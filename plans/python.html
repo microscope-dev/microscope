@@ -1102,11 +1102,11 @@ struct py_frame { __u64 code; __u64 qualname; __u32 unit; __u32 first_line; __u3
         </ul>
         <div class="scroller"><table class="data"><thead><tr><th>Task</th><th>Work</th><th>Status</th><th>Result</th></tr></thead><tbody>
           <tr><td>P0.1</td><td>Interpreter matrix in the flake: <code>MICROSCOPE_CPYTHON</code> with nixpkgs 3.12, 3.13, 3.13t, 3.14, 3.14t, python-build-standalone 3.15.0 and 3.15.0t, Debian trixie 3.13, Ubuntu noble 3.12, and the nixpkgs debug outputs</td><td><span class="st done">done</span></td><td>1bf7c0e1: nine interpreters; python-build-standalone builds need their <span class="mono">.dynstr</span> section header repaired before patchelf</td></tr>
-          <tr><td>P0.2</td><td>Shared truth harness <code>tests/support/truth.rs</code> with its self-test; Go and tokio suites use it</td><td><span class="st todo">todo</span></td><td></td></tr>
-          <tr><td>P0.3</td><td><code>tests/fixtures/python/truth.py</code>: checkpoints, parking, canonical values, code tables</td><td><span class="st todo">todo</span></td><td></td></tr>
+          <tr><td>P0.2</td><td>Shared truth harness <code>tests/support/truth.rs</code> with its self-test; Go and tokio suites use it</td><td><span class="st done">done</span></td><td>12445985</td></tr>
+          <tr><td>P0.3</td><td><code>tests/fixtures/python/truth.py</code>: checkpoints, parking, canonical values, code tables</td><td><span class="st done">done</span></td><td>0d03598f</td></tr>
           <tr><td>P0.4</td><td>G1: stepping reads code roles from every module</td><td><span class="st done">done</span></td><td>9aa3b5f2</td></tr>
           <tr><td>P0.5</td><td>G2: split-off parts such as <code>f.cold</code> inherit <code>f</code>'s role</td><td><span class="st done">done</span></td><td>a8b13d72; also GCC clone suffixes (<span class="mono">.isra</span>, <span class="mono">.constprop</span>, <span class="mono">.lto_priv</span>)</td></tr>
-          <tr><td>P0.6</td><td>G3: live snapshots detect runtimes in every module and never fall back to stopped ones</td><td><span class="st todo">todo</span></td><td></td></tr>
+          <tr><td>P0.6</td><td>G3: live snapshots detect runtimes in every module and never fall back to stopped ones</td><td><span class="st done">done</span></td><td>44e53a14; thread pointers come from glibc's thread lists in memory, so live snapshots never stop</td></tr>
           <tr><td>P0.7</td><td>G14: perf maps as pseudo-modules, unwound by frame pointer, symbolized at record time</td><td><span class="st todo">todo</span></td><td></td></tr>
         </tbody></table></div>
         <p class="exit">Exit: <code>python -X perf</code> stacks no longer truncate. Stepping honors roles in shared libraries. A live snapshot of tokio in a shared library finds its tasks.</p>
