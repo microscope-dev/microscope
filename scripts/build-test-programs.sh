@@ -636,7 +636,9 @@ derive_dwz() {
     [[ "$layout" == split ]] && output="$directory/split/shapes"
     [[ "$layout" == dwarf5 ]] && output="$directory/dwarf5/shapes"
     local version
-    version=$(dwz --version | head -n 1)
+    # sed reads all input, where head would exit early and the tool's
+    # SIGPIPE fail the pipeline; the same holds for each version below.
+    version=$(dwz --version | sed -n 1p)
     run_cached_build "$directory/plain" "$output" \
         "derivation=dwz-v1"$'\n'"layout=${layout}"$'\n'"dwz=${version}" \
         bash -c "$script" _ "$directory" "$layout"
@@ -830,7 +832,7 @@ build_d_fixture() {
         ldc2 -g -w "$@" "-od=${output}.objects" "-of=${output}" "$source"
     )
     if [[ -z "$d_version" ]]; then
-        d_version=$(ldc2 --version | head -n 1)
+        d_version=$(ldc2 --version | sed -n 1p)
     fi
     run_cached_build "$source" "$output" \
         "compiler=${d_version}"$'\n'"target=x86_64-linux" \
@@ -848,7 +850,7 @@ build_nim_fixture() {
         "$@" "--nimcache:${output}.nimcache" "--out:${output}" "$source"
     )
     if [[ -z "$nim_version" ]]; then
-        nim_version=$(nim --version | head -n 1)
+        nim_version=$(nim --version | sed -n 1p)
     fi
     run_cached_build "$source" "$output" \
         "compiler=${nim_version}"$'\n'"target=x86_64-linux" \
@@ -867,7 +869,7 @@ build_ada_fixture() {
         gnatmake -q -g -gnat2022 -gnatwa -gnatwe "$@" -o "${PWD}/${output}" "${PWD}/${source}"
     )
     if [[ -z "$ada_version" ]]; then
-        ada_version=$(gnatmake --version | head -n 1)
+        ada_version=$(gnatmake --version | sed -n 1p)
     fi
     mkdir -p "${output}.objects"
     run_cached_build "$source" "$output" \
