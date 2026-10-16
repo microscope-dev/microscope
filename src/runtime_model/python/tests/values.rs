@@ -14,7 +14,10 @@ use crate::inspection::InspectionBudget;
 use crate::runtime_model::{
     InterpretedChild, InterpretedKind, InterpretedLocal, InterpretedSlot, InterpretedValue,
 };
-use crate::{InspectionLimit, InspectionLimits, VirtualAddress};
+use crate::{
+    InspectionExhaustion, InspectionLimit, InspectionLimits, VariableUnavailableReason,
+    VirtualAddress,
+};
 
 /// The depth at which a summary shows `...`, as the model's summary gives
 /// it. The model keeps the constant private, so the test mirrors it.
@@ -433,12 +436,14 @@ fn none_and_the_booleans_are_shown_by_their_names() {
 fn ints_are_shown_in_decimal_with_their_value_where_it_fits_in_128_bits() {
     let mut process = Process::new(layout());
     let types = process.builtin_types();
-    let cases: [(i128, &str); 5] = [
+    let cases: [(i128, &str); 7] = [
         (0, "0"),
         (7, "7"),
         (-12345, "-12345"),
         (1 << 30, "1073741824"),
         ((1 << 100) + 12345, "1267650600228229401496703217721"),
+        (i128::MAX, "170141183460469231731687303715884105727"),
+        (i128::MIN, "-170141183460469231731687303715884105728"),
     ];
     for (value, summary) in cases {
         let address = process.int(types.int, value);
@@ -460,6 +465,19 @@ fn ints_are_shown_in_decimal_with_their_value_where_it_fits_in_128_bits() {
     );
     assert_eq!(shown.kind, InterpretedKind::Int(None));
     assert_builtin(&shown, "int");
+}
+
+#[test]
+fn an_object_whose_head_cannot_be_read_whole_is_read_by_its_fields() {
+    let mut process = Process::new(layout());
+    let types = process.builtin_types();
+    let address = process.int(types.int, 7);
+    let end = address + process.offset(Field::LongDigits) + 4;
+    process.unmap(end, 64);
+
+    let shown = read_value(&process, types, address);
+    assert_eq!(shown.summary.as_ref(), "7");
+    assert_eq!(shown.problem, None);
 }
 
 #[test]
@@ -613,15 +631,9 @@ fn a_list_longer_than_the_summary_shows_its_first_items_then_an_ellipsis() {
         .collect();
     let list = process.list(types.list, &items);
 
-    // Each int costs four reads, so 65 of them need more reads than the
-    // default budget allows; the budget is raised to the most it may be.
-    let limits = InspectionLimits {
-        memory_reads: 1024,
-        ..InspectionLimits::default()
-    };
-    let shown = value_of(with_values(&process, types, limits, |values| {
-        values.value(VirtualAddress::new(list))
-    }));
+    // Each small object costs one read, so the default budget affords the
+    // summary.
+    let shown = read_value(&process, types, list);
     let first: Vec<String> = (0..SUMMARY_ITEMS).map(|value| value.to_string()).collect();
     assert_eq!(
         shown.summary.as_ref(),
@@ -824,10 +836,10 @@ fn an_element_the_budget_cannot_afford_is_a_limit_and_the_ones_before_it_are_rea
     let types = process.builtin_types();
     let items: Vec<u64> = (1..=3).map(|value| process.int(types.int, value)).collect();
     let list = process.list(types.list, &items);
-    // Reading the list takes three reads and its items takes one more. Each
-    // int takes four reads, so the first int is the only one that fits.
+    // Reading the list takes one read, its items one more, and each int
+    // one, so the first int is the only one that fits.
     let limits = InspectionLimits {
-        memory_reads: 8,
+        memory_reads: 3,
         ..InspectionLimits::default()
     };
 
@@ -848,12 +860,62 @@ fn an_element_the_budget_cannot_afford_is_a_limit_and_the_ones_before_it_are_rea
         matches!(
             slots[1],
             InterpretedSlot::Limit(exhaustion)
-                if exhaustion.resource == InspectionLimit::MemoryReads && exhaustion.limit == 8
+                if exhaustion.resource == InspectionLimit::MemoryReads && exhaustion.limit == 3
         ),
         "the second element: {:?}",
         slots[1]
     );
     assert_eq!(describe(slots[2]), "limit");
+}
+
+#[test]
+fn a_summary_the_budget_runs_out_in_ends_where_it_ran_out() {
+    let mut process = Process::new(layout());
+    let types = process.builtin_types();
+    let inner: Vec<u64> = (3..=4).map(|value| process.int(types.int, value)).collect();
+    let inner = process.list(types.list, &inner);
+    let items = [
+        process.int(types.int, 1),
+        process.int(types.int, 2),
+        inner,
+        process.int(types.int, 5),
+    ];
+    let list = process.list(types.list, &items);
+    let mapping = process.dict(
+        types.dict,
+        Table::eight(Kind::General),
+        2,
+        &[(items[0], items[1]), (items[3], inner)],
+    );
+
+    // The outer list, its items, two ints, the inner list, its items, and
+    // its first int: the inner list is cut short, so it is left out.
+    let limits = InspectionLimits {
+        memory_reads: 7,
+        ..InspectionLimits::default()
+    };
+    let shown = value_of(with_values(&process, types, limits, |values| {
+        values.value(VirtualAddress::new(list))
+    }));
+    assert_eq!(shown.summary.as_ref(), "[1, 2, ...]");
+    let spent = VariableUnavailableReason::InspectionLimit(InspectionExhaustion {
+        resource: InspectionLimit::MemoryReads,
+        limit: 7,
+        used: 7,
+        requested: 1,
+    })
+    .to_string();
+    assert_eq!(shown.problem.as_deref(), Some(spent.as_str()));
+
+    // The dict, its keys, its entries, and the first entry's key and value.
+    let limits = InspectionLimits {
+        memory_reads: 5,
+        ..InspectionLimits::default()
+    };
+    let shown = value_of(with_values(&process, types, limits, |values| {
+        values.value(VirtualAddress::new(mapping))
+    }));
+    assert_eq!(shown.summary.as_ref(), "{1: 2, ...}");
 }
 
 #[test]

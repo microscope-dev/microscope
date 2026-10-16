@@ -15,7 +15,7 @@ use std::cell::RefCell;
 use std::sync::Arc;
 
 use super::code::{CodeId, CodeTable};
-use super::objects::{Charge, Problem, Reader, Record, malformed};
+use super::objects::{Charge, Head, Problem, Reader, Record, malformed};
 use super::text;
 use crate::VirtualAddress;
 use crate::image::python::{Constant, Field};
@@ -317,50 +317,50 @@ impl Values<'_, '_> {
         }
 
         let reader = &self.reader;
-        let ty = VirtualAddress::new(reader.field_word(address, Field::ObjectType)?);
+        let head = reader.head(address)?;
+        let ty = VirtualAddress::new(head.field_word(Field::ObjectType)?);
         let types = &self.types;
 
         if ty == types.none {
             Ok(Object::Nothing)
         } else if ty == types.bool {
-            let (negative, digits) = self.int(address)?;
+            let (negative, digits) = self.int(&head)?;
             Ok(Object::Bool(
                 !negative && digits.iter().any(|digit| *digit != 0),
             ))
         } else if ty == types.int {
-            let tag = reader.field_word(address, Field::LongTag)?;
+            let tag = head.field_word(Field::LongTag)?;
             let count = tag >> reader.layout.constant(Constant::LongNonSizeBits);
             if count > MAX_INT_DIGITS {
                 return Ok(Object::LargeInt { digits: count });
             }
 
-            let (negative, digits) = self.int(address)?;
+            let (negative, digits) = self.int(&head)?;
             Ok(Object::Int { negative, digits })
         } else if ty == types.float {
-            let bits = reader.field_word(address, Field::FloatValue)?;
+            let bits = head.field_word(Field::FloatValue)?;
             Ok(Object::Float(f64::from_bits(bits)))
         } else if ty == types.str {
-            let (points, length) = reader.code_points(address, SUMMARY_TEXT)?;
+            let (points, length) = head.code_points(SUMMARY_TEXT)?;
             Ok(Object::Str { points, length })
         } else if ty == types.bytes {
-            let length = length(reader.field_word(address, Field::BytesSize)?, address)?;
-            let contents =
-                reader.field_bytes(address, Field::BytesData, length.min(SUMMARY_TEXT))?;
+            let length = length(head.field_word(Field::BytesSize)?, address)?;
+            let contents = head.field_bytes(Field::BytesData, length.min(SUMMARY_TEXT))?;
             Ok(Object::Bytes { contents, length })
         } else if ty == types.list {
-            let length = length(reader.field_word(address, Field::ListSize)?, address)?;
-            let items = VirtualAddress::new(reader.field_word(address, Field::ListItems)?);
+            let length = length(head.field_word(Field::ListSize)?, address)?;
+            let items = VirtualAddress::new(head.field_word(Field::ListItems)?);
             if length > 0 && items == VirtualAddress::new(0) {
                 return Err(malformed(address, "list"));
             }
 
             Ok(Object::List { items, length })
         } else if ty == types.tuple {
-            let length = length(reader.field_word(address, Field::TupleSize)?, address)?;
+            let length = length(head.field_word(Field::TupleSize)?, address)?;
             let items = address.wrapping_add(reader.offset(Field::TupleItems)?);
             Ok(Object::Tuple { items, length })
         } else if ty == types.dict {
-            self.dict(address)
+            self.dict(&head)
         } else {
             let name = VirtualAddress::new(reader.field_word(ty, Field::TypeName)?);
             Ok(Object::Other {
@@ -369,10 +369,10 @@ impl Values<'_, '_> {
         }
     }
 
-    /// The sign and magnitude digits of the `int` at `address`.
-    fn int(&self, address: VirtualAddress) -> Result<(bool, Vec<u32>), Problem> {
-        let reader = &self.reader;
-        let tag = reader.field_word(address, Field::LongTag)?;
+    /// The sign and magnitude digits of the `int` the head is of.
+    fn int(&self, head: &Head<'_, '_>) -> Result<(bool, Vec<u32>), Problem> {
+        let (address, reader) = (head.address(), &self.reader);
+        let tag = head.field_word(Field::LongTag)?;
         let count = tag >> reader.layout.constant(Constant::LongNonSizeBits);
         let (negative, zero) = match tag & 3 {
             0 => (false, false),
@@ -387,7 +387,7 @@ impl Values<'_, '_> {
 
         let shift = self.shift();
         let width = if shift > 16 { 4 } else { 2 };
-        let bytes = reader.field_bytes(address, Field::LongDigits, count * width)?;
+        let bytes = head.field_bytes(Field::LongDigits, count * width)?;
         let digits: Vec<u32> = if width == 4 {
             bytes
                 .as_chunks::<4>()
@@ -415,24 +415,21 @@ impl Values<'_, '_> {
         u32::from(self.reader.layout.constant(Constant::LongShift))
     }
 
-    fn dict(&self, address: VirtualAddress) -> Result<Object, Problem> {
-        let reader = &self.reader;
-        let length = length(reader.field_word(address, Field::DictUsed)?, address)?;
-        if reader.field_word(address, Field::DictValues)? != 0 {
+    /// The `dict` the head is of, as far as reading its entries needs it.
+    fn dict(&self, head: &Head<'_, '_>) -> Result<Object, Problem> {
+        let (address, reader) = (head.address(), &self.reader);
+        let length = length(head.field_word(Field::DictUsed)?, address)?;
+        if head.field_word(Field::DictValues)? != 0 {
             return Ok(Object::SplitDict { length });
         }
 
-        let keys = VirtualAddress::new(reader.field_word(address, Field::DictKeys)?);
-        let byte = |field| -> Result<u64, Problem> {
-            Ok(u64::from(
-                *reader.field_bytes(keys, field, 1)?.first().unwrap_or(&0),
-            ))
-        };
-
+        let keys = VirtualAddress::new(head.field_word(Field::DictKeys)?);
+        let keys_head = reader.head(keys)?;
+        let byte = |field| keys_head.field_byte(field).map(u64::from);
         let log2_size = byte(Field::DictKeysLog2Size)?;
         let log2_index_bytes = byte(Field::DictKeysLog2IndexBytes)?;
         let kind = byte(Field::DictKeysKind)?;
-        let count = reader.field_word(keys, Field::DictKeysNentries)?;
+        let count = keys_head.field_word(Field::DictKeysNentries)?;
         let bad = || malformed(address, "dict");
         if log2_size >= 32 || log2_index_bytes < log2_size || log2_index_bytes > log2_size + 3 {
             return Err(bad());
@@ -696,25 +693,28 @@ impl Values<'_, '_> {
         summary: &mut Summary,
     ) -> String {
         let shown = length.min(SUMMARY_ITEMS);
-        let texts = match self.items(items, 0, shown) {
-            Ok(items) => items
-                .into_iter()
-                .map(|item| self.item_text(item, depth + 1, summary))
-                .collect::<Vec<_>>(),
+        let (mut texts, whole) = match self.items(items, 0, shown) {
+            Ok(items) => self.until_spent(items.len(), summary, |index, summary| {
+                self.item_text(items[index], depth + 1, summary)
+            }),
             Err(problem) => {
                 note(summary, problem.to_string());
-                vec!["...".to_owned()]
+                (Vec::new(), false)
             }
         };
 
-        let mut text = format!("{open}{}", texts.join(", "));
-        if shown < length {
+        if !whole {
+            texts.push("...".to_owned());
+        } else if shown < length {
             note(
                 summary,
                 format!("a summary shows {SUMMARY_ITEMS} items of each container"),
             );
-            text.push_str(", ...");
-        } else if open == "(" && length == 1 {
+            texts.push("...".to_owned());
+        }
+
+        let mut text = format!("{open}{}", texts.join(", "));
+        if whole && open == "(" && length == 1 {
             text.push(',');
         }
 
@@ -727,16 +727,16 @@ impl Values<'_, '_> {
         let read = self.entries(dict, 0..SUMMARY_ITEMS, |key, value| {
             pairs.push((key, value));
         });
-        let mut texts: Vec<String> = pairs
-            .into_iter()
-            .map(|(key, value)| {
-                let key = self.item_text(key, depth + 1, summary);
-                let value = self.item_text(value, depth + 1, summary);
-                format!("{key}: {value}")
-            })
-            .collect();
+        let (mut texts, whole) = self.until_spent(pairs.len(), summary, |index, summary| {
+            let (key, value) = pairs[index];
+            let key = self.item_text(key, depth + 1, summary);
+            let value = self.item_text(value, depth + 1, summary);
+            format!("{key}: {value}")
+        });
         if let Err(problem) = read {
             note(summary, problem.to_string());
+            texts.push("...".to_owned());
+        } else if !whole {
             texts.push("...".to_owned());
         } else if dict.length > SUMMARY_ITEMS {
             note(
@@ -747,6 +747,28 @@ impl Values<'_, '_> {
         }
 
         format!("{{{}}}", texts.join(", "))
+    }
+
+    /// The texts of the first of `count` items, each from `text`, until
+    /// the budget is spent, and whether it lasted for every item. An item
+    /// whose reads spent it is left out, since its text is not whole.
+    fn until_spent(
+        &self,
+        count: usize,
+        summary: &mut Summary,
+        mut text: impl FnMut(usize, &mut Summary) -> String,
+    ) -> (Vec<String>, bool) {
+        let mut texts = Vec::with_capacity(count);
+        for index in 0..count {
+            let item = text(index, summary);
+            if self.budget.exhaustion().is_some() {
+                return (texts, false);
+            }
+
+            texts.push(item);
+        }
+
+        (texts, true)
     }
 }
 
@@ -780,6 +802,9 @@ fn exact(negative: bool, digits: &[u32], shift: u32) -> Option<i128> {
             .checked_add(u128::from(digit))?;
     }
 
-    let value = i128::try_from(magnitude).ok()?;
-    Some(if negative { -value } else { value })
+    if negative {
+        0_i128.checked_sub_unsigned(magnitude)
+    } else {
+        i128::try_from(magnitude).ok()
+    }
 }

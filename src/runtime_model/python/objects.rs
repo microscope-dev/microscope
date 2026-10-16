@@ -19,6 +19,11 @@ pub(super) const MAX_ITEMS: u64 = 1 << 16;
 /// The longest C string read, in bytes, as a type's name.
 const MAX_C_STRING: u64 = 256;
 
+/// How many bytes of an object are read at once, before any of its
+/// fields: enough for the header and fixed fields of each built-in object
+/// the debugger presents, and the text of a short string.
+const HEAD: usize = 64;
+
 /// A problem reading the process, as one line.
 pub(super) type Problem = Arc<str>;
 
@@ -42,6 +47,25 @@ impl<'a> Reader<'a> {
         let mut bytes = vec![0; usize::try_from(length).map_err(|_| unreadable(address))?];
         self.read(address, &mut bytes)?;
         Ok(bytes)
+    }
+
+    /// The first bytes of the object at `address`, read at once, or none
+    /// where they cannot all be read, as near the end of a mapping.
+    pub(super) fn head(&self, address: VirtualAddress) -> Result<Head<'_, 'a>, Problem> {
+        let mut bytes = vec![0; HEAD];
+        if let Some(charge) = self.charge {
+            charge.charge(HEAD)?;
+        }
+
+        if !self.stop.read(address, &mut bytes) {
+            bytes.clear();
+        }
+
+        Ok(Head {
+            reader: self,
+            address,
+            bytes,
+        })
     }
 
     pub(super) fn word(&self, address: VirtualAddress) -> Result<u64, Problem> {
@@ -123,7 +147,7 @@ impl<'a> Reader<'a> {
     /// The `str` at `object`, of at most [`MAX_STRING`] characters, as a
     /// name or a path is: one that holds a lone surrogate is malformed.
     pub(super) fn string(&self, object: VirtualAddress) -> Result<Arc<str>, Problem> {
-        let (points, length) = self.code_points(object, MAX_STRING)?;
+        let (points, length) = self.head(object)?.code_points(MAX_STRING)?;
         if length > MAX_STRING {
             return Err(format!("the str at {object:#x} is {length} characters long").into());
         }
@@ -136,17 +160,89 @@ impl<'a> Reader<'a> {
             .ok_or_else(|| malformed(object, "str"))
     }
 
-    /// The first `limit` code points of the `str` at `object`, as CPython
-    /// keeps them, and how many it holds.
-    pub(super) fn code_points(
-        &self,
-        object: VirtualAddress,
-        limit: u64,
-    ) -> Result<(Vec<u32>, u64), Problem> {
-        let compact = self.offset(Field::UnicodeCompactSize)?;
+    /// The contents of the `bytes` at `object`, of at most [`MAX_ITEMS`].
+    pub(super) fn bytes_object(&self, object: VirtualAddress) -> Result<Vec<u8>, Problem> {
+        let length = self.field_word(object, Field::BytesSize)?;
+        if length > MAX_ITEMS {
+            return Err(format!("the bytes at {object:#x} are {length} long").into());
+        }
+
+        self.field_bytes(object, Field::BytesData, length)
+    }
+
+    /// The items of the `tuple` at `object`, of at most [`MAX_ITEMS`].
+    pub(super) fn tuple(&self, object: VirtualAddress) -> Result<Vec<VirtualAddress>, Problem> {
+        let length = self.field_word(object, Field::TupleSize)?;
+        if length > MAX_ITEMS {
+            return Err(format!("the tuple at {object:#x} holds {length} items").into());
+        }
+
+        let items = self.field_bytes(object, Field::TupleItems, length * 8)?;
+        Ok(items
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|item| VirtualAddress::new(u64::from_le_bytes(*item)))
+            .collect())
+    }
+}
+
+/// The first bytes of an object, read at once, so a small object costs
+/// one read. What lies past them, or in an object whose head could not be
+/// read whole, is read where it is.
+pub(super) struct Head<'r, 'a> {
+    reader: &'r Reader<'a>,
+    address: VirtualAddress,
+    bytes: Vec<u8>,
+}
+
+impl Head<'_, '_> {
+    /// The address of the object the head is of.
+    pub(super) const fn address(&self) -> VirtualAddress {
+        self.address
+    }
+
+    /// The `length` bytes at `at`, from the head where it holds them all.
+    pub(super) fn bytes(&self, at: VirtualAddress, length: u64) -> Result<Vec<u8>, Problem> {
+        let held = at.get().checked_sub(self.address.get()).and_then(|start| {
+            let end = start.checked_add(length)?;
+            self.bytes
+                .get(usize::try_from(start).ok()?..usize::try_from(end).ok()?)
+        });
+        held.map_or_else(|| self.reader.bytes(at, length), |bytes| Ok(bytes.to_vec()))
+    }
+
+    /// The `length` bytes at the object's `field`.
+    pub(super) fn field_bytes(&self, field: Field, length: u64) -> Result<Vec<u8>, Problem> {
+        self.bytes(
+            self.address.wrapping_add(self.reader.offset(field)?),
+            length,
+        )
+    }
+
+    /// The word at the object's `field`.
+    pub(super) fn field_word(&self, field: Field) -> Result<u64, Problem> {
+        let bytes = self.field_bytes(field, 8)?;
+        read_le(&bytes, 0, 8).ok_or_else(|| unreadable(self.address))
+    }
+
+    /// The first byte at the object's `field`.
+    pub(super) fn field_byte(&self, field: Field) -> Result<u8, Problem> {
+        let bytes = self.field_bytes(field, 1)?;
+        bytes
+            .first()
+            .copied()
+            .ok_or_else(|| unreadable(self.address))
+    }
+
+    /// The first `limit` code points of the `str` the head is of, as
+    /// CPython keeps them, and how many it holds.
+    pub(super) fn code_points(&self, limit: u64) -> Result<(Vec<u32>, u64), Problem> {
+        let (object, reader) = (self.address, self.reader);
+        let compact = reader.offset(Field::UnicodeCompactSize)?;
         let header = self.bytes(object, compact)?;
         let at = |field| -> Result<u64, Problem> {
-            let offset = self.offset(field)?;
+            let offset = reader.offset(field)?;
             read_le(&header, offset, 8).ok_or_else(|| malformed(object, "str"))
         };
 
@@ -156,18 +252,18 @@ impl<'a> Reader<'a> {
         }
 
         let state = {
-            let offset = self.offset(Field::UnicodeState)?;
+            let offset = reader.offset(Field::UnicodeState)?;
             read_le(&header, offset, 4).ok_or_else(|| malformed(object, "str"))?
         };
-        let bit = |shift: Constant| (state >> self.layout.constant(shift)) & 1 != 0;
-        let kind = (state >> self.layout.constant(Constant::UnicodeKindShift)) & 7;
+        let bit = |shift: Constant| (state >> reader.layout.constant(shift)) & 1 != 0;
+        let kind = (state >> reader.layout.constant(Constant::UnicodeKindShift)) & 7;
         let data = match (
             bit(Constant::UnicodeCompactShift),
             bit(Constant::UnicodeAsciiShift),
         ) {
-            (true, true) => object.wrapping_add(self.offset(Field::UnicodeAsciiSize)?),
+            (true, true) => object.wrapping_add(reader.offset(Field::UnicodeAsciiSize)?),
             (true, false) => object.wrapping_add(compact),
-            (false, _) => VirtualAddress::new(self.field_word(object, Field::UnicodeData)?),
+            (false, _) => VirtualAddress::new(self.field_word(Field::UnicodeData)?),
         };
 
         let width = match kind {
@@ -199,32 +295,6 @@ impl<'a> Reader<'a> {
         }
 
         Ok((points, length))
-    }
-
-    /// The contents of the `bytes` at `object`, of at most [`MAX_ITEMS`].
-    pub(super) fn bytes_object(&self, object: VirtualAddress) -> Result<Vec<u8>, Problem> {
-        let length = self.field_word(object, Field::BytesSize)?;
-        if length > MAX_ITEMS {
-            return Err(format!("the bytes at {object:#x} are {length} long").into());
-        }
-
-        self.field_bytes(object, Field::BytesData, length)
-    }
-
-    /// The items of the `tuple` at `object`, of at most [`MAX_ITEMS`].
-    pub(super) fn tuple(&self, object: VirtualAddress) -> Result<Vec<VirtualAddress>, Problem> {
-        let length = self.field_word(object, Field::TupleSize)?;
-        if length > MAX_ITEMS {
-            return Err(format!("the tuple at {object:#x} holds {length} items").into());
-        }
-
-        let items = self.field_bytes(object, Field::TupleItems, length * 8)?;
-        Ok(items
-            .as_chunks::<8>()
-            .0
-            .iter()
-            .map(|item| VirtualAddress::new(u64::from_le_bytes(*item)))
-            .collect())
     }
 }
 

@@ -34,6 +34,10 @@ const STRING_SIZE: u64 = 48;
 /// A runtime or an interpreter, whose fields all lie in its first bytes.
 const SMALL: u64 = 32;
 
+/// How far past the start of each allocation memory is mapped: as far as
+/// the model reads an object's head.
+const MAPPED_PAST: u64 = 64;
+
 /// What a walk of one thread returns: its frames and why they end early.
 type Walked = (Vec<InterpretedFrame>, Option<Arc<str>>);
 
@@ -224,13 +228,22 @@ impl Process {
     }
 
     /// Reserves `size` zeroed bytes, aligned to sixteen, and returns their
-    /// address.
+    /// address. The memory past them is mapped, as the rest of an
+    /// allocator's pool is, up to [`MAPPED_PAST`] bytes from their start.
     fn alloc(&mut self, size: u64) -> u64 {
         let address = self.next;
-        let zeros = vec![0; usize::try_from(size).expect("an object fits the address space")];
+        let mapped = size.max(MAPPED_PAST);
+        let zeros = vec![0; usize::try_from(mapped).expect("an object fits the address space")];
         self.memory.fill(address, &zeros);
         self.next = address + size.next_multiple_of(16);
         address
+    }
+
+    /// Unmaps the `length` bytes at `address`.
+    fn unmap(&mut self, address: u64, length: u64) {
+        self.memory
+            .bytes
+            .retain(|at, _| !(address..address + length).contains(at));
     }
 
     fn reader(&self) -> Reader<'_> {
