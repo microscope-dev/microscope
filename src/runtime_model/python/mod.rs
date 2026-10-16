@@ -315,3 +315,6 @@ impl RuntimeModel for PythonRuntime {
         Some(self.stacks(stop))
     }
 }
+
+#[cfg(test)]
+mod tests;
