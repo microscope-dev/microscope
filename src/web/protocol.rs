@@ -1910,8 +1910,8 @@ pub struct Frame {
     pub module: Option<String>,
     pub source: Option<SourceLine>,
 
-    /// For a frame that drives a future whose awaits the stack does not
-    /// show in full, why.
+    /// For a frame that drives frames the stack does not show in full,
+    /// the note that says so and why.
     pub unfollowed: Option<String>,
 }
 

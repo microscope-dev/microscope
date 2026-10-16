@@ -124,8 +124,8 @@ async fn frame_of(
         unfollowed: trace
             .unfollowed
             .iter()
-            .find(|future| future.driver == frame.id)
-            .map(|future| future.reason.to_string()),
+            .find(|note| note.driver == frame.id)
+            .map(|note| crate::present::frames::unfollowed(note, "the next frame")),
     }
 }
 

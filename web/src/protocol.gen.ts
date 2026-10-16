@@ -346,8 +346,8 @@ address: string | null,
  */
 module: string | null, source: SourceLine | null, 
 /**
- * For a frame that drives a future whose awaits the stack does not
- * show in full, why.
+ * For a frame that drives frames the stack does not show in full,
+ * the note that says so and why.
  */
 unfollowed: string | null, };
 

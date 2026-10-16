@@ -104,6 +104,12 @@ entries! {
         CodeFlags = "code_object.co_flags",
         CodeNlocalsplus = "code_object.co_nlocalsplus",
 
+        /// A free-threaded build's `_PyCodeArray`: how many copies of a
+        /// code object's bytecode there are, and the first, whose index
+        /// a frame's [`Field::FrameTlbcIndex`] gives.
+        CodeArraySize = "code_array.size",
+        CodeArrayEntries = "code_array.entries",
+
         ObjectType = "pyobject.ob_type",
         VarObjectSize = "pyvarobject.ob_size",
 
@@ -184,6 +190,14 @@ entries! {
         DictKeysSplit = "DICT_KEYS_SPLIT",
     }
 }
+
+/// The function each activation of CPython's evaluation loop runs in.
+pub const EVALUATION_LOOP: &str = "_PyEval_EvalFrameDefault";
+
+/// What a build of CPython whose evaluation loop tail-calls a function for
+/// each instruction names those functions: each activation of the loop is
+/// the instruction's it runs.
+pub const TAIL_CALL_PREFIX: &str = "_TAIL_CALL_";
 
 /// An offset no field has: the version does not have the field.
 const ABSENT: u16 = u16::MAX;

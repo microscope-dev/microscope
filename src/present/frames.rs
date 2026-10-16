@@ -74,6 +74,21 @@ pub fn name(frame: &StackFrame, image: Option<&ModuleImage>) -> String {
     }
 }
 
+/// The note that frames a frame drives are not shown in full, naming the
+/// frame `driver`, as `#3` or `the next frame`.
+pub fn unfollowed(note: &microscope::Unfollowed, driver: &str) -> String {
+    match note.driven {
+        microscope::DrivenFrames::Future => format!(
+            "the future {driver} drives is not shown in full: {}",
+            note.reason
+        ),
+        microscope::DrivenFrames::Interpreted => format!(
+            "the interpreted frames {driver} runs are not shown in full: {}",
+            note.reason
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;

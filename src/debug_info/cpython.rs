@@ -121,7 +121,7 @@ pub(super) fn runtime(object: &object::File<'_>) -> Option<PythonRuntime> {
         version,
         flags,
         runtime,
-        layout: layout.and_then(|layout| validated(version, layout)),
+        layout: layout.and_then(|layout| validated(version, flags & FREE_THREADED != 0, layout)),
     })
 }
 
@@ -286,11 +286,58 @@ fn unsupported(version: PyVersion) -> Arc<str> {
     format!("CPython {version} is not supported: microscope reads 3.12 through 3.15").into()
 }
 
+/// The fields a free-threaded build since 3.14 needs as well, which find
+/// the copy of the bytecode a frame runs.
+const THREAD_LOCAL_BYTECODE: [Field; 4] = [
+    Field::FrameTlbcIndex,
+    Field::CodeTlbc,
+    Field::CodeArraySize,
+    Field::CodeArrayEntries,
+];
+
+/// The sizes of the structures the model reads whole, and the most each
+/// may be: a table in the process may say anything.
+const READ_WHOLE: [Field; 6] = [
+    Field::ThreadSize,
+    Field::FrameSize,
+    Field::CodeSize,
+    Field::UnicodeCompactSize,
+    Field::DictEntrySize,
+    Field::DictUnicodeEntrySize,
+];
+const MAX_STRUCTURE: u64 = 1 << 16;
+
 /// The layout, once each field it needs is there and lies within its
-/// structure.
-fn validated(version: PyVersion, layout: PythonLayout) -> Result<PythonLayout, Arc<str>> {
-    if let Some(missing) = REQUIRED.iter().find(|field| !layout.has(**field)) {
+/// structure, and no structure read whole is larger than [`MAX_STRUCTURE`].
+fn validated(
+    version: PyVersion,
+    free_threaded: bool,
+    layout: PythonLayout,
+) -> Result<PythonLayout, Arc<str>> {
+    let thread_local = if free_threaded && version.minor() >= 14 {
+        &THREAD_LOCAL_BYTECODE[..]
+    } else {
+        &[]
+    };
+
+    if let Some(missing) = REQUIRED
+        .iter()
+        .chain(thread_local)
+        .find(|field| !layout.has(**field))
+    {
         return Err(format!("CPython {version}'s layout has no {}", missing.name()).into());
+    }
+
+    if let Some((field, size)) = READ_WHOLE
+        .iter()
+        .find_map(|&field| Some((field, layout.field(field)?)))
+        .filter(|(_, size)| *size > MAX_STRUCTURE)
+    {
+        return Err(format!(
+            "CPython {version}'s layout makes {} {size} bytes",
+            field.name()
+        )
+        .into());
     }
 
     for &field in Field::ALL {
@@ -463,7 +510,7 @@ mod tests {
         let (version, flags, layout) = describe(Some(&[1, 0, 0, 0]), Some(V3_12_13));
         assert_eq!(version.to_string(), "3.12.13");
         assert_eq!(flags, GENERATED_TABLE);
-        let layout = validated(version, layout.expect("a layout")).expect("valid");
+        let layout = validated(version, false, layout.expect("a layout")).expect("valid");
         assert!(layout.has(Field::CframeCurrentFrame));
     }
 
@@ -539,8 +586,26 @@ mod tests {
     #[test]
     fn every_generated_layout_is_valid() {
         for generated in layouts::GENERATED {
-            validated(PyVersion(generated.version), generated.layout())
-                .unwrap_or_else(|problem| panic!("{}: {problem}", generated.name));
+            validated(
+                PyVersion(generated.version),
+                generated.free_threaded,
+                generated.layout(),
+            )
+            .unwrap_or_else(|problem| panic!("{}: {problem}", generated.name));
         }
+    }
+
+    #[test]
+    fn a_layout_whose_structure_is_too_large_to_read_is_refused() {
+        let generated = &layouts::GENERATED[0];
+        let mut layout = generated.layout();
+        layout.set_field(Field::FrameSize, MAX_STRUCTURE + 1);
+        let refused = validated(
+            PyVersion(generated.version),
+            generated.free_threaded,
+            layout,
+        )
+        .expect_err("a frame too large to read");
+        assert!(refused.contains("interpreter_frame.size"), "{refused}");
     }
 }

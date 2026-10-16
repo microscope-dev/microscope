@@ -7,6 +7,8 @@ use std::collections::BTreeSet;
 use super::gopclntab::{GoFunctionFacts, SpecialFunction};
 use std::path::PathBuf;
 
+use crate::demangle::split_from;
+use crate::image::python;
 use crate::{CodeRole, FunctionInfo, SourceLanguage};
 
 /// The file Go declares the code it generates in: wrappers, but also
@@ -218,7 +220,7 @@ pub fn symbol_role(name: &str) -> CodeRole {
 /// Python runtime gives them this role (see `super::cpython`).
 const CPYTHON_MACHINERY: [&str; 64] = [
     // The evaluation loop, and what enters it.
-    "_PyEval_EvalFrameDefault",
+    python::EVALUATION_LOOP,
     "_PyEval_EvalFrame",
     "_PyEval_Vector",
     "PyEval_EvalCode",
@@ -291,41 +293,9 @@ const CPYTHON_MACHINERY: [&str; 64] = [
 /// an image that carries a Python runtime, or `None` for code of its own
 /// role. A part split off a function plays the function's role.
 pub fn cpython_role(name: &str) -> Option<CodeRole> {
-    CPYTHON_MACHINERY
-        .contains(&split_from(name))
+    let name = split_from(name);
+    (CPYTHON_MACHINERY.contains(&name) || name.starts_with(python::TAIL_CALL_PREFIX))
         .then_some(CodeRole::Interpreter)
-}
-
-/// What compilers append to a function's name to name a part of it they
-/// moved out of line, as GCC's `f.cold` and `f.part.0` and LLVM's
-/// `f.cold.1`, or a copy of it they specialized, as GCC's `f.isra.0`,
-/// `f.constprop.0`, and `f.lto_priv.0`. Each may be numbered.
-const SPLIT_SUFFIXES: [&str; 5] = ["cold", "part", "isra", "constprop", "lto_priv"];
-
-/// The function a symbol names a split-off part or a specialized copy of,
-/// through any number of such suffixes, or the name itself.
-fn split_from(name: &str) -> &str {
-    let mut name = name;
-    loop {
-        let numbered = name
-            .rsplit_once('.')
-            .filter(|(_, number)| {
-                !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
-            })
-            .map(|(base, _)| base);
-        let Some(base) = [Some(name), numbered]
-            .into_iter()
-            .flatten()
-            .find_map(|candidate| {
-                let (base, suffix) = candidate.rsplit_once('.')?;
-                (!base.is_empty() && SPLIT_SUFFIXES.contains(&suffix)).then_some(base)
-            })
-        else {
-            return name;
-        };
-
-        name = base;
-    }
 }
 
 /// The role of a function Go compiled or assembled, following the runtime's
@@ -484,6 +454,8 @@ mod tests {
             "method_vectorcall",
             "thread_run",
             "Py_RunMain",
+            "_TAIL_CALL_CALL",
+            "_TAIL_CALL_CALL_BUILTIN_FAST.warm",
         ] {
             assert_eq!(cpython_role(name), Some(CodeRole::Interpreter), "{name}");
         }

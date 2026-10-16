@@ -210,9 +210,10 @@ def _print_thread(native_id, name, role, frame):
                 report("local", native_id, depth, local, canonical(value))
 
 
-def checkpoint(name, gate=None):
+def checkpoint(name, gate=None, abort=False):
     """Prints every thread's frames and locals, then parks until a line
-    arrives on standard input; parks for good at its end."""
+    arrives on standard input, or parks for good at its end; or, to leave a
+    core dump of the process as it reported it, aborts."""
     if gate is not None:
         gate.wait()
     printer = threading.current_thread()
@@ -229,6 +230,8 @@ def checkpoint(name, gate=None):
     with _print_lock:
         sys.stdout.write("READY\n")
         sys.stdout.flush()
+    if abort:
+        os.abort()
     park()
 
 

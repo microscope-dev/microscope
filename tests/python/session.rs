@@ -48,7 +48,13 @@ impl PythonSession {
             python::interpreter(interpreter),
             &debug_files,
         );
-        let mut command = vec!["-I".into(), python::fixture(fixture).into_os_string()];
+        // Fixtures write no bytecode beside their sources, which would make
+        // the fixtures' build think they changed.
+        let mut command = vec![
+            "-I".into(),
+            "-B".into(),
+            python::fixture(fixture).into_os_string(),
+        ];
         command.extend(arguments.iter().map(Into::into));
         let running = scenario
             .start_running_with(LaunchOptions {

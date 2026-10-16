@@ -27,7 +27,7 @@ export function Stack() {
         {trace.frames.map((frame) => [
           frame.unfollowed && (
             <li key={`${frame.index} unfollowed`} className="row dim" title={frame.unfollowed}>
-              the future the next frame drives is not shown in full: {frame.unfollowed}
+              {frame.unfollowed}
             </li>
           ),
           <li key={frame.index}>

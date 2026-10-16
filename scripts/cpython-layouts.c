@@ -145,6 +145,10 @@ int main(int argc, char **argv) {
 #if defined(Py_GIL_DISABLED) && PY_VERSION_HEX >= 0x030e0000
     FIELD(CodeTlbc, offsetof(PyCodeObject, co_tlbc));
 #endif
+#if defined(Py_GIL_DISABLED) && PY_VERSION_HEX >= 0x030e0000
+    FIELD(CodeArraySize, offsetof(_PyCodeArray, size));
+    FIELD(CodeArrayEntries, offsetof(_PyCodeArray, entries));
+#endif
     FIELD(CodeFlags, offsetof(PyCodeObject, co_flags));
     FIELD(CodeNlocalsplus, offsetof(PyCodeObject, co_nlocalsplus));
     FIELD(ObjectType, offsetof(PyObject, ob_type));

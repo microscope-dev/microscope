@@ -2524,6 +2524,20 @@ for variant in gcc-o0 clang-o2 gcc-o2-nopie; do
     generate_core "$output_dir/crash-${variant}-abort.core" 6 "$default_core_filter" \
         "$inputs" "$program" abort
 done
+# A Python program's threads at a checkpoint, which aborts there, under
+# interpreters that each lay their frames out or call their loop their own
+# way: a nixpkgs build, a free-threaded one, a tail-calling one, and a
+# distribution's. Each core's log keeps what the program reported.
+if [[ -z "${MICROSCOPE_CPYTHON-}" ]]; then
+    printf 'error: MICROSCOPE_CPYTHON is unset; build inside the Nix shell\n' >&2
+    exit 1
+fi
+for interpreter in 3.13 3.14t 3.15 debian-3.13; do
+    python="$MICROSCOPE_CPYTHON/$interpreter/python"
+    generate_core "$output_dir/python-stacks-${interpreter}.core" 6 "$default_core_filter" \
+        "$fixtures_dir/python/stacks.py $fixtures_dir/python/truth.py $python" \
+        "$python" -I -B "$fixtures_dir/python/stacks.py" --abort
+done
 generate_core "$output_dir/crash-gcc-o0-headerless.core" 11 "$headerless_core_filter" \
     "$output_dir/crash-gcc-o0 $output_dir/libcrash.so" "$output_dir/crash-gcc-o0" segv
 generate_core "$output_dir/crash-gcc-o0-headers-only.core" 11 "$headers_only_core_filter" \

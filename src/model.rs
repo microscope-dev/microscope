@@ -270,6 +270,7 @@ macro_rules! id_type {
 
             /// Returns the dense index within the owning collection.
             #[must_use]
+            #[allow(dead_code, reason = "a crate's own identifier may only index")]
             pub const fn get(self) -> u32 {
                 self.0
             }
@@ -281,13 +282,15 @@ macro_rules! id_type {
             }
         }
 
-        impl fmt::Display for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        impl ::std::fmt::Display for $name {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
                 self.0.fmt(f)
             }
         }
     };
 }
+
+pub(crate) use id_type;
 
 /// Defines a public `u64` identifier with numeric conversions and `Display`.
 macro_rules! numeric_id {
@@ -535,6 +538,10 @@ pub enum StackSegment {
     /// drives, such as the one a runtime's `block_on` polls, which is
     /// suspended between its polls.
     Future,
+
+    /// Interpreted frames the thread runs whose place among its machine
+    /// frames is unknown, shown after them.
+    Unplaced,
 }
 
 /// What a stopped thread runs for a language runtime.
@@ -2353,6 +2360,10 @@ pub enum CallFrameUnavailableReason {
     /// The frame is a suspended task's: its future holds its state, and it
     /// has no place on any stack.
     Suspended,
+
+    /// The frame is interpreted: the interpreter holds its state, and it
+    /// has no machine frame of its own.
+    Interpreted,
 }
 
 /// Why the value a parameter held on entry cannot be recovered from the
@@ -2630,6 +2641,9 @@ impl fmt::Display for VariableUnavailableReason {
             }
             Self::CallFrameUnavailable(CallFrameUnavailableReason::Suspended) => {
                 formatter.write_str("the frame is suspended, and is on no stack")
+            }
+            Self::CallFrameUnavailable(CallFrameUnavailableReason::Interpreted) => {
+                formatter.write_str("the frame is interpreted, and has no machine frame")
             }
             Self::EntryValue(reason) => {
                 write!(formatter, "the entry value is unavailable: {reason}")
@@ -4764,20 +4778,31 @@ pub struct Backtrace {
     /// The completion or failure reason for the trace.
     pub termination: UnwindTermination,
 
-    /// The futures frames of the trace drive whose chains of awaits it
-    /// shows in part or not at all.
-    pub unfollowed: Arc<[UnfollowedFuture]>,
+    /// The frames that frames of the trace drive which it shows in part
+    /// or not at all.
+    pub unfollowed: Arc<[Unfollowed]>,
 }
 
-/// A future a frame drives whose chain of awaits a backtrace does not show
-/// in full.
+/// Frames a frame drives that a backtrace does not show in full.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UnfollowedFuture {
-    /// The frame that drives the future.
+pub struct Unfollowed {
+    /// The frame that drives them; for interpreted frames whose place in
+    /// the stack is unknown, the first of them.
     pub driver: StackFrameId,
+    pub driven: DrivenFrames,
 
-    /// Why the chain is not shown, or where it ends.
+    /// Why they are not shown, or where they end.
     pub reason: Arc<str>,
+}
+
+/// What frames a frame drives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrivenFrames {
+    /// The chain of awaits of a future it polls.
+    Future,
+
+    /// The frames an activation of an interpreter's loop runs.
+    Interpreted,
 }
 
 impl Backtrace {

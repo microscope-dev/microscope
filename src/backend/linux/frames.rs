@@ -522,6 +522,9 @@ impl<P: InspectionOps> Controller<P> {
             FrameSource::Future(future) => {
                 return Ok(self.suspended_frame(frame, selected, &expanded.futures[future]));
             }
+            FrameSource::Interpreted(_) => {
+                return Ok(super::interpreted::resolved(frame, selected, activation));
+            }
         };
 
         let physical = &stack.frames[activation];
@@ -1070,6 +1073,10 @@ pub(super) enum FrameSource {
 
     /// A future its activation drives, in [`Expanded::futures`].
     Future(usize),
+
+    /// An interpreted frame its activation runs, or that its thread runs
+    /// where its place is unknown, in [`Expanded::interpreted`].
+    Interpreted(usize),
 }
 
 /// A stack's logical frames, and where each comes from.
@@ -1079,6 +1086,9 @@ pub(super) struct Expanded {
 
     /// The futures whose frames the trace shows, where frames drive them.
     pub(super) futures: Vec<futures::AsyncFrame>,
+
+    /// The interpreted frames the trace shows.
+    pub(super) interpreted: Vec<crate::runtime_model::InterpretedFrame>,
 
     /// The declared types of the futures frames drive that cannot be read.
     pub(super) lost: Vec<crate::TypeReference>,
@@ -1114,11 +1124,13 @@ impl Expanded {
             debug_assert!(
                 match origin.source {
                     FrameSource::Future(future) => future < self.futures.len(),
+                    FrameSource::Interpreted(frame) => frame < self.interpreted.len(),
                     FrameSource::Activation | FrameSource::TailCall(..) => true,
                 },
-                "the frame at {level} is {:?} of {} futures",
+                "the frame at {level} is {:?} of {} futures and {} interpreted frames",
                 origin.source,
-                self.futures.len()
+                self.futures.len(),
+                self.interpreted.len()
             );
         }
 
@@ -1194,6 +1206,7 @@ fn expand_inline_backtrace(
         },
         origins,
         futures: Vec::new(),
+        interpreted: Vec::new(),
         lost: Vec::new(),
     };
 

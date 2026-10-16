@@ -12,6 +12,7 @@
 
 pub mod futures;
 mod go;
+mod python;
 mod records;
 mod rust;
 mod tokio;
@@ -21,8 +22,8 @@ use std::sync::Arc;
 use crate::unwind::RegisterFile;
 use crate::{
     CodeRole, CoroutineInfo, EntryProvenance, ExceptionFilter, ImageAddress, IntegerValue,
-    ModuleImage, RecordMemberLayout, StackFrame, StackSegment, TaskState, ThreadId, ThreadLocal,
-    TypeInfo, TypeKind, TypeReference, VirtualAddress,
+    ModuleImage, RecordMemberLayout, RecordedPlace, StackFrame, StackSegment, TaskState, ThreadId,
+    ThreadLocal, TypeInfo, TypeKind, TypeReference, VirtualAddress,
 };
 
 /// A result with the reasons it may be incomplete, such as a task whose
@@ -149,6 +150,11 @@ pub trait RuntimeImage: std::fmt::Debug {
     /// when its code is out of line and no other body runs it.
     fn coroutine_body(&self, ty: TypeReference) -> Option<ImageAddress> {
         let _ = ty;
+        None
+    }
+
+    /// The Python runtime the image carries, as its loader read it.
+    fn python(&self) -> Option<crate::image::python::PythonRuntime> {
         None
     }
 }
@@ -611,6 +617,14 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         None
     }
 
+    /// The frames the runtime's interpreter runs on the stop's threads,
+    /// and why some threads' may be missing; `None` for a runtime that
+    /// interprets nothing.
+    fn interpreted(&self, stop: &dyn RuntimeStop) -> Option<Partial<InterpretedStacks>> {
+        let _ = stop;
+        None
+    }
+
     /// Whether code from the source file at `path` is the runtime's own
     /// library, which raises its exceptions on the program's behalf: an
     /// exception blames the program's frame that called it.
@@ -673,12 +687,111 @@ pub struct TaskEntries {
     pub frees: Vec<VirtualAddress>,
 }
 
+/// The frames an interpreter runs on the threads of one stop, which no
+/// native unwind finds: each thread's, innermost first, with the outermost
+/// of those each activation of the interpreter's loop runs marked.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InterpretedStacks {
+    /// Each thread that runs interpreted frames, in the order of their ids
+    /// and then of their interpreters. A thread may have several states in
+    /// one interpreter, as CPython's may.
+    pub threads: Vec<InterpretedThread>,
+
+    /// Every thread's frames, each thread's together and innermost first.
+    pub frames: Vec<InterpretedFrame>,
+}
+
+/// One thread's interpreted frames, in one interpreter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterpretedThread {
+    pub thread: ThreadId,
+
+    /// The interpreter the frames are in, by the runtime's number for it,
+    /// for a runtime that runs several in one process.
+    pub interpreter: i64,
+
+    /// Where its frames are in [`InterpretedStacks::frames`].
+    pub frames: std::ops::Range<usize>,
+
+    /// Why its frames end before the thread's outermost, if they do.
+    pub end: Option<Arc<str>>,
+}
+
+/// A frame an interpreter runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterpretedFrame {
+    /// Where the interpreter keeps the frame.
+    pub frame: VirtualAddress,
+
+    /// The function it runs, and where in its source, as the interpreter
+    /// records them; none where they cannot be read, which `problem` says.
+    pub function: Option<Arc<str>>,
+    pub place: Option<RecordedPlace>,
+    pub problem: Option<Arc<str>>,
+
+    /// Whether it is the outermost of the frames one activation of the
+    /// interpreter's loop runs.
+    pub outermost: bool,
+}
+
+impl InterpretedStacks {
+    /// The frames of one of [`Self::threads`].
+    #[must_use]
+    pub fn frames_of(&self, thread: &InterpretedThread) -> &[InterpretedFrame] {
+        self.frames.get(thread.frames.clone()).unwrap_or_default()
+    }
+
+    /// Panics unless the threads are in order, their frames lie within
+    /// [`Self::frames`] in order with none between them, and each thread's
+    /// outermost frame ends an activation's.
+    pub fn check_invariants(&self) {
+        let mut next = 0;
+        for (index, thread) in self.threads.iter().enumerate() {
+            debug_assert!(
+                index == 0
+                    || (
+                        self.threads[index - 1].thread,
+                        self.threads[index - 1].interpreter
+                    ) <= (thread.thread, thread.interpreter),
+                "thread {index} is out of order"
+            );
+            debug_assert_eq!(
+                thread.frames.start, next,
+                "thread {index}'s frames do not follow the previous thread's"
+            );
+            debug_assert!(
+                thread.frames.start < thread.frames.end,
+                "thread {index} has no frames"
+            );
+            debug_assert!(
+                self.frames_of(thread)
+                    .last()
+                    .is_some_and(|frame| frame.outermost),
+                "thread {index}'s outermost frame ends no activation's frames"
+            );
+            next = thread.frames.end;
+        }
+
+        debug_assert_eq!(
+            next,
+            self.frames.len(),
+            "frames {next}.. belong to no thread"
+        );
+    }
+}
+
 /// What a runtime's frame drives that the native stack does not show.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Driven {
     /// A future the frame polls, held in its variable `variable`. Its
     /// chain of awaits shows before the frame.
     Future { variable: &'static str },
+
+    /// A segment of its thread's interpreted frames, which the runtime's
+    /// [`RuntimeModel::interpreted`] gives: the frame is an activation of
+    /// the interpreter's loop, and the innermost such activation runs the
+    /// innermost segment.
+    Interpreted,
 }
 
 /// How a task ended.
@@ -701,12 +814,17 @@ pub fn detect(
         .into_iter()
         .chain(rust::detect(image).map(Ok))
         .chain(self::tokio::detect(image))
+        .chain(python::detect(image))
         .collect()
 }
 
 impl RuntimeImage for ModuleImage {
     fn producers(&self) -> Vec<&str> {
         Self::producers(self).collect()
+    }
+
+    fn python(&self) -> Option<crate::image::python::PythonRuntime> {
+        self.python_runtime()
     }
 
     fn constant(&self, name: &str) -> Option<IntegerValue> {

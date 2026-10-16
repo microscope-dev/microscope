@@ -192,6 +192,38 @@ fn split_parameters(name: &str) -> (&str, &str) {
     (name, "")
 }
 
+/// What compilers append to a function's name to name a part of it they
+/// moved out of line, as GCC's `f.cold` and `f.part.0`, LLVM's `f.cold.1`,
+/// and BOLT's `f.warm`, or a copy of it they specialized, as GCC's
+/// `f.isra.0`, `f.constprop.0`, and `f.lto_priv.0`. Each may be numbered.
+const SPLIT_SUFFIXES: [&str; 6] = ["cold", "warm", "part", "isra", "constprop", "lto_priv"];
+
+/// The function a symbol names a split-off part or a specialized copy of,
+/// through any number of such suffixes, or the name itself.
+pub fn split_from(name: &str) -> &str {
+    let mut name = name;
+    loop {
+        let numbered = name
+            .rsplit_once('.')
+            .filter(|(_, number)| {
+                !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+            })
+            .map(|(base, _)| base);
+        let Some(base) = [Some(name), numbered]
+            .into_iter()
+            .flatten()
+            .find_map(|candidate| {
+                let (base, suffix) = candidate.rsplit_once('.')?;
+                (!base.is_empty() && SPLIT_SUFFIXES.contains(&suffix)).then_some(base)
+            })
+        else {
+            return name;
+        };
+
+        name = base;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ada_name, demangle, rust_path, spells};

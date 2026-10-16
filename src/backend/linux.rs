@@ -77,6 +77,7 @@ mod frames;
 mod indirect;
 mod inspection;
 mod internal_stops;
+mod interpreted;
 mod invariants;
 mod language_exceptions;
 mod libraries;
@@ -854,6 +855,10 @@ struct PublicStop {
     /// for, and why some may be missing; forgotten once the debugger
     /// writes memory.
     task_sets: RefCell<Option<runtimes::TaskSets>>,
+
+    /// The frames each runtime interprets on the threads, read once asked
+    /// for; forgotten once the debugger writes memory.
+    interpreted: interpreted::InterpretedCache,
 
     /// What the function a step out finished returned.
     returned: Option<returns::Returned>,
@@ -2679,6 +2684,7 @@ impl PublicStop {
             activities: RefCell::default(),
             task_locators: RefCell::default(),
             task_sets: RefCell::default(),
+            interpreted: RefCell::default(),
             returned: None,
         }
     }

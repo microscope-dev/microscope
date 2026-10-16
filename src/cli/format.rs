@@ -15,8 +15,8 @@ use microscope::{
     LineNumber, LoadedModuleSnapshot, MemoryRead, MemoryReadCompletion, ModuleId, ModuleIdentity,
     ModuleImage, RegisterSnapshot, SourceContext, SourceLine, StackFrame, StackSegment,
     StateSnapshot, StepKind, StopReason, SymbolExtentProvenance, SymbolLocation, TargetBoundary,
-    TaskSnapshot, ThreadActivity, ThreadState, UnfollowedFuture, VirtualAddress, WatchScope,
-    Watchpoint, WatchpointHit, WatchpointInvalidation,
+    TaskSnapshot, ThreadActivity, ThreadState, Unfollowed, VirtualAddress, WatchScope, Watchpoint,
+    WatchpointHit, WatchpointInvalidation,
 };
 
 use super::commands::{COMMANDS, CommandSpec, aliases};
@@ -2168,12 +2168,12 @@ pub fn backtrace(
     };
 
     let note = |lines: &mut Vec<String>, frames: std::ops::Range<usize>| {
-        for future in trace.unfollowed.iter().filter(|future| {
-            usize::try_from(future.driver.get()).is_ok_and(|level| frames.contains(&level))
+        for note in trace.unfollowed.iter().filter(|note| {
+            usize::try_from(note.driver.get()).is_ok_and(|level| frames.contains(&level))
         }) {
             lines.push(
                 renderer
-                    .paint(Role::Warning, format_args!("    {}", unfollowed(future)))
+                    .paint(Role::Warning, format_args!("    {}", unfollowed(note)))
                     .to_string(),
             );
         }
@@ -2332,17 +2332,14 @@ pub const fn stack_label(segment: StackSegment) -> &'static str {
         StackSegment::System => "on the runtime's stack",
         StackSegment::Signal => "on the signal stack",
         StackSegment::Future => "in the future the next frame drives",
+        StackSegment::Unplaced => "interpreted, where in the stack unknown",
     }
 }
 
-/// The line that says why the chain of awaits of the future the frame
-/// `driver` drives is shown in part or not at all.
-pub fn unfollowed(future: &UnfollowedFuture) -> String {
-    format!(
-        "the future #{} drives is not shown in full: {}",
-        future.driver.get(),
-        future.reason
-    )
+/// The line that says why the frames the frame `driver` drives are shown
+/// in part or not at all.
+pub fn unfollowed(note: &Unfollowed) -> String {
+    frames::unfollowed(note, &format!("#{}", note.driver.get()))
 }
 
 /// Renders one backtrace frame: its level, instruction, code, the level of

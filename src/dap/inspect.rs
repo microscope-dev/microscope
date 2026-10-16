@@ -295,14 +295,14 @@ impl Session {
                 ));
             }
 
-            for future in trace
+            for note in trace
                 .unfollowed
                 .iter()
-                .filter(|future| future.driver == frame.id)
+                .filter(|note| note.driver == frame.id)
             {
                 entries.push(Err(format!(
-                    "<the future the next frame drives is not shown in full: {}>",
-                    future.reason
+                    "<{}>",
+                    crate::present::frames::unfollowed(note, "the next frame")
                 )));
             }
 

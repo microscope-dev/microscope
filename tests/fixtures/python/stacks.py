@@ -1,5 +1,6 @@
 """Threads parked at several depths, one of them through a call into C
-that calls back into Python, and the main thread at the checkpoint."""
+that calls back into Python, and the main thread at the checkpoint, which
+with --abort aborts there for a core dump."""
 
 import contextvars
 import os
@@ -34,4 +35,4 @@ for worker in workers:
     worker.start()
 
 truth.code_table()
-truth.checkpoint("parked", gate)
+truth.checkpoint("parked", gate, abort="--abort" in sys.argv)
