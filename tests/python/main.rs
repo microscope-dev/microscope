@@ -6,5 +6,15 @@
 #[path = "../support/mod.rs"]
 mod support;
 
+// The schemas the provider reads each version's table by, which the
+// layout tests check against the headers.
+#[path = "../../src/debug_info/cpython/schemas.rs"]
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the provider's module, whose items its parent reads"
+)]
+mod schemas;
+
+mod layouts;
 mod session;
 mod stacks;

@@ -6,6 +6,7 @@ use super::functions::{
     EntryRecord, FunctionRecord, FunctionView, GenericRecord, InstanceRecord, Member, RangeRecord,
     StartRecord,
 };
+use super::python::PythonRuntimeRecord;
 
 use super::index::{Interval, NameEntry};
 use super::lines::{
@@ -224,6 +225,20 @@ fn the_schema_is_the_records_layout() {
         [name, value, reason, place]
     );
     check!(TableKind::Packages, PackageRecord, [path, name]);
+    check!(
+        TableKind::PythonRuntime,
+        PythonRuntimeRecord,
+        [
+            version,
+            flags,
+            reserved,
+            runtime_start,
+            runtime_end,
+            problem,
+            offsets,
+            constants
+        ]
+    );
     check!(
         TableKind::Types,
         TypeRecord,
@@ -581,7 +596,7 @@ fn the_schema_is_the_records_layout() {
     // A change to any record changes this; bump the format with it.
     assert_eq!(
         schema::layout_fingerprint(),
-        0x3ac0_8700_2751_cb3a,
+        0x9982_3cb9_22aa_b27d,
         "the layout changed:\n{}",
         schema::schema_text()
     );
@@ -3605,4 +3620,78 @@ fn a_type_table_finds_the_coroutines_the_graph_holds() {
             "{id:?}"
         );
     }
+}
+
+/// A Python runtime reads back as it was sealed, with its layout or the
+/// reason it has none.
+#[test]
+fn a_python_runtime_reads_back_with_its_layout_or_its_problem() {
+    use super::python::{
+        self, Constant, FREE_THREADED, Field, PyVersion, PythonLayout, PythonRuntime, TARGET_TABLE,
+    };
+
+    let sealed = |runtime: Option<&PythonRuntime>| {
+        let mut builder = Builder::new(TARGET);
+        let mut strings = StringsBuilder::default();
+        python::add_to(&mut builder, &mut strings, runtime).unwrap();
+        builder.bytes(TableKind::Strings, strings.into_bytes());
+        python::runtime(&builder.seal(Limits::default()).unwrap())
+    };
+
+    let mut layout = PythonLayout::default();
+    layout.set_field(Field::ThreadNext, 8);
+    layout.set_field(Field::FrameTlbcIndex, 0x1_0000);
+    layout.set_constant(Constant::OwnerEntry, 3);
+    let runtime = PythonRuntime {
+        version: PyVersion(0x030e_04f0),
+        flags: TARGET_TABLE | FREE_THREADED,
+        runtime: AddressRange {
+            start: ImageAddress::new(0x1000),
+            end: ImageAddress::new(0x2000),
+        },
+        layout: Ok(layout),
+    };
+    let read = sealed(Some(&runtime)).unwrap();
+    assert_eq!(read, runtime);
+    let layout = read.layout.unwrap();
+    assert_eq!(layout.field(Field::ThreadNext), Some(8));
+    assert_eq!(layout.field(Field::FrameTlbcIndex), None, "past a u16");
+    assert_eq!(layout.field(Field::CodeTlbc), None);
+    assert_eq!(layout.constant(Constant::OwnerEntry), 3);
+
+    let refused = PythonRuntime {
+        layout: Err("CPython 3.16.0 is not supported".into()),
+        ..runtime
+    };
+    assert_eq!(sealed(Some(&refused)), Some(refused));
+    assert_eq!(sealed(None), None);
+}
+
+#[test]
+fn validation_rejects_a_python_runtime_that_names_nothing() {
+    let record = |start: u64, end: u64, problem: u32| PythonRuntimeRecord {
+        version: 0x030d_0df0.into(),
+        flags: 0.into(),
+        reserved: 0.into(),
+        runtime_start: start.into(),
+        runtime_end: end.into(),
+        problem: problem.into(),
+        offsets: [u16::MAX.into(); super::python::Field::COUNT],
+        constants: [0; super::python::Constant::COUNT],
+    };
+    let refusal = |records: Vec<PythonRuntimeRecord>| {
+        let mut builder = Builder::new(TARGET);
+        builder.owned_table(records);
+        builder.seal(Limits::default()).unwrap_err().to_string()
+    };
+
+    assert!(refusal(vec![record(2, 1, u32::MAX)]).contains("ends before it begins"));
+    assert!(refusal(vec![record(1, 2, 7)]).contains("is no string"));
+    assert!(refusal(vec![record(1, 2, u32::MAX); 2]).contains("2 Python runtimes"));
+    let mut flagged = record(1, 2, u32::MAX);
+    flagged.flags = 8.into();
+    assert!(refusal(vec![flagged]).contains("flags it does not define"));
+    let mut reserved = record(1, 2, u32::MAX);
+    reserved.reserved = 1.into();
+    assert!(refusal(vec![reserved]).contains("flags it does not define"));
 }

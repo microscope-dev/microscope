@@ -5,7 +5,7 @@
 use std::sync::OnceLock;
 
 use super::format::{self, TableKind};
-use super::lines;
+use super::{lines, python};
 
 /// One field of a record: its name, offset, and size.
 pub(super) type Field = (&'static str, usize, usize);
@@ -762,7 +762,29 @@ pub(super) const SCHEMA: &[TableSchema] = &[
         ],
     },
     intervals(TableKind::StubFrames),
+    TableSchema {
+        kind: TableKind::PythonRuntime,
+        record: "PythonRuntimeRecord",
+        size: PYTHON_OFFSETS + 2 * python::Field::COUNT + python::Constant::COUNT,
+        fields: &[
+            ("version", 0, 4),
+            ("flags", 4, 2),
+            ("reserved", 6, 2),
+            ("runtime_start", 8, 8),
+            ("runtime_end", 16, 8),
+            ("problem", 24, 4),
+            ("offsets", PYTHON_OFFSETS, 2 * python::Field::COUNT),
+            (
+                "constants",
+                PYTHON_OFFSETS + 2 * python::Field::COUNT,
+                python::Constant::COUNT,
+            ),
+        ],
+    },
 ];
+
+/// Where a Python runtime record's offsets begin.
+const PYTHON_OFFSETS: usize = 28;
 
 const fn keyed(kind: TableKind) -> TableSchema {
     TableSchema {

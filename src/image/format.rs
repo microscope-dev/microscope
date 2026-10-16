@@ -369,11 +369,14 @@ pub enum TableKind {
     /// How many words each PLT stub instruction finds pushed, for lookups
     /// by address.
     StubFrames = 96,
+
+    /// The Python runtime the module carries.
+    PythonRuntime = 97,
 }
 
 impl TableKind {
     /// Every kind, in the order tables are laid out.
-    pub const ALL: [Self; 96] = [
+    pub const ALL: [Self; 97] = [
         Self::Strings,
         Self::Files,
         Self::LineAddresses,
@@ -470,6 +473,7 @@ impl TableKind {
         Self::EmbeddedViews,
         Self::RuntimeDimensions,
         Self::StubFrames,
+        Self::PythonRuntime,
     ];
 
     pub const COUNT: usize = Self::ALL.len();

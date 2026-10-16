@@ -1513,6 +1513,7 @@ fn load_image(
             sections: super::elf::load_sections(&object),
             thread_local_storage: super::elf::has_thread_local_storage(&object),
             thread_locals: super::elf::load_thread_locals(&object),
+            python: super::cpython::runtime(&object),
             debug_information: match dwarf_use {
                 DwarfUse::Unusable(reason) => crate::DebugInformation::Unusable { reason },
                 DwarfUse::Read => match (split_units(&dwarf, &catalog)?, &locals_left_out) {
