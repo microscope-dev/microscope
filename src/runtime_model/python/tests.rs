@@ -26,7 +26,7 @@ const UNMAPPED: u64 = 0x6000_0000_0000;
 const FILE: &str = "app.py";
 
 /// The sizes of the synthetic structures the layout gives.
-const FRAME_SIZE: u64 = 40;
+const FRAME_SIZE: u64 = 80;
 const CODE_SIZE: u64 = 128;
 const THREAD_SIZE: u64 = 64;
 const STRING_SIZE: u64 = 48;
@@ -77,6 +77,27 @@ fn layout() -> PythonLayout {
         (Field::ThreadNext, 0),
         (Field::ThreadCurrentFrame, 8),
         (Field::ThreadNativeId, 16),
+        (Field::TypeName, 24),
+        (Field::LongTag, 16),
+        (Field::LongDigits, 24),
+        (Field::FloatValue, 16),
+        (Field::ListSize, 16),
+        (Field::ListItems, 24),
+        (Field::DictUsed, 16),
+        (Field::DictValues, 24),
+        (Field::DictKeys, 32),
+        (Field::DictKeysLog2Size, 0),
+        (Field::DictKeysLog2IndexBytes, 1),
+        (Field::DictKeysKind, 2),
+        (Field::DictKeysNentries, 8),
+        (Field::DictKeysIndices, 16),
+        (Field::DictEntrySize, 24),
+        (Field::DictEntryKey, 8),
+        (Field::DictEntryValue, 16),
+        (Field::DictUnicodeEntrySize, 16),
+        (Field::DictUnicodeEntryKey, 0),
+        (Field::DictUnicodeEntryValue, 8),
+        (Field::FrameLocalsplus, 40),
     ];
     for (field, offset) in fields {
         layout.set_field(field, offset);
@@ -90,6 +111,17 @@ fn layout() -> PythonLayout {
     layout.set_constant(Constant::UnicodeKindShift, 2);
     layout.set_constant(Constant::UnicodeCompactShift, 5);
     layout.set_constant(Constant::UnicodeAsciiShift, 6);
+    layout.set_constant(Constant::LongShift, 30);
+    layout.set_constant(Constant::LongNonSizeBits, 3);
+    layout.set_constant(Constant::FastHidden, 0x10);
+    layout.set_constant(Constant::FastLocal, 0x20);
+    layout.set_constant(Constant::FastCell, 0x40);
+    layout.set_constant(Constant::FastFree, 0x80);
+    layout.set_constant(Constant::VarArgs, 4);
+    layout.set_constant(Constant::VarKeywords, 8);
+    layout.set_constant(Constant::DictKeysGeneral, 0);
+    layout.set_constant(Constant::DictKeysUnicode, 1);
+    layout.set_constant(Constant::DictKeysSplit, 2);
     layout
 }
 
@@ -788,3 +820,5 @@ fn a_thread_list_that_loops_is_a_gap_and_keeps_the_threads_before_it() {
     let gaps: Vec<&str> = gaps.iter().map(AsRef::as_ref).collect();
     assert_eq!(gaps, ["interpreter 7's list of threads loops"]);
 }
+
+mod values;
