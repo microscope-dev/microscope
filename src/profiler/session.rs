@@ -530,28 +530,20 @@ impl Snapshots {
             // The program runs on, and the samples it writes meanwhile
             // arrive as any do.
             let start = monotonic();
-            match snapshotter.take_live() {
-                Live::Taken(snapshot) => {
-                    let end = monotonic();
-                    self.next = std::time::Instant::now() + self.every;
-                    let weight = start.saturating_sub(self.previous);
-                    processor.live_task_snapshot(
-                        Pid::new(self.pid),
-                        (start, end),
-                        weight,
-                        &snapshot,
-                    );
-                    self.previous = start;
-                    return;
-                }
+            let modules = processor.modules_of(Pid::new(self.pid));
+            let taken = snapshotter.take_live(&modules);
+            self.next = std::time::Instant::now() + self.every;
 
-                // The recording ends with the program, which has no tasks.
-                Live::Exited => {
-                    self.next = std::time::Instant::now() + self.every;
-                    return;
-                }
-                Live::Unlearned => {}
+            // A program that exited, with which the recording ends, has no
+            // tasks.
+            if let Live::Taken(snapshot) = taken {
+                let end = monotonic();
+                let weight = start.saturating_sub(self.previous);
+                processor.live_task_snapshot(Pid::new(self.pid), (start, end), weight, &snapshot);
+                self.previous = start;
             }
+
+            return;
         }
 
         if sampling {
@@ -559,7 +551,7 @@ impl Snapshots {
         }
 
         let start = monotonic();
-        let taken = snapshotter.take(self.live);
+        let taken = snapshotter.take();
         let end = monotonic();
 
         // With the events off, every record from before the pause is in

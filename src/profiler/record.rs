@@ -1063,6 +1063,27 @@ impl Processor {
 
     /// Records that a task snapshot at `time` failed, or missed tasks, and
     /// why.
+    /// The modules process `pid` maps, as its mapping records last said,
+    /// each once, with its debug information: what a live task snapshot
+    /// reads the process's runtimes through. A module whose debug
+    /// information could not be read is left out.
+    pub fn modules_of(&self, pid: Pid) -> Vec<(LoadedModule, DebugInfo)> {
+        let Some(process) = self.processes.get(&pid) else {
+            return Vec::new();
+        };
+
+        let mut seen = BTreeSet::new();
+        process
+            .mapped
+            .iter()
+            .filter(|mapped| seen.insert(mapped.image))
+            .filter_map(|mapped| {
+                let info = self.images.get(mapped.image)?.info.clone()?;
+                Some((mapped.loaded, info))
+            })
+            .collect()
+    }
+
     pub fn snapshot_failed(&mut self, time: u64, why: &str) {
         record!("record: {why}");
         self.builder.count(AccountKind::SnapshotFailures as u32, 1);

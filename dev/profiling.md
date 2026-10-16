@@ -103,6 +103,13 @@ record the pause duration. Live snapshots read without stopping. Every live
 read is subject to change; use runtime consistency checks and omit an unstable
 task rather than combining fields from different states.
 
+A live snapshot never falls back to a stopped one: engines do not switch by
+themselves. It reads every module the recorder has seen the process map,
+through the debug information the recorder loaded for the mapping. Facts that
+only a stop would give, such as a thread's thread pointer, come from memory
+instead, here from glibc's `_thread_db` descriptors and its lists of threads,
+or the tasks that need them are left out with the reason.
+
 Snapshots connect sampled native activity with task identities and record
 where parked tasks wait. They do not rewrite the native sample. Analysis can
 choose a logical task stack or the original native stack.

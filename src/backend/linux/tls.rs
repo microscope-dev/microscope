@@ -192,6 +192,19 @@ pub(super) fn fuzz_glibc(data: &[u8]) {
     glibc::fuzz(data);
 }
 
+/// Each thread's id and thread pointer in a process that uses glibc,
+/// which may be running: glibc's lists of its threads, read from memory
+/// without stopping it. A thread whose control block does not point to
+/// itself, as one being made or freed may not, is left out.
+pub(in crate::backend) fn running_thread_pointers(pid: Pid) -> Result<Vec<(u64, u64)>, String> {
+    let process = LiveProcess { pid };
+    let threads = glibc::thread_pointers(&process).map_err(|error| error.to_string())?;
+    Ok(threads
+        .into_iter()
+        .filter(|&(_, pointer)| read_word(&process, Some(pointer)) == Ok(pointer))
+        .collect())
+}
+
 /// The thread pointer of `thread`, which addresses its control block once
 /// the C library sets it up.
 fn thread_pointer(services: &dyn ProcessServices, thread: Pid) -> Result<u64, TlsError> {

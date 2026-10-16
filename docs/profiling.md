@@ -77,7 +77,11 @@ where Go goroutines and tokio tasks wait. The report includes the pause cost.
 
 `--live-snapshots` reads tasks without stopping the program. A task that
 changes while it is being read is omitted from that snapshot and counted as an
-unstable read.
+unstable read. It reads the runtimes of every module the program maps, such as
+a Go library a C program loads. tokio is found through each thread's thread
+pointer, which a live snapshot learns from glibc's own list of the program's
+threads; under musl or a statically linked glibc those tasks are left out, and
+the snapshot says why.
 
 ## Keep a rolling window
 

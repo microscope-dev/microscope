@@ -184,6 +184,16 @@ pub fn fuzz_glibc_tls(data: &[u8]) {
     tls::fuzz_glibc(data);
 }
 
+/// Each thread's id and thread pointer in process `pid`, which may be
+/// running, from its C library's own lists of its threads.
+pub fn running_thread_pointers(pid: u32) -> std::result::Result<Vec<(u32, u64)>, String> {
+    let pid = i32::try_from(pid).map_err(|_| format!("process {pid} has no Linux id"))?;
+    Ok(tls::running_thread_pointers(Pid::from_raw(pid))?
+        .into_iter()
+        .filter_map(|(tid, pointer)| Some((u32::try_from(tid).ok()?, pointer)))
+        .collect())
+}
+
 /// The debug register slots, which the `u32` capability reports.
 const WATCH_SLOTS: u32 = 4;
 const _: () = assert!(WATCH_SLOTS as usize == debug_registers::SLOT_COUNT);

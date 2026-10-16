@@ -1664,6 +1664,34 @@ fn live_task_snapshots_find_goroutines_waiting_without_a_pause() {
     assert_receivers_wait(&profile);
 }
 
+/// A live task snapshot reads the runtime of every module the program
+/// maps, not only its executable's: a C program's Go library carries the
+/// runtime, whose goroutine waits until the host calls into it.
+#[test]
+fn live_task_snapshots_read_a_runtime_in_a_library() {
+    let waiting = |profile: &Profile| {
+        profile.task_waits().iter().any(|wait| {
+            wait.functions
+                .iter()
+                .any(|function| function == "main.waiting")
+        })
+    };
+
+    let profile = snapshot_until(Command::new(Scenario::fixture("go-host")), true, waiting);
+    let (taken, paused, failed) = profile.task_snapshots();
+    assert!(
+        paused == 0 && failed == 0,
+        "{taken} {paused} {failed}: {:?}",
+        profile.task_snapshot_problems()
+    );
+    assert_eq!(profile.live_snapshots().0, taken);
+    assert!(
+        waiting(&profile),
+        "no live snapshot found the library's goroutine: {:?}",
+        profile.task_snapshot_problems()
+    );
+}
+
 /// A task snapshot taken while the budget has sampling paused falls inside
 /// that pause: the gaps the two leave stay apart and in time order, as a
 /// saved capture needs them.
@@ -1717,9 +1745,13 @@ fn snapshots_in_a_budget_pause_leave_gaps_apart() {
     );
 }
 
+/// How long a recording holds its program for a profile to be ready
+/// before it releases it anyway, and the test fails on what it lacks.
+const READY_DEADLINE: Duration = Duration::from_secs(20);
+
 /// Records `command` with a task snapshot every 50 ms, `live` or stopping
-/// it, holding it until a profile so far is `ready`, then writing a line
-/// to release it.
+/// it, holding it until a profile so far is `ready`, or the deadline, then
+/// writing a line to release it.
 fn snapshot_until(
     mut command: Command,
     live: bool,
@@ -1738,13 +1770,14 @@ fn snapshot_until(
 
     let stop = AtomicBool::new(false);
     let mut released = false;
+    let deadline = std::time::Instant::now() + READY_DEADLINE;
     let recording = record_watched(
         command,
         &options,
         &mut Watch {
             every: Duration::from_millis(20),
             publish: &mut |profile| {
-                if !released && ready(&profile) {
+                if !released && (ready(&profile) || std::time::Instant::now() > deadline) {
                     writer.write_all(b"\n").expect("release the program");
                     released = true;
                 }
@@ -1816,22 +1849,16 @@ fn follows_a_tokio_tasks_awaits(live: bool) {
     command.arg("hold");
 
     // Tokio is found through its threads' thread pointers, which a live
-    // recording's first snapshot stops the program to learn: more
-    // snapshots than stopped it finding the task means a live one did.
-    let found = |profile: &Profile| {
-        let times: std::collections::BTreeSet<i64> =
-            at_gate(profile).iter().map(|wait| wait.time).collect();
-        let (taken, _, _) = profile.task_snapshots();
-        let stopped = taken - profile.live_snapshots().0;
-        times.len() as u64 > if live { stopped } else { 0 }
-    };
-
-    let profile = snapshot_until(command, live, found);
+    // snapshot learns from the C library's lists of its threads.
+    let profile = snapshot_until(command, live, |profile| !at_gate(profile).is_empty());
     let (taken, _, failed) = profile.task_snapshots();
     let (read_live, _) = profile.live_snapshots();
     assert_eq!(failed, 0, "{:?}", profile.task_snapshot_problems());
-    assert_eq!(read_live > 0, live, "{taken} {read_live}");
-    assert!(taken > read_live, "{taken} {read_live}");
+    assert_eq!(
+        read_live,
+        if live { taken } else { 0 },
+        "a live recording never stops the program"
+    );
     let waits = at_gate(&profile);
     assert!(!waits.is_empty());
     for wait in waits {

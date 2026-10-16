@@ -300,6 +300,13 @@ pub fn signal_codes() -> impl Iterator<Item = u64> {
     linux::Signal::all().map(linux::Signal::code)
 }
 
+/// Each thread's id and thread pointer in process `pid`, which may be
+/// running, read from its C library's lists of its threads without
+/// stopping it, or why they cannot be.
+pub fn running_thread_pointers(pid: u32) -> std::result::Result<Vec<(u32, u64)>, String> {
+    linux::running_thread_pointers(pid)
+}
+
 /// Describes the platform's hardware watchpoint support.
 pub fn watchpoint_capabilities() -> crate::WatchpointCapabilities {
     linux::watchpoint_capabilities()
