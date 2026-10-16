@@ -1100,7 +1100,7 @@ core_signature() {
     printf -v command_text '%q ' "$@"
     printf 'generator=gcore-v2\ngdb=%s\nsignal=%s\nfilter=%s\ncommand=%s\n' \
         "$gdb_version" "$signal" "$filter" "$command_text"
-    stat -L --format='%n %Y %s' "${input_paths[@]}"
+    stat -L --format='%n %Y %s' "${input_paths[@]}" "$stack_guard_mappings"
 }
 
 core_is_current() {
@@ -1155,6 +1155,7 @@ make_core() {
         -ex 'set disable-randomization off' \
         -ex 'set pagination off' \
         -ex 'set confirm off' \
+        -ex "set exec-wrapper ${stack_guard_mappings}" \
         -ex 'run' \
         -ex 'printf "microscope-signal=%d\n", $_siginfo.si_signo' \
         -ex "gcore ${temporary}" \
@@ -1173,8 +1174,9 @@ make_core() {
         rm -f "$temporary"
         exit 1
     fi
-    # gcore saves zeros for the whole of a mapping it fails to read. No
-    # process can read the vsyscall page, which no test reads either.
+    # gcore saves nothing of a mapping past the first read that fails, which
+    # stack-guard-mappings keeps glibc's guards of threads' stacks from making.
+    # No process can read the vsyscall page, which no test reads either.
     if grep -F 'Memory read failed for corefile section' <<<"$log" |
         grep -Fv ' at 0xffffffffff600000.' >/dev/null; then
         printf 'error: gcore could not read all of %s:\n%s\n' "$temporary" "$log" >&2
@@ -1211,7 +1213,7 @@ suite_is_current() {
     [[ -f "$suite_stamp" && -f "$suite_outputs" ]] || return 1
     [[ "$(<"$suite_stamp")" == "$signature" ]] || return 1
     [[ -z "$(find "$fixtures_dir" sdk views/kernels scripts/gosym-oracle \
-        scripts/coroutine-oracle "${BASH_SOURCE[0]}" \
+        scripts/coroutine-oracle scripts/stack-guard-mappings.c "${BASH_SOURCE[0]}" \
         "$frame_oracle_script" -newer "$suite_stamp" -print -quit)" ]] \
         || return 1
     local output
@@ -1436,6 +1438,12 @@ fi
 # Written before building so sources edited during this run are newer than the
 # stamp that the final rename publishes.
 printf '%s\n' "$signature" >"${suite_stamp}.tmp"
+# Every core's program runs under it (make_core), the tokio fixtures' too:
+# it is built before they start, which wait on no job of this shell's.
+readonly stack_guard_mappings="$output_dir/stack-guard-mappings"
+build_fixture gcc scripts/stack-guard-mappings.c "$stack_guard_mappings" -O2
+wait_builds
+
 build_tokio_fixtures &
 readonly tokio_build=$!
 
