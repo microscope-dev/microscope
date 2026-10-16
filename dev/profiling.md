@@ -21,6 +21,7 @@ over those layers. The browser reads the same profile and analysis results.
 | --- | --- |
 | `src/profiler/collector.rs`, `src/profiler/record.rs`, `src/profiler/session.rs` | perf collection, record decoding, and session lifecycle |
 | `src/profiler/tasks.rs`, `src/profiler/calls.rs`, `src/profiler/frame_pointers.rs` | Task tracking and stack reconstruction |
+| `src/profiler/jit.rs`, `src/debug_info/perf_map.rs` | Perf maps: anonymous code as modules |
 | `src/profiler/annotate.rs`, `src/profiler/symbols.rs`, `src/profiler/zones.rs` | Symbol, source, and instrumentation annotation |
 | `src/profiler/formats/` | Chrome, folded-stack, and pprof output |
 | `src/capture/` | Validated capture file format and table builder |
@@ -78,6 +79,31 @@ plausible chain after an unproven transition.
 Addresses are normalized through the mapping active at the sample's time.
 Module unload, remap, exec, and late mapping records matter. A source line is
 attached only after the address is bound to the matching module image.
+
+### Code a compiler generated
+
+Anonymous executable memory, where a just-in-time compiler writes code, has
+no file to describe it. When the process writes a perf map,
+`/tmp/perf-PID.map` (CPython does under `-X perf`), each anonymous range it
+covers becomes a module of its own (`src/debug_info/perf_map.rs`,
+`src/profiler/jit.rs`). The map is append-only and written while it is read,
+so the recorder reads on from where it stopped, and only when a sample lands in
+anonymous code no function it named covers; the sample is then unwound again.
+
+Nothing describes those functions' frames, so their frames are proved from
+their code, read from the process when the map is
+(`src/debug_info/x86_64/frames.rs`). The proof follows the instructions that
+fall through from the entry, as call-frame information takes a frame to be a
+function of the instruction, and proves nothing past a jump or return. Not
+every trampoline keeps a frame pointer: CPython 3.12's does not, and assuming
+one would skip its caller. A frame the proof does not reach ends the stack
+with no unwind information.
+
+A map names the process's addresses but no build ID proves which code it
+describes, so its functions are symbolized as they are recorded, never later,
+and a frame in a range outside every function it names belongs to no module.
+A map made before its process began was written by an earlier process with
+its pid, and is not read; the capture's `perf map PID` setting says why.
 
 ## Symbolization now and later
 

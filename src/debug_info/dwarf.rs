@@ -1554,6 +1554,12 @@ fn bind(
     })
 }
 
+/// The variables of an image no DWARF describes: it has none, and says
+/// so as a module stripped of its DWARF does.
+pub(super) fn no_variables(image: &ModuleImage) -> Arc<dyn super::VariableInfo> {
+    Arc::new(variables::DwarfVariableInfo::new(image))
+}
+
 /// The bytes of the views a module carries for its own types.
 fn embedded_views(object: &object::File<'_>) -> std::result::Result<Vec<u8>, DwarfError> {
     Ok(object

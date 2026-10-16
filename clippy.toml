@@ -18,3 +18,6 @@ disallowed-methods = [
   { path = "std::collections::HashSet::symmetric_difference", reason = "iteration order varies between runs" },
   { path = "std::collections::HashSet::union", reason = "iteration order varies between runs" },
 ]
+
+# Names documentation spells as prose; ".." keeps Clippy's own list.
+doc-valid-idents = ["CPython", ".."]

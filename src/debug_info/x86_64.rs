@@ -1,5 +1,7 @@
 use iced_x86::{Code, Decoder, DecoderOptions, Instruction, Mnemonic, OpKind, Register};
 
+pub(super) mod frames;
+
 const MAX_PROLOGUE_BYTES: usize = 256;
 const MAX_PROLOGUE_INSTRUCTIONS: usize = 64;
 

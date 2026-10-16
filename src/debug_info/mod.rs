@@ -10,6 +10,8 @@ mod dwarf;
 mod elf;
 #[cfg(target_os = "linux")]
 pub mod gopclntab;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub mod perf_map;
 mod roles;
 #[cfg(target_os = "linux")]
 mod separate;

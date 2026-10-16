@@ -39,6 +39,11 @@ amount of data written.
 Stacks are exact up to the point where the available unwind information and
 copied memory end. A truncated stack records its reason.
 
+Code a just-in-time compiler generates has no file. A program that writes a
+perf map, `/tmp/perf-PID.map`, names it: stacks go on through the functions
+the map names, under those names. For Python, run the interpreter with
+`-X perf`.
+
 ## Read a profile
 
 List the most expensive functions:

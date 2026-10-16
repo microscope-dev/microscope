@@ -1052,6 +1052,79 @@ fn a_stack_through_the_vdso_goes_on_to_its_callers() {
     );
 }
 
+/// Removes a process's perf map when dropped: CPython leaves its own.
+struct PerfMap(Option<u32>);
+
+impl Drop for PerfMap {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0 {
+            let _ = std::fs::remove_file(format!("/tmp/perf-{pid}.map"));
+        }
+    }
+}
+
+/// CPython under `-X perf` enters each Python function that C calls
+/// through a trampoline of its own, in anonymous memory its perf map
+/// names. 3.12's keeps no frame pointer and later ones do; a stack goes on
+/// through either, named, to the interpreter's callers.
+#[test]
+fn a_stack_through_a_perf_maps_code_goes_on_to_its_callers() {
+    for version in ["3.12", "3.13", "3.14"] {
+        let mut command = Command::new(support::python::interpreter(version));
+        command
+            .args(["-I", "-X", "perf"])
+            .arg(support::python::fixture("perf.py"))
+            .arg("1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let recording = record(command, &RecordOptions::preset(Preset::Maximum)).expect("record");
+        let stacks = recording.profile.stacks();
+        let _map = PerfMap(stacks.first().map(|stack| stack.pid));
+        assert!(recording.status.success(), "{version}");
+        assert_eq!(
+            recording
+                .profile
+                .setting(&format!("perf map {}", stacks[0].pid)),
+            None,
+            "{version}"
+        );
+
+        let mut through = 0;
+        for stack in &stacks {
+            let context = format!("{version}: {stack:?}");
+            assert_ne!(
+                stack.ending,
+                StackEnding::Truncated("unmapped return address".into()),
+                "{context}"
+            );
+            let Some(leaf) = stack
+                .functions
+                .iter()
+                .position(|function| function.starts_with("py::leaf:"))
+            else {
+                continue;
+            };
+
+            through += 1;
+            assert!(
+                stack.functions[leaf + 1..]
+                    .iter()
+                    .any(|function| function.starts_with("py::<module>:")),
+                "{context}"
+            );
+            assert_eq!(stack.ending, StackEnding::Complete, "{context}");
+        }
+
+        // Spinning in leaf is all the program does after it starts.
+        assert!(
+            through * 2 > stacks.len(),
+            "{version}: {through} of {} samples through leaf",
+            stacks.len()
+        );
+    }
+}
+
 /// Attaches to `process`, then, once the events are open, releases it, or
 /// when `stopping`, stops the recording, which records until it ends.
 fn attach_and_release(

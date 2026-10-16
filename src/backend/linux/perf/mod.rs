@@ -4,6 +4,7 @@
 //! lifetimes to that CPU's ring.
 
 pub mod decode;
+pub mod jit;
 pub mod sys;
 
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -686,7 +687,7 @@ pub fn is_vdso(mmap: &decode::Mmap<'_>) -> bool {
 /// needs privileges, or for the program itself, its `exe`.
 pub fn identify(mmap: &decode::Mmap<'_>) -> Option<(PathBuf, crate::LoadBias)> {
     use std::os::unix::ffi::OsStrExt;
-    if !mmap.executable || !mmap.path.starts_with(b"/") {
+    if !mmap.executable || !mmap.path.starts_with(b"/") || jit::is_anonymous_code(mmap) {
         return None;
     }
 
@@ -731,7 +732,8 @@ pub struct Mapped {
 }
 
 /// The executable mappings of process `pid` now, which the records of an
-/// attach began after.
+/// attach began after. Anonymous ones are named `//anon`, as perf's
+/// records name them.
 pub fn mappings(pid: u32) -> std::io::Result<Vec<Mapped>> {
     let maps = std::fs::read(format!("/proc/{pid}/maps"))?;
     let mut mappings = Vec::new();
@@ -762,7 +764,9 @@ pub fn mappings(pid: u32) -> std::io::Result<Vec<Mapped>> {
         let inode = std::str::from_utf8(inode)
             .ok()
             .and_then(|inode| inode.parse().ok());
-        if executable && !path.is_empty() {
+        // Anonymous code, as perf's records name it.
+        let path = if path.is_empty() { b"//anon" } else { path };
+        if executable {
             mappings.push(Mapped {
                 start,
                 end,

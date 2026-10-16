@@ -11,6 +11,7 @@ use foldhash::HashMap;
 use super::calls::Branch;
 use super::collector::Found;
 use super::frame_pointers::{CallSites, call_sites};
+use super::jit::{Jit, Stale};
 use super::probes::{self, Event, SiteRecord, Stacks};
 use super::tasks::{Snapshot, WaitFrame};
 use crate::backend::perf::{self, decode};
@@ -50,6 +51,12 @@ struct Image {
 
     /// Its instrumentation, if its file has any.
     probes: Option<Arc<probes::Table>>,
+
+    /// Whether it is anonymous code a perf map names, which no file holds
+    /// for a viewer to symbolize it from later: its frames are symbolized
+    /// as they are recorded, and its frames outside every function it
+    /// names are frames of no module.
+    perf_map: bool,
 }
 
 /// One executable mapping of a process.
@@ -61,10 +68,11 @@ struct Mapped {
     loaded: LoadedModule,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 struct ProcessState {
     mapped: Vec<Mapped>,
     threads: BTreeSet<Tid>,
+    jit: Jit,
 }
 
 /// When one task snapshot held the program stopped, and the task row of
@@ -511,6 +519,9 @@ impl Processor {
         state
             .mapped
             .retain(|mapped| mapped.end <= mmap.start || mapped.start >= end);
+        state
+            .jit
+            .mapped(mmap.start, end, perf::jit::is_anonymous_code(mmap));
         let Some((image, bias)) = image else {
             return;
         };
@@ -632,8 +643,150 @@ impl Processor {
             id,
             module,
             probes,
+            perf_map: false,
         });
         image
+    }
+
+    /// Makes the module of anonymous code a perf map names, mapped at the
+    /// addresses it names, in place of what the range held.
+    fn perf_map_module(&mut self, pid: Pid, time: u64, stale: &Stale) {
+        let began = thread_cpu();
+        let id = ModuleImageId::new(u32::try_from(self.images.len()).unwrap_or(u32::MAX));
+        let range = crate::AddressRange {
+            start: ImageAddress::new(stale.start),
+            end: ImageAddress::new(stale.end),
+        };
+        let mut digest = twox_hash::XxHash3_128::new();
+        digest.write(&stale.start.to_le_bytes());
+        for function in &stale.functions {
+            digest.write(&function.entry.start.to_le_bytes());
+            digest.write(&function.entry.end.to_le_bytes());
+            digest.write(function.entry.name.as_bytes());
+        }
+
+        let size = stale.end - stale.start;
+        let module =
+            self.builder
+                .module(&stale.path, None, digest.finish_128().to_le_bytes(), size);
+        let info = crate::debug_info::perf_map::load(
+            std::path::Path::new(&stale.path),
+            id,
+            range,
+            &stale.functions,
+        )
+        .ok();
+        let image = self.images.len();
+        self.images.push(Image {
+            info,
+            id,
+            module,
+            probes: None,
+            perf_map: true,
+        });
+        self.loading += thread_cpu().saturating_sub(began);
+
+        let loaded = LoadedModule {
+            id: ModuleId::new(self.next_module),
+            image: id,
+            load_bias: LoadBias::new(0),
+        };
+        self.next_module += 1;
+        let process = self.builder.process(pid, time.cast_signed());
+        let held = &mut self.processes.entry(pid).or_default().mapped;
+        held.retain(|mapped| mapped.end <= stale.start || mapped.start >= stale.end);
+        held.push(Mapped {
+            start: stale.start,
+            end: stale.end,
+            image,
+            loaded,
+        });
+        self.builder.mapping(Mapping {
+            process: process.into(),
+            module: module.into(),
+            start: stale.start.into(),
+            end: stale.end.into(),
+            file_offset: 0.into(),
+            bias: 0.into(),
+            time: time.cast_signed().into(),
+        });
+    }
+
+    /// Unwinds a sample through the modules of its process, with the
+    /// mappings its frames' modules index.
+    fn unwind(
+        &mut self,
+        sample: &decode::Sample<'_>,
+    ) -> (
+        Vec<crate::unwind::sample::SampledFrame>,
+        StackEnd,
+        Vec<Mapped>,
+    ) {
+        let mapped: &[Mapped] = self
+            .processes
+            .get(&sample.pid)
+            .map_or(&[], |process| &process.mapped);
+        let mut owners = Vec::with_capacity(mapped.len());
+        let modules: Vec<UnwindModule<'_>> = mapped
+            .iter()
+            .filter_map(|mapped| {
+                let info = self.images[mapped.image].info.as_ref()?;
+                owners.push(*mapped);
+                Some(UnwindModule {
+                    loaded: mapped.loaded,
+                    image: &info.image,
+                    unwind: info.unwind.as_ref(),
+                })
+            })
+            .collect();
+        let (frames, end) = unwind_sample(
+            &modules,
+            &mut self.rules,
+            SampledState {
+                registers: &self.registers,
+                stack: sample.stack,
+                chain: &self.chain,
+            },
+            self.limit,
+        );
+        (frames, end, owners)
+    }
+
+    /// Makes again the modules of anonymous code a sample's frames or
+    /// chain landed in that the perf map of its process may name since:
+    /// whether any changed.
+    fn refresh_perf_map(
+        &mut self,
+        sample: &decode::Sample<'_>,
+        frames: &[crate::unwind::sample::SampledFrame],
+    ) -> bool {
+        let Some(process) = self.processes.get_mut(&sample.pid) else {
+            return false;
+        };
+
+        let addresses = frames
+            .iter()
+            .map(|frame| frame.address.get())
+            .chain(self.chain.first().copied())
+            .chain(
+                self.chain
+                    .iter()
+                    .skip(1)
+                    .map(|address| address.wrapping_sub(1)),
+            );
+        let stale = process.jit.refresh(sample.pid.get(), addresses);
+        if let Some(problem) = process.jit.take_problem() {
+            self.builder.setting(
+                &format!("perf map {}", sample.pid),
+                &format!("not read: {problem}"),
+            );
+        }
+
+        for stale in &stale {
+            self.perf_map_module(sample.pid, sample.time, stale);
+        }
+
+        !stale.is_empty()
     }
 
     fn sample(&mut self, sample: &decode::Sample<'_>) {
@@ -665,40 +818,22 @@ impl Processor {
         self.builder
             .count(AccountKind::StackBytes as u32, sample.stack.len() as u64);
 
-        let mapped: &[Mapped] = self
-            .processes
-            .get(&sample.pid)
-            .map_or(&[], |process| &process.mapped);
-        let mut owners = Vec::with_capacity(mapped.len());
-        let modules: Vec<UnwindModule<'_>> = mapped
-            .iter()
-            .filter_map(|mapped| {
-                let info = self.images[mapped.image].info.as_ref()?;
-                owners.push(*mapped);
-                Some(UnwindModule {
-                    loaded: mapped.loaded,
-                    image: &info.image,
-                    unwind: info.unwind.as_ref(),
-                })
-            })
-            .collect();
-        let (frames, end) = unwind_sample(
-            &modules,
-            &mut self.rules,
-            SampledState {
-                registers: &self.registers,
-                stack: sample.stack,
-                chain: &self.chain,
-            },
-            self.limit,
-        );
+        let (mut frames, mut end, mut owners) = self.unwind(sample);
+        if self.refresh_perf_map(sample, &frames) {
+            (frames, end, owners) = self.unwind(sample);
+        }
+
         if let Some(leaf) = frames.first() {
             self.note_task(sample.pid, thread, time, leaf, &owners);
         }
 
         self.frames.clear();
         for frame in &frames {
-            let id = match frame.module.map(|module| owners[module]) {
+            let owner = frame
+                .module
+                .map(|module| owners[module])
+                .filter(|owner| self.names(owner, frame.address.get()));
+            let id = match owner {
                 Some(owner) => self.builder.frame(
                     FrameKind::Native,
                     self.images[owner.image].module,
@@ -1100,6 +1235,7 @@ impl Processor {
                 .find(|mapped| mapped.start <= address && address < mapped.end)
                 .copied()
         });
+        let owner = owner.filter(|owner| self.names(owner, address));
         let (module, address, role) = owner.map_or((NONE, address, 0), |owner| {
             (
                 self.images[owner.image].module,
@@ -1112,6 +1248,17 @@ impl Processor {
             )
         });
         self.builder.frame(FrameKind::Native, module, address, role)
+    }
+
+    /// Whether a frame at `address` is one of `owner`'s module: anywhere in
+    /// a file's, and only in a function it names in anonymous code's.
+    fn names(&self, owner: &Mapped, address: u64) -> bool {
+        let image = &self.images[owner.image];
+        !image.perf_map
+            || image
+                .info
+                .as_ref()
+                .is_some_and(|info| info.image.symbolize(ImageAddress::new(address)).is_some())
     }
 
     /// Where the first gap after `time` began, or the end of time.
@@ -1141,16 +1288,20 @@ impl Processor {
         // A segment cut after the last record ends no earlier than it began.
         let end = self.latest.max(self.gaps_end).max(start);
         self.builder.setting("end", &end.to_string());
-        if self.symbols_later {
-            return;
-        }
 
+        // A viewer finds a file's module to symbolize it later; anonymous
+        // code is gone by then.
         let images: BTreeMap<u32, usize> = self
             .images
             .iter()
             .enumerate()
+            .filter(|(_, image)| image.perf_map || !self.symbols_later)
             .map(|(index, image)| (image.module, index))
             .collect();
+        if images.is_empty() {
+            return;
+        }
+
         let frames: Vec<(u32, u32, u64)> = self
             .builder
             .frames()

@@ -13,6 +13,8 @@ layouts, and ABI rules stay behind this boundary.
 | `src/debug_info/elf.rs`, `src/debug_info/separate.rs` | ELF metadata and separate debug-file discovery |
 | `src/debug_info/gopclntab.rs`, `src/debug_info/gopclntab/` | Go table decoding and Go-specific unwind data |
 | `src/debug_info/x86_64.rs` | Architecture-specific register and unwind rules |
+| `src/debug_info/x86_64/frames.rs` | Frames of undescribed code, proved from its instructions |
+| `src/debug_info/perf_map.rs` | Perf maps: names and frames of code a compiler generated |
 | `src/image/` | Validated immutable table image and checked views |
 | `src/model/image.rs`, `src/model/image/` | Public image model and location types |
 | `src/cache.rs` | Persistent image cache and cache-key construction |
