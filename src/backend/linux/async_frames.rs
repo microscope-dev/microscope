@@ -32,7 +32,7 @@ use super::frames::{
 };
 
 use super::inspection::variable_context;
-use super::interpreted::interpreted_frame;
+use super::interpreted::{Placed, interpreted_frame};
 use super::native::InspectionOps;
 use super::{Controller, Inferior, RuntimeModule};
 
@@ -634,7 +634,7 @@ struct Spliced {
     frames: Vec<StackFrame>,
     origins: Vec<FrameOrigin>,
     futures: Vec<futures::AsyncFrame>,
-    interpreted: Vec<crate::runtime_model::InterpretedFrame>,
+    interpreted: Vec<Placed>,
     unfollowed: Vec<Unfollowed>,
 }
 
@@ -658,13 +658,8 @@ impl Spliced {
 
     /// Pushes an interpreted frame on the stack `segment`, which the
     /// physical frame `activation` runs or stands for.
-    fn push_interpreted(
-        &mut self,
-        frame: crate::runtime_model::InterpretedFrame,
-        segment: StackSegment,
-        activation: usize,
-    ) {
-        self.frames.push(interpreted_frame(&frame, segment));
+    fn push_interpreted(&mut self, frame: Placed, segment: StackSegment, activation: usize) {
+        self.frames.push(interpreted_frame(&frame.frame, segment));
         self.origins.push(FrameOrigin {
             activation,
             source: FrameSource::Interpreted(self.interpreted.len()),

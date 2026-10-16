@@ -2534,9 +2534,11 @@ if [[ -z "${MICROSCOPE_CPYTHON-}" ]]; then
 fi
 for interpreter in 3.13 3.14t 3.15 debian-3.13; do
     python="$MICROSCOPE_CPYTHON/$interpreter/python"
-    generate_core "$output_dir/python-stacks-${interpreter}.core" 6 "$default_core_filter" \
-        "$fixtures_dir/python/stacks.py $fixtures_dir/python/truth.py $python" \
-        "$python" -I -B "$fixtures_dir/python/stacks.py" --abort
+    for fixture in stacks locals; do
+        generate_core "$output_dir/python-${fixture}-${interpreter}.core" 6 "$default_core_filter" \
+            "$fixtures_dir/python/${fixture}.py $fixtures_dir/python/truth.py $python" \
+            "$python" -I -B "$fixtures_dir/python/${fixture}.py" --abort
+    done
 done
 generate_core "$output_dir/crash-gcc-o0-headerless.core" 11 "$headerless_core_filter" \
     "$output_dir/crash-gcc-o0 $output_dir/libcrash.so" "$output_dir/crash-gcc-o0" segv

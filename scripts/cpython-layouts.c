@@ -139,6 +139,7 @@ int main(int argc, char **argv) {
     FIELD(CodeLinetable, offsetof(PyCodeObject, co_linetable));
     FIELD(CodeFirstlineno, offsetof(PyCodeObject, co_firstlineno));
     FIELD(CodeArgcount, offsetof(PyCodeObject, co_argcount));
+    FIELD(CodeKwonlyargcount, offsetof(PyCodeObject, co_kwonlyargcount));
     FIELD(CodeLocalsplusnames, offsetof(PyCodeObject, co_localsplusnames));
     FIELD(CodeLocalspluskinds, offsetof(PyCodeObject, co_localspluskinds));
     FIELD(CodeCodeAdaptive, offsetof(PyCodeObject, co_code_adaptive));
@@ -216,6 +217,8 @@ int main(int argc, char **argv) {
     CONSTANT(FastHidden, 0);
 #endif
     CONSTANT(Optimized, CO_OPTIMIZED);
+    CONSTANT(VarArgs, CO_VARARGS);
+    CONSTANT(VarKeywords, CO_VARKEYWORDS);
     CONSTANT(DictKeysGeneral, DICT_KEYS_GENERAL);
     CONSTANT(DictKeysUnicode, DICT_KEYS_UNICODE);
     CONSTANT(DictKeysSplit, DICT_KEYS_SPLIT);

@@ -2291,6 +2291,10 @@ pub enum UnsupportedVariableFeature {
     /// to find, as for an aggregate in a language that leaves its own
     /// unspecified.
     ReturnPlace,
+
+    /// Reading the cell through which an interpreted frame shares a
+    /// variable with the closures it makes or was made in.
+    SharedCell,
 }
 
 impl fmt::Display for UnsupportedVariableFeature {
@@ -2312,6 +2316,7 @@ impl fmt::Display for UnsupportedVariableFeature {
             Self::RuntimeAggregateLocation => "the runtime aggregate location",
             Self::ScalarRepresentation => "the scalar representation",
             Self::ReturnPlace => "returning this type by the function's calling convention",
+            Self::SharedCell => "a variable shared with closures through a cell",
         })
     }
 }
@@ -2564,6 +2569,13 @@ pub enum VariableUnavailableReason {
         line: LineNumber,
     },
 
+    /// An interpreted variable has no value: it is not yet assigned, or it
+    /// was deleted.
+    Unbound,
+
+    /// The interpreter's object cannot be read, and why.
+    Interpreted(Arc<str>),
+
     /// A runtime-sized array or slice index is outside its current bounds.
     IndexOutOfBounds {
         /// Requested source index.
@@ -2720,6 +2732,10 @@ impl fmt::Display for VariableUnavailableReason {
                 "{:?} limit {} exhausted after {} while requesting {}",
                 exhaustion.resource, exhaustion.limit, exhaustion.used, exhaustion.requested
             ),
+            Self::Unbound => {
+                formatter.write_str("the variable is unbound: not yet assigned, or deleted")
+            }
+            Self::Interpreted(reason) => write!(formatter, "the interpreter's object: {reason}"),
             Self::IndexOutOfBounds {
                 index,
                 lower_bound,

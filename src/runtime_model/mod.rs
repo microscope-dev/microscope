@@ -19,6 +19,7 @@ mod tokio;
 
 use std::sync::Arc;
 
+use crate::inspection::InspectionBudget;
 use crate::unwind::RegisterFile;
 use crate::{
     CodeRole, CoroutineInfo, EntryProvenance, ExceptionFilter, ImageAddress, IntegerValue,
@@ -625,6 +626,34 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         None
     }
 
+    /// The local variables of the interpreted frame the interpreter keeps
+    /// at `frame`, as [`RuntimeModel::interpreted`] named it at this stop,
+    /// in the order the code declares them. Each read is charged to
+    /// `budget`.
+    fn interpreted_locals(
+        &self,
+        stop: &dyn RuntimeStop,
+        frame: VirtualAddress,
+        budget: &mut InspectionBudget,
+    ) -> Result<Vec<InterpretedLocal>, Arc<str>> {
+        let _ = (stop, frame, budget);
+        Err("the runtime interprets no frames".into())
+    }
+
+    /// The children `range` of the interpreter's object at `object`, which
+    /// [`InterpretedValue::children`] counted at this stop: a sequence's
+    /// elements, or a map's entries, in order.
+    fn interpreted_children(
+        &self,
+        stop: &dyn RuntimeStop,
+        object: VirtualAddress,
+        range: std::ops::Range<u64>,
+        budget: &mut InspectionBudget,
+    ) -> Result<Vec<InterpretedChild>, Arc<str>> {
+        let _ = (stop, object, range, budget);
+        Err("the runtime interprets no objects".into())
+    }
+
     /// Whether code from the source file at `path` is the runtime's own
     /// library, which raises its exceptions on the program's behalf: an
     /// exception blames the program's frame that called it.
@@ -778,6 +807,99 @@ impl InterpretedStacks {
             "frames {next}.. belong to no thread"
         );
     }
+}
+
+/// A local variable of an interpreted frame.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InterpretedLocal {
+    pub name: Arc<str>,
+
+    /// Whether the code's caller passes it, as a parameter.
+    pub parameter: bool,
+    pub slot: InterpretedSlot,
+}
+
+/// What a variable or a container's element holds.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InterpretedSlot {
+    Value(InterpretedValue),
+
+    /// Nothing: the variable is not yet assigned, or was deleted.
+    Unbound,
+
+    /// A cell the frame shares with the closures it makes or was made in,
+    /// which holds the value.
+    Cell,
+
+    /// The inspection's limits were reached before it was read.
+    Limit(crate::InspectionExhaustion),
+
+    /// It cannot be read, and why.
+    Unreadable(Arc<str>),
+}
+
+/// An object the interpreter keeps, as the debugger presents it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InterpretedValue {
+    pub object: VirtualAddress,
+
+    /// The object's type: the module that defines it, where the debugger
+    /// knows it, and its name there.
+    pub module: Option<Arc<str>>,
+    pub type_name: Arc<str>,
+    pub kind: InterpretedKind,
+
+    /// The object as text, in the runtime's own notation, with what a
+    /// container holds past the summary's bounds left out as `...`.
+    pub summary: Arc<str>,
+
+    /// Why the summary or the children are shown in part, if they are.
+    pub problem: Option<Arc<str>>,
+}
+
+impl InterpretedValue {
+    /// How many children [`RuntimeModel::interpreted_children`] gives.
+    #[must_use]
+    pub const fn children(&self) -> u64 {
+        match self.kind {
+            InterpretedKind::Sequence { length } | InterpretedKind::Map { length } => length,
+            _ => 0,
+        }
+    }
+}
+
+/// What kind of value an object is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum InterpretedKind {
+    /// The runtime's value that stands for no value, as Python's `None`.
+    Nothing,
+    Bool(bool),
+
+    /// An integer, its value where it fits in 128 bits; the summary holds
+    /// it at any size.
+    Int(Option<i128>),
+    Float(f64),
+    Text,
+    Bytes,
+    Sequence {
+        length: u64,
+    },
+    Map {
+        length: u64,
+    },
+
+    /// An object the debugger presents by its type and address alone.
+    Other,
+}
+
+/// One child of an interpreted container.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InterpretedChild {
+    Element(InterpretedSlot),
+    Entry {
+        key: InterpretedSlot,
+        value: InterpretedSlot,
+    },
 }
 
 /// What a runtime's frame drives that the native stack does not show.

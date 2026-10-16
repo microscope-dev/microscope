@@ -57,6 +57,9 @@ fn layout() -> PythonLayout {
         (Field::CodeFirstlineno, 40),
         (Field::CodeLocalsplusnames, 48),
         (Field::CodeLocalspluskinds, 56),
+        (Field::CodeArgcount, 80),
+        (Field::CodeKwonlyargcount, 84),
+        (Field::CodeFlags, 88),
         (Field::CodeCodeAdaptive, 96),
         (Field::UnicodeCompactSize, STRING_SIZE),
         (Field::UnicodeAsciiSize, 40),
@@ -202,6 +205,7 @@ impl Process {
         Reader {
             stop: &self.memory,
             layout: &self.layout,
+            charge: None,
         }
     }
 

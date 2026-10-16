@@ -108,7 +108,9 @@ impl<P: InspectionOps> Controller<P> {
         let selected = match frame.scope {
             // A suspended frame's variables are in its future, which no
             // scope of its function's code describes.
-            FrameScope::Unavailable | FrameScope::Suspended { .. } => return None,
+            FrameScope::Unavailable
+            | FrameScope::Suspended { .. }
+            | FrameScope::Interpreted { .. } => return None,
             FrameScope::Function => None,
             FrameScope::Inline(instance) => Some(instance),
         };
@@ -162,9 +164,25 @@ impl<P: InspectionOps> Controller<P> {
         let resolved = self.resolve_frame(inferior, root, frame)?;
         let scope = self.frame_scope(&resolved);
         let suspended = matches!(resolved.scope, FrameScope::Suspended { .. });
+        let interpreted = match resolved.scope {
+            FrameScope::Interpreted { runtime, frame } => Some((runtime, frame)),
+            _ => None,
+        };
         let inspect_locals = |budget: &mut InspectionBudget| {
             if suspended {
                 return self.async_variables(stop_id, root, &resolved, query, budget);
+            }
+
+            if let Some(interpreted) = interpreted {
+                return self.interpreted_variables(
+                    inferior,
+                    stop_id,
+                    root,
+                    frame,
+                    interpreted,
+                    query,
+                    budget,
+                );
             }
 
             let (module, address, selected) = scope.ok_or(Error::VariableContextUnsupported)?;
@@ -205,7 +223,7 @@ impl<P: InspectionOps> Controller<P> {
                 variables
             }
             VariableQuery::Name(name) => {
-                let local = if scope.is_some() || suspended {
+                let local = if scope.is_some() || suspended || interpreted.is_some() {
                     inspect_locals(&mut budget)
                 } else {
                     Err(Error::VariableNotFound(name.clone()))
@@ -213,7 +231,9 @@ impl<P: InspectionOps> Controller<P> {
 
                 match local {
                     Ok(variables) => variables,
-                    Err(Error::VariableNotFound(_)) => {
+                    // An interpreted frame's names are its interpreter's,
+                    // which no native global answers to.
+                    Err(Error::VariableNotFound(_)) if interpreted.is_none() => {
                         let global = self.loaded_global_named(name)?;
                         vec![self.inspect_loaded_global(
                             inferior,
@@ -228,8 +248,9 @@ impl<P: InspectionOps> Controller<P> {
             }
         };
 
-        // Views present what the provider read, with the same budget.
-        {
+        // Views present what the provider read, with the same budget; an
+        // interpreter's values come presented.
+        if interpreted.is_none() {
             let scope = self.frame_for(inferior, stop_id, root, &resolved);
             let mut machine = StopMachine::new(&scope, &mut budget, true);
             for variable in &mut variables {
@@ -488,6 +509,15 @@ impl<P: InspectionOps> Controller<P> {
         }
 
         if let Some(view) = &reference.view {
+            if let Some(children) = view
+                .bound
+                .as_ref()
+                .and_then(|bound| bound.downcast_ref::<super::interpreted::InterpretedChildren>())
+            {
+                return self
+                    .interpreted_children(inferior, &root, reference, children, query, budget);
+            }
+
             return self.view_children(reference, view, query.offset, query.limit, budget);
         }
 

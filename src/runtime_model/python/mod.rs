@@ -16,18 +16,22 @@ mod code;
 mod frames;
 mod linetable;
 mod objects;
+mod text;
 mod threads;
+mod values;
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use super::{
-    Crossing, Driven, DynamicValue, InterpretedStacks, InterpretedThread, Partial,
-    RuntimeException, RuntimeHook, RuntimeImage, RuntimeModel, RuntimeSignals, RuntimeStop,
-    StartedTask, StoredValue, TaskContext, TaskPage, TaskRef, TaskStarter, ThreadActivity, Unbound,
+    Crossing, Driven, DynamicValue, InterpretedChild, InterpretedLocal, InterpretedStacks,
+    InterpretedThread, Partial, RuntimeException, RuntimeHook, RuntimeImage, RuntimeModel,
+    RuntimeSignals, RuntimeStop, StartedTask, StoredValue, TaskContext, TaskPage, TaskRef,
+    TaskStarter, ThreadActivity, Unbound,
 };
 use crate::demangle::split_from;
-use crate::image::python::{EVALUATION_LOOP, PyVersion, PythonLayout, TAIL_CALL_PREFIX};
+use crate::image::python::{EVALUATION_LOOP, Field, PyVersion, PythonLayout, TAIL_CALL_PREFIX};
+use crate::inspection::InspectionBudget;
 use crate::unwind::RegisterFile;
 use crate::{
     AddressRange, CodeRole, ImageAddress, StackFrame, StackSegment, ThreadId, VirtualAddress,
@@ -60,8 +64,34 @@ pub fn detect(
         runtime: runtime.runtime,
         layout,
         code_type: code_type.address,
+        types: types(image.as_ref(), runtime.version),
         code: Mutex::default(),
     })))
+}
+
+/// The type objects of the built-in types whose values the model reads,
+/// by the symbols CPython exports them as; or why it cannot read values.
+fn types(image: &dyn RuntimeImage, version: PyVersion) -> Result<[ImageAddress; 9], Arc<str>> {
+    let names = [
+        "_PyNone_Type",
+        "PyBool_Type",
+        "PyLong_Type",
+        "PyFloat_Type",
+        "PyUnicode_Type",
+        "PyBytes_Type",
+        "PyList_Type",
+        "PyTuple_Type",
+        "PyDict_Type",
+    ];
+    let mut types = [ImageAddress::new(0); 9];
+    for (ty, name) in types.iter_mut().zip(names) {
+        *ty = image
+            .symbol(name)
+            .ok_or_else(|| format!("CPython {version} names no {name}"))?
+            .address;
+    }
+
+    Ok(types)
 }
 
 #[derive(Debug)]
@@ -73,16 +103,63 @@ struct PythonRuntime {
     runtime: AddressRange<ImageAddress>,
     layout: PythonLayout,
     code_type: ImageAddress,
+
+    /// The built-in types' objects, in the order [`types`] names them.
+    types: Result<[ImageAddress; 9], Arc<str>>,
     code: Mutex<code::CodeTable>,
 }
 
 impl PythonRuntime {
+    /// The stop's values, read through `budget`, and the code table.
+    fn values<R>(
+        &self,
+        stop: &dyn RuntimeStop,
+        budget: &mut InspectionBudget,
+        read: impl FnOnce(&values::Values<'_, '_>, &mut code::CodeTable) -> Result<R, Arc<str>>,
+    ) -> Result<R, Arc<str>> {
+        let symbols = self.types.as_ref().map_err(Arc::clone)?;
+        let bias = stop.load_bias();
+        let loaded = |symbol: ImageAddress| {
+            bias.load(symbol)
+                .ok_or_else(|| Arc::from("CPython's types lie outside the process"))
+        };
+        let [none, bool, int, float, str, bytes, list, tuple, dict] = symbols.map(loaded);
+        let types = values::Types {
+            none: none?,
+            bool: bool?,
+            int: int?,
+            float: float?,
+            str: str?,
+            bytes: bytes?,
+            list: list?,
+            tuple: tuple?,
+            dict: dict?,
+        };
+
+        let budget = values::Budget::new(budget);
+        let values = values::Values {
+            reader: objects::Reader {
+                stop,
+                layout: &self.layout,
+                charge: Some(&budget),
+            },
+            types,
+            budget: &budget,
+        };
+        let mut table = self
+            .code
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        read(&values, &mut table)
+    }
+
     fn stacks(&self, stop: &dyn RuntimeStop) -> Partial<InterpretedStacks> {
         let mut stacks = InterpretedStacks::default();
         let mut gaps = Vec::new();
         let reader = objects::Reader {
             stop,
             layout: &self.layout,
+            charge: None,
         };
 
         let bias = stop.load_bias();
@@ -313,6 +390,38 @@ impl RuntimeModel for PythonRuntime {
 
     fn interpreted(&self, stop: &dyn RuntimeStop) -> Option<Partial<InterpretedStacks>> {
         Some(self.stacks(stop))
+    }
+
+    fn interpreted_locals(
+        &self,
+        stop: &dyn RuntimeStop,
+        frame: VirtualAddress,
+        budget: &mut InspectionBudget,
+    ) -> Result<Vec<InterpretedLocal>, Arc<str>> {
+        let code_type = stop
+            .load_bias()
+            .load(self.code_type)
+            .ok_or_else(|| Arc::from("CPython's code type lies outside the process"))?;
+        self.values(stop, budget, |values, table| {
+            let record = values.reader.record(frame, Field::FrameSize)?;
+            let (_, code) = frames::Walk {
+                reader: values.reader,
+                code: table,
+                code_type,
+            }
+            .code_of(&record)?;
+            values.locals(table, code, &record)
+        })
+    }
+
+    fn interpreted_children(
+        &self,
+        stop: &dyn RuntimeStop,
+        object: VirtualAddress,
+        range: std::ops::Range<u64>,
+        budget: &mut InspectionBudget,
+    ) -> Result<Vec<InterpretedChild>, Arc<str>> {
+        self.values(stop, budget, |values, _| values.children(object, range))
     }
 }
 

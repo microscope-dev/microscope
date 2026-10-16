@@ -16,5 +16,6 @@ mod support;
 mod schemas;
 
 mod layouts;
+mod locals;
 mod session;
 mod stacks;

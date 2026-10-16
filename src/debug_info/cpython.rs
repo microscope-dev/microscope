@@ -71,7 +71,7 @@ impl Generated {
 }
 
 /// The fields without which no thread's frames can be read.
-const REQUIRED: [Field; 20] = [
+const REQUIRED: [Field; 34] = [
     Field::RuntimeInterpretersHead,
     Field::InterpreterNext,
     Field::InterpreterThreadsHead,
@@ -91,7 +91,21 @@ const REQUIRED: [Field; 20] = [
     Field::CodeLinetable,
     Field::CodeFirstlineno,
     Field::CodeCodeAdaptive,
+    Field::CodeLocalsplusnames,
+    Field::CodeLocalspluskinds,
+    Field::CodeArgcount,
+    Field::CodeKwonlyargcount,
+    Field::CodeFlags,
     Field::ObjectType,
+    Field::VarObjectSize,
+    Field::TupleItems,
+    Field::TupleSize,
+    Field::BytesSize,
+    Field::BytesData,
+    Field::UnicodeState,
+    Field::UnicodeLength,
+    Field::UnicodeAsciiSize,
+    Field::UnicodeCompactSize,
 ];
 
 /// Whether the module carries a Python runtime.
@@ -380,11 +394,11 @@ fn validated(
 /// a layout records.
 const fn structure_size(field: Field) -> Option<Field> {
     use Field::{
-        CodeArgcount, CodeFilename, CodeFirstlineno, CodeFlags, CodeLinetable, CodeLocalspluskinds,
-        CodeLocalsplusnames, CodeName, CodeNlocalsplus, CodeQualname, CodeSize, CodeTlbc,
-        FrameExecutable, FrameInstruction, FrameOwner, FramePrevious, FrameSize, FrameTlbcIndex,
-        ThreadBaseFrame, ThreadCurrentFrame, ThreadId, ThreadInterp, ThreadNativeId, ThreadNext,
-        ThreadPrev, ThreadSize,
+        CodeArgcount, CodeFilename, CodeFirstlineno, CodeFlags, CodeKwonlyargcount, CodeLinetable,
+        CodeLocalspluskinds, CodeLocalsplusnames, CodeName, CodeNlocalsplus, CodeQualname,
+        CodeSize, CodeTlbc, FrameExecutable, FrameInstruction, FrameOwner, FramePrevious,
+        FrameSize, FrameTlbcIndex, ThreadBaseFrame, ThreadCurrentFrame, ThreadId, ThreadInterp,
+        ThreadNativeId, ThreadNext, ThreadPrev, ThreadSize,
     };
 
     match field {
@@ -395,9 +409,8 @@ const fn structure_size(field: Field) -> Option<Field> {
         }
 
         CodeFilename | CodeName | CodeQualname | CodeLinetable | CodeFirstlineno | CodeArgcount
-        | CodeLocalsplusnames | CodeLocalspluskinds | CodeTlbc | CodeFlags | CodeNlocalsplus => {
-            Some(CodeSize)
-        }
+        | CodeKwonlyargcount | CodeLocalsplusnames | CodeLocalspluskinds | CodeTlbc | CodeFlags
+        | CodeNlocalsplus => Some(CodeSize),
 
         // The locals follow the frame and the bytecode follows the code
         // object, each from its structure's last member on.

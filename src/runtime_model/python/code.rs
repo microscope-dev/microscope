@@ -14,7 +14,7 @@ use std::sync::Arc;
 use super::linetable;
 use super::objects::{Problem, Reader, Record, malformed};
 use crate::VirtualAddress;
-use crate::image::python::Field;
+use crate::image::python::{Constant, Field};
 
 crate::model::id_type!(CodeId, "A code object's row in one process's code table.");
 crate::model::id_type!(NameId, "A string in one process's code table.");
@@ -82,6 +82,9 @@ pub(super) struct CodeRecord {
 
     /// How many code units its bytecode holds.
     pub(super) units: u64,
+
+    /// How many of its first locals its caller passes, as parameters.
+    pub(super) parameters: u32,
     pub(super) locals: Span<Local>,
     lines: Span<u8>,
 }
@@ -160,6 +163,7 @@ impl CodeTable {
             .into_iter()
             .map(|name| reader.string(name))
             .collect::<Result<Vec<_>, _>>()?;
+        let parameters = parameters(reader, header)?;
 
         let id = u32::try_from(self.rows.len())
             .map(CodeId::new)
@@ -182,6 +186,7 @@ impl CodeTable {
             file,
             first_line: proof.first_line,
             units: proof.units,
+            parameters,
             locals: Span::since(first_local, self.locals.len()).ok_or_else(full)?,
             lines: Span::since(first_line, self.lines.len()).ok_or_else(full)?,
         });
@@ -203,6 +208,12 @@ impl CodeTable {
 
     pub(super) fn row(&self, id: CodeId) -> &CodeRecord {
         &self.rows[id.index()]
+    }
+
+    /// The locals of the code object in row `id`, in the order its frames
+    /// keep them.
+    pub(super) fn locals(&self, id: CodeId) -> &[Local] {
+        &self.locals[self.row(id).locals.range()]
     }
 
     pub(super) fn name(&self, id: NameId) -> &Arc<str> {
@@ -264,6 +275,21 @@ impl CodeTable {
     }
 }
 
+/// How many parameters a code object's header says it has: its positional
+/// and keyword-only ones, then its `*args` and `**kwargs`, which are its
+/// first locals in that order.
+fn parameters(reader: &Reader<'_>, header: &Record<'_>) -> Result<u32, Problem> {
+    let count = |field| {
+        u32::try_from(header.int(field)?).map_err(|_| malformed(header.address, "code object"))
+    };
+    let flags = header.int(Field::CodeFlags)?.cast_unsigned();
+    let flag = |constant| u32::from(flags & u32::from(reader.layout.constant(constant)) != 0);
+    Ok(count(Field::CodeArgcount)?
+        .saturating_add(count(Field::CodeKwonlyargcount)?)
+        .saturating_add(flag(Constant::VarArgs))
+        .saturating_add(flag(Constant::VarKeywords)))
+}
+
 /// What a code object's header says that proves it is the object a row
 /// was decoded from.
 fn proof(header: &Record<'_>) -> Result<CodeProof, Problem> {
@@ -300,6 +326,7 @@ mod tests {
             file: NameId::new(0),
             first_line: 1,
             units: 0,
+            parameters: 0,
             locals: Span::since(0, 0).expect("a span"),
             lines: Span::since(0, 4).expect("a span"),
         });

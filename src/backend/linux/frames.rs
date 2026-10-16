@@ -464,8 +464,14 @@ impl<P: InspectionOps> Controller<P> {
         let level = frame.get() as usize;
 
         // Every activation presents at least one logical frame, so unwinding
-        // one activation per level always reaches the requested frame.
-        let max_frames = level.saturating_add(1).min(DEFAULT_MAX_FRAMES);
+        // one activation per level always reaches the requested frame; but
+        // interpreted frames are placed by every activation of their loop,
+        // so a thread that runs them is unwound as its backtrace is.
+        let max_frames = if self.interprets_on(inferior, root) {
+            DEFAULT_MAX_FRAMES
+        } else {
+            level.saturating_add(1).min(DEFAULT_MAX_FRAMES)
+        };
         let stack = self.physical_stack(inferior, root, max_frames)?;
         let modules = self.unwind_modules(inferior);
 
@@ -522,8 +528,13 @@ impl<P: InspectionOps> Controller<P> {
             FrameSource::Future(future) => {
                 return Ok(self.suspended_frame(frame, selected, &expanded.futures[future]));
             }
-            FrameSource::Interpreted(_) => {
-                return Ok(super::interpreted::resolved(frame, selected, activation));
+            FrameSource::Interpreted(index) => {
+                return Ok(super::interpreted::resolved(
+                    frame,
+                    selected,
+                    activation,
+                    &expanded.interpreted[index],
+                ));
             }
         };
 
@@ -1088,7 +1099,7 @@ pub(super) struct Expanded {
     pub(super) futures: Vec<futures::AsyncFrame>,
 
     /// The interpreted frames the trace shows.
-    pub(super) interpreted: Vec<crate::runtime_model::InterpretedFrame>,
+    pub(super) interpreted: Vec<super::interpreted::Placed>,
 
     /// The declared types of the futures frames drive that cannot be read.
     pub(super) lost: Vec<crate::TypeReference>,
@@ -1487,6 +1498,13 @@ pub(super) enum FrameScope {
         object: VirtualAddress,
         ty: TypeReference,
         state: u64,
+    },
+
+    /// An interpreted frame's, which `runtime`'s interpreter keeps at
+    /// `frame`.
+    Interpreted {
+        runtime: crate::RuntimeId,
+        frame: VirtualAddress,
     },
 }
 

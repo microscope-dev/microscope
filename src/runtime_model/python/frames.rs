@@ -155,6 +155,15 @@ impl Walk<'_, '_> {
 
     /// The frame's code, and its line or why it has none.
     fn located(&mut self, frame: &Record<'_>) -> Result<(CodeId, Result<u32, Problem>), Problem> {
+        let (code, id) = self.code_of(frame)?;
+        Ok((id, self.line(frame, code, id)))
+    }
+
+    /// The code object the frame runs, and its row in the code table.
+    pub(super) fn code_of(
+        &mut self,
+        frame: &Record<'_>,
+    ) -> Result<(VirtualAddress, CodeId), Problem> {
         let layout = self.reader.layout;
         let executable = frame.word(Field::FrameExecutable)?;
         let code = if layout.constant(Constant::StackRefs) == 0 {
@@ -168,8 +177,7 @@ impl Walk<'_, '_> {
             format!("the frame at {:#x} runs no code", frame.address).into()
         })?;
 
-        let id = self.code.code(&self.reader, self.code_type, code)?;
-        Ok((id, self.line(frame, code, id)))
+        Ok((code, self.code.code(&self.reader, self.code_type, code)?))
     }
 
     /// The line of the frame's instruction in its code `id`, at `code`.

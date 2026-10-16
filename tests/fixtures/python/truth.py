@@ -57,8 +57,11 @@ def report(*fields):
 
 
 def _string(text):
-    # Python's repr, which keeps a printable character as it is and picks
-    # double quotes only for text that holds a single quote and no double.
+    # Python's repr, but for the characters it escapes: a backslash, the
+    # quote, the C0 and C1 control characters, DEL, and lone surrogates,
+    # where repr also escapes those its version's Unicode database says do
+    # not print. It picks double quotes only for text that holds a single
+    # quote and no double. src/runtime_model/python/text.rs is the same.
     quote = '"' if "'" in text and '"' not in text else "'"
     escaped = []
     for character in text:
@@ -71,8 +74,10 @@ def _string(text):
             escaped.append("\\r")
         elif character == "\t":
             escaped.append("\\t")
-        elif code < 0x20 or code == 0x7F:
+        elif code < 0x20 or 0x7F <= code < 0xA0:
             escaped.append("\\x%02x" % code)
+        elif 0xD800 <= code < 0xE000:
+            escaped.append("\\u%04x" % code)
         else:
             escaped.append(character)
     return quote + "".join(escaped) + quote
@@ -82,7 +87,8 @@ def canonical(value, _depth=0, _seen=None):
     """The text microscope must present a value as.
 
     It is Python's repr for None, bools, ints at any size, floats (the
-    shortest text that reads back as the same float), strings, and bytes,
+    shortest text that reads back as the same float), strings (escaping
+    only what _string does), and bytes,
     and for lists, tuples, and dicts (in insertion order) of those. Sets are
     sorted by their items' text, so that every interpreter agrees. Any other
     object is its type's module and qualified name and, for a type the

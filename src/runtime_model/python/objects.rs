@@ -16,31 +16,73 @@ pub(super) const MAX_STRING: u64 = 4096;
 /// The largest sequence read, in items or bytes.
 pub(super) const MAX_ITEMS: u64 = 1 << 16;
 
+/// The longest C string read, in bytes, as a type's name.
+const MAX_C_STRING: u64 = 256;
+
 /// A problem reading the process, as one line.
 pub(super) type Problem = Arc<str>;
 
-/// The memory of a stopped process, read by a layout.
+/// What pays for each read a reader makes.
+pub(super) trait Charge {
+    /// Pays for one read of `bytes`, or says why it cannot be paid for.
+    fn charge(&self, bytes: usize) -> Result<(), Problem>;
+}
+
+/// The memory of a stopped process, read by a layout, and what pays for
+/// the reads, if anything does.
 #[derive(Clone, Copy)]
 pub(super) struct Reader<'a> {
     pub(super) stop: &'a dyn RuntimeStop,
     pub(super) layout: &'a PythonLayout,
+    pub(super) charge: Option<&'a dyn Charge>,
 }
 
 impl<'a> Reader<'a> {
     pub(super) fn bytes(&self, address: VirtualAddress, length: u64) -> Result<Vec<u8>, Problem> {
         let mut bytes = vec![0; usize::try_from(length).map_err(|_| unreadable(address))?];
-        self.stop
-            .read(address, &mut bytes)
-            .then_some(bytes)
-            .ok_or_else(|| unreadable(address))
+        self.read(address, &mut bytes)?;
+        Ok(bytes)
     }
 
     pub(super) fn word(&self, address: VirtualAddress) -> Result<u64, Problem> {
         let mut bytes = [0; 8];
+        self.read(address, &mut bytes)?;
+        Ok(u64::from_le_bytes(bytes))
+    }
+
+    fn read(&self, address: VirtualAddress, bytes: &mut [u8]) -> Result<(), Problem> {
+        if let Some(charge) = self.charge {
+            charge.charge(bytes.len())?;
+        }
+
         self.stop
-            .read(address, &mut bytes)
-            .then(|| u64::from_le_bytes(bytes))
+            .read(address, bytes)
+            .then_some(())
             .ok_or_else(|| unreadable(address))
+    }
+
+    /// The NUL-terminated string at `address`, of at most
+    /// [`MAX_C_STRING`] bytes, read a few aligned bytes at a time so that
+    /// no read reaches past a page its string ends in.
+    pub(super) fn c_string(&self, address: VirtualAddress) -> Result<Arc<str>, Problem> {
+        const CHUNK: u64 = 16;
+        let mut text = Vec::new();
+        let mut at = address;
+        while (text.len() as u64) < MAX_C_STRING {
+            let length = CHUNK - at.get() % CHUNK;
+            let chunk = self.bytes(at, length)?;
+            if let Some(end) = chunk.iter().position(|byte| *byte == 0) {
+                text.extend_from_slice(&chunk[..end]);
+                return String::from_utf8(text)
+                    .map(Arc::from)
+                    .map_err(|_| malformed(address, "C string"));
+            }
+
+            text.extend_from_slice(&chunk);
+            at = at.wrapping_add(length);
+        }
+
+        Err(format!("the C string at {address:#x} is longer than {MAX_C_STRING} bytes").into())
     }
 
     /// The offset of `field`, which the layout must have.
@@ -78,8 +120,29 @@ impl<'a> Reader<'a> {
         self.word(object.wrapping_add(self.offset(field)?))
     }
 
-    /// The `str` at `object`, of at most [`MAX_STRING`] characters.
+    /// The `str` at `object`, of at most [`MAX_STRING`] characters, as a
+    /// name or a path is: one that holds a lone surrogate is malformed.
     pub(super) fn string(&self, object: VirtualAddress) -> Result<Arc<str>, Problem> {
+        let (points, length) = self.code_points(object, MAX_STRING)?;
+        if length > MAX_STRING {
+            return Err(format!("the str at {object:#x} is {length} characters long").into());
+        }
+
+        points
+            .into_iter()
+            .map(char::from_u32)
+            .collect::<Option<String>>()
+            .map(Arc::from)
+            .ok_or_else(|| malformed(object, "str"))
+    }
+
+    /// The first `limit` code points of the `str` at `object`, as CPython
+    /// keeps them, and how many it holds.
+    pub(super) fn code_points(
+        &self,
+        object: VirtualAddress,
+        limit: u64,
+    ) -> Result<(Vec<u32>, u64), Problem> {
         let compact = self.offset(Field::UnicodeCompactSize)?;
         let header = self.bytes(object, compact)?;
         let at = |field| -> Result<u64, Problem> {
@@ -88,8 +151,8 @@ impl<'a> Reader<'a> {
         };
 
         let length = at(Field::UnicodeLength)?;
-        if length > MAX_STRING {
-            return Err(format!("the str at {object:#x} is {length} characters long").into());
+        if length.cast_signed() < 0 {
+            return Err(malformed(object, "str"));
         }
 
         let state = {
@@ -112,27 +175,30 @@ impl<'a> Reader<'a> {
             _ => return Err(malformed(object, "str")),
         };
 
-        let bytes = self.bytes(data, length * width)?;
-        let text: Option<String> = match width {
-            1 => Some(bytes.iter().map(|&byte| char::from(byte)).collect()),
-            2 => char::decode_utf16(
-                bytes
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|unit| u16::from_le_bytes(*unit)),
-            )
-            .collect::<Result<_, _>>()
-            .ok(),
+        let shown = length.min(limit);
+        let bytes = self.bytes(data, shown * width)?;
+        let points: Vec<u32> = match width {
+            1 => bytes.iter().map(|&byte| u32::from(byte)).collect(),
+            2 => bytes
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|unit| u32::from(u16::from_le_bytes(*unit)))
+                .collect(),
             _ => bytes
                 .as_chunks::<4>()
                 .0
                 .iter()
-                .map(|unit| char::from_u32(u32::from_le_bytes(*unit)))
+                .map(|unit| u32::from_le_bytes(*unit))
                 .collect(),
         };
 
-        text.map(Arc::from).ok_or_else(|| malformed(object, "str"))
+        // A 4-byte kind holds no code point past Unicode's last.
+        if points.iter().any(|point| *point > u32::from(char::MAX)) {
+            return Err(malformed(object, "str"));
+        }
+
+        Ok((points, length))
     }
 
     /// The contents of the `bytes` at `object`, of at most [`MAX_ITEMS`].

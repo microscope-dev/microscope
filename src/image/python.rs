@@ -97,6 +97,7 @@ entries! {
         CodeLinetable = "code_object.linetable",
         CodeFirstlineno = "code_object.firstlineno",
         CodeArgcount = "code_object.argcount",
+        CodeKwonlyargcount = "code_object.co_kwonlyargcount",
         CodeLocalsplusnames = "code_object.localsplusnames",
         CodeLocalspluskinds = "code_object.localspluskinds",
         CodeCodeAdaptive = "code_object.co_code_adaptive",
@@ -184,6 +185,8 @@ entries! {
         /// 0 before 3.13, which hides no locals.
         FastHidden = "CO_FAST_HIDDEN",
         Optimized = "CO_OPTIMIZED",
+        VarArgs = "CO_VARARGS",
+        VarKeywords = "CO_VARKEYWORDS",
 
         DictKeysGeneral = "DICT_KEYS_GENERAL",
         DictKeysUnicode = "DICT_KEYS_UNICODE",

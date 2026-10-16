@@ -351,6 +351,13 @@ fn int_name(int: IntType) -> String {
 /// The image that types the language itself defines claim.
 pub const LANGUAGE_IMAGE: ModuleImageId = ModuleImageId::new(u32::MAX);
 
+/// The identity of a type without one of its own, which no language or
+/// program type has.
+pub const UNIDENTIFIED: TypeReference = TypeReference {
+    image: LANGUAGE_IMAGE,
+    id: TypeId::new(u32::MAX),
+};
+
 /// The image ids at and above this one belong to the language: no loaded
 /// image has one. Pointers to a program type claim those below
 /// [`LANGUAGE_IMAGE`], one per pointee image and pointer depth.
@@ -394,12 +401,7 @@ pub fn type_reference(ty: &Ty) -> TypeReference {
 
     debug_assert!(depth < POINTER_DEPTHS, "a pointer {depth} deep");
 
-    // A type without an identity of its own claims one no language or program
-    // type has.
-    let unidentified = TypeReference {
-        image: LANGUAGE_IMAGE,
-        id: TypeId::new(u32::MAX),
-    };
+    let unidentified = UNIDENTIFIED;
 
     let Ty::Program(reference) = leaf else {
         return language_type_id(leaf, depth).map_or(unidentified, |id| TypeReference {

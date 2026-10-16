@@ -15,6 +15,22 @@ use tokio::task::JoinHandle;
 use crate::support::truth::Report;
 use crate::support::{Scenario, ScratchDir, python};
 
+/// Every interpreter in the matrix, as the flake names it.
+pub const MATRIX: [&str; 9] = [
+    "3.12",
+    "3.13",
+    "3.13t",
+    "3.14",
+    "3.14t",
+    "3.15",
+    "3.15t",
+    "debian-3.13",
+    "ubuntu-3.12",
+];
+
+/// The interpreters whose fixtures' cores the build saves.
+pub const CORES: [&str; 4] = ["3.13", "3.14t", "3.15", "debian-3.13"];
+
 /// How long a fixture may take to reach a checkpoint.
 const CHECKPOINT_DEADLINE: Duration = Duration::from_secs(30);
 

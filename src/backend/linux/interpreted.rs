@@ -17,27 +17,46 @@ use super::native::InspectionOps;
 use super::runtimes::BoundRuntime;
 use super::{Controller, Inferior, debug_thread_id};
 
+use crate::eval::types::UNIDENTIFIED;
+use crate::inspection::InspectionBudget;
 use crate::model::FrameMetadata;
+use crate::model::{ValueStorage, ViewChildren};
 use crate::protocol::PresentedFrame;
-use crate::runtime_model::{Driven, InterpretedFrame, InterpretedStacks, Partial};
-use crate::{
-    CallFrameUnavailableReason, CodeRole, FrameKind, RecordedFrame, RuntimeId, StackFrame,
-    StackFrameId, StackSegment, VariableUnavailableReason,
+use crate::runtime_model::{
+    Driven, InterpretedChild, InterpretedFrame, InterpretedKind, InterpretedSlot,
+    InterpretedStacks, InterpretedValue, Partial,
 };
+use crate::{
+    AddressValue, ArgumentOrigin, CallFrameUnavailableReason, CodeRole, DereferenceState, Error,
+    ExecutionContext, FloatValue, FrameKind, LoadedModule, MapKey, Presentation, PresentedCount,
+    PresentedShape, RecordedFrame, Result, RuntimeId, ScalarValue, SourceLanguage, StackFrame,
+    StackFrameId, StackSegment, StopId, TypeIdentity, TypeInfo, TypeKind,
+    UnsupportedVariableFeature, ValueChild, ValueChildPage, ValueChildQuery,
+    ValueChildRelationship, ValueChildren, ValueChildrenReference, Variable, VariableKind,
+    VariableQuery, VariableState, VariableUnavailableReason, VariableValue, VariableValueSource,
+    ViewName, ViewProblem, VirtualAddress,
+};
+
+/// An interpreted frame of a trace, and the runtime that interprets it.
+#[derive(Debug, Clone)]
+pub(super) struct Placed {
+    pub(super) runtime: RuntimeId,
+    pub(super) frame: InterpretedFrame,
+}
 
 /// Where a thread's interpreted frames go in its backtrace.
 #[derive(Debug, Default)]
 pub(super) struct Placement {
     /// The segment each activation of an interpreter's loop runs,
     /// innermost first, by the activation's frame in the trace.
-    pub(super) placed: BTreeMap<usize, Vec<InterpretedFrame>>,
+    pub(super) placed: BTreeMap<usize, Vec<Placed>>,
 
     /// Why the segment the activation at each frame of the trace runs is
     /// shown in part, where it is.
     pub(super) notes: BTreeMap<usize, Arc<str>>,
 
     /// The frames whose place is unknown, innermost first, and why.
-    pub(super) unplaced: Vec<InterpretedFrame>,
+    pub(super) unplaced: Vec<Placed>,
     pub(super) unplaced_reason: Option<Arc<str>>,
 }
 
@@ -93,6 +112,19 @@ impl<P: InspectionOps> Controller<P> {
         found
     }
 
+    /// Whether a runtime interprets frames on the thread whose stack
+    /// `root` begins.
+    pub(super) fn interprets_on(&self, inferior: &Inferior, root: &StackRoot) -> bool {
+        let Some(thread) = root.thread().map(debug_thread_id) else {
+            return false;
+        };
+
+        self.runtimes(inferior).iter().any(|runtime| {
+            self.interpreted(inferior, runtime, root)
+                .is_some_and(|stacks| stacks.value.threads.iter().any(|on| on.thread == thread))
+        })
+    }
+
     /// Where the frames each of `runtimes` interprets go in the trace of
     /// the stack `root` begins, given the trace's `drivers`, each with
     /// what it drives and the index of the runtime that says so. Every
@@ -137,6 +169,16 @@ impl<P: InspectionOps> Controller<P> {
             return placement;
         };
 
+        let placed = |frames: &[InterpretedFrame]| -> Vec<Placed> {
+            frames
+                .iter()
+                .map(|frame| Placed {
+                    runtime: runtime.id,
+                    frame: frame.clone(),
+                })
+                .collect()
+        };
+
         let threads: Vec<_> = stacks
             .value
             .threads
@@ -162,7 +204,7 @@ impl<P: InspectionOps> Controller<P> {
             } else {
                 placement.unplaced = threads
                     .iter()
-                    .flat_map(|interpreted| stacks.value.frames_of(interpreted).iter().cloned())
+                    .flat_map(|interpreted| placed(stacks.value.frames_of(interpreted)))
                     .collect();
                 placement.unplaced_reason = Some(
                     format!(
@@ -180,7 +222,7 @@ impl<P: InspectionOps> Controller<P> {
         let segments: Vec<&[InterpretedFrame]> =
             frames.split_inclusive(|frame| frame.outermost).collect();
         if segments.len() != activations.len() {
-            placement.unplaced = frames.to_vec();
+            placement.unplaced = placed(frames);
             placement.unplaced_reason = Some(
                 format!(
                     "the thread runs {} of them, and {} activations of the interpreter's loop",
@@ -197,7 +239,7 @@ impl<P: InspectionOps> Controller<P> {
                 placement.notes.insert(activation, problem);
             }
 
-            placement.placed.insert(activation, segment.to_vec());
+            placement.placed.insert(activation, placed(segment));
         }
 
         if let (Some(&outermost), Some(end)) = (activations.last(), &interpreted.end) {
@@ -236,14 +278,23 @@ pub(super) fn interpreted_frame(frame: &InterpretedFrame, segment: StackSegment)
 }
 
 /// An interpreted frame, as its inspection sees it: it has no registers,
-/// no place on a machine stack, and no code in an image.
-pub(super) fn resolved(id: StackFrameId, frame: StackFrame, activation: usize) -> ResolvedFrame {
+/// no place on a machine stack, and no code in an image; its interpreter
+/// keeps its variables.
+pub(super) fn resolved(
+    id: StackFrameId,
+    frame: StackFrame,
+    activation: usize,
+    placed: &Placed,
+) -> ResolvedFrame {
     ResolvedFrame {
         id,
         presented: PresentedFrame::Physical,
         frame: Some(frame),
         code: None,
-        scope: FrameScope::Unavailable,
+        scope: FrameScope::Interpreted {
+            runtime: placed.runtime,
+            frame: placed.frame.frame,
+        },
         registers: FrameRegisters::Discarded,
         cfa: Err(VariableUnavailableReason::CallFrameUnavailable(
             CallFrameUnavailableReason::Interpreted,
@@ -259,5 +310,348 @@ fn plural(count: usize, noun: &str) -> String {
         format!("{count} {noun}")
     } else {
         format!("{count} {noun}s")
+    }
+}
+
+/// The children of an interpreter's object, which a value's capability
+/// pages: only this backend reads them, through the runtime that
+/// interprets the object.
+#[derive(Debug)]
+pub(super) struct InterpretedChildren {
+    runtime: RuntimeId,
+}
+
+/// Where an interpreted frame's values are read, for their children's
+/// capabilities.
+struct Origin {
+    stop: StopId,
+    context: ExecutionContext,
+    frame: StackFrameId,
+    runtime: RuntimeId,
+    module: LoadedModule,
+}
+
+impl<P: InspectionOps> Controller<P> {
+    fn bound_runtime(&self, inferior: &Inferior, id: RuntimeId) -> Result<BoundRuntime> {
+        self.runtimes(inferior)
+            .into_iter()
+            .find(|runtime| runtime.id == id)
+            .ok_or_else(|| {
+                Error::VariableRuntime(format!("runtime {id} is not bound to the process").into())
+            })
+    }
+
+    /// The variables of the interpreted frame `resolved`, which `runtime`
+    /// keeps at `frame`, that `query` names.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the stop, the frame, and what the runtime names it"
+    )]
+    pub(super) fn interpreted_variables(
+        &self,
+        inferior: &Inferior,
+        stop: StopId,
+        root: &StackRoot,
+        resolved: StackFrameId,
+        (runtime, frame): (RuntimeId, VirtualAddress),
+        query: &VariableQuery,
+        budget: &mut InspectionBudget,
+    ) -> Result<Vec<Variable>> {
+        let bound = self.bound_runtime(inferior, runtime)?;
+        let locals = self
+            .with_runtime_stop(inferior, &bound, root.reader(), |runtime_stop| {
+                bound.model.interpreted_locals(runtime_stop, frame, budget)
+            })
+            .map_err(Error::VariableRuntime)?;
+        let origin = Origin {
+            stop,
+            context: root.context,
+            frame: resolved,
+            runtime,
+            module: bound.module,
+        };
+
+        let mut variables = Vec::new();
+        for local in locals {
+            if let VariableQuery::Name(name) = query
+                && *local.name != **name
+            {
+                continue;
+            }
+
+            // Once a read has exhausted the budget, the rest of the locals
+            // show that they were not read, as they were not.
+            if budget.exhaustion().is_none() && budget.consume_variable_value().is_err() {
+                break;
+            }
+
+            let (type_info, state) = origin.slot(local.slot);
+            variables.push(Variable {
+                kind: if local.parameter {
+                    VariableKind::Parameter
+                } else {
+                    VariableKind::Local
+                },
+                global: None,
+                name: local.name,
+                declaration: None,
+                type_info,
+                unresolved_shape: None,
+                state,
+            });
+        }
+
+        if let VariableQuery::Name(name) = query
+            && variables.is_empty()
+        {
+            return Err(Error::VariableNotFound(name.clone()));
+        }
+
+        Ok(variables)
+    }
+
+    /// The page `query` asks for of the children of the interpreter's
+    /// object `reference` names.
+    pub(super) fn interpreted_children(
+        &self,
+        inferior: &Inferior,
+        root: &StackRoot,
+        reference: &ValueChildrenReference,
+        children: &InterpretedChildren,
+        query: &ValueChildQuery,
+        budget: &mut InspectionBudget,
+    ) -> Result<ValueChildPage> {
+        let ValueStorage::Memory(object) = reference.storage else {
+            return Err(Error::VariableContextUnsupported);
+        };
+
+        let bound = self.bound_runtime(inferior, children.runtime)?;
+        let end = query
+            .offset
+            .saturating_add(u64::from(query.limit))
+            .min(reference.total);
+        let start = query.offset.min(end);
+        let read = self
+            .with_runtime_stop(inferior, &bound, root.reader(), |runtime_stop| {
+                bound
+                    .model
+                    .interpreted_children(runtime_stop, object, start..end, budget)
+            })
+            .map_err(Error::VariableRuntime)?;
+        let origin = Origin {
+            stop: reference.stop_id,
+            context: reference.context,
+            frame: reference.frame,
+            runtime: children.runtime,
+            module: bound.module,
+        };
+
+        let mut page = Vec::new();
+        for (index, child) in (start..).zip(read) {
+            if budget.exhaustion().is_none() && budget.consume_value_nodes(1).is_err() {
+                break;
+            }
+
+            page.push(match child {
+                InterpretedChild::Element(slot) => {
+                    let (type_info, state) = origin.slot(slot);
+                    ValueChild {
+                        relationship: ValueChildRelationship::Element { index },
+                        type_info: type_info.unwrap_or_else(untyped),
+                        state,
+                    }
+                }
+                InterpretedChild::Entry { key, value } => {
+                    let (key_type, key_state) = origin.slot(key);
+                    let (type_info, state) = origin.slot(value);
+                    ValueChild {
+                        relationship: ValueChildRelationship::Entry {
+                            index,
+                            key: Arc::new(MapKey {
+                                type_info: key_type.unwrap_or_else(untyped),
+                                state: key_state,
+                            }),
+                        },
+                        type_info: type_info.unwrap_or_else(untyped),
+                        state,
+                    }
+                }
+            });
+        }
+
+        Ok(ValueChildPage {
+            stop_id: reference.stop_id,
+            offset: start,
+            total: reference.total,
+            children: page.into(),
+            completion: budget.completion(),
+            usage: budget.usage(),
+        })
+    }
+}
+
+impl Origin {
+    /// The type and state the debugger presents a slot's value as.
+    fn slot(&self, slot: InterpretedSlot) -> (Option<TypeInfo>, VariableState) {
+        let value = match slot {
+            InterpretedSlot::Value(value) => value,
+            InterpretedSlot::Unbound => {
+                return (
+                    None,
+                    VariableState::Unavailable(VariableUnavailableReason::Unbound),
+                );
+            }
+            InterpretedSlot::Cell => {
+                return (
+                    None,
+                    VariableState::Unavailable(VariableUnavailableReason::Unsupported(
+                        UnsupportedVariableFeature::SharedCell,
+                    )),
+                );
+            }
+            InterpretedSlot::Limit(exhaustion) => {
+                return (
+                    None,
+                    VariableState::Unavailable(VariableUnavailableReason::InspectionLimit(
+                        exhaustion,
+                    )),
+                );
+            }
+            InterpretedSlot::Unreadable(reason) => {
+                return (
+                    None,
+                    VariableState::Unavailable(VariableUnavailableReason::Interpreted(reason)),
+                );
+            }
+        };
+
+        let (scalar, shape) = match value.kind {
+            InterpretedKind::Nothing => (None, PresentedShape::Empty),
+            InterpretedKind::Bool(value) => {
+                (Some(ScalarValue::Boolean(value)), PresentedShape::Value)
+            }
+            InterpretedKind::Int(value) => (value.map(ScalarValue::Signed), PresentedShape::Value),
+            InterpretedKind::Float(value) => (
+                Some(ScalarValue::Floating(FloatValue::Binary64(value.to_bits()))),
+                PresentedShape::Value,
+            ),
+            InterpretedKind::Text => (None, PresentedShape::Text),
+            InterpretedKind::Bytes | InterpretedKind::Other => (None, PresentedShape::Value),
+            InterpretedKind::Sequence { .. } => (None, PresentedShape::Sequence),
+            InterpretedKind::Map { .. } => (None, PresentedShape::Map),
+        };
+
+        let count = value.children();
+        let children = if count == 0 {
+            ValueChildren::NotApplicable
+        } else {
+            ValueChildren::Available(Arc::new(self.children(value.object, count)))
+        };
+
+        let presentation = Presentation {
+            view: Arc::new(ViewName {
+                source: "microscope".into(),
+                line: 0,
+                header: "Python objects".into(),
+                extend: false,
+            }),
+            shape,
+            count: matches!(
+                value.kind,
+                InterpretedKind::Sequence { .. } | InterpretedKind::Map { .. }
+            )
+            .then_some(PresentedCount::Exact(count)),
+            summary: Arc::clone(&value.summary),
+            children,
+            problem: value.problem.clone().map(|problem| {
+                ViewProblem::Unavailable(VariableUnavailableReason::Interpreted(problem))
+            }),
+            number: None,
+            presented: None,
+            visualizers: Arc::from([]),
+        };
+
+        let state = VariableState::Available {
+            source: VariableValueSource::Memory(value.object),
+            raw: None,
+            value: scalar.map_or(
+                VariableValue::Address(AddressValue {
+                    address: value.object,
+                    function: None,
+                }),
+                VariableValue::Scalar,
+            ),
+            dereference: DereferenceState::NotApplicable,
+            children: ValueChildren::NotApplicable,
+            text: None,
+            presentation: Some(Arc::new(presentation)),
+        };
+
+        (Some(python_type(&value)), state)
+    }
+
+    /// The capability of the `count` children of the object at `object`.
+    fn children(&self, object: VirtualAddress, count: u64) -> ValueChildrenReference {
+        ValueChildrenReference {
+            stop_id: self.stop,
+            context: self.context,
+            frame: self.frame,
+            module: self.module.id,
+            image: self.module.image,
+            context_address: None,
+            target_type: UNIDENTIFIED.id,
+            storage: ValueStorage::Memory(object),
+            total: count,
+            active_variant: None,
+            view: Some(ViewChildren {
+                bound: Some(Arc::new(InterpretedChildren {
+                    runtime: self.runtime,
+                })),
+                elements: count,
+                fields: 0,
+                inner: None,
+                picked: None,
+            }),
+            placement: None,
+        }
+    }
+}
+
+/// The type of an interpreter's object: a Python type, named by its module
+/// and its name there, with no layout the debugger computes with.
+fn python_type(value: &InterpretedValue) -> TypeInfo {
+    let name = match value.module.as_deref() {
+        Some(module) if module != "builtins" => format!("{module}.{}", value.type_name),
+        _ => value.type_name.to_string(),
+    };
+
+    TypeInfo {
+        reference: UNIDENTIFIED,
+        name: name.into(),
+        byte_size: None,
+        kind: TypeKind::Opaque {
+            description: "a Python object".into(),
+        },
+        identity: Some(Arc::new(TypeIdentity {
+            language: SourceLanguage::Python,
+            path: value.module.iter().cloned().collect(),
+            inline_namespaces: Arc::from([]),
+            base: Arc::clone(&value.type_name),
+            arguments: Arc::from([]),
+            pack: None,
+            origin: ArgumentOrigin::None,
+            go: None,
+        })),
+    }
+}
+
+/// The type of a child whose slot holds no object.
+fn untyped() -> TypeInfo {
+    TypeInfo {
+        reference: UNIDENTIFIED,
+        name: "<unknown type>".into(),
+        byte_size: None,
+        kind: TypeKind::Unspecified,
+        identity: None,
     }
 }

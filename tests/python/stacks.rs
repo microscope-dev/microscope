@@ -5,7 +5,7 @@ use microscope::{
     StackSegment, StopContext, ThreadId,
 };
 
-use crate::session::PythonSession;
+use crate::session::{CORES, MATRIX, PythonSession};
 use crate::support::Scenario;
 use crate::support::truth::Report;
 
@@ -46,19 +46,6 @@ async fn the_interpreters_loop_and_calls_are_its_own() {
         session.shutdown().await;
     }
 }
-
-/// Every interpreter in the matrix, as the flake names it.
-const MATRIX: [&str; 9] = [
-    "3.12",
-    "3.13",
-    "3.13t",
-    "3.14",
-    "3.14t",
-    "3.15",
-    "3.15t",
-    "debian-3.13",
-    "ubuntu-3.12",
-];
 
 /// A Python frame as CPython reported it: its qualified name, file, and
 /// line.
@@ -158,7 +145,7 @@ async fn each_threads_python_frames_are_the_ones_cpython_reports() {
 /// frames their own way.
 #[tokio::test]
 async fn a_cores_python_frames_are_the_ones_cpython_reported() {
-    for interpreter in ["3.13", "3.14t", "3.15", "debian-3.13"] {
+    for interpreter in CORES {
         let name = format!("python-stacks-{interpreter}.core");
         let core = Scenario::fixture(&name);
         let log = std::fs::read_to_string(core.with_extension("core.log"))
