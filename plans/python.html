@@ -1112,12 +1112,12 @@ struct py_frame { __u64 code; __u64 qualname; __u32 unit; __u32 first_line; __u3
         <p class="exit">Exit: <code>python -X perf</code> stacks no longer truncate. Stepping honors roles in shared libraries. A live snapshot of tokio in a shared library finds its tasks.</p>
       </div>
       <div class="phase">
-        <header><span class="pid">P1</span><h3>See Python</h3><span class="st todo">todo</span></header>
+        <header><span class="pid">P1</span><h3>See Python</h3><span class="st doing">doing</span></header>
         <p>G4, the splice by role, and G5, frames with no image, each landing first. The provider: detection, the per-minor schemas, the generated 3.12 table, generated constants, validation for 3.12–3.15 in both GIL modes, and the image table. The runtime model: threads mapped to tracees, the code table, and <code>PythonStop</code>. Python stacks spliced into backtraces at every stop and in core dumps. Locals of built-in types. CLI, DAP, and web rendering. The interpreter code role and the setting that shows hidden frames.</p>
         <div class="scroller"><table class="data"><thead><tr><th>Task</th><th>Work</th><th>Status</th><th>Result</th></tr></thead><tbody>
           <tr><td>P1.1</td><td>G4: the splice asks the model for a driven segment by code role</td><td><span class="st todo">todo</span></td><td></td></tr>
           <tr><td>P1.2</td><td>G5: <code>FrameKind::Interpreted</code>, <code>has_registers()</code>, <code>StackFrame.recorded</code>, and the <code>src/present</code> frame-place helper</td><td><span class="st todo">todo</span></td><td></td></tr>
-          <tr><td>P1.3</td><td><code>SourceLanguage::Python</code> and <code>CodeRole::Interpreter</code>, with split <code>.cold</code> parts</td><td><span class="st todo">todo</span></td><td></td></tr>
+          <tr><td>P1.3</td><td><code>SourceLanguage::Python</code> and <code>CodeRole::Interpreter</code>, with split <code>.cold</code> parts</td><td><span class="st done">done</span></td><td><code>057b67e6</code>. Changes the plan: the provider gives the role only in images that have a <code>.PyRuntime</code> section, because CPython&#8217;s static names (<code>thread_run</code>, <code>run_mod</code>) are common in other C programs. Capture revision 9 opens here instead of in P3, because the new role is stored by number.</td></tr>
           <tr><td>P1.4</td><td>Provider <code>src/debug_info/cpython.rs</code>: detection, per-minor schemas, validation, and the image table <code>src/image/python.rs</code></td><td><span class="st todo">todo</span></td><td></td></tr>
           <tr><td>P1.5</td><td>Generated 3.12 table and constants, <code>layouts.gen.rs</code>, with its staleness test</td><td><span class="st todo">todo</span></td><td></td></tr>
           <tr><td>P1.6</td><td>Runtime model: threads mapped to tracees, the code table, and <code>PythonStop</code></td><td><span class="st todo">todo</span></td><td></td></tr>
