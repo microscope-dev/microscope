@@ -309,8 +309,8 @@ const THREAD_LOCAL_BYTECODE: [Field; 4] = [
     Field::CodeArrayEntries,
 ];
 
-/// The sizes of the structures the model reads whole, and the most each
-/// may be: a table in the process may say anything.
+/// The sizes of the structures the model reads whole, which a table in
+/// the process may make anything.
 const READ_WHOLE: [Field; 6] = [
     Field::ThreadSize,
     Field::FrameSize,
@@ -319,7 +319,10 @@ const READ_WHOLE: [Field; 6] = [
     Field::DictEntrySize,
     Field::DictUnicodeEntrySize,
 ];
-const MAX_STRUCTURE: u64 = 1 << 16;
+
+/// The largest structure read whole the layout may give: a free-threaded
+/// build's thread state, the largest there is, takes under 1 KiB.
+const MAX_STRUCTURE: u64 = 1 << 13;
 
 /// The layout, once each field it needs is there and lies within its
 /// structure, and no structure read whole is larger than [`MAX_STRUCTURE`].
@@ -344,8 +347,8 @@ fn validated(
 
     if let Some((field, size)) = READ_WHOLE
         .iter()
-        .find_map(|&field| Some((field, layout.field(field)?)))
-        .filter(|(_, size)| *size > MAX_STRUCTURE)
+        .filter_map(|&field| Some((field, layout.field(field)?)))
+        .find(|(_, size)| *size > MAX_STRUCTURE)
     {
         return Err(format!(
             "CPython {version}'s layout makes {} {size} bytes",
@@ -611,14 +614,19 @@ mod tests {
     #[test]
     fn a_layout_whose_structure_is_too_large_to_read_is_refused() {
         let generated = &layouts::GENERATED[0];
-        let mut layout = generated.layout();
-        layout.set_field(Field::FrameSize, MAX_STRUCTURE + 1);
-        let refused = validated(
-            PyVersion(generated.version),
-            generated.free_threaded,
-            layout,
-        )
-        .expect_err("a frame too large to read");
-        assert!(refused.contains("interpreter_frame.size"), "{refused}");
+        for size in READ_WHOLE {
+            let mut layout = generated.layout();
+            layout.set_field(size, MAX_STRUCTURE + 1);
+            let refused = validated(
+                PyVersion(generated.version),
+                generated.free_threaded,
+                layout,
+            )
+            .expect_err(size.name());
+            assert!(
+                refused.contains(&format!("makes {} ", size.name())),
+                "{refused}"
+            );
+        }
     }
 }
