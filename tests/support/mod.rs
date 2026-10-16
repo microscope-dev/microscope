@@ -10,6 +10,7 @@
 
 pub mod flight_recordings;
 mod memory_cap;
+pub mod truth;
 
 use std::future::Future;
 use std::io::{BufRead as _, BufReader, Write as _};

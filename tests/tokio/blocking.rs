@@ -12,6 +12,7 @@ use microscope::{InferiorState, LaunchOptions, StopReason, TaskState, ThreadActi
 use crate::invariants::checked;
 use crate::steps::stopped_task;
 use crate::stops::line;
+use crate::support::truth::Report;
 use crate::support::{Scenario, ScratchDir};
 use crate::workers::{activities, tasks};
 
@@ -34,8 +35,8 @@ struct Truth {
 impl Truth {
     fn parse(text: &str) -> Self {
         let mut truth = Self::default();
-        for line in text.lines().filter_map(|line| line.strip_prefix("TRUTH\t")) {
-            match line.split('\t').collect::<Vec<_>>()[..] {
+        for fields in Report::parse(text).lines() {
+            match fields.iter().map(String::as_str).collect::<Vec<_>>()[..] {
                 ["task", id, "release", _] => truth.blocker = id.parse().expect("an id"),
                 ["queued", id] => truth.queued.push(id.parse().expect("an id")),
                 ["pool", tid] => truth.pool = tid.parse().expect("a thread id"),

@@ -15,6 +15,7 @@ use microscope::{
 
 use crate::invariants::checked;
 use crate::stops::line;
+use crate::support::truth::Report;
 use crate::support::{Scenario, ScratchDir};
 use crate::workers::check_saved_local;
 
@@ -73,10 +74,9 @@ impl Driven {
         let text = std::fs::read_to_string(&output).expect("the fixture's output");
         let mut driver = None;
         let mut values = BTreeMap::new();
-        for fields in text
+        for fields in Report::parse(&text)
             .lines()
-            .filter_map(|line| line.strip_prefix("TRUTH\t"))
-            .map(|line| line.split('\t').collect::<Vec<_>>())
+            .map(|fields| fields.iter().map(String::as_str).collect::<Vec<_>>())
         {
             match fields[..] {
                 ["driver", tid] => driver = Some(ThreadId::new(tid.parse().expect("a tid"))),

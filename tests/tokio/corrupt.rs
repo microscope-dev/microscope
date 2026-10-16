@@ -9,6 +9,7 @@ use std::process::Stdio;
 
 use microscope::{ExecutionContext, LaunchOptions, StackFrameId, StopContext, StopReason};
 
+use crate::support::truth::Report;
 use crate::support::{Scenario, ScratchDir};
 use crate::workers::tasks;
 
@@ -24,8 +25,8 @@ struct Truth {
 impl Truth {
     fn parse(text: &str) -> Self {
         let mut truth = Self::default();
-        for line in text.lines().filter_map(|line| line.strip_prefix("TRUTH\t")) {
-            match line.split('\t').collect::<Vec<_>>()[..] {
+        for fields in Report::parse(text).lines() {
+            match fields.iter().map(String::as_str).collect::<Vec<_>>()[..] {
                 ["shard", id, shard] => {
                     truth
                         .shards
