@@ -141,7 +141,7 @@ The simulator models catch stops with rules K-SYS-1 to K-SYS-6 in
 
 ## Captures
 
-`-o FILE.usprof` writes a capture, the profiler's file format, at revision 8.
+`-o FILE.usprof` writes a capture, the profiler's file format, at revision 9.
 `capture.rs` writes the calls; `src/profiler/syscalls.rs` reads them back into
 events, so the browser and `microscope report` reuse the same presentation.
 

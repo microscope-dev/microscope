@@ -615,6 +615,20 @@ impl Scenario {
         task
     }
 
+    /// Launches with explicit options and returns once the inferior runs,
+    /// with what ends the run.
+    pub async fn start_running_with(
+        &mut self,
+        options: LaunchOptions,
+    ) -> JoinHandle<Result<StopReason>> {
+        let task = self.spawn_request(&format!("run {options:?}"), |handle| async move {
+            handle.run_with(options).await
+        });
+        self.wait_for(|event| matches!(event, DebuggerEvent::InferiorContinued { .. }))
+            .await;
+        task
+    }
+
     /// Launches and returns as soon as the inferior exists, which may be
     /// before its initial exec stop has been processed.
     pub async fn start_launching(&mut self) -> JoinHandle<Result<StopReason>> {

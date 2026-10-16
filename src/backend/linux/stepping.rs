@@ -2194,11 +2194,15 @@ pub(super) const fn innermost_frame(native: &libc::user_regs_struct) -> FrameCon
 const STEPS_OVER: &str = "a step into a new task runs as a step over";
 
 /// Whether code in this role is a language runtime's own: its machinery,
-/// its outermost frames, and what it enters by a trap.
+/// an interpreter's, its outermost frames, and what it enters by a trap.
 pub(super) const fn is_runtime_role(role: CodeRole) -> bool {
     matches!(
         role,
-        CodeRole::RuntimeInternal | CodeRole::Outermost | CodeRole::TrapEntry | CodeRole::Dispatch
+        CodeRole::RuntimeInternal
+            | CodeRole::Outermost
+            | CodeRole::TrapEntry
+            | CodeRole::Dispatch
+            | CodeRole::Interpreter
     )
 }
 

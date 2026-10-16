@@ -10,6 +10,13 @@ pub fn interpreter(name: &str) -> PathBuf {
     PathBuf::from(root).join(name).join("python")
 }
 
+/// Where the separate debug files of the interpreter `name` are, for an
+/// interpreter whose build has them.
+pub fn debug_directory(name: &str) -> Option<PathBuf> {
+    let directory = interpreter(name).with_file_name("debug").join("lib/debug");
+    directory.is_dir().then_some(directory)
+}
+
 /// The source of the Python fixture `name`, as `perf.py`.
 pub fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

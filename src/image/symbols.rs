@@ -122,7 +122,7 @@ const BINDINGS: [SymbolBinding; 3] = [
     SymbolBinding::Weak,
     SymbolBinding::Local,
 ];
-const ROLES: [CodeRole; 9] = [
+const ROLES: [CodeRole; 10] = [
     CodeRole::Ordinary,
     CodeRole::Wrapper,
     CodeRole::RuntimeInternal,
@@ -132,6 +132,7 @@ const ROLES: [CodeRole; 9] = [
     CodeRole::TrapEntry,
     CodeRole::SignalTrampoline,
     CodeRole::Dispatch,
+    CodeRole::Interpreter,
 ];
 
 /// A code role's number in a table.

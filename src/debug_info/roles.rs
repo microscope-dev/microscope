@@ -210,6 +210,92 @@ pub fn symbol_role(name: &str) -> CodeRole {
     }
 }
 
+/// CPython's evaluation loop, the functions that enter it, and the call
+/// machinery between it and the functions it calls or that call it, as
+/// its C names them. A backtrace shows the Python frames a loop runs in
+/// its place; the rest only passes calls along. The names are CPython's
+/// own, which other programs may reuse, so only an image that carries a
+/// Python runtime gives them this role (see `super::cpython`).
+const CPYTHON_MACHINERY: [&str; 64] = [
+    // The evaluation loop, and what enters it.
+    "_PyEval_EvalFrameDefault",
+    "_PyEval_EvalFrame",
+    "_PyEval_Vector",
+    "PyEval_EvalCode",
+    "PyEval_EvalCodeEx",
+    "_PyEval_EvalFrameDefault_impl",
+    // Calls, between frames and into C functions.
+    "_PyFunction_Vectorcall",
+    "_PyObject_VectorcallTstate",
+    "PyObject_Vectorcall",
+    "PyObject_VectorcallDict",
+    "_PyObject_VectorcallDictTstate",
+    "_PyObject_FastCallDictTstate",
+    "PyObject_VectorcallMethod",
+    "_PyObject_Call",
+    "PyObject_Call",
+    "_PyObject_Call_Prepend",
+    "_PyObject_MakeTpCall",
+    "_PyVectorcall_Call",
+    "PyVectorcall_Call",
+    "PyObject_CallOneArg",
+    "PyObject_CallNoArgs",
+    "_PyObject_CallNoArgs",
+    "PyObject_CallObject",
+    "PyObject_CallFunctionObjArgs",
+    "PyObject_CallMethodObjArgs",
+    "object_vacall",
+    "method_vectorcall",
+    "method_vectorcall_FASTCALL",
+    "method_vectorcall_FASTCALL_KEYWORDS",
+    "method_vectorcall_FASTCALL_KEYWORDS_METHOD",
+    "method_vectorcall_NOARGS",
+    "method_vectorcall_O",
+    "method_vectorcall_VARARGS",
+    "method_vectorcall_VARARGS_KEYWORDS",
+    "cfunction_call",
+    "cfunction_vectorcall_FASTCALL",
+    "cfunction_vectorcall_FASTCALL_KEYWORDS",
+    "cfunction_vectorcall_FASTCALL_KEYWORDS_METHOD",
+    "cfunction_vectorcall_NOARGS",
+    "cfunction_vectorcall_O",
+    "slot_tp_call",
+    "vectorcall_method",
+    "vectorcall_unbound",
+    "call_unbound",
+    "call_unbound_noarg",
+    // What runs a Python function a thread or a context begins in.
+    "context_run",
+    "thread_run",
+    "pythread_wrapper",
+    // The interpreter's own start, which runs the main module.
+    "Py_BytesMain",
+    "Py_RunMain",
+    "pymain_main",
+    "pymain_run_python",
+    "pymain_run_file",
+    "pymain_run_file_obj",
+    "pymain_run_module",
+    "pymain_run_command",
+    "_PyRun_SimpleFileObject",
+    "_PyRun_AnyFileObject",
+    "PyRun_AnyFileExFlags",
+    "PyRun_SimpleFileExFlags",
+    "pyrun_file",
+    "run_mod",
+    "run_eval_code_obj",
+    "PyRun_StringFlags",
+];
+
+/// The role CPython's code at a symbol or function of this name plays, in
+/// an image that carries a Python runtime, or `None` for code of its own
+/// role. A part split off a function plays the function's role.
+pub fn cpython_role(name: &str) -> Option<CodeRole> {
+    CPYTHON_MACHINERY
+        .contains(&split_from(name))
+        .then_some(CodeRole::Interpreter)
+}
+
 /// What compilers append to a function's name to name a part of it they
 /// moved out of line, as GCC's `f.cold` and `f.part.0` and LLVM's
 /// `f.cold.1`, or a copy of it they specialized, as GCC's `f.isra.0`,
@@ -384,6 +470,35 @@ mod tests {
         }
 
         assert_eq!(symbol_role("__restore_rt.cold"), CodeRole::SignalTrampoline);
+    }
+
+    /// CPython's evaluation loop, with the parts GCC splits off it, and its
+    /// call machinery are the interpreter's; the functions it calls, such
+    /// as `time.sleep`'s, are not.
+    #[test]
+    fn cpythons_loop_and_call_machinery_are_the_interpreters() {
+        for name in [
+            "_PyEval_EvalFrameDefault",
+            "_PyEval_EvalFrameDefault.cold",
+            "cfunction_vectorcall_O",
+            "method_vectorcall",
+            "thread_run",
+            "Py_RunMain",
+        ] {
+            assert_eq!(cpython_role(name), Some(CodeRole::Interpreter), "{name}");
+        }
+
+        for name in [
+            "time_sleep",
+            "pysleep",
+            "builtin_exec",
+            "main",
+            "_PyEval_Vector2",
+        ] {
+            assert_eq!(cpython_role(name), None, "{name}");
+        }
+
+        assert_eq!(symbol_role("_PyEval_EvalFrameDefault"), CodeRole::Ordinary);
     }
 
     /// Only the compilers' own suffixes name a part: a number alone, an

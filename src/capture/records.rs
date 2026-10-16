@@ -451,6 +451,7 @@ pub const fn role_number(role: CodeRole) -> u8 {
         CodeRole::TrapEntry => 6,
         CodeRole::SignalTrampoline => 7,
         CodeRole::Dispatch => 8,
+        CodeRole::Interpreter => 9,
     }
 }
 
@@ -466,6 +467,7 @@ pub const fn role_of(number: u8) -> Option<CodeRole> {
         6 => CodeRole::TrapEntry,
         7 => CodeRole::SignalTrampoline,
         8 => CodeRole::Dispatch,
+        9 => CodeRole::Interpreter,
         _ => return None,
     })
 }

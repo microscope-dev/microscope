@@ -1369,6 +1369,9 @@ pub enum SourceLanguage {
     /// Ada, of any standard.
     Ada,
 
+    /// Python, which an interpreter runs rather than a compiler's code.
+    Python,
+
     /// Another language, by its DWARF language code.
     Other(u16),
 
@@ -4019,6 +4022,12 @@ pub enum CodeRole {
     /// task may have left the thread, so a stack it switched from ends at
     /// the switch.
     Dispatch,
+
+    /// An interpreter's evaluation loop, or the machinery through which it
+    /// calls and is called, which runs the interpreted frames a backtrace
+    /// shows in its place: a backtrace hides it unless asked, and a step
+    /// passes through it.
+    Interpreter,
 }
 
 /// Describes whether a function instance is emitted out of line or inlined.

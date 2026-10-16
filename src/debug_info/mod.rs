@@ -2,6 +2,8 @@
 compile_error!("microscope currently supports debug information only on Linux");
 
 pub mod coroutines;
+#[cfg(target_os = "linux")]
+mod cpython;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod dispatch;
 #[cfg(target_os = "linux")]

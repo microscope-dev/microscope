@@ -1480,6 +1480,10 @@ fn load_image(
         assign_go_symbol_roles(table, &mut symbols.symbols);
     }
 
+    if super::cpython::carries_runtime(&object) {
+        super::cpython::assign_roles(&mut function_metadata.functions, &mut symbols.symbols);
+    }
+
     Ok(Read {
         target,
         address_range: image_address_range(&object)?,

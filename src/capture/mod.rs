@@ -33,7 +33,7 @@ pub struct CaptureFormat;
 
 /// What a capture's tables mean: bump it with any change to what is
 /// stored.
-pub const CAPTURE_REVISION: u32 = 8;
+pub const CAPTURE_REVISION: u32 = 9;
 
 impl Format for CaptureFormat {
     type Kind = CaptureTable;
