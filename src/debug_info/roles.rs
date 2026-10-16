@@ -195,9 +195,11 @@ fn go_loop_parent(name: &str) -> Option<&str> {
         .then_some(parent)
 }
 
-/// The role of code that only a linker symbol describes.
+/// The role of code that only a linker symbol describes. A part a
+/// compiler split off a function, or a copy it specialized, plays the
+/// function's role.
 pub fn symbol_role(name: &str) -> CodeRole {
-    match name {
+    match split_from(name) {
         // The process's entry point, which nothing calls.
         "_start" => CodeRole::Outermost,
         // glibc's `sa_restorer`, which a signal handler returns to.
@@ -205,6 +207,38 @@ pub fn symbol_role(name: &str) -> CodeRole {
         // Rust's intrinsic that calls code under `catch_unwind`.
         "__rust_try" => CodeRole::RuntimeInternal,
         _ => CodeRole::Ordinary,
+    }
+}
+
+/// What compilers append to a function's name to name a part of it they
+/// moved out of line, as GCC's `f.cold` and `f.part.0` and LLVM's
+/// `f.cold.1`, or a copy of it they specialized, as GCC's `f.isra.0`,
+/// `f.constprop.0`, and `f.lto_priv.0`. Each may be numbered.
+const SPLIT_SUFFIXES: [&str; 5] = ["cold", "part", "isra", "constprop", "lto_priv"];
+
+/// The function a symbol names a split-off part or a specialized copy of,
+/// through any number of such suffixes, or the name itself.
+fn split_from(name: &str) -> &str {
+    let mut name = name;
+    loop {
+        let numbered = name
+            .rsplit_once('.')
+            .filter(|(_, number)| {
+                !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+            })
+            .map(|(base, _)| base);
+        let Some(base) = [Some(name), numbered]
+            .into_iter()
+            .flatten()
+            .find_map(|candidate| {
+                let (base, suffix) = candidate.rsplit_once('.')?;
+                (!base.is_empty() && SPLIT_SUFFIXES.contains(&suffix)).then_some(base)
+            })
+        else {
+            return name;
+        };
+
+        name = base;
     }
 }
 
@@ -324,4 +358,49 @@ fn is_exported_runtime(name: &str) -> bool {
         .unwrap_or(receiver);
     let exported = |text: &str| text.starts_with(|first: char| first.is_ascii_uppercase());
     exported(function) && (receiver.is_empty() || exported(receiver))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// GCC and LLVM move a function's cold paths into a symbol of their
+    /// own, and GCC names specialized copies; each plays the role of the
+    /// function it came from, which an image without DWARF knows only by
+    /// the symbol's name.
+    #[test]
+    fn split_off_parts_and_copies_play_their_functions_role() {
+        for name in [
+            "_start.cold",
+            "_start.cold.1",
+            "_start.part.0",
+            "_start.isra.0",
+            "_start.constprop.3",
+            "_start.lto_priv.0",
+            "_start.isra.0.cold",
+            "_start.constprop.0.isra.0.part.2",
+        ] {
+            assert_eq!(symbol_role(name), CodeRole::Outermost, "{name}");
+        }
+
+        assert_eq!(symbol_role("__restore_rt.cold"), CodeRole::SignalTrampoline);
+    }
+
+    /// Only the compilers' own suffixes name a part: a number alone, an
+    /// unknown suffix, or a suffix with nothing before it names a function
+    /// of its own.
+    #[test]
+    fn other_dotted_names_are_functions_of_their_own() {
+        for name in [
+            "_start.1",
+            "_start.hot",
+            "_start.cold.x",
+            ".cold",
+            "cold",
+            "_start.",
+            "_start..cold",
+        ] {
+            assert_eq!(symbol_role(name), CodeRole::Ordinary, "{name}");
+        }
+    }
 }
