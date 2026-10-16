@@ -309,6 +309,89 @@ const ada = simple({
   attributes: true,
 });
 
+const PYTHON_KEYWORDS = new Set(
+  (
+    "False None True and as assert async await break case class continue def del elif else " +
+    "except finally for from global if import in is lambda match nonlocal not or pass raise " +
+    "return try type while with yield"
+  ).split(" "),
+);
+
+/** Python's string prefixes, in any case, before the quote that opens a string. */
+const PYTHON_STRING_START = /^(?:rb|br|fr|rf|tr|rt|[rubft])?(?=['"])/i;
+
+/** Hexadecimal, octal, binary, or decimal with an exponent and an imaginary suffix. */
+const PYTHON_NUMBER =
+  /^0[xX][\da-fA-F_]+|^0[oO][0-7_]+|^0[bB][01_]+|^\d[\d_]*(\.\d[\d_]*)?(?:[eE][-+]?\d[\d_]*)?[jJ]?/;
+
+/** The state of a string: the delimiter that closes it, if it runs on. */
+interface PythonState {
+  closing: string | null;
+}
+
+/** Reads on through a string closed by `closing`, to that delimiter or the
+ * line's end. A backslash escapes the next character, even a line's end,
+ * which continues the string onto the next line. */
+function readPythonString(stream: StringStream, state: PythonState, closing: string) {
+  const triple = closing.length === 3;
+  let continued = false;
+  while (!stream.eol()) {
+    if (stream.match(closing)) {
+      state.closing = null;
+      return;
+    }
+    if (stream.eat("\\") && stream.eol()) {
+      continued = true;
+    }
+    stream.next();
+  }
+  state.closing = triple || continued ? closing : null;
+}
+
+/** A small Python tokenizer: keywords, strings with their prefixes and
+ * triple quotes, numbers, and `#` comments. */
+const python = StreamLanguage.define<PythonState>({
+  name: "python",
+  startState: () => ({ closing: null }),
+  copyState: (state) => ({ ...state }),
+  token(stream, state) {
+    if (state.closing !== null) {
+      readPythonString(stream, state, state.closing);
+      return "string";
+    }
+    if (stream.eatSpace()) {
+      return null;
+    }
+    if (stream.match("#")) {
+      stream.skipToEnd();
+      return "comment";
+    }
+    if (stream.match(PYTHON_STRING_START)) {
+      const quote = stream.next() ?? "";
+      const closing = stream.string.startsWith(quote.repeat(3), stream.pos - 1)
+        ? quote.repeat(3)
+        : quote;
+      stream.pos += closing.length - 1;
+      readPythonString(stream, state, closing);
+      return "string";
+    }
+    if (stream.match(PYTHON_NUMBER)) {
+      return "number";
+    }
+    if (stream.match(/^[A-Za-z_]\w*/)) {
+      if (PYTHON_KEYWORDS.has(stream.current())) {
+        return "keyword";
+      }
+      return stream.peek() === "(" ? "variableName.function" : "variableName";
+    }
+    stream.next();
+    return null;
+  },
+  tokenTable: {
+    "variableName.function": tags.function(tags.variableName),
+  },
+});
+
 export function language(path: string): Extension {
   const extension = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
   switch (extension) {
@@ -345,6 +428,9 @@ export function language(path: string): Extension {
     case "adb":
     case "ads":
       return ada;
+    case "py":
+    case "pyi":
+      return python;
     default:
       return [];
   }

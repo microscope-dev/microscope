@@ -53,6 +53,36 @@ describe("stream languages", () => {
     expect(of(found, "string")).toEqual(['"""one', '"two""""']);
   });
 
+  it("span Python's triple quotes across lines and take its prefixes", () => {
+    const found = tokens(
+      "a.py",
+      [
+        "def f(): return 'it' # note",
+        String.raw`t = rb'\d' + f"{x}" + "a#b"`,
+        "n = 0x1f + 1.5e-3j",
+        `s = """one`,
+        `it's "two"`,
+        `three""" + '''a`,
+        "b''' if x else 0",
+        "@cache",
+      ].join("\n"),
+    );
+    expect(of(found, "keyword")).toEqual(["def", "return", "if", "else"]);
+    expect(of(found, "comment")).toEqual(["# note"]);
+    expect(of(found, "string")).toEqual([
+      "'it'",
+      String.raw`rb'\d'`,
+      'f"{x}"',
+      '"a#b"',
+      '"""one',
+      `it's "two"`,
+      'three"""',
+      "'''a",
+      "b'''",
+    ]);
+    expect(of(found, "number")).toEqual(["0x1f", "1.5e-3j", "0"]);
+  });
+
   it("tell Ada's characters from its attributes", () => {
     const found = tokens("a.adb", 'Last := Items\'Last; -- end\nC := \'q\'; S := "a""b"; BEGIN');
     expect(of(found, "comment")).toEqual(["-- end"]);
