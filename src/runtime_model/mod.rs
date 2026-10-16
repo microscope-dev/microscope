@@ -20,9 +20,9 @@ use std::sync::Arc;
 
 use crate::unwind::RegisterFile;
 use crate::{
-    CoroutineInfo, EntryProvenance, ExceptionFilter, FunctionInfo, ImageAddress, IntegerValue,
-    ModuleImage, RecordMemberLayout, StackSegment, TaskState, ThreadId, ThreadLocal, TypeInfo,
-    TypeKind, TypeReference, VirtualAddress,
+    CodeRole, CoroutineInfo, EntryProvenance, ExceptionFilter, ImageAddress, IntegerValue,
+    ModuleImage, RecordMemberLayout, StackFrame, StackSegment, TaskState, ThreadId, ThreadLocal,
+    TypeInfo, TypeKind, TypeReference, VirtualAddress,
 };
 
 /// A result with the reasons it may be incomplete, such as a task whose
@@ -596,11 +596,18 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         false
     }
 
-    /// The variable through which `function`, the runtime's, polls a
-    /// future that no task holds, as a runtime's `block_on` does; `None`
-    /// for any other function.
-    fn driven_future(&self, function: &FunctionInfo) -> Option<&'static str> {
-        let _ = function;
+    /// The role of the runtime's frames that drive frames the native stack
+    /// does not show, as a scheduler's `block_on` drives a future no task
+    /// holds. A backtrace asks [`Self::driven`] only of frames in this role.
+    fn driver_role(&self) -> Option<CodeRole> {
+        None
+    }
+
+    /// What `frame`, one of the runtime's frames in its
+    /// [driver role](Self::driver_role), drives; `None` when it drives
+    /// nothing.
+    fn driven(&self, frame: &StackFrame) -> Option<Driven> {
+        let _ = frame;
         None
     }
 
@@ -664,6 +671,14 @@ pub struct TaskEntries {
     /// Where each copy of the function that frees the task begins, once it
     /// has ended.
     pub frees: Vec<VirtualAddress>,
+}
+
+/// What a runtime's frame drives that the native stack does not show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Driven {
+    /// A future the frame polls, held in its variable `variable`. Its
+    /// chain of awaits shows before the frame.
+    Future { variable: &'static str },
 }
 
 /// How a task ended.

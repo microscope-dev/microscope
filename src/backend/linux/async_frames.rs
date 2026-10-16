@@ -14,6 +14,7 @@ use crate::eval::target::Machine;
 use crate::inspection::InspectionBudget;
 use crate::model::{FrameMetadata, ValueStorage};
 use crate::protocol::{PresentedFrame, StopId};
+use crate::runtime_model::Driven;
 use crate::runtime_model::futures::{self, AsyncFrameKind, ChainEnd};
 
 use crate::{
@@ -26,8 +27,8 @@ use crate::{
 
 use super::evaluation::{StopMachine, StopPlace};
 use super::frames::{
-    Expanded, FrameOrigin, FrameRegisters, FrameScope, PhysicalStack, ResolvedFrame, RootOrigin,
-    StackRoot, UnwindModule,
+    Expanded, FrameOrigin, FrameRegisters, FrameScope, FrameSource, PhysicalStack, ResolvedFrame,
+    RootOrigin, StackRoot, UnwindModule,
 };
 
 use super::inspection::variable_context;
@@ -305,27 +306,15 @@ impl<P: InspectionOps> Controller<P> {
         expanded: Expanded,
     ) -> Result<Expanded> {
         let runtimes = self.runtimes(inferior);
-        let variable_of = |frame: &StackFrame| {
-            let function = frame.function.as_ref()?;
+        let drivers = drivers(&expanded.trace.frames, |frame| {
             runtimes
                 .iter()
-                .filter(|runtime| Some(runtime.module.id) == frame.module)
-                .find_map(|runtime| runtime.model.driven_future(function))
-        };
-
-        let mut polling = false;
-        let mut drivers = Vec::new();
-        for (index, frame) in expanded.trace.frames.iter().enumerate() {
-            if !polling && let Some(variable) = variable_of(frame) {
-                drivers.push((index, variable));
-            }
-
-            polling |= frame
-                .function
-                .as_ref()
-                .is_some_and(|function| function.coroutine.is_some());
-        }
-
+                .filter(|runtime| {
+                    Some(runtime.module.id) == frame.module
+                        && runtime.model.driver_role() == Some(frame.role)
+                })
+                .find_map(|runtime| runtime.model.driven(frame))
+        });
         if drivers.is_empty() {
             return Ok(expanded);
         }
@@ -352,7 +341,9 @@ impl<P: InspectionOps> Controller<P> {
         let mut lost = Vec::new();
         for (index, frame) in expanded.trace.frames.iter().enumerate() {
             let here = |frames: &Vec<StackFrame>| frame_u32(frames.len()).map(StackFrameId::new);
-            if let Some((_, variable)) = drivers.next_if(|(driver, _)| *driver == index) {
+            if let Some((_, Driven::Future { variable })) =
+                drivers.next_if(|(driver, _)| *driver == index)
+            {
                 let driver = StackFrameId::new(frame_u32(index)?);
                 match self.driven_chain(inferior, root, stack, modules, &expanded, driver, variable)
                 {
@@ -366,8 +357,7 @@ impl<P: InspectionOps> Controller<P> {
                                 frames.push(built);
                                 origins.push(FrameOrigin {
                                     activation: expanded.origins[index].activation,
-                                    jump: None,
-                                    future: Some(futures.len()),
+                                    source: FrameSource::Future(futures.len()),
                                 });
                                 futures.push(future);
                             }
@@ -624,6 +614,32 @@ fn end_reason(end: &ChainEnd) -> Option<Arc<str>> {
     }
 }
 
+/// Each frame of `frames`, innermost first, that drives frames the stack
+/// does not show, with what `driven` says it drives. A future being polled
+/// runs on the stack itself, so a frame below one that runs a coroutine
+/// drives no future the stack does not already show.
+fn drivers(
+    frames: &[StackFrame],
+    driven: impl Fn(&StackFrame) -> Option<Driven>,
+) -> Vec<(usize, Driven)> {
+    let mut polling = false;
+    let mut drivers = Vec::new();
+    for (index, frame) in frames.iter().enumerate() {
+        match driven(frame) {
+            Some(Driven::Future { .. }) if polling => {}
+            Some(driving) => drivers.push((index, driving)),
+            None => {}
+        }
+
+        polling |= frame
+            .function
+            .as_ref()
+            .is_some_and(|function| function.coroutine.is_some());
+    }
+
+    drivers
+}
+
 /// The variables a coroutine of type `ty` at `object` holds in `state`.
 fn saved<'a>(
     coroutine: &'a CoroutineInfo,
@@ -739,4 +755,48 @@ pub fn resume_address(
 
     let points = image.resume_points(instance.id())?.ok()?;
     Some(points.point(state)?.address)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A frame of code in `role` that no debug information describes, or
+    /// of an async function's coroutine when `coroutine`.
+    fn frame(level: u32, role: CodeRole, coroutine: bool) -> StackFrame {
+        let mut frame = StackFrame::new(level, FrameKind::Physical, None, VirtualAddress::new(1));
+        frame.role = role;
+        frame.function = coroutine.then(|| crate::FunctionInfo {
+            id: crate::FunctionId::new(level),
+            name: "poll".into(),
+            linkage_name: None,
+            declaration: None,
+            language: crate::SourceLanguage::Rust,
+            role,
+            enclosing: None,
+            coroutine: Some(crate::TypeId::new(0)),
+            generics: Arc::from([]),
+            main_subprogram: false,
+        });
+        frame
+    }
+
+    /// Drivers are found by what the model says of a frame, which a
+    /// frame's code role alone can decide, and a future polled within a
+    /// coroutine's poll is not driven again.
+    #[test]
+    fn drivers_are_the_frames_a_model_says_drive_and_no_future_runs_within() {
+        let future = Driven::Future { variable: "future" };
+        let driven =
+            |frame: &StackFrame| (frame.role == CodeRole::RuntimeInternal).then_some(future);
+        let frames = [
+            frame(0, CodeRole::Ordinary, false),
+            frame(1, CodeRole::RuntimeInternal, false),
+            frame(2, CodeRole::Ordinary, true),
+            frame(3, CodeRole::RuntimeInternal, false),
+        ];
+        assert_eq!(drivers(&frames, driven), [(1, future)]);
+        assert_eq!(drivers(&frames[3..], driven), [(0, future)]);
+        assert!(drivers(&frames, |_| None).is_empty());
+    }
 }

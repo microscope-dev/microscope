@@ -23,9 +23,9 @@ use layout::{Context, Flavor, Layout, Locals, Owned, Tasks};
 
 use super::records::{self, Missing};
 use super::{
-    Crossing, DynamicValue, Partial, RuntimeException, RuntimeHook, RuntimeImage, RuntimeModel,
-    RuntimeSignals, RuntimeStop, StartedTask, StoredValue, TaskContext, TaskEnd, TaskEntries,
-    TaskPage, TaskRef, TaskStarter, ThreadActivity,
+    Crossing, Driven, DynamicValue, Partial, RuntimeException, RuntimeHook, RuntimeImage,
+    RuntimeModel, RuntimeSignals, RuntimeStop, StartedTask, StoredValue, TaskContext, TaskEnd,
+    TaskEntries, TaskPage, TaskRef, TaskStarter, ThreadActivity,
 };
 
 use crate::unwind::{RDI, RSI, RegisterFile};
@@ -906,8 +906,12 @@ impl RuntimeModel for TokioRuntime {
         })
     }
 
-    fn driven_future(&self, function: &crate::FunctionInfo) -> Option<&'static str> {
-        future::driven_future(function)
+    fn driver_role(&self) -> Option<crate::CodeRole> {
+        Some(crate::CodeRole::RuntimeInternal)
+    }
+
+    fn driven(&self, frame: &crate::StackFrame) -> Option<Driven> {
+        future::driven_future(frame).map(|variable| Driven::Future { variable })
     }
 }
 

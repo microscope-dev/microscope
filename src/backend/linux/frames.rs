@@ -515,14 +515,14 @@ impl<P: InspectionOps> Controller<P> {
             });
         };
 
-        let FrameOrigin {
-            activation,
-            jump,
-            future,
-        } = expanded.origins[level];
-        if let Some(future) = future {
-            return Ok(self.suspended_frame(frame, selected, &expanded.futures[future]));
-        }
+        let FrameOrigin { activation, source } = expanded.origins[level];
+        let jump = match source {
+            FrameSource::Activation => None,
+            FrameSource::TailCall(module, address) => Some((module, address)),
+            FrameSource::Future(future) => {
+                return Ok(self.suspended_frame(frame, selected, &expanded.futures[future]));
+            }
+        };
 
         let physical = &stack.frames[activation];
         let code = jump.or_else(|| {
@@ -1039,16 +1039,34 @@ pub(super) fn source_line_changed(
 pub(super) struct FrameOrigin {
     /// The physical activation whose state the frame has, or, for a frame
     /// whose function left by a tail call, the one whose state replaced it;
-    /// for a future's frame, the one that drives it.
+    /// for a frame a runtime's frame drives, the one that drives it.
     pub(super) activation: usize,
 
-    /// For a frame whose function left by a tail call, the module and an
-    /// address within its jump.
-    pub(super) jump: Option<(ModuleId, ImageAddress)>,
+    pub(super) source: FrameSource,
+}
 
-    /// For a frame of a future a frame drives, the future, in
-    /// [`Expanded::futures`].
-    pub(super) future: Option<usize>,
+impl FrameOrigin {
+    const fn of(activation: usize) -> Self {
+        Self {
+            activation,
+            source: FrameSource::Activation,
+        }
+    }
+}
+
+/// What a logical frame's state is read from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FrameSource {
+    /// Its activation: the activation's own function, or one inlined
+    /// into it.
+    Activation,
+
+    /// A function that left by a tail call, by its module and an address
+    /// within its jump.
+    TailCall(ModuleId, ImageAddress),
+
+    /// A future its activation drives, in [`Expanded::futures`].
+    Future(usize),
 }
 
 /// A stack's logical frames, and where each comes from.
@@ -1091,11 +1109,12 @@ impl Expanded {
                 origin.activation
             );
             debug_assert!(
-                origin
-                    .future
-                    .is_none_or(|future| future < self.futures.len()),
-                "the frame at {level} drives future {:?} of {}",
-                origin.future,
+                match origin.source {
+                    FrameSource::Future(future) => future < self.futures.len(),
+                    FrameSource::Activation | FrameSource::TailCall(..) => true,
+                },
+                "the frame at {level} is {:?} of {} futures",
+                origin.source,
                 self.futures.len()
             );
         }
@@ -1127,14 +1146,7 @@ fn expand_inline_backtrace(
     for (activation, physical) in stack.frames.iter().enumerate() {
         let first = frames.len();
         let code = expand_activation(stack, activation, modules, presentation, &mut frames)?;
-        origins.resize(
-            frames.len(),
-            FrameOrigin {
-                activation,
-                jump: None,
-                future: None,
-            },
-        );
+        origins.resize(frames.len(), FrameOrigin::of(activation));
 
         // A signal interrupted its frame rather than calling it.
         if let Some((module, address)) = code
@@ -1159,8 +1171,7 @@ fn expand_inline_backtrace(
                     frames.len(),
                     FrameOrigin {
                         activation,
-                        jump: Some((module.loaded.id, jump.lookup)),
-                        future: None,
+                        source: FrameSource::TailCall(module.loaded.id, jump.lookup),
                     },
                 );
             }
