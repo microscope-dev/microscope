@@ -231,6 +231,9 @@ pub enum Error {
     #[error("the frame is a suspended task's: it has no registers and runs no code")]
     FrameSuspended,
 
+    #[error("the frame is interpreted: it has no registers and no machine code")]
+    FrameInterpreted,
+
     #[error("the frames of task {task} are unavailable: {reason}")]
     TaskUnavailable {
         task: crate::TaskId,

@@ -22,6 +22,7 @@ use microscope::{
 use super::commands::{COMMANDS, CommandSpec, aliases};
 use super::terminal::{Renderer, Role};
 use super::value::{self, bound_output};
+use crate::present::frames;
 
 const HEX_DUMP_BYTES_PER_LINE: usize = 16;
 
@@ -1187,7 +1188,7 @@ pub fn task_function(task: &TaskSnapshot, trace: &Backtrace) -> Option<String> {
                 .and_then(|entry| entry.function.as_deref())
                 .map(str::to_owned)
         },
-        |frame| Some(code_name(frame.function.as_ref(), frame.symbol.as_ref())),
+        |frame| Some(frames::code(frame)),
     )
 }
 
@@ -1209,10 +1210,7 @@ pub fn task_place(
                 )
             },
             |frame| {
-                let name = renderer.paint(
-                    Role::Name,
-                    code_name(frame.function.as_ref(), frame.symbol.as_ref()),
-                );
+                let name = renderer.paint(Role::Name, frames::code(frame));
                 frame_source(frame, images, renderer).map_or_else(
                     || name.to_string(),
                     |source| format!("{name} at {}", renderer.paint(Role::Metadata, source)),
@@ -2495,16 +2493,16 @@ pub fn elide_arguments(name: &str) -> String {
     elided
 }
 
-/// What a frame runs, as a backtrace names it: its function or symbol, or,
-/// for the future a suspended task awaits, `awaiting` and that future's
-/// type.
+/// What a frame runs, as a backtrace names it: its function or symbol, or
+/// the function its runtime recorded, or, for the future a suspended task
+/// awaits, `awaiting` and that future's type.
 pub fn frame_code(frame: &StackFrame, images: &BTreeMap<ModuleId, Arc<ModuleImage>>) -> String {
     if let microscope::FrameKind::Awaited { ty, .. } = frame.kind {
         let image = images.values().find(|image| image.id() == ty.image);
         return awaited(image.map(AsRef::as_ref), ty);
     }
 
-    code_name(frame.function.as_ref(), frame.symbol.as_ref())
+    frames::code(frame)
 }
 
 /// The future of type `ty` a suspended task awaits, as its frame is named:
@@ -2535,17 +2533,16 @@ pub fn awaited_frame(image: Option<&ModuleImage>, frame: &StackFrame) -> Option<
     })
 }
 
-/// A frame's source file and line, from its module's image.
+/// A frame's source file and line, as its runtime recorded them or from
+/// its module's image.
 fn frame_source(
     frame: &StackFrame,
     images: &BTreeMap<ModuleId, Arc<ModuleImage>>,
     renderer: Renderer,
 ) -> Option<String> {
-    let source = frame.source.as_ref()?;
-    images
-        .get(&frame.module?)?
-        .source_file(source.file)
-        .map(|file| renderer.location(&file.path, source.line))
+    let image = frame.module.and_then(|module| images.get(&module));
+    frames::place(frame, image.map(AsRef::as_ref))
+        .map(|place| renderer.location(&place.path, place.line))
 }
 
 pub fn globals(page: &GlobalVariablePage, renderer: Renderer) -> String {

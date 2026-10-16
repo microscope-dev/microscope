@@ -351,7 +351,7 @@ module: string | null, source: SourceLine | null,
  */
 unfollowed: string | null, };
 
-export type FrameKind = "physical" | "inline" | "signal" | "tailCall" | "async" | "awaited";
+export type FrameKind = "physical" | "inline" | "signal" | "tailCall" | "async" | "awaited" | "interpreted";
 
 export type SourceLine = { path: string, line: number, column: number | null, };
 

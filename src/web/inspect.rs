@@ -8,7 +8,7 @@ use microscope::{
     UnwindTermination,
 };
 
-use super::describe::{Images, frame_name, hex};
+use super::describe::{Images, hex};
 use super::protocol::{
     self, Backtrace, ErrorKind, Frame, FunctionMatch, FunctionQuery, Functions, SourceFiles,
     SourceLine, SourceText,
@@ -98,17 +98,14 @@ async fn frame_of(
         None => None,
     };
 
-    let source = frame.source.as_ref().and_then(|location| {
-        let file = image.as_ref()?.source_file(location.file)?;
-        Some(SourceLine {
-            path: file.path.display().to_string(),
-            line: location.line.get(),
-            column: location.column.map(microscope::ColumnNumber::get),
-        })
+    let source = crate::present::frames::place(frame, image.as_deref()).map(|place| SourceLine {
+        path: place.path.display().to_string(),
+        line: place.line,
+        column: place.column,
     });
     Frame {
         index: frame.id.get(),
-        name: frame_name(frame, image.as_deref()),
+        name: crate::present::frames::name(frame, image.as_deref()),
         kind: match frame.kind {
             FrameKind::Physical => protocol::FrameKind::Physical,
             FrameKind::Inline => protocol::FrameKind::Inline,
@@ -116,6 +113,7 @@ async fn frame_of(
             FrameKind::TailCall => protocol::FrameKind::TailCall,
             FrameKind::Async { .. } => protocol::FrameKind::Async,
             FrameKind::Awaited { .. } => protocol::FrameKind::Awaited,
+            FrameKind::Interpreted { .. } => protocol::FrameKind::Interpreted,
         },
         address: frame.instruction.map(|address| hex(address.get())),
         module: image

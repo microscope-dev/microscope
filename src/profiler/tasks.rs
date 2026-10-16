@@ -332,7 +332,9 @@ fn frames(backtrace: &crate::Backtrace, futures: Vec<String>) -> Vec<WaitFrame> 
     for frame in backtrace.frames.iter() {
         let role = role_number(frame.role);
         match frame.kind {
-            FrameKind::Inline | FrameKind::TailCall => {}
+            // An interpreted frame's code is in no image. The interpreter's
+            // own frame that runs it stays in the stack, and stands for it.
+            FrameKind::Inline | FrameKind::TailCall | FrameKind::Interpreted { .. } => {}
             FrameKind::Physical => {
                 if let Some(instruction) = frame.instruction {
                     let address = instruction.get();

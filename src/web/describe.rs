@@ -101,20 +101,14 @@ impl Images {
             None => None,
         };
 
-        let path = frame.source.as_ref().and_then(|location| {
-            let file = image.as_ref()?.source_file(location.file)?;
-            Some(file.path.display().to_string())
-        });
+        let place = crate::present::frames::place(frame, image.as_deref());
         Place {
             address: frame
                 .instruction
                 .map_or_else(String::new, |address| hex(address.get())),
-            function: Some(frame_name(frame, image.as_deref())),
-            line: path
-                .as_ref()
-                .and(frame.source.as_ref())
-                .map(|location| location.line.get()),
-            path,
+            function: Some(crate::present::frames::name(frame, image.as_deref())),
+            line: place.as_ref().map(|place| place.line),
+            path: place.map(|place| place.path.display().to_string()),
         }
     }
 }
@@ -123,26 +117,6 @@ impl Images {
 fn symbol_name(image: &ModuleImage, address: ImageAddress) -> Option<String> {
     let symbol = image.symbolize(address)?;
     Some(format::code_name(None, Some(&symbol)))
-}
-
-/// A frame's name: its function or symbol, or else its address and module.
-pub fn frame_name(frame: &StackFrame, image: Option<&ModuleImage>) -> String {
-    if let Some(awaited) = format::awaited_frame(image, frame) {
-        return awaited;
-    }
-
-    if frame.function.is_some() || frame.symbol.is_some() {
-        return format::code_name(frame.function.as_ref(), frame.symbol.as_ref());
-    }
-
-    let module = image
-        .and_then(|image| image.path().file_name())
-        .map(|name| format!(" in {}", name.to_string_lossy()))
-        .unwrap_or_default();
-    frame.instruction.map_or_else(
-        || format!("a suspended frame{module}"),
-        |address| format!("{address:#x}{module}"),
-    )
 }
 
 pub fn hex(address: u64) -> String {

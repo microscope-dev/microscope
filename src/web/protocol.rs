@@ -1935,6 +1935,9 @@ pub enum FrameKind {
 
     /// The future a suspended task's innermost async function awaits.
     Awaited,
+
+    /// A frame of an interpreted language, whose code is in no module.
+    Interpreted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

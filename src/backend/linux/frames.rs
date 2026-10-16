@@ -537,12 +537,14 @@ impl<P: InspectionOps> Controller<P> {
                     .code_instance
                     .ok_or_else(|| Error::internal("inline frames name their code instance"))?,
             ),
-            // A thread's stack has no suspended frames.
+            // A thread's stack has no suspended frames, and an interpreted
+            // frame's state is no activation's.
             FrameKind::Physical
             | FrameKind::Signal
             | FrameKind::TailCall
             | FrameKind::Async { .. }
-            | FrameKind::Awaited { .. } => PresentedFrame::Physical,
+            | FrameKind::Awaited { .. }
+            | FrameKind::Interpreted { .. } => PresentedFrame::Physical,
         };
 
         // Only code a function describes has a source scope.
@@ -554,7 +556,8 @@ impl<P: InspectionOps> Controller<P> {
                 | FrameKind::Signal
                 | FrameKind::TailCall
                 | FrameKind::Async { .. }
-                | FrameKind::Awaited { .. },
+                | FrameKind::Awaited { .. }
+                | FrameKind::Interpreted { .. },
                 Some(_),
             ) => FrameScope::Function,
         };

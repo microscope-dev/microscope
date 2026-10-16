@@ -4527,6 +4527,11 @@ pub enum FrameKind {
         object: VirtualAddress,
         ty: TypeReference,
     },
+
+    /// A frame of an interpreted language that a thread runs, whose state
+    /// is the interpreter's record of it at `frame`. Its code is in no
+    /// image, so it has a recorded place and locals but no registers.
+    Interpreted { frame: VirtualAddress },
 }
 
 impl FrameKind {
@@ -4536,6 +4541,23 @@ impl FrameKind {
     pub const fn is_suspended(self) -> bool {
         matches!(self, Self::Async { .. } | Self::Awaited { .. })
     }
+
+    /// Whether the frame is machine code's, with registers: neither a
+    /// suspended task's nor an interpreted one.
+    #[must_use]
+    pub const fn has_registers(self) -> bool {
+        !self.is_suspended() && !matches!(self, Self::Interpreted { .. })
+    }
+}
+
+/// The function and place of a frame whose code is in no image, as its
+/// runtime recorded them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedFrame {
+    pub function: Arc<str>,
+
+    /// Where the frame is, when its runtime knows.
+    pub place: Option<RecordedPlace>,
 }
 
 /// A platform-independent stack frame.
@@ -4586,6 +4608,11 @@ pub struct StackFrame {
     /// the view that presents it summarizes it; `None` for any other frame,
     /// or a future no view presents.
     pub awaiting: Option<Arc<str>>,
+
+    /// The function and place of a frame whose code is in no image, as an
+    /// [`FrameKind::Interpreted`] frame's, which has no function, source,
+    /// or symbol of its own.
+    pub recorded: Option<RecordedFrame>,
 }
 
 pub struct FrameMetadata {
@@ -4638,6 +4665,7 @@ impl StackFrame {
             symbol: metadata.symbol,
             role: metadata.role,
             awaiting: None,
+            recorded: None,
         }
     }
 }

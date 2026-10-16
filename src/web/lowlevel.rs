@@ -155,8 +155,9 @@ pub async fn disassemble(
 /// An address inside the instruction a frame is executing. The innermost
 /// activation and one a signal interrupted are at their instruction; any
 /// other returns past its call, so the call holds the byte before. Inline
-/// frames share their activation's address. A suspended task's frame
-/// resumes at its instruction, if it has one.
+/// frames share their activation's address, and frames with no registers,
+/// which a runtime's frame drives, show before it but call nothing. A
+/// suspended task's frame resumes at its instruction, if it has one.
 fn executing(frames: &[microscope::StackFrame], index: usize) -> Option<VirtualAddress> {
     let activation = frames[index..]
         .iter()
@@ -167,7 +168,7 @@ fn executing(frames: &[microscope::StackFrame], index: usize) -> Option<VirtualA
         || frame.kind.is_suspended()
         || frames[..activation]
             .iter()
-            .all(|frame| frame.kind == FrameKind::Inline);
+            .all(|frame| frame.kind == FrameKind::Inline || !frame.kind.has_registers());
     let instruction = frame.instruction?;
     Some(if exact {
         instruction

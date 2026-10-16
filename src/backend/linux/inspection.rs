@@ -68,12 +68,16 @@ impl<P: InspectionOps> Controller<P> {
             Some(self.resolve_frame(inferior, root, frame)?)
         };
 
-        if resolved
+        if let Some(frame) = resolved
             .as_ref()
             .and_then(|resolved| resolved.frame.as_ref())
-            .is_some_and(|frame| frame.kind.is_suspended())
+            .filter(|frame| !frame.kind.has_registers())
         {
-            return Err(Error::FrameSuspended);
+            return Err(if frame.kind.is_suspended() {
+                Error::FrameSuspended
+            } else {
+                Error::FrameInterpreted
+            });
         }
 
         let discarded = crate::unwind::RegisterFile::new([]);

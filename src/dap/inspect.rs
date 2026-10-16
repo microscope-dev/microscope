@@ -384,41 +384,20 @@ impl Session {
             execution,
             frame: frame.id,
         })?;
-        let mut name = if let microscope::FrameKind::Awaited { .. } = frame.kind {
-            let image = match frame.module {
-                Some(module) => self.image(module).await,
-                None => None,
-            };
-
-            crate::cli::format::awaited_frame(image.as_deref(), frame).unwrap_or_default()
-        } else if frame.function.is_none() && frame.symbol.is_none() {
-            // Code without a name is named by its address and module.
-            let module = match frame.module {
-                Some(module) => self.image(module).await.and_then(|image| {
-                    image
-                        .path()
-                        .file_name()
-                        .map(|name| format!(" in {}", name.to_string_lossy()))
-                }),
-                None => None,
-            };
-
-            let module = module.unwrap_or_default();
-            frame.instruction.map_or_else(
-                || format!("a suspended frame{module}"),
-                |address| format!("{address:#x}{module}"),
-            )
-        } else {
-            crate::cli::format::code_name(frame.function.as_ref(), frame.symbol.as_ref())
+        let image = match frame.module {
+            Some(module) => self.image(module).await,
+            None => None,
         };
 
+        let mut name = crate::present::frames::name(frame, image.as_deref());
         match frame.kind {
             microscope::FrameKind::Inline => name.push_str(" [inlined]"),
             microscope::FrameKind::TailCall => name.push_str(" [tail call]"),
             microscope::FrameKind::Async { .. } => name.insert_str(0, "async "),
             microscope::FrameKind::Physical
             | microscope::FrameKind::Signal
-            | microscope::FrameKind::Awaited { .. } => {}
+            | microscope::FrameKind::Awaited { .. }
+            | microscope::FrameKind::Interpreted { .. } => {}
         }
 
         let mut body = json!({
@@ -435,21 +414,13 @@ impl Session {
             body["moduleId"] = module.get().to_string().into();
         }
 
-        let source = match (&frame.source, frame.module) {
-            (Some(location), Some(module)) => self.image(module).await.and_then(|image| {
-                let file = image.source_file(location.file)?;
-                Some((self.local_path(&file.path), location.clone()))
-            }),
-            _ => None,
-        };
-
-        match source {
-            Some((path, location)) => {
-                body["source"] = super::sources::source_json(&path);
-                body["line"] = self.line_to_client(location.line.get()).into();
-                body["column"] = location
+        match crate::present::frames::place(frame, image.as_deref()) {
+            Some(place) => {
+                body["source"] = super::sources::source_json(&self.local_path(&place.path));
+                body["line"] = self.line_to_client(place.line).into();
+                body["column"] = place
                     .column
-                    .map_or(0, |column| self.column_to_client(column.get()))
+                    .map_or(0, |column| self.column_to_client(column))
                     .into();
             }
             None => body["presentationHint"] = "subtle".into(),
@@ -602,8 +573,9 @@ impl Session {
             }));
         }
 
-        // A suspended task's frame has no registers.
-        if !frame.is_some_and(|frame| frame.kind.is_suspended()) {
+        // A suspended task's frame and an interpreted one have no
+        // registers.
+        if frame.is_none_or(|frame| frame.kind.has_registers()) {
             let reference = self
                 .references
                 .variables(Variables::Registers { context })?;
