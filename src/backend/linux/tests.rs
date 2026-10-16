@@ -1002,6 +1002,9 @@ struct FakeTrace {
     /// their debug information loads.
     libraries: RefCell<BTreeMap<PathBuf, (crate::LoadBias, bool)>>,
 
+    /// The symbols each library's image names; others name none.
+    library_symbols: RefCell<BTreeMap<PathBuf, Vec<crate::SymbolInfo>>>,
+
     /// Statuses the kernel holds that no waiter has taken.
     unreaped: RefCell<BTreeMap<Pid, WaitEvent>>,
 }
@@ -1292,7 +1295,15 @@ impl LinuxTraceOps for FakeTrace {
                         start: ImageAddress::new(0),
                         end: ImageAddress::new(0x1000),
                     },
-                    crate::model::ModuleMetadata::default(),
+                    crate::model::ModuleMetadata {
+                        symbols: self
+                            .library_symbols
+                            .borrow()
+                            .get(path)
+                            .cloned()
+                            .unwrap_or_default(),
+                        ..crate::model::ModuleMetadata::default()
+                    },
                 )
                 .unwrap();
                 let binding = crate::model::Binding {
@@ -7236,4 +7247,67 @@ fn new_modules_load_together_and_register_in_observation_order() {
         .collect::<Vec<_>>();
     assert_eq!(loads, ["load_modules /lib/libb.so#4 /lib/libd.so#5"]);
     assert_eq!(loaded(&mut harness), [(5, "/lib/libd.so".into())]);
+}
+
+/// Stepping knows the role of code in any loaded module, not only in the
+/// program's own: a source step leaves a library's runtime machinery for
+/// its caller as it leaves the program's.
+#[test]
+fn a_step_leaves_runtime_machinery_in_a_library() {
+    let mut harness = watch_harness(1);
+    let library = PathBuf::from("/lib/libruntime.so");
+    harness
+        .trace()
+        .libraries
+        .borrow_mut()
+        .insert(library.clone(), (crate::LoadBias::new(0x7300_0000), true));
+    let symbol = |id, name: &str, start, role| crate::SymbolInfo {
+        id: crate::SymbolId::new(id),
+        name: name.into(),
+        address: ImageAddress::new(start),
+        kind: crate::SymbolKind::Function,
+        binding: crate::SymbolBinding::Global,
+        exported: true,
+        extent: Some(crate::SymbolExtent {
+            range: AddressRange {
+                start: ImageAddress::new(start),
+                end: ImageAddress::new(start + 0x100),
+            },
+            provenance: crate::SymbolExtentProvenance::Declared,
+        }),
+        storage: None,
+        role,
+    };
+    harness.trace().library_symbols.borrow_mut().insert(
+        library,
+        vec![
+            symbol(0, "machinery", 0x100, crate::CodeRole::RuntimeInternal),
+            symbol(1, "ordinary", 0x200, crate::CodeRole::Ordinary),
+        ],
+    );
+    harness.controller.refresh_modules().unwrap();
+
+    let pid = harness.threads[0];
+    let at = |harness: &WatchHarness, address: u64| {
+        harness.trace().set_pc(pid, address);
+        harness
+            .controller
+            .stopped_where_step_leaves(pid)
+            .expect("the thread's registers")
+    };
+    assert!(at(&harness, 0x7300_0150), "in the library's machinery");
+    assert!(!at(&harness, 0x7300_0250), "in the library's ordinary code");
+    assert_eq!(
+        harness
+            .controller
+            .code_role(VirtualAddress::new(0x7300_0180)),
+        Some(crate::CodeRole::RuntimeInternal)
+    );
+    assert_eq!(
+        harness
+            .controller
+            .code_role(VirtualAddress::new(0x7400_0000)),
+        None,
+        "no module holds the address"
+    );
 }

@@ -243,7 +243,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// caller rather than stepping through: a stack switch, whose call-frame
     /// information cannot follow it, or the runtime's own machinery when
     /// the step may not enter it.
-    fn stopped_where_step_leaves(&self, pid: Pid) -> Result<bool> {
+    pub(super) fn stopped_where_step_leaves(&self, pid: Pid) -> Result<bool> {
         let registers = self.ptrace.registers(pid)?;
         let enters_runtime = self.step_enters_runtime();
         Ok(match self.code_role(VirtualAddress::new(registers.rip)) {
@@ -2166,11 +2166,12 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     /// What the physical function holding `address` is to stepping, not
-    /// any function inlined into it there.
+    /// any function inlined into it there, in whichever loaded module holds
+    /// it; `None` when no module does.
     pub(super) fn code_role(&self, address: VirtualAddress) -> Option<CodeRole> {
         let inferior = self.inferior.as_ref()?;
-        let image = inferior.loaded_module.image_address(address).ok()?;
-        Some(self.module_image.code_role(image))
+        let (image, address) = self.module_holding(inferior, address)?;
+        Some(image.code_role(address))
     }
 
     pub(super) fn image_location(&self, address: VirtualAddress) -> Option<ImageLocation> {

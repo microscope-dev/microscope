@@ -189,6 +189,22 @@ impl<P: InspectionOps> Controller<P> {
         )
     }
 
+    /// The image of the loaded module whose range holds `address`, and the
+    /// address within it.
+    pub(super) fn module_holding<'a>(
+        &'a self,
+        inferior: &'a Inferior,
+        address: VirtualAddress,
+    ) -> Option<(&'a Arc<ModuleImage>, ImageAddress)> {
+        self.loaded_images(inferior).find_map(|(module, image)| {
+            module
+                .image_address(address)
+                .ok()
+                .filter(|address| image.contains_address(*address))
+                .map(|address| (image, address))
+        })
+    }
+
     fn bind_runtimes(
         &self,
         image: &Arc<ModuleImage>,
