@@ -518,8 +518,11 @@ impl Pool {
             lock,
             head: sized(&["head"])?,
             len: sized(&["len"])?,
-            buffer: sized(&["buf", "inner", "ptr", "pointer", "pointer"])?,
-            capacity: sized(&["buf", "inner", "cap", "__0"])?,
+            // Each a word wrapped in single-member records whose names std
+            // changes: `Unique` and `Cap` once, `NonNull` and
+            // `UsizeNoHighBit` now. The word begins each wrapper.
+            buffer: sized(&["buf", "inner", "ptr"])?,
+            capacity: sized(&["buf", "inner", "cap"])?,
             task_size: records::size(image, task)?,
             task: records::sized(image, task, &["task", "raw", "ptr", "pointer"], 8)?,
             data: records::field(image, arc, &["data"])?.offset,
