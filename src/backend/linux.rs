@@ -64,6 +64,7 @@ mod activation;
 mod async_frames;
 pub use async_frames::resume_address;
 mod awaits;
+pub mod bpf;
 mod breakpoints;
 mod callers;
 mod catchpoints;

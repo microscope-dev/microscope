@@ -22,6 +22,7 @@ over those layers. The browser reads the same profile and analysis results.
 | `src/profiler/collector.rs`, `src/profiler/record.rs`, `src/profiler/session.rs` | perf collection, record decoding, and session lifecycle |
 | `src/profiler/tasks.rs`, `src/profiler/calls.rs`, `src/profiler/frame_pointers.rs` | Task and thread snapshots, and stack reconstruction |
 | `src/backend/linux/reaped.rs` | The exit status of a recorded program that a snapshot's debugger reaped |
+| `src/backend/linux/bpf/sampler.bpf.c`, `src/backend/linux/bpf/python.bpf.h`, `src/backend/linux/bpf/sampler.rs`, `src/profiler/interpreted.rs` | The BPF engine for Python stacks: its program, walker, loader, and splice |
 | `src/profiler/jit.rs`, `src/debug_info/perf_map.rs` | Perf maps: anonymous code as modules |
 | `src/profiler/annotate.rs`, `src/profiler/symbols.rs`, `src/profiler/zones.rs` | Symbol, source, and instrumentation annotation |
 | `src/profiler/formats/` | Chrome, folded-stack, and pprof output |
@@ -164,6 +165,43 @@ code is proved; any other read is counted as changed, never kept shorter.
 Each also stores the labels the runtimes give each thread
 (`RuntimeModel::thread_labels`), which the recording keeps as label spans on
 the thread from the snapshot before to this one.
+
+### Python frames in each sample
+
+The BPF engine (`--python bpf`) runs a program on the sampler's own perf
+events (`perf::Events::run_program`, `PERF_EVENT_IOC_SET_BPF`), which aya
+cannot attach to an existing descriptor. Events a thread inherits later run
+it too, so it is attached before the launched program leaves its gate. As
+each sample is taken, the program walks the thread's CPython frames
+(`python.bpf.h`, one global function the verifier checks once) and writes
+them through that CPU's BPF output event, which `perf::Events::outputs`
+points at the CPU's ring, then returns 1 so that perf writes the sample as
+always. Records of both kinds share the ring; the decoder tells them apart
+by the output events' identifiers (`decode::next_of`).
+
+The recorder pairs each record with the next sample of the same thread and
+CPU in ring order, never by time: kernels prepare a sample before or after
+they run its program, so either may carry the earlier stamp. A record held
+back past the watermark keeps its pairing by going back into the carry just
+before its sample; one whose sample never comes is dropped once the
+watermark passes it by `interpreted::PAIRING_SLACK`, as its sample was.
+
+The program reads each process through a `py_layout` the recorder fills from
+the interpreter's `PythonLayout` once its module is mapped, and begins each
+thread at the state a `tid → py_thread` map names, which the recorder
+refreshes every 20 ms from the interpreter's thread list
+(`RuntimeModel::walked_threads`). The walker checks the state's
+`native_thread_id` against the map's, so a reused thread id reads as stale,
+never as another thread's frames. A sample before either is known ends in
+`Truncation::InterpretedUnknown`. Code objects are named and proved as each
+record is processed (`RuntimeModel::sampled_frames`), while the program runs
+on; one freed since is unreadable. Segments go before the activations of the
+interpreter's loop that run them, as the debugger places them, and where the
+two differ in number the frames follow the native ones and the stack ends in
+`Truncation::InterpretedUnplaced`. The record's GIL state becomes label spans,
+one per run of samples with one value, and from 3.14 the asyncio task the
+thread ran joins the samples that task snapshots claim, as a task a Go or
+tokio sample keeps in a register does.
 
 ### Reaping the program
 

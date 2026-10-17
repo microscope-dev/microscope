@@ -298,10 +298,23 @@ pub enum Truncation {
     /// Unwinding a task's stack could not read what it needed: a register,
     /// memory, or unwind information it could interpret.
     Unreadable = 11,
+
+    /// An interpreter runs on the thread, and its frames at the sample are
+    /// unknown: their record was lost, or came before the interpreter's
+    /// layout or the thread's state was known.
+    InterpretedUnknown = 12,
+
+    /// The interpreter's frames end before the thread's outermost: one
+    /// could not be read, or there were more than a record holds.
+    InterpretedEnded = 13,
+
+    /// The interpreter's frames, which follow the native frames, belong
+    /// before activations of its loop that differ from them in number.
+    InterpretedUnplaced = 14,
 }
 
 impl Truncation {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 14] = [
         Self::NoUnwindInfo,
         Self::FramePointerNotKept,
         Self::StackCopyExhausted,
@@ -313,6 +326,9 @@ impl Truncation {
         Self::StackSwitch,
         Self::AwaitChainEnded,
         Self::Unreadable,
+        Self::InterpretedUnknown,
+        Self::InterpretedEnded,
+        Self::InterpretedUnplaced,
     ];
 
     pub fn from_number(number: u64) -> Option<Self> {
@@ -333,6 +349,9 @@ impl Truncation {
             Self::StackSwitch => "frames before a stack switch not captured",
             Self::AwaitChainEnded => "chain of awaits ended",
             Self::Unreadable => "unwinding could not read the stack",
+            Self::InterpretedUnknown => "interpreted frames unknown",
+            Self::InterpretedEnded => "interpreted frames ended early",
+            Self::InterpretedUnplaced => "interpreted frames not placed among the native ones",
         }
     }
 }
@@ -562,6 +581,9 @@ pub enum AccountKind {
 
     /// System call records the kernel's ring had no room for.
     SyscallsLost = 27,
+
+    /// Records of interpreted frames the kernel's rings had no room for.
+    InterpretedLost = 28,
 }
 
 /// A count of something the views must show.

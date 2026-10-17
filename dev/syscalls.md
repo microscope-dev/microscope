@@ -13,7 +13,7 @@ formats, counts, or saves it.
 | `src/syscalls/` | Neutral model: events, call tables, argument specs, the filter language, descriptors, processes, and statistics |
 | `src/present/syscalls/` | strace's text format and the `-c` table, shared by the CLI and the browser |
 | `src/backend/linux/syscalls/ptrace.rs`, `seccomp.rs`, `info.rs`, `launch.rs` | The ptrace engine |
-| `src/backend/linux/syscalls/bpf.rs`, `bpf/syscalls.bpf.c`, `bpf/records.h` | The BPF engine: its loader and its kernel programs |
+| `src/backend/linux/syscalls/bpf.rs`, `src/backend/linux/bpf/syscalls.bpf.c`, `bpf/records.h` | The BPF engine: its loader and its kernel programs |
 | `src/backend/linux/syscalls/budget.rs`, `cgroup.rs`, `continuous.rs`, `stacks.rs`, `capture.rs` | Budgets, cgroup targets, continuous traces, stacks, and captures |
 | `src/backend/linux/catchpoints.rs` | Debugger catchpoints |
 | `src/cli/syscalls.rs` | The `microscope syscalls` command |
@@ -59,10 +59,10 @@ always announces a tracee before anything it does.
 
 ## The BPF engine
 
-The kernel programs are C in `src/backend/linux/syscalls/bpf/`. `build.rs`
-compiles them with the clang that the dev shell names in `MICROSCOPE_BPF_CLANG`,
-against the headers in `MICROSCOPE_BPF_INCLUDE`, and embeds the objects. aya
-loads them. `records.h` is the record layout shared with the Rust decoders,
+The kernel programs are C in `src/backend/linux/bpf/`, a directory the
+syscall programs share with the profiler's. `build.rs` compiles them with the
+clang that the dev shell names in `MICROSCOPE_BPF_CLANG`, against the headers
+in `MICROSCOPE_BPF_INCLUDE`, and embeds the objects. aya loads them. `records.h` is the record layout shared with the Rust decoders,
 and a test compares the two through the object's BTF.
 
 Rules the engine keeps:

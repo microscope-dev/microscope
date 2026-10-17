@@ -5,9 +5,10 @@
 //! the bytes behind its arguments, and send one record per call through a
 //! ring buffer.
 //!
-//! The programs (`bpf/*.bpf.c`) are built by `build.rs` and embedded.
-//! Records and map values cross the boundary as the plain structures of
-//! `bpf/records.h`, which this module mirrors field for field; a test
+//! The program (`src/backend/linux/bpf/syscalls.bpf.c`) is built by
+//! `build.rs` and embedded. Records and map values cross the boundary as
+//! the plain structures of `bpf/records.h`, which this module mirrors
+//! field for field; a test
 //! compares both layouts through the object's BTF. Decoding a record is
 //! pure. Everything else, from naming a call to printing it, is shared
 //! with the ptrace engine.
@@ -910,6 +911,21 @@ impl Probe {
         self.capabilities & (1 << capability) != 0
     }
 
+    /// Which of `CAP_BPF` and `CAP_PERFMON`, which every BPF engine needs,
+    /// this process lacks, as the end of a sentence about it: `None` when
+    /// it has both.
+    #[must_use]
+    pub const fn lacks_privileges(&self) -> Option<&'static str> {
+        let bpf = self.has(CAP_BPF) || self.has(CAP_SYS_ADMIN);
+        let perfmon = self.has(CAP_PERFMON) || self.has(CAP_SYS_ADMIN);
+        match (bpf, perfmon) {
+            (true, true) => None,
+            (false, false) => Some("has neither"),
+            (false, true) => Some("lacks CAP_BPF"),
+            (true, false) => Some("lacks CAP_PERFMON"),
+        }
+    }
+
     /// Whether the engine can run, or the one specific reason it cannot,
     /// with the fix.
     ///
@@ -934,16 +950,7 @@ impl Probe {
             ));
         }
 
-        let bpf = self.has(CAP_BPF) || self.has(CAP_SYS_ADMIN);
-        let perfmon = self.has(CAP_PERFMON) || self.has(CAP_SYS_ADMIN);
-        let missing = match (bpf, perfmon) {
-            (true, true) => None,
-            (false, false) => Some("has neither"),
-            (false, true) => Some("lacks CAP_BPF"),
-            (true, false) => Some("lacks CAP_PERFMON"),
-        };
-
-        if let Some(missing) = missing {
+        if let Some(missing) = self.lacks_privileges() {
             let token = self.token.as_ref().map_or_else(String::new, |path| {
                 format!(
                     "\n  {} offers a BPF token, which microscope cannot use: aya, which loads its \
@@ -2332,143 +2339,69 @@ mod tests {
 
     use crate::syscalls::captures::MOST_BYTES;
 
-    /// The object's BTF: each struct's size and its members' names and
-    /// byte offsets.
-    fn btf_structs() -> BTreeMap<String, (u32, Vec<(String, u32)>)> {
-        use object::{Object as _, ObjectSection as _};
-        let file = object::File::parse(OBJECT).expect("the object parses");
-        let section = file.section_by_name(".BTF").expect("a .BTF section");
-        let data = section.data().expect("its bytes");
-        let u32_at = |at: usize| u32::from_le_bytes(data[at..at + 4].try_into().expect("4"));
-        let header_len = u32_at(4) as usize;
-        let (type_off, type_len) = (u32_at(8) as usize, u32_at(12) as usize);
-        let str_off = u32_at(16) as usize;
-        let types = header_len + type_off;
-        let strings = header_len + str_off;
-        let name = |offset: u32| {
-            let start = strings + offset as usize;
-            let end = start + data[start..].iter().position(|&b| b == 0).expect("NUL");
-            String::from_utf8_lossy(&data[start..end]).into_owned()
-        };
-
-        let mut structs = BTreeMap::new();
-        let mut at = types;
-        while at < types + type_len {
-            let (name_off, info, size) = (u32_at(at), u32_at(at + 4), u32_at(at + 8));
-            let kind = (info >> 24) & 0x1f;
-            let vlen = (info & 0xffff) as usize;
-            at += 12;
-
-            // Each kind's trailing data, by the BTF format.
-            let trailing = match kind {
-                1 | 14 | 15 | 17 => 4,
-                3 => 12,
-                4 | 5 => 12 * vlen,
-                6 | 13 => 8 * vlen,
-                19 => 16 * vlen,
-                _ => 0,
-            };
-
-            if kind == 4 {
-                let members = (0..vlen)
-                    .map(|index| {
-                        let member = at + index * 12;
-                        (name(u32_at(member)), (u32_at(member + 8) & 0x00ff_ffff) / 8)
-                    })
-                    .collect();
-                structs.insert(name(name_off), (size, members));
-            }
-
-            at += trailing;
-        }
-
-        structs
-    }
-
-    macro_rules! layout {
-        ($type:ty, $c:literal, [$($field:ident),*]) => {
-            (
-                $c,
-                size_of::<$type>(),
-                vec![$((stringify!($field), std::mem::offset_of!($type, $field))),*],
-            )
-        };
-    }
-
     #[test]
     fn records_h_and_the_decoders_agree_field_for_field() {
-        let structs = btf_structs();
-        let layouts = [
-            layout!(
+        crate::backend::linux::bpf::assert_mirrors!(
+            OBJECT,
+            (
                 RawArgCopy,
                 "arg_copy",
                 [kind, when, writes, count, count_arg, pad, size, limit]
             ),
-            layout!(
+            (
                 RawCallSpec,
                 "call_spec",
                 [selected, moves, makes, makes_arg, forks, pad, stat, args]
             ),
-            layout!(
+            (
                 RawFileRecord,
                 "file_record",
                 [header, fd, mode, ino, magic, rdev, len, cloexec, pad]
             ),
-            layout!(RawConfig, "config", [flags, elements, sample, rows]),
-            layout!(
+            (RawConfig, "config", [flags, elements, sample, rows]),
+            (
                 RawEntry,
                 "entry",
                 [entered, args, nr, tgid, abi, flags, pad]
             ),
-            layout!(RawRecord, "record", [kind, size, tid, tgid]),
-            layout!(RawInFlightRecord, "in_flight_record", [tid, pad, entry]),
-            layout!(
+            (RawRecord, "record", [kind, size, tid, tgid]),
+            (RawInFlightRecord, "in_flight_record", [tid, pad, entry]),
+            (
                 RawCallRecord,
                 "call_record",
                 [header, entered, exited, ret, args, nr, abi, flags, captures]
             ),
-            layout!(
+            (
                 RawCaptureHeader,
                 "capture_header",
                 [arg, when, state, pad, len, wanted, pad2]
             ),
-            layout!(
+            (
                 RawSpawnRecord,
                 "spawn_record",
                 [header, time, child, child_tgid]
             ),
-            layout!(RawExecRecord, "exec_record", [header, time, former, len]),
-            layout!(RawExitRecord, "exit_record", [header, time, code, last]),
-            layout!(
+            (RawExecRecord, "exec_record", [header, time, former, len]),
+            (RawExitRecord, "exit_record", [header, time, code, last]),
+            (
                 RawSignalRecord,
                 "signal_record",
                 [header, time, signal, pad, info]
             ),
-            layout!(
+            (
                 RawStatValue,
                 "stat_value",
                 [
                     calls, errors, timed, total_ns, min_ns, max_ns, bytes, log2_ns
                 ]
             ),
-            layout!(RawErrnoKey, "errno_key", [slot, err]),
-            layout!(
+            (RawErrnoKey, "errno_key", [slot, err]),
+            (
                 RawStackRecord,
                 "stack_record",
                 [header, frames, copied, regs]
             ),
-        ];
-        for (name, size, fields) in layouts {
-            let (c_size, c_fields) = structs
-                .get(name)
-                .unwrap_or_else(|| panic!("records.h has no struct {name}"));
-            assert_eq!(*c_size as usize, size, "struct {name}'s size");
-            let rust: Vec<(String, u32)> = fields
-                .into_iter()
-                .map(|(field, offset)| (field.to_owned(), u32::try_from(offset).expect("small")))
-                .collect();
-            assert_eq!(c_fields, &rust, "struct {name}'s fields");
-        }
+        );
     }
 
     fn call_bytes(kind: u32, flags: u8, captures: &[(u8, u8, &[u8])]) -> Vec<u8> {

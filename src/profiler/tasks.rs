@@ -101,7 +101,7 @@ impl InterpretedWait {
     }
 
     /// An interpreted frame a runtime model read.
-    fn of_frame(frame: &runtime_model::InterpretedFrame) -> Self {
+    pub(super) fn of_frame(frame: &runtime_model::InterpretedFrame) -> Self {
         frame
             .function
             .as_ref()
@@ -796,7 +796,7 @@ fn threads(pid: u32) -> Vec<crate::ThreadId> {
 /// The running process, as a runtime model of one module reads it: its
 /// memory, and of its threads' registers, which run on, only the thread
 /// pointers learned.
-struct LiveStop<'a> {
+pub(super) struct LiveStop<'a> {
     pid: u32,
     bias: crate::LoadBias,
     threads: Vec<crate::ThreadId>,
@@ -805,6 +805,23 @@ struct LiveStop<'a> {
     /// The threads whose thread pointers a model asked for and none was
     /// learned.
     unlearned: RefCell<BTreeSet<u32>>,
+}
+
+/// No thread pointers.
+static NO_POINTERS: BTreeMap<u32, u64> = BTreeMap::new();
+
+impl LiveStop<'static> {
+    /// Process `pid`'s memory alone, as the runtime model of a module
+    /// loaded with `bias` reads it: no thread of it.
+    pub(super) fn memory(pid: u32, bias: crate::LoadBias) -> Self {
+        Self {
+            pid,
+            bias,
+            threads: Vec::new(),
+            pointers: &NO_POINTERS,
+            unlearned: RefCell::new(BTreeSet::new()),
+        }
+    }
 }
 
 impl RuntimeStop for LiveStop<'_> {

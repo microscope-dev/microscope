@@ -30,11 +30,12 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use super::{
-    Crossing, Driven, DynamicValue, InterpretedChild, InterpretedFailure, InterpretedLocal,
-    InterpretedName, InterpretedOperand, InterpretedSlot, InterpretedStacks, InterpretedStep,
-    InterpretedThread, Partial, RuntimeException, RuntimeHook, RuntimeImage, RuntimeModel,
-    RuntimeSignals, RuntimeStop, StartedTask, StopMemory, StoredValue, TaskContext, TaskPage,
-    TaskRef, TaskStarter, ThreadActivity, ThreadLabels, Unbound,
+    Crossing, Driven, DynamicValue, InterpretedChild, InterpretedFailure, InterpretedFrame,
+    InterpretedLocal, InterpretedName, InterpretedOperand, InterpretedSlot, InterpretedStacks,
+    InterpretedStep, InterpretedThread, Partial, RuntimeException, RuntimeHook, RuntimeImage,
+    RuntimeModel, RuntimeSignals, RuntimeStop, SampledFrame, StartedTask, StopMemory, StoredValue,
+    TaskContext, TaskPage, TaskRef, TaskStarter, ThreadActivity, ThreadLabels, Unbound,
+    WalkedThread,
 };
 use crate::demangle::split_from;
 use crate::image::python::{EVALUATION_LOOP, Field, PyVersion, PythonLayout, TAIL_CALL_PREFIX};
@@ -396,6 +397,74 @@ impl Reading {
 }
 
 impl Reading {
+    /// Each thread state of every interpreter, where a walker in the
+    /// kernel begins the thread it names.
+    fn walked_threads(
+        &self,
+        stop: &dyn RuntimeStop,
+        version: PyVersion,
+    ) -> Partial<Vec<WalkedThread>> {
+        let reader = objects::Reader {
+            stop,
+            layout: &self.layout,
+            charge: None,
+            blocks: None,
+        };
+
+        let Some(runtime) = stop.load_bias().load(self.runtime.start) else {
+            return Partial {
+                value: Vec::new(),
+                gaps: vec!["CPython's runtime state lies outside the process".into()],
+            };
+        };
+
+        match threads::thread_states(&reader, runtime) {
+            Ok((states, gaps)) => Partial {
+                value: states
+                    .iter()
+                    .map(|state| WalkedThread {
+                        native: state.native,
+                        state: state.address,
+                    })
+                    .collect(),
+                gaps,
+            },
+            Err(problem) => Partial {
+                value: Vec::new(),
+                gaps: vec![format!("CPython {version}'s threads cannot be read: {problem}").into()],
+            },
+        }
+    }
+
+    /// The frames a walker in the kernel read of one thread, named.
+    fn sampled_frames(
+        &self,
+        stop: &dyn RuntimeStop,
+        frames: &[SampledFrame],
+    ) -> (Vec<InterpretedFrame>, Option<Arc<str>>) {
+        let Some(code_type) = stop.load_bias().load(self.code_type) else {
+            return (
+                Vec::new(),
+                Some("CPython's code type lies outside the process".into()),
+            );
+        };
+
+        frames::Walk {
+            reader: objects::Reader {
+                stop,
+                layout: &self.layout,
+                charge: None,
+                blocks: None,
+            },
+            code: &mut self
+                .code
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            code_type,
+        }
+        .sampled(frames)
+    }
+
     /// Each thread of the stop that holds its interpreter's GIL, or from
     /// 3.15 asks for it, labeled `gil=held` or `gil=waiting`.
     fn thread_labels(
@@ -733,6 +802,27 @@ impl RuntimeModel for PythonRuntime {
                 gaps: vec![Arc::clone(reason)],
             },
         })
+    }
+
+    fn walked_threads(&self, stop: &dyn RuntimeStop) -> Option<Partial<Vec<WalkedThread>>> {
+        Some(match &self.reading {
+            Ok(reading) => reading.walked_threads(stop, self.version),
+            Err(reason) => Partial {
+                value: Vec::new(),
+                gaps: vec![Arc::clone(reason)],
+            },
+        })
+    }
+
+    fn sampled_frames(
+        &self,
+        stop: &dyn RuntimeStop,
+        frames: &[SampledFrame],
+    ) -> (Vec<InterpretedFrame>, Option<Arc<str>>) {
+        match &self.reading {
+            Ok(reading) => reading.sampled_frames(stop, frames),
+            Err(reason) => (Vec::new(), Some(Arc::clone(reason))),
+        }
     }
 
     fn thread_labels(&self, stop: &dyn RuntimeStop) -> Partial<Vec<ThreadLabels>> {

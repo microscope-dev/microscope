@@ -15,7 +15,7 @@ use super::code::{CodeId, CodeTable};
 use super::objects::{Problem, Reader, Record, stack_reference};
 use super::threads::ThreadState;
 use crate::image::python::{Constant, Field};
-use crate::runtime_model::InterpretedFrame;
+use crate::runtime_model::{InterpretedFrame, SampledFrame};
 use crate::{RecordedPlace, SourceLanguage, VirtualAddress};
 
 /// The most frames of one thread read.
@@ -42,21 +42,29 @@ pub(super) struct Walk<'a, 'b> {
 impl Walk<'_, '_> {
     fn owner(&self, frame: &Record<'_>) -> Result<Owner, Problem> {
         let owner = frame.number(Field::FrameOwner, 1)?;
+        self.owner_of(owner).ok_or_else(|| {
+            format!(
+                "the frame at {:#x} has owner {owner}, which this CPython gives no frame",
+                frame.address
+            )
+            .into()
+        })
+    }
+
+    /// What CPython's owner number `owner` says owns a frame, if it names
+    /// an owner of one.
+    fn owner_of(&self, owner: u64) -> Option<Owner> {
         let layout = self.reader.layout;
         let is = |constant| owner == u64::from(layout.constant(constant));
         if is(Constant::OwnerThread)
             || is(Constant::OwnerGenerator)
             || is(Constant::OwnerFrameObject)
         {
-            Ok(Owner::Code)
+            Some(Owner::Code)
         } else if is(Constant::OwnerEntry) {
-            Ok(Owner::Entry)
+            Some(Owner::Entry)
         } else {
-            Err(format!(
-                "the frame at {:#x} has owner {owner}, which this CPython gives no frame",
-                frame.address
-            )
-            .into())
+            None
         }
     }
 
@@ -190,16 +198,19 @@ impl Walk<'_, '_> {
     fn line(&self, frame: &Record<'_>, code: VirtualAddress, id: CodeId) -> Result<u32, Problem> {
         let instruction = frame.word(Field::FrameInstruction)?;
         let bytecode = self.bytecode(frame, code)?;
+        let offset = instruction.wrapping_sub(bytecode.get()).cast_signed();
+        self.line_at(id, code, offset)
+            .map_err(|problem| format!("the frame at {:#x} {problem}", frame.address).into())
+    }
+
+    /// The line of the instruction at byte `offset` of the bytecode of the
+    /// code `id`, at `code`; or why it has none, to follow the frame it is
+    /// a frame's.
+    fn line_at(&self, id: CodeId, code: VirtualAddress, offset: i64) -> Result<u32, Problem> {
         let row = self.code.row(id);
         let length = row.units.saturating_mul(super::linetable::CODE_UNIT);
-        let offset = instruction.wrapping_sub(bytecode.get()).cast_signed();
-        let outside = || -> Problem {
-            format!(
-                "the frame at {:#x} is at {instruction:#x}, outside its code's bytecode",
-                frame.address
-            )
-            .into()
-        };
+        let outside =
+            || -> Problem { format!("is at byte {offset}, outside its code's bytecode").into() };
 
         // 3.12 points at the instruction before the one to run, which for
         // a frame that has run none is before the first.
@@ -216,13 +227,113 @@ impl Walk<'_, '_> {
             }
 
             self.code.line(id, offset).map_err(|_| -> Problem {
-                format!("the line table of the code at {code:#x} is malformed").into()
+                format!("runs code at {code:#x}, whose line table is malformed").into()
             })?
         };
 
         line.and_then(|line| u32::try_from(line).ok())
             .filter(|line| *line != 0)
-            .ok_or_else(|| format!("the frame at {:#x} is at no line", frame.address).into())
+            .ok_or_else(|| "is at no line".into())
+    }
+
+    /// The frames a walker in the kernel read of one thread, innermost
+    /// first, as [`Self::thread`] reads a thread's own, and why they end
+    /// before the thread's outermost, if they do. A frame's code object
+    /// is read now, and proved to be the one the walker read.
+    pub(super) fn sampled(
+        &mut self,
+        sampled: &[SampledFrame],
+    ) -> (Vec<InterpretedFrame>, Option<Problem>) {
+        let mut frames: Vec<InterpretedFrame> = Vec::new();
+        let mut end = None;
+        for frame in sampled {
+            match self.owner_of(u64::from(frame.owner)) {
+                Some(Owner::Code) => frames.push(self.sampled_frame(frame)),
+                Some(Owner::Entry) => {
+                    if let Some(outermost) = frames.last_mut() {
+                        outermost.outermost = true;
+                    }
+                }
+                None => {
+                    end = Some(
+                        format!(
+                            "a frame has owner {}, which this CPython gives no frame",
+                            frame.owner
+                        )
+                        .into(),
+                    );
+                    break;
+                }
+            }
+        }
+
+        let end = match frames.last_mut() {
+            Some(outermost) if !outermost.outermost => {
+                outermost.outermost = true;
+                end.or_else(|| Some("the outermost frames have no entry frame beneath them".into()))
+            }
+            _ => end,
+        };
+
+        (frames, end)
+    }
+
+    /// One frame a walker in the kernel read.
+    fn sampled_frame(&mut self, frame: &SampledFrame) -> InterpretedFrame {
+        let mut built = InterpretedFrame {
+            frame: VirtualAddress::new(0),
+            language: SourceLanguage::Python,
+            function: None,
+            place: None,
+            problem: None,
+            first_line: None,
+            outermost: false,
+        };
+
+        let located = self
+            .code
+            .code(&self.reader, self.code_type, frame.code)
+            .and_then(|id| {
+                if self.code.proves(id, frame.proof) {
+                    Ok(id)
+                } else {
+                    Err(
+                        format!("the code object at {:#x} the frame ran is gone", frame.code)
+                            .into(),
+                    )
+                }
+            });
+        let id = match located {
+            Ok(id) => id,
+            Err(problem) => {
+                built.problem = Some(problem);
+                return built;
+            }
+        };
+
+        let row = self.code.row(id);
+        built.function = Some(std::sync::Arc::clone(self.code.name(row.qualname)));
+        built.first_line = u32::try_from(row.first_line).ok();
+        let path = std::sync::Arc::clone(self.code.name(row.file));
+        let line = frame
+            .offset
+            .ok_or_else(|| -> Problem { "its instruction could not be read".into() })
+            .and_then(|offset| self.line_at(id, frame.code, offset));
+        match line {
+            Ok(line) => {
+                built.place = Some(RecordedPlace {
+                    path,
+                    line,
+                    column: 0,
+                });
+            }
+            Err(problem) => {
+                built.problem =
+                    Some(format!("the frame running {:#x} {problem}", frame.code).into());
+            }
+        }
+
+        built
     }
 
     /// Where the bytecode the frame runs begins: the code object's own,

@@ -15,6 +15,7 @@ use crate::protocol::{CoreDumpOptions, DebuggerEvent, Request};
 use crate::{Error, ProcessId, Result};
 
 pub use linux::PostMortemSession;
+pub use linux::bpf;
 #[cfg(test)]
 pub use linux::native_tracee;
 pub use linux::perf;

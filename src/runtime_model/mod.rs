@@ -716,6 +716,32 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         }
     }
 
+    /// Where a walker in the kernel begins each of the interpreter's
+    /// threads, read through `stop`, and why some may be missing; `None`
+    /// for a runtime no such walker reads (see `backend::bpf::sampler`).
+    fn walked_threads(&self, stop: &dyn RuntimeStop) -> Option<Partial<Vec<WalkedThread>>> {
+        let _ = stop;
+        None
+    }
+
+    /// The frames a walker in the kernel read of one thread at a sample,
+    /// innermost first, as `frames` holds them, named through `stop`: as
+    /// [`InterpretedStacks`] holds a thread's, each activation's outermost
+    /// marked, and why they end before the thread's outermost, if they do.
+    /// A frame whose code object is gone, or is no longer the one the
+    /// walker read, is unreadable.
+    fn sampled_frames(
+        &self,
+        stop: &dyn RuntimeStop,
+        frames: &[SampledFrame],
+    ) -> (Vec<InterpretedFrame>, Option<Arc<str>>) {
+        let _ = (stop, frames);
+        (
+            Vec::new(),
+            Some("the runtime reads no sampled frames".into()),
+        )
+    }
+
     /// The local variables of the interpreted frame the interpreter keeps
     /// at `frame`, as [`RuntimeModel::interpreted`] named it at this stop,
     /// in the order the code declares them. Each read is charged to
@@ -916,6 +942,30 @@ pub struct InterpretedStacks {
 
     /// Every thread's frames, each thread's together and innermost first.
     pub frames: Vec<InterpretedFrame>,
+}
+
+/// Where a walker in the kernel begins one of an interpreter's threads:
+/// the state it keeps for the thread, which names the thread by its id in
+/// its own pid namespace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WalkedThread {
+    pub native: u64,
+    pub state: VirtualAddress,
+}
+
+/// One interpreted frame as a walker in the kernel read it at a sample:
+/// the code object it ran, and what of the object proves it is that one
+/// when it is read again; where its instruction is in its bytecode; and
+/// its owner, as the runtime numbers owners.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SampledFrame {
+    pub code: VirtualAddress,
+    pub proof: (u64, i32),
+
+    /// The instruction's byte offset from the bytecode's start, which may
+    /// be just before it; `None` where it could not be read.
+    pub offset: Option<i64>,
+    pub owner: u32,
 }
 
 /// The labels a runtime gives one thread.

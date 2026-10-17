@@ -210,6 +210,13 @@ impl CodeTable {
         &self.rows[id.index()]
     }
 
+    /// Whether the row `id` is of the code object whose qualified-name
+    /// pointer and first line were `proof` when they were read.
+    pub(super) fn proves(&self, id: CodeId, (qualname, first_line): (u64, i32)) -> bool {
+        let proof = self.row(id).proof;
+        proof.qualname == qualname && proof.first_line == first_line
+    }
+
     /// The locals of the code object in row `id`, in the order its frames
     /// keep them.
     pub(super) fn locals(&self, id: CodeId) -> &[Local] {

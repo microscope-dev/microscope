@@ -70,11 +70,13 @@ narrower limits and report them when used.
   shape and dtype, and indexing an array is refused. Python is
   not supported yet for breakpoints by file and line, stepping, and Python
   exceptions as catchpoints.
-- A profile reads Python stacks by stopping the program or reading it as it
-  runs (`record --python`), not in each CPU sample: the BPF engine is not built
-  yet. A live read holds Python frames only, and leaves out a thread whose
-  frames change as it reads them. Only CPython 3.15 and later say which
-  threads wait for the GIL.
+- A profile's Python stacks (`record --python`) come from the BPF engine,
+  which needs `CAP_BPF` and `CAP_PERFMON`, or from snapshots that stop the
+  program or read it as it runs. The BPF engine's first samples of a program
+  or thread may have unknown Python frames, and say so, and it holds at most
+  128 Python frames a sample. A live read holds Python frames only, and leaves
+  out a thread whose frames change as it reads them. Only CPython 3.15 and
+  later say which threads wait for the GIL.
 - Runtime support follows known compiler and runtime layouts. Unknown versions
   can leave tasks or logical frames unavailable.
 - Built-in views cover selected standard-library and runtime types, not every

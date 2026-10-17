@@ -78,7 +78,13 @@ than assigning a more specific cause without one.
 ## Record runtime tasks
 
 `--task-snapshots SECONDS` briefly stops the program at that interval and reads
-where Go goroutines and tokio tasks wait. The report includes the pause cost.
+where Go goroutines, tokio tasks, and asyncio tasks (CPython 3.14 and later)
+wait. The report includes the pause cost.
+
+A CPU sample is given to the task it ran when the snapshots on both sides of it
+find that task where the sample found it. Go and tokio keep the running task in
+a register; with `--python bpf`, each sample says which asyncio task its thread
+ran.
 
 `--live-snapshots` reads tasks without stopping the program. A task that
 changes while it is being read is omitted from that snapshot and counted as an
@@ -94,9 +100,17 @@ CPU samples see the interpreter's own functions, not the Python code they
 run. `--python ENGINE` reads each thread's Python frames beside the samples:
 
 ```sh
-microscope record --python snapshot -o server.usprof -- python3 server.py
-microscope report --waits --python --lines server.usprof
+microscope record --python bpf -o server.usprof -- python3 server.py
+microscope report --python --lines server.usprof
 ```
+
+- `bpf` reads the sampled thread's Python frames in the kernel as each CPU
+  sample is taken, and puts them in the sample's stack, before the
+  activations of the interpreter that run them. The program is never stopped.
+  It needs `CAP_BPF` and `CAP_PERFMON`, as
+  [`microscope syscalls`' BPF engine](syscalls.md#give-microscope-the-bpf-privileges)
+  does, and without them recording refuses and says which is missing; it
+  never falls back to another engine.
 
 - `snapshot[=SECONDS]` stops the program every SECONDS, 0.1 if not given, and
   reads each thread's whole stack: its Python frames among the native frames
@@ -108,12 +122,20 @@ microscope report --waits --python --lines server.usprof
   Python frames, since a running thread's registers cannot be read. A thread
   whose frames change while they are read is left out and counted, never
   kept as a shorter stack.
-- `bpf` is not built yet.
 
-Each read thread is a task of its own, named `thread` and numbered by its id,
-whose stack stands for the time since the read before, as a task snapshot's
-waits do. `report --waits` shows them, and the browser's Waits source. CPython
-3.12 through 3.15 are read, with and without the GIL.
+With `bpf`, the Python frames are part of each CPU sample. A sample taken
+before microscope has read the interpreter's layout or the thread's state, as
+just after the program or a thread starts, ends in "interpreted frames
+unknown"; one whose Python frames end early, as one paged out, ends in
+"interpreted frames ended early". `report` counts both with the other stacks
+that end short. A Python frame whose code object was freed before microscope
+read it is shown as unreadable.
+
+With `snapshot` and `live`, each read thread is a task of its own, named
+`thread` and numbered by its id, whose stack stands for the time since the read
+before, as a task snapshot's waits do. `report --waits` shows them, and the
+browser's Waits source. CPython 3.12 through 3.15 are read, with and without
+the GIL.
 
 Three looks show the stacks. The default shows Python frames among the
 native frames that run them. `--python`, and the browser's Python stacks
@@ -128,7 +150,10 @@ as its own row.
 
 Each read records which thread holds its interpreter's GIL, as the label
 `gil=held` on the thread from the read before to this one, and from CPython
-3.15, which says so, `gil=waiting` on each thread that asks for it. The labels
+3.15, which says so, `gil=waiting` on each thread that asks for it. With `bpf`,
+each CPU sample says it of its own thread, and each run of samples with one
+label is one span; a thread that waits for the GIL is mostly off its CPU, so
+`gil=waiting` shows in CPU samples only as the thread spins up. The labels
 select samples and draw lanes as instrumentation labels do. CPython before
 3.15 does not say which threads wait for the GIL, and a free-threaded build's
 GIL is off, so it has no GIL labels. A label is as the GIL was when read.

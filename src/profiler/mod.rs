@@ -8,6 +8,7 @@ mod calls;
 mod collector;
 mod formats;
 mod frame_pointers;
+mod interpreted;
 mod jit;
 mod probes;
 mod record;

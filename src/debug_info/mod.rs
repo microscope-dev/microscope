@@ -4,6 +4,13 @@ compile_error!("microscope currently supports debug information only on Linux");
 pub mod coroutines;
 #[cfg(target_os = "linux")]
 mod cpython;
+
+/// The CPython layout generated for the interpreter the matrix names
+/// `name`, as `3.14t`.
+#[cfg(test)]
+pub fn generated_python_layout(name: &str) -> Option<crate::image::python::PythonLayout> {
+    cpython::generated(name)
+}
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod dispatch;
 #[cfg(target_os = "linux")]

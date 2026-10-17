@@ -9,7 +9,8 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use microscope::profiler::{
-    Granularity, Look, Profile, PythonEngine, Query, RecordOptions, Source, Watch, record_watched,
+    Granularity, Look, Profile, PythonEngine, Query, RecordError, RecordOptions, Source, Watch,
+    record, record_watched,
 };
 
 use crate::support::python;
@@ -42,10 +43,16 @@ fn lines() -> BTreeMap<String, u32> {
 /// Each path of the waits' call tree that waits end at, outermost first,
 /// as the Python look shows them by line, with the weight that ends there.
 fn python_paths(profile: &Profile) -> BTreeMap<Vec<String>, u64> {
+    paths(profile, Source::Waits, Look::Python)
+}
+
+/// Each path of `source`'s call tree in `look` that weight ends at,
+/// outermost first, by line, with the weight that ends there.
+fn paths(profile: &Profile, source: Source, look: Look) -> BTreeMap<Vec<String>, u64> {
     let keys = profile.keys(Granularity::Line);
     let tree = keys.aggregate(&Query {
-        source: Source::Waits,
-        look: Look::Python,
+        source,
+        look,
         ..Query::default()
     });
     (0..tree.len())
@@ -244,6 +251,174 @@ fn live_snapshots_read_each_python_thread_as_it_runs() {
                 !wait.functions.iter().any(|function| evaluates(function)),
                 "{interpreter}: a live stack with native frames: {wait:?}"
             );
+        }
+    }
+}
+
+/// Whether this process holds `CAP_BPF` and `CAP_PERFMON`, as the BPF
+/// engine needs.
+fn privileged() -> bool {
+    const CAP_SYS_ADMIN: u32 = 21;
+    const CAP_PERFMON: u32 = 38;
+    const CAP_BPF: u32 = 39;
+    let status = std::fs::read_to_string("/proc/self/status").expect("read the status");
+    let effective = status
+        .lines()
+        .find_map(|line| line.strip_prefix("CapEff:"))
+        .and_then(|bits| u64::from_str_radix(bits.trim(), 16).ok())
+        .expect("CapEff");
+    let has = |capability: u32| effective & (1 << capability) != 0;
+    has(CAP_SYS_ADMIN) || (has(CAP_BPF) && has(CAP_PERFMON))
+}
+
+/// The BPF engine never falls back to another: without its privileges
+/// it refuses, naming the one it lacks and the engines that need none,
+/// and the program never starts.
+#[test]
+fn the_bpf_engine_names_the_privilege_it_lacks_and_starts_nothing() {
+    if privileged() {
+        // `just test-bpf` runs the engine itself (`bpf` below).
+        return;
+    }
+
+    let marker =
+        std::env::temp_dir().join(format!("microscope-bpf-refused-{}", std::process::id()));
+    let mut command = Command::new(python::interpreter("3.14"));
+    command
+        .args([
+            "-I",
+            "-c",
+            "import pathlib, sys; pathlib.Path(sys.argv[1]).touch()",
+        ])
+        .arg(&marker);
+    let options = RecordOptions {
+        python: Some(PythonEngine::Bpf),
+        ..RecordOptions::default()
+    };
+
+    let Err(RecordError::Python(why)) = record(command, &options) else {
+        panic!("the BPF engine ran without its privileges");
+    };
+
+    assert!(why.contains("needs CAP_BPF and CAP_PERFMON"), "{why}");
+    assert!(why.contains("--python snapshot"), "{why}");
+    assert!(!marker.exists(), "the program started");
+}
+
+/// The BPF engine, which reads each sampled thread's Python frames in the
+/// kernel as the sample is taken. It needs `CAP_BPF` and `CAP_PERFMON`,
+/// so these run only through `just test-bpf`, which records through the
+/// `microscope-bpf` wrapper.
+mod bpf {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    fn launcher() -> PathBuf {
+        std::env::var_os("MICROSCOPE_BPF_LAUNCHER").map_or_else(
+            || {
+                panic!(
+                    "MICROSCOPE_BPF_LAUNCHER names no launcher: run these with `just test-bpf`, \
+                     which records through the microscope-bpf wrapper"
+                )
+            },
+            PathBuf::from,
+        )
+    }
+
+    /// The fixture's profile under `interpreter` by the BPF engine, from
+    /// a recording that lets the program go after `running`.
+    fn recorded(interpreter: &str, running: Duration) -> Profile {
+        let output = std::env::temp_dir().join(format!(
+            "microscope-bpf-{}-{interpreter}.usprof",
+            std::process::id()
+        ));
+        let mut child = Command::new(launcher())
+            .arg(env!("CARGO_BIN_EXE_microscope"))
+            .arg("record")
+            .arg("--python")
+            .arg("bpf")
+            .arg("--output")
+            .arg(&output)
+            .arg("--")
+            .arg(python::interpreter(interpreter))
+            .args(["-I", "-B"])
+            .arg(python::fixture("profiled.py"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("run microscope");
+        std::thread::sleep(running);
+        child
+            .stdin
+            .take()
+            .expect("its input")
+            .write_all(b"\n")
+            .expect("release the program");
+        let finished = child.wait_with_output().expect("microscope finishes");
+        assert!(
+            finished.status.success(),
+            "{interpreter}: {}",
+            String::from_utf8_lossy(&finished.stderr)
+        );
+        let profile = Profile::read(&output).expect("read the profile").profile;
+        let _ = std::fs::remove_file(&output);
+        profile
+    }
+
+    /// Each CPU sample of a spinner holds its Python frames by line,
+    /// spliced before the activations of the interpreter's loop that run
+    /// them: the Python look is `spin` calling `work`, with no frame of the
+    /// interpreter's, and the mixed stacks keep both. A GIL build's
+    /// spinners hold its GIL in turn; a free-threaded build's is off. Only
+    /// the samples taken before the engine knew the program are unknown.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
+    fn samples_hold_each_threads_python_frames_by_line() {
+        let lines = lines();
+        for interpreter in PROFILED {
+            let profile = recorded(interpreter, Duration::from_secs(2));
+            let python = paths(&profile, Source::Samples, Look::Python);
+            let spinning: u64 = python
+                .iter()
+                .filter(|(path, _)| spins(path, &lines))
+                .map(|(_, weight)| weight)
+                .sum();
+            let total: u64 = python.values().sum();
+            assert!(
+                spinning * 2 > total,
+                "{interpreter}: {spinning} of {total} through work: {python:#?}"
+            );
+            for path in python.keys() {
+                assert!(
+                    !path.iter().any(|step| evaluates(step)),
+                    "{interpreter}: the Python look shows the interpreter: {path:?}"
+                );
+            }
+
+            let mixed = profile.stacks().into_iter().any(|stack| {
+                stack.functions.iter().any(|function| function == "work")
+                    && stack.functions.iter().any(|function| evaluates(function))
+            });
+            assert!(mixed, "{interpreter}: no mixed stack of work");
+
+            let unknown = profile
+                .truncations()
+                .into_iter()
+                .find(|(reason, _)| reason == "interpreted frames unknown")
+                .map_or(0, |(_, count)| count);
+            assert!(
+                unknown * 10 < total,
+                "{interpreter}: {unknown} of {total} samples have unknown frames"
+            );
+
+            let gil = gil_values(&profile);
+            if interpreter.ends_with('t') {
+                assert_eq!(gil, Vec::<String>::new(), "{interpreter}");
+            } else {
+                assert!(gil.contains(&"held".to_owned()), "{interpreter}: {gil:?}");
+            }
         }
     }
 }

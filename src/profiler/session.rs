@@ -10,6 +10,7 @@ use std::time::Duration;
 use super::budget::{Budget, Controller, Observation, STEPS};
 use super::calls::{self, Calls};
 use super::collector::{Collector, ProbeSelection};
+use super::interpreted::Walked;
 use super::record::{self, Sites};
 use super::tasks::{self, Live, Reads, Snapshot, Snapshotter};
 use super::{
@@ -17,6 +18,7 @@ use super::{
     SampleSource, StackCopy,
 };
 
+use crate::backend::bpf::sampler::{Sampler, SamplerError};
 use crate::backend::perf;
 use crate::backend::syscall_engines::bpf::{self, BpfOptions};
 use crate::backend::syscall_engines::capture::SyscallCapture;
@@ -24,7 +26,7 @@ use crate::backend::syscall_engines::stacks::SharedStacks;
 use crate::backend::syscall_engines::{Sink, TraceOptions};
 use crate::capture::Capture;
 use crate::capture::builder::CaptureBuilder;
-use crate::capture::records::{GapReason, MarkerKind};
+use crate::capture::records::{AccountKind, GapReason, MarkerKind};
 use crate::model::Pid;
 
 /// A recording and how its program ended.
@@ -93,7 +95,6 @@ pub fn record_watched(
     watch: &mut Watch<'_>,
 ) -> Result<Recording, RecordError> {
     let _span = crate::span!("record");
-    python_engine(options)?;
     let program = PathBuf::from(command.get_program());
     let (source, breakpoint) = perf_source(&program, &options.source, None)?;
     let mut processor = processor(options, breakpoint);
@@ -110,19 +111,39 @@ pub fn record_watched(
     };
 
     let mut syscalls = None;
+    let mut walker = None;
+    let mut refused = None;
+    let launched = perf::launch(command, &events, launch, |pid, events| {
+        // The program runs on the events before the program can start a
+        // thread that would inherit them without it.
+        if options.python == Some(PythonEngine::Bpf) {
+            match Walker::attach(events, &mut processor) {
+                Ok(attached) => walker = Some(attached),
+                Err(error) => {
+                    let why = error.to_string();
+                    refused = Some(error);
+                    return Err(why);
+                }
+            }
+        }
+
+        if let Some(calls) = &options.syscalls {
+            syscalls = Some(SyscallTrace::start(pid, calls, options)?);
+        }
+
+        Ok(())
+    });
+    if let Some(error) = refused {
+        return Err(error.into());
+    }
+
     let perf::Launched {
         pid,
         mut events,
         exit,
         killer,
         executed,
-    } = perf::launch(command, &events, launch, |pid| {
-        if let Some(calls) = &options.syscalls {
-            syscalls = Some(SyscallTrace::start(pid, calls, options)?);
-        }
-
-        Ok(())
-    })?;
+    } = launched?;
     settings(
         &mut processor,
         options,
@@ -143,6 +164,7 @@ pub fn record_watched(
         options,
         started,
         syscalls.as_ref(),
+        walker.as_mut(),
         || exit.is_finished(),
         || {
             record!("record: stopping, killing {pid}");
@@ -179,7 +201,6 @@ pub fn record_attached(
     watch: &mut Watch<'_>,
 ) -> Result<Attachment, RecordError> {
     let _span = crate::span!("record attached");
-    python_engine(options)?;
     let program = PathBuf::from(format!("/proc/{pid}/exe"));
     let bias = perf::program_bias(pid);
     let (source, breakpoint) = perf_source(&program, &options.source, bias)?;
@@ -196,6 +217,11 @@ pub fn record_attached(
         mut events,
         process,
     } = perf::attach(pid, &events, options.max_events)?;
+    let mut walker = match options.python {
+        Some(PythonEngine::Bpf) => Some(Walker::attach(&events, &mut processor)?),
+        _ => None,
+    };
+
     processor.attached(Pid::new(pid), monotonic());
     let name = std::fs::read_link(&program).unwrap_or(program);
     let pages = events.pages();
@@ -216,6 +242,7 @@ pub fn record_attached(
         options,
         Some(pid),
         None,
+        walker.as_mut(),
         || process.exited(),
         || {
             record!("record: stopping, detaching from {pid}");
@@ -236,13 +263,110 @@ pub fn record_attached(
     })
 }
 
-/// Refuses a Python engine this build cannot run.
-fn python_engine(options: &RecordOptions) -> Result<(), RecordError> {
-    match options.python {
-        Some(PythonEngine::Bpf) => Err(RecordError::Python(
-            "the BPF engine for Python stacks is not built yet; use snapshot or live".into(),
-        )),
-        _ => Ok(()),
+/// How often the BPF engine is told each Python process's threads anew,
+/// as they start and end.
+const WALK_REFRESH: Duration = Duration::from_millis(20);
+
+/// The BPF engine for Python stacks, and what it has been told.
+struct Walker {
+    sampler: Sampler,
+    next: std::time::Instant,
+
+    /// The processes whose layout it has, and those it was told it
+    /// cannot have.
+    laid_out: std::collections::BTreeSet<u32>,
+    refused: std::collections::BTreeSet<u32>,
+}
+
+impl From<SamplerError> for RecordError {
+    fn from(error: SamplerError) -> Self {
+        Self::Python(error.to_string())
+    }
+}
+
+impl Walker {
+    /// Loads the engine onto `events`, which must not yet sample, and has
+    /// `processor` splice what it writes.
+    fn attach(
+        events: &perf::Events,
+        processor: &mut record::Processor,
+    ) -> Result<Self, SamplerError> {
+        let (sampler, outputs) = Sampler::load(events)?;
+        processor.interpret(outputs);
+        Ok(Self {
+            sampler,
+            next: std::time::Instant::now(),
+            laid_out: std::collections::BTreeSet::new(),
+            refused: std::collections::BTreeSet::new(),
+        })
+    }
+
+    /// Tells the engine each Python process's layout, once, and its
+    /// threads, when due; and forgets the processes that are gone.
+    fn refresh(&mut self, processor: &mut record::Processor) {
+        let now = std::time::Instant::now();
+        if now < self.next {
+            return;
+        }
+
+        self.next = now + WALK_REFRESH;
+        let walked = processor.walked();
+        let sampler = &mut self.sampler;
+        self.laid_out.retain(|pid| {
+            let live = walked.iter().any(|walked| walked.pid == *pid);
+            if !live {
+                sampler.forget(*pid);
+            }
+
+            live
+        });
+
+        for walked in walked {
+            if !self.laid_out.contains(&walked.pid) && !self.lay_out(processor, &walked) {
+                continue;
+            }
+
+            if let Some(gap) = walked.gaps.first() {
+                record!("python sampler: {}'s threads: {gap}", walked.pid);
+            }
+
+            if let Err(error) = self.sampler.set_threads(walked.pid, &walked.threads) {
+                record!("python sampler: {}'s threads: {error}", walked.pid);
+            }
+        }
+    }
+
+    /// Tells the engine the layout of the process `walked` is of, or the
+    /// recording why it cannot: whether the engine has it.
+    fn lay_out(&mut self, processor: &mut record::Processor, walked: &Walked) -> bool {
+        let set = walked.layout.clone().and_then(|layout| {
+            self.sampler
+                .set_layout(walked.pid, &layout)
+                .map_err(|error| error.to_string())
+        });
+        match set {
+            Ok(()) => self.laid_out.insert(walked.pid),
+            Err(why) => {
+                if self.refused.insert(walked.pid) {
+                    processor.builder().setting(
+                        &format!("python {}", walked.pid),
+                        &format!("not read: {why}"),
+                    );
+                }
+
+                false
+            }
+        }
+    }
+
+    /// Counts the records the rings had no room for.
+    fn finish(&self, processor: &mut record::Processor) {
+        let builder = processor.builder();
+        let had = builder.account(AccountKind::InterpretedLost as u32);
+        builder.count(
+            AccountKind::InterpretedLost as u32,
+            self.sampler.lost().saturating_sub(had),
+        );
     }
 }
 
@@ -350,6 +474,7 @@ fn drive(
     options: &RecordOptions,
     started: Option<u32>,
     syscalls: Option<&SyscallTrace>,
+    mut walker: Option<&mut Walker>,
     mut ended: impl FnMut() -> bool,
     mut stop: impl FnMut() -> bool,
 ) {
@@ -409,6 +534,10 @@ fn drive(
             buffer.len()
         );
         processor.ingest(&buffer, (!finished).then_some(watermark));
+        if let Some(walker) = &mut walker {
+            walker.refresh(processor);
+        }
+
         if let Some(probes) = &mut probes {
             if finished {
                 probes.finish(processor, !ended());
@@ -437,21 +566,14 @@ fn drive(
         // A program's trigger saves the window as microscope's does.
         let triggered = processor.take_triggered();
         if let Some(save) = &mut watch.save {
-            let due = segment.is_some_and(|every| segmented.elapsed() >= every);
-            if save.trigger.swap(false, Ordering::Relaxed) || triggered || due {
-                processor.counts(events.counts());
-                record!("record: saved, segment due {due}");
-                let capture = if segment.is_some() {
-                    segmented = std::time::Instant::now();
-                    processor.segment()
-                } else {
-                    processor.snapshot()
-                };
-
-                // The calls of the same span, on the same clock.
-                let capture = syscalls.map_or_else(|| capture.clone(), |trace| trace.cut(&capture));
-                (save.to)(Profile { capture });
-            }
+            save_when_due(
+                save,
+                processor,
+                events,
+                syscalls,
+                triggered,
+                (segment, &mut segmented),
+            );
         }
 
         if started && published.elapsed() >= wait {
@@ -469,7 +591,41 @@ fn drive(
         pacer.finish(monotonic(), processor);
     }
 
+    if let Some(walker) = walker {
+        walker.finish(processor);
+    }
+
     processor.counts(events.counts());
+}
+
+/// Saves the profile so far when `save`'s trigger fires, the program
+/// `triggered` one, or a segment of `every` since it was last `cut` is
+/// due: the window, or the segment, which ends there.
+fn save_when_due(
+    save: &mut Save<'_>,
+    processor: &mut record::Processor,
+    events: &perf::Events,
+    syscalls: Option<&SyscallTrace>,
+    triggered: bool,
+    (every, cut): (Option<Duration>, &mut std::time::Instant),
+) {
+    let due = every.is_some_and(|every| cut.elapsed() >= every);
+    if !(save.trigger.swap(false, Ordering::Relaxed) || triggered || due) {
+        return;
+    }
+
+    processor.counts(events.counts());
+    record!("record: saved, segment due {due}");
+    let capture = if every.is_some() {
+        *cut = std::time::Instant::now();
+        processor.segment()
+    } else {
+        processor.snapshot()
+    };
+
+    // The calls of the same span, on the same clock.
+    let capture = syscalls.map_or_else(|| capture.clone(), |trace| trace.cut(&capture));
+    (save.to)(Profile { capture });
 }
 
 /// What takes the snapshots `options` asks of process `pid`: of its

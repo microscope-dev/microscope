@@ -276,7 +276,12 @@ a `# LINE name` comment, which the test finds in the source. Recording runs
 until the profile so far holds what the test checks, or a deadline, then
 releases the program by its standard input. `just test` warms the image
 cache; without it, a stopped snapshot reloads the interpreter's debug
-information each time and holds the program for seconds.
+information each time and holds the program for seconds. Its `bpf` module
+records through the `microscope-bpf` wrapper and runs only under
+`just test-bpf`; without the privileges, the suite checks that the BPF engine
+refuses and names the one it lacks. The BPF records' layouts, their
+decoding, and their pairing with samples are unit tests that need no
+privilege (`backend::bpf::sampler`, `profiler::record`).
 
 ## Unit tests
 

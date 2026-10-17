@@ -91,8 +91,29 @@ pub struct Events {
     rings: Vec<sys::Ring>,
     pages: usize,
 
+    /// The CPU of each ring, in their order.
+    cpus: Vec<u32>,
+
     /// Events that write to the rings of others on their CPUs.
     followers: Vec<OwnedFd>,
+}
+
+/// The fields of each record a BPF program writes through an [`Output`],
+/// in the kernel's order: those of a sample's that come first, then the
+/// program's bytes.
+pub const OUTPUT_SAMPLE_TYPE: u64 = sys::sample::IDENTIFIER
+    | sys::sample::TID
+    | sys::sample::TIME
+    | sys::sample::CPU
+    | sys::sample::RAW;
+
+/// A CPU's BPF output event, which writes to that CPU's ring, and its
+/// identifier, which each of its records begins with.
+#[derive(Debug)]
+pub struct Output {
+    pub cpu: u32,
+    pub fd: OwnedFd,
+    pub id: u64,
 }
 
 /// The most bytes a sample of `stack_bytes` can take: its fixed fields,
@@ -129,6 +150,7 @@ impl Events {
         Ok(Self {
             rings,
             pages,
+            cpus,
             followers: Vec::new(),
         })
     }
@@ -176,6 +198,7 @@ impl Events {
                             owner = Some(Self {
                                 rings,
                                 pages,
+                                cpus: cpus.clone(),
                                 followers: Vec::new(),
                             });
                         }
@@ -223,6 +246,46 @@ impl Events {
     /// Data pages each ring has.
     pub const fn pages(&self) -> usize {
         self.pages
+    }
+
+    /// Runs the BPF program `program` as each event, and each event a
+    /// thread inherits from one later, takes a sample, before the kernel
+    /// writes it.
+    pub fn run_program(&self, program: std::os::fd::BorrowedFd<'_>) -> std::io::Result<()> {
+        for fd in self.rings.iter().map(sys::Ring::fd).chain(&self.followers) {
+            sys::set_bpf(fd, program)?;
+        }
+
+        Ok(())
+    }
+
+    /// Opens a BPF output event on each CPU that writes to that CPU's
+    /// ring, so that what a program writes through it lies beside the
+    /// samples it is written for.
+    pub fn outputs(&self) -> Result<Vec<Output>, OpenError> {
+        let attr = sys::Attr {
+            size: sys::ATTR_SIZE,
+            kind: sys::TYPE_SOFTWARE,
+            config: sys::COUNT_SW_BPF_OUTPUT,
+            sample_period: 1,
+            sample_type: OUTPUT_SAMPLE_TYPE,
+            flags: sys::flag::USE_CLOCKID,
+            clockid: libc::CLOCK_MONOTONIC,
+            ..sys::Attr::default()
+        };
+
+        self.rings
+            .iter()
+            .zip(&self.cpus)
+            .map(|(ring, &cpu)| {
+                let failed = |source| OpenError::Event { cpu, source };
+                let fd =
+                    sys::open(&attr, -1, i32::try_from(cpu).unwrap_or(i32::MAX)).map_err(failed)?;
+                sys::set_output(&fd, ring.fd()).map_err(failed)?;
+                let id = sys::id(&fd).map_err(failed)?;
+                Ok(Output { cpu, fd, id })
+            })
+            .collect()
     }
 
     /// Appends every ring's new records to `out`, a ring's whole records
@@ -516,14 +579,15 @@ pub struct LaunchOptions {
 /// The child waits between fork and exec until its events are open. A
 /// thread of its own spawns it, because spawning returns only after the
 /// exec, and stays to wait for its exit: the child dies with that thread.
-/// `held` runs while it waits, its events open, so that what `held` starts
-/// sees it from its first instruction too; an error from `held` ends the
-/// child before it executes.
+/// `held` runs while it waits, given its pid and its events, so that what
+/// `held` starts or attaches to the events sees it from its first
+/// instruction too; an error from `held` ends the child before it
+/// executes.
 pub fn launch(
     mut command: Command,
     options: &EventOptions,
     launch: LaunchOptions,
-    held: impl FnOnce(u32) -> Result<(), String>,
+    held: impl FnOnce(u32, &Events) -> Result<(), String>,
 ) -> Result<Launched, LaunchError> {
     let (pid_read, pid_write) = pipe()?;
     let (go_read, go_write) = pipe()?;
@@ -596,7 +660,7 @@ pub fn launch(
         }
     };
 
-    if let Err(why) = held(pid) {
+    if let Err(why) = held(pid, &events) {
         record!("perf launch: closing {pid}'s gate unopened: {why}");
         drop(go_write);
         let _ = spawner.join();

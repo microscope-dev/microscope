@@ -14,7 +14,7 @@ use super::objects::{self, Reader};
 use super::threads::{self, ThreadState};
 use crate::image::python::{Constant, Field, PythonLayout};
 use crate::inspection::InspectionBudget;
-use crate::runtime_model::{InterpretedFrame, RuntimeStop};
+use crate::runtime_model::{InterpretedFrame, RuntimeStop, SampledFrame};
 use crate::{InspectionLimits, LoadBias, ThreadId, VirtualAddress};
 
 /// Where the builders allocate objects first.
@@ -557,6 +557,128 @@ fn a_thread_walks_its_segments_innermost_first_and_each_ends_at_an_entry_frame()
     );
     assert!(frames.iter().all(|frame| frame.problem.is_none()));
     assert_eq!(end, None);
+}
+
+/// A frame as a walker in the kernel reads it: the code object it runs,
+/// that object's qualified-name pointer and first line, its instruction's
+/// offset from its bytecode, and its owner.
+fn sampled(process: &Process, frame: u64) -> SampledFrame {
+    let read = |address: u64, width: usize| {
+        let mut bytes = [0; 8];
+        assert!(
+            process
+                .memory
+                .read(VirtualAddress::new(address), &mut bytes[..width])
+        );
+        u64::from_le_bytes(bytes)
+    };
+
+    let field =
+        |object: u64, field: Field, width: usize| read(object + process.offset(field), width);
+    let code = field(frame, Field::FrameExecutable, 8);
+    let instruction = field(frame, Field::FrameInstruction, 8);
+    let owner = u32::try_from(field(frame, Field::FrameOwner, 1)).expect("a byte");
+    let (proof, offset) = if code == 0 {
+        ((0, 0), None)
+    } else {
+        let qualname = field(code, Field::CodeQualname, 8);
+        let first_line = i32::try_from(field(code, Field::CodeFirstlineno, 4)).expect("a line");
+        let bytecode = code + process.offset(Field::CodeCodeAdaptive);
+        let offset = instruction.wrapping_sub(bytecode).cast_signed();
+        ((qualname, first_line), Some(offset))
+    };
+
+    SampledFrame {
+        code: VirtualAddress::new(code),
+        proof,
+        offset,
+        owner,
+    }
+}
+
+/// A frame's function, place, first line, and whether it ends a segment.
+type Found<'a> = (Option<&'a str>, Option<(&'a str, u32)>, Option<u32>, bool);
+
+/// What two walks of a thread found that does not depend on where its
+/// frames are.
+fn found(frames: &[InterpretedFrame]) -> Vec<Found<'_>> {
+    frames
+        .iter()
+        .map(|frame| {
+            (
+                frame.function.as_deref(),
+                place(frame),
+                frame.first_line,
+                frame.outermost,
+            )
+        })
+        .collect()
+}
+
+/// The frames a walker in the kernel read name the functions and lines
+/// the stopped walk of the same chain does. A code object freed since, and
+/// another put at its address, is no longer the one the walker read, and
+/// its frame is unreadable; so is one whose instruction it could not read.
+#[test]
+fn sampled_frames_read_as_the_stopped_walk_reads_them() {
+    let mut process = Process::new(layout());
+    let a = process.code("a", 10, &[(2, 1)]);
+    let b = process.code("b", 20, &[(1, 0), (1, 2)]);
+    let outer = process.entry(0);
+    let b_frame = process.frame(outer, b, process.instruction(b, 1));
+    let inner = process.entry(b_frame);
+    let a_frame = process.frame(inner, a, process.instruction(a, 0));
+    let (stopped, end) = walk_thread(&process, a_frame);
+    assert_eq!(end, None);
+
+    let mut chain: Vec<SampledFrame> = [a_frame, inner, b_frame, outer]
+        .into_iter()
+        .map(|frame| sampled(&process, frame))
+        .collect();
+    let mut code = CodeTable::default();
+    let mut walk = |process: &Process, chain: &[SampledFrame]| {
+        Walk {
+            reader: process.reader(),
+            code: &mut code,
+            code_type: VirtualAddress::new(process.code_type),
+        }
+        .sampled(chain)
+    };
+
+    let (frames, end) = walk(&process, &chain);
+    assert_eq!(found(&frames), found(&stopped));
+    assert_eq!(
+        found(&frames),
+        [
+            (Some("a"), Some((FILE, 11)), Some(10), true),
+            (Some("b"), Some((FILE, 22)), Some(20), true),
+        ]
+    );
+    assert_eq!(end, None);
+
+    let other = process.string("c");
+    process.word(a, Field::CodeQualname, other);
+    chain[2].offset = None;
+    let (frames, _) = walk(&process, &chain);
+    assert_eq!(frames[0].function, None);
+    assert!(
+        frames[0]
+            .problem
+            .as_deref()
+            .is_some_and(|problem| problem.ends_with("the frame ran is gone")),
+        "{:?}",
+        frames[0].problem
+    );
+    assert_eq!(frames[1].function.as_deref(), Some("b"));
+    assert_eq!(place(&frames[1]), None);
+    assert!(
+        frames[1]
+            .problem
+            .as_deref()
+            .is_some_and(|problem| problem.ends_with("its instruction could not be read")),
+        "{:?}",
+        frames[1].problem
+    );
 }
 
 #[test]

@@ -74,6 +74,16 @@ impl Generated {
     }
 }
 
+/// The layout generated for the interpreter the matrix names `name`, as
+/// `3.14t`.
+#[cfg(test)]
+pub(super) fn generated(name: &str) -> Option<PythonLayout> {
+    layouts::GENERATED
+        .iter()
+        .find(|generated| generated.name == name)
+        .map(Generated::layout)
+}
+
 /// The fields without which no thread's frames can be read.
 const REQUIRED: [Field; 34] = [
     Field::RuntimeInterpretersHead,
