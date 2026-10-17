@@ -127,6 +127,11 @@ installs:
   every hit `hook_event` reads what the thread reports and says whether it
   stops (`HookEvent`). A hit that goes on is stepped over unseen. A report
   that cannot be read stops with `StopReason::RuntimeEvent`, and says why.
+  A hook is at an address in the runtime's own image, or at a function a
+  companion image exports (`HookPlace::Companion`). A companion is a
+  library the runtime loads beside its own, as Python's agent loads its hook
+  library. Its hook is armed in each loaded image that exports the name, and
+  goes when the image unloads.
 
 Both are judged when no user breakpoint at the site stops, and before a
 step's plan meets the thread. The private sites run control keeps for itself,

@@ -485,6 +485,21 @@ pub struct RuntimeException {
     pub value: Option<Arc<str>>,
 }
 
+/// Where one of a runtime's internal hooks is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Python's agent calls a hook from P4.6")
+)]
+pub enum HookPlace {
+    /// At this address in the runtime's own image.
+    Own(ImageAddress),
+
+    /// At the function exported under this name by a companion image: one
+    /// the runtime loads beside its own, as a library its agent calls.
+    Companion(&'static str),
+}
+
 /// A change to the stopped process's memory that a runtime model needs. A
 /// model only reads, so it returns its writes for the debugger to make,
 /// while every thread is stopped.
@@ -653,16 +668,16 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
     /// debugger of its own events, each armed for as long as the runtime
     /// is loaded, whatever stops. At each hit, [`Self::hook_event`] says
     /// whether the thread stops.
-    fn internal_hooks(&self) -> &[ImageAddress] {
+    fn internal_hooks(&self) -> &[HookPlace] {
         &[]
     }
 
-    /// What a stopped thread entering the internal hook at `hook` reports,
+    /// What a stopped thread entering the internal hook `hook` reports,
     /// given the thread's registers there.
     fn hook_event(
         &self,
         stop: &dyn RuntimeStop,
-        hook: ImageAddress,
+        hook: HookPlace,
         registers: &RegisterFile,
     ) -> Result<HookEvent, Arc<str>> {
         let _ = (stop, hook, registers);

@@ -5093,7 +5093,10 @@ struct ScriptedRuntime {
     running: std::sync::Mutex<BTreeMap<crate::ThreadId, u64>>,
 
     /// The runtime's internal hooks.
-    internal: Vec<ImageAddress>,
+    internal: Vec<crate::runtime_model::HookPlace>,
+
+    /// The hook each hit was asked of, in turn.
+    asked: std::sync::Mutex<Vec<crate::runtime_model::HookPlace>>,
 
     /// What each hit of an internal hook reports, in turn.
     events: std::sync::Mutex<
@@ -5246,16 +5249,17 @@ impl crate::runtime_model::RuntimeModel for ScriptedRuntime {
         "task"
     }
 
-    fn internal_hooks(&self) -> &[ImageAddress] {
+    fn internal_hooks(&self) -> &[crate::runtime_model::HookPlace] {
         &self.internal
     }
 
     fn hook_event(
         &self,
         _stop: &dyn crate::runtime_model::RuntimeStop,
-        _hook: ImageAddress,
+        hook: crate::runtime_model::HookPlace,
         _registers: &RegisterFile,
     ) -> std::result::Result<crate::runtime_model::HookEvent, Arc<str>> {
+        self.asked.lock().expect("the script").push(hook);
         self.events
             .lock()
             .expect("the script")
@@ -5508,7 +5512,9 @@ fn a_runtime_hook_asks_at_each_hit_whether_its_thread_stops() {
     let runtime = scripted_runtime(
         &harness,
         ScriptedRuntime {
-            internal: vec![ImageAddress::new(HOOK)],
+            internal: vec![crate::runtime_model::HookPlace::Own(ImageAddress::new(
+                HOOK,
+            ))],
             ..ScriptedRuntime::default()
         },
     );
@@ -5590,6 +5596,88 @@ fn a_runtime_hook_asks_at_each_hit_whether_its_thread_stops() {
         ),
         "a hit whose report is unreadable stops and says why: {unreadable:?}"
     );
+}
+
+/// A runtime's internal hook may be a function a companion image exports,
+/// as a library the runtime loads beside its own: it is armed once the
+/// image loads, asked of by that name at each hit, and gone with the image.
+#[test]
+fn a_runtime_hook_in_a_companion_image_is_armed_while_it_is_loaded() {
+    const HOOK: crate::runtime_model::HookPlace =
+        crate::runtime_model::HookPlace::Companion("scripted_hook");
+    let mut harness = watch_harness(1);
+    harness.controller.unwind_info = Arc::new(FlatUnwindInfo);
+    let hitting = harness.threads[0];
+    let runtime = scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            internal: vec![HOOK],
+            ..ScriptedRuntime::default()
+        },
+    );
+    let armed = |harness: &mut WatchHarness| {
+        harness
+            .inferior()
+            .breakpoints
+            .iter()
+            .filter(|(_, site)| site.owners.contains(&BreakpointOwner::Runtime))
+            .map(|(&address, _)| address.get())
+            .collect::<Vec<_>>()
+    };
+    harness.controller.sync_runtime_hooks().expect("sync");
+    assert_eq!(
+        armed(&mut harness),
+        [0_u64; 0],
+        "no image exports the hook yet"
+    );
+
+    let library = PathBuf::from("/lib/libhook.so");
+    harness
+        .trace()
+        .libraries
+        .borrow_mut()
+        .insert(library.clone(), (crate::LoadBias::new(0x7300_0000), true));
+    harness.trace().library_symbols.borrow_mut().insert(
+        library.clone(),
+        vec![crate::SymbolInfo {
+            id: crate::SymbolId::new(0),
+            name: "scripted_hook".into(),
+            address: ImageAddress::new(0x100),
+            kind: crate::SymbolKind::Function,
+            binding: crate::SymbolBinding::Global,
+            exported: true,
+            extent: None,
+            storage: None,
+            role: crate::CodeRole::Ordinary,
+        }],
+    );
+    harness
+        .controller
+        .refresh_libraries()
+        .expect("the library loads");
+    assert_eq!(armed(&mut harness), [0x7300_0100]);
+
+    runtime.reports(Ok(crate::runtime_model::HookEvent::Continue));
+    harness.start_continue();
+    harness.trace().take_actions();
+    harness
+        .hit_at(hitting, 0x7300_0100)
+        .expect("the hook's trap");
+    assert_eq!(harness.stopped(), None);
+    assert_eq!(*runtime.asked.lock().expect("the script"), [HOOK]);
+    steps_over_alone(&mut harness, hitting);
+
+    harness.trace().libraries.borrow_mut().remove(&library);
+    harness
+        .controller
+        .refresh_libraries()
+        .expect("the library unloads");
+    assert_eq!(
+        armed(&mut harness),
+        [0_u64; 0],
+        "the hook goes with its image"
+    );
+    assert!(harness.inferior().runtime_hooks.is_empty());
 }
 
 /// The writes a runtime model asks for are made while every thread is

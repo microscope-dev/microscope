@@ -10,8 +10,8 @@ use std::sync::Arc;
 use nix::unistd::Pid;
 
 use crate::protocol::{ExceptionStops, LanguageException, StopReason};
-use crate::runtime_model::{HookEvent, RuntimeHook};
-use crate::{Error, ImageAddress, LanguageExceptionKind, Result, RuntimeId, VirtualAddress};
+use crate::runtime_model::{HookEvent, HookPlace, RuntimeHook};
+use crate::{Error, LanguageExceptionKind, Result, RuntimeId, VirtualAddress};
 
 use super::breakpoints::remove_breakpoint_owner_from;
 use super::frames::StackRoot;
@@ -32,8 +32,8 @@ enum HookPurpose {
     /// The function reports an exception that stops.
     Exception(RuntimeHook),
 
-    /// The function is an internal hook, at the image address given.
-    Internal(ImageAddress),
+    /// The function is an internal hook.
+    Internal(HookPlace),
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
@@ -70,24 +70,35 @@ impl<P: LinuxTraceOps> Controller<P> {
                     .hooks()
                     .iter()
                     .filter(|hook| stops.stops(hook.filter.id))
-                    .map(|hook| (hook.address, HookPurpose::Exception(*hook)));
-                let internal = runtime
-                    .model
-                    .internal_hooks()
-                    .iter()
-                    .map(|&hook| (hook, HookPurpose::Internal(hook)));
+                    .filter_map(|hook| {
+                        let address = runtime.module.virtual_address(hook.address).ok()?;
+                        Some((address, HookPurpose::Exception(*hook)))
+                    });
+                let internal = runtime.model.internal_hooks().iter().flat_map(|&hook| {
+                    let addresses = match hook {
+                        HookPlace::Own(address) => runtime
+                            .module
+                            .virtual_address(address)
+                            .ok()
+                            .into_iter()
+                            .collect(),
+                        HookPlace::Companion(name) => self.exported_functions(inferior, name),
+                    };
+                    addresses
+                        .into_iter()
+                        .map(move |address| (address, HookPurpose::Internal(hook)))
+                });
 
                 // An internal hook asks at every hit, so it outranks an
                 // exception's hook at the same function.
-                exceptions.chain(internal).filter_map(|(address, purpose)| {
-                    let address = runtime.module.virtual_address(address).ok()?;
-                    Some((
+                exceptions.chain(internal).map(|(address, purpose)| {
+                    (
                         address,
                         HookSite {
                             runtime: runtime.id,
                             purpose,
                         },
-                    ))
+                    )
                 })
             })
             .collect::<BTreeMap<_, _>>();
@@ -127,6 +138,18 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         Ok(())
+    }
+
+    /// Where each loaded image that exports the function `name` has it.
+    fn exported_functions(&self, inferior: &super::Inferior, name: &str) -> Vec<VirtualAddress> {
+        self.loaded_images(inferior)
+            .filter_map(|(module, image)| {
+                let symbol = image.symbols_named(name).find(|symbol| {
+                    symbol.exported() && symbol.kind() == crate::SymbolKind::Function
+                })?;
+                module.virtual_address(symbol.address()).ok()
+            })
+            .collect()
     }
 
     /// Why a thread at `address` stops, when a runtime's breakpoint there

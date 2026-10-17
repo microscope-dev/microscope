@@ -184,7 +184,7 @@ impl<P: InspectionOps> Controller<P> {
             .collect()
     }
 
-    fn loaded_images<'a>(
+    pub(super) fn loaded_images<'a>(
         &'a self,
         inferior: &'a Inferior,
     ) -> impl Iterator<Item = (LoadedModule, &'a Arc<ModuleImage>)> {
