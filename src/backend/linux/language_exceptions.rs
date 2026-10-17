@@ -198,7 +198,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     model.hook_event(stop, hook, registers)
                 });
                 match event {
-                    Ok(HookEvent::Continue) => None,
+                    Ok(HookEvent::Continue | HookEvent::Armed { .. }) => None,
                     Ok(HookEvent::Exception { filter, report }) => self
                         .exception_stops
                         .stops(filter.id)

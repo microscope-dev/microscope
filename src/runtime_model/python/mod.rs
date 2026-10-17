@@ -12,11 +12,13 @@
 //! The model keeps one cache across stops, the process's code objects
 //! ([`code::CodeTable`]), and proves each row again where it is used.
 
+mod agent;
 mod asyncio;
 mod code;
 mod expressions;
 mod frames;
 mod gil;
+mod hook;
 mod instances;
 mod library;
 mod linetable;
@@ -575,6 +577,36 @@ fn walk_threads(
 }
 
 impl RuntimeModel for PythonRuntime {
+    fn internal_hooks(&self) -> &[super::HookPlace] {
+        &[super::HookPlace::Companion(hook::SYMBOL)]
+    }
+
+    fn hook_event(
+        &self,
+        _stop: &dyn RuntimeStop,
+        hook: super::HookPlace,
+        registers: &RegisterFile,
+    ) -> Result<super::HookEvent, Arc<str>> {
+        if hook != super::HookPlace::Companion(hook::SYMBOL) {
+            return Err("not Python's agent hook".into());
+        }
+        let argument = |register, name| {
+            registers.get(register).ok_or_else(|| -> Arc<str> {
+                format!("Python agent hook argument {name} is unavailable").into()
+            })
+        };
+        let report = agent::decode(
+            argument(crate::unwind::RDI, "rdi")?,
+            argument(crate::unwind::RSI, "rsi")?,
+            argument(crate::unwind::DwarfRegister::new(1), "rdx")?,
+        )?;
+        Ok(match report {
+            agent::Report::Armed { generation } => super::HookEvent::Armed { generation },
+            agent::Report::Breakpoint { number } => super::HookEvent::Breakpoint { number },
+            agent::Report::StepEnded { number } => super::HookEvent::StepEnded { number },
+        })
+    }
+
     /// asyncio's tasks, which only 3.14 and later list.
     fn tasks(
         &self,

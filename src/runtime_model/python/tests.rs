@@ -1170,3 +1170,47 @@ fn reads_in_a_block_read_before_cost_nothing_and_bytes_in_a_block_not_mapped_who
     // the bytes after them, in the same block.
     assert_eq!(inspection.usage().memory_reads, 6);
 }
+
+/// At the C ABI boundary, absent registers and another hook's reports are
+/// errors. The runtime needs no Python heap reads to decode a valid report.
+#[test]
+fn agent_reports_are_read_from_the_calling_threads_registers() {
+    use crate::runtime_model::{HookEvent, HookPlace, RuntimeModel as _};
+    use crate::unwind::{DwarfRegister, RDI, RSI, RegisterFile};
+    let model = super::PythonRuntime {
+        version: crate::image::python::PyVersion(0x030e_00f0),
+        reading: Err("no heap is needed for the hook ABI".into()),
+    };
+    let stop = Memory::default();
+    let hook = HookPlace::Companion(super::hook::SYMBOL);
+    assert_eq!(model.internal_hooks(), &[hook]);
+    let mut registers = RegisterFile::new([(RDI, 1), (RSI, 42), (DwarfRegister::new(1), 0)]);
+    assert_eq!(
+        model.hook_event(&stop, hook, &registers),
+        Ok(HookEvent::Breakpoint { number: 42 })
+    );
+    registers.set(RDI, 2);
+    assert_eq!(
+        model.hook_event(&stop, hook, &registers),
+        Ok(HookEvent::StepEnded { number: 42 })
+    );
+    registers.set(RDI, 0);
+    assert_eq!(
+        model.hook_event(&stop, hook, &registers),
+        Ok(HookEvent::Armed { generation: 42 })
+    );
+    for missing in [RDI, RSI, DwarfRegister::new(1)] {
+        let mut absent = registers.clone();
+        absent.remove(missing);
+        assert!(model.hook_event(&stop, hook, &absent).is_err());
+    }
+    assert!(
+        model
+            .hook_event(
+                &stop,
+                HookPlace::Own(crate::ImageAddress::new(1)),
+                &registers
+            )
+            .is_err()
+    );
+}

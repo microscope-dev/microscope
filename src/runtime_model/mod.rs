@@ -487,12 +487,15 @@ pub struct RuntimeException {
 
 /// Where one of a runtime's internal hooks is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "Python's agent calls a hook from P4.6")
-)]
 pub enum HookPlace {
     /// At this address in the runtime's own image.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "no runtime yet uses an internal hook in its own image"
+        )
+    )]
     Own(ImageAddress),
 
     /// At the function exported under this name by a companion image: one
@@ -518,15 +521,26 @@ pub struct RuntimeWrite {
 
 /// What a thread that entered one of a runtime's internal hooks reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "Python's agent reports these from P4.6")
-)]
 pub enum HookEvent {
+    /// The agent applied this generation of its whole desired state. The
+    /// injection owner may now retire that generation's script (P4.7).
+    Armed { generation: u64 },
+
     /// Nothing the user sees: the thread goes on.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "reporters currently report readiness or user events"
+        )
+    )]
     Continue,
 
     /// An exception, which stops when its filter does.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Python exception policy is P4.10")
+    )]
     Exception {
         filter: &'static ExceptionFilter,
         report: RuntimeException,

@@ -15,6 +15,7 @@ their own, join native backtraces as interpreted frames.
 | `src/runtime_model/tokio/` | Tokio runtime, task, and future discovery |
 | `src/runtime_model/futures.rs`, `src/runtime_model/rust/` | Rust future inspection and shared Rust rules |
 | `src/runtime_model/python/` | CPython's threads, frames, code objects, line tables, and built-in values |
+| `src/runtime_model/python/agent.rs`, `agent.py`, `hook.rs` | Whole-state scripts, monitoring transport, native hook ELF and ABI |
 | `src/backend/linux/interpreted.rs` | Interpreted frames placed in backtraces, and their variables |
 | `src/debug_info/coroutines.rs`, `src/debug_info/roles.rs` | Static coroutine and code-role metadata |
 | `src/image/resumes.rs` | Validated resume-point tables |
@@ -246,9 +247,52 @@ GIL.
 
 ## CPython
 
-CPython support reads the interpreter from outside, as a core dump allows: it
-puts no code in the process. It covers CPython 3.12 through 3.15, with the GIL
-and free-threaded.
+CPython inspection reads the interpreter from outside, as a core dump allows,
+and puts no code in the process. It covers CPython 3.12 through 3.15, with the
+GIL and free-threaded. The monitoring agent below is a separate transport for
+execution control; inspection and profiling do not load it.
+
+**Agent transport.** `python/agent.py` translates explicitly configured
+`sys.monitoring` probes into calls to `microscope_python_hook`.
+`python/agent.rs` builds standalone whole-state scripts; the source executes
+once in `_microscope_agent` in `sys.modules`, so fresh script namespaces share
+one generation and installation. Atomic `dict.setdefault` publishes a module
+with its lock before source initialization; that lock serializes initialization
+and configuration. The atomic publication relies on CPython's guarantee for
+[built-in string dictionary keys](https://docs.python.org/3.14/builtins/threadsafety.html#thread-safety-for-dict-objects).
+Older or identical generations do nothing.
+An empty configuration frees the tool ID, its local/global events, and its
+callbacks. No tool is registered while idle. The agent prefers ID 0, tries
+other free IDs, and reports exhaustion without changing another tool.
+
+The transport's flat probes specify an event, report kind, number, and exact
+file/line/qualified-name selectors. The runtime supplies event policy;
+conditions, hit counts, expressions, step ownership, and exception judgments
+remain debugger work. `PY_START` discovers code objects; local events apply
+only to matching code, including code already running at installation.
+`DISABLE` suppresses irrelevant local locations, never non-disableable events.
+Reconfiguration needs `restart_events()`, whose CPython API also reactivates
+other tools' disabled locations; it preserves their registrations and callbacks.
+
+`python/hook.rs` generates a small ELF shared library, including its export
+and unwind information. It needs no target compiler or libpython. Its function
+is a no-op without a debugger. At entry its three unsigned 64-bit arguments
+are in rdi/rsi/rdx: kind, number, argument. Kind 0 acknowledges a generation
+(argument 0–5 is the tool ID; 6 means idle), 1 reports a breakpoint, 2 a step's
+completion (both require a nonzero number and zero argument), and 3 reports an
+error (argument 1: tool exhaustion; 2: callback/configuration failure). Malformed
+reports produce a visible runtime stop. The frame comes from the stopped
+thread's interpreter state; no mailbox or process-global event buffer exists.
+A single lock serializes configuration and callbacks on free-threaded builds,
+and is released before every native report. Callback failures disarm the agent
+and report the failure instead of raising into the program.
+
+P4.6 provides this transport and cooperative fixture tests. PEP 768 injection,
+target-namespace files and their lifetime, controller acknowledgement tracking,
+and detach integration are P4.7; Python breakpoint/step/exception policy follows
+in P4.8–P4.10. These are not yet user-facing Python control features.
+`tests/python/agent.rs` checks the real monitoring API on 3.14/3.15 in both GIL
+modes and the native register/all-stop boundary through `Scenario`.
 
 **Layout.** The module that carries the runtime, `libpython` or an executable
 that links it, has a `.PyRuntime` section. From 3.13 its `_Py_DebugOffsets`
