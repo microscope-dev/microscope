@@ -734,9 +734,12 @@ fn queued_signals_are_read_from_the_named_unblocked_pending_set() {
         format!(
             "Name:\tworker\nShdPnd:\t0000000000020010\nSigPnd:\t{pending}\nSigBlk:\t{blocked}\n"
         )
+        .into_bytes()
     };
 
-    let trap = |status: &str| queued_in_status(status, Signal::SIGTRAP, SignalQueue::Thread);
+    let trap = |status: &[u8]| {
+        queued_in_status(status, Signal::SIGTRAP, SignalQueue::Thread).expect("valid masks")
+    };
     assert!(trap(&status("0000000000000010", "0000000000000000")));
     assert!(trap(&status("0000000000010110", "0000000000000100")));
     assert!(
@@ -747,23 +750,53 @@ fn queued_signals_are_read_from_the_named_unblocked_pending_set() {
         !trap(&status("0000000000000000", "0000000000000000")),
         "a process-wide trap is not the thread's own"
     );
-    let shared = |status: &str| queued_in_status(status, Signal::SIGCONT, SignalQueue::Process);
+    let shared = |status: &[u8]| {
+        queued_in_status(status, Signal::SIGCONT, SignalQueue::Process).expect("valid masks")
+    };
     assert!(shared(&status("0000000000000000", "0000000000000000")));
     assert!(!shared(&status("0000000000000000", "0000000000020000")));
-    assert!(!trap("SigPnd:\tnot-hex\n"));
-    assert!(!trap(""));
+    assert_eq!(
+        queued_in_status(b"SigPnd:\tnot-hex\n", Signal::SIGTRAP, SignalQueue::Thread),
+        None
+    );
+    assert_eq!(
+        queued_in_status(b"", Signal::SIGTRAP, SignalQueue::Thread),
+        None
+    );
+}
+
+#[test]
+fn pending_signals_with_unreadable_blocking_masks_are_not_classified() {
+    let status = b"SigPnd: 0000000000000010\nSigBlk: invalid\n";
+    assert_eq!(
+        queued_in_status(status, Signal::SIGTRAP, SignalQueue::Thread),
+        None,
+        "a malformed blocking mask cannot prove the trap is unblocked"
+    );
+}
+
+#[test]
+fn malformed_detach_evidence_is_unknown_instead_of_not_held() {
+    let status =
+        b"TracerPid: 0\nSigPnd: 0000000000040000\nShdPnd: 0000000000000000\nSigBlk: invalid\n";
+    assert_eq!(held_in_status(status, b"42 (child) R 1 "), None);
+    assert_eq!(held_in_status(b"", b""), None);
 }
 
 #[test]
 fn a_process_is_held_while_untraced_and_stopped_or_about_to_stop() {
+    let held_in_status = |status: &[u8], stat: &[u8]| {
+        super::native::held_in_status(status, stat).expect("valid held-process evidence")
+    };
     let status = |state: &str, tracer: &str, pending: &str| {
         format!(
             "Name:\tchild\nState:\t{state}\nTracerPid:\t{tracer}\nSigPnd:\t{pending}\n\
              ShdPnd:\t0000000000000000\nSigBlk:\t0000000000000000\n"
         )
+        .into_bytes()
     };
 
-    let stat = |state: &str| format!("4242 (child) {state} 4241 4242 4241 0 -1");
+    let stat = |state: &str| format!("4242 (child) {state} 4241 4242 4241 0 -1").into_bytes();
     let none = "0000000000000000";
     let stop = "0000000000040000";
     assert!(held_in_status(
@@ -786,7 +819,6 @@ fn a_process_is_held_while_untraced_and_stopped_or_about_to_stop() {
         !held_in_status(&status("S (sleeping)", "0", none), &stat("S")),
         "something let it run"
     );
-    assert!(!held_in_status("", ""));
 }
 
 #[test]
@@ -944,6 +976,7 @@ struct FakeTrace {
 
     /// Threads holding a SIGTRAP queued behind an interrupt stop.
     queued_traps: RefCell<BTreeSet<Pid>>,
+    queue_error: Option<(Pid, SignalQueue)>,
 
     /// Threads past their exit, which no interrupt reaches, whose exit
     /// status is due.
@@ -1424,6 +1457,9 @@ impl LinuxTraceOps for FakeTrace {
     }
 
     fn signal_mask(&self, pid: Pid) -> Result<u64> {
+        if self.vanished.borrow().contains(&pid) {
+            return Err(backend_error(LinuxError::System(Errno::ESRCH)));
+        }
         Ok(self.signal_masks.borrow().get(&pid).copied().unwrap_or(0))
     }
 
@@ -1447,6 +1483,13 @@ impl LinuxTraceOps for FakeTrace {
     }
 
     fn queued_signal(&self, pid: Pid, signal: Signal, queue: SignalQueue) -> Result<bool> {
+        if self.queue_error == Some((pid, queue)) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "malformed signal masks",
+            )
+            .into());
+        }
         Ok(match (signal, queue) {
             (Signal::SIGTRAP, SignalQueue::Thread) => self.queued_traps.borrow().contains(&pid),
             (Signal::SIGCONT, SignalQueue::Process) => {
@@ -3644,6 +3687,68 @@ fn a_held_process_attached_is_continued_and_the_program_never_sees_why() {
         harness.public_reason(),
         Some(StopReason::Exception(ExceptionInfo { code: 18, .. }))
     ));
+}
+
+#[test]
+fn unreadable_signal_queue_stops_attach_draining_before_resuming_any_thread() {
+    let mut harness = watch_harness(2);
+    harness.attached();
+    harness
+        .trace()
+        .queued_traps
+        .borrow_mut()
+        .insert(harness.threads[0]);
+    harness.controller.ptrace.queue_error = Some((harness.threads[1], SignalQueue::Thread));
+    harness.trace().take_actions();
+    let error = harness
+        .controller
+        .drain_queued_traps()
+        .expect_err("queue evidence is required");
+    assert!(error.to_string().contains("malformed signal masks"));
+    assert!(
+        harness.trace().take_actions().is_empty(),
+        "no thread may run on unknown queue evidence"
+    );
+}
+
+#[test]
+fn a_failed_sigcont_queue_read_restores_the_mask_and_still_detaches() {
+    let mut harness = watch_harness(1);
+    let pid = harness.threads[0];
+    harness
+        .add(0xf000, 8)
+        .expect("arm a watchpoint before detach");
+    harness.attached();
+    harness.inferior().held = Some(HeldStop::Continued);
+    let original = 0xffff_ffff_fffb_feff;
+    harness
+        .trace()
+        .signal_masks
+        .borrow_mut()
+        .insert(pid, original);
+    harness.controller.ptrace.queue_error = Some((pid, SignalQueue::Process));
+    harness.trace().take_actions();
+    let (reply, result) = tokio::sync::oneshot::channel();
+    harness.controller.begin_shutdown(Some(reply));
+    let error = result
+        .blocking_recv()
+        .expect("shutdown replied")
+        .expect_err("the queue read failed");
+    assert!(error.to_string().contains("malformed signal masks"));
+    assert_eq!(
+        harness.trace().signal_masks.borrow().get(&pid),
+        Some(&original)
+    );
+    let actions = harness.trace().take_actions();
+    assert!(
+        actions.contains(&format!("write {pid} dr7=0x0")),
+        "hardware disarmed: {actions:?}"
+    );
+    assert!(
+        actions.contains(&format!("detach {pid} None")),
+        "detached: {actions:?}"
+    );
+    assert!(harness.controller.inferior.is_none());
 }
 
 /// A held process detached before it ever ran still holds the `SIGCONT`

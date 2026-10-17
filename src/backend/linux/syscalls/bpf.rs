@@ -881,14 +881,9 @@ impl Probe {
         let release = nix::sys::utsname::uname()
             .map(|name| name.release().to_string_lossy().into_owned())
             .unwrap_or_default();
-        let capabilities = std::fs::read_to_string("/proc/self/status")
+        let capabilities = super::super::proc_status::read_path("/proc/self/status")
             .ok()
-            .and_then(|status| {
-                status
-                    .lines()
-                    .find_map(|line| line.strip_prefix("CapEff:"))
-                    .and_then(|bits| u64::from_str_radix(bits.trim(), 16).ok())
-            })
+            .and_then(|status| super::super::proc_status::hex_field(&status, b"CapEff:"))
             .unwrap_or(0);
         let lockdown = std::fs::read_to_string("/sys/kernel/security/lockdown")
             .ok()

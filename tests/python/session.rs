@@ -220,7 +220,7 @@ impl PythonSession {
         fixture: &str,
         name: &str,
     ) -> (Self, Vec<Vec<String>>) {
-        Self::attach_at_in(interpreter, fixture, name, false).await
+        Self::attach_at_in(interpreter, fixture, name, false, &[]).await
     }
 
     /// A real nested PID namespace, retaining the outer proc mount so the
@@ -229,8 +229,9 @@ impl PythonSession {
         interpreter: &str,
         fixture: &str,
         name: &str,
+        arguments: &[&str],
     ) -> (Self, Vec<Vec<String>>) {
-        Self::attach_at_in(interpreter, fixture, name, true).await
+        Self::attach_at_in(interpreter, fixture, name, true, arguments).await
     }
 
     async fn attach_at_in(
@@ -238,6 +239,7 @@ impl PythonSession {
         fixture: &str,
         name: &str,
         namespace: bool,
+        arguments: &[&str],
     ) -> (Self, Vec<Vec<String>>) {
         let streams = Streams::new();
         let mut command = if namespace {
@@ -256,7 +258,7 @@ impl PythonSession {
         };
         let child = Ended(
             command
-                .args(self::command(fixture, &[]))
+                .args(self::command(fixture, arguments))
                 .stdin(Stdio::from(streams.reader))
                 .stdout(Stdio::from(streams.file))
                 .stderr(Stdio::from(streams.errors))
@@ -285,9 +287,13 @@ impl PythonSession {
         } else {
             ProcessId::new(u64::from(child.0.id()))
         };
-        let debugger = Debugger::attach_with(process, None, &debug_files)
-            .await
-            .expect("attach to the fixture");
+        let debugger = tokio::time::timeout(
+            CHECKPOINT_DEADLINE,
+            Debugger::attach_with(process, None, &debug_files),
+        )
+        .await
+        .expect("attach deadline")
+        .expect("attach to the fixture");
         let session = Self {
             scenario: Scenario::attached(context, debugger),
             interpreter: interpreter.to_owned(),
@@ -357,6 +363,25 @@ impl PythonSession {
     /// The interpreter and fixture, for messages.
     pub fn context(&self) -> String {
         format!("{} {}", self.interpreter, self.fixture)
+    }
+
+    /// Detaches, releases the checkpoint, and waits for a fixture whose
+    /// contract is to exit after that checkpoint. The owned child is reaped.
+    pub async fn detach_and_finish(mut self) {
+        self.input
+            .write_all(b"\n")
+            .expect("release fixture after detach");
+        self.scenario.shutdown().await;
+        let child = self.attached.as_mut().expect("an attached fixture owner");
+        let deadline = Instant::now() + CHECKPOINT_DEADLINE;
+        let status = loop {
+            if let Some(status) = child.0.try_wait().expect("poll detached fixture") {
+                break status;
+            }
+            assert!(Instant::now() < deadline, "detached fixture did not finish");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        assert!(status.success(), "detached fixture failed: {status}");
     }
 
     /// Ends the fixture and the debugger.

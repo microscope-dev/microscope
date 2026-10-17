@@ -268,12 +268,7 @@ impl Snapshotter {
 /// When thread `tid` of process `pid` started, in clock ticks since boot,
 /// which tells it from a later thread given its id.
 fn thread_start(pid: u32, tid: u32) -> Option<u64> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/stat")).ok()?;
-
-    // The name, in parentheses, may hold anything; the fields after it
-    // begin with the state, the third.
-    let after = &stat[stat.rfind(')')? + 2..];
-    after.split(' ').nth(19)?.parse().ok()
+    crate::backend::thread_start_time(crate::model::Pid::new(pid), crate::model::Tid::new(tid))
 }
 
 /// What `reads` asks of the program at `stop`.
@@ -757,28 +752,7 @@ fn label(model: &dyn runtime_model::RuntimeModel, stop: &LiveStop<'_>, snapshot:
 
 /// Whether process `pid` has exited: it is gone, or waits to be reaped.
 pub fn exited(pid: u32) -> bool {
-    std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |stat| stat_exited(&stat))
-}
-
-/// Whether a `/proc/PID/stat` line shows a process that began to exit,
-/// whose memory may be gone before it waits to be reaped.
-fn stat_exited(stat: &str) -> bool {
-    /// The kernel's `PF_EXITING`, set as `do_exit` begins.
-    const EXITING: u64 = 0x4;
-    let Some(fields) = stat.rfind(')').and_then(|end| stat.get(end + 2..)) else {
-        return false;
-    };
-
-    // State, parent, group, session, terminal, foreground group, flags.
-    let mut fields = fields.split_ascii_whitespace();
-    let reaped = fields
-        .next()
-        .is_some_and(|state| state.starts_with(['Z', 'X']));
-    let exiting = fields
-        .nth(5)
-        .and_then(|flags| flags.parse::<u64>().ok())
-        .is_some_and(|flags| flags & EXITING != 0);
-    reaped || exiting
+    crate::backend::process_exited(crate::model::Pid::new(pid))
 }
 
 /// The threads of process `pid`, in the order of their ids.
@@ -1213,17 +1187,15 @@ const fn live_waits(task: &runtime_model::RuntimeTask) -> bool {
 
 #[cfg(test)]
 mod tests {
-    /// A process is exited once it begins to: its memory may be gone
-    /// before it is a zombie.
     #[test]
-    fn a_process_that_began_to_exit_has_exited() {
-        // State, parent, group, session, terminal, foreground group, flags.
-        let running = "42 (a (b)) R 1 42 42 0 -1 4194304 0 0";
-        let exiting = "42 (a (b)) R 1 42 42 0 -1 4194308 0 0";
-        let zombie = "42 (a (b)) Z 1 42 42 0 -1 4194308 0 0";
-        assert!(!super::stat_exited(running));
-        assert!(super::stat_exited(exiting));
-        assert!(super::stat_exited(zombie));
+    fn a_live_thread_with_a_non_utf8_comm_is_not_mistaken_for_an_exited_process() {
+        let original = nix::sys::prctl::get_name().unwrap();
+        let name = c"microscope_\xff";
+        nix::sys::prctl::set_name(name).unwrap();
+        let thread = u32::try_from(nix::unistd::gettid().as_raw()).unwrap();
+        let exited = super::exited(thread);
+        nix::sys::prctl::set_name(&original).unwrap();
+        assert!(!exited, "invalid UTF-8 in comm does not imply process exit");
     }
 
     use std::time::{Duration, Instant};

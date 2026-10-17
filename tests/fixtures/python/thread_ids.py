@@ -14,7 +14,7 @@ assert host != os.getpid(), "the proc mount must retain the outer namespace"
 truth.report("host_pid", host)
 
 
-def worker(gate):
+def bad_name():
     # 16 UTF-8 bytes, truncated by Linux to 15 bytes in the OS comm field.
     threading.current_thread().name = "🧬" * 4
     status = open("/proc/thread-self/status", "rb").read()
@@ -25,10 +25,20 @@ def worker(gate):
         pass
     else:
         raise AssertionError("the proc name must exercise non-UTF-8 decoding")
+
+
+def worker(gate):
+    bad_name()
     gate.arrive()
 
+
+if "--leader-name" in sys.argv:
+    bad_name()
 
 gate = truth.Gate(1)
 thread = threading.Thread(target=worker, args=(gate,), name="worker")
 thread.start()
 truth.checkpoint("parked", gate)
+
+# The detach scenario releases the checkpoint before ending its session.
+os._exit(0)

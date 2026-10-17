@@ -721,13 +721,19 @@ impl LinuxTraceOps for LinuxPtrace {
 
     fn queued_signal(&self, pid: Pid, signal: Signal, queue: SignalQueue) -> Result<bool> {
         self.assert_owner_thread();
-        let status = match fs::read_to_string(format!("/proc/{pid}/status")) {
+        let status = match super::proc_status::read_path(format!("/proc/{pid}/status")) {
             Ok(status) => status,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) if super::proc_status::gone(&error) => return Ok(false),
             Err(error) => return Err(error.into()),
         };
 
-        Ok(queued_in_status(&status, signal, queue))
+        queued_in_status(&status, signal, queue).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("/proc/{pid}/status has missing or malformed signal masks"),
+            )
+            .into()
+        })
     }
 
     fn executable(&self, pid: Pid, address: VirtualAddress) -> Result<bool> {
@@ -798,24 +804,16 @@ pub(super) enum SignalQueue {
     Process,
 }
 
-/// Whether `/proc/<tid>/status` shows `signal` pending in `queue` and not
-/// blocked by the thread. A malformed mask is treated as nothing queued.
-pub(super) fn queued_in_status(status: &str, signal: Signal, queue: SignalQueue) -> bool {
-    let mask = |field: &str| {
-        status
-            .lines()
-            .find_map(|line| line.strip_prefix(field))
-            .and_then(|value| u64::from_str_radix(value.trim(), 16).ok())
-            .unwrap_or(0)
-    };
-
-    let bit = 1 << (signal.number() - 1);
+/// Whether the selected pending signal is unblocked. Missing or malformed
+/// masks are unknown, never evidence that a signal can safely be drained.
+pub(super) fn queued_in_status(status: &[u8], signal: Signal, queue: SignalQueue) -> Option<bool> {
     let pending = match queue {
-        SignalQueue::Thread => mask("SigPnd:"),
-        SignalQueue::Process => mask("ShdPnd:"),
+        SignalQueue::Thread => super::proc_status::hex_field(status, b"SigPnd:")?,
+        SignalQueue::Process => super::proc_status::hex_field(status, b"ShdPnd:")?,
     };
-
-    pending & bit != 0 && mask("SigBlk:") & bit == 0
+    let blocked = super::proc_status::hex_field(status, b"SigBlk:")?;
+    let bit = 1 << (signal.number() - 1);
+    Some(pending & bit != 0 && blocked & bit == 0)
 }
 
 /// The `struct user` offset of one debug register, as `PTRACE_PEEKUSER` and
@@ -913,9 +911,9 @@ fn tgkill(process: Pid, thread: Pid, signal: Signal) -> Result<()> {
 /// tracer has it, and it is stopped by job control or has the `SIGSTOP`
 /// that stops it still pending.
 pub(super) fn process_held(process: Pid, start_time: u64) -> Result<bool> {
-    let read = |file: &str| match fs::read_to_string(format!("/proc/{process}/{file}")) {
+    let read = |file: &str| match super::proc_status::read_path(format!("/proc/{process}/{file}")) {
         Ok(contents) => Ok(Some(contents)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) if super::proc_status::gone(&error) => Ok(None),
         Err(error) => Err(Error::from(error)),
     };
 
@@ -930,7 +928,16 @@ pub(super) fn process_held(process: Pid, start_time: u64) -> Result<bool> {
     // Read after both, the start time proves that they described the
     // process that was held.
     let same = crate::backend::process_start_time(process.as_raw()) == Some(start_time);
-    Ok(same && held_in_status(&status, &stat))
+    if !same {
+        return Ok(false);
+    }
+    held_in_status(&status, &stat).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("/proc/{process} has missing or malformed held-process evidence"),
+        )
+        .into()
+    })
 }
 
 /// Ends the job-control stop of `process` with `SIGCONT` if it is still
@@ -961,20 +968,12 @@ pub(super) fn continue_held(process: Pid, start_time: u64) -> Result<bool> {
 /// job control. The status shows the state before the pending signals, so
 /// a thread that takes `SIGSTOP` in between, which stops it at once, shows
 /// neither there; the state the later stat shows is current.
-pub(super) fn held_in_status(status: &str, stat: &str) -> bool {
-    let untraced = status
-        .lines()
-        .find_map(|line| line.strip_prefix("TracerPid:"))
-        .map(str::trim)
-        == Some("0");
-    let stopping = [SignalQueue::Thread, SignalQueue::Process]
-        .into_iter()
-        .any(|queue| queued_in_status(status, Signal::SIGSTOP, queue));
-    let stopped = stat
-        .rsplit_once(')')
-        .and_then(|(_, fields)| fields.split_whitespace().next())
-        == Some("T");
-    untraced && (stopping || stopped)
+pub(super) fn held_in_status(status: &[u8], stat: &[u8]) -> Option<bool> {
+    let tracer = super::proc_status::tracer_pid(status)?;
+    let stopped = super::proc_status::stat_state(stat)? == b'T';
+    let thread = queued_in_status(status, Signal::SIGSTOP, SignalQueue::Thread)?;
+    let process = queued_in_status(status, Signal::SIGSTOP, SignalQueue::Process)?;
+    Some(tracer == 0 && (thread || process || stopped))
 }
 
 pub(super) fn pidfd_open(process: Pid) -> std::result::Result<std::os::fd::OwnedFd, Errno> {
@@ -1113,11 +1112,9 @@ pub(super) fn ptrace_with_signal(
 
 pub(super) fn thread_group_id(pid: Pid) -> Result<Pid> {
     let path = format!("/proc/{pid}/status");
-    let status = fs::read_to_string(&path)?;
-    status
-        .lines()
-        .find_map(|line| line.strip_prefix("Tgid:"))
-        .and_then(|value| value.trim().parse::<i32>().ok())
+    let status = super::proc_status::read_path(&path)?;
+    super::proc_status::tgid(&status)
+        .and_then(|group| i32::try_from(group).ok())
         .map(Pid::from_raw)
         .ok_or_else(|| backend_error(LinuxError::ProcFile(path)))
 }
@@ -1150,14 +1147,10 @@ pub(super) fn interrupt_outcome(pid: Pid, result: nix::Result<()>) -> Result<boo
 
 /// The thread tracing `pid`, from its `/proc` status.
 fn tracer_of(pid: Pid) -> Option<Pid> {
-    let status = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-    status
-        .lines()
-        .find_map(|line| line.strip_prefix("TracerPid:"))?
-        .trim()
-        .parse()
-        .ok()
-        .filter(|&tracer| tracer != 0)
+    let status = super::proc_status::read_path(format!("/proc/{pid}/status")).ok()?;
+    super::proc_status::tracer_pid(&status)
+        .filter(|tracer| *tracer != 0)
+        .and_then(|tracer| i32::try_from(tracer).ok())
         .map(Pid::from_raw)
 }
 
@@ -1165,13 +1158,9 @@ fn tracer_of(pid: Pid) -> Option<Pid> {
 /// in the thread list for a moment, and `PTRACE_SEIZE` refuses it with
 /// `EPERM`.
 fn thread_has_exited(pid: Pid) -> bool {
-    match fs::read_to_string(format!("/proc/{pid}/stat")) {
-        // Fields resume after the command name's final parenthesis.
-        Ok(stat) => stat
-            .rsplit_once(')')
-            .and_then(|(_, fields)| fields.split_whitespace().next())
-            .is_some_and(|state| matches!(state, "Z" | "X")),
-        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+    match super::proc_status::read_path(format!("/proc/{pid}/stat")) {
+        Ok(stat) => matches!(super::proc_status::stat_state(&stat), Some(b'Z' | b'X')),
+        Err(error) => super::proc_status::gone(&error),
     }
 }
 

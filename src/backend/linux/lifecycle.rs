@@ -1172,19 +1172,21 @@ impl<P: LinuxTraceOps> Controller<P> {
             })
             .map(|(&pid, _)| pid)
             .collect::<Vec<_>>();
-        let mut resumed = false;
+        // Validate every queue before resuming any thread. A later read
+        // failure must leave the all-stop intact for shutdown cleanup.
+        let mut queued = Vec::new();
         for pid in candidates {
-            if !self
+            if self
                 .ptrace
                 .queued_signal(pid, Signal::SIGTRAP, SignalQueue::Thread)?
             {
-                continue;
+                queued.push(pid);
             }
-
-            self.resume_to_drain(pid)?;
-            resumed = true;
         }
-
+        let resumed = !queued.is_empty();
+        for pid in queued {
+            self.resume_to_drain(pid)?;
+        }
         Ok(resumed)
     }
 
@@ -1245,7 +1247,13 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
 
         if inferior.held == Some(HeldStop::Continued) {
-            let mask = self.ptrace.signal_mask(thread)?;
+            let mask = match self.ptrace.signal_mask(thread) {
+                Err(error) if is_vanished_tracee(&error) => {
+                    inferior.thread_mut(thread)?.state = NativeThreadState::Running;
+                    return Ok(true);
+                }
+                result => result?,
+            };
             let continued = 1 << (Signal::SIGCONT.number() - 1);
             if mask & continued != 0 {
                 match self.ptrace.set_signal_mask(thread, mask & !continued) {
@@ -1756,8 +1764,22 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .threads
                 .iter()
                 .all(|(&pid, thread)| inferior.settled(pid, thread));
-        if ready && !self.drain_queued_traps()? && !self.drain_held_continue()? {
-            self.detach_inferior();
+        if ready {
+            let draining = self.drain_queued_traps().and_then(|resumed| {
+                if resumed {
+                    Ok(true)
+                } else {
+                    self.drain_held_continue()
+                }
+            });
+            match draining {
+                Ok(false) => self.detach_inferior(),
+                Ok(true) => {}
+                // Queue evidence can be unavailable even at an all-stop.
+                // Report it, but still remove instrumentation and detach.
+                Err(error) if self.sites_live() => self.detach_inferior_reporting(Some(error)),
+                Err(error) => return Err(error),
+            }
         }
 
         Ok(())
@@ -1983,6 +2005,10 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// with breakpoints or debug registers still armed. The first failure is
     /// reported in the shutdown reply.
     pub(super) fn detach_inferior(&mut self) {
+        self.detach_inferior_reporting(None);
+    }
+
+    fn detach_inferior_reporting(&mut self, mut first_error: Option<Error>) {
         debug_assert!(
             self.inferior.as_ref().is_some_and(|inferior| {
                 inferior
@@ -1996,10 +2022,20 @@ impl<P: LinuxTraceOps> Controller<P> {
         // Every thread was stopped, and only SIGKILL takes one out of its
         // stop: a thread that refuses to be written belongs to a process
         // that is ending, where what is left can never run.
-        let mut first_error = self
-            .disarm_for_detach()
-            .err()
-            .filter(|error| !is_vanished_tracee(error));
+        // A queue read can fail after SIGCONT was temporarily unblocked.
+        // Restore its mask even when draining could not finish.
+        if let Some(HeldStop::Draining { thread, mask }) =
+            self.inferior.as_ref().and_then(|inferior| inferior.held)
+            && let Err(error) = self.ptrace.set_signal_mask(thread, mask)
+            && !is_vanished_tracee(&error)
+        {
+            first_error.get_or_insert(error);
+        }
+        if let Err(error) = self.disarm_for_detach()
+            && !is_vanished_tracee(&error)
+        {
+            first_error.get_or_insert(error);
+        }
         let Some(mut inferior) = self.inferior.take() else {
             self.answer_kill();
             self.finish_shutdown(first_error.map_or(Err(Error::NotRunning), Err));

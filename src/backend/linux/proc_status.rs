@@ -1,5 +1,5 @@
-//! Bounded identity fields from kernel proc status records. Names need not
-//! be UTF-8; only the numeric fields are decoded.
+//! Numeric fields from kernel stat/status records. Command names need not
+//! be UTF-8; only the selected numeric fields are decoded.
 
 use std::io::Read as _;
 use std::os::fd::OwnedFd;
@@ -27,6 +27,10 @@ fn read(file: impl std::io::Read) -> std::io::Result<Vec<u8>> {
         bytes.truncate(end);
     }
     Ok(bytes)
+}
+
+pub(super) fn read_path(path: impl AsRef<std::path::Path>) -> std::io::Result<Vec<u8>> {
+    read(std::fs::File::open(path)?)
 }
 
 pub(super) fn effective_uids(process: &OwnedFd) -> std::io::Result<(u32, u32)> {
@@ -93,6 +97,122 @@ fn namespace() -> Option<OwnedFd> {
     own_namespace(&own, std::process::id()).then_some(root)
 }
 
+/// Numeric stat fields are separated from an arbitrary byte-string comm.
+fn stat_field(stat: &[u8], index: usize) -> Option<&[u8]> {
+    let open = stat.iter().position(|byte| *byte == b'(')?;
+    let close = stat.iter().rposition(|byte| *byte == b')')?;
+    if open == 0
+        || close <= open
+        || !stat.get(open.checked_sub(1)?)?.is_ascii_whitespace()
+        || !stat.get(close.checked_add(1)?)?.is_ascii_whitespace()
+    {
+        return None;
+    }
+    let pid = u32::try_from(decimal(stat.get(..open)?.trim_ascii())?).ok()?;
+    if !valid_pid(pid) {
+        return None;
+    }
+    let fields = stat.get(close.checked_add(1)?..)?;
+    let state = fields
+        .split(u8::is_ascii_whitespace)
+        .find(|field| !field.is_empty())?;
+    if state.len() != 1 || !state.first()?.is_ascii_alphabetic() {
+        return None;
+    }
+    let field = fields
+        .split_inclusive(u8::is_ascii_whitespace)
+        .filter(|field| !field.trim_ascii().is_empty())
+        .nth(index)?;
+    // Do not accept a truncated final number as identity evidence.
+    field
+        .last()?
+        .is_ascii_whitespace()
+        .then(|| field.trim_ascii())
+}
+
+fn decimal(bytes: &[u8]) -> Option<u64> {
+    if bytes.is_empty() || !bytes.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    std::str::from_utf8(bytes).ok()?.parse().ok()
+}
+
+pub(super) fn stat_start_time(stat: &[u8]) -> Option<u64> {
+    decimal(stat_field(stat, 19)?)
+}
+
+pub(super) fn stat_state(stat: &[u8]) -> Option<u8> {
+    stat_field(stat, 0)?.first().copied()
+}
+
+pub(super) fn stat_exited(stat: &[u8]) -> bool {
+    const EXITING: u64 = 0x4;
+    matches!(stat_state(stat), Some(b'Z' | b'X'))
+        || stat_field(stat, 6)
+            .and_then(decimal)
+            .is_some_and(|flags| flags & EXITING != 0)
+}
+
+pub(super) fn process_start_time(process: i32) -> Option<u64> {
+    if process <= 0 {
+        return None;
+    }
+    stat_start_time(&read_path(format!("/proc/{process}/stat")).ok()?)
+}
+
+pub(super) fn thread_start_time(
+    process: crate::model::Pid,
+    thread: crate::model::Tid,
+) -> Option<u64> {
+    if !valid_pid(process.get()) || !valid_pid(thread.get()) {
+        return None;
+    }
+    stat_start_time(
+        &read_path(format!(
+            "/proc/{}/task/{}/stat",
+            process.get(),
+            thread.get()
+        ))
+        .ok()?,
+    )
+}
+
+pub(super) fn process_exited(process: crate::model::Pid) -> bool {
+    if !valid_pid(process.get()) {
+        return true;
+    }
+    exited_record(read_path(format!("/proc/{}/stat", process.get())))
+}
+
+pub(super) fn gone(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::NotFound || error.raw_os_error() == Some(nix::libc::ESRCH)
+}
+
+fn exited_record(record: std::io::Result<Vec<u8>>) -> bool {
+    match record {
+        Ok(stat) => stat_exited(&stat),
+        Err(error) => gone(&error),
+    }
+}
+
+pub(super) fn tgid(status: &[u8]) -> Option<u32> {
+    let value = u32::try_from(decimal(field(status, b"Tgid:")?.trim_ascii())?).ok()?;
+    valid_pid(value).then_some(value)
+}
+
+pub(super) fn tracer_pid(status: &[u8]) -> Option<u32> {
+    let value = u32::try_from(decimal(field(status, b"TracerPid:")?.trim_ascii())?).ok()?;
+    (value == 0 || valid_pid(value)).then_some(value)
+}
+
+pub(super) fn hex_field(status: &[u8], key: &[u8]) -> Option<u64> {
+    let value = field(status, key)?.trim_ascii();
+    if value.len() != 16 || !value.iter().all(u8::is_ascii_hexdigit) {
+        return None;
+    }
+    u64::from_str_radix(std::str::from_utf8(value).ok()?, 16).ok()
+}
+
 fn valid_pid(value: u32) -> bool {
     value != 0 && i32::try_from(value).is_ok()
 }
@@ -151,6 +271,142 @@ fn thread_in_status(status: &[u8], process: u32, thread: u32) -> Option<TargetTh
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unavailable_proc_metadata_does_not_prove_process_exit() {
+        assert!(
+            exited_record(Err(std::io::Error::from_raw_os_error(nix::libc::ESRCH))),
+            "an opened proc inode can outlive its process"
+        );
+        for kind in [
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::Interrupted,
+            std::io::ErrorKind::UnexpectedEof,
+        ] {
+            assert!(!exited_record(Err(std::io::Error::from(kind))), "{kind:?}");
+        }
+        assert!(exited_record(Err(std::io::Error::from(
+            std::io::ErrorKind::NotFound
+        ))));
+    }
+
+    fn stat_record(comm: &[u8], flags: u64, start: &str) -> Vec<u8> {
+        let mut record = b"42 (".to_vec();
+        record.extend_from_slice(comm);
+        record.extend_from_slice(b") R 1 42 42 0 -1 ");
+        record.extend_from_slice(format!("{flags} ").as_bytes());
+        record.extend_from_slice(b"0 0 0 0 0 0 0 0 0 0 0 0 ");
+        record.extend_from_slice(start.as_bytes());
+        record.push(b' ');
+        record
+    }
+
+    #[test]
+    fn stat_fields_reject_malformed_headers_and_incomplete_numbers() {
+        let good = stat_record(b"name", 0, "123");
+        assert_eq!(stat_start_time(&good), Some(123));
+        for header in [
+            "",
+            "0 (name)",
+            "-1 (name)",
+            "2147483648 (name)",
+            "42 name",
+            "42(name)",
+            "42 (name)",
+        ] {
+            let mut record = header.as_bytes().to_vec();
+            record.extend_from_slice(b"R 1 42 42 0 -1 0 ");
+            assert_eq!(stat_state(&record), None, "{header}");
+        }
+        for start in ["", "+1", "-1", "12x", "18446744073709551616"] {
+            assert_eq!(
+                stat_start_time(&stat_record(b"name", 0, start)),
+                None,
+                "{start}"
+            );
+        }
+        assert_eq!(stat_start_time(&good[..good.len() - 1]), None);
+        assert_eq!(stat_state(&good[..good.len() - 1]), Some(b'R'));
+        assert_eq!(stat_state(b"42 (name) RR "), None);
+        assert_eq!(stat_state(b"42 (name) 0 "), None);
+    }
+
+    #[test]
+    fn status_numbers_require_one_bounded_complete_field() {
+        let status = b"Name: \xff\xfe\xfd\nTgid: 42\nTracerPid: 0\nCapEff: ffffffffffffffff\n";
+        assert_eq!(tgid(status), Some(42));
+        assert_eq!(tracer_pid(status), Some(0));
+        assert_eq!(hex_field(status, b"CapEff:"), Some(u64::MAX));
+        for number in [
+            "",
+            "0",
+            "+1",
+            "-1",
+            "2147483648",
+            "4294967296",
+            "4 2",
+            "42x",
+        ] {
+            assert_eq!(
+                tgid(format!("Tgid: {number}\n").as_bytes()),
+                None,
+                "{number}"
+            );
+        }
+        assert_eq!(tgid(b"Tgid: 42\nTgid: 42\n"), None);
+        assert_eq!(tracer_pid(b"TracerPid: 2147483648\n"), None);
+        for value in [
+            "",
+            "1",
+            "+000000000000001",
+            "000000000000000g",
+            "00000000000000000",
+        ] {
+            assert_eq!(
+                hex_field(format!("SigBlk: {value}\n").as_bytes(), b"SigBlk:"),
+                None,
+                "{value}"
+            );
+        }
+        assert_eq!(
+            hex_field(
+                b"SigBlk: 0000000000000001\nSigBlk: 0000000000000001\n",
+                b"SigBlk:"
+            ),
+            None
+        );
+        assert_eq!(
+            hex_field(b"SigBlk: 0000000000000001\n", b"SigBlk:"),
+            Some(1)
+        );
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn arbitrary_command_bytes_do_not_change_numeric_stat_fields(
+            comm in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..64),
+            start in proptest::prelude::any::<u64>(),
+            flags in proptest::prelude::any::<u64>(),
+        ) {
+            let record = stat_record(&comm, flags, &start.to_string());
+            proptest::prop_assert_eq!(stat_start_time(&record), Some(start));
+            proptest::prop_assert_eq!(stat_state(&record), Some(b'R'));
+            proptest::prop_assert_eq!(stat_exited(&record), flags & 4 != 0);
+        }
+    }
+
+    /// A process is exited once it begins to: its memory may be gone
+    /// before it is a zombie.
+    #[test]
+    fn a_process_that_began_to_exit_has_exited() {
+        // State, parent, group, session, terminal, foreground group, flags.
+        let running = "42 (a (b)) R 1 42 42 0 -1 4194304 0 0";
+        let exiting = "42 (a (b)) R 1 42 42 0 -1 4194308 0 0";
+        let zombie = "42 (a (b)) Z 1 42 42 0 -1 4194308 0 0";
+        assert!(!stat_exited(running.as_bytes()));
+        assert!(stat_exited(exiting.as_bytes()));
+        assert!(stat_exited(zombie.as_bytes()));
+    }
 
     #[test]
     fn namespaces_match_the_controlled_process_and_thread_before_using_the_innermost_id() {

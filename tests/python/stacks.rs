@@ -341,39 +341,57 @@ async fn each_python_frames_source_is_the_line_it_runs() {
 #[tokio::test]
 async fn a_pid_namespaces_python_frames_match_the_reported_target_threads() {
     for interpreter in ["3.14", "3.14t"] {
-        let (mut session, truth) =
-            PythonSession::attach_in_pid_namespace_at(interpreter, "thread_ids.py", "parked").await;
-        let snapshot = session.scenario.snapshot().await;
-        let threads = snapshot.threads;
-        assert_eq!(threads.len(), 2, "{}: {threads:?}", session.context());
-        let host_process = match snapshot.inferior {
-            InferiorState::Stopped { process_id, .. } => process_id.get(),
-            other => panic!("not stopped: {other:?}"),
-        };
-        for (native, printer, reported) in reported_threads(&truth) {
-            let host = if printer {
-                host_process
-            } else {
-                threads
-                    .iter()
-                    .find(|thread| thread.id.get() != host_process)
-                    .expect("worker host thread")
-                    .id
-                    .get()
-            };
-            assert_ne!(host, native);
-            let trace = session.backtrace(ThreadId::new(host)).await;
-            check_frames(&trace, &reported, if printer { 2 } else { 0 }).unwrap_or_else(|lie| {
-                panic!(
-                    "{} native {native}, host {host}: {lie}\n{trace:#?}",
-                    session.context()
-                )
-            });
-        }
+        let session = check_namespaced_frames(interpreter, &[]).await;
         session
             .scenario
             .operation("kill namespace init", session.scenario.handle().kill())
             .await;
         session.shutdown().await;
     }
+}
+
+#[tokio::test]
+async fn a_non_utf8_process_leader_name_preserves_attach_and_inspection() {
+    for interpreter in ["3.14", "3.14t"] {
+        let session = check_namespaced_frames(interpreter, &["--leader-name"]).await;
+        session.detach_and_finish().await;
+    }
+}
+
+async fn check_namespaced_frames(interpreter: &str, arguments: &[&str]) -> PythonSession {
+    let (mut session, truth) = PythonSession::attach_in_pid_namespace_at(
+        interpreter,
+        "thread_ids.py",
+        "parked",
+        arguments,
+    )
+    .await;
+    let snapshot = session.scenario.snapshot().await;
+    let threads = snapshot.threads;
+    assert_eq!(threads.len(), 2, "{}: {threads:?}", session.context());
+    let host_process = match snapshot.inferior {
+        InferiorState::Stopped { process_id, .. } => process_id.get(),
+        other => panic!("not stopped: {other:?}"),
+    };
+    for (native, printer, reported) in reported_threads(&truth) {
+        let host = if printer {
+            host_process
+        } else {
+            threads
+                .iter()
+                .find(|thread| thread.id.get() != host_process)
+                .expect("worker host thread")
+                .id
+                .get()
+        };
+        assert_ne!(host, native);
+        let trace = session.backtrace(ThreadId::new(host)).await;
+        check_frames(&trace, &reported, if printer { 2 } else { 0 }).unwrap_or_else(|lie| {
+            panic!(
+                "{} native {native}, host {host}: {lie}\n{trace:#?}",
+                session.context()
+            )
+        });
+    }
+    session
 }

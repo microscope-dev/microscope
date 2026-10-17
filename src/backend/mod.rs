@@ -128,19 +128,18 @@ fn read_executable_source(
     })
 }
 
-/// Returns a process's start time in clock ticks since boot, from field 22
-/// of `/proc/<pid>/stat`.
-pub fn process_start_time(process: i32) -> Option<u64> {
-    let stat = fs::read_to_string(format!("/proc/{process}/stat")).ok()?;
+/// A thread's start time in clock ticks since boot.
+pub fn thread_start_time(process: crate::model::Pid, thread: crate::model::Tid) -> Option<u64> {
+    linux::thread_start_time(process, thread)
+}
 
-    // The command name may contain spaces and parentheses; fields resume
-    // after its final closing parenthesis.
-    stat.rsplit_once(')')?
-        .1
-        .split_whitespace()
-        .nth(19)?
-        .parse()
-        .ok()
+pub fn process_exited(process: crate::model::Pid) -> bool {
+    linux::process_exited(process)
+}
+
+/// Returns field 22 of `/proc/<pid>/stat`, in clock ticks since boot.
+pub fn process_start_time(process: i32) -> Option<u64> {
+    linux::process_start_time(process)
 }
 
 pub enum ControllerMessage {

@@ -377,13 +377,8 @@ impl NativeTracee {
     /// `T`, where a ptrace-stop shows `t`.
     #[must_use]
     pub fn job_stopped(&self, thread: Tid) -> bool {
-        std::fs::read_to_string(format!("/proc/{thread}/stat"))
-            .ok()
-            .and_then(|stat| {
-                let (_, fields) = stat.rsplit_once(')')?;
-                fields.split_whitespace().next().map(|state| state == "T")
-            })
-            .unwrap_or(false)
+        super::proc_status::read_path(format!("/proc/{thread}/stat"))
+            .is_ok_and(|stat| super::proc_status::stat_state(&stat) == Some(b'T'))
     }
 
     pub fn peek(&self, thread: Tid, address: u64) -> std::result::Result<u64, Errno> {

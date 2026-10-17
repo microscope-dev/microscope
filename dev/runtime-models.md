@@ -373,6 +373,12 @@ state when its host thread is unknown, with an explanation and no guessed
 thread or parked-frame context. The simulator supplies its explicit single
 namespace mapping.
 
+Linux stat/status readers decode selected numeric fields from bytes. A kernel
+command name can end in a partial UTF-8 character or contain parentheses and
+newlines; it must not prevent attach, identity checks, signal handling, detach,
+or profiling. Signal queue classification requires both the pending and blocking
+masks; a missing or malformed mask is an error, never an unblocked signal.
+
 A thread's chain of frames begins at its current frame (3.12: through its `_PyCFrame`). `frames.rs` walks it innermost first.
 Frames the thread owns run code; the interpreter's entry frame ends each
 segment that one activation of the evaluation loop runs. The walk ends on a

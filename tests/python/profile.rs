@@ -144,6 +144,15 @@ fn gil_values(profile: &Profile) -> Vec<String> {
 fn record_until(
     interpreter: &str,
     engine: PythonEngine,
+    ready: impl FnMut(&Profile) -> bool,
+) -> Profile {
+    record_until_with_args(interpreter, engine, &[], ready)
+}
+
+fn record_until_with_args(
+    interpreter: &str,
+    engine: PythonEngine,
+    arguments: &[&str],
     mut ready: impl FnMut(&Profile) -> bool,
 ) -> Profile {
     let (reader, mut writer) = std::io::pipe().expect("pipe");
@@ -151,6 +160,7 @@ fn record_until(
     command
         .args(["-I", "-B"])
         .arg(python::fixture("profiled.py"))
+        .args(arguments)
         .stdin(reader)
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -284,6 +294,43 @@ fn live_snapshots_read_each_python_thread_as_it_runs() {
                 !wait.functions.iter().any(|function| evaluates(function)),
                 "{interpreter}: a live stack with native frames: {wait:?}"
             );
+        }
+    }
+}
+
+#[test]
+fn arbitrary_kernel_names_preserve_live_and_stopped_python_profiles() {
+    let lines = lines();
+    for interpreter in ["3.14", "3.14t"] {
+        for engine in [
+            PythonEngine::Snapshot { every: EVERY },
+            PythonEngine::Live { every: EVERY },
+        ] {
+            let ready = |profile: &Profile| {
+                let paths = python_paths(profile);
+                paths.keys().any(|path| spins(path, &lines))
+                    && paths.keys().any(|path| naps(path, &lines))
+            };
+            let profile = record_until_with_args(interpreter, engine, &["--bad-names"], ready);
+            assert!(
+                ready(&profile),
+                "{interpreter}: {:?}",
+                python_paths(&profile)
+            );
+            if matches!(engine, PythonEngine::Snapshot { .. }) {
+                assert!(
+                    profile.task_snapshot_problems().is_empty(),
+                    "{interpreter}: {:?}",
+                    profile.task_snapshot_problems()
+                );
+            } else {
+                // Live reads can race thread creation, exit, and mapping
+                // records. Require the actual stacks, as the live contract
+                // does, rather than treating its visible gaps as failures.
+                let (taken, paused, _) = profile.task_snapshots();
+                assert!(taken > 0);
+                assert_eq!(paused, 0);
+            }
         }
     }
 }

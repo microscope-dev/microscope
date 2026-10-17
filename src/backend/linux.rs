@@ -210,6 +210,18 @@ pub fn running_thread_pointers(pid: u32) -> std::result::Result<Vec<(u32, u64)>,
         .collect())
 }
 
+pub fn thread_start_time(process: crate::model::Pid, thread: crate::model::Tid) -> Option<u64> {
+    proc_status::thread_start_time(process, thread)
+}
+
+pub fn process_exited(process: crate::model::Pid) -> bool {
+    proc_status::process_exited(process)
+}
+
+pub fn process_start_time(process: i32) -> Option<u64> {
+    proc_status::process_start_time(process)
+}
+
 pub fn target_thread_ids(
     process: u32,
     threads: &[u32],
