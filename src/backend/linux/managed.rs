@@ -131,32 +131,65 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Arms each runtime whose arming changed with all of it, while every
     /// thread is stopped. A runtime that cannot be armed keeps why, and is
     /// armed again at the next change.
-    pub(super) fn sync_runtime_arming(&mut self) {
+    /// Returns whether the public arming reasons changed. A configuration
+    /// edit publishes its whole change; standalone rearming must notify it.
+    #[must_use]
+    pub(super) fn sync_runtime_arming(&mut self) -> bool {
         let Some(inferior) = self.inferior.as_mut() else {
-            return;
+            return false;
         };
-
+        let mut changed = false;
         for runtime in inferior.managed.take_stale() {
-            let armed = self.arm_runtime(runtime);
-            let Some(inferior) = self.inferior.as_mut() else {
-                return;
-            };
-
-            match armed {
-                Ok(()) => {
-                    inferior.managed.unarmed.remove(&runtime);
-                }
-                Err(reason) => {
-                    record!("runtime {runtime} is not armed: {reason}");
-                    inferior.managed.unarmed.insert(runtime, reason);
-                }
-            }
+            let previous = self.arming_problem(runtime);
+            let _ = self.arm_runtime(runtime);
+            changed |= previous != self.arming_problem(runtime);
         }
+        changed
     }
 
     /// Arms the runtime `runtime` with everything its internal hooks are to
     /// report: its managed locations, its step, and which exceptions stop.
     pub(super) fn arm_runtime(&mut self, runtime: RuntimeId) -> Result<(), Arc<str>> {
+        let result = self.prepare_runtime_arming(runtime);
+        if let Some(inferior) = self.inferior.as_mut() {
+            match &result {
+                Ok(()) => {
+                    inferior.managed.unarmed.remove(&runtime);
+                }
+                Err(reason) => {
+                    record!("runtime {runtime} is not armed: {reason}");
+                    inferior.managed.unarmed.insert(runtime, Arc::clone(reason));
+                }
+            }
+        }
+        result
+    }
+
+    fn arming_problem(&self, runtime: RuntimeId) -> Option<Arc<str>> {
+        self.inferior
+            .as_ref()?
+            .managed
+            .unarmed
+            .get(&runtime)
+            .cloned()
+    }
+
+    /// Publishes only the final readiness change of a standalone operation,
+    /// including any rollback of an unsuccessful step request.
+    pub(super) fn with_arming_notification<T>(
+        &mut self,
+        runtime: RuntimeId,
+        operation: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let previous = self.arming_problem(runtime);
+        let result = operation(self);
+        if previous != self.arming_problem(runtime) {
+            self.publish_breakpoints_changed();
+        }
+        result
+    }
+
+    fn prepare_runtime_arming(&mut self, runtime: RuntimeId) -> Result<(), Arc<str>> {
         let inferior = self
             .inferior
             .as_ref()
@@ -211,6 +244,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
         }
 
-        self.sync_runtime_arming();
+        if self.sync_runtime_arming() {
+            self.publish_breakpoints_changed();
+        }
     }
 }

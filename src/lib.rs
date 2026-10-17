@@ -161,13 +161,13 @@ pub use protocol::{
     ExceptionInfo, ExceptionStops, ExecutionId, ExitStatus, FramePresentation, GlobalVariableQuery,
     HeldChild, HeldProcess, HitComparison, HitCondition, InferiorState, InvalidatedWatchpoint,
     KernelSource, LanguageException, LanguageExceptionKind, LaunchOptions, LogPart,
-    MAX_DRAWING_BYTES, ModuleIdentity, NumberKind, Numbers, PresentedFrame, ProcessId, Renderer,
-    ResolvedBreakpointLocation, ResumeScope, SignalPolicy, StateSnapshot, StepKind, StepTarget,
-    StopId, StopReason, SyscallStop, TaskEnding, ThreadSnapshot, ThreadState, TypeViews,
-    ValueChildQuery, VariableQuery, ViewCandidate, ViewCheck, ViewExplanation, VisualizerBinding,
-    VisualizerInput, VisualizerInputs, VisualizerValue, WatchAccess, WatchScope, WatchTarget,
-    Watchpoint, WatchpointCapabilities, WatchpointHit, WatchpointId, WatchpointInvalidation,
-    WatchpointOptions, WatchpointSpec,
+    MAX_DRAWING_BYTES, ModuleIdentity, NumberKind, Numbers, PendingBreakpointLocation,
+    PresentedFrame, ProcessId, Renderer, ResolvedBreakpointLocation, ResumeScope, SignalPolicy,
+    StateSnapshot, StepKind, StepTarget, StopId, StopReason, SyscallStop, TaskEnding,
+    ThreadSnapshot, ThreadState, TypeViews, ValueChildQuery, VariableQuery, ViewCandidate,
+    ViewCheck, ViewExplanation, VisualizerBinding, VisualizerInput, VisualizerInputs,
+    VisualizerValue, WatchAccess, WatchScope, WatchTarget, Watchpoint, WatchpointCapabilities,
+    WatchpointHit, WatchpointId, WatchpointInvalidation, WatchpointOptions, WatchpointSpec,
 };
 
 pub use runtime_model::TASK_NOUNS;

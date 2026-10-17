@@ -1220,7 +1220,7 @@ impl Cli {
                     .map(|record| record.module)
             });
         let mut placed = Vec::new();
-        for resolved in breakpoint.locations.iter() {
+        for resolved in breakpoint.ready_locations() {
             placed.push(self.place(resolved.location.clone(), main).await);
         }
 

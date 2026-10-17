@@ -1658,6 +1658,12 @@ impl WatchHarness {
             .count()
     }
 
+    fn breakpoint_events(&mut self) -> usize {
+        std::iter::from_fn(|| self.events.try_recv().ok())
+            .filter(|event| matches!(event, DebuggerEvent::BreakpointsChanged { .. }))
+            .count()
+    }
+
     /// Marks every thread running inside a process-wide continue.
     fn start_continue(&mut self) {
         let inferior = self.controller.inferior.as_mut().expect("inferior");
@@ -2197,6 +2203,7 @@ fn stale_status_is_never_consulted_outside_debug_exceptions() {
         },
     );
     harness.controller.breakpoints.push(Breakpoint {
+        pending_locations: Arc::from([]),
         id: BreakpointId::new(1),
         spec: BreakpointSpec::Address(VirtualAddress::new(0x40)),
         locations: Arc::from([]),
@@ -4257,6 +4264,7 @@ const HIT_SITE: u64 = 0x40;
 fn hit_harness(thread_count: i32, hit_condition: &str) -> WatchHarness {
     let mut harness = watch_harness(thread_count);
     harness.controller.breakpoints.push(Breakpoint {
+        pending_locations: Arc::from([]),
         id: BreakpointId::new(1),
         spec: BreakpointSpec::Address(VirtualAddress::new(HIT_SITE)),
         locations: Arc::from([ResolvedBreakpointLocation {
@@ -5112,6 +5120,10 @@ struct ScriptedRuntime {
     /// What the runtime was armed with, each time it was.
     armed: std::sync::Mutex<Vec<Vec<crate::runtime_model::ManagedArm>>>,
 
+    /// A scripted refusal while arming, after resolution succeeded.
+    arm_failure: std::sync::Mutex<Option<Arc<str>>>,
+    mixed_function: bool,
+
     /// The step the runtime was armed with, each time it was.
     steps: std::sync::Mutex<Vec<Option<crate::runtime_model::RuntimeStep>>>,
 
@@ -5290,6 +5302,13 @@ impl crate::runtime_model::RuntimeModel for ScriptedRuntime {
         _stop: &dyn crate::runtime_model::RuntimeStop,
         spec: &BreakpointSpec,
     ) -> Option<std::result::Result<Vec<crate::ManagedPlace>, Arc<str>>> {
+        if self.mixed_function
+            && matches!(spec, BreakpointSpec::Function(name) if name == "physical")
+        {
+            return Some(Ok(vec![crate::ManagedPlace::Function {
+                name: "physical".into(),
+            }]));
+        }
         let BreakpointSpec::Source { path, line } = spec else {
             return None;
         };
@@ -5314,6 +5333,9 @@ impl crate::runtime_model::RuntimeModel for ScriptedRuntime {
         _stop: &dyn crate::runtime_model::RuntimeStop,
         arming: &crate::runtime_model::Arming<'_>,
     ) -> std::result::Result<Vec<crate::runtime_model::RuntimeWrite>, Arc<str>> {
+        if let Some(reason) = self.arm_failure.lock().expect("the script").as_ref() {
+            return Err(Arc::clone(reason));
+        }
         if arming
             .step
             .is_some_and(|step| step.kind == StepKind::Instruction)
@@ -5855,6 +5877,406 @@ fn a_runtime_resolves_arms_and_reports_a_managed_breakpoint() {
     );
 }
 
+/// Resolution does not prove the runtime accepted its arming. Public
+/// replies and snapshots retain the location and expose the failure.
+#[test]
+fn managed_arming_failures_remain_visible_until_recovery() {
+    let mut harness = watch_harness(1);
+    let runtime = scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            internal: vec![crate::runtime_model::HookPlace::Own(ImageAddress::new(
+                0x40,
+            ))],
+            arm_failure: std::sync::Mutex::new(Some("the scripted runtime is initializing".into())),
+            ..ScriptedRuntime::default()
+        },
+    );
+    let breakpoint = harness
+        .add_spec(BreakpointSpec::Source {
+            path: "pending.scripted".into(),
+            line: crate::LineNumber::new(3).expect("line"),
+        })
+        .expect("resolved intent is retained");
+    assert_eq!(breakpoint.locations.len(), 1);
+    let expected: Arc<[crate::PendingBreakpointLocation]> =
+        Arc::from([crate::PendingBreakpointLocation {
+            location: breakpoint.locations[0].location.clone(),
+            reason: "the scripted runtime is initializing".into(),
+        }]);
+    assert_eq!(breakpoint.pending_locations, expected);
+    assert_eq!(breakpoint.ready_locations().count(), 0);
+    let snapshot = harness.controller.snapshot();
+    assert_eq!(snapshot.breakpoints[0].pending_locations, expected);
+    assert!(runtime.armed.lock().expect("the script").is_empty());
+    while harness.events.try_recv().is_ok() {}
+
+    *runtime.arm_failure.lock().expect("the script") = None;
+    harness.controller.rearm_reporting_runtimes();
+    let snapshot = harness.controller.snapshot();
+    assert!(snapshot.breakpoints[0].pending_locations.is_empty());
+    assert_eq!(snapshot.breakpoints[0].ready_locations().count(), 1);
+    assert_eq!(harness.breakpoint_events(), 1);
+}
+
+#[test]
+fn pending_managed_locations_survive_edits_and_notify_only_when_the_reason_changes() {
+    let mut harness = watch_harness(1);
+    let runtime = scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            internal: vec![crate::runtime_model::HookPlace::Own(ImageAddress::new(
+                0x40,
+            ))],
+            arm_failure: std::sync::Mutex::new(Some("waiting".into())),
+            ..ScriptedRuntime::default()
+        },
+    );
+    let breakpoint = harness
+        .add_spec(BreakpointSpec::Source {
+            path: "pending.scripted".into(),
+            line: crate::LineNumber::new(3).expect("line"),
+        })
+        .expect("breakpoint");
+    assert_eq!(
+        harness
+            .add_spec(breakpoint.spec.clone())
+            .expect("duplicate"),
+        breakpoint
+    );
+    let disabled = harness
+        .controller
+        .set_breakpoint_enabled(breakpoint.id, false)
+        .expect("disable");
+    assert!(disabled.pending_locations.is_empty());
+    let enabled = harness
+        .controller
+        .set_breakpoint_enabled(breakpoint.id, true)
+        .expect("enable");
+    assert_eq!(enabled.pending_locations, breakpoint.pending_locations);
+    let unchanged = harness
+        .controller
+        .set_breakpoint_enabled(breakpoint.id, true)
+        .expect("already enabled");
+    assert_eq!(unchanged.pending_locations, breakpoint.pending_locations);
+    let edited = harness
+        .controller
+        .set_breakpoint_condition(breakpoint.id, None)
+        .expect("edit");
+    assert_eq!(edited.pending_locations, breakpoint.pending_locations);
+    harness.breakpoint_events();
+    harness.controller.rearm_reporting_runtimes();
+    assert_eq!(
+        harness.breakpoint_events(),
+        0,
+        "the same refusal changes nothing"
+    );
+    *runtime.arm_failure.lock().expect("the script") = Some("tool IDs occupied".into());
+    harness.controller.rearm_reporting_runtimes();
+    assert_eq!(harness.breakpoint_events(), 1);
+    assert_eq!(
+        &*harness.controller.snapshot().breakpoints[0].pending_locations[0].reason,
+        "tool IDs occupied"
+    );
+}
+
+#[test]
+fn mixed_breakpoint_readiness_is_projected_in_replies_and_snapshots() {
+    let mut lines = crate::image::lines::LineTables::default();
+    lines.begin_sequence().expect("one sequence");
+    lines
+        .push_row(&crate::image::lines::Row {
+            address: 0x20,
+            file: Some(crate::SourceFileId::new(0)),
+            line: 3,
+            statement: true,
+            prologue_end: true,
+            ..Default::default()
+        })
+        .expect("one statement");
+    lines
+        .push_range(
+            AddressRange {
+                start: ImageAddress::new(0x20),
+                end: ImageAddress::new(0x30),
+            },
+            0,
+            true,
+        )
+        .expect("one range");
+    lines
+        .push_row(&crate::image::lines::Row {
+            address: 0x30,
+            end_sequence: true,
+            ..Default::default()
+        })
+        .expect("end sequence");
+    let image = lined_test_image(&[(0, None, None, (0, 0x100))], lines);
+    let mut harness = watch_harness_of(1, &image);
+    let _runtime = scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            mixed_function: true,
+            arm_failure: std::sync::Mutex::new(Some("not confirmed".into())),
+            ..ScriptedRuntime::default()
+        },
+    );
+    let breakpoint = harness
+        .add_spec(BreakpointSpec::Function("physical".into()))
+        .expect("mixed resolution");
+    assert_eq!(breakpoint.locations.len(), 2);
+    assert_eq!(breakpoint.pending_locations.len(), 1);
+    let ready = breakpoint.ready_locations().collect::<Vec<_>>();
+    assert_eq!(ready.len(), 1);
+    assert!(matches!(
+        ready[0].location,
+        crate::BreakpointLocation::Image(_)
+    ));
+    assert!(matches!(
+        breakpoint.pending_locations[0].location,
+        crate::BreakpointLocation::Managed(_)
+    ));
+    assert_eq!(harness.controller.snapshot().breakpoints[0], breakpoint);
+}
+
+#[test]
+fn removed_breakpoint_definitions_have_no_pending_arming() {
+    for all in [false, true] {
+        let mut harness = watch_harness(1);
+        let _runtime = scripted_runtime(
+            &harness,
+            ScriptedRuntime {
+                arm_failure: std::sync::Mutex::new(Some("configuration refused".into())),
+                ..ScriptedRuntime::default()
+            },
+        );
+        let breakpoint = harness
+            .add_spec(BreakpointSpec::Source {
+                path: "pending.scripted".into(),
+                line: crate::LineNumber::new(3).expect("line"),
+            })
+            .expect("breakpoint");
+        assert_eq!(breakpoint.pending_locations.len(), 1);
+        let removed = if all {
+            harness
+                .controller
+                .remove_all_breakpoints()
+                .expect("remove all")
+                .to_vec()
+        } else {
+            vec![
+                harness
+                    .controller
+                    .remove_breakpoint(breakpoint.id)
+                    .expect("remove"),
+            ]
+        };
+        assert_eq!(removed.len(), 1);
+        assert!(
+            removed[0].pending_locations.is_empty(),
+            "removed definition: {removed:?}"
+        );
+        assert!(harness.controller.snapshot().breakpoints.is_empty());
+    }
+}
+
+#[test]
+fn a_module_refresh_publishes_new_managed_arming_state_once() {
+    let mut harness = watch_harness(1);
+    let breakpoint = harness
+        .edit(|reply| Edit::AddBreakpoint {
+            spec: BreakpointSpec::Source {
+                path: "pending.scripted".into(),
+                line: crate::LineNumber::new(3).expect("line"),
+            },
+            options: Box::new(crate::BreakpointOptions {
+                pending: true,
+                ..Default::default()
+            }),
+            reply,
+        })
+        .try_recv()
+        .expect("reply")
+        .expect("pending intent");
+    assert!(breakpoint.locations.is_empty());
+    harness.breakpoint_events();
+    let _runtime = scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            arm_failure: std::sync::Mutex::new(Some("configuration refused".into())),
+            ..ScriptedRuntime::default()
+        },
+    );
+    harness.controller.refresh_libraries().expect("refresh");
+    let snapshot = harness.controller.snapshot();
+    assert_eq!(snapshot.breakpoints[0].locations.len(), 1);
+    assert_eq!(snapshot.breakpoints[0].pending_locations.len(), 1);
+    assert_eq!(harness.breakpoint_events(), 1);
+}
+
+/// A refusal leaves the whole desired configuration unconfirmed. The
+/// earlier configuration can remain effective, so its hits still count.
+#[test]
+fn unconfirmed_runtime_arming_still_judges_hits_from_the_previous_configuration() {
+    let mut harness = watch_harness(1);
+    harness.controller.unwind_info = Arc::new(FlatUnwindInfo);
+    let hitting = harness.threads[0];
+    let runtime = scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            internal: vec![crate::runtime_model::HookPlace::Own(ImageAddress::new(
+                0x40,
+            ))],
+            ..ScriptedRuntime::default()
+        },
+    );
+    harness.controller.sync_runtime_hooks().expect("hook");
+    let source = |path: &str| BreakpointSpec::Source {
+        path: path.into(),
+        line: crate::LineNumber::new(3).expect("line"),
+    };
+    let first = harness.add_spec(source("first.scripted")).expect("first");
+    assert!(first.pending_locations.is_empty());
+    *runtime.arm_failure.lock().expect("the script") = Some("new configuration refused".into());
+    let second = harness
+        .add_spec(source("second.scripted"))
+        .expect("second intent");
+    assert_eq!(second.pending_locations.len(), 1);
+    assert_eq!(
+        harness.controller.snapshot().breakpoints[0]
+            .pending_locations
+            .len(),
+        1
+    );
+    runtime.reports(Ok(crate::runtime_model::HookEvent::Breakpoint {
+        number: 0,
+    }));
+    harness.start_continue();
+    harness
+        .hit_at(hitting, 0x40)
+        .expect("previously armed hook");
+    harness.settle_requested_stops();
+    assert!(
+        matches!(harness.stopped(), Some((_, StopReason::Breakpoint { hits, .. })) if hits[0].breakpoint == first.id)
+    );
+    // Site numbers survive changes to the desired list. A deleted site's
+    // stale hook names no owner, never the remaining site's breakpoint.
+    harness
+        .controller
+        .remove_breakpoint(first.id)
+        .expect("remove first");
+    let report = |harness: &mut WatchHarness, number| {
+        runtime.reports(Ok(crate::runtime_model::HookEvent::Breakpoint { number }));
+        harness
+            .controller
+            .runtime_hook_stop(hitting, VirtualAddress::new(0x40))
+    };
+    assert_eq!(report(&mut harness, 0), None);
+    assert!(
+        matches!(report(&mut harness, 1), Some(StopReason::Breakpoint { hits, .. }) if hits[0].breakpoint == second.id)
+    );
+    harness
+        .controller
+        .set_breakpoint_enabled(second.id, false)
+        .expect("disable");
+    assert_eq!(report(&mut harness, 1), None);
+    harness
+        .controller
+        .set_breakpoint_enabled(second.id, true)
+        .expect("enable with a new site number");
+    assert_eq!(report(&mut harness, 1), None);
+    harness
+        .controller
+        .remove_all_breakpoints()
+        .expect("remove all");
+    assert_eq!(report(&mut harness, 2), None);
+}
+
+#[test]
+fn runtime_step_arming_updates_breakpoint_confirmation() {
+    let mut harness = watch_harness(1);
+    harness.controller.unwind_info = Arc::new(FlatUnwindInfo);
+    let pid = harness.threads[0];
+    let runtime = scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            internal: vec![crate::runtime_model::HookPlace::Own(ImageAddress::new(
+                0x40,
+            ))],
+            arm_failure: std::sync::Mutex::new(Some("initializing".into())),
+            ..ScriptedRuntime::default()
+        },
+    );
+    harness.controller.sync_runtime_hooks().expect("hook");
+    harness
+        .add_spec(BreakpointSpec::Source {
+            path: "pending.scripted".into(),
+            line: crate::LineNumber::new(3).expect("line"),
+        })
+        .expect("breakpoint");
+    assert_eq!(
+        harness.controller.snapshot().breakpoints[0]
+            .pending_locations
+            .len(),
+        1
+    );
+    let runtime_id = crate::RuntimeId::new(harness.inferior().loaded_module.id.get() * 4);
+    *runtime.arm_failure.lock().expect("the script") = None;
+    harness.breakpoint_events();
+    harness
+        .controller
+        .begin_runtime_step(
+            process_id(pid),
+            harness.stop_id(),
+            pid,
+            (runtime_id, VirtualAddress::new(0x9000)),
+            StepKind::OverSource,
+            ResumeScope::Process(process_id(pid)),
+            ExceptionDisposition::Pass,
+        )
+        .expect("step confirms the whole arming");
+    assert!(
+        harness.controller.snapshot().breakpoints[0]
+            .pending_locations
+            .is_empty()
+    );
+    assert_eq!(harness.breakpoint_events(), 1);
+
+    // Failure to remove the step also leaves the whole configuration
+    // unconfirmed. Old step events are still rejected by execution id.
+    *runtime.arm_failure.lock().expect("the script") = Some("cannot disarm".into());
+    runtime.reports(Ok(crate::runtime_model::HookEvent::StepEnded { number: 0 }));
+    harness.hit_at(pid, 0x40).expect("step ended");
+    harness.settle_requested_stops();
+    let events = harness.published();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        DebuggerEvent::InferiorStopped {
+            reason: StopReason::Step { .. },
+            ..
+        }
+    )));
+    assert_eq!(
+        &*harness.controller.snapshot().breakpoints[0].pending_locations[0].reason,
+        "cannot disarm"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, DebuggerEvent::BreakpointsChanged { .. }))
+            .count(),
+        1
+    );
+    *runtime.arm_failure.lock().expect("the script") = None;
+    harness.controller.rearm_reporting_runtimes();
+    assert!(
+        harness.controller.snapshot().breakpoints[0]
+            .pending_locations
+            .is_empty()
+    );
+    assert_eq!(harness.breakpoint_events(), 1);
+}
+
 /// A step a runtime arms runs every thread, and ends only where the
 /// runtime reports its end on the step's own thread: another thread's
 /// report, or a report of another step, goes on unseen. The runtime is
@@ -5901,6 +6323,11 @@ fn a_runtime_step_ends_where_its_runtime_reports_it_on_its_thread() {
         "{refused:?}"
     );
     assert!(!harness.trace().took("continue"), "nothing runs");
+    assert_eq!(
+        harness.breakpoint_events(),
+        0,
+        "a refused step leaves readiness unchanged"
+    );
 
     // The refused step took number 0, which no step takes again.
     step(&mut harness, StepKind::OverSource).expect("the step begins");

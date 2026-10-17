@@ -80,17 +80,21 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.sync_stack_movers()?;
         self.learn_from_got(None);
         self.sync_resolvers()?;
-        self.reresolve_breakpoints(lost_locations)?;
-        self.sync_runtime_arming();
+        let locations_changed = self.reresolve_breakpoints(lost_locations)?;
+        let arming_changed = self.sync_runtime_arming();
+        if locations_changed || arming_changed {
+            self.publish_breakpoints_changed();
+        }
         Ok(())
     }
 
     /// Re-resolves function and source breakpoints across the loaded
     /// images: a library that loaded may add locations, and one that
     /// unloaded takes its locations with it, which leaves a breakpoint with
-    /// none pending until a module with code for it loads. Publishes the
-    /// change, or one already `changed`.
-    fn reresolve_breakpoints(&mut self, mut changed: bool) -> Result<()> {
+    /// none pending until a module with code for it loads. Returns whether
+    /// locations changed; the caller arms them before publishing.
+    #[must_use = "publish changed locations after arming them"]
+    fn reresolve_breakpoints(&mut self, mut changed: bool) -> Result<bool> {
         for index in 0..self.breakpoints.len() {
             let breakpoint = &self.breakpoints[index];
 
@@ -161,11 +165,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
         }
 
-        if changed {
-            self.publish_breakpoints_changed();
-        }
-
-        Ok(())
+        Ok(changed)
     }
 }
 

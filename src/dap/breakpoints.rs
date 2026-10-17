@@ -95,10 +95,11 @@ pub enum State {
     Resolved {
         breakpoint: BreakpointId,
         placement: Placement,
+        message: Option<String>,
     },
 
-    /// Installed in the debugger, with no locations until a module that has
-    /// code for it loads.
+    /// Configured in the debugger, but no location is ready: code has not
+    /// loaded or its runtime has not accepted arming.
     Pending {
         breakpoint: BreakpointId,
         message: String,
@@ -380,6 +381,7 @@ impl Breakpoints {
                 state: State::Resolved {
                     breakpoint: breakpoint.id,
                     placement: Placement::default(),
+                    message: None,
                 },
             };
 
@@ -410,6 +412,7 @@ mod tests {
             state: State::Resolved {
                 breakpoint: BreakpointId::new(breakpoint),
                 placement: Placement::default(),
+                message: None,
             },
         }
     }
@@ -557,6 +560,7 @@ mod tests {
         let file = Group::Source("/a.c".into());
         apply(&mut breakpoints, &file, vec![line(4)]);
         let core = |id: u64| microscope::Breakpoint {
+            pending_locations: std::sync::Arc::from([]),
             id: BreakpointId::new(id),
             spec: microscope::BreakpointSpec::Function("f".to_owned()),
             locations: std::sync::Arc::from([]),
@@ -577,6 +581,7 @@ mod tests {
                 state: State::Resolved {
                     breakpoint: BreakpointId::new(9),
                     placement: Placement::default(),
+                    message: None,
                 },
             })]
         );
@@ -617,6 +622,7 @@ mod tests {
 
         assert_eq!(breakpoints.hit(&[hit]), (vec![2], "breakpoint"));
         let core = |id: u64| microscope::Breakpoint {
+            pending_locations: std::sync::Arc::from([]),
             id: BreakpointId::new(id),
             spec: microscope::BreakpointSpec::Function("f".to_owned()),
             locations: std::sync::Arc::from([]),

@@ -319,6 +319,16 @@ pub fn breakpoint(breakpoint: &Breakpoint, placed: &[Placed], renderer: Renderer
         );
     }
 
+    if let Some(pending) = crate::present::breakpoints::pending_message(breakpoint) {
+        if placed.is_empty() {
+            return format!(
+                "{heading}, {}{options}",
+                renderer.paint(Role::Warning, pending)
+            );
+        }
+        let _ = write!(options, ", {}", renderer.paint(Role::Warning, pending));
+    }
+
     if let [only] = placed {
         return format!("{heading} at {}{options}", self::placed(only, renderer));
     }
@@ -468,7 +478,9 @@ pub fn breakpoints(rows: &[(&Breakpoint, Vec<Placed>)], renderer: Renderer) -> S
             options.push("temporary".to_owned());
         }
 
-        if placed.is_empty() {
+        if let Some(pending) = crate::present::breakpoints::pending_message(breakpoint) {
+            options.push(renderer.paint(Role::Warning, pending).to_string());
+        } else if placed.is_empty() {
             options.push(renderer.paint(Role::Warning, "pending").to_string());
         }
 
@@ -2926,6 +2938,66 @@ mod tests {
             },
             bytes: bytes.into(),
         }
+    }
+
+    #[test]
+    fn runtime_breakpoint_waits_show_their_reason_and_partial_native_placement() {
+        let location = BreakpointLocation::Managed(microscope::ManagedLocation {
+            runtime: microscope::RuntimeId::new(1),
+            place: ManagedPlace::Line {
+                path: "app.scripted".into(),
+                line: 3,
+            },
+        });
+        let mut breakpoint = Breakpoint {
+            id: microscope::BreakpointId::new(1),
+            spec: microscope::BreakpointSpec::Source {
+                path: "app.scripted".into(),
+                line: LineNumber::new(3).expect("line"),
+            },
+            locations: Arc::from([microscope::ResolvedBreakpointLocation {
+                location: location.clone(),
+                code_instances: Arc::from([]),
+                library: None,
+            }]),
+            pending_locations: Arc::from([microscope::PendingBreakpointLocation {
+                location,
+                reason: "the runtime's tool IDs are occupied".into(),
+            }]),
+            hit_condition: None,
+            condition: None,
+            log_message: None,
+            hit_count: 0,
+            enabled: true,
+            temporary: false,
+        };
+        let renderer = Renderer::new(false);
+        let shown = super::breakpoint(&breakpoint, &[], renderer);
+        assert!(shown.contains("tool IDs are occupied"), "{shown}");
+        assert!(!shown.contains("until a module"), "{shown}");
+        let table = super::breakpoints(&[(&breakpoint, Vec::new())], renderer);
+        assert!(table.contains("tool IDs are occupied"), "{table}");
+
+        let location = BreakpointLocation::Virtual(VirtualAddress::new(0x1234));
+        let native = microscope::ResolvedBreakpointLocation {
+            location: location.clone(),
+            code_instances: Arc::from([]),
+            library: None,
+        };
+        let mut locations = breakpoint.locations.to_vec();
+        locations.push(native);
+        breakpoint.locations = locations.into();
+        let placed = Placed {
+            location,
+            function: None,
+            source: None,
+            module: None,
+        };
+        let shown = super::breakpoint(&breakpoint, &[placed], renderer);
+        assert!(
+            shown.contains("0x1234") && shown.contains("tool IDs are occupied"),
+            "{shown}"
+        );
     }
 
     #[test]

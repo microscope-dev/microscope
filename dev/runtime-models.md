@@ -139,6 +139,26 @@ Both are judged when no user breakpoint at the site stops, and before a
 step's plan meets the thread. The private sites run control keeps for itself,
 such as Go's stack mover, are separate owners.
 
+A managed location is a runtime's line or function rather than a trap
+address. `managed.rs` records its owners and arms the runtime with its whole
+configuration. Resolution alone does not prove that arming succeeded.
+`Breakpoint.pending_locations` exposes each resolved location whose runtime
+could not accept arming, without discarding the desired location. Public
+replies and snapshots derive these reasons from the controller's current
+arming state; `ready_locations()` filters them for clients. A refusal leaves
+that runtime's whole current configuration unconfirmed. Earlier instrumentation
+may still report hits, which retain their logical ownership and hit policy.
+Every whole-state arm, including step setup and cleanup, updates the same
+readiness record. Recovery or a changed reason publishes `BreakpointsChanged`, while an unchanged refusal
+does not. Disabling a breakpoint excludes it from the arming request.
+
+The CLI, DAP, and browser share the pending explanation in
+`src/present/breakpoints.rs`. A partly armed breakpoint retains its ready
+locations and reports the others. The browser adds optional `pending`
+metadata and lists only ready placements in `places`; absent metadata keeps
+older messages and open tabs usable. Python-specific controller integration
+still remains P4.7.
+
 ## Runtime writes
 
 A runtime model never writes: `RuntimeStop` only reads. A model that needs

@@ -60,44 +60,46 @@ impl<P: LinuxTraceOps> Controller<P> {
         scope: ResumeScope,
         exception: ExceptionDisposition,
     ) -> Result<ExecutionId> {
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
-        let number = inferior.next_runtime_step;
-        inferior.next_runtime_step = number.saturating_add(1);
-        let step = RuntimeStep {
-            number,
-            kind,
-            thread: debug_thread_id(pid),
-            frame,
-        };
-        inferior.runtime_step = Some((runtime, step));
-        if let Err(reason) = self.arm_runtime(runtime) {
-            self.disarm_runtime_step(runtime);
-            return Err(Error::FrameStepUnsupported(
-                format!("the runtime cannot step: {reason}").into(),
-            ));
-        }
-
-        let owner = StepOwner {
-            thread: pid,
-            task: self.step_task(pid),
-        };
-        let begun = self.begin_execution(
-            process_id,
-            stop_id,
-            scope,
-            ActiveKind::RuntimeStep {
-                owner,
-                kind,
-                runtime,
+        self.with_arming_notification(runtime, |controller| {
+            let inferior = controller.inferior.as_mut().ok_or(Error::NotRunning)?;
+            let number = inferior.next_runtime_step;
+            inferior.next_runtime_step = number.saturating_add(1);
+            let step = RuntimeStep {
                 number,
-            },
-            exception,
-        );
-        if begun.is_err() {
-            self.disarm_runtime_step(runtime);
-        }
+                kind,
+                thread: debug_thread_id(pid),
+                frame,
+            };
+            inferior.runtime_step = Some((runtime, step));
+            if let Err(reason) = controller.arm_runtime(runtime) {
+                controller.disarm_runtime_step(runtime);
+                return Err(Error::FrameStepUnsupported(
+                    format!("the runtime cannot step: {reason}").into(),
+                ));
+            }
 
-        begun
+            let owner = StepOwner {
+                thread: pid,
+                task: controller.step_task(pid),
+            };
+            let begun = controller.begin_execution(
+                process_id,
+                stop_id,
+                scope,
+                ActiveKind::RuntimeStep {
+                    owner,
+                    kind,
+                    runtime,
+                    number,
+                },
+                exception,
+            );
+            if begun.is_err() {
+                controller.disarm_runtime_step(runtime);
+            }
+
+            begun
+        })
     }
 
     /// Why thread `pid` stops where the runtime `runtime` reports the end
@@ -135,7 +137,9 @@ impl<P: LinuxTraceOps> Controller<P> {
                 _ => None,
             });
         if let Some(runtime) = runtime {
-            self.disarm_runtime_step(runtime);
+            self.with_arming_notification(runtime, |controller| {
+                controller.disarm_runtime_step(runtime);
+            });
         }
     }
 

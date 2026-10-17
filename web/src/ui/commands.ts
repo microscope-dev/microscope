@@ -4,6 +4,7 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback } from "react";
 import { type ActionName, action } from "../actions";
+import { breakpointAt } from "../breakpoints";
 import type { Connection } from "../connection";
 import { followedLook, inView, stopPath, stringifySearch, type View } from "../focus";
 import type { Command } from "../keys";
@@ -240,9 +241,7 @@ function breakpoint(
     flash("This link can only view the session");
     return;
   }
-  const existing = state.breakpoints.find((candidate) =>
-    candidate.places.some((place) => place.path === where.path && place.line === where.line),
-  );
+  const existing = breakpointAt(state.breakpoints, where.path, where.line);
   if (command === "editBreakpoint") {
     if (existing) {
       tab.setState({ editing: existing.id });

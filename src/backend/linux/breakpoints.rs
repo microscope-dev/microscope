@@ -18,7 +18,7 @@ use crate::{
 };
 
 use super::memory::MemoryAccessError;
-use super::native::{LinuxTraceOps, is_vanished_tracee};
+use super::native::{InspectionOps, LinuxTraceOps, is_vanished_tracee};
 use super::{BREAKPOINT_OPCODE, BreakpointOwner, Controller, Inferior, LinuxError, backend_error};
 
 /// The logical breakpoints clients requested, in creation order, counted by
@@ -130,6 +130,44 @@ impl<'a> IntoIterator for &'a mut UserBreakpoints {
     }
 }
 
+impl<P: InspectionOps> Controller<P> {
+    /// Public snapshots retain resolution intent while reporting why a
+    /// runtime could not accept it. No target read is needed here.
+    pub(super) fn describe_breakpoint(&self, breakpoint: &Breakpoint) -> Breakpoint {
+        let mut shown = breakpoint.clone();
+        let pending = self
+            .inferior
+            .as_ref()
+            .filter(|_| breakpoint.enabled)
+            .map_or_else(Vec::new, |inferior| {
+                breakpoint
+                    .locations
+                    .iter()
+                    .filter_map(|resolved| {
+                        let BreakpointLocation::Managed(location) = &resolved.location else {
+                            return None;
+                        };
+                        Some(crate::PendingBreakpointLocation {
+                            location: resolved.location.clone(),
+                            reason: Arc::clone(inferior.managed.unarmed.get(&location.runtime)?),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            });
+        if shown.pending_locations.as_ref() != pending.as_slice() {
+            shown.pending_locations = pending.into();
+        }
+        shown
+    }
+
+    pub(super) fn breakpoint_snapshot(&self) -> Arc<[Breakpoint]> {
+        self.breakpoints
+            .iter()
+            .map(|breakpoint| self.describe_breakpoint(breakpoint))
+            .collect()
+    }
+}
+
 impl<P: LinuxTraceOps> Controller<P> {
     /// Adds a logical breakpoint. Its traps are installed at once when the
     /// inferior's sites are live, which requires every thread to be stopped;
@@ -141,7 +179,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     ) -> Result<Breakpoint> {
         let spec = self.in_stopped_scope(spec);
         if let Some(existing) = self.breakpoints.identical(&spec, &options) {
-            return Ok(existing.clone());
+            return Ok(self.describe_breakpoint(existing));
         }
 
         // Only a function breakpoint can wait on an indirect function's
@@ -180,9 +218,9 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.sync_resolvers()?;
         }
 
-        self.sync_runtime_arming();
+        let _ = self.sync_runtime_arming();
         self.publish_breakpoints_changed();
-        Ok(breakpoint)
+        Ok(self.describe_breakpoint(&breakpoint))
     }
 
     /// Reads a function location at a stop as the source of the selected
@@ -242,6 +280,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             id,
             spec,
             locations,
+            pending_locations: Arc::from([]),
             hit_condition: None,
             condition: None,
             log_message: None,
@@ -454,8 +493,11 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.sync_resolvers()?;
         }
 
-        self.sync_runtime_arming();
+        let _ = self.sync_runtime_arming();
         self.publish_breakpoints_changed();
+        // This definition is retired, rather than waiting for arming.
+        let mut breakpoint = breakpoint;
+        breakpoint.pending_locations = Arc::from([]);
         Ok(breakpoint)
     }
 
@@ -477,7 +519,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .ok_or(Error::BreakpointNotFound(id.get()))?;
         let current = &self.breakpoints[index];
         if current.enabled == enabled {
-            return Ok(current.clone());
+            return Ok(self.describe_breakpoint(current));
         }
 
         let mut breakpoint = current.clone();
@@ -512,9 +554,9 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.sync_resolvers()?;
         }
 
-        self.sync_runtime_arming();
+        let _ = self.sync_runtime_arming();
         self.publish_breakpoints_changed();
-        Ok(breakpoint)
+        Ok(self.describe_breakpoint(&breakpoint))
     }
 
     /// Deletes the temporary breakpoints a stop's hits name, as part of
@@ -555,7 +597,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         if removed {
-            self.sync_runtime_arming();
+            let _ = self.sync_runtime_arming();
         }
 
         Ok(removed)
@@ -605,12 +647,19 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
         }
 
-        let removed: Arc<[Breakpoint]> = self.breakpoints.take().into();
+        let removed = self.breakpoints.take();
+        let removed: Arc<[Breakpoint]> = removed
+            .into_iter()
+            .map(|mut breakpoint| {
+                breakpoint.pending_locations = Arc::from([]);
+                breakpoint
+            })
+            .collect();
         if self.sites_live() {
             self.sync_resolvers()?;
         }
 
-        self.sync_runtime_arming();
+        let _ = self.sync_runtime_arming();
         self.publish_breakpoints_changed();
         Ok(removed)
     }
@@ -654,7 +703,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         edit(breakpoint);
         let breakpoint = breakpoint.clone();
         self.publish_breakpoints_changed();
-        Ok(breakpoint)
+        Ok(self.describe_breakpoint(&breakpoint))
     }
 
     /// Counts one hit for every logical breakpoint owning the site at

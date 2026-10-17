@@ -268,9 +268,13 @@ location: string, condition: string | null, hitCondition: string | null, logMess
  */
 hits: number, 
 /**
- * Where it resolved; none while no loaded code has it.
+ * Ready locations; runtime arming problems are described in `pending`.
  */
-places: Array<Place>, };
+places: Array<Place>, pending?: PendingBreakpoint, };
+
+export type PendingBreakpoint = { message: string, places: Array<PendingBreakpointPlace>, };
+
+export type PendingBreakpointPlace = { place: Place, reason: string, };
 
 export type Thread = { id: number, name: string | null, stopped: boolean, };
 

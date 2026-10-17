@@ -3,6 +3,7 @@
 // the file shown. Groups come in the order of their best match.
 
 import { useId, useState } from "react";
+import { firstBreakpointPlace } from "../breakpoints";
 import { useRequest } from "../data";
 import { type Command, describe, LABELS } from "../keys";
 import { best, score } from "../palette";
@@ -310,10 +311,10 @@ function useGroups(mode: Mode, query: string): Group[] {
   }));
   const breakpoints: Item[] = state.breakpoints.map((breakpoint) => ({
     id: `breakpoint:${breakpoint.id}`,
-    label: `${placeLabel(breakpoint)} ${breakpoint.places[0]?.function ?? ""}`.trim(),
+    label: `${placeLabel(breakpoint)} ${firstBreakpointPlace(breakpoint)?.function ?? ""}`.trim(),
     detail: `breakpoint ${breakpoint.id}`,
     run: () => {
-      const place = breakpoint.places[0];
+      const place = firstBreakpointPlace(breakpoint);
       if (place?.path && place.line) {
         showSource(place.path, place.line);
       }

@@ -406,6 +406,7 @@ mod tests {
             }]),
             presentation: None,
             breakpoints: Arc::from([Breakpoint {
+                pending_locations: Arc::from([]),
                 id: BreakpointId::new(1),
                 spec: BreakpointSpec::Function("f".into()),
                 locations: Arc::from([]),

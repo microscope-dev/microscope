@@ -8,6 +8,7 @@
 //! wire and how its expansion is referred to later; nothing here keeps
 //! state between requests.
 
+pub mod breakpoints;
 pub mod complete;
 mod completing;
 pub mod debug_information;

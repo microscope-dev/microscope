@@ -1767,8 +1767,31 @@ pub struct Breakpoint {
     /// Hits in the current process, including those that did not stop.
     pub hits: u64,
 
-    /// Where it resolved; none while no loaded code has it.
+    /// Ready locations; runtime arming problems are described in `pending`.
     pub places: Vec<Place>,
+
+    // Additive and omitted for native breakpoints; old tabs still see
+    // only ready places and therefore render unarmed breakpoints pending.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub pending: Option<PendingBreakpoint>,
+}
+
+/// Runtime locations whose desired arming has not been accepted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct PendingBreakpoint {
+    pub message: String,
+    pub places: Vec<PendingBreakpointPlace>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct PendingBreakpointPlace {
+    pub place: Place,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2593,6 +2616,8 @@ mod tests {
         Place::decl,
         StopEntry::decl,
         Breakpoint::decl,
+        PendingBreakpoint::decl,
+        PendingBreakpointPlace::decl,
         Thread::decl,
         ErrorBody::decl,
         ErrorKind::decl,

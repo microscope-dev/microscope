@@ -525,8 +525,13 @@ pub struct Breakpoint {
     /// The user intent that created the breakpoint.
     pub spec: BreakpointSpec,
 
-    /// Every deduplicated location at which the breakpoint is installed.
+    /// Every deduplicated resolved location for the breakpoint.
     pub locations: Arc<[ResolvedBreakpointLocation]>,
+
+    /// Locations whose runtime has not confirmed the current whole
+    /// configuration. Earlier instrumentation may remain effective.
+    /// These describe the current inferior; the desired locations stay listed.
+    pub pending_locations: Arc<[PendingBreakpointLocation]>,
 
     /// Which hits stop execution; `None` stops at every hit.
     pub hit_condition: Option<HitCondition>,
@@ -556,6 +561,26 @@ pub struct Breakpoint {
 
     /// Whether the stop the breakpoint first causes deletes it.
     pub temporary: bool,
+}
+
+/// A resolved location whose runtime could not be armed, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingBreakpointLocation {
+    pub location: BreakpointLocation,
+    pub reason: Arc<str>,
+}
+
+impl Breakpoint {
+    /// Resolved locations with no current runtime-arming problem. The
+    /// breakpoint still needs to be enabled in a live process to hit.
+    pub fn ready_locations(&self) -> impl Iterator<Item = &ResolvedBreakpointLocation> {
+        self.locations.iter().filter(move |resolved| {
+            !self
+                .pending_locations
+                .iter()
+                .any(|pending| pending.location == resolved.location)
+        })
+    }
 }
 
 /// What a breakpoint does at a hit besides counting it. Every hit is

@@ -4,6 +4,7 @@
 // shows its instructions instead.
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { breakpointAt, knownBreakpointPlaces } from "../breakpoints";
 import { cache, useRequest } from "../data";
 import { followedLook, formatPlace, inView, parsePlace, showingSource, type View } from "../focus";
 import { controls } from "../model";
@@ -232,6 +233,12 @@ export function breakpointLines(
       : breakpoint.condition || breakpoint.hitCondition
         ? "conditional"
         : "plain";
+    for (const pending of breakpoint.pending?.places ?? []) {
+      const place = pending.place;
+      if (place.path === path && place.line && !lines.has(place.line)) {
+        lines.set(place.line, "pending");
+      }
+    }
     for (const place of breakpoint.places) {
       if (place.path === path && place.line) {
         lines.set(place.line, kind);
@@ -239,7 +246,12 @@ export function breakpointLines(
     }
     // One set at a line no code has yet shows where it was asked for.
     const asked = /^(.*):(\d+)$/.exec(breakpoint.location);
-    if (breakpoint.places.length === 0 && asked && asked[1] === path) {
+    if (
+      knownBreakpointPlaces(breakpoint).length === 0 &&
+      asked &&
+      asked[1] === path &&
+      !lines.has(Number(asked[2]))
+    ) {
       lines.set(Number(asked[2]), "pending");
     }
   }
@@ -297,9 +309,7 @@ function SourceFile({ shown }: { shown: Shown }) {
       return;
     }
     setError(null);
-    const existing = state.breakpoints.find((breakpoint) =>
-      breakpoint.places.some((place) => place.path === shown.path && place.line === line),
-    );
+    const existing = breakpointAt(state.breakpoints, shown.path, line);
     const request = existing
       ? connection.request("removeBreakpoint", { id: existing.id })
       : connection.request("addBreakpoint", { location: `${shown.path}:${line}` });

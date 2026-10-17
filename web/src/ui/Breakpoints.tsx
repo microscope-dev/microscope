@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { firstBreakpointPlace, knownBreakpointPlaces } from "../breakpoints";
 import { controls } from "../model";
 import type { Breakpoint, WatchAccess, Watchpoint } from "../protocol";
 import { useConnection, useModel } from "../store";
@@ -61,12 +62,24 @@ export function Breakpoints() {
 
 /** Where a breakpoint is, as briefly as it can be said. */
 export function placeLabel(breakpoint: Breakpoint): string {
-  const place = breakpoint.places[0];
+  const place = firstBreakpointPlace(breakpoint);
   if (place?.path && place.line) {
-    const more = breakpoint.places.length > 1 ? ` +${breakpoint.places.length - 1}` : "";
+    const count = knownBreakpointPlaces(breakpoint).length;
+    const more = count > 1 ? ` +${count - 1}` : "";
     return `${fileName(place.path)}:${place.line}${more}`;
   }
   return breakpoint.location;
+}
+
+/** A breakpoint's active locations, or why it remains pending. */
+export function breakpointTitle(breakpoint: Breakpoint): string {
+  const places = breakpoint.places
+    .map((at) => `${at.function ?? at.address} ${at.path ? `${at.path}:${at.line}` : ""}`)
+    .join("\n");
+  if (breakpoint.pending) {
+    return [places, breakpoint.pending.message].filter(Boolean).join("\n");
+  }
+  return places || `${breakpoint.location}: no loaded code has it yet`;
 }
 
 function Row({
@@ -81,7 +94,7 @@ function Row({
   const connection = useConnection();
   const showSource = useShowSource();
   const [error, setError] = useState<string | null>(null);
-  const place = breakpoint.places[0];
+  const place = firstBreakpointPlace(breakpoint);
   const pending = breakpoint.places.length === 0;
   const kind = breakpoint.logMessage ? "log" : breakpoint.condition ? "conditional" : "plain";
   const detail = breakpoint.logMessage
@@ -100,16 +113,7 @@ function Row({
         <button
           type="button"
           className="link-row"
-          title={
-            pending
-              ? `${breakpoint.location}: no loaded code has it yet`
-              : breakpoint.places
-                  .map(
-                    (at) =>
-                      `${at.function ?? at.address} ${at.path ? `${at.path}:${at.line}` : ""}`,
-                  )
-                  .join("\n")
-          }
+          title={breakpointTitle(breakpoint)}
           disabled={!place?.path}
           onClick={() => place?.path && place.line && showSource(place.path, place.line)}
         >
@@ -146,6 +150,7 @@ function Row({
           </>
         )}
       </div>
+      {breakpoint.pending && <div className="row sub">{breakpoint.pending.message}</div>}
       {detail && <div className="row sub">{detail}</div>}
       {error && <div className="row sub error">{error}</div>}
     </li>

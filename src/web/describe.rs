@@ -307,9 +307,10 @@ impl Describer {
     async fn breakpoint(&self, breakpoint: &microscope::Breakpoint) -> protocol::Breakpoint {
         let mut places = Vec::with_capacity(breakpoint.locations.len());
         for location in breakpoint.locations.iter() {
-            places.push(self.breakpoint_place(breakpoint, location).await);
+            places.push((location, self.breakpoint_place(breakpoint, location).await));
         }
 
+        let (places, pending) = breakpoint_places(breakpoint, places);
         protocol::Breakpoint {
             id: breakpoint.id.get(),
             location: breakpoint.spec.to_string(),
@@ -320,6 +321,7 @@ impl Describer {
             log_message: breakpoint.log_message.as_ref().map(ToString::to_string),
             hits: breakpoint.hit_count,
             places,
+            pending,
         }
     }
 
@@ -519,5 +521,150 @@ const fn reason_kind(reason: &StopReason) -> &'static str {
         StopReason::Unclassifiable { .. } => "unclassifiable",
         StopReason::Exited(_) => "exited",
         StopReason::CoreDump { .. } => "coreDump",
+    }
+}
+
+/// Partitions queried metadata without losing the arming failure or presenting
+/// an unarmed runtime location as a ready placement.
+fn breakpoint_places(
+    breakpoint: &microscope::Breakpoint,
+    places: Vec<(&microscope::ResolvedBreakpointLocation, Place)>,
+) -> (Vec<Place>, Option<protocol::PendingBreakpoint>) {
+    debug_assert_eq!(
+        places.len(),
+        breakpoint.locations.len(),
+        "breakpoint metadata covers every resolved location"
+    );
+    let mut ready = Vec::new();
+    let mut pending = Vec::new();
+    for (resolved, place) in places {
+        if let Some(issue) = breakpoint
+            .pending_locations
+            .iter()
+            .find(|pending| pending.location == resolved.location)
+        {
+            pending.push(protocol::PendingBreakpointPlace {
+                place,
+                reason: issue.reason.to_string(),
+            });
+        } else {
+            ready.push(place);
+        }
+    }
+    let pending = crate::present::breakpoints::pending_message(breakpoint).map(|message| {
+        protocol::PendingBreakpoint {
+            message,
+            places: pending,
+        }
+    });
+    (ready, pending)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn web_breakpoints_keep_pending_locations_separate_from_ready_places() {
+        let location = microscope::BreakpointLocation::Managed(microscope::ManagedLocation {
+            runtime: microscope::RuntimeId::new(1),
+            place: microscope::ManagedPlace::Line {
+                path: "/src/app.py".into(),
+                line: 3,
+            },
+        });
+        let mut breakpoint = microscope::Breakpoint {
+            id: microscope::BreakpointId::new(1),
+            spec: microscope::BreakpointSpec::Function("managed".into()),
+            locations: Arc::from([microscope::ResolvedBreakpointLocation {
+                location: location.clone(),
+                code_instances: Arc::from([]),
+                library: None,
+            }]),
+            pending_locations: Arc::from([microscope::PendingBreakpointLocation {
+                location,
+                reason: "waiting for an acknowledgement".into(),
+            }]),
+            hit_condition: None,
+            condition: None,
+            log_message: None,
+            hit_count: 0,
+            enabled: true,
+            temporary: false,
+        };
+        let source = Place {
+            address: String::new(),
+            function: None,
+            path: Some("/src/app.py".into()),
+            line: Some(3),
+        };
+        let (ready, pending) = breakpoint_places(
+            &breakpoint,
+            vec![(&breakpoint.locations[0], source.clone())],
+        );
+        assert!(ready.is_empty());
+        let pending = pending.expect("visible pending state");
+        assert!(pending.message.contains("acknowledgement"));
+        assert_eq!(pending.places[0].place, source);
+        let json = serde_json::to_value(&pending).expect("wire state");
+        assert_eq!(
+            json["places"][0]["reason"],
+            "waiting for an acknowledgement"
+        );
+
+        let native = microscope::ResolvedBreakpointLocation {
+            location: microscope::BreakpointLocation::Virtual(VirtualAddress::new(0x1234)),
+            code_instances: Arc::from([]),
+            library: None,
+        };
+        let mut locations = breakpoint.locations.to_vec();
+        locations.push(native);
+        breakpoint.locations = locations.into();
+        let native = Place {
+            address: "0x1234".into(),
+            function: None,
+            path: None,
+            line: None,
+        };
+        let queried = || {
+            vec![
+                (&breakpoint.locations[0], source.clone()),
+                (&breakpoint.locations[1], native.clone()),
+            ]
+        };
+        let (ready, pending) = breakpoint_places(&breakpoint, queried());
+        assert_eq!(ready, vec![native.clone()]);
+        assert!(
+            pending
+                .expect("partial arming")
+                .message
+                .contains("some locations pending")
+        );
+        breakpoint.pending_locations = Arc::from([]);
+        let (ready, pending) = breakpoint_places(
+            &breakpoint,
+            vec![
+                (&breakpoint.locations[0], source.clone()),
+                (&breakpoint.locations[1], native.clone()),
+            ],
+        );
+        assert_eq!(ready, vec![source, native]);
+        assert!(pending.is_none());
+        let wire = protocol::Breakpoint {
+            id: 1,
+            location: "managed".into(),
+            condition: None,
+            hit_condition: None,
+            log_message: None,
+            hits: 0,
+            places: ready,
+            pending,
+        };
+        assert!(
+            serde_json::to_value(&wire)
+                .expect("wire state")
+                .get("pending")
+                .is_none()
+        );
     }
 }

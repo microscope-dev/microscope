@@ -2298,19 +2298,20 @@ impl Session {
             };
         }
 
-        if breakpoint.locations.is_empty() {
+        if breakpoint.ready_locations().next().is_none() {
             return State::Pending {
                 breakpoint: breakpoint.id,
-                message: format!(
+                message: crate::present::breakpoints::pending_message(breakpoint).unwrap_or_else(|| format!(
                     "no loaded module has code for {}; the breakpoint resolves when one that does loads",
                     breakpoint.spec
-                ),
+                )),
             };
         }
 
         State::Resolved {
             breakpoint: breakpoint.id,
             placement: self.placement(breakpoint).await,
+            message: crate::present::breakpoints::pending_message(breakpoint),
         }
     }
 
@@ -2321,7 +2322,7 @@ impl Session {
             return Placement::default();
         };
 
-        let Some(first) = breakpoint.locations.first() else {
+        let Some(first) = breakpoint.ready_locations().next() else {
             return Placement::default();
         };
 
@@ -2395,8 +2396,13 @@ impl Session {
     fn breakpoint_json(&self, group: &Group, entry: &Entry) -> Value {
         let mut body = json!({"id": entry.id});
         let (message, reason) = match &entry.state {
-            State::Resolved { placement, .. } => {
+            State::Resolved {
+                placement, message, ..
+            } => {
                 body["verified"] = true.into();
+                if let Some(message) = message {
+                    body["message"] = message.clone().into();
+                }
                 if let Some((path, line)) = &placement.source {
                     body["line"] = self.line_to_client(*line).into();
                     body["source"] = match group {
@@ -2986,6 +2992,62 @@ mod tests {
             command: command.to_owned(),
             arguments,
         }
+    }
+
+    #[tokio::test]
+    async fn a_resolved_runtime_location_is_pending_until_arming_recovers() {
+        let (outgoing, _messages) = mpsc::channel(8);
+        let mut session = Session::new(Client::new(outgoing), Cancelled::default());
+        let location = microscope::BreakpointLocation::Managed(microscope::ManagedLocation {
+            runtime: microscope::RuntimeId::new(1),
+            place: microscope::ManagedPlace::Line {
+                path: "app.scripted".into(),
+                line: 3,
+            },
+        });
+        let mut breakpoint = microscope::Breakpoint {
+            id: microscope::BreakpointId::new(1),
+            spec: microscope::BreakpointSpec::Function("managed".into()),
+            locations: Arc::from([microscope::ResolvedBreakpointLocation {
+                location: location.clone(),
+                code_instances: Arc::from([]),
+                library: None,
+            }]),
+            pending_locations: Arc::from([microscope::PendingBreakpointLocation {
+                location,
+                reason: "waiting for a runtime acknowledgement".into(),
+            }]),
+            hit_condition: None,
+            condition: None,
+            log_message: None,
+            hit_count: 0,
+            enabled: true,
+            temporary: false,
+        };
+        assert!(matches!(session.state_of(&breakpoint).await,
+            State::Pending { message, .. } if message.contains("runtime acknowledgement")));
+        breakpoint.enabled = false;
+        assert!(matches!(
+            session.state_of(&breakpoint).await,
+            State::Disabled { .. }
+        ));
+        breakpoint.enabled = true;
+        let mut locations = breakpoint.locations.to_vec();
+        locations.push(microscope::ResolvedBreakpointLocation {
+            location: microscope::BreakpointLocation::Virtual(VirtualAddress::new(0x1234)),
+            code_instances: Arc::from([]),
+            library: None,
+        });
+        breakpoint.locations = locations.into();
+        assert!(matches!(
+            session.state_of(&breakpoint).await,
+            State::Resolved { message: Some(message), .. } if message.contains("some locations pending") && message.contains("runtime acknowledgement")
+        ));
+        breakpoint.pending_locations = Arc::from([]);
+        assert!(matches!(
+            session.state_of(&breakpoint).await,
+            State::Resolved { .. }
+        ));
     }
 
     #[test]

@@ -2614,7 +2614,7 @@ impl<P: InspectionOps> Controller<P> {
                 selected_frame: None,
                 threads: Arc::from([]),
                 presentation: None,
-                breakpoints: Arc::from(&*self.breakpoints),
+                breakpoints: self.breakpoint_snapshot(),
                 watchpoints: Arc::from([]),
                 catchpoints: self.catchpoints.values().cloned().collect(),
             };
@@ -2666,7 +2666,7 @@ impl<P: InspectionOps> Controller<P> {
                     .and_then(|pid| stop.presentations.get(&pid))
                     .cloned()
             }),
-            breakpoints: Arc::from(&*self.breakpoints),
+            breakpoints: self.breakpoint_snapshot(),
             watchpoints: inferior
                 .watch
                 .watchpoints
