@@ -185,6 +185,17 @@ unrelated user breakpoint, hit a watchpoint, carry a signal, or expose a
 runtime transition the plan follows. Keep those cases explicit. “Trap means
 step complete” is not a valid rule.
 
+A step from a frame a runtime interprets, which has no instructions of its own
+to step, is a runtime step (`runtime_steps.rs`). Such a frame may be at any
+level. The runtime's arming gains the step, with a number never reused in
+the process. The execution,
+`ActiveKind::RuntimeStep`, runs threads as a continue does. It keeps the
+native step's owner, a thread or a task. The step ends only where the
+runtime's internal hook reports `HookEvent::StepEnded` with the step's number
+on a thread that runs the step. Any other report goes on unseen. The runtime
+is armed with no step as whatever stop ends the step forms. A runtime that
+cannot make a step refuses it, and nothing runs.
+
 ## Breakpoint installation and repair
 
 A software breakpoint replaces the first byte of an instruction with `int3`.
@@ -217,9 +228,10 @@ and a runtime's refusal is the error when nothing else resolves it.
 
 Ownership follows the native split. `managed.rs` records which user
 breakpoints own each managed location, and numbers it. The number is never
-reused in a process. Whenever a runtime's locations change,
-`RuntimeModel::arm_breakpoints` computes the writes that arm the runtime with
-exactly those locations, and `write_for_runtime` makes them at an all-stop.
+reused in a process. A runtime is armed whole (`Arming`) with its
+locations, its step, and which exceptions stop. The arming is redone whenever
+any of them changes. `RuntimeModel::arm` computes the writes, so a model keeps
+no state between armings, and `write_for_runtime` makes them at an all-stop.
 A runtime that cannot be armed keeps why. A hit comes through the runtime's
 internal hook as `HookEvent::Breakpoint` with the location's number. It is
 counted and judged as a trap's hit is, and stops as `StopReason::Breakpoint`

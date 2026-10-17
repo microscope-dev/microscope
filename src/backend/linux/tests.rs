@@ -5112,6 +5112,9 @@ struct ScriptedRuntime {
     /// What the runtime was armed with, each time it was.
     armed: std::sync::Mutex<Vec<Vec<crate::runtime_model::ManagedArm>>>,
 
+    /// The step the runtime was armed with, each time it was.
+    steps: std::sync::Mutex<Vec<Option<crate::runtime_model::RuntimeStep>>>,
+
     /// What each hit of an internal hook reports, in turn.
     events: std::sync::Mutex<
         std::collections::VecDeque<std::result::Result<crate::runtime_model::HookEvent, Arc<str>>>,
@@ -5305,17 +5308,31 @@ impl crate::runtime_model::RuntimeModel for ScriptedRuntime {
     }
 
     /// Arming writes how many locations the runtime is armed with to the
-    /// byte at 0x7000.
-    fn arm_breakpoints(
+    /// byte at 0x7000. The script steps by line, never by instruction.
+    fn arm(
         &self,
         _stop: &dyn crate::runtime_model::RuntimeStop,
-        arms: &[crate::runtime_model::ManagedArm],
+        arming: &crate::runtime_model::Arming<'_>,
     ) -> std::result::Result<Vec<crate::runtime_model::RuntimeWrite>, Arc<str>> {
-        self.armed.lock().expect("the script").push(arms.to_vec());
+        if arming
+            .step
+            .is_some_and(|step| step.kind == StepKind::Instruction)
+        {
+            return Err("the script steps by line".into());
+        }
+
+        self.armed
+            .lock()
+            .expect("the script")
+            .push(arming.breakpoints.to_vec());
+        self.steps
+            .lock()
+            .expect("the script")
+            .push(arming.step.cloned());
         Ok(vec![crate::runtime_model::RuntimeWrite {
             address: VirtualAddress::new(0x7000),
             expected: vec![0],
-            bytes: vec![u8::try_from(arms.len()).expect("few arms")],
+            bytes: vec![u8::try_from(arming.breakpoints.len()).expect("few arms")],
         }])
     }
 }
@@ -5836,6 +5853,135 @@ fn a_runtime_resolves_arms_and_reports_a_managed_breakpoint() {
         Some(&Vec::new()),
         "the runtime is armed with nothing once the breakpoint is gone"
     );
+}
+
+/// A step a runtime arms runs every thread, and ends only where the
+/// runtime reports its end on the step's own thread: another thread's
+/// report, or a report of another step, goes on unseen. The runtime is
+/// armed with the step as it begins, and with none as the stop that ends
+/// it forms. A step the runtime cannot make is refused, and nothing runs.
+#[test]
+fn a_runtime_step_ends_where_its_runtime_reports_it_on_its_thread() {
+    const HOOK: u64 = 0x40;
+    let mut harness = watch_harness(2);
+    harness.controller.unwind_info = Arc::new(FlatUnwindInfo);
+    let (stepping, other) = (harness.threads[0], harness.threads[1]);
+    let runtime = scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            internal: vec![crate::runtime_model::HookPlace::Own(ImageAddress::new(
+                HOOK,
+            ))],
+            ..ScriptedRuntime::default()
+        },
+    );
+    harness
+        .controller
+        .sync_runtime_hooks()
+        .expect("arm the hook");
+    let runtime_id = crate::RuntimeId::new(harness.inferior().loaded_module.id.get() * 4);
+    let frame = (runtime_id, VirtualAddress::new(0x9000));
+    let step = |harness: &mut WatchHarness, kind| {
+        let stop = harness.stop_id();
+        harness.controller.begin_runtime_step(
+            process_id(stepping),
+            stop,
+            stepping,
+            frame,
+            kind,
+            ResumeScope::Process(process_id(stepping)),
+            ExceptionDisposition::Pass,
+        )
+    };
+
+    harness.trace().take_actions();
+    let refused = step(&mut harness, StepKind::Instruction);
+    assert!(
+        matches!(&refused, Err(Error::FrameStepUnsupported(reason)) if reason.contains("by line")),
+        "{refused:?}"
+    );
+    assert!(!harness.trace().took("continue"), "nothing runs");
+
+    // The refused step took number 0, which no step takes again.
+    step(&mut harness, StepKind::OverSource).expect("the step begins");
+    assert_eq!(
+        runtime.steps.lock().expect("the script").last(),
+        Some(&Some(crate::runtime_model::RuntimeStep {
+            number: 1,
+            kind: StepKind::OverSource,
+            thread: debug_thread_id(stepping),
+            frame: frame.1,
+        }))
+    );
+    let actions = harness.trace().take_actions();
+    for thread in [stepping, other] {
+        assert!(
+            actions.contains(&format!("continue {thread} None")),
+            "{actions:?}"
+        );
+    }
+
+    let ended = |harness: &mut WatchHarness, thread, number| {
+        runtime.reports(Ok(crate::runtime_model::HookEvent::StepEnded { number }));
+        harness.hit_at(thread, HOOK).expect("the hook's trap");
+        harness.settle_requested_stops();
+        harness.stopped()
+    };
+    assert_eq!(ended(&mut harness, other, 1), None, "another thread's");
+    steps_over_alone(&mut harness, other);
+    assert_eq!(ended(&mut harness, stepping, 0), None, "another step's");
+    steps_over_alone(&mut harness, stepping);
+    assert_eq!(
+        ended(&mut harness, stepping, 1),
+        Some((
+            debug_thread_id(stepping),
+            StopReason::Step {
+                kind: StepKind::OverSource
+            }
+        ))
+    );
+    assert_eq!(
+        runtime.steps.lock().expect("the script").last(),
+        Some(&None),
+        "the runtime is disarmed"
+    );
+}
+
+/// A runtime that reports events through internal hooks is armed again
+/// when which exceptions stop changes, since its arming says which do, and
+/// not when they stay as they were.
+#[test]
+fn a_runtime_is_armed_again_when_which_exceptions_stop_changes() {
+    let mut harness = watch_harness(1);
+    let runtime = scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            internal: vec![crate::runtime_model::HookPlace::Own(ImageAddress::new(
+                0x40,
+            ))],
+            ..ScriptedRuntime::default()
+        },
+    );
+    let stops = crate::protocol::ExceptionStops::NONE;
+    harness
+        .controller
+        .set_exception_stops(stops)
+        .expect("no exception stops");
+    let armings = |runtime: &ScriptedRuntime| runtime.armed.lock().expect("the script").len();
+    let before = armings(&runtime);
+
+    let filter = &crate::runtime_model::EXCEPTION_FILTERS[3];
+    harness
+        .controller
+        .set_exception_stops(stops.with(filter.id, true).expect("a filter"))
+        .expect("the exception stops");
+    assert_eq!(armings(&runtime), before + 1, "armed again");
+
+    harness
+        .controller
+        .set_exception_stops(stops.with(filter.id, true).expect("a filter"))
+        .expect("the same stops");
+    assert_eq!(armings(&runtime), before + 1, "nothing changed");
 }
 
 /// The writes a runtime model asks for are made while every thread is

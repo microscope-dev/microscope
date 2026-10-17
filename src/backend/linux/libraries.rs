@@ -81,7 +81,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.learn_from_got(None);
         self.sync_resolvers()?;
         self.reresolve_breakpoints(lost_locations)?;
-        self.sync_managed_breakpoints();
+        self.sync_runtime_arming();
         Ok(())
     }
 

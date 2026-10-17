@@ -79,6 +79,22 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
         };
 
+        if into_call.is_none()
+            && let Some(interpreted) = self.interpreted_frame(stop_id, pid, frame)
+        {
+            let result = self.begin_runtime_step(
+                process_id,
+                stop_id,
+                pid,
+                interpreted,
+                kind,
+                scope,
+                exception,
+            );
+            self.reply_execution(result, scope, reply);
+            return;
+        }
+
         // A step into a chosen call executes the line up to it, never only
         // entering an inline frame.
         let virtual_step = if into_call.is_some() {
@@ -162,7 +178,11 @@ impl<P: LinuxTraceOps> Controller<P> {
             });
         }
 
-        if frame.get() != 0 && kind != StepKind::Out {
+        // A runtime steps from a frame it interprets, wherever it is.
+        if frame.get() != 0
+            && kind != StepKind::Out
+            && self.interpreted_frame(stop_id, pid, frame).is_none()
+        {
             return Err(Error::FrameStepUnsupported(
                 "only stepping out applies to an outer frame; other steps begin at the innermost frame"
                     .into(),
@@ -566,7 +586,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
                 self.continue_scope_threads()
             }
-            ActiveKind::Launch | ActiveKind::Continue => {
+            ActiveKind::Launch | ActiveKind::Continue | ActiveKind::RuntimeStep { .. } => {
                 for pid in resume_threads {
                     self.continue_thread(pid)?;
                 }
@@ -1798,6 +1818,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         {
             self.cleanup_plan_breakpoints(execution)?;
         }
+
+        self.end_runtime_step();
 
         // An image exec(2) replaced has no loader rendezvous to follow.
         let exec_replaced = self

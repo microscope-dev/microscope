@@ -535,6 +535,38 @@ pub enum HookEvent {
     /// A hit of the managed breakpoint location the runtime was armed with
     /// under this number.
     Breakpoint { number: u64 },
+
+    /// The end of the step the runtime was armed with under this number,
+    /// as the runtime judges it: the thread reached where the step stops.
+    StepEnded { number: u64 },
+}
+
+/// Everything a runtime's internal hooks are to report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Arming<'a> {
+    /// The managed breakpoint locations, each by its number.
+    pub breakpoints: &'a [ManagedArm],
+
+    /// The step the runtime arms and judges, if one is active.
+    pub step: Option<&'a RuntimeStep>,
+
+    /// Which exceptions stop.
+    pub exceptions: crate::protocol::ExceptionStops,
+}
+
+/// A step a runtime arms and judges itself, as Python's agent steps by the
+/// lines of Python code, which have no address.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeStep {
+    /// The number the runtime reports the step's end by.
+    pub number: u64,
+    pub kind: crate::StepKind,
+
+    /// The thread the step runs on.
+    pub thread: ThreadId,
+
+    /// The interpreted frame the step begins in.
+    pub frame: VirtualAddress,
 }
 
 /// A managed breakpoint location a runtime is armed with: where it stops,
@@ -705,16 +737,17 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         None
     }
 
-    /// The writes that arm the runtime with exactly the managed breakpoint
-    /// locations `arms`, so that its internal hooks report a hit of each
-    /// and of no other; or why it cannot be armed.
-    fn arm_breakpoints(
+    /// The writes that arm the runtime with exactly `arming`, everything
+    /// the debugger wants its internal hooks to report, so that they
+    /// report that and nothing else; or why it cannot be armed so. Each
+    /// arming is whole, so a model keeps no state between them.
+    fn arm(
         &self,
         stop: &dyn RuntimeStop,
-        arms: &[ManagedArm],
+        arming: &Arming<'_>,
     ) -> Result<Vec<RuntimeWrite>, Arc<str>> {
-        let _ = (stop, arms);
-        Err("the runtime manages no breakpoints".into())
+        let _ = (stop, arming);
+        Err("the runtime reports nothing of its own".into())
     }
 
     /// The runtime function that moves a task's stack to another, which

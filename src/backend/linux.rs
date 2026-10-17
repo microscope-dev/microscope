@@ -103,6 +103,7 @@ mod recorded;
 mod registers;
 mod returns;
 mod run_control;
+mod runtime_steps;
 mod runtimes;
 mod signals;
 #[cfg(any(test, feature = "sim"))]
@@ -719,6 +720,18 @@ enum ActiveKind {
         /// an internal stop intervened.
         progress_owed: bool,
     },
+
+    /// A step through code a runtime runs itself, which the runtime arms
+    /// and judges: every thread runs, and the step ends where the runtime
+    /// reports its end on the step's own thread or task.
+    RuntimeStep {
+        owner: StepOwner,
+        kind: StepKind,
+        runtime: crate::RuntimeId,
+
+        /// The number the runtime reports the step's end by.
+        number: u64,
+    },
 }
 
 struct ActiveExecution {
@@ -967,6 +980,13 @@ struct Inferior {
 
     /// The breakpoint locations runtimes manage that user breakpoints own.
     managed: managed::ManagedSites,
+
+    /// The number the next step a runtime arms takes. A number is never
+    /// reused in a process, so a stale step's end names none.
+    next_runtime_step: u64,
+
+    /// The step a runtime is armed with, and the runtime, while one runs.
+    runtime_step: Option<(crate::RuntimeId, crate::runtime_model::RuntimeStep)>,
     indirect: indirect::IndirectFunctions,
     watch: WatchState,
 
@@ -1042,6 +1062,8 @@ impl Inferior {
             runtime_hooks: BTreeMap::new(),
             stack_moves: stack_watches::StackMoves::default(),
             managed: managed::ManagedSites::default(),
+            next_runtime_step: 0,
+            runtime_step: None,
             indirect: indirect::IndirectFunctions::default(),
             watch: WatchState::default(),
             terminating: None,

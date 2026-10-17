@@ -42,6 +42,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         let previous = std::mem::replace(&mut self.exception_stops, stops);
         if self.sites_live() {
             self.sync_runtime_hooks()?;
+            if previous != stops {
+                self.rearm_reporting_runtimes();
+            }
         }
 
         Ok(previous)
@@ -206,6 +209,9 @@ impl<P: LinuxTraceOps> Controller<P> {
                         })),
                     Ok(HookEvent::Breakpoint { number }) => {
                         self.managed_hit(pid, site.runtime, number)
+                    }
+                    Ok(HookEvent::StepEnded { number }) => {
+                        self.runtime_step_end(pid, site.runtime, number)
                     }
                     Err(description) => Some(StopReason::RuntimeEvent { description }),
                 }

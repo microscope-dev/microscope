@@ -1,14 +1,15 @@
 //! Breakpoint locations language runtimes manage. The debugger keeps no
 //! trap at one: the runtime arms each and reports a hit through one of its
 //! internal hooks. Ownership follows the native split, as for a trap site:
-//! the site record says which user breakpoints own each location, and a
-//! runtime is armed with its locations whenever they change.
+//! the site record says which user breakpoints own each location. A
+//! runtime is armed whole, with its locations, its step, and which
+//! exceptions stop, whenever any of them changes.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::protocol::BreakpointId;
-use crate::runtime_model::ManagedArm;
+use crate::runtime_model::{Arming, ManagedArm};
 use crate::{ManagedLocation, RuntimeId};
 
 use super::Controller;
@@ -25,10 +26,10 @@ pub(super) struct ManagedSites {
     /// site since removed names none.
     next: u64,
 
-    /// The runtimes whose locations changed since they were last armed.
+    /// The runtimes whose arming changed since they were last armed.
     stale: BTreeSet<RuntimeId>,
 
-    /// Why each runtime that could not be armed with its locations was not.
+    /// Why each runtime that could not be armed was not.
     pub(super) unarmed: BTreeMap<RuntimeId, Arc<str>>,
 }
 
@@ -98,10 +99,15 @@ impl ManagedSites {
             .collect()
     }
 
-    /// The runtimes whose locations changed since they were last armed,
+    /// The runtimes whose arming changed since they were last armed,
     /// which are then counted armed.
     pub(super) fn take_stale(&mut self) -> BTreeSet<RuntimeId> {
         std::mem::take(&mut self.stale)
+    }
+
+    /// Marks the runtime's arming changed, so that it is armed again.
+    pub(super) fn mark_stale(&mut self, runtime: RuntimeId) {
+        self.stale.insert(runtime);
     }
 
     /// Whether `owner` owns the location.
@@ -122,10 +128,10 @@ impl ManagedSites {
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// Arms each runtime whose managed locations changed with all of its
-    /// locations, while every thread is stopped. A runtime that cannot be
-    /// armed keeps why, and is armed again at the next change.
-    pub(super) fn sync_managed_breakpoints(&mut self) {
+    /// Arms each runtime whose arming changed with all of it, while every
+    /// thread is stopped. A runtime that cannot be armed keeps why, and is
+    /// armed again at the next change.
+    pub(super) fn sync_runtime_arming(&mut self) {
         let Some(inferior) = self.inferior.as_mut() else {
             return;
         };
@@ -148,30 +154,63 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Arms the runtime `runtime` with its managed locations.
-    fn arm_runtime(&mut self, runtime: RuntimeId) -> Result<(), Arc<str>> {
+    /// Arms the runtime `runtime` with everything its internal hooks are to
+    /// report: its managed locations, its step, and which exceptions stop.
+    pub(super) fn arm_runtime(&mut self, runtime: RuntimeId) -> Result<(), Arc<str>> {
         let inferior = self
             .inferior
             .as_ref()
             .ok_or_else(|| Arc::<str>::from("the process is gone"))?;
-        let arms = inferior.managed.arms(runtime);
+        let breakpoints = inferior.managed.arms(runtime);
+        let step = inferior
+            .runtime_step
+            .as_ref()
+            .filter(|(stepping, _)| *stepping == runtime)
+            .map(|(_, step)| step);
         let Some(bound) = self
             .runtimes(inferior)
             .into_iter()
             .find(|bound| bound.id == runtime)
         else {
             // A runtime that is gone took what it was armed with.
-            return if arms.is_empty() {
+            return if breakpoints.is_empty() && step.is_none() {
                 Ok(())
             } else {
                 Err("the runtime is no longer loaded".into())
             };
         };
 
+        let arming = Arming {
+            breakpoints: &breakpoints,
+            step,
+            exceptions: self.exception_stops,
+        };
         let writes =
             self.with_runtime_stop(inferior, &bound, inferior.memory_thread(), |stop| {
-                bound.model.arm_breakpoints(stop, &arms)
+                bound.model.arm(stop, &arming)
             })?;
         self.write_for_runtime(&writes)
+    }
+
+    /// Marks every loaded runtime that reports events through internal
+    /// hooks to be armed again, as when which exceptions stop changed.
+    pub(super) fn rearm_reporting_runtimes(&mut self) {
+        let Some(inferior) = self.inferior.as_ref() else {
+            return;
+        };
+
+        let reporting = self
+            .runtimes(inferior)
+            .into_iter()
+            .filter(|runtime| !runtime.model.internal_hooks().is_empty())
+            .map(|runtime| runtime.id)
+            .collect::<Vec<_>>();
+        if let Some(inferior) = self.inferior.as_mut() {
+            for runtime in reporting {
+                inferior.managed.mark_stale(runtime);
+            }
+        }
+
+        self.sync_runtime_arming();
     }
 }

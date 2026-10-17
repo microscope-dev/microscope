@@ -180,7 +180,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.sync_resolvers()?;
         }
 
-        self.sync_managed_breakpoints();
+        self.sync_runtime_arming();
         self.publish_breakpoints_changed();
         Ok(breakpoint)
     }
@@ -454,7 +454,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.sync_resolvers()?;
         }
 
-        self.sync_managed_breakpoints();
+        self.sync_runtime_arming();
         self.publish_breakpoints_changed();
         Ok(breakpoint)
     }
@@ -512,7 +512,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.sync_resolvers()?;
         }
 
-        self.sync_managed_breakpoints();
+        self.sync_runtime_arming();
         self.publish_breakpoints_changed();
         Ok(breakpoint)
     }
@@ -555,7 +555,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         if removed {
-            self.sync_managed_breakpoints();
+            self.sync_runtime_arming();
         }
 
         Ok(removed)
@@ -610,7 +610,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.sync_resolvers()?;
         }
 
-        self.sync_managed_breakpoints();
+        self.sync_runtime_arming();
         self.publish_breakpoints_changed();
         Ok(removed)
     }
