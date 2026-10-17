@@ -302,7 +302,9 @@ one generation and installation. Atomic `dict.setdefault` publishes a module
 with its lock before source initialization; that lock serializes initialization
 and configuration. The atomic publication relies on CPython's guarantee for
 [built-in string dictionary keys](https://docs.python.org/3.14/builtins/threadsafety.html#thread-safety-for-dict-objects).
-Older or identical generations do nothing.
+Older or identical generations from the same library owner do nothing.
+A replacement owner starts a new generation sequence. Library loading occurs
+outside the configuration lock, avoiding an inversion with the dynamic loader.
 An empty configuration frees the tool ID, its local/global events, and its
 callbacks. No tool is registered while idle. The agent prefers ID 0, tries
 other free IDs, and reports exhaustion without changing another tool.
@@ -334,9 +336,24 @@ is a no-op without a debugger. At entry its three unsigned 64-bit arguments
 are in rdi/rsi/rdx: kind, number, argument. Kind 0 acknowledges a generation
 (argument 0–5 is the tool ID; 6 means idle), 1 reports a breakpoint, 2 a step's
 completion (both require a nonzero number and zero argument), and 3 reports an
-error (argument 1: tool exhaustion; 2: callback/configuration failure). Malformed
-reports produce a visible runtime stop. The frame comes from the stopped
-thread's interpreter state; no mailbox or process-global event buffer exists.
+error (argument 1: tool exhaustion; 2: callback/configuration failure with
+confirmed disarming; 3: cleanup failed and prior state is unconfirmed;
+4: initialization failed and any previous installation is unconfirmed). Error
+reports retain the failed generation. Malformed reports produce a visible
+runtime stop. The frame comes from the stopped thread's interpreter state.
+
+The library also exports a bounded 64 KiB command slot and a sequence reader
+that uses one aligned native 64-bit load. The header carries magic, sequence,
+payload length and capacity; payloads are JSON whole configurations. The future
+controller publishes payload and length before sequence while all threads are
+stopped, with one outstanding request until its acknowledgement. Callbacks
+check that sequence under the configuration lock. Configuration acknowledgements
+can immediately accept another command in an iterative loop, so repeated edits
+do not grow the Python stack. A malformed command disarms and reports its
+generation. An idle agent has no callbacks: activating it again requires
+source injection. This command transport is still dormant in the controller.
+The bootstrap reports initialization failures through its request's own library,
+even when an incompatible interpreter-local module already exists.
 A single lock serializes configuration and callbacks on free-threaded builds,
 and captures each report's hook before releasing the lock. That keeps an old
 report bound to its original sink if a later owner replaces it. The lock is

@@ -6,6 +6,8 @@ import types
 agent = types.ModuleType('race_agent')
 agent._bootstrap_lock = threading.RLock()
 exec(compile(open(sys.argv[1]).read(), sys.argv[1], 'exec'), agent.__dict__)
+library = sys.argv[3]
+agent.apply(library, 0, ())
 old_reports, new_reports = [], []
 agent.hook = lambda *args: old_reports.append(args)
 
@@ -18,7 +20,7 @@ mode = sys.argv[2]
 old_line = first if mode == 'capture' else first + 1
 old_probe = ('LINE', 1, 42, __file__, old_line, '')
 new_probe = ('LINE', 1, 43, __file__, first, '')
-agent.apply('unused', 1, (old_probe,))
+agent.apply(library, 1, (old_probe,))
 entered, release = threading.Event(), threading.Event()
 errors = []
 
@@ -58,7 +60,7 @@ try:
     assert entered.wait(10), 'pause after callback lock release'
     if mode == 'capture':
         agent.hook = lambda *args: new_reports.append(args)
-    agent.apply('unused', 2, (new_probe,))
+    agent.apply(library, 2, (new_probe,))
 finally:
     release.set()
     worker.join(10)
@@ -70,5 +72,5 @@ else:
     old_reports.clear()
     assert target() == 1
     assert (1, 43, 0) in old_reports, old_reports
-agent.apply('unused', 3, ())
+agent.apply(library, 3, ())
 print('RACE OK', mode)

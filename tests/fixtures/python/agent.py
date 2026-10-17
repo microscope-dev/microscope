@@ -26,6 +26,22 @@ if sys.version_info < (3, 14):
     print("AGENT OK (unsupported version refused)")
     sys.exit(0)
 
+if "--failed-bootstrap" in sys.argv:
+    incompatible = type(sys)("_microscope_agent")
+    incompatible._bootstrap_lock = threading.RLock()
+    incompatible._microscope_loaded = 999
+    sys.modules["_microscope_agent"] = incompatible
+    try:
+        load(1, ())
+    except RuntimeError as error:
+        assert "incompatible microscope agent transport" in str(error)
+    else:
+        raise AssertionError("incompatible agent replaced silently")
+    assert incompatible._microscope_loaded == 999
+    print("FAILED BOOTSTRAP OK")
+    sys.exit(0)
+
+
 def bootstrap_race():
     # Pause the first source execution before any module body runs. A second
     # fresh script must find the same published, guarded module, not create

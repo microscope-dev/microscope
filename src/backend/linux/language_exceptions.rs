@@ -199,6 +199,9 @@ impl<P: LinuxTraceOps> Controller<P> {
                 });
                 match event {
                     Ok(HookEvent::Continue | HookEvent::Armed { .. }) => None,
+                    Ok(HookEvent::AgentFailed { description, .. }) => {
+                        Some(StopReason::RuntimeEvent { description })
+                    }
                     Ok(HookEvent::Exception { filter, report }) => self
                         .exception_stops
                         .stops(filter.id)

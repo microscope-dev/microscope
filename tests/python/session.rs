@@ -361,6 +361,10 @@ impl PythonSession {
     }
 
     /// The interpreter and fixture, for messages.
+    pub fn output(&self) -> String {
+        std::fs::read_to_string(&self.output).expect("read fixture output")
+    }
+
     pub fn context(&self) -> String {
         format!("{} {}", self.interpreter, self.fixture)
     }

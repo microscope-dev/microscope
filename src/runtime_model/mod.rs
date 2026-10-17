@@ -587,6 +587,13 @@ pub struct RuntimeWrite {
 /// What a thread that entered one of a runtime's internal hooks reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HookEvent {
+    /// A configuration failed after its source was consumed. The owner
+    /// may retire that generation's artifacts, but cannot claim it armed.
+    AgentFailed {
+        generation: u64,
+        description: Arc<str>,
+    },
+
     /// The agent applied this generation of its whole desired state. The
     /// injection owner may now retire that generation's script (P4.7).
     Armed { generation: u64 },

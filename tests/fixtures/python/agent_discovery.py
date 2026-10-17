@@ -8,6 +8,8 @@ import weakref
 agent = types.ModuleType('discovery_agent')
 agent._bootstrap_lock = threading.RLock()
 exec(compile(open(sys.argv[1]).read(), sys.argv[1], 'exec'), agent.__dict__)
+library = sys.argv[3]
+agent.apply(library, 0, ())
 reports = []
 agent.hook = lambda *args: reports.append(args)
 
@@ -27,7 +29,7 @@ if mode == 'repeat':
         return original(tool, code, mask)
     sys.monitoring.set_local_events = observe
     try:
-        agent.apply('unused', 1, (probe,))
+        agent.apply(library, 1, (probe,))
         reports.clear()
         for _ in range(10):
             assert target() == 1
@@ -43,14 +45,14 @@ elif mode == 'fault':
         return original(tool, code, mask)
     sys.monitoring.set_local_events = refuse
     try:
-        agent.apply('unused', 1, (probe,))
+        agent.apply(library, 1, (probe,))
         reports.clear()
         assert target() == 1
         assert reports == [(3, 1, 2)], reports
         assert agent.tool is None and not agent.discovered
     finally:
         sys.monitoring.set_local_events = original
-    agent.apply('unused', 2, (probe,))
+    agent.apply(library, 2, (probe,))
     reports.clear()
     assert target() == 1
     assert reports == [(1, 42, 0)], reports
@@ -62,7 +64,7 @@ elif mode == 'resumed':
     suspended_generator = generator()
     assert next(suspended_generator) == 0
     generator_line = generator.__code__.co_firstlineno + 2
-    agent.apply('unused', 1, (('LINE', 1, 42, __file__, generator_line, ''),))
+    agent.apply(library, 1, (('LINE', 1, 42, __file__, generator_line, ''),))
     reports.clear()
     assert next(suspended_generator) == 42
     assert reports == [(1, 42, 0)], reports
@@ -77,7 +79,7 @@ elif mode == 'resumed':
     thrown_generator = catching()
     assert next(thrown_generator) == 0
     thrown_line = catching.__code__.co_firstlineno + 4
-    agent.apply('unused', 2, (('LINE', 1, 44, __file__, thrown_line, ''),))
+    agent.apply(library, 2, (('LINE', 1, 44, __file__, thrown_line, ''),))
     reports.clear()
     assert thrown_generator.throw(LookupError()) == 42
     assert reports == [(1, 44, 0)], reports
@@ -93,7 +95,7 @@ elif mode == 'resumed':
     suspended_coroutine = coroutine()
     assert suspended_coroutine.send(None) is None
     coroutine_line = coroutine.__code__.co_firstlineno + 2
-    agent.apply('unused', 3, (('LINE', 1, 43, __file__, coroutine_line, ''),))
+    agent.apply(library, 3, (('LINE', 1, 43, __file__, coroutine_line, ''),))
     reports.clear()
     try:
         suspended_coroutine.send(None)
@@ -115,7 +117,7 @@ elif mode == 'delegated':
     delegated = outer()
     assert next(delegated) == 0
     outer_line = outer.__code__.co_firstlineno + 2
-    agent.apply('unused', 1, (('LINE', 1, 45, __file__, outer_line, ''),))
+    agent.apply(library, 1, (('LINE', 1, 45, __file__, outer_line, ''),))
     reports.clear()
     assert delegated.throw(LookupError()) == 42
     assert reports == [(1, 45, 0)], reports
@@ -137,7 +139,7 @@ elif mode == 'delegated':
     delegated_coroutine = outer_coroutine()
     assert delegated_coroutine.send(None) is None
     outer_line = outer_coroutine.__code__.co_firstlineno + 2
-    agent.apply('unused', 2, (('LINE', 1, 46, __file__, outer_line, ''),))
+    agent.apply(library, 2, (('LINE', 1, 46, __file__, outer_line, ''),))
     reports.clear()
     try:
         delegated_coroutine.throw(asyncio.CancelledError())
@@ -152,14 +154,14 @@ elif mode == 'identity':
     other_code = target.__code__.replace(co_filename='/unmatched.py')
     assert other_code == target.__code__ and other_code is not target.__code__
     other = types.FunctionType(other_code, globals())
-    agent.apply('unused', 1, (probe,))
+    agent.apply(library, 1, (probe,))
     reports.clear()
     assert other() == 1
     assert not reports
     assert target() == 1
     assert reports == [(1, 42, 0)], reports
 elif mode == 'gc':
-    agent.apply('unused', 1, (probe,))
+    agent.apply(library, 1, (probe,))
     references = []
     identities = []
     for i in range(100):
@@ -184,7 +186,7 @@ elif mode == 'reused':
     assert target() == 1
     assert disabled
     sys.monitoring.free_tool_id(tool)
-    agent.apply('unused', 1, (probe,))
+    agent.apply(library, 1, (probe,))
     assert agent.tool == tool
     reports.clear()
     assert target() == 1
@@ -205,7 +207,7 @@ elif mode in ('coexist', 'coexist_matching'):
     disabled.clear()
     assert target() == 1 and not disabled
     wanted = probe if mode == 'coexist_matching' else ('LINE', 1, 42, '/unmatched.py', 1, '')
-    agent.apply('unused', 1, (wanted,))
+    agent.apply(library, 1, (wanted,))
     assert agent.tool != 0
     reports.clear()
     assert target() == 1
@@ -223,10 +225,10 @@ elif mode in ('coexist', 'coexist_matching'):
     assert unrelated() == 1 and not disabled
     assert sys.monitoring.get_tool(0) == 'other debugger'
     assert sys.monitoring.get_local_events(0, target.__code__) == sys.monitoring.events.LINE
-    agent.apply('unused', 2, ())
+    agent.apply(library, 2, ())
     assert unrelated() == 1 and not disabled
     sys.monitoring.free_tool_id(0)
 else:
     raise AssertionError(mode)
-agent.apply('unused', 4, ())
+agent.apply(library, 4, ())
 print('DISCOVERY OK', mode)

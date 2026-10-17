@@ -18,12 +18,27 @@ import _thread as _thread
 _candidate = type(_sys)('_microscope_agent')
 _candidate._bootstrap_lock = _thread.RLock()
 _agent = _sys.modules.setdefault('_microscope_agent', _candidate)
-with _agent._bootstrap_lock:
-    if '_microscope_loaded' not in _agent.__dict__:
-        exec({source}, _agent.__dict__)
-    elif _agent._microscope_loaded != 1:
-        raise RuntimeError('incompatible microscope agent transport')
-_agent.apply(__microscope_library, __microscope_generation, __microscope_probes)
+try:
+    with _agent._bootstrap_lock:
+        if '_microscope_loaded' not in _agent.__dict__:
+            exec(compile({source}, __microscope_library + '.agent', 'exec'), _agent.__dict__)
+        elif _agent._microscope_loaded != 2:
+            raise RuntimeError('incompatible microscope agent transport')
+    _agent.apply(__microscope_library, __microscope_generation, __microscope_probes)
+except BaseException:
+    # A consumed script must report initialization failure through its own
+    # library, even if a previous agent owns the interpreter-local module.
+    if _sys.version_info >= (3, 14):
+        try:
+            import ctypes as _ctypes
+            _failure_library = _ctypes.PyDLL(__microscope_library)
+            _failure_hook = _failure_library.microscope_python_hook
+            _failure_hook.argtypes = (_ctypes.c_uint64,) * 3
+            _failure_hook.restype = None
+            _failure_hook(3, __microscope_generation, 4)
+        except BaseException:
+            pass  # No acknowledgement: the controller retains the script.
+    raise
 "
     ))
 }
@@ -59,6 +74,30 @@ pub enum Report {
     Armed { generation: u64 },
     Breakpoint { number: u64 },
     StepEnded { number: u64 },
+    Failed { generation: u64, failure: Failure },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Failure {
+    ToolExhausted,
+    Configuration,
+    Cleanup,
+    Initialization,
+}
+
+impl Failure {
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::ToolExhausted => "all sys.monitoring tool IDs are in use",
+            Self::Configuration => {
+                "a monitoring callback or configuration failed; the agent is disarmed"
+            }
+            Self::Cleanup => "monitoring cleanup failed; its previous state is unconfirmed",
+            Self::Initialization => {
+                "agent initialization failed; any previous installation is unconfirmed"
+            }
+        }
+    }
 }
 
 pub fn decode(event: u64, number: u64, argument: u64) -> Result<Report, std::sync::Arc<str>> {
@@ -66,19 +105,22 @@ pub fn decode(event: u64, number: u64, argument: u64) -> Result<Report, std::syn
         (0, generation, 0..=6) => Ok(Report::Armed { generation }),
         (1, number, 0) if number != 0 => Ok(Report::Breakpoint { number }),
         (2, number, 0) if number != 0 => Ok(Report::StepEnded { number }),
-        (3, generation, 1) => Err(format!(
-            "Python agent generation {generation}: all sys.monitoring tool IDs are in use"
-        ).into()),
-        (3, generation, 2) => Err(format!(
-            "Python agent generation {generation}: a monitoring callback or configuration failed; the agent is disarmed"
-        ).into()),
+        (3, generation, 1..=4) => Ok(Report::Failed {
+            generation,
+            failure: match argument {
+                1 => Failure::ToolExhausted,
+                2 => Failure::Configuration,
+                3 => Failure::Cleanup,
+                _ => Failure::Initialization,
+            },
+        }),
         _ => Err("invalid Python agent hook report".into()),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Report, decode};
+    use super::{Failure, Report, decode};
 
     #[test]
     fn a_whole_state_script_escapes_its_literals() {
@@ -100,8 +142,21 @@ mod tests {
         assert_eq!(decode(0, 7, 6), Ok(Report::Armed { generation: 7 }));
         assert_eq!(decode(1, 42, 0), Ok(Report::Breakpoint { number: 42 }));
         assert_eq!(decode(2, 43, 0), Ok(Report::StepEnded { number: 43 }));
-        assert!(decode(3, 7, 1).unwrap_err().contains("tool IDs"));
-        assert!(decode(3, 7, 2).unwrap_err().contains("disarmed"));
+        for (argument, failure) in [
+            (1, Failure::ToolExhausted),
+            (2, Failure::Configuration),
+            (3, Failure::Cleanup),
+            (4, Failure::Initialization),
+        ] {
+            assert_eq!(
+                decode(3, 7, argument),
+                Ok(Report::Failed {
+                    generation: 7,
+                    failure
+                })
+            );
+            assert!(!failure.description().is_empty());
+        }
         for (event, number, argument) in [
             (0, 1, 7),
             (1, 0, 0),
@@ -109,6 +164,7 @@ mod tests {
             (2, 0, 0),
             (2, 1, 1),
             (3, 1, 0),
+            (3, 1, 5),
             (4, 1, 0),
             (u64::MAX, 1, 0),
         ] {

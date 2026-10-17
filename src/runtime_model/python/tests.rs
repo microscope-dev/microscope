@@ -1211,6 +1211,11 @@ fn agent_reports_are_read_from_the_calling_threads_registers() {
         model.hook_event(&stop, hook, &registers),
         Ok(HookEvent::Armed { generation: 42 })
     );
+    registers.set(RDI, 3);
+    registers.set(DwarfRegister::new(1), 4);
+    assert!(
+        matches!(model.hook_event(&stop, hook, &registers), Ok(HookEvent::AgentFailed { generation: 42, ref description }) if description.contains("initialization failed"))
+    );
     for missing in [RDI, RSI, DwarfRegister::new(1)] {
         let mut absent = registers.clone();
         absent.remove(missing);

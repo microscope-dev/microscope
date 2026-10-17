@@ -626,6 +626,17 @@ impl RuntimeModel for PythonRuntime {
         )?;
         Ok(match report {
             agent::Report::Armed { generation } => super::HookEvent::Armed { generation },
+            agent::Report::Failed {
+                generation,
+                failure,
+            } => super::HookEvent::AgentFailed {
+                generation,
+                description: format!(
+                    "Python agent generation {generation}: {}",
+                    failure.description()
+                )
+                .into(),
+            },
             agent::Report::Breakpoint { number } => super::HookEvent::Breakpoint { number },
             agent::Report::StepEnded { number } => super::HookEvent::StepEnded { number },
         })

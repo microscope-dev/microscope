@@ -10,6 +10,8 @@ if sys.version_info < (3, 14):
     raise RuntimeError("microscope's monitoring transport requires CPython 3.14 or later")
 
 import ctypes
+import json
+import _thread
 import _weakref
 
 monitoring = sys.monitoring
@@ -19,6 +21,13 @@ generation = -1
 probes = ()
 hook = None
 _library = None
+_owner = None
+_control = None
+_sequence = None
+_local = _thread._local()
+CONTROL_HEADER = 32
+CONTROL_CAPACITY = 65536
+CONTROL_MAGIC = b'MICPYC02'
 discovered = {}
 # Configuration and callbacks can run concurrently in free-threaded builds.
 # No native hook is called while this lock is held.
@@ -71,39 +80,98 @@ def discover(code):
     discovered[identity] = _weakref.ref(code, expired)
 
 
+def failed(wanted_generation):
+    global generation
+    generation = wanted_generation
+    try:
+        clear()
+    except BaseException:
+        return (3, generation, 3)  # The previous monitoring state is unknown.
+    return (3, generation, 2)
+
+
+def pending():
+    # The helper performs one aligned native load. A byte-wise sequence
+    # copy could straddle an all-stop publication and manufacture an ID.
+    wanted_generation = _sequence()
+    if wanted_generation <= generation:
+        return None
+    try:
+        if (bytes(_control[:8]) != CONTROL_MAGIC
+                or int.from_bytes(bytes(_control[20:24]), 'little') != CONTROL_CAPACITY):
+            raise ValueError('invalid microscope command header')
+        length = int.from_bytes(bytes(_control[16:20]), 'little')
+        if not 0 < length <= CONTROL_CAPACITY:
+            raise ValueError('invalid microscope command length')
+        request = json.loads(bytes(_control[CONTROL_HEADER:CONTROL_HEADER + length]))
+        if (type(request) is not list or len(request) != 2
+                or type(request[0]) is not int or request[0] != wanted_generation):
+            raise ValueError('invalid microscope command generation')
+        return configure(_owner, wanted_generation, request[1])
+    except BaseException:
+        return failed(wanted_generation)
+
+
+def emit(report, report_hook, report_owner):
+    # Acknowledgements can accept another configuration at this hook.
+    # Keep that iterative: repeated edits must not nest Python scripts.
+    while report is not None:
+        report_hook(*report)
+        with lock:
+            if report_owner != _owner or report_hook is not hook:
+                return
+            report = pending()
+
+
 def callback(event):
     def report(code, location, *unused):
-        if id(code) in INTERNAL:
+        if id(code) in INTERNAL or getattr(_local, 'busy', False):
             return None
-        with lock:
-            if tool is None:
-                return
-            try:
-                if event in ("PY_START", "PY_RESUME", "PY_THROW"):
-                    discover(code)
-                reports = dispatch(event, code, location)
-            except BaseException:
-                # A monitoring exception must never escape into user code.
-                clear()
-                reports = ((3, generation, 2),)
-            # A new owner may replace the global hook after this lock is
-            # released. Each captured report retains its original sink.
-            report_hook = hook
-        for arguments in reports:
-            report_hook(*arguments)
+        _local.busy = True
+        try:
+            with lock:
+                notices = []
+                changed = pending()
+                if changed is not None:
+                    notices.append(changed)
+                if tool is not None:
+                    try:
+                        if event in ('PY_START', 'PY_RESUME', 'PY_THROW'):
+                            discover(code)
+                        notices.extend(dispatch(event, code, location))
+                    except BaseException:
+                        notices.append(failed(generation))
+                report_hook, report_owner = hook, _owner
+            for notice in notices:
+                emit(notice, report_hook, report_owner)
+        finally:
+            _local.busy = False
     return report
 
 
-# Returning monitoring.DISABLE races a new configuration: CPython can
-# process the old return after the new events were armed. Keep discovery
-# weak and idempotent instead, and never reset other tools' disabled sites.
+def transport(library):
+    native = ctypes.PyDLL(library)
+    report_hook = native.microscope_python_hook
+    report_hook.argtypes = (ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64)
+    report_hook.restype = None
+    control = (ctypes.c_ubyte * (CONTROL_HEADER + CONTROL_CAPACITY)).in_dll(
+        native, 'microscope_python_control')
+    sequence = native.microscope_python_sequence
+    sequence.argtypes = ()
+    sequence.restype = ctypes.c_uint64
+    if (bytes(control[:8]) != CONTROL_MAGIC
+            or int.from_bytes(bytes(control[20:24]), 'little') != CONTROL_CAPACITY
+            or sequence() != 0):
+        raise RuntimeError('incompatible or already-published microscope control library')
+    return native, report_hook, control, sequence
 
 
-def configure(library, wanted_generation, wanted_probes):
-    global _library, hook, generation, tool, probes
+
+def configure(library, wanted_generation, wanted_probes, replacement=None):
+    global _library, hook, generation, tool, probes, _owner, _control, _sequence
     if type(wanted_generation) is not int or not 0 <= wanted_generation < 2**64:
         raise ValueError("invalid microscope generation")
-    if wanted_generation <= generation:
+    if library == _owner and wanted_generation <= generation:
         return None
 
     # Validate the complete request before changing the active installation.
@@ -118,15 +186,12 @@ def configure(library, wanted_generation, wanted_probes):
                 or not isinstance(probe[5], str)):
             raise ValueError("invalid microscope monitoring probe")
 
-    if hook is None:
-        # PyDLL preserves the GIL in conventional builds. Arguments belong to
-        # the calling thread in both GIL modes; there is no shared mailbox.
-        _library = ctypes.PyDLL(library)
-        hook = _library.microscope_python_hook
-        hook.argtypes = (ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64)
-        hook.restype = None
-
+    if library != _owner and replacement is None:
+        raise RuntimeError("microscope transport owner changed during preparation")
     clear()
+    if library != _owner:
+        _library, hook, _control, _sequence = replacement
+        _owner = library
     generation = wanted_generation
     if not wanted_probes:
         return (0, generation, 6)  # 6 means no tool is registered.
@@ -163,11 +228,21 @@ def configure(library, wanted_generation, wanted_probes):
 
 
 def apply(library, wanted_generation, wanted_probes):
-    with lock:
-        report = configure(library, wanted_generation, wanted_probes)
-        report_hook = hook
-    if report is not None:
-        report_hook(*report)
+    was_busy = getattr(_local, 'busy', False)
+    _local.busy = True
+    try:
+        with lock:
+            needs_transport = library != _owner
+        # The loader may wait for a thread whose monitoring callback needs
+        # our lock. Load outside it; configure revalidates ownership inside.
+        replacement = transport(library) if needs_transport else None
+        with lock:
+            report = configure(library, wanted_generation, wanted_probes, replacement)
+            report_hook, report_owner = hook, _owner
+        if report is not None:
+            emit(report, report_hook, report_owner)
+    finally:
+        _local.busy = was_busy
 
 
 # Suppress only our own code objects, never functions guessed from their names.
@@ -182,4 +257,4 @@ INTERNAL = frozenset(_internal)
 del _pending, _internal, _code
 
 # Published only after initialization succeeds; the bootstrap serializes it.
-_microscope_loaded = 1
+_microscope_loaded = 2
