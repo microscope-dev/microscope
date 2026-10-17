@@ -88,6 +88,26 @@ entries! {
         ThreadId = "thread_state.thread_id",
         ThreadNativeId = "thread_state.native_thread_id",
 
+        /// From 3.15, whether a thread holds its interpreter's GIL, and
+        /// whether it asks for it, each an `int`.
+        ThreadHoldsGil = "thread_state.holds_gil",
+        ThreadGilRequested = "thread_state.gil_requested",
+
+        /// The GIL an interpreter takes, `ceval.gil`: its own
+        /// [`Field::InterpreterGil`], or another interpreter's it shares.
+        InterpreterCevalGil = "interpreter_state.ceval_gil",
+
+        /// An interpreter's own GIL, and its `locked` and `last_holder`,
+        /// each from the start of the interpreter's state, which the
+        /// GIL's structure holds at the difference.
+        InterpreterGil = "interpreter_state.gil_runtime_state",
+        InterpreterGilLocked = "interpreter_state.gil_runtime_state_locked",
+        InterpreterGilHolder = "interpreter_state.gil_runtime_state_holder",
+
+        /// In a free-threaded build, whether its GIL is on, an `int` from
+        /// the start of the GIL's structure.
+        GilEnabled = "interpreter_state.gil_runtime_state_enabled",
+
         /// From 3.14, the asyncio task a thread runs, and the head of the
         /// circular list of the `asyncio.Task`s it made, linked through
         /// each task's [`Field::TaskNode`], in `_PyThreadStateImpl`.

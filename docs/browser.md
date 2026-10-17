@@ -58,7 +58,9 @@ microscope web current.usprof baseline.usprof
 
 The profile pages include call trees, functions, flame views, timelines,
 source and disassembly costs, blocked-time lanes, task stacks, and
-instrumentation zones when the recording contains them.
+instrumentation zones when the recording contains them. A profile with Python
+frames has a Python stacks switch, which shows each stack as its Python code
+sees it, without the interpreter's own frames.
 
 A file with system calls, from `microscope syscalls -o FILE.usprof` or
 `microscope record --syscalls`, has a Syscalls view. It lists calls in a table

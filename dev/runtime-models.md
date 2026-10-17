@@ -241,7 +241,19 @@ by its `native_thread_id`. A thread's chain of frames begins at its current
 frame (3.12: through its `_PyCFrame`). `frames.rs` walks it innermost first.
 Frames the thread owns run code; the interpreter's entry frame ends each
 segment that one activation of the evaluation loop runs. The walk ends on a
-loop, an unknown owner, or an unreadable frame, and says why.
+loop, an unknown owner, or an unreadable frame, and says why. From 3.15 every
+chain ends at the thread's base frame, so one that ends before it says it was
+read as it changed: a live profile leaves such a thread out.
+
+**The GIL.** `gil.rs` reads who holds each interpreter's GIL, which
+`RuntimeModel::thread_labels` gives as `gil=held` and `gil=waiting`. From
+3.15 each thread state's `holds_gil` and `gil_requested` say so. Before
+that, only the GIL itself does: it is locked, and `last_holder` is the
+thread state that took it; nothing says who waits. A free-threaded build's
+`enabled` may be 0, and then no thread has a label. The GIL is
+`ceval.gil`'s, which may be another interpreter's; the table gives `locked`
+and `last_holder` from the start of the interpreter's own copy, so they are
+read at their distance from it.
 
 **Code and lines.** Each frame's code object is decoded once per runtime into
 `code::CodeTable`: its qualified name, file, first line, and line table. The

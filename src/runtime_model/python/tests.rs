@@ -747,6 +747,39 @@ fn a_base_frame_ends_the_walk_before_it_with_no_problem() {
     assert_eq!(end, None);
 }
 
+/// From 3.15 every thread's chain ends at its base frame, so one that ends
+/// before it was read as the program changed it, which the walk says.
+#[test]
+fn a_chain_that_ends_before_its_base_frame_says_so() {
+    let mut process = Process::new(layout());
+    let a = process.code("a", 10, &[(1, 0)]);
+    let base = process.frame(0, a, process.instruction(a, 0));
+    let entry = process.entry(0);
+    let a_frame = process.frame(entry, a, process.instruction(a, 0));
+
+    let state = ThreadState {
+        base: Some(VirtualAddress::new(base)),
+        ..innermost(a_frame)
+    };
+    let (frames, end) = walk(&process, &mut CodeTable::default(), &state);
+    assert_eq!(frames.len(), 1);
+    assert_eq!(
+        end.as_deref(),
+        Some("the thread's frames end before its base frame")
+    );
+
+    // A thread that runs no Python code has no frames to end early.
+    let idle = ThreadState {
+        base: Some(VirtualAddress::new(base)),
+        frame: None,
+        ..innermost(a_frame)
+    };
+    assert_eq!(
+        walk(&process, &mut CodeTable::default(), &idle),
+        (Vec::new(), None)
+    );
+}
+
 /// Pins what the walk does when a thread's frames reach its base frame
 /// with no entry frame beneath the last one: the last frame is marked
 /// outermost and the walk reports the missing entry frame. The base frame

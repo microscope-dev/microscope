@@ -43,6 +43,7 @@ describe("a profile's address", () => {
       tf: ["focus:<Pin<Box<F>> as Future>::poll", "drop:std::sys::backtrace::__rust_begin"],
       invert: "1",
       native: "1",
+      py: "1",
       by: "line",
       fn: "app::db::decode",
       z: ["main", "a & b", "c=d?"],
@@ -65,7 +66,7 @@ describe("a profile's address", () => {
         { op: "drop", name: "std::sys::backtrace::__rust_begin" },
       ],
       invert: true,
-      native: true,
+      look: "native",
       granularity: "line",
       base: { profile: "f00d", range: [5, 90] },
     });
@@ -86,6 +87,7 @@ describe("a profile's address", () => {
         lanes: "threads",
         tf: ["spin:main", ":main", "merge:"],
         invert: "yes",
+        py: "yes",
         by: "function",
         bp: "",
         br: "9-3",
@@ -99,9 +101,14 @@ describe("a profile's address", () => {
       labels: [],
       transforms: [],
       invert: false,
-      native: false,
+      look: "logical",
       granularity: "function",
     });
+  });
+
+  it("looks at stacks as Python sees them unless it looks at native ones", () => {
+    expect(queryOf("p", { py: "1" }).look).toBe("python");
+    expect(queryOf("p", { py: "1", native: "1" }).look).toBe("native");
   });
 
   it("keeps transforms in order, and forgets the zoom they move", () => {

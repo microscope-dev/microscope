@@ -4593,6 +4593,11 @@ pub struct RecordedFrame {
 
     /// Where the frame is, when its runtime knows.
     pub place: Option<RecordedPlace>,
+
+    /// The line of the place's file the function's code begins at, when
+    /// its runtime knows: two functions of one name in one file differ in
+    /// it.
+    pub first_line: Option<u32>,
 }
 
 /// A platform-independent stack frame.

@@ -20,7 +20,8 @@ over those layers. The browser reads the same profile and analysis results.
 | Path | What lives there |
 | --- | --- |
 | `src/profiler/collector.rs`, `src/profiler/record.rs`, `src/profiler/session.rs` | perf collection, record decoding, and session lifecycle |
-| `src/profiler/tasks.rs`, `src/profiler/calls.rs`, `src/profiler/frame_pointers.rs` | Task tracking and stack reconstruction |
+| `src/profiler/tasks.rs`, `src/profiler/calls.rs`, `src/profiler/frame_pointers.rs` | Task and thread snapshots, and stack reconstruction |
+| `src/backend/linux/reaped.rs` | The exit status of a recorded program that a snapshot's debugger reaped |
 | `src/profiler/jit.rs`, `src/debug_info/perf_map.rs` | Perf maps: anonymous code as modules |
 | `src/profiler/annotate.rs`, `src/profiler/symbols.rs`, `src/profiler/zones.rs` | Symbol, source, and instrumentation annotation |
 | `src/profiler/formats/` | Chrome, folded-stack, and pprof output |
@@ -150,6 +151,32 @@ sample of a busy goroutine to name it.
 Bound snapshot frequency, task count, reads, bytes, and time. A program with a
 million tasks must degrade explicitly rather than exhaust the recorder.
 
+### Thread snapshots
+
+A recording's Python engine (`RecordOptions::python`) other than BPF takes
+snapshots of threads rather than tasks (`tasks::Reads`). Each thread is a
+task row named `thread`, numbered by its id, and its stack a wait row, so
+thread snapshots need no table of their own. A stopped one stores each
+thread's debugger backtrace, Python frames among native ones. A live one
+stores each thread's interpreted frames from one read, which is complete
+only when the walk ends where the runtime says it ends and every frame's
+code is proved; any other read is counted as changed, never kept shorter.
+Each also stores the labels the runtimes give each thread
+(`RuntimeModel::thread_labels`), which the recording keeps as label spans on
+the thread from the snapshot before to this one.
+
+### Reaping the program
+
+A stopped snapshot's debugger runs in the recorder's process and waits for
+any child, as a debugger must, and the program a recording starts is the
+recorder's child. Any thread of a process may reap any of its children, so
+when the program exits as a snapshot attaches or detaches, the debugger's
+waiter or the recorder could each take the other's exit.
+`backend::reaped` keeps both whole: the recorder reaps its child only once
+no snapshot holds it, so a snapshot's debugger sees the exit itself, and
+every wait leaves a watched child's status there for the recorder, which
+takes it when it finds its child already reaped.
+
 ## Off-CPU intervals
 
 Scheduler events delimit periods when a thread is not executing on a CPU.
@@ -192,6 +219,13 @@ Writers build tables in deterministic order and seal them. Readers validate
 all counts, indexes, ranges, and cross-references before analysis. Importers
 for pprof and folded stacks must satisfy the same validated model.
 
+A frame of a kind keyed by a string (`FrameKind::named`), an awaited
+future's or an interpreted frame's, has the string's id as its address and
+no module. Rebuilding a capture from others keys such a frame by its text.
+An interpreted frame's key is its file, function, line, and the line its
+function begins at, and its one line declares the function at that file
+and first line, so functions of one name stay apart.
+
 Format changes need:
 
 - a compatibility decision and version update;
@@ -224,13 +258,21 @@ complete one. Retention deletes only files owned by the recording layout.
 ## Analysis
 
 `src/analysis::keys` maps frame and function identities into dense keys at a
-chosen granularity. `query` aggregates samples into call trees, flat costs,
+chosen granularity, an interpreted frame by its line even by address. `query` aggregates samples into call trees, flat costs,
 density lanes, and off-CPU lanes. `diff` compares compatible results. `zones`
 builds blocks and statistics from instrumentation.
 
 Analysis is pure over a validated capture. It does not open process memory,
 read clocks, or fetch debug files. Keep ordering deterministic so reports,
 tests, and comparisons do not change with hash iteration.
+
+A query's `Look` chooses how it sees each path. The native look drops
+interpreted frames, which the interpreter's frames that run them stand
+for. The logical look makes each async task's frames a stack of their own.
+The Python look is the logical one from the outermost interpreted frame in,
+without `CodeRole::Interpreter` frames, so the segments that activations of
+the interpreter run join, and native code they call stays where it was
+called.
 
 Separate the measured quantity from grouping. CPU samples, wall intervals,
 blocked time, probe values, and counts have different units. A transform must

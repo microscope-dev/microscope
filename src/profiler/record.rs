@@ -15,9 +15,9 @@ use super::jit::{Jit, Stale};
 use super::probes::{self, Event, SiteRecord, Stacks};
 use super::tasks::{Snapshot, WaitFrame};
 use crate::backend::perf::{self, decode};
-use crate::capture::builder::LineInput;
+use crate::capture::builder::{InterpretedPlace, LineInput};
 use crate::capture::records::{
-    AccountKind, FrameKind, GapReason, Mapping, MarkerKind, NONE, Truncation, role_number,
+    AccountKind, FrameKind, GapReason, Mapping, MarkerKind, NONE, Truncation, Zone, role_number,
 };
 
 use crate::capture::{Capture, CaptureBuilder};
@@ -1126,12 +1126,42 @@ impl Processor {
 
         let time = start.cast_signed();
         self.claim(pid, (time, end.cast_signed()), snapshot);
+
+        // A thread's labels, as sampled, stand for the time since the
+        // snapshot before, as its waits do.
+        let since = time.saturating_sub(weight.cast_signed());
+        for (tid, labels) in &snapshot.thread_labels {
+            let thread = self.thread(pid, Tid::new(*tid), time);
+            for (key, value) in labels {
+                let site = self
+                    .builder
+                    .site(key, "", 0, NONE, microscope_probes::abi::SITE_LABEL);
+                let value = self.builder.string(value);
+                self.builder.zone(
+                    thread,
+                    Zone {
+                        start: since.into(),
+                        end: time.into(),
+                        site: site.into(),
+                        flags: 0.into(),
+                        value: value.into(),
+                        reserved: 0.into(),
+                    },
+                );
+            }
+        }
         for task in &snapshot.waiting {
             self.frames.clear();
             for frame in &task.frames {
                 let id = match frame {
                     WaitFrame::Code { address, role } => self.code_frame(pid, *address, *role),
                     WaitFrame::Awaited(text) => self.builder.awaited(text),
+                    WaitFrame::Interpreted(frame) => self.builder.interpreted(&InterpretedPlace {
+                        function: &frame.function,
+                        file: frame.file.as_deref(),
+                        line: frame.line,
+                        declared: frame.first_line,
+                    }),
                     WaitFrame::Truncated(reason) => self.builder.truncation(*reason, NONE),
                 };
 

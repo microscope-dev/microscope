@@ -232,6 +232,7 @@ mod tests {
                 function: "Worker.run".into(),
                 language: microscope::SourceLanguage::Python,
                 place,
+                first_line: Some(1),
             }),
         }
     }

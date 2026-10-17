@@ -269,6 +269,15 @@ function's argument through `(py)`, which proves conditions over Python
 values at native breakpoints, and evaluates each path in the Python caller.
 The extension is built per interpreter by `scripts/build-test-programs.sh`.
 
+`tests/python/profile.rs` records `tests/fixtures/python/profiled.py`, two
+threads that spin in Python and one that sleeps, with each Python engine on
+3.12, 3.14, 3.14t, and 3.15. The lines it checks are marked in the fixture by
+a `# LINE name` comment, which the test finds in the source. Recording runs
+until the profile so far holds what the test checks, or a deadline, then
+releases the program by its standard input. `just test` warms the image
+cache; without it, a stopped snapshot reloads the interpreter's debug
+information each time and holds the program for seconds.
+
 ## Unit tests
 
 Unit-test complicated deterministic logic where a failure can identify the

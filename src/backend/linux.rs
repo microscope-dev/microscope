@@ -95,6 +95,7 @@ mod panic_release;
 pub mod perf;
 mod post_mortem;
 mod presentation;
+pub mod reaped;
 #[cfg(debug_assertions)]
 mod recorded;
 mod registers;

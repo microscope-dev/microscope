@@ -4,7 +4,7 @@ use proptest::prelude::*;
 
 use super::Format;
 use crate::analysis::Granularity;
-use crate::capture::builder::{CaptureBuilder, LineInput};
+use crate::capture::builder::{CaptureBuilder, InterpretedPlace, LineInput};
 use crate::capture::records::{FrameKind, MarkerKind, NONE};
 use crate::model::{Pid, Tid};
 use crate::profiler::{Profile, StackView, query};
@@ -126,6 +126,61 @@ proptest! {
 
 /// Weights that add up past what a count holds are refused, as a total of
 /// them could not be taken.
+/// An export in the Python look writes each stack as its Python code sees
+/// it, its interpreted frames by their functions, files, and lines.
+#[test]
+fn a_python_look_exports_its_interpreted_frames_by_line() {
+    let mut builder = CaptureBuilder::new();
+    let module = builder.module("/bin/python3", None, [0; 16], 0);
+    let evaluate = builder.frame(FrameKind::Native, module, 0x10, 0);
+    builder.symbolize(
+        evaluate,
+        module,
+        &[LineInput {
+            function: "_PyEval_EvalFrameDefault",
+            file: None,
+            line: 0,
+            column: 0,
+            declared: None,
+            role: crate::capture::records::role_number(crate::CodeRole::Interpreter),
+        }],
+    );
+    let mut python = |function: &str, line: u32| {
+        builder.interpreted(&InterpretedPlace {
+            function,
+            file: Some("/srv/app.py"),
+            line,
+            declared: Some(1),
+        })
+    };
+
+    let handle = python("handle", 7);
+    let outer = python("<module>", 20);
+    let thread = builder.thread(Pid::new(1), Tid::new(1), 0);
+    let stack = builder.stack(&[handle, evaluate, outer, evaluate]);
+    builder.sample(thread, 0, 5, stack, NONE);
+    builder.setting("weight", "nanoseconds");
+    let original = Profile {
+        capture: builder.finish(),
+    };
+
+    let expected = BTreeMap::from([(vec!["<module>".to_owned(), "handle".to_owned()], 5)]);
+    for format in [Format::Pprof, Format::Folded] {
+        let bytes = original.export(format, StackView::Python).unwrap();
+        let read = Profile::import(&bytes).expect("an export").profile;
+        assert_eq!(paths(&read), expected, "{format:?}");
+    }
+
+    let pprof = original.export(Format::Pprof, StackView::Python).unwrap();
+    let read = Profile::import(&pprof).expect("pprof").profile;
+    let keys = read.keys(Granularity::Line);
+    let lines: Vec<String> = (0..u32::try_from(read.capture.frames.len()).unwrap_or(0))
+        .flat_map(|frame| keys.frame(frame).to_vec())
+        .map(|key| keys.name(key))
+        .collect();
+    assert_eq!(lines, ["handle app.py:7", "<module> app.py:20"]);
+}
+
 #[test]
 fn weights_that_add_up_past_a_count_are_refused() {
     let text = format!("main;a {}\nmain;b 1\n", u64::MAX);

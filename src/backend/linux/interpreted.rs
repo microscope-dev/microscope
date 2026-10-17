@@ -276,6 +276,7 @@ pub(super) fn interpreted_frame(frame: &InterpretedFrame, segment: StackSegment)
         function,
         language: frame.language,
         place: frame.place.clone(),
+        first_line: frame.first_line,
     });
     built
 }

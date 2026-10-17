@@ -704,6 +704,18 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         None
     }
 
+    /// The labels the runtime gives each thread of the stop that it has
+    /// any for, as `key` and `value`, such as whether the thread holds a
+    /// lock the runtime's threads take turns at, and why some threads' may
+    /// be missing. A profile's samples of the thread carry them.
+    fn thread_labels(&self, stop: &dyn RuntimeStop) -> Partial<Vec<ThreadLabels>> {
+        let _ = stop;
+        Partial {
+            value: Vec::new(),
+            gaps: Vec::new(),
+        }
+    }
+
     /// The local variables of the interpreted frame the interpreter keeps
     /// at `frame`, as [`RuntimeModel::interpreted`] named it at this stop,
     /// in the order the code declares them. Each read is charged to
@@ -906,6 +918,13 @@ pub struct InterpretedStacks {
     pub frames: Vec<InterpretedFrame>,
 }
 
+/// The labels a runtime gives one thread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadLabels {
+    pub thread: ThreadId,
+    pub labels: Vec<(Arc<str>, Arc<str>)>,
+}
+
 /// One thread's interpreted frames, in one interpreter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InterpretedThread {
@@ -936,6 +955,10 @@ pub struct InterpretedFrame {
     pub function: Option<Arc<str>>,
     pub place: Option<RecordedPlace>,
     pub problem: Option<Arc<str>>,
+
+    /// The line of the place's file its function's code begins at, which
+    /// tells it from another function of its name in that file.
+    pub first_line: Option<u32>,
 
     /// Whether it is the outermost of the frames one activation of the
     /// interpreter's loop runs.

@@ -1765,6 +1765,40 @@ fn live_task_snapshots_read_a_runtime_in_a_library() {
     );
 }
 
+/// A program that exits as a task snapshot attaches to it or detaches from
+/// it ends its recording with its own status, and leaves no snapshot's
+/// debugger behind: the recording reaps it only once no snapshot holds it,
+/// so the debugger sees its exit itself, and the status the debugger reaps
+/// is the recording's. An interpreter that sleeps exits while snapshots
+/// take most of its time attaching to it.
+#[test]
+fn a_program_that_exits_around_a_snapshot_keeps_its_status() {
+    let options = RecordOptions {
+        task_snapshots: Some(Duration::from_millis(1)),
+        ..RecordOptions::default()
+    };
+
+    // A loaded machine may read the program for longer than it runs, and
+    // take no snapshot of it, but not in every round.
+    let mut taken = 0;
+    for _ in 0..10 {
+        let mut command = Command::new(support::python::interpreter("3.15"));
+        command.args(["-I", "-c", "import time; time.sleep(0.3)"]);
+        let recording = record(command, &options).expect("record");
+        assert_eq!(recording.status.code(), Some(0), "{}", recording.status);
+        let (these, _, failed) = recording.profile.task_snapshots();
+        taken += these;
+        assert_eq!(
+            failed,
+            0,
+            "{:?}",
+            recording.profile.task_snapshot_problems()
+        );
+    }
+
+    assert!(taken > 0, "no snapshot was taken");
+}
+
 /// A task snapshot taken while the budget has sampling paused falls inside
 /// that pause: the gaps the two leave stay apart and in time order, as a
 /// saved capture needs them.

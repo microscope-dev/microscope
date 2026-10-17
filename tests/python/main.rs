@@ -22,6 +22,7 @@ mod gallery;
 mod layouts;
 mod locals;
 mod oracles;
+mod profile;
 mod session;
 mod stacks;
 mod tasks;

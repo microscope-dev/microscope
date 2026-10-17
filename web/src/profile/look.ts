@@ -45,6 +45,8 @@ export interface ProfileLook {
   invert?: "1";
   /** The frames threads ran, not each async task's own. */
   native?: "1";
+  /** Each stack as its Python code sees it. */
+  py?: "1";
   /** How finely frames are told apart; by function when absent. */
   by?: Exclude<ProfileGranularity, "function">;
   /** The function selected, by name. */
@@ -138,6 +140,9 @@ export function validateProfileLook(search: Record<string, unknown>): ProfileLoo
   }
   if (text("native") === "1") {
     look.native = "1";
+  }
+  if (text("py") === "1") {
+    look.py = "1";
   }
   const by = text("by");
   if (by && GRANULARITIES.includes(by)) {
@@ -255,7 +260,7 @@ export function queryOf(profile: string, look: ProfileLook): ProfileQuery {
       return transform ? [transform] : [];
     }),
     invert: look.invert === "1",
-    native: look.native === "1",
+    look: look.native === "1" ? "native" : look.py === "1" ? "python" : "logical",
     granularity: look.by ?? "function",
     ...(base ? { base } : {}),
   };

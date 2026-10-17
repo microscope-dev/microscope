@@ -88,6 +88,51 @@ pointer, which a live snapshot learns from glibc's own list of the program's
 threads; under musl or a statically linked glibc those tasks are left out, and
 the snapshot says why.
 
+## Record Python programs
+
+CPU samples see the interpreter's own functions, not the Python code they
+run. `--python ENGINE` reads each thread's Python frames beside the samples:
+
+```sh
+microscope record --python snapshot -o server.usprof -- python3 server.py
+microscope report --waits --python --lines server.usprof
+```
+
+- `snapshot[=SECONDS]` stops the program every SECONDS, 0.1 if not given, and
+  reads each thread's whole stack: its Python frames among the native frames
+  that run them, and the C code they call. Each snapshot holds the program
+  for the time its debugger takes to attach, tens of milliseconds with the
+  interpreter's debug information cached, which the report states.
+- `live[=SECONDS]` reads each thread's Python frames every SECONDS, 0.01 if
+  not given, as the program runs, never stopping it. It reads only the
+  Python frames, since a running thread's registers cannot be read. A thread
+  whose frames change while they are read is left out and counted, never
+  kept as a shorter stack.
+- `bpf` is not built yet.
+
+Each read thread is a task of its own, named `thread` and numbered by its id,
+whose stack stands for the time since the read before, as a task snapshot's
+waits do. `report --waits` shows them, and the browser's Waits source. CPython
+3.12 through 3.15 are read, with and without the GIL.
+
+Three looks show the stacks. The default shows Python frames among the
+native frames that run them. `--python`, and the browser's Python stacks
+switch, shows each stack from its outermost Python frame in, without the
+interpreter's own frames between them; native code that Python calls, such as
+a C extension's function, stays where it was called. `--native` shows only the
+frames the threads ran, the interpreter's in place of the Python code.
+`--lines` tells Python functions apart by line, so a handler's slow line shows
+as its own row.
+
+### The GIL
+
+Each read records which thread holds its interpreter's GIL, as the label
+`gil=held` on the thread from the read before to this one, and from CPython
+3.15, which says so, `gil=waiting` on each thread that asks for it. The labels
+select samples and draw lanes as instrumentation labels do. CPython before
+3.15 does not say which threads wait for the GIL, and a free-threaded build's
+GIL is off, so it has no GIL labels. A label is as the GIL was when read.
+
 ## Keep a rolling window
 
 `--window SECONDS` retains only the latest part of a recording. Sending

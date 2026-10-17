@@ -240,6 +240,17 @@ int main(int argc, char **argv) {
 #endif
     FIELD(ThreadId, offsetof(PyThreadState, thread_id));
     FIELD(ThreadNativeId, offsetof(PyThreadState, native_thread_id));
+    FIELD(InterpreterCevalGil, offsetof(PyInterpreterState, ceval.gil));
+    FIELD(InterpreterGil, offsetof(PyInterpreterState, _gil));
+    FIELD(InterpreterGilLocked, offsetof(PyInterpreterState, _gil.locked));
+    FIELD(InterpreterGilHolder, offsetof(PyInterpreterState, _gil.last_holder));
+#ifdef Py_GIL_DISABLED
+    FIELD(GilEnabled, offsetof(struct _gil_runtime_state, enabled));
+#endif
+#if PY_VERSION_HEX >= 0x030f0000
+    FIELD(ThreadHoldsGil, offsetof(PyThreadState, holds_gil));
+    FIELD(ThreadGilRequested, offsetof(PyThreadState, gil_requested));
+#endif
 #if PY_VERSION_HEX < 0x030d0000
     FIELD(CframeCurrentFrame, offsetof(_PyCFrame, current_frame));
 #endif

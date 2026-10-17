@@ -16,6 +16,7 @@ mod asyncio;
 mod code;
 mod expressions;
 mod frames;
+mod gil;
 mod instances;
 mod library;
 mod linetable;
@@ -33,7 +34,7 @@ use super::{
     InterpretedName, InterpretedOperand, InterpretedSlot, InterpretedStacks, InterpretedStep,
     InterpretedThread, Partial, RuntimeException, RuntimeHook, RuntimeImage, RuntimeModel,
     RuntimeSignals, RuntimeStop, StartedTask, StopMemory, StoredValue, TaskContext, TaskPage,
-    TaskRef, TaskStarter, ThreadActivity, Unbound,
+    TaskRef, TaskStarter, ThreadActivity, ThreadLabels, Unbound,
 };
 use crate::demangle::split_from;
 use crate::image::python::{EVALUATION_LOOP, Field, PyVersion, PythonLayout, TAIL_CALL_PREFIX};
@@ -394,6 +395,76 @@ impl Reading {
     }
 }
 
+impl Reading {
+    /// Each thread of the stop that holds its interpreter's GIL, or from
+    /// 3.15 asks for it, labeled `gil=held` or `gil=waiting`.
+    fn thread_labels(
+        &self,
+        stop: &dyn RuntimeStop,
+        version: PyVersion,
+    ) -> Partial<Vec<ThreadLabels>> {
+        let mut labels = Vec::new();
+        let mut gaps = Vec::new();
+        let reader = objects::Reader {
+            stop,
+            layout: &self.layout,
+            charge: None,
+            blocks: None,
+        };
+
+        let Some(runtime) = stop.load_bias().load(self.runtime.start) else {
+            gaps.push("CPython's runtime state lies outside the process".into());
+            return Partial {
+                value: labels,
+                gaps,
+            };
+        };
+
+        let states = match threads::thread_states(&reader, runtime) {
+            Ok((states, problems)) => {
+                gaps.extend(problems);
+                states
+            }
+            Err(problem) => {
+                gaps.push(format!("CPython {version}'s threads cannot be read: {problem}").into());
+                return Partial {
+                    value: labels,
+                    gaps,
+                };
+            }
+        };
+
+        let threads: BTreeSet<ThreadId> = stop.threads().into_iter().collect();
+        let key: Arc<str> = "gil".into();
+        for (state, gil) in states.iter().zip(gil::gil_states(&reader, &states)) {
+            let thread = ThreadId::new(state.native);
+            if !threads.contains(&thread) {
+                continue;
+            }
+
+            match gil {
+                Ok(gil) => {
+                    if let Some(value) = gil.and_then(gil::Gil::label) {
+                        labels.push(ThreadLabels {
+                            thread,
+                            labels: vec![(Arc::clone(&key), value.into())],
+                        });
+                    }
+                }
+                Err(problem) => gaps.push(
+                    format!("thread {thread}'s hold on the GIL cannot be read: {problem}").into(),
+                ),
+            }
+        }
+
+        labels.sort_by_key(|labels| labels.thread);
+        Partial {
+            value: labels,
+            gaps,
+        }
+    }
+}
+
 /// Adds the frames of each thread state that runs on one of the stop's
 /// `threads` to `stacks`, and why others' are missing to `gaps`.
 fn walk_threads(
@@ -662,6 +733,16 @@ impl RuntimeModel for PythonRuntime {
                 gaps: vec![Arc::clone(reason)],
             },
         })
+    }
+
+    fn thread_labels(&self, stop: &dyn RuntimeStop) -> Partial<Vec<ThreadLabels>> {
+        match &self.reading {
+            Ok(reading) => reading.thread_labels(stop, self.version),
+            Err(reason) => Partial {
+                value: Vec::new(),
+                gaps: vec![Arc::clone(reason)],
+            },
+        }
     }
 
     fn interpreted_locals(

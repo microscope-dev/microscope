@@ -1028,7 +1028,15 @@ pub(super) fn wait_for(
     let event = match waited {
         Ok(None) => return Ok(None),
         Ok(Some((child, status))) => {
-            WaitEvent::decode(Pid::from_raw(child.as_raw_nonzero().get()), status.as_raw())
+            let pid = child.as_raw_nonzero().get();
+
+            // A child that exited is gone for its owner, which may wait
+            // for it elsewhere in this process.
+            if status.exited() || status.signaled() {
+                super::reaped::REAPED.leave(pid.cast_unsigned(), status.as_raw());
+            }
+
+            WaitEvent::decode(Pid::from_raw(pid), status.as_raw())
         }
         Err(error) => Err(errno(error)),
     };

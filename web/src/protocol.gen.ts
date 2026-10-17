@@ -879,9 +879,9 @@ transforms: Array<ProfileTransform>,
  */
 invert: boolean, 
 /**
- * The frames threads ran, rather than each async task's own stack.
+ * How each stack's frames are seen.
  */
-native: boolean, granularity: ProfileGranularity, 
+look: ProfileLook, granularity: ProfileGranularity, 
 /**
  * What a tree or functions answer compares itself with.
  */
@@ -892,6 +892,8 @@ export type ProfileTransform = { op: TransformOp, name: string, };
 export type TransformOp = "focus" | "merge" | "drop" | "collapse";
 
 export type ProfileGranularity = "function" | "physical" | "line" | "address";
+
+export type ProfileLook = "logical" | "native" | "python";
 
 export type ProfileTimelineQuery = { 
 /**
@@ -946,9 +948,9 @@ transforms: Array<ProfileTransform>,
  */
 invert: boolean, 
 /**
- * The frames threads ran, rather than each async task's own stack.
+ * How each stack's frames are seen.
  */
-native: boolean, granularity: ProfileGranularity, 
+look: ProfileLook, granularity: ProfileGranularity, 
 /**
  * What a tree or functions answer compares itself with.
  */
@@ -1018,6 +1020,11 @@ budgetChanges: Array<ProfileMarker>,
  * The tasks task snapshots found, most weight first.
  */
 tasks: Array<ProfileTask>, 
+/**
+ * Whether its stacks hold frames an interpreter runs, which a query's
+ * `python` look shows as their code sees them.
+ */
+interpreted: boolean, 
 /**
  * Task snapshots taken, the nanoseconds they held the program
  * stopped, and the samples they named the task of.
@@ -1248,9 +1255,9 @@ transforms: Array<ProfileTransform>,
  */
 invert: boolean, 
 /**
- * The frames threads ran, rather than each async task's own stack.
+ * How each stack's frames are seen.
  */
-native: boolean, granularity: ProfileGranularity, 
+look: ProfileLook, granularity: ProfileGranularity, 
 /**
  * What a tree or functions answer compares itself with.
  */

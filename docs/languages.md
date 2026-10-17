@@ -285,12 +285,18 @@ thread's Python frames' do:
 A running task's stack is its thread's. A suspended task cannot be stepped.
 Python 3.12 and 3.13 keep no list of their tasks, so they show none.
 
+### Profiling
+
+`microscope record --python snapshot` or `--python live` reads each thread's
+Python frames, by line, beside the samples, with which thread holds the GIL.
+A task snapshot records each waiting asyncio task's coroutine frames. See
+[Record Python programs](profiling.md#record-python-programs).
+
 ### Not supported yet
 
 Python breakpoints, stepping through Python code, and Python exceptions as
-catchpoints are not supported yet. Python stacks do not appear in
-`microscope record`, nor do asyncio tasks' stacks in its task snapshots.
-[Known limits](reference/limitations.md) lists them all.
+catchpoints are not supported yet. CPU samples do not hold Python frames
+themselves. [Known limits](reference/limitations.md) lists them all.
 
 In editors, Python frames appear in the call stack with their source file and
 line, but no instruction reference. Their scopes are Arguments and Locals.

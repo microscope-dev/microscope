@@ -537,12 +537,12 @@ pub fn launch(
 
             // The child holds its own copies until it executes.
             drop((pid_write, go_read));
-            let mut child = spawned?;
+            let child = spawned?;
             let _ = executing.send(());
 
             // A task snapshot traces the child from this process, which any
             // wait for it here would take the stops of: wait for its exit
-            // alone, then reap it.
+            // alone, then reap it once no snapshot holds it (see `reaped`).
             let exit = super::native::pidfd_open(nix::unistd::Pid::from_raw(
                 i32::try_from(child.id()).unwrap_or(i32::MAX),
             ));
@@ -550,7 +550,8 @@ pub fn launch(
                 sys::wait_readable(exit);
             }
 
-            child.wait()
+            super::reaped::REAPED.wait_unheld(child.id());
+            reap(child)
         })
         .map_err(LaunchError::Spawn)?;
     let mut pid = [0_u8; 4];
@@ -566,6 +567,9 @@ pub fn launch(
 
     let pid = u32::from_le_bytes(pid);
     record!("perf launch: {pid} waits at its gate");
+
+    // Until the gate opens the child cannot exit.
+    super::reaped::REAPED.watch(pid);
 
     // Until the gate opens the child can neither execute nor exit, so the
     // descriptor names it and no other process.
@@ -608,6 +612,31 @@ pub fn launch(
         killer,
         executed,
     })
+}
+
+/// How long after finding its child reaped a launch waits for the thread
+/// that reaped it to leave its status.
+const REAPED_PATIENCE: Duration = Duration::from_secs(5);
+
+/// Reaps `child`, or takes its status from the thread of this process that
+/// reaped it first.
+fn reap(mut child: std::process::Child) -> std::io::Result<std::process::ExitStatus> {
+    use std::os::unix::process::ExitStatusExt as _;
+    let pid = child.id();
+    match child.wait() {
+        Err(error) if error.raw_os_error() == Some(libc::ECHILD) => super::reaped::REAPED
+            .take(pid, REAPED_PATIENCE)
+            .map(std::process::ExitStatus::from_raw)
+            .ok_or_else(|| {
+                std::io::Error::other(format!(
+                    "program {pid} was reaped by a wait that left no status: {error}"
+                ))
+            }),
+        waited => {
+            super::reaped::REAPED.forget(pid);
+            waited
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

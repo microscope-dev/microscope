@@ -283,7 +283,7 @@ enum Tool {
     Config(ConfigArgs),
 
     /// Record where a program spends its time, from outside it.
-    Record(cli::profile::RecordArgs),
+    Record(Box<cli::profile::RecordArgs>),
 
     /// Summarize a recorded profile.
     Report(cli::profile::ReportArgs),

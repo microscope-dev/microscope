@@ -251,9 +251,15 @@ fn from_table(
             continue;
         };
 
-        // Only a free-threaded build has thread-local bytecode: a build
-        // with the GIL names 0 for its fields, which it lacks.
-        if !free_threaded && matches!(field, Field::FrameTlbcIndex | Field::CodeTlbc) {
+        // Only a free-threaded build has thread-local bytecode, or a GIL
+        // that may be off: a build with the GIL names 0 for those fields,
+        // which it lacks.
+        if !free_threaded
+            && matches!(
+                field,
+                Field::FrameTlbcIndex | Field::CodeTlbc | Field::GilEnabled
+            )
+        {
             continue;
         }
 
@@ -405,12 +411,13 @@ const fn structure_size(field: Field) -> Option<Field> {
         CodeLocalspluskinds, CodeLocalsplusnames, CodeName, CodeNlocalsplus, CodeQualname,
         CodeSize, CodeTlbc, FrameBuiltins, FrameExecutable, FrameGlobals, FrameInstruction,
         FrameOwner, FramePrevious, FrameSize, FrameTlbcIndex, ThreadBaseFrame, ThreadCurrentFrame,
-        ThreadId, ThreadInterp, ThreadNativeId, ThreadNext, ThreadPrev, ThreadSize,
+        ThreadGilRequested, ThreadHoldsGil, ThreadId, ThreadInterp, ThreadNativeId, ThreadNext,
+        ThreadPrev, ThreadSize,
     };
 
     match field {
         ThreadPrev | ThreadNext | ThreadInterp | ThreadCurrentFrame | ThreadBaseFrame
-        | ThreadId | ThreadNativeId => Some(ThreadSize),
+        | ThreadId | ThreadNativeId | ThreadHoldsGil | ThreadGilRequested => Some(ThreadSize),
         FramePrevious | FrameExecutable | FrameInstruction | FrameOwner | FrameTlbcIndex
         | FrameGlobals | FrameBuiltins => Some(FrameSize),
 

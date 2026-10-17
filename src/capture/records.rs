@@ -231,6 +231,11 @@ pub enum FrameKind {
     /// is the string that names it, and its one line says what it waits
     /// for.
     Awaited = 4,
+
+    /// A frame an interpreter runs, whose code is in no module: the
+    /// address is the string that keys its function and line, and its one
+    /// line says where it is, its function declared where its code begins.
+    Interpreted = 5,
 }
 
 impl FrameKind {
@@ -241,8 +246,15 @@ impl FrameKind {
             2 => Some(Self::TaskRoot),
             3 => Some(Self::Runtime),
             4 => Some(Self::Awaited),
+            5 => Some(Self::Interpreted),
             _ => None,
         }
+    }
+
+    /// Whether a frame of this kind is keyed by a string, not an address,
+    /// and so has no address to show.
+    pub const fn named(self) -> bool {
+        matches!(self, Self::Awaited | Self::Interpreted)
     }
 }
 

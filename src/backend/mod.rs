@@ -18,6 +18,7 @@ pub use linux::PostMortemSession;
 #[cfg(test)]
 pub use linux::native_tracee;
 pub use linux::perf;
+pub use linux::reaped;
 pub use linux::resume_address;
 #[cfg(any(test, feature = "sim"))]
 pub use linux::sim_edge;

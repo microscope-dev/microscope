@@ -55,8 +55,7 @@ narrower limits and report them when used.
 - C, C++, Rust, Go, Zig, Odin, Fortran, D, Nim, and Ada use the shared native
   debugger.
 - Logical runtime tasks are implemented for Go goroutines, tokio tasks, and
-  asyncio tasks from CPython 3.14, which is the first to list them. A
-  profile's task snapshots record no asyncio task's stack yet, and say so.
+  asyncio tasks from CPython 3.14, which is the first to list them.
 - Python frames are read from CPython 3.12 through 3.15, with and without the
   GIL. A CPython release microscope has not checked, or a version outside that
   range, is refused by name; its native frames still appear.
@@ -69,8 +68,13 @@ narrower limits and report them when used.
   shows its type and address. A numpy array of a dtype other than `bool`, an
   integer, `float32`, or `float64`, or of big-endian elements, shows only its
   shape and dtype, and indexing an array is refused. Python is
-  not supported yet for breakpoints by file and line, stepping, Python
-  exceptions as catchpoints, and Python stacks in profiles.
+  not supported yet for breakpoints by file and line, stepping, and Python
+  exceptions as catchpoints.
+- A profile reads Python stacks by stopping the program or reading it as it
+  runs (`record --python`), not in each CPU sample: the BPF engine is not built
+  yet. A live read holds Python frames only, and leaves out a thread whose
+  frames change as it reads them. Only CPython 3.15 and later say which
+  threads wait for the GIL.
 - Runtime support follows known compiler and runtime layouts. Unknown versions
   can leave tasks or logical frames unavailable.
 - Built-in views cover selected standard-library and runtime types, not every

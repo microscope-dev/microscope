@@ -11,9 +11,10 @@ use super::budget::{Budget, Controller, Observation, STEPS};
 use super::calls::{self, Calls};
 use super::collector::{Collector, ProbeSelection};
 use super::record::{self, Sites};
-use super::tasks::{self, Live, Snapshot, Snapshotter};
+use super::tasks::{self, Live, Reads, Snapshot, Snapshotter};
 use super::{
-    DEEP_STACK_COPY, Profile, RecordError, RecordOptions, SMALL_STACK_COPY, SampleSource, StackCopy,
+    DEEP_STACK_COPY, Profile, PythonEngine, RecordError, RecordOptions, SMALL_STACK_COPY,
+    SampleSource, StackCopy,
 };
 
 use crate::backend::perf;
@@ -92,6 +93,7 @@ pub fn record_watched(
     watch: &mut Watch<'_>,
 ) -> Result<Recording, RecordError> {
     let _span = crate::span!("record");
+    python_engine(options)?;
     let program = PathBuf::from(command.get_program());
     let (source, breakpoint) = perf_source(&program, &options.source, None)?;
     let mut processor = processor(options, breakpoint);
@@ -177,6 +179,7 @@ pub fn record_attached(
     watch: &mut Watch<'_>,
 ) -> Result<Attachment, RecordError> {
     let _span = crate::span!("record attached");
+    python_engine(options)?;
     let program = PathBuf::from(format!("/proc/{pid}/exe"));
     let bias = perf::program_bias(pid);
     let (source, breakpoint) = perf_source(&program, &options.source, bias)?;
@@ -231,6 +234,16 @@ pub fn record_attached(
         },
         exited: !stopped,
     })
+}
+
+/// Refuses a Python engine this build cannot run.
+fn python_engine(options: &RecordOptions) -> Result<(), RecordError> {
+    match options.python {
+        Some(PythonEngine::Bpf) => Err(RecordError::Python(
+            "the BPF engine for Python stacks is not built yet; use snapshot or live".into(),
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// A processor for `options`, and for a breakpoint's repeats.
@@ -305,6 +318,12 @@ fn settings(
                 },
             ),
         ),
+        (
+            "python",
+            options
+                .python
+                .map_or_else(|| "off".into(), |engine| engine.to_string()),
+        ),
         ("probes", options.probes.to_string()),
         (
             "budget",
@@ -338,9 +357,7 @@ fn drive(
         .budget
         .filter(|_| started.is_some())
         .map(|budget| Pacer::new(budget, monotonic(), processor));
-    let mut snapshots = started
-        .zip(options.task_snapshots)
-        .map(|(pid, every)| Snapshots::new(pid, every, options));
+    let mut snapshots = started.map_or_else(Vec::new, |pid| snapshotters(pid, options));
     let mut probes = started
         .filter(|_| options.probes != ProbeSelection::Off)
         .map(|pid| Collector::new(pid, options.probes.clone(), options.probe_timeout));
@@ -404,7 +421,7 @@ fn drive(
             break;
         }
 
-        if let Some(snapshots) = &mut snapshots {
+        for snapshots in &mut snapshots {
             let sampling = pacer.as_ref().is_none_or(Pacer::sampling);
             snapshots.when_due(processor, events, sampling);
         }
@@ -455,6 +472,35 @@ fn drive(
     processor.counts(events.counts());
 }
 
+/// What takes the snapshots `options` asks of process `pid`: of its
+/// tasks, and of its threads for a Python engine that reads them.
+fn snapshotters(pid: u32, options: &RecordOptions) -> Vec<Snapshots> {
+    let tasks = options.task_snapshots.map(|every| {
+        let reads = Reads {
+            tasks: true,
+            threads: false,
+        };
+        (every, options.live_snapshots, reads)
+    });
+    let threads = options.python.and_then(|engine| {
+        let reads = Reads {
+            tasks: false,
+            threads: true,
+        };
+        match engine {
+            PythonEngine::Snapshot { every } => Some((every, false, reads)),
+            PythonEngine::Live { every } => Some((every, true, reads)),
+            PythonEngine::Bpf => None,
+        }
+    });
+
+    [tasks, threads]
+        .into_iter()
+        .flatten()
+        .map(|(every, live, reads)| Snapshots::new(pid, every, live, reads, options))
+        .collect()
+}
+
 /// Takes a task snapshot every so often, once the program's debug
 /// information is read, with every event off while it holds the program
 /// stopped.
@@ -462,6 +508,7 @@ struct Snapshots {
     pid: u32,
     every: Duration,
     live: bool,
+    reads: Reads,
     loading: Option<std::thread::JoinHandle<Result<Snapshotter, RecordError>>>,
     snapshotter: Option<Snapshotter>,
     next: std::time::Instant,
@@ -471,7 +518,7 @@ struct Snapshots {
 }
 
 impl Snapshots {
-    fn new(pid: u32, every: Duration, options: &RecordOptions) -> Self {
+    fn new(pid: u32, every: Duration, live: bool, reads: Reads, options: &RecordOptions) -> Self {
         let debug_files = crate::DebugFileOptions {
             directories: options.debug_directories.clone(),
             ..crate::DebugFileOptions::default()
@@ -486,7 +533,8 @@ impl Snapshots {
         Self {
             pid,
             every,
-            live: options.live_snapshots,
+            live,
+            reads,
             loading,
             snapshotter: None,
             next: std::time::Instant::now() + every,
@@ -509,6 +557,7 @@ impl Snapshots {
         if let Some(loading) = self.loading.take_if(|loading| loading.is_finished()) {
             match loading.join() {
                 Ok(Ok(snapshotter)) => self.snapshotter = Some(snapshotter),
+
                 Ok(Err(error)) => {
                     processor.snapshot_failed(
                         monotonic(),
@@ -531,7 +580,7 @@ impl Snapshots {
             // arrive as any do.
             let start = monotonic();
             let modules = processor.modules_of(Pid::new(self.pid));
-            let taken = snapshotter.take_live(&modules);
+            let taken = snapshotter.take_live(self.reads, &modules);
             self.next = std::time::Instant::now() + self.every;
 
             // A program that exited, with which the recording ends, has no
@@ -550,8 +599,9 @@ impl Snapshots {
             events.enable(false);
         }
 
+        let modules = processor.modules_of(Pid::new(self.pid));
         let start = monotonic();
-        let taken = snapshotter.take();
+        let taken = snapshotter.take(self.reads, &modules);
         let end = monotonic();
 
         // With the events off, every record from before the pause is in

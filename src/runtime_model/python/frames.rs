@@ -70,8 +70,11 @@ impl Walk<'_, '_> {
         let mut seen = HashSet::new();
         let mut next = state.frame;
         let end = loop {
+            // From 3.15 every chain ends at its thread's base frame: one
+            // that ends before it was read as it changed.
             let Some(address) = next else {
-                break None;
+                break (state.base.is_some() && !seen.is_empty())
+                    .then(|| "the thread's frames end before its base frame".into());
             };
 
             // From 3.15, the thread's base frame ends its chain.
@@ -129,6 +132,7 @@ impl Walk<'_, '_> {
             function: None,
             place: None,
             problem: None,
+            first_line: None,
             outermost: false,
         };
 
@@ -136,6 +140,7 @@ impl Walk<'_, '_> {
             Ok((code, line)) => {
                 let row = self.code.row(code);
                 built.function = Some(std::sync::Arc::clone(self.code.name(row.qualname)));
+                built.first_line = u32::try_from(row.first_line).ok();
                 let path = std::sync::Arc::clone(self.code.name(row.file));
                 match line {
                     Ok(line) => {

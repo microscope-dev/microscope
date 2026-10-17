@@ -963,9 +963,9 @@ pub struct ProfileQuery {
     #[serde(default)]
     pub invert: bool,
 
-    /// The frames threads ran, rather than each async task's own stack.
+    /// How each stack's frames are seen.
     #[serde(default)]
-    pub native: bool,
+    pub look: ProfileLook,
 
     #[serde(default)]
     pub granularity: ProfileGranularity,
@@ -1031,6 +1031,24 @@ pub enum TransformOp {
 
     /// Merges the function's calls of itself.
     Collapse,
+}
+
+/// How a query sees each stack's frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub enum ProfileLook {
+    /// Each async task's frames as a stack of their own, an interpreter's
+    /// frames among the frames that run them.
+    #[default]
+    Logical,
+
+    /// The frames threads ran, which an interpreter's frames are not.
+    Native,
+
+    /// As the logical look, from each stack's outermost interpreted frame
+    /// in, without the interpreter's own frames.
+    Python,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -1193,6 +1211,10 @@ pub struct ProfileSummary {
 
     /// The tasks task snapshots found, most weight first.
     pub tasks: Vec<ProfileTask>,
+
+    /// Whether its stacks hold frames an interpreter runs, which a query's
+    /// `python` look shows as their code sees them.
+    pub interpreted: bool,
 
     /// Task snapshots taken, the nanoseconds they held the program
     /// stopped, and the samples they named the task of.
@@ -2655,6 +2677,7 @@ mod tests {
         ProfileTransform::decl,
         TransformOp::decl,
         ProfileGranularity::decl,
+        ProfileLook::decl,
         ProfileTimelineQuery::decl,
         ProfileSummary::decl,
         ProfileThread::decl,
