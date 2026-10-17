@@ -478,5 +478,125 @@
     "p99_ns": null,
     "recorder_cpu": 0.02908428627413488,
     "recording_bytes": 34013184
+  },
+  {
+    "workload": "python",
+    "setup": "bare",
+    "rate": 44806.666666666664,
+    "p99_ns": null,
+    "recorder_cpu": null,
+    "recording_bytes": null
+  },
+  {
+    "workload": "python",
+    "setup": "prod",
+    "rate": 45693.333333333336,
+    "p99_ns": null,
+    "recorder_cpu": 0.00443121379549929,
+    "recording_bytes": 73965568
+  },
+  {
+    "workload": "python",
+    "setup": "dev",
+    "rate": 44854.333333333336,
+    "p99_ns": null,
+    "recorder_cpu": 0.032378708461790195,
+    "recording_bytes": 38338560
+  },
+  {
+    "workload": "python",
+    "setup": "prod+live",
+    "rate": 45003.666666666664,
+    "p99_ns": null,
+    "recorder_cpu": 0.010439933339394818,
+    "recording_bytes": 25632768
+  },
+  {
+    "workload": "python",
+    "setup": "prod+snapshot",
+    "rate": 38197.0,
+    "p99_ns": null,
+    "recorder_cpu": 0.005100906559564099,
+    "recording_bytes": 97476608
+  },
+  {
+    "workload": "python",
+    "setup": "bare",
+    "rate": 45996.333333333336,
+    "p99_ns": null,
+    "recorder_cpu": null,
+    "recording_bytes": null
+  },
+  {
+    "workload": "python",
+    "setup": "prod",
+    "rate": 44901.333333333336,
+    "p99_ns": null,
+    "recorder_cpu": 0.004770427169353314,
+    "recording_bytes": 8302592
+  },
+  {
+    "workload": "python",
+    "setup": "dev",
+    "rate": 45258.0,
+    "p99_ns": null,
+    "recorder_cpu": 0.032273122491056516,
+    "recording_bytes": 21196800
+  },
+  {
+    "workload": "python",
+    "setup": "prod+live",
+    "rate": 46061.666666666664,
+    "p99_ns": null,
+    "recorder_cpu": 0.010689144635808884,
+    "recording_bytes": 12599296
+  },
+  {
+    "workload": "python",
+    "setup": "prod+snapshot",
+    "rate": 38193.333333333336,
+    "p99_ns": null,
+    "recorder_cpu": 0.005683845413727333,
+    "recording_bytes": 36368384
+  },
+  {
+    "workload": "python",
+    "setup": "bare",
+    "rate": 45376.0,
+    "p99_ns": null,
+    "recorder_cpu": null,
+    "recording_bytes": null
+  },
+  {
+    "workload": "python",
+    "setup": "prod",
+    "rate": 45063.333333333336,
+    "p99_ns": null,
+    "recorder_cpu": 0.004627530637689129,
+    "recording_bytes": 16474112
+  },
+  {
+    "workload": "python",
+    "setup": "dev",
+    "rate": 44865.666666666664,
+    "p99_ns": null,
+    "recorder_cpu": 0.03300867246093023,
+    "recording_bytes": 3313664
+  },
+  {
+    "workload": "python",
+    "setup": "prod+live",
+    "rate": 44559.666666666664,
+    "p99_ns": null,
+    "recorder_cpu": 0.01041485972743634,
+    "recording_bytes": 6987776
+  },
+  {
+    "workload": "python",
+    "setup": "prod+snapshot",
+    "rate": 38510.666666666664,
+    "p99_ns": null,
+    "recorder_cpu": 0.005450404694808822,
+    "recording_bytes": 61652992
   }
 ]

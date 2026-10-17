@@ -22,7 +22,7 @@ use nix::sched::{CpuSet, sched_setaffinity};
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 
-use crate::profiler::{Preset, Profile, RecordOptions, Watch, record_watched};
+use crate::profiler::{Preset, Profile, PythonEngine, RecordOptions, Watch, record_watched};
 
 /// How a workload's rate is read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,50 +34,133 @@ enum Measure {
     Server,
 }
 
+/// What runs a workload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Program {
+    /// A built fixture, by its name.
+    Built(&'static str),
+
+    /// A Python fixture, by its name, run by the interpreter the flake
+    /// names `interpreter`.
+    Python {
+        interpreter: &'static str,
+        script: &'static str,
+    },
+}
+
 /// A reference workload: a fixture, its arguments, and how its rate is read.
 #[derive(Debug, Clone, Copy)]
 pub struct Workload {
     pub name: &'static str,
-    program: &'static str,
+    program: Program,
     arguments: &'static [&'static str],
     measure: Measure,
 }
 
 /// CPU-bound C, Go goroutines that allocate, a tokio server under load,
-/// and Rust instrumented with microscope's probes, listened to when recorded.
-pub const WORKLOADS: [Workload; 4] = [
+/// Rust instrumented with microscope's probes, listened to when recorded,
+/// and CPU-bound Python, whose stacks each Python engine reads.
+pub const WORKLOADS: [Workload; 5] = [
     Workload {
         name: "c",
-        program: "overhead",
+        program: Program::Built("overhead"),
         arguments: &["4"],
         measure: Measure::Lines,
     },
     Workload {
         name: "go",
-        program: "overhead-go",
+        program: Program::Built("overhead-go"),
         arguments: &[],
         measure: Measure::Lines,
     },
     Workload {
         name: "tokio",
-        program: "tokio-server-o3",
+        program: Program::Built("tokio-server-o3"),
         arguments: &[],
         measure: Measure::Server,
     },
     Workload {
         name: "probes",
-        program: "probes",
+        program: Program::Built("probes"),
         arguments: &["rate"],
+        measure: Measure::Lines,
+    },
+    Workload {
+        name: "python",
+        program: Program::Python {
+            interpreter: "3.14",
+            script: "overhead.py",
+        },
+        arguments: &[],
         measure: Measure::Lines,
     },
 ];
 
-/// Each setup a workload runs under: bare, then each preset.
+/// Each setup every workload runs under: bare, then each preset.
 pub const SETUPS: [(&str, Option<Preset>); 3] = [
     ("bare", None),
     ("prod", Some(Preset::Production)),
     ("dev", Some(Preset::Development)),
 ];
+
+/// The production preset with each Python engine, which a Python workload
+/// also runs under.
+///
+/// The BPF engine's setup runs only where the tool has its privileges.
+pub const PYTHON_SETUPS: [(&str, PythonEngine); 3] = [
+    (
+        "prod+live",
+        PythonEngine::Live {
+            every: Duration::from_millis(10),
+        },
+    ),
+    (
+        "prod+snapshot",
+        PythonEngine::Snapshot {
+            every: Duration::from_millis(100),
+        },
+    ),
+    ("prod+bpf", PythonEngine::Bpf),
+];
+
+/// What a workload is recorded with under `setup`, or `None` for bare.
+fn recorded_with(workload: &Workload, setup: &str) -> Option<RecordOptions> {
+    if let Some((_, preset)) = SETUPS.iter().find(|(name, _)| *name == setup) {
+        return preset.map(RecordOptions::preset);
+    }
+
+    let engine = PYTHON_SETUPS
+        .iter()
+        .find(|(name, _)| *name == setup)
+        .map(|(_, engine)| *engine)
+        .filter(|_| matches!(workload.program, Program::Python { .. }))?;
+    Some(RecordOptions {
+        python: Some(engine),
+        ..RecordOptions::preset(Preset::Production)
+    })
+}
+
+/// The setups `workload` runs under, in order.
+fn setups(workload: &Workload, privileged: bool) -> Vec<&'static str> {
+    let mut setups: Vec<&str> = SETUPS.iter().map(|(name, _)| *name).collect();
+    if matches!(workload.program, Program::Python { .. }) {
+        setups.extend(
+            PYTHON_SETUPS
+                .iter()
+                .filter(|(_, engine)| privileged || *engine != PythonEngine::Bpf)
+                .map(|(name, _)| *name),
+        );
+    }
+
+    setups
+}
+
+/// Whether this process may run the BPF engine.
+fn privileged() -> bool {
+    crate::backend::syscall_engines::bpf::Probe::read()
+        .lacks_privileges()
+        .is_none()
+}
 
 /// How many clients load the server, and how many requests each keeps
 /// outstanding: enough that the server's cores never idle, since a core
@@ -138,11 +221,12 @@ pub fn measure(options: &Options, mut progress: impl FnMut(&Run)) -> Result<Vec<
         .collect();
     let placement = Placement::new()?;
     placement.microscope()?;
+    let privileged = privileged();
     let mut runs = Vec::new();
     for _ in 0..options.runs.max(1) {
         for workload in &workloads {
-            for (setup, preset) in SETUPS {
-                let run = run(workload, setup, preset, options, &placement)
+            for setup in setups(workload, privileged) {
+                let run = run(workload, setup, options, &placement)
                     .with_context(|| format!("{} under {setup}", workload.name))?;
                 progress(&run);
                 runs.push(run);
@@ -261,15 +345,27 @@ fn cpu_list(path: &str) -> Vec<usize> {
     cpus
 }
 
-fn run(
-    workload: &Workload,
-    setup: &str,
-    preset: Option<Preset>,
-    options: &Options,
-    placement: &Placement,
-) -> Result<Run> {
+fn run(workload: &Workload, setup: &str, options: &Options, placement: &Placement) -> Result<Run> {
     let (reader, writer) = std::io::pipe()?;
-    let mut command = Command::new(options.programs.join(workload.program));
+    let mut command = match workload.program {
+        Program::Built(program) => Command::new(options.programs.join(program)),
+        Program::Python {
+            interpreter,
+            script,
+        } => {
+            let root = std::env::var_os("MICROSCOPE_CPYTHON")
+                .context("MICROSCOPE_CPYTHON names the interpreters; run in the dev shell")?;
+            let mut command = Command::new(PathBuf::from(root).join(interpreter).join("python"));
+            command.args(["-I", "-B"]).arg(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures/python")
+                    .join(script),
+            );
+            command
+        }
+    };
+
+    let recorded = recorded_with(workload, setup);
     command
         .args(workload.arguments)
         .stdin(Stdio::null())
@@ -277,9 +373,9 @@ fn run(
         .stderr(Stdio::null());
     let stop = AtomicBool::new(false);
     let (started, on) = mpsc::channel();
-    let resident = preset.and_then(|_| reset_peak_rss());
+    let resident = recorded.as_ref().and_then(|_| reset_peak_rss());
     std::thread::scope(|scope| {
-        let (bare, recording) = match preset {
+        let (bare, recording) = match recorded {
             None => {
                 placement.program()?;
                 let child = command.spawn().context("starting the program");
@@ -289,7 +385,7 @@ fn run(
                 started.send(()).ok();
                 (Some(child), None)
             }
-            Some(preset) => {
+            Some(recorded) => {
                 let stop = &stop;
                 let recording = scope.spawn(move || {
                     let mut sent = false;
@@ -299,7 +395,7 @@ fn run(
                     placement.program()?;
                     Ok::<_, anyhow::Error>(record_watched(
                         command,
-                        &RecordOptions::preset(preset),
+                        &recorded,
                         &mut Watch {
                             every: Duration::MAX,
                             publish: &mut |_| {
@@ -516,7 +612,7 @@ pub fn summarize(runs: &[Run]) -> Vec<Summary> {
 
         let spread = bare_rates.iter().copied().fold(f64::NAN, f64::max)
             - bare_rates.iter().copied().fold(f64::NAN, f64::min);
-        for (setup, _) in SETUPS {
+        for setup in setups(&workload, true) {
             let these = of(setup);
             let Some(rate) = median(these.iter().map(|run| run.rate)) else {
                 continue;

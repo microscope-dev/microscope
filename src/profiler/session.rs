@@ -276,6 +276,9 @@ struct Walker {
     /// cannot have.
     laid_out: std::collections::BTreeSet<u32>,
     refused: std::collections::BTreeSet<u32>,
+
+    /// The processes some of whose threads it could not be told of.
+    troubled: std::collections::BTreeSet<u32>,
 }
 
 impl From<SamplerError> for RecordError {
@@ -298,6 +301,7 @@ impl Walker {
             next: std::time::Instant::now(),
             laid_out: std::collections::BTreeSet::new(),
             refused: std::collections::BTreeSet::new(),
+            troubled: std::collections::BTreeSet::new(),
         })
     }
 
@@ -326,12 +330,19 @@ impl Walker {
                 continue;
             }
 
-            if let Some(gap) = walked.gaps.first() {
-                record!("python sampler: {}'s threads: {gap}", walked.pid);
-            }
-
-            if let Err(error) = self.sampler.set_threads(walked.pid, &walked.threads) {
-                record!("python sampler: {}'s threads: {error}", walked.pid);
+            // Threads it is not told of have unknown frames, which the
+            // recording says why once.
+            let failed = self
+                .sampler
+                .set_threads(walked.pid, &walked.threads)
+                .err()
+                .map(|error| error.to_string());
+            if let Some(problem) = failed.or_else(|| walked.gaps.first().map(ToString::to_string))
+                && self.troubled.insert(walked.pid)
+            {
+                processor
+                    .builder()
+                    .setting(&format!("python {} threads", walked.pid), &problem);
             }
         }
     }
