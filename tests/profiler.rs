@@ -1,6 +1,7 @@
 mod support;
 
 use std::io::Write as _;
+use std::os::unix::process::ExitStatusExt as _;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -1063,6 +1064,55 @@ impl Drop for PerfMap {
     }
 }
 
+const PERF_MAP_LEAF_SAMPLES: usize = 32;
+
+fn perf_map_leaf(stack: &SampledStack) -> Option<usize> {
+    stack
+        .functions
+        .iter()
+        .position(|function| function.starts_with("py::leaf:"))
+}
+
+/// Stops and reaps the owned fixture after collecting real leaf evidence.
+fn sample_perf_map(version: &str) -> (microscope::profiler::Recording, Option<i64>) {
+    let mut command = Command::new(support::python::interpreter(version));
+    command
+        .args(["-I", "-X", "perf"])
+        .arg(support::python::fixture("perf.py"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // Startup and descheduling take an unbounded fraction of a fixed
+    // wall interval under stress. Collect actual leaf evidence instead.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let mut stopped_at = None;
+    let stop = AtomicBool::new(false);
+    let recording = record_watched(
+        command,
+        &RecordOptions::preset(Preset::Maximum),
+        &mut Watch {
+            every: Duration::from_millis(50),
+            publish: &mut |profile| {
+                let through = profile
+                    .stacks()
+                    .iter()
+                    .filter(|stack| perf_map_leaf(stack).is_some())
+                    .count();
+                if stopped_at.is_none()
+                    && (through >= PERF_MAP_LEAF_SAMPLES || std::time::Instant::now() >= deadline)
+                {
+                    stopped_at = Some(profile.span().1);
+                    stop.store(true, Ordering::Relaxed);
+                }
+            },
+            stop: &stop,
+            save: None,
+        },
+    )
+    .expect("record");
+    (recording, stopped_at)
+}
+
 /// CPython under `-X perf` enters each Python function that C calls
 /// through a trampoline of its own, in anonymous memory its perf map
 /// names. 3.12's keeps no frame pointer and later ones do; a stack goes on
@@ -1070,18 +1120,14 @@ impl Drop for PerfMap {
 #[test]
 fn a_stack_through_a_perf_maps_code_goes_on_to_its_callers() {
     for version in ["3.12", "3.13", "3.14"] {
-        let mut command = Command::new(support::python::interpreter(version));
-        command
-            .args(["-I", "-X", "perf"])
-            .arg(support::python::fixture("perf.py"))
-            .arg("1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let recording = record(command, &RecordOptions::preset(Preset::Maximum)).expect("record");
+        let (recording, stopped_at) = sample_perf_map(version);
         let stacks = recording.profile.stacks();
         let _map = PerfMap(stacks.first().map(|stack| stack.pid));
-        assert!(recording.status.success(), "{version}");
+        assert_eq!(
+            recording.status.signal(),
+            Some(nix::libc::SIGKILL),
+            "{version}"
+        );
         assert_eq!(
             recording
                 .profile
@@ -1098,11 +1144,7 @@ fn a_stack_through_a_perf_maps_code_goes_on_to_its_callers() {
                 StackEnding::Truncated("unmapped return address".into()),
                 "{context}"
             );
-            let Some(leaf) = stack
-                .functions
-                .iter()
-                .position(|function| function.starts_with("py::leaf:"))
-            else {
+            let Some(leaf) = perf_map_leaf(stack) else {
                 continue;
             };
 
@@ -1116,11 +1158,29 @@ fn a_stack_through_a_perf_maps_code_goes_on_to_its_callers() {
             assert_eq!(stack.ending, StackEnding::Complete, "{context}");
         }
 
-        // Spinning in leaf is all the program does after it starts.
         assert!(
-            through * 2 > stacks.len(),
+            through >= PERF_MAP_LEAF_SAMPLES,
             "{version}: {through} of {} samples through leaf",
             stacks.len()
+        );
+        let first = stacks
+            .iter()
+            .filter(|stack| perf_map_leaf(stack).is_some())
+            .min_by_key(|stack| stack.time)
+            .expect("leaf was observed");
+        let end = stopped_at.expect("the recorder stopped the fixture");
+        let window: Vec<_> = stacks
+            .iter()
+            .filter(|stack| stack.tid == first.tid && (first.time..=end).contains(&stack.time))
+            .collect();
+        let named = window
+            .iter()
+            .filter(|stack| perf_map_leaf(stack).is_some())
+            .count();
+        assert_eq!(
+            named,
+            window.len(),
+            "{version}: every leaf-window sample must name leaf"
         );
     }
 }
