@@ -6,12 +6,13 @@
 
 use std::cmp::Ordering;
 
+use super::dynamic::{self, Number};
 use super::error::{ErrorKind, ExpressionError};
 use super::ir::{Capacity, Comparison, Constant, Conversion, Length, Node, Op, Program};
 use super::number::{Bits, Exact, Float, FloatFormat, IntType, Integer, NumberError};
 use super::syntax::Span;
 use super::syntax::ast::BinaryOp;
-use super::target::{Key, Machine, Refusal, Register, Stop};
+use super::target::{Key, Loaded, LoadedValue, Machine, Refusal, Register, Stop};
 use super::types::{Category, Ty, category, size_of, type_info};
 use crate::{
     ByteOrder, DereferenceState, InspectedValue, ScalarValue, TextCompletion,
@@ -74,6 +75,9 @@ pub enum Value<P> {
     Bool(bool),
     Pointer(u64),
     Text(Vec<u8>),
+
+    /// A value of a dynamic type, loaded for an operation.
+    Loaded(Loaded),
 }
 
 enum Halt {
@@ -201,6 +205,40 @@ impl<M: Machine> Interpreter<'_, M> {
         }
     }
 
+    /// An operand of an operation on a value of a dynamic type, as it
+    /// runs: that value loaded, or a number, truth value, or string.
+    fn dynamic(&mut self, node: &Node<M::Object, M::Step>) -> Result<Loaded, Halt> {
+        let value = match self.eval(node)? {
+            Value::Loaded(loaded) => return Ok(loaded),
+            Value::Int(integer) => LoadedValue::Int(integer.value()),
+            Value::Float(value) => LoadedValue::Float(value),
+            Value::Bool(value) => LoadedValue::Bool(value),
+            Value::Text(bytes) => LoadedValue::Text(crate::TextSummary {
+                bytes: bytes.into(),
+                completion: TextCompletion::Complete,
+            }),
+            _ => return Self::invariant("the binder loads the operands of dynamic operations"),
+        };
+
+        let ty = match (&node.ty, &value) {
+            (Ty::Dynamic, LoadedValue::Float(value)) => Ty::Float(value.format()),
+            (Ty::Dynamic, _) => Ty::Exact,
+            (ty, _) => ty.clone(),
+        };
+
+        Ok(Loaded {
+            type_name: super::types::type_name(self.machine, &ty).into(),
+            value,
+        })
+    }
+
+    const fn number(number: Number) -> Value<M::Place> {
+        match number {
+            Number::Int(value) => Value::Int(Integer::Exact(value)),
+            Number::Float(value) => Value::Float(value),
+        }
+    }
+
     fn place(&mut self, node: &Node<M::Object, M::Step>) -> Result<M::Place, Halt> {
         match self.eval(node)? {
             Value::Place(place) => Ok(place),
@@ -310,6 +348,9 @@ impl<M: Machine> Interpreter<'_, M> {
             }
             Op::Raw { address } => Value::Raw(self.pointee_address(address, span)?),
             Op::Load(place) => match self.eval(place)? {
+                Value::Place(at) if matches!(node.ty, Ty::Dynamic) => {
+                    Value::Loaded(Self::at(span, self.machine.load_dynamic(&at))?)
+                }
                 Value::Place(at) => {
                     let loaded = Self::at(span, self.machine.load(&at))?;
                     Self::at(span, self.loaded(&node.ty, loaded))?
@@ -371,6 +412,15 @@ impl<M: Machine> Interpreter<'_, M> {
                 let left = self.float(left)?;
                 let right = self.float(right)?;
                 Value::Float(Float::binary(*op, left, right))
+            }
+            Op::DynamicArithmetic { op, left, right } => {
+                let left = self.dynamic(left)?;
+                let right = self.dynamic(right)?;
+                Self::number(Self::at(span, dynamic::binary(*op, &left, &right))?)
+            }
+            Op::DynamicUnary { op, operand } => {
+                let operand = self.dynamic(operand)?;
+                Self::number(Self::at(span, dynamic::unary(*op, &operand))?)
             }
             Op::Bitwise { op, left, right } => {
                 let left_value = self.integer(left)?;
@@ -494,6 +544,10 @@ impl<M: Machine> Interpreter<'_, M> {
                 let place = self.place(operand)?;
                 let length = match how {
                     Length::Slice => Self::at(span, self.machine.length(&place))?,
+                    Length::Dynamic => Self::at(span, self.machine.presented_length(&place))?
+                        .ok_or_else(|| {
+                            Self::error(span, ErrorKind::Type, "the value has no length")
+                        })?,
                     _ => self.text_length(&place, operand.span)?,
                 };
 
@@ -678,6 +732,7 @@ impl<M: Machine> Interpreter<'_, M> {
                 Value::Float(value) => !value.is_zero(),
                 Value::Pointer(address) => address != 0,
                 Value::Bool(value) => value,
+                Value::Loaded(loaded) => Self::at(span, dynamic::truth(&loaded))?,
                 _ => return Self::invariant("the binder converts only scalars to truth values"),
             }),
             Conversion::BoolToInteger(int) => {
@@ -760,6 +815,12 @@ impl<M: Machine> Interpreter<'_, M> {
                     Ordering::Less
                 })
             }
+            Comparison::Dynamic => {
+                let span = left.span.to(right.span);
+                let left = self.dynamic(left)?;
+                let right = self.dynamic(right)?;
+                return Self::at(span, dynamic::compare(op, &left, &right));
+            }
             Comparison::Text => {
                 let place = self.place(left)?;
                 let Value::Text(literal) = self.eval(right)? else {
@@ -812,7 +873,7 @@ impl<M: Machine> Interpreter<'_, M> {
             // Text known to differ before what could not be read differs.
             _ if !literal.starts_with(read) => Ok(false),
             completion => Err(Halt::Missing {
-                state: Box::new(unavailable(Self::incomplete(completion))),
+                state: Box::new(unavailable(incomplete(completion))),
                 cause: span,
             }),
         }
@@ -841,26 +902,9 @@ impl<M: Machine> Interpreter<'_, M> {
                 ..
             } => Ok(length),
             completion => Err(Halt::Missing {
-                state: Box::new(unavailable(Self::incomplete(completion))),
+                state: Box::new(unavailable(incomplete(completion))),
                 cause: span,
             }),
-        }
-    }
-
-    const fn incomplete(completion: TextCompletion) -> VariableUnavailableReason {
-        match completion {
-            TextCompletion::Unreadable { address } => {
-                VariableUnavailableReason::MemoryInaccessible {
-                    address,
-                    requested: 1,
-                    completed: 0,
-                    next_address: address,
-                }
-            }
-            TextCompletion::Limited { exhaustion, .. } => {
-                VariableUnavailableReason::InspectionLimit(exhaustion)
-            }
-            _ => VariableUnavailableReason::EvaluationLimit,
         }
     }
 
@@ -1091,6 +1135,7 @@ impl<M: Machine> Interpreter<'_, M> {
             Value::Bool(value) => Key::Bool(value),
             Value::Pointer(address) => Key::Address(address),
             Value::Text(bytes) => Key::Text(bytes),
+            Value::Loaded(loaded) => Self::at(node.span, dynamic::key(&loaded))?,
             Value::Place(place) => {
                 let Some(text) = Self::at(node.span, self.machine.text(&place))? else {
                     return Err(Self::error(
@@ -1102,7 +1147,7 @@ impl<M: Machine> Interpreter<'_, M> {
 
                 if text.completion != TextCompletion::Complete {
                     return Err(Halt::Missing {
-                        state: Box::new(unavailable(Self::incomplete(text.completion))),
+                        state: Box::new(unavailable(incomplete(text.completion))),
                         cause: node.span,
                     });
                 }
@@ -1129,6 +1174,15 @@ impl<M: Machine> Interpreter<'_, M> {
             }
             Value::Text(bytes) => return Ok(self.present_text(ty, bytes)),
             value => value,
+        };
+
+        // A number computed from values of a dynamic type has the type it
+        // has as it runs.
+        let ty = match (ty, &value) {
+            (Ty::Dynamic, Value::Int(_)) => &Ty::Exact,
+            (Ty::Dynamic, Value::Float(value)) => &Ty::Float(value.format()),
+            (Ty::Dynamic, Value::Bool(_)) => &Ty::Bool,
+            (ty, _) => ty,
         };
 
         self.present_computed(ty, &value, None, span)
@@ -1176,7 +1230,7 @@ impl<M: Machine> Interpreter<'_, M> {
                 function: None,
                 address: VirtualAddress::new(*address),
             }),
-            Value::Place(_) | Value::Raw(_) | Value::Text(_) => {
+            Value::Place(_) | Value::Raw(_) | Value::Text(_) | Value::Loaded(_) => {
                 return Self::invariant("places and strings are presented elsewhere");
             }
         };
@@ -1237,7 +1291,7 @@ impl<M: Machine> Interpreter<'_, M> {
             Value::Bool(value) => u128::from(*value),
             Value::Pointer(address) => u128::from(*address),
             Value::Float(value) => float_bits(value.to_value()),
-            Value::Place(_) | Value::Raw(_) | Value::Text(_) => 0,
+            Value::Place(_) | Value::Raw(_) | Value::Text(_) | Value::Loaded(_) => 0,
         };
 
         self.ordered(raw, size)
@@ -1278,5 +1332,21 @@ fn float_bits(value: crate::FloatValue) -> u128 {
             significand,
             sign_exponent,
         } => u128::from(sign_exponent) << 64 | u128::from(significand),
+    }
+}
+
+/// Why text read in part has no value an operation can use.
+pub(super) const fn incomplete(completion: TextCompletion) -> VariableUnavailableReason {
+    match completion {
+        TextCompletion::Unreadable { address } => VariableUnavailableReason::MemoryInaccessible {
+            address,
+            requested: 1,
+            completed: 0,
+            next_address: address,
+        },
+        TextCompletion::Limited { exhaustion, .. } => {
+            VariableUnavailableReason::InspectionLimit(exhaustion)
+        }
+        _ => VariableUnavailableReason::EvaluationLimit,
     }
 }

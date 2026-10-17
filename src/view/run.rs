@@ -387,7 +387,7 @@ fn side_text<P>(value: &Value<P>) -> String {
         Value::Float(float) => float.to_string(),
         Value::Bool(value) => value.to_string(),
         Value::Pointer(address) | Value::Raw(address) => format!("{address:#x}"),
-        Value::Place(_) | Value::Text(_) => "…".to_owned(),
+        Value::Place(_) | Value::Text(_) | Value::Loaded(_) => "…".to_owned(),
     }
 }
 

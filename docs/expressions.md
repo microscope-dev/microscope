@@ -675,6 +675,88 @@ cap(s)                 => error type at `s`
 cap(1)                 => error type at `1`
 ```
 
+## Python values
+
+In a Python frame, a name is the frame's variable, then a global of its
+module, then a built-in, as Python finds it, and `::name` skips to the
+native program's globals. A Python variable has no type of its own: it holds
+whatever object it was last given, so each operation finds its operands'
+types as it runs. A value of any type binds, and an operation its value's
+type does not allow is refused when it runs.
+
+`x[i]` indexes a list or tuple, from its end when `i` is negative, and
+`d[key]` finds a dict's key as Python's `==` would: numbers compare exactly,
+so `d[1]`, `d[1.0]`, and `d[true]` find one key, text equals only text, and
+`d[None]` finds a `None` key. A key of a type whose own `__eq__` decides
+what it equals, such as an instance of a class, is refused where the lookup
+would have to compare with it. An index past the end is a bounds error, and a key the dict does not hold
+is a missing-key error. `len(x)` is the length of a `str` in characters, of
+`bytes` in bytes, and of a list, tuple, or dict in items. A value is true as
+Python says: `None`, zero, and empty text and collections are false.
+
+Numbers follow microscope's exact rules, and `True` and `False` count as 1
+and 0, as Python's do. Python divides integers into a fraction and floors a
+remainder, so an integer `/`, and `%` of a negative number or a float, are
+refused rather than truncated; multiply by `1.0` for a fraction. An `int`
+too large for 128 bits is shown whole but not computed with. Values of
+different types are unequal, and only numbers, `str`, and `bytes` are
+ordered. Lists, dicts, and objects are neither compared nor computed with,
+since only running their types' code could say what those mean, and
+microscope never runs code in the program: not `__eq__`, properties, or
+calls.
+
+```microscope-example
+world: python
+count                  => 7 : int
+count + 1              => 8 : integer
+count * ratio          => 3.5 : f64
+-count                 => -7 : integer
+count & 3              => 3 : integer
+True + 1               => 2 : integer
+count / 2              => error arithmetic at `count / 2`
+count * 1.0 / 2        => 3.5 : f64
+count % 4              => 3 : integer
+ratio / 0              => error arithmetic at `ratio / 0`
+count == 7             => true : bool
+count > 6.5            => true : bool
+count == name          => false : bool
+count < name           => error type at `count < name`
+name == "ann"          => true : bool
+data == "ab"           => false : bool
+nothing == None        => true : bool
+count != None          => true : bool
+numbers[0]             => 10 : int
+numbers[-1]            => 30 : int
+numbers[3]             => error bounds at `numbers[3]`
+numbers[0] + numbers[1] => 30 : integer
+pair[1]                => 'two' : str
+ages["bob"]            => 41 : int
+ages["eve"]            => error missing-key at `ages["eve"]`
+squares[2]             => 4 : int
+squares[2.0]           => 4 : int
+squares[true]          => 1 : int
+squares[count - 4]     => 9 : int
+labels[None]           => 'none' : str
+labels[1]              => 'one' : str
+labels["one"]          => error missing-key at `labels["one"]`
+ages[name] < 40        => true : bool
+name[0]                => error unsupported at `name[0]`
+count[0]               => error type at `count[0]`
+len(name)              => 3 : integer
+len(numbers)           => 3 : integer
+len(ages)              => 2 : integer
+len(count)             => error type at `len(count)`
+!empty                 => true : bool
+numbers && count       => true : bool
+!point                 => error type at `point`
+numbers == numbers     => error unsupported at `numbers == numbers`
+big                    => 1361129467683753853853498429727072845824 : int
+big + 1                => error arithmetic at `big`
+*count                 => error type at `count`
+count->real            => error type at `count`
+assign: count = 1      => error unsupported at `count`
+```
+
 ## Assignment
 
 In the console and with `set var`, `=` and the compound operators (`+=`,

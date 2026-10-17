@@ -68,6 +68,7 @@ fn layout() -> PythonLayout {
         (Field::UnicodeCompactSize, STRING_SIZE),
         (Field::UnicodeAsciiSize, 40),
         (Field::UnicodeLength, 16),
+        (Field::UnicodeHash, 24),
         (Field::UnicodeState, 32),
         (Field::BytesSize, 16),
         (Field::BytesData, 32),

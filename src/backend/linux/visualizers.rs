@@ -39,7 +39,7 @@ impl<P: InspectionOps> Controller<P> {
             &bound,
             reference.index,
             &mut machine,
-            StopPlace::of(children),
+            StopPlace::of(children).into(),
         );
         let inputs = match run {
             Ok(inputs) => inputs,
@@ -192,7 +192,7 @@ impl<P: InspectionOps> Controller<P> {
             return match crate::view::run::contiguous(
                 &bound,
                 &mut machine,
-                StopPlace::of(reference),
+                StopPlace::of(reference).into(),
             ) {
                 Ok(found) => Ok(found.filter(|(_, count, ..)| *count == view.elements)),
                 Err(Failure::Debugger(error)) => Err(error),

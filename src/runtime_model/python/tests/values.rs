@@ -293,6 +293,8 @@ fn with_values<R>(
         },
         types,
         budget: &budget,
+        secret: None,
+        hashing: std::cell::Cell::new(None),
     };
     read(&values)
 }

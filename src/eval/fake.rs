@@ -17,9 +17,10 @@ use std::sync::Arc;
 
 use super::error::ErrorKind;
 use super::number::Exact;
+use super::number::Float;
 use super::target::{
-    Key, Lookup, Machine, Planned, Refusal, Register, Scope, StepKind, Stop, TextSpan, TypeLookup,
-    TypeQuery,
+    Key, Loaded, LoadedValue, Lookup, Machine, Planned, Refusal, Register, Scope, StepKind, Stop,
+    TextSpan, TypeLookup, TypeQuery,
 };
 
 use super::types::{TypeSource, c_type_key_of_name};
@@ -38,8 +39,14 @@ const IMAGE: ModuleImageId = ModuleImageId::new(1);
 #[derive(Debug, Clone)]
 enum Storage {
     Memory(u64),
-    Register { name: &'static str, bytes: Vec<u8> },
+    Register {
+        name: &'static str,
+        bytes: Vec<u8>,
+    },
     OptimizedOut,
+
+    /// A value of a dynamic type, by its index in [`World::dynamic`].
+    Dynamic(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -61,12 +68,16 @@ pub enum Place {
         bytes: Vec<u8>,
         ty: TypeReference,
     },
+
+    /// A value of a dynamic type, by its index in [`World::dynamic`].
+    Dynamic(usize),
 }
 
 impl Place {
     const fn ty(&self) -> TypeReference {
         match self {
             Self::Memory { ty, .. } | Self::Register { ty, .. } => *ty,
+            Self::Dynamic(_) => panic!("a value of a dynamic type has no static type"),
         }
     }
 }
@@ -109,6 +120,12 @@ pub enum Step {
     /// To what a shared pointer, `{u64 count; V *value}`, points to, as
     /// the view that presents it would.
     Presented(TypeReference),
+
+    /// To an attribute of a value of a dynamic type.
+    Attribute(Arc<str>),
+
+    /// To an item of a value of a dynamic type, by its key or index.
+    Item,
 }
 
 /// A world the evaluator binds and runs in.
@@ -150,6 +167,47 @@ pub struct World {
     /// Generic functions, by the address their code begins at, with their
     /// type arguments by their parameters' names.
     functions: BTreeMap<u64, Vec<(Arc<str>, TypeReference)>>,
+
+    /// Values of a dynamic type, as Python's are.
+    dynamic: Vec<Dynamic>,
+}
+
+/// A value of a dynamic type, with Python's built-in types.
+#[derive(Debug, Clone)]
+pub enum Dynamic {
+    Nothing,
+    Bool(bool),
+    Int(i128),
+
+    /// An int beyond 128 bits.
+    BigInt(&'static str),
+    Float(f64),
+    Str(&'static str),
+    Bytes(&'static [u8]),
+    List(Vec<usize>),
+    Tuple(Vec<usize>),
+    Dict(Vec<(usize, usize)>),
+    Instance {
+        type_name: &'static str,
+        attributes: Vec<(&'static str, usize)>,
+    },
+}
+
+impl Dynamic {
+    const fn type_name(&self) -> &'static str {
+        match self {
+            Self::Nothing => "NoneType",
+            Self::Bool(_) => "bool",
+            Self::Int(_) | Self::BigInt(_) => "int",
+            Self::Float(_) => "float",
+            Self::Str(_) => "str",
+            Self::Bytes(_) => "bytes",
+            Self::List(_) => "list",
+            Self::Tuple(_) => "tuple",
+            Self::Dict(_) => "dict",
+            Self::Instance { type_name, .. } => type_name,
+        }
+    }
 }
 
 impl World {
@@ -679,6 +737,7 @@ impl World {
                 let offset = usize::try_from(address - start).expect("small offsets");
                 region[offset..offset + bytes.len()].copy_from_slice(bytes);
             }
+            Place::Dynamic(_) => panic!("a value of a dynamic type is not written"),
             Place::Register { name, .. } => {
                 for object in &mut self.objects {
                     if let Storage::Register {
@@ -774,6 +833,7 @@ impl World {
         match place {
             Place::Memory { address, .. } => self.read_memory(*address, size),
             Place::Register { bytes, .. } => Ok(bytes[..size.min(bytes.len())].to_vec()),
+            Place::Dynamic(_) => panic!("a value of a dynamic type has no bytes"),
         }
     }
 
@@ -1051,6 +1111,9 @@ impl Scope for World {
             .filter(|&index| self.objects[index].name == name)
             .collect();
         match objects.as_slice() {
+            [index] if matches!(self.objects[*index].storage, Storage::Dynamic(_)) => {
+                return Ok(Lookup::Dynamic(*index));
+            }
             [index] => {
                 return Ok(Lookup::Object {
                     object: *index,
@@ -1224,6 +1287,14 @@ impl Scope for World {
         }
     }
 
+    fn plan_dynamic(&self, step: StepKind<'_>) -> Result<Step, Refusal> {
+        match step {
+            StepKind::Member(name) => Ok(Step::Attribute(name.into())),
+            StepKind::Entry => Ok(Step::Item),
+            _ => Err(type_error("a dynamic value takes attributes and items")),
+        }
+    }
+
     fn call_values(&self) -> Option<&super::target::CallValues> {
         self.call.as_ref()
     }
@@ -1314,6 +1385,7 @@ impl Machine for World {
             Storage::OptimizedOut => Err(Stop::missing(VariableState::Unavailable(
                 VariableUnavailableReason::OptimizedOut(OptimizedOutReason::NoLocation),
             ))),
+            Storage::Dynamic(index) => Ok(Place::Dynamic(*index)),
         }
     }
 
@@ -1335,6 +1407,10 @@ impl Machine for World {
     }
 
     fn step(&mut self, from: &Place, step: &Step, indices: &[i128]) -> Result<Place, Stop> {
+        if let (Place::Dynamic(index), Step::Attribute(name)) = (from, step) {
+            return self.attribute(*index, name);
+        }
+
         let offset_place = |place: &Place, offset: u64, ty| match place {
             Place::Memory { address, .. } => Place::Memory {
                 address: address.wrapping_add(offset),
@@ -1345,13 +1421,15 @@ impl Machine for World {
                 bytes: bytes[usize::try_from(offset).expect("small")..].to_vec(),
                 ty,
             },
+            Place::Dynamic(_) => panic!("a value of a dynamic type is stepped by attribute"),
         };
 
         match step {
-            Step::Entry { .. } => Err(Stop::Refused(Refusal::new(
+            Step::Entry { .. } | Step::Item => Err(Stop::Refused(Refusal::new(
                 ErrorKind::Type,
                 "a map's entries are found by key",
             ))),
+            Step::Attribute(_) => panic!("only a value of a dynamic type has attributes"),
             Step::Global(object) => self.locate(object),
             Step::Presented(target) => {
                 let bytes = self.bytes(from)?;
@@ -1450,6 +1528,7 @@ impl Machine for World {
                 ErrorKind::NotAnLvalue,
                 format!("the value is in register {name}, which has no address"),
             ))),
+            Place::Dynamic(index) => Ok(dynamic_address(*index)),
         }
     }
 
@@ -1531,6 +1610,10 @@ impl Machine for World {
     }
 
     fn entry(&mut self, from: &Place, step: &Step, key: &Key) -> Result<Option<Place>, Stop> {
+        if let Place::Dynamic(index) = from {
+            return self.item(*index, key).map(Some);
+        }
+
         let Step::Entry {
             key: key_type,
             value,
@@ -1605,6 +1688,7 @@ impl Machine for World {
                 VariableValueSource::Memory(VirtualAddress::new(*address))
             }
             Place::Register { .. } => VariableValueSource::Computed,
+            Place::Dynamic(index) => return Ok(self.present_dynamic(*index)),
         };
 
         let bytes = match &self.representation(at.ty()).kind {
@@ -1652,6 +1736,310 @@ impl Machine for World {
             usage: InspectionUsage::default(),
         }
     }
+
+    fn load_dynamic(&mut self, at: &Place) -> Result<Loaded, Stop> {
+        let Place::Dynamic(index) = at else {
+            panic!("only a value of a dynamic type is loaded as one");
+        };
+
+        let complete = |bytes: &[u8]| TextSummary {
+            bytes: bytes.into(),
+            completion: TextCompletion::Complete,
+        };
+        let value = &self.dynamic[*index];
+        let loaded = match value {
+            Dynamic::Nothing => LoadedValue::Nothing,
+            Dynamic::Bool(value) => LoadedValue::Bool(*value),
+            Dynamic::Int(value) => LoadedValue::Int(Exact::from(*value)),
+            Dynamic::BigInt(_) => {
+                return Err(Stop::Refused(Refusal::new(
+                    ErrorKind::Arithmetic,
+                    "the int is beyond the 128 bits microscope computes with",
+                )));
+            }
+            Dynamic::Float(value) => LoadedValue::Float(Float::from_f64(*value)),
+            Dynamic::Str(text) => LoadedValue::Text(complete(text.as_bytes())),
+            Dynamic::Bytes(bytes) => LoadedValue::Bytes(complete(bytes)),
+            Dynamic::List(items) | Dynamic::Tuple(items) => LoadedValue::Collection {
+                length: items.len() as u64,
+            },
+            Dynamic::Dict(entries) => LoadedValue::Collection {
+                length: entries.len() as u64,
+            },
+            Dynamic::Instance { .. } => LoadedValue::Object,
+        };
+
+        Ok(Loaded {
+            type_name: value.type_name().into(),
+            value: loaded,
+        })
+    }
+
+    fn presented_length(&mut self, at: &Place) -> Result<Option<u64>, Stop> {
+        let Place::Dynamic(index) = at else {
+            return Ok(None);
+        };
+
+        let value = &self.dynamic[*index];
+        let length = match value {
+            Dynamic::Str(text) => text.chars().count(),
+            Dynamic::Bytes(bytes) => bytes.len(),
+            Dynamic::List(items) | Dynamic::Tuple(items) => items.len(),
+            Dynamic::Dict(entries) => entries.len(),
+            _ => {
+                return Err(Stop::Refused(type_error(format!(
+                    "a `{}` has no length microscope reads",
+                    value.type_name()
+                ))));
+            }
+        };
+
+        Ok(Some(length as u64))
+    }
+}
+
+/// Where the world says a value of a dynamic type is.
+const fn dynamic_address(index: usize) -> u64 {
+    0x7f00_0000 + index as u64 * 0x40
+}
+
+impl World {
+    /// A value of a dynamic type, by the index it has.
+    pub fn dynamic(&mut self, value: Dynamic) -> usize {
+        self.dynamic.push(value);
+        self.dynamic.len() - 1
+    }
+
+    /// A variable of a dynamic type, holding the value at `index`.
+    pub fn dynamic_variable(&mut self, name: &str, index: usize) {
+        self.objects.push(Object {
+            name: name.to_owned(),
+            ty: super::types::UNIDENTIFIED,
+            storage: Storage::Dynamic(index),
+        });
+    }
+
+    /// Gives the variable `name` of a dynamic type another value.
+    pub fn replace_dynamic(&mut self, name: &str, value: Dynamic) {
+        let object = self
+            .objects
+            .iter()
+            .find(|object| object.name == name)
+            .expect("a variable of a dynamic type");
+        let Storage::Dynamic(index) = object.storage else {
+            panic!("`{name}` has a static type");
+        };
+
+        self.dynamic[index] = value;
+    }
+
+    fn attribute(&self, index: usize, name: &str) -> Result<Place, Stop> {
+        let value = &self.dynamic[index];
+        let Dynamic::Instance { attributes, .. } = value else {
+            return Err(Stop::Refused(Refusal::new(
+                ErrorKind::Unsupported,
+                format!(
+                    "microscope reads no attributes of a `{}`",
+                    value.type_name()
+                ),
+            )));
+        };
+
+        attributes
+            .iter()
+            .find(|(attribute, _)| *attribute == name)
+            .map(|(_, index)| Place::Dynamic(*index))
+            .ok_or_else(|| {
+                Stop::Refused(Refusal::new(
+                    ErrorKind::MissingKey,
+                    format!("the `{}` has no attribute `{name}`", value.type_name()),
+                ))
+            })
+    }
+
+    /// The item of a sequence at an index, from its end when negative, or
+    /// of a dict for a key, as Python's indexing finds it.
+    fn item(&self, index: usize, key: &Key) -> Result<Place, Stop> {
+        let value = &self.dynamic[index];
+        match value {
+            Dynamic::List(items) | Dynamic::Tuple(items) => {
+                let position = match key {
+                    Key::Integer(position) => position.to_i128(),
+                    Key::Bool(value) => Some(i128::from(*value)),
+                    _ => {
+                        return Err(Stop::Refused(type_error(format!(
+                            "a `{}` is indexed by integers",
+                            value.type_name()
+                        ))));
+                    }
+                };
+
+                let length = items.len() as i128;
+                position
+                    .map(|position| {
+                        if position < 0 {
+                            position + length
+                        } else {
+                            position
+                        }
+                    })
+                    .filter(|position| (0..length).contains(position))
+                    .and_then(|position| usize::try_from(position).ok())
+                    .map(|position| Place::Dynamic(items[position]))
+                    .ok_or_else(|| {
+                        Stop::Refused(Refusal::new(
+                            ErrorKind::Bounds,
+                            format!(
+                                "the `{}` has {length} items, and {key} indexes none",
+                                value.type_name()
+                            ),
+                        ))
+                    })
+            }
+            Dynamic::Dict(entries) => entries
+                .iter()
+                .find(|(entry, _)| self.equals(*entry, key))
+                .map(|(_, value)| Place::Dynamic(*value))
+                .ok_or_else(|| {
+                    Stop::Refused(Refusal::new(
+                        ErrorKind::MissingKey,
+                        format!("the `dict` holds no key {key}"),
+                    ))
+                }),
+            Dynamic::Str(_) => Err(Stop::Refused(Refusal::new(
+                ErrorKind::Unsupported,
+                "an item of a `str` is a new `str`, which microscope does not make",
+            ))),
+            _ => Err(Stop::Refused(type_error(format!(
+                "a `{}` has no items",
+                value.type_name()
+            )))),
+        }
+    }
+
+    /// Whether a dict's key equals the key written, as Python's `==` says.
+    fn equals(&self, entry: usize, key: &Key) -> bool {
+        let number = match &self.dynamic[entry] {
+            Dynamic::Bool(value) => Some(f64::from(u8::from(*value))),
+            #[expect(clippy::cast_precision_loss, reason = "the world's ints are small")]
+            Dynamic::Int(value) => Some(*value as f64),
+            Dynamic::Float(value) => Some(*value),
+            Dynamic::Str(text) => {
+                return matches!(key, Key::Text(bytes) if bytes == text.as_bytes());
+            }
+            Dynamic::Nothing => return *key == Key::Nothing,
+            _ => return false,
+        };
+
+        #[expect(
+            clippy::float_cmp,
+            clippy::cast_precision_loss,
+            reason = "Python compares numbers exactly, and the world's ints are small"
+        )]
+        match (number, key) {
+            (Some(number), Key::Integer(value)) => {
+                value.to_i128().is_some_and(|value| number == value as f64)
+            }
+            (Some(number), Key::Bool(value)) => number == f64::from(u8::from(*value)),
+            (Some(number), Key::Float(value)) => {
+                Float::from_f64(number).compare(*value) == Some(std::cmp::Ordering::Equal)
+            }
+            _ => false,
+        }
+    }
+
+    /// A value of a dynamic type as inspection presents it: by its text in
+    /// Python's notation.
+    fn present_dynamic(&self, index: usize) -> InspectedValue {
+        let value = &self.dynamic[index];
+        let scalar = match value {
+            Dynamic::Bool(value) => Some(ScalarValue::Boolean(*value)),
+            Dynamic::Int(value) => Some(ScalarValue::Signed(*value)),
+            Dynamic::Float(value) => {
+                Some(ScalarValue::Floating(FloatValue::Binary64(value.to_bits())))
+            }
+            _ => None,
+        };
+
+        let presentation = crate::Presentation {
+            view: Arc::new(crate::ViewName {
+                source: "world".into(),
+                line: 0,
+                header: "dynamic values".into(),
+                extend: false,
+            }),
+            shape: crate::PresentedShape::Value,
+            count: None,
+            summary: self.repr(index).into(),
+            children: ValueChildren::NotApplicable,
+            problem: None,
+            number: None,
+            presented: None,
+            visualizers: Arc::from([]),
+        };
+
+        let address = VirtualAddress::new(dynamic_address(index));
+        self.finish(
+            Some(TypeInfo {
+                reference: super::types::UNIDENTIFIED,
+                name: value.type_name().into(),
+                byte_size: None,
+                kind: TypeKind::Opaque {
+                    description: "a dynamic value".into(),
+                },
+                identity: None,
+            }),
+            VariableState::Available {
+                source: VariableValueSource::Memory(address),
+                raw: None,
+                value: scalar.map_or(
+                    VariableValue::Address(AddressValue {
+                        function: None,
+                        address,
+                    }),
+                    VariableValue::Scalar,
+                ),
+                dereference: DereferenceState::NotApplicable,
+                children: ValueChildren::NotApplicable,
+                text: None,
+                presentation: Some(Arc::new(presentation)),
+            },
+        )
+    }
+
+    /// A value's text in Python's notation.
+    fn repr(&self, index: usize) -> String {
+        let items = |items: &[usize]| {
+            items
+                .iter()
+                .map(|item| self.repr(*item))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+
+        match &self.dynamic[index] {
+            Dynamic::Nothing => "None".to_owned(),
+            Dynamic::Bool(true) => "True".to_owned(),
+            Dynamic::Bool(false) => "False".to_owned(),
+            Dynamic::Int(value) => value.to_string(),
+            Dynamic::BigInt(digits) => (*digits).to_owned(),
+            Dynamic::Float(value) => format!("{value:?}"),
+            Dynamic::Str(text) => format!("'{text}'"),
+            Dynamic::Bytes(bytes) => format!("b{:?}", String::from_utf8_lossy(bytes)),
+            Dynamic::List(values) => format!("[{}]", items(values)),
+            Dynamic::Tuple(values) if values.len() == 1 => format!("({},)", items(values)),
+            Dynamic::Tuple(values) => format!("({})", items(values)),
+            Dynamic::Dict(entries) => format!(
+                "{{{}}}",
+                entries
+                    .iter()
+                    .map(|(key, value)| format!("{}: {}", self.repr(*key), self.repr(*value)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Dynamic::Instance { type_name, .. } => format!("<{type_name} object>"),
+        }
+    }
 }
 
 /// A world by the name an example block gives.
@@ -1660,8 +2048,82 @@ pub fn world(name: &str) -> World {
         "scalars" => scalars(),
         "memory" => memory(),
         "syscall" => syscall(),
+        "python" => python(),
         other => panic!("no world named {other}"),
     }
+}
+
+/// A Python frame's variables, whose types only their values know.
+pub fn python() -> World {
+    let mut world = World::new();
+    let variable = |world: &mut World, name: &str, value: Dynamic| {
+        let index = world.dynamic(value);
+        world.dynamic_variable(name, index);
+        index
+    };
+
+    let none = variable(&mut world, "None", Dynamic::Nothing);
+    world.dynamic_variable("nothing", none);
+    variable(&mut world, "True", Dynamic::Bool(true));
+    variable(&mut world, "False", Dynamic::Bool(false));
+    variable(&mut world, "count", Dynamic::Int(7));
+    variable(&mut world, "ratio", Dynamic::Float(0.5));
+    variable(&mut world, "name", Dynamic::Str("ann"));
+    variable(&mut world, "data", Dynamic::Bytes(b"ab"));
+    variable(
+        &mut world,
+        "big",
+        Dynamic::BigInt("1361129467683753853853498429727072845824"),
+    );
+    let ten = world.dynamic(Dynamic::Int(10));
+    let twenty = world.dynamic(Dynamic::Int(20));
+    let thirty = world.dynamic(Dynamic::Int(30));
+    variable(
+        &mut world,
+        "numbers",
+        Dynamic::List(vec![ten, twenty, thirty]),
+    );
+    variable(&mut world, "empty", Dynamic::List(Vec::new()));
+    let one = world.dynamic(Dynamic::Int(1));
+    let two = world.dynamic(Dynamic::Str("two"));
+    variable(&mut world, "pair", Dynamic::Tuple(vec![one, two]));
+    let ann = world.dynamic(Dynamic::Str("ann"));
+    let bob = world.dynamic(Dynamic::Str("bob"));
+    let thirty_one = world.dynamic(Dynamic::Int(30));
+    let forty_one = world.dynamic(Dynamic::Int(41));
+    variable(
+        &mut world,
+        "ages",
+        Dynamic::Dict(vec![(ann, thirty_one), (bob, forty_one)]),
+    );
+    let squares: Vec<(usize, usize)> = [(1, 1), (2, 4), (3, 9)]
+        .into_iter()
+        .map(|(key, value)| {
+            (
+                world.dynamic(Dynamic::Int(key)),
+                world.dynamic(Dynamic::Int(value)),
+            )
+        })
+        .collect();
+    variable(&mut world, "squares", Dynamic::Dict(squares));
+    let one_text = world.dynamic(Dynamic::Str("one"));
+    let none_text = world.dynamic(Dynamic::Str("none"));
+    variable(
+        &mut world,
+        "labels",
+        Dynamic::Dict(vec![(one, one_text), (none, none_text)]),
+    );
+    let x = world.dynamic(Dynamic::Int(3));
+    let y = world.dynamic(Dynamic::Int(4));
+    variable(
+        &mut world,
+        "point",
+        Dynamic::Instance {
+            type_name: "Point",
+            attributes: vec![("x", x), ("y", y)],
+        },
+    );
+    world
 }
 
 /// A thread stopped as `openat(AT_FDCWD, "/etc/hosts", O_RDONLY)` returned

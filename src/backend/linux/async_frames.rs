@@ -238,7 +238,7 @@ impl<P: InspectionOps> Controller<P> {
             },
         };
 
-        match machine.present(&place).ok()?.state {
+        match machine.present(&place.into()).ok()?.state {
             VariableState::Available {
                 presentation: Some(presentation),
                 ..

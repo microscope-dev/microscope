@@ -4280,6 +4280,28 @@ fn python_frames_show_their_source_and_fold_the_interpreters_frames() {
     line_index(&lines, back, |shown| {
         shown.starts_with('#') && shown.contains(" in _PyEval_EvalFrameDefault+")
     });
+
+    // Expressions read the frame's objects as Python finds them.
+    let stdout = batch(
+        &["--core", PYTHON_CORE],
+        &[
+            &thread,
+            &frame,
+            "print numbers[-1]",
+            "print by_name[\"b\"]",
+            "print numbers[0] + len(by_name) * 10",
+            "whatis numbers",
+        ],
+    );
+    let lines = stdout.lines().collect::<Vec<_>>();
+    let last = line_index(&lines, 0, |shown| shown == "(int) numbers[-1] = 3");
+    let found = line_index(&lines, last, |shown| {
+        shown == "(str) by_name[\"b\"] = 'two'"
+    });
+    let sum = line_index(&lines, found, |shown| {
+        shown == "(integer) numbers[0] + len(by_name) * 10 = 31"
+    });
+    line_index(&lines, sum, |shown| shown == "type = list");
 }
 
 #[test]

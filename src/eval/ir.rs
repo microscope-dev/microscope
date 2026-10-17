@@ -3,7 +3,7 @@
 
 use super::number::{BitOperator, Float, FloatFormat, FloatOperator, IntType, Integer};
 use super::syntax::Span;
-use super::syntax::ast::BinaryOp;
+use super::syntax::ast::{BinaryOp, UnaryOp};
 use super::target::Register;
 use super::types::Ty;
 use crate::TypeReference;
@@ -114,8 +114,10 @@ impl<O, S> Node<O, S> {
             | Op::Fit(operand)
             | Op::Convert { operand, .. }
             | Op::Length { operand, .. }
-            | Op::Capacity { operand, .. } => operand.mentions(test),
+            | Op::Capacity { operand, .. }
+            | Op::DynamicUnary { operand, .. } => operand.mentions(test),
             Op::Arithmetic { left, right, .. }
+            | Op::DynamicArithmetic { left, right, .. }
             | Op::FloatArithmetic { left, right, .. }
             | Op::Bitwise { left, right, .. }
             | Op::Compare { left, right, .. }
@@ -186,6 +188,10 @@ pub enum Comparison {
 
     /// Two strings.
     Texts,
+
+    /// Values one of which has a dynamic type, compared by the types they
+    /// have when they run.
+    Dynamic,
 }
 
 /// A conversion of a value to another type.
@@ -227,6 +233,10 @@ pub enum Length {
 
     /// The length of a string the expression computed.
     Bytes,
+
+    /// The length a value of a dynamic type has, as its language measures
+    /// it.
+    Dynamic,
 }
 
 /// How `cap` measures.
@@ -308,6 +318,20 @@ pub enum Op<O, S> {
         op: BinaryOp,
         left: Box<Node<O, S>>,
         right: Box<Node<O, S>>,
+    },
+
+    /// `+ - * / % & | ^ << >>` of values one of which has a dynamic type,
+    /// by the rules of the types they have when they run.
+    DynamicArithmetic {
+        op: BinaryOp,
+        left: Box<Node<O, S>>,
+        right: Box<Node<O, S>>,
+    },
+
+    /// `-` or `~` of a value of a dynamic type.
+    DynamicUnary {
+        op: UnaryOp,
+        operand: Box<Node<O, S>>,
     },
 
     /// Float arithmetic in the node's format.

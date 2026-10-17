@@ -17,12 +17,15 @@ newline as \\, \t, or \n:
     TRUTH  thread      NATIVE-ID  NAME  ROLE
     TRUTH  frame       NATIVE-ID  DEPTH  QUALNAME  FILE  LINE  OFFSET
     TRUTH  local       NATIVE-ID  DEPTH  NAME  VALUE
+    TRUTH  evaluated   TEXT  RESULT
 
 VERSION is major.minor.micro, BUILD is gil or free-threaded, ROLE is printer
 for the thread that printed the checkpoint and parked for the others, DEPTH
 counts from the innermost frame, LINE is - when CPython has none, and OFFSET
 is the frame's last instruction's offset in bytes, f_lasti. VALUE is
-canonical(), the text microscope must present the value as.
+canonical(), the text microscope must present the value as. RESULT is the
+canonical() text of what CPython's eval() gave for the expression TEXT, or
+! and the name of the exception's type when it raised one.
 
 Only the standard library is used. Fixtures run with -I, so the environment
 and the user's site-packages cannot change them.
@@ -215,10 +218,24 @@ def _print_thread(native_id, name, role, frame):
                 report("local", native_id, depth, local, canonical(value))
 
 
-def checkpoint(name, gate=None, abort=False):
-    """Prints every thread's frames and locals, then parks until a line
-    arrives on standard input, or parks for good at its end; or, to leave a
-    core dump of the process as it reported it, aborts."""
+def evaluated(expressions, frame):
+    """Each expression and what CPython's eval() gives for it in frame, as
+    checkpoint() reports it."""
+    results = []
+    for text in expressions:
+        try:
+            result = canonical(eval(text, frame.f_globals, frame.f_locals))
+        except Exception as error:  # noqa: BLE001
+            result = "!" + type(error).__name__
+        results.append(("evaluated", text, result))
+    return results
+
+
+def checkpoint(name, gate=None, abort=False, records=()):
+    """Prints every thread's frames and locals, then records, each a
+    tuple of a line's fields; then parks until a line arrives on standard
+    input, or parks for good at its end; or, to leave a core dump of the
+    process as it reported it, aborts."""
     if gate is not None:
         gate.wait()
     printer = threading.current_thread()
@@ -232,6 +249,8 @@ def checkpoint(name, gate=None, abort=False):
             continue
         _print_thread(thread.native_id, thread.name, "parked", frames[thread.ident])
     del frames
+    for record in records:
+        report(*record)
     with _print_lock:
         sys.stdout.write("READY\n")
         sys.stdout.flush()

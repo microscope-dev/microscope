@@ -43,6 +43,31 @@ pub(super) fn string(code_points: &[u32]) -> String {
     text
 }
 
+/// Code points as UTF-8, with each lone surrogate encoded as a scalar
+/// value would be, as CPython's `surrogatepass` handler encodes it: the
+/// bytes sort as the code points do.
+pub(super) fn utf8(code_points: &[u32]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(code_points.len());
+    for &point in code_points {
+        if let Some(character) = char::from_u32(point) {
+            let mut buffer = [0; 4];
+            bytes.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
+        } else {
+            // A surrogate, which a str may hold alone: three bytes, as
+            // every code point from U+0800 to U+FFFF takes.
+            let [_, _, high, low] = point.to_be_bytes();
+            let point = u16::from_be_bytes([high, low]);
+            bytes.extend_from_slice(&[
+                0xe0 | u8::try_from(point >> 12).unwrap_or(0),
+                0x80 | u8::try_from((point >> 6) & 0x3f).unwrap_or(0),
+                0x80 | u8::try_from(point & 0x3f).unwrap_or(0),
+            ]);
+        }
+    }
+
+    bytes
+}
+
 /// A `bytes` object's contents, as `repr` gives them.
 pub(super) fn bytes(contents: &[u8]) -> String {
     let quote = if contents.contains(&b'\'') && !contents.contains(&b'"') {

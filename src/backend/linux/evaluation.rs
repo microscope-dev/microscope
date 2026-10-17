@@ -17,8 +17,8 @@ use crate::eval::number::Exact;
 use crate::eval::syntax::ast::Tag;
 use crate::eval::syntax::{Expression, Span};
 use crate::eval::target::{
-    Key, Lookup, Machine, Planned, Refusal, Register, Scope, StepKind, Stop, TextSpan, TypeLookup,
-    TypeQuery,
+    Key, Loaded, Lookup, Machine, Planned, Refusal, Register, Scope, StepKind, Stop, TextSpan,
+    TypeLookup, TypeQuery,
 };
 
 use crate::eval::types::{TypeSource, type_info};
@@ -37,6 +37,7 @@ use super::frames::{FrameRegisters, FrameScope, ResolvedFrame, StackRoot};
 use super::inspection::{
     LinuxVariableRuntime, global_context_address, validate_inspection_limits, variable_context,
 };
+use super::interpreted_values::interpreted_key;
 
 use super::native::{InspectionOps, LinuxTraceOps};
 use super::registers::x86_64_register_snapshot;
@@ -61,6 +62,14 @@ enum ObjectRef {
     /// A variable a suspended async frame keeps in its future, or the
     /// future itself: a value of type `ty` at `address`.
     Saved { ty: TypeId, address: VirtualAddress },
+
+    /// What a name means in an interpreted frame, which `runtime`'s
+    /// interpreter keeps at `frame`.
+    Interpreted {
+        runtime: crate::RuntimeId,
+        frame: VirtualAddress,
+        name: crate::runtime_model::InterpretedName,
+    },
 }
 
 impl StopObject {
@@ -70,6 +79,25 @@ impl StopObject {
             module,
             key: ObjectRef::Data(key),
             local: false,
+        }
+    }
+
+    /// What a name means in the interpreted frame `runtime`, carried by
+    /// `module`, keeps at `frame`.
+    pub(super) const fn interpreted(
+        module: ModuleId,
+        runtime: crate::RuntimeId,
+        frame: VirtualAddress,
+        name: crate::runtime_model::InterpretedName,
+    ) -> Self {
+        Self {
+            module,
+            key: ObjectRef::Interpreted {
+                runtime,
+                frame,
+                name,
+            },
+            local: true,
         }
     }
 }
@@ -91,6 +119,12 @@ pub(super) enum StopStep {
 
     /// To a global, from anywhere: a view's `global(NAME)`.
     Global(StopObject),
+
+    /// From an interpreter's object to its attribute of this name.
+    Attribute(Arc<str>),
+
+    /// From an interpreter's object to the item a key or an index finds.
+    Item,
 }
 
 /// A view bound against one type, whose steps are a stop's.
@@ -106,6 +140,8 @@ impl fmt::Debug for StopStep {
                 write!(formatter, "StopStep(presented by {})", bound.view.header)
             }
             Self::Global(object) => write!(formatter, "StopStep(global {object:?})"),
+            Self::Attribute(name) => write!(formatter, "StopStep(attribute {name})"),
+            Self::Item => write!(formatter, "StopStep(item)"),
         }
     }
 }
@@ -115,6 +151,38 @@ impl fmt::Debug for StopStep {
 pub(super) struct StopPlace {
     pub(super) module: ModuleId,
     pub(super) located: Located,
+}
+
+/// Where a value an expression reaches is.
+#[derive(Debug, Clone)]
+pub(super) enum Place {
+    /// A value of one module's types.
+    Native(StopPlace),
+
+    /// An interpreter's object, which `runtime` keeps at `object`.
+    Interpreted {
+        runtime: crate::RuntimeId,
+        object: VirtualAddress,
+    },
+}
+
+impl From<StopPlace> for Place {
+    fn from(place: StopPlace) -> Self {
+        Self::Native(place)
+    }
+}
+
+impl Place {
+    /// The value of a module's types the binder made this place, which no
+    /// expression can make an interpreter's object.
+    pub(super) fn native(&self) -> std::result::Result<&StopPlace, Stop> {
+        match self {
+            Self::Native(place) => Ok(place),
+            Self::Interpreted { .. } => Err(Stop::Failed(Error::internal(
+                "the binder gives an interpreter's object no native operation",
+            ))),
+        }
+    }
 }
 
 /// One frame of a stop, as expressions see it.
@@ -166,6 +234,18 @@ impl<P: InspectionOps> Controller<P> {
 }
 
 impl<'a, P: InspectionOps> Frame<'a, P> {
+    pub(super) const fn inferior(&self) -> &'a Inferior {
+        self.inferior
+    }
+
+    pub(super) const fn root(&self) -> &'a StackRoot {
+        self.root
+    }
+
+    pub(super) const fn resolved(&self) -> &'a ResolvedFrame {
+        self.resolved
+    }
+
     pub(super) fn module(&self, id: ModuleId) -> Option<&'a RuntimeModule> {
         self.controller.modules.get(&id)
     }
@@ -662,24 +742,18 @@ impl<P: InspectionOps> Scope for Frame<'_, P> {
             }
         }
 
+        // An interpreted frame's names are its interpreter's: its variables,
+        // then the globals and built-ins its code reads.
+        if !outermost && let Some(found) = self.lookup_interpreted(name)? {
+            return Ok(found);
+        }
+
         if let Some(global) = self.lookup_global(name)? {
             return Ok(global);
         }
 
         if let Some(found) = self.lookup_enumerator(name) {
             return Ok(found);
-        }
-
-        // An interpreted frame's variables are its interpreter's, which
-        // expressions do not read yet.
-        if !outermost && matches!(self.resolved.scope, FrameScope::Interpreted { .. }) {
-            return Err(Refusal::new(
-                ErrorKind::Unsupported,
-                format!(
-                    "`{name}` is no native variable, and a Python frame's variables are not \
-                     evaluated in expressions yet; `print` alone shows them"
-                ),
-            ));
         }
 
         Ok(Lookup::NotFound)
@@ -736,6 +810,17 @@ impl<P: InspectionOps> Scope for Frame<'_, P> {
 
     fn call_values(&self) -> Option<&crate::eval::target::CallValues> {
         self.call.as_ref()
+    }
+
+    fn plan_dynamic(&self, step: StepKind<'_>) -> std::result::Result<StopStep, Refusal> {
+        match step {
+            StepKind::Member(name) => Ok(StopStep::Attribute(name.into())),
+            StepKind::Entry => Ok(StopStep::Item),
+            _ => Err(Refusal::new(
+                ErrorKind::Type,
+                "an interpreter's object has attributes and items",
+            )),
+        }
     }
 
     fn register(&self, name: &str) -> Option<Register> {
@@ -880,7 +965,7 @@ impl<P: InspectionOps> TypeSource for StopMachine<'_, '_, P> {
 impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
     type Object = StopObject;
     type Step = StopStep;
-    type Place = StopPlace;
+    type Place = Place;
 
     fn charge(&mut self) -> std::result::Result<(), Stop> {
         self.budget
@@ -898,20 +983,25 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
         Ok(())
     }
 
-    fn locate(&mut self, object: &StopObject) -> std::result::Result<StopPlace, Stop> {
+    fn locate(&mut self, object: &StopObject) -> std::result::Result<Place, Stop> {
         let module = self.module(object.module)?;
         let address = self.address(module);
         let key = match object.key {
             ObjectRef::Data(key) => key,
             ObjectRef::Saved { ty, address } => {
-                return Ok(StopPlace {
+                return Ok(Place::Native(StopPlace {
                     module: object.module,
                     located: Located {
                         ty,
                         storage: ValueStorage::Memory(address),
                     },
-                });
+                }));
             }
+            ObjectRef::Interpreted {
+                runtime,
+                frame,
+                name,
+            } => return self.interpreted_name(runtime, frame, name),
         };
 
         let mut runtime = self.frame.runtime(module);
@@ -919,7 +1009,7 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
             .variables
             .locate(key, address, &mut runtime, self.budget)
             .map_err(Stop::Failed)?;
-        Self::accessed(accessed, object.module)
+        Self::accessed(accessed, object.module).map(Place::Native)
     }
 
     fn check_indices(&self, step: &StopStep, indices: &[i128]) -> std::result::Result<(), Stop> {
@@ -930,16 +1020,24 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
             StopStep::Element(_)
             | StopStep::Entry(_)
             | StopStep::Presented(_)
-            | StopStep::Global(_) => Ok(()),
+            | StopStep::Global(_)
+            | StopStep::Attribute(_)
+            | StopStep::Item => Ok(()),
         }
     }
 
     fn step(
         &mut self,
-        from: &StopPlace,
+        from: &Place,
         step: &StopStep,
         indices: &[i128],
-    ) -> std::result::Result<StopPlace, Stop> {
+    ) -> std::result::Result<Place, Stop> {
+        if let StopStep::Attribute(name) = step {
+            return self
+                .interpreted_step(from, crate::runtime_model::InterpretedStep::Attribute(name));
+        }
+
+        let from = from.native()?;
         let (module_id, step) = match step {
             StopStep::Provider { module, step } => (*module, step),
             StopStep::Element(bound) => {
@@ -954,10 +1052,15 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
             }
             StopStep::Global(object) => return self.locate(object),
             StopStep::Presented(bound) => return self.view_presented(bound, from),
-            StopStep::Entry(_) => {
+            StopStep::Entry(_) | StopStep::Item => {
                 return Err(Stop::Refused(Refusal::new(
                     ErrorKind::Type,
                     "a map's entries are found by key",
+                )));
+            }
+            StopStep::Attribute(_) => {
+                return Err(Stop::Failed(Error::internal(
+                    "attributes are stepped above",
                 )));
             }
         };
@@ -979,25 +1082,26 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
                 Error::ValueIndexOutOfBounds { .. } => Stop::Refused(refusal(&error)),
                 error => Stop::Failed(error),
             })?;
-        Self::accessed(accessed, module_id)
+        Self::accessed(accessed, module_id).map(Place::Native)
     }
 
-    fn place_at(
-        &mut self,
-        address: u64,
-        ty: TypeReference,
-    ) -> std::result::Result<StopPlace, Stop> {
+    fn place_at(&mut self, address: u64, ty: TypeReference) -> std::result::Result<Place, Stop> {
         let module = type_module(self.frame.controller, ty).map_err(Stop::Refused)?;
-        Ok(StopPlace {
+        Ok(Place::Native(StopPlace {
             module: module.loaded.id,
             located: Located {
                 ty: ty.id,
                 storage: ValueStorage::Memory(VirtualAddress::new(address)),
             },
-        })
+        }))
     }
 
-    fn address(&self, at: &StopPlace) -> std::result::Result<u64, Stop> {
+    fn address(&self, at: &Place) -> std::result::Result<u64, Stop> {
+        let at = match at {
+            Place::Native(at) => at,
+            Place::Interpreted { object, .. } => return Ok(object.get()),
+        };
+
         let not_in_memory = |where_: &str| {
             Stop::Refused(Refusal::new(
                 ErrorKind::NotAnLvalue,
@@ -1032,7 +1136,8 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
         }
     }
 
-    fn load(&mut self, at: &StopPlace) -> std::result::Result<VariableValue, Stop> {
+    fn load(&mut self, at: &Place) -> std::result::Result<VariableValue, Stop> {
+        let at = at.native()?;
         let module = self.module(at.module)?;
         let context = self.context(module);
         let mut runtime = self.frame.runtime(module);
@@ -1065,7 +1170,7 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
             })
     }
 
-    fn text(&mut self, at: &StopPlace) -> std::result::Result<Option<TextSummary>, Stop> {
+    fn text(&mut self, at: &Place) -> std::result::Result<Option<TextSummary>, Stop> {
         let value = self.present(at)?;
         match value.state {
             VariableState::Available { text, .. } => Ok(text.map(|text| (*text).clone())),
@@ -1073,7 +1178,7 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
         }
     }
 
-    fn length(&mut self, at: &StopPlace) -> std::result::Result<u64, Stop> {
+    fn length(&mut self, at: &Place) -> std::result::Result<u64, Stop> {
         match self.load(at)? {
             VariableValue::Slice { length, .. } => Ok(length),
             VariableValue::Array { dimensions } => {
@@ -1086,11 +1191,16 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
         }
     }
 
-    fn presented_length(&mut self, at: &StopPlace) -> std::result::Result<Option<u64>, Stop> {
-        self.view_length(at)
+    fn presented_length(&mut self, at: &Place) -> std::result::Result<Option<u64>, Stop> {
+        match at {
+            Place::Native(at) => self.view_length(at),
+            Place::Interpreted { runtime, object } => {
+                self.interpreted_length(*runtime, *object).map(Some)
+            }
+        }
     }
 
-    fn capacity(&mut self, at: &StopPlace) -> std::result::Result<u64, Stop> {
+    fn capacity(&mut self, at: &Place) -> std::result::Result<u64, Stop> {
         match self.load(at)? {
             VariableValue::Slice {
                 capacity: Some(capacity),
@@ -1103,15 +1213,16 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
         }
     }
 
-    fn presented_capacity(&mut self, at: &StopPlace) -> std::result::Result<Option<u64>, Stop> {
-        self.view_capacity(at)
+    fn presented_capacity(&mut self, at: &Place) -> std::result::Result<Option<u64>, Stop> {
+        self.view_capacity(at.native()?)
     }
 
     fn presented_element(
         &mut self,
-        at: &StopPlace,
+        at: &Place,
         index: i128,
-    ) -> std::result::Result<Option<StopPlace>, Stop> {
+    ) -> std::result::Result<Option<Place>, Stop> {
+        let at = at.native()?;
         let Some(bound) = self.view_of(at)? else {
             return Ok(None);
         };
@@ -1119,7 +1230,10 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
         self.view_element(&bound, at, index).map(Some)
     }
 
-    fn text_span(&mut self, at: &StopPlace) -> std::result::Result<Option<TextSpan>, Stop> {
+    fn text_span(&mut self, at: &Place) -> std::result::Result<Option<TextSpan>, Stop> {
+        let place = at;
+        let at = at.native()?;
+
         // A view that presents the value as text says where it is, and
         // otherwise the debug information does.
         let found = if let Some(found) = self.view_text_span(at)? {
@@ -1143,7 +1257,7 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
         // Text that ends at a NUL is as long as reading it finds.
         let length = match length {
             Some(length) => length,
-            None => match self.text(at)? {
+            None => match self.text(place)? {
                 Some(TextSummary {
                     bytes,
                     completion: TextCompletion::Complete,
@@ -1175,10 +1289,17 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
 
     fn entry(
         &mut self,
-        from: &StopPlace,
+        from: &Place,
         step: &StopStep,
         key: &Key,
-    ) -> std::result::Result<Option<StopPlace>, Stop> {
+    ) -> std::result::Result<Option<Place>, Stop> {
+        if matches!(step, StopStep::Item) {
+            let key = interpreted_key(key)?;
+            return self
+                .interpreted_step(from, crate::runtime_model::InterpretedStep::Item(&key))
+                .map(Some);
+        }
+
         let StopStep::Entry(bound) = step else {
             return Err(Stop::Refused(Refusal::new(
                 ErrorKind::Type,
@@ -1186,7 +1307,17 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
             )));
         };
 
-        self.view_entry_place(bound, from, key)
+        self.view_entry_place(bound, from.native()?, key)
+    }
+
+    fn load_dynamic(&mut self, at: &Place) -> std::result::Result<Loaded, Stop> {
+        let Place::Interpreted { runtime, object } = at else {
+            return Err(Stop::Failed(Error::internal(
+                "only an interpreter's object has a dynamic type",
+            )));
+        };
+
+        self.interpreted_operand(*runtime, *object)
     }
 
     fn function_generics(
@@ -1288,7 +1419,14 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
         })
     }
 
-    fn present(&mut self, at: &StopPlace) -> std::result::Result<InspectedValue, Stop> {
+    fn present(&mut self, at: &Place) -> std::result::Result<InspectedValue, Stop> {
+        let at = match at {
+            Place::Native(at) => at,
+            Place::Interpreted { runtime, object } => {
+                return self.interpreted_present(*runtime, *object);
+            }
+        };
+
         let module = self.module(at.module)?;
         let value = self.materialize(module, &at.located)?;
         self.presented(value)
@@ -1647,7 +1785,13 @@ impl<P: InspectionOps> Controller<P> {
                 whole,
                 span,
             } => Evaluated::Write {
-                target,
+                // The binder assigns only to values of a module's types.
+                target: match target {
+                    Place::Native(target) => target,
+                    Place::Interpreted { .. } => {
+                        return Err(Error::internal("an interpreter's object is assigned"));
+                    }
+                },
                 bytes,
                 whole,
                 span,
@@ -1732,6 +1876,14 @@ impl<P: InspectionOps> Controller<P> {
         let program = bind(expression, &scope, Mode::Read).map_err(Error::Expression)?;
         let mut budget = InspectionBudget::new(crate::InspectionLimits::default());
         let mut machine = StopMachine::new(&scope, &mut budget, false);
+        if matches!(program.result(), crate::eval::types::Ty::Dynamic) {
+            return Err(Error::WatchTargetUnsupported(
+                "an interpreter's object moves and changes as its interpreter likes; watch \
+                 native memory"
+                    .into(),
+            ));
+        }
+
         let Outcome::Value { value, .. } = run(&program, &mut machine).map_err(failure)? else {
             return Err(Error::WatchTargetUnsupported(
                 "a range cannot be watched; watch one element".into(),
@@ -1772,7 +1924,8 @@ impl<P: InspectionOps> Controller<P> {
         })
     }
 
-    /// The type an expression has in one frame, reading no memory.
+    /// The type an expression has in one frame, reading no memory, but
+    /// for a value of a dynamic type, which has the type its value has.
     pub(super) fn expression_type(
         &self,
         stop_id: StopId,
@@ -1784,6 +1937,22 @@ impl<P: InspectionOps> Controller<P> {
         let resolved = self.resolve_frame(inferior, root, frame)?;
         let scope = self.frame_for(inferior, stop_id, root, &resolved);
         let program = bind(expression, &scope, Mode::Read).map_err(Error::Expression)?;
+        if matches!(program.result(), crate::eval::types::Ty::Dynamic) {
+            let mut budget = InspectionBudget::new(crate::InspectionLimits::default());
+            let mut machine = StopMachine::new(&scope, &mut budget, true);
+            if let Outcome::Value {
+                value:
+                    InspectedValue {
+                        type_info: Some(type_info),
+                        ..
+                    },
+                ..
+            } = run(&program, &mut machine).map_err(failure)?
+            {
+                return Ok(type_info);
+            }
+        }
+
         Ok(type_info(&scope, program.result()))
     }
 

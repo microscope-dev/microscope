@@ -88,6 +88,11 @@ entries! {
         FrameInstruction = "interpreter_frame.instr_ptr",
         FrameLocalsplus = "interpreter_frame.localsplus",
         FrameOwner = "interpreter_frame.owner",
+
+        /// The globals and the builtins the frame's code reads, each a
+        /// dict.
+        FrameGlobals = "interpreter_frame.globals",
+        FrameBuiltins = "interpreter_frame.builtins",
         FrameTlbcIndex = "interpreter_frame.tlbc_index",
 
         CodeSize = "code_object.size",
@@ -133,6 +138,9 @@ entries! {
         DictKeysNentries = "dict_keys.dk_nentries",
         DictKeysIndices = "dict_keys.dk_indices",
         DictEntrySize = "dict_entry.size",
+
+        /// The hash a general dict's entry keeps of its key.
+        DictEntryHash = "dict_entry.me_hash",
         DictEntryKey = "dict_entry.me_key",
         DictEntryValue = "dict_entry.me_value",
         DictUnicodeEntrySize = "dict_unicode_entry.size",
@@ -148,6 +156,9 @@ entries! {
 
         UnicodeState = "unicode_object.state",
         UnicodeLength = "unicode_object.length",
+
+        /// The hash a str keeps of itself once it is hashed, or -1.
+        UnicodeHash = "unicode_object.hash",
         UnicodeAsciiSize = "unicode_object.asciiobject_size",
         UnicodeCompactSize = "unicode_object.compactunicodeobject_size",
         UnicodeData = "unicode_object.data",

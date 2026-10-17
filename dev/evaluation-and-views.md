@@ -12,6 +12,7 @@ shape. Keep these layers separate.
 | `src/eval/syntax/` | Lexer, parser, syntax tree, and canonical printing |
 | `src/eval/bind.rs`, `src/eval/ir.rs` | Name and type binding into target-neutral IR |
 | `src/eval/interp.rs`, `src/eval/number.rs`, `src/eval/target.rs` | Evaluation, exact numeric rules, and target traits |
+| `src/eval/dynamic.rs` | The rules of operations on values of a dynamic type |
 | `src/inspection.rs` | Bounded conversion from located values to public value trees |
 | `src/backend/linux/evaluation.rs`, `src/backend/linux/inspection.rs` | Debugger implementations of evaluation and inspection access |
 | `src/view/syntax.rs`, `src/view/bind.rs`, `src/view/run.rs` | View parsing, binding, and execution |
@@ -63,6 +64,32 @@ override them.
 
 A bound name records the declaration and location operation needed at run
 time. It does not cache the value from the stop used during binding.
+
+## Dynamic types
+
+A variable of an interpreted language, such as Python, has no static type:
+its value's type is whatever object it holds when the expression runs. Such
+a name binds through `Lookup::Dynamic` to `Ty::Dynamic`, and binding defers
+every decision about it to the run:
+
+- A member or an item plans a step through `Scope::plan_dynamic`, which the
+  machine takes from the object it reaches (`Machine::step` and `entry`).
+- An operand is loaded with `Machine::load_dynamic`, which gives the
+  object's type name and a neutral `LoadedValue`: nothing, a truth value, an
+  exact integer, a float, text, bytes, a collection's length, or an object.
+- Arithmetic, comparisons, truth, and keys follow `src/eval/dynamic.rs`.
+  Numbers keep microscope's exact rules, with truth values as 0 and 1. An
+  operation a language defines differently from microscope, such as Python's
+  integer `/` or floored `%`, is refused rather than computed the other way.
+- A value that only its own type's code could compare or compute with, such
+  as a list or an instance, is refused. The evaluator never asks the runtime
+  to run code.
+
+A program is bound once and may run on values of different types, so every
+check happens as it runs. A dynamic value is not assigned, not watched, and
+has no size; `&x` is the object's address as a `void*`. The fake world
+`python` in `src/eval/fake.rs` holds dynamic values for the evaluator's own
+tests and the reference's examples.
 
 ## Exact arithmetic
 

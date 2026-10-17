@@ -33,7 +33,7 @@ use crate::{
 };
 
 use super::evaluation::{
-    StopMachine, StopObject, StopPlace, StopStep, ViewBound, lookup_type_in, plan_in,
+    Place, StopMachine, StopObject, StopPlace, StopStep, ViewBound, lookup_type_in, plan_in,
 };
 
 use super::frames::StackRoot;
@@ -794,7 +794,7 @@ impl<P: InspectionOps> Controller<P> {
                         crate::view::run::children(
                             bound,
                             &mut machine,
-                            this.clone(),
+                            this.clone().into(),
                             elements,
                             start,
                             end - next,
@@ -1515,7 +1515,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
             .views
             .scan(self.frame.stop_id, key, |checkpoints| {
                 self.in_share(|machine| {
-                    crate::view::run::present(&bound, machine, this, checkpoints)
+                    crate::view::run::present(&bound, machine, this.into(), checkpoints)
                 })
             });
         let name = crate::view::name_of(&bound.view);
@@ -2399,7 +2399,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
 
         // A text view scans nothing.
         let result = self.in_share(|machine| {
-            crate::view::run::present(&bound, machine, place, &mut Checkpoints::default())
+            crate::view::run::present(&bound, machine, place.into(), &mut Checkpoints::default())
         });
         match result {
             Ok(presented) => Ok((presented.text, None)),
@@ -2418,7 +2418,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         bound: &Arc<ViewBound>,
         from: &StopPlace,
         index: i128,
-    ) -> std::result::Result<StopPlace, Stop> {
+    ) -> std::result::Result<Place, Stop> {
         let controller = self.frame.controller;
         let stop = self.frame.stop_id;
         let key = scan_key(bound, self.module(from.module)?.loaded.image, from);
@@ -2429,7 +2429,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
                 crate::view::run::element_place(
                     bound,
                     &mut machine,
-                    from.clone(),
+                    from.clone().into(),
                     index,
                     checkpoints,
                 )
@@ -2443,9 +2443,9 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         &mut self,
         bound: &Arc<ViewBound>,
         from: &StopPlace,
-    ) -> std::result::Result<StopPlace, Stop> {
+    ) -> std::result::Result<Place, Stop> {
         let mut machine = self.nested(self.depth);
-        crate::view::run::presented_place(bound, &mut machine, from.clone())
+        crate::view::run::presented_place(bound, &mut machine, from.clone().into())
             .map_err(|failure| view_stop(failure, bound, ErrorKind::Type))
     }
 
@@ -2456,7 +2456,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         bound: &Arc<ViewBound>,
         from: &StopPlace,
         key: &crate::eval::target::Key,
-    ) -> std::result::Result<Option<StopPlace>, Stop> {
+    ) -> std::result::Result<Option<Place>, Stop> {
         let controller = self.frame.controller;
         let stop = self.frame.stop_id;
         let scan = scan_key(bound, self.module(from.module)?.loaded.image, from);
@@ -2464,7 +2464,13 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         controller
             .views
             .scan(stop, scan, |checkpoints| {
-                crate::view::run::entry_place(bound, &mut machine, from.clone(), key, checkpoints)
+                crate::view::run::entry_place(
+                    bound,
+                    &mut machine,
+                    from.clone().into(),
+                    key,
+                    checkpoints,
+                )
             })
             .map_err(|failure| view_stop(failure, bound, ErrorKind::Type))
     }
@@ -2498,7 +2504,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         };
 
         let mut machine = self.nested(self.depth);
-        crate::view::run::capacity(&bound, &mut machine, at.clone())
+        crate::view::run::capacity(&bound, &mut machine, at.clone().into())
             .map_err(|failure| view_stop(failure, &bound, ErrorKind::Type))
     }
 
@@ -2517,7 +2523,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         }
 
         let mut machine = self.nested(self.depth);
-        crate::view::run::text_span(&bound, &mut machine, at.clone())
+        crate::view::run::text_span(&bound, &mut machine, at.clone().into())
             .map_err(|failure| view_stop(failure, &bound, ErrorKind::Type))
     }
 
@@ -2544,7 +2550,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         controller
             .views
             .scan(stop, key, |checkpoints| {
-                crate::view::run::length(&bound, &mut machine, at.clone(), checkpoints)
+                crate::view::run::length(&bound, &mut machine, at.clone().into(), checkpoints)
             })
             .map(Some)
             .map_err(|failure| view_stop(failure, &bound, ErrorKind::Type))

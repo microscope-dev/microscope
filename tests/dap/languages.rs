@@ -360,5 +360,26 @@ fn python_frames_show_their_recorded_source_and_their_locals() {
     assert_eq!(variables["numbers"]["value"], "[1, 2, 3]", "{variables:#?}");
     assert_eq!(variables["pair"]["value"], "(1, 'two')", "{variables:#?}");
     assert!(variables["numbers"]["variablesReference"].as_i64() > Some(0));
+
+    // Expressions read the frame's objects in every context an editor
+    // evaluates in, and a container expands as a local does.
+    for context in ["watch", "hover", "repl"] {
+        let evaluate = |dap: &mut Dap, expression: &str| {
+            dap.request(
+                "evaluate",
+                json!({"expression": expression, "frameId": frame["id"], "context": context}),
+            )
+        };
+        let last = evaluate(&mut dap, "numbers[-1]");
+        assert_eq!(last["result"], "3", "{context}: {last}");
+        let found = evaluate(&mut dap, "by_name[\"b\"]");
+        assert_eq!(found["result"], "'two'", "{context}: {found}");
+        let nested = evaluate(&mut dap, "nested[2]");
+        assert_eq!(nested["result"], "{'k': [4]}", "{context}: {nested}");
+        assert!(
+            nested["variablesReference"].as_i64() > Some(0),
+            "{context}: {nested}"
+        );
+    }
     dap.finish();
 }

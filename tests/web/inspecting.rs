@@ -393,11 +393,11 @@ async fn a_python_stack_marks_its_languages_and_folds_the_interpreter() {
             .iter()
             .position(|frame| frame["name"] == "containers")
         {
-            found = Some((trace.clone(), index));
+            found = Some((trace.clone(), index, thread["id"].clone()));
         }
     }
 
-    let (trace, index) = found.expect("the frame of containers");
+    let (trace, index, thread) = found.expect("the frame of containers");
     let frames = trace["frames"].as_array().expect("frames");
     let frame = &frames[index];
     assert_eq!(frame["kind"], "interpreted", "{frame}");
@@ -423,4 +423,15 @@ async fn a_python_stack_marks_its_languages_and_folds_the_interpreter() {
             assert!(folded["address"].is_string(), "{folded}");
         }
     }
+
+    // Expressions read the frame's objects, and a container expands.
+    let at = json!({"stop": stop, "thread": thread, "frame": frame["index"]});
+    let evaluate = |expression: &str| with(&at, &json!({"expression": expression}));
+    let last = tab.ok("evaluate", evaluate("numbers[-1]")).await;
+    assert_eq!(last["text"], "3", "{last}");
+    let found = tab.ok("evaluate", evaluate("by_name[\"b\"]")).await;
+    assert_eq!(found["text"], "'two'", "{found}");
+    let nested = tab.ok("evaluate", evaluate("nested[2]")).await;
+    assert_eq!(nested["text"], "{'k': [4]}", "{nested}");
+    assert!(nested["children"]["handle"].is_u64(), "{nested}");
 }

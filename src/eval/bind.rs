@@ -636,6 +636,7 @@ impl<'a, S: Scope> Binder<'a, S> {
                 }
                 Lookup::Bound { object, ty } => self.node(Op::Bound(object), ty, name_span)?,
                 Lookup::Object { object, ty } => self.object(&name, object, ty, name_span)?,
+                Lookup::Dynamic(object) => self.node(Op::Object(object), Ty::Dynamic, name_span)?,
             };
 
             for segment in &path.segments[count..] {
@@ -1143,10 +1144,19 @@ impl<'a, S: Scope> Binder<'a, S> {
         let node = self.operand(node)?;
         match self.category(&node.ty) {
             Category::Bool => Ok(node),
-            Category::Integer { .. }
+            category @ (Category::Integer { .. }
             | Category::Float(_)
             | Category::Pointer(_)
-            | Category::Null => {
+            | Category::Null
+            | Category::Dynamic) => {
+                // A value of a dynamic type is true as its language says,
+                // as Python's empty containers are false.
+                let node = if matches!(category, Category::Dynamic) {
+                    self.dynamic_value(node)?
+                } else {
+                    node
+                };
+
                 let span = node.span;
                 self.node(
                     Op::Convert {
@@ -1173,6 +1183,18 @@ impl<'a, S: Scope> Binder<'a, S> {
         }
 
         let operand = self.bind(operand)?;
+        if matches!(op, UnaryOp::Neg | UnaryOp::BitNot) && self.is_dynamic(&operand) {
+            let operand = self.dynamic_value(operand)?;
+            return self.node(
+                Op::DynamicUnary {
+                    op,
+                    operand: Box::new(operand),
+                },
+                Ty::Dynamic,
+                span,
+            );
+        }
+
         match op {
             UnaryOp::Neg => {
                 let operand = self.value(operand)?;
@@ -1209,7 +1231,15 @@ impl<'a, S: Scope> Binder<'a, S> {
                     ));
                 }
 
-                let ty = Ty::Pointer(Arc::new(operand.ty.clone()));
+                // A value of a dynamic type is at its object's address,
+                // which holds no type the evaluator knows.
+                let pointee = if matches!(operand.ty, Ty::Dynamic) {
+                    Ty::Void
+                } else {
+                    operand.ty.clone()
+                };
+
+                let ty = Ty::Pointer(Arc::new(pointee));
                 self.node(Op::AddressOf(Box::new(operand)), ty, span)
             }
         }
@@ -1416,6 +1446,14 @@ impl<'a, S: Scope> Binder<'a, S> {
         right: Bound<S>,
         span: Span,
     ) -> BindResult<S> {
+        let comparison = matches!(
+            op,
+            BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge
+        );
+        if !comparison && (self.is_dynamic(&left) || self.is_dynamic(&right)) {
+            return self.dynamic_arithmetic(op, left, right, span);
+        }
+
         match op {
             BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => {
                 self.arithmetic(op, left, right, span)
@@ -1709,6 +1747,20 @@ impl<'a, S: Scope> Binder<'a, S> {
         let ordering = !matches!(op, BinaryOp::Eq | BinaryOp::Ne);
         let left = self.settle(left)?;
         let right = self.settle(right)?;
+        if self.is_dynamic(&left) || self.is_dynamic(&right) {
+            let left = self.dynamic_operand(left, true)?;
+            let right = self.dynamic_operand(right, true)?;
+            return self.node(
+                Op::Compare {
+                    op,
+                    how: Comparison::Dynamic,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                },
+                Ty::Bool,
+                span,
+            );
+        }
 
         // Text compares with a string literal, equality only.
         if matches!(left.ty, Ty::Text) || matches!(right.ty, Ty::Text) {
@@ -1913,6 +1965,17 @@ impl<'a, S: Scope> Binder<'a, S> {
         }
 
         let target = self.settle(target)?;
+        if matches!(target.ty, Ty::Dynamic) {
+            return Err(Self::error(
+                target.span,
+                ErrorKind::Unsupported,
+                format!(
+                    "`{}` has a dynamic type, whose values microscope does not change",
+                    self.quote(target.span)
+                ),
+            ));
+        }
+
         if !target.is_place() || !matches!(target.ty, Ty::Program(_)) {
             return Err(Self::error(
                 target.span,
@@ -2191,6 +2254,10 @@ impl<'a, S: Scope> Binder<'a, S> {
         span: Span,
     ) -> BindResult<S> {
         let base = self.settle(base)?;
+        if self.is_dynamic(&base) {
+            return self.dynamic_member(base, field, field_span, arrow, span);
+        }
+
         let base = match self.category(&base.ty) {
             Category::Pointer(_) => self.deref(base, span)?,
             _ if arrow => {
@@ -2276,6 +2343,12 @@ impl<'a, S: Scope> Binder<'a, S> {
             node = self.settle(node)?;
             let category = self.category(&node.ty);
             match category {
+                // A value of a dynamic type takes a key or an index, as its
+                // type when it runs says.
+                Category::Dynamic if node.is_place() => {
+                    node = self.dynamic_index(node, *first, *span)?;
+                    pending = &pending[1..];
+                }
                 Category::Pointer(target) if !self.represents(&node.ty) => {
                     let pointer = self.value(node)?;
                     let scale = self.element_size(&pointer, target.as_ref())?;
@@ -2414,6 +2487,14 @@ impl<'a, S: Scope> Binder<'a, S> {
                 Op::Length {
                     operand: Box::new(operand),
                     how: Length::Bytes,
+                },
+                Ty::Exact,
+                span,
+            ),
+            Category::Dynamic if operand.is_place() => self.node(
+                Op::Length {
+                    operand: Box::new(operand),
+                    how: Length::Dynamic,
                 },
                 Ty::Exact,
                 span,
@@ -2612,12 +2693,152 @@ impl<'a, S: Scope> Binder<'a, S> {
             | Category::Null
             | Category::Text => Ok(node),
             Category::Record | Category::Slice(_) if node.is_place() => Ok(node),
+            Category::Dynamic => self.dynamic_value(node),
             category => Err(self.type_error(
                 &node,
                 &category,
                 "is no key: a key is a number, truth value, pointer, or string",
             )),
         }
+    }
+
+    // ---- Values of a dynamic type ----
+
+    fn is_dynamic(&self, node: &Bound<S>) -> bool {
+        matches!(self.category(&node.ty), Category::Dynamic)
+    }
+
+    /// The value of a node of a dynamic type, which the machine loads when
+    /// it is a place.
+    fn dynamic_value(&mut self, node: Bound<S>) -> BindResult<S> {
+        if !node.is_place() {
+            return Ok(node);
+        }
+
+        let span = node.span;
+        self.node(Op::Load(Box::new(node)), Ty::Dynamic, span)
+    }
+
+    /// An operand of an operation on a value of a dynamic type: that value,
+    /// or a number or truth value, or a string where `text` allows one.
+    fn dynamic_operand(&mut self, node: Bound<S>, text: bool) -> BindResult<S> {
+        let node = self.operand(node)?;
+        match self.category(&node.ty) {
+            Category::Dynamic => self.dynamic_value(node),
+            Category::Integer { .. } | Category::Float(_) | Category::Bool => Ok(node),
+            Category::Text if text => Ok(node),
+            category => Err(self.type_error(
+                &node,
+                &category,
+                if text {
+                    "is not a number, truth value, or string"
+                } else {
+                    "is not a number"
+                },
+            )),
+        }
+    }
+
+    /// Arithmetic or a bit operation of which an operand has a dynamic
+    /// type, whose rules the operands' types when it runs choose.
+    fn dynamic_arithmetic(
+        &mut self,
+        op: BinaryOp,
+        left: Bound<S>,
+        right: Bound<S>,
+        span: Span,
+    ) -> BindResult<S> {
+        let left = self.dynamic_operand(left, false)?;
+        let right = self.dynamic_operand(right, false)?;
+        self.node(
+            Op::DynamicArithmetic {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            Ty::Dynamic,
+            span,
+        )
+    }
+
+    /// `x[key]` of a value of a dynamic type: the item its value has for
+    /// the key or index when it runs.
+    fn dynamic_index(&mut self, base: Bound<S>, key: NodeId, span: Span) -> BindResult<S> {
+        let step = self
+            .scope
+            .plan_dynamic(StepKind::Entry)
+            .map_err(|refusal| Self::refused(span, refusal))?;
+        let key = self.bind(key)?;
+        let key = self.key(key)?;
+        self.node(
+            Op::Entry {
+                base: Box::new(base),
+                step,
+                key: Box::new(key),
+            },
+            Ty::Dynamic,
+            span,
+        )
+    }
+
+    /// `x.name` of a value of a dynamic type: the attribute its value has
+    /// when it runs. An attribute belongs to a value, not to its type, so
+    /// one a value lacks is refused only then.
+    fn dynamic_member(
+        &mut self,
+        base: Bound<S>,
+        field: &Field,
+        field_span: Span,
+        arrow: bool,
+        span: Span,
+    ) -> BindResult<S> {
+        if arrow {
+            return Err(Self::error(
+                base.span,
+                ErrorKind::Type,
+                format!(
+                    "`{}` has a dynamic type, which is no pointer; `.` reaches its attributes",
+                    self.quote(base.span)
+                ),
+            ));
+        }
+
+        let Field::Named(name) = field else {
+            return Err(Self::error(
+                field_span,
+                ErrorKind::Type,
+                format!(
+                    "`{}` has attributes by name, not by number",
+                    self.quote(base.span)
+                ),
+            ));
+        };
+
+        if !base.is_place() {
+            return Err(Self::error(
+                base.span,
+                ErrorKind::Type,
+                format!(
+                    "`{}` is a computed value, whose members cannot be selected",
+                    self.quote(base.span)
+                ),
+            ));
+        }
+
+        let step = self
+            .scope
+            .plan_dynamic(StepKind::Member(name))
+            .map_err(|refusal| Self::refused(field_span, refusal))?;
+        self.node(
+            Op::Step {
+                base: Box::new(base),
+                step,
+                indices: Vec::new(),
+                follows: true,
+            },
+            Ty::Dynamic,
+            span,
+        )
     }
 }
 

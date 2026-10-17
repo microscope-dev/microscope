@@ -153,6 +153,15 @@ fn evaluate(world_name: &str, text: &str) -> String {
                 ) if !matches!(value, VariableValue::Address(_)) => {
                     format!("{} : {name}", crate::quoted_text(text))
                 }
+                // A value a presentation summarizes shows as its summary,
+                // as a Python object's does.
+                (
+                    VariableState::Available {
+                        presentation: Some(presentation),
+                        ..
+                    },
+                    _,
+                ) => format!("{} : {name}", presentation.summary),
                 (VariableState::Available { value, .. }, _) => {
                     format!("{} : {name}", render(value))
                 }
@@ -310,6 +319,88 @@ fn a_program_bound_once_runs_on_other_data_as_one_bound_there() {
             run(&fresh, &mut changed).map(|outcome| format!("{outcome:?}"))
         );
         assert_eq!(reused, rebound, "`{text}`");
+    }
+}
+
+#[test]
+fn a_value_of_a_dynamic_type_finds_its_attributes_and_items_as_it_runs() {
+    for (text, expected) in [
+        ("point.x", "3 : int"),
+        ("point.x * point.y", "12 : integer"),
+        ("point.z", "error missing-key at `point.z`"),
+        ("count.real", "error unsupported at `count.real`"),
+        ("point->x", "error type at `point`"),
+        ("point.0", "error type at `0`"),
+        ("(count + 1).real", "error type at `(count + 1)`"),
+        ("numbers[0][1]", "error type at `numbers[0][1]`"),
+        ("&count", "0x7f0000c0 : void*"),
+        ("sizeof(count)", "error type at `sizeof(count)`"),
+        ("(bool)empty", "false : bool"),
+        ("(bool)numbers", "true : bool"),
+        ("count > 5 ? numbers : pair", "[10, 20, 30] : list"),
+        ("~count", "-8 : integer"),
+        ("-ratio", "-0.5 : f64"),
+        ("ratio % 1", "error arithmetic at `ratio % 1`"),
+        ("count % -2", "error arithmetic at `count % -2`"),
+        ("count << 2", "28 : integer"),
+        ("ratio & 1", "error type at `ratio & 1`"),
+        ("name + 1", "error type at `name + 1`"),
+        ("name + \"x\"", "error type at `\"x\"`"),
+        ("nothing < 1", "error type at `nothing < 1`"),
+        ("name < \"bob\"", "true : bool"),
+        ("data < data", "false : bool"),
+        ("ages[nothing]", "error missing-key at `ages[nothing]`"),
+        ("ages[numbers]", "error type at `numbers`"),
+    ] {
+        assert_eq!(evaluate("python", text), expected, "`{text}`");
+    }
+}
+
+#[test]
+fn a_program_bound_once_runs_on_whatever_types_its_dynamic_values_have() {
+    use super::fake::Dynamic;
+    let texts = ["count + 1", "count > 2", "!count", "count == None"];
+    let original = super::fake::python();
+    let mut changed = super::fake::python();
+    changed.replace_dynamic("count", Dynamic::Float(1.5));
+    let mut emptied = super::fake::python();
+    emptied.replace_dynamic("count", Dynamic::Nothing);
+    for (world, expected) in [
+        (
+            &mut changed,
+            ["2.5 : f64", "false : bool", "false : bool", "false : bool"],
+        ),
+        (
+            &mut emptied,
+            [
+                "error type at `count + 1`",
+                "error type at `count > 2`",
+                "true : bool",
+                "true : bool",
+            ],
+        ),
+    ] {
+        for (text, expected) in texts.into_iter().zip(expected) {
+            let expression = Expression::parse(text).expect("parse");
+            let program = bind(&expression, &original, Mode::Read).expect("bind");
+            let actual = match run(&program, world) {
+                Ok(Outcome::Value { value, .. }) => match &value.state {
+                    VariableState::Available { value: decoded, .. } => format!(
+                        "{} : {}",
+                        render(decoded),
+                        value
+                            .type_info
+                            .map_or_else(String::new, |info| info.name.to_string())
+                    ),
+                    state => format!("{state:?}"),
+                },
+                Err(Failure::Expression(error)) => {
+                    format!("error {} at `{}`", error.kind.name(), error.span.text(text))
+                }
+                other => format!("{other:?}"),
+            };
+            assert_eq!(actual, expected, "`{text}`");
+        }
     }
 }
 

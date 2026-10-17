@@ -5,12 +5,13 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use microscope::{
-    CoreDumpOptions, ExecutionContext, FloatValue, FrameKind, InferiorState, ScalarValue,
-    StackFrameId, StopContext, StopId, ThreadId, UnsupportedVariableFeature, ValueChildQuery,
-    ValueChildRelationship, ValueChildren, ValueChildrenReference, Variable, VariableKind,
-    VariableState, VariableUnavailableReason, VariableValue,
+    CoreDumpOptions, ExecutionContext, ExpressionErrorKind, FloatValue, FrameKind, InferiorState,
+    ScalarValue, StackFrameId, StopContext, StopId, ThreadId, UnsupportedVariableFeature,
+    ValueChildQuery, ValueChildRelationship, ValueChildren, ValueChildrenReference, Variable,
+    VariableKind, VariableState, VariableUnavailableReason, VariableValue,
 };
 
+use crate::expressions::{Outcome, outcome};
 use crate::session::{CORES, MATRIX, PythonSession};
 use crate::support::Scenario;
 use crate::support::truth::Report;
@@ -406,23 +407,29 @@ async fn assert_children(stop: &Stop<'_>, truth: &[Vec<String>]) {
     );
 }
 
-/// An expression over a Python frame's locals says it is not evaluated,
-/// rather than that the frame has no such variable.
-async fn assert_unevaluated(stop: &Stop<'_>, truth: &[Vec<String>]) {
+/// Expressions over a frame's locals give the values the frame holds.
+async fn assert_evaluated(stop: &Stop<'_>, truth: &[Vec<String>]) {
     let frame = stop
         .frame(thread_of(truth, "containers"), "containers")
         .await;
-    let expression = microscope::Expression::parse("numbers").expect("an expression");
-    match stop.scenario.handle().at(frame).evaluate(&expression).await {
-        Err(microscope::Error::Expression(error)) => {
-            assert_eq!(
-                error.kind,
-                microscope::ExpressionErrorKind::Unsupported,
-                "{error:?}"
-            );
-            assert!(error.message.contains("Python frame"), "{error:?}");
-        }
-        other => panic!("{}: {other:?}", stop.context),
+    let value = |text: &str| Outcome::Value(text.to_owned());
+    for (text, expected) in [
+        ("numbers[-1]", value("3")),
+        ("numbers[0] + numbers[2]", value("4")),
+        ("nested[2][\"k\"][0]", value("4")),
+        ("by_name[\"b\"]", value("'two'")),
+        ("by_name[\"c\"] == None", value("True")),
+        ("mixed[None]", value("b'n'")),
+        ("len(thinned)", value("10")),
+        ("thinned[\"k5\"]", value("5")),
+        (
+            "thinned[\"k4\"]",
+            Outcome::Error(ExpressionErrorKind::MissingKey),
+        ),
+        ("numbers[3]", Outcome::Error(ExpressionErrorKind::Bounds)),
+    ] {
+        let outcome = outcome(stop, frame, text).await;
+        assert_eq!(outcome, expected, "{}: {text}", stop.context);
     }
 }
 
@@ -478,7 +485,7 @@ async fn a_cores_python_locals_are_the_ones_cpython_reported() {
         runs.push((name.clone(), assert_locals(&stop, &truth).await));
         assert_numbers(&stop, &truth).await;
         assert_children(&stop, &truth).await;
-        assert_unevaluated(&stop, &truth).await;
+        assert_evaluated(&stop, &truth).await;
         scenario.shutdown().await;
     }
 

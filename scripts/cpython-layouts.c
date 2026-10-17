@@ -129,6 +129,8 @@ int main(int argc, char **argv) {
 #endif
     FIELD(FrameLocalsplus, offsetof(_PyInterpreterFrame, localsplus));
     FIELD(FrameOwner, offsetof(_PyInterpreterFrame, owner));
+    FIELD(FrameGlobals, offsetof(_PyInterpreterFrame, f_globals));
+    FIELD(FrameBuiltins, offsetof(_PyInterpreterFrame, f_builtins));
 #if defined(Py_GIL_DISABLED) && PY_VERSION_HEX >= 0x030e0000
     FIELD(FrameTlbcIndex, offsetof(_PyInterpreterFrame, tlbc_index));
 #endif
@@ -171,6 +173,7 @@ int main(int argc, char **argv) {
     FIELD(DictKeysNentries, offsetof(PyDictKeysObject, dk_nentries));
     FIELD(DictKeysIndices, offsetof(PyDictKeysObject, dk_indices));
     FIELD(DictEntrySize, sizeof(PyDictKeyEntry));
+    FIELD(DictEntryHash, offsetof(PyDictKeyEntry, me_hash));
     FIELD(DictEntryKey, offsetof(PyDictKeyEntry, me_key));
     FIELD(DictEntryValue, offsetof(PyDictKeyEntry, me_value));
     FIELD(DictUnicodeEntrySize, sizeof(PyDictUnicodeEntry));
@@ -183,6 +186,7 @@ int main(int argc, char **argv) {
     FIELD(BytesSize, offsetof(PyBytesObject, ob_base.ob_size));
     FIELD(BytesData, offsetof(PyBytesObject, ob_sval));
     FIELD(UnicodeState, offsetof(PyASCIIObject, state));
+    FIELD(UnicodeHash, offsetof(PyASCIIObject, hash));
     FIELD(UnicodeLength, offsetof(PyASCIIObject, length));
     FIELD(UnicodeAsciiSize, sizeof(PyASCIIObject));
     FIELD(UnicodeCompactSize, sizeof(PyCompactUnicodeObject));

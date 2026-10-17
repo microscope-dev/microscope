@@ -15,6 +15,7 @@ mod support;
 )]
 mod schemas;
 
+mod expressions;
 mod layouts;
 mod locals;
 mod oracles;

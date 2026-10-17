@@ -654,6 +654,82 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         Err("the runtime interprets no objects".into())
     }
 
+    /// What `name` means in the interpreted frame the interpreter keeps at
+    /// `frame`, as an expression binds it: one of the frame's variables,
+    /// or the global or built-in it finds; `None` when it means nothing
+    /// there.
+    fn interpreted_name(
+        &self,
+        stop: &dyn RuntimeStop,
+        frame: VirtualAddress,
+        name: &str,
+        budget: &mut InspectionBudget,
+    ) -> Result<Option<InterpretedName>, InterpretedFailure> {
+        let _ = (stop, frame, name, budget);
+        Err(InterpretedFailure::interprets_nothing())
+    }
+
+    /// The object the variable in slot `slot` of the interpreted frame at
+    /// `frame` holds, which [`Self::interpreted_name`] named.
+    fn interpreted_variable(
+        &self,
+        stop: &dyn RuntimeStop,
+        frame: VirtualAddress,
+        slot: u32,
+        budget: &mut InspectionBudget,
+    ) -> Result<VirtualAddress, InterpretedFailure> {
+        let _ = (stop, frame, slot, budget);
+        Err(InterpretedFailure::interprets_nothing())
+    }
+
+    /// The object a step from the interpreter's object at `object` reaches.
+    fn interpreted_step(
+        &self,
+        stop: &dyn RuntimeStop,
+        object: VirtualAddress,
+        taken: InterpretedStep<'_>,
+        budget: &mut InspectionBudget,
+    ) -> Result<VirtualAddress, InterpretedFailure> {
+        let _ = (stop, object, taken, budget);
+        Err(InterpretedFailure::interprets_nothing())
+    }
+
+    /// The interpreter's object at `object`, as an operation computes with
+    /// it.
+    fn interpreted_operand(
+        &self,
+        stop: &dyn RuntimeStop,
+        object: VirtualAddress,
+        budget: &mut InspectionBudget,
+    ) -> Result<InterpretedOperand, InterpretedFailure> {
+        let _ = (stop, object, budget);
+        Err(InterpretedFailure::interprets_nothing())
+    }
+
+    /// The length of the interpreter's object at `object`, as its language
+    /// measures it.
+    fn interpreted_length(
+        &self,
+        stop: &dyn RuntimeStop,
+        object: VirtualAddress,
+        budget: &mut InspectionBudget,
+    ) -> Result<u64, InterpretedFailure> {
+        let _ = (stop, object, budget);
+        Err(InterpretedFailure::interprets_nothing())
+    }
+
+    /// The interpreter's object at `object`, presented as a variable's
+    /// value is.
+    fn interpreted_value(
+        &self,
+        stop: &dyn RuntimeStop,
+        object: VirtualAddress,
+        budget: &mut InspectionBudget,
+    ) -> InterpretedSlot {
+        let _ = (stop, object, budget);
+        InterpretedSlot::Unreadable("the runtime interprets no objects".into())
+    }
+
     /// Whether code from the source file at `path` is the runtime's own
     /// library, which raises its exceptions on the program's behalf: an
     /// exception blames the program's frame that called it.
@@ -903,6 +979,74 @@ pub enum InterpretedChild {
         key: InterpretedSlot,
         value: InterpretedSlot,
     },
+}
+
+/// What a name means in an interpreted frame, as an expression binds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterpretedName {
+    /// The frame's variable in this slot of its code's variables.
+    Variable(u32),
+
+    /// A global of the frame's module, or a built-in: the object the name
+    /// is bound to.
+    Object(VirtualAddress),
+}
+
+/// A step an expression takes from an interpreter's object to another.
+#[derive(Debug, Clone, Copy)]
+pub enum InterpretedStep<'a> {
+    /// To its attribute of this name.
+    Attribute(&'a str),
+
+    /// To the item a key or an index finds.
+    Item(&'a InterpretedKey),
+}
+
+/// A key or an index, as an expression writes it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InterpretedKey {
+    Int(i128),
+    Float(f64),
+    Bool(bool),
+
+    /// Text, as UTF-8.
+    Text(Vec<u8>),
+
+    /// The value for nothing, such as Python's `None`.
+    Nothing,
+}
+
+/// An interpreter's object, as an operation computes with it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InterpretedOperand {
+    /// The name of its type, as messages show it.
+    pub type_name: Arc<str>,
+    pub kind: InterpretedKind,
+
+    /// The characters of text as UTF-8, or the bytes of bytes, as far as
+    /// they were read; `None` for any other kind.
+    pub text: Option<crate::TextSummary>,
+}
+
+/// Why an expression's step through an interpreter's objects has no
+/// result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InterpretedFailure {
+    /// What the expression asks does not apply to the value, or is not
+    /// done: the kind of the expression's error, and why.
+    Refused(crate::eval::error::ErrorKind, Arc<str>),
+
+    /// The value cannot be had, and why, as a variable's state says.
+    Unavailable(crate::VariableUnavailableReason),
+}
+
+impl InterpretedFailure {
+    fn interprets_nothing() -> Self {
+        Self::Refused(
+            crate::eval::error::ErrorKind::Unsupported,
+            "the runtime interprets no code".into(),
+        )
+    }
 }
 
 /// What a runtime's frame drives that the native stack does not show.

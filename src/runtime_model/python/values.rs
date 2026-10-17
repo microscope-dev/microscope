@@ -87,7 +87,7 @@ impl Charge for Budget<'_> {
 }
 
 /// An object, as far as presenting it needs it read.
-enum Object {
+pub(super) enum Object {
     Nothing,
     Bool(bool),
     Int {
@@ -130,16 +130,33 @@ enum Object {
 
 /// A combined `dict`'s table of entries, in insertion order.
 #[derive(Clone, Copy)]
-struct Dict {
-    object: VirtualAddress,
-    length: u64,
-    entries: VirtualAddress,
-    count: u64,
+pub(super) struct Dict {
+    pub(super) object: VirtualAddress,
+    pub(super) length: u64,
 
-    /// Each entry's size, and where its key and value are within it.
+    /// Its hash table of indices into its entries, of `1 << log2_size`
+    /// slots each `index_width` bytes wide, which its entries follow.
+    pub(super) indices: VirtualAddress,
+    pub(super) log2_size: u64,
+    pub(super) index_width: u64,
+    entries: VirtualAddress,
+    pub(super) count: u64,
+
+    /// Each entry's size, and where its key and value are within it, and
+    /// the hash of its key, which a general table's entries keep.
     size: u64,
     key: u64,
     value: u64,
+    hash: Option<u64>,
+}
+
+/// One item of a `dict`: its key, its value, and the hash its entry keeps
+/// of its key, where it keeps one.
+#[derive(Clone, Copy)]
+pub(super) struct Entry {
+    pub(super) key: VirtualAddress,
+    pub(super) value: VirtualAddress,
+    pub(super) hash: Option<i64>,
 }
 
 /// Where a summary is: how many objects it has read, the containers it is
@@ -156,6 +173,12 @@ pub(super) struct Values<'a, 'b> {
     pub(super) reader: Reader<'a>,
     pub(super) types: Types,
     pub(super) budget: &'a Budget<'b>,
+
+    /// Where the process keeps the secret its `str` hashes are keyed by,
+    /// `_Py_HashSecret`, and whether hashing with it gives the hashes the
+    /// process's own strings keep, once that is known.
+    pub(super) secret: Option<VirtualAddress>,
+    pub(super) hashing: std::cell::Cell<Option<bool>>,
 }
 
 impl Values<'_, '_> {
@@ -202,24 +225,29 @@ impl Values<'_, '_> {
 
     /// What a frame's slot for a local holds: an object, or nothing.
     fn local(&self, bits: u64) -> InterpretedSlot {
+        match self.reference(bits) {
+            Ok(Some(object)) => self.value(object),
+            Ok(None) => InterpretedSlot::Unbound,
+            Err(problem) => InterpretedSlot::Unreadable(problem),
+        }
+    }
+
+    /// The object a frame's slot for a local refers to, or `None` when it
+    /// refers to none.
+    pub(super) fn reference(&self, bits: u64) -> Result<Option<VirtualAddress>, Problem> {
         if self.reader.layout.constant(Constant::StackRefs) == 0 {
-            return match bits {
-                0 => InterpretedSlot::Unbound,
-                object => self.value(VirtualAddress::new(object)),
-            };
+            return Ok(Some(bits)
+                .filter(|bits| *bits != 0)
+                .map(VirtualAddress::new));
         }
 
         // A stack reference: a pointer whose low bit counts references,
         // or a tagged integer, which only the interpreter's own values are.
         match bits & 3 {
-            0 | 1 if bits & !1 == 0 => InterpretedSlot::Unbound,
-            0 | 1 => self.value(VirtualAddress::new(bits & !1)),
-            3 => InterpretedSlot::Unreadable(
-                "the variable holds a tagged integer, which only the interpreter uses".into(),
-            ),
-            _ => InterpretedSlot::Unreadable(
-                format!("the variable holds {bits:#x}, which is no reference").into(),
-            ),
+            0 | 1 if bits & !1 == 0 => Ok(None),
+            0 | 1 => Ok(Some(VirtualAddress::new(bits & !1))),
+            3 => Err("the variable holds a tagged integer, which only the interpreter uses".into()),
+            _ => Err(format!("the variable holds {bits:#x}, which is no reference").into()),
         }
     }
 
@@ -233,7 +261,7 @@ impl Values<'_, '_> {
 
     /// Why a read failed: the inspection's limits, once they are reached,
     /// which is what stopped it, as every read past them fails.
-    fn failed(&self, problem: Problem) -> InterpretedSlot {
+    pub(super) fn failed(&self, problem: Problem) -> InterpretedSlot {
         self.budget.exhaustion().map_or_else(
             || InterpretedSlot::Unreadable(problem),
             InterpretedSlot::Limit,
@@ -297,11 +325,12 @@ impl Values<'_, '_> {
             }
             Object::Dict(dict) => {
                 let mut children = Vec::new();
-                self.entries(dict, range, |key, value| {
+                self.entries(dict, range, |entry| {
                     children.push(InterpretedChild::Entry {
-                        key: self.value(key),
-                        value: self.value(value),
+                        key: self.value(entry.key),
+                        value: self.value(entry.value),
                     });
+                    Ok(())
                 })?;
                 Ok(children)
             }
@@ -311,7 +340,7 @@ impl Values<'_, '_> {
     }
 
     /// Reads as much of the object at `address` as presenting it needs.
-    fn object(&self, address: VirtualAddress) -> Result<Object, Problem> {
+    pub(super) fn object(&self, address: VirtualAddress) -> Result<Object, Problem> {
         if address == VirtualAddress::new(0) {
             return Err("the reference is NULL".into());
         }
@@ -411,7 +440,7 @@ impl Values<'_, '_> {
         Ok((negative, digits))
     }
 
-    fn shift(&self) -> u32 {
+    pub(super) fn shift(&self) -> u32 {
         u32::from(self.reader.layout.constant(Constant::LongShift))
     }
 
@@ -440,43 +469,73 @@ impl Values<'_, '_> {
         }
 
         let layout = reader.layout;
-        let (size, key, value) = if kind == u64::from(layout.constant(Constant::DictKeysGeneral)) {
-            (
-                reader.offset(Field::DictEntrySize)?,
-                reader.offset(Field::DictEntryKey)?,
-                reader.offset(Field::DictEntryValue)?,
-            )
-        } else if kind == u64::from(layout.constant(Constant::DictKeysUnicode)) {
-            (
-                reader.offset(Field::DictUnicodeEntrySize)?,
-                reader.offset(Field::DictUnicodeEntryKey)?,
-                reader.offset(Field::DictUnicodeEntryValue)?,
-            )
-        } else {
-            // Split keys belong to a dict that keeps its values apart.
-            return Err(bad());
-        };
+        let (size, key, value, hash) =
+            if kind == u64::from(layout.constant(Constant::DictKeysGeneral)) {
+                (
+                    reader.offset(Field::DictEntrySize)?,
+                    reader.offset(Field::DictEntryKey)?,
+                    reader.offset(Field::DictEntryValue)?,
+                    layout.field(Field::DictEntryHash),
+                )
+            } else if kind == u64::from(layout.constant(Constant::DictKeysUnicode)) {
+                (
+                    reader.offset(Field::DictUnicodeEntrySize)?,
+                    reader.offset(Field::DictUnicodeEntryKey)?,
+                    reader.offset(Field::DictUnicodeEntryValue)?,
+                    None,
+                )
+            } else {
+                // Split keys belong to a dict that keeps its values apart.
+                return Err(bad());
+            };
 
         let indices = keys.wrapping_add(reader.offset(Field::DictKeysIndices)?);
         Ok(Object::Dict(Dict {
             object: address,
             length,
+            indices,
+            log2_size,
+            index_width: 1 << (log2_index_bytes - log2_size),
             entries: indices.wrapping_add(1 << log2_index_bytes),
             count,
             size,
             key,
             value,
+            hash,
         }))
     }
 
-    /// Calls `each` with the key and value of each of the `dict`'s items
-    /// in `range`, in insertion order. Deleted entries keep their place
-    /// in the table with no value, and are passed over.
-    fn entries(
+    /// The entry at `index` of the `dict`'s table, which may be deleted:
+    /// a deleted entry holds no value.
+    pub(super) fn entry(&self, dict: Dict, index: u64) -> Result<Entry, Problem> {
+        if index >= dict.count {
+            return Err(malformed(dict.object, "dict"));
+        }
+
+        let bytes = self
+            .reader
+            .bytes(dict.entries.wrapping_add(index * dict.size), dict.size)?;
+        let word = |offset| {
+            super::objects::read_le(&bytes, offset, 8).ok_or_else(|| malformed(dict.object, "dict"))
+        };
+        Ok(Entry {
+            key: VirtualAddress::new(word(dict.key)?),
+            value: VirtualAddress::new(word(dict.value)?),
+            hash: match dict.hash {
+                Some(offset) => Some(word(offset)?.cast_signed()),
+                None => None,
+            },
+        })
+    }
+
+    /// Calls `each` with each of the `dict`'s items in `range`, in
+    /// insertion order, until it fails. Deleted entries keep their place in
+    /// the table with no value, and are passed over.
+    pub(super) fn entries(
         &self,
         dict: Dict,
         range: std::ops::Range<u64>,
-        mut each: impl FnMut(VirtualAddress, VirtualAddress),
+        mut each: impl FnMut(Entry) -> Result<(), Problem>,
     ) -> Result<(), Problem> {
         if dict.count > MAX_DICT_ENTRIES {
             return Err(format!(
@@ -513,7 +572,15 @@ impl Values<'_, '_> {
                 }
 
                 if range.contains(&item) {
-                    each(key, value);
+                    let hash = match dict.hash {
+                        Some(offset) => Some(
+                            super::objects::read_le(entry, offset, 8)
+                                .ok_or_else(|| malformed(dict.object, "dict"))?
+                                .cast_signed(),
+                        ),
+                        None => None,
+                    };
+                    each(Entry { key, value, hash })?;
                 }
 
                 item += 1;
@@ -532,7 +599,7 @@ impl Values<'_, '_> {
 
     /// The `end - start` item pointers from `start` of the array at
     /// `items`.
-    fn items(
+    pub(super) fn items(
         &self,
         items: VirtualAddress,
         start: u64,
@@ -550,7 +617,7 @@ impl Values<'_, '_> {
     }
 
     /// The module and name of the object's type.
-    fn type_name(object: &Object) -> (Option<Arc<str>>, Arc<str>) {
+    pub(super) fn type_name(object: &Object) -> (Option<Arc<str>>, Arc<str>) {
         let builtin = |name: &str| (Some(Arc::from("builtins")), Arc::from(name));
         match object {
             Object::Nothing => builtin("NoneType"),
@@ -724,8 +791,9 @@ impl Values<'_, '_> {
 
     fn dict_text(&self, dict: Dict, depth: usize, summary: &mut Summary) -> String {
         let mut pairs = Vec::new();
-        let read = self.entries(dict, 0..SUMMARY_ITEMS, |key, value| {
-            pairs.push((key, value));
+        let read = self.entries(dict, 0..SUMMARY_ITEMS, |entry| {
+            pairs.push((entry.key, entry.value));
+            Ok(())
         });
         let (mut texts, whole) = self.until_spent(pairs.len(), summary, |index, summary| {
             let (key, value) = pairs[index];
@@ -779,7 +847,7 @@ fn note(summary: &mut Summary, problem: String) {
     }
 }
 
-fn split_dict() -> Problem {
+pub(super) fn split_dict() -> Problem {
     "the dict keeps its values apart from its keys, as an instance's may, which is not read yet"
         .into()
 }
@@ -794,7 +862,7 @@ fn length(size: u64, address: VirtualAddress) -> Result<u64, Problem> {
 }
 
 /// An int's value, where it fits in 128 bits.
-fn exact(negative: bool, digits: &[u32], shift: u32) -> Option<i128> {
+pub(super) fn exact(negative: bool, digits: &[u32], shift: u32) -> Option<i128> {
     let mut magnitude: u128 = 0;
     for &digit in digits.iter().rev() {
         magnitude = magnitude

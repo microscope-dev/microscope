@@ -242,10 +242,27 @@ Python object model. Cells and split dicts are reported as unsupported.
 **Interpreted frames in the debugger.** An interpreted frame has
 `FrameKind::Interpreted` and a `RecordedFrame` with its function, language,
 and place. Locating it is `Error::FrameInterpreted`. Its source context reads
-the recorded path. An expression naming its variables is refused as
-unsupported until the evaluator reads them. Clients fold the interpreter's
-frames (`CodeRole::Interpreter`) between Python frames, with the rule in
+the recorded path. Clients fold the interpreter's frames
+(`CodeRole::Interpreter`) between Python frames, with the rule in
 `src/present/frames.rs`.
+
+**Expressions.** A name in a Python frame binds as a dynamic value
+([Dynamic types](evaluation-and-views.md#dynamic-types)).
+`expressions.rs` resolves it as Python does: a variable of the frame's code
+(`InterpretedName::Variable`, read at run time from its slot), then the
+frame's `f_globals`, then its `f_builtins` (`InterpretedName::Object`, found
+at bind time). `src/backend/linux/interpreted_values.rs` adapts the trait's
+methods to the evaluator's machine. An item of a list or tuple is found by
+index, and a dict's key by CPython's own lookup: the key's hash, then the
+table's probe sequence, comparing only the keys of equal hash it passes. A key
+of `None`, `bool`, `int`, `float`, `str`, `bytes`, or `tuple` compares by value;
+meeting a key of any other type with an equal hash refuses the lookup, since
+only its `__eq__` could compare it. A number's hash is computed as CPython
+computes it. A `str`'s is SipHash-1-3 keyed by `_Py_HashSecret`, used only once a
+`str` key of the dict proves that hashing with the secret gives the hash the
+key keeps. Without a known hash, as for a NaN key, every entry is compared,
+and a key of another type is ruled out only by the hash its entry keeps.
+Attributes are refused until the object model reads instances.
 
 ## Expressions and values in tasks
 

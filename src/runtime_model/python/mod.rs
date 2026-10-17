@@ -13,6 +13,7 @@
 //! ([`code::CodeTable`]), and proves each row again where it is used.
 
 mod code;
+mod expressions;
 mod frames;
 mod linetable;
 mod objects;
@@ -24,7 +25,8 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use super::{
-    Crossing, Driven, DynamicValue, InterpretedChild, InterpretedLocal, InterpretedStacks,
+    Crossing, Driven, DynamicValue, InterpretedChild, InterpretedFailure, InterpretedLocal,
+    InterpretedName, InterpretedOperand, InterpretedSlot, InterpretedStacks, InterpretedStep,
     InterpretedThread, Partial, RuntimeException, RuntimeHook, RuntimeImage, RuntimeModel,
     RuntimeSignals, RuntimeStop, StartedTask, StoredValue, TaskContext, TaskPage, TaskRef,
     TaskStarter, ThreadActivity, Unbound,
@@ -55,6 +57,7 @@ pub fn detect(
                 layout,
                 code_type: code_type.address,
                 types: types(image.as_ref(), runtime.version),
+                secret: image.symbol("_Py_HashSecret").map(|symbol| symbol.address),
                 code: Mutex::default(),
             })
         })
@@ -102,6 +105,13 @@ impl PythonRuntime {
     fn reading(&self) -> Result<&Reading, Arc<str>> {
         self.reading.as_ref().map_err(Arc::clone)
     }
+
+    /// What reads the values expressions compute with, or why nothing can.
+    fn expressions(&self) -> Result<&Reading, InterpretedFailure> {
+        self.reading().map_err(|reason| {
+            InterpretedFailure::Unavailable(crate::VariableUnavailableReason::Interpreted(reason))
+        })
+    }
 }
 
 /// What reads a runtime whose layout is known.
@@ -115,6 +125,10 @@ struct Reading {
 
     /// The built-in types' objects, in the order [`types`] names them.
     types: Result<[ImageAddress; 9], Arc<str>>,
+
+    /// The secret `str` hashes are keyed by, `_Py_HashSecret`, where the
+    /// module exports it.
+    secret: Option<ImageAddress>,
     code: Mutex<code::CodeTable>,
 }
 
@@ -154,12 +168,67 @@ impl Reading {
             },
             types,
             budget: &budget,
+            secret: self.secret.and_then(|secret| bias.load(secret)),
+            hashing: std::cell::Cell::new(None),
         };
         let mut table = self
             .code
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         read(&values, &mut table)
+    }
+
+    /// What an expression's `read` of the stop's values gives.
+    fn interpreted<R>(
+        &self,
+        stop: &dyn RuntimeStop,
+        budget: &mut InspectionBudget,
+        read: impl FnOnce(
+            &values::Values<'_, '_>,
+            &mut code::CodeTable,
+        ) -> Result<R, InterpretedFailure>,
+    ) -> Result<R, InterpretedFailure> {
+        self.values(stop, budget, |values, table| Ok(read(values, table)))
+            .map_err(|problem| {
+                InterpretedFailure::Unavailable(crate::VariableUnavailableReason::Interpreted(
+                    problem,
+                ))
+            })?
+    }
+
+    /// What an expression's `read` of the frame at `frame`, with the row
+    /// of its code, gives.
+    fn interpreted_frame<R>(
+        &self,
+        stop: &dyn RuntimeStop,
+        frame: VirtualAddress,
+        budget: &mut InspectionBudget,
+        read: impl FnOnce(
+            &values::Values<'_, '_>,
+            &code::CodeTable,
+            code::CodeId,
+            &objects::Record<'_>,
+        ) -> Result<R, InterpretedFailure>,
+    ) -> Result<R, InterpretedFailure> {
+        let code_type = stop.load_bias().load(self.code_type).ok_or_else(|| {
+            InterpretedFailure::Unavailable(crate::VariableUnavailableReason::Interpreted(
+                "CPython's code type lies outside the process".into(),
+            ))
+        })?;
+        self.interpreted(stop, budget, |values, table| {
+            let record = values
+                .reader
+                .record(frame, Field::FrameSize)
+                .map_err(|problem| values.unavailable(problem))?;
+            let (_, code) = frames::Walk {
+                reader: values.reader,
+                code: table,
+                code_type,
+            }
+            .code_of(&record)
+            .map_err(|problem| values.unavailable(problem))?;
+            read(values, table, code, &record)
+        })
     }
 
     fn stacks(&self, stop: &dyn RuntimeStop, version: PyVersion) -> Partial<InterpretedStacks> {
@@ -433,6 +502,77 @@ impl RuntimeModel for PythonRuntime {
     ) -> Result<Vec<InterpretedChild>, Arc<str>> {
         self.reading()?
             .values(stop, budget, |values, _| values.children(object, range))
+    }
+
+    fn interpreted_name(
+        &self,
+        stop: &dyn RuntimeStop,
+        frame: VirtualAddress,
+        name: &str,
+        budget: &mut InspectionBudget,
+    ) -> Result<Option<InterpretedName>, InterpretedFailure> {
+        self.expressions()?
+            .interpreted_frame(stop, frame, budget, |values, table, code, record| {
+                values.name(table, code, record, name)
+            })
+    }
+
+    fn interpreted_variable(
+        &self,
+        stop: &dyn RuntimeStop,
+        frame: VirtualAddress,
+        slot: u32,
+        budget: &mut InspectionBudget,
+    ) -> Result<VirtualAddress, InterpretedFailure> {
+        self.expressions()?
+            .interpreted_frame(stop, frame, budget, |values, table, code, record| {
+                values.variable(table, code, record, slot)
+            })
+    }
+
+    fn interpreted_step(
+        &self,
+        stop: &dyn RuntimeStop,
+        object: VirtualAddress,
+        taken: InterpretedStep<'_>,
+        budget: &mut InspectionBudget,
+    ) -> Result<VirtualAddress, InterpretedFailure> {
+        self.expressions()?
+            .interpreted(stop, budget, |values, _| values.step(object, taken))
+    }
+
+    fn interpreted_operand(
+        &self,
+        stop: &dyn RuntimeStop,
+        object: VirtualAddress,
+        budget: &mut InspectionBudget,
+    ) -> Result<InterpretedOperand, InterpretedFailure> {
+        self.expressions()?
+            .interpreted(stop, budget, |values, _| values.operand(object))
+    }
+
+    fn interpreted_length(
+        &self,
+        stop: &dyn RuntimeStop,
+        object: VirtualAddress,
+        budget: &mut InspectionBudget,
+    ) -> Result<u64, InterpretedFailure> {
+        self.expressions()?
+            .interpreted(stop, budget, |values, _| values.length(object))
+    }
+
+    fn interpreted_value(
+        &self,
+        stop: &dyn RuntimeStop,
+        object: VirtualAddress,
+        budget: &mut InspectionBudget,
+    ) -> InterpretedSlot {
+        match self.reading() {
+            Ok(reading) => reading
+                .values(stop, budget, |values, _| Ok(values.value(object)))
+                .unwrap_or_else(InterpretedSlot::Unreadable),
+            Err(reason) => InterpretedSlot::Unreadable(reason),
+        }
     }
 }
 

@@ -333,7 +333,7 @@ struct Origin {
 }
 
 impl<P: InspectionOps> Controller<P> {
-    fn bound_runtime(&self, inferior: &Inferior, id: RuntimeId) -> Result<BoundRuntime> {
+    pub(super) fn bound_runtime(&self, inferior: &Inferior, id: RuntimeId) -> Result<BoundRuntime> {
         self.runtimes(inferior)
             .into_iter()
             .find(|runtime| runtime.id == id)
@@ -489,6 +489,24 @@ impl<P: InspectionOps> Controller<P> {
             usage: budget.usage(),
         })
     }
+}
+
+/// The type and state the debugger presents a slot's value as, which
+/// `runtime`, of `module`, read at the frame `frame` of `context` at the
+/// stop `stop`.
+pub(super) fn present_slot(
+    (stop, context, frame): (StopId, ExecutionContext, StackFrameId),
+    runtime: &BoundRuntime,
+    slot: InterpretedSlot,
+) -> (Option<TypeInfo>, VariableState) {
+    Origin {
+        stop,
+        context,
+        frame,
+        runtime: runtime.id,
+        module: runtime.module,
+    }
+    .slot(slot)
 }
 
 impl Origin {

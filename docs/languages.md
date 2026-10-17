@@ -133,12 +133,36 @@ A local that is not yet assigned shows as unbound. A local that a nested
 function shares (a cell) is not shown yet. An instance's attribute dict with
 split values (CPython's split dicts) is not read yet.
 
+### Expressions
+
+In a Python frame, a name is the frame's local, then a global of its module,
+then a built-in, as Python finds it. `::name` skips to the native program's
+globals. Expressions index lists and tuples, find a dict's keys as Python's
+own lookup finds them, take `len`, compare, and compute with numbers:
+
+```text
+(microscope) print numbers[-1]
+(int) numbers[-1] = 3
+(microscope) print by_name["b"]
+(str) by_name["b"] = 'two'
+(microscope) print numbers[0] + len(by_name) * 10
+(integer) numbers[0] + len(by_name) * 10 = 31
+(microscope) print mixed[None]
+(bytes) mixed[None] = b'n'
+```
+
+A Python variable's type is whatever object it holds when the expression
+runs. microscope never runs code in the program: it refuses what only a
+type's own code could answer, such as comparing lists or finding a dict key
+of a class's instance, rather than guess. Python divides integers into a
+fraction and floors a remainder, so an integer `/`, and `%` of a negative
+number or a float, are refused. Attributes, such as `point.x`, are not read
+yet. [Expressions](expressions.md#python-values) gives the rules.
+
 ### Not supported yet
 
-Expressions over a Python frame's variables are not evaluated yet. `print
-numbers` reports that; `print` alone shows the variables. Python breakpoints,
-stepping through Python code, and Python exceptions as catchpoints are not
-supported yet either. Python stacks do not appear in `microscope record`, and
+Python breakpoints, stepping through Python code, and Python exceptions as
+catchpoints are not supported yet. Python stacks do not appear in `microscope record`, and
 asyncio tasks are not shown. [Known limits](reference/limitations.md) lists
 them all.
 
