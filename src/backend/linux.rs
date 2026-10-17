@@ -86,6 +86,7 @@ mod language_exceptions;
 mod libraries;
 mod lifecycle;
 mod loops;
+mod managed;
 mod memory;
 mod modules;
 mod native;
@@ -963,6 +964,9 @@ struct Inferior {
     /// The runtime functions whose entry stops for an exception.
     runtime_hooks: BTreeMap<VirtualAddress, language_exceptions::HookSite>,
     stack_moves: stack_watches::StackMoves,
+
+    /// The breakpoint locations runtimes manage that user breakpoints own.
+    managed: managed::ManagedSites,
     indirect: indirect::IndirectFunctions,
     watch: WatchState,
 
@@ -1037,6 +1041,7 @@ impl Inferior {
             loader_site: None,
             runtime_hooks: BTreeMap::new(),
             stack_moves: stack_watches::StackMoves::default(),
+            managed: managed::ManagedSites::default(),
             indirect: indirect::IndirectFunctions::default(),
             watch: WatchState::default(),
             terminating: None,

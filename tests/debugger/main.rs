@@ -170,7 +170,9 @@ fn single_image_breakpoint_address(
     assert_eq!(breakpoint.locations.len(), 1);
     match breakpoint.locations[0].location {
         BreakpointLocation::Image(address) => address,
-        BreakpointLocation::Virtual(_) => panic!("function breakpoint was not image-based"),
+        BreakpointLocation::Virtual(_) | BreakpointLocation::Managed(_) => {
+            panic!("function breakpoint was not image-based")
+        }
     }
 }
 

@@ -105,7 +105,11 @@ impl<P: InspectionOps> Controller<P> {
         // Every instance a breakpoint hit lies in the one chain, outermost
         // first. Where several hit together, the stop presents the
         // innermost, as gdb does; the others are its callers.
-        if let Some(StopReason::Breakpoint { address, .. }) = reason {
+        if let Some(StopReason::Breakpoint {
+            address: Some(address),
+            ..
+        }) = reason
+        {
             let hit = self.breakpoint_code_instances(inferior, *address)?;
             if let Some(target) = location
                 .physical_instance
@@ -172,7 +176,7 @@ impl<P: InspectionOps> Controller<P> {
             };
 
             for resolved in breakpoint.locations.iter() {
-                if runtime_breakpoint_address(inferior, resolved.location)? == address {
+                if runtime_breakpoint_address(inferior, &resolved.location)? == Some(address) {
                     instances.extend(resolved.code_instances.iter().copied());
                 }
             }

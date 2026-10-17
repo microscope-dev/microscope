@@ -990,9 +990,10 @@ impl SimController {
                         breakpoint.locations.iter().filter_map(|resolved| {
                             super::breakpoints::runtime_breakpoint_address(
                                 inferior,
-                                resolved.location,
+                                &resolved.location,
                             )
                             .ok()
+                            .flatten()
                         })
                     })
                     .map(VirtualAddress::get)

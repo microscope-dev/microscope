@@ -1221,7 +1221,7 @@ impl Cli {
             });
         let mut placed = Vec::new();
         for resolved in breakpoint.locations.iter() {
-            placed.push(self.place(resolved.location, main).await);
+            placed.push(self.place(resolved.location.clone(), main).await);
         }
 
         placed
@@ -1233,13 +1233,26 @@ impl Cli {
         main: Option<microscope::LoadedModule>,
     ) -> format::Placed {
         let mut placed = format::Placed {
-            location,
+            location: location.clone(),
             function: None,
             source: None,
             module: None,
         };
 
         let (image, address) = match location {
+            // A runtime's location is where the runtime says it is.
+            microscope::BreakpointLocation::Managed(managed) => {
+                match managed.place {
+                    microscope::ManagedPlace::Line { path, line } => {
+                        placed.source = microscope::LineNumber::new(u64::from(line)).map(|line| {
+                            (std::sync::Arc::new(std::path::PathBuf::from(&*path)), line)
+                        });
+                    }
+                    microscope::ManagedPlace::Function { name } => placed.function = Some(name),
+                }
+
+                return placed;
+            }
             microscope::BreakpointLocation::Image(address) => {
                 if let Some(runtime) = main.and_then(|main| main.virtual_address(address).ok()) {
                     placed.location = microscope::BreakpointLocation::Virtual(runtime);

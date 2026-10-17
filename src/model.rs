@@ -4505,13 +4505,59 @@ pub enum InlineFrameLookup {
 }
 
 /// The address space in which a breakpoint was resolved.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BreakpointLocation {
     /// A location relative to an immutable module image.
     Image(ImageAddress),
 
     /// An absolute location in a running process.
     Virtual(VirtualAddress),
+
+    /// A location a language runtime arms and reports itself, with no
+    /// address, as Python's agent stops at a line of Python code.
+    Managed(ManagedLocation),
+}
+
+impl BreakpointLocation {
+    /// The location's trap address in the program's own image or the
+    /// process, when it has one.
+    #[must_use]
+    pub const fn address(&self) -> Option<TrapAddress> {
+        match self {
+            Self::Image(address) => Some(TrapAddress::Image(*address)),
+            Self::Virtual(address) => Some(TrapAddress::Virtual(*address)),
+            Self::Managed(_) => None,
+        }
+    }
+}
+
+/// Where a breakpoint location's trap is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TrapAddress {
+    /// Relative to the program's own image.
+    Image(ImageAddress),
+
+    /// An absolute address in a running process.
+    Virtual(VirtualAddress),
+}
+
+/// A breakpoint location a language runtime manages.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ManagedLocation {
+    /// The runtime that arms it.
+    pub runtime: RuntimeId,
+    pub place: ManagedPlace,
+}
+
+/// Where a runtime's managed breakpoint stops.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ManagedPlace {
+    /// Before the runtime runs a line of the source file at `path`, as the
+    /// runtime records the file's path.
+    Line { path: Arc<str>, line: u32 },
+
+    /// As the runtime begins a function of this name.
+    Function { name: Arc<str> },
 }
 
 /// A resolved execution location in a running process.

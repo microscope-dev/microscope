@@ -154,11 +154,12 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     /// Why a thread at `address` stops, when a runtime's breakpoint there
     /// stops it: an exception's hook stops for the exception it reports,
-    /// and an internal hook for what the runtime says its event is. A
-    /// report the runtime's memory cannot give is still a stop, which says
-    /// why it is missing.
+    /// and an internal hook for what the runtime says its event is, as a
+    /// managed breakpoint's hit, judged as a trap's is. A report the
+    /// runtime's memory cannot give is still a stop, which says why it is
+    /// missing.
     pub(super) fn runtime_hook_stop(
-        &self,
+        &mut self,
         pid: Pid,
         address: VirtualAddress,
     ) -> Option<StopReason> {
@@ -203,10 +204,30 @@ impl<P: LinuxTraceOps> Controller<P> {
                             message: report.message,
                             value: report.value,
                         })),
+                    Ok(HookEvent::Breakpoint { number }) => {
+                        self.managed_hit(pid, site.runtime, number)
+                    }
                     Err(description) => Some(StopReason::RuntimeEvent { description }),
                 }
             }
         }
+    }
+
+    /// Why thread `pid` stops at a hit of the managed location the runtime
+    /// `runtime` numbers `number`, if a breakpoint that owns it stops.
+    /// One since removed is owned by none.
+    fn managed_hit(&mut self, pid: Pid, runtime: RuntimeId, number: u64) -> Option<StopReason> {
+        let owners = self
+            .inferior
+            .as_ref()?
+            .managed
+            .site(runtime, number)
+            .map(|(_, owners)| owners.clone())?;
+        let hits = self.judge_hits(pid, &owners, None);
+        (!hits.is_empty()).then_some(StopReason::Breakpoint {
+            address: None,
+            hits,
+        })
     }
 
     /// What the runtime `runtime` reports of the stopped thread `pid` at

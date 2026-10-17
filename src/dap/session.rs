@@ -2326,9 +2326,23 @@ impl Session {
         };
 
         // A location's image, and its address there.
-        let (image, address, virtual_address) = match (first.location, first.library) {
+        let (image, address, virtual_address) = match (&first.location, first.library) {
             (microscope::BreakpointLocation::Image(address), _) => {
-                (Arc::clone(handle.module_image()), address, None)
+                (Arc::clone(handle.module_image()), *address, None)
+            }
+
+            // A runtime's location has no address: it is where the runtime
+            // says it is.
+            (microscope::BreakpointLocation::Managed(managed), _) => {
+                return Placement {
+                    source: match &managed.place {
+                        microscope::ManagedPlace::Line { path, line } => {
+                            Some((self.local_path(Path::new(&**path)), u64::from(*line)))
+                        }
+                        microscope::ManagedPlace::Function { .. } => None,
+                    },
+                    address: None,
+                };
             }
             (microscope::BreakpointLocation::Virtual(address), Some(library)) => {
                 let bias = handle.loaded_modules().await.ok().and_then(|snapshot| {
@@ -2340,7 +2354,7 @@ impl Session {
                 });
                 match (self.image(library).await, bias) {
                     (Some(image), Some(bias)) => {
-                        (image, bias.wrapping_unload(address), Some(address))
+                        (image, bias.wrapping_unload(*address), Some(*address))
                     }
                     _ => {
                         return Placement {

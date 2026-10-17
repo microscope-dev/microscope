@@ -66,6 +66,11 @@ pub enum Error {
     #[error("breakpoint {0} was not found")]
     BreakpointNotFound(u64),
 
+    /// A language runtime runs code the breakpoint names, but cannot stop
+    /// there, for the reason given.
+    #[error("the runtime cannot stop there: {0}")]
+    RuntimeBreakpoint(Arc<str>),
+
     #[error("invalid hit condition: {0}")]
     InvalidHitCondition(String),
 

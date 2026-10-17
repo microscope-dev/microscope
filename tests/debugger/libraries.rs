@@ -32,9 +32,10 @@ fn library_addresses(breakpoint: &Breakpoint) -> Vec<u64> {
     breakpoint
         .locations
         .iter()
-        .map(|location| match location.location {
+        .map(|location| match &location.location {
             BreakpointLocation::Virtual(address) => address.get(),
             BreakpointLocation::Image(address) => panic!("{address:?} is in the program"),
+            BreakpointLocation::Managed(managed) => panic!("{managed:?} is a runtime's"),
         })
         .collect()
 }

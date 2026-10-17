@@ -234,7 +234,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.resolve_breakpoint(crate::BreakpointId::new(0), spec, false)?
             .locations
             .iter()
-            .map(|resolved| runtime_breakpoint_address(inferior, resolved.location))
+            .filter_map(|resolved| {
+                runtime_breakpoint_address(inferior, &resolved.location).transpose()
+            })
             .collect()
     }
 
@@ -896,7 +898,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return self.begin_visible_stop(
                 pid,
                 StopReason::Breakpoint {
-                    address,
+                    address: Some(address),
                     hits: stopping,
                 },
             );
@@ -1733,9 +1735,10 @@ impl<P: LinuxTraceOps> Controller<P> {
             .threads
             .iter()
             .find_map(|(&pid, thread)| match thread.reason {
-                Some(StopReason::Breakpoint { address, .. }) if self.runs_step(owner, pid) => {
-                    Some((pid, address))
-                }
+                Some(StopReason::Breakpoint {
+                    address: Some(address),
+                    ..
+                }) if self.runs_step(owner, pid) => Some((pid, address)),
                 _ => None,
             })
     }

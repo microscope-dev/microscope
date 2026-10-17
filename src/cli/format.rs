@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use microscope::{
@@ -12,11 +12,11 @@ use microscope::{
     DisassemblyBlock, DisassemblyView, ExitStatus, FunctionInfo, FunctionOrigin,
     GlobalVariablePage, HitCondition, IndirectTarget, InstructionContent, InstructionReferenceKind,
     InstructionTokenKind, InvalidatedWatchpoint, LanguageException, LanguageExceptionKind,
-    LineNumber, LoadedModuleSnapshot, MemoryRead, MemoryReadCompletion, ModuleId, ModuleIdentity,
-    ModuleImage, RegisterSnapshot, SourceContext, SourceLine, StackFrame, StackSegment,
-    StateSnapshot, StepKind, StopReason, SymbolExtentProvenance, SymbolLocation, TargetBoundary,
-    TaskSnapshot, ThreadActivity, ThreadState, Unfollowed, VirtualAddress, WatchScope, Watchpoint,
-    WatchpointHit, WatchpointInvalidation,
+    LineNumber, LoadedModuleSnapshot, ManagedPlace, MemoryRead, MemoryReadCompletion, ModuleId,
+    ModuleIdentity, ModuleImage, RegisterSnapshot, SourceContext, SourceLine, StackFrame,
+    StackSegment, StateSnapshot, StepKind, StopReason, SymbolExtentProvenance, SymbolLocation,
+    TargetBoundary, TaskSnapshot, ThreadActivity, ThreadState, Unfollowed, VirtualAddress,
+    WatchScope, Watchpoint, WatchpointHit, WatchpointInvalidation,
 };
 
 use super::commands::{COMMANDS, CommandSpec, aliases};
@@ -197,7 +197,7 @@ pub fn deleted(what: &str, renderer: Renderer) -> String {
     format!("{} {what}", renderer.paint(Role::Success, "deleted"))
 }
 
-fn breakpoint_location(location: BreakpointLocation, renderer: Renderer) -> String {
+fn breakpoint_location(location: &BreakpointLocation, renderer: Renderer) -> String {
     match location {
         BreakpointLocation::Image(address) => {
             format!("image address {}", renderer.paint(Role::Metadata, address))
@@ -208,6 +208,14 @@ fn breakpoint_location(location: BreakpointLocation, renderer: Renderer) -> Stri
                 renderer.paint(Role::Metadata, address)
             )
         }
+        BreakpointLocation::Managed(managed) => match &managed.place {
+            ManagedPlace::Line { path, line } => renderer
+                .paint(Role::Metadata, renderer.location(Path::new(&**path), line))
+                .to_string(),
+            ManagedPlace::Function { name } => {
+                format!("function {}", renderer.paint(Role::Name, name))
+            }
+        },
     }
 }
 
@@ -331,7 +339,7 @@ pub fn breakpoint(breakpoint: &Breakpoint, placed: &[Placed], renderer: Renderer
             let _ = write!(
                 output,
                 "\n  {}  {described}",
-                breakpoint_address(location.location, renderer)
+                breakpoint_address(&location.location, renderer)
             );
         }
     }
@@ -364,12 +372,16 @@ pub fn placed(placed: &Placed, renderer: Renderer) -> String {
         (None, Some((path, line))) => renderer
             .paint(Role::Metadata, renderer.location(path, line))
             .to_string(),
+        // A runtime's function has no address to be at.
+        (Some(_), None) if matches!(placed.location, BreakpointLocation::Managed(_)) => {
+            breakpoint_location(&placed.location, renderer)
+        }
         (Some(function), None) => format!(
             "{} at {}",
             renderer.paint(Role::Name, function),
-            breakpoint_address(placed.location, renderer)
+            breakpoint_address(&placed.location, renderer)
         ),
-        (None, None) => breakpoint_location(placed.location, renderer),
+        (None, None) => breakpoint_location(&placed.location, renderer),
     };
 
     if let Some(module) = &placed.module {
@@ -383,10 +395,13 @@ pub fn placed(placed: &Placed, renderer: Renderer) -> String {
     output
 }
 
-fn breakpoint_address(location: BreakpointLocation, renderer: Renderer) -> String {
+/// A location's address, or for one a runtime manages, which has none,
+/// that it is managed.
+fn breakpoint_address(location: &BreakpointLocation, renderer: Renderer) -> String {
     match location {
         BreakpointLocation::Image(address) => renderer.paint(Role::Metadata, address).to_string(),
         BreakpointLocation::Virtual(address) => renderer.paint(Role::Metadata, address).to_string(),
+        BreakpointLocation::Managed(_) => renderer.paint(Role::Metadata, "managed").to_string(),
     }
 }
 
@@ -477,7 +492,7 @@ pub fn breakpoints(rows: &[(&Breakpoint, Vec<Placed>)], renderer: Renderer) -> S
                             } else {
                                 branch
                             },
-                            breakpoint_address(location.location, renderer),
+                            breakpoint_address(&location.location, renderer),
                             self::placed(location, renderer)
                         )
                     })

@@ -548,7 +548,7 @@ fn user_breakpoint_supersedes_a_coincident_exception_barrier() {
     inferior.public_stop = None;
     inferior.barrier = Some(StopBarrier::visible(pid, StopReason::Exception(exception)));
     let breakpoint = StopReason::Breakpoint {
-        address: VirtualAddress::new(0x20),
+        address: Some(VirtualAddress::new(0x20)),
         hits: Arc::from([BreakpointHit {
             breakpoint: BreakpointId::new(1),
             hit_count: 1,
@@ -1576,6 +1576,17 @@ impl WatchHarness {
             .process_wait(WaitEvent::PtraceEvent(pid, Signal::SIGTRAP, event))
     }
 
+    /// Adds a breakpoint by `spec` while every thread is stopped.
+    fn add_spec(&mut self, spec: BreakpointSpec) -> Result<Breakpoint> {
+        self.edit(|reply| Edit::AddBreakpoint {
+            spec,
+            options: Box::default(),
+            reply,
+        })
+        .try_recv()
+        .expect("reply")
+    }
+
     /// Adds a breakpoint at `address` while every thread is stopped.
     fn add_breakpoint(&mut self, address: u64) -> Breakpoint {
         self.edit(|reply| Edit::AddBreakpoint {
@@ -2206,7 +2217,7 @@ fn stale_status_is_never_consulted_outside_debug_exceptions() {
     assert_eq!(
         harness.public_reason(),
         Some(StopReason::Breakpoint {
-            address: VirtualAddress::new(0x40),
+            address: Some(VirtualAddress::new(0x40)),
             hits: Arc::from([BreakpointHit {
                 breakpoint: BreakpointId::new(1),
                 hit_count: 1,
@@ -4312,7 +4323,7 @@ impl WatchHarness {
 
 fn site_hit(hit_count: u64) -> StopReason {
     StopReason::Breakpoint {
-        address: VirtualAddress::new(HIT_SITE),
+        address: Some(VirtualAddress::new(HIT_SITE)),
         hits: Arc::from([BreakpointHit {
             breakpoint: BreakpointId::new(1),
             hit_count,
@@ -4778,7 +4789,7 @@ fn a_hit_on_a_breakpoint_that_survives_the_edit_is_published_with_its_owners() {
             ..
         } if *execution == ExecutionId::new(2)
             && thread_id.get() == 5001
-            && address.get() == 0x40
+            && *address == Some(VirtualAddress::new(0x40))
             && hits.iter().map(|hit| hit.breakpoint).eq([kept.id])
     )));
 }
@@ -5098,6 +5109,9 @@ struct ScriptedRuntime {
     /// The hook each hit was asked of, in turn.
     asked: std::sync::Mutex<Vec<crate::runtime_model::HookPlace>>,
 
+    /// What the runtime was armed with, each time it was.
+    armed: std::sync::Mutex<Vec<Vec<crate::runtime_model::ManagedArm>>>,
+
     /// What each hit of an internal hook reports, in turn.
     events: std::sync::Mutex<
         std::collections::VecDeque<std::result::Result<crate::runtime_model::HookEvent, Arc<str>>>,
@@ -5265,6 +5279,44 @@ impl crate::runtime_model::RuntimeModel for ScriptedRuntime {
             .expect("the script")
             .pop_front()
             .unwrap_or_else(|| Err("the script reports no more hits".into()))
+    }
+
+    /// The script runs files named `*.scripted`, and refuses `refused.scripted`.
+    fn resolve_breakpoint(
+        &self,
+        _stop: &dyn crate::runtime_model::RuntimeStop,
+        spec: &BreakpointSpec,
+    ) -> Option<std::result::Result<Vec<crate::ManagedPlace>, Arc<str>>> {
+        let BreakpointSpec::Source { path, line } = spec else {
+            return None;
+        };
+
+        let name = path.to_str()?;
+        if name == "refused.scripted" {
+            return Some(Err("the script refuses the file".into()));
+        }
+
+        name.ends_with(".scripted").then(|| {
+            Ok(vec![crate::ManagedPlace::Line {
+                path: name.into(),
+                line: u32::try_from(line.get()).expect("a small line"),
+            }])
+        })
+    }
+
+    /// Arming writes how many locations the runtime is armed with to the
+    /// byte at 0x7000.
+    fn arm_breakpoints(
+        &self,
+        _stop: &dyn crate::runtime_model::RuntimeStop,
+        arms: &[crate::runtime_model::ManagedArm],
+    ) -> std::result::Result<Vec<crate::runtime_model::RuntimeWrite>, Arc<str>> {
+        self.armed.lock().expect("the script").push(arms.to_vec());
+        Ok(vec![crate::runtime_model::RuntimeWrite {
+            address: VirtualAddress::new(0x7000),
+            expected: vec![0],
+            bytes: vec![u8::try_from(arms.len()).expect("few arms")],
+        }])
     }
 }
 
@@ -5678,6 +5730,112 @@ fn a_runtime_hook_in_a_companion_image_is_armed_while_it_is_loaded() {
         "the hook goes with its image"
     );
     assert!(harness.inferior().runtime_hooks.is_empty());
+}
+
+/// A runtime resolves a breakpoint in code it runs itself to a location it
+/// manages, which has no address: the runtime is armed with it as it is
+/// added and removed, and a hit its hook reports by the location's number
+/// stops as a breakpoint's, with no address. A number the runtime was not
+/// armed with is no breakpoint's.
+#[test]
+fn a_runtime_resolves_arms_and_reports_a_managed_breakpoint() {
+    const HOOK: u64 = 0x40;
+    let mut harness = watch_harness(1);
+    harness.controller.unwind_info = Arc::new(FlatUnwindInfo);
+    let hitting = harness.threads[0];
+    let runtime = scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            internal: vec![crate::runtime_model::HookPlace::Own(ImageAddress::new(
+                HOOK,
+            ))],
+            ..ScriptedRuntime::default()
+        },
+    );
+    harness
+        .controller
+        .sync_runtime_hooks()
+        .expect("arm the hook");
+    let source = |path: &str| BreakpointSpec::Source {
+        path: path.into(),
+        line: crate::LineNumber::new(3).expect("a line"),
+    };
+    let add = |harness: &mut WatchHarness, spec| harness.add_spec(spec);
+
+    let refused = add(&mut harness, source("refused.scripted"));
+    assert!(
+        matches!(&refused, Err(Error::RuntimeBreakpoint(reason)) if reason.contains("refuses")),
+        "{refused:?}"
+    );
+
+    harness.trace().take_actions();
+    let breakpoint = add(&mut harness, source("app.scripted")).expect("added");
+    let place = crate::ManagedPlace::Line {
+        path: "app.scripted".into(),
+        line: 3,
+    };
+    let runtime_id = crate::RuntimeId::new(harness.inferior().loaded_module.id.get() * 4);
+    assert_eq!(
+        breakpoint
+            .locations
+            .iter()
+            .map(|resolved| resolved.location.clone())
+            .collect::<Vec<_>>(),
+        [crate::BreakpointLocation::Managed(crate::ManagedLocation {
+            runtime: runtime_id,
+            place: place.clone(),
+        })]
+    );
+    assert_eq!(
+        runtime.armed.lock().expect("the script").last(),
+        Some(&vec![crate::runtime_model::ManagedArm { number: 0, place }])
+    );
+    let pid = harness.inferior().memory_thread();
+    assert!(
+        harness
+            .trace()
+            .take_actions()
+            .contains(&format!("write_word {pid} 0x7000 0x1")),
+        "arming's writes are made"
+    );
+
+    let hit = |harness: &mut WatchHarness, number| {
+        runtime.reports(Ok(crate::runtime_model::HookEvent::Breakpoint { number }));
+        harness.start_continue();
+        harness.trace().take_actions();
+        harness.hit_at(hitting, HOOK).expect("the hook's trap");
+        harness.settle_requested_stops();
+        harness.stopped()
+    };
+    assert_eq!(hit(&mut harness, 7), None, "no breakpoint has number 7");
+    steps_over_alone(&mut harness, hitting);
+    assert_eq!(
+        hit(&mut harness, 0),
+        Some((
+            debug_thread_id(hitting),
+            StopReason::Breakpoint {
+                address: None,
+                hits: Arc::from([BreakpointHit {
+                    breakpoint: breakpoint.id,
+                    hit_count: 1,
+                }]),
+            }
+        ))
+    );
+
+    harness
+        .edit(|reply| Edit::RemoveBreakpoint {
+            id: breakpoint.id,
+            reply,
+        })
+        .try_recv()
+        .expect("reply")
+        .expect("removed");
+    assert_eq!(
+        runtime.armed.lock().expect("the script").last(),
+        Some(&Vec::new()),
+        "the runtime is armed with nothing once the breakpoint is gone"
+    );
 }
 
 /// The writes a runtime model asks for are made while every thread is

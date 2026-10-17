@@ -205,6 +205,26 @@ All user memory reads overlay original bytes at installed sites. Writes must
 update the original-byte model correctly so removing a breakpoint does not
 restore stale memory.
 
+## Managed breakpoint locations
+
+A runtime that runs code itself, as CPython runs Python, can resolve a
+breakpoint there. Resolution runs a list of resolvers: the native one over
+every loaded image, then `RuntimeModel::resolve_breakpoint` for each loaded
+runtime. A runtime's location is `BreakpointLocation::Managed`: a runtime and
+a line or function, with no address. Native and managed locations of one spec
+are combined. A spec only a runtime knows resolves through the runtime alone,
+and a runtime's refusal is the error when nothing else resolves it.
+
+Ownership follows the native split. `managed.rs` records which user
+breakpoints own each managed location, and numbers it. The number is never
+reused in a process. Whenever a runtime's locations change,
+`RuntimeModel::arm_breakpoints` computes the writes that arm the runtime with
+exactly those locations, and `write_for_runtime` makes them at an all-stop.
+A runtime that cannot be armed keeps why. A hit comes through the runtime's
+internal hook as `HookEvent::Breakpoint` with the location's number. It is
+counted and judged as a trap's hit is, and stops as `StopReason::Breakpoint`
+with no address.
+
 ## Watchpoints
 
 Hardware watchpoints are planned against x86 debug-register constraints:

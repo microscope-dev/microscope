@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use crate::protocol::BreakpointSpec;
-use crate::{Error, Result, VirtualAddress};
+use crate::{BreakpointLocation, Error, Result, VirtualAddress};
 
 use super::breakpoints::{remove_breakpoint_owner_from, runtime_breakpoint_address};
 use super::native::LinuxTraceOps;
@@ -80,7 +80,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.sync_stack_movers()?;
         self.learn_from_got(None);
         self.sync_resolvers()?;
-        self.reresolve_breakpoints(lost_locations)
+        self.reresolve_breakpoints(lost_locations)?;
+        self.sync_managed_breakpoints();
+        Ok(())
     }
 
     /// Re-resolves function and source breakpoints across the loaded
@@ -98,13 +100,14 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
 
             let resolved = self
-                .resolve_in_modules(&breakpoint.spec)
-                .unwrap_or_else(|_| Arc::from([]));
+                .resolve_breakpoint(breakpoint.id, breakpoint.spec.clone(), true)
+                .map_or_else(|_| Arc::from([]), |resolved| resolved.locations);
             if resolved == breakpoint.locations {
                 continue;
             }
 
-            let owner = BreakpointOwner::User(breakpoint.id);
+            let id = breakpoint.id;
+            let owner = BreakpointOwner::User(id);
             let previous = std::mem::replace(
                 &mut self.breakpoints[index].locations,
                 Arc::clone(&resolved),
@@ -118,7 +121,15 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .iter()
                 .filter(|location| !resolved.contains(location))
             {
-                let address = runtime_breakpoint_address(inferior, location.location)?;
+                if let BreakpointLocation::Managed(managed) = &location.location {
+                    inferior.managed.release(managed, id);
+                    continue;
+                }
+
+                let Some(address) = runtime_breakpoint_address(inferior, &location.location)?
+                else {
+                    continue;
+                };
 
                 // An unmapped library's trap went with its memory.
                 if location
@@ -135,7 +146,15 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .iter()
                 .filter(|location| !previous.contains(location))
             {
-                let address = runtime_breakpoint_address(inferior, location.location)?;
+                if let BreakpointLocation::Managed(managed) = &location.location {
+                    inferior.managed.own(managed, id);
+                    continue;
+                }
+
+                let Some(address) = runtime_breakpoint_address(inferior, &location.location)?
+                else {
+                    continue;
+                };
                 let pid = inferior.memory_thread();
                 self.ptrace
                     .install_breakpoint(pid, &mut inferior.breakpoints, address, owner)?;

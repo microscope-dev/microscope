@@ -911,7 +911,10 @@ pub fn signal_thread(process: ProcessId, thread: microscope::ThreadId, signal: n
 /// Returns the address of a breakpoint stop, failing on any other stop.
 pub fn breakpoint_address(reason: &StopReason) -> VirtualAddress {
     match reason {
-        StopReason::Breakpoint { address, .. } => *address,
+        StopReason::Breakpoint {
+            address: Some(address),
+            ..
+        } => *address,
         other => panic!("expected a breakpoint stop, got {other:?}"),
     }
 }

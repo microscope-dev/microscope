@@ -246,7 +246,7 @@ async fn enabling_a_breakpoint_resolves_it_where_its_code_moved() {
     let locations = enabled
         .locations
         .iter()
-        .map(|location| location.location)
+        .map(|location| location.location.clone())
         .collect::<Vec<_>>();
     assert_eq!(
         locations,

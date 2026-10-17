@@ -162,7 +162,10 @@ async fn breakpoint_memory_and_event_state_follow_one_consistent_scenario() {
     let first = scenario.run_to_stop().await;
 
     let first_address = match first {
-        StopReason::Breakpoint { address, .. } => address,
+        StopReason::Breakpoint {
+            address: Some(address),
+            ..
+        } => address,
         other => panic!("expected breakpoint, got {other:?}"),
     };
 
@@ -448,7 +451,7 @@ async fn inline_function_breakpoints_resolve_every_concrete_instance() {
         let resolved_addresses = breakpoint
             .locations
             .iter()
-            .map(|location| location.location)
+            .map(|location| location.location.clone())
             .collect::<BTreeSet<_>>();
 
         assert_eq!(resolved_instances, expected_instances, "{fixture}");

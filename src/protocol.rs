@@ -1643,10 +1643,12 @@ pub enum StopReason {
 
     /// Execution reached an installed breakpoint.
     Breakpoint {
-        address: VirtualAddress,
+        /// Where the trap is; `None` at a location a runtime manages, which
+        /// has no address.
+        address: Option<VirtualAddress>,
 
-        /// Every logical breakpoint at the address whose hit condition this
-        /// hit met, in identifier order.
+        /// Every logical breakpoint at the location whose hit condition
+        /// this hit met, in identifier order.
         hits: Arc<[BreakpointHit]>,
     },
 

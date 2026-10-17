@@ -841,7 +841,9 @@ async fn assert_hidden_data_at_its_stop(scenario: &mut Scenario, hidden: u64) {
         .add_breakpoint_spec(BreakpointSpec::Address(VirtualAddress::new(hidden + 4)))
         .await;
     let stop = scenario.resume_to_stop().await;
-    assert!(matches!(stop, StopReason::Breakpoint { address, .. } if address.get() == hidden + 4));
+    assert!(
+        matches!(stop, StopReason::Breakpoint { address: Some(address), .. } if address.get() == hidden + 4)
+    );
     let (boundary, leading, block) =
         into_window(disassemble(scenario, window(hidden + 4, 4, 2)).await);
     assert_eq!(
@@ -1574,7 +1576,10 @@ async fn assert_executed_targets(
                 assert_eq!(status, microscope::ExitStatus::Code(0), "{fixture}");
                 break;
             }
-            StopReason::Breakpoint { address, .. } => address,
+            StopReason::Breakpoint {
+                address: Some(address),
+                ..
+            } => address,
             StopReason::Step { .. } => {
                 let location = scenario.operation("location", scenario.handle().current_location());
                 location.await.address

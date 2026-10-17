@@ -330,26 +330,45 @@ impl Describer {
         breakpoint: &microscope::Breakpoint,
         resolved: &microscope::ResolvedBreakpointLocation,
     ) -> Place {
-        let (image, address, shown) = match (resolved.location, resolved.library) {
+        let (image, address, shown) = match (&resolved.location, resolved.library) {
             (BreakpointLocation::Image(address), _) => (
                 Some(Arc::clone(self.handle.module_image())),
-                address,
+                *address,
                 // Before the program runs, there is no virtual address yet.
                 self.main_bias()
                     .await
-                    .map_or_else(|| address.get(), |bias| bias.wrapping_load(address).get()),
+                    .map_or_else(|| address.get(), |bias| bias.wrapping_load(*address).get()),
             ),
             (BreakpointLocation::Virtual(address), Some(library)) => {
                 let bias = self.bias_of(library).await;
                 match (self.images.get(library).await, bias) {
                     (Some(image), Some(bias)) => {
-                        (Some(image), bias.wrapping_unload(address), address.get())
+                        (Some(image), bias.wrapping_unload(*address), address.get())
                     }
                     _ => (None, ImageAddress::new(0), address.get()),
                 }
             }
             (BreakpointLocation::Virtual(address), None) => {
-                return self.place_of_address(address).await;
+                return self.place_of_address(*address).await;
+            }
+
+            // A runtime's location has no address: it is where the runtime
+            // says it is.
+            (BreakpointLocation::Managed(managed), _) => {
+                return match &managed.place {
+                    microscope::ManagedPlace::Line { path, line } => Place {
+                        address: String::new(),
+                        function: None,
+                        path: Some(path.to_string()),
+                        line: Some(u64::from(*line)),
+                    },
+                    microscope::ManagedPlace::Function { name } => Place {
+                        address: String::new(),
+                        function: Some(name.to_string()),
+                        path: None,
+                        line: None,
+                    },
+                };
             }
         };
 

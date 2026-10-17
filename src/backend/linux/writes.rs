@@ -46,10 +46,6 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// stopped: all of them, each where memory still holds what the model
     /// read there, or none. A write that fails after others were made says
     /// so, since they stay made.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "Python's agent is installed through it from P4.7")
-    )]
     pub(super) fn write_for_runtime(
         &mut self,
         writes: &[RuntimeWrite],

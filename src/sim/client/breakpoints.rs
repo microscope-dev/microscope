@@ -997,7 +997,7 @@ fn image_traps(breakpoint: &crate::Breakpoint) -> Vec<u64> {
         .iter()
         .filter_map(|location| match location.location {
             BreakpointLocation::Image(address) => Some(address.get()),
-            BreakpointLocation::Virtual(_) => None,
+            BreakpointLocation::Virtual(_) | BreakpointLocation::Managed(_) => None,
         })
         .collect()
 }
@@ -1047,10 +1047,15 @@ fn misplaced(
 ) -> Option<String> {
     let mut addresses = Vec::new();
     for location in locations {
-        match location.location {
+        match &location.location {
             BreakpointLocation::Image(address) => addresses.push(address.get()),
             BreakpointLocation::Virtual(address) => {
                 return Some(format!("{:#x} is in no image", address.get()));
+            }
+
+            // The simulated program runs no runtime that manages any.
+            BreakpointLocation::Managed(location) => {
+                return Some(format!("a managed location {location:?}"));
             }
         }
     }

@@ -504,10 +504,6 @@ pub enum HookPlace {
 /// model only reads, so it returns its writes for the debugger to make,
 /// while every thread is stopped.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "Python's agent is installed through it from P4.7")
-)]
 pub struct RuntimeWrite {
     pub address: VirtualAddress,
 
@@ -535,6 +531,18 @@ pub enum HookEvent {
         filter: &'static ExceptionFilter,
         report: RuntimeException,
     },
+
+    /// A hit of the managed breakpoint location the runtime was armed with
+    /// under this number.
+    Breakpoint { number: u64 },
+}
+
+/// A managed breakpoint location a runtime is armed with: where it stops,
+/// and the number it reports a hit of it by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedArm {
+    pub number: u64,
+    pub place: crate::ManagedPlace,
 }
 
 /// Where a value whose dynamic type a runtime records is stored.
@@ -682,6 +690,31 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
     ) -> Result<HookEvent, Arc<str>> {
         let _ = (stop, hook, registers);
         Err("the runtime has no internal hooks".into())
+    }
+
+    /// Where a breakpoint `spec` stops in the code the runtime runs
+    /// itself, read through `stop`, as one of the debugger's resolvers:
+    /// `None` when the spec names nothing the runtime runs, so that other
+    /// resolvers decide, or why the runtime cannot stop there.
+    fn resolve_breakpoint(
+        &self,
+        stop: &dyn RuntimeStop,
+        spec: &crate::BreakpointSpec,
+    ) -> Option<Result<Vec<crate::ManagedPlace>, Arc<str>>> {
+        let _ = (stop, spec);
+        None
+    }
+
+    /// The writes that arm the runtime with exactly the managed breakpoint
+    /// locations `arms`, so that its internal hooks report a hit of each
+    /// and of no other; or why it cannot be armed.
+    fn arm_breakpoints(
+        &self,
+        stop: &dyn RuntimeStop,
+        arms: &[ManagedArm],
+    ) -> Result<Vec<RuntimeWrite>, Arc<str>> {
+        let _ = (stop, arms);
+        Err("the runtime manages no breakpoints".into())
     }
 
     /// The runtime function that moves a task's stack to another, which

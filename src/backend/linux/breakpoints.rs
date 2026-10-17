@@ -13,7 +13,9 @@ use crate::protocol::{
     ExecutionId, HitCondition, ResolvedBreakpointLocation, StopReason,
 };
 
-use crate::{BreakpointLocation, Error, LineNumber, Result, VirtualAddress};
+use crate::{
+    BreakpointLocation, Error, LineNumber, ManagedLocation, Result, TrapAddress, VirtualAddress,
+};
 
 use super::memory::MemoryAccessError;
 use super::native::{LinuxTraceOps, is_vanished_tracee};
@@ -178,6 +180,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.sync_resolvers()?;
         }
 
+        self.sync_managed_breakpoints();
         self.publish_breakpoints_changed();
         Ok(breakpoint)
     }
@@ -225,23 +228,14 @@ impl<P: LinuxTraceOps> Controller<P> {
         spec: BreakpointSpec,
         pending: bool,
     ) -> Result<Breakpoint> {
-        let locations = match &spec {
-            BreakpointSpec::Address(address) => Arc::from([ResolvedBreakpointLocation {
+        let locations = if let BreakpointSpec::Address(address) = &spec {
+            Arc::from([ResolvedBreakpointLocation {
                 location: BreakpointLocation::Virtual(*address),
                 code_instances: Arc::from([]),
                 library: None,
-            }]),
-            _ => match self.resolve_in_modules(&spec) {
-                Ok(locations) => locations,
-                Err(Error::FunctionNotFound(_) | Error::SourceFileNotFound(_)) if pending => {
-                    Arc::from([])
-                }
-
-                // A function the program imports is in a library yet to
-                // load.
-                Err(Error::FunctionNotFound(name)) if self.imports_function(&name) => Arc::from([]),
-                Err(error) => return Err(error),
-            },
+            }])
+        } else {
+            self.resolve_by_location(&spec, pending)?
         };
 
         Ok(Breakpoint {
@@ -255,6 +249,36 @@ impl<P: LinuxTraceOps> Controller<P> {
             enabled: true,
             temporary: false,
         })
+    }
+
+    /// Resolves a function or source spec by every resolver: in the
+    /// program and every loaded library, and by each runtime that runs code
+    /// it names itself. A spec that resolves nowhere is pending when
+    /// `pending` asks, as is one naming a function the program imports.
+    fn resolve_by_location(
+        &self,
+        spec: &BreakpointSpec,
+        pending: bool,
+    ) -> Result<Arc<[ResolvedBreakpointLocation]>> {
+        let (managed, refusal) = self.resolve_managed(spec);
+        match self.resolve_in_modules(spec) {
+            Ok(locations) => Ok(locations.iter().cloned().chain(managed).collect()),
+
+            // Code a runtime runs itself has no native location.
+            Err(_) if !managed.is_empty() => Ok(managed.into()),
+            Err(Error::FunctionNotFound(_) | Error::SourceFileNotFound(_)) if pending => {
+                Ok(Arc::from([]))
+            }
+            Err(Error::FunctionNotFound(_) | Error::SourceFileNotFound(_))
+                if let Some(reason) = refusal =>
+            {
+                Err(Error::RuntimeBreakpoint(reason))
+            }
+
+            // A function the program imports is in a library yet to load.
+            Err(Error::FunctionNotFound(name)) if self.imports_function(&name) => Ok(Arc::from([])),
+            Err(error) => Err(error),
+        }
     }
 
     /// Resolves a function or source spec in the program and every loaded
@@ -329,6 +353,48 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(locations.into())
     }
 
+    /// The locations that each loaded runtime that runs code `spec` names
+    /// manages, and why a runtime that cannot stop there cannot, if one
+    /// cannot.
+    fn resolve_managed(
+        &self,
+        spec: &BreakpointSpec,
+    ) -> (Vec<ResolvedBreakpointLocation>, Option<Arc<str>>) {
+        let mut locations = Vec::new();
+        let mut refusal = None;
+        let Some(inferior) = self.inferior.as_ref() else {
+            return (locations, refusal);
+        };
+
+        for runtime in self.runtimes(inferior) {
+            let resolved =
+                self.with_runtime_stop(inferior, &runtime, inferior.memory_thread(), |stop| {
+                    runtime.model.resolve_breakpoint(stop, spec)
+                });
+            match resolved {
+                None => {}
+                Some(Ok(places)) => {
+                    locations.extend(places.into_iter().map(|place| {
+                        ResolvedBreakpointLocation {
+                            location: BreakpointLocation::Managed(ManagedLocation {
+                                runtime: runtime.id,
+                                place,
+                            }),
+                            code_instances: Arc::from([]),
+                            library: (runtime.module.id != inferior.loaded_module.id)
+                                .then_some(runtime.module.id),
+                        }
+                    }));
+                }
+                Some(Err(reason)) => {
+                    refusal.get_or_insert(reason);
+                }
+            }
+        }
+
+        (locations, refusal)
+    }
+
     /// Whether a breakpoint's spec can name an indirect function, whose
     /// resolver's entries and returns follow the breakpoint once sites are
     /// live.
@@ -354,11 +420,9 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// resumes, as one does after a step that ends at a breakpoint.
     fn step_over_where_threads_trapped(&mut self, breakpoint: &Breakpoint) -> Result<()> {
         let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
-        let sites = breakpoint
-            .locations
-            .iter()
-            .map(|resolved| runtime_breakpoint_address(inferior, resolved.location))
-            .collect::<Result<BTreeSet<_>>>()?;
+        let sites = trap_addresses(inferior, breakpoint)?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
         for thread in inferior.threads.values_mut() {
             if thread.stopped_at_breakpoint.is_none()
                 && let Some(address) = thread.trapped_at.filter(|address| sites.contains(address))
@@ -390,6 +454,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.sync_resolvers()?;
         }
 
+        self.sync_managed_breakpoints();
         self.publish_breakpoints_changed();
         Ok(breakpoint)
     }
@@ -447,6 +512,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.sync_resolvers()?;
         }
 
+        self.sync_managed_breakpoints();
         self.publish_breakpoints_changed();
         Ok(breakpoint)
     }
@@ -486,6 +552,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         while let Some(index) = self.breakpoints.iter().position(stopped) {
             self.breakpoints.remove(index);
             removed = true;
+        }
+
+        if removed {
+            self.sync_managed_breakpoints();
         }
 
         Ok(removed)
@@ -540,6 +610,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.sync_resolvers()?;
         }
 
+        self.sync_managed_breakpoints();
         self.publish_breakpoints_changed();
         Ok(removed)
     }
@@ -616,6 +687,20 @@ impl<P: LinuxTraceOps> Controller<P> {
                 | BreakpointOwner::Resolver => None,
             })
             .collect::<BTreeSet<_>>();
+        self.judge_hits(pid, &owners, Some(address))
+    }
+
+    /// Counts a hit of each enabled breakpoint among `owners` by thread
+    /// `pid` at the location at `address`, or at a managed location when
+    /// `None`, and returns those whose hit condition and condition this
+    /// hit meets, in identifier order. A breakpoint that logs publishes its
+    /// message instead.
+    pub(super) fn judge_hits(
+        &mut self,
+        pid: Pid,
+        owners: &BTreeSet<BreakpointId>,
+        address: Option<VirtualAddress>,
+    ) -> Arc<[BreakpointHit]> {
         let mut candidates = Vec::new();
         for breakpoint in &mut self.breakpoints {
             if !owners.contains(&breakpoint.id) {
@@ -1039,9 +1124,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             breakpoint.locations = breakpoint
                 .locations
                 .iter()
-                .filter(|location| {
-                    runtime_breakpoint_address(inferior, location.location).ok() != Some(address)
-                })
+                .filter(|location| !traps_at(inferior, location, address))
                 .cloned()
                 .collect();
         }
@@ -1278,14 +1361,52 @@ fn function_locations<'a>(
         .collect())
 }
 
+/// Where a location's trap is in the process; `None` for a location a
+/// runtime manages, which has no trap.
 pub(super) fn runtime_breakpoint_address(
     inferior: &Inferior,
-    location: BreakpointLocation,
-) -> Result<VirtualAddress> {
-    match location {
-        BreakpointLocation::Image(address) => inferior.loaded_module.virtual_address(address),
-        BreakpointLocation::Virtual(address) => Ok(address),
+    location: &BreakpointLocation,
+) -> Result<Option<VirtualAddress>> {
+    match location.address() {
+        Some(TrapAddress::Image(address)) => {
+            inferior.loaded_module.virtual_address(address).map(Some)
+        }
+        Some(TrapAddress::Virtual(address)) => Ok(Some(address)),
+        None => Ok(None),
     }
+}
+
+/// Whether the location's trap is at `address`.
+fn traps_at(
+    inferior: &Inferior,
+    location: &ResolvedBreakpointLocation,
+    address: VirtualAddress,
+) -> bool {
+    runtime_breakpoint_address(inferior, &location.location).is_ok_and(|trap| trap == Some(address))
+}
+
+/// Where the traps of a breakpoint's locations are, leaving out the
+/// locations runtimes manage.
+pub(super) fn trap_addresses(
+    inferior: &Inferior,
+    breakpoint: &Breakpoint,
+) -> Result<Vec<VirtualAddress>> {
+    breakpoint
+        .locations
+        .iter()
+        .filter_map(|resolved| runtime_breakpoint_address(inferior, &resolved.location).transpose())
+        .collect()
+}
+
+/// The managed locations among a breakpoint's.
+pub(super) fn managed_locations(breakpoint: &Breakpoint) -> impl Iterator<Item = &ManagedLocation> {
+    breakpoint
+        .locations
+        .iter()
+        .filter_map(|resolved| match &resolved.location {
+            BreakpointLocation::Managed(location) => Some(location),
+            BreakpointLocation::Image(_) | BreakpointLocation::Virtual(_) => None,
+        })
 }
 
 /// Installs a site that `execution`'s plan owns, and records it for the
@@ -1327,11 +1448,7 @@ pub(super) fn install_logical_breakpoint(
         breakpoint.id
     );
     let owner = BreakpointOwner::User(breakpoint.id);
-    let addresses = breakpoint
-        .locations
-        .iter()
-        .map(|resolved| runtime_breakpoint_address(inferior, resolved.location))
-        .collect::<Result<Vec<_>>>()?;
+    let addresses = trap_addresses(inferior, breakpoint)?;
     let mut installed = Vec::with_capacity(addresses.len());
 
     for address in addresses {
@@ -1356,6 +1473,10 @@ pub(super) fn install_logical_breakpoint(
         installed.push(address);
     }
 
+    for location in managed_locations(breakpoint) {
+        inferior.managed.own(location, breakpoint.id);
+    }
+
     Ok(())
 }
 
@@ -1365,11 +1486,7 @@ pub(super) fn remove_logical_breakpoint(
     breakpoint: &Breakpoint,
 ) -> Result<()> {
     let owner = BreakpointOwner::User(breakpoint.id);
-    let addresses = breakpoint
-        .locations
-        .iter()
-        .map(|resolved| runtime_breakpoint_address(inferior, resolved.location))
-        .collect::<Result<Vec<_>>>()?;
+    let addresses = trap_addresses(inferior, breakpoint)?;
 
     for &address in &addresses {
         let site = inferior
@@ -1402,6 +1519,10 @@ pub(super) fn remove_logical_breakpoint(
         }
 
         removed.push(address);
+    }
+
+    for location in managed_locations(breakpoint) {
+        inferior.managed.release(location, breakpoint.id);
     }
 
     Ok(())

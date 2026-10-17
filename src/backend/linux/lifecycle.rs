@@ -1112,6 +1112,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         inferior.repairs.clear();
         inferior.loader_site = None;
         inferior.runtime_hooks.clear();
+        inferior.managed = super::managed::ManagedSites::default();
         inferior.stack_moves.clear();
         inferior.indirect = super::indirect::IndirectFunctions::default();
 

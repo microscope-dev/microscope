@@ -564,7 +564,9 @@ impl Client {
 
                 // Code outside the program is not where the oracle can
                 // follow an advance to.
-                BreakpointLocation::Virtual(_) => return Ok(None),
+                BreakpointLocation::Virtual(_) | BreakpointLocation::Managed(_) => {
+                    return Ok(None);
+                }
             }
         }
 
