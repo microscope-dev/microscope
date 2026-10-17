@@ -7,9 +7,11 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use microscope::{
-    Backtrace, DebugFileOptions, Debugger, ExecutionContext, InferiorState, LaunchOptions,
-    ProcessId, StackFrameId, StopContext, StopId, StopReason, ThreadId,
+    Backtrace, BreakpointOptions, BreakpointSpec, DebugFileOptions, Debugger, DebuggerEvent,
+    ExecutionContext, InferiorState, LaunchOptions, ProcessId, StackFrameId, StopContext, StopId,
+    StopReason, ThreadId,
 };
+use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
 use crate::support::truth::Report;
@@ -156,6 +158,58 @@ impl PythonSession {
             attached: None,
             _scratch: streams.scratch,
         }
+    }
+
+    /// Launches `fixture` with `arguments` under `interpreter` with
+    /// `breakpoints` set, each pending until a module has its code, and
+    /// runs it to its first stop; returns its reason, and the debugger's
+    /// events from before the launch on.
+    pub async fn launch_to_stop(
+        interpreter: &str,
+        fixture: &str,
+        arguments: &[&str],
+        breakpoints: Vec<(BreakpointSpec, BreakpointOptions)>,
+    ) -> (Self, StopReason, broadcast::Receiver<DebuggerEvent>) {
+        let streams = Streams::new();
+        let debug_files = DebugFileOptions {
+            directories: python::debug_directory(interpreter).into_iter().collect(),
+            ..DebugFileOptions::default()
+        };
+        let mut scenario = Scenario::with_debug_files(
+            format!("{interpreter} {fixture}"),
+            python::interpreter(interpreter),
+            &debug_files,
+        );
+        for (spec, options) in breakpoints {
+            scenario
+                .operation(
+                    "add breakpoint",
+                    scenario.handle().add_breakpoint_with(spec, options),
+                )
+                .await;
+        }
+
+        let events = scenario.handle().subscribe();
+        let reason = scenario
+            .run_with_to_stop(LaunchOptions {
+                arguments: command(fixture, arguments),
+                stdin: Some(Stdio::from(streams.reader)),
+                stdout: Some(Stdio::from(streams.file)),
+                stderr: Some(Stdio::from(streams.errors)),
+                ..LaunchOptions::default()
+            })
+            .await;
+        let session = Self {
+            scenario,
+            interpreter: interpreter.to_owned(),
+            fixture: fixture.to_owned(),
+            output: streams.output,
+            input: streams.input,
+            running: None,
+            attached: None,
+            _scratch: streams.scratch,
+        };
+        (session, reason, events)
     }
 
     /// Runs `fixture` under `interpreter` outside the debugger until it

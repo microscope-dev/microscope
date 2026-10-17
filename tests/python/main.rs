@@ -18,6 +18,7 @@ mod schemas;
 mod arrays;
 mod expressions;
 mod extension;
+mod gallery;
 mod layouts;
 mod locals;
 mod oracles;

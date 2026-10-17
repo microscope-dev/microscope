@@ -14,10 +14,10 @@ use crate::support::Scenario;
 
 /// The interpreters the extension is built for, against each one's
 /// headers.
-const INTERPRETERS: [&str; 4] = ["3.12", "3.14", "3.14t", "3.15"];
+pub const INTERPRETERS: [&str; 4] = ["3.12", "3.14", "3.14t", "3.15"];
 
 /// The directory of the extension built for `interpreter`.
-fn extension_directory(interpreter: &str) -> String {
+pub fn extension_directory(interpreter: &str) -> String {
     Scenario::fixture(&format!("python-extension-{interpreter}"))
         .to_string_lossy()
         .into_owned()

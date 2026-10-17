@@ -241,6 +241,17 @@ it as in a Python frame:
 (integer) len((py)numbers) = 3
 ```
 
+A native breakpoint's condition reads Python values through `(py)` as well,
+so a breakpoint in an extension's C function can stop only for some
+objects. A `PyObject *` itself compares as a pointer, as C compares it:
+
+```text
+(microscope) break reached if (py)checkpoint == "containers"
+```
+
+A condition that cannot be judged, such as comparing a `str` with an `int`,
+stops and says why, as any condition does.
+
 ### asyncio tasks
 
 From CPython 3.14, which lists every `asyncio.Task` for debuggers,

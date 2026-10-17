@@ -260,6 +260,15 @@ core of each core fixture with its report beside it, as
 `build/test-programs/python-*.core` and `.core.log`. Every interpreter must
 present the same locals alike; a difference fails the test.
 
+The values gallery, `tests/fixtures/python/values.py`, prints the gallery
+format the native languages use, one `TRUTH CHECKPOINT PATH summary VALUE`
+line per value, then calls the C extension's `reached`. A path is an
+expression both Python and microscope read, so double-quoted. The test stops
+there through a pending native breakpoint whose condition reads the
+function's argument through `(py)`, which proves conditions over Python
+values at native breakpoints, and evaluates each path in the Python caller.
+The extension is built per interpreter by `scripts/build-test-programs.sh`.
+
 ## Unit tests
 
 Unit-test complicated deterministic logic where a failure can identify the
