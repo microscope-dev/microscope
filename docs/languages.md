@@ -50,6 +50,104 @@ Go maps, slices, strings, interfaces, channels, and common runtime-backed
 values use built-in views. Compiler optimization and runtime-version changes
 can make individual variables or goroutines unavailable.
 
+## Python
+
+microscope reads the memory of a CPython interpreter and shows its Python frames
+in the native backtrace. Nothing runs inside the Python process.
+
+microscope supports CPython 3.12, 3.13, 3.14, and 3.15, with the GIL and
+free-threaded builds (3.13t and later). It is tested with nixpkgs builds,
+python-build-standalone (as uv installs), and Debian and Ubuntu builds. That
+includes statically linked, stripped interpreters, and builds with or without
+frame pointers. libpython may be a shared library or linked into the
+executable. Debug symbols for the interpreter are not required.
+
+Python works when you launch a program, attach to a process, or open a core
+dump:
+
+```sh
+microscope python3 app.py
+microscope -p PID
+microscope --core core python3
+```
+
+A CPython version outside 3.12 to 3.15, or a release microscope has not
+checked, is refused by name. The backtrace says why at the interpreter's
+evaluation loop, and the native frames still appear as usual.
+
+### Stacks
+
+Each thread's Python frames appear in its native backtrace, before the
+interpreter's evaluation loop (`_PyEval_EvalFrameDefault`) that runs them. A
+Python frame shows its qualified function name, file, and line, with no
+address:
+
+```text
+#9                     in Condition.wait at /usr/lib/python3.14/threading.py:369
+#10                    in Event.wait at /usr/lib/python3.14/threading.py:670
+#11                    in containers at app.py:72
+#12                    in Thread.run at /usr/lib/python3.14/threading.py:1024
+    … #13–#18: 6 frames of the runtime; `bt -r` shows them
+#19                    in Thread._bootstrap_inner at /usr/lib/python3.14/threading.py:1082
+```
+
+The interpreter's own frames between Python frames, such as its evaluation loop
+and call machinery, fold into one line. Go and tokio runtimes fold their frames
+the same way. C functions that Python calls, such as a lock's acquire, are
+shown and not folded. `bt -r` shows every frame. The
+[`[backtrace]` setting](reference/configuration.md) and `set runtime-frames`
+choose whether backtraces show them by default. `up` and `down` pass over
+folded frames; `frame N` selects any frame by its level.
+
+`list`, `frame`, `where`, `context`, and `edit` work in a Python frame. They
+read the file at the path the interpreter recorded, through source path maps
+like any other source. `where` prints a location such as `containers at
+app.py:72`. Python source is syntax-highlighted in the terminal and the
+browser.
+
+### Variables
+
+`print` with no expression shows a Python frame's parameters and locals, in
+order:
+
+```text
+(list) numbers = [1, 2, 3]
+(tuple) single = (1,)
+(dict) by_name = {'a': 1, 'b': 'two', 'c': None}
+(int) big = 1267650600228229401496703217721
+(Gate) gate = <Gate object at 0x7f3a2c591990>
+```
+
+Values use Python's `repr` for None, True and False, int of any size, float,
+str, bytes, list, tuple, and dict. A float uses the shortest round-trip form,
+such as `0.1`, `1e+16`, `inf`, or `nan`. A dict keeps its insertion order.
+Lists, tuples, and dicts expand into their items in clients that expand values,
+such as the browser and editors. Any other type shows its type and address.
+
+A summary reads at most 6 containers deep, 64 items of each container, and 1024
+characters of a string. It says when it stops short. `pp` lays containers out
+over lines in the generic form microscope uses for every language, such as
+`len=3 [1, 2, 3]`.
+
+A local that is not yet assigned shows as unbound. A local that a nested
+function shares (a cell) is not shown yet. An instance's attribute dict with
+split values (CPython's split dicts) is not read yet.
+
+### Not supported yet
+
+Expressions over a Python frame's variables are not evaluated yet. `print
+numbers` reports that; `print` alone shows the variables. Python breakpoints,
+stepping through Python code, and Python exceptions as catchpoints are not
+supported yet either. Python stacks do not appear in `microscope record`, and
+asyncio tasks are not shown. [Known limits](reference/limitations.md) lists
+them all.
+
+In editors, Python frames appear in the call stack with their source file and
+line, but no instruction reference. Their scopes are Arguments and Locals.
+
+Native breakpoints, stepping, and everything else in the native code of a Python
+process work as usual.
+
 ## Zig, Odin, D, Nim, Ada, and Fortran
 
 These languages use the shared native debugger and expression engine. microscope

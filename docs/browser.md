@@ -25,6 +25,12 @@ The workspace can show source, disassembly, memory, values, registers,
 breakpoints, threads, tasks, signals, the console, and drawings. The command
 palette lists available actions and keyboard shortcuts.
 
+The stack marks each frame with a short language mark, such as `py`, `c`, `rs`,
+or `go`, where its function or interpreter says which language it is. Each run
+of a runtime's frames folds into one row, such as "6 frames of the runtime
+folded". Click the row to open it. A row that holds the selected frame stays
+open.
+
 Each tab selects its own thread or task, frame, source location, and panel. All
 tabs control the same session and receive the same stops.
 

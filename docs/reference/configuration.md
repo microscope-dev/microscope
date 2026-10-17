@@ -50,6 +50,7 @@ launch configuration, `-c` files, then `-e` commands.
 | `[print]` | Compact or pretty output, radix, width, depth, and element limits |
 | `[disassembly]` | Intel or AT&T syntax and instruction bytes |
 | `[step]` | Whether source steps enter supported runtime code |
+| `[backtrace]` | Whether backtraces fold runtime and interpreter frames |
 | `[breakpoints]` | Saved-breakpoint behavior |
 | `[debug-info]` | Separate debug-file directories and debuginfod |
 | `[history]` | REPL history size |
@@ -63,6 +64,12 @@ launch configuration, `-c` files, then `-e` commands.
 Run `microscope config init` to produce a file containing every setting, its
 type, and its default. That generated file is the exact reference for the
 installed version.
+
+`[backtrace] runtime` can be `"fold"` (the default) or `"show"`. With `"fold"`,
+each run of a language runtime's own frames, such as an interpreter's frames
+between Python frames, shows as one line. With `"show"`, backtraces show every
+frame. `bt -r` shows every frame for one command, and `set runtime-frames`
+changes the setting for a session.
 
 ## Launch configurations
 
