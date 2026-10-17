@@ -34,15 +34,15 @@ const SUMMARY_TEXT: usize = 1024;
 /// The keys table of a combined `dict`: its kind of entries, and its index
 /// and table sizes as log2 values.
 #[derive(Clone, Copy)]
-struct Table {
-    kind: Kind,
-    log2_size: u8,
-    log2_index_bytes: u8,
+pub(super) struct Table {
+    pub(super) kind: Kind,
+    pub(super) log2_size: u8,
+    pub(super) log2_index_bytes: u8,
 }
 
 impl Table {
     /// A table of eight slots, whose indices are one byte each.
-    const fn eight(kind: Kind) -> Self {
+    pub(super) const fn eight(kind: Kind) -> Self {
         Self {
             kind,
             log2_size: 3,
@@ -54,7 +54,7 @@ impl Table {
 /// The two kinds of a combined `dict`'s entries: a general entry holds a
 /// hash, and a unicode entry does not.
 #[derive(Clone, Copy)]
-enum Kind {
+pub(super) enum Kind {
     General,
     Unicode,
 }
@@ -69,7 +69,7 @@ impl Process {
     }
 
     /// A type object named `name`, as CPython names a type.
-    fn type_object(&mut self, name: &str) -> VirtualAddress {
+    pub(super) fn type_object(&mut self, name: &str) -> VirtualAddress {
         let object = self.alloc(self.offset(Field::TypeName) + 8);
         let name = self.c_string(name);
         self.word(object, Field::TypeName, name);
@@ -77,7 +77,7 @@ impl Process {
     }
 
     /// The type objects of the nine built-in types the model presents.
-    fn builtin_types(&mut self) -> Types {
+    pub(super) fn builtin_types(&mut self) -> Types {
         Types {
             none: self.type_object("NoneType"),
             bool: self.type_object("bool"),
@@ -93,28 +93,28 @@ impl Process {
 
     /// An object of type `ty` that is `size` zeroed bytes, with its type
     /// written.
-    fn object(&mut self, ty: VirtualAddress, size: u64) -> u64 {
+    pub(super) fn object(&mut self, ty: VirtualAddress, size: u64) -> u64 {
         let object = self.alloc(size);
         self.word(object, Field::ObjectType, ty.get());
         object
     }
 
     /// Writes `values` as consecutive words from `at`.
-    fn words(&mut self, at: u64, values: &[u64]) {
+    pub(super) fn words(&mut self, at: u64, values: &[u64]) {
         for (index, value) in (0_u64..).zip(values) {
             self.memory.write(at + 8 * index, *value, 8);
         }
     }
 
     /// The tag of an `int` with the sign bits `sign` and `digits` digits.
-    fn long_tag(&self, sign: u64, digits: usize) -> u64 {
+    pub(super) fn long_tag(&self, sign: u64, digits: usize) -> u64 {
         let shift = u32::from(self.layout.constant(Constant::LongNonSizeBits));
         sign | ((digits as u64) << shift)
     }
 
     /// An `int`-shaped object of type `ty`, with the tag `tag` and the
     /// 30-bit `digits`, least significant first.
-    fn long(&mut self, ty: VirtualAddress, tag: u64, digits: &[u32]) -> u64 {
+    pub(super) fn long(&mut self, ty: VirtualAddress, tag: u64, digits: &[u32]) -> u64 {
         let size = self.offset(Field::LongDigits) + 4 * (digits.len() as u64);
         let object = self.object(ty, size);
         self.word(object, Field::LongTag, tag);
@@ -127,7 +127,7 @@ impl Process {
 
     /// An `int` of type `ty` with the value `value`, in digits of the
     /// layout's shift.
-    fn int(&mut self, ty: VirtualAddress, value: i128) -> u64 {
+    pub(super) fn int(&mut self, ty: VirtualAddress, value: i128) -> u64 {
         let shift = u32::from(self.layout.constant(Constant::LongShift));
         let mut magnitude = value.unsigned_abs();
         let mut digits = Vec::new();
@@ -149,14 +149,14 @@ impl Process {
     }
 
     /// A `float` of type `ty` with the value `value`.
-    fn float(&mut self, ty: VirtualAddress, value: f64) -> u64 {
+    pub(super) fn float(&mut self, ty: VirtualAddress, value: f64) -> u64 {
         let object = self.object(ty, self.offset(Field::FloatValue) + 8);
         self.word(object, Field::FloatValue, value.to_bits());
         object
     }
 
     /// A `str` of type `ty` holding the ASCII `text`.
-    fn str_object(&mut self, ty: VirtualAddress, text: &str) -> u64 {
+    pub(super) fn str_object(&mut self, ty: VirtualAddress, text: &str) -> u64 {
         let object = self.string(text);
         self.word(object, Field::ObjectType, ty.get());
         object
@@ -164,7 +164,7 @@ impl Process {
 
     /// A `str` of type `ty` holding the two-byte code units `units`, which
     /// is compact and not ASCII.
-    fn wide_str(&mut self, ty: VirtualAddress, units: &[u16]) -> u64 {
+    pub(super) fn wide_str(&mut self, ty: VirtualAddress, units: &[u16]) -> u64 {
         let compact = self.offset(Field::UnicodeCompactSize);
         let object = self.alloc(compact + 2 * (units.len() as u64));
         self.word(object, Field::ObjectType, ty.get());
@@ -178,7 +178,7 @@ impl Process {
     }
 
     /// A `tuple` of type `ty`, whose items lie inline.
-    fn tuple(&mut self, ty: VirtualAddress, items: &[u64]) -> u64 {
+    pub(super) fn tuple(&mut self, ty: VirtualAddress, items: &[u64]) -> u64 {
         let size = self.offset(Field::TupleItems) + 8 * (items.len() as u64);
         let object = self.object(ty, size);
         self.word(object, Field::TupleSize, items.len() as u64);
@@ -188,7 +188,7 @@ impl Process {
     }
 
     /// A `list` of type `ty` whose items are `items`.
-    fn list(&mut self, ty: VirtualAddress, items: &[u64]) -> u64 {
+    pub(super) fn list(&mut self, ty: VirtualAddress, items: &[u64]) -> u64 {
         let object = self.object(ty, self.offset(Field::ListItems) + 8);
         self.set_items(object, items);
         object
@@ -210,21 +210,14 @@ impl Process {
     /// A combined `dict` of type `ty` whose header counts `used` items. Its
     /// table holds `entries` as (key, value) pairs in insertion order, and a
     /// value of 0 marks a deleted entry.
-    fn dict(&mut self, ty: VirtualAddress, table: Table, used: u64, entries: &[(u64, u64)]) -> u64 {
-        let (size_field, key_field, value_field, kind_constant) = match table.kind {
-            Kind::General => (
-                Field::DictEntrySize,
-                Field::DictEntryKey,
-                Field::DictEntryValue,
-                Constant::DictKeysGeneral,
-            ),
-            Kind::Unicode => (
-                Field::DictUnicodeEntrySize,
-                Field::DictUnicodeEntryKey,
-                Field::DictUnicodeEntryValue,
-                Constant::DictKeysUnicode,
-            ),
-        };
+    pub(super) fn dict(
+        &mut self,
+        ty: VirtualAddress,
+        table: Table,
+        used: u64,
+        entries: &[(u64, u64)],
+    ) -> u64 {
+        let (size_field, key_field, value_field, kind_constant) = entry_fields(table.kind);
 
         let size = self.offset(size_field);
         let indices = self.offset(Field::DictKeysIndices);
@@ -254,9 +247,103 @@ impl Process {
         object
     }
 
+    /// A combined `dict` of type `ty` whose table holds `entries` as (key,
+    /// value, hash) triples in insertion order, with its index table filled
+    /// as CPython's insertion fills it: each entry takes the first empty slot
+    /// of its probe sequence. The entries listed in `deleted` keep their
+    /// slots, which become deleted, and hold no key or value. The hash of a
+    /// general table's entry is written to the entry, and that of a unicode
+    /// table's key to the key's `str`, so the table's hashes agree with
+    /// the entries' keys.
+    pub(super) fn hashed_dict(
+        &mut self,
+        ty: VirtualAddress,
+        table: Table,
+        entries: &[(u64, u64, i64)],
+        deleted: &[usize],
+    ) -> u64 {
+        let (size_field, key_field, value_field, kind_constant) = entry_fields(table.kind);
+        let size = self.offset(size_field);
+        let indices = self.offset(Field::DictKeysIndices);
+        let slots = 1_u64 << table.log2_index_bytes;
+        let width = 1_u64 << (table.log2_index_bytes - table.log2_size);
+        let keys = self.alloc(indices + slots + size * (entries.len() as u64));
+        let kind = u64::from(self.layout.constant(kind_constant));
+        self.put(keys, Field::DictKeysLog2Size, u64::from(table.log2_size), 1);
+        self.put(
+            keys,
+            Field::DictKeysLog2IndexBytes,
+            u64::from(table.log2_index_bytes),
+            1,
+        );
+        self.put(keys, Field::DictKeysKind, kind, 1);
+        self.word(keys, Field::DictKeysNentries, entries.len() as u64);
+
+        let index_slots = 1_u64 << table.log2_size;
+        let mask = index_slots - 1;
+        let width_bytes = usize::try_from(width).expect("an index is a few bytes wide");
+        let at = |slot: u64| usize::try_from(slot).expect("a slot is within the table");
+        let empty = (-1_i64).cast_unsigned();
+        for slot in 0..index_slots {
+            self.memory
+                .write(keys + indices + slot * width, empty, width_bytes);
+        }
+
+        let mut taken = vec![false; at(index_slots)];
+        let mut placed = Vec::with_capacity(entries.len());
+        for (index, (_, _, hash)) in (0_u64..).zip(entries) {
+            let mut slot = hash.cast_unsigned() & mask;
+            let mut perturb = hash.cast_unsigned();
+            while taken[at(slot)] {
+                perturb >>= 5;
+                slot = slot.wrapping_mul(5).wrapping_add(perturb).wrapping_add(1) & mask;
+            }
+
+            taken[at(slot)] = true;
+            placed.push(slot);
+            self.memory
+                .write(keys + indices + slot * width, index, width_bytes);
+        }
+
+        for &index in deleted {
+            let slot = placed[index];
+            self.memory.write(
+                keys + indices + slot * width,
+                (-2_i64).cast_unsigned(),
+                width_bytes,
+            );
+        }
+
+        let first = keys + indices + slots;
+        for (index, (key, value, hash)) in (0_u64..).zip(entries) {
+            let entry = first + size * index;
+            let live = !deleted.contains(&usize::try_from(index).expect("an entry index fits"));
+            let (key, value) = if live { (*key, *value) } else { (0, 0) };
+            self.put(entry, key_field, key, 8);
+            self.put(entry, value_field, value, 8);
+            match table.kind {
+                Kind::General => self.put(entry, Field::DictEntryHash, hash.cast_unsigned(), 8),
+                Kind::Unicode if live => {
+                    self.put(key, Field::UnicodeHash, hash.cast_unsigned(), 8);
+                }
+                Kind::Unicode => {}
+            }
+        }
+
+        let object = self.object(ty, self.offset(Field::DictKeys) + 8);
+        self.word(
+            object,
+            Field::DictUsed,
+            (entries.len() - deleted.len()) as u64,
+        );
+        self.word(object, Field::DictValues, 0);
+        self.word(object, Field::DictKeys, keys);
+        object
+    }
+
     /// A `dict` of type `ty` that keeps its values apart from its keys, as
     /// an instance's do, and whose header counts `used` items.
-    fn split_dict(&mut self, ty: VirtualAddress, used: u64) -> u64 {
+    pub(super) fn split_dict(&mut self, ty: VirtualAddress, used: u64) -> u64 {
         let object = self.object(ty, self.offset(Field::DictKeys) + 8);
         let separate = self.alloc(16);
         self.word(object, Field::DictUsed, used);
@@ -266,7 +353,7 @@ impl Process {
 
     /// Gives the code object `code` the local variables `names`, whose
     /// kinds are `kinds`.
-    fn locals(&mut self, types: &Types, code: u64, names: &[&str], kinds: &[u8]) {
+    pub(super) fn locals(&mut self, types: &Types, code: u64, names: &[&str], kinds: &[u8]) {
         let name_objects: Vec<u64> = names.iter().map(|name| self.string(name)).collect();
         let tuple = self.tuple(types.tuple, &name_objects);
         let kinds = self.bytes(kinds);
@@ -275,12 +362,43 @@ impl Process {
     }
 }
 
+/// The fields of a combined `dict`'s entries of `kind`: the size of an
+/// entry, where its key and value are, and the constant of its keys' kind.
+fn entry_fields(kind: Kind) -> (Field, Field, Field, Constant) {
+    match kind {
+        Kind::General => (
+            Field::DictEntrySize,
+            Field::DictEntryKey,
+            Field::DictEntryValue,
+            Constant::DictKeysGeneral,
+        ),
+        Kind::Unicode => (
+            Field::DictUnicodeEntrySize,
+            Field::DictUnicodeEntryKey,
+            Field::DictUnicodeEntryValue,
+            Constant::DictKeysUnicode,
+        ),
+    }
+}
+
 /// Runs `read` on the values of `process`, which pays for its reads from a
 /// budget of `limits`.
-fn with_values<R>(
+pub(super) fn with_values<R>(
     process: &Process,
     types: Types,
     limits: InspectionLimits,
+    read: impl FnOnce(&Values<'_, '_>) -> R,
+) -> R {
+    with_secret(process, types, limits, None, read)
+}
+
+/// Runs `read` on the values of `process` with the process's hash secret at
+/// `secret`, which pays for its reads from a budget of `limits`.
+pub(super) fn with_secret<R>(
+    process: &Process,
+    types: Types,
+    limits: InspectionLimits,
+    secret: Option<VirtualAddress>,
     read: impl FnOnce(&Values<'_, '_>) -> R,
 ) -> R {
     let mut inspection = InspectionBudget::new(limits);
@@ -293,7 +411,7 @@ fn with_values<R>(
         },
         types,
         budget: &budget,
-        secret: None,
+        secret,
         hashing: std::cell::Cell::new(None),
     };
     read(&values)

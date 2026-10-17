@@ -26,7 +26,7 @@ const UNMAPPED: u64 = 0x6000_0000_0000;
 const FILE: &str = "app.py";
 
 /// The sizes of the synthetic structures the layout gives.
-const FRAME_SIZE: u64 = 80;
+const FRAME_SIZE: u64 = 96;
 const CODE_SIZE: u64 = 128;
 const THREAD_SIZE: u64 = 64;
 const STRING_SIZE: u64 = 48;
@@ -97,12 +97,15 @@ fn layout() -> PythonLayout {
         (Field::DictKeysNentries, 8),
         (Field::DictKeysIndices, 16),
         (Field::DictEntrySize, 24),
+        (Field::DictEntryHash, 0),
         (Field::DictEntryKey, 8),
         (Field::DictEntryValue, 16),
         (Field::DictUnicodeEntrySize, 16),
         (Field::DictUnicodeEntryKey, 0),
         (Field::DictUnicodeEntryValue, 8),
-        (Field::FrameLocalsplus, 40),
+        (Field::FrameGlobals, 32),
+        (Field::FrameBuiltins, 40),
+        (Field::FrameLocalsplus, 48),
     ];
     for (field, offset) in fields {
         layout.set_field(field, offset);
@@ -835,6 +838,7 @@ fn a_thread_list_that_loops_is_a_gap_and_keeps_the_threads_before_it() {
     assert_eq!(gaps, ["interpreter 7's list of threads loops"]);
 }
 
+mod expressions;
 mod values;
 
 /// A runtime whose frames cannot be read, as one of a version microscope

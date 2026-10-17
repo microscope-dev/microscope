@@ -609,7 +609,7 @@ fn signed(bytes: &[u8]) -> Option<i64> {
 /// CPython's hash of a `str` of `points`, keyed by `key`: SipHash-1-3 of
 /// the code points in the narrowest of the widths CPython keeps them in,
 /// one, two, or four bytes each, and 0 for the empty `str`.
-fn hash_text(key: (u64, u64), points: &[u32]) -> i64 {
+pub(super) fn hash_text(key: (u64, u64), points: &[u32]) -> i64 {
     if points.is_empty() {
         return 0;
     }
@@ -733,7 +733,7 @@ const fn never_error(hash: i64) -> i64 {
 
 /// CPython's `long_hash`: the value modulo [`HASH_MODULUS`], with the
 /// value's sign.
-fn hash_int(value: i128) -> i64 {
+pub(super) fn hash_int(value: i128) -> i64 {
     let magnitude = value.unsigned_abs() % u128::from(HASH_MODULUS);
     let magnitude = i64::try_from(magnitude).unwrap_or(i64::MAX);
     never_error(if value < 0 { -magnitude } else { magnitude })
@@ -741,7 +741,7 @@ fn hash_int(value: i128) -> i64 {
 
 /// CPython's `_Py_HashDouble`: an integral float hashes as the int it
 /// equals, and any other as the rational it is, modulo [`HASH_MODULUS`].
-fn hash_float(value: f64) -> Option<i64> {
+pub(super) fn hash_float(value: f64) -> Option<i64> {
     if value.is_nan() {
         return None;
     }
