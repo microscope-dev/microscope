@@ -17,5 +17,6 @@ mod schemas;
 
 mod layouts;
 mod locals;
+mod oracles;
 mod session;
 mod stacks;

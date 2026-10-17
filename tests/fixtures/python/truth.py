@@ -143,22 +143,21 @@ def _codes(code):
             yield from _codes(constant)
 
 
-def code_table(path=None):
-    """Prints the lines of every code object compiled from a source file.
+def code_table():
+    """Prints the lines of every code object compiled from the main script
+    and from this module, whose frames park the fixture's threads.
 
     Every line microscope reports for a code object must be one CPython
-    gives it. Compiling the file again gives the same code objects without
-    racing the threads that run them. The file is the main script's unless
-    a path is given.
+    gives it. Compiling a file again gives the same code objects without
+    racing the threads that run them.
     """
-    if path is None:
-        path = sys.modules["__main__"].__file__
-    with open(path, encoding="utf-8") as source:
-        compiled = compile(source.read(), path, "exec")
-    for code in _codes(compiled):
-        lines = sorted({line for _, _, line in code.co_lines() if line is not None})
-        report("code", code.co_qualname, code.co_filename, code.co_firstlineno,
-               ",".join(map(str, lines)))
+    for path in (sys.modules["__main__"].__file__, __file__):
+        with open(path, encoding="utf-8") as source:
+            compiled = compile(source.read(), path, "exec")
+        for code in _codes(compiled):
+            lines = sorted({line for _, _, line in code.co_lines() if line is not None})
+            report("code", code.co_qualname, code.co_filename, code.co_firstlineno,
+                   ",".join(map(str, lines)))
 
 
 def _process():

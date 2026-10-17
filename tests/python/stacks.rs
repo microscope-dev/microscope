@@ -1,5 +1,7 @@
 //! Python programs' stacks at native stops.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use microscope::{
     CodeRole, CoreDumpOptions, ExecutionContext, FrameKind, InferiorState, StackFrameId,
     StackSegment, StopContext, ThreadId,
@@ -49,11 +51,11 @@ async fn the_interpreters_loop_and_calls_are_its_own() {
 
 /// A Python frame as CPython reported it: its qualified name, file, and
 /// line.
-type Reported = (String, String, String);
+pub type Reported = (String, String, String);
 
 /// Each thread a checkpoint reported: its native id, whether it printed
 /// the report, and its Python frames, innermost first.
-fn reported_threads(truth: &[Vec<String>]) -> Vec<(u64, bool, Vec<Reported>)> {
+pub fn reported_threads(truth: &[Vec<String>]) -> Vec<(u64, bool, Vec<Reported>)> {
     let mut threads: Vec<(u64, bool, Vec<Reported>)> = Vec::new();
     for fields in truth {
         match fields[0].as_str() {
@@ -78,30 +80,34 @@ fn reported_threads(truth: &[Vec<String>]) -> Vec<(u64, bool, Vec<Reported>)> {
 /// `reported`, past `beneath` innermost frames the thread entered after it
 /// reported them, each segment before the activation of the evaluation
 /// loop that runs it.
-fn assert_python_frames(
+pub fn check_frames(
     trace: &microscope::Backtrace,
     reported: &[Reported],
     beneath: usize,
-    context: &str,
-) {
-    let context = format!("{context}: {trace:#?}");
-    assert!(trace.unfollowed.is_empty(), "{context}");
-    let shown: Vec<Reported> = trace
-        .frames
-        .iter()
-        .filter(|frame| matches!(frame.kind, FrameKind::Interpreted { .. }))
-        .map(|frame| {
-            let recorded = frame.recorded.as_ref().expect(&context);
-            let place = recorded.place.as_ref().expect(&context);
-            (
-                recorded.function.to_string(),
-                place.path.to_string(),
-                place.line.to_string(),
-            )
-        })
-        .collect();
-    assert_eq!(shown.len(), reported.len() + beneath, "{context}");
-    assert!(shown.ends_with(reported), "{context}\n{reported:#?}");
+) -> Result<(), String> {
+    if !trace.unfollowed.is_empty() {
+        return Err(format!("frames are unfollowed: {:?}", trace.unfollowed));
+    }
+
+    let mut shown = Vec::new();
+    for frame in python_frames(trace) {
+        let place = frame
+            .recorded
+            .as_ref()
+            .and_then(|recorded| Some((recorded, recorded.place.as_ref()?)))
+            .ok_or_else(|| format!("frame {} has no recorded place", frame.level))?;
+        shown.push((
+            place.0.function.to_string(),
+            place.1.path.to_string(),
+            place.1.line.to_string(),
+        ));
+    }
+
+    if shown.len() != reported.len() + beneath || !shown.ends_with(reported) {
+        return Err(format!(
+            "shown {shown:#?}\nwhere CPython reported {reported:#?} beneath {beneath}"
+        ));
+    }
 
     for (index, frame) in trace.frames.iter().enumerate() {
         let ends = matches!(frame.kind, FrameKind::Interpreted { .. })
@@ -111,9 +117,81 @@ fn assert_python_frames(
                 .is_some_and(|next| !matches!(next.kind, FrameKind::Interpreted { .. }));
         if ends {
             let activation = &trace.frames[index + 1];
-            assert_eq!(activation.role, CodeRole::Interpreter, "{context}");
-            assert_eq!(activation.segment, StackSegment::Thread, "{context}");
+            if activation.role != CodeRole::Interpreter
+                || activation.segment != StackSegment::Thread
+            {
+                return Err(format!(
+                    "frame {} is not the evaluation loop that runs frame {}",
+                    activation.level, frame.level
+                ));
+            }
         }
+    }
+
+    Ok(())
+}
+
+/// A backtrace's Python frames, innermost first.
+fn python_frames(trace: &microscope::Backtrace) -> impl Iterator<Item = &microscope::StackFrame> {
+    trace
+        .frames
+        .iter()
+        .filter(|frame| matches!(frame.kind, FrameKind::Interpreted { .. }))
+}
+
+/// The lines of each code object a fixture's code table gave, by its
+/// qualified name and file.
+pub struct CodeLines(BTreeMap<(String, String), BTreeSet<String>>);
+
+impl CodeLines {
+    /// The code table in a fixture's report, which it prints before any
+    /// checkpoint.
+    pub fn of(report: &Report) -> Self {
+        let mut lines: BTreeMap<_, BTreeSet<String>> = BTreeMap::new();
+        for fields in report.lines().filter(|fields| fields[0] == "code") {
+            lines
+                .entry((fields[1].clone(), fields[2].clone()))
+                .or_default()
+                .extend(fields[4].split(',').map(ToOwned::to_owned));
+        }
+
+        Self(lines)
+    }
+
+    /// Checks that each Python frame in a file the table covers runs a
+    /// line its code has, and that the table covers some frame.
+    pub fn check(&self, trace: &microscope::Backtrace) -> Result<(), String> {
+        let mut checked = 0;
+        for frame in python_frames(trace) {
+            let Some((function, place)) = frame
+                .recorded
+                .as_ref()
+                .and_then(|recorded| Some((&recorded.function, recorded.place.as_ref()?)))
+            else {
+                continue;
+            };
+
+            let covered = self.0.keys().any(|(_, file)| *file == *place.path);
+            if !covered {
+                continue;
+            }
+
+            checked += 1;
+            let key = (function.to_string(), place.path.to_string());
+            let line = place.line.to_string();
+            if !self.0.get(&key).is_some_and(|lines| lines.contains(&line)) {
+                return Err(format!(
+                    "frame {} runs {function} at {}:{line}, a line its code has not",
+                    frame.level, place.path
+                ));
+            }
+        }
+
+        if checked == 0 {
+            return Err("the code table covers no frame of the stack".to_owned());
+        }
+
+        Ok(())
     }
 }
 
@@ -126,14 +204,19 @@ async fn each_threads_python_frames_are_the_ones_cpython_reports() {
         let mut session = PythonSession::launch(interpreter, "stacks.py", &[]).await;
         let truth = session.stop_at("parked").await;
         let threads = reported_threads(&truth);
+        let lines = CodeLines::of(&session.report());
         assert_eq!(threads.len(), 3, "{}: {truth:?}", session.context());
         for (thread, printer, reported) in threads {
             let trace = session.backtrace(ThreadId::new(thread)).await;
             // The printer reported its frames from its checkpoint's caller,
             // and parks in two frames beneath it.
             let beneath = if printer { 2 } else { 0 };
-            let context = format!("{} thread {thread}", session.context());
-            assert_python_frames(&trace, &reported, beneath, &context);
+            let context = format!("{} thread {thread}: {trace:#?}", session.context());
+            check_frames(&trace, &reported, beneath)
+                .unwrap_or_else(|lie| panic!("{context}\n{lie}"));
+            lines
+                .check(&trace)
+                .unwrap_or_else(|lie| panic!("{context}\n{lie}"));
         }
 
         session.shutdown().await;
@@ -150,11 +233,13 @@ async fn a_cores_python_frames_are_the_ones_cpython_reported() {
         let core = Scenario::fixture(&name);
         let log = std::fs::read_to_string(core.with_extension("core.log"))
             .expect("the core's log; run `just build-test-programs`");
-        let truth = Report::parse(&log)
+        let report = Report::parse(&log);
+        let truth = report
             .checkpoint("parked")
             .expect("the checkpoint the core was taken at")
             .to_vec();
         let threads = reported_threads(&truth);
+        let lines = CodeLines::of(&report);
         assert_eq!(threads.len(), 3, "{name}: {truth:?}");
 
         let mut scenario = Scenario::open_core(&name, &CoreDumpOptions::new(core));
@@ -177,12 +262,12 @@ async fn a_cores_python_frames_are_the_ones_cpython_reported() {
 
             // The printer aborts in its checkpoint, beneath what it reported.
             let beneath = usize::from(printer);
-            assert_python_frames(
-                &trace,
-                &reported,
-                beneath,
-                &format!("{name} thread {thread}"),
-            );
+            let context = format!("{name} thread {thread}: {trace:#?}");
+            check_frames(&trace, &reported, beneath)
+                .unwrap_or_else(|lie| panic!("{context}\n{lie}"));
+            lines
+                .check(&trace)
+                .unwrap_or_else(|lie| panic!("{context}\n{lie}"));
         }
 
         scenario.shutdown().await;

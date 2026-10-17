@@ -17,7 +17,7 @@ use crate::support::truth::Report;
 
 /// The fixture's functions, each parked on a thread of its own, and the
 /// parameters of each, in order.
-const PARKED: [(&str, &[&str]); 4] = [
+pub const PARKED: [(&str, &[&str]); 4] = [
     ("scalars", &["gate"]),
     ("containers", &["gate"]),
     ("unbound_and_shared", &["gate"]),
@@ -37,7 +37,7 @@ const UNBOUND_IN: &str = "unbound_and_shared";
 
 /// Each frame's locals as CPython reported them, by its thread's native id
 /// and its qualified name: each local's name and canonical text.
-fn reported_locals(truth: &[Vec<String>]) -> BTreeMap<(u64, String), Vec<(String, String)>> {
+pub fn reported_locals(truth: &[Vec<String>]) -> BTreeMap<(u64, String), Vec<(String, String)>> {
     let mut frames = BTreeMap::new();
     let mut names = BTreeMap::new();
     for fields in truth {
@@ -62,15 +62,15 @@ fn reported_locals(truth: &[Vec<String>]) -> BTreeMap<(u64, String), Vec<(String
 }
 
 /// A stop's frames and their variables.
-struct Stop<'a> {
-    scenario: &'a Scenario,
-    id: StopId,
-    context: String,
+pub struct Stop<'a> {
+    pub scenario: &'a Scenario,
+    pub id: StopId,
+    pub context: String,
 }
 
 impl Stop<'_> {
     /// The variables of the frame of `thread` that runs `function`.
-    async fn variables(&self, thread: u64, function: &str) -> Vec<Variable> {
+    pub async fn variables(&self, thread: u64, function: &str) -> Vec<Variable> {
         let at = |frame| StopContext {
             stop: self.id,
             execution: ExecutionContext::Thread(ThreadId::new(thread)),
@@ -152,83 +152,140 @@ fn children_of(state: &VariableState) -> &Arc<ValueChildrenReference> {
     }
 }
 
-/// Checks the locals of every parked function's frame against CPython's.
-async fn assert_locals(stop: &Stop<'_>, truth: &[Vec<String>]) {
+/// The one-line text a value is presented as, if it is presented.
+fn presented(state: &VariableState) -> Option<&str> {
+    match state {
+        VariableState::Available {
+            presentation: Some(presentation),
+            ..
+        } => Some(&presentation.summary),
+        _ => None,
+    }
+}
+
+/// Checks the locals of the frame of `function`, whose parameters are
+/// `parameters`, against those CPython reported for it: each bound local
+/// by its name, its kind, and its canonical text, in order; the unbound
+/// ones said to be; and those a closure shares said to be in a cell.
+pub fn check_locals(
+    function: &str,
+    parameters: &[&str],
+    variables: &[Variable],
+    reported: &[(String, String)],
+) -> Result<(), String> {
+    // CPython leaves unbound locals out; the debugger says they are.
+    let mut bound = Vec::new();
+    for variable in variables {
+        if !UNBOUND.contains(&&*variable.name) {
+            bound.push(variable);
+        } else if variable.state != VariableState::Unavailable(VariableUnavailableReason::Unbound) {
+            return Err(format!(
+                "{} is not unbound: {:?}",
+                variable.name, variable.state
+            ));
+        }
+    }
+
+    let unbound = variables.len() - bound.len();
+    let expected = if function == UNBOUND_IN {
+        UNBOUND.len()
+    } else {
+        0
+    };
+    if unbound != expected {
+        return Err(format!("{unbound} locals are unbound, not {expected}"));
+    }
+
+    let names: Vec<&str> = bound.iter().map(|variable| &*variable.name).collect();
+    let reported_names: Vec<&str> = reported.iter().map(|(name, _)| name.as_str()).collect();
+    if names != reported_names {
+        return Err(format!(
+            "locals {names:?} where CPython reported {reported_names:?}"
+        ));
+    }
+
+    for (variable, (name, text)) in bound.iter().zip(reported) {
+        let kind = if parameters.contains(&name.as_str()) {
+            VariableKind::Parameter
+        } else {
+            VariableKind::Local
+        };
+        if variable.kind != kind {
+            return Err(format!("{name} is a {:?}, not a {kind:?}", variable.kind));
+        }
+
+        if SHARED.contains(&name.as_str()) {
+            let cell = VariableState::Unavailable(VariableUnavailableReason::Unsupported(
+                UnsupportedVariableFeature::SharedCell,
+            ));
+            if variable.state != cell {
+                return Err(format!("{name} is not in a cell: {:?}", variable.state));
+            }
+            continue;
+        }
+
+        // An object of a type the debugger does not present is shown by
+        // its type, which CPython reported as `<module.name ...>`.
+        if let Some(shown) = text.strip_prefix('<') {
+            let qualified = shown.split([' ', '>']).next().unwrap_or_default();
+            let base = qualified.rsplit('.').next().unwrap_or_default();
+            let type_name = variable.type_info.as_ref().map(|info| &*info.name);
+            if type_name != Some(base) && type_name != Some(qualified) {
+                return Err(format!("{name} is of type {type_name:?}, for {text}"));
+            }
+            continue;
+        }
+
+        if presented(&variable.state) != Some(text) {
+            return Err(format!(
+                "{name} is {:?} where CPython reported {text}",
+                variable.state
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Each presented local's text, by its function and name, where it is
+/// the same on every interpreter: not an object shown by its address.
+type Agreed = BTreeMap<(String, String), String>;
+
+/// Checks the locals of every parked function's frame against CPython's,
+/// and gives the texts every interpreter must agree on.
+pub async fn assert_locals(stop: &Stop<'_>, truth: &[Vec<String>]) -> Agreed {
     let reported = reported_locals(truth);
+    let mut agreed = Agreed::new();
     for (function, parameters) in PARKED {
         let (thread, expected) = reported
             .iter()
             .find_map(|((thread, name), locals)| (name == function).then_some((*thread, locals)))
             .unwrap_or_else(|| panic!("{}: CPython reported no {function}", stop.context));
         let variables = stop.variables(thread, function).await;
-        let context = format!("{} {function}: {variables:#?}", stop.context);
-
-        // CPython leaves unbound locals out; the debugger says they are.
-        let bound: Vec<&Variable> = variables
-            .iter()
-            .filter(|variable| {
-                if UNBOUND.contains(&&*variable.name) {
-                    assert_eq!(
-                        variable.state,
-                        VariableState::Unavailable(VariableUnavailableReason::Unbound),
-                        "{context}"
-                    );
-                    return false;
-                }
-
-                true
-            })
-            .collect();
-        let unbound = variables.len() - bound.len();
-        let expected_unbound = if function == UNBOUND_IN {
-            UNBOUND.len()
-        } else {
-            0
-        };
-        assert_eq!(unbound, expected_unbound, "{context}");
-        let names: Vec<&str> = bound.iter().map(|variable| &*variable.name).collect();
-        let reported_names: Vec<&str> = expected.iter().map(|(name, _)| name.as_str()).collect();
-        assert_eq!(names, reported_names, "{context}");
-
-        for (variable, (_, text)) in bound.iter().zip(expected) {
-            let kind = if parameters.contains(&&*variable.name) {
-                VariableKind::Parameter
-            } else {
-                VariableKind::Local
-            };
-            assert_eq!(variable.kind, kind, "{} {}", variable.name, context);
-            if SHARED.contains(&&*variable.name) {
-                assert_eq!(
-                    variable.state,
-                    VariableState::Unavailable(VariableUnavailableReason::Unsupported(
-                        UnsupportedVariableFeature::SharedCell
-                    )),
-                    "{context}"
+        check_locals(function, parameters, &variables, expected)
+            .unwrap_or_else(|lie| panic!("{} {function}: {variables:#?}\n{lie}", stop.context));
+        for variable in &variables {
+            if let Some(text) = presented(&variable.state).filter(|text| !text.starts_with('<')) {
+                agreed.insert(
+                    (function.to_owned(), variable.name.to_string()),
+                    text.to_owned(),
                 );
-                continue;
             }
-
-            // An object of a type the debugger does not present is shown
-            // by its type, which CPython reported as `<module.name ...>`.
-            if let Some(shown) = text.strip_prefix('<') {
-                let qualified = shown.split([' ', '>']).next().unwrap_or_default();
-                let name = qualified.rsplit('.').next().unwrap_or_default();
-                let type_name = &variable.type_info.as_ref().expect(&context).name;
-                assert!(
-                    **type_name == *name || **type_name == *qualified,
-                    "{}: {type_name} for {text}: {context}",
-                    variable.name
-                );
-                continue;
-            }
-
-            assert_eq!(
-                summary(&variable.state),
-                text,
-                "{}: {context}",
-                variable.name
-            );
         }
+    }
+
+    agreed
+}
+
+/// Checks that every interpreter presented the locals each presents as
+/// the first did.
+fn assert_agreement(runs: &[(String, Agreed)]) {
+    let Some((first, expected)) = runs.first() else {
+        return;
+    };
+
+    for (name, agreed) in &runs[1..] {
+        assert_eq!(agreed, expected, "{name} disagrees with {first}");
     }
 }
 
@@ -350,6 +407,7 @@ async fn assert_children(stop: &Stop<'_>, truth: &[Vec<String>]) {
 /// its `repr` presents them, on every interpreter in the matrix.
 #[tokio::test]
 async fn each_frames_locals_are_the_ones_cpython_reports() {
+    let mut runs = Vec::new();
     for interpreter in MATRIX {
         let mut session = PythonSession::launch(interpreter, "locals.py", &[]).await;
         let truth = session.stop_at("parked").await;
@@ -358,17 +416,22 @@ async fn each_frames_locals_are_the_ones_cpython_reports() {
             scenario: &session.scenario,
             context: session.context(),
         };
-        assert_locals(&stop, &truth).await;
+        runs.push((interpreter.to_owned(), assert_locals(&stop, &truth).await));
         assert_numbers(&stop, &truth).await;
         assert_children(&stop, &truth).await;
         session.shutdown().await;
     }
+
+    // Every interpreter presents the same values alike, free-threaded or
+    // not, as its own build or a distribution's.
+    assert_agreement(&runs);
 }
 
 /// A core dump's Python frames hold the locals the program reported just
 /// before it aborted.
 #[tokio::test]
 async fn a_cores_python_locals_are_the_ones_cpython_reported() {
+    let mut runs = Vec::new();
     for interpreter in CORES {
         let name = format!("python-locals-{interpreter}.core");
         let core = Scenario::fixture(&name);
@@ -389,9 +452,11 @@ async fn a_cores_python_locals_are_the_ones_cpython_reported() {
             id: stop_id,
             context: name.clone(),
         };
-        assert_locals(&stop, &truth).await;
+        runs.push((name.clone(), assert_locals(&stop, &truth).await));
         assert_numbers(&stop, &truth).await;
         assert_children(&stop, &truth).await;
         scenario.shutdown().await;
     }
+
+    assert_agreement(&runs);
 }

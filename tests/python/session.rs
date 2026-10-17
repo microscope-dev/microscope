@@ -7,8 +7,8 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use microscope::{
-    Backtrace, DebugFileOptions, ExecutionContext, InferiorState, LaunchOptions, StackFrameId,
-    StopContext, StopId, StopReason, ThreadId,
+    Backtrace, DebugFileOptions, Debugger, ExecutionContext, InferiorState, LaunchOptions,
+    ProcessId, StackFrameId, StopContext, StopId, StopReason, ThreadId,
 };
 use tokio::task::JoinHandle;
 
@@ -44,17 +44,90 @@ pub struct PythonSession {
     output: PathBuf,
     input: std::io::PipeWriter,
     running: Option<JoinHandle<microscope::Result<StopReason>>>,
+
+    /// A fixture the debugger attached to, which the session ends.
+    attached: Option<Ended>,
     _scratch: ScratchDir,
 }
 
-impl PythonSession {
-    /// Launches `fixture` with `arguments` under `interpreter`, running.
-    pub async fn launch(interpreter: &str, fixture: &str, arguments: &[&str]) -> Self {
+/// A process the session started and ends: killed and reaped when it is
+/// dropped, whatever else failed.
+struct Ended(std::process::Child);
+
+impl Drop for Ended {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Where a fixture writes, and how it is fed: its output in a file, which
+/// its errors share, and its input a pipe.
+struct Streams {
+    scratch: ScratchDir,
+    output: PathBuf,
+    file: std::fs::File,
+    errors: std::fs::File,
+    reader: std::io::PipeReader,
+    input: std::io::PipeWriter,
+}
+
+impl Streams {
+    fn new() -> Self {
         let scratch = ScratchDir::new("python");
         let output = scratch.path().join("stdout");
         let file = std::fs::File::create(&output).expect("create the fixture's output");
         let errors = file.try_clone().expect("share the fixture's output");
         let (reader, input) = std::io::pipe().expect("the fixture's input");
+        Self {
+            scratch,
+            output,
+            file,
+            errors,
+            reader,
+            input,
+        }
+    }
+}
+
+/// The interpreter's arguments that run `fixture` with `arguments`.
+fn command(fixture: &str, arguments: &[&str]) -> Vec<std::ffi::OsString> {
+    // Fixtures write no bytecode beside their sources, which would make
+    // the fixtures' build think they changed.
+    let mut command = vec![
+        "-I".into(),
+        "-B".into(),
+        python::fixture(fixture).into_os_string(),
+    ];
+    command.extend(arguments.iter().map(Into::into));
+    command
+}
+
+/// Waits for the fixture writing `output` to park at the checkpoint
+/// `name`, and returns what it reported there.
+async fn reported(output: &std::path::Path, name: &str, context: &str) -> Vec<Vec<String>> {
+    let began = Instant::now();
+    loop {
+        let text = std::fs::read_to_string(output).unwrap_or_default();
+        let ready = text
+            .rsplit_once("TRUTH\tcheckpoint\t")
+            .is_some_and(|(_, last)| last.contains("\nREADY\n"));
+        if ready && let Some(lines) = Report::parse(&text).checkpoint(name) {
+            return lines.to_vec();
+        }
+
+        assert!(
+            began.elapsed() < CHECKPOINT_DEADLINE,
+            "{context}: no checkpoint {name} in:\n{text}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+impl PythonSession {
+    /// Launches `fixture` with `arguments` under `interpreter`, running.
+    pub async fn launch(interpreter: &str, fixture: &str, arguments: &[&str]) -> Self {
+        let streams = Streams::new();
         let debug_files = DebugFileOptions {
             directories: python::debug_directory(interpreter).into_iter().collect(),
             ..DebugFileOptions::default()
@@ -64,20 +137,12 @@ impl PythonSession {
             python::interpreter(interpreter),
             &debug_files,
         );
-        // Fixtures write no bytecode beside their sources, which would make
-        // the fixtures' build think they changed.
-        let mut command = vec![
-            "-I".into(),
-            "-B".into(),
-            python::fixture(fixture).into_os_string(),
-        ];
-        command.extend(arguments.iter().map(Into::into));
         let running = scenario
             .start_running_with(LaunchOptions {
-                arguments: command,
-                stdin: Some(Stdio::from(reader)),
-                stdout: Some(Stdio::from(file)),
-                stderr: Some(Stdio::from(errors)),
+                arguments: command(fixture, arguments),
+                stdin: Some(Stdio::from(streams.reader)),
+                stdout: Some(Stdio::from(streams.file)),
+                stderr: Some(Stdio::from(streams.errors)),
                 ..LaunchOptions::default()
             })
             .await;
@@ -85,34 +150,59 @@ impl PythonSession {
             scenario,
             interpreter: interpreter.to_owned(),
             fixture: fixture.to_owned(),
-            output,
-            input,
+            output: streams.output,
+            input: streams.input,
             running: Some(running),
-            _scratch: scratch,
+            attached: None,
+            _scratch: streams.scratch,
         }
+    }
+
+    /// Runs `fixture` under `interpreter` outside the debugger until it
+    /// parks at the checkpoint `name`, then attaches to it, which stops
+    /// it; and returns what it reported there.
+    pub async fn attach_at(
+        interpreter: &str,
+        fixture: &str,
+        name: &str,
+    ) -> (Self, Vec<Vec<String>>) {
+        let streams = Streams::new();
+        let child = Ended(
+            std::process::Command::new(python::interpreter(interpreter))
+                .args(command(fixture, &[]))
+                .stdin(Stdio::from(streams.reader))
+                .stdout(Stdio::from(streams.file))
+                .stderr(Stdio::from(streams.errors))
+                .spawn()
+                .expect("start the fixture"),
+        );
+        let context = format!("{interpreter} {fixture} attached");
+        let truth = reported(&streams.output, name, &context).await;
+        let debug_files = DebugFileOptions {
+            directories: python::debug_directory(interpreter).into_iter().collect(),
+            ..DebugFileOptions::default()
+        };
+        let process = ProcessId::new(u64::from(child.0.id()));
+        let debugger = Debugger::attach_with(process, None, &debug_files)
+            .await
+            .expect("attach to the fixture");
+        let session = Self {
+            scenario: Scenario::attached(context, debugger),
+            interpreter: interpreter.to_owned(),
+            fixture: fixture.to_owned(),
+            output: streams.output,
+            input: streams.input,
+            running: None,
+            attached: Some(child),
+            _scratch: streams.scratch,
+        };
+        (session, truth)
     }
 
     /// Waits for the fixture to park at the checkpoint `name`, then stops
     /// it, and returns what it reported there.
     pub async fn stop_at(&mut self, name: &str) -> Vec<Vec<String>> {
-        let began = Instant::now();
-        let lines = loop {
-            let text = std::fs::read_to_string(&self.output).unwrap_or_default();
-            let ready = text
-                .rsplit_once("TRUTH\tcheckpoint\t")
-                .is_some_and(|(_, last)| last.contains("\nREADY\n"));
-            if ready && let Some(lines) = Report::parse(&text).checkpoint(name) {
-                break lines.to_vec();
-            }
-
-            assert!(
-                began.elapsed() < CHECKPOINT_DEADLINE,
-                "{}: no checkpoint {name} in:\n{text}",
-                self.context()
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        };
-
+        let lines = reported(&self.output, name, &self.context()).await;
         let running = self.running.take().expect("the fixture runs");
         self.scenario
             .operation("pause", self.scenario.handle().pause())
@@ -157,6 +247,11 @@ impl PythonSession {
             .await
     }
 
+    /// Everything the fixture has reported so far.
+    pub fn report(&self) -> Report {
+        Report::read(&self.output)
+    }
+
     /// The interpreter and fixture, for messages.
     pub fn context(&self) -> String {
         format!("{} {}", self.interpreter, self.fixture)
@@ -166,5 +261,6 @@ impl PythonSession {
     pub async fn shutdown(self) {
         drop(self.input);
         self.scenario.shutdown().await;
+        drop(self.attached);
     }
 }
