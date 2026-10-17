@@ -310,11 +310,23 @@ other free IDs, and reports exhaustion without changing another tool.
 The transport's flat probes specify an event, report kind, number, and exact
 file/line/qualified-name selectors. The runtime supplies event policy;
 conditions, hit counts, expressions, step ownership, and exception judgments
-remain debugger work. `PY_START` discovers code objects; local events apply
-only to matching code, including code already running at installation.
-`DISABLE` suppresses irrelevant local locations, never non-disableable events.
-Reconfiguration needs `restart_events()`, whose CPython API also reactivates
-other tools' disabled locations; it preserves their registrations and callbacks.
+remain debugger work. `PY_START`, `PY_RESUME`, and `PY_THROW` discover code
+objects; local events apply only to matching code, including frames running
+at installation and generators
+or coroutines that were already suspended when configuration changed.
+Discovery keeps weak references keyed by code identity, because code equality
+can ignore the filename. Each code object is instrumented once per generation,
+and zero masks require no instrumentation call. Callbacks never return
+`DISABLE`: CPython can process an older callback's return after a newer
+configuration, disabling its locations. Freeing the old tool ID resets its
+local-event version, so configuration needs no global `restart_events()` and
+avoids global reactivation of other tools' disabled locations. CPython can
+reactivate their disabled locations on code microscope instruments with the
+same event; their registrations and event masks remain intact. Unrelated code
+stays disabled. While armed, discovery still takes
+one Python callback per function entry, resumption, or thrown-in exception;
+matching code takes local callbacks at each enabled event, including
+nonmatching lines. Idle unregisters everything.
 
 `python/hook.rs` generates a small ELF shared library, including its export
 and unwind information. It needs no target compiler or libpython. Its function
@@ -326,7 +338,9 @@ error (argument 1: tool exhaustion; 2: callback/configuration failure). Malforme
 reports produce a visible runtime stop. The frame comes from the stopped
 thread's interpreter state; no mailbox or process-global event buffer exists.
 A single lock serializes configuration and callbacks on free-threaded builds,
-and is released before every native report. Callback failures disarm the agent
+and captures each report's hook before releasing the lock. That keeps an old
+report bound to its original sink if a later owner replaces it. The lock is
+released before every native report. Callback failures disarm the agent
 and report the failure instead of raising into the program.
 
 P4.6 provides this transport and cooperative fixture tests. PEP 768 injection,

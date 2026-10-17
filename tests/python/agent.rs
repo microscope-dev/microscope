@@ -54,35 +54,100 @@ fn monitoring_reconfiguration_and_cleanup() {
     .expect("write script");
     for interpreter in ["3.12", "3.13", "3.13t", "3.14", "3.14t", "3.15", "3.15t"] {
         let output = scratch.path().join(format!("{interpreter}.out"));
-        let stdout = std::fs::File::create(&output).expect("fixture output");
-        let mut child = Reaped(
-            Command::new(python::interpreter(interpreter))
-                .args(["-I", "-B"])
-                .arg(python::fixture("agent.py"))
-                .arg(&agent)
-                .arg(&library)
-                .arg(&standalone)
-                .stdout(stdout.try_clone().expect("share output"))
-                .stderr(stdout)
-                .stdin(Stdio::null())
-                .spawn()
-                .expect("run the agent fixture"),
+        let output = fixture_output(
+            interpreter,
+            "agent.py",
+            &[
+                agent.as_os_str(),
+                library.as_os_str(),
+                standalone.as_os_str(),
+            ],
+            &output,
         );
-        let deadline = Instant::now() + Duration::from_secs(30);
-        let status = loop {
-            if let Some(status) = child.0.try_wait().expect("wait for the fixture") {
-                break status;
-            }
-            if Instant::now() >= deadline {
-                child.0.kill().expect("kill timed out fixture");
-                child.0.wait().expect("reap timed out fixture");
-                panic!("{interpreter}: agent fixture timed out");
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        };
-        let output = std::fs::read_to_string(&output).expect("read fixture output");
-        assert!(status.success(), "{interpreter}: {output}");
         assert!(output.contains("AGENT OK"), "{interpreter}: {output}");
+    }
+}
+
+fn fixture_output(
+    interpreter: &str,
+    fixture: &str,
+    arguments: &[&std::ffi::OsStr],
+    output: &std::path::Path,
+) -> String {
+    let stdout = std::fs::File::create(output).expect("fixture output");
+    let mut child = Reaped(
+        Command::new(python::interpreter(interpreter))
+            .args(["-I", "-B"])
+            .arg(python::fixture(fixture))
+            .args(arguments)
+            .stdout(stdout.try_clone().expect("share output"))
+            .stderr(stdout)
+            .stdin(Stdio::null())
+            .spawn()
+            .expect("run the agent fixture"),
+    );
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = child.0.try_wait().expect("wait for the fixture") {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{interpreter}: {fixture} timed out"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let output = std::fs::read_to_string(output).expect("read fixture output");
+    assert!(status.success(), "{interpreter} {fixture}: {output}");
+    output
+}
+
+#[test]
+fn monitoring_callbacks_survive_reconfiguration_and_code_reuse() {
+    let scratch = ScratchDir::new("python-agent-races");
+    let source =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runtime_model/python/agent.py");
+    for interpreter in ["3.14", "3.14t", "3.15", "3.15t"] {
+        for (fixture, modes) in [
+            ("agent_races.py", &["capture", "disable"][..]),
+            (
+                "agent_discovery.py",
+                &[
+                    "repeat",
+                    "fault",
+                    "resumed",
+                    "delegated",
+                    "identity",
+                    "gc",
+                    "reused",
+                    "coexist",
+                    "coexist_matching",
+                ][..],
+            ),
+        ] {
+            for mode in modes {
+                let output = scratch
+                    .path()
+                    .join(format!("{interpreter}-{fixture}-{mode}.out"));
+                let output = fixture_output(
+                    interpreter,
+                    fixture,
+                    &[source.as_os_str(), std::ffi::OsStr::new(mode)],
+                    &output,
+                );
+                let prefix = if fixture == "agent_races.py" {
+                    "RACE"
+                } else {
+                    "DISCOVERY"
+                };
+                assert!(
+                    output
+                        .lines()
+                        .any(|line| line == format!("{prefix} OK {mode}")),
+                    "{interpreter}: {output}"
+                );
+            }
+        }
     }
 }
 

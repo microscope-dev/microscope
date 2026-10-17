@@ -131,7 +131,7 @@ load(1, ())
 target()
 assert records == [(1, 42, 0)], records
 records.clear()
-# A new generation restarts locations previously disabled by DISABLE.
+# A new generation replaces the local event mask on already seen code.
 probe2 = ("PY_START", 1, 43, __file__, 0, "target")
 load(3, (probe2,))
 records.clear()
@@ -267,6 +267,32 @@ target()
 assert records == [(1, 43, 0)], records
 agent.hook = record
 load(16, ())
+
+# Force a weakref callback under the real bootstrap's reentrant lock.
+# The only strong references form a cycle, so collection triggers expiry.
+import gc
+import weakref
+load(17, (probe,))
+was_enabled = gc.isenabled()
+gc.disable()
+try:
+    namespace = {}
+    exec(compile("def cyclic(): return cyclic\n", "<cycle>", "exec"), namespace)
+    cyclic = namespace["cyclic"]
+    assert cyclic() is cyclic
+    identity = id(cyclic.__code__)
+    reference = weakref.ref(cyclic.__code__)
+    assert identity in agent.discovered
+    del cyclic, namespace
+    with agent.lock:
+        assert agent.lock is agent._bootstrap_lock
+        gc.collect()
+        assert reference() is None
+        assert identity not in agent.discovered
+finally:
+    if was_enabled:
+        gc.enable()
+load(18, ())
 
 # A generated whole-state script needs no prepopulated namespace, including
 # on repeated execution. Its string literals are escaped by the Rust builder.

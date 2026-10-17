@@ -90,6 +90,7 @@ mod tests {
         .expect("serialize the complete state");
         assert!(script.contains("__microscope_generation = 18446744073709551615"));
         assert!(script.contains(r#"a\"\\\nb.so"#));
+        assert!(script.contains("_candidate._bootstrap_lock = _thread.RLock()"));
         assert!(script.contains("_sys.modules.setdefault('_microscope_agent', _candidate)"));
         assert!(super::super::hook::library().starts_with(b"\x7fELF"));
     }

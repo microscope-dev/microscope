@@ -10,6 +10,7 @@ if sys.version_info < (3, 14):
     raise RuntimeError("microscope's monitoring transport requires CPython 3.14 or later")
 
 import ctypes
+import _weakref
 
 monitoring = sys.monitoring
 events = monitoring.events
@@ -18,6 +19,7 @@ generation = -1
 probes = ()
 hook = None
 _library = None
+discovered = {}
 # Configuration and callbacks can run concurrently in free-threaded builds.
 # No native hook is called while this lock is held.
 lock = _bootstrap_lock
@@ -39,6 +41,7 @@ def clear():
         monitoring.free_tool_id(tool)
         tool = None
     probes = ()
+    discovered.clear()
 
 
 def dispatch(event, code, location):
@@ -48,35 +51,52 @@ def dispatch(event, code, location):
 
 
 def discover(code):
+    identity = id(code)
+    previous = discovered.get(identity)
+    if previous is not None and previous() is code:
+        return
     mask = 0
     for probe in probes:
         if probe[0] in LOCAL and matches(probe, code):
             mask |= getattr(events, probe[0])
-    monitoring.set_local_events(tool, code, mask)
+    if mask:
+        monitoring.set_local_events(tool, code, mask)
+
+    # Code equality can ignore its filename. Cache by identity and retain
+    # only a weak reference, so dynamic code neither aliases nor leaks.
+    def expired(reference):
+        with lock:
+            if discovered.get(identity) is reference:
+                discovered.pop(identity, None)
+    discovered[identity] = _weakref.ref(code, expired)
 
 
 def callback(event):
     def report(code, location, *unused):
         if id(code) in INTERNAL:
-            return monitoring.DISABLE if event in LOCAL else None
+            return None
         with lock:
             if tool is None:
                 return
             try:
-                if event == "PY_START":
+                if event in ("PY_START", "PY_RESUME", "PY_THROW"):
                     discover(code)
                 reports = dispatch(event, code, location)
-                disable = not reports and event in LOCAL
             except BaseException:
                 # A monitoring exception must never escape into user code.
                 clear()
                 reports = ((3, generation, 2),)
-                disable = False
+            # A new owner may replace the global hook after this lock is
+            # released. Each captured report retains its original sink.
+            report_hook = hook
         for arguments in reports:
-            hook(*arguments)
-        if disable:
-            return monitoring.DISABLE
+            report_hook(*arguments)
     return report
+
+
+# Returning monitoring.DISABLE races a new configuration: CPython can
+# process the old return after the new events were armed. Keep discovery
+# weak and idempotent instead, and never reset other tools' disabled sites.
 
 
 def configure(library, wanted_generation, wanted_probes):
@@ -125,15 +145,11 @@ def configure(library, wanted_generation, wanted_probes):
         probes = wanted_probes
         for event in LOCAL + OTHER:
             monitoring.register_callback(tool, getattr(events, event), callback(event))
-        mask = events.PY_START
+        mask = events.PY_START | events.PY_RESUME | events.PY_THROW
         for probe in probes:
             if probe[0] in OTHER:
                 mask |= getattr(events, probe[0])
         monitoring.set_events(tool, mask)
-        # DISABLE survives tool-ID reuse. CPython offers only a global restart;
-        # other tools keep their events/callbacks but can get another callback
-        # at a location they disabled.
-        monitoring.restart_events()
         # Enable discovery before scanning frames: another thread can enter
         # code while this one configures a free-threaded interpreter.
         for frame in sys._current_frames().values():
@@ -149,8 +165,9 @@ def configure(library, wanted_generation, wanted_probes):
 def apply(library, wanted_generation, wanted_probes):
     with lock:
         report = configure(library, wanted_generation, wanted_probes)
+        report_hook = hook
     if report is not None:
-        hook(*report)
+        report_hook(*report)
 
 
 # Suppress only our own code objects, never functions guessed from their names.
