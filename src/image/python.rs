@@ -58,6 +58,7 @@ entries! {
     /// a structure's size.
     Field {
         RuntimeInterpretersHead = "runtime_state.interpreters_head",
+        RuntimeInitialized = "runtime_state.initialized",
 
         InterpreterId = "interpreter_state.id",
         InterpreterNext = "interpreter_state.next",
@@ -87,6 +88,16 @@ entries! {
         ThreadBaseFrame = "thread_state.base_frame",
         ThreadId = "thread_state.thread_id",
         ThreadNativeId = "thread_state.native_thread_id",
+
+        /// PEP 768, from 3.14. The first two offsets are relative to
+        /// `PyThreadState`, Enabled to `PyInterpreterState`, and Pending and
+        /// Script to the embedded remote-debugger support structure.
+        DebugEvalBreaker = "debugger_support.eval_breaker",
+        DebugSupport = "debugger_support.remote_debugger_support",
+        DebugEnabled = "debugger_support.remote_debugging_enabled",
+        DebugPending = "debugger_support.debugger_pending_call",
+        DebugScript = "debugger_support.debugger_script_path",
+        DebugScriptSize = "debugger_support.debugger_script_path_size",
 
         /// From 3.15, whether a thread holds its interpreter's GIL, and
         /// whether it asks for it, each an `int`.
@@ -427,6 +438,9 @@ entries! {
         /// The state of a future that has neither a result nor been
         /// cancelled, `STATE_PENDING`.
         FuturePending = "STATE_PENDING",
+
+        /// The eval breaker bit PEP 768 asks a debugger to set.
+        DebugStopBit = "_PY_EVAL_PLEASE_STOP_BIT",
     }
 }
 

@@ -103,6 +103,15 @@ WIDTH(PyASCIIObject, state, 4);
 WIDTH(PyDictKeysObject, dk_log2_size, 1);
 WIDTH(PyDictKeysObject, dk_log2_index_bytes, 1);
 WIDTH(PyDictKeysObject, dk_kind, 1);
+WIDTH(_PyRuntimeState, initialized, 4);
+
+#if PY_VERSION_HEX >= 0x030e0000
+/* The PEP 768 control fields are written at exactly these widths. */
+WIDTH(PyThreadState, eval_breaker, 8);
+WIDTH(PyInterpreterState, config.remote_debug, 4);
+WIDTH(_PyRemoteDebuggerSupport, debugger_pending_call, 4);
+WIDTH(_PyRemoteDebuggerSupport, debugger_script_path[0], 1);
+#endif
 
 /* An int's digits are 4 bytes wide where they hold more than 16 bits. */
 _Static_assert(sizeof(digit) == (PyLong_SHIFT > 16 ? 4 : 2), "an int's digit width");

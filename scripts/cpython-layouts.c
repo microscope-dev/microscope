@@ -28,6 +28,7 @@
 #include "internal/pycore_genobject.h"
 #include "internal/pycore_llist.h"
 #include "internal/pycore_tstate.h"
+#include "internal/pycore_ceval.h"
 #endif
 #include "internal/pycore_frame.h"
 
@@ -223,6 +224,7 @@ int main(int argc, char **argv) {
 
     printf("        fields: &[\n");
     FIELD(RuntimeInterpretersHead, offsetof(_PyRuntimeState, interpreters.head));
+    FIELD(RuntimeInitialized, offsetof(_PyRuntimeState, initialized));
     FIELD(InterpreterId, offsetof(PyInterpreterState, id));
     FIELD(InterpreterNext, offsetof(PyInterpreterState, next));
     FIELD(InterpreterThreadsHead, offsetof(PyInterpreterState, threads.head));
@@ -240,6 +242,14 @@ int main(int argc, char **argv) {
 #endif
     FIELD(ThreadId, offsetof(PyThreadState, thread_id));
     FIELD(ThreadNativeId, offsetof(PyThreadState, native_thread_id));
+#if PY_VERSION_HEX >= 0x030e0000
+    FIELD(DebugEvalBreaker, offsetof(PyThreadState, eval_breaker));
+    FIELD(DebugSupport, offsetof(PyThreadState, remote_debugger_support));
+    FIELD(DebugEnabled, offsetof(PyInterpreterState, config.remote_debug));
+    FIELD(DebugPending, offsetof(_PyRemoteDebuggerSupport, debugger_pending_call));
+    FIELD(DebugScript, offsetof(_PyRemoteDebuggerSupport, debugger_script_path));
+    FIELD(DebugScriptSize, _Py_MAX_SCRIPT_PATH_SIZE);
+#endif
     FIELD(InterpreterCevalGil, offsetof(PyInterpreterState, ceval.gil));
     FIELD(InterpreterGil, offsetof(PyInterpreterState, _gil));
     FIELD(InterpreterGilLocked, offsetof(PyInterpreterState, _gil.locked));
@@ -438,6 +448,9 @@ int main(int argc, char **argv) {
     printf("        ],\n");
 
     printf("        constants: &[\n");
+#if PY_VERSION_HEX >= 0x030e0000
+    CONSTANT(DebugStopBit, _PY_EVAL_PLEASE_STOP_BIT);
+#endif
     CONSTANT(OwnerThread, FRAME_OWNED_BY_THREAD);
     CONSTANT(OwnerGenerator, FRAME_OWNED_BY_GENERATOR);
     CONSTANT(OwnerFrameObject, FRAME_OWNED_BY_FRAME_OBJECT);

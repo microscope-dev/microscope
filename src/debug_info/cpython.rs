@@ -523,6 +523,27 @@ mod tests {
     }
 
     #[test]
+    fn remote_debugging_fields_are_taken_from_each_targets_table() {
+        for (version, schema) in [(0x030e_00f0, schemas::V3_14), (0x030f_00f0, schemas::V3_15)] {
+            for free_threaded in [false, true] {
+                let bytes = table(version, free_threaded, schema.len());
+                let layout = describe(Some(&bytes), Some(version)).2.expect("layout");
+                for name in schema
+                    .iter()
+                    .filter(|name| name.starts_with("debugger_support."))
+                {
+                    let field = Field::named(name).unwrap_or_else(|| panic!("missing {name}"));
+                    let index = schema
+                        .iter()
+                        .position(|entry| entry == name)
+                        .expect("in schema");
+                    assert_eq!(layout.field(field), Some(index as u64 + 8), "{name}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn versions_microscope_has_not_checked_are_refused_by_name() {
         let refused = |bytes: Option<&[u8]>, symbol| match describe(bytes, symbol).2 {
             Err(reason) => reason.to_string(),

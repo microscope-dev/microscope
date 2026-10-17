@@ -34,6 +34,7 @@ const fn member(field: Field, minor: u32) -> Option<Member> {
     let before_13 = minor < 13;
     Some(match field {
         Field::RuntimeInterpretersHead => ("_PyRuntimeState", &["interpreters", "head"]),
+        Field::RuntimeInitialized => ("_PyRuntimeState", &["initialized"]),
         Field::InterpreterId => ("PyInterpreterState", &["id"]),
         Field::InterpreterNext => ("PyInterpreterState", &["next"]),
         Field::InterpreterThreadsHead => ("PyInterpreterState", &["threads", "head"]),
@@ -46,6 +47,11 @@ const fn member(field: Field, minor: u32) -> Option<Member> {
         Field::ThreadBaseFrame if minor >= 15 => ("PyThreadState", &["base_frame"]),
         Field::ThreadId => ("PyThreadState", &["thread_id"]),
         Field::ThreadNativeId => ("PyThreadState", &["native_thread_id"]),
+        Field::DebugEvalBreaker => ("PyThreadState", &["eval_breaker"]),
+        Field::DebugSupport => ("PyThreadState", &["remote_debugger_support"]),
+        Field::DebugEnabled => ("PyInterpreterState", &["config", "remote_debug"]),
+        Field::DebugPending => ("_PyRemoteDebuggerSupport", &["debugger_pending_call"]),
+        Field::DebugScript => ("_PyRemoteDebuggerSupport", &["debugger_script_path"]),
         Field::ThreadHoldsGil => ("PyThreadState", &["holds_gil"]),
         Field::ThreadGilRequested => ("PyThreadState", &["gil_requested"]),
         Field::InterpreterCevalGil => ("PyInterpreterState", &["ceval", "gil"]),
@@ -191,7 +197,8 @@ const fn member(field: Field, minor: u32) -> Option<Member> {
         // Threads before 3.15 have no base frame, and from 3.13 none
         // keeps a C frame; 3.12 manages no extension's static types; and
         // asyncio's task is `_asyncio`'s, which its own section checks.
-        Field::TaskState
+        Field::DebugScriptSize
+        | Field::TaskState
         | Field::TaskAwaitedBy
         | Field::TaskIsTask
         | Field::TaskAwaitedByIsSet
@@ -455,6 +462,19 @@ fn each_described_interpreter_agrees_with_its_dwarf() {
             };
 
             if in_extension(field) {
+                continue;
+            }
+
+            if field == Field::DebugScriptSize {
+                let script = member_named(
+                    aggregate(image, "_PyRemoteDebuggerSupport"),
+                    "debugger_script_path",
+                );
+                assert_eq!(
+                    underlying(image, script.type_ref).byte_size,
+                    Some(at),
+                    "{name}: script capacity"
+                );
                 continue;
             }
 

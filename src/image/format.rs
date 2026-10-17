@@ -15,7 +15,7 @@ pub const FORMAT_VERSION: u32 = 1;
 /// What the tables mean. Bump it with any change to how metadata is
 /// normalized, even one that changes no record's layout, such as a
 /// demangling rule, so that no cached image built before is used.
-pub const NORMALIZATION_REVISION: u32 = 2;
+pub const NORMALIZATION_REVISION: u32 = 3;
 
 /// Every table starts at a multiple of this.
 pub const TABLE_ALIGNMENT: usize = 64;

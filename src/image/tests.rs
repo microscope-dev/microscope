@@ -593,10 +593,11 @@ fn the_schema_is_the_records_layout() {
         .collect::<Vec<_>>();
     assert_eq!(kinds, TableKind::ALL);
 
-    // A change to any record changes this; bump the format with it.
+    // A changed record has a new fingerprint. The header rejects older
+    // layouts before reading tables; the container format is independent.
     assert_eq!(
         schema::layout_fingerprint(),
-        0x9233_828f_50d4_3162,
+        0x2d32_6b8a_421f_3f15,
         "the layout changed:\n{}",
         schema::schema_text()
     );
