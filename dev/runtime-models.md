@@ -3,7 +3,8 @@
 microscope presents language-level work as tasks and logical stacks without
 making the public debugger depend on one runtime. Go goroutines and tokio tasks
 use the same public concepts even though their metadata, scheduling, stack
-shape, and saved state differ.
+shape, and saved state differ. CPython's frames, which run no machine code of
+their own, join native backtraces as interpreted frames.
 
 ## Code map
 
@@ -13,11 +14,13 @@ shape, and saved state differ.
 | `src/runtime_model/go/` | Go runtime layout and goroutine discovery |
 | `src/runtime_model/tokio/` | Tokio runtime, task, and future discovery |
 | `src/runtime_model/futures.rs`, `src/runtime_model/rust/` | Rust future inspection and shared Rust rules |
+| `src/runtime_model/python/` | CPython's threads, frames, code objects, line tables, and built-in values |
+| `src/backend/linux/interpreted.rs` | Interpreted frames placed in backtraces, and their variables |
 | `src/debug_info/coroutines.rs`, `src/debug_info/roles.rs` | Static coroutine and code-role metadata |
 | `src/image/resumes.rs` | Validated resume-point tables |
 | `src/backend/linux/runtimes.rs`, `src/backend/linux/async_frames.rs`, `src/backend/linux/frames.rs` | Stop-scoped runtime snapshots and logical stacks |
-| `tests/go/`, `tests/tokio/` | Runtime integration suites |
-| `tests/fixtures/go/`, `tests/fixtures/rust/tokio/` | Programs that expose scheduler and task states |
+| `tests/go/`, `tests/tokio/`, `tests/python/` | Runtime integration suites |
+| `tests/fixtures/go/`, `tests/fixtures/rust/tokio/`, `tests/fixtures/python/` | Programs that expose scheduler, task, and frame states |
 | `views/` | Built-in Go, Rust, and Tokio value views |
 
 ## Boundary
@@ -56,6 +59,11 @@ process may contain more than one supported instance.
 
 A **logical frame** represents source execution in a task even when no native
 machine frame currently exists for it.
+
+An **interpreted frame** is a frame an interpreter keeps in its own record,
+such as a CPython `_PyInterpreterFrame`. It has a function, file, and line the
+interpreter recorded, and variables, but no registers, no address, and no code
+in any module image.
 
 ## Stop-scoped snapshots
 
@@ -170,6 +178,74 @@ state clearly when they require unstable runtime instrumentation.
 Pinned and boxed futures, trait-object erasure, combinators, and compiler
 layout changes are common sources of partial chains. Each traversal step needs
 a concrete type and storage relationship. Stop where proof ends.
+
+## CPython
+
+CPython support reads the interpreter from outside, as a core dump allows: it
+puts no code in the process. It covers CPython 3.12 through 3.15, with the GIL
+and free-threaded.
+
+**Layout.** The module that carries the runtime, `libpython` or an executable
+that links it, has a `.PyRuntime` section. From 3.13 its `_Py_DebugOffsets`
+table gives most field offsets; `debug_info::cpython` reads it by name under a
+schema per minor version (`schemas.rs`) and completes it from a layout
+generated from that version's headers (`layouts.gen.rs`). 3.12 has no table, so
+only a release whose generated layout microscope has checked is read. Any other
+version is refused by name. The layout, its constants, and why it cannot be
+read are stored in the image's `PythonRuntime` record (`src/image/python.rs`),
+so the runtime model never sees a version number. This is the stated exception
+to Go's "from DWARF by name, never from a table of versions" rule:
+generated constants cover only what the target's own table leaves out.
+[Debug information](debug-information.md#cpython) describes how each layout is
+checked.
+
+**Binding.** `runtime_model::python::detect` binds every module that carries a
+runtime. A runtime whose layout is unknown is still bound, without a reader: it
+finds its loop's activations and reports why their frames are missing, so a
+backtrace says so instead of silently showing native frames only.
+
+**Threads and frames.** At a stop, the model walks `_PyRuntime`'s interpreters
+and each one's thread states (`threads.rs`), and maps each to a native thread
+by its `native_thread_id`. A thread's chain of frames begins at its current
+frame (3.12: through its `_PyCFrame`). `frames.rs` walks it innermost first.
+Frames the thread owns run code; the interpreter's entry frame ends each
+segment that one activation of the evaluation loop runs. The walk ends on a
+loop, an unknown owner, or an unreadable frame, and says why.
+
+**Code and lines.** Each frame's code object is decoded once per runtime into
+`code::CodeTable`: its qualified name, file, first line, and line table. The
+table survives stops, so each row is proved again where it is used: the object
+must still be a code object with the same identity. `linetable.rs` decodes
+`co_linetable` to the line of the frame's instruction. A free-threaded 3.14+
+frame may run a thread-local copy of the bytecode, which `tlbc_index` selects.
+
+**Splicing.** `RuntimeModel::driven` recognizes the activations of the
+evaluation loop: `_PyEval_EvalFrameDefault`, or, in a build whose loop
+tail-calls a function for each instruction, those functions. `interpreted.rs` places each segment of a thread's frames just
+before the activation that runs it, innermost first. Placement is proved by
+count: when the thread's segments and activations differ in number, or the
+thread runs frames in several interpreters' states, the frames are shown
+together on `StackSegment::Unplaced` with the reason, never paired by guess.
+A thread that runs interpreted frames is unwound whole to place them, so
+frame numbers stay stable.
+
+**Values.** `values.rs` reads the built-in types the model presents: `None`,
+`bool`, `int`, `float`, `str`, `bytes`, `list`, `tuple`, and `dict`. An object
+is identified by its type object, which the module's symbols name. Its first
+bytes are read at once (`objects::Head`), and each read is charged to the
+inspection budget. `text.rs` writes each value's summary as `repr` would.
+A summary is bounded in depth, items, objects, and characters, and says where
+it stopped. The backend presents values as language-neutral presentations,
+whose children page through an `InterpretedChildren` capability; clients see no
+Python object model. Cells and split dicts are reported as unsupported.
+
+**Interpreted frames in the debugger.** An interpreted frame has
+`FrameKind::Interpreted` and a `RecordedFrame` with its function, language,
+and place. Locating it is `Error::FrameInterpreted`. Its source context reads
+the recorded path. An expression naming its variables is refused as
+unsupported until the evaluator reads them. Clients fold the interpreter's
+frames (`CodeRole::Interpreter`) between Python frames, with the rule in
+`src/present/frames.rs`.
 
 ## Expressions and values in tasks
 

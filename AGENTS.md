@@ -23,7 +23,7 @@ Read the pages that match the work:
 | New data structures, ids, or numeric parameters | [`dev/style.md`](dev/style.md) |
 | Run control, breakpoints, signals, or lifecycle | [`dev/process-control.md`](dev/process-control.md), [`dev/testing.md`](dev/testing.md) |
 | ELF, DWARF, unwinding, images, or the cache | [`dev/debug-information.md`](dev/debug-information.md) |
-| Go goroutines, Rust coroutines, or tokio tasks | [`dev/runtime-models.md`](dev/runtime-models.md), [`dev/testing.md`](dev/testing.md) |
+| Go goroutines, Rust coroutines, tokio tasks, or CPython | [`dev/runtime-models.md`](dev/runtime-models.md), [`dev/testing.md`](dev/testing.md) |
 | Recording, captures, or profile analysis | [`dev/profiling.md`](dev/profiling.md), [`dev/performance.md`](dev/performance.md) |
 | System call tracing, its BPF programs, or catchpoints | [`dev/syscalls.md`](dev/syscalls.md) |
 | Expressions, inspection, views, or visualizers | [`dev/evaluation-and-views.md`](dev/evaluation-and-views.md), [`docs/expressions.md`](docs/expressions.md), [`docs/views.md`](docs/views.md) |

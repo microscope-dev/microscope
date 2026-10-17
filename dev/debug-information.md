@@ -15,6 +15,7 @@ layouts, and ABI rules stay behind this boundary.
 | `src/debug_info/x86_64.rs` | Architecture-specific register and unwind rules |
 | `src/debug_info/x86_64/frames.rs` | Frames of undescribed code, proved from its instructions |
 | `src/debug_info/perf_map.rs` | Perf maps: names and frames of code a compiler generated |
+| `src/debug_info/cpython.rs`, `src/debug_info/cpython/` | CPython's runtime layout: its offsets table, generated layouts, and their checks |
 | `src/image/` | Validated immutable table image and checked views |
 | `src/model/image.rs`, `src/model/image/` | Public image model and location types |
 | `src/cache.rs` | Persistent image cache and cache-key construction |
@@ -257,9 +258,42 @@ Language providers can add static facts without changing clients:
 - Type-name normalization handles compiler spellings used by expressions and
   views.
 
+- CPython's `.PyRuntime` section and its symbols give the layout the Python
+  runtime model reads, and the roles of the evaluation loop and its call
+  machinery.
+
 These facts belong in image tables when they depend only on module bytes. Live
 runtime traversal belongs in the runtime model and reads them through the
 bound module.
+
+### CPython
+
+`debug_info::cpython` finds the runtime in a module's `.PyRuntime` section and
+its version in `Py_Version`. From 3.13 the section begins with
+`_Py_DebugOffsets`, whose offsets are read by name under the minor version's
+schema in `cpython/schemas.rs`. The fields it lacks come from
+`cpython/layouts.gen.rs`, which `scripts/cpython-layouts.sh` generates by
+compiling `scripts/cpython-layouts.c` against each interpreter's headers in
+`MICROSCOPE_CPYTHON`. A prerelease is read only by a layout generated for that
+exact release. 3.12 has no table, so its layout is the generated one for its
+exact release. Every layout is validated before it is stored: each required
+field is present and lies within its structure, and no structure read whole
+exceeds a bound.
+
+Each layout is checked three ways, so a new release that moves a field fails
+in one place:
+
+- against its headers, by `tests/python/layouts.rs`: the generated file is
+  current, each schema is its version's `_Py_DebugOffsets`, and the widths and
+  tags the readers assume are the headers';
+- against the target's own table, by
+  `each_interpreter_in_the_matrix_agrees_with_its_headers`;
+- against DWARF, for each interpreter with a debug output, by
+  `cpython/conformance.rs`.
+
+When a new CPython release arrives, add it to the flake's interpreter set, run
+`scripts/cpython-layouts.sh` in the dev shell, add a schema if its minor
+version is new, and run these tests.
 
 ## Load testing
 
