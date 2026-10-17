@@ -159,6 +159,23 @@ of the path as a file name does:
 (pathlib.PosixPath) home = '/home'
 ```
 
+A numpy array shows as `array(ELEMENTS, dtype=NAME)`, its elements written
+as Python writes the numbers, and expands into its elements, or into its
+rows when it has more than one axis.
+microscope reads arrays of `bool`, the signed and unsigned integers, `float32`,
+and `float64`, in any strides; an array of another dtype, or of big-endian
+elements, shows its shape and dtype. A `float32` is written in the shortest
+digits of its own width. An array whose numbers lie next to each other,
+and each such row of a larger array, is read at once for
+[drawings](visualizers.md), so **Draw as…** a line plot of a million
+numbers takes one read:
+
+```text
+(numpy.ndarray) grid = array([[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11]], dtype=int32)
+(numpy.ndarray) singles = array([0.1, 16777216.0, 1e-05], dtype=float32)
+(numpy.ndarray) complex_numbers = <numpy.ndarray of shape (1,), dtype complex128>
+```
+
 A summary reads at most 6 containers deep, 64 items of each container, and 1024
 characters of a string. It says when it stops short. `pp` lays containers out
 over lines in the generic form microscope uses for every language, such as
@@ -173,7 +190,9 @@ In a Python frame, a name is the frame's local, then a global of its module,
 then a built-in, as Python finds it. `::name` skips to the native program's
 globals. Expressions index lists, tuples, and deques, find the keys of a
 dict, a `defaultdict`, or an `OrderedDict` as Python's own lookup finds them,
-read attributes, take `len`, compare, and compute with numbers:
+read attributes, take `len`, compare, and compute with numbers. An item of a
+numpy array is a new object numpy makes, so indexing one is refused; expand
+the array instead:
 
 ```text
 (microscope) print numbers[-1]

@@ -24,17 +24,19 @@ use crate::model::FrameMetadata;
 use crate::model::{ValueStorage, ViewChildren};
 use crate::protocol::PresentedFrame;
 use crate::runtime_model::{
-    Driven, InterpretedChild, InterpretedFrame, InterpretedKind, InterpretedSlot,
-    InterpretedStacks, InterpretedValue, Partial, interpreted_identity,
+    ArrayElement, Driven, InterpretedArray, InterpretedChild, InterpretedFrame, InterpretedKind,
+    InterpretedNumber, InterpretedSlot, InterpretedStacks, InterpretedValue, Partial,
+    interpreted_identity,
 };
 use crate::{
-    AddressValue, CallFrameUnavailableReason, CodeRole, DereferenceState, Error, ExecutionContext,
-    FloatValue, FrameKind, LoadedModule, MapKey, Presentation, PresentedCount, PresentedShape,
-    RecordedFrame, Result, RuntimeId, ScalarValue, SourceLanguage, StackFrame, StackFrameId,
-    StackSegment, StopId, TypeInfo, TypeKind, ValueChild, ValueChildPage, ValueChildQuery,
-    ValueChildRelationship, ValueChildren, ValueChildrenReference, Variable, VariableKind,
-    VariableQuery, VariableState, VariableUnavailableReason, VariableValue, VariableValueSource,
-    ViewName, ViewProblem, VirtualAddress,
+    AddressValue, BaseType, BaseTypeEncoding, CallFrameUnavailableReason, CodeRole,
+    DereferenceState, Error, ExecutionContext, FloatValue, FrameKind, LoadedModule, MapKey,
+    NumberKind, Presentation, PresentedCount, PresentedShape, RecordedFrame, Result, RuntimeId,
+    ScalarValue, SourceLanguage, StackFrame, StackFrameId, StackSegment, StopId, TypeInfo,
+    TypeKind, ValueChild, ValueChildPage, ValueChildQuery, ValueChildRelationship, ValueChildren,
+    ValueChildrenReference, Variable, VariableKind, VariableQuery, VariableState,
+    VariableUnavailableReason, VariableValue, VariableValueSource, ViewName, ViewProblem,
+    VirtualAddress,
 };
 
 /// An interpreted frame of a trace, and the runtime that interprets it.
@@ -320,6 +322,11 @@ fn plural(count: usize, noun: &str) -> String {
 #[derive(Debug)]
 pub(super) struct InterpretedChildren {
     runtime: RuntimeId,
+
+    /// The part of the object whose children these are, and the numbers
+    /// it keeps as an array, if it keeps them so.
+    part: Arc<[u64]>,
+    pub(super) array: Option<Arc<InterpretedArray>>,
 }
 
 /// Where an interpreted frame's values are read, for their children's
@@ -431,9 +438,12 @@ impl<P: InspectionOps> Controller<P> {
         let start = query.offset.min(end);
         let read = self
             .with_runtime_stop(inferior, &bound, root.reader(), |runtime_stop| {
-                bound
-                    .model
-                    .interpreted_children(runtime_stop, object, start..end, budget)
+                bound.model.interpreted_children(
+                    runtime_stop,
+                    (object, &children.part),
+                    start..end,
+                    budget,
+                )
             })
             .map_err(Error::VariableRuntime)?;
         let frame = self.resolve_frame(inferior, root, reference.frame)?;
@@ -527,7 +537,7 @@ pub(super) fn children_reference(
         runtime: runtime.id,
         module: runtime.module,
     }
-    .children(object, elements, fields)
+    .children(object, (Arc::from([]), None), (elements, fields))
 }
 
 impl Origin {
@@ -535,6 +545,7 @@ impl Origin {
     fn slot(&self, slot: InterpretedSlot) -> (Option<TypeInfo>, VariableState) {
         let value = match slot {
             InterpretedSlot::Value(value) => value,
+            InterpretedSlot::Number(number) => return Self::number(&number),
             InterpretedSlot::Unbound => {
                 return (
                     None,
@@ -580,8 +591,8 @@ impl Origin {
         } else {
             ValueChildren::Available(Arc::new(self.children(
                 value.object,
-                value.elements(),
-                value.attributes,
+                (Arc::clone(&value.part), value.array.clone()),
+                (value.elements(), value.attributes),
             )))
         };
 
@@ -627,13 +638,79 @@ impl Origin {
         (Some(python_type(&value)), state)
     }
 
-    /// The capability of the children of the object at `object`: its
-    /// `elements` elements or entries, then its `fields` attributes.
+    /// The type and state the debugger presents a number an object keeps
+    /// as the machine does as: the number as stored, written in the
+    /// runtime's notation.
+    fn number(number: &InterpretedNumber) -> (Option<TypeInfo>, VariableState) {
+        let (encoding, byte_size) = match number.element {
+            ArrayElement::Bool => (BaseTypeEncoding::Boolean, 1),
+            ArrayElement::Number(
+                kind @ (NumberKind::I8 | NumberKind::I16 | NumberKind::I32 | NumberKind::I64),
+            ) => (BaseTypeEncoding::Signed, kind.size()),
+            ArrayElement::Number(
+                kind @ (NumberKind::U8 | NumberKind::U16 | NumberKind::U32 | NumberKind::U64),
+            ) => (BaseTypeEncoding::Unsigned, kind.size()),
+            ArrayElement::Number(kind @ (NumberKind::F32 | NumberKind::F64)) => {
+                (BaseTypeEncoding::Floating, kind.size())
+            }
+        };
+        let name: Arc<str> = number.module.as_deref().map_or_else(
+            || Arc::clone(&number.type_name),
+            |module| format!("{module}.{}", number.type_name).into(),
+        );
+        let type_info = TypeInfo {
+            reference: UNIDENTIFIED,
+            name: Arc::clone(&name),
+            byte_size: Some(byte_size),
+            kind: TypeKind::Base(BaseType {
+                name,
+                base_name: Arc::clone(&number.type_name),
+                encoding,
+                byte_size,
+                bit_size: None,
+            }),
+            identity: Some(Arc::new(interpreted_identity(
+                SourceLanguage::Python,
+                number.module.as_deref(),
+                &number.type_name,
+            ))),
+        };
+        let presentation = Presentation {
+            view: Arc::new(ViewName {
+                source: "microscope".into(),
+                line: 0,
+                header: "Python objects".into(),
+                extend: false,
+            }),
+            shape: PresentedShape::Formatted,
+            count: None,
+            summary: Arc::clone(&number.summary),
+            children: ValueChildren::NotApplicable,
+            problem: None,
+            number: None,
+            presented: None,
+            visualizers: Arc::from([]),
+        };
+        let state = VariableState::Available {
+            source: VariableValueSource::Memory(number.address),
+            raw: None,
+            value: VariableValue::Scalar(number.value.clone()),
+            dereference: DereferenceState::NotApplicable,
+            children: ValueChildren::NotApplicable,
+            text: None,
+            presentation: Some(Arc::new(presentation)),
+        };
+        (Some(type_info), state)
+    }
+
+    /// The capability of the children of the object at `object`, or of
+    /// its part at `part`, which keeps `array`: its `elements` elements or
+    /// entries, then its `fields` attributes.
     fn children(
         &self,
         object: VirtualAddress,
-        elements: u64,
-        fields: u64,
+        (part, array): (Arc<[u64]>, Option<Arc<InterpretedArray>>),
+        (elements, fields): (u64, u64),
     ) -> ValueChildrenReference {
         ValueChildrenReference {
             stop_id: self.stop,
@@ -649,6 +726,8 @@ impl Origin {
             view: Some(ViewChildren {
                 bound: Some(Arc::new(InterpretedChildren {
                     runtime: self.runtime,
+                    part,
+                    array,
                 })),
                 elements,
                 fields,

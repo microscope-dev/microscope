@@ -133,6 +133,8 @@ def canonical(value, _depth=0, _seen=None):
         return viewed
     if (base.__module__, base.__qualname__) in _LIBRARY and _defined_in_c(base):
         return _library_text(value, base, _depth, seen)
+    if (base.__module__, base.__qualname__) == ("numpy", "ndarray") and _defined_in_c(base):
+        return array_text(value)
     if base in (bool, int, float, bytes):
         return base.__repr__(value)
     if base is str:
@@ -262,6 +264,95 @@ def _library_text(value, base, depth, seen):
     with decimal.localcontext() as context:
         context.capitals = 1
         return "Decimal('%s')" % base.__str__(value)
+
+
+# numpy's type numbers of the elements microscope reads, and their names,
+# and the names of those it does not.
+_ARRAY_ELEMENTS = {
+    0: "bool", 1: "int8", 2: "uint8", 3: "int16", 4: "uint16", 5: "int32", 6: "uint32",
+    7: "int64", 8: "uint64", 9: "int64", 10: "uint64", 11: "float32", 12: "float64",
+}
+_ARRAY_UNREAD = {
+    13: "longdouble", 14: "complex64", 15: "complex128", 16: "clongdouble", 17: "object",
+    18: "bytes", 19: "str", 20: "void", 21: "datetime64", 22: "timedelta64", 23: "float16",
+}
+
+# The most objects one summary reads, past which it shows `...`.
+_OBJECTS = 512
+
+
+def array_text(value):
+    """The text of a numpy array: array(ELEMENTS, dtype=NAME), its
+    elements as nested lists, each number as Python writes it, a float32
+    with its own shortest digits; at most _ITEMS of each axis and _OBJECTS
+    numbers, past which it shows `...`. An array of elements microscope
+    does not read shows its shape and dtype alone."""
+    numpy = sys.modules["numpy"]
+    array = numpy.ndarray.view(value, numpy.ndarray)
+    number = array.dtype.num
+    if number not in _ARRAY_ELEMENTS or array.dtype.byteorder == ">":
+        name = _ARRAY_ELEMENTS.get(number) or _ARRAY_UNREAD.get(number, "dtype %d" % number)
+        if array.dtype.byteorder == ">":
+            name += " (big-endian)"
+        return "<numpy.ndarray of shape %r, dtype %s>" % (tuple(array.shape), name)
+    counted = [1]
+
+    def nested(part, depth):
+        if part.ndim == 0:
+            counted[0] += 1
+            return _number_text(part[()])
+        if depth >= _DEPTH:
+            return "..."
+        texts = []
+        for index in range(min(len(part), _ITEMS)):
+            if counted[0] >= _OBJECTS:
+                texts.append("...")
+                return "[" + ", ".join(texts) + "]"
+            texts.append(nested(part[index], depth + 1))
+        if len(part) > _ITEMS:
+            texts.append("...")
+        return "[" + ", ".join(texts) + "]"
+
+    return "array(%s, dtype=%s)" % (nested(array, 0), _ARRAY_ELEMENTS[number])
+
+
+def _number_text(number):
+    """A numpy scalar as microscope writes an array's element."""
+    numpy = sys.modules["numpy"]
+    if isinstance(number, numpy.bool_):
+        return "True" if number else "False"
+    if isinstance(number, numpy.integer):
+        return str(int(number))
+    if isinstance(number, numpy.float32):
+        return _float32_text(number)
+    return repr(float(number))
+
+
+def _float32_text(number):
+    """A float32 as Python's repr writes a float, with the fewest digits
+    that read back as the same float32."""
+    numpy = sys.modules["numpy"]
+    value = float(number)
+    if value != value or value in (float("inf"), float("-inf")) or value == 0:
+        return repr(value)
+    for precision in range(1, 10):
+        written = "%.*e" % (precision - 1, abs(value))
+        with numpy.errstate(over="ignore"):
+            if numpy.float32(float(written)) == abs(number):
+                break
+    mantissa, exponent = written.split("e")
+    digits = mantissa.replace(".", "").rstrip("0") or "0"
+    point = int(exponent) + 1
+    sign = "-" if value < 0 else ""
+    if point <= -4 or point > 16:
+        fraction = "." + digits[1:] if len(digits) > 1 else ""
+        return "%s%s%se%s%02d" % (sign, digits[0], fraction, "-" if point - 1 < 0 else "+",
+                                  abs(point - 1))
+    if point <= 0:
+        return "%s0.%s%s" % (sign, "0" * -point, digits)
+    if point < len(digits):
+        return "%s%s.%s" % (sign, digits[:point], digits[point:])
+    return "%s%s%s.0" % (sign, digits, "0" * (point - len(digits)))
 
 
 def _collection_text(value, base, short, inner, get):

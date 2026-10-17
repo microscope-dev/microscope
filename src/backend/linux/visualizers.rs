@@ -6,6 +6,7 @@ use std::sync::Arc;
 use crate::eval::types::{TypeSource, representation};
 use crate::inspection::InspectionBudget;
 use crate::model::ValueStorage;
+use crate::runtime_model::InterpretedArray;
 use crate::view::run::{Failure, Input};
 use crate::{
     BaseTypeEncoding, Error, InspectionLimits, NumberKind, Numbers, Renderer, Result, TypeKind,
@@ -14,10 +15,11 @@ use crate::{
 };
 
 use super::Controller;
-use super::evaluation::{StopMachine, StopPlace, ViewBound};
+use super::evaluation::{Place, StopMachine};
+use super::interpreted::InterpretedChildren;
 use super::memory::read_logical_block;
 use super::native::InspectionOps;
-use super::presentation::ModuleScope;
+use super::presentation::{ModuleScope, view_place};
 
 impl<P: InspectionOps> Controller<P> {
     /// Reads the inputs of one drawing of a value, with the bytes each
@@ -28,19 +30,14 @@ impl<P: InspectionOps> Controller<P> {
         limits: InspectionLimits,
     ) -> Result<VisualizerInputs> {
         let children = &reference.children;
-        let bound = Self::view_bound(children)?;
+        let (bound, place) = view_place(children)?;
         let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
         let root = self.stack_root(children.stop_id, children.context)?;
         let frame = self.resolve_frame(inferior, &root, children.frame)?;
         let scope = self.frame_for(inferior, children.stop_id, &root, &frame);
         let mut budget = InspectionBudget::new(limits);
         let mut machine = StopMachine::new(&scope, &mut budget, true);
-        let run = crate::view::run::inputs(
-            &bound,
-            reference.index,
-            &mut machine,
-            StopPlace::of(children).into(),
-        );
+        let run = crate::view::run::inputs(&bound, reference.index, &mut machine, place);
         let inputs = match run {
             Ok(inputs) => inputs,
             Err(Failure::Debugger(error)) => return Err(error),
@@ -132,6 +129,12 @@ impl<P: InspectionOps> Controller<P> {
         reference: &ValueChildrenReference,
         most_bytes: u64,
     ) -> Result<Option<Numbers>> {
+        // An interpreter's array of numbers says where its elements lie
+        // and what they are, as debug information says a native array's.
+        if let Some(array) = Self::interpreted_array(reference) {
+            return self.array_numbers(reference, &array, most_bytes);
+        }
+
         let Some((address, count, element, stride)) = self.contiguous(reference)? else {
             return Ok(None);
         };
@@ -162,6 +165,61 @@ impl<P: InspectionOps> Controller<P> {
         }))
     }
 
+    /// The array of numbers an interpreter's object, or its part, keeps,
+    /// whose elements a capability pages, or a view lends it.
+    fn interpreted_array(reference: &ValueChildrenReference) -> Option<Arc<InterpretedArray>> {
+        let view = reference.view.as_ref()?;
+        if let Some(children) = Self::interpreted_children_of(reference) {
+            return children.array.clone();
+        }
+
+        let inner = view.inner.as_ref().filter(|_| view.picked.is_none())?;
+        Self::interpreted_array(inner).filter(|array| array.shape.first() == Some(&view.elements))
+    }
+
+    /// The children of an interpreter's object a capability pages, which
+    /// no view presents.
+    fn interpreted_children_of(reference: &ValueChildrenReference) -> Option<&InterpretedChildren> {
+        reference
+            .view
+            .as_ref()?
+            .bound
+            .as_ref()?
+            .downcast_ref::<InterpretedChildren>()
+    }
+
+    /// The numbers of `array` read at once, when they lie next to each
+    /// other on its one axis and take at most `most_bytes`.
+    fn array_numbers(
+        &self,
+        reference: &ValueChildrenReference,
+        array: &InterpretedArray,
+        most_bytes: u64,
+    ) -> Result<Option<Numbers>> {
+        let Some((address, count, kind)) = array.contiguous() else {
+            return Ok(None);
+        };
+
+        let Some(size) = count
+            .checked_mul(kind.size())
+            .filter(|size| *size <= most_bytes)
+        else {
+            return Ok(None);
+        };
+
+        let bytes = if size == 0 {
+            Arc::from([])
+        } else {
+            self.read_block(address.get(), size)?
+        };
+        Ok(Some(Numbers {
+            stop_id: reference.stop_id,
+            kind,
+            count,
+            bytes,
+        }))
+    }
+
     /// Where a value's elements lie when they lie next to each other: the
     /// first's address, how many there are, their type, and the distance
     /// between them.
@@ -170,7 +228,7 @@ impl<P: InspectionOps> Controller<P> {
         reference: &ValueChildrenReference,
     ) -> Result<Option<(u64, u64, TypeReference, u64)>> {
         if let Some(view) = &reference.view {
-            if view.picked.is_some() {
+            if view.picked.is_some() || Self::interpreted_children_of(reference).is_some() {
                 return Ok(None);
             }
 
@@ -182,18 +240,20 @@ impl<P: InspectionOps> Controller<P> {
                     .filter(|(_, count, ..)| *count == view.elements));
             }
 
-            let bound = Self::view_bound(reference)?;
+            // An interpreter's object lends no memory a view's elements
+            // lie in; its own arrays say where theirs do.
+            let (bound, place) = view_place(reference)?;
+            if !matches!(place, Place::Native(_)) {
+                return Ok(None);
+            }
+
             let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
             let root = self.stack_root(reference.stop_id, reference.context)?;
             let frame = self.resolve_frame(inferior, &root, reference.frame)?;
             let scope = self.frame_for(inferior, reference.stop_id, &root, &frame);
             let mut budget = InspectionBudget::new(InspectionLimits::default());
             let mut machine = StopMachine::new(&scope, &mut budget, true);
-            return match crate::view::run::contiguous(
-                &bound,
-                &mut machine,
-                StopPlace::of(reference).into(),
-            ) {
+            return match crate::view::run::contiguous(&bound, &mut machine, place) {
                 Ok(found) => Ok(found.filter(|(_, count, ..)| *count == view.elements)),
                 Err(Failure::Debugger(error)) => Err(error),
                 Err(Failure::Problem(_)) => Ok(None),
@@ -277,19 +337,6 @@ impl<P: InspectionOps> Controller<P> {
             controller: self,
             module,
         })
-    }
-
-    /// The view a capability presents through.
-    fn view_bound(reference: &ValueChildrenReference) -> Result<Arc<ViewBound>> {
-        reference
-            .view
-            .as_ref()
-            .and_then(|view| view.bound.clone())
-            .ok_or_else(|| Error::InvalidValueExpression("the value has no view".into()))?
-            .downcast::<ViewBound>()
-            .map_err(|_| {
-                Error::InvalidValueExpression("the view belongs to another debugger".into())
-            })
     }
 
     /// Every renderer drawings may name, in the order a name is looked up.

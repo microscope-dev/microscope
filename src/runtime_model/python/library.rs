@@ -15,11 +15,16 @@
 //! `OrderedDict`'s in the order its list of nodes keeps, which `move_to_end`
 //! changes and its dict's order does not show. A `Decimal`'s exponent is
 //! written `E`, as the default context's `capitals` writes it.
+//!
+//! numpy's `ndarray` is identified alike, by its module and name and an
+//! object size that holds the fields of numpy's public structure, and read
+//! by [`super::numpy`].
 
 use std::fmt::Write as _;
 use std::sync::Arc;
 
 use super::instances::Class;
+use super::numpy::Array;
 use super::objects::{Head, Problem, malformed};
 use super::values::{Dict, Entry, Object, Summary, Values, note};
 use crate::VirtualAddress;
@@ -55,60 +60,85 @@ pub(super) enum LibraryType {
     Delta,
     TimeZone,
     Decimal,
+    NdArray,
+}
+
+/// The size a type's objects must have: that of the structure the layout
+/// copies, or at least this many bytes past the object's header.
+#[derive(Clone, Copy)]
+pub(super) enum Size {
+    Exact(Field),
+    AtLeast(u64),
 }
 
 /// Each type, by its module and name, and the size of its objects.
-const LIBRARY: [(&str, &str, LibraryType, Field); 9] = [
+const LIBRARY: [(&str, &str, LibraryType, Size); 10] = [
     (
         "collections",
         "deque",
         LibraryType::Deque,
-        Field::DequeObjectSize,
+        Size::Exact(Field::DequeObjectSize),
     ),
     (
         "collections",
         "defaultdict",
         LibraryType::DefaultDict,
-        Field::DefaultDictObjectSize,
+        Size::Exact(Field::DefaultDictObjectSize),
     ),
     (
         "collections",
         "OrderedDict",
         LibraryType::OrderedDict,
-        Field::OrderedDictObjectSize,
+        Size::Exact(Field::OrderedDictObjectSize),
     ),
-    ("datetime", "date", LibraryType::Date, Field::DateObjectSize),
-    ("datetime", "time", LibraryType::Time, Field::TimeObjectSize),
+    (
+        "datetime",
+        "date",
+        LibraryType::Date,
+        Size::Exact(Field::DateObjectSize),
+    ),
+    (
+        "datetime",
+        "time",
+        LibraryType::Time,
+        Size::Exact(Field::TimeObjectSize),
+    ),
     (
         "datetime",
         "datetime",
         LibraryType::DateTime,
-        Field::DateTimeObjectSize,
+        Size::Exact(Field::DateTimeObjectSize),
     ),
     (
         "datetime",
         "timedelta",
         LibraryType::Delta,
-        Field::DeltaObjectSize,
+        Size::Exact(Field::DeltaObjectSize),
     ),
     (
         "datetime",
         "timezone",
         LibraryType::TimeZone,
-        Field::TimeZoneObjectSize,
+        Size::Exact(Field::TimeZoneObjectSize),
     ),
     (
         "decimal",
         "Decimal",
         LibraryType::Decimal,
-        Field::DecimalObjectSize,
+        Size::Exact(Field::DecimalObjectSize),
+    ),
+    (
+        "numpy",
+        "ndarray",
+        LibraryType::NdArray,
+        Size::AtLeast(super::numpy::FIELDS),
     ),
 ];
 
 impl LibraryType {
     /// The type named `name` in `module`, and the size its objects must
     /// have, if one is.
-    pub(super) fn named(module: Option<&str>, name: &str) -> Option<(Self, Field)> {
+    pub(super) fn named(module: Option<&str>, name: &str) -> Option<(Self, Size)> {
         LIBRARY
             .iter()
             .find(|(owner, named, ..)| Some(*owner) == module && *named == name)
@@ -161,6 +191,7 @@ pub(super) enum Library {
         name: Option<VirtualAddress>,
     },
     Decimal(Decimal),
+    Array(Array),
 }
 
 #[derive(Clone, Copy)]
@@ -197,7 +228,7 @@ pub(super) enum Decimal {
 
 impl Library {
     /// What kind of value it is.
-    pub(super) const fn kind(&self) -> InterpretedKind {
+    pub(super) fn kind(&self) -> InterpretedKind {
         match self {
             Self::Deque { length, .. } => InterpretedKind::Sequence { length: *length },
             Self::DefaultDict { dict, .. } | Self::OrderedDict { dict, .. } => {
@@ -211,6 +242,7 @@ impl Library {
             | Self::Delta { .. }
             | Self::TimeZone { .. }
             | Self::Decimal(_) => InterpretedKind::Other,
+            Self::Array(array) => array.kind(),
         }
     }
 
@@ -247,8 +279,15 @@ impl Values<'_, '_> {
             return Ok(None);
         };
 
-        let basicsize = self.reader.field_word(ty, Field::TypeBasicsize)?;
-        Ok((self.reader.layout.field(size) == Some(basicsize)).then_some(library))
+        let reader = &self.reader;
+        let basicsize = reader.field_word(ty, Field::TypeBasicsize)?;
+        let sized = match size {
+            Size::Exact(size) => reader.layout.field(size) == Some(basicsize),
+            Size::AtLeast(fields) => {
+                basicsize >= reader.offset(Field::ObjectSize)?.saturating_add(fields)
+            }
+        };
+        Ok(sized.then_some(library))
     }
 
     /// The object the head is of, of the library type `class`, which an
@@ -351,6 +390,7 @@ impl Values<'_, '_> {
                 name: pointer(Field::TimeZoneName)?,
             },
             LibraryType::Decimal => Library::Decimal(self.decimal(head)?),
+            LibraryType::NdArray => Library::Array(self.array(head)?),
         };
 
         let name = reader.c_string(VirtualAddress::new(reader.field_word(ty, Field::TypeName)?))?;
@@ -609,6 +649,7 @@ impl Values<'_, '_> {
                 exponent,
                 words,
             }) => format!("Decimal('{}')", scientific(*flags, *exponent, words)),
+            Library::Array(array) => self.array_text(array, summary),
             Library::Decimal(Decimal::Large { digits }) => {
                 note(
                     summary,

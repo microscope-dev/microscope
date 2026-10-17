@@ -33,11 +33,11 @@ use crate::{InspectionExhaustion, VariableUnavailableReason};
 
 /// How deep a summary nests containers, and how many items of each it
 /// shows.
-const SUMMARY_DEPTH: usize = 6;
+pub(super) const SUMMARY_DEPTH: usize = 6;
 pub(super) const SUMMARY_ITEMS: u64 = 64;
 
 /// The most objects one summary reads.
-const SUMMARY_OBJECTS: usize = 512;
+pub(super) const SUMMARY_OBJECTS: usize = 512;
 
 /// The most characters of a `str`, or bytes of a `bytes`, a summary shows.
 const SUMMARY_TEXT: u64 = 1024;
@@ -262,9 +262,9 @@ pub(super) struct Entry {
 /// within, and why it shows less than all, if it does.
 #[derive(Default)]
 pub(super) struct Summary {
-    objects: usize,
-    within: Vec<VirtualAddress>,
-    problem: Option<Problem>,
+    pub(super) objects: usize,
+    pub(super) within: Vec<VirtualAddress>,
+    pub(super) problem: Option<Problem>,
 }
 
 /// The values of one stop's objects, and the budget that pays for them.
@@ -417,6 +417,22 @@ impl Values<'_, '_> {
             problem: None,
         };
         let text = self.text(address, &object, 0, &mut summary);
+        let array = match &object {
+            Object::Library {
+                value: Library::Array(array),
+                ..
+            } => array.interpreted(),
+            Object::Instance {
+                base: Some(base), ..
+            } => match &**base {
+                Object::Library {
+                    value: Library::Array(array),
+                    ..
+                } => array.interpreted(),
+                _ => None,
+            },
+            _ => None,
+        };
         Ok(InterpretedValue {
             object: address,
             class,
@@ -426,6 +442,8 @@ impl Values<'_, '_> {
             attributes,
             summary: text.into(),
             problem: summary.problem,
+            part: Arc::from([]),
+            array,
         })
     }
 
@@ -458,15 +476,40 @@ impl Values<'_, '_> {
         }
     }
 
-    /// The children `range` of the object at `object`: a sequence's
-    /// elements, a `dict`'s entries in insertion order, or an instance's
-    /// attributes, after those of the built-in value it holds.
+    /// The children `range` of the object at `object`, or of its part at
+    /// `part`: a sequence's elements, a `dict`'s entries in insertion order,
+    /// or an instance's attributes, after those of the built-in value it
+    /// holds.
     pub(super) fn children(
         &self,
         object: VirtualAddress,
+        part: &[u64],
         range: std::ops::Range<u64>,
     ) -> Result<Vec<InterpretedChild>, Problem> {
-        let (class, base) = match self.object(object)? {
+        let read = self.object(object)?;
+        if !part.is_empty() {
+            let (class, array) = match &read {
+                Object::Library {
+                    class,
+                    value: Library::Array(array),
+                    ..
+                } => (class, array),
+                Object::Instance {
+                    class,
+                    base: Some(base),
+                } => match &**base {
+                    Object::Library {
+                        value: Library::Array(array),
+                        ..
+                    } => (class, array),
+                    _ => return Err(malformed(object, "object")),
+                },
+                _ => return Err(malformed(object, "object")),
+            };
+            return self.array_children((object, class), array, part, range);
+        }
+
+        let (class, base) = match read {
             Object::Instance { class, base } => (class, base),
             read => return self.contents(object, &read, range),
         };
@@ -562,6 +605,11 @@ impl Values<'_, '_> {
                 value: Library::DefaultDict { dict, .. },
                 ..
             } => self.contents(object, &Object::Dict(dict), range),
+            Object::Library {
+                ref class,
+                value: Library::Array(ref array),
+                ..
+            } => self.array_children((object, class), array, &[], range),
             Object::Library {
                 value: Library::OrderedDict { dict, first },
                 ..

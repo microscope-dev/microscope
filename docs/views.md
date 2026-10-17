@@ -970,8 +970,10 @@ The built-in views cover:
 - Python: an `enum.Enum` member, an `IntEnum`'s too, as its name and value; a
   `fractions.Fraction` as `str` writes it; and a `pathlib` path as its text,
   once Python has made it. The types the standard library writes in C, such
-  as `collections.deque`, `datetime.datetime`, and `decimal.Decimal`, need no
-  view ([Python](languages.md#python)).
+  as `collections.deque`, `datetime.datetime`, and `decimal.Decimal`, and
+  numpy's arrays need no view ([Python](languages.md#python)). A view of a
+  Python class may still `visualize` its objects; a numpy array handed to a
+  drawing as `values = self` is read at once.
 
 Some values need no view, because their debug information says what they
 are:

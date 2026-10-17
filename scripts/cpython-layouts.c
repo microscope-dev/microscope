@@ -235,6 +235,7 @@ int main(int argc, char **argv) {
     FIELD(CodeFlags, offsetof(PyCodeObject, co_flags));
     FIELD(CodeNlocalsplus, offsetof(PyCodeObject, co_nlocalsplus));
     FIELD(ObjectType, offsetof(PyObject, ob_type));
+    FIELD(ObjectSize, sizeof(PyObject));
     FIELD(VarObjectSize, offsetof(PyVarObject, ob_size));
     FIELD(TypeName, offsetof(PyTypeObject, tp_name));
     FIELD(TypeFlags, offsetof(PyTypeObject, tp_flags));

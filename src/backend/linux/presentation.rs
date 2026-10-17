@@ -968,6 +968,15 @@ fn viewed(
     Ok((Some(bound), native()))
 }
 
+/// The view a capability presents through, and where the value it
+/// presents is: a native value, or an interpreter's object.
+pub(super) fn view_place(reference: &ValueChildrenReference) -> Result<(Arc<ViewBound>, Place)> {
+    let no_view = || Error::InvalidValueExpression("the value has no view".into());
+    let view = reference.view.as_ref().ok_or_else(no_view)?;
+    let (bound, viewed) = viewed(reference, view)?;
+    Ok((bound.ok_or_else(no_view)?, viewed.place()))
+}
+
 /// A child a view presents, as the public model has it.
 fn value_child<P: InspectionOps>(
     child: Child,
@@ -1449,7 +1458,7 @@ pub(super) fn view_presentation(
 
 /// The drawings a view and its `extend`s offer of a value whose children,
 /// through the view, are `children`.
-fn drawings(bound: &ViewBound, children: &ValueChildren) -> Arc<[crate::Visualizer]> {
+pub(super) fn drawings(bound: &ViewBound, children: &ValueChildren) -> Arc<[crate::Visualizer]> {
     let ValueChildren::Available(children) = children else {
         return Arc::from([]);
     };

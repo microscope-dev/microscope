@@ -75,6 +75,7 @@ const fn member(field: Field, minor: u32) -> Option<Member> {
         Field::CodeFlags => ("PyCodeObject", &["co_flags"]),
         Field::CodeNlocalsplus => ("PyCodeObject", &["co_nlocalsplus"]),
         Field::ObjectType => ("PyObject", &["ob_type"]),
+        Field::ObjectSize => ("PyObject", &[]),
         Field::VarObjectSize => ("PyVarObject", &["ob_size"]),
         Field::TypeName => ("PyTypeObject", &["tp_name"]),
         Field::TypeFlags => ("PyTypeObject", &["tp_flags"]),

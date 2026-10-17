@@ -265,7 +265,13 @@ on target type, not value magnitude: a 64-bit integer remains a bigint even
 when small. Any unavailable input prevents the renderer from receiving a
 misleading partial object.
 
-Bulk byte and number reads have a separate hard byte limit. Shape count,
+Bulk byte and number reads have a separate hard byte limit. A sequence's
+numbers are read at once only where they lie in one run of memory: a native
+array or slice by its type, a view's sequence by its `contiguous` run, and
+an interpreted object by the `InterpretedArray` its runtime gives. A view
+presenting another value lends that value's run when it keeps every
+element. A view bound to an interpreted object has no native place, so its
+own elements are never read at once, only an array the runtime describes. Shape count,
 dimensions, strings, and pixel buffers are validated before rendering.
 
 The terminal and DAP clients expose ordinary presented values but do not run

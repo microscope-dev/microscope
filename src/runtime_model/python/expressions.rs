@@ -253,7 +253,12 @@ impl Values<'_, '_> {
                     )),
                 },
             },
-            Object::Str { .. } | Object::Bytes { .. } => Err(refused(
+            Object::Library {
+                value: Library::Array(_),
+                ..
+            }
+            | Object::Str { .. }
+            | Object::Bytes { .. } => Err(refused(
                 ErrorKind::Unsupported,
                 format!(
                     "an item of a `{}` is a new object, which microscope does not make",

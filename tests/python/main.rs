@@ -15,6 +15,7 @@ mod support;
 )]
 mod schemas;
 
+mod arrays;
 mod expressions;
 mod extension;
 mod layouts;

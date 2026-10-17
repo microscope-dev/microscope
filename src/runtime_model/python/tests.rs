@@ -110,6 +110,7 @@ fn layout() -> PythonLayout {
         (Field::FrameOwner, 24),
         (Field::CodeSize, CODE_SIZE),
         (Field::ObjectType, 0),
+        (Field::ObjectSize, 8),
         (Field::VarObjectSize, 8),
         (Field::CodeQualname, 16),
         (Field::CodeFilename, 24),
@@ -916,6 +917,7 @@ fn a_thread_list_that_loops_is_a_gap_and_keeps_the_threads_before_it() {
 
 mod expressions;
 mod instances;
+mod numpy;
 mod values;
 
 /// A runtime whose frames cannot be read, as one of a version microscope

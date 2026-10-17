@@ -63,8 +63,10 @@ narrower limits and report them when used.
   program, so properties, methods, and a class's own `__getattr__`,
   `__getitem__`, `__len__`, and `__repr__` are refused or not used, and so is a
   key a `defaultdict` holds no value for. A type an extension defines in C,
-  other than the standard library's that microscope reads, shows its type and
-  address. Python is
+  other than the standard library's and numpy's arrays that microscope reads,
+  shows its type and address. A numpy array of a dtype other than `bool`, an
+  integer, `float32`, or `float64`, or of big-endian elements, shows only its
+  shape and dtype, and indexing an array is refused. Python is
   not supported yet for breakpoints by file and line, stepping, Python
   exceptions as catchpoints, asyncio tasks, and Python stacks in profiles.
 - Runtime support follows known compiler and runtime layouts. Unknown versions

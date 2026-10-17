@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use super::evaluation::{Place, StopMachine, ViewBound};
 use super::native::InspectionOps;
-use super::presentation::{MAX_DEPTH, ModuleScope, interpreted_scan_key, view_presentation};
+use super::presentation::{
+    MAX_DEPTH, ModuleScope, drawings, interpreted_scan_key, view_presentation,
+};
 use super::runtimes::BoundRuntime;
 use crate::eval::target::Stop;
 use crate::runtime_model::InterpretedSlot;
@@ -89,7 +91,7 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
                 let raw = super::interpreted::children_reference(at, runtime, object, children);
                 let shown = presented.text.clone();
                 let presentation = view_presentation(name, &bound, &raw, presented);
-                *stored = Arc::new(through_runtime(presentation, runtime.id, bound));
+                *stored = Arc::new(through_runtime(presentation, runtime.id, &bound));
                 *text = shown.map(Arc::new);
             }
 
@@ -164,23 +166,25 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
 }
 
 /// `presentation`, whose children `bound` presents, with children that
-/// page through the runtime numbered `runtime`, which reads the object.
+/// page through the runtime numbered `runtime`, which reads the object, and
+/// drawings whose inputs it reads too.
 fn through_runtime(
     mut presentation: Presentation,
     runtime: RuntimeId,
-    bound: Arc<ViewBound>,
+    bound: &Arc<ViewBound>,
 ) -> Presentation {
     if let ValueChildren::Available(reference) = &presentation.children {
         let mut reference = (**reference).clone();
         if let Some(view) = &mut reference.view {
-            view.bound = Some(Arc::new(InterpretedView { runtime, bound }));
+            view.bound = Some(Arc::new(InterpretedView {
+                runtime,
+                bound: Arc::clone(bound),
+            }));
         }
 
-        // A drawing's inputs are read through the children it was offered
-        // with, which are a native value's; an object's are offered once
-        // inputs read through its runtime.
-        presentation.visualizers = Arc::from([]);
-        presentation.children = ValueChildren::Available(Arc::new(reference));
+        let children = ValueChildren::Available(Arc::new(reference));
+        presentation.visualizers = drawings(bound, &children);
+        presentation.children = children;
     }
 
     presentation

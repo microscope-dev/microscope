@@ -112,6 +112,16 @@
         # distributions do, so debuggers read its symbols from a lib/debug tree.
         { name = "debug"; path = "${package.debug}"; }
       ];
+      # The same, with `site`, a directory holding numpy built for that
+      # interpreter, without DWARF, as numpy's wheels are. A fixture that
+      # draws arrays puts it on its path; the free-threaded builds have none,
+      # since nixpkgs builds their numpy from source.
+      cpythonNumpy = version: package: pkgs.linkFarm "cpython-${version}" [
+        { name = "python"; path = "${package}/bin/python${version}"; }
+        { name = "include"; path = "${package}/include/python${version}"; }
+        { name = "debug"; path = "${package.debug}"; }
+        { name = "site"; path = "${package.pkgs.numpy}/${package.sitePackages}"; }
+      ];
       # Rewrites the file offset of the dynamic string table's section header to
       # the one its segment maps the table from. python-build-standalone's
       # BOLT-optimized interpreters keep a copy of the table at the end of the
@@ -463,10 +473,10 @@
         }
       ];
       cpython = pkgs.linkFarm "cpython" [
-        { name = "3.12"; path = cpythonNixpkgs "3.12" pkgs.python312; }
-        { name = "3.13"; path = cpythonNixpkgs "3.13" pkgs.python313; }
+        { name = "3.12"; path = cpythonNumpy "3.12" pkgs.python312; }
+        { name = "3.13"; path = cpythonNumpy "3.13" pkgs.python313; }
         { name = "3.13t"; path = cpythonNixpkgs "3.13t" pkgs.python313FreeThreading; }
-        { name = "3.14"; path = cpythonNixpkgs "3.14" pkgs.python314; }
+        { name = "3.14"; path = cpythonNumpy "3.14" pkgs.python314; }
         { name = "3.14t"; path = cpythonNixpkgs "3.14t" pkgs.python314FreeThreading; }
         {
           name = "3.15";

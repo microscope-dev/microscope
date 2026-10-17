@@ -270,6 +270,22 @@ uses. An `OrderedDict`'s items follow its list of nodes, each of whose key
 is found in the dict by identity and the node's hash. A `Decimal` is
 written as libmpdec's `mpd_to_sci` writes it with capitals.
 
+`numpy.rs` reads `numpy.ndarray`, whose fields after the object's header
+are numpy's public `PyArrayObject_fields`; `Field::ObjectSize` gives where
+the header ends. An array is one where its type passes the library test
+with a `tp_basicsize` at least that header and its fields. Its dtype's type
+number and byte order decide its element: `bool`, the integers, `float32`,
+and `float64` are read, and any other dtype, or big-endian elements, makes
+the array `Element::Unread`, shown by its shape with the reason as its
+problem. An array's rows are parts of it: an `InterpretedValue` carries the
+index path (`part`) from the object, and `RuntimeModel::interpreted_children`
+takes `(object, part)`, so a row is paged without Python making the row's
+view object. An element is an `InterpretedSlot::Number`, a value as the
+machine keeps it, which the backend presents as a base type. A value's
+`InterpretedArray` gives its data, shape, strides, and element, and
+`contiguous()` gives the one run of memory a one-axis array lies in, which
+`Controller::numbers` reads at once for a drawing.
+
 Python classes are presented through views as well (`views/python-std.views`;
 [Views of dynamic types](evaluation-and-views.md#views-of-dynamic-types)).
 `truth.canonical` mirrors each built-in view and each library type's `repr`,

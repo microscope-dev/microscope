@@ -709,17 +709,18 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         Err("the runtime interprets no frames".into())
     }
 
-    /// The children `range` of the interpreter's object at `object`, which
+    /// The children `range` of the interpreter's object at `object`, or of
+    /// its part at `part` ([`InterpretedValue::part`]), which
     /// [`InterpretedValue::children`] counted at this stop: a sequence's
     /// elements, or a map's entries, in order.
     fn interpreted_children(
         &self,
         stop: &dyn RuntimeStop,
-        object: VirtualAddress,
+        (object, part): (VirtualAddress, &[u64]),
         range: std::ops::Range<u64>,
         budget: &mut InspectionBudget,
     ) -> Result<Vec<InterpretedChild>, Arc<str>> {
-        let _ = (stop, object, range, budget);
+        let _ = (stop, object, part, range, budget);
         Err("the runtime interprets no objects".into())
     }
 
@@ -993,6 +994,10 @@ pub struct InterpretedLocal {
 pub enum InterpretedSlot {
     Value(InterpretedValue),
 
+    /// A number an object keeps as the machine does, outside any object of
+    /// its own, as an element of a numpy array is.
+    Number(InterpretedNumber),
+
     /// Nothing: the variable is not yet assigned, or was deleted.
     Unbound,
 
@@ -1068,6 +1073,69 @@ pub struct InterpretedValue {
 
     /// Why the summary or the children are shown in part, if they are.
     pub problem: Option<Arc<str>>,
+
+    /// Which part of the object this is, by the index on each axis that
+    /// leads to it, as a row of a numpy array is; empty for the object
+    /// itself.
+    pub part: Arc<[u64]>,
+
+    /// The numbers the object, or its part, keeps as an array, which its
+    /// elements are, if it keeps them so.
+    pub array: Option<Arc<InterpretedArray>>,
+}
+
+/// An array of numbers an object keeps apart from any object, as a numpy
+/// array keeps its elements: `shape[i]` on axis `i`, `strides[i]` bytes
+/// apart, the first at `data`, each an `element`. Its elements on the first
+/// axis are numbers where it has one axis, and arrays of the rest where it
+/// has more.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterpretedArray {
+    pub data: VirtualAddress,
+    pub shape: Arc<[u64]>,
+    pub strides: Arc<[i64]>,
+    pub element: ArrayElement,
+
+    /// The element type's name, in the runtime's notation, as `float64`.
+    pub element_name: Arc<str>,
+}
+
+impl InterpretedArray {
+    /// Where its elements on the first axis lie, when they lie next to
+    /// each other: numbers, the first at `data`, `shape[0]` of them.
+    #[must_use]
+    pub fn contiguous(&self) -> Option<(VirtualAddress, u64, crate::NumberKind)> {
+        let (&[count], &[stride], ArrayElement::Number(kind)) =
+            (&*self.shape, &*self.strides, self.element)
+        else {
+            return None;
+        };
+
+        let next = u64::try_from(stride).is_ok_and(|stride| stride == kind.size());
+        (next || count <= 1).then_some((self.data, count, kind))
+    }
+}
+
+/// What each element of an [`InterpretedArray`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArrayElement {
+    /// A truth value, a byte of 0 or 1.
+    Bool,
+    Number(crate::NumberKind),
+}
+
+/// A number kept as the machine keeps it: where it is, its value, and its
+/// type, by its module and name, in the runtime's notation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterpretedNumber {
+    pub address: VirtualAddress,
+    pub value: crate::ScalarValue,
+    pub element: ArrayElement,
+    pub module: Option<Arc<str>>,
+    pub type_name: Arc<str>,
+
+    /// The number as text, in the runtime's notation.
+    pub summary: Arc<str>,
 }
 
 impl InterpretedValue {

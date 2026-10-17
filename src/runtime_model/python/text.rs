@@ -114,8 +114,28 @@ pub(super) fn float(value: f64) -> String {
     }
 
     // Rust's exponent form gives the same shortest digits, as `d.ddde±x`.
-    let shortest = format!("{:e}", value.abs());
-    let (mantissa, exponent) = shortest.split_once('e').unwrap_or((&shortest, "0"));
+    shortest(sign, &format!("{:e}", value.abs()))
+}
+
+/// A 32-bit float as [`float`] writes a float, with the shortest digits
+/// that read back as the same 32-bit float.
+pub(super) fn float32(value: f32) -> String {
+    if value.is_nan() {
+        return "nan".to_owned();
+    }
+
+    let sign = if value.is_sign_negative() { "-" } else { "" };
+    if value.is_infinite() {
+        return format!("{sign}inf");
+    }
+
+    shortest(sign, &format!("{:e}", value.abs()))
+}
+
+/// A float's text from its sign and its shortest digits in exponent form,
+/// in positional notation where Python's `repr` writes it so.
+fn shortest(sign: &str, shortest: &str) -> String {
+    let (mantissa, exponent) = shortest.split_once('e').unwrap_or((shortest, "0"));
     let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
     let exponent: i64 = exponent.parse().unwrap_or(0);
 
@@ -253,6 +273,27 @@ mod tests {
             (f64::MAX, "1.7976931348623157e+308"),
         ] {
             assert_eq!(float(value), expected, "{value:e}");
+        }
+    }
+
+    /// A 32-bit float has the shortest digits of its own width, in the
+    /// notation Python's `repr` writes a float in.
+    #[test]
+    fn a_float32_is_its_shortest_digits() {
+        for (value, expected) in [
+            (0.1_f32, "0.1"),
+            (1.0, "1.0"),
+            (-0.0, "-0.0"),
+            (16_777_216.0, "16777216.0"),
+            (123_456.79, "123456.79"),
+            (1e16, "1e+16"),
+            (1e-5, "1e-05"),
+            (f32::MAX, "3.4028235e+38"),
+            (f32::MIN_POSITIVE, "1.1754944e-38"),
+            (f32::NAN, "nan"),
+            (f32::NEG_INFINITY, "-inf"),
+        ] {
+            assert_eq!(float32(value), expected, "{value:e}");
         }
     }
 

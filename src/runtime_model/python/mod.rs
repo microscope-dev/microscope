@@ -18,6 +18,7 @@ mod frames;
 mod instances;
 mod library;
 mod linetable;
+mod numpy;
 mod objects;
 mod text;
 mod threads;
@@ -557,12 +558,13 @@ impl RuntimeModel for PythonRuntime {
     fn interpreted_children(
         &self,
         stop: &dyn RuntimeStop,
-        object: VirtualAddress,
+        (object, part): (VirtualAddress, &[u64]),
         range: std::ops::Range<u64>,
         budget: &mut InspectionBudget,
     ) -> Result<Vec<InterpretedChild>, Arc<str>> {
-        self.reading()?
-            .values(stop, budget, |values, _| values.children(object, range))
+        self.reading()?.values(stop, budget, |values, _| {
+            values.children(object, part, range)
+        })
     }
 
     fn interpreted_name(

@@ -130,6 +130,10 @@ entries! {
         CodeArrayEntries = "code_array.entries",
 
         ObjectType = "pyobject.ob_type",
+
+        /// The size of every object's header, which an extension's own
+        /// structure starts after, as a numpy array's does.
+        ObjectSize = "pyobject.size",
         VarObjectSize = "pyvarobject.ob_size",
 
         TypeName = "type_object.tp_name",

@@ -488,6 +488,7 @@ fn assert_builtin(value: &InterpretedValue, name: &str) {
 pub(super) fn describe(slot: &InterpretedSlot) -> String {
     match slot {
         InterpretedSlot::Value(value) => value.summary.to_string(),
+        InterpretedSlot::Number(number) => number.summary.to_string(),
         InterpretedSlot::Unbound => "unbound".to_owned(),
         InterpretedSlot::Limit(_) => "limit".to_owned(),
         InterpretedSlot::Unreadable(problem) => format!("unreadable: {problem}"),
@@ -503,7 +504,7 @@ pub(super) fn children_of(
     range: std::ops::Range<u64>,
 ) -> Result<Vec<InterpretedChild>, Arc<str>> {
     with_values(process, types, InspectionLimits::default(), |values| {
-        values.children(VirtualAddress::new(address), range)
+        values.children(VirtualAddress::new(address), &[], range)
     })
 }
 
@@ -985,7 +986,7 @@ fn an_element_the_budget_cannot_afford_is_a_limit_and_the_ones_before_it_are_rea
     };
 
     let children = with_values(&process, types, limits, |values| {
-        values.children(VirtualAddress::new(list), 0..3)
+        values.children(VirtualAddress::new(list), &[], 0..3)
     })
     .expect("the list's items are read");
     let slots: Vec<&InterpretedSlot> = children
