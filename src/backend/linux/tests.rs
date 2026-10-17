@@ -5091,6 +5091,14 @@ fn a_step_resumed_to_hit_a_breakpoint_disabled_while_running_ends_where_it_stand
 #[derive(Debug, Default)]
 struct ScriptedRuntime {
     running: std::sync::Mutex<BTreeMap<crate::ThreadId, u64>>,
+
+    /// The runtime's internal hooks.
+    internal: Vec<ImageAddress>,
+
+    /// What each hit of an internal hook reports, in turn.
+    events: std::sync::Mutex<
+        std::collections::VecDeque<std::result::Result<crate::runtime_model::HookEvent, Arc<str>>>,
+    >,
 }
 
 impl ScriptedRuntime {
@@ -5099,6 +5107,11 @@ impl ScriptedRuntime {
             .lock()
             .expect("the script")
             .insert(debug_thread_id(thread), task);
+    }
+
+    /// Scripts what the next hit of an internal hook reports.
+    fn reports(&self, event: std::result::Result<crate::runtime_model::HookEvent, Arc<str>>) {
+        self.events.lock().expect("the script").push_back(event);
     }
 }
 
@@ -5231,6 +5244,23 @@ impl crate::runtime_model::RuntimeModel for ScriptedRuntime {
 
     fn task_noun(&self) -> &'static str {
         "task"
+    }
+
+    fn internal_hooks(&self) -> &[ImageAddress] {
+        &self.internal
+    }
+
+    fn hook_event(
+        &self,
+        _stop: &dyn crate::runtime_model::RuntimeStop,
+        _hook: ImageAddress,
+        _registers: &RegisterFile,
+    ) -> std::result::Result<crate::runtime_model::HookEvent, Arc<str>> {
+        self.events
+            .lock()
+            .expect("the script")
+            .pop_front()
+            .unwrap_or_else(|| Err("the script reports no more hits".into()))
     }
 }
 
@@ -5428,6 +5458,137 @@ fn a_step_follows_its_task_to_another_thread_and_passes_the_others() {
             .iter()
             .any(|event| matches!(event, DebuggerEvent::InferiorStopped { .. })),
         "neither hit is reported"
+    );
+}
+
+/// Binds `runtime` to the harness's executable.
+fn scripted_runtime(harness: &WatchHarness, runtime: ScriptedRuntime) -> Arc<ScriptedRuntime> {
+    let runtime = Arc::new(runtime);
+    let image = Arc::clone(&harness.controller.module_image);
+    harness
+        .controller
+        .runtime_models
+        .borrow_mut()
+        .insert(image.id(), vec![Ok(Arc::clone(&runtime) as _)]);
+    runtime
+}
+
+/// Checks that `hitting` steps over the trap it hit while its siblings
+/// wait, and that every thread then continues.
+fn steps_over_alone(harness: &mut WatchHarness, hitting: Pid) {
+    assert!(
+        harness
+            .trace()
+            .take_actions()
+            .contains(&format!("step {hitting}")),
+        "the thread is stepped over the trap"
+    );
+    harness
+        .trap(hitting, libc::TRAP_TRACE, debug_registers::STATUS_IDLE)
+        .expect("the repair step");
+    let actions = harness.trace().take_actions();
+    for thread in harness.threads.clone() {
+        assert!(
+            actions.contains(&format!("continue {thread} None")),
+            "{actions:?}"
+        );
+    }
+}
+
+/// A runtime's internal hook is armed whatever exceptions stop, and each
+/// hit asks the runtime whether its thread stops: a hit that goes on is
+/// stepped over unseen, an exception stops when its filter does, and a
+/// hit whose report cannot be read stops and says so.
+#[test]
+fn a_runtime_hook_asks_at_each_hit_whether_its_thread_stops() {
+    const HOOK: u64 = 0x40;
+    let mut harness = watch_harness(2);
+    harness.controller.unwind_info = Arc::new(FlatUnwindInfo);
+    let hitting = harness.threads[0];
+    let runtime = scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            internal: vec![ImageAddress::new(HOOK)],
+            ..ScriptedRuntime::default()
+        },
+    );
+    let filter = &crate::runtime_model::EXCEPTION_FILTERS[3];
+    harness
+        .controller
+        .set_exception_stops(crate::protocol::ExceptionStops::NONE)
+        .expect("no exception stops");
+    harness
+        .controller
+        .sync_runtime_hooks()
+        .expect("arm the hook");
+    assert!(
+        harness
+            .inferior()
+            .breakpoints
+            .get(&VirtualAddress::new(HOOK))
+            .is_some_and(|site| site.owners.contains(&BreakpointOwner::Runtime)),
+        "the hook is armed with no exception stopping"
+    );
+
+    let exception = || crate::runtime_model::HookEvent::Exception {
+        filter,
+        report: crate::runtime_model::RuntimeException {
+            message: "boom".into(),
+            value: None,
+        },
+    };
+
+    let hit = |harness: &mut WatchHarness| {
+        harness.start_continue();
+        harness.trace().take_actions();
+        harness.hit_at(hitting, HOOK).expect("the hook's trap");
+        harness.settle_requested_stops();
+        harness.stopped()
+    };
+
+    runtime.reports(Ok(crate::runtime_model::HookEvent::Continue));
+    assert_eq!(hit(&mut harness), None, "a hit that goes on is unseen");
+    steps_over_alone(&mut harness, hitting);
+
+    runtime.reports(Ok(exception()));
+    assert_eq!(
+        hit(&mut harness),
+        None,
+        "an exception that does not stop is unseen"
+    );
+    steps_over_alone(&mut harness, hitting);
+
+    harness
+        .controller
+        .set_exception_stops(
+            crate::protocol::ExceptionStops::NONE
+                .with(filter.id, true)
+                .expect("a filter"),
+        )
+        .expect("the exception stops");
+    runtime.reports(Ok(exception()));
+    assert_eq!(
+        hit(&mut harness),
+        Some((
+            debug_thread_id(hitting),
+            StopReason::LanguageException(crate::protocol::LanguageException {
+                kind: filter.kind,
+                message: "boom".into(),
+                value: None,
+            })
+        )),
+        "an exception that stops is reported"
+    );
+
+    runtime.reports(Err("the mailbox is unreadable".into()));
+    let unreadable = hit(&mut harness);
+    assert!(
+        matches!(
+            &unreadable,
+            Some((_, StopReason::RuntimeEvent { description }))
+                if description.contains("the mailbox is unreadable")
+        ),
+        "a hit whose report is unreadable stops and says why: {unreadable:?}"
     );
 }
 

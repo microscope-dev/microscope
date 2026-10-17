@@ -1,6 +1,8 @@
-//! Exceptions that language runtimes report: a breakpoint at each runtime
-//! function that reports one the user wants to stop at, and the runtime's
-//! own account of the exception when a thread enters it.
+//! The breakpoints language runtimes own: one at each runtime function
+//! that reports an exception the user wants to stop at, with the runtime's
+//! own account of the exception when a thread enters it; and one at each
+//! of a runtime's internal hooks, armed whatever stops, at whose every hit
+//! the runtime says whether the thread stops.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -8,8 +10,8 @@ use std::sync::Arc;
 use nix::unistd::Pid;
 
 use crate::protocol::{ExceptionStops, LanguageException, StopReason};
-use crate::runtime_model::RuntimeHook;
-use crate::{Error, LanguageExceptionKind, Result, RuntimeId, VirtualAddress};
+use crate::runtime_model::{HookEvent, RuntimeHook};
+use crate::{Error, ImageAddress, LanguageExceptionKind, Result, RuntimeId, VirtualAddress};
 
 use super::breakpoints::remove_breakpoint_owner_from;
 use super::frames::StackRoot;
@@ -17,11 +19,21 @@ use super::native::LinuxTraceOps;
 use super::registers::x86_64_registers;
 use super::{BreakpointOwner, Controller, debug_thread_id};
 
-/// A runtime function whose entry stops for an exception.
+/// A runtime function whose entry a runtime's breakpoint is at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct HookSite {
     runtime: RuntimeId,
-    hook: RuntimeHook,
+    purpose: HookPurpose,
+}
+
+/// Why a runtime's breakpoint is where it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HookPurpose {
+    /// The function reports an exception that stops.
+    Exception(RuntimeHook),
+
+    /// The function is an internal hook, at the image address given.
+    Internal(ImageAddress),
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
@@ -35,9 +47,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(previous)
     }
 
-    /// Installs a breakpoint at each loaded runtime's hook for an exception
-    /// that stops, and removes the rest. The runtimes' signals take their
-    /// defaults from the same runtimes.
+    /// Installs a breakpoint at each loaded runtime's internal hooks and
+    /// at its hook for each exception that stops, and removes the rest. The
+    /// runtimes' signals take their defaults from the same runtimes.
     pub(super) fn sync_runtime_hooks(&mut self) -> Result<()> {
         let Some(inferior) = self.inferior.as_ref() else {
             return Ok(());
@@ -53,21 +65,30 @@ impl<P: LinuxTraceOps> Controller<P> {
         let wanted = runtimes
             .iter()
             .flat_map(|runtime| {
-                runtime
+                let exceptions = runtime
                     .model
                     .hooks()
                     .iter()
                     .filter(|hook| stops.stops(hook.filter.id))
-                    .filter_map(|hook| {
-                        let address = runtime.module.virtual_address(hook.address).ok()?;
-                        Some((
-                            address,
-                            HookSite {
-                                runtime: runtime.id,
-                                hook: *hook,
-                            },
-                        ))
-                    })
+                    .map(|hook| (hook.address, HookPurpose::Exception(*hook)));
+                let internal = runtime
+                    .model
+                    .internal_hooks()
+                    .iter()
+                    .map(|&hook| (hook, HookPurpose::Internal(hook)));
+
+                // An internal hook asks at every hit, so it outranks an
+                // exception's hook at the same function.
+                exceptions.chain(internal).filter_map(|(address, purpose)| {
+                    let address = runtime.module.virtual_address(address).ok()?;
+                    Some((
+                        address,
+                        HookSite {
+                            runtime: runtime.id,
+                            purpose,
+                        },
+                    ))
+                })
             })
             .collect::<BTreeMap<_, _>>();
         let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
@@ -108,49 +129,92 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// The exception a thread at `address` reports, when a runtime hook
-    /// that stops is there. A report the runtime's memory cannot give is
-    /// still a stop, which says why its message is missing.
-    pub(super) fn runtime_exception(
+    /// Why a thread at `address` stops, when a runtime's breakpoint there
+    /// stops it: an exception's hook stops for the exception it reports,
+    /// and an internal hook for what the runtime says its event is. A
+    /// report the runtime's memory cannot give is still a stop, which says
+    /// why it is missing.
+    pub(super) fn runtime_hook_stop(
         &self,
         pid: Pid,
         address: VirtualAddress,
     ) -> Option<StopReason> {
         let inferior = self.inferior.as_ref()?;
         let site = *inferior.runtime_hooks.get(&address)?;
-        let kind = site.hook.filter.kind;
-        if !self.exception_stops.stops(site.hook.filter.id) {
-            return None;
+        match site.purpose {
+            HookPurpose::Exception(hook) => {
+                let kind = hook.filter.kind;
+                if !self.exception_stops.stops(hook.filter.id) {
+                    return None;
+                }
+
+                let (message, value) =
+                    match self.read_hook(pid, site.runtime, |model, stop, registers| {
+                        model.exception(stop, hook.address, registers)
+                    }) {
+                        Ok(report) => (report.message, report.value),
+                        Err(reason) => (
+                            format!("{}; its message is unreadable: {reason}", describe(kind))
+                                .into(),
+                            None,
+                        ),
+                    };
+
+                Some(StopReason::LanguageException(LanguageException {
+                    kind,
+                    message,
+                    value,
+                }))
+            }
+            HookPurpose::Internal(hook) => {
+                let event = self.read_hook(pid, site.runtime, |model, stop, registers| {
+                    model.hook_event(stop, hook, registers)
+                });
+                match event {
+                    Ok(HookEvent::Continue) => None,
+                    Ok(HookEvent::Exception { filter, report }) => self
+                        .exception_stops
+                        .stops(filter.id)
+                        .then_some(StopReason::LanguageException(LanguageException {
+                            kind: filter.kind,
+                            message: report.message,
+                            value: report.value,
+                        })),
+                    Err(description) => Some(StopReason::RuntimeEvent { description }),
+                }
+            }
         }
+    }
 
-        let report = (|| {
-            let runtime = self
-                .runtimes(inferior)
-                .into_iter()
-                .find(|runtime| runtime.id == site.runtime)
-                .ok_or_else(|| Arc::<str>::from("the runtime is no longer loaded"))?;
-            let registers = self
-                .ptrace
-                .registers(pid)
-                .map_err(|error| Arc::<str>::from(error.to_string()))?;
-            let registers = x86_64_registers(&registers);
-            self.with_runtime_stop(inferior, &runtime, pid, |stop| {
-                runtime.model.exception(stop, site.hook.address, &registers)
-            })
-        })();
-        let (message, value) = match report {
-            Ok(report) => (report.message, report.value),
-            Err(reason) => (
-                format!("{}; its message is unreadable: {reason}", describe(kind)).into(),
-                None,
-            ),
-        };
-
-        Some(StopReason::LanguageException(LanguageException {
-            kind,
-            message,
-            value,
-        }))
+    /// What the runtime `runtime` reports of the stopped thread `pid` at
+    /// one of its hooks, through `read`.
+    fn read_hook<T>(
+        &self,
+        pid: Pid,
+        runtime: RuntimeId,
+        read: impl FnOnce(
+            &dyn crate::runtime_model::RuntimeModel,
+            &dyn crate::runtime_model::RuntimeStop,
+            &crate::unwind::RegisterFile,
+        ) -> std::result::Result<T, Arc<str>>,
+    ) -> std::result::Result<T, Arc<str>> {
+        let inferior = self
+            .inferior
+            .as_ref()
+            .ok_or_else(|| Arc::<str>::from("the process is gone"))?;
+        let runtime = self
+            .runtimes(inferior)
+            .into_iter()
+            .find(|bound| bound.id == runtime)
+            .ok_or_else(|| Arc::<str>::from("the runtime is no longer loaded"))?;
+        let registers = self
+            .ptrace
+            .registers(pid)
+            .map_err(|error| Arc::<str>::from(error.to_string()))?;
+        let registers = x86_64_registers(&registers);
+        self.with_runtime_stop(inferior, &runtime, pid, |stop| {
+            read(runtime.model.as_ref(), stop, &registers)
+        })
     }
 
     /// Selects the frame a runtime's exception blames, the first one the

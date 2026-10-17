@@ -1718,6 +1718,14 @@ pub enum StopReason {
     /// a fatal error. The frame the runtime blames is selected.
     LanguageException(LanguageException),
 
+    /// A language runtime's own hook was entered, as it is to report an
+    /// event the user may stop at, but what the event is could not be
+    /// read, so the debugger stops rather than guess.
+    RuntimeEvent {
+        /// Why the event could not be read.
+        description: Arc<str>,
+    },
+
     /// The program executed a breakpoint instruction of its own, such as
     /// Go's `runtime.Breakpoint`. It resumes after the instruction.
     ProgramBreakpoint {

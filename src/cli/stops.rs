@@ -133,6 +133,7 @@ const fn in_code(reason: &StopReason) -> bool {
             | StopReason::Watchpoint { .. }
             | StopReason::Exception(_)
             | StopReason::LanguageException(_)
+            | StopReason::RuntimeEvent { .. }
             | StopReason::Pause
             | StopReason::Jump
     )

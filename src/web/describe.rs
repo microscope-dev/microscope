@@ -493,6 +493,7 @@ const fn reason_kind(reason: &StopReason) -> &'static str {
         StopReason::Jump => "jump",
         StopReason::Exception(_) => "exception",
         StopReason::LanguageException(_) => "languageException",
+        StopReason::RuntimeEvent { .. } => "runtimeEvent",
         StopReason::ProgramBreakpoint { .. } => "programBreakpoint",
         StopReason::Exec { .. } => "exec",
         StopReason::ThreadExited { .. } => "threadExited",

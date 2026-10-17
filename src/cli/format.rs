@@ -956,6 +956,10 @@ pub fn stop(reason: &StopReason, renderer: Renderer) -> String {
             exception(&info.description, info.code, renderer)
         ),
         StopReason::LanguageException(raised) => exception_summary(raised, renderer),
+        StopReason::RuntimeEvent { description } => format!(
+            "{} at the runtime's report of an event it could not read: {description}",
+            stopped(Role::Warning)
+        ),
         StopReason::ProgramBreakpoint { address } => format!(
             "{} by the program's breakpoint instruction at {}",
             stopped(Role::Current),

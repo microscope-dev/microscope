@@ -113,6 +113,25 @@ The session setting for entering or skipping runtime code applies to these
 roles. Skipping must not hide a user function merely because its name happens
 to resemble a runtime helper.
 
+## Runtime breakpoints
+
+A runtime model names the runtime functions run control keeps a breakpoint
+at, which `BreakpointOwner::Runtime` owns and `language_exceptions.rs`
+installs:
+
+- `hooks()` lists the functions that report an exception as they are
+  entered, such as Go's `gopanic`. Each is armed only while its exception
+  filter stops.
+- `internal_hooks()` lists functions a runtime calls to tell the debugger
+  of its own events. Each stays armed while its runtime is loaded, and at
+  every hit `hook_event` reads what the thread reports and says whether it
+  stops (`HookEvent`). A hit that goes on is stepped over unseen. A report
+  that cannot be read stops with `StopReason::RuntimeEvent`, and says why.
+
+Both are judged when no user breakpoint at the site stops, and before a
+step's plan meets the thread. The private sites run control keeps for itself,
+such as Go's stack mover, are separate owners.
+
 ## Resume points
 
 Compiler metadata maps a coroutine state to the code location where it can

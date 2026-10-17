@@ -911,7 +911,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// stopped. Whatever else owns the site, such as the active step's
     /// plan, meets the thread there.
     fn arrive_unstopped(&mut self, pid: Pid, address: VirtualAddress) -> Result<()> {
-        if let Some(reason) = self.runtime_exception(pid, address) {
+        if let Some(reason) = self.runtime_hook_stop(pid, address) {
             return self.begin_visible_stop(pid, reason);
         }
 

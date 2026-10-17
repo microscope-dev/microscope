@@ -2827,31 +2827,10 @@ pub(super) fn stop_kind(reason: &StopReason) -> &'static str {
 
 fn describe_stop(reason: &StopReason) -> (&'static str, Option<String>, Option<String>) {
     match reason {
-        StopReason::Step { .. } => ("step", None, None),
-        StopReason::StepIncomplete { description, .. } => (
-            "step",
-            Some(format!(
-                "the step stopped before it completed: {description}"
-            )),
-            Some("step incomplete".to_owned()),
-        ),
-        StopReason::TaskEnded { task, ending, .. } => {
-            let ending = match ending {
-                microscope::TaskEnding::Finished => "finished",
-                microscope::TaskEnding::Cancelled => "was cancelled",
-            };
-
-            (
-                "step",
-                Some(format!("the step's task {task} {ending}")),
-                Some(format!("task {task} {ending}")),
-            )
-        }
-        StopReason::FutureDropped { .. } => (
-            "step",
-            Some("the future the step waited for was dropped".to_owned()),
-            Some("future dropped".to_owned()),
-        ),
+        StopReason::Step { .. }
+        | StopReason::StepIncomplete { .. }
+        | StopReason::TaskEnded { .. }
+        | StopReason::FutureDropped { .. } => describe_step_stop(reason),
         StopReason::Pause => ("pause", None, None),
         StopReason::Jump => ("goto", None, None),
         StopReason::Entry | StopReason::Attach => ("entry", None, None),
@@ -2859,6 +2838,13 @@ fn describe_stop(reason: &StopReason) -> (&'static str, Option<String>, Option<S
             "exception",
             Some(exception.message.to_string()),
             Some(language_exception_text(exception.kind).to_owned()),
+        ),
+        StopReason::RuntimeEvent { description } => (
+            "exception",
+            Some(format!(
+                "the runtime reported an event that could not be read: {description}"
+            )),
+            Some("unreadable runtime event".to_owned()),
         ),
         StopReason::ProgramBreakpoint { address } => (
             "exception",
@@ -2926,6 +2912,37 @@ fn describe_stop(reason: &StopReason) -> (&'static str, Option<String>, Option<S
         | StopReason::Watchpoint { .. }
         | StopReason::WatchpointInvalidated { .. }
         | StopReason::Exited(_) => ("stopped", Some(DESCRIBED_ELSEWHERE.to_owned()), None),
+    }
+}
+
+/// The `stopped` event's reason, description, and text for a step's end.
+fn describe_step_stop(reason: &StopReason) -> (&'static str, Option<String>, Option<String>) {
+    match reason {
+        StopReason::StepIncomplete { description, .. } => (
+            "step",
+            Some(format!(
+                "the step stopped before it completed: {description}"
+            )),
+            Some("step incomplete".to_owned()),
+        ),
+        StopReason::TaskEnded { task, ending, .. } => {
+            let ending = match ending {
+                microscope::TaskEnding::Finished => "finished",
+                microscope::TaskEnding::Cancelled => "was cancelled",
+            };
+
+            (
+                "step",
+                Some(format!("the step's task {task} {ending}")),
+                Some(format!("task {task} {ending}")),
+            )
+        }
+        StopReason::FutureDropped { .. } => (
+            "step",
+            Some("the future the step waited for was dropped".to_owned()),
+            Some("future dropped".to_owned()),
+        ),
+        _ => ("step", None, None),
     }
 }
 

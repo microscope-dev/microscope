@@ -212,6 +212,7 @@ pub(super) const fn visible_stop_priority(reason: &StopReason) -> u8 {
         StopReason::Attach | StopReason::Entry | StopReason::Pause | StopReason::Jump => 0,
         StopReason::Exception(_) => 1,
         StopReason::LanguageException(_)
+        | StopReason::RuntimeEvent { .. }
         | StopReason::ProgramBreakpoint { .. }
         | StopReason::Breakpoint { .. }
         | StopReason::Watchpoint { .. }

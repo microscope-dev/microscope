@@ -485,6 +485,23 @@ pub struct RuntimeException {
     pub value: Option<Arc<str>>,
 }
 
+/// What a thread that entered one of a runtime's internal hooks reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Python's agent reports these from P4.6")
+)]
+pub enum HookEvent {
+    /// Nothing the user sees: the thread goes on.
+    Continue,
+
+    /// An exception, which stops when its filter does.
+    Exception {
+        filter: &'static ExceptionFilter,
+        report: RuntimeException,
+    },
+}
+
 /// Where a value whose dynamic type a runtime records is stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoredValue<'a> {
@@ -611,6 +628,26 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         representation: &str,
         value: StoredValue<'_>,
     ) -> Option<Result<DynamicValue, Arc<str>>>;
+
+    /// The runtime's internal hooks: functions it calls to tell the
+    /// debugger of its own events, each armed for as long as the runtime
+    /// is loaded, whatever stops. At each hit, [`Self::hook_event`] says
+    /// whether the thread stops.
+    fn internal_hooks(&self) -> &[ImageAddress] {
+        &[]
+    }
+
+    /// What a stopped thread entering the internal hook at `hook` reports,
+    /// given the thread's registers there.
+    fn hook_event(
+        &self,
+        stop: &dyn RuntimeStop,
+        hook: ImageAddress,
+        registers: &RegisterFile,
+    ) -> Result<HookEvent, Arc<str>> {
+        let _ = (stop, hook, registers);
+        Err("the runtime has no internal hooks".into())
+    }
 
     /// The runtime function that moves a task's stack to another, which
     /// the move has finished once it returns.
