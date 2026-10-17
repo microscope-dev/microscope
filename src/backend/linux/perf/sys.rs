@@ -120,7 +120,7 @@ const IOC_DISABLE: libc::Ioctl = 0x2401;
 const IOC_SET_OUTPUT: libc::Ioctl = 0x2405;
 
 /// `_IOR('$', 7, __u64 *)`.
-const IOC_ID: libc::Ioctl = 0x8008_2407;
+const IOC_ID: libc::Ioctl = 0x8008_2407_u32 as libc::Ioctl;
 
 /// `_IOW('$', 8, __u32)`.
 const IOC_SET_BPF: libc::Ioctl = 0x4004_2408;
