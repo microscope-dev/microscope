@@ -1112,7 +1112,7 @@ struct py_frame { __u64 code; __u64 qualname; __u32 unit; __u32 first_line; __u3
         <p class="exit">Exit: <code>python -X perf</code> stacks no longer truncate. Stepping honors roles in shared libraries. A live snapshot of tokio in a shared library finds its tasks.</p>
       </div>
       <div class="phase">
-        <header><span class="pid">P1</span><h3>See Python</h3><span class="st doing">doing</span></header>
+        <header><span class="pid">P1</span><h3>See Python</h3><span class="st done">done</span></header>
         <p>G4, the splice by role, and G5, frames with no image, each landing first. The provider: detection, the per-minor schemas, the generated 3.12 table, generated constants, validation for 3.12–3.15 in both GIL modes, and the image table. The runtime model: threads mapped to tracees, the code table, and <code>PythonStop</code>. Python stacks spliced into backtraces at every stop and in core dumps. Locals of built-in types. CLI, DAP, and web rendering. The interpreter code role and the setting that shows hidden frames.</p>
         <div class="scroller"><table class="data"><thead><tr><th>Task</th><th>Work</th><th>Status</th><th>Result</th></tr></thead><tbody>
           <tr><td>P1.1</td><td>G4: the splice asks the model for a driven segment by code role</td><td><span class="st done">done</span></td><td><code>fe7e43fb</code>. <code>RuntimeModel::driver_role</code> and <code>driven</code> return a <code>Driven</code> enum (only <code>Future</code> so far), and <code>FrameOrigin</code> holds a <code>FrameSource</code>. tokio still reads its driver's variable only through the function's DWARF, so symbol-only tokio builds behave as before.</td></tr>
@@ -1130,10 +1130,10 @@ struct py_frame { __u64 code; __u64 qualname; __u32 unit; __u32 first_line; __u3
         <p class="exit">Exit: every native stop in a Python program shows correct mixed stacks and simple locals on every interpreter in the matrix; unknown versions say so.</p>
       </div>
       <div class="phase">
-        <header><span class="pid">P2</span><h3>Values, expressions, views</h3><span class="st todo">todo</span></header>
+        <header><span class="pid">P2</span><h3>Values, expressions, views</h3><span class="st doing">doing</span></header>
         <p>G11, the evaluator's dynamic category, and G12, view and visualizer keys, each landing first. The full object model (instances, inline values, slots, cells, sets). <code>PyObject *</code> in native frames. The <code>python</code> view language and built-in views. The ndarray visualizer. asyncio tasks and logical stacks.</p>
         <div class="scroller"><table class="data"><thead><tr><th>Task</th><th>Work</th><th>Status</th><th>Result</th></tr></thead><tbody>
-          <tr><td>P2.1</td><td>G11: the evaluator's dynamic type category</td><td><span class="st todo">todo</span></td><td></td></tr>
+          <tr><td>P2.1</td><td>G11: the evaluator's dynamic type category</td><td><span class="st doing">doing</span></td><td></td></tr>
           <tr><td>P2.2</td><td>G12: view choices cached per dynamic type and stop; bulk reads of language number types</td><td><span class="st todo">todo</span></td><td></td></tr>
           <tr><td>P2.3</td><td>Full object model: instances, inline values, slots, cells, sets</td><td><span class="st todo">todo</span></td><td></td></tr>
           <tr><td>P2.4</td><td><code>PyObject *</code> in native frames, and the cast to the dynamic type</td><td><span class="st todo">todo</span></td><td></td></tr>
