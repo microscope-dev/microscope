@@ -165,6 +165,7 @@ int main(int argc, char **argv) {
     FIELD(TypeDictoffset, offsetof(PyTypeObject, tp_dictoffset));
     FIELD(TypeDict, offsetof(PyTypeObject, tp_dict));
     FIELD(TypeMro, offsetof(PyTypeObject, tp_mro));
+    FIELD(TypeBase, offsetof(PyTypeObject, tp_base));
     FIELD(TypeSubclasses, offsetof(PyTypeObject, tp_subclasses));
 #if PY_VERSION_HEX >= 0x030d0000
     FIELD(InterpreterStaticTypes, offsetof(PyInterpreterState, types.builtins.initialized));
@@ -184,6 +185,7 @@ int main(int argc, char **argv) {
     FIELD(TypeDescrSet, offsetof(PyTypeObject, tp_descr_set));
     FIELD(HeapTypeQualname, offsetof(PyHeapTypeObject, ht_qualname));
     FIELD(HeapTypeCachedKeys, offsetof(PyHeapTypeObject, ht_cached_keys));
+    FIELD(HeapTypeSlots, offsetof(PyHeapTypeObject, ht_slots));
     FIELD(MemberDescrMember, offsetof(PyMemberDescrObject, d_member));
     FIELD(MemberDefType, offsetof(PyMemberDef, type));
     FIELD(MemberDefOffset, offsetof(PyMemberDef, offset));
@@ -195,6 +197,11 @@ int main(int argc, char **argv) {
     FIELD(SetEntryKey, offsetof(setentry, key));
     FIELD(SetEntryHash, offsetof(setentry, hash));
     FIELD(ModuleDict, offsetof(PyModuleObject, md_dict));
+    FIELD(FunctionQualname, offsetof(PyFunctionObject, func_qualname));
+    FIELD(BuiltinMethod, offsetof(PyCFunctionObject, m_ml));
+    FIELD(BuiltinSelf, offsetof(PyCFunctionObject, m_self));
+    FIELD(MethodDefName, offsetof(PyMethodDef, ml_name));
+    FIELD(WrapperDescrWrapped, offsetof(PyWrapperDescrObject, d_wrapped));
     FIELD(TupleItems, offsetof(PyTupleObject, ob_item));
     FIELD(TupleSize, offsetof(PyTupleObject, ob_base.ob_size));
     FIELD(ListItems, offsetof(PyListObject, ob_item));
@@ -268,6 +275,7 @@ int main(int argc, char **argv) {
     CONSTANT(DictKeysSplit, DICT_KEYS_SPLIT);
     CONSTANT(TypeHeapBit, __builtin_ctzl(Py_TPFLAGS_HEAPTYPE));
     CONSTANT(TypeStaticBuiltinBit, __builtin_ctzl(_Py_TPFLAGS_STATIC_BUILTIN));
+    CONSTANT(TypeTypeSubclassBit, __builtin_ctzl(Py_TPFLAGS_TYPE_SUBCLASS));
     CONSTANT(TypeManagedDictBit, __builtin_ctzl(Py_TPFLAGS_MANAGED_DICT));
 #if PY_VERSION_HEX >= 0x030d0000
     CONSTANT(TypeInlineValuesBit, __builtin_ctzl(Py_TPFLAGS_INLINE_VALUES));

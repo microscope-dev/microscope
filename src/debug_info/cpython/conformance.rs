@@ -82,6 +82,7 @@ const fn member(field: Field, minor: u32) -> Option<Member> {
         Field::TypeDictoffset => ("PyTypeObject", &["tp_dictoffset"]),
         Field::TypeDict => ("PyTypeObject", &["tp_dict"]),
         Field::TypeMro => ("PyTypeObject", &["tp_mro"]),
+        Field::TypeBase => ("PyTypeObject", &["tp_base"]),
         Field::TypeSubclasses => ("PyTypeObject", &["tp_subclasses"]),
         Field::InterpreterStaticTypes if before_13 => {
             ("PyInterpreterState", &["types", "builtins"])
@@ -105,6 +106,7 @@ const fn member(field: Field, minor: u32) -> Option<Member> {
         Field::TypeDescrSet => ("PyTypeObject", &["tp_descr_set"]),
         Field::HeapTypeQualname => ("PyHeapTypeObject", &["ht_qualname"]),
         Field::HeapTypeCachedKeys => ("PyHeapTypeObject", &["ht_cached_keys"]),
+        Field::HeapTypeSlots => ("PyHeapTypeObject", &["ht_slots"]),
         Field::MemberDescrMember => ("PyMemberDescrObject", &["d_member"]),
         Field::MemberDefType => ("PyMemberDef", &["type"]),
         Field::MemberDefOffset => ("PyMemberDef", &["offset"]),
@@ -116,6 +118,11 @@ const fn member(field: Field, minor: u32) -> Option<Member> {
         Field::SetEntryKey => ("setentry", &["key"]),
         Field::SetEntryHash => ("setentry", &["hash"]),
         Field::ModuleDict => ("PyModuleObject", &["md_dict"]),
+        Field::FunctionQualname => ("PyFunctionObject", &["func_qualname"]),
+        Field::BuiltinMethod => ("PyCFunctionObject", &["m_ml"]),
+        Field::BuiltinSelf => ("PyCFunctionObject", &["m_self"]),
+        Field::MethodDefName => ("PyMethodDef", &["ml_name"]),
+        Field::WrapperDescrWrapped => ("PyWrapperDescrObject", &["d_wrapped"]),
         Field::TupleItems => ("PyTupleObject", &["ob_item"]),
         Field::TupleSize => ("PyTupleObject", &["ob_base", "ob_size"]),
         Field::ListItems => ("PyListObject", &["ob_item"]),

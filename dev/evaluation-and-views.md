@@ -83,7 +83,10 @@ every decision about it to the run:
   integer `/` or floored `%`, is refused rather than computed the other way.
 - A value that only its own type's code could compare or compute with, such
   as a list or an instance, is refused. The evaluator never asks the runtime
-  to run code.
+  to run code. A refusal is a type error only where the language's own
+  operation would be one, as Python's `None + 1` is; where an operand's type
+  could give a value, as text joined with text or an object's own operator
+  does, it is unsupported.
 
 A program is bound once and may run on values of different types, so every
 check happens as it runs. A dynamic value is not assigned, not watched, and

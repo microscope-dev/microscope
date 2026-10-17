@@ -230,14 +230,30 @@ A thread that runs interpreted frames is unwound whole to place them, so
 frame numbers stay stable.
 
 **Values.** `values.rs` reads the built-in types the model presents: `None`,
-`bool`, `int`, `float`, `str`, `bytes`, `list`, `tuple`, and `dict`. An object
-is identified by its type object, which the module's symbols name. Its first
-bytes are read at once (`objects::Head`), and each read is charged to the
-inspection budget. `text.rs` writes each value's summary as `repr` would.
-A summary is bounded in depth, items, objects, and characters, and says where
-it stopped. The backend presents values as language-neutral presentations,
-whose children page through an `InterpretedChildren` capability; clients see no
-Python object model. Cells and split dicts are reported as unsupported.
+`bool`, `int`, `float`, `str`, `bytes`, `list`, `tuple`, `dict`, `set`,
+`frozenset`, modules, functions, built-in functions, and code objects. An
+object is identified by its type object, which the module's symbols name. Its
+first bytes are read at once (`objects::Head`), and each read is charged to
+the inspection budget. A reading keeps the 256-byte blocks it has read
+(`objects::Blocks`): a page holds whole blocks, so a block is readable
+wherever its bytes are, and the fields of one object, a table's entries, and
+objects allocated together cost one read. `text.rs` writes each value's
+summary as `repr` would. A summary is bounded in depth, items, objects, and
+characters, and says where it stopped. The backend presents values as
+language-neutral presentations, whose children page through an
+`InterpretedChildren` capability; clients see no Python object model.
+
+`instances.rs` reads everything else as CPython's object model lays it out. A
+class's identity is its `__module__` and `ht_qualname`, or a static type's
+`tp_name`. An instance's attributes are its dict, wherever the class keeps
+it: a managed dict before the object, with 3.12's tagged values pointer or
+3.13's inline values after it, sharing keys with the class's other instances;
+or a dict at a positive `tp_dictoffset`. Its `__slots__` follow, read through
+each class's member descriptors. A static built-in type's dict is in its
+interpreter's state, found by the index `tp_subclasses` keeps. A class whose
+bases lead to a built-in type other than `object` holds that type's value,
+which it is presented as, with its attributes after its items. A cell's
+variable is the object it holds.
 
 **Interpreted frames in the debugger.** An interpreted frame has
 `FrameKind::Interpreted` and a `RecordedFrame` with its function, language,
@@ -262,7 +278,16 @@ computes it. A `str`'s is SipHash-1-3 keyed by `_Py_HashSecret`, used only once 
 `str` key of the dict proves that hashing with the secret gives the hash the
 key keeps. Without a known hash, as for a NaN key, every entry is compared,
 and a key of another type is ruled out only by the hash its entry keeps.
-Attributes are refused until the object model reads instances.
+An attribute is found as `PyObject_GenericGetAttr` finds it, only for a class
+whose `tp_getattro` is that function, or whose `__getattribute__` is the
+wrapper of it and which defines `__getattr__`, which then refuses a miss: a
+data descriptor of the class's MRO first, of which only a member descriptor
+(a slot) is read, then the instance's dict, then a class attribute that does
+not bind. A module's attribute is in its dict, and a class's in its MRO when
+its metaclass is `type`. `x[i]` and `len(x)` on an instance use its built-in
+value only where the class's MRO finds the special method on the built-in
+type itself; any other definition refuses them, and none is a type error, as
+Python's is.
 
 ## Expressions and values in tasks
 

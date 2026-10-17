@@ -30,11 +30,10 @@ use crate::{
     AddressValue, ArgumentOrigin, CallFrameUnavailableReason, CodeRole, DereferenceState, Error,
     ExecutionContext, FloatValue, FrameKind, LoadedModule, MapKey, Presentation, PresentedCount,
     PresentedShape, RecordedFrame, Result, RuntimeId, ScalarValue, SourceLanguage, StackFrame,
-    StackFrameId, StackSegment, StopId, TypeIdentity, TypeInfo, TypeKind,
-    UnsupportedVariableFeature, ValueChild, ValueChildPage, ValueChildQuery,
-    ValueChildRelationship, ValueChildren, ValueChildrenReference, Variable, VariableKind,
-    VariableQuery, VariableState, VariableUnavailableReason, VariableValue, VariableValueSource,
-    ViewName, ViewProblem, VirtualAddress,
+    StackFrameId, StackSegment, StopId, TypeIdentity, TypeInfo, TypeKind, ValueChild,
+    ValueChildPage, ValueChildQuery, ValueChildRelationship, ValueChildren, ValueChildrenReference,
+    Variable, VariableKind, VariableQuery, VariableState, VariableUnavailableReason, VariableValue,
+    VariableValueSource, ViewName, ViewProblem, VirtualAddress,
 };
 
 /// An interpreted frame of a trace, and the runtime that interprets it.
@@ -462,6 +461,14 @@ impl<P: InspectionOps> Controller<P> {
                         state,
                     }
                 }
+                InterpretedChild::Attribute { name, value } => {
+                    let (type_info, state) = origin.slot(value);
+                    ValueChild {
+                        relationship: ValueChildRelationship::Field { name },
+                        type_info: type_info.unwrap_or_else(untyped),
+                        state,
+                    }
+                }
                 InterpretedChild::Entry { key, value } => {
                     let (key_type, key_state) = origin.slot(key);
                     let (type_info, state) = origin.slot(value);
@@ -520,14 +527,6 @@ impl Origin {
                     VariableState::Unavailable(VariableUnavailableReason::Unbound),
                 );
             }
-            InterpretedSlot::Cell => {
-                return (
-                    None,
-                    VariableState::Unavailable(VariableUnavailableReason::Unsupported(
-                        UnsupportedVariableFeature::SharedCell,
-                    )),
-                );
-            }
             InterpretedSlot::Limit(exhaustion) => {
                 return (
                     None,
@@ -558,13 +557,18 @@ impl Origin {
             InterpretedKind::Bytes | InterpretedKind::Other => (None, PresentedShape::Value),
             InterpretedKind::Sequence { .. } => (None, PresentedShape::Sequence),
             InterpretedKind::Map { .. } => (None, PresentedShape::Map),
+            InterpretedKind::Instance => (None, PresentedShape::Record),
         };
 
         let count = value.children();
         let children = if count == 0 {
             ValueChildren::NotApplicable
         } else {
-            ValueChildren::Available(Arc::new(self.children(value.object, count)))
+            ValueChildren::Available(Arc::new(self.children(
+                value.object,
+                value.elements(),
+                value.attributes,
+            )))
         };
 
         let presentation = Presentation {
@@ -579,7 +583,7 @@ impl Origin {
                 value.kind,
                 InterpretedKind::Sequence { .. } | InterpretedKind::Map { .. }
             )
-            .then_some(PresentedCount::Exact(count)),
+            .then_some(PresentedCount::Exact(value.elements())),
             summary: Arc::clone(&value.summary),
             children,
             problem: value.problem.clone().map(|problem| {
@@ -609,8 +613,14 @@ impl Origin {
         (Some(python_type(&value)), state)
     }
 
-    /// The capability of the `count` children of the object at `object`.
-    fn children(&self, object: VirtualAddress, count: u64) -> ValueChildrenReference {
+    /// The capability of the children of the object at `object`: its
+    /// `elements` elements or entries, then its `fields` attributes.
+    fn children(
+        &self,
+        object: VirtualAddress,
+        elements: u64,
+        fields: u64,
+    ) -> ValueChildrenReference {
         ValueChildrenReference {
             stop_id: self.stop,
             context: self.context,
@@ -620,14 +630,14 @@ impl Origin {
             context_address: None,
             target_type: UNIDENTIFIED.id,
             storage: ValueStorage::Memory(object),
-            total: count,
+            total: elements.saturating_add(fields),
             active_variant: None,
             view: Some(ViewChildren {
                 bound: Some(Arc::new(InterpretedChildren {
                     runtime: self.runtime,
                 })),
-                elements: count,
-                fields: 0,
+                elements,
+                fields,
                 inner: None,
                 picked: None,
             }),

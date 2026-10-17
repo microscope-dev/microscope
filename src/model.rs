@@ -1800,14 +1800,17 @@ pub struct InspectionLimits {
 
 impl Default for InspectionLimits {
     /// Enough for a frame's values and the text they hold: text is charged
-    /// to the same budget, up to [`TextSummary::MAX_BYTES`] per value.
+    /// to the same budget, up to [`TextSummary::MAX_BYTES`] per value. An
+    /// interpreted frame's values are objects reached through pointers, as
+    /// each one's type and the dict that names it are, which take many
+    /// small reads.
     fn default() -> Self {
         Self {
             variables: 256,
             value_nodes: 512,
             aggregate_depth: 64,
-            memory_reads: 256,
-            memory_bytes: 64 * 1_024,
+            memory_reads: 1_024,
+            memory_bytes: 256 * 1_024,
             expression_work: 5_120_000,
         }
     }
@@ -2291,10 +2294,6 @@ pub enum UnsupportedVariableFeature {
     /// to find, as for an aggregate in a language that leaves its own
     /// unspecified.
     ReturnPlace,
-
-    /// Reading the cell through which an interpreted frame shares a
-    /// variable with the closures it makes or was made in.
-    SharedCell,
 }
 
 impl fmt::Display for UnsupportedVariableFeature {
@@ -2316,7 +2315,6 @@ impl fmt::Display for UnsupportedVariableFeature {
             Self::RuntimeAggregateLocation => "the runtime aggregate location",
             Self::ScalarRepresentation => "the scalar representation",
             Self::ReturnPlace => "returning this type by the function's calling convention",
-            Self::SharedCell => "a variable shared with closures through a cell",
         })
     }
 }

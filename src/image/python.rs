@@ -134,6 +134,7 @@ entries! {
         TypeDictoffset = "type_object.tp_dictoffset",
         TypeDict = "type_object.tp_dict",
         TypeMro = "type_object.tp_mro",
+        TypeBase = "type_object.tp_base",
 
         /// A static built-in type's index, plus one, among the states
         /// its interpreter keeps of such types, which hold their dicts.
@@ -145,10 +146,11 @@ entries! {
         TypeDescrGet = "type_object.tp_descr_get",
         TypeDescrSet = "type_object.tp_descr_set",
 
-        /// A class's qualified name, and the keys its instances' split
-        /// dicts share.
+        /// A class's qualified name, the keys its instances' split dicts
+        /// share, and the names of its slots, sorted, or null.
         HeapTypeQualname = "heap_type_object.ht_qualname",
         HeapTypeCachedKeys = "heap_type_object.ht_cached_keys",
+        HeapTypeSlots = "heap_type_object.ht_slots",
 
         /// A member descriptor's definition, such as a slot's: the type
         /// of the value it keeps, and where in an instance it keeps it.
@@ -164,6 +166,18 @@ entries! {
         SetEntryKey = "set_entry.key",
         SetEntryHash = "set_entry.hash",
         ModuleDict = "module_object.md_dict",
+        FunctionQualname = "function_object.func_qualname",
+
+        /// A built-in function's method definition, whose name is its
+        /// name, and the object it is bound to, NULL or a module for a
+        /// function.
+        BuiltinMethod = "builtin_function.m_ml",
+        BuiltinSelf = "builtin_function.m_self",
+        MethodDefName = "method_def.ml_name",
+
+        /// The C function a slot's wrapper, as `int.__getattribute__`,
+        /// wraps.
+        WrapperDescrWrapped = "wrapper_descr_object.d_wrapped",
 
         TupleItems = "tuple_object.ob_item",
         TupleSize = "tuple_object.ob_size",
@@ -255,6 +269,10 @@ entries! {
         /// instances keep their attributes' values inline.
         TypeHeapBit = "Py_TPFLAGS_HEAPTYPE",
         TypeStaticBuiltinBit = "_Py_TPFLAGS_STATIC_BUILTIN",
+
+        /// The bit of `tp_flags` that marks `type` and its subclasses,
+        /// whose instances are classes.
+        TypeTypeSubclassBit = "Py_TPFLAGS_TYPE_SUBCLASS",
         TypeManagedDictBit = "Py_TPFLAGS_MANAGED_DICT",
         TypeInlineValuesBit = "Py_TPFLAGS_INLINE_VALUES",
 

@@ -6,9 +6,9 @@ use std::sync::Arc;
 
 use microscope::{
     CoreDumpOptions, ExecutionContext, ExpressionErrorKind, FloatValue, FrameKind, InferiorState,
-    ScalarValue, StackFrameId, StopContext, StopId, ThreadId, UnsupportedVariableFeature,
-    ValueChildQuery, ValueChildRelationship, ValueChildren, ValueChildrenReference, Variable,
-    VariableKind, VariableState, VariableUnavailableReason, VariableValue,
+    ScalarValue, StackFrameId, StopContext, StopId, ThreadId, ValueChildQuery,
+    ValueChildRelationship, ValueChildren, ValueChildrenReference, Variable, VariableKind,
+    VariableState, VariableUnavailableReason, VariableValue,
 };
 
 use crate::expressions::{Outcome, outcome};
@@ -27,9 +27,6 @@ pub const PARKED: [(&str, &[&str]); 4] = [
         &["gate", "positional", "keyword", "rest", "options"],
     ),
 ];
-
-/// The locals a closure shares, through a cell the frame keeps.
-const SHARED: [&str; 1] = ["shared"];
 
 /// The locals not yet assigned at the checkpoint, which CPython leaves out
 /// of a frame's locals, and the function whose they are.
@@ -112,7 +109,7 @@ impl Stop<'_> {
     }
 
     /// Every child of a value, in order.
-    async fn children(
+    pub async fn children(
         &self,
         reference: &Arc<ValueChildrenReference>,
         offset: u64,
@@ -132,7 +129,7 @@ impl Stop<'_> {
 }
 
 /// The one-line text a value is presented as.
-fn summary(state: &VariableState) -> &str {
+pub fn summary(state: &VariableState) -> &str {
     match state {
         VariableState::Available {
             presentation: Some(presentation),
@@ -143,7 +140,7 @@ fn summary(state: &VariableState) -> &str {
 }
 
 /// The capability of a value's children.
-fn children_of(state: &VariableState) -> &Arc<ValueChildrenReference> {
+pub fn children_of(state: &VariableState) -> &Arc<ValueChildrenReference> {
     match state {
         VariableState::Available {
             presentation: Some(presentation),
@@ -157,7 +154,7 @@ fn children_of(state: &VariableState) -> &Arc<ValueChildrenReference> {
 }
 
 /// The one-line text a value is presented as, if it is presented.
-fn presented(state: &VariableState) -> Option<&str> {
+pub fn presented(state: &VariableState) -> Option<&str> {
     match state {
         VariableState::Available {
             presentation: Some(presentation),
@@ -170,7 +167,7 @@ fn presented(state: &VariableState) -> Option<&str> {
 /// Checks the locals of the frame of `function`, whose parameters are
 /// `parameters`, against those CPython reported for it: each bound local
 /// by its name, its kind, and its canonical text, in order; the unbound
-/// ones said to be; and those a closure shares said to be in a cell.
+/// ones said to be.
 pub fn check_locals(
     function: &str,
     parameters: &[&str],
@@ -216,28 +213,6 @@ pub fn check_locals(
         };
         if variable.kind != kind {
             return Err(format!("{name} is a {:?}, not a {kind:?}", variable.kind));
-        }
-
-        if SHARED.contains(&name.as_str()) {
-            let cell = VariableState::Unavailable(VariableUnavailableReason::Unsupported(
-                UnsupportedVariableFeature::SharedCell,
-            ));
-            if variable.state != cell {
-                return Err(format!("{name} is not in a cell: {:?}", variable.state));
-            }
-            continue;
-        }
-
-        // An object of a type the debugger does not present is shown by
-        // its type, which CPython reported as `<module.name ...>`.
-        if let Some(shown) = text.strip_prefix('<') {
-            let qualified = shown.split([' ', '>']).next().unwrap_or_default();
-            let base = qualified.rsplit('.').next().unwrap_or_default();
-            let type_name = variable.type_info.as_ref().map(|info| &*info.name);
-            if type_name != Some(base) && type_name != Some(qualified) {
-                return Err(format!("{name} is of type {type_name:?}, for {text}"));
-            }
-            continue;
         }
 
         if presented(&variable.state) != Some(text) {

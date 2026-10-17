@@ -350,7 +350,7 @@ fn a_value_of_a_dynamic_type_finds_its_attributes_and_items_as_it_runs() {
         ("name < \"bob\"", "true : bool"),
         ("data < data", "false : bool"),
         ("ages[nothing]", "error missing-key at `ages[nothing]`"),
-        ("ages[numbers]", "error type at `numbers`"),
+        ("ages[numbers]", "error unsupported at `numbers`"),
     ] {
         assert_eq!(evaluate("python", text), expected, "`{text}`");
     }

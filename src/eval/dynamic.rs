@@ -8,6 +8,11 @@
 //! microscope truncates. A value that is no number, truth value, text,
 //! bytes, or nothing is neither compared nor computed with, since its own
 //! type's code decides what those mean.
+//!
+//! A refusal is a type error only where the language's own operation
+//! would be one, as `None + 1` is; where the operand's type could give a
+//! value, as `"a" + "b"` or an object's own `__add__` does, it is
+//! unsupported.
 
 use std::cmp::Ordering;
 
@@ -69,7 +74,7 @@ pub fn truth(value: &Loaded) -> Result<bool, Stop> {
         }
         LoadedValue::Collection { length } => Ok(*length != 0),
         LoadedValue::Object => Err(refused(
-            ErrorKind::Type,
+            ErrorKind::Unsupported,
             format!(
                 "the truth of a `{}` is what its type's code says, which microscope does not run",
                 value.type_name
@@ -172,7 +177,11 @@ pub fn binary(op: BinaryOp, left: &Loaded, right: &Loaded) -> Result<Number, Sto
     let (Some(left_number), Some(right_number)) = (number(&left.value), number(&right.value))
     else {
         return Err(refused(
-            ErrorKind::Type,
+            if computes(op, left, right) {
+                ErrorKind::Unsupported
+            } else {
+                ErrorKind::Type
+            },
             format!(
                 "`{}` cannot be applied to `{}` and `{}`",
                 binary_text(op),
@@ -254,6 +263,25 @@ fn floats(op: BinaryOp, left: Float, right: Float) -> Result<Float, Stop> {
     Ok(Float::binary(operator, left, right))
 }
 
+/// Whether `op` could compute a value from operands that are not both
+/// numbers: an object's type defines its own operators; text, bytes, and
+/// collections are joined, and combined as sets, with each other; and
+/// with a number they are repeated by `*` and formatted by `%`. Anything
+/// else, such as nothing with a number, is Python's type error.
+fn computes(op: BinaryOp, left: &Loaded, right: &Loaded) -> bool {
+    let joined = |value: &Loaded| {
+        matches!(
+            value.value,
+            LoadedValue::Text(_) | LoadedValue::Bytes(_) | LoadedValue::Collection { .. }
+        )
+    };
+    let object = |value: &Loaded| value.value == LoadedValue::Object;
+    object(left)
+        || object(right)
+        || (joined(left) && joined(right))
+        || ((joined(left) || joined(right)) && matches!(op, BinaryOp::Mul | BinaryOp::Rem))
+}
+
 /// `-` or `~` of a value.
 pub fn unary(op: UnaryOp, operand: &Loaded) -> Result<Number, Stop> {
     let symbol = if op == UnaryOp::Neg { "-" } else { "~" };
@@ -270,7 +298,12 @@ pub fn unary(op: UnaryOp, operand: &Loaded) -> Result<Number, Stop> {
             "`~` applies to integers, not floats",
         )),
         _ => Err(refused(
-            ErrorKind::Type,
+            // Only an object's own type may define the operator.
+            if operand.value == LoadedValue::Object {
+                ErrorKind::Unsupported
+            } else {
+                ErrorKind::Type
+            },
             format!("`{symbol}` cannot be applied to `{}`", operand.type_name),
         )),
     }
@@ -288,8 +321,9 @@ pub fn key(value: &Loaded) -> Result<Key, Stop> {
             TextCompletion::Complete => Ok(Key::Text(text.bytes.to_vec())),
             completion => Err(incomplete(completion)),
         },
+        // Bytes, a tuple, or an object may be a key, by its type's hash.
         _ => Err(refused(
-            ErrorKind::Type,
+            ErrorKind::Unsupported,
             format!(
                 "a `{}` is no key: microscope finds items by numbers, truth values, text, and the \
                  value for nothing",

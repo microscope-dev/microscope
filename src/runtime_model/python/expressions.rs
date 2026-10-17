@@ -2,7 +2,8 @@
 //! the item a key or an index finds, and an object as an operand.
 //!
 //! A name is a variable of the frame's code, then a global of the frame's
-//! module, then a built-in, as Python's own lookup finds it. A `dict`'s key
+//! module, then a built-in, as Python's own lookup finds it. An attribute
+//! is found as [`super::instances`] finds it. A `dict`'s key
 //! is found as Python's lookup finds it, without running any code: by the
 //! key's hash, through the dict's table, comparing only the keys of equal
 //! hash it passes. A key of `None`, `bool`, `int`, `float`, `str`, `bytes`,
@@ -18,19 +19,17 @@
 use std::sync::Arc;
 
 use super::code::{CodeId, CodeTable};
+use super::instances::Class;
 use super::objects::{Problem, Record, malformed};
 use super::text;
-use super::values::{Dict, Object, Values, exact, split_dict};
+use super::values::{Dict, Object, Values, exact};
 use crate::eval::error::ErrorKind;
 use crate::image::python::{Constant, Field};
 use crate::runtime_model::{
     InterpretedFailure, InterpretedKey, InterpretedKind, InterpretedName, InterpretedOperand,
     InterpretedStep,
 };
-use crate::{
-    TextCompletion, TextSummary, UnsupportedVariableFeature, VariableUnavailableReason,
-    VirtualAddress,
-};
+use crate::{TextCompletion, TextSummary, VariableUnavailableReason, VirtualAddress};
 
 /// The most characters of a `str`, or bytes of a `bytes`, an operand reads.
 const OPERAND_TEXT: u64 = 1 << 16;
@@ -137,14 +136,8 @@ impl Values<'_, '_> {
             .ok()
             .and_then(|slot| table.locals(code).get(slot))
             .ok_or_else(|| self.unavailable(malformed(frame.address, "frame")))?;
-        if local.kind & (layout.constant(Constant::FastCell) | layout.constant(Constant::FastFree))
-            != 0
-        {
-            return Err(InterpretedFailure::Unavailable(
-                VariableUnavailableReason::Unsupported(UnsupportedVariableFeature::SharedCell),
-            ));
-        }
-
+        let shared = local.kind
+            & (layout.constant(Constant::FastCell) | layout.constant(Constant::FastFree));
         let at = self
             .reader
             .offset(Field::FrameLocalsplus)
@@ -159,7 +152,14 @@ impl Values<'_, '_> {
             .reader
             .word(at)
             .map_err(|problem| self.unavailable(problem))?;
-        match self.reference(bits) {
+        let held = self.reference(bits).and_then(|object| {
+            if shared == 0 {
+                Ok(object)
+            } else {
+                self.cell(object)
+            }
+        });
+        match held {
             Ok(Some(object)) => Ok(object),
             Ok(None) => Err(InterpretedFailure::Unavailable(
                 VariableUnavailableReason::Unbound,
@@ -176,18 +176,18 @@ impl Values<'_, '_> {
         object: VirtualAddress,
         step: InterpretedStep<'_>,
     ) -> Result<VirtualAddress, InterpretedFailure> {
-        let read = self.read(object)?;
         let key = match step {
             InterpretedStep::Item(key) => key,
-            InterpretedStep::Attribute(name) => {
-                return Err(refused(
-                    ErrorKind::Unsupported,
-                    format!(
-                        "microscope does not read attributes, such as `{name}`, of a `{}` yet",
-                        type_text(&read)
-                    ),
-                ));
-            }
+            InterpretedStep::Attribute(name) => return self.attribute(object, name),
+        };
+
+        let (read, class) = match self.read(object)? {
+            Object::Instance { class, base } => (
+                self.special(&class, base, "__getitem__", "finds its items")?,
+                Some(class),
+            ),
+            Object::Class { this, meta } => return Err(self.class_items(&this, &meta)?),
+            read => (read, None),
         };
 
         match read {
@@ -231,13 +231,25 @@ impl Values<'_, '_> {
                     _ => Err(self.unavailable(malformed(object, &type_text(&read)))),
                 }
             }
-            Object::Dict(dict) => self.lookup(dict, key)?.ok_or_else(|| {
-                refused(
-                    ErrorKind::MissingKey,
-                    format!("the dict holds no key {}", key_text(key)),
-                )
-            }),
-            Object::SplitDict { .. } => Err(refused(ErrorKind::Unsupported, split_dict())),
+            Object::Dict(dict) => match self.lookup(dict, key)? {
+                Some(value) => Ok(value),
+                None => match class {
+                    Some(class) if self.type_attribute(&class, "__missing__")?.is_some() => {
+                        Err(refused(
+                            ErrorKind::Unsupported,
+                            format!(
+                                "a `{}` gives a key it holds no value for by its own \
+                                 `__missing__`, which microscope does not run",
+                                class.qualified()
+                            ),
+                        ))
+                    }
+                    _ => Err(refused(
+                        ErrorKind::MissingKey,
+                        format!("the dict holds no key {}", key_text(key)),
+                    )),
+                },
+            },
             Object::Str { .. } | Object::Bytes { .. } => Err(refused(
                 ErrorKind::Unsupported,
                 format!(
@@ -256,7 +268,7 @@ impl Values<'_, '_> {
     }
 
     /// The value `dict` holds for `key`, or `None` when it holds none.
-    fn lookup(
+    pub(super) fn lookup(
         &self,
         dict: Dict,
         key: &InterpretedKey,
@@ -469,7 +481,9 @@ impl Values<'_, '_> {
                     Compared::Unequal
                 });
             }
-            Object::Bytes { .. } | Object::Tuple { .. } => return Ok(Compared::Unequal),
+            Object::Bytes { .. } | Object::Tuple { .. } | Object::Set { frozen: true, .. } => {
+                return Ok(Compared::Unequal);
+            }
             object => return Ok(Compared::Unknown(type_text(object).into())),
         };
 
@@ -546,13 +560,18 @@ impl Values<'_, '_> {
                     }),
                 )
             }
-            Object::List { length, .. } | Object::Tuple { length, .. } => {
+            Object::List { length, .. }
+            | Object::Tuple { length, .. }
+            | Object::Set { used: length, .. } => {
                 (InterpretedKind::Sequence { length: *length }, None)
             }
-            Object::Dict(Dict { length, .. }) | Object::SplitDict { length } => {
-                (InterpretedKind::Map { length: *length }, None)
-            }
-            Object::Other { .. } => (InterpretedKind::Other, None),
+            Object::Dict(Dict { length, .. }) => (InterpretedKind::Map { length: *length }, None),
+            Object::Instance { .. }
+            | Object::Class { .. }
+            | Object::Module { .. }
+            | Object::Function { .. }
+            | Object::Builtin { .. }
+            | Object::Code { .. } => (InterpretedKind::Other, None),
         };
 
         Ok(InterpretedOperand {
@@ -562,20 +581,77 @@ impl Values<'_, '_> {
         })
     }
 
+    /// Why the class `this`, of the metaclass `meta`, gives no item:
+    /// Python finds one by the metaclass's `__getitem__`, or else by the
+    /// class's own `__class_getitem__`, and either runs code.
+    fn class_items(
+        &self,
+        this: &Class,
+        meta: &Class,
+    ) -> Result<InterpretedFailure, InterpretedFailure> {
+        Ok(if self.type_attribute(meta, "__getitem__")?.is_some() {
+            refused(
+                ErrorKind::Unsupported,
+                format!(
+                    "the class `{}` finds its items by its metaclass's `__getitem__`, which \
+                     microscope does not run",
+                    this.qualified()
+                ),
+            )
+        } else if self.type_attribute(this, "__class_getitem__")?.is_some() {
+            refused(
+                ErrorKind::Unsupported,
+                format!(
+                    "the class `{}` makes its items by its own `__class_getitem__`, which \
+                     microscope does not run",
+                    this.qualified()
+                ),
+            )
+        } else {
+            refused(
+                ErrorKind::Type,
+                format!("the class `{}` has no items", this.qualified()),
+            )
+        })
+    }
+
     /// The length of the object at `object`, as Python's `len` gives it.
     pub(super) fn length(&self, object: VirtualAddress) -> Result<u64, InterpretedFailure> {
-        match self.read(object)? {
+        let read = match self.read(object)? {
+            Object::Instance { class, base } => {
+                self.special(&class, base, "__len__", "gives its length")?
+            }
+            Object::Class { this, meta } => {
+                return Err(match self.type_attribute(&meta, "__len__")? {
+                    Some(_) => refused(
+                        ErrorKind::Unsupported,
+                        format!(
+                            "the class `{}` gives its length by its metaclass's `__len__`, which \
+                             microscope does not run",
+                            this.qualified()
+                        ),
+                    ),
+                    None => refused(
+                        ErrorKind::Type,
+                        format!("the class `{}` has no length", this.qualified()),
+                    ),
+                });
+            }
+            read => read,
+        };
+
+        match read {
             Object::Str { length, .. }
             | Object::Bytes { length, .. }
             | Object::List { length, .. }
             | Object::Tuple { length, .. }
             | Object::Dict(Dict { length, .. })
-            | Object::SplitDict { length } => Ok(length),
+            | Object::Set { used: length, .. } => Ok(length),
             read => Err(refused(
                 ErrorKind::Type,
                 format!(
-                    "microscope reads the length of a str, bytes, list, tuple, or dict, not \
-                     of a `{}`",
+                    "microscope reads the length of a str, bytes, list, tuple, dict, or set, \
+                     not of a `{}`",
                     type_text(&read)
                 ),
             )),

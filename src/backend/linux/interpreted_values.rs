@@ -192,7 +192,7 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
             InterpretedKind::Sequence { length } | InterpretedKind::Map { length } => {
                 LoadedValue::Collection { length }
             }
-            InterpretedKind::Other => LoadedValue::Object,
+            InterpretedKind::Instance | InterpretedKind::Other => LoadedValue::Object,
         };
 
         Ok(Loaded {

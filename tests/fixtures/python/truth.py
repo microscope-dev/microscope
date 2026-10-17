@@ -35,6 +35,7 @@ import os
 import sys
 import sysconfig
 import threading
+import types
 
 # A code object's flag for a function's frame, whose locals are its own.
 _CO_OPTIMIZED = 0x1
@@ -43,6 +44,10 @@ _CO_OPTIMIZED = 0x1
 # container; fixtures keep their values within both.
 _DEPTH = 6
 _ITEMS = 64
+
+# The flag of a class a program defines, as opposed to a type CPython or
+# an extension does.
+_HEAPTYPE = 1 << 9
 
 _print_lock = threading.Lock()
 
@@ -89,54 +94,121 @@ def _string(text):
 def canonical(value, _depth=0, _seen=None):
     """The text microscope must present a value as.
 
-    It is Python's repr for None, bools, ints at any size, floats (the
-    shortest text that reads back as the same float), strings (escaping
-    only what _string does), and bytes,
-    and for lists, tuples, and dicts (in insertion order) of those. Sets are
-    sorted by their items' text, so that every interpreter agrees. Any other
-    object is its type's module and qualified name and, for a type the
-    fixture defines, its attributes in the order they were set, then those
-    its slots hold.
+    A value of a built-in type is Python's repr of it for None, bools, ints
+    at any size, floats (the shortest text that reads back as the same
+    float), strings (escaping only what _string does), and bytes, and for
+    lists, tuples, dicts (in insertion order), sets, and frozensets (in
+    iteration order) of those; so is a value of a class deriving from one,
+    as that type's own repr gives it. A class, a module, a function, a
+    built-in function, and a code object show their names, and any other
+    object its type's module and qualified name and its address.
     """
     seen = set() if _seen is None else _seen
-    if value is None or isinstance(value, (bool, int, float, bytes)):
+    kind = type(value)
+    base = _laid_out(kind)
+    if value is None:
+        return "None"
+    if base in (bool, int, float, bytes):
+        return base.__repr__(value)
+    if base is str:
+        return _string(str.__str__(value))
+    if isinstance(value, type):
+        return "<class '%s'>" % _qualified(value)
+    if base is types.ModuleType:
+        name = object.__getattribute__(value, "__dict__").get("__name__")
+        if type(name) is str:
+            return "<module %s>" % _string(name)
+        return "<module object at %#x>" % id(value)
+    if kind is types.FunctionType:
+        return "<function %s at %#x>" % (value.__qualname__, id(value))
+    if kind in (types.BuiltinFunctionType, types.CodeType):
         return repr(value)
-    if isinstance(value, str):
-        return _string(value)
+    if base not in (list, tuple, dict, set, frozenset):
+        return "<%s object at %#x>" % (_qualified(kind), id(value))
     if _depth >= _DEPTH:
         raise ValueError("a fixture's value nests deeper than canonical() shows")
     if id(value) in seen:
-        return {list: "[...]", dict: "{...}"}.get(type(value), "...")
+        return {list: "[...]", dict: "{...}"}.get(base, "...")
     seen.add(id(value))
     try:
         inner = lambda item: canonical(item, _depth + 1, seen)  # noqa: E731
-        if isinstance(value, (list, tuple, dict, set, frozenset)) and len(value) > _ITEMS:
+        if base is dict:
+            items = list(dict.items(value))
+        elif base in (list, tuple):
+            items = list(base.__getitem__(value, slice(None)))
+        else:
+            items = list(base.__iter__(value))
+        if len(items) > _ITEMS:
             raise ValueError("a fixture's container holds more than canonical() shows")
-        if type(value) is list:
-            return "[" + ", ".join(map(inner, value)) + "]"
-        if type(value) is tuple:
-            items = list(map(inner, value))
-            return "(" + ", ".join(items) + ("," if len(items) == 1 else "") + ")"
-        if type(value) is dict:
-            return "{" + ", ".join(inner(k) + ": " + inner(v) for k, v in value.items()) + "}"
-        if type(value) in (set, frozenset):
-            items = sorted(map(inner, value))
-            if type(value) is set:
-                return "{" + ", ".join(items) + "}" if items else "set()"
-            return "frozenset({" + ", ".join(items) + "})" if items else "frozenset()"
-        kind = type(value)
-        if kind.__module__ != "__main__":
-            return "<%s.%s>" % (kind.__module__, kind.__qualname__)
-        attributes = list(getattr(value, "__dict__", {}).items())
-        for klass in kind.__mro__:
-            slots = klass.__dict__.get("__slots__", ())
-            for slot in (slots,) if isinstance(slots, str) else slots:
-                if slot not in ("__dict__", "__weakref__") and hasattr(value, slot):
-                    attributes.append((slot, getattr(value, slot)))
-        shown = "".join(" %s=%s" % (name, inner(item)) for name, item in attributes)
-        return "<%s.%s%s>" % (kind.__module__, kind.__qualname__, shown)
+        if base is list:
+            return "[" + ", ".join(map(inner, items)) + "]"
+        if base is tuple:
+            return "(" + ", ".join(map(inner, items)) + ("," if len(items) == 1 else "") + ")"
+        if base is dict:
+            return "{" + ", ".join(inner(k) + ": " + inner(v) for k, v in items) + "}"
+        shown = ", ".join(map(inner, items))
+        if base is set:
+            return "{" + shown + "}" if items else "set()"
+        return "frozenset({" + shown + "})" if items else "frozenset()"
     finally:
         seen.discard(id(value))
+
+
+def _laid_out(kind):
+    """The type kind's instances are laid out as: the first its bases lead
+    to that no program defines, which is the built-in type whose value they
+    hold, if they hold one."""
+    while kind.__flags__ & _HEAPTYPE:
+        kind = kind.__base__
+    return kind
+
+
+def _qualified(kind):
+    """A type's name as Python's repr gives it: qualified by its module,
+    unless that is builtins."""
+    if kind.__module__ == "builtins":
+        return kind.__qualname__
+    return "%s.%s" % (kind.__module__, kind.__qualname__)
+
+
+def _mangle(klass, name):
+    # The name CPython keeps a private slot under, as it mangles a private
+    # name in a class body.
+    owner = klass.__name__.lstrip("_")
+    if name.startswith("__") and not name.endswith("__") and owner:
+        return "_%s%s" % (owner, name)
+    return name
+
+
+def attributes(value):
+    """An object's attributes, each a name and its value, as microscope
+    shows them: those its dict holds, in insertion order, then those its
+    slots hold, each class's from the most derived on, in the sorted order
+    CPython keeps a class's slots in. A slot is read by its own class's
+    descriptor, and one whose name a more derived class's slot takes is
+    left out, whatever either holds."""
+    try:
+        found = list(object.__getattribute__(value, "__dict__").items())
+    except AttributeError:
+        found = []
+    taken = set()
+    for klass in type(value).__mro__:
+        if not klass.__flags__ & _HEAPTYPE:
+            continue
+        slots = klass.__dict__.get("__slots__", ())
+        names = (slots,) if isinstance(slots, str) else slots
+        for slot in sorted(_mangle(klass, name) for name in names):
+            if slot in ("__dict__", "__weakref__") or slot in taken:
+                continue
+            taken.add(slot)
+            descriptor = klass.__dict__.get(slot)
+            if type(descriptor) is not types.MemberDescriptorType:
+                continue
+            try:
+                found.append((slot, descriptor.__get__(value, klass)))
+            except AttributeError:
+                pass
+    return found
 
 
 def _codes(code):

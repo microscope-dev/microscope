@@ -115,14 +115,27 @@ order:
 (tuple) single = (1,)
 (dict) by_name = {'a': 1, 'b': 'two', 'c': None}
 (int) big = 1267650600228229401496703217721
-(Gate) gate = <Gate object at 0x7f3a2c591990>
+(truth.Gate) gate = <truth.Gate object at 0x51a68591990>
+(module) truth = <module 'truth'>
+(builtin_function_or_method) len = <built-in function len>
 ```
 
 Values use Python's `repr` for None, True and False, int of any size, float,
-str, bytes, list, tuple, and dict. A float uses the shortest round-trip form,
-such as `0.1`, `1e+16`, `inf`, or `nan`. A dict keeps its insertion order.
-Lists, tuples, and dicts expand into their items in clients that expand values,
-such as the browser and editors. Any other type shows its type and address.
+str, bytes, list, tuple, dict, set, and frozenset. A float uses the shortest
+round-trip form, such as `0.1`, `1e+16`, `inf`, or `nan`. A dict keeps its
+insertion order, and a set the order of its table, which is the order Python
+iterates it in. Lists, tuples, dicts, and sets expand into their items in
+clients that expand values, such as the browser and editors.
+
+An instance of a class shows its type and address, as Python's default
+`repr` does, and expands into its attributes: those its dict holds, in
+insertion order, then those its `__slots__` hold. An instance of a class
+that derives from a built-in type, such as a `namedtuple` or an `IntEnum`
+member, shows that type's value and expands into its items, then its
+attributes. Classes, modules, functions, built-in functions and methods,
+and code objects show as Python's `repr` names them. Nothing runs in the
+program, so a class's own `__repr__` is not used. Any other object shows
+its type and address.
 
 A summary reads at most 6 containers deep, 64 items of each container, and 1024
 characters of a string. It says when it stops short. `pp` lays containers out
@@ -130,15 +143,15 @@ over lines in the generic form microscope uses for every language, such as
 `len=3 [1, 2, 3]`.
 
 A local that is not yet assigned shows as unbound. A local that a nested
-function shares (a cell) is not shown yet. An instance's attribute dict with
-split values (CPython's split dicts) is not read yet.
+function shares (a cell) shows the value the cell holds.
 
 ### Expressions
 
 In a Python frame, a name is the frame's local, then a global of its module,
 then a built-in, as Python finds it. `::name` skips to the native program's
 globals. Expressions index lists and tuples, find a dict's keys as Python's
-own lookup finds them, take `len`, compare, and compute with numbers:
+own lookup finds them, read attributes, take `len`, compare, and compute
+with numbers:
 
 ```text
 (microscope) print numbers[-1]
@@ -149,15 +162,21 @@ own lookup finds them, take `len`, compare, and compute with numbers:
 (integer) numbers[0] + len(by_name) * 10 = 31
 (microscope) print mixed[None]
 (bytes) mixed[None] = b'n'
+(microscope) print gate._count
+(int) gate._count = 4
+(microscope) print truth._DEPTH
+(int) truth._DEPTH = 6
+(microscope) print gate.wait
+error: `wait` of a `truth.Gate` is a `function`, which binds with code microscope does not run, as a method does
 ```
 
 A Python variable's type is whatever object it holds when the expression
 runs. microscope never runs code in the program: it refuses what only a
-type's own code could answer, such as comparing lists or finding a dict key
-of a class's instance, rather than guess. Python divides integers into a
-fraction and floors a remainder, so an integer `/`, and `%` of a negative
-number or a float, are refused. Attributes, such as `point.x`, are not read
-yet. [Expressions](expressions.md#python-values) gives the rules.
+type's own code could answer, such as comparing lists, finding a dict key
+of a class's instance, or reading a property, rather than guess. Python
+divides integers into a fraction and floors a remainder, so an integer `/`,
+and `%` of a negative number or a float, are refused.
+[Expressions](expressions.md#python-values) gives the rules.
 
 ### Not supported yet
 

@@ -17,8 +17,7 @@ use crate::runtime_model::{
     InterpretedStep,
 };
 use crate::{
-    InspectionLimit, InspectionLimits, TextCompletion, UnsupportedVariableFeature,
-    VariableUnavailableReason, VirtualAddress,
+    InspectionLimit, InspectionLimits, TextCompletion, VariableUnavailableReason, VirtualAddress,
 };
 
 /// The kinds of local the tests give a code object: a plain local, a
@@ -319,15 +318,19 @@ fn a_variable_is_the_object_its_slot_holds() {
 }
 
 #[test]
-fn a_null_slot_is_unbound_and_a_cell_is_a_shared_cell() {
+fn a_null_slot_is_unbound_and_a_cell_holds_its_variable() {
     let mut process = Process::new(layout());
     let types = process.builtin_types();
+    let three = process.int(types.int, 3);
+    let cell = process.object(types.cell, SMALL);
+    process.word(cell, Field::CellRef, three);
+    let empty = process.object(types.cell, SMALL);
     let frame = frame_with(
         &mut process,
         &types,
-        &["a", "b"],
-        &[LOCAL, CELL],
-        &[0, 0],
+        &["a", "b", "c", "d"],
+        &[LOCAL, CELL, CELL, CELL],
+        &[0, cell, empty, three],
         0,
         0,
     );
@@ -340,9 +343,19 @@ fn a_null_slot_is_unbound_and_a_cell_is_a_shared_cell() {
     );
     assert_eq!(
         variable_in(&process, types, frame, 1),
+        Ok(VirtualAddress::new(three))
+    );
+    assert_eq!(
+        variable_in(&process, types, frame, 2),
         Err(InterpretedFailure::Unavailable(
-            VariableUnavailableReason::Unsupported(UnsupportedVariableFeature::SharedCell)
+            VariableUnavailableReason::Unbound
         ))
+    );
+
+    // A parameter the frame has not yet put in its cell is its object.
+    assert_eq!(
+        variable_in(&process, types, frame, 3),
+        Ok(VirtualAddress::new(three))
     );
 }
 
@@ -848,21 +861,4 @@ fn the_length_of_a_text_bytes_sequence_or_map_is_its_count_and_an_int_has_none()
         ),
         "an int has no length"
     );
-}
-
-#[test]
-fn an_attribute_is_unsupported_and_its_message_names_it() {
-    let mut process = Process::new(layout());
-    let types = process.builtin_types();
-    let one = process.int(types.int, 1);
-
-    let result = with_values(&process, types, InspectionLimits::default(), |values| {
-        values.step(VirtualAddress::new(one), InterpretedStep::Attribute("x"))
-    });
-    match result {
-        Err(InterpretedFailure::Refused(ErrorKind::Unsupported, message)) => {
-            assert!(message.contains("`x`"), "the message: {message}");
-        }
-        other => panic!("expected an unsupported attribute, got {other:?}"),
-    }
 }

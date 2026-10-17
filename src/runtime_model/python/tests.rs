@@ -10,11 +10,12 @@ use std::sync::Arc;
 use super::code::CodeTable;
 use super::frames::Walk;
 use super::linetable::CODE_UNIT;
-use super::objects::Reader;
+use super::objects::{self, Reader};
 use super::threads::{self, ThreadState};
 use crate::image::python::{Constant, Field, PythonLayout};
+use crate::inspection::InspectionBudget;
 use crate::runtime_model::{InterpretedFrame, RuntimeStop};
-use crate::{LoadBias, ThreadId, VirtualAddress};
+use crate::{InspectionLimits, LoadBias, ThreadId, VirtualAddress};
 
 /// Where the builders allocate objects first.
 const HEAP: u64 = 0x7000_0000_0000;
@@ -40,6 +41,57 @@ const MAPPED_PAST: u64 = 64;
 
 /// What a walk of one thread returns: its frames and why they end early.
 type Walked = (Vec<InterpretedFrame>, Option<Arc<str>>);
+
+/// The fields and constants of the objects the object model reads: classes
+/// and their dicts, instances' attributes, slots, sets, and the static
+/// types' dicts in the interpreter's state.
+fn object_model(layout: &mut PythonLayout) {
+    let fields = [
+        (Field::CodeName, 64),
+        (Field::TypeBasicsize, 48),
+        (Field::TypeBase, 56),
+        (Field::TypeDict, 64),
+        (Field::TypeMro, 72),
+        (Field::TypeSubclasses, 80),
+        (Field::TypeGetattro, 88),
+        (Field::TypeDescrGet, 96),
+        (Field::TypeDescrSet, 104),
+        (Field::HeapTypeQualname, 112),
+        (Field::HeapTypeCachedKeys, 120),
+        (Field::HeapTypeSlots, 128),
+        (Field::MemberDefType, 8),
+        (Field::MemberDefOffset, 16),
+        (Field::MemberDescrMember, 24),
+        (Field::WrapperDescrWrapped, 24),
+        (Field::SetUsed, 24),
+        (Field::SetMask, 32),
+        (Field::SetTable, 40),
+        (Field::SetEntryKey, 0),
+        (Field::SetEntryHash, 8),
+        (Field::SetEntrySize, 16),
+        (Field::ModuleDict, 24),
+        (Field::FunctionQualname, 24),
+        (Field::BuiltinMethod, 24),
+        (Field::BuiltinSelf, 32),
+        (Field::MethodDefName, 0),
+        (Field::InterpreterStaticTypes, 32),
+        (Field::InterpreterStaticTypesEnd, 64),
+        (Field::StaticTypeStateSize, 16),
+        (Field::StaticTypeStateDict, 8),
+    ];
+    for (field, offset) in fields {
+        layout.set_field(field, offset);
+    }
+
+    layout.set_constant(Constant::TypeHeapBit, 9);
+    layout.set_constant(Constant::TypeStaticBuiltinBit, 1);
+    layout.set_constant(Constant::TypeTypeSubclassBit, 31);
+    layout.set_constant(Constant::TypeManagedDictBit, 4);
+    layout.set_constant(Constant::TypeInlineValuesBit, 2);
+    layout.set_constant(Constant::ManagedDictWords, 3);
+    layout.set_constant(Constant::ManagedDictTagged, 1);
+    layout.set_constant(Constant::MemberObjectEx, 16);
+}
 
 /// The layout the tests read. Each structure's fields are at offsets the
 /// tests choose, within the structure's size, and the constants are the
@@ -83,6 +135,8 @@ fn layout() -> PythonLayout {
         (Field::ThreadCurrentFrame, 8),
         (Field::ThreadNativeId, 16),
         (Field::TypeName, 24),
+        (Field::TypeFlags, 32),
+        (Field::TypeDictoffset, 40),
         (Field::LongTag, 16),
         (Field::LongDigits, 24),
         (Field::FloatValue, 16),
@@ -106,6 +160,7 @@ fn layout() -> PythonLayout {
         (Field::FrameGlobals, 32),
         (Field::FrameBuiltins, 40),
         (Field::FrameLocalsplus, 48),
+        (Field::CellRef, 16),
     ];
     for (field, offset) in fields {
         layout.set_field(field, offset);
@@ -130,6 +185,7 @@ fn layout() -> PythonLayout {
     layout.set_constant(Constant::DictKeysGeneral, 0);
     layout.set_constant(Constant::DictKeysUnicode, 1);
     layout.set_constant(Constant::DictKeysSplit, 2);
+    object_model(&mut layout);
     layout
 }
 
@@ -211,12 +267,14 @@ impl RuntimeStop for Memory {
 }
 
 /// A process the tests build: its memory, the layout that reads it, the
-/// address of its `PyCode_Type`, and where the next object goes.
+/// address of its `PyCode_Type`, where the next object goes, and what it
+/// is aligned to.
 struct Process {
     memory: Memory,
     layout: PythonLayout,
     code_type: u64,
     next: u64,
+    align: u64,
 }
 
 impl Process {
@@ -226,21 +284,29 @@ impl Process {
             layout,
             code_type: 0,
             next: HEAP,
+            align: 16,
         };
         process.code_type = process.alloc(16);
         process
     }
 
-    /// Reserves `size` zeroed bytes, aligned to sixteen, and returns their
-    /// address. The memory past them is mapped, as the rest of an
-    /// allocator's pool is, up to [`MAPPED_PAST`] bytes from their start.
+    /// Reserves `size` zeroed bytes, aligned as the process aligns them,
+    /// and returns their address. The memory past them is mapped, as the
+    /// rest of an allocator's pool is, up to [`MAPPED_PAST`] bytes from
+    /// their start, or to the end of their alignment.
     fn alloc(&mut self, size: u64) -> u64 {
-        let address = self.next;
-        let mapped = size.max(MAPPED_PAST);
+        let address = self.next.next_multiple_of(self.align);
+        let mapped = size.max(MAPPED_PAST).next_multiple_of(self.align);
         let zeros = vec![0; usize::try_from(mapped).expect("an object fits the address space")];
         self.memory.fill(address, &zeros);
         self.next = address + size.next_multiple_of(16);
         address
+    }
+
+    /// Places each object from here on in mapped blocks of memory of its
+    /// own, which a reader reads by themselves, so that each costs a read.
+    const fn spread(&mut self) {
+        self.align = objects::BLOCK as u64;
     }
 
     /// Unmaps the `length` bytes at `address`.
@@ -255,6 +321,7 @@ impl Process {
             stop: &self.memory,
             layout: &self.layout,
             charge: None,
+            blocks: None,
         }
     }
 
@@ -839,6 +906,7 @@ fn a_thread_list_that_loops_is_a_gap_and_keeps_the_threads_before_it() {
 }
 
 mod expressions;
+mod instances;
 mod values;
 
 /// A runtime whose frames cannot be read, as one of a version microscope
@@ -883,4 +951,54 @@ fn an_unreadable_runtime_finds_its_loop_and_says_why_its_frames_are_missing() {
     assert_eq!(model.driven(&evaluating), Some(Driven::Interpreted));
     evaluating.symbol = None;
     assert_eq!(model.driven(&evaluating), None);
+}
+
+#[test]
+fn reads_in_a_block_read_before_cost_nothing_and_bytes_in_a_block_not_mapped_whole_are_read_alone()
+{
+    let block = objects::BLOCK as u64;
+    let mut memory = Memory::default();
+    memory.fill(HEAP, &[7; objects::BLOCK]);
+    let alone = HEAP + 4 * block + 8;
+    memory.fill(alone, &[9; 8]);
+    let layout = layout();
+    let mut inspection = InspectionBudget::new(InspectionLimits::default());
+    let budget = super::values::Budget::new(&mut inspection);
+    let blocks = objects::Blocks::default();
+    {
+        let reader = Reader {
+            stop: &memory,
+            layout: &layout,
+            charge: Some(&budget),
+            blocks: Some(&blocks),
+        };
+
+        // Each read in the mapped block is paid for by its first.
+        assert_eq!(
+            reader.word(VirtualAddress::new(HEAP)),
+            Ok(0x0707_0707_0707_0707)
+        );
+        assert_eq!(
+            reader.word(VirtualAddress::new(HEAP + block - 8)),
+            Ok(0x0707_0707_0707_0707)
+        );
+        assert_eq!(
+            reader.bytes(VirtualAddress::new(HEAP + 3), 2),
+            Ok(vec![7, 7])
+        );
+
+        // Bytes reaching into a block that cannot be read are unreadable, and
+        // mapped bytes in such a block are read by themselves.
+        assert!(reader.word(VirtualAddress::new(HEAP + block - 4)).is_err());
+        assert_eq!(
+            reader.word(VirtualAddress::new(alone)),
+            Ok(0x0909_0909_0909_0909)
+        );
+        assert!(reader.word(VirtualAddress::new(alone + 8)).is_err());
+    }
+
+    // The mapped block; the next, which cannot be read, and the bytes
+    // reaching into it; the block of the bytes alone, and those bytes; and
+    // the bytes after them, in the same block.
+    assert_eq!(inspection.usage().memory_reads, 6);
 }

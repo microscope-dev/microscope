@@ -8,7 +8,7 @@ pub const MAX_INSPECTION_LIMITS: InspectionLimits = InspectionLimits {
     variables: 4_096,
     value_nodes: 4_096,
     aggregate_depth: 64,
-    memory_reads: 1_024,
+    memory_reads: 4_096,
     memory_bytes: 1024 * 1024,
     expression_work: 10_240_000,
 };

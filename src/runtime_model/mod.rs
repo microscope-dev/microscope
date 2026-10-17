@@ -906,10 +906,6 @@ pub enum InterpretedSlot {
     /// Nothing: the variable is not yet assigned, or was deleted.
     Unbound,
 
-    /// A cell the frame shares with the closures it makes or was made in,
-    /// which holds the value.
-    Cell,
-
     /// The inspection's limits were reached before it was read.
     Limit(crate::InspectionExhaustion),
 
@@ -928,6 +924,10 @@ pub struct InterpretedValue {
     pub type_name: Arc<str>,
     pub kind: InterpretedKind,
 
+    /// How many attributes the object shows by name, after the elements or
+    /// entries its kind gives it.
+    pub attributes: u64,
+
     /// The object as text, in the runtime's own notation, with what a
     /// container holds past the summary's bounds left out as `...`.
     pub summary: Arc<str>,
@@ -937,13 +937,21 @@ pub struct InterpretedValue {
 }
 
 impl InterpretedValue {
-    /// How many children [`RuntimeModel::interpreted_children`] gives.
+    /// How many elements or entries the object's kind gives it, which its
+    /// children start with.
     #[must_use]
-    pub const fn children(&self) -> u64 {
+    pub const fn elements(&self) -> u64 {
         match self.kind {
             InterpretedKind::Sequence { length } | InterpretedKind::Map { length } => length,
             _ => 0,
         }
+    }
+
+    /// How many children [`RuntimeModel::interpreted_children`] gives: the
+    /// elements or entries, then the attributes.
+    #[must_use]
+    pub const fn children(&self) -> u64 {
+        self.elements().saturating_add(self.attributes)
     }
 }
 
@@ -967,6 +975,10 @@ pub enum InterpretedKind {
         length: u64,
     },
 
+    /// An object of a class that holds no value of a built-in type, which
+    /// its attributes alone describe.
+    Instance,
+
     /// An object the debugger presents by its type and address alone.
     Other,
 }
@@ -977,6 +989,10 @@ pub enum InterpretedChild {
     Element(InterpretedSlot),
     Entry {
         key: InterpretedSlot,
+        value: InterpretedSlot,
+    },
+    Attribute {
+        name: Arc<str>,
         value: InterpretedSlot,
     },
 }

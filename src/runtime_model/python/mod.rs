@@ -15,6 +15,7 @@
 mod code;
 mod expressions;
 mod frames;
+mod instances;
 mod linetable;
 mod objects;
 mod text;
@@ -68,21 +69,40 @@ pub fn detect(
     })))
 }
 
-/// The type objects of the built-in types whose values the model reads,
-/// by the symbols CPython exports them as; or why it cannot read values.
-fn types(image: &dyn RuntimeImage, version: PyVersion) -> Result<[ImageAddress; 9], Arc<str>> {
-    let names = [
-        "_PyNone_Type",
-        "PyBool_Type",
-        "PyLong_Type",
-        "PyFloat_Type",
-        "PyUnicode_Type",
-        "PyBytes_Type",
-        "PyList_Type",
-        "PyTuple_Type",
-        "PyDict_Type",
-    ];
-    let mut types = [ImageAddress::new(0); 9];
+/// The symbols CPython exports the objects the model reads values by as:
+/// the type objects of the built-in types it presents, and the function
+/// that reads attributes as `object` does.
+const TYPES: [&str; 20] = [
+    "_PyNone_Type",
+    "PyBool_Type",
+    "PyLong_Type",
+    "PyFloat_Type",
+    "PyUnicode_Type",
+    "PyBytes_Type",
+    "PyList_Type",
+    "PyTuple_Type",
+    "PyDict_Type",
+    "PySet_Type",
+    "PyFrozenSet_Type",
+    "PyCell_Type",
+    "PyModule_Type",
+    "PyFunction_Type",
+    "PyCFunction_Type",
+    "PyCode_Type",
+    "PyType_Type",
+    "PyMemberDescr_Type",
+    "PyWrapperDescr_Type",
+    "PyObject_GenericGetAttr",
+];
+
+/// The objects [`TYPES`] names, in its order; or why the model cannot read
+/// values.
+fn types(
+    image: &dyn RuntimeImage,
+    version: PyVersion,
+) -> Result<[ImageAddress; TYPES.len()], Arc<str>> {
+    let names = TYPES;
+    let mut types = [ImageAddress::new(0); TYPES.len()];
     for (ty, name) in types.iter_mut().zip(names) {
         *ty = image
             .symbol(name)
@@ -123,8 +143,8 @@ struct Reading {
     layout: PythonLayout,
     code_type: ImageAddress,
 
-    /// The built-in types' objects, in the order [`types`] names them.
-    types: Result<[ImageAddress; 9], Arc<str>>,
+    /// The built-in types' objects, in the order [`TYPES`] names them.
+    types: Result<[ImageAddress; TYPES.len()], Arc<str>>,
 
     /// The secret `str` hashes are keyed by, `_Py_HashSecret`, where the
     /// module exports it.
@@ -146,7 +166,28 @@ impl Reading {
             bias.load(symbol)
                 .ok_or_else(|| Arc::from("CPython's types lie outside the process"))
         };
-        let [none, bool, int, float, str, bytes, list, tuple, dict] = symbols.map(loaded);
+        let [
+            none,
+            bool,
+            int,
+            float,
+            str,
+            bytes,
+            list,
+            tuple,
+            dict,
+            set,
+            frozenset,
+            cell,
+            module,
+            function,
+            builtin,
+            code,
+            class,
+            member,
+            wrapper,
+            generic_getattr,
+        ] = symbols.map(loaded);
         let types = values::Types {
             none: none?,
             bool: bool?,
@@ -157,19 +198,35 @@ impl Reading {
             list: list?,
             tuple: tuple?,
             dict: dict?,
+            set: set?,
+            frozenset: frozenset?,
+            cell: cell?,
+            module: module?,
+            function: function?,
+            builtin: builtin?,
+            code: code?,
+            class: class?,
+            member: member?,
+            wrapper: wrapper?,
+            generic_getattr: generic_getattr?,
         };
+        let runtime = loaded(self.runtime.start)?;
 
         let budget = values::Budget::new(budget);
+        let blocks = objects::Blocks::default();
         let values = values::Values {
             reader: objects::Reader {
                 stop,
                 layout: &self.layout,
                 charge: Some(&budget),
+                blocks: Some(&blocks),
             },
             types,
             budget: &budget,
             secret: self.secret.and_then(|secret| bias.load(secret)),
             hashing: std::cell::Cell::new(None),
+            runtime,
+            classes: std::cell::RefCell::default(),
         };
         let mut table = self
             .code
@@ -238,6 +295,7 @@ impl Reading {
             stop,
             layout: &self.layout,
             charge: None,
+            blocks: None,
         };
 
         let bias = stop.load_bias();

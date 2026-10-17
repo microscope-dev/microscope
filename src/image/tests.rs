@@ -596,7 +596,7 @@ fn the_schema_is_the_records_layout() {
     // A change to any record changes this; bump the format with it.
     assert_eq!(
         schema::layout_fingerprint(),
-        0xece8_5fc6_769a_2322,
+        0x41dc_7173_a6df_0987,
         "the layout changed:\n{}",
         schema::schema_text()
     );

@@ -58,11 +58,12 @@ narrower limits and report them when used.
 - Python frames are read from CPython 3.12 through 3.15, with and without the
   GIL. A CPython release microscope has not checked, or a version outside that
   range, is refused by name; its native frames still appear.
-- Python expressions read names, items, keys, and lengths, and compute with
-  numbers, text, and truth values. They do not read attributes yet, or run
-  any code in the program. Python is not supported yet for breakpoints by file
-  and line, stepping, Python exceptions as catchpoints, closure cells of a
-  frame, asyncio tasks, and Python stacks in profiles.
+- Python expressions read names, attributes, items, keys, and lengths, and
+  compute with numbers, text, and truth values. They never run code in the
+  program, so properties, methods, and a class's own `__getattr__`,
+  `__getitem__`, `__len__`, and `__repr__` are refused or not used. Python is
+  not supported yet for breakpoints by file and line, stepping, Python
+  exceptions as catchpoints, asyncio tasks, and Python stacks in profiles.
 - Runtime support follows known compiler and runtime layouts. Unknown versions
   can leave tasks or logical frames unavailable.
 - Built-in views cover selected standard-library and runtime types, not every

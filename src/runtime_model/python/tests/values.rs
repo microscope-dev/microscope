@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use super::super::code::CodeTable;
-use super::super::objects::Reader;
+use super::super::objects::{Blocks, Reader};
 use super::super::values::{Budget, Types, Values};
 use super::{Process, SMALL, UNMAPPED, layout};
 use crate::image::python::{Constant, Field};
@@ -30,6 +30,10 @@ const SUMMARY_ITEMS: u64 = 64;
 /// How many characters of a `str` a summary shows, mirrored as
 /// [`SUMMARY_DEPTH`] is.
 const SUMMARY_TEXT: usize = 1024;
+
+/// The size of a type object the builders write, past every field of one
+/// the layout gives.
+const TYPE_SIZE: u64 = 144;
 
 /// The keys table of a combined `dict`: its kind of entries, and its index
 /// and table sizes as log2 values.
@@ -61,16 +65,17 @@ pub(super) enum Kind {
 
 impl Process {
     /// A C string holding `text`, in memory whole-chunk reads stay within.
-    fn c_string(&mut self, text: &str) -> u64 {
+    pub(super) fn c_string(&mut self, text: &str) -> u64 {
         let size = (text.len() as u64 + 1).next_multiple_of(16);
         let address = self.alloc(size);
         self.memory.fill(address, text.as_bytes());
         address
     }
 
-    /// A type object named `name`, as CPython names a type.
+    /// A type object named `name`, as CPython names a type, of a static
+    /// type with no flags.
     pub(super) fn type_object(&mut self, name: &str) -> VirtualAddress {
-        let object = self.alloc(self.offset(Field::TypeName) + 8);
+        let object = self.alloc(TYPE_SIZE);
         let name = self.c_string(name);
         self.word(object, Field::TypeName, name);
         VirtualAddress::new(object)
@@ -88,6 +93,17 @@ impl Process {
             list: self.type_object("list"),
             tuple: self.type_object("tuple"),
             dict: self.type_object("dict"),
+            set: self.type_object("set"),
+            frozenset: self.type_object("frozenset"),
+            cell: self.type_object("cell"),
+            module: self.type_object("module"),
+            function: self.type_object("function"),
+            builtin: self.type_object("builtin_function_or_method"),
+            code: self.type_object("code"),
+            class: self.type_object("type"),
+            member: self.type_object("member_descriptor"),
+            wrapper: self.type_object("wrapper_descriptor"),
+            generic_getattr: VirtualAddress::new(self.alloc(16)),
         }
     }
 
@@ -341,16 +357,6 @@ impl Process {
         object
     }
 
-    /// A `dict` of type `ty` that keeps its values apart from its keys, as
-    /// an instance's do, and whose header counts `used` items.
-    pub(super) fn split_dict(&mut self, ty: VirtualAddress, used: u64) -> u64 {
-        let object = self.object(ty, self.offset(Field::DictKeys) + 8);
-        let separate = self.alloc(16);
-        self.word(object, Field::DictUsed, used);
-        self.word(object, Field::DictValues, separate);
-        object
-    }
-
     /// Gives the code object `code` the local variables `names`, whose
     /// kinds are `kinds`.
     pub(super) fn locals(&mut self, types: &Types, code: u64, names: &[&str], kinds: &[u8]) {
@@ -401,31 +407,56 @@ pub(super) fn with_secret<R>(
     secret: Option<VirtualAddress>,
     read: impl FnOnce(&Values<'_, '_>) -> R,
 ) -> R {
+    with_runtime(
+        process,
+        types,
+        limits,
+        secret,
+        VirtualAddress::new(UNMAPPED),
+        read,
+    )
+}
+
+/// Runs `read` on the values of `process`, with the process's hash secret at
+/// `secret` and its `_PyRuntime` at `runtime`, which pays for its reads from
+/// a budget of `limits`.
+pub(super) fn with_runtime<R>(
+    process: &Process,
+    types: Types,
+    limits: InspectionLimits,
+    secret: Option<VirtualAddress>,
+    runtime: VirtualAddress,
+    read: impl FnOnce(&Values<'_, '_>) -> R,
+) -> R {
     let mut inspection = InspectionBudget::new(limits);
     let budget = Budget::new(&mut inspection);
+    let blocks = Blocks::default();
     let values = Values {
         reader: Reader {
             stop: &process.memory,
             layout: &process.layout,
             charge: Some(&budget),
+            blocks: Some(&blocks),
         },
         types,
         budget: &budget,
         secret,
         hashing: std::cell::Cell::new(None),
+        runtime,
+        classes: std::cell::RefCell::default(),
     };
     read(&values)
 }
 
 /// The value at `address`, read with the default limits.
-fn value_at(process: &Process, types: Types, address: u64) -> InterpretedSlot {
+pub(super) fn value_at(process: &Process, types: Types, address: u64) -> InterpretedSlot {
     with_values(process, types, InspectionLimits::default(), |values| {
         values.value(VirtualAddress::new(address))
     })
 }
 
 /// The value at `address`, which must be one.
-fn read_value(process: &Process, types: Types, address: u64) -> InterpretedValue {
+pub(super) fn read_value(process: &Process, types: Types, address: u64) -> InterpretedValue {
     value_of(value_at(process, types, address))
 }
 
@@ -448,11 +479,10 @@ fn assert_builtin(value: &InterpretedValue, name: &str) {
 }
 
 /// How a slot reads, in words: a value's summary, or what it lacks.
-fn describe(slot: &InterpretedSlot) -> String {
+pub(super) fn describe(slot: &InterpretedSlot) -> String {
     match slot {
         InterpretedSlot::Value(value) => value.summary.to_string(),
         InterpretedSlot::Unbound => "unbound".to_owned(),
-        InterpretedSlot::Cell => "cell".to_owned(),
         InterpretedSlot::Limit(_) => "limit".to_owned(),
         InterpretedSlot::Unreadable(problem) => format!("unreadable: {problem}"),
     }
@@ -460,7 +490,7 @@ fn describe(slot: &InterpretedSlot) -> String {
 
 /// The children `range` of the container at `address`, read with the
 /// default limits.
-fn children_of(
+pub(super) fn children_of(
     process: &Process,
     types: Types,
     address: u64,
@@ -478,7 +508,9 @@ fn entry_summaries(children: &[InterpretedChild]) -> Vec<(String, String)> {
         .iter()
         .map(|child| match child {
             InterpretedChild::Entry { key, value } => (describe(key), describe(value)),
-            InterpretedChild::Element(_) => panic!("a dict's children are entries"),
+            InterpretedChild::Element(_) | InterpretedChild::Attribute { .. } => {
+                panic!("a dict's children are entries")
+            }
         })
         .collect()
 }
@@ -880,26 +912,6 @@ fn a_dict_whose_index_is_smaller_than_its_table_is_unreadable() {
 }
 
 #[test]
-fn a_split_dict_is_shown_by_its_size_and_has_no_children() {
-    let mut process = Process::new(layout());
-    let types = process.builtin_types();
-    let split = process.split_dict(types.dict, 2);
-
-    let shown = read_value(&process, types, split);
-    assert_eq!(shown.summary.as_ref(), "<dict of 2 items>");
-    assert_eq!(shown.kind, InterpretedKind::Other);
-    assert!(
-        shown
-            .problem
-            .as_deref()
-            .is_some_and(|problem| problem.contains("keeps its values apart")),
-        "the problem: {:?}",
-        shown.problem
-    );
-    assert!(children_of(&process, types, split, 0..2).is_err());
-}
-
-#[test]
 fn an_object_of_another_type_is_shown_by_its_module_its_name_and_its_address() {
     let mut process = Process::new(layout());
     let types = process.builtin_types();
@@ -911,15 +923,17 @@ fn an_object_of_another_type_is_shown_by_its_module_its_name_and_its_address() {
     let shown = read_value(&process, types, lock);
     assert_eq!(shown.module.as_deref(), Some("_thread"));
     assert_eq!(shown.type_name.as_ref(), "lock");
-    assert_eq!(shown.kind, InterpretedKind::Other);
+    assert_eq!(shown.kind, InterpretedKind::Instance);
+    assert_eq!(shown.attributes, 0);
     assert_eq!(
         shown.summary.as_ref(),
         format!("<_thread.lock object at {lock:#x}>")
     );
     assert_eq!(shown.problem, None);
 
+    // A static type's name with no module's is the name of a built-in.
     let shown = read_value(&process, types, gate);
-    assert_eq!(shown.module, None);
+    assert_eq!(shown.module.as_deref(), Some("builtins"));
     assert_eq!(shown.type_name.as_ref(), "Gate");
     assert_eq!(
         shown.summary.as_ref(),
@@ -954,6 +968,7 @@ fn a_list_item_at_unmapped_memory_is_unreadable_in_the_summary_and_the_children(
 fn an_element_the_budget_cannot_afford_is_a_limit_and_the_ones_before_it_are_read() {
     let mut process = Process::new(layout());
     let types = process.builtin_types();
+    process.spread();
     let items: Vec<u64> = (1..=3).map(|value| process.int(types.int, value)).collect();
     let list = process.list(types.list, &items);
     // Reading the list takes one read, its items one more, and each int
@@ -971,7 +986,9 @@ fn an_element_the_budget_cannot_afford_is_a_limit_and_the_ones_before_it_are_rea
         .iter()
         .map(|child| match child {
             InterpretedChild::Element(slot) => slot,
-            InterpretedChild::Entry { .. } => panic!("a list has no entries"),
+            InterpretedChild::Entry { .. } | InterpretedChild::Attribute { .. } => {
+                panic!("a list has only elements")
+            }
         })
         .collect();
 
@@ -992,6 +1009,7 @@ fn an_element_the_budget_cannot_afford_is_a_limit_and_the_ones_before_it_are_rea
 fn a_summary_the_budget_runs_out_in_ends_where_it_ran_out() {
     let mut process = Process::new(layout());
     let types = process.builtin_types();
+    process.spread();
     let inner: Vec<u64> = (3..=4).map(|value| process.int(types.int, value)).collect();
     let inner = process.list(types.list, &inner);
     let items = [
@@ -1044,7 +1062,10 @@ fn a_frame_shows_its_parameters_values_cells_and_unbound_locals_but_not_hidden_o
     let types = process.builtin_types();
     let five = process.int(types.int, 5);
     let seven = process.int(types.int, 7);
-    let frame = local_frame(&mut process, &types, [five, 0, 0, 0, seven]);
+    let three = process.int(types.int, 3);
+    let cell = process.object(types.cell, SMALL);
+    process.word(cell, Field::CellRef, three);
+    let frame = local_frame(&mut process, &types, [five, 0, 0, cell, seven]);
 
     let shown: Vec<(String, bool, String)> = locals_of(&process, types, frame)
         .iter()
@@ -1061,7 +1082,7 @@ fn a_frame_shows_its_parameters_values_cells_and_unbound_locals_but_not_hidden_o
         [
             ("a".to_owned(), true, "5".to_owned()),
             ("b".to_owned(), false, "unbound".to_owned()),
-            ("d".to_owned(), false, "cell".to_owned()),
+            ("d".to_owned(), false, "3".to_owned()),
             ("e".to_owned(), false, "7".to_owned()),
         ]
     );
@@ -1085,7 +1106,7 @@ fn a_stack_reference_reads_its_object_and_a_tagged_integer_is_unreadable() {
         [
             ("a".to_owned(), "5".to_owned()),
             ("b".to_owned(), "unbound".to_owned()),
-            ("d".to_owned(), "cell".to_owned()),
+            ("d".to_owned(), "unbound".to_owned()),
             (
                 "e".to_owned(),
                 "unreadable: the variable holds a tagged integer, which only the interpreter uses"

@@ -691,8 +691,25 @@ so `d[1]`, `d[1.0]`, and `d[true]` find one key, text equals only text, and
 what it equals, such as an instance of a class, is refused where the lookup
 would have to compare with it. An index past the end is a bounds error, and a key the dict does not hold
 is a missing-key error. `len(x)` is the length of a `str` in characters, of
-`bytes` in bytes, and of a list, tuple, or dict in items. A value is true as
-Python says: `None`, zero, and empty text and collections are false.
+`bytes` in bytes, and of a list, tuple, dict, set, or frozenset in items. A
+value is true as Python says: `None`, zero, and empty text and collections
+are false.
+
+`x.name` reads an attribute as Python's `object.__getattribute__` finds it:
+a slot or other data descriptor of the object's class first, then the
+object's own dict, then an attribute of its class or the classes it derives
+from. `module.name` is a global of the module, and `Class.name` an
+attribute of the class. An attribute the object does not have is a
+missing-key error. A property, a method, any other descriptor whose code
+gives its value, a class's own `__getattribute__`, and a `__getattr__` that
+would find a missing attribute are refused.
+
+An object of a class that derives from a built-in type, such as a
+`namedtuple`, holds that type's value, and `x[i]` and `len(x)` use it while
+the class keeps the built-in type's own `__getitem__` and `__len__`. A class
+that defines its own, a dict whose class defines `__missing__` and lacks the
+key, and any other object whose type defines them are refused; an object
+whose type defines neither is a type error, as in Python.
 
 Numbers follow microscope's exact rules, and `True` and `False` count as 1
 and 0, as Python's do. Python divides integers into a fraction and floors a
@@ -703,7 +720,9 @@ different types are unequal, and only numbers, `str`, and `bytes` are
 ordered. Lists, dicts, and objects are neither compared nor computed with,
 since only running their types' code could say what those mean, and
 microscope never runs code in the program: not `__eq__`, properties, or
-calls.
+calls. Such an operation is a type error only where Python's would be one,
+as `None + 1` is; where a type's code could give a value, as `"a" + "b"`
+does, it is refused as unsupported.
 
 ```microscope-example
 world: python
@@ -730,6 +749,9 @@ numbers[-1]            => 30 : int
 numbers[3]             => error bounds at `numbers[3]`
 numbers[0] + numbers[1] => 30 : integer
 pair[1]                => 'two' : str
+point.x                => 3 : int
+point.x * point.y      => 12 : integer
+point.z                => error missing-key at `point.z`
 ages["bob"]            => 41 : int
 ages["eve"]            => error missing-key at `ages["eve"]`
 squares[2]             => 4 : int
@@ -748,7 +770,7 @@ len(ages)              => 2 : integer
 len(count)             => error type at `len(count)`
 !empty                 => true : bool
 numbers && count       => true : bool
-!point                 => error type at `point`
+!point                 => error unsupported at `point`
 numbers == numbers     => error unsupported at `numbers == numbers`
 big                    => 1361129467683753853853498429727072845824 : int
 big + 1                => error arithmetic at `big`

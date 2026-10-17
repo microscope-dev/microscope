@@ -1818,8 +1818,7 @@ fn pp_fills_long_sequences_and_breaks_maps_by_width() {
     let wide = batch(&rust, &commands);
     assert!(
         wide.contains(
-            "  249, 250, <truncated: MemoryReads limit 256 after 256; requested 1>,\n\
-             \x20 <49 omitted>,\n\
+            "  249, 250, 251, 252, 253, 254, 255, <44 omitted>,\n\
              ]\n"
         ),
         "{wide}"
@@ -2514,7 +2513,7 @@ fn views_present_values_raw_is_one_step_away_and_info_view_explains() {
         &[
             "(Vec<i32, alloc::alloc::Global>) ints = len=3 [1, 2, 3]\n",
             "(Vec<u32, alloc::alloc::Global>) many = len=300 [0, 1, 2, 3, ",
-            " 249, 250, <truncated: MemoryReads limit 256 after 256; requested 1>, <49 omitted>]\n",
+            " 254, 255, <44 omitted>]\n",
             raw_ints,
             "}, len = 3}\n",
             "(Vec<alloc::string::String, alloc::alloc::Global>) words = len=2 [\"one\", \"two\"]\n",
