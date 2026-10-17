@@ -391,6 +391,15 @@ pub enum TaskContext {
         future: VirtualAddress,
         ty: TypeReference,
     },
+
+    /// No thread runs the task, whose frames are those its runtime's
+    /// interpreter keeps, innermost first, as a suspended coroutine's and
+    /// those of the coroutines it awaits; and why they end before the
+    /// task's outermost, if they do.
+    Interpreted {
+        frames: Arc<[InterpretedFrame]>,
+        end: Option<Arc<str>>,
+    },
 }
 
 /// Where unwinding goes from a frame whose code switches stacks.

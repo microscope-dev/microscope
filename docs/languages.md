@@ -241,12 +241,45 @@ it as in a Python frame:
 (integer) len((py)numbers) = 3
 ```
 
+### asyncio tasks
+
+From CPython 3.14, which lists every `asyncio.Task` for debuggers,
+`tasks` shows each task of every event loop, a task of a class deriving
+from `asyncio.Task` among them. A task's number is Python's `id()` of
+it, its name is a label, and so are the tasks that await it. A task a
+thread runs is running on that thread. One that waits says what it awaits;
+one that is ready for its next step is runnable:
+
+```text
+(microscope) tasks
+* [140402375100848] park at truth.py:582 {name: main} (thread 3128782)
+  [140402375101328] Event.wait at asyncio/locks.py:213 — awaits _asyncio.Future {name: chained, awaited_by: awaiting}
+  [140402383563792] waiter at tasks.py:56 — awaits task chained {name: awaiting}
+  [140402375166064] sleeper at tasks.py:51 {name: fresh}
+```
+
+The stack of a task no thread runs is its coroutine's frame and the frame
+of each coroutine it awaits, innermost first, as `cr_await` leads. Select
+the task with `task ID`, and its frames' locals and expressions read as a
+thread's Python frames' do:
+
+```text
+(microscope) task 140402375101328
+(microscope) bt
+#0  in Event.wait at asyncio/locks.py:213
+#1  in leaf at tasks.py:41
+#2  in middle at tasks.py:47
+```
+
+A running task's stack is its thread's. A suspended task cannot be stepped.
+Python 3.12 and 3.13 keep no list of their tasks, so they show none.
+
 ### Not supported yet
 
 Python breakpoints, stepping through Python code, and Python exceptions as
-catchpoints are not supported yet. Python stacks do not appear in `microscope record`, and
-asyncio tasks are not shown. [Known limits](reference/limitations.md) lists
-them all.
+catchpoints are not supported yet. Python stacks do not appear in
+`microscope record`, nor do asyncio tasks' stacks in its task snapshots.
+[Known limits](reference/limitations.md) lists them all.
 
 In editors, Python frames appear in the call stack with their source file and
 line, but no instruction reference. Their scopes are Arguments and Locals.
@@ -260,8 +293,8 @@ These languages use the shared native debugger and expression engine. microscope
 normalizes their DWARF types and names where needed and includes built-in views
 for common runtime or standard-library values where maintained.
 
-Runtime-specific task scheduling is currently limited to Go and tokio. Other
-languages appear as native threads and frames.
+Runtime-specific task scheduling is currently limited to Go, tokio, and
+Python's asyncio. Other languages appear as native threads and frames.
 
 ## Debug information decides what is available
 

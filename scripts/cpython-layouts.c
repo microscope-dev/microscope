@@ -25,9 +25,11 @@
 #include "internal/pycore_unicodeobject.h"
 #if PY_VERSION_HEX >= 0x030e0000
 #include "internal/pycore_interpframe.h"
-#else
-#include "internal/pycore_frame.h"
+#include "internal/pycore_genobject.h"
+#include "internal/pycore_llist.h"
+#include "internal/pycore_tstate.h"
 #endif
+#include "internal/pycore_frame.h"
 
 /* The standard library's types that only their own C defines, copied as
  * 3.12 to 3.15 define them: collections.deque and defaultdict, from
@@ -36,6 +38,49 @@
  * from Modules/_decimal/_decimal.c, with libmpdec's number as its 64-bit
  * builds define it in mpdecimal.h. conformance.rs checks the first three
  * against the runtime's DWARF; the others are in extension modules. */
+#if PY_VERSION_HEX >= 0x030e0000
+/* asyncio.Task, as Modules/_asynciomodule.c defines it in 3.14 and 3.15:
+ * FutureObj_HEAD(task), then the task's own fields. conformance.rs checks
+ * it against each build's .AsyncioDebug section, which gives the offsets
+ * external debuggers read. */
+typedef enum {
+    MICROSCOPE_STATE_PENDING,
+    MICROSCOPE_STATE_CANCELLED,
+    MICROSCOPE_STATE_FINISHED
+} microscope_fut_state;
+
+typedef struct {
+    PyObject_HEAD
+    PyObject *task_loop;
+    PyObject *task_callback0;
+    PyObject *task_context0;
+    PyObject *task_callbacks;
+    PyObject *task_exception;
+    PyObject *task_exception_tb;
+    PyObject *task_result;
+    PyObject *task_source_tb;
+    PyObject *task_cancel_msg;
+    PyObject *task_cancelled_exc;
+    PyObject *task_awaited_by;
+    microscope_fut_state task_state;
+    char task_is_task;
+    char task_awaited_by_is_set;
+    unsigned task_log_tb: 1;
+    unsigned task_blocking: 1;
+    unsigned task_must_cancel: 1;
+    unsigned task_log_destroy_pending: 1;
+    int task_num_cancels_requested;
+    PyObject *task_fut_waiter;
+    PyObject *task_coro;
+    PyObject *task_name;
+    PyObject *task_context;
+    struct llist_node task_node;
+#ifdef Py_GIL_DISABLED
+    uintptr_t task_tid;
+#endif
+} microscope_task;
+#endif
+
 #define MICROSCOPE_BLOCKLEN 64
 #define MICROSCOPE_MAXFREEBLOCKS 16
 
@@ -211,6 +256,24 @@ int main(int argc, char **argv) {
     FIELD(FrameOwner, offsetof(_PyInterpreterFrame, owner));
     FIELD(FrameGlobals, offsetof(_PyInterpreterFrame, f_globals));
     FIELD(FrameBuiltins, offsetof(_PyInterpreterFrame, f_builtins));
+#if PY_VERSION_HEX >= 0x030e0000
+    FIELD(FrameStackpointer, offsetof(_PyInterpreterFrame, stackpointer));
+    FIELD(ThreadAsyncioRunningTask, offsetof(_PyThreadStateImpl, asyncio_running_task));
+    FIELD(ThreadAsyncioTasksHead, offsetof(_PyThreadStateImpl, asyncio_tasks_head));
+    FIELD(InterpreterAsyncioTasksHead, offsetof(PyInterpreterState, asyncio_tasks_head));
+    FIELD(LlistNext, offsetof(struct llist_node, next));
+    FIELD(TaskState, offsetof(microscope_task, task_state));
+    FIELD(TaskAwaitedBy, offsetof(microscope_task, task_awaited_by));
+    FIELD(TaskIsTask, offsetof(microscope_task, task_is_task));
+    FIELD(TaskAwaitedByIsSet, offsetof(microscope_task, task_awaited_by_is_set));
+    FIELD(TaskFutWaiter, offsetof(microscope_task, task_fut_waiter));
+    FIELD(TaskCoro, offsetof(microscope_task, task_coro));
+    FIELD(TaskName, offsetof(microscope_task, task_name));
+    FIELD(TaskNode, offsetof(microscope_task, task_node));
+    FIELD(TaskObjectSize, sizeof(microscope_task));
+#endif
+    FIELD(GenFrameState, offsetof(PyGenObject, gi_frame_state));
+    FIELD(GenFrame, offsetof(PyGenObject, gi_iframe));
 #if defined(Py_GIL_DISABLED) && PY_VERSION_HEX >= 0x030e0000
     FIELD(FrameTlbcIndex, offsetof(_PyInterpreterFrame, tlbc_index));
 #endif
@@ -413,6 +476,37 @@ int main(int argc, char **argv) {
     CONSTANT(MemberObjectEx, Py_T_OBJECT_EX);
     CONSTANT(TypeImmutableBit, __builtin_ctzl(Py_TPFLAGS_IMMUTABLETYPE));
     CONSTANT(DequeBlockLength, MICROSCOPE_BLOCKLEN);
+    /* A generator's state is an int8_t, negative before 3.15. 3.12 has no
+     * state for a generator suspended in a yield from, so its are its
+     * suspended state; the model reads what a generator awaits only from
+     * 3.14, whose frames have a stack pointer. */
+    CONSTANT(GeneratorCreated, (uint8_t)(int8_t)FRAME_CREATED);
+    CONSTANT(GeneratorSuspended, (uint8_t)(int8_t)FRAME_SUSPENDED);
+#if PY_VERSION_HEX < 0x030d0000
+    CONSTANT(GeneratorYieldFrom, (uint8_t)(int8_t)FRAME_SUSPENDED);
+#else
+    CONSTANT(GeneratorYieldFrom, (uint8_t)(int8_t)FRAME_SUSPENDED_YIELD_FROM);
+#endif
+#if PY_VERSION_HEX >= 0x030f0000
+    CONSTANT(GeneratorYieldFromLocked, (uint8_t)(int8_t)FRAME_SUSPENDED_YIELD_FROM_LOCKED);
+#elif PY_VERSION_HEX >= 0x030d0000
+    CONSTANT(GeneratorYieldFromLocked, (uint8_t)(int8_t)FRAME_SUSPENDED_YIELD_FROM);
+#else
+    CONSTANT(GeneratorYieldFromLocked, (uint8_t)(int8_t)FRAME_SUSPENDED);
+#endif
+    CONSTANT(GeneratorExecuting, (uint8_t)(int8_t)FRAME_EXECUTING);
+    /* _PyGen_yf peeks at the top of the stack; from 3.15, GET_ITER pushes
+     * the iterator's index above it, and gen_getyieldfrom peeks at 2. */
+#if PY_VERSION_HEX >= 0x030f0000
+    CONSTANT(GeneratorAwaitedDepth, 2);
+#else
+    CONSTANT(GeneratorAwaitedDepth, 1);
+#endif
+#if PY_VERSION_HEX >= 0x030e0000
+    CONSTANT(FuturePending, MICROSCOPE_STATE_PENDING);
+#else
+    CONSTANT(FuturePending, 0);
+#endif
     printf("        ],\n");
 
     printf("    },\n");

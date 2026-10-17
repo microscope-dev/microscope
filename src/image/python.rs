@@ -88,6 +88,17 @@ entries! {
         ThreadId = "thread_state.thread_id",
         ThreadNativeId = "thread_state.native_thread_id",
 
+        /// From 3.14, the asyncio task a thread runs, and the head of the
+        /// circular list of the `asyncio.Task`s it made, linked through
+        /// each task's [`Field::TaskNode`], in `_PyThreadStateImpl`.
+        ThreadAsyncioRunningTask = "thread_state_impl.asyncio_running_task",
+        ThreadAsyncioTasksHead = "thread_state_impl.asyncio_tasks_head",
+
+        /// From 3.14, the head of the list of the tasks of threads that
+        /// have exited.
+        InterpreterAsyncioTasksHead = "interpreter_state.asyncio_tasks_head",
+        LlistNext = "llist_node.next",
+
         /// 3.12's `_PyCFrame.current_frame`.
         CframeCurrentFrame = "cframe.current_frame",
 
@@ -107,6 +118,31 @@ entries! {
         FrameGlobals = "interpreter_frame.globals",
         FrameBuiltins = "interpreter_frame.builtins",
         FrameTlbcIndex = "interpreter_frame.tlbc_index",
+
+        /// From 3.14, the top of the frame's stack of values, which
+        /// points past the last.
+        FrameStackpointer = "interpreter_frame.stackpointer",
+
+        /// A generator's or coroutine's state, one of the
+        /// `Constant::Generator*` bytes, and the frame it embeds.
+        GenFrameState = "gen_object.gi_frame_state",
+        GenFrame = "gen_object.gi_iframe",
+
+        /// From 3.14, `asyncio.Task`, as `Modules/_asynciomodule.c`
+        /// defines it: its future's state, who awaits it (one future, or
+        /// a set of them where `TaskAwaitedByIsSet` is 1), whether it is
+        /// a task, the future it waits for, its coroutine, its name (an
+        /// `int` until Python asks for it as `Task-N`), and its node in
+        /// its thread's list.
+        TaskState = "task_object.task_state",
+        TaskAwaitedBy = "task_object.task_awaited_by",
+        TaskIsTask = "task_object.task_is_task",
+        TaskAwaitedByIsSet = "task_object.task_awaited_by_is_set",
+        TaskFutWaiter = "task_object.task_fut_waiter",
+        TaskCoro = "task_object.task_coro",
+        TaskName = "task_object.task_name",
+        TaskNode = "task_object.task_node",
+        TaskObjectSize = "task_object.size",
 
         CodeSize = "code_object.size",
         CodeFilename = "code_object.filename",
@@ -352,6 +388,25 @@ entries! {
 
         /// How many items each block of a `collections.deque` holds.
         DequeBlockLength = "BLOCKLEN",
+
+        /// The bytes a generator's [`Field::GenFrameState`] holds: not yet
+        /// started; suspended; suspended in an `await` or `yield from` of
+        /// the object atop its frame's stack, which 3.15 may lock as
+        /// well; and running. Any other state is finished.
+        GeneratorCreated = "FRAME_CREATED",
+        GeneratorSuspended = "FRAME_SUSPENDED",
+        GeneratorYieldFrom = "FRAME_SUSPENDED_YIELD_FROM",
+        GeneratorYieldFromLocked = "FRAME_SUSPENDED_YIELD_FROM_LOCKED",
+        GeneratorExecuting = "FRAME_EXECUTING",
+
+        /// How far below the top of a generator's frame's stack the object
+        /// it awaits is, in values: 1, or from 3.15, where the value below
+        /// the top is the iterator's index, 2.
+        GeneratorAwaitedDepth = "awaited_depth",
+
+        /// The state of a future that has neither a result nor been
+        /// cancelled, `STATE_PENDING`.
+        FuturePending = "STATE_PENDING",
     }
 }
 

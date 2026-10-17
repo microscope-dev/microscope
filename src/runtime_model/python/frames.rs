@@ -121,8 +121,8 @@ impl Walk<'_, '_> {
         (frames, end)
     }
 
-    /// One frame that runs code.
-    fn frame(&mut self, frame: &Record<'_>) -> InterpretedFrame {
+    /// One frame that runs code, a thread's or a coroutine's.
+    pub(super) fn frame(&mut self, frame: &Record<'_>) -> InterpretedFrame {
         let mut built = InterpretedFrame {
             frame: frame.address,
             language: SourceLanguage::Python,

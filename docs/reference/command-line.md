@@ -114,7 +114,7 @@ IDs such as `c1`, or `all` where the command permits it.
 | `threads`, `thread ID` | List or select native threads |
 | `goroutines`, `goroutine ID` | List or select Go goroutines |
 | `tasks`, `task ID` | List or select runtime tasks |
-| `locals`, `args` | Show variables in the selected frame |
+| `print`, `pp` | With no expression, show the selected frame's variables |
 
 ### Values and machine state
 

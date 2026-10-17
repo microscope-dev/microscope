@@ -847,6 +847,12 @@ impl<P: InspectionOps> Controller<P> {
                 module: runtime.module,
                 reader,
             },
+            Ok(Some(TaskContext::Interpreted { frames, end })) => RootOrigin::Interpreted {
+                runtime: runtime.id,
+                frames,
+                end,
+                reader,
+            },
             Ok(None) => return Ok(None),
             Err(reason) => return Err(Error::TaskUnavailable { task, reason }),
         };

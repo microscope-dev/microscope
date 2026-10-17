@@ -17,6 +17,9 @@ const MAX_THREAD_STATES: usize = 1 << 14;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ThreadState {
     pub(super) address: VirtualAddress,
+
+    /// The interpreter's state, and its number.
+    pub(super) interpreter_state: VirtualAddress,
     pub(super) interpreter: i64,
 
     /// The native thread it runs on, as the process's own namespace
@@ -109,6 +112,7 @@ fn interpreter_threads(
 
         states.push(ThreadState {
             address,
+            interpreter_state: interpreter,
             interpreter: id,
             native: state.word(Field::ThreadNativeId)?,
             frame,

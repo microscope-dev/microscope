@@ -491,6 +491,7 @@ impl Process {
 fn innermost(frame: u64) -> ThreadState {
     ThreadState {
         address: VirtualAddress::new(HEAP),
+        interpreter_state: VirtualAddress::new(HEAP),
         interpreter: 0,
         native: 1,
         frame: Some(VirtualAddress::new(frame)),
@@ -915,6 +916,7 @@ fn a_thread_list_that_loops_is_a_gap_and_keeps_the_threads_before_it() {
     assert_eq!(gaps, ["interpreter 7's list of threads loops"]);
 }
 
+mod asyncio;
 mod expressions;
 mod instances;
 mod numpy;

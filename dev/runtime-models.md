@@ -179,6 +179,37 @@ Pinned and boxed futures, trait-object erasure, combinators, and compiler
 layout changes are common sources of partial chains. Each traversal step needs
 a concrete type and storage relationship. Stop where proof ends.
 
+## asyncio
+
+From 3.14, CPython links every `asyncio.Task` into a circular list in the
+state of the thread that made it, and moves the list of an exiting thread
+into its interpreter's. A thread's state names the task it runs.
+`src/runtime_model/python/asyncio.rs` walks those lists, bounded and checked
+for loops, and takes an object as a task only where its type is, or derives
+from, the C type `_asyncio.Task` with objects of exactly the size of the
+`TaskObj` the layouts copy (`scripts/cpython-layouts.c`). conformance.rs checks
+that copy against the `.AsyncioDebug` section `_asyncio` publishes for
+external debuggers, which lives in an extension module the Python runtime's
+own image does not carry. A task's number is its address, Python's `id()`.
+
+A task no thread runs is suspended in its coroutine: a coroutine or generator
+in the state `FRAME_SUSPENDED_YIELD_FROM` awaits the object below the top of
+its embedded frame's stack (`Constant::GeneratorAwaitedDepth`: 1, or 2 from
+3.15, whose `GET_ITER` pushes an index above it). The chain ends at the first
+object no coroutine is, such as a future, or at a coroutine resting at its
+start or a bare `yield`. Its frames, innermost first, are the task's
+`TaskContext::Interpreted`, which the backend roots as
+`RootOrigin::Interpreted`: each frame resolves as an interpreted frame
+(`FrameScope::Interpreted`), so locals, expressions, and children work as in
+a thread's Python frames, and a reason the chain ends early is the trace's
+`BrokenAwaitChain`. A running task is `TaskContext::OnThread`.
+
+`tests/fixtures/python/tasks.py` reports every task `asyncio.all_tasks()`
+lists in each loop, with its state, what it awaits, who awaits it
+(`capture_call_graph`), and each coroutine's frame and locals by `cr_await`;
+`tests/python/tasks.rs` compares them on 3.14 and 3.15, with and without the
+GIL.
+
 ## CPython
 
 CPython support reads the interpreter from outside, as a core dump allows: it

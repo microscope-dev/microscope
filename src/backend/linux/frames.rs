@@ -9,7 +9,7 @@ use nix::unistd::Pid;
 use crate::debug_info::{TailJump, VariableRuntimeError};
 use crate::model::FrameMetadata;
 use crate::protocol::{FramePresentation, PresentedFrame, StepKind, StopId, StopReason};
-use crate::runtime_model::{Crossing, futures};
+use crate::runtime_model::{Crossing, InterpretedFrame, futures};
 use crate::unwind::{
     CallerProvider, CallerResult, DEFAULT_MAX_FRAMES, FrameContext, MemoryReader, RETURN_ADDRESS,
     RSP, RegisterFile, collect_frames,
@@ -237,6 +237,8 @@ impl<P: InspectionOps> Controller<P> {
         let inferior = self.stopped_root(stop_id, root)?;
         let mut trace = if let Some(trace) = self.async_backtrace(inferior, root)? {
             trace
+        } else if let Some(trace) = super::interpreted::task_backtrace(root)? {
+            trace
         } else {
             let presentation = self.root_presentation(root)?;
             let stack = self.physical_stack(inferior, root, DEFAULT_MAX_FRAMES)?;
@@ -362,6 +364,7 @@ impl<P: InspectionOps> Controller<P> {
                 ..
             } => (None, registers.clone(), *after_call, Vec::new()),
             RootOrigin::Suspended { .. } => return Err(Error::FrameSuspended),
+            RootOrigin::Interpreted { .. } => return Err(Error::FrameInterpreted),
         };
 
         let instruction = registers
@@ -458,6 +461,10 @@ impl<P: InspectionOps> Controller<P> {
         presentation: Option<&FramePresentation>,
     ) -> Result<ResolvedFrame> {
         if let Some(resolved) = self.resolve_async_frame(inferior, root, frame)? {
+            return Ok(resolved);
+        }
+
+        if let Some(resolved) = super::interpreted::resolve_task_frame(root, frame)? {
             return Ok(resolved);
         }
 
@@ -1438,6 +1445,16 @@ pub(super) enum RootOrigin {
         module: LoadedModule,
         reader: Pid,
     },
+
+    /// A suspended task whose frames the interpreter of the runtime
+    /// `runtime` keeps, innermost first, and why they end before the
+    /// task's outermost, if they do.
+    Interpreted {
+        runtime: crate::RuntimeId,
+        frames: Arc<[InterpretedFrame]>,
+        end: Option<Arc<str>>,
+        reader: Pid,
+    },
 }
 
 impl StackRoot {
@@ -1454,7 +1471,8 @@ impl StackRoot {
         match self.origin {
             RootOrigin::Thread(pid)
             | RootOrigin::Saved { reader: pid, .. }
-            | RootOrigin::Suspended { reader: pid, .. } => pid,
+            | RootOrigin::Suspended { reader: pid, .. }
+            | RootOrigin::Interpreted { reader: pid, .. } => pid,
         }
     }
 
@@ -1462,7 +1480,9 @@ impl StackRoot {
     pub(super) const fn thread(&self) -> Option<Pid> {
         match self.origin {
             RootOrigin::Thread(pid) => Some(pid),
-            RootOrigin::Saved { .. } | RootOrigin::Suspended { .. } => None,
+            RootOrigin::Saved { .. }
+            | RootOrigin::Suspended { .. }
+            | RootOrigin::Interpreted { .. } => None,
         }
     }
 }

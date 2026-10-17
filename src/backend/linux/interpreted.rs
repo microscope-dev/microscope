@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::evaluation::StopMachine;
-use super::frames::{FrameRegisters, FrameScope, ResolvedFrame, StackRoot};
+use super::frames::{FrameRegisters, FrameScope, ResolvedFrame, RootOrigin, StackRoot};
 use super::native::InspectionOps;
 use super::runtimes::BoundRuntime;
 use super::{Controller, Inferior, debug_thread_id};
@@ -29,14 +29,14 @@ use crate::runtime_model::{
     interpreted_identity,
 };
 use crate::{
-    AddressValue, BaseType, BaseTypeEncoding, CallFrameUnavailableReason, CodeRole,
+    AddressValue, Backtrace, BaseType, BaseTypeEncoding, CallFrameUnavailableReason, CodeRole,
     DereferenceState, Error, ExecutionContext, FloatValue, FrameKind, LoadedModule, MapKey,
     NumberKind, Presentation, PresentedCount, PresentedShape, RecordedFrame, Result, RuntimeId,
     ScalarValue, SourceLanguage, StackFrame, StackFrameId, StackSegment, StopId, TypeInfo,
-    TypeKind, ValueChild, ValueChildPage, ValueChildQuery, ValueChildRelationship, ValueChildren,
-    ValueChildrenReference, Variable, VariableKind, VariableQuery, VariableState,
-    VariableUnavailableReason, VariableValue, VariableValueSource, ViewName, ViewProblem,
-    VirtualAddress,
+    TypeKind, UnwindTermination, ValueChild, ValueChildPage, ValueChildQuery,
+    ValueChildRelationship, ValueChildren, ValueChildrenReference, Variable, VariableKind,
+    VariableQuery, VariableState, VariableUnavailableReason, VariableValue, VariableValueSource,
+    ViewName, ViewProblem, VirtualAddress,
 };
 
 /// An interpreted frame of a trace, and the runtime that interprets it.
@@ -278,6 +278,75 @@ pub(super) fn interpreted_frame(frame: &InterpretedFrame, segment: StackSegment)
         place: frame.place.clone(),
     });
     built
+}
+
+/// The backtrace of a suspended task whose interpreter keeps its frames,
+/// or `None` for any other stack.
+pub(super) fn task_backtrace(root: &StackRoot) -> Result<Option<Backtrace>> {
+    let RootOrigin::Interpreted { frames, end, .. } = &root.origin else {
+        return Ok(None);
+    };
+
+    let frames = (0..frames.len())
+        .zip(frames.iter())
+        .map(|(level, frame)| task_frame(level, frame))
+        .collect::<Result<Vec<_>>>()?;
+    let termination = end.clone().map_or(UnwindTermination::Complete, |reason| {
+        UnwindTermination::BrokenAwaitChain { reason }
+    });
+    Ok(Some(Backtrace {
+        context: root.context,
+        frames: frames.into(),
+        termination,
+        unfollowed: Arc::from([]),
+    }))
+}
+
+/// One frame of a suspended task whose interpreter keeps its frames, and
+/// what evaluates its variables, or `None` for any other stack.
+pub(super) fn resolve_task_frame(
+    root: &StackRoot,
+    id: StackFrameId,
+) -> Result<Option<ResolvedFrame>> {
+    let RootOrigin::Interpreted {
+        runtime, frames, ..
+    } = &root.origin
+    else {
+        return Ok(None);
+    };
+
+    let level = id.get() as usize;
+    let Some(frame) = frames.get(level) else {
+        return Err(Error::FrameNotFound {
+            frame: id,
+            frames: frame_level(frames.len())?,
+        });
+    };
+
+    let placed = Placed {
+        runtime: *runtime,
+        frame: frame.clone(),
+    };
+    Ok(Some(resolved(
+        id,
+        task_frame(level, frame)?,
+        level,
+        &placed,
+    )))
+}
+
+/// The frame at `level` of a suspended task's backtrace that shows
+/// `frame`.
+fn task_frame(level: usize, frame: &InterpretedFrame) -> Result<StackFrame> {
+    let level = frame_level(level)?;
+    let mut built = interpreted_frame(frame, StackSegment::Task);
+    built.level = level;
+    built.id = StackFrameId::new(level);
+    Ok(built)
+}
+
+fn frame_level(level: usize) -> Result<u32> {
+    u32::try_from(level).map_err(|_| Error::internal("a stack has more frames than u32 levels"))
 }
 
 /// An interpreted frame, as its inspection sees it: it has no registers,

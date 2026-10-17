@@ -105,6 +105,8 @@ impl Process {
             module: self.type_object("module"),
             function: self.type_object("function"),
             builtin: self.type_object("builtin_function_or_method"),
+            coroutine: self.type_object("coroutine"),
+            generator: self.type_object("generator"),
             code: self.type_object("code"),
             class,
             member: self.type_object("member_descriptor"),

@@ -4832,14 +4832,24 @@ impl Backtrace {
     /// runtime's own traceback shows a task: where it waits, not how. The
     /// future a suspended task awaits runs no code, and is never one; nor
     /// is a frame past a runtime's dispatch, which runs the runtime's code
-    /// for the thread, not the task's.
+    /// for the thread, not the task's. In a stack that runs interpreted
+    /// code, native code with no source is the system's beneath the
+    /// interpreter, as a system call's, not the program's.
     #[must_use]
     pub fn user_frame(&self) -> Option<&StackFrame> {
+        let interprets = self
+            .frames
+            .iter()
+            .any(|frame| matches!(frame.kind, FrameKind::Interpreted { .. }));
         self.frames
             .iter()
             .take_while(|frame| frame.role != CodeRole::Dispatch)
             .find(|frame| {
-                frame.role == CodeRole::Ordinary && !matches!(frame.kind, FrameKind::Awaited { .. })
+                frame.role == CodeRole::Ordinary
+                    && !matches!(frame.kind, FrameKind::Awaited { .. })
+                    && (!interprets
+                        || matches!(frame.kind, FrameKind::Interpreted { .. })
+                        || frame.source.is_some())
             })
     }
 

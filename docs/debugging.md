@@ -144,8 +144,8 @@ Each run of a runtime's own frames, such as Go's or CPython's, folds into one
 line in `bt`. `bt -r` shows every frame.
 
 Use `threads` to list native threads and `thread ID` to select one. Programs
-with a supported runtime can also expose logical tasks such as goroutines and
-async Rust tasks. See [Languages](languages.md).
+with a supported runtime can also expose logical tasks such as goroutines,
+async Rust tasks, and asyncio tasks. See [Languages](languages.md).
 
 ## Inspect values
 

@@ -12,6 +12,7 @@
 //! The model keeps one cache across stops, the process's code objects
 //! ([`code::CodeTable`]), and proves each row again where it is used.
 
+mod asyncio;
 mod code;
 mod expressions;
 mod frames;
@@ -74,7 +75,7 @@ pub fn detect(
 /// The symbols CPython exports the objects the model reads values by as:
 /// the type objects of the built-in types it presents, and the function
 /// that reads attributes as `object` does.
-const TYPES: [&str; 20] = [
+const TYPES: [&str; 22] = [
     "_PyNone_Type",
     "PyBool_Type",
     "PyLong_Type",
@@ -90,6 +91,8 @@ const TYPES: [&str; 20] = [
     "PyModule_Type",
     "PyFunction_Type",
     "PyCFunction_Type",
+    "PyCoro_Type",
+    "PyGen_Type",
     "PyCode_Type",
     "PyType_Type",
     "PyMemberDescr_Type",
@@ -162,6 +165,18 @@ impl Reading {
         budget: &mut InspectionBudget,
         read: impl FnOnce(&values::Values<'_, '_>, &mut code::CodeTable) -> Result<R, Arc<str>>,
     ) -> Result<R, Arc<str>> {
+        self.read_values(stop, Some(budget), read)
+    }
+
+    /// The stop's values, their reads paid for from `budget`, or unpaid
+    /// for as a backtrace's are, which bounds its own work, and the code
+    /// table.
+    fn read_values<R>(
+        &self,
+        stop: &dyn RuntimeStop,
+        budget: Option<&mut InspectionBudget>,
+        read: impl FnOnce(&values::Values<'_, '_>, &mut code::CodeTable) -> Result<R, Arc<str>>,
+    ) -> Result<R, Arc<str>> {
         let symbols = self.types.as_ref().map_err(Arc::clone)?;
         let bias = stop.load_bias();
         let loaded = |symbol: ImageAddress| {
@@ -184,6 +199,8 @@ impl Reading {
             module,
             function,
             builtin,
+            coroutine,
+            generator,
             code,
             class,
             member,
@@ -206,6 +223,8 @@ impl Reading {
             module: module?,
             function: function?,
             builtin: builtin?,
+            coroutine: coroutine?,
+            generator: generator?,
             code: code?,
             class: class?,
             member: member?,
@@ -214,7 +233,9 @@ impl Reading {
         };
         let runtime = loaded(self.runtime.start)?;
 
-        let budget = values::Budget::new(budget);
+        let charged = budget.is_some();
+        let mut unpaid = InspectionBudget::new(crate::InspectionLimits::default());
+        let budget = values::Budget::new(budget.unwrap_or(&mut unpaid));
         // Blocks read at the stop are kept while it lasts, where the debugger
         // keeps them, and while this read lasts otherwise.
         let read_now = StopMemory::default();
@@ -222,7 +243,7 @@ impl Reading {
             reader: objects::Reader {
                 stop,
                 layout: &self.layout,
-                charge: Some(&budget),
+                charge: charged.then_some(&budget as &dyn objects::Charge),
                 blocks: Some(stop.memory().unwrap_or(&read_now)),
             },
             types,
@@ -289,6 +310,31 @@ impl Reading {
             .code_of(&record)
             .map_err(|problem| values.unavailable(problem))?;
             read(values, table, code, &record)
+        })
+    }
+
+    /// What `read` gives of asyncio's tasks, given the values, the walk
+    /// that reads frames, and every task, read unpaid for, as a
+    /// backtrace's frames are, which bounds its own work.
+    fn asyncio<R>(
+        &self,
+        stop: &dyn RuntimeStop,
+        read: impl FnOnce(&values::Values<'_, '_>, &mut frames::Walk<'_, '_>, &asyncio::Tasks) -> R,
+    ) -> Result<R, Arc<str>> {
+        let code_type = stop
+            .load_bias()
+            .load(self.code_type)
+            .ok_or_else(|| Arc::from("CPython's code type lies outside the process"))?;
+        self.read_values(stop, None, |values, table| {
+            let (states, gaps) = threads::thread_states(&values.reader, values.runtime)?;
+            let mut tasks = values.asyncio_tasks(&states);
+            tasks.gaps.splice(0..0, gaps);
+            let mut walk = frames::Walk {
+                reader: values.reader,
+                code: table,
+                code_type,
+            };
+            Ok(read(values, &mut walk, &tasks))
         })
     }
 
@@ -389,32 +435,118 @@ fn walk_threads(
 }
 
 impl RuntimeModel for PythonRuntime {
+    /// asyncio's tasks, which only 3.14 and later list.
     fn tasks(
         &self,
-        _stop: &dyn RuntimeStop,
-        _start: u64,
-        _limit: usize,
+        stop: &dyn RuntimeStop,
+        start: u64,
+        limit: usize,
         _program_only: bool,
     ) -> Partial<TaskPage> {
-        Partial {
+        let empty = |gaps| Partial {
             value: TaskPage {
                 tasks: Vec::new(),
                 next: None,
             },
-            gaps: Vec::new(),
+            gaps,
+        };
+        let reading = match self.reading() {
+            Ok(reading) if reading.layout.has(Field::TaskNode) => reading,
+            Ok(_) => return empty(Vec::new()),
+            Err(reason) => {
+                return empty(vec![
+                    format!("asyncio's tasks cannot be read: {reason}").into(),
+                ]);
+            }
+        };
+
+        let first = usize::try_from(start).unwrap_or(usize::MAX);
+        let page = reading.asyncio(stop, |values, _, tasks| {
+            let page: Vec<_> = tasks
+                .all
+                .iter()
+                .skip(first)
+                .take(limit)
+                .map(|&task| values.task(task, tasks.running.get(&task).copied()))
+                .collect();
+            let end = first.saturating_add(page.len());
+            Partial {
+                value: TaskPage {
+                    tasks: page,
+                    next: (end < tasks.all.len()).then_some(end as u64),
+                },
+                gaps: tasks.gaps.clone(),
+            }
+        });
+        page.unwrap_or_else(|problem| {
+            empty(vec![
+                format!("asyncio's tasks cannot be read: {problem}").into(),
+            ])
+        })
+    }
+
+    /// The asyncio task a thread runs, which its state names from 3.14.
+    fn thread_activity(&self, stop: &dyn RuntimeStop, thread: ThreadId) -> ThreadActivity {
+        let reading = match self.reading() {
+            Ok(reading) if reading.layout.has(Field::ThreadAsyncioRunningTask) => reading,
+            _ => return ThreadActivity::Outside,
+        };
+
+        let running = reading.read_values(stop, None, |values, _| {
+            let (states, _) = threads::thread_states(&values.reader, values.runtime)?;
+            for state in states.iter().filter(|state| state.native == thread.get()) {
+                if let Some(task) = values.running_task(state)? {
+                    return Ok(Some(task));
+                }
+            }
+
+            Ok(None)
+        });
+        match running {
+            Ok(Some(task)) => ThreadActivity::Task {
+                number: task.get(),
+                stack: StackSegment::Thread,
+            },
+            Ok(None) => ThreadActivity::Outside,
+            Err(reason) => ThreadActivity::Unknown(reason),
         }
     }
 
-    fn thread_activity(&self, _stop: &dyn RuntimeStop, _thread: ThreadId) -> ThreadActivity {
-        ThreadActivity::Outside
-    }
-
+    /// A task a thread runs begins on the thread; one no thread runs is
+    /// its chain of awaits.
     fn task_context(
         &self,
-        _stop: &dyn RuntimeStop,
-        _task: TaskRef,
+        stop: &dyn RuntimeStop,
+        task: TaskRef,
     ) -> Result<Option<TaskContext>, Arc<str>> {
-        Ok(None)
+        let reading = self.reading()?;
+        if !reading.layout.has(Field::TaskNode) {
+            return Ok(None);
+        }
+
+        let object = VirtualAddress::new(task.number);
+        reading.asyncio(stop, |values, walk, tasks| {
+            if !tasks.all.contains(&object) {
+                // A task missing from lists that cannot all be read may
+                // be in the rest.
+                if tasks.gaps.is_empty() {
+                    return Ok(None);
+                }
+
+                let gaps: Vec<&str> = tasks.gaps.iter().map(AsRef::as_ref).collect();
+                return Err(gaps.join("; ").into());
+            }
+
+            if let Some(&thread) = tasks.running.get(&object) {
+                return Ok(Some(TaskContext::OnThread(thread)));
+            }
+
+            let awaits = values.awaits(walk, object);
+            Ok(Some(TaskContext::Interpreted {
+                frames: awaits.frames.into(),
+                end: awaits.end,
+            }))
+        })?
     }
 
     fn thread_stacks(

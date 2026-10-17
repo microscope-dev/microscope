@@ -75,6 +75,11 @@ pub(super) struct Types {
 
     /// The type of built-in functions and methods, as `len`.
     pub(super) builtin: VirtualAddress,
+
+    /// The types of coroutines, and of generators, which asyncio's
+    /// coroutines may be.
+    pub(super) coroutine: VirtualAddress,
+    pub(super) generator: VirtualAddress,
     pub(super) code: VirtualAddress,
 
     /// `type`, whose instances are classes.
@@ -1138,7 +1143,7 @@ impl Values<'_, '_> {
     /// whose table at `table` has `mask + 1` slots, `used` of them holding
     /// items, in the table's order, until it fails. An empty slot holds no
     /// key, and a deleted one the hash -1, which no key has.
-    fn set_items(
+    pub(super) fn set_items(
         &self,
         object: VirtualAddress,
         table: VirtualAddress,

@@ -182,8 +182,18 @@ const fn member(field: Field, minor: u32) -> Option<Member> {
         Field::OrderedDictNodeHash => ("_odictnode", &["hash"]),
         Field::OrderedDictNodeNext => ("_odictnode", &["next"]),
         // Threads before 3.15 have no base frame, and from 3.13 none
-        // keeps a C frame; 3.12 manages no extension's static types.
-        Field::ThreadBaseFrame
+        // keeps a C frame; 3.12 manages no extension's static types; and
+        // asyncio's task is `_asyncio`'s, which its own section checks.
+        Field::TaskState
+        | Field::TaskAwaitedBy
+        | Field::TaskIsTask
+        | Field::TaskAwaitedByIsSet
+        | Field::TaskFutWaiter
+        | Field::TaskCoro
+        | Field::TaskName
+        | Field::TaskNode
+        | Field::TaskObjectSize
+        | Field::ThreadBaseFrame
         | Field::CframeCurrentFrame
         | Field::InterpreterStaticExtensionTypes
         | Field::InterpreterStaticExtensionTypesEnd
@@ -214,17 +224,35 @@ const fn member(field: Field, minor: u32) -> Option<Member> {
         Field::DecimalLength => ("PyDecObject", &["dec", "len"]),
         Field::DecimalData => ("PyDecObject", &["dec", "data"]),
         Field::DecimalObjectSize => ("PyDecObject", &[]),
+        Field::ThreadAsyncioRunningTask => ("_PyThreadStateImpl", &["asyncio_running_task"]),
+        Field::ThreadAsyncioTasksHead => ("_PyThreadStateImpl", &["asyncio_tasks_head"]),
+        Field::InterpreterAsyncioTasksHead => ("PyInterpreterState", &["asyncio_tasks_head"]),
+        Field::LlistNext => ("llist_node", &["next"]),
+        Field::FrameStackpointer => ("_PyInterpreterFrame", &["stackpointer"]),
+        Field::GenFrameState => ("PyGenObject", &["gi_frame_state"]),
+        Field::GenFrame => ("PyGenObject", &["gi_iframe"]),
     })
 }
 
 /// Whether a field is of a type an extension module defines, whose debug
 /// information is the extension's rather than the runtime's: `datetime`'s,
-/// whose layouts come from its public header, and `decimal.Decimal`'s,
-/// which tests/python/views.rs checks by the values its objects show.
+/// whose layouts come from its public header; `decimal.Decimal`'s, which
+/// tests/python/views.rs checks by the values its objects show; and
+/// `asyncio.Task`'s, which
+/// [`each_asyncio_build_agrees_with_its_debug_section`] checks.
 const fn in_extension(field: Field) -> bool {
     matches!(
         field,
-        Field::DateHasTzinfo
+        Field::TaskState
+            | Field::TaskAwaitedBy
+            | Field::TaskIsTask
+            | Field::TaskAwaitedByIsSet
+            | Field::TaskFutWaiter
+            | Field::TaskCoro
+            | Field::TaskName
+            | Field::TaskNode
+            | Field::TaskObjectSize
+            | Field::DateHasTzinfo
             | Field::DateData
             | Field::DateObjectSize
             | Field::TimeData
@@ -456,4 +484,102 @@ fn each_described_interpreter_agrees_with_its_dwarf() {
     }
 
     assert_eq!(checked, DESCRIBED, "the interpreters with debug outputs");
+}
+
+/// The fields `_asyncio`'s `.AsyncioDebug` section gives, in its order,
+/// each an 8-byte word: the task's size and fields, the interpreter's size
+/// and list of tasks, and the thread's size, running loop, running task,
+/// and list of tasks. `None` for a word no field is.
+const ASYNCIO_DEBUG: [Option<Field>; 13] = [
+    Some(Field::TaskObjectSize),
+    Some(Field::TaskName),
+    Some(Field::TaskAwaitedBy),
+    Some(Field::TaskIsTask),
+    Some(Field::TaskAwaitedByIsSet),
+    Some(Field::TaskCoro),
+    Some(Field::TaskNode),
+    None,
+    Some(Field::InterpreterAsyncioTasksHead),
+    None,
+    None,
+    Some(Field::ThreadAsyncioRunningTask),
+    Some(Field::ThreadAsyncioTasksHead),
+];
+
+/// The module of the interpreter in `directory` that carries `_asyncio`'s
+/// debug section: the runtime's, where `_asyncio` is built in, or the
+/// extension in its `lib-dynload`.
+fn asyncio_module(directory: &Path) -> PathBuf {
+    let runtime = runtime_module(directory);
+    let bytes = std::fs::read(&runtime).expect("read the runtime's module");
+    let parsed = object::File::parse(&*bytes).expect("parse the runtime's module");
+    if object::Object::section_by_name(&parsed, ".AsyncioDebug").is_some() {
+        return runtime;
+    }
+
+    let executable =
+        std::fs::canonicalize(directory.join("python")).expect("resolve the interpreter");
+    let lib = executable
+        .parent()
+        .and_then(Path::parent)
+        .expect("the interpreter is in a bin directory")
+        .join("lib");
+    std::fs::read_dir(&lib)
+        .expect("list the interpreter's lib directory")
+        .map(|entry| entry.expect("read an entry").path().join("lib-dynload"))
+        .filter(|dynload| dynload.is_dir())
+        .flat_map(|dynload| std::fs::read_dir(dynload).expect("list lib-dynload"))
+        .map(|entry| entry.expect("read an entry").path())
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("_asyncio."))
+        })
+        .expect("the interpreter has an _asyncio module")
+}
+
+/// Every interpreter whose layout reads asyncio's tasks agrees with the
+/// offsets its own `_asyncio` publishes for external debuggers, which the
+/// copy of `TaskObj` in scripts/cpython-layouts.c must match.
+#[test]
+fn each_asyncio_build_agrees_with_its_debug_section() {
+    let root = std::env::var_os("MICROSCOPE_CPYTHON")
+        .expect("MICROSCOPE_CPYTHON names the interpreters; run tests in the dev shell");
+    let mut checked = Vec::new();
+    for generated in layouts::GENERATED {
+        let layout = generated.layout();
+        if layout.field(Field::TaskNode).is_none() {
+            continue;
+        }
+
+        let directory = Path::new(&root).join(generated.name);
+        let module = asyncio_module(&directory);
+        let bytes = std::fs::read(&module).expect("read the module");
+        let parsed = object::File::parse(&*bytes).expect("parse the module");
+        let section = object::Object::section_by_name(&parsed, ".AsyncioDebug")
+            .expect("the module has an .AsyncioDebug section");
+        let data = object::ObjectSection::data(&section).expect("read the section");
+        let words: Vec<u64> = data
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|word| u64::from_le_bytes(*word))
+            .collect();
+        assert_eq!(words.len(), ASYNCIO_DEBUG.len(), "{}", generated.name);
+        for (field, word) in ASYNCIO_DEBUG.iter().zip(&words) {
+            if let Some(field) = field {
+                assert_eq!(
+                    layout.field(*field),
+                    Some(*word),
+                    "{}: {}",
+                    generated.name,
+                    field.name()
+                );
+            }
+        }
+
+        checked.push(generated.name);
+    }
+
+    assert_eq!(checked, ["3.14", "3.14t", "3.15", "3.15t"]);
 }

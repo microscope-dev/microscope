@@ -40,6 +40,11 @@ use crate::{
 /// The most tasks one snapshot reads.
 const MOST_TASKS: usize = 10_000;
 
+/// Why a task whose frames an interpreter keeps, as an asyncio task's, has
+/// no stack in a profile.
+const INTERPRETED_FRAMES: &str =
+    "its frames are an interpreter's, which profiles do not record yet";
+
 /// Where one waiting task waits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Waiting {
@@ -208,6 +213,16 @@ async fn read(handle: &DebuggerHandle, stop: StopId) -> Result<Snapshot, crate::
             };
 
             match handle.at(context).backtrace().await {
+                Ok(backtrace)
+                    if backtrace
+                        .frames
+                        .iter()
+                        .all(|frame| matches!(frame.kind, FrameKind::Interpreted { .. })) =>
+                {
+                    snapshot
+                        .problems
+                        .push(format!("{} {}: {INTERPRETED_FRAMES}", task.noun, task.id));
+                }
                 Ok(backtrace) => {
                     let mut futures = Vec::new();
                     for frame in backtrace.frames.iter() {
@@ -764,6 +779,11 @@ impl LiveRuntime<'_> {
                 }
 
                 frames
+            }
+            // An interpreter's frames are in no image, so no frame of a
+            // profile can name them yet.
+            Some(runtime_model::TaskContext::Interpreted { .. }) => {
+                return Err(INTERPRETED_FRAMES.to_owned());
             }
             Some(runtime_model::TaskContext::Suspended { future, ty }) => {
                 let walk =
