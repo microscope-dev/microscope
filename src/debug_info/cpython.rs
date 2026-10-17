@@ -22,6 +22,10 @@ mod schemas;
 #[path = "cpython/layouts.gen.rs"]
 mod layouts;
 
+#[cfg(test)]
+#[path = "cpython/conformance.rs"]
+mod conformance;
+
 use std::sync::Arc;
 
 use object::{Object, ObjectSection, ObjectSymbol};
@@ -513,6 +517,8 @@ mod tests {
         assert!(refused(None, Some(0x030b_04f0)).contains("3.11.4 is not supported"));
         assert!(refused(None, Some(0x030d_02f0)).contains("has no offsets table"));
         assert!(refused(None, None).contains("version is unknown"));
+        let next = table(0x0310_00f0, false, schemas::V3_15.len());
+        assert!(refused(Some(&next), Some(0x0310_00f0)).contains("3.16.0 is not supported"));
         let beta = table(0x030f_00b3, false, schemas::V3_15.len());
         assert!(refused(Some(&beta), Some(0x030f_00b3)).contains("3.15.0b3 is not a release"));
         let cut = table(0x030d_0df0, false, 3);
@@ -530,33 +536,6 @@ mod tests {
         assert!(layout.has(Field::CframeCurrentFrame));
     }
 
-    /// The module of the interpreter `directory` that carries its runtime:
-    /// the executable, or the libpython it links.
-    fn runtime_module(directory: &std::path::Path) -> Vec<u8> {
-        let executable =
-            std::fs::canonicalize(directory.join("python")).expect("resolve the interpreter");
-        let bytes = std::fs::read(&executable).expect("read the interpreter");
-        if carries_runtime(&object::File::parse(&*bytes).expect("parse the interpreter")) {
-            return bytes;
-        }
-
-        let lib = executable
-            .parent()
-            .and_then(std::path::Path::parent)
-            .expect("the interpreter is in a bin directory")
-            .join("lib");
-        let library = std::fs::read_dir(&lib)
-            .expect("list the interpreter's lib directory")
-            .map(|entry| entry.expect("read an entry").path())
-            .find(|path| {
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with("libpython") && name.ends_with(".so.1.0"))
-            })
-            .expect("the interpreter links a libpython");
-        std::fs::read(library).expect("read the libpython")
-    }
-
     /// Every interpreter in the matrix is read by the layout generated
     /// from its own headers, and a table it carries agrees with them on
     /// every field.
@@ -565,7 +544,9 @@ mod tests {
         let root = std::env::var_os("MICROSCOPE_CPYTHON")
             .expect("MICROSCOPE_CPYTHON names the interpreters; run tests in the dev shell");
         for generated in layouts::GENERATED {
-            let bytes = runtime_module(&std::path::Path::new(&root).join(generated.name));
+            let module =
+                conformance::runtime_module(&std::path::Path::new(&root).join(generated.name));
+            let bytes = std::fs::read(module).expect("read the module");
             let object = object::File::parse(&*bytes).expect("parse the module");
             let runtime = runtime(&object).expect("a Python runtime");
             assert_eq!(
