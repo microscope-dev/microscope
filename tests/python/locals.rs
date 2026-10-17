@@ -71,6 +71,16 @@ pub struct Stop<'a> {
 impl Stop<'_> {
     /// The variables of the frame of `thread` that runs `function`.
     pub async fn variables(&self, thread: u64, function: &str) -> Vec<Variable> {
+        let at = self.frame(thread, function).await;
+        let snapshot = self
+            .scenario
+            .operation("frame variables", self.scenario.handle().at(at).variables())
+            .await;
+        snapshot.variables.to_vec()
+    }
+
+    /// The frame of `thread` that runs `function`.
+    pub async fn frame(&self, thread: u64, function: &str) -> StopContext {
         let at = |frame| StopContext {
             stop: self.id,
             execution: ExecutionContext::Thread(ThreadId::new(thread)),
@@ -97,14 +107,7 @@ impl Stop<'_> {
                         .is_some_and(|recorded| &*recorded.function == function)
             })
             .unwrap_or_else(|| panic!("{}: no frame of {function}: {trace:#?}", self.context));
-        let snapshot = self
-            .scenario
-            .operation(
-                "frame variables",
-                self.scenario.handle().at(at(frame.id)).variables(),
-            )
-            .await;
-        snapshot.variables.to_vec()
+        at(frame.id)
     }
 
     /// Every child of a value, in order.
@@ -403,6 +406,26 @@ async fn assert_children(stop: &Stop<'_>, truth: &[Vec<String>]) {
     );
 }
 
+/// An expression over a Python frame's locals says it is not evaluated,
+/// rather than that the frame has no such variable.
+async fn assert_unevaluated(stop: &Stop<'_>, truth: &[Vec<String>]) {
+    let frame = stop
+        .frame(thread_of(truth, "containers"), "containers")
+        .await;
+    let expression = microscope::Expression::parse("numbers").expect("an expression");
+    match stop.scenario.handle().at(frame).evaluate(&expression).await {
+        Err(microscope::Error::Expression(error)) => {
+            assert_eq!(
+                error.kind,
+                microscope::ExpressionErrorKind::Unsupported,
+                "{error:?}"
+            );
+            assert!(error.message.contains("Python frame"), "{error:?}");
+        }
+        other => panic!("{}: {other:?}", stop.context),
+    }
+}
+
 /// Every parked frame's locals are the ones CPython reports, presented as
 /// its `repr` presents them, on every interpreter in the matrix.
 #[tokio::test]
@@ -455,6 +478,7 @@ async fn a_cores_python_locals_are_the_ones_cpython_reported() {
         runs.push((name.clone(), assert_locals(&stop, &truth).await));
         assert_numbers(&stop, &truth).await;
         assert_children(&stop, &truth).await;
+        assert_unevaluated(&stop, &truth).await;
         scenario.shutdown().await;
     }
 

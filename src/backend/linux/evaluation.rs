@@ -666,7 +666,23 @@ impl<P: InspectionOps> Scope for Frame<'_, P> {
             return Ok(global);
         }
 
-        Ok(self.lookup_enumerator(name).unwrap_or(Lookup::NotFound))
+        if let Some(found) = self.lookup_enumerator(name) {
+            return Ok(found);
+        }
+
+        // An interpreted frame's variables are its interpreter's, which
+        // expressions do not read yet.
+        if !outermost && matches!(self.resolved.scope, FrameScope::Interpreted { .. }) {
+            return Err(Refusal::new(
+                ErrorKind::Unsupported,
+                format!(
+                    "`{name}` is no native variable, and a Python frame's variables are not \
+                     evaluated in expressions yet; `print` alone shows them"
+                ),
+            ));
+        }
+
+        Ok(Lookup::NotFound)
     }
 
     /// The types a name means, in the frame's module first.
