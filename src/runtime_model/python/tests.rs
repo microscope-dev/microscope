@@ -1073,6 +1073,7 @@ fn a_thread_list_that_loops_is_a_gap_and_keeps_the_threads_before_it() {
 
 mod asyncio;
 mod expressions;
+mod injection;
 mod instances;
 mod numpy;
 mod values;

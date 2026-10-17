@@ -31,8 +31,8 @@ use std::sync::Arc;
 use object::{Object, ObjectSection, ObjectSymbol};
 
 use crate::image::python::{
-    Constant, FREE_THREADED, Field, GENERATED_TABLE, PyVersion, PythonLayout, PythonRuntime,
-    TARGET_TABLE,
+    Constant, FREE_THREADED, Field, GENERATED_TABLE, MAX_STRUCTURE, PyVersion, PythonLayout,
+    PythonRuntime, TARGET_TABLE,
 };
 use crate::{AddressRange, CodeRole, FunctionInfo, ImageAddress, SymbolInfo};
 
@@ -339,10 +339,6 @@ const READ_WHOLE: [Field; 6] = [
     Field::DictEntrySize,
     Field::DictUnicodeEntrySize,
 ];
-
-/// The largest structure read whole the layout may give: a free-threaded
-/// build's thread state, the largest there is, takes under 1 KiB.
-const MAX_STRUCTURE: u64 = 1 << 13;
 
 /// The layout, once each field it needs is there and lies within its
 /// structure, and no structure read whole is larger than [`MAX_STRUCTURE`].

@@ -59,6 +59,7 @@ entries! {
     Field {
         RuntimeInterpretersHead = "runtime_state.interpreters_head",
         RuntimeInitialized = "runtime_state.initialized",
+        RuntimeFinalizing = "runtime_state.finalizing",
 
         InterpreterId = "interpreter_state.id",
         InterpreterNext = "interpreter_state.next",
@@ -443,6 +444,10 @@ entries! {
         DebugStopBit = "_PY_EVAL_PLEASE_STOP_BIT",
     }
 }
+
+/// The largest fixed structure read whole: a thread state, including its
+/// remote-debugger buffer. Headers and target tables are checked against it.
+pub const MAX_STRUCTURE: u64 = 1 << 13;
 
 /// The function each activation of CPython's evaluation loop runs in.
 pub const EVALUATION_LOOP: &str = "_PyEval_EvalFrameDefault";

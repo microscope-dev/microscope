@@ -15,6 +15,7 @@ pub(super) const GENERATED: &[Generated] = &[
         fields: &[
             (Field::RuntimeInterpretersHead, 40),
             (Field::RuntimeInitialized, 16),
+            (Field::RuntimeFinalizing, 24),
             (Field::InterpreterId, 8),
             (Field::InterpreterNext, 0),
             (Field::InterpreterThreadsHead, 72),
@@ -206,6 +207,7 @@ pub(super) const GENERATED: &[Generated] = &[
         fields: &[
             (Field::RuntimeInterpretersHead, 632),
             (Field::RuntimeInitialized, 600),
+            (Field::RuntimeFinalizing, 608),
             (Field::InterpreterId, 7272),
             (Field::InterpreterNext, 7264),
             (Field::InterpreterThreadsHead, 7344),
@@ -402,6 +404,7 @@ pub(super) const GENERATED: &[Generated] = &[
         fields: &[
             (Field::RuntimeInterpretersHead, 632),
             (Field::RuntimeInitialized, 600),
+            (Field::RuntimeFinalizing, 608),
             (Field::InterpreterId, 7272),
             (Field::InterpreterNext, 7264),
             (Field::InterpreterThreadsHead, 7344),
@@ -599,6 +602,7 @@ pub(super) const GENERATED: &[Generated] = &[
         fields: &[
             (Field::RuntimeInterpretersHead, 808),
             (Field::RuntimeInitialized, 776),
+            (Field::RuntimeFinalizing, 784),
             (Field::InterpreterId, 7280),
             (Field::InterpreterNext, 7272),
             (Field::InterpreterThreadsHead, 7344),
@@ -816,6 +820,7 @@ pub(super) const GENERATED: &[Generated] = &[
         fields: &[
             (Field::RuntimeInterpretersHead, 808),
             (Field::RuntimeInitialized, 776),
+            (Field::RuntimeFinalizing, 784),
             (Field::InterpreterId, 7280),
             (Field::InterpreterNext, 7272),
             (Field::InterpreterThreadsHead, 7344),
@@ -1038,6 +1043,7 @@ pub(super) const GENERATED: &[Generated] = &[
         fields: &[
             (Field::RuntimeInterpretersHead, 936),
             (Field::RuntimeInitialized, 904),
+            (Field::RuntimeFinalizing, 912),
             (Field::InterpreterId, 7272),
             (Field::InterpreterNext, 7264),
             (Field::InterpreterThreadsHead, 7336),
@@ -1258,6 +1264,7 @@ pub(super) const GENERATED: &[Generated] = &[
         fields: &[
             (Field::RuntimeInterpretersHead, 936),
             (Field::RuntimeInitialized, 904),
+            (Field::RuntimeFinalizing, 912),
             (Field::InterpreterId, 7272),
             (Field::InterpreterNext, 7264),
             (Field::InterpreterThreadsHead, 7336),
@@ -1483,6 +1490,7 @@ pub(super) const GENERATED: &[Generated] = &[
         fields: &[
             (Field::RuntimeInterpretersHead, 632),
             (Field::RuntimeInitialized, 600),
+            (Field::RuntimeFinalizing, 608),
             (Field::InterpreterId, 7272),
             (Field::InterpreterNext, 7264),
             (Field::InterpreterThreadsHead, 7344),
@@ -1679,6 +1687,7 @@ pub(super) const GENERATED: &[Generated] = &[
         fields: &[
             (Field::RuntimeInterpretersHead, 40),
             (Field::RuntimeInitialized, 16),
+            (Field::RuntimeFinalizing, 24),
             (Field::InterpreterId, 8),
             (Field::InterpreterNext, 0),
             (Field::InterpreterThreadsHead, 72),

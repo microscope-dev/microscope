@@ -16,6 +16,7 @@ their own, join native backtraces as interpreted frames.
 | `src/runtime_model/futures.rs`, `src/runtime_model/rust/` | Rust future inspection and shared Rust rules |
 | `src/runtime_model/python/` | CPython's threads, frames, code objects, line tables, and built-in values |
 | `src/runtime_model/python/agent.rs`, `agent.py`, `hook.rs` | Whole-state scripts, monitoring transport, native hook ELF and ABI |
+| `src/runtime_model/python/injection.rs` | Bounded PEP 768 request preparation; controller integration remains unfinished |
 | `src/backend/linux/interpreted.rs` | Interpreted frames placed in backtraces, and their variables |
 | `src/debug_info/coroutines.rs`, `src/debug_info/roles.rs` | Static coroutine and code-role metadata |
 | `src/image/resumes.rs` | Validated resume-point tables |
@@ -251,6 +252,22 @@ CPython inspection reads the interpreter from outside, as a core dump allows,
 and puts no code in the process. It covers CPython 3.12 through 3.15, with the
 GIL and free-threaded. The monitoring agent below is a separate transport for
 execution control; inspection and profiling do not load it.
+
+**Injection preparation.** `python/injection.rs` computes PEP 768 writes from
+one stopped state and a preference-ordered list of threads the caller has
+proved execute Python, with both controller and target-namespace thread IDs.
+The caller first proves the build supports PEP 768; the runtime configuration
+flag controls policy and cannot establish compiled support for custom embedders.
+Every write carries its expected bytes. The preparer
+uses the caller's read budget, with a bounded default when none is supplied,
+and refuses finalization, malformed control spans, reserved flags, occupied
+requests, uncleared script slots, and multiple interpreters, including ones
+without thread states. Read limits and unavailable memory have distinct outcomes;
+the caller decides when to retry. Initialization and a lack of eligible threads
+are retryable waits. The caller owns outstanding generations across all threads
+and must await acknowledgement before clearing a previous slot or preparing the
+next request. Candidate eligibility must exclude CPython's request-consumption
+and path-copy window. The controller integration remains unfinished (P4.7).
 
 **Agent transport.** `python/agent.py` translates explicitly configured
 `sys.monitoring` probes into calls to `microscope_python_hook`.

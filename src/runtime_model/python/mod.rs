@@ -19,6 +19,14 @@ mod expressions;
 mod frames;
 mod gil;
 mod hook;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "P4.7 controller integration is under separate review"
+    )
+)]
+mod injection;
 mod instances;
 mod library;
 mod linetable;

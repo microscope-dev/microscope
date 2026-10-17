@@ -104,6 +104,7 @@ WIDTH(PyDictKeysObject, dk_log2_size, 1);
 WIDTH(PyDictKeysObject, dk_log2_index_bytes, 1);
 WIDTH(PyDictKeysObject, dk_kind, 1);
 WIDTH(_PyRuntimeState, initialized, 4);
+WIDTH(_PyRuntimeState, _finalizing, 8);
 
 #if PY_VERSION_HEX >= 0x030e0000
 /* The PEP 768 control fields are written at exactly these widths. */

@@ -35,6 +35,7 @@ const fn member(field: Field, minor: u32) -> Option<Member> {
     Some(match field {
         Field::RuntimeInterpretersHead => ("_PyRuntimeState", &["interpreters", "head"]),
         Field::RuntimeInitialized => ("_PyRuntimeState", &["initialized"]),
+        Field::RuntimeFinalizing => ("_PyRuntimeState", &["_finalizing"]),
         Field::InterpreterId => ("PyInterpreterState", &["id"]),
         Field::InterpreterNext => ("PyInterpreterState", &["next"]),
         Field::InterpreterThreadsHead => ("PyInterpreterState", &["threads", "head"]),

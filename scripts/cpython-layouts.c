@@ -225,6 +225,7 @@ int main(int argc, char **argv) {
     printf("        fields: &[\n");
     FIELD(RuntimeInterpretersHead, offsetof(_PyRuntimeState, interpreters.head));
     FIELD(RuntimeInitialized, offsetof(_PyRuntimeState, initialized));
+    FIELD(RuntimeFinalizing, offsetof(_PyRuntimeState, _finalizing));
     FIELD(InterpreterId, offsetof(PyInterpreterState, id));
     FIELD(InterpreterNext, offsetof(PyInterpreterState, next));
     FIELD(InterpreterThreadsHead, offsetof(PyInterpreterState, threads.head));
