@@ -71,14 +71,47 @@ fn paths(profile: &Profile, source: Source, look: Look) -> BTreeMap<Vec<String>,
         .collect()
 }
 
-/// Whether a Python path ends in the fixture's `work`, called from `spin`.
+/// Whether a Python path passes through `spin` calling `work`. Native
+/// callees of `work` remain in the Python look and may follow those frames.
 fn spins(path: &[String], lines: &BTreeMap<String, u32>) -> bool {
-    let [.., outer, inner] = path else {
-        return false;
-    };
-
+    let spin = format!("spin profiled.py:{}", lines["spin"]);
     let work = ["work-loop", "work-add"].map(|mark| format!("work profiled.py:{}", lines[mark]));
-    *outer == format!("spin profiled.py:{}", lines["spin"]) && work.contains(inner)
+    path.windows(2).enumerate().any(|(at, pair)| {
+        pair[0] == spin
+            && work.contains(&pair[1])
+            && path[at + 2..].iter().all(|frame| !frame.contains(".py:"))
+    })
+}
+
+/// Reproduce a snapshot taken inside a native callee of Python's `work`.
+/// The Python look deliberately retains native callees after Python frames.
+#[test]
+fn spinner_detection_keeps_native_callees_and_rejects_wrong_callers() {
+    let lines = lines();
+    let spin = format!("spin profiled.py:{}", lines["spin"]);
+    let work = format!("work profiled.py:{}", lines["work-add"]);
+    let native = "_PyLong_FromMedium longobject.c:210".to_owned();
+    assert!(spins(&[spin.clone(), work.clone()], &lines));
+    assert!(spins(&[spin.clone(), work.clone(), native.clone()], &lines));
+    for path in [
+        vec![
+            spin.clone(),
+            work.clone(),
+            format!("nap profiled.py:{}", lines["nap"]),
+        ],
+        vec![spin.clone(), work.clone(), work.clone()],
+        vec![
+            spin.clone(),
+            work.clone(),
+            "helper threading.py:12".to_owned(),
+        ],
+        vec![work.clone(), spin.clone(), native.clone()],
+        vec![work.clone(), native.clone()],
+        vec![spin.clone(), "other.py:1".to_owned(), work],
+        vec![spin, "work profiled.py:1".to_owned(), native],
+    ] {
+        assert!(!spins(&path, &lines), "{path:?}");
+    }
 }
 
 /// Whether a Python path passes through the fixture's `nap`.
