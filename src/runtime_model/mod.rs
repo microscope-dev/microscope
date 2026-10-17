@@ -485,6 +485,26 @@ pub struct RuntimeException {
     pub value: Option<Arc<str>>,
 }
 
+/// A change to the stopped process's memory that a runtime model needs. A
+/// model only reads, so it returns its writes for the debugger to make,
+/// while every thread is stopped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Python's agent is installed through it from P4.7")
+)]
+pub struct RuntimeWrite {
+    pub address: VirtualAddress,
+
+    /// What the memory held as the model read it: the write is made only
+    /// while it still does, so that it never applies to state the model
+    /// did not see.
+    pub expected: Vec<u8>,
+
+    /// What the memory is to hold, as many bytes as `expected`.
+    pub bytes: Vec<u8>,
+}
+
 /// What a thread that entered one of a runtime's internal hooks reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(

@@ -5592,6 +5592,80 @@ fn a_runtime_hook_asks_at_each_hit_whether_its_thread_stops() {
     );
 }
 
+/// The writes a runtime model asks for are made while every thread is
+/// stopped, each only where memory still holds what the model read there,
+/// and all of them or none. A trap's hidden byte is what the model read.
+#[test]
+fn a_runtimes_writes_are_made_only_to_the_memory_it_read() {
+    let mut harness = watch_harness(2);
+    let pid = harness.inferior().memory_thread();
+    let write = |address: u64, expected: &[u8], bytes: &[u8]| crate::runtime_model::RuntimeWrite {
+        address: VirtualAddress::new(address),
+        expected: expected.to_vec(),
+        bytes: bytes.to_vec(),
+    };
+    harness.store(0x6000, 0x0807_0605_0403_0201);
+    harness.store(0x6008, 0x1817_1615_1413_1211);
+    harness.add_breakpoint(0x40);
+    harness.trace().take_actions();
+
+    // Memory that changed since the model read it takes none of the writes.
+    let refused = harness.controller.write_for_runtime(&[
+        write(0x6000, &[1, 2], &[0xaa, 0xbb]),
+        write(0x6008, &[0x99], &[0xcc]),
+    ]);
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|reason| reason.contains("0x6008") && reason.contains("no longer holds")),
+        "{refused:?}"
+    );
+    assert!(
+        !harness
+            .trace()
+            .take_actions()
+            .iter()
+            .any(|action| action.starts_with("write_word")),
+        "nothing is written"
+    );
+
+    harness
+        .controller
+        .write_for_runtime(&[
+            write(0x6000, &[1, 2], &[0xaa, 0xbb]),
+            write(0x6009, &[0x12], &[0xcc]),
+        ])
+        .expect("the writes are made");
+    let actions = harness.trace().take_actions();
+    for expected in [
+        format!("write_word {pid} 0x6000 0x80706050403bbaa"),
+        format!("write_word {pid} 0x6008 0x181716151413cc11"),
+    ] {
+        assert!(actions.contains(&expected), "{expected} in {actions:?}");
+    }
+
+    // The trap at 0x40 hides the byte the model reads there, which the
+    // write replaces under the trap.
+    let original = harness.inferior().breakpoints[&VirtualAddress::new(0x40)].original_byte;
+    harness
+        .controller
+        .write_for_runtime(&[write(0x40, &[original], &[0x55])])
+        .expect("the hidden byte is written");
+    assert_eq!(
+        harness.inferior().breakpoints[&VirtualAddress::new(0x40)].original_byte,
+        0x55
+    );
+
+    // A running thread could change what was read.
+    harness.start_continue();
+    assert!(
+        harness
+            .controller
+            .write_for_runtime(&[write(0x6000, &[0xaa], &[1])])
+            .is_err()
+    );
+}
+
 #[test]
 fn ending_a_plan_removes_only_the_sites_it_still_owns() {
     let mut harness = watch_harness(1);

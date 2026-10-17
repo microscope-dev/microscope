@@ -132,6 +132,16 @@ Both are judged when no user breakpoint at the site stops, and before a
 step's plan meets the thread. The private sites run control keeps for itself,
 such as Go's stack mover, are separate owners.
 
+## Runtime writes
+
+A runtime model never writes: `RuntimeStop` only reads. A model that needs
+the process changed, as installing Python's agent sets fields of a thread
+state, returns `RuntimeWrite`s. Each carries the bytes the model read there.
+`Controller::write_for_runtime` makes them only while every thread is
+stopped, and only where memory still holds those bytes, all or none. A trap
+byte is hidden, as for any write. Every runtime write goes through that one
+function, which records it.
+
 ## Resume points
 
 Compiler metadata maps a coroutine state to the code location where it can
