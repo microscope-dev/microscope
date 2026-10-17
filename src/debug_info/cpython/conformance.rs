@@ -20,11 +20,16 @@ const DESCRIBED: usize = 5;
 
 /// Where a field is in C: the type that holds it, as the headers name it,
 /// and the members that lead to it from there; no members for the type's
-/// size.
+/// size, and [`END`] last for where the member before it ends.
 type Member = (&'static str, &'static [&'static str]);
+
+/// The last of a member's path that stands for where the member it
+/// follows ends, as the end of an array.
+const END: &str = "<end>";
 
 /// Where each field is in the C of a minor version, or `None` for a field
 /// no build of that version has.
+#[expect(clippy::too_many_lines, reason = "one arm per field")]
 const fn member(field: Field, minor: u32) -> Option<Member> {
     let before_13 = minor < 13;
     Some(match field {
@@ -75,6 +80,42 @@ const fn member(field: Field, minor: u32) -> Option<Member> {
         Field::TypeFlags => ("PyTypeObject", &["tp_flags"]),
         Field::TypeBasicsize => ("PyTypeObject", &["tp_basicsize"]),
         Field::TypeDictoffset => ("PyTypeObject", &["tp_dictoffset"]),
+        Field::TypeDict => ("PyTypeObject", &["tp_dict"]),
+        Field::TypeMro => ("PyTypeObject", &["tp_mro"]),
+        Field::TypeSubclasses => ("PyTypeObject", &["tp_subclasses"]),
+        Field::InterpreterStaticTypes if before_13 => {
+            ("PyInterpreterState", &["types", "builtins"])
+        }
+        Field::InterpreterStaticTypes => {
+            ("PyInterpreterState", &["types", "builtins", "initialized"])
+        }
+        Field::InterpreterStaticTypesEnd if before_13 => {
+            ("PyInterpreterState", &["types", "builtins", END])
+        }
+        Field::InterpreterStaticTypesEnd => (
+            "PyInterpreterState",
+            &["types", "builtins", "initialized", END],
+        ),
+        Field::StaticTypeStateSize if before_13 => ("static_builtin_state", &[]),
+        Field::StaticTypeStateSize => ("managed_static_type_state", &[]),
+        Field::StaticTypeStateDict if before_13 => ("static_builtin_state", &["tp_dict"]),
+        Field::StaticTypeStateDict => ("managed_static_type_state", &["tp_dict"]),
+        Field::TypeGetattro => ("PyTypeObject", &["tp_getattro"]),
+        Field::TypeDescrGet => ("PyTypeObject", &["tp_descr_get"]),
+        Field::TypeDescrSet => ("PyTypeObject", &["tp_descr_set"]),
+        Field::HeapTypeQualname => ("PyHeapTypeObject", &["ht_qualname"]),
+        Field::HeapTypeCachedKeys => ("PyHeapTypeObject", &["ht_cached_keys"]),
+        Field::MemberDescrMember => ("PyMemberDescrObject", &["d_member"]),
+        Field::MemberDefType => ("PyMemberDef", &["type"]),
+        Field::MemberDefOffset => ("PyMemberDef", &["offset"]),
+        Field::CellRef => ("PyCellObject", &["ob_ref"]),
+        Field::SetUsed => ("PySetObject", &["used"]),
+        Field::SetMask => ("PySetObject", &["mask"]),
+        Field::SetTable => ("PySetObject", &["table"]),
+        Field::SetEntrySize => ("setentry", &[]),
+        Field::SetEntryKey => ("setentry", &["key"]),
+        Field::SetEntryHash => ("setentry", &["hash"]),
+        Field::ModuleDict => ("PyModuleObject", &["md_dict"]),
         Field::TupleItems => ("PyTupleObject", &["ob_item"]),
         Field::TupleSize => ("PyTupleObject", &["ob_base", "ob_size"]),
         Field::ListItems => ("PyListObject", &["ob_item"]),
@@ -95,6 +136,9 @@ const fn member(field: Field, minor: u32) -> Option<Member> {
         Field::DictUnicodeEntryKey => ("PyDictUnicodeEntry", &["me_key"]),
         Field::DictUnicodeEntryValue => ("PyDictUnicodeEntry", &["me_value"]),
         Field::DictValuesValues => ("PyDictValues", &["values"]),
+        Field::DictValuesCapacity if !before_13 => ("PyDictValues", &["capacity"]),
+        Field::DictValuesSize if !before_13 => ("PyDictValues", &["size"]),
+        Field::DictValuesValid if !before_13 => ("PyDictValues", &["valid"]),
         Field::FloatValue => ("PyFloatObject", &["ob_fval"]),
         Field::LongTag => ("PyLongObject", &["long_value", "lv_tag"]),
         Field::LongDigits => ("PyLongObject", &["long_value", "ob_digit"]),
@@ -108,7 +152,11 @@ const fn member(field: Field, minor: u32) -> Option<Member> {
         Field::UnicodeData => ("PyUnicodeObject", &["data"]),
         // Threads before 3.15 have no base frame, and from 3.13 none
         // keeps a C frame.
-        Field::ThreadBaseFrame | Field::CframeCurrentFrame => return None,
+        Field::ThreadBaseFrame
+        | Field::CframeCurrentFrame
+        | Field::DictValuesCapacity
+        | Field::DictValuesSize
+        | Field::DictValuesValid => return None,
     })
 }
 
@@ -214,6 +262,10 @@ fn described(image: &ModuleImage, (ty, path): Member) -> u64 {
 
     let mut offset = 0;
     for name in path {
+        if *name == END {
+            return offset + info.byte_size.expect("a complete member has a size");
+        }
+
         let member = member_named(info, name);
         let RecordMemberLayout::ByteOffset(at) = member.layout else {
             panic!("{ty}.{name} is not at a byte offset: {:?}", member.layout);

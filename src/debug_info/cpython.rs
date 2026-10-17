@@ -55,7 +55,7 @@ pub(super) struct Generated {
     /// `PY_VERSION_HEX`.
     pub version: u32,
     pub free_threaded: bool,
-    pub fields: &'static [(Field, u16)],
+    pub fields: &'static [(Field, u32)],
     pub constants: &'static [(Constant, u8)],
 }
 
@@ -258,7 +258,7 @@ fn from_table(
         }
 
         let offset = u64::from_le_bytes(*bytes);
-        if u16::try_from(offset).is_err() {
+        if u32::try_from(offset).is_err() {
             return Err(format!("its table puts {name} at {offset}, past any structure").into());
         }
 

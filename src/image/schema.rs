@@ -765,7 +765,7 @@ pub(super) const SCHEMA: &[TableSchema] = &[
     TableSchema {
         kind: TableKind::PythonRuntime,
         record: "PythonRuntimeRecord",
-        size: PYTHON_OFFSETS + 2 * python::Field::COUNT + python::Constant::COUNT,
+        size: PYTHON_OFFSETS + 4 * python::Field::COUNT + python::Constant::COUNT,
         fields: &[
             ("version", 0, 4),
             ("flags", 4, 2),
@@ -773,10 +773,10 @@ pub(super) const SCHEMA: &[TableSchema] = &[
             ("runtime_start", 8, 8),
             ("runtime_end", 16, 8),
             ("problem", 24, 4),
-            ("offsets", PYTHON_OFFSETS, 2 * python::Field::COUNT),
+            ("offsets", PYTHON_OFFSETS, 4 * python::Field::COUNT),
             (
                 "constants",
-                PYTHON_OFFSETS + 2 * python::Field::COUNT,
+                PYTHON_OFFSETS + 4 * python::Field::COUNT,
                 python::Constant::COUNT,
             ),
         ],

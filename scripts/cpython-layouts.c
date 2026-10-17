@@ -15,6 +15,9 @@
 #include "internal/pycore_code.h"
 #include "internal/pycore_dict.h"
 #include "internal/pycore_long.h"
+#include "internal/pycore_moduleobject.h"
+#include "internal/pycore_object.h"
+#include "internal/pycore_typeobject.h"
 #include "internal/pycore_runtime.h"
 #include "internal/pycore_interp.h"
 #include "internal/pycore_unicodeobject.h"
@@ -29,9 +32,9 @@ static void fail(const char *what, unsigned long long value) {
     exit(1);
 }
 
-/* A layout stores offsets and sizes as u16s. */
+/* A layout stores offsets and sizes as u32s. */
 static void emit_field(const char *name, size_t value) {
-    if (value > UINT16_MAX) {
+    if (value >= UINT32_MAX) {
         fail(name, value);
     }
     printf("            (Field::%s, %zu),\n", name, value);
@@ -160,6 +163,38 @@ int main(int argc, char **argv) {
     FIELD(TypeFlags, offsetof(PyTypeObject, tp_flags));
     FIELD(TypeBasicsize, offsetof(PyTypeObject, tp_basicsize));
     FIELD(TypeDictoffset, offsetof(PyTypeObject, tp_dictoffset));
+    FIELD(TypeDict, offsetof(PyTypeObject, tp_dict));
+    FIELD(TypeMro, offsetof(PyTypeObject, tp_mro));
+    FIELD(TypeSubclasses, offsetof(PyTypeObject, tp_subclasses));
+#if PY_VERSION_HEX >= 0x030d0000
+    FIELD(InterpreterStaticTypes, offsetof(PyInterpreterState, types.builtins.initialized));
+    FIELD(InterpreterStaticTypesEnd, offsetof(PyInterpreterState, types.builtins.initialized)
+                                         + sizeof(((PyInterpreterState *)0)->types.builtins.initialized));
+    FIELD(StaticTypeStateSize, sizeof(managed_static_type_state));
+    FIELD(StaticTypeStateDict, offsetof(managed_static_type_state, tp_dict));
+#else
+    FIELD(InterpreterStaticTypes, offsetof(PyInterpreterState, types.builtins));
+    FIELD(InterpreterStaticTypesEnd, offsetof(PyInterpreterState, types.builtins)
+                                         + sizeof(((PyInterpreterState *)0)->types.builtins));
+    FIELD(StaticTypeStateSize, sizeof(static_builtin_state));
+    FIELD(StaticTypeStateDict, offsetof(static_builtin_state, tp_dict));
+#endif
+    FIELD(TypeGetattro, offsetof(PyTypeObject, tp_getattro));
+    FIELD(TypeDescrGet, offsetof(PyTypeObject, tp_descr_get));
+    FIELD(TypeDescrSet, offsetof(PyTypeObject, tp_descr_set));
+    FIELD(HeapTypeQualname, offsetof(PyHeapTypeObject, ht_qualname));
+    FIELD(HeapTypeCachedKeys, offsetof(PyHeapTypeObject, ht_cached_keys));
+    FIELD(MemberDescrMember, offsetof(PyMemberDescrObject, d_member));
+    FIELD(MemberDefType, offsetof(PyMemberDef, type));
+    FIELD(MemberDefOffset, offsetof(PyMemberDef, offset));
+    FIELD(CellRef, offsetof(PyCellObject, ob_ref));
+    FIELD(SetUsed, offsetof(PySetObject, used));
+    FIELD(SetMask, offsetof(PySetObject, mask));
+    FIELD(SetTable, offsetof(PySetObject, table));
+    FIELD(SetEntrySize, sizeof(setentry));
+    FIELD(SetEntryKey, offsetof(setentry, key));
+    FIELD(SetEntryHash, offsetof(setentry, hash));
+    FIELD(ModuleDict, offsetof(PyModuleObject, md_dict));
     FIELD(TupleItems, offsetof(PyTupleObject, ob_item));
     FIELD(TupleSize, offsetof(PyTupleObject, ob_base.ob_size));
     FIELD(ListItems, offsetof(PyListObject, ob_item));
@@ -180,6 +215,11 @@ int main(int argc, char **argv) {
     FIELD(DictUnicodeEntryKey, offsetof(PyDictUnicodeEntry, me_key));
     FIELD(DictUnicodeEntryValue, offsetof(PyDictUnicodeEntry, me_value));
     FIELD(DictValuesValues, offsetof(PyDictValues, values));
+#if PY_VERSION_HEX >= 0x030d0000
+    FIELD(DictValuesCapacity, offsetof(PyDictValues, capacity));
+    FIELD(DictValuesSize, offsetof(PyDictValues, size));
+    FIELD(DictValuesValid, offsetof(PyDictValues, valid));
+#endif
     FIELD(FloatValue, offsetof(PyFloatObject, ob_fval));
     FIELD(LongTag, offsetof(PyLongObject, long_value.lv_tag));
     FIELD(LongDigits, offsetof(PyLongObject, long_value.ob_digit));
@@ -226,6 +266,20 @@ int main(int argc, char **argv) {
     CONSTANT(DictKeysGeneral, DICT_KEYS_GENERAL);
     CONSTANT(DictKeysUnicode, DICT_KEYS_UNICODE);
     CONSTANT(DictKeysSplit, DICT_KEYS_SPLIT);
+    CONSTANT(TypeHeapBit, __builtin_ctzl(Py_TPFLAGS_HEAPTYPE));
+    CONSTANT(TypeStaticBuiltinBit, __builtin_ctzl(_Py_TPFLAGS_STATIC_BUILTIN));
+    CONSTANT(TypeManagedDictBit, __builtin_ctzl(Py_TPFLAGS_MANAGED_DICT));
+#if PY_VERSION_HEX >= 0x030d0000
+    CONSTANT(TypeInlineValuesBit, __builtin_ctzl(Py_TPFLAGS_INLINE_VALUES));
+    CONSTANT(ManagedDictWords, -MANAGED_DICT_OFFSET / (Py_ssize_t)sizeof(PyObject *));
+    CONSTANT(ManagedDictTagged, 0);
+#else
+    /* 3.12 keeps a dict or, tagged by its low bit, values, in the word
+     * _PyObject_DictOrValuesPointer gives. */
+    CONSTANT(ManagedDictWords, 3);
+    CONSTANT(ManagedDictTagged, 1);
+#endif
+    CONSTANT(MemberObjectEx, Py_T_OBJECT_EX);
     printf("        ],\n");
 
     printf("    },\n");

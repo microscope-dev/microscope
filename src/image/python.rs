@@ -63,6 +63,15 @@ entries! {
         InterpreterNext = "interpreter_state.next",
         InterpreterThreadsHead = "interpreter_state.threads_head",
 
+        /// The states an interpreter keeps of the static built-in types,
+        /// from the first to the end of the last, each of
+        /// [`Field::StaticTypeStateSize`] bytes, and where each keeps its
+        /// type's dict.
+        InterpreterStaticTypes = "interpreter_state.static_types",
+        InterpreterStaticTypesEnd = "interpreter_state.static_types_end",
+        StaticTypeStateSize = "static_type_state.size",
+        StaticTypeStateDict = "static_type_state.tp_dict",
+
         ThreadSize = "thread_state.size",
         ThreadPrev = "thread_state.prev",
         ThreadNext = "thread_state.next",
@@ -123,6 +132,38 @@ entries! {
         TypeFlags = "type_object.tp_flags",
         TypeBasicsize = "type_object.tp_basicsize",
         TypeDictoffset = "type_object.tp_dictoffset",
+        TypeDict = "type_object.tp_dict",
+        TypeMro = "type_object.tp_mro",
+
+        /// A static built-in type's index, plus one, among the states
+        /// its interpreter keeps of such types, which hold their dicts.
+        TypeSubclasses = "type_object.tp_subclasses",
+
+        /// How the type reads its instances' attributes, and how a value
+        /// of it binds or sets as a descriptor; null where it does not.
+        TypeGetattro = "type_object.tp_getattro",
+        TypeDescrGet = "type_object.tp_descr_get",
+        TypeDescrSet = "type_object.tp_descr_set",
+
+        /// A class's qualified name, and the keys its instances' split
+        /// dicts share.
+        HeapTypeQualname = "heap_type_object.ht_qualname",
+        HeapTypeCachedKeys = "heap_type_object.ht_cached_keys",
+
+        /// A member descriptor's definition, such as a slot's: the type
+        /// of the value it keeps, and where in an instance it keeps it.
+        MemberDescrMember = "member_descr_object.d_member",
+        MemberDefType = "member_def.type",
+        MemberDefOffset = "member_def.offset",
+
+        CellRef = "cell_object.ob_ref",
+        SetUsed = "set_object.used",
+        SetMask = "set_object.mask",
+        SetTable = "set_object.table",
+        SetEntrySize = "set_entry.size",
+        SetEntryKey = "set_entry.key",
+        SetEntryHash = "set_entry.hash",
+        ModuleDict = "module_object.md_dict",
 
         TupleItems = "tuple_object.ob_item",
         TupleSize = "tuple_object.ob_size",
@@ -147,6 +188,12 @@ entries! {
         DictUnicodeEntryKey = "dict_unicode_entry.me_key",
         DictUnicodeEntryValue = "dict_unicode_entry.me_value",
         DictValuesValues = "dict_values.values",
+
+        /// From 3.13, how many values the values hold room for and hold,
+        /// and whether an instance's inline values are its attributes.
+        DictValuesCapacity = "dict_values.capacity",
+        DictValuesSize = "dict_values.size",
+        DictValuesValid = "dict_values.valid",
 
         FloatValue = "float_object.ob_fval",
         LongTag = "long_object.lv_tag",
@@ -202,6 +249,22 @@ entries! {
         DictKeysGeneral = "DICT_KEYS_GENERAL",
         DictKeysUnicode = "DICT_KEYS_UNICODE",
         DictKeysSplit = "DICT_KEYS_SPLIT",
+
+        /// The bits of `tp_flags` that mark a class, a type whose
+        /// instances' dicts CPython manages, and, from 3.13, one whose
+        /// instances keep their attributes' values inline.
+        TypeHeapBit = "Py_TPFLAGS_HEAPTYPE",
+        TypeStaticBuiltinBit = "_Py_TPFLAGS_STATIC_BUILTIN",
+        TypeManagedDictBit = "Py_TPFLAGS_MANAGED_DICT",
+        TypeInlineValuesBit = "Py_TPFLAGS_INLINE_VALUES",
+
+        /// How many words before an object its managed dict's pointer is,
+        /// and 1 where that word tags values by its low bit, as in 3.12.
+        ManagedDictWords = "managed_dict_words",
+        ManagedDictTagged = "managed_dict_tagged",
+
+        /// The member type of a slot, which keeps an object or none.
+        MemberObjectEx = "Py_T_OBJECT_EX",
     }
 }
 
@@ -214,7 +277,7 @@ pub const EVALUATION_LOOP: &str = "_PyEval_EvalFrameDefault";
 pub const TAIL_CALL_PREFIX: &str = "_TAIL_CALL_";
 
 /// An offset no field has: the version does not have the field.
-const ABSENT: u16 = u16::MAX;
+const ABSENT: u32 = u32::MAX;
 
 /// The runtime is CPython's free-threaded build.
 pub const FREE_THREADED: u16 = 1;
@@ -244,7 +307,7 @@ pub struct PythonRuntimeRecord {
     /// Why the module's runtime cannot be read, a string, or [`NONE`]
     /// when its layout is complete.
     pub problem: U32,
-    pub offsets: [U16; Field::COUNT],
+    pub offsets: [U32; Field::COUNT],
     pub constants: [u8; Constant::COUNT],
 }
 
@@ -301,7 +364,7 @@ impl std::fmt::Display for PyVersion {
 /// Where each field is, and each constant's value, for one version.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PythonLayout {
-    offsets: [u16; Field::COUNT],
+    offsets: [u32; Field::COUNT],
     constants: [u8; Constant::COUNT],
 }
 
@@ -332,7 +395,7 @@ impl PythonLayout {
 
     /// Sets a field, or leaves it absent when its offset does not fit.
     pub fn set_field(&mut self, field: Field, offset: u64) {
-        self.offsets[field.index()] = u16::try_from(offset)
+        self.offsets[field.index()] = u32::try_from(offset)
             .ok()
             .filter(|offset| *offset != ABSENT)
             .unwrap_or(ABSENT);
@@ -398,7 +461,7 @@ pub fn add_to(
                 runtime_start: runtime.runtime.start.get().into(),
                 runtime_end: runtime.runtime.end.get().into(),
                 problem: problem.into(),
-                offsets: layout.offsets.map(U16::new),
+                offsets: layout.offsets.map(U32::new),
                 constants: layout.constants,
             })
         })
@@ -421,7 +484,7 @@ pub fn runtime(image: &Image) -> Option<PythonRuntime> {
         },
         layout: if problem == NONE {
             Ok(PythonLayout {
-                offsets: record.offsets.map(U16::get),
+                offsets: record.offsets.map(U32::get),
                 constants: record.constants,
             })
         } else {

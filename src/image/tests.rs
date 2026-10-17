@@ -596,7 +596,7 @@ fn the_schema_is_the_records_layout() {
     // A change to any record changes this; bump the format with it.
     assert_eq!(
         schema::layout_fingerprint(),
-        0xc262_8e5e_5b0e_f045,
+        0xece8_5fc6_769a_2322,
         "the layout changed:\n{}",
         schema::schema_text()
     );
@@ -3640,7 +3640,7 @@ fn a_python_runtime_reads_back_with_its_layout_or_its_problem() {
 
     let mut layout = PythonLayout::default();
     layout.set_field(Field::ThreadNext, 8);
-    layout.set_field(Field::FrameTlbcIndex, 0x1_0000);
+    layout.set_field(Field::FrameTlbcIndex, 0x1_0000_0000);
     layout.set_constant(Constant::OwnerEntry, 3);
     let runtime = PythonRuntime {
         version: PyVersion(0x030e_04f0),
@@ -3655,7 +3655,7 @@ fn a_python_runtime_reads_back_with_its_layout_or_its_problem() {
     assert_eq!(read, runtime);
     let layout = read.layout.unwrap();
     assert_eq!(layout.field(Field::ThreadNext), Some(8));
-    assert_eq!(layout.field(Field::FrameTlbcIndex), None, "past a u16");
+    assert_eq!(layout.field(Field::FrameTlbcIndex), None, "past a u32");
     assert_eq!(layout.field(Field::CodeTlbc), None);
     assert_eq!(layout.constant(Constant::OwnerEntry), 3);
 
@@ -3676,7 +3676,7 @@ fn validation_rejects_a_python_runtime_that_names_nothing() {
         runtime_start: start.into(),
         runtime_end: end.into(),
         problem: problem.into(),
-        offsets: [u16::MAX.into(); super::python::Field::COUNT],
+        offsets: [u32::MAX.into(); super::python::Field::COUNT],
         constants: [0; super::python::Constant::COUNT],
     };
     let refusal = |records: Vec<PythonRuntimeRecord>| {
