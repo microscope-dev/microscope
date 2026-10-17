@@ -724,6 +724,14 @@ calls. Such an operation is a type error only where Python's would be one,
 as `None + 1` is; where a type's code could give a value, as `"a" + "b"`
 does, it is refused as unsupported.
 
+In any frame of a CPython process, `(py)x` casts an address to the Python
+object there, so that a C extension's native frame reaches into the objects
+its `PyObject *` locals point to as a Python frame would: `((py)args).x`,
+`len((py)list)`. A Python value casts to itself, and an address is a pointer
+or an integer; anything else is a type error. A null address, or one that
+holds no object of a type microscope reads, is unavailable. A `PyObject *`
+pointer itself already shows the object it points to.
+
 ```microscope-example
 world: python
 count                  => 7 : int
@@ -752,6 +760,10 @@ pair[1]                => 'two' : str
 point.x                => 3 : int
 point.x * point.y      => 12 : integer
 point.z                => error missing-key at `point.z`
+((py)&point).y         => 4 : int
+(py)count              => 7 : int
+(py)ratio              => 0.5 : float
+(py)1.5                => error type at `1.5`
 ages["bob"]            => 41 : int
 ages["eve"]            => error missing-key at `ages["eve"]`
 squares[2]             => 4 : int

@@ -169,6 +169,11 @@ class Derived(Base):
 Pair = collections.namedtuple("Pair", "left right")
 
 
+# The instance locals whose dicts are never made, each with the names of its
+# attributes: reading an object's __dict__ makes one, after which CPython
+# reads its attributes through it, not from where it keeps them.
+UNTOUCHED = {"fresh": ("x", "y")}
+
 # The expressions to evaluate and what CPython gave for each, kept out of
 # the frame's locals, which the checkpoint reports.
 EXPRESSIONS = sys.argv[1:]
@@ -205,6 +210,7 @@ def values():
     labels = {None: "none", True: "yes", (1, 2): "pair", b"k": "bytes"}
     doubtful = {Key(7): "seven", 1.5: "float", "s": "str"}
     point = Point(3, 4)
+    fresh = Point(7, 8)
     slotted = Slotted()
     both = Both()
     described = Described()
@@ -247,7 +253,11 @@ def values():
     for local, value in frame.f_locals.items():
         if type(value).__module__ == "__main__":
             RESULTS.append(("instance", local))
-            for attribute, item in truth.attributes(value):
+            if local in UNTOUCHED:
+                found = [(name, object.__getattribute__(value, name)) for name in UNTOUCHED[local]]
+            else:
+                found = truth.attributes(value)
+            for attribute, item in found:
                 RESULTS.append(("attribute", local, attribute, truth.canonical(item)))
     del frame
     truth.checkpoint("parked", records=RESULTS)

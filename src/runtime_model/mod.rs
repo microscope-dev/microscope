@@ -718,6 +718,14 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         Err(InterpretedFailure::interprets_nothing())
     }
 
+    /// The names native code gives the interpreter's objects: the type a
+    /// pointer to one points to, as C's `PyObject`, and the dynamic type an
+    /// expression casts such a pointer to, to reach into the object. A
+    /// pointer of that type is presented as the object it points to.
+    fn object_types(&self) -> Option<ObjectTypes> {
+        None
+    }
+
     /// The interpreter's object at `object`, presented as a variable's
     /// value is.
     fn interpreted_value(
@@ -911,6 +919,17 @@ pub enum InterpretedSlot {
 
     /// It cannot be read, and why.
     Unreadable(Arc<str>),
+}
+
+/// The names native code gives an interpreter's objects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObjectTypes {
+    /// The type a pointer to an object points to, as C names it.
+    pub native: &'static str,
+
+    /// The type an expression casts a pointer to, to reach into the object
+    /// it points to.
+    pub cast: &'static str,
 }
 
 /// An object the interpreter keeps, as the debugger presents it.

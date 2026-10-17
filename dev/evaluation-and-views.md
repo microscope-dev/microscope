@@ -90,7 +90,12 @@ every decision about it to the run:
 
 A program is bound once and may run on values of different types, so every
 check happens as it runs. A dynamic value is not assigned, not watched, and
-has no size; `&x` is the object's address as a `void*`. The fake world
+has no size; `&x` is the object's address as a `void*`. The reverse is a
+cast to a name `Scope::dynamic_type` accepts, such as `(py)p`: it binds to
+`Op::Interpreted`, whose operand is a pointer or an integer, and runs
+`Machine::dynamic_at` to reach the object at that address as a dynamic
+value. The binder chooses the cast reading of `(py)&x` and `(py)-x` by the
+same test, when no value in scope is named `py`. The fake world
 `python` in `src/eval/fake.rs` holds dynamic values for the evaluator's own
 tests and the reference's examples.
 

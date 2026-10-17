@@ -80,6 +80,15 @@ pub fn bind_value<S: Scope>(
     bind_as(expression, scope, Mode::Read, Finish::Value)
 }
 
+/// The name of the runtime's object type that a path spells, as one
+/// plain name that the scope casts to the objects it models.
+fn dynamic_type<'p, S: Scope>(scope: &S, path: &'p Path) -> Option<&'p str> {
+    match path.segments.as_slice() {
+        [segment] if !path.global && scope.dynamic_type(&segment.name) => Some(&segment.name),
+        _ => None,
+    }
+}
+
 /// Whether values of a category convert only through pointers to them.
 const fn aggregate(category: &Category) -> bool {
     matches!(
@@ -97,6 +106,11 @@ fn bind_as<S: Scope>(
     let mut casts = 0;
     for (index, ambiguity) in expression.ambiguities().iter().enumerate() {
         if Binder::names_value(scope, &ambiguity.name)? {
+            continue;
+        }
+
+        if dynamic_type(scope, &ambiguity.name).is_some() {
+            casts |= 1 << index;
             continue;
         }
 
@@ -363,6 +377,14 @@ impl<'a, S: Scope> Binder<'a, S> {
                 )),
             },
             NodeKind::Cast { ty, operand, .. } => {
+                if let TypeBase::Named(path) = &ty.base
+                    && ty.pointers == 0
+                    && let Some(name) = dynamic_type(self.scope, path)
+                {
+                    let operand = self.bind(operand)?;
+                    return self.interpreted(name, operand, span);
+                }
+
                 let target = Self::resolve_type(self.scope, &ty)?;
                 let operand = self.bind(operand)?;
                 self.convert(operand, target, span)
@@ -1017,6 +1039,50 @@ impl<'a, S: Scope> Binder<'a, S> {
                 span,
             ),
         }
+    }
+
+    /// The interpreter's object the address `operand` gives, as a cast to
+    /// the dynamic type `ty` takes it; a value of a dynamic type already is
+    /// one.
+    fn interpreted(&mut self, ty: &str, operand: Bound<S>, span: Span) -> BindResult<S> {
+        let operand = self.settle(operand)?;
+        if matches!(operand.ty, Ty::Dynamic) {
+            let mut operand = operand;
+            operand.span = span;
+            return Ok(operand);
+        }
+
+        let operand = self.operand(operand)?;
+        let address = match self.category(&operand.ty) {
+            Category::Pointer(_) => operand,
+            Category::Integer { .. } => self.node(
+                Op::Convert {
+                    operand: Box::new(operand),
+                    conversion: Conversion::IntegerToPointer,
+                },
+                Ty::Pointer(Arc::new(Ty::Void)),
+                span,
+            )?,
+            _ => {
+                return Err(Self::error(
+                    operand.span,
+                    ErrorKind::Type,
+                    format!(
+                        "a cast to `{ty}` takes an address, not a `{}`",
+                        type_name(self.scope, &operand.ty)
+                    ),
+                ));
+            }
+        };
+
+        self.node(
+            Op::Interpreted {
+                ty: ty.into(),
+                address: Box::new(address),
+            },
+            Ty::Dynamic,
+            span,
+        )
     }
 
     /// Dereferences a pointer-typed node, stored or computed.

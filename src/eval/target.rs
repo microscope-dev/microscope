@@ -175,6 +175,14 @@ pub trait Scope: TypeSource {
         ))
     }
 
+    /// Whether `name` is the dynamic type of an interpreter's objects, to
+    /// which a cast takes an address to reach into the object there, as
+    /// `py` is CPython's.
+    fn dynamic_type(&self, name: &str) -> bool {
+        let _ = name;
+        false
+    }
+
     /// The call that stopped the thread, where a system call did.
     fn call_values(&self) -> Option<&CallValues> {
         None
@@ -543,6 +551,16 @@ pub trait Machine: TypeSource {
         Err(Stop::Refused(Refusal::new(
             ErrorKind::Unsupported,
             "no task is known here",
+        )))
+    }
+
+    /// The place of the interpreter's object at `address`, as a cast to its
+    /// dynamic type `ty` names it.
+    fn dynamic_at(&mut self, ty: &str, address: u64) -> Result<Self::Place, Stop> {
+        let _ = (ty, address);
+        Err(Stop::Refused(Refusal::new(
+            ErrorKind::Unsupported,
+            "this machine reads no interpreter's objects",
         )))
     }
 

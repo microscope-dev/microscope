@@ -275,6 +275,10 @@ struct Process {
     code_type: u64,
     next: u64,
     align: u64,
+
+    /// `type`, once the tests' types are made, which every type object
+    /// after it is an object of.
+    metatype: u64,
 }
 
 impl Process {
@@ -285,6 +289,7 @@ impl Process {
             code_type: 0,
             next: HEAP,
             align: 16,
+            metatype: 0,
         };
         process.code_type = process.alloc(16);
         process

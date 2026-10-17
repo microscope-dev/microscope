@@ -812,6 +812,10 @@ impl<P: InspectionOps> Scope for Frame<'_, P> {
         self.call.as_ref()
     }
 
+    fn dynamic_type(&self, name: &str) -> bool {
+        self.interpreter_cast(name).is_some()
+    }
+
     fn plan_dynamic(&self, step: StepKind<'_>) -> std::result::Result<StopStep, Refusal> {
         match step {
             StepKind::Member(name) => Ok(StopStep::Attribute(name.into())),
@@ -1308,6 +1312,18 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
         };
 
         self.view_entry_place(bound, from.native()?, key)
+    }
+
+    fn dynamic_at(&mut self, ty: &str, address: u64) -> std::result::Result<Place, Stop> {
+        let runtime = self.frame.interpreter_cast(ty).ok_or_else(|| {
+            Stop::Failed(Error::internal(
+                "the binder casts only to an interpreter's dynamic type",
+            ))
+        })?;
+        Ok(Place::Interpreted {
+            runtime,
+            object: VirtualAddress::new(address),
+        })
     }
 
     fn load_dynamic(&mut self, at: &Place) -> std::result::Result<Loaded, Stop> {

@@ -78,11 +78,16 @@ impl Process {
         let object = self.alloc(TYPE_SIZE);
         let name = self.c_string(name);
         self.word(object, Field::TypeName, name);
+        self.word(object, Field::ObjectType, self.metatype);
         VirtualAddress::new(object)
     }
 
     /// The type objects of the nine built-in types the model presents.
     pub(super) fn builtin_types(&mut self) -> Types {
+        // `type` is an object of itself, and every type after it of `type`.
+        let class = self.type_object("type");
+        self.word(class.get(), Field::ObjectType, class.get());
+        self.metatype = class.get();
         Types {
             none: self.type_object("NoneType"),
             bool: self.type_object("bool"),
@@ -100,7 +105,7 @@ impl Process {
             function: self.type_object("function"),
             builtin: self.type_object("builtin_function_or_method"),
             code: self.type_object("code"),
-            class: self.type_object("type"),
+            class,
             member: self.type_object("member_descriptor"),
             wrapper: self.type_object("wrapper_descriptor"),
             generic_getattr: VirtualAddress::new(self.alloc(16)),

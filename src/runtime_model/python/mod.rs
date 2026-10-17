@@ -619,6 +619,13 @@ impl RuntimeModel for PythonRuntime {
             .interpreted(stop, budget, |values, _| values.length(object))
     }
 
+    fn object_types(&self) -> Option<crate::runtime_model::ObjectTypes> {
+        Some(crate::runtime_model::ObjectTypes {
+            native: "PyObject",
+            cast: "py",
+        })
+    }
+
     fn interpreted_value(
         &self,
         stop: &dyn RuntimeStop,

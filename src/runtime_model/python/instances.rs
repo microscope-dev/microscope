@@ -87,7 +87,15 @@ impl Values<'_, '_> {
             return Ok(Arc::clone(class));
         }
 
+        // A type is an object whose type is `type` or a metaclass, which a
+        // pointer that is no object's type, as native code may hold, is
+        // not.
         let reader = &self.reader;
+        let meta = VirtualAddress::new(reader.field_word(ty, Field::ObjectType)?);
+        if !self.is_class(meta)? {
+            return Err(malformed(ty, "type"));
+        }
+
         let flags = reader.field_word(ty, Field::TypeFlags)?;
         let (module, name) = if self.flagged(flags, Constant::TypeHeapBit) {
             let qualname = VirtualAddress::new(reader.field_word(ty, Field::HeapTypeQualname)?);
@@ -299,10 +307,11 @@ impl Values<'_, '_> {
             let words = u64::from(layout.constant(Constant::ManagedDictWords));
             let pointer = reader.word(VirtualAddress::new(object.get().wrapping_sub(words * 8)))?;
 
-            // 3.12 tags values with the pointer's low bit.
+            // 3.12 keeps the address before the values, which are aligned,
+            // so that its low bit tags them.
             if layout.constant(Constant::ManagedDictTagged) == 1 && pointer & 1 == 1 {
                 return self
-                    .shared_values(class, VirtualAddress::new(pointer - 1))
+                    .shared_values(class, VirtualAddress::new(pointer.wrapping_add(1)))
                     .map(Some);
             }
 

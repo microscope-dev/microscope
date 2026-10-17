@@ -219,7 +219,9 @@ fn set_managed(process: &mut Process, object: u64, word: u64) {
 }
 
 /// The values of a 3.12 instance, as the tagged pointer its managed dict
-/// word holds. `values` are each key's index and value, in insertion order.
+/// word holds: the address one byte before them, as
+/// `_PyDictOrValues_SetValues` writes it. `values` are each key's index and
+/// value, in insertion order.
 fn tagged_values(process: &mut Process, values: &[(u64, u64)]) -> u64 {
     let base = process.alloc(96);
     let array = base + 32;
@@ -229,7 +231,7 @@ fn tagged_values(process: &mut Process, values: &[(u64, u64)]) -> u64 {
         process.memory.write(array + 8 * index, value, 8);
     }
 
-    array + 1
+    array - 1
 }
 
 /// Writes the inline values at `values`, of 3.13. `slots` holds each key's

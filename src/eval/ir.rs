@@ -1,6 +1,8 @@
 //! A bound expression: a tree whose every node has a type, whose every
 //! conversion is explicit, and whose names are resolved.
 
+use std::sync::Arc;
+
 use super::number::{BitOperator, Float, FloatFormat, FloatOperator, IntType, Integer};
 use super::syntax::Span;
 use super::syntax::ast::{BinaryOp, UnaryOp};
@@ -103,7 +105,9 @@ impl<O, S> Node<O, S> {
                 base.mentions(test) || indices.iter().any(|index| index.mentions(test))
             }
             Op::Holds { base, .. } => base.mentions(test),
-            Op::At { address, .. } | Op::Raw { address } => address.mentions(test),
+            Op::At { address, .. } | Op::Raw { address } | Op::Interpreted { address, .. } => {
+                address.mentions(test)
+            }
             Op::Load(operand)
             | Op::AddressOf(operand)
             | Op::Decay(operand)
@@ -152,7 +156,12 @@ impl<O, S> Node<O, S> {
     pub const fn is_place(&self) -> bool {
         matches!(
             self.op,
-            Op::Object(_) | Op::Step { .. } | Op::Entry { .. } | Op::At { .. } | Op::Raw { .. }
+            Op::Object(_)
+                | Op::Step { .. }
+                | Op::Entry { .. }
+                | Op::At { .. }
+                | Op::Raw { .. }
+                | Op::Interpreted { .. }
         ) || matches!(&self.op, Op::Choose { places: true, .. })
     }
 }
@@ -293,6 +302,13 @@ pub enum Op<O, S> {
 
     /// The place a computed pointer to a language type points at.
     Raw {
+        address: Box<Node<O, S>>,
+    },
+
+    /// The interpreter's object a computed pointer points at, as a cast to
+    /// the dynamic type `ty` takes it.
+    Interpreted {
+        ty: Arc<str>,
         address: Box<Node<O, S>>,
     },
 

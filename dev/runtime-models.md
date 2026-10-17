@@ -289,6 +289,17 @@ value only where the class's MRO finds the special method on the built-in
 type itself; any other definition refuses them, and none is a type error, as
 Python's is.
 
+A runtime model whose objects native code also holds names them through
+`RuntimeModel::object_types`: the native type a pointer to an object has
+(`PyObject`) and the cast that reaches one (`py`). Presentation shows a native
+pointer whose pointee's typedef chain reaches that type as the object it points
+to, through the same `interpreted_value` path a Python frame's local takes. In
+the evaluator, the binder reads `(py)x` as a cast whenever
+`Scope::dynamic_type` accepts the name, including where `(py)&x` could
+otherwise be a bitwise and, and binds it to `Op::Interpreted`, which runs
+`Machine::dynamic_at` on the address. The result is a `Place::Interpreted` like
+any Python value, so every operation on Python values applies to it.
+
 ## Expressions and values in tasks
 
 Selecting a logical frame changes name binding to that frame's source scope.

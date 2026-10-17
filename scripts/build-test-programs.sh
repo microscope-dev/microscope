@@ -2532,6 +2532,16 @@ if [[ -z "${MICROSCOPE_CPYTHON-}" ]]; then
     printf 'error: MICROSCOPE_CPYTHON is unset; build inside the Nix shell\n' >&2
     exit 1
 fi
+# A C extension that holds Python objects in a native frame, built against
+# each interpreter's own headers, as an extension is: the frame's objects are
+# laid out as that interpreter lays them out.
+for interpreter in 3.12 3.14 3.14t 3.15; do
+    mkdir -p "$output_dir/python-extension-${interpreter}"
+    build_program gcc "$fixtures_dir/python/extension.c" \
+        "$output_dir/python-extension-${interpreter}/microscope_extension.so" \
+        -std=c17 -Wall -Wextra -Werror -shared -fPIC -O0 -g \
+        "-I$MICROSCOPE_CPYTHON/$interpreter/include"
+done
 for interpreter in 3.13 3.14t 3.15 debian-3.13; do
     python="$MICROSCOPE_CPYTHON/$interpreter/python"
     for fixture in stacks locals; do

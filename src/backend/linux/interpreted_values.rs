@@ -18,7 +18,7 @@ use crate::runtime_model::{
     InterpretedFailure, InterpretedKey, InterpretedKind, InterpretedName, InterpretedStep,
     RuntimeStop,
 };
-use crate::{Error, InspectedValue, RuntimeId, VariableState, VirtualAddress};
+use crate::{Error, InspectedValue, Presentation, RuntimeId, VariableState, VirtualAddress};
 
 /// A failure of the runtime model as the evaluator's stop.
 fn stop(failure: InterpretedFailure) -> Stop {
@@ -68,6 +68,21 @@ impl<P: InspectionOps> Frame<'_, P> {
                 format!("the frame's names cannot be read: {reason}"),
             )),
         }
+    }
+
+    /// The runtime of the process whose objects a cast to the dynamic type
+    /// `name` reaches, if one is.
+    pub(super) fn interpreter_cast(&self, name: &str) -> Option<RuntimeId> {
+        self.controller
+            .runtimes(self.inferior())
+            .into_iter()
+            .find(|bound| {
+                bound
+                    .model
+                    .object_types()
+                    .is_some_and(|types| types.cast == name)
+            })
+            .map(|bound| bound.id)
     }
 
     /// The runtime numbered `runtime`, bound to the frame's process.
@@ -199,6 +214,42 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
             type_name: Arc::clone(&operand.type_name),
             value,
         })
+    }
+
+    /// The presentation of the interpreter's object at `object`, which a
+    /// native pointer to a type named one of `names` points to, where an
+    /// interpreter of the process names its objects so and one is there;
+    /// `None` otherwise, as for an address that holds no object.
+    pub(super) fn interpreted_object(
+        &mut self,
+        names: &[Arc<str>],
+        object: VirtualAddress,
+    ) -> Option<Arc<Presentation>> {
+        let frame = self.frame;
+        let bound = frame
+            .controller
+            .runtimes(frame.inferior())
+            .into_iter()
+            .find(|bound| {
+                bound
+                    .model
+                    .object_types()
+                    .is_some_and(|types| names.iter().any(|name| **name == *types.native))
+            })?;
+
+        let budget = &mut *self.budget;
+        let (_, state) = frame.with_stop(&bound, |stop| {
+            let slot = bound.model.interpreted_value(stop, object, budget);
+            super::interpreted::present_slot(
+                (frame.stop_id, frame.root().context, frame.resolved().id),
+                &bound,
+                slot,
+            )
+        });
+        match state {
+            VariableState::Available { presentation, .. } => presentation,
+            _ => None,
+        }
     }
 
     /// An interpreter's object, as inspection presents it.

@@ -1295,6 +1295,12 @@ impl Scope for World {
         }
     }
 
+    /// A world of dynamic values has an interpreter, whose objects `py`
+    /// casts an address to.
+    fn dynamic_type(&self, name: &str) -> bool {
+        name == "py" && !self.dynamic.is_empty()
+    }
+
     fn call_values(&self) -> Option<&super::target::CallValues> {
         self.call.as_ref()
     }
@@ -1735,6 +1741,23 @@ impl Machine for World {
             completion: InspectionCompletion::Complete,
             usage: InspectionUsage::default(),
         }
+    }
+
+    fn dynamic_at(&mut self, ty: &str, address: u64) -> Result<Place, Stop> {
+        assert_eq!(
+            ty, "py",
+            "the binder casts only to the world's dynamic type"
+        );
+        (0..self.dynamic.len())
+            .find(|index| dynamic_address(*index) == address)
+            .map(Place::Dynamic)
+            .ok_or_else(|| {
+                Stop::missing(VariableState::Unavailable(
+                    VariableUnavailableReason::Interpreted(
+                        format!("no object is at {address:#x}").into(),
+                    ),
+                ))
+            })
     }
 
     fn load_dynamic(&mut self, at: &Place) -> Result<Loaded, Stop> {

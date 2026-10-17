@@ -178,6 +178,28 @@ divides integers into a fraction and floors a remainder, so an integer `/`,
 and `%` of a negative number or a float, are refused.
 [Expressions](expressions.md#python-values) gives the rules.
 
+### C extensions
+
+In a native frame of a CPython process, such as a C extension's function, a
+`PyObject *` shows the Python value it points to and expands as that value
+does, so the frame's locals read as the objects they hold:
+
+```text
+(PyObject *) numbers = [1, 2, 3]
+(PyObject *) point = <__main__.Point object at 0x7fffe9234d70>
+(PyObject *) missing = 0x0000000000000000
+```
+
+`(py)` casts an address to the object there, so that expressions reach into
+it as in a Python frame:
+
+```text
+(microscope) print ((py)point).x
+(int) ((py)point).x = 3
+(microscope) print len((py)numbers)
+(integer) len((py)numbers) = 3
+```
+
 ### Not supported yet
 
 Python breakpoints, stepping through Python code, and Python exceptions as

@@ -1376,6 +1376,18 @@ fn number(value: &InspectedValue) -> Option<Arc<InspectedValue>> {
 }
 
 /// `value` with `presentation`.
+/// `value` with a presentation already shared.
+fn present_as_shared(mut value: InspectedValue, presentation: Arc<Presentation>) -> InspectedValue {
+    if let VariableState::Available {
+        presentation: slot, ..
+    } = &mut value.state
+    {
+        *slot = Some(presentation);
+    }
+
+    value
+}
+
 fn present_as(mut value: InspectedValue, presentation: Presentation) -> InspectedValue {
     if let VariableState::Available {
         presentation: slot, ..
@@ -1546,6 +1558,12 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
             return self.with_dynamic(value, dynamic);
         }
 
+        if self.dynamic
+            && let Some(presentation) = self.interpreter_pointer(&value)
+        {
+            return Ok(present_as_shared(value, presentation));
+        }
+
         if let Some(type_info) = &value.type_info
             && self.is_go_pointer(type_info)
             && let Some(raw) = self.place_of(type_info, &value.state)
@@ -1632,6 +1650,44 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
             value,
             built_in_presentation("sum types", shape, sum.summary, &raw, lent),
         ))
+    }
+
+    /// The presentation of the interpreter's object a native pointer points
+    /// to, where its pointee's type, or a type it names, is the one an
+    /// interpreter of the process gives its objects, as CPython's
+    /// `PyObject`; `None` for any other value, and a null pointer.
+    fn interpreter_pointer(&mut self, value: &InspectedValue) -> Option<Arc<Presentation>> {
+        let (
+            Some(type_info),
+            VariableState::Available {
+                value: crate::VariableValue::Address(address),
+                ..
+            },
+        ) = (&value.type_info, &value.state)
+        else {
+            return None;
+        };
+
+        let target = match typedef_chain(self, type_info.reference)
+            .last()
+            .map(|info| &info.kind)
+        {
+            Some(TypeKind::Pointer {
+                target: Some(target),
+                ..
+            }) => *target,
+            _ => return None,
+        };
+
+        if address.address.get() == 0 {
+            return None;
+        }
+
+        let names: Vec<Arc<str>> = typedef_chain(self, target)
+            .iter()
+            .map(|info| Arc::clone(&info.name))
+            .collect();
+        self.interpreted_object(&names, address.address)
     }
 
     /// What a value dynamically is, when its debug information and the

@@ -347,6 +347,10 @@ impl<M: Machine> Interpreter<'_, M> {
                 Value::Place(Self::at(span, self.machine.place_at(address, *pointee))?)
             }
             Op::Raw { address } => Value::Raw(self.pointee_address(address, span)?),
+            Op::Interpreted { ty, address } => {
+                let address = self.pointee_address(address, span)?;
+                Value::Place(Self::at(span, self.machine.dynamic_at(ty, address))?)
+            }
             Op::Load(place) => match self.eval(place)? {
                 Value::Place(at) if matches!(node.ty, Ty::Dynamic) => {
                     Value::Loaded(Self::at(span, self.machine.load_dynamic(&at))?)
