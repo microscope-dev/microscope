@@ -28,6 +28,7 @@ use crate::capture::records::{NONE, Zone};
 use crate::debug_info::DebugInfo;
 use crate::image::python::PythonLayout;
 use crate::model::Pid;
+use crate::runtime_model::thread_ids::ThreadIds;
 use crate::runtime_model::{self, InterpretedFrame, RuntimeImage, RuntimeModel, SampledFrame};
 use crate::{LoadBias, LoadedModule, VirtualAddress};
 
@@ -183,21 +184,20 @@ impl Interpreted {
             .and_then(|layout| {
                 sampler::layout(layout).map_err(|field| format!("CPython's layout has no {field}"))
             });
-        let stop = LiveStop::memory(pid.get(), runtime.bias);
-        let walked = runtime.model.walked_threads(&stop)?;
-        let hosts = host_threads(pid.get());
-        let threads = walked
-            .value
-            .iter()
-            .filter_map(|thread| {
-                let host = match &hosts {
-                    Some(hosts) => *hosts.get(&thread.native)?,
-                    None => u32::try_from(thread.native).ok()?,
-                };
-
-                Some((host, thread.state.get(), thread.native))
-            })
-            .collect();
+        let stop = LiveStop::for_threads(pid.get(), runtime.bias);
+        let hosts = match ThreadIds::new(&stop) {
+            Ok(hosts) => hosts,
+            Err(problem) => {
+                return Some(Walked {
+                    pid: pid.get(),
+                    layout,
+                    threads: Vec::new(),
+                    gaps: vec![problem],
+                });
+            }
+        };
+        let mut walked = runtime.model.walked_threads(&stop)?;
+        let threads = mapped_threads(&mut walked, &hosts);
         Some(Walked {
             pid: pid.get(),
             layout,
@@ -289,36 +289,78 @@ fn sampled_frames(stack: &PyStack<'_>) -> Vec<SampledFrame> {
         .collect()
 }
 
-/// Each thread of process `pid` by its id in the process's own pid
-/// namespace, to its id as microscope sees it; `None` where the two
-/// namespaces are one, so that the ids agree.
-fn host_threads(pid: u32) -> Option<BTreeMap<u64, u32>> {
-    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-    let depth = nspid(&status)?.len();
-    if depth <= 1 {
-        return None;
-    }
-
-    let tasks = std::fs::read_dir(format!("/proc/{pid}/task")).ok()?;
-    Some(
-        tasks
-            .flatten()
-            .filter_map(|task| {
-                let host: u32 = task.file_name().to_str()?.parse().ok()?;
-                let status = std::fs::read_to_string(task.path().join("status")).ok()?;
-                let own = *nspid(&status)?.last()?;
-                Some((own, host))
-            })
-            .collect(),
-    )
+/// Keep examples and a total count without allocating one string for
+/// each unsupported state in a large interpreter catalog.
+struct MappingGaps<'a> {
+    gaps: &'a mut Vec<Arc<str>>,
+    failed: usize,
 }
 
-/// A `/proc/PID/status`'s `NSpid` ids, from microscope's namespace inward.
-fn nspid(status: &str) -> Option<Vec<u64>> {
-    let ids = status
-        .lines()
-        .find_map(|line| line.strip_prefix("NSpid:"))?;
-    ids.split_whitespace().map(|id| id.parse().ok()).collect()
+impl MappingGaps<'_> {
+    const EXAMPLES: usize = 8;
+
+    fn push(&mut self, why: impl FnOnce() -> Arc<str>) {
+        self.failed += 1;
+        if self.failed <= Self::EXAMPLES {
+            self.gaps.push(why());
+        }
+    }
+
+    fn finish(self) {
+        if self.failed > Self::EXAMPLES {
+            self.gaps.push(
+                format!(
+                    "{} Python thread mapping problems; {} additional details omitted",
+                    self.failed,
+                    self.failed - Self::EXAMPLES
+                )
+                .into(),
+            );
+        }
+    }
+}
+
+/// Maps each state to one proven Linux thread. The kernel map holds one
+/// state per host thread, so multiple interpreter states are ambiguous.
+fn mapped_threads(
+    walked: &mut runtime_model::Partial<Vec<runtime_model::WalkedThread>>,
+    hosts: &ThreadIds,
+) -> Vec<(u32, u64, u64)> {
+    let mut gaps = MappingGaps {
+        gaps: &mut walked.gaps,
+        failed: 0,
+    };
+    let mut mapped = BTreeMap::<u32, Option<(u64, u64)>>::new();
+    for thread in &walked.value {
+        let host = match hosts.lookup(thread.native) {
+            Ok(host) => host,
+            Err(problem) => {
+                gaps.push(|| problem.to_string().into());
+                continue;
+            }
+        };
+        let Some(kernel_id) = i32::try_from(host.get()).ok().filter(|host| *host > 0) else {
+            gaps.push(|| format!("debugger thread {host} is outside Linux's TID range").into());
+            continue;
+        };
+        let host = kernel_id.cast_unsigned();
+        match mapped.entry(host) {
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(Some((thread.state.get(), thread.native)));
+            }
+            std::collections::btree_map::Entry::Occupied(mut slot) => {
+                if slot.get().is_some() {
+                    gaps.push(|| format!("debugger thread {host} has multiple Python thread states; the BPF engine cannot select one").into());
+                }
+                slot.insert(None);
+            }
+        }
+    }
+    gaps.finish();
+    mapped
+        .into_iter()
+        .filter_map(|(host, state)| state.map(|(state, native)| (host, state, native)))
+        .collect()
 }
 
 /// A stack's frames with the interpreted ones spliced in, innermost first:
@@ -411,9 +453,142 @@ mod tests {
     }
 
     #[test]
-    fn nspid_lists_a_threads_ids_from_the_outside_in() {
-        assert_eq!(nspid("Name:\tx\nNSpid:\t812\t7\n"), Some(vec![812, 7]));
-        assert_eq!(nspid("NSpid:\t812\n"), Some(vec![812]));
-        assert_eq!(nspid("Name:\tx\n"), None);
+    fn missing_host_identity_never_assigns_python_state_by_numeric_equality() {
+        let mut walked = runtime_model::Partial {
+            value: vec![runtime_model::WalkedThread {
+                native: 7,
+                state: VirtualAddress::new(0x1234),
+            }],
+            gaps: Vec::new(),
+        };
+        let hosts = ThreadIds::read(Vec::new(), |_| Vec::new()).unwrap();
+        let mapped = mapped_threads(&mut walked, &hosts);
+        assert!(
+            mapped.is_empty(),
+            "unproven state was assigned to host thread 7: {mapped:?}"
+        );
+        assert!(
+            !walked.gaps.is_empty(),
+            "missing identity evidence is visible"
+        );
+    }
+
+    #[test]
+    fn proven_namespace_ids_preserve_good_states_and_report_missing_ones() {
+        let host = crate::ThreadId::new(5000);
+        let collision = crate::ThreadId::new(7);
+        let hosts = ThreadIds::read(vec![host, collision], |_| {
+            vec![
+                (host, runtime_model::TargetThreadId::new(7).unwrap()),
+                (collision, runtime_model::TargetThreadId::new(8).unwrap()),
+            ]
+        })
+        .unwrap();
+        let mut walked = runtime_model::Partial {
+            value: [(7, 0x1000), (8, 0x2000), (9, 0x3000)]
+                .map(|(native, state)| runtime_model::WalkedThread {
+                    native,
+                    state: VirtualAddress::new(state),
+                })
+                .to_vec(),
+            gaps: vec!["existing runtime gap".into()],
+        };
+        assert_eq!(
+            mapped_threads(&mut walked, &hosts),
+            [(7, 0x2000, 8), (5000, 0x1000, 7)]
+        );
+        assert_eq!(walked.gaps.len(), 2);
+        assert_eq!(&*walked.gaps[0], "existing runtime gap");
+        assert!(walked.gaps[1].contains('9') && walked.gaps[1].contains("no proven"));
+    }
+
+    #[test]
+    fn ambiguous_namespace_ids_and_host_ids_outside_the_kernel_range_are_visible() {
+        for ambiguous in [false, true] {
+            let first = crate::ThreadId::new(if ambiguous {
+                5000
+            } else {
+                u64::from(u32::MAX) + 1
+            });
+            let second = crate::ThreadId::new(5001);
+            let hosts = ThreadIds::read(vec![first, second], |_| {
+                let mut pairs = vec![(first, runtime_model::TargetThreadId::new(7).unwrap())];
+                if ambiguous {
+                    pairs.push((second, runtime_model::TargetThreadId::new(7).unwrap()));
+                }
+                pairs
+            })
+            .unwrap();
+            let mut walked = runtime_model::Partial {
+                value: vec![runtime_model::WalkedThread {
+                    native: 7,
+                    state: VirtualAddress::new(0x1000),
+                }],
+                gaps: Vec::new(),
+            };
+            assert!(mapped_threads(&mut walked, &hosts).is_empty());
+            assert_eq!(walked.gaps.len(), 1);
+            assert!(walked.gaps[0].contains(if ambiguous { "ambiguous" } else { "TID range" }));
+        }
+    }
+
+    #[test]
+    fn mapping_diagnostics_are_bounded_without_losing_later_proven_states() {
+        let host = crate::ThreadId::new(5000);
+        let hosts = ThreadIds::read(vec![host], |_| {
+            vec![(host, runtime_model::TargetThreadId::new(7).unwrap())]
+        })
+        .unwrap();
+        let mut walked = runtime_model::Partial {
+            value: (10..10010)
+                .map(|native| runtime_model::WalkedThread {
+                    native,
+                    state: VirtualAddress::new(native * 8),
+                })
+                .collect::<Vec<_>>(),
+            gaps: vec!["existing runtime gap".into()],
+        };
+        walked.value.push(runtime_model::WalkedThread {
+            native: 7,
+            state: VirtualAddress::new(0x7777),
+        });
+        assert_eq!(mapped_threads(&mut walked, &hosts), [(5000, 0x7777, 7)]);
+        assert!(
+            walked.gaps.len() <= 10,
+            "{} mapping diagnostics",
+            walked.gaps.len()
+        );
+        assert!(walked.gaps.last().unwrap().contains("10000"));
+        assert_eq!(&*walked.gaps[0], "existing runtime gap");
+    }
+
+    #[test]
+    fn multiple_python_states_on_one_host_thread_are_not_chosen_arbitrarily() {
+        let mut walked = runtime_model::Partial {
+            value: vec![
+                runtime_model::WalkedThread {
+                    native: 7,
+                    state: VirtualAddress::new(0x1000),
+                },
+                runtime_model::WalkedThread {
+                    native: 7,
+                    state: VirtualAddress::new(0x2000),
+                },
+            ],
+            gaps: Vec::new(),
+        };
+        let hosts = ThreadIds::read(vec![crate::ThreadId::new(5000)], |_| {
+            vec![(
+                crate::ThreadId::new(5000),
+                runtime_model::TargetThreadId::new(7).unwrap(),
+            )]
+        })
+        .unwrap();
+        let mapped = mapped_threads(&mut walked, &hosts);
+        assert!(
+            mapped.is_empty(),
+            "one kernel key cannot select between interpreter states: {mapped:?}"
+        );
+        assert!(!walked.gaps.is_empty());
     }
 }

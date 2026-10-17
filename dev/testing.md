@@ -30,6 +30,10 @@ completed fix.
 Run focused tests while developing. Run the full gate once the change is
 ready. Expensive sweeps and stress runs should not follow every edit.
 
+Namespace scenarios require unprivileged user, PID and mount namespaces.
+The pinned shell includes `util-linux`. A host policy that blocks `unshare`
+is a test setup failure; run the gate where these namespace scenarios can run.
+
 ## Debugger scenarios
 
 Use `tests/support::Scenario` for real debugger workflows. It uses the public

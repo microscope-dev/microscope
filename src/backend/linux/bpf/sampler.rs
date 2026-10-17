@@ -12,6 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::fd::AsFd as _;
+use std::os::unix::fs::MetadataExt as _;
 
 use aya::maps::{HashMap, Map, MapData, PerCpuArray};
 use aya::programs::PerfEvent;
@@ -302,6 +303,33 @@ const REMEDY: &str =
       /run/wrappers/bin/microscope-bpf (docs/syscalls.md#give-microscope-the-bpf-privileges)
     - record with --python snapshot or --python live, which need no privilege";
 
+/// The kernel's initial PID namespace inode (linux/nsfs.h). BPF's
+/// `bpf_get_current_pid_tgid` uses it, while perf uses the event creator's
+/// namespace. An nsfs descriptor proves which ID space the recorder uses.
+const INITIAL_PID_NAMESPACE: u64 = 0xefff_fffc;
+
+fn initial_pid_namespace(namespace: &std::fs::File) -> std::io::Result<bool> {
+    let filesystem = nix::sys::statfs::fstatfs(namespace).map_err(std::io::Error::from)?;
+    Ok(filesystem.filesystem_type() == nix::sys::statfs::NSFS_MAGIC
+        && namespace.metadata()?.ino() == INITIAL_PID_NAMESPACE)
+}
+
+/// The sampler's kernel keys must agree with perf's sample IDs. Targets
+/// may occupy nested namespaces; the recorder currently must use the initial one.
+///
+/// # Errors
+///
+/// Why the recorder's namespace cannot be proved to match the kernel keys.
+pub fn check_namespace() -> Result<(), SamplerError> {
+    let observed = std::fs::File::open("/proc/self/ns/pid")
+        .and_then(|namespace| initial_pid_namespace(&namespace));
+    match observed {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(SamplerError::Unavailable("Python BPF sampling requires the recorder in the initial PID namespace; run it on the host, or use --python snapshot or --python live".into())),
+        Err(error) => Err(SamplerError::Unavailable(format!("cannot prove the Python BPF recorder uses the initial PID namespace: {error}; use --python snapshot or --python live"))),
+    }
+}
+
 /// The loaded program, attached to a recording's events, and its maps.
 pub struct Sampler {
     /// Holds the program, which the events run, and the maps.
@@ -336,6 +364,7 @@ impl Sampler {
     /// When this process lacks the privileges, or the kernel refuses the
     /// program or the events.
     pub fn load(events: &perf::Events) -> Result<(Self, Vec<u64>), SamplerError> {
+        check_namespace()?;
         let probe = super::super::syscalls::bpf::Probe::read();
         if let Some(missing) = probe.lacks_privileges() {
             return Err(SamplerError::Unavailable(format!(
@@ -455,6 +484,19 @@ impl Sampler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kernel_key_namespace_proof_rejects_other_namespace_types_and_ordinary_files() {
+        let pid = std::fs::File::open("/proc/self/ns/pid").unwrap();
+        let initial = std::fs::read_link("/proc/self/ns/pid").unwrap()
+            == std::path::Path::new("pid:[4026531836]");
+        assert_eq!(initial_pid_namespace(&pid).unwrap(), initial);
+        let user = std::fs::File::open("/proc/self/ns/user").unwrap();
+        assert!(!initial_pid_namespace(&user).unwrap());
+        let ordinary =
+            std::fs::File::open(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap();
+        assert!(!initial_pid_namespace(&ordinary).unwrap());
+    }
 
     #[test]
     fn records_h_and_the_sampler_agree_field_for_field() {

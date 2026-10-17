@@ -15,6 +15,7 @@ mod go;
 mod python;
 mod records;
 mod rust;
+pub mod thread_ids;
 mod tokio;
 
 use std::sync::Arc;

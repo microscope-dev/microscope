@@ -811,6 +811,14 @@ pub(super) struct LiveStop<'a> {
 static NO_POINTERS: BTreeMap<u32, u64> = BTreeMap::new();
 
 impl LiveStop<'static> {
+    /// A live thread catalog for namespace identity and interpreter reads.
+    pub(super) fn for_threads(pid: u32, bias: crate::LoadBias) -> Self {
+        Self {
+            threads: threads(pid),
+            ..Self::memory(pid, bias)
+        }
+    }
+
     /// Process `pid`'s memory alone, as the runtime model of a module
     /// loaded with `bias` reads it: no thread of it.
     pub(super) fn memory(pid: u32, bias: crate::LoadBias) -> Self {

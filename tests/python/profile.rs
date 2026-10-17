@@ -304,11 +304,11 @@ fn privileged() -> bool {
     has(CAP_SYS_ADMIN) || (has(CAP_BPF) && has(CAP_PERFMON))
 }
 
-/// The BPF engine never falls back to another: without its privileges
-/// it refuses, naming the one it lacks and the engines that need none,
+/// The BPF engine refuses an unsupported recorder namespace or missing
+/// privileges, naming the requirement and the engines that need none,
 /// and the program never starts.
 #[test]
-fn the_bpf_engine_names_the_privilege_it_lacks_and_starts_nothing() {
+fn the_bpf_engine_names_the_missing_requirement_and_starts_nothing() {
     if privileged() {
         // `just test-bpf` runs the engine itself (`bpf` below).
         return;
@@ -333,9 +333,82 @@ fn the_bpf_engine_names_the_privilege_it_lacks_and_starts_nothing() {
         panic!("the BPF engine ran without its privileges");
     };
 
-    assert!(why.contains("needs CAP_BPF and CAP_PERFMON"), "{why}");
+    let initial = std::fs::read_link("/proc/self/ns/pid")
+        .is_ok_and(|link| link == std::path::Path::new("pid:[4026531836]"));
+    assert!(
+        why.contains(if initial {
+            "needs CAP_BPF and CAP_PERFMON"
+        } else {
+            "initial PID namespace"
+        }),
+        "{why}"
+    );
     assert!(why.contains("--python snapshot"), "{why}");
     assert!(!marker.exists(), "the program started");
+}
+
+/// Perf records use the recorder's PID namespace; BPF currently reports
+/// initial-namespace IDs. Refuse the mismatch before starting the target.
+#[test]
+fn a_namespaced_bpf_recorder_refuses_unproven_kernel_keys() {
+    struct Reaped(std::process::Child);
+    impl Drop for Reaped {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let scratch = crate::support::ScratchDir::new("bpf-recorder-namespace");
+    let marker = scratch.path().join("started");
+    let output = scratch.path().join("stderr");
+    let errors = std::fs::File::create(&output).expect("record stderr");
+    let mut child = Reaped(
+        Command::new("unshare")
+            .args([
+                "--user",
+                "--map-root-user",
+                "--pid",
+                "--fork",
+                "--kill-child=KILL",
+                "--mount-proc",
+            ])
+            .arg(env!("CARGO_BIN_EXE_microscope"))
+            .args(["record", "--python", "bpf", "--output"])
+            .arg(scratch.path().join("capture.usprof"))
+            .arg("--")
+            .arg(python::interpreter("3.14"))
+            .args([
+                "-I",
+                "-c",
+                "import pathlib, sys; pathlib.Path(sys.argv[1]).touch()",
+            ])
+            .arg(&marker)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(errors)
+            .spawn()
+            .expect("start namespaced recorder"),
+    );
+    let deadline = Instant::now() + READY_DEADLINE;
+    let status = loop {
+        if let Some(status) = child.0.try_wait().expect("poll recorder") {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "namespaced recorder did not finish"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let error = std::fs::read_to_string(output).expect("read recorder error");
+    assert!(
+        !error.trim_start().starts_with("unshare:"),
+        "namespace test setup needs unprivileged user, PID and mount namespaces: {error}"
+    );
+    assert!(!status.success(), "the mismatched engine started");
+    assert!(error.contains("initial PID namespace"), "{error}");
+    assert!(error.contains("--python snapshot"), "{error}");
+    assert!(!marker.exists(), "the target started");
 }
 
 /// The BPF engine, which reads each sampled thread's Python frames in the

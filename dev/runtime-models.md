@@ -11,6 +11,7 @@ their own, join native backtraces as interpreted frames.
 | Path | What lives there |
 | --- | --- |
 | `src/runtime_model/mod.rs`, `src/runtime_model/records.rs` | Neutral runtime records and discovery interface |
+| `src/runtime_model/thread_ids.rs` | Shared proof-based host/target identity resolution, including ambiguity and bounds |
 | `src/runtime_model/go/` | Go runtime layout and goroutine discovery |
 | `src/runtime_model/tokio/` | Tokio runtime, task, and future discovery |
 | `src/runtime_model/futures.rs`, `src/runtime_model/rust/` | Rust future inspection and shared Rust rules |

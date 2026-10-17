@@ -95,6 +95,9 @@ pub fn record_watched(
     watch: &mut Watch<'_>,
 ) -> Result<Recording, RecordError> {
     let _span = crate::span!("record");
+    if options.python == Some(PythonEngine::Bpf) {
+        crate::backend::bpf::sampler::check_namespace()?;
+    }
     let program = PathBuf::from(command.get_program());
     let (source, breakpoint) = perf_source(&program, &options.source, None)?;
     let mut processor = processor(options, breakpoint);
@@ -201,6 +204,9 @@ pub fn record_attached(
     watch: &mut Watch<'_>,
 ) -> Result<Attachment, RecordError> {
     let _span = crate::span!("record attached");
+    if options.python == Some(PythonEngine::Bpf) {
+        crate::backend::bpf::sampler::check_namespace()?;
+    }
     let program = PathBuf::from(format!("/proc/{pid}/exe"));
     let bias = perf::program_bias(pid);
     let (source, breakpoint) = perf_source(&program, &options.source, bias)?;

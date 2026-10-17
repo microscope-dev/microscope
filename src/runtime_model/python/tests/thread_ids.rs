@@ -105,6 +105,14 @@ fn unavailable_or_ambiguous_ids_never_fall_back_to_numeric_identity() {
         let labels = model.thread_labels(&process.memory);
         assert!(labels.value.is_empty(), "ambiguous={ambiguous}: {labels:?}");
         assert!(!labels.gaps.is_empty());
+        let states = model.walked_threads(&process.memory).expect("walks states");
+        assert!(states.gaps.is_empty(), "{:?}", states.gaps);
+        assert_eq!(states.value.len(), 1);
+        assert_eq!(states.value[0].native, 7);
+        if !ambiguous {
+            assert_eq!(stacks.gaps.len(), 1);
+            assert!(stacks.gaps[0].contains("platform supplied no proven"));
+        }
     }
 }
 

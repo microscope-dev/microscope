@@ -3,60 +3,17 @@
 //! threads' states, which name the native thread each runs on and its
 //! innermost frame.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 
 use super::objects::{Problem, Reader};
+use crate::VirtualAddress;
 use crate::image::python::Field;
-use crate::runtime_model::{RuntimeStop, TargetThreadId};
-use crate::{ThreadId, VirtualAddress};
 
 /// The most interpreters read, and the most thread states of one.
 const MAX_INTERPRETERS: usize = 256;
 const MAX_THREAD_STATES: usize = 1 << 14;
 
-/// Bound the host catalog independently of the interpreter's thread list.
-const MAX_MAPPED_THREADS: usize = 1 << 14;
-
-/// Proven target-namespace identities, with ambiguity retained rather than
-/// assigning an interpreter frame to whichever host thread was seen last.
-#[derive(Debug)]
-pub(super) struct ThreadIds(BTreeMap<TargetThreadId, Option<ThreadId>>);
-
-impl ThreadIds {
-    pub(super) fn new(stop: &dyn RuntimeStop) -> Result<Self, Problem> {
-        let mut threads = stop.threads();
-        if threads.len() > MAX_MAPPED_THREADS {
-            return Err(format!(
-                "mapping Python's native ids exceeds {MAX_MAPPED_THREADS} controlled threads"
-            )
-            .into());
-        }
-        threads.sort_unstable();
-        threads.dedup();
-        let mut ids = BTreeMap::new();
-        for (thread, target) in stop.target_thread_ids(&threads) {
-            if threads.binary_search(&thread).is_ok() {
-                ids.entry(target)
-                    .and_modify(|known| {
-                        if *known != Some(thread) {
-                            *known = None;
-                        }
-                    })
-                    .or_insert(Some(thread));
-            }
-        }
-        Ok(Self(ids))
-    }
-
-    pub(super) fn resolve(&self, native: u64) -> Result<ThreadId, Problem> {
-        let target = TargetThreadId::new(native).ok_or("Python's native thread id is zero")?;
-        match self.0.get(&target) {
-            Some(Some(thread)) => Ok(*thread),
-            Some(None) => Err(format!("Python native thread {native} has an ambiguous debugger-thread mapping").into()),
-            None => Err(format!("Python native thread {native} has no proven matching debugger thread in its namespace").into()),
-        }
-    }
-}
+pub(super) use crate::runtime_model::thread_ids::ThreadIds;
 
 /// A thread's state in one interpreter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

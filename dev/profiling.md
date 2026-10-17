@@ -152,6 +152,20 @@ sample of a busy goroutine to name it.
 Bound snapshot frequency, task count, reads, bytes, and time. A program with a
 million tasks must degrade explicitly rather than exhaust the recorder.
 
+Python's BPF metadata uses the same host/target thread identity resolver as
+the debugger. The live edge proves namespace and process membership before
+mapping a CPython native ID to a kernel thread key. Missing evidence never
+implies numeric equality. The kernel map holds one Python state per host
+thread; multiple states for that host are omitted with a gap. This mapping
+runs during metadata refresh, outside sample decoding. Mapping diagnostics keep
+eight examples and an omitted count; valid states later in the catalog still
+survive. The Python BPF recorder currently requires the initial PID namespace:
+perf reports IDs in the event creator's namespace, while the BPF helper uses
+initial-namespace IDs. The loader verifies the recorder through an nsfs file
+descriptor and refuses a mismatch before launching or attaching. Targets may
+run in nested namespaces. Snapshot and live engines support a recorder in a
+nested namespace when its proc view can be verified.
+
 ### Thread snapshots
 
 A recording's Python engine (`RecordOptions::python`) other than BPF takes
