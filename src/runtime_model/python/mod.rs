@@ -37,35 +37,31 @@ use crate::{
     AddressRange, CodeRole, ImageAddress, StackFrame, StackSegment, ThreadId, VirtualAddress,
 };
 
-/// The CPython runtime a module carries, when its layout is known.
+/// The CPython runtime a module carries. One whose frames cannot be read,
+/// as one of a version microscope does not know, still finds its loop's
+/// activations, where a backtrace says why their frames are missing.
 pub fn detect(
     image: &Arc<dyn RuntimeImage + Send + Sync>,
 ) -> Option<Result<Arc<dyn RuntimeModel>, Unbound>> {
     let runtime = image.python()?;
-    let unbound = |reason: String| Unbound {
-        reason: format!("the Python frames cannot be read: {reason}").into(),
-        deferrable: &[],
-    };
-
-    let layout = match runtime.layout {
-        Ok(layout) => layout,
-        Err(reason) => return Some(Err(unbound(reason.to_string()))),
-    };
-
-    let Some(code_type) = image.symbol("PyCode_Type") else {
-        return Some(Err(unbound(format!(
-            "CPython {} names no PyCode_Type",
-            runtime.version
-        ))));
-    };
-
+    let reading = runtime
+        .layout
+        .and_then(|layout| {
+            let code_type = image.symbol("PyCode_Type").ok_or_else(|| -> Arc<str> {
+                format!("CPython {} names no PyCode_Type", runtime.version).into()
+            })?;
+            Ok(Reading {
+                runtime: runtime.runtime,
+                layout,
+                code_type: code_type.address,
+                types: types(image.as_ref(), runtime.version),
+                code: Mutex::default(),
+            })
+        })
+        .map_err(|reason| format!("the Python frames cannot be read: {reason}").into());
     Some(Ok(Arc::new(PythonRuntime {
         version: runtime.version,
-        runtime: runtime.runtime,
-        layout,
-        code_type: code_type.address,
-        types: types(image.as_ref(), runtime.version),
-        code: Mutex::default(),
+        reading,
     })))
 }
 
@@ -98,6 +94,19 @@ fn types(image: &dyn RuntimeImage, version: PyVersion) -> Result<[ImageAddress; 
 struct PythonRuntime {
     version: PyVersion,
 
+    /// What reads its frames and values, or why nothing can.
+    reading: Result<Reading, Arc<str>>,
+}
+
+impl PythonRuntime {
+    fn reading(&self) -> Result<&Reading, Arc<str>> {
+        self.reading.as_ref().map_err(Arc::clone)
+    }
+}
+
+/// What reads a runtime whose layout is known.
+#[derive(Debug)]
+struct Reading {
     /// CPython's runtime state, `_PyRuntime`, which its `.PyRuntime`
     /// section holds.
     runtime: AddressRange<ImageAddress>,
@@ -109,7 +118,7 @@ struct PythonRuntime {
     code: Mutex<code::CodeTable>,
 }
 
-impl PythonRuntime {
+impl Reading {
     /// The stop's values, read through `budget`, and the code table.
     fn values<R>(
         &self,
@@ -153,7 +162,7 @@ impl PythonRuntime {
         read(&values, &mut table)
     }
 
-    fn stacks(&self, stop: &dyn RuntimeStop) -> Partial<InterpretedStacks> {
+    fn stacks(&self, stop: &dyn RuntimeStop, version: PyVersion) -> Partial<InterpretedStacks> {
         let mut stacks = InterpretedStacks::default();
         let mut gaps = Vec::new();
         let reader = objects::Reader {
@@ -179,13 +188,7 @@ impl PythonRuntime {
                 states
             }
             Err(problem) => {
-                gaps.push(
-                    format!(
-                        "CPython {}'s threads cannot be read: {problem}",
-                        self.version
-                    )
-                    .into(),
-                );
+                gaps.push(format!("CPython {version}'s threads cannot be read: {problem}").into());
                 Vec::new()
             }
         };
@@ -389,7 +392,13 @@ impl RuntimeModel for PythonRuntime {
     }
 
     fn interpreted(&self, stop: &dyn RuntimeStop) -> Option<Partial<InterpretedStacks>> {
-        Some(self.stacks(stop))
+        Some(match &self.reading {
+            Ok(reading) => reading.stacks(stop, self.version),
+            Err(reason) => Partial {
+                value: InterpretedStacks::default(),
+                gaps: vec![Arc::clone(reason)],
+            },
+        })
     }
 
     fn interpreted_locals(
@@ -398,11 +407,12 @@ impl RuntimeModel for PythonRuntime {
         frame: VirtualAddress,
         budget: &mut InspectionBudget,
     ) -> Result<Vec<InterpretedLocal>, Arc<str>> {
+        let reading = self.reading()?;
         let code_type = stop
             .load_bias()
-            .load(self.code_type)
+            .load(reading.code_type)
             .ok_or_else(|| Arc::from("CPython's code type lies outside the process"))?;
-        self.values(stop, budget, |values, table| {
+        reading.values(stop, budget, |values, table| {
             let record = values.reader.record(frame, Field::FrameSize)?;
             let (_, code) = frames::Walk {
                 reader: values.reader,
@@ -421,7 +431,8 @@ impl RuntimeModel for PythonRuntime {
         range: std::ops::Range<u64>,
         budget: &mut InspectionBudget,
     ) -> Result<Vec<InterpretedChild>, Arc<str>> {
-        self.values(stop, budget, |values, _| values.children(object, range))
+        self.reading()?
+            .values(stop, budget, |values, _| values.children(object, range))
     }
 }
 

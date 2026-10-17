@@ -835,3 +835,47 @@ fn a_thread_list_that_loops_is_a_gap_and_keeps_the_threads_before_it() {
 }
 
 mod values;
+
+/// A runtime whose frames cannot be read, as one of a version microscope
+/// does not know, still finds the activations of its loop, and says why
+/// their frames are missing, which a backtrace notes there.
+#[test]
+fn an_unreadable_runtime_finds_its_loop_and_says_why_its_frames_are_missing() {
+    use crate::runtime_model::{Driven, RuntimeModel};
+
+    let reason: Arc<str> =
+        "the Python frames cannot be read: CPython 3.16.0 is not supported".into();
+    let model = super::PythonRuntime {
+        version: crate::image::python::PyVersion(0x0310_00f0),
+        reading: Err(Arc::clone(&reason)),
+    };
+    let process = Process::new(layout());
+    let stacks = model
+        .interpreted(&process.memory)
+        .expect("the runtime interprets frames");
+    assert!(stacks.value.threads.is_empty());
+    assert_eq!(stacks.gaps, [reason]);
+
+    let mut evaluating = crate::StackFrame::from_parts(
+        0,
+        crate::FrameKind::Physical,
+        None,
+        Some(VirtualAddress::new(0x1000)),
+        crate::model::FrameMetadata {
+            code_instance: None,
+            function: None,
+            source: None,
+            symbol: Some(crate::SymbolLocation {
+                symbol: crate::SymbolId::new(0),
+                name: "_PyEval_EvalFrameDefault".into(),
+                kind: crate::SymbolKind::Function,
+                offset: 0x10,
+                provenance: crate::SymbolExtentProvenance::Declared,
+            }),
+            role: crate::CodeRole::Interpreter,
+        },
+    );
+    assert_eq!(model.driven(&evaluating), Some(Driven::Interpreted));
+    evaluating.symbol = None;
+    assert_eq!(model.driven(&evaluating), None);
+}
