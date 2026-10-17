@@ -16,7 +16,7 @@ use super::objects::{Problem, Reader, Record, stack_reference};
 use super::threads::ThreadState;
 use crate::image::python::{Constant, Field};
 use crate::runtime_model::InterpretedFrame;
-use crate::{RecordedPlace, VirtualAddress};
+use crate::{RecordedPlace, SourceLanguage, VirtualAddress};
 
 /// The most frames of one thread read.
 pub(super) const MAX_FRAMES: usize = 1 << 13;
@@ -125,6 +125,7 @@ impl Walk<'_, '_> {
     fn frame(&mut self, frame: &Record<'_>) -> InterpretedFrame {
         let mut built = InterpretedFrame {
             frame: frame.address,
+            language: SourceLanguage::Python,
             function: None,
             place: None,
             problem: None,

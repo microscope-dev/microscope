@@ -74,8 +74,8 @@ async fn source_line_and_file_qualified_function_breakpoints_stop_where_they_nam
         let context = scenario
             .operation("source context", scenario.handle().source_context(0))
             .await;
-        assert_eq!(context.location.line.get(), expected);
-        assert!(context.file.path.ends_with("tests/fixtures/c/basic.c"));
+        assert_eq!(context.line.get(), expected);
+        assert!(context.recorded.ends_with("tests/fixtures/c/basic.c"));
     }
 
     scenario.shutdown().await;
@@ -406,8 +406,7 @@ async fn stops_in_a_shared_library_show_that_librarys_own_source() {
         .await;
     assert!(
         context
-            .file
-            .path
+            .recorded
             .ends_with("tests/fixtures/c/module-frames/library.c"),
         "{context:#?}"
     );
@@ -1370,8 +1369,8 @@ async fn source_path_maps_find_sources_of_programs_built_elsewhere() {
         .operation("mapped source", handle.source_context(1))
         .await;
     assert_eq!(*context.path, copied);
-    assert_eq!(*context.file.path, recorded);
-    assert_eq!(context.location.line.get(), 11);
+    assert_eq!(*context.recorded, recorded);
+    assert_eq!(context.line.get(), 11);
     assert_eq!(
         &*context.lines[0].text,
         "    uint64_t first = breakpoint_target(); /* copy */"
@@ -1729,12 +1728,13 @@ fn assert_basic_source_context(
     let current = context
         .lines
         .iter()
-        .find(|line| line.number == context.location.line)
+        .find(|line| line.number == context.line)
         .expect("current source line");
 
-    assert_eq!(&context.file, source_file);
-    assert_eq!(&context.location, source);
-    assert_eq!(context.location.line.get(), 6);
+    assert_eq!(context.recorded, source_file.path);
+    assert_eq!(context.line, source.line);
+    assert_eq!(context.column, source.column);
+    assert_eq!(context.line.get(), 6);
     assert_eq!(current.text.as_ref(), "    return microscope_value;");
     assert_eq!(
         context

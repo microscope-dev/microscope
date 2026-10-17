@@ -678,6 +678,9 @@ impl<P: InspectionOps> Controller<P> {
     ) -> Result<ExecutionLocation> {
         let resolved = self.resolve_frame(inferior, root, frame)?;
         let selected = resolved.frame.ok_or(Error::AmbiguousInlineFrame)?;
+        if matches!(selected.kind, FrameKind::Interpreted { .. }) {
+            return Err(Error::FrameInterpreted);
+        }
 
         // A suspended frame whose resume address is unknown has no code to
         // locate.

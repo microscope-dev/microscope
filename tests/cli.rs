@@ -4207,6 +4207,81 @@ fn frame_commands_move_through_caller_frames_and_show_their_source() {
     line_index(&lines, outermost, |line| line.starts_with("#10 "));
 }
 
+/// A Python program's core, whose Python frames call each other through
+/// the interpreter's frames on some of its threads.
+const PYTHON_CORE: &str = "build/test-programs/python-locals-3.14t.core";
+
+#[test]
+fn python_frames_show_their_source_and_fold_the_interpreters_frames() {
+    let log = fs::read_to_string(format!("{PYTHON_CORE}.log"))
+        .expect("the core's log; run `just build-test-programs`");
+    let report = support::truth::Report::parse(&log);
+    let parked = report.checkpoint("parked").expect("the core's checkpoint");
+    let frame = parked
+        .iter()
+        .find(|fields| fields[0] == "frame" && fields[3] == "containers")
+        .expect("the frame of containers");
+    let (thread, line) = (&frame[1], &frame[5]);
+    let place = format!("in containers at tests/fixtures/python/locals.py:{line}");
+
+    let thread = format!("thread {thread}");
+    let stdout = batch(&["--core", PYTHON_CORE], &[&thread, "bt"]);
+    let lines = stdout.lines().collect::<Vec<_>>();
+    let shown = line_index(&lines, 0, |shown| shown.ends_with(&place));
+    let level = lines[shown]
+        .split_whitespace()
+        .next()
+        .and_then(|level| level.strip_prefix('#'))
+        .expect("the frame's level");
+    line_index(&lines, 0, |line| {
+        line.contains("frames of the runtime; `bt -r` shows them")
+    });
+    assert!(
+        !stdout.contains("_PyEval_EvalFrameDefault"),
+        "the interpreter's frames fold:\n{stdout}"
+    );
+
+    // Moving between frames passes over the frames a backtrace folds,
+    // until they are shown.
+    let frame = format!("frame {level}");
+    let stdout = batch(
+        &["--core", PYTHON_CORE],
+        &[
+            &thread,
+            &frame,
+            "where",
+            "up",
+            "up",
+            "down",
+            "set runtime-frames on",
+            "up",
+        ],
+    );
+    let lines = stdout.lines().collect::<Vec<_>>();
+    let selected = line_index(&lines, 0, |shown| {
+        shown.starts_with(&format!("#{level} ")) && shown.ends_with(&place)
+    });
+    let marked = line_index(&lines, selected, |shown| {
+        shown.starts_with(&format!("=> {line} |"))
+    });
+    assert!(lines[marked].ends_with("gate.arrive()"), "{stdout}");
+    let location = line_index(&lines, marked, |shown| {
+        format!("in {shown}").ends_with(&place)
+    });
+    let run = line_index(&lines, location, |shown| {
+        shown.contains(" in Thread.run at ")
+    });
+    let bootstrap = line_index(&lines, run, |shown| {
+        shown.starts_with('#') && shown.contains(" in Thread._bootstrap_inner at ")
+    });
+    let back = line_index(&lines, bootstrap, |shown| {
+        shown.starts_with('#') && shown.contains(" in Thread.run at ")
+    });
+    line_index(&lines, back, |shown| {
+        shown.starts_with('#') && shown.contains(" in _PyEval_EvalFrameDefault+")
+    });
+}
+
 #[test]
 fn frame_commands_report_the_ends_of_the_stack() {
     let (_, stderr) = piped(

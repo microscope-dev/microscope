@@ -364,7 +364,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         "set",
         [],
         "set [var] <assignment...>",
-        "Change a number, truth value, enumeration, or pointer, such as set var x = y + 1; set views on|off shows values as their views present them or as stored; set step-runtime on|off makes steps stop in a language runtime's own code or pass over it"
+        "Change a number, truth value, enumeration, or pointer, such as set var x = y + 1; set views on|off shows values as their views present them or as stored; set step-runtime on|off makes steps stop in a language runtime's own code or pass over it; set runtime-frames on|off makes backtraces show a runtime's and an interpreter's own frames or fold them"
     ),
     command!(
         Views,
@@ -490,7 +490,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         "backtrace",
         ["bt"],
         "backtrace [-r]",
-        "Show the selected thread's or task's stack; -r shows the runtime frames it folds"
+        "Show the selected thread's or task's stack; -r shows the runtime and interpreter frames it folds"
     ),
     command!(
         Frame,
@@ -746,7 +746,7 @@ impl Cli {
             Command::Context => self.context().await?,
             Command::Edit => self.edit().await?,
             Command::Backtrace => match arguments.as_slice() {
-                [] => self.backtrace(None, false).await?,
+                [] => self.backtrace(None, self.shows_runtime_frames()).await?,
                 ["-r"] => self.backtrace(None, true).await?,
                 _ => return Err(spec.usage_error()),
             },
@@ -2157,6 +2157,17 @@ impl Cli {
             ));
         }
 
+        if let Some(setting @ ("on" | "off")) = text.strip_prefix("runtime-frames ").map(str::trim)
+        {
+            self.runtime_frames
+                .store(setting == "on", std::sync::atomic::Ordering::Relaxed);
+            return Ok(if setting == "on" {
+                "backtraces show every runtime frame".to_owned()
+            } else {
+                "backtraces fold runtime frames".to_owned()
+            });
+        }
+
         if let Some(setting @ ("on" | "off")) = text.strip_prefix("step-runtime ").map(str::trim) {
             self.debugger.set_step_into_runtime(setting == "on").await?;
             return Ok(if setting == "on" {
@@ -2470,9 +2481,24 @@ impl Cli {
 
     /// Selects a frame and shows it with its source.
     async fn frame(&self, target: FrameTarget) -> Result<String> {
-        let selected = u64::from(self.selected_level().await?);
+        let selected_level = self.selected_level().await?;
+        let selected = u64::from(selected_level);
         let trace = self.debugger.backtrace().await?;
         let outermost = trace.frames.len().saturating_sub(1) as u64;
+
+        // Moving between frames passes over those a backtrace folds.
+        let folded = if self.shows_runtime_frames() {
+            Vec::new()
+        } else {
+            crate::present::frames::folded_frames(&trace, selected_level)
+        };
+        let shown = |level: &u64| {
+            !usize::try_from(*level)
+                .ok()
+                .and_then(|index| folded.get(index))
+                .is_some_and(|folded| *folded)
+        };
+        let steps = |count: u64| usize::try_from(count).unwrap_or(usize::MAX);
         let level = match target {
             FrameTarget::Selected => selected,
             FrameTarget::Level(level) if level > outermost => {
@@ -2488,9 +2514,22 @@ impl Cli {
                     trace.termination
                 )
             }
-            FrameTarget::Outward(count) => selected.saturating_add(count).min(outermost),
+            FrameTarget::Outward(count) => (selected + 1..=outermost)
+                .filter(shown)
+                .take(steps(count))
+                .last()
+                .ok_or_else(|| {
+                    anyhow!(
+                        "the outermost frame shown is selected; `bt -r` shows the runtime's frames past it"
+                    )
+                })?,
             FrameTarget::Inward(_) if selected == 0 => bail!("the innermost frame is selected"),
-            FrameTarget::Inward(count) => selected.saturating_sub(count),
+            FrameTarget::Inward(count) => (0..selected)
+                .rev()
+                .filter(shown)
+                .take(steps(count))
+                .last()
+                .unwrap_or(0),
         };
 
         let index = trace
@@ -2513,7 +2552,11 @@ impl Cli {
             false,
             renderer,
         );
-        if frame.source.is_some() {
+        let placed = frame
+            .recorded
+            .as_ref()
+            .is_some_and(|recorded| recorded.place.is_some());
+        if frame.source.is_some() || placed {
             output.push('\n');
             match self.source_context().await {
                 Ok(context) => output.push_str(&self.source_listing(&context, true).await),
@@ -2552,6 +2595,17 @@ impl Cli {
                         format_args!("{:#018x}", self.selected_instruction().await?)
                     )
                 ));
+            }
+            // An interpreted frame is where its interpreter recorded it.
+            Err(microscope::Error::FrameInterpreted) => {
+                let selected = self.debugger.snapshot().await?.selected_frame;
+                let trace = self.debugger.backtrace().await?;
+                let frame = trace
+                    .frames
+                    .iter()
+                    .find(|frame| Some(frame.id) == selected)
+                    .ok_or_else(|| anyhow!("the selected frame is not in the backtrace"))?;
+                return Ok(format::interpreted_location(frame, renderer));
             }
             Err(error) => return Err(error.into()),
         };
@@ -2615,7 +2669,7 @@ impl Cli {
     pub(super) async fn source_context(&self) -> microscope::Result<microscope::SourceContext> {
         let [before, after] = self.settings.config.source.context;
         let mut context = self.debugger.source_context(before.max(after)).await?;
-        let line = context.location.line.get();
+        let line = context.line.get();
         let first = line.saturating_sub(u64::from(before));
         let last = line.saturating_add(u64::from(after));
         context.lines = context
@@ -2625,6 +2679,13 @@ impl Cli {
             .cloned()
             .collect();
         Ok(context)
+    }
+
+    /// Whether backtraces show every runtime frame, as `set runtime-frames`
+    /// or the settings chose.
+    pub(super) fn shows_runtime_frames(&self) -> bool {
+        self.runtime_frames
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The selected thread's backtrace, of at most `limit` frames.
@@ -2660,7 +2721,7 @@ impl Cli {
         let context = self.source_context().await?;
         let path = std::path::absolute(&*context.path)?;
         let quoted = shell_quoted(&path.to_string_lossy());
-        let line = context.location.line.to_string();
+        let line = context.line.to_string();
         let template = &self.settings.config.ui.editor;
         #[expect(
             clippy::literal_string_with_formatting_args,
@@ -2736,7 +2797,7 @@ impl Cli {
             for breakpoint in snapshot.breakpoints.iter() {
                 for placed in self.placed(breakpoint).await {
                     if let Some((path, line)) = placed.source
-                        && path == context.file.path
+                        && path == context.recorded
                     {
                         let enabled = marks.entry(line).or_insert(false);
                         *enabled |= breakpoint.enabled;

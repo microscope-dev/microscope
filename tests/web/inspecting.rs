@@ -367,3 +367,60 @@ async fn the_stack_shows_functions_that_left_by_tail_calls() {
         .clone();
     assert_eq!(row(&arguments["rows"], "value")["text"], "6", "{arguments}");
 }
+
+/// A Python program's stack marks each frame with its language, places
+/// its Python frames where the interpreter recorded them, and folds the
+/// interpreter's frames between them.
+#[tokio::test]
+async fn a_python_stack_marks_its_languages_and_folds_the_interpreter() {
+    let core = Scenario::fixture("python-locals-3.14t.core");
+    let core = core.to_str().expect("a UTF-8 path");
+    let web = Web::start("python", &["--core", core]);
+    let mut tab = web.control("tab").await;
+    let state = tab
+        .state("the core opened", |state| {
+            state["inferior"]["stop"].is_u64()
+        })
+        .await;
+    let stop = state["inferior"]["stop"].clone();
+    let mut found = None;
+    for thread in state["threads"].as_array().expect("threads") {
+        let trace = tab
+            .ok("backtrace", json!({"stop": stop, "thread": thread["id"]}))
+            .await;
+        let frames = trace["frames"].as_array().expect("frames");
+        if let Some(index) = frames
+            .iter()
+            .position(|frame| frame["name"] == "containers")
+        {
+            found = Some((trace.clone(), index));
+        }
+    }
+
+    let (trace, index) = found.expect("the frame of containers");
+    let frames = trace["frames"].as_array().expect("frames");
+    let frame = &frames[index];
+    assert_eq!(frame["kind"], "interpreted", "{frame}");
+    assert_eq!(frame["language"], json!({"mark": "py", "name": "Python"}));
+    assert!(frame["address"].is_null(), "{frame}");
+    assert!(
+        frame["source"]["path"]
+            .as_str()
+            .is_some_and(|path| path.ends_with("tests/fixtures/python/locals.py")),
+        "{frame}"
+    );
+
+    // Each fold is two or more of the interpreter's frames, none of them
+    // Python's.
+    let folds = trace["folds"].as_array().expect("folds");
+    assert!(!folds.is_empty(), "{trace}");
+    for fold in folds {
+        let first = usize::try_from(fold["first"].as_u64().expect("first")).expect("an index");
+        let count = usize::try_from(fold["count"].as_u64().expect("count")).expect("a count");
+        assert!(count >= 2, "{fold}");
+        for folded in &frames[first..first + count] {
+            assert_ne!(folded["kind"], "interpreted", "{trace}");
+            assert!(folded["address"].is_string(), "{folded}");
+        }
+    }
+}

@@ -1565,10 +1565,24 @@ impl DebuggerHandle {
             .cloned()
             .ok_or(Error::SourceLocationUnavailable)?;
 
-        let (path, contents) = self.read_source(&file.path).await?;
+        self.source_around(file.path, location.line, location.column, radius)
+            .await
+    }
+
+    /// Reads the source lines within `radius` of `line` of the file at the
+    /// `recorded` path.
+    async fn source_around(
+        &self,
+        recorded: Arc<PathBuf>,
+        line: LineNumber,
+        column: Option<ColumnNumber>,
+        radius: u32,
+    ) -> Result<SourceContext> {
+        let (path, contents) = self.read_source(&recorded).await?;
 
         let all_lines: Vec<_> = contents.lines().collect();
-        let line = location.line.get();
+        let number = line;
+        let line = number.get();
         let target = usize::try_from(line)
             .ok()
             .and_then(|line| line.checked_sub(1))
@@ -1599,9 +1613,10 @@ impl DebuggerHandle {
             .into();
 
         Ok(SourceContext {
-            file,
+            recorded,
             path: Arc::new(path),
-            location,
+            line: number,
+            column,
             lines,
         })
     }
@@ -2200,14 +2215,30 @@ impl StopView<'_> {
         let (module, source) = match self.location().await {
             Ok(location) => (location.module, location.image.source),
             // A suspended task's frame with no code to locate still waits
-            // at a line.
-            Err(Error::FrameSuspended) => {
+            // at a line, and an interpreted frame runs one its runtime
+            // recorded.
+            Err(Error::FrameSuspended | Error::FrameInterpreted) => {
                 let trace = self.backtrace().await?;
                 let frame = trace
                     .frames
                     .iter()
                     .find(|frame| frame.id == self.context.frame)
                     .ok_or(Error::SourceLocationUnavailable)?;
+                if let Some(place) = frame
+                    .recorded
+                    .as_ref()
+                    .and_then(|recorded| recorded.place.as_ref())
+                {
+                    let line = LineNumber::new(u64::from(place.line))
+                        .ok_or(Error::SourceLocationUnavailable)?;
+                    let column = ColumnNumber::new(u64::from(place.column));
+                    let recorded = Arc::new(PathBuf::from(&*place.path));
+                    return self
+                        .handle
+                        .source_around(recorded, line, column, radius)
+                        .await;
+                }
+
                 (
                     frame.module.ok_or(Error::SourceLocationUnavailable)?,
                     frame.source.clone(),

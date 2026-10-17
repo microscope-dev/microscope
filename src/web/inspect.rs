@@ -10,8 +10,8 @@ use microscope::{
 
 use super::describe::{Images, hex};
 use super::protocol::{
-    self, Backtrace, ErrorKind, Frame, FunctionMatch, FunctionQuery, Functions, SourceFiles,
-    SourceLine, SourceText,
+    self, Backtrace, ErrorKind, Frame, FrameLanguage, FrameRun, FunctionMatch, FunctionQuery,
+    Functions, SourceFiles, SourceLine, SourceText,
 };
 
 use super::session::Failure;
@@ -80,8 +80,18 @@ pub async fn backtrace(
         frames.push(frame_of(images, &trace, frame).await);
     }
 
+    let folds = crate::present::frames::folds(&trace, trace.frames.len(), 0)
+        .into_iter()
+        .filter_map(|run| {
+            Some(FrameRun {
+                first: u32::try_from(run.start).ok()?,
+                count: u32::try_from(run.len()).ok()?,
+            })
+        })
+        .collect();
     Ok(Backtrace {
         frames,
+        folds,
         incomplete: (trace.termination != UnwindTermination::Complete)
             .then(|| trace.termination.to_string()),
     })
@@ -121,6 +131,10 @@ async fn frame_of(
             .and_then(|image| image.path().file_name())
             .map(|name| name.to_string_lossy().into_owned()),
         source,
+        language: crate::present::frames::language(frame).map(|(mark, name)| FrameLanguage {
+            mark: mark.to_owned(),
+            name: name.to_owned(),
+        }),
         unfollowed: trace
             .unfollowed
             .iter()

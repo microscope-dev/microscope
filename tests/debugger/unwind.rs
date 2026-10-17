@@ -18,8 +18,8 @@ async fn dwarf_cfi_unwinds_and_finishes_across_the_compiler_and_linker_matrix() 
             .operation("source context", scenario.handle().source_context(1))
             .await;
 
-        assert!(source.file.path.ends_with("unwind.c"));
-        assert!(source.file.path.is_absolute());
+        assert!(source.recorded.ends_with("unwind.c"));
+        assert!(source.recorded.is_absolute());
         assert!(
             source
                 .lines

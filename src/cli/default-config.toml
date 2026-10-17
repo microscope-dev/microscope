@@ -53,6 +53,10 @@ show-bytes = true
 runtime = "skip"          # skip | enter: stop in a language runtime's own code, such as
                           # Go's or tokio's, or pass over it to the program's code it calls
 
+[backtrace]
+runtime = "fold"          # fold | show: each run of a language runtime's own frames, as an
+                          # interpreter's between Python's, or every frame; `bt -r` shows them
+
 [breakpoints]
 save = true               # keep breakpoints and displays in the project's .microscope/state
 

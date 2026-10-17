@@ -1888,8 +1888,29 @@ pub struct Process {
 pub struct Backtrace {
     pub frames: Vec<Frame>,
 
+    /// The runs of frames of a runtime's or an interpreter's machinery
+    /// the stack folds into a line each, as the CLI's `bt` does, with the
+    /// innermost frame shown.
+    pub folds: Vec<FrameRun>,
+
     /// Why the stack ends early, when the unwinder could not finish it.
     pub incomplete: Option<String>,
+}
+
+/// Frames in a row, by their indices in [`Backtrace::frames`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct FrameRun {
+    pub first: u32,
+    pub count: u32,
+}
+
+/// The language of the code a frame runs: a short mark, and its name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct FrameLanguage {
+    pub mark: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1909,6 +1930,9 @@ pub struct Frame {
     /// The file name of the module the code is in.
     pub module: Option<String>,
     pub source: Option<SourceLine>,
+
+    /// The language of its code, where its function or interpreter says.
+    pub language: Option<FrameLanguage>,
 
     /// For a frame that drives frames the stack does not show in full,
     /// the note that says so and why.
@@ -2562,8 +2586,10 @@ mod tests {
         Process::decl,
         ShareLink::decl,
         Backtrace::decl,
+        FrameRun::decl,
         Frame::decl,
         FrameKind::decl,
+        FrameLanguage::decl,
         SourceLine::decl,
         SourceFiles::decl,
         FunctionQuery::decl,

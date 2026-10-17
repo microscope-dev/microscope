@@ -2,9 +2,12 @@
 //! end shows them. A frame whose code is in no image, as an interpreted
 //! frame's, has the function and place its runtime recorded instead.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use microscope::{FrameKind, ModuleImage, StackFrame};
+use microscope::{
+    Backtrace, CodeRole, FrameKind, ModuleImage, SourceLanguage, StackFrame, StackSegment,
+};
 
 use crate::cli::format;
 
@@ -89,6 +92,118 @@ pub fn unfollowed(note: &microscope::Unfollowed, driver: &str) -> String {
     }
 }
 
+/// The language of the code a frame runs, as a short mark and its name,
+/// where its function or the interpreter that runs it says.
+pub fn language(frame: &StackFrame) -> Option<(&'static str, &'static str)> {
+    let language = frame
+        .recorded
+        .as_ref()
+        .map(|recorded| recorded.language)
+        .or_else(|| frame.function.as_ref().map(|function| function.language))?;
+    Some(match language {
+        SourceLanguage::C => ("c", "C"),
+        SourceLanguage::Cpp => ("c++", "C++"),
+        SourceLanguage::Rust => ("rs", "Rust"),
+        SourceLanguage::Go => ("go", "Go"),
+        SourceLanguage::Zig => ("zig", "Zig"),
+        SourceLanguage::Odin => ("odin", "Odin"),
+        SourceLanguage::Fortran => ("f", "Fortran"),
+        SourceLanguage::D => ("d", "D"),
+        SourceLanguage::Nim => ("nim", "Nim"),
+        SourceLanguage::Ada => ("ada", "Ada"),
+        SourceLanguage::Python => ("py", "Python"),
+        _ => return None,
+    })
+}
+
+/// Which of a backtrace's frames its folds hide, by index, with the
+/// `selected` frame shown.
+pub fn folded_frames(trace: &Backtrace, selected: u32) -> Vec<bool> {
+    let mut folded = vec![false; trace.frames.len()];
+    for run in folds(trace, trace.frames.len(), selected) {
+        folded[run].fill(true);
+    }
+
+    folded
+}
+
+/// The runs of a runtime's frames a backtrace folds into a line each, by
+/// index, of its first `shown` frames: two or more frames in a row on one
+/// stack of its machinery, an interpreter's included, its dispatch, and
+/// the wrappers between them, at least one the runtime's own; and every
+/// frame past the innermost dispatch, which runs the runtime's code for
+/// the thread rather than the task's. Where the stack stopped, and the
+/// `selected` frame, are always shown.
+pub fn folds(trace: &Backtrace, shown: usize, selected: u32) -> Vec<std::ops::Range<usize>> {
+    let frames = &trace.frames[..shown];
+
+    // A frame that drives a future is shown with it, or with why it is not.
+    let mut kept = trace
+        .frames
+        .windows(2)
+        .filter(|pair| {
+            pair[0].segment == StackSegment::Future && pair[1].segment != StackSegment::Future
+        })
+        .map(|pair| pair[1].level)
+        .chain(trace.unfollowed.iter().map(|future| future.driver.get()))
+        .collect::<BTreeSet<_>>();
+    kept.insert(selected);
+    let dispatch = frames
+        .iter()
+        .position(|frame| frame.role == CodeRole::Dispatch)
+        .filter(|at| frames[*at].level >= selected);
+    let Some(dispatch) = dispatch else {
+        return machinery_runs(frames, &kept);
+    };
+
+    let mut runs = machinery_runs(&frames[..=dispatch], &kept);
+    let below = dispatch + 1..frames.len();
+    if below.len() >= 2 {
+        // The dispatch frame joins the run that ends at it.
+        match runs.last_mut() {
+            Some(run) if run.end == below.start => run.end = below.end,
+            _ => runs.push(below),
+        }
+    }
+
+    runs
+}
+
+/// The runs [`folds`] folds by role alone.
+fn machinery_runs(frames: &[StackFrame], kept: &BTreeSet<u32>) -> Vec<std::ops::Range<usize>> {
+    let runtime = |frame: &StackFrame| {
+        matches!(
+            frame.role,
+            CodeRole::RuntimeInternal | CodeRole::Dispatch | CodeRole::Interpreter
+        )
+    };
+    let folds = |frame: &StackFrame| {
+        frame.level != 0
+            && !kept.contains(&frame.level)
+            && (runtime(frame) || frame.role == CodeRole::Wrapper)
+    };
+
+    let mut runs = Vec::new();
+    let mut start = 0;
+    while start < frames.len() {
+        let mut end = start;
+        while end < frames.len()
+            && folds(&frames[end])
+            && frames[end].segment == frames[start].segment
+        {
+            end += 1;
+        }
+
+        if end - start >= 2 && frames[start..end].iter().any(runtime) {
+            runs.push(start..end);
+        }
+
+        start = end.max(start + 1);
+    }
+
+    runs
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -115,6 +230,7 @@ mod tests {
             awaiting: None,
             recorded: Some(RecordedFrame {
                 function: "Worker.run".into(),
+                language: microscope::SourceLanguage::Python,
                 place,
             }),
         }

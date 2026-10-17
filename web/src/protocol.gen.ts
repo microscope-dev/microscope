@@ -323,9 +323,17 @@ export type ShareLink = { url: string, };
 
 export type Backtrace = { frames: Array<Frame>, 
 /**
+ * The runs of frames of a runtime's or an interpreter's machinery
+ * the stack folds into a line each, as the CLI's `bt` does, with the
+ * innermost frame shown.
+ */
+folds: Array<FrameRun>, 
+/**
  * Why the stack ends early, when the unwinder could not finish it.
  */
 incomplete: string | null, };
+
+export type FrameRun = { first: number, count: number, };
 
 export type Frame = { 
 /**
@@ -346,12 +354,18 @@ address: string | null,
  */
 module: string | null, source: SourceLine | null, 
 /**
+ * The language of its code, where its function or interpreter says.
+ */
+language: FrameLanguage | null, 
+/**
  * For a frame that drives frames the stack does not show in full,
  * the note that says so and why.
  */
 unfollowed: string | null, };
 
 export type FrameKind = "physical" | "inline" | "signal" | "tailCall" | "async" | "awaited" | "interpreted";
+
+export type FrameLanguage = { mark: string, name: string, };
 
 export type SourceLine = { path: string, line: number, column: number | null, };
 

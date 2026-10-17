@@ -23,8 +23,8 @@ use crate::inspection::InspectionBudget;
 use crate::unwind::RegisterFile;
 use crate::{
     CodeRole, CoroutineInfo, EntryProvenance, ExceptionFilter, ImageAddress, IntegerValue,
-    ModuleImage, RecordMemberLayout, RecordedPlace, StackFrame, StackSegment, TaskState, ThreadId,
-    ThreadLocal, TypeInfo, TypeKind, TypeReference, VirtualAddress,
+    ModuleImage, RecordMemberLayout, RecordedPlace, SourceLanguage, StackFrame, StackSegment,
+    TaskState, ThreadId, ThreadLocal, TypeInfo, TypeKind, TypeReference, VirtualAddress,
 };
 
 /// A result with the reasons it may be incomplete, such as a task whose
@@ -751,6 +751,9 @@ pub struct InterpretedThread {
 pub struct InterpretedFrame {
     /// Where the interpreter keeps the frame.
     pub frame: VirtualAddress,
+
+    /// The language of the code it runs.
+    pub language: SourceLanguage,
 
     /// The function it runs, and where in its source, as the interpreter
     /// records them; none where they cannot be read, which `problem` says.

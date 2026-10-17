@@ -240,6 +240,10 @@ pub struct Cli {
     /// The exceptions that stop, as `catch` last chose them.
     exceptions: std::sync::Mutex<microscope::ExceptionStops>,
 
+    /// Whether backtraces show every runtime frame rather than folding
+    /// them, as `set runtime-frames` last chose.
+    runtime_frames: std::sync::atomic::AtomicBool,
+
     /// The expressions every stop prints.
     displays: std::sync::Mutex<stops::Displays>,
 
@@ -281,6 +285,7 @@ impl Cli {
         settings: Settings,
         launch: LaunchSettings,
     ) -> Self {
+        let runtime_frames = settings.config.backtrace.runtime == config::RuntimeFrames::Show;
         Self {
             debugger,
             renderers,
@@ -295,6 +300,7 @@ impl Cli {
             columns: std::sync::atomic::AtomicUsize::new(0),
             rows: std::sync::atomic::AtomicUsize::new(0),
             exceptions: std::sync::Mutex::default(),
+            runtime_frames: std::sync::atomic::AtomicBool::new(runtime_frames),
             displays: std::sync::Mutex::default(),
             changes: std::sync::Mutex::default(),
             highlights: std::sync::Mutex::default(),

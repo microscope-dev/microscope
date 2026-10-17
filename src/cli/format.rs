@@ -1364,12 +1364,12 @@ pub fn source_context(
         lines.push(format!(
             "{}:{}",
             renderer.paint(Role::Metadata, renderer.path(&context.path)),
-            renderer.paint(Role::Current, context.location.line)
+            renderer.paint(Role::Current, context.line)
         ));
     }
 
     for line in context.lines.iter() {
-        let current = line.number == context.location.line;
+        let current = line.number == context.line;
         let (marker, role) = if current {
             (
                 renderer.paint(Role::Current, "=>").to_string(),
@@ -2164,7 +2164,7 @@ pub fn backtrace(
     let folded = if raw {
         Vec::new()
     } else {
-        runtime_runs(trace, shown, selected)
+        frames::folds(trace, shown, selected)
     };
 
     let note = |lines: &mut Vec<String>, frames: std::ops::Range<usize>| {
@@ -2249,78 +2249,6 @@ pub fn backtrace(
             .to_string()
     });
     lines.join("\n")
-}
-
-/// The runs of a runtime's frames a backtrace folds into a line each,
-/// by index: two or more frames in a row on one stack of its machinery,
-/// its dispatch, and the wrappers between them, at least one the
-/// runtime's own; and every frame past the innermost dispatch, which runs
-/// the runtime's code for the thread rather than the task's. Where the
-/// stack stopped, and the selected frame, are always shown.
-fn runtime_runs(trace: &Backtrace, shown: usize, selected: u32) -> Vec<std::ops::Range<usize>> {
-    let frames = &trace.frames[..shown];
-
-    // A frame that drives a future is shown with it, or with why it is not.
-    let mut kept = trace
-        .frames
-        .windows(2)
-        .filter(|pair| {
-            pair[0].segment == StackSegment::Future && pair[1].segment != StackSegment::Future
-        })
-        .map(|pair| pair[1].level)
-        .chain(trace.unfollowed.iter().map(|future| future.driver.get()))
-        .collect::<BTreeSet<_>>();
-    kept.insert(selected);
-    let dispatch = frames
-        .iter()
-        .position(|frame| frame.role == CodeRole::Dispatch)
-        .filter(|at| frames[*at].level >= selected);
-    let Some(dispatch) = dispatch else {
-        return machinery_runs(frames, &kept);
-    };
-
-    let mut runs = machinery_runs(&frames[..=dispatch], &kept);
-    let below = dispatch + 1..frames.len();
-    if below.len() >= 2 {
-        // The dispatch frame joins the run that ends at it.
-        match runs.last_mut() {
-            Some(run) if run.end == below.start => run.end = below.end,
-            _ => runs.push(below),
-        }
-    }
-
-    runs
-}
-
-/// The runs [`runtime_runs`] folds by role alone.
-fn machinery_runs(frames: &[StackFrame], kept: &BTreeSet<u32>) -> Vec<std::ops::Range<usize>> {
-    let runtime =
-        |frame: &StackFrame| matches!(frame.role, CodeRole::RuntimeInternal | CodeRole::Dispatch);
-    let folds = |frame: &StackFrame| {
-        frame.level != 0
-            && !kept.contains(&frame.level)
-            && (runtime(frame) || frame.role == CodeRole::Wrapper)
-    };
-
-    let mut runs = Vec::new();
-    let mut start = 0;
-    while start < frames.len() {
-        let mut end = start;
-        while end < frames.len()
-            && folds(&frames[end])
-            && frames[end].segment == frames[start].segment
-        {
-            end += 1;
-        }
-
-        if end - start >= 2 && frames[start..end].iter().any(runtime) {
-            runs.push(start..end);
-        }
-
-        start = end.max(start + 1);
-    }
-
-    runs
 }
 
 /// Where a run of frames is: whose stack it is on, or the future the frame
@@ -2528,6 +2456,19 @@ pub fn awaited_frame(image: Option<&ModuleImage>, frame: &StackFrame) -> Option<
         Some(awaiting) => format!("{name} — {awaiting}"),
         None => name,
     })
+}
+
+/// Where an interpreted frame is, as `where` says: the function its
+/// interpreter recorded, and its file and line, where it recorded them.
+pub fn interpreted_location(frame: &StackFrame, renderer: Renderer) -> String {
+    let name = renderer.paint(Role::Name, frames::code(frame));
+    match frames::place(frame, None) {
+        Some(place) => format!(
+            "{name} at {}",
+            renderer.paint(Role::Metadata, renderer.location(&place.path, place.line))
+        ),
+        None => name.to_string(),
+    }
 }
 
 /// A frame's source file and line, as its runtime recorded them or from

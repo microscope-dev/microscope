@@ -3779,15 +3779,19 @@ pub struct SourceLine {
 /// Source lines surrounding an execution location.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceContext {
-    /// The source file the debug information names.
-    pub file: SourceFile,
+    /// The source path as it was recorded: by the debug information, or by
+    /// the runtime that runs an interpreted frame.
+    pub recorded: Arc<PathBuf>,
 
     /// The file that was read: the recorded path, or where a source path
     /// map found it.
     pub path: Arc<PathBuf>,
 
-    /// The execution location within the file.
-    pub location: SourceLocation,
+    /// The execution location's one-based line within the file.
+    pub line: LineNumber,
+
+    /// The location's one-based column, when it was recorded.
+    pub column: Option<ColumnNumber>,
 
     /// Contiguous source lines ordered by line number.
     pub lines: Arc<[SourceLine]>,
@@ -4585,6 +4589,9 @@ impl FrameKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordedFrame {
     pub function: Arc<str>,
+
+    /// The language of the code the frame runs.
+    pub language: SourceLanguage,
 
     /// Where the frame is, when its runtime knows.
     pub place: Option<RecordedPlace>,

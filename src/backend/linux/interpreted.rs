@@ -272,6 +272,7 @@ pub(super) fn interpreted_frame(frame: &InterpretedFrame, segment: StackSegment)
     built.segment = segment;
     built.recorded = frame.function.clone().map(|function| RecordedFrame {
         function,
+        language: frame.language,
         place: frame.place.clone(),
     });
     built

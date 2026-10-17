@@ -287,7 +287,7 @@ fn exception_words(argument: usize, first: Option<&str>) -> Vec<String> {
 }
 
 /// The settings `set` turns on or off.
-const TOGGLES: [&str; 2] = ["views", "step-runtime"];
+const TOGGLES: [&str; 3] = ["views", "step-runtime", "runtime-frames"];
 
 pub fn complete(
     line: &str,
@@ -371,7 +371,7 @@ pub fn complete(
             COMMANDS.iter().map(|spec| spec.name.to_owned()).collect()
         }
         Command::Set if argument == 0 && !word.contains(['=', '.']) => {
-            let mut candidates = words_of(&["var", "views", "step-runtime"]);
+            let mut candidates = words_of(&["var", "views", "step-runtime", "runtime-frames"]);
             candidates.extend(context.names.iter().cloned());
             candidates
         }

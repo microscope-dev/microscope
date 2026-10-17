@@ -197,7 +197,7 @@ async fn body(scenario: &Scenario) -> std::ops::RangeInclusive<u64> {
     let context = scenario
         .operation("source", scenario.handle().source_context(32))
         .await;
-    let declaration = context.location.line.get();
+    let declaration = context.line.get();
     let closing = context
         .lines
         .iter()

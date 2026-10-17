@@ -188,3 +188,65 @@ async fn a_cores_python_frames_are_the_ones_cpython_reported() {
         scenario.shutdown().await;
     }
 }
+
+/// Each Python frame's source is the line its interpreter recorded, read
+/// from the file at the path it recorded, on every interpreter in the
+/// matrix.
+#[tokio::test]
+async fn each_python_frames_source_is_the_line_it_runs() {
+    for interpreter in MATRIX {
+        let mut session = PythonSession::launch(interpreter, "stacks.py", &[]).await;
+        let truth = session.stop_at("parked").await;
+        let stop = session.stop().await;
+        for (thread, _, reported) in reported_threads(&truth) {
+            let thread = ThreadId::new(thread);
+            let trace = session.backtrace(thread).await;
+            let context = format!("{} thread {thread}: {trace:#?}", session.context());
+            let interpreted: Vec<_> = trace
+                .frames
+                .iter()
+                .filter(|frame| matches!(frame.kind, FrameKind::Interpreted { .. }))
+                .collect();
+            assert!(interpreted.len() >= reported.len(), "{context}");
+            for frame in interpreted {
+                let place = frame
+                    .recorded
+                    .as_ref()
+                    .and_then(|recorded| recorded.place.as_ref())
+                    .expect(&context);
+                let at = StopContext {
+                    stop,
+                    execution: ExecutionContext::Thread(thread),
+                    frame: frame.id,
+                };
+                // An interpreted frame has no machine code to locate.
+                let location = session.scenario.handle().at(at).location().await;
+                assert!(
+                    matches!(location, Err(microscope::Error::FrameInterpreted)),
+                    "{location:?}: {context}"
+                );
+                let source = session
+                    .scenario
+                    .operation(
+                        "frame source",
+                        session.scenario.handle().at(at).source_context(1),
+                    )
+                    .await;
+                let text = std::fs::read_to_string(&*place.path).expect(&context);
+                let line = usize::try_from(place.line).expect("a line number");
+                let expected = text.lines().nth(line - 1).expect(&context);
+                assert_eq!(**source.recorded, *place.path, "{context}");
+                assert_eq!(source.line.get(), u64::from(place.line), "{context}");
+                let current = source
+                    .lines
+                    .iter()
+                    .find(|shown| shown.number == source.line)
+                    .expect(&context);
+                assert_eq!(&*current.text, expected, "{context}");
+                assert!(source.lines.len() > 1, "{context}");
+            }
+        }
+
+        session.shutdown().await;
+    }
+}

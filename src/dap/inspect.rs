@@ -426,12 +426,10 @@ impl Session {
             None => body["presentationHint"] = "subtle".into(),
         }
 
-        // A runtime's machinery and the wrappers a compiler writes recede.
-        if frame
-            .function
-            .as_ref()
-            .is_some_and(|function| function.role != microscope::CodeRole::Ordinary)
-        {
+        // A runtime's machinery, an interpreter's included, and the
+        // wrappers a compiler writes recede, by the frame's role, which a
+        // function only symbols describe has too.
+        if frame.role != microscope::CodeRole::Ordinary {
             body["presentationHint"] = "subtle".into();
         }
 

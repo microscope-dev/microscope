@@ -1070,6 +1070,18 @@ textarea.input {
   text-align: right;
 }
 
+.row .mark {
+  width: 2.2em;
+  flex: none;
+  color: var(--ink-3);
+  font-size: 10.5px;
+  text-align: center;
+}
+
+.row.fold {
+  font-style: italic;
+}
+
 .row .fn {
   overflow: hidden;
   color: var(--f);

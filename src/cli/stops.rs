@@ -341,8 +341,11 @@ impl Cli {
                 Section::Registers => self.registers_section(activation).await,
                 Section::Disassembly => self.disassembly_section().await,
                 Section::Backtrace => {
-                    self.backtrace(Some(stop.backtrace_frames as usize), false)
-                        .await
+                    self.backtrace(
+                        Some(stop.backtrace_frames as usize),
+                        self.shows_runtime_frames(),
+                    )
+                    .await
                 }
                 Section::Threads => self
                     .debugger
