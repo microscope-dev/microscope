@@ -362,43 +362,12 @@ impl Drop for Files {
 }
 
 fn credentials(process: &OwnedFd) -> Result<(), Arc<str>> {
-    let fd = openat(
-        process,
-        "status",
-        OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW,
-        Mode::empty(),
-    )
-    .map_err(problem)?;
-    let mut status = String::new();
-    std::fs::File::from(fd)
-        .take(64 * 1024)
-        .read_to_string(&mut status)
-        .map_err(problem)?;
-    let (effective, filesystem) = effective_uids(&status)
-        .ok_or_else(|| problem("the target's effective and filesystem UIDs cannot be read"))?;
+    let (effective, filesystem) = super::proc_status::effective_uids(process).map_err(problem)?;
     let own = rustix::process::geteuid().as_raw();
     if effective != own || filesystem != own {
         return Err("the target's effective or filesystem user differs from the debugger's; private agent files would be unreadable".into());
     }
     Ok(())
-}
-
-fn effective_uids(status: &str) -> Option<(u32, u32)> {
-    let mut lines = status.lines().filter_map(|line| line.strip_prefix("Uid:"));
-    let line = lines.next()?;
-    if lines.next().is_some() {
-        return None;
-    }
-    let ids = line
-        .split_whitespace()
-        .take(5)
-        .map(str::parse::<u32>)
-        .collect::<Result<Vec<_>, _>>()
-        .ok()?;
-    let [_, effective, _, filesystem] = ids.as_slice() else {
-        return None;
-    };
-    Some((*effective, *filesystem))
 }
 
 /// A writable shared parent must prevent other users from renaming our
@@ -659,27 +628,6 @@ mod tests {
         let _ = std::fs::remove_dir(&directory);
         assert!(!directory.exists(), "test artifacts were removed");
         assert_eq!(kept.unwrap(), "foreign library");
-    }
-
-    #[test]
-    fn effective_and_filesystem_uids_come_from_exactly_one_complete_status_record() {
-        assert_eq!(
-            effective_uids("Name:\tworker\nUid:\t0\t1000\t0\t1000\n"),
-            Some((1000, 1000))
-        );
-        assert_eq!(effective_uids("Uid: 1000 1000 0 2000"), Some((1000, 2000)));
-        for status in [
-            "",
-            "Uid:",
-            "Uid: 0 1000 0",
-            "Uid: 0 1000 0 1000 0",
-            "Uid: 0 -1 0 1000",
-            "Uid: 0 4294967296 0 1000",
-            "Uid: 0 X 0 1000",
-            "Uid: 0 1000 0 1000\nUid: 0 1000 0 1000",
-        ] {
-            assert_eq!(effective_uids(status), None, "{status:?}");
-        }
     }
 
     #[test]

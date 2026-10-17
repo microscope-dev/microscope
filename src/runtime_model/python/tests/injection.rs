@@ -1,5 +1,6 @@
-use super::super::injection::{AgentFailure, Candidate, TargetThreadId};
+use super::super::injection::{AgentFailure, Candidate};
 use super::*;
+use crate::runtime_model::TargetThreadId;
 
 fn candidate(controller: u64, native: u64) -> Candidate {
     Candidate {

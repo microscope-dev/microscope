@@ -825,6 +825,28 @@ impl LiveStop<'static> {
 }
 
 impl RuntimeStop for LiveStop<'_> {
+    fn target_thread_id(&self, thread: crate::ThreadId) -> Option<runtime_model::TargetThreadId> {
+        if self.threads.binary_search(&thread).is_err() {
+            return None;
+        }
+        crate::backend::target_thread_id(self.pid, u32::try_from(thread.get()).ok()?)
+    }
+
+    fn target_thread_ids(
+        &self,
+        threads: &[crate::ThreadId],
+    ) -> Vec<(crate::ThreadId, runtime_model::TargetThreadId)> {
+        let threads = threads
+            .iter()
+            .filter(|thread| self.threads.binary_search(thread).is_ok())
+            .filter_map(|thread| u32::try_from(thread.get()).ok())
+            .collect::<Vec<_>>();
+        crate::backend::target_thread_ids(self.pid, &threads)
+            .into_iter()
+            .map(|(thread, target)| (crate::ThreadId::new(u64::from(thread)), target))
+            .collect()
+    }
+
     fn read(&self, address: crate::VirtualAddress, bytes: &mut [u8]) -> bool {
         super::perf::read_memory(self.pid, address.get(), bytes)
             .is_ok_and(|read| read == bytes.len())

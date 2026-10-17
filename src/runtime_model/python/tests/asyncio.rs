@@ -167,6 +167,7 @@ fn addresses(tasks: &[u64]) -> Vec<VirtualAddress> {
 #[test]
 fn each_thread_lists_its_tasks_then_its_interpreter_those_of_exited_threads() {
     let (mut process, types, ty) = world(TASK_SIZE);
+    process.memory.threads = vec![ThreadId::new(7), ThreadId::new(8)];
     let name = process.str_object(types.str, "worker");
     let [a, b, c, d] = [0; 4].map(|_| process.task(ty, 0, name));
     let interpreter = process.alloc(STATE_SIZE);
@@ -191,7 +192,7 @@ fn each_thread_lists_its_tasks_then_its_interpreter_those_of_exited_threads() {
     assert_eq!(found.all, addresses(&[a, b, c, d]));
     assert_eq!(
         found.running.into_iter().collect::<Vec<_>>(),
-        [(VirtualAddress::new(c), ThreadId::new(8))]
+        [(VirtualAddress::new(c), Ok(ThreadId::new(8)))]
     );
 }
 
@@ -226,8 +227,10 @@ fn a_list_that_loops_or_holds_no_task_keeps_the_tasks_before_and_says_why() {
     assert_eq!(
         gaps,
         [
-            "the list of thread 7 tasks loops".to_owned(),
-            format!("the list of thread 8 tasks holds {list:#x}, which is no asyncio.Task"),
+            "the list of Python native thread 7 tasks loops".to_owned(),
+            format!(
+                "the list of Python native thread 8 tasks holds {list:#x}, which is no asyncio.Task"
+            ),
         ]
     );
 }
@@ -418,4 +421,214 @@ fn a_frame_whose_stack_pointer_lies_below_what_it_awaits_ends_the_chain() {
         )
     );
     assert_eq!(read.frames.len(), 1, "the frame itself is read");
+}
+
+#[test]
+fn running_tasks_use_the_proven_target_thread_instead_of_a_colliding_host_id() {
+    let (mut process, types, ty) = world(TASK_SIZE);
+    let name = process.str_object(types.str, "worker");
+    let task = process.task(ty, 0, name);
+    let interpreter = process.alloc(STATE_SIZE);
+    let thread = process.alloc(STATE_SIZE);
+    let head = process.empty_list(thread, Field::ThreadAsyncioTasksHead);
+    process.link(head, &[task]);
+    process.empty_list(interpreter, Field::InterpreterAsyncioTasksHead);
+    process.word(thread, Field::ThreadAsyncioRunningTask, task);
+    let host = ThreadId::new(5000);
+    let collision = ThreadId::new(7);
+    process.memory.threads = vec![collision, host];
+    process
+        .memory
+        .target_ids
+        .insert(host, crate::runtime_model::TargetThreadId::new(7));
+    process
+        .memory
+        .target_ids
+        .insert(collision, crate::runtime_model::TargetThreadId::new(8));
+    let found = tasks(&process, types, &[state(thread, interpreter, 7)]);
+    assert!(found.gaps.is_empty(), "{:?}", found.gaps);
+    let snapshot = with_values(&process, types, InspectionLimits::default(), |values| {
+        values.task(
+            VirtualAddress::new(task),
+            found.running.get(&VirtualAddress::new(task)),
+        )
+    });
+    assert_eq!(snapshot.state, TaskState::Running);
+    assert_eq!(snapshot.thread, Some(host));
+}
+
+#[test]
+fn a_running_task_keeps_its_state_when_thread_identity_is_unproven_or_ambiguous() {
+    for duplicate in [false, true] {
+        let (mut process, types, ty) = world(TASK_SIZE);
+        let name = process.str_object(types.str, "worker");
+        let task = process.task(ty, 0, name);
+        let interpreter = process.alloc(STATE_SIZE);
+        let thread = process.alloc(STATE_SIZE);
+        let head = process.empty_list(thread, Field::ThreadAsyncioTasksHead);
+        process.link(head, &[task]);
+        process.empty_list(interpreter, Field::InterpreterAsyncioTasksHead);
+        process.word(thread, Field::ThreadAsyncioRunningTask, task);
+        process.memory.threads = vec![ThreadId::new(7), ThreadId::new(5000)];
+        for host in process.memory.threads.clone() {
+            process.memory.target_ids.insert(
+                host,
+                duplicate.then(|| crate::runtime_model::TargetThreadId::new(7).unwrap()),
+            );
+        }
+        let found = tasks(&process, types, &[state(thread, interpreter, 7)]);
+        assert!(!found.gaps.is_empty());
+        let snapshot = with_values(&process, types, InspectionLimits::default(), |values| {
+            values.task(
+                VirtualAddress::new(task),
+                found.running.get(&VirtualAddress::new(task)),
+            )
+        });
+        assert_eq!(snapshot.state, TaskState::Running);
+        assert_eq!(snapshot.thread, None);
+        assert!(
+            snapshot
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains(if duplicate {
+                    "ambiguous"
+                } else {
+                    "no proven"
+                }))
+        );
+    }
+}
+
+#[test]
+fn a_task_reported_as_running_twice_has_no_guessed_owner() {
+    let (mut process, types, ty) = world(TASK_SIZE);
+    let name = process.str_object(types.str, "worker");
+    let task = process.task(ty, 0, name);
+    let interpreter = process.alloc(STATE_SIZE);
+    let first = process.alloc(STATE_SIZE);
+    let second = process.alloc(STATE_SIZE);
+    for thread in [first, second] {
+        let head = process.empty_list(thread, Field::ThreadAsyncioTasksHead);
+        if thread == first {
+            process.link(head, &[task]);
+        }
+        process.word(thread, Field::ThreadAsyncioRunningTask, task);
+    }
+    process.empty_list(interpreter, Field::InterpreterAsyncioTasksHead);
+    process.memory.threads = vec![ThreadId::new(7), ThreadId::new(8)];
+    let found = tasks(
+        &process,
+        types,
+        &[state(first, interpreter, 7), state(second, interpreter, 8)],
+    );
+    assert!(found.running[&VirtualAddress::new(task)].is_err());
+    let snapshot = with_values(&process, types, InspectionLimits::default(), |values| {
+        values.task(
+            VirtualAddress::new(task),
+            found.running.get(&VirtualAddress::new(task)),
+        )
+    });
+    assert_eq!(snapshot.state, TaskState::Running);
+    assert_eq!(snapshot.thread, None);
+    assert!(
+        snapshot
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("multiple thread states"))
+    );
+    assert!(
+        found
+            .gaps
+            .iter()
+            .any(|gap| gap.contains("multiple thread states"))
+    );
+}
+
+#[test]
+fn current_task_and_context_use_proven_identity_and_refuse_missing_proof() {
+    use crate::runtime_model::{RuntimeModel as _, TaskContext, TaskRef, ThreadActivity};
+    let (mut process, types, ty) = world(TASK_SIZE);
+    process.layout.set_field(Field::ThreadSize, STATE_SIZE);
+    let name = process.str_object(types.str, "worker");
+    let task = process.task(ty, 0, name);
+    let thread = process.thread_state(0, 0, 7);
+    let interpreter = process.interpreter(0, 0, thread);
+    let runtime = process.runtime(interpreter);
+    let head = process.empty_list(thread, Field::ThreadAsyncioTasksHead);
+    process.link(head, &[task]);
+    process.empty_list(interpreter, Field::InterpreterAsyncioTasksHead);
+    process.word(thread, Field::ThreadAsyncioRunningTask, task);
+    let host = ThreadId::new(5000);
+    let collision = ThreadId::new(7);
+    process.memory.threads = vec![collision, host];
+    process
+        .memory
+        .target_ids
+        .insert(host, crate::runtime_model::TargetThreadId::new(7));
+    process
+        .memory
+        .target_ids
+        .insert(collision, crate::runtime_model::TargetThreadId::new(8));
+    let model = super::super::PythonRuntime {
+        version: crate::image::python::PyVersion(0x030e_00f0),
+        reading: Ok(super::super::Reading {
+            runtime: crate::AddressRange {
+                start: crate::ImageAddress::new(runtime),
+                end: crate::ImageAddress::new(runtime + 8),
+            },
+            layout: process.layout.clone(),
+            code_type: crate::ImageAddress::new(process.code_type),
+            types: Ok([
+                types.none,
+                types.bool,
+                types.int,
+                types.float,
+                types.str,
+                types.bytes,
+                types.list,
+                types.tuple,
+                types.dict,
+                types.set,
+                types.frozenset,
+                types.cell,
+                types.module,
+                types.function,
+                types.builtin,
+                types.coroutine,
+                types.generator,
+                types.code,
+                types.class,
+                types.member,
+                types.wrapper,
+                types.generic_getattr,
+            ]
+            .map(|address| crate::ImageAddress::new(address.get()))),
+            secret: None,
+            code: std::sync::Mutex::new(CodeTable::default()),
+        }),
+    };
+    assert_eq!(
+        model.thread_activity(&process.memory, host),
+        ThreadActivity::Task {
+            number: task,
+            stack: crate::StackSegment::Thread
+        }
+    );
+    assert_eq!(
+        model.thread_activity(&process.memory, collision),
+        ThreadActivity::Outside
+    );
+    let reference = TaskRef {
+        number: task,
+        locator: Some(task),
+    };
+    assert!(
+        matches!(model.task_context(&process.memory, reference), Ok(Some(TaskContext::OnThread(thread))) if thread == host)
+    );
+    process.memory.target_ids.insert(host, None);
+    assert!(matches!(
+        model.thread_activity(&process.memory, host),
+        ThreadActivity::Unknown(_)
+    ));
+    assert!(model.task_context(&process.memory, reference).is_err());
 }

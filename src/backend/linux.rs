@@ -105,6 +105,7 @@ mod panic_release;
 pub mod perf;
 mod post_mortem;
 mod presentation;
+mod proc_status;
 pub mod reaped;
 #[cfg(debug_assertions)]
 mod recorded;
@@ -207,6 +208,17 @@ pub fn running_thread_pointers(pid: u32) -> std::result::Result<Vec<(u32, u64)>,
         .into_iter()
         .filter_map(|(tid, pointer)| Some((u32::try_from(tid).ok()?, pointer)))
         .collect())
+}
+
+pub fn target_thread_ids(
+    process: u32,
+    threads: &[u32],
+) -> Vec<(u32, crate::runtime_model::TargetThreadId)> {
+    proc_status::target_thread_ids(process, threads)
+}
+
+pub fn target_thread_id(process: u32, thread: u32) -> Option<crate::runtime_model::TargetThreadId> {
+    proc_status::target_thread_id(process, thread)
 }
 
 /// The debug register slots, which the `u32` capability reports.

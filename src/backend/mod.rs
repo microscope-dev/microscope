@@ -309,6 +309,18 @@ pub fn running_thread_pointers(pid: u32) -> std::result::Result<Vec<(u32, u64)>,
     linux::running_thread_pointers(pid)
 }
 
+/// The target namespace id of this process's live thread, when proven.
+pub fn target_thread_ids(
+    process: u32,
+    threads: &[u32],
+) -> Vec<(u32, crate::runtime_model::TargetThreadId)> {
+    linux::target_thread_ids(process, threads)
+}
+
+pub fn target_thread_id(process: u32, thread: u32) -> Option<crate::runtime_model::TargetThreadId> {
+    linux::target_thread_id(process, thread)
+}
+
 /// Describes the platform's hardware watchpoint support.
 pub fn watchpoint_capabilities() -> crate::WatchpointCapabilities {
     linux::watchpoint_capabilities()

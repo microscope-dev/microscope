@@ -30,6 +30,18 @@ use crate::{ImageAddress, LoadBias, VirtualAddress};
 mod glibc;
 mod musl;
 
+/// A core's thread notes may use a different PID namespace than the
+/// target's runtime. The libc descriptor must have one verified provider.
+pub(super) fn target_thread_id(
+    services: &dyn ProcessServices,
+    thread: Pid,
+    descriptor: u64,
+) -> Option<crate::runtime_model::TargetThreadId> {
+    crate::runtime_model::TargetThreadId::new(
+        glibc::target_thread_id(services, thread, descriptor).ok()?,
+    )
+}
+
 /// The prefix of the file name of musl's dynamic loader, which is also its
 /// C library: `ld-musl-x86_64.so.1` on x86-64.
 const MUSL_LOADER_PREFIX: &[u8] = b"ld-musl-";

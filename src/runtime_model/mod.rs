@@ -160,6 +160,21 @@ pub trait RuntimeImage: std::fmt::Debug {
     }
 }
 
+/// A native thread identifier as the target observes it. This is distinct
+/// from the debugger's `ThreadId`, as in a nested PID namespace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TargetThreadId(u64);
+
+impl TargetThreadId {
+    pub const fn new(value: u64) -> Option<Self> {
+        if value == 0 { None } else { Some(Self(value)) }
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
 /// One validated stop of the process a runtime runs in.
 pub trait RuntimeStop {
     /// Fills `bytes` from memory as the program sees it, without the
@@ -179,6 +194,21 @@ pub trait RuntimeStop {
     /// Every thread of the process, in the order of their ids.
     fn threads(&self) -> Vec<ThreadId>;
 
+    /// The id this live thread has in the target's namespace, if proven.
+    /// Absence is unknown; it must never be inferred from `ThreadId`.
+    fn target_thread_id(&self, _thread: ThreadId) -> Option<TargetThreadId> {
+        None
+    }
+
+    /// Proven identities for a controlled thread catalog, read in a batch
+    /// where the platform can share its namespace validation.
+    fn target_thread_ids(&self, threads: &[ThreadId]) -> Vec<(ThreadId, TargetThreadId)> {
+        threads
+            .iter()
+            .filter_map(|&thread| Some((thread, self.target_thread_id(thread)?)))
+            .collect()
+    }
+
     /// The sets of tasks the futures the stop's threads drive run, by
     /// where the runtime keeps them, as [`RuntimeModel::task_set`] named
     /// them: tasks that no runtime lists while their set waits.
@@ -194,6 +224,8 @@ pub trait RuntimeStop {
     }
 }
 
+type ThreadIdPairs = Arc<[(ThreadId, TargetThreadId)]>;
+
 /// Memory of a stopped process read so far, in aligned blocks of
 /// [`StopMemory::BLOCK`] bytes, each as read or as unreadable. A stopped
 /// process's memory does not change, so a read near one made before, as an
@@ -203,6 +235,7 @@ pub trait RuntimeStop {
 #[derive(Debug, Default)]
 pub struct StopMemory {
     blocks: std::cell::RefCell<std::collections::BTreeMap<u64, Option<Box<[u8]>>>>,
+    thread_ids: std::cell::RefCell<Option<ThreadIdPairs>>,
 }
 
 impl StopMemory {
@@ -250,9 +283,40 @@ impl StopMemory {
         Ok(copied)
     }
 
+    /// Identity evidence shares the stop's lifetime and invalidation: a
+    /// core's TCB can be changed by a debugger memory write too. Only a
+    /// complete match to the sorted distinct host catalog is retained.
+    pub fn thread_identities(
+        &self,
+        expected_threads: &[ThreadId],
+        read: impl FnOnce() -> Vec<(ThreadId, TargetThreadId)>,
+    ) -> Arc<[(ThreadId, TargetThreadId)]> {
+        let matches = |ids: &[(ThreadId, TargetThreadId)]| {
+            ids.iter()
+                .map(|(host, _)| *host)
+                .eq(expected_threads.iter().copied())
+        };
+        if let Some(known) = &*self.thread_ids.borrow()
+            && matches(known)
+        {
+            return Arc::clone(known);
+        }
+        let mut ids = read();
+        ids.sort_unstable();
+        ids.dedup();
+        let ids: Arc<[_]> = ids.into();
+        // Missing evidence can be a transient proc read failure. Keep a
+        // complete catalog only; partial results can be retried at this stop.
+        if matches(&ids) {
+            *self.thread_ids.borrow_mut() = Some(Arc::clone(&ids));
+        }
+        ids
+    }
+
     /// Forgets every block, once the memory may have changed.
     pub fn forget(&self) {
         self.blocks.borrow_mut().clear();
+        *self.thread_ids.borrow_mut() = None;
     }
 }
 

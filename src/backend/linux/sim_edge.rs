@@ -408,6 +408,15 @@ fn wait_status(event: &WaitEvent) -> String {
 }
 
 impl InspectionOps for SimTrace {
+    fn target_thread_id(
+        &self,
+        _process: Pid,
+        thread: Pid,
+    ) -> Option<crate::runtime_model::TargetThreadId> {
+        // The kernel model has one PID namespace and uses these IDs.
+        crate::runtime_model::TargetThreadId::new(u64::try_from(thread.as_raw()).ok()?)
+    }
+
     fn read_word(&self, pid: Pid, address: u64) -> Result<u64> {
         self.kernel()
             .peek(tid(pid), address)

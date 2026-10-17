@@ -104,6 +104,10 @@ impl Glibc<'_> {
             )));
         };
 
+        self.field_at(name, address)
+    }
+
+    fn field_at(&self, name: &'static str, address: u64) -> Result<Field, TlsError> {
         let mut bytes = [0; 12];
         self.read(address, &mut bytes)?;
         let (words, _) = bytes.as_chunks::<4>();
@@ -255,6 +259,26 @@ impl Glibc<'_> {
 
         Ok(block)
     }
+}
+
+/// Reads the target-namespace TID from the saved thread's own TCB, using
+/// an unambiguous descriptor supplied by the core's verified images.
+pub(super) fn target_thread_id(
+    services: &dyn ProcessServices,
+    thread: Pid,
+    descriptor: u64,
+) -> Result<u64, TlsError> {
+    let glibc = Glibc { services };
+    let id = glibc.field_at("_thread_db_pthread_tid", descriptor)?;
+    if id.bits != 32 || id.count != 1 {
+        return Err(failed("the C library's thread id is not one pid_t"));
+    }
+    let pointer = thread_pointer(services, thread)?;
+    let tid = glibc.fetch(id, pointer, 0)?;
+    if tid == 0 || tid > i32::MAX as u64 {
+        return Err(failed("the saved thread has no live target-namespace id"));
+    }
+    Ok(tid)
 }
 
 /// The most threads glibc's lists hold before they count as corrupt.
@@ -671,6 +695,35 @@ mod tests {
         }
 
         process
+    }
+
+    #[test]
+    fn saved_thread_identity_comes_from_its_tcb_and_validated_descriptor() {
+        let mut process = Process::new(1, 0x5555_0000, 0x80);
+        process.descriptor("_thread_db_pthread_tid", 32, 1, 0x2d0);
+        process.write(THREAD_POINTER + 0x2d0, &7u32.to_le_bytes());
+        let descriptor = process.symbols["_thread_db_pthread_tid"];
+        // The note's ID is a host ID, not the target's ID of 7.
+        assert_eq!(
+            target_thread_id(&process, Pid::from_raw(5000), descriptor),
+            Ok(7)
+        );
+        for id in [0, u32::MAX, 1 << 31] {
+            process.write(THREAD_POINTER + 0x2d0, &id.to_le_bytes());
+            assert!(target_thread_id(&process, Pid::from_raw(5000), descriptor).is_err());
+        }
+        process.write(THREAD_POINTER + 0x2d0, &7u32.to_le_bytes());
+        for (bits, count) in [(64u32, 1u32), (32, 0), (32, 2), (0, 1)] {
+            process.write(descriptor, &bits.to_le_bytes());
+            process.write(descriptor + 4, &count.to_le_bytes());
+            assert!(target_thread_id(&process, Pid::from_raw(5000), descriptor).is_err());
+        }
+        process.write(descriptor, &32u32.to_le_bytes());
+        process.write(descriptor + 4, &1u32.to_le_bytes());
+        process.memory.remove(&(THREAD_POINTER + 0x2d0));
+        assert!(target_thread_id(&process, Pid::from_raw(5000), descriptor).is_err());
+        process.thread_pointer = 0;
+        assert!(target_thread_id(&process, Pid::from_raw(5000), descriptor).is_err());
     }
 
     #[test]

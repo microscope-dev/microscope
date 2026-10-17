@@ -36,7 +36,6 @@ mod text;
 mod threads;
 mod values;
 
-use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use super::{
@@ -383,7 +382,16 @@ impl Reading {
         };
 
         states.sort_by_key(|state| (state.native, state.interpreter));
-        let threads: BTreeSet<ThreadId> = stop.threads().into_iter().collect();
+        let threads = match threads::ThreadIds::new(stop) {
+            Ok(threads) => threads,
+            Err(problem) => {
+                gaps.push(problem);
+                return Partial {
+                    value: stacks,
+                    gaps,
+                };
+            }
+        };
         walk_threads(
             &mut frames::Walk {
                 reader,
@@ -513,26 +521,39 @@ impl Reading {
             }
         };
 
-        let threads: BTreeSet<ThreadId> = stop.threads().into_iter().collect();
+        let mut threads = None;
+        let mut mapping_gap = false;
         let key: Arc<str> = "gil".into();
         for (state, gil) in states.iter().zip(gil::gil_states(&reader, &states)) {
-            let thread = ThreadId::new(state.native);
-            if !threads.contains(&thread) {
-                continue;
-            }
-
-            match gil {
-                Ok(gil) => {
-                    if let Some(value) = gil.and_then(gil::Gil::label) {
-                        labels.push(ThreadLabels {
-                            thread,
-                            labels: vec![(Arc::clone(&key), value.into())],
-                        });
-                    }
+            let value = match gil {
+                Ok(gil) => match gil.and_then(gil::Gil::label) {
+                    Some(value) => value,
+                    None => continue,
+                },
+                Err(problem) => {
+                    gaps.push(
+                        format!(
+                            "Python native thread {}'s hold on the GIL cannot be read: {problem}",
+                            state.native
+                        )
+                        .into(),
+                    );
+                    continue;
                 }
-                Err(problem) => gaps.push(
-                    format!("thread {thread}'s hold on the GIL cannot be read: {problem}").into(),
-                ),
+            };
+            match threads.get_or_insert_with(|| threads::ThreadIds::new(stop)) {
+                Ok(threads) => match threads.resolve(state.native) {
+                    Ok(thread) => labels.push(ThreadLabels {
+                        thread,
+                        labels: vec![(Arc::clone(&key), value.into())],
+                    }),
+                    Err(problem) => gaps.push(problem),
+                },
+                Err(problem) if !mapping_gap => {
+                    gaps.push(Arc::clone(problem));
+                    mapping_gap = true;
+                }
+                Err(_) => {}
             }
         }
 
@@ -549,23 +570,18 @@ impl Reading {
 fn walk_threads(
     walk: &mut frames::Walk<'_, '_>,
     states: &[threads::ThreadState],
-    threads: &BTreeSet<ThreadId>,
+    threads: &threads::ThreadIds,
     stacks: &mut InterpretedStacks,
     gaps: &mut Vec<Arc<str>>,
 ) {
     for state in states.iter().filter(|state| state.frame.is_some()) {
-        let thread = ThreadId::new(state.native);
-        if !threads.contains(&thread) {
-            gaps.push(
-                format!(
-                    "a Python thread runs on native thread {}, which is none of the \
-                         process's threads",
-                    state.native
-                )
-                .into(),
-            );
-            continue;
-        }
+        let thread = match threads.resolve(state.native) {
+            Ok(thread) => thread,
+            Err(problem) => {
+                gaps.push(problem);
+                continue;
+            }
+        };
 
         let (frames, end) = walk.thread(state);
         if frames.is_empty() {
@@ -647,7 +663,7 @@ impl RuntimeModel for PythonRuntime {
                 .iter()
                 .skip(first)
                 .take(limit)
-                .map(|&task| values.task(task, tasks.running.get(&task).copied()))
+                .map(|&task| values.task(task, tasks.running.get(&task)))
                 .collect();
             let end = first.saturating_add(page.len());
             Partial {
@@ -673,14 +689,36 @@ impl RuntimeModel for PythonRuntime {
         };
 
         let running = reading.read_values(stop, None, |values, _| {
-            let (states, _) = threads::thread_states(&values.reader, values.runtime)?;
-            for state in states.iter().filter(|state| state.native == thread.get()) {
+            let ids = threads::ThreadIds::new(stop)?;
+            let native = stop.target_thread_id(thread).ok_or_else(|| {
+                Arc::<str>::from("the thread has no proven target-namespace identity")
+            })?;
+            if ids.resolve(native.get())? != thread {
+                return Err(
+                    "the thread's target-namespace identity does not map back to it".into(),
+                );
+            }
+            let (states, gaps) = threads::thread_states(&values.reader, values.runtime)?;
+            if !gaps.is_empty() {
+                return Err(gaps
+                    .iter()
+                    .map(AsRef::as_ref)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+                    .into());
+            }
+            let mut running = None;
+            for state in states.iter().filter(|state| state.native == native.get()) {
                 if let Some(task) = values.running_task(state)? {
-                    return Ok(Some(task));
+                    if running.is_some_and(|other| other != task) {
+                        return Err(
+                            "the thread's interpreter states report different running tasks".into(),
+                        );
+                    }
+                    running = Some(task);
                 }
             }
-
-            Ok(None)
+            Ok(running)
         });
         match running {
             Ok(Some(task)) => ThreadActivity::Task {
@@ -717,8 +755,11 @@ impl RuntimeModel for PythonRuntime {
                 return Err(gaps.join("; ").into());
             }
 
-            if let Some(&thread) = tasks.running.get(&object) {
-                return Ok(Some(TaskContext::OnThread(thread)));
+            if let Some(thread) = tasks.running.get(&object) {
+                return thread
+                    .as_ref()
+                    .map(|&thread| Some(TaskContext::OnThread(thread)))
+                    .map_err(Arc::clone);
             }
 
             let awaits = values.awaits(walk, object);

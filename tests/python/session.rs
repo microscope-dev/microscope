@@ -220,10 +220,43 @@ impl PythonSession {
         fixture: &str,
         name: &str,
     ) -> (Self, Vec<Vec<String>>) {
+        Self::attach_at_in(interpreter, fixture, name, false).await
+    }
+
+    /// A real nested PID namespace, retaining the outer proc mount so the
+    /// fixture can report its debugger-visible PID separately from `getpid()`.
+    pub async fn attach_in_pid_namespace_at(
+        interpreter: &str,
+        fixture: &str,
+        name: &str,
+    ) -> (Self, Vec<Vec<String>>) {
+        Self::attach_at_in(interpreter, fixture, name, true).await
+    }
+
+    async fn attach_at_in(
+        interpreter: &str,
+        fixture: &str,
+        name: &str,
+        namespace: bool,
+    ) -> (Self, Vec<Vec<String>>) {
         let streams = Streams::new();
-        let child = Ended(
+        let mut command = if namespace {
+            let mut command = std::process::Command::new("unshare");
+            command.args([
+                "--user",
+                "--map-root-user",
+                "--pid",
+                "--fork",
+                "--kill-child=KILL",
+            ]);
+            command.arg(python::interpreter(interpreter));
+            command
+        } else {
             std::process::Command::new(python::interpreter(interpreter))
-                .args(command(fixture, &[]))
+        };
+        let child = Ended(
+            command
+                .args(self::command(fixture, &[]))
                 .stdin(Stdio::from(streams.reader))
                 .stdout(Stdio::from(streams.file))
                 .stderr(Stdio::from(streams.errors))
@@ -236,7 +269,22 @@ impl PythonSession {
             directories: python::debug_directory(interpreter).into_iter().collect(),
             ..DebugFileOptions::default()
         };
-        let process = ProcessId::new(u64::from(child.0.id()));
+        let process = if namespace {
+            let host = Report::read(&streams.output)
+                .lines()
+                .find(|fields| fields[0] == "host_pid")
+                .expect("the namespace fixture reports its host PID")[1]
+                .parse()
+                .expect("a host PID");
+            assert_ne!(
+                host,
+                u64::from(child.0.id()),
+                "the unshare parent is not the interpreter"
+            );
+            ProcessId::new(host)
+        } else {
+            ProcessId::new(u64::from(child.0.id()))
+        };
         let debugger = Debugger::attach_with(process, None, &debug_files)
             .await
             .expect("attach to the fixture");

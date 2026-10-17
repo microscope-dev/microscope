@@ -100,6 +100,22 @@ impl Display for Described<'_> {
 }
 
 impl<P: InspectionOps> InspectionOps for Recorded<P> {
+    fn target_thread_id(
+        &self,
+        process: Pid,
+        thread: Pid,
+    ) -> Option<crate::runtime_model::TargetThreadId> {
+        self.0.target_thread_id(process, thread)
+    }
+
+    fn target_thread_ids(
+        &self,
+        process: Pid,
+        threads: &[Pid],
+    ) -> Vec<(Pid, crate::runtime_model::TargetThreadId)> {
+        self.0.target_thread_ids(process, threads)
+    }
+
     fn read_word(&self, pid: Pid, address: u64) -> Result<u64> {
         self.0.read_word(pid, address)
     }

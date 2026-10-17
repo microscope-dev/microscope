@@ -356,8 +356,23 @@ backtrace says so instead of silently showing native frames only.
 
 **Threads and frames.** At a stop, the model walks `_PyRuntime`'s interpreters
 and each one's thread states (`threads.rs`), and maps each to a native thread
-by its `native_thread_id`. A thread's chain of frames begins at its current
-frame (3.12: through its `_PyCFrame`). `frames.rs` walks it innermost first.
+by its `native_thread_id` through `RuntimeStop::target_thread_id`. Target
+IDs and debugger `ThreadId`s occupy different namespaces. The Linux edge
+checks the proc mount's namespace and the thread's process membership before
+using the innermost `NSpid`; missing evidence never implies identity. Batched
+lookups anchor one proc mount and share its namespace check; the mapping has
+an explicit 16384-host-thread resource bound. Published stops retain the
+identity evidence with `StopMemory`, invalidated with its memory blocks, so
+per-thread activity queries do not repeat proc reads. Cores
+read the target ID from the saved thread's TCB with an unambiguous glibc
+`_thread_db_pthread_tid` descriptor, resolved once for the immutable core.
+Missing descriptors, unreadable TCBs,
+and ambiguous mappings produce gaps. A running asyncio task keeps its running
+state when its host thread is unknown, with an explanation and no guessed
+thread or parked-frame context. The simulator supplies its explicit single
+namespace mapping.
+
+A thread's chain of frames begins at its current frame (3.12: through its `_PyCFrame`). `frames.rs` walks it innermost first.
 Frames the thread owns run code; the interpreter's entry frame ends each
 segment that one activation of the evaluation loop runs. The walk ends on a
 loop, an unknown owner, or an unreadable frame, and says why. From 3.15 every

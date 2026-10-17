@@ -222,6 +222,7 @@ fn one_run(units: u8, delta: u8) -> [u8; 3] {
 struct Memory {
     bytes: BTreeMap<u64, u8>,
     threads: Vec<ThreadId>,
+    target_ids: BTreeMap<ThreadId, Option<crate::runtime_model::TargetThreadId>>,
 }
 
 impl Memory {
@@ -268,6 +269,15 @@ impl RuntimeStop for Memory {
 
     fn threads(&self) -> Vec<ThreadId> {
         self.threads.clone()
+    }
+
+    // This fixture's default platform has no PID namespace. Individual
+    // tests override identities, including explicitly unavailable ones.
+    fn target_thread_id(&self, thread: ThreadId) -> Option<crate::runtime_model::TargetThreadId> {
+        self.target_ids
+            .get(&thread)
+            .copied()
+            .unwrap_or_else(|| crate::runtime_model::TargetThreadId::new(thread.get()))
     }
 }
 
@@ -1076,6 +1086,7 @@ mod expressions;
 mod injection;
 mod instances;
 mod numpy;
+mod thread_ids;
 mod values;
 
 /// A runtime whose frames cannot be read, as one of a version microscope

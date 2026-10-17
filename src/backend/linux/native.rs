@@ -42,6 +42,26 @@ use super::{
 /// Read-only access to a stopped target's registers, memory, and thread-local
 /// storage. Live tracing and post-mortem targets share every inspection path.
 pub(super) trait InspectionOps {
+    /// A thread's id in its own namespace, if the edge proves the mapping.
+    fn target_thread_id(
+        &self,
+        _process: Pid,
+        _thread: Pid,
+    ) -> Option<crate::runtime_model::TargetThreadId> {
+        None
+    }
+
+    fn target_thread_ids(
+        &self,
+        process: Pid,
+        threads: &[Pid],
+    ) -> Vec<(Pid, crate::runtime_model::TargetThreadId)> {
+        threads
+            .iter()
+            .filter_map(|&thread| Some((thread, self.target_thread_id(process, thread)?)))
+            .collect()
+    }
+
     fn read_word(&self, pid: Pid, address: u64) -> Result<u64>;
 
     fn read_memory_word(
@@ -334,6 +354,37 @@ impl LinuxPtrace {
 }
 
 impl InspectionOps for LinuxPtrace {
+    fn target_thread_id(
+        &self,
+        process: Pid,
+        thread: Pid,
+    ) -> Option<crate::runtime_model::TargetThreadId> {
+        super::proc_status::target_thread_id(
+            u32::try_from(process.as_raw()).ok()?,
+            u32::try_from(thread.as_raw()).ok()?,
+        )
+    }
+
+    fn target_thread_ids(
+        &self,
+        process: Pid,
+        threads: &[Pid],
+    ) -> Vec<(Pid, crate::runtime_model::TargetThreadId)> {
+        let Ok(process) = u32::try_from(process.as_raw()) else {
+            return Vec::new();
+        };
+        let threads = threads
+            .iter()
+            .filter_map(|thread| u32::try_from(thread.as_raw()).ok())
+            .collect::<Vec<_>>();
+        super::proc_status::target_thread_ids(process, &threads)
+            .into_iter()
+            .filter_map(|(thread, target)| {
+                Some((Pid::from_raw(i32::try_from(thread).ok()?), target))
+            })
+            .collect()
+    }
+
     fn read_word(&self, pid: Pid, address: u64) -> Result<u64> {
         self.assert_owner_thread();
         let value = ptrace::read(pid, address as ptrace::AddressType)

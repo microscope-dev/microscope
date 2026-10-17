@@ -48,7 +48,7 @@ pub(super) struct Tasks {
     pub(super) all: Vec<VirtualAddress>,
 
     /// The thread running each task one runs.
-    pub(super) running: BTreeMap<VirtualAddress, ThreadId>,
+    pub(super) running: BTreeMap<VirtualAddress, Result<ThreadId, Problem>>,
 
     /// Why some tasks may be missing.
     pub(super) gaps: Vec<Problem>,
@@ -83,22 +83,47 @@ impl Values<'_, '_> {
             gaps: Vec::new(),
         };
 
+        let mut ids = None;
         let mut interpreters = Vec::new();
         for state in states {
             if !interpreters.contains(&(state.interpreter_state, state.interpreter)) {
                 interpreters.push((state.interpreter_state, state.interpreter));
             }
 
-            let thread = ThreadId::new(state.native);
             match self.running_task(state) {
                 Ok(Some(task)) => {
-                    found.running.insert(task, thread);
+                    let ids = ids.get_or_insert_with(|| {
+                        let ids = super::threads::ThreadIds::new(self.reader.stop);
+                        if let Err(problem) = &ids {
+                            found.gaps.push(Arc::clone(problem));
+                        }
+                        ids
+                    });
+                    let thread = ids
+                        .as_ref()
+                        .map_err(Arc::clone)
+                        .and_then(|ids| ids.resolve(state.native));
+                    if ids.is_ok()
+                        && let Err(problem) = &thread
+                    {
+                        found.gaps.push(Arc::clone(problem));
+                    }
+                    if let std::collections::btree_map::Entry::Vacant(slot) =
+                        found.running.entry(task)
+                    {
+                        slot.insert(thread);
+                    } else {
+                        let problem: Problem =
+                            "asyncio reports one task running in multiple thread states".into();
+                        found.running.insert(task, Err(Arc::clone(&problem)));
+                        found.gaps.push(problem);
+                    }
                 }
                 Ok(None) => {}
                 Err(problem) => found.gaps.push(problem),
             }
 
-            let whose = format!("thread {}", state.native);
+            let whose = format!("Python native thread {}", state.native);
             self.task_list(
                 (state.address, Field::ThreadAsyncioTasksHead),
                 &whose,
@@ -133,7 +158,7 @@ impl Values<'_, '_> {
         let task = VirtualAddress::new(task);
         if !self.is_task(task)? {
             return Err(format!(
-                "thread {} runs the task at {task:#x}, which is no asyncio.Task",
+                "Python native thread {} runs the task at {task:#x}, which is no asyncio.Task",
                 state.native
             )
             .into());
@@ -209,9 +234,14 @@ impl Values<'_, '_> {
     }
 
     /// The task at `task`, which the thread `running` runs, if one does.
-    pub(super) fn task(&self, task: VirtualAddress, running: Option<ThreadId>) -> RuntimeTask {
+    pub(super) fn task(
+        &self,
+        task: VirtualAddress,
+        running: Option<&Result<ThreadId, Problem>>,
+    ) -> RuntimeTask {
         let (state, detail) = match running {
-            Some(_) => (TaskState::Running, None),
+            Some(Ok(_)) => (TaskState::Running, None),
+            Some(Err(problem)) => (TaskState::Running, Some(Arc::clone(problem))),
             None => match self.waiting(task) {
                 Ok(state) => state,
                 Err(problem) => (TaskState::Unknown(problem), None),
@@ -236,7 +266,7 @@ impl Values<'_, '_> {
             locator: task.get(),
             state,
             detail,
-            thread: running,
+            thread: running.and_then(|thread| thread.as_ref().ok().copied()),
             resume: None,
             creation: None,
             spawned: None,

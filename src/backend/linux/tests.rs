@@ -940,6 +940,7 @@ struct FakeTrace {
     discard_writes: bool,
     siginfo: RefCell<BTreeMap<Pid, SignalMetadata>>,
     program_counters: RefCell<BTreeMap<Pid, u64>>,
+    target_ids: BTreeMap<Pid, Option<crate::runtime_model::TargetThreadId>>,
 
     /// Threads holding a SIGTRAP queued behind an interrupt stop.
     queued_traps: RefCell<BTreeSet<Pid>>,
@@ -1111,6 +1112,18 @@ impl FakeTrace {
 }
 
 impl InspectionOps for FakeTrace {
+    fn target_thread_id(
+        &self,
+        _process: Pid,
+        thread: Pid,
+    ) -> Option<crate::runtime_model::TargetThreadId> {
+        // This fixture's default kernel has one PID namespace; tests can
+        // supply a nested or unavailable mapping explicitly.
+        self.target_ids.get(&thread).copied().unwrap_or_else(|| {
+            crate::runtime_model::TargetThreadId::new(u64::try_from(thread.as_raw()).ok()?)
+        })
+    }
+
     fn read_word(&self, pid: Pid, address: u64) -> Result<u64> {
         if *self.kill_at_read.borrow() == Some((pid, address)) {
             self.kill_at_read.borrow_mut().take();
@@ -8364,4 +8377,21 @@ fn a_step_leaves_runtime_machinery_in_a_library() {
         None,
         "no module holds the address"
     );
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn recorded_identity_batches_preserve_nested_and_unknown_thread_mappings() {
+    let host = Pid::from_raw(5000);
+    let collision = Pid::from_raw(7);
+    let target = crate::runtime_model::TargetThreadId::new(7).unwrap();
+    let edge = super::recorded::Recorded(FakeTrace {
+        target_ids: BTreeMap::from([(host, Some(target)), (collision, None)]),
+        ..FakeTrace::default()
+    });
+    assert_eq!(
+        edge.target_thread_ids(host, &[collision, host]),
+        [(host, target)]
+    );
+    assert_eq!(edge.target_thread_id(host, collision), None);
 }

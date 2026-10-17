@@ -335,3 +335,45 @@ async fn each_python_frames_source_is_the_line_it_runs() {
         session.shutdown().await;
     }
 }
+
+/// The host IDs are intentionally different from every CPython ID, and
+/// decoding status must not depend on the kernel comm field being UTF-8.
+#[tokio::test]
+async fn a_pid_namespaces_python_frames_match_the_reported_target_threads() {
+    for interpreter in ["3.14", "3.14t"] {
+        let (mut session, truth) =
+            PythonSession::attach_in_pid_namespace_at(interpreter, "thread_ids.py", "parked").await;
+        let snapshot = session.scenario.snapshot().await;
+        let threads = snapshot.threads;
+        assert_eq!(threads.len(), 2, "{}: {threads:?}", session.context());
+        let host_process = match snapshot.inferior {
+            InferiorState::Stopped { process_id, .. } => process_id.get(),
+            other => panic!("not stopped: {other:?}"),
+        };
+        for (native, printer, reported) in reported_threads(&truth) {
+            let host = if printer {
+                host_process
+            } else {
+                threads
+                    .iter()
+                    .find(|thread| thread.id.get() != host_process)
+                    .expect("worker host thread")
+                    .id
+                    .get()
+            };
+            assert_ne!(host, native);
+            let trace = session.backtrace(ThreadId::new(host)).await;
+            check_frames(&trace, &reported, if printer { 2 } else { 0 }).unwrap_or_else(|lie| {
+                panic!(
+                    "{} native {native}, host {host}: {lie}\n{trace:#?}",
+                    session.context()
+                )
+            });
+        }
+        session
+            .scenario
+            .operation("kill namespace init", session.scenario.handle().kill())
+            .await;
+        session.shutdown().await;
+    }
+}

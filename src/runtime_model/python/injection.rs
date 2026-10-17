@@ -6,23 +6,8 @@ use std::sync::Arc;
 use super::objects::{Problem, Reader};
 use super::threads;
 use crate::image::python::{Constant, Field};
-use crate::runtime_model::RuntimeWrite;
+use crate::runtime_model::{RuntimeWrite, TargetThreadId};
 use crate::{ThreadId, VirtualAddress};
-
-/// The id CPython observes, which may differ from the controller's id in
-/// a PID namespace. The caller supplies the proven correspondence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct TargetThreadId(u64);
-
-impl TargetThreadId {
-    pub(super) const fn new(value: u64) -> Option<Self> {
-        if value == 0 { None } else { Some(Self(value)) }
-    }
-
-    pub(super) const fn get(self) -> u64 {
-        self.0
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Candidate {
