@@ -83,6 +83,8 @@ pub enum Failure {
     Configuration,
     Cleanup,
     Initialization,
+    Reentry,
+    Interrupted,
 }
 
 impl Failure {
@@ -96,6 +98,12 @@ impl Failure {
             Self::Initialization => {
                 "agent initialization failed; any previous installation is unconfirmed"
             }
+            Self::Reentry => {
+                "user code reentered agent configuration; monitoring coverage is unconfirmed and the agent is disarmed"
+            }
+            Self::Interrupted => {
+                "an exception interrupted the agent; the interruption is preserved and the agent is disarmed"
+            }
         }
     }
 }
@@ -105,13 +113,15 @@ pub fn decode(event: u64, number: u64, argument: u64) -> Result<Report, std::syn
         (0, generation, 0..=6) => Ok(Report::Armed { generation }),
         (1, number, 0) if number != 0 => Ok(Report::Breakpoint { number }),
         (2, number, 0) if number != 0 => Ok(Report::StepEnded { number }),
-        (3, generation, 1..=4) => Ok(Report::Failed {
+        (3, generation, 1..=6) => Ok(Report::Failed {
             generation,
             failure: match argument {
                 1 => Failure::ToolExhausted,
                 2 => Failure::Configuration,
                 3 => Failure::Cleanup,
-                _ => Failure::Initialization,
+                4 => Failure::Initialization,
+                5 => Failure::Reentry,
+                _ => Failure::Interrupted,
             },
         }),
         _ => Err("invalid Python agent hook report".into()),
@@ -147,6 +157,8 @@ mod tests {
             (2, Failure::Configuration),
             (3, Failure::Cleanup),
             (4, Failure::Initialization),
+            (5, Failure::Reentry),
+            (6, Failure::Interrupted),
         ] {
             assert_eq!(
                 decode(3, 7, argument),
@@ -164,7 +176,7 @@ mod tests {
             (2, 0, 0),
             (2, 1, 1),
             (3, 1, 0),
-            (3, 1, 5),
+            (3, 1, 7),
             (4, 1, 0),
             (u64::MAX, 1, 0),
         ] {

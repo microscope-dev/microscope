@@ -167,6 +167,24 @@ fn monitoring_callbacks_survive_reconfiguration_and_code_reuse() {
             ("agent_races.py", &["capture", "disable"][..]),
             ("agent_control.py", &["chain"][..]),
             (
+                "agent_safety.py",
+                &[
+                    "drain",
+                    "drain_race",
+                    "hook_interrupt",
+                    "arming_fault",
+                    "reentry",
+                    "keyboard",
+                    "exit",
+                    "custom",
+                    "cancelled",
+                    "timeout",
+                    "malformed",
+                    "interrupt_race",
+                    "reentry_race",
+                ][..],
+            ),
+            (
                 "agent_discovery.py",
                 &[
                     "repeat",
@@ -198,6 +216,7 @@ fn monitoring_callbacks_survive_reconfiguration_and_code_reuse() {
                 let prefix = match fixture {
                     "agent_races.py" => "RACE",
                     "agent_control.py" => "CONTROL AGENT",
+                    "agent_safety.py" => "SAFETY AGENT",
                     _ => "DISCOVERY",
                 };
                 assert!(
@@ -326,5 +345,58 @@ async fn bootstrap_failure_reports_its_generation_through_the_owned_library() {
         );
         assert!(session.output().contains("FAILED BOOTSTRAP OK"));
         session.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn user_reentry_and_interruptions_are_visible_at_the_native_boundary() {
+    use crate::session::PythonSession;
+    use microscope::{ExitStatus, StopReason};
+    let scratch = ScratchDir::new("python-agent-safety-native");
+    let library = scratch.path().join("hook.so");
+    std::fs::write(&library, hook::library()).expect("write companion");
+    let source =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runtime_model/python/agent.py");
+    for interpreter in ["3.14", "3.14t", "3.15", "3.15t"] {
+        for (mode, description) in [
+            ("reentry", "monitoring coverage is unconfirmed"),
+            ("keyboard", "interruption is preserved"),
+            ("exit", "interruption is preserved"),
+            ("custom", "interruption is preserved"),
+            ("cancelled", "interruption is preserved"),
+            ("timeout", "interruption is preserved"),
+        ] {
+            let (mut session, reason, _) = PythonSession::launch_to_stop(
+                interpreter,
+                "agent_safety.py",
+                &[
+                    source.to_str().expect("source path"),
+                    mode,
+                    library.to_str().expect("library path"),
+                    "--native",
+                ],
+                Vec::new(),
+            )
+            .await;
+            assert!(
+                matches!(reason, StopReason::RuntimeEvent { description: ref reported } if reported.contains(description)),
+                "{interpreter} {mode}: {reason:?}: {}",
+                session.output()
+            );
+            assert_eq!(
+                session.scenario.resume_to_stop().await,
+                StopReason::Exited(ExitStatus::Code(0)),
+                "{interpreter} {mode}"
+            );
+            assert!(
+                session
+                    .output()
+                    .lines()
+                    .any(|line| line == format!("SAFETY AGENT OK {mode}")),
+                "{interpreter} {mode}: {}",
+                session.output()
+            );
+            session.shutdown().await;
+        }
     }
 }

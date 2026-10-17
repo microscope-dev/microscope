@@ -360,11 +360,12 @@ impl PythonSession {
         Report::read(&self.output)
     }
 
-    /// The interpreter and fixture, for messages.
+    /// The fixture's complete output so far, including stderr.
     pub fn output(&self) -> String {
         std::fs::read_to_string(&self.output).expect("read fixture output")
     }
 
+    /// The interpreter and fixture, for messages.
     pub fn context(&self) -> String {
         format!("{} {}", self.interpreter, self.fixture)
     }

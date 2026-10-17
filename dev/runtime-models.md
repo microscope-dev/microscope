@@ -338,7 +338,9 @@ are in rdi/rsi/rdx: kind, number, argument. Kind 0 acknowledges a generation
 completion (both require a nonzero number and zero argument), and 3 reports an
 error (argument 1: tool exhaustion; 2: callback/configuration failure with
 confirmed disarming; 3: cleanup failed and prior state is unconfirmed;
-4: initialization failed and any previous installation is unconfirmed). Error
+4: initialization failed and any previous installation is unconfirmed;
+5: observable user reentry makes monitoring coverage unconfirmed;
+6: a user interruption is reported and re-raised, with the agent disarmed). Error
 reports retain the failed generation. Malformed reports produce a visible
 runtime stop. The frame comes from the stopped thread's interpreter state.
 
@@ -350,8 +352,25 @@ stopped, with one outstanding request until its acknowledgement. Callbacks
 check that sequence under the configuration lock. Configuration acknowledgements
 can immediately accept another command in an iterative loop, so repeated edits
 do not grow the Python stack. A malformed command disarms and reports its
-generation. An idle agent has no callbacks: activating it again requires
-source injection. This command transport is still dormant in the controller.
+generation, including invalid reserved header bytes. Before decoding, a
+strict UTF-8 decoding and a string-aware scan bound container nesting to eight levels, and the integer
+parser bounds tokens to 20 characters; malformed input cannot exhaust the
+recursive decoder or reach Python's integer-string conversion limit. A callback discards its
+remaining captured notices when any thread replaces its configuration. Discovery
+failure supersedes an acknowledgement that has not yet been sent. Observable
+user reentry during configuration disarms with an explicit coverage failure.
+Non-Exception interruptions (including cancellation) are reported and re-raised.
+Command decoding distinguishes malformed requests from unexpected exceptions,
+so an ordinary exception raised by a user signal handler during decoding is
+also preserved. Ordinary faults during instrumentation remain contained and
+reported as configuration failures. Delayed interruption and reentry handling
+cannot disarm a newer generation. The outer exception boundary captures
+interruptions after hooks as well as inside decoding and discovery; a
+superseded operation reports unconfirmed cleanup without changing its successor. An idle agent has no callbacks: activating it again requires
+source injection. The first source configuration loads a pristine companion
+whose published sequence is zero; subsequent commands use its slot. Generations
+are monotonic within one library owner, and controller hook binding must
+distinguish owners. This command transport is still dormant in the controller.
 The bootstrap reports initialization failures through its request's own library,
 even when an incompatible interpreter-local module already exists.
 A single lock serializes configuration and callbacks on free-threaded builds,
