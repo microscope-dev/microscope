@@ -61,6 +61,14 @@ pub(super) use tls::CLibrary;
 use tls::TlsModule;
 
 mod activation;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the P4.7 lifecycle owner is integrated separately"
+    )
+)]
+mod agent_files;
 mod async_frames;
 pub use async_frames::resume_address;
 mod awaits;

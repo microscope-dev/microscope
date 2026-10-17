@@ -17,6 +17,7 @@ their own, join native backtraces as interpreted frames.
 | `src/runtime_model/python/` | CPython's threads, frames, code objects, line tables, and built-in values |
 | `src/runtime_model/python/agent.rs`, `agent.py`, `hook.rs` | Whole-state scripts, monitoring transport, native hook ELF and ABI |
 | `src/runtime_model/python/injection.rs` | Bounded PEP 768 request preparation; controller integration remains unfinished |
+| `src/backend/linux/agent_files.rs` | Private target-namespace artifacts and explicit acknowledgement/exit cleanup; controller integration remains unfinished |
 | `src/backend/linux/interpreted.rs` | Interpreted frames placed in backtraces, and their variables |
 | `src/debug_info/coroutines.rs`, `src/debug_info/roles.rs` | Static coroutine and code-role metadata |
 | `src/image/resumes.rs` | Validated resume-point tables |
@@ -164,10 +165,13 @@ still remains P4.7.
 A runtime model never writes: `RuntimeStop` only reads. A model that needs
 the process changed, as installing Python's agent sets fields of a thread
 state, returns `RuntimeWrite`s. Each carries the bytes the model read there.
-`Controller::write_for_runtime` makes them only while every thread is
-stopped, and only where memory still holds those bytes, all or none. A trap
-byte is hidden, as for any write. Every runtime write goes through that one
-function, which records it.
+`Controller::write_for_runtime` checks every expected byte before making the
+first write, while every thread is stopped. A kernel write failure can leave
+earlier bytes changed; its error reports the partial progress. A caller must
+retain any artifacts a partially published request might still consume until
+it proves cancellation, acknowledgement, or target exit. A trap byte is hidden,
+as for any write. Every runtime write goes through that one function, which
+records it.
 
 ## Resume points
 
