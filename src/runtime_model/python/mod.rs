@@ -643,6 +643,12 @@ impl RuntimeModel for PythonRuntime {
                 }
             }
             crate::BreakpointSpec::Function(name) if name.starts_with("py:") => {
+                // The agent treats an empty name as any function.
+                if name.len() == 3 {
+                    return Some(Err(
+                        "a Python function breakpoint needs a function name".into()
+                    ));
+                }
                 crate::ManagedPlace::Function {
                     name: name[3..].into(),
                 }

@@ -9,13 +9,17 @@ pub const CONTROL_HEADER: usize = 32;
 pub const CONTROL_CAPACITY: u32 = 64 * 1024;
 pub const CONTROL_SIZE: usize = CONTROL_HEADER + CONTROL_CAPACITY as usize;
 pub const CONTROL_MAGIC: &[u8; 8] = b"MICPYC02";
+/// glibc before 2.35 relocates the dynamic section in place, so it follows
+/// the command slot in the writable segment.
+const DYNAMIC_OFFSET: usize = CONTROL_OFFSET + CONTROL_SIZE;
+const DYNAMIC_SIZE: usize = 96;
 
 #[expect(
     clippy::too_many_lines,
     reason = "one fixed ELF layout keeps offsets auditable together"
 )]
 pub fn library() -> Vec<u8> {
-    let mut elf = vec![0; CONTROL_OFFSET + CONTROL_SIZE];
+    let mut elf = vec![0; DYNAMIC_OFFSET + DYNAMIC_SIZE];
     elf[..16].copy_from_slice(b"\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0");
     let mut put = |offset: usize, bytes: &[u8]| {
         elf[offset..offset + bytes.len()].copy_from_slice(bytes);
@@ -30,8 +34,8 @@ pub fn library() -> Vec<u8> {
     }
     for (index, kind, flags, offset, size, alignment) in [
         (0, 1_u32, 5_u32, 0_u64, 1600_u64, 4096_u64),
-        (1, 1, 6, 4096, CONTROL_SIZE as u64, 4096),
-        (2, 2, 4, 752, 96, 8),
+        (1, 1, 6, 4096, (CONTROL_SIZE + DYNAMIC_SIZE) as u64, 4096),
+        (2, 2, 6, DYNAMIC_OFFSET as u64, DYNAMIC_SIZE as u64, 8),
         (3, 0x6474_e551, 6, 0, 0, 16),
     ] {
         let at = 64 + index * 56;
@@ -81,8 +85,8 @@ pub fn library() -> Vec<u8> {
     .into_iter()
     .enumerate()
     {
-        put(752 + index * 16, &tag.to_le_bytes());
-        put(760 + index * 16, &value.to_le_bytes());
+        put(DYNAMIC_OFFSET + index * 16, &tag.to_le_bytes());
+        put(DYNAMIC_OFFSET + 8 + index * 16, &value.to_le_bytes());
     }
     put(
         864,
@@ -110,7 +114,16 @@ pub fn library() -> Vec<u8> {
         (7, 11, 2, 544, 96, 3, 8, 24),
         (15, 3, 2, 640, strings.len() as u64, 0, 1, 0),
         (23, 5, 2, 720, 28, 2, 4, 4),
-        (29, 6, 2, 752, 96, 3, 8, 16),
+        (
+            29,
+            6,
+            3,
+            DYNAMIC_OFFSET as u64,
+            DYNAMIC_SIZE as u64,
+            3,
+            8,
+            16,
+        ),
         (38, 3, 0, 864, 64, 0, 1, 0),
         (48, 1, 2, 928, 76, 0, 8, 0),
         (

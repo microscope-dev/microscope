@@ -10,6 +10,7 @@ if sys.version_info < (3, 14):
     raise RuntimeError("microscope's monitoring transport requires CPython 3.14 or later")
 
 import ctypes
+import gc
 import json
 import _thread
 import _weakref
@@ -29,6 +30,10 @@ CONTROL_HEADER = 32
 CONTROL_CAPACITY = 65536
 CONTROL_MAGIC = b'MICPYC02'
 discovered = {}
+# Other threads run concurrently with this one in a free-threaded build, so
+# their frames can change, and be freed, under a reader.
+FREE_THREADED = 't' in sys.abiflags
+_objects = gc.get_objects
 # Configuration and callbacks can run concurrently in free-threaded builds.
 # No native hook is called while this lock is held.
 lock = _bootstrap_lock
@@ -73,6 +78,11 @@ def discover(code):
         if probe[0] in LOCAL and matches(probe, code):
             mask |= getattr(events, probe[0])
     if mask:
+        # A freed tool's events linger on code until it next starts or
+        # resumes. Setting the same events again would change nothing,
+        # leaving locations that tool disabled disabled.
+        if monitoring.get_local_events(tool, code):
+            monitoring.set_local_events(tool, code, 0)
         monitoring.set_local_events(tool, code, mask)
 
     # Code equality can ignore its filename. Cache by identity and retain
@@ -82,6 +92,24 @@ def discover(code):
             if discovered.get(identity) is reference:
                 discovered.pop(identity, None)
     discovered[identity] = _weakref.ref(code, expired)
+
+
+def running_code():
+    """Code that may be running now, including on other threads."""
+    if FREE_THREADED:
+        # Never read another thread's frames. The collector tracks code in
+        # this build and lists it while every thread is at a safe point;
+        # code is immutable. Uncalled matching code is instrumented early.
+        return [code for code in _objects() if type(code) is CODE
+                and any(probe[0] in LOCAL and matches(probe, code)
+                        for probe in probes)]
+    # The GIL keeps another thread's frame objects consistent here.
+    codes = []
+    for frame in sys._current_frames().values():
+        while frame is not None:
+            codes.append(frame.f_code)
+            frame = frame.f_back
+    return codes
 
 
 def failed(wanted_generation, reason=2):
@@ -260,9 +288,21 @@ def callback(event):
                 if missed is not None:
                     notices = [missed]
                 report_hook, report_owner, report_generation = hook, _owner, generation
-            for notice in notices:
-                if emit(notice, report_hook, report_owner, report_generation):
-                    break  # A consumed configuration supersedes the batch.
+            emitted = []
+            while notices:
+                notice = notices.pop(0)
+                superseded = emit(notice, report_hook, report_owner, report_generation)
+                emitted.append(notice)
+                if superseded:
+                    # A consumed configuration supersedes the batch. Sites
+                    # keep their numbers, so report what this event hits
+                    # under it that has not been reported already.
+                    with lock:
+                        notices = [] if tool is None else [
+                            hit for hit in dispatch(event, code, location)
+                            if hit not in emitted]
+                        report_hook, report_owner, report_generation = (
+                            hook, _owner, generation)
         except BaseException:
             emit_interruption()
             raise
@@ -340,12 +380,11 @@ def configure(library, wanted_generation, wanted_probes, replacement=None):
             if probe[0] in OTHER:
                 mask |= getattr(events, probe[0])
         monitoring.set_events(tool, mask)
-        # Enable discovery before scanning frames: another thread can enter
-        # code while this one configures a free-threaded interpreter.
-        for frame in sys._current_frames().values():
-            while frame is not None:
-                discover(frame.f_code)
-                frame = frame.f_back
+        # Enable discovery before scanning: another thread can enter code
+        # while this one configures a free-threaded interpreter.
+        if any(probe[0] in LOCAL for probe in probes):
+            for code in running_code():
+                discover(code)
     except Exception:
         return failed(generation)
     except BaseException:
@@ -395,6 +434,10 @@ while _pending:
     _pending.extend(value for value in _code.co_consts if type(value) is type(_code))
 INTERNAL = frozenset(_internal)
 del _pending, _internal, _code
+CODE = type(matches.__code__)
+if FREE_THREADED and not gc.is_tracked(matches.__code__):
+    raise RuntimeError("microscope cannot find running code safely: this "
+                       "free-threaded build's collector does not track code")
 
 # Published only after initialization succeeds; the bootstrap serializes it.
 _microscope_loaded = 2

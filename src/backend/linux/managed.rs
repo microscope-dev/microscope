@@ -110,6 +110,11 @@ impl ManagedSites {
         self.stale.insert(runtime);
     }
 
+    /// Whether the runtime's arming changed since it was last armed.
+    pub(super) fn is_stale(&self, runtime: RuntimeId) -> bool {
+        self.stale.contains(&runtime)
+    }
+
     /// Whether `owner` owns the location.
     pub(super) fn owns(&self, location: &ManagedLocation, owner: BreakpointId) -> bool {
         self.sites

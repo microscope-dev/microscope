@@ -1728,7 +1728,7 @@ impl WatchHarness {
     }
 
     /// Marks every thread running inside a process-wide continue.
-    fn start_continue(&mut self) {
+    pub(super) fn start_continue(&mut self) {
         let inferior = self.controller.inferior.as_mut().expect("inferior");
         inferior.public_stop = None;
         inferior.active = Some(ActiveExecution {
@@ -1745,7 +1745,7 @@ impl WatchHarness {
 
     /// Delivers the SIGSTOP each still-running thread was asked for. A
     /// thread that stopped for another reason keeps its SIGSTOP pending.
-    fn settle_requested_stops(&mut self) {
+    pub(super) fn settle_requested_stops(&mut self) {
         let requested = self
             .controller
             .inferior
@@ -6005,6 +6005,45 @@ fn a_runtime_resolves_arms_and_reports_a_managed_breakpoint() {
         Some(&Vec::new()),
         "the runtime is armed with nothing once the breakpoint is gone"
     );
+}
+
+/// A runtime whose arming changed has not accepted the change until it is
+/// armed, as when an error ends an edit between claiming and arming.
+#[test]
+fn a_managed_change_not_yet_armed_is_not_shown_ready() {
+    let mut harness = watch_harness(1);
+    scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            internal: vec![crate::runtime_model::HookPlace::Own(ImageAddress::new(
+                0x40,
+            ))],
+            ..ScriptedRuntime::default()
+        },
+    );
+    let breakpoint = harness
+        .add_spec(BreakpointSpec::Source {
+            path: "pending.scripted".into(),
+            line: crate::LineNumber::new(3).expect("line"),
+        })
+        .expect("armed");
+    assert!(breakpoint.pending_locations.is_empty());
+    let crate::BreakpointLocation::Managed(location) = &breakpoint.locations[0].location else {
+        panic!("a managed location: {breakpoint:?}");
+    };
+    harness
+        .controller
+        .inferior
+        .as_mut()
+        .expect("inferior")
+        .managed
+        .mark_stale(location.runtime);
+    let snapshot = harness.controller.snapshot();
+    assert_eq!(snapshot.breakpoints[0].pending_locations.len(), 1);
+    assert_eq!(snapshot.breakpoints[0].ready_locations().count(), 0);
+    let _ = harness.controller.sync_runtime_arming();
+    let snapshot = harness.controller.snapshot();
+    assert!(snapshot.breakpoints[0].pending_locations.is_empty());
 }
 
 /// Resolution does not prove the runtime accepted its arming. Public

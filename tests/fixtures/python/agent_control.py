@@ -71,4 +71,31 @@ assert target() == 42
 assert records == [(1, 42, 0)], records
 agent.apply(library, limit + 3, ())
 assert agent.tool is None
+if sys.argv[2] == 'batch':
+    # The probed line's callback consumes the configuration published by
+    # the line before it and hits the site. Reporting that acknowledgement
+    # accepts another configuration that keeps the site armed, so the hit
+    # is still reported, once.
+    def batch_target():
+        queue(agent.generation + 1, (batch_probe,))
+        value = 41
+        return value + 1
+
+    batch_probe = ('LINE', 1, 44, __file__, batch_target.__code__.co_firstlineno + 2, '')
+    base = agent.generation + 1
+
+    def batch_record(*args):
+        records.append(args)
+        if args[0] == 0 and args[1] == base + 1:
+            queue(base + 2, (batch_probe,))
+
+    agent.hook = batch_record
+    agent.apply(library, base, (batch_probe,))
+    records.clear()
+    assert batch_target() == 42
+    assert [r[1] for r in records if r[0] == 0] == [base + 1, base + 2], records
+    assert records.count((1, 44, 0)) == 1, records
+    agent.hook = record
+    agent.apply(library, base + 3, ())
+    assert agent.tool is None
 print('CONTROL AGENT OK', sys.argv[2])

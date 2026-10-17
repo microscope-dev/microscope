@@ -21,6 +21,10 @@ pub(super) trait AgentFiles: std::fmt::Debug + Send {
     /// Never publish an independent library-load request from this path.
     fn library(&self) -> Result<&str, Arc<str>>;
     fn script(&mut self, generation: u64, source: &str) -> Result<String, Arc<str>>;
+    /// Revalidates through `thread`, a stopped thread of the target that
+    /// will read the next script. The thread the owner was created for may
+    /// since have exited, taking its procfs directory with it.
+    fn anchor(&mut self, thread: Pid) -> Result<(), Arc<str>>;
     /// The caller proves this generation no longer needs its files: it
     /// was never published, or its script was read and library loaded.
     fn acknowledge(&mut self, generation: u64) -> Result<(), Arc<str>>;
@@ -311,10 +315,22 @@ impl AgentFiles for Files {
         Ok(format!("/tmp/{}/agent-{generation}.py", self.name))
     }
 
+    fn anchor(&mut self, thread: Pid) -> Result<(), Arc<str>> {
+        let process =
+            open(format!("/proc/{thread}").as_str(), DIRECTORY, Mode::empty()).map_err(problem)?;
+        let previous = std::mem::replace(&mut self.process, process);
+        let validated = self.validate();
+        if validated.is_err() {
+            self.process = previous;
+        }
+        validated
+    }
+
     fn acknowledge(&mut self, generation: u64) -> Result<(), Arc<str>> {
-        if let Some(name) = self.scripts.get(&generation).cloned() {
+        // The generation is consumed even if its file cannot be removed.
+        // That file stays owned, bounding preparation, and close reports it.
+        if let Some(name) = self.scripts.remove(&generation) {
             self.remove_owned(&name)?;
-            self.scripts.remove(&generation);
         }
         Ok(())
     }
@@ -680,6 +696,68 @@ mod tests {
             "identity changed before acknowledgement"
         );
         assert_eq!(kept.unwrap(), "foreign source");
+    }
+
+    #[test]
+    fn a_failed_acknowledgement_reports_its_file_rather_than_a_pending_request() {
+        let mut files = files();
+        let library = std::path::PathBuf::from(files.library().unwrap());
+        let script = std::path::PathBuf::from(files.script(1, "source").unwrap());
+        let replacement = library.parent().unwrap().join("replacement");
+        std::fs::write(&replacement, "foreign source").unwrap();
+        std::fs::rename(replacement, &script).unwrap();
+        let acknowledged = files.acknowledge(1);
+        let pending = !files.scripts.is_empty();
+        let prepared = files.script(2, "must not publish");
+        if prepared.is_ok() {
+            files.acknowledge(2).unwrap();
+        }
+        let closed = files.close();
+        std::fs::remove_file(&script).unwrap();
+        files.close().unwrap();
+        assert!(acknowledged.is_err(), "the replacement was retained");
+        assert!(!pending, "the caller proved the generation consumed");
+        assert!(prepared.is_err(), "the retained file bounds preparation");
+        let closed = closed.unwrap_err();
+        assert!(
+            !closed.contains("unacknowledged"),
+            "cleanup names the retained file: {closed}"
+        );
+    }
+
+    #[test]
+    fn the_owner_outlives_the_thread_it_was_created_for() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let worker = std::thread::spawn(move || {
+            sender
+                .send(rustix::thread::gettid().as_raw_nonzero())
+                .unwrap();
+            let _ = wait.recv();
+        });
+        let thread = Pid::from_raw(receiver.recv().unwrap().get());
+        let mut files = Files::new(thread, b"library").expect("private files");
+        drop(release);
+        worker.join().unwrap();
+        // The kernel releases the thread's root after the join wakes us.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::fs::read_link(format!("/proc/{thread}/root")).is_ok() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{thread} never exited"
+            );
+            std::thread::yield_now();
+        }
+        assert!(files.library().is_err(), "validation needs a live thread");
+        assert!(files.anchor(Pid::from_raw(-1)).is_err());
+        files
+            .anchor(Pid::this())
+            .expect("another thread of the target");
+        files
+            .script(1, "source")
+            .expect("a script after re-anchoring");
+        files.acknowledge(1).unwrap();
+        files.close().unwrap();
     }
 
     #[test]

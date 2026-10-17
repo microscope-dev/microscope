@@ -1113,6 +1113,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         inferior.loader_site = None;
         inferior.runtime_hooks.clear();
         let agent_cleanup = inferior.retire_agents_after_exit();
+        let had_arming_reasons = !inferior.managed.unarmed.is_empty();
         inferior.managed = super::managed::ManagedSites::default();
         inferior.stack_moves.clear();
         inferior.indirect = super::indirect::IndirectFunctions::default();
@@ -1141,6 +1142,16 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .as_mut()
                 .ok_or(Error::NotRunning)?
                 .exec_unsupported = true;
+        }
+        // Arming the new image publishes reasons it reports, but not that
+        // the old image's reasons are gone.
+        if had_arming_reasons
+            && self
+                .inferior
+                .as_ref()
+                .is_some_and(|inferior| inferior.managed.unarmed.is_empty())
+        {
+            self.publish_breakpoints_changed();
         }
 
         let reason = agent_cleanup.map_or_else(

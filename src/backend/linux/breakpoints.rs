@@ -147,9 +147,18 @@ impl<P: InspectionOps> Controller<P> {
                         let BreakpointLocation::Managed(location) = &resolved.location else {
                             return None;
                         };
+                        // A change not yet armed, as after an edit that
+                        // failed between claiming and arming, is unconfirmed.
+                        let reason = match inferior.managed.unarmed.get(&location.runtime) {
+                            Some(reason) => Arc::clone(reason),
+                            None if inferior.managed.is_stale(location.runtime) => {
+                                "the runtime has not yet been armed with this location".into()
+                            }
+                            None => return None,
+                        };
                         Some(crate::PendingBreakpointLocation {
                             location: resolved.location.clone(),
-                            reason: Arc::clone(inferior.managed.unarmed.get(&location.runtime)?),
+                            reason,
                         })
                     })
                     .collect::<Vec<_>>()

@@ -17,8 +17,9 @@ their own, join native backtraces as interpreted frames.
 | `src/runtime_model/futures.rs`, `src/runtime_model/rust/` | Rust future inspection and shared Rust rules |
 | `src/runtime_model/python/` | CPython's threads, frames, code objects, line tables, and built-in values |
 | `src/runtime_model/python/agent.rs`, `agent.py`, `hook.rs` | Whole-state scripts, monitoring transport, native hook ELF and ABI |
-| `src/runtime_model/python/injection.rs` | Bounded PEP 768 request preparation; controller integration remains unfinished |
-| `src/backend/linux/agent_files.rs` | Private target-namespace artifacts and explicit acknowledgement/exit cleanup; controller integration remains unfinished |
+| `src/runtime_model/python/injection.rs` | Bounded PEP 768 request preparation |
+| `src/backend/linux/agent_files.rs` | Private target-namespace artifacts and explicit acknowledgement/exit cleanup |
+| `src/backend/linux/runtime_agents.rs` | Controller-owned agent installations, generations, acknowledgements, and detach |
 | `src/backend/linux/interpreted.rs` | Interpreted frames placed in backtraces, and their variables |
 | `src/debug_info/coroutines.rs`, `src/debug_info/roles.rs` | Static coroutine and code-role metadata |
 | `src/image/resumes.rs` | Validated resume-point tables |
@@ -158,8 +159,7 @@ The CLI, DAP, and browser share the pending explanation in
 `src/present/breakpoints.rs`. A partly armed breakpoint retains its ready
 locations and reports the others. The browser adds optional `pending`
 metadata and lists only ready placements in `places`; absent metadata keeps
-older messages and open tabs usable. Python-specific controller integration
-still remains P4.7.
+older messages and open tabs usable.
 
 ## Runtime writes
 
@@ -285,14 +285,15 @@ The caller first proves the build supports PEP 768; the runtime configuration
 flag controls policy and cannot establish compiled support for custom embedders.
 Every write carries its expected bytes. The preparer
 uses the caller's read budget, with a bounded default when none is supplied,
-and refuses finalization, malformed control spans, reserved flags, occupied
-requests, uncleared script slots, and multiple interpreters, including ones
-without thread states. Read limits and unavailable memory have distinct outcomes;
+and refuses finalization, malformed control spans, reserved flags, and multiple
+interpreters, including ones without thread states. It passes over a thread
+with an occupied request or an uncleared script slot, which CPython never
+clears, and returns that reason only when no candidate is free. Read limits and unavailable memory have distinct outcomes;
 the caller decides when to retry. Initialization and a lack of eligible threads
 are retryable waits. The caller owns outstanding generations across all threads
 and must await acknowledgement before clearing a previous slot or preparing the
 next request. Candidate eligibility must exclude CPython's request-consumption
-and path-copy window. The controller integration remains unfinished (P4.7).
+and path-copy window.
 
 **Agent transport.** `python/agent.py` translates explicitly configured
 `sys.monitoring` probes into calls to `microscope_python_hook`.
@@ -316,6 +317,15 @@ remain debugger work. `PY_START`, `PY_RESUME`, and `PY_THROW` discover code
 objects; local events apply only to matching code, including frames running
 at installation and generators
 or coroutines that were already suspended when configuration changed.
+A free-threaded build never reads another thread's frames, which that thread
+can change or free concurrently. Its collector tracks code objects, so
+configuration instead takes every live code object from `gc.get_objects()`,
+which lists them while every thread is at a safe point, and instruments the
+matching ones, running or not. That costs about 30–50 ns per live object, once
+per configuration. A build whose collector does not track code refuses to load
+the agent. Freshly instrumented code first clears events a freed tool left
+on it, which would otherwise keep that tool's disabled locations disabled.
+With the GIL, frames running at installation are walked directly.
 Discovery keeps weak references keyed by code identity, because code equality
 can ignore the filename. Each code object is instrumented once per generation,
 and zero masks require no instrumentation call. Callbacks never return
@@ -331,7 +341,8 @@ matching code takes local callbacks at each enabled event, including
 nonmatching lines. Idle unregisters everything.
 
 `python/hook.rs` generates a small ELF shared library, including its export
-and unwind information. It needs no target compiler or libpython. Its function
+and unwind information. It needs no target compiler or libpython. Its dynamic
+section is writable, because glibc before 2.35 relocates it in place. Its function
 is a no-op without a debugger. At entry its three unsigned 64-bit arguments
 are in rdi/rsi/rdx: kind, number, argument. Kind 0 acknowledges a generation
 (argument 0–5 is the tool ID; 6 means idle), 1 reports a breakpoint, 2 a step's
@@ -346,17 +357,21 @@ runtime stop. The frame comes from the stopped thread's interpreter state.
 
 The library also exports a bounded 64 KiB command slot and a sequence reader
 that uses one aligned native 64-bit load. The header carries magic, sequence,
-payload length and capacity; payloads are JSON whole configurations. The future
+payload length and capacity; payloads are JSON whole configurations. The
 controller publishes payload and length before sequence while all threads are
-stopped, with one outstanding request until its acknowledgement. Callbacks
+stopped, with one outstanding request until its acknowledgement. Only detach
+publishes over an unacknowledged request: its empty configuration is the
+last, and nothing awaits it. Callbacks
 check that sequence under the configuration lock. Configuration acknowledgements
 can immediately accept another command in an iterative loop, so repeated edits
 do not grow the Python stack. A malformed command disarms and reports its
 generation, including invalid reserved header bytes. Before decoding, a
 strict UTF-8 decoding and a string-aware scan bound container nesting to eight levels, and the integer
 parser bounds tokens to 20 characters; malformed input cannot exhaust the
-recursive decoder or reach Python's integer-string conversion limit. A callback discards its
-remaining captured notices when any thread replaces its configuration. Discovery
+recursive decoder or reach Python's integer-string conversion limit. When any
+thread replaces the configuration while a callback reports, the callback
+reports what its event hits under the replacement and has not reported yet;
+sites keep their numbers across configurations. Discovery
 failure supersedes an acknowledgement that has not yet been sent. Observable
 user reentry during configuration disarms with an explicit coverage failure.
 Non-Exception interruptions (including cancellation) are reported and re-raised.
@@ -370,7 +385,7 @@ superseded operation reports unconfirmed cleanup without changing its successor.
 source injection. The first source configuration loads a pristine companion
 whose published sequence is zero; subsequent commands use its slot. Generations
 are monotonic within one library owner, and controller hook binding must
-distinguish owners. This command transport is still dormant in the controller.
+distinguish owners.
 The bootstrap reports initialization failures through its request's own library,
 even when an incompatible interpreter-local module already exists.
 A single lock serializes configuration and callbacks on free-threaded builds,
@@ -379,10 +394,19 @@ report bound to its original sink if a later owner replaces it. The lock is
 released before every native report. Callback failures disarm the agent
 and report the failure instead of raising into the program.
 
-P4.6 provides this transport and cooperative fixture tests. PEP 768 injection,
-target-namespace files and their lifetime, controller acknowledgement tracking,
-and detach integration are P4.7; Python breakpoint/step/exception policy follows
-in P4.8–P4.10. These are not yet user-facing Python control features.
+**Installation.** `backend/linux/runtime_agents.rs` owns one installation per
+runtime: its files, one outstanding generation, and the PEP 768 request's
+ticket. An idle agent, or one not yet installed, is configured by a source
+request; an armed one through its command slot. Each source request
+revalidates the private files through the thread that will read it. A
+location stays pending until the matching acknowledgement. A change refused
+before any write reaches the target keeps the acknowledged configuration,
+which the agent still holds. Acknowledgements must arrive within five seconds
+of running time; public and internal stops do not count. A free-threaded
+interpreter needs every thread resumed while an agent is configuring or armed,
+because monitoring changes stop its world. Detach cancels an unconsumed
+request and disarms an armed agent before removing traps; exit and exec
+remove the files. Breakpoint, step, and exception policy follow in P4.8–P4.10.
 `tests/python/agent.rs` checks the real monitoring API on 3.14/3.15 in both GIL
 modes and the native register/all-stop boundary through `Scenario`.
 

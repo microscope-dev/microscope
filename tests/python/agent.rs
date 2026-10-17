@@ -37,6 +37,25 @@ fn the_hook_is_a_loadable_exported_function() {
     assert_eq!(symbol.kind(), object::SymbolKind::Text);
 }
 
+/// glibc before 2.35 relocates a library's dynamic section in place, so a
+/// read-only one crashes the target as it loads the hook.
+#[test]
+fn the_hook_loads_under_older_glibc() {
+    let scratch = ScratchDir::new("python-hook-glibc");
+    let library = scratch.path().join("hook.so");
+    std::fs::write(&library, hook::library()).expect("write the hook");
+    for version in ["2.31", "2.35"] {
+        let program =
+            crate::support::Scenario::fixture(&format!("tls-modules-single-thread-glibc{version}"));
+        let output = Command::new(&program)
+            .env("LD_PRELOAD", &library)
+            .stdin(Stdio::null())
+            .output()
+            .expect("run the program");
+        assert!(output.status.success(), "glibc {version}: {output:?}");
+    }
+}
+
 #[test]
 fn the_command_slot_and_atomic_reader_have_the_declared_abi() {
     let bytes = hook::library();
@@ -165,7 +184,7 @@ fn monitoring_callbacks_survive_reconfiguration_and_code_reuse() {
     for interpreter in ["3.14", "3.14t", "3.15", "3.15t"] {
         for (fixture, modes) in [
             ("agent_races.py", &["capture", "disable"][..]),
-            ("agent_control.py", &["chain"][..]),
+            ("agent_control.py", &["chain", "batch"][..]),
             (
                 "agent_safety.py",
                 &[
@@ -196,6 +215,7 @@ fn monitoring_callbacks_survive_reconfiguration_and_code_reuse() {
                     "reused",
                     "coexist",
                     "coexist_matching",
+                    "running",
                 ][..],
             ),
         ] {

@@ -527,3 +527,32 @@ fn an_ambiguous_preferred_thread_does_not_hide_an_eligible_alternative() {
     let writes = request(&process, runtime, "/a.py", &[100, 200]).expect("unambiguous alternative");
     assert_eq!(writes[0].address.get(), second + 76);
 }
+
+/// CPython never clears a consumed script slot, so one earlier request on
+/// the preferred thread must not hide an eligible alternative.
+#[test]
+fn a_busy_preferred_thread_does_not_hide_an_eligible_alternative() {
+    for busy in ["pending", "uncleared"] {
+        let (mut process, runtime, first, second) = target();
+        if busy == "pending" {
+            process.memory.write(first + 72, 1, 4);
+        } else {
+            process.memory.fill(first + 76, b"/old.py\0");
+        }
+        let writes = request(&process, runtime, "/a.py", &[100, 200]).expect(busy);
+        assert_eq!(writes[0].address.get(), second + 76, "{busy}");
+        let failure = super::super::injection::plan(
+            &process.reader(),
+            VirtualAddress::new(runtime),
+            "/a.py",
+            &[candidate(100, 100)],
+        );
+        assert!(
+            matches!(
+                failure,
+                Err(AgentFailure::PendingRequest | AgentFailure::UnclearedSlot { .. })
+            ),
+            "{busy}: {failure:?}"
+        );
+    }
+}

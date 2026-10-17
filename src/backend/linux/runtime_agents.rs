@@ -261,12 +261,14 @@ impl<P: LinuxTraceOps> Controller<P> {
             ));
         }
         for bound in self.runtimes(inferior) {
+            // A waiting or refused agent is idle: the target's agent clears
+            // its monitoring on every failure.
             if inferior.agents.get(&bound.id).is_some_and(|installation| {
                 matches!(installation.state, State::Awaiting { .. })
-                    || installation
-                        .sent
-                        .as_ref()
-                        .is_some_and(|sent| !sent.breakpoints.is_empty() || sent.step.is_some())
+                    || (matches!(installation.state, State::Ready)
+                        && installation.sent.as_ref().is_some_and(|sent| {
+                            !sent.breakpoints.is_empty() || sent.step.is_some()
+                        }))
             }) && bound
                 .model
                 .agent()
@@ -304,32 +306,37 @@ impl<P: LinuxTraceOps> Controller<P> {
             State::Refused(reason) if installation.sent.as_ref() == Some(&wanted) => {
                 Err(Arc::clone(reason))
             }
-            _ => {
-                let result = self.configure_agent(bound, arming, &mut installation);
-                installation.sent = Some(wanted);
-                match result {
-                    Ok(()) => {
-                        Err("waiting for the runtime agent to acknowledge its configuration".into())
-                    }
-                    Err(AgentFailure::Initializing | AgentFailure::NoThread) => {
-                        installation.state = State::Waiting;
-                        Err(
-                            "waiting for an initialized interpreter thread outside the agent"
-                                .into(),
-                        )
-                    }
-                    Err(reason) => {
-                        let reason: Arc<str> = reason.to_string().into();
+            _ => match self.configure_agent(bound, arming, &mut installation) {
+                Ok(()) => {
+                    installation.sent = Some(wanted);
+                    Err("waiting for the runtime agent to acknowledge its configuration".into())
+                }
+                Err(AgentFailure::Initializing | AgentFailure::NoThread) => {
+                    installation.sent = Some(wanted);
+                    installation.state = State::Waiting;
+                    Err("waiting for an initialized interpreter thread outside the agent".into())
+                }
+                Err(reason) => {
+                    let reason: Arc<str> = reason.to_string().into();
+                    // Still ready: no request reached the target, whose agent
+                    // keeps the acknowledged configuration. The next arming
+                    // tries again.
+                    if !matches!(installation.state, State::Ready) {
+                        installation.sent = Some(wanted);
                         if !matches!(installation.state, State::Awaiting { .. }) {
                             installation.state = State::Refused(Arc::clone(&reason));
                         }
-                        Err(reason)
                     }
+                    Err(reason)
                 }
-            }
+            },
         };
         if let Some(inferior) = self.inferior.as_mut() {
-            if inferior.active.is_some() && inferior.public_stop.is_none() {
+            // An internal stop starts the deadline as it resumes.
+            if inferior.active.is_some()
+                && inferior.public_stop.is_none()
+                && inferior.barrier.is_none()
+            {
                 installation.start_deadline(Instant::now());
             }
             inferior.agents.insert(bound.id, installation);
@@ -397,11 +404,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
         let process =
             TargetProcessId::new(target.get()).ok_or("the target process id is invalid")?;
-        if installation.files.is_none() {
-            installation.files = Some(self.ptrace.agent_files(
-                debug_pid(thread).map_err(|error| Arc::<str>::from(error.to_string()))?,
-                &agent.library(),
-            )?);
+        let reader = debug_pid(thread).map_err(|error| Arc::<str>::from(error.to_string()))?;
+        if let Some(files) = installation.files.as_mut() {
+            files.anchor(reader)?;
+        } else {
+            installation.files = Some(self.ptrace.agent_files(reader, &agent.library())?);
         }
         let files = installation
             .files
@@ -449,6 +456,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
             installation.files = None;
             installation.library = None;
+            // A replacement library's command slot starts unpublished.
+            installation.sequence = 0;
             return Err(reason.into());
         }
         Ok(())
@@ -477,8 +486,8 @@ impl<P: LinuxTraceOps> Controller<P> {
                 });
             if readable && held == publication.expected {
                 // Payload or length may have changed, but this command was
-                // not published. Preserve the last proven sequence.
-                installation.state = State::Refused(Arc::clone(reason));
+                // not published: the agent reads neither until the sequence
+                // changes, and keeps its acknowledged configuration.
                 return Err(Arc::clone(reason).into());
             }
             if readable && held == publication.bytes {
@@ -842,6 +851,9 @@ mod tests {
                 .push(format!("script {generation}"));
             Ok("/tmp/test-agent/agent.py".into())
         }
+        fn anchor(&mut self, _: nix::unistd::Pid) -> Result<(), Arc<str>> {
+            Ok(())
+        }
         fn acknowledge(&mut self, generation: u64) -> Result<(), Arc<str>> {
             self.calls.lock().unwrap().push(format!("ack {generation}"));
             Ok(())
@@ -996,6 +1008,7 @@ mod tests {
     struct Agent {
         thread: crate::ThreadId,
         refuse: bool,
+        process_scope: bool,
         calls: Arc<Mutex<Vec<String>>>,
     }
     impl crate::runtime_model::RuntimeAgent for Agent {
@@ -1055,7 +1068,151 @@ mod tests {
             Err("not scripted".into())
         }
         fn process_scope_required(&self) -> bool {
-            false
+            self.process_scope
+        }
+    }
+
+    fn scripted_agent(harness: &super::super::tests::WatchHarness, agent: Agent) -> BoundRuntime {
+        let mut model = ScriptedRuntime::default();
+        model.agent = Some(Arc::new(agent));
+        let image = Arc::clone(&harness.controller.module_image);
+        harness
+            .controller
+            .runtime_models
+            .borrow_mut()
+            .insert(image.id(), vec![Ok(Arc::new(model))]);
+        harness
+            .controller
+            .runtimes(harness.controller.inferior.as_ref().unwrap())
+            .remove(0)
+    }
+
+    fn function_arm(number: u64, name: &str) -> crate::runtime_model::ManagedArm {
+        crate::runtime_model::ManagedArm {
+            number,
+            place: crate::ManagedPlace::Function { name: name.into() },
+        }
+    }
+
+    #[test]
+    fn a_reconfiguration_refused_before_any_write_keeps_the_acknowledged_configuration() {
+        let mut harness = watch_harness(1);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let thread =
+            super::super::debug_thread_id(harness.controller.inferior.as_ref().unwrap().tgid);
+        let bound = scripted_agent(
+            &harness,
+            Agent {
+                thread,
+                refuse: false,
+                process_scope: false,
+                calls: Arc::clone(&calls),
+            },
+        );
+        let first = [function_arm(0, "first")];
+        let both = [function_arm(0, "first"), function_arm(1, "second")];
+        let mut installation = Installation::new();
+        installation.state = State::Ready;
+        installation.generation = Some(1);
+        installation.next = 2;
+        installation.sequence = 1;
+        installation.library = Some("/tmp/test-agent/hook.so".into());
+        installation.files = Some(Box::new(Files {
+            calls: Arc::clone(&calls),
+            fail_exit: false,
+        }));
+        installation.sent = Some(Desired {
+            breakpoints: first.to_vec(),
+            step: None,
+        });
+        harness
+            .controller
+            .inferior
+            .as_mut()
+            .unwrap()
+            .agents
+            .insert(bound.id, installation);
+        let arming = |breakpoints| Arming {
+            breakpoints,
+            step: None,
+            exceptions: crate::ExceptionStops::default(),
+        };
+        assert!(
+            harness
+                .controller
+                .arm_agent(&bound, &arming(&both))
+                .is_err(),
+            "the scripted command cannot be prepared"
+        );
+        let installation = &harness.controller.inferior.as_ref().unwrap().agents[&bound.id];
+        assert!(matches!(installation.state, State::Ready));
+        assert_eq!(installation.sent.as_ref().unwrap().breakpoints, first);
+        harness
+            .controller
+            .arm_agent(&bound, &arming(&first))
+            .expect("the agent still holds its acknowledged configuration");
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "no source request replaced the loaded agent"
+        );
+    }
+
+    #[test]
+    fn free_threaded_resume_is_restricted_only_while_an_agent_may_be_active() {
+        let mut harness = watch_harness(2);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let inferior = harness.controller.inferior.as_ref().unwrap();
+        let first = super::super::debug_thread_id(inferior.tgid);
+        let bound = scripted_agent(
+            &harness,
+            Agent {
+                thread: first,
+                refuse: false,
+                process_scope: true,
+                calls,
+            },
+        );
+        let active = Some(Desired {
+            breakpoints: vec![function_arm(0, "first")],
+            step: None,
+        });
+        let idle = Some(Desired {
+            breakpoints: Vec::new(),
+            step: None,
+        });
+        for (state, sent, restricted) in [
+            (State::Ready, active.clone(), true),
+            (State::Ready, idle.clone(), false),
+            (
+                State::Awaiting {
+                    generation: 5,
+                    source: false,
+                },
+                idle,
+                true,
+            ),
+            (State::Waiting, active.clone(), false),
+            (State::Refused("refused".into()), active, false),
+        ] {
+            let mut installation = Installation::new();
+            let shown = format!("{state:?} {sent:?}");
+            installation.state = state;
+            installation.sent = sent;
+            harness
+                .controller
+                .inferior
+                .as_mut()
+                .unwrap()
+                .agents
+                .insert(bound.id, installation);
+            assert_eq!(
+                harness
+                    .controller
+                    .validate_agent_resume(crate::ResumeScope::Thread(first))
+                    .is_err(),
+                restricted,
+                "{shown}"
+            );
         }
     }
 
@@ -1070,6 +1227,7 @@ mod tests {
             model.agent = Some(Arc::new(Agent {
                 thread,
                 refuse,
+                process_scope: false,
                 calls: Arc::clone(&calls),
             }));
             let image = Arc::clone(&harness.controller.module_image);
@@ -1083,6 +1241,7 @@ mod tests {
                 .runtimes(harness.controller.inferior.as_ref().unwrap())
                 .remove(0);
             let mut installation = Installation::new();
+            installation.sequence = 7;
             installation.files = Some(Box::new(Files {
                 calls: Arc::clone(&calls),
                 fail_exit: false,
@@ -1133,10 +1292,56 @@ mod tests {
                 );
                 assert!(installation.ticket.is_none());
                 assert!(installation.files.is_none());
+                assert_eq!(
+                    installation.sequence, 0,
+                    "a replacement library's command slot starts unpublished"
+                );
                 assert!(matches!(installation.state, State::Refused(_)));
             }
         }
     }
+    #[test]
+    fn internal_stops_do_not_spend_the_acknowledgement_budget() {
+        let mut harness = watch_harness(1);
+        harness
+            .controller
+            .inferior
+            .as_mut()
+            .unwrap()
+            .agents
+            .insert(RuntimeId::new(0), awaiting());
+        harness.start_continue();
+        let installation = |harness: &super::super::tests::WatchHarness| {
+            harness.controller.inferior.as_ref().unwrap().agents[&RuntimeId::new(0)].deadline()
+        };
+        let started = Instant::now();
+        harness
+            .controller
+            .inferior
+            .as_mut()
+            .unwrap()
+            .agents
+            .get_mut(&RuntimeId::new(0))
+            .unwrap()
+            .start_deadline(started);
+        harness.controller.begin_internal_stop().expect("stopping");
+        assert_eq!(installation(&harness), None, "paused while stopped");
+        harness.settle_requested_stops();
+        assert!(
+            harness
+                .controller
+                .inferior
+                .as_ref()
+                .unwrap()
+                .barrier
+                .is_none()
+        );
+        assert!(
+            installation(&harness).is_some(),
+            "running again after the internal stop"
+        );
+    }
+
     #[test]
     fn interrupted_running_periods_share_one_acknowledgement_budget() {
         let now = Instant::now();
@@ -1164,6 +1369,7 @@ mod tests {
         model.agent = Some(Arc::new(Agent {
             thread: second,
             refuse: false,
+            process_scope: false,
             calls,
         }));
         let image = Arc::clone(&harness.controller.module_image);
@@ -1265,7 +1471,10 @@ mod tests {
                 "failed after {successful_words} writes"
             );
             assert_eq!(installation.generation, Some(1));
-            assert!(matches!(installation.state, State::Refused(_)));
+            assert!(
+                matches!(installation.state, State::Ready),
+                "the agent keeps its acknowledged configuration"
+            );
         }
     }
     #[test]

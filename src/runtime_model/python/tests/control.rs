@@ -202,3 +202,26 @@ fn partial_unresumed_publication_is_retired_but_foreign_and_incomplete_state_is_
         matches!(ticket.retire(&process.memory, AgentRetirementProof::Cancel), Ok(AgentRetirement::Retired(writes)) if writes.is_empty())
     );
 }
+
+/// Empty selectors match any code in the agent, so a function breakpoint
+/// without a name would stop at every Python call.
+#[test]
+fn a_python_function_breakpoint_needs_a_name() {
+    use crate::runtime_model::RuntimeModel as _;
+    let model = super::super::PythonRuntime {
+        version: crate::image::python::PyVersion(0x030e_00f0),
+        reading: Err("not needed to resolve".into()),
+        free_threaded: false,
+        entry: None,
+        evaluation: Vec::new(),
+    };
+    let memory = Memory::default();
+    let resolve = |name: &str| {
+        model.resolve_breakpoint(&memory, &crate::BreakpointSpec::Function(name.into()))
+    };
+    assert!(matches!(resolve("py:"), Some(Err(_))));
+    assert!(matches!(
+        resolve("py:main").expect("a Python function").as_deref(),
+        Ok([crate::ManagedPlace::Function { name }]) if &**name == "main"
+    ));
+}

@@ -45,10 +45,14 @@ elif mode == 'fault':
         return original(tool, code, mask)
     sys.monitoring.set_local_events = refuse
     try:
-        agent.apply(library, 1, (probe,))
         reports.clear()
+        agent.apply(library, 1, (probe,))
         assert target() == 1
-        assert reports == [(3, 1, 2)], reports
+        # A free-threaded build instruments matching code as it configures,
+        # so the configuration itself reports the fault.
+        acknowledged = [] if 't' in sys.abiflags else [(0, 1)]
+        assert [r[:2] for r in reports[:-1]] == acknowledged, reports
+        assert reports[-1] == (3, 1, 2), reports
         assert agent.tool is None and not agent.discovered
     finally:
         sys.monitoring.set_local_events = original
@@ -228,6 +232,35 @@ elif mode in ('coexist', 'coexist_matching'):
     agent.apply(library, 2, ())
     assert unrelated() == 1 and not disabled
     sys.monitoring.free_tool_id(0)
+elif mode == 'running':
+    # Code another thread is running at installation is instrumented. A
+    # free-threaded build never reads that thread's frames to find it: the
+    # thread runs concurrently, and its frames can change under the reader.
+    started, spinning, results = threading.Event(), [True], []
+    def worker():
+        started.set()
+        while spinning[0]:
+            pass
+        value = 41
+        results.append(value + 1)
+    worker_line = worker.__code__.co_firstlineno + 4
+    thread = threading.Thread(target=worker)
+    thread.start()
+    assert started.wait(10)
+    original = sys._current_frames
+    if 't' in sys.abiflags:
+        def forbidden():
+            raise AssertionError("another thread's frames were read")
+        sys._current_frames = forbidden
+    try:
+        agent.apply(library, 1, (('LINE', 1, 47, __file__, worker_line, ''),))
+    finally:
+        sys._current_frames = original
+    reports.clear()
+    spinning[0] = False
+    thread.join(10)
+    assert not thread.is_alive() and results == [42], results
+    assert reports == [(1, 47, 0)], reports
 else:
     raise AssertionError(mode)
 agent.apply(library, 4, ())

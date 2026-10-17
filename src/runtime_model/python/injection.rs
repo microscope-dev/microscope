@@ -130,7 +130,7 @@ fn compute(
         return Err("CPython has an invalid initialization flag".into());
     }
     let breaker = ranges[2].start;
-    let (state, thread) = select_thread(reader, runtime, candidates)?;
+    let (state, thread) = select_thread(reader, runtime, candidates, &ranges)?;
 
     let add = |base: VirtualAddress, offset: u64| {
         base.get()
@@ -156,18 +156,6 @@ fn compute(
         })
     };
     let pending = ranges[0].start;
-    let pending_address = add(state.address, pending)?;
-    let occupied = reader.bytes(pending_address, 4)?;
-    if occupied == 1_i32.to_le_bytes() {
-        return Err(AgentFailure::PendingRequest);
-    }
-    if occupied != [0; 4] {
-        return Err("CPython has an invalid pending remote-debugging flag".into());
-    }
-    let slot = add(state.address, ranges[1].start)?;
-    if reader.bytes(slot, 1)? != [0] {
-        return Err(AgentFailure::UnclearedSlot { address: slot });
-    }
     let breaker_value = reader.word(add(state.address, breaker)?)?;
     let mut path = script.as_bytes().to_vec();
     path.push(0);
@@ -236,12 +224,42 @@ fn control_ranges(reader: &Reader<'_>) -> Result<[std::ops::Range<u64>; 3], Agen
     Ok(ranges)
 }
 
+/// Whether a thread's request slot is free. CPython clears the pending
+/// flag as it consumes a request but never clears the script path.
+fn request_slot(
+    reader: &Reader<'_>,
+    state: &threads::ThreadState,
+    ranges: &[std::ops::Range<u64>; 3],
+) -> Result<Option<AgentFailure>, AgentFailure> {
+    let add = |offset: u64| {
+        state
+            .address
+            .checked_add(offset)
+            .ok_or_else(|| AgentFailure::from("the Python injection address overflows"))
+    };
+    let occupied = reader.bytes(add(ranges[0].start)?, 4)?;
+    if occupied == 1_i32.to_le_bytes() {
+        return Ok(Some(AgentFailure::PendingRequest));
+    }
+    if occupied != [0; 4] {
+        return Err("CPython has an invalid pending remote-debugging flag".into());
+    }
+    let slot = add(ranges[1].start)?;
+    if reader.bytes(slot, 1)? != [0] {
+        return Ok(Some(AgentFailure::UnclearedSlot { address: slot }));
+    }
+    Ok(None)
+}
+
 /// Select only among the caller's proven candidates, and refuse ambiguous
 /// interpreter ownership instead of installing in an arbitrary interpreter.
+/// A candidate whose request slot is in use is passed over; when every one
+/// is, the preferred one's reason is returned.
 fn select_thread(
     reader: &Reader<'_>,
     runtime: VirtualAddress,
     candidates: &[Candidate],
+    ranges: &[std::ops::Range<u64>; 3],
 ) -> Result<(threads::ThreadState, ThreadId), AgentFailure> {
     let first = reader.field_word(runtime, Field::RuntimeInterpretersHead)?;
     if first == 0 {
@@ -268,6 +286,7 @@ fn select_thread(
     }
     let live = reader.stop.threads();
     let mut ambiguous = false;
+    let mut busy = None;
     for candidate in candidates
         .iter()
         .filter(|candidate| live.contains(&candidate.thread))
@@ -282,11 +301,17 @@ fn select_thread(
             ambiguous = true;
             continue;
         }
+        if let Some(reason) = request_slot(reader, state, ranges)? {
+            busy.get_or_insert(reason);
+            continue;
+        }
         return Ok((*state, candidate.thread));
     }
-    if ambiguous {
-        Err("each matching injection candidate has more than one CPython thread state".into())
-    } else {
-        Err(AgentFailure::NoThread)
-    }
+    Err(busy.unwrap_or_else(|| {
+        if ambiguous {
+            "each matching injection candidate has more than one CPython thread state".into()
+        } else {
+            AgentFailure::NoThread
+        }
+    }))
 }

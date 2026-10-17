@@ -209,6 +209,10 @@ impl<P: LinuxTraceOps> Controller<P> {
             ended: None,
             edits: Vec::new(),
         });
+        // An agent's acknowledgement budget counts only running time.
+        for installation in inferior.agents.values_mut() {
+            installation.pause_deadline(std::time::Instant::now());
+        }
         self.request_stops()
     }
 
@@ -224,6 +228,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         inferior.barrier = None;
         if inferior.active.is_none() {
             return Ok(());
+        }
+        for installation in inferior.agents.values_mut() {
+            installation.start_deadline(std::time::Instant::now());
         }
 
         match self.sync_debug_registers() {
