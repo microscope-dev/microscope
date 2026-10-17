@@ -15,17 +15,11 @@
 mod agent;
 mod asyncio;
 mod code;
+mod control;
 mod expressions;
 mod frames;
 mod gil;
 mod hook;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "P4.7 controller integration is under separate review"
-    )
-)]
 mod injection;
 mod instances;
 mod library;
@@ -61,6 +55,7 @@ pub fn detect(
     image: &Arc<dyn RuntimeImage + Send + Sync>,
 ) -> Option<Result<Arc<dyn RuntimeModel>, Unbound>> {
     let runtime = image.python()?;
+    let free_threaded = runtime.free_threaded();
     let reading = runtime
         .layout
         .and_then(|layout| {
@@ -80,6 +75,25 @@ pub fn detect(
     Some(Ok(Arc::new(PythonRuntime {
         version: runtime.version,
         reading,
+        free_threaded,
+        entry: image
+            .symbol(&format!("{TAIL_CALL_PREFIX}start_frame"))
+            .or_else(|| image.symbol(EVALUATION_LOOP))
+            .map(|symbol| symbol.address),
+        evaluation: [
+            format!("{TAIL_CALL_PREFIX}start_frame"),
+            EVALUATION_LOOP.to_owned(),
+            format!("{EVALUATION_LOOP}.cold"),
+        ]
+        .iter()
+        .filter_map(|name| {
+            let symbol = image.symbol(name)?;
+            Some(AddressRange {
+                start: symbol.address,
+                end: symbol.address.checked_add(symbol.size?)?,
+            })
+        })
+        .collect(),
     })))
 }
 
@@ -135,6 +149,9 @@ struct PythonRuntime {
 
     /// What reads its frames and values, or why nothing can.
     reading: Result<Reading, Arc<str>>,
+    free_threaded: bool,
+    entry: Option<ImageAddress>,
+    evaluation: Vec<AddressRange<ImageAddress>>,
 }
 
 impl PythonRuntime {
@@ -601,6 +618,43 @@ fn walk_threads(
 }
 
 impl RuntimeModel for PythonRuntime {
+    fn agent(&self) -> Option<&dyn super::RuntimeAgent> {
+        Some(self)
+    }
+
+    fn resolve_breakpoint(
+        &self,
+        _stop: &dyn RuntimeStop,
+        spec: &crate::BreakpointSpec,
+    ) -> Option<Result<Vec<crate::ManagedPlace>, Arc<str>>> {
+        let place = match spec {
+            crate::BreakpointSpec::Source { path, line }
+                if path.extension().is_some_and(|extension| extension == "py") =>
+            {
+                let Some(path) = path.to_str() else {
+                    return Some(Err("the Python source path is not UTF-8".into()));
+                };
+                let Ok(line) = u32::try_from(line.get()) else {
+                    return Some(Err("the Python source line exceeds 32 bits".into()));
+                };
+                crate::ManagedPlace::Line {
+                    path: path.into(),
+                    line,
+                }
+            }
+            crate::BreakpointSpec::Function(name) if name.starts_with("py:") => {
+                crate::ManagedPlace::Function {
+                    name: name[3..].into(),
+                }
+            }
+            _ => return None,
+        };
+        // Keep the requested location even when injection is unsupported.
+        // Arming supplies its explicit reason, including for pending requests
+        // created before the interpreter was discovered.
+        Some(Ok(vec![place]))
+    }
+
     fn internal_hooks(&self) -> &[super::HookPlace] {
         &[super::HookPlace::Companion(hook::SYMBOL)]
     }
@@ -611,6 +665,9 @@ impl RuntimeModel for PythonRuntime {
         hook: super::HookPlace,
         registers: &RegisterFile,
     ) -> Result<super::HookEvent, Arc<str>> {
+        if matches!(hook, super::HookPlace::Own(address) if self.entry == Some(address)) {
+            return Ok(super::HookEvent::AgentEntry);
+        }
         if hook != super::HookPlace::Companion(hook::SYMBOL) {
             return Err("not Python's agent hook".into());
         }
@@ -637,7 +694,9 @@ impl RuntimeModel for PythonRuntime {
                 )
                 .into(),
             },
-            agent::Report::Breakpoint { number } => super::HookEvent::Breakpoint { number },
+            agent::Report::Breakpoint { number } => {
+                super::HookEvent::Breakpoint { number: number - 1 }
+            }
             agent::Report::StepEnded { number } => super::HookEvent::StepEnded { number },
         })
     }

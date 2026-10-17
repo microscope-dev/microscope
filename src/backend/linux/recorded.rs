@@ -151,6 +151,15 @@ impl<P: InspectionOps> InspectionOps for Recorded<P> {
 }
 
 impl<P: LinuxTraceOps> LinuxTraceOps for Recorded<P> {
+    fn agent_files(
+        &self,
+        pid: Pid,
+        library: &[u8],
+    ) -> std::result::Result<Box<dyn super::agent_files::AgentFiles>, Arc<str>> {
+        record!("create runtime agent files for {pid}");
+        self.0.agent_files(pid, library)
+    }
+
     fn spawn(&self, executable: &Path, options: LaunchOptions) -> Result<Pid> {
         record!("spawn {} {:?}", executable.display(), options.arguments);
         let pid = self.0.spawn(executable, options);

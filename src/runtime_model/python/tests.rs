@@ -1082,6 +1082,7 @@ fn a_thread_list_that_loops_is_a_gap_and_keeps_the_threads_before_it() {
 }
 
 mod asyncio;
+mod control;
 mod expressions;
 mod injection;
 mod instances;
@@ -1099,6 +1100,9 @@ fn an_unreadable_runtime_finds_its_loop_and_says_why_its_frames_are_missing() {
     let reason: Arc<str> =
         "the Python frames cannot be read: CPython 3.16.0 is not supported".into();
     let model = super::PythonRuntime {
+        free_threaded: false,
+        entry: None,
+        evaluation: Vec::new(),
         version: crate::image::python::PyVersion(0x0310_00f0),
         reading: Err(Arc::clone(&reason)),
     };
@@ -1190,6 +1194,9 @@ fn agent_reports_are_read_from_the_calling_threads_registers() {
     use crate::runtime_model::{HookEvent, HookPlace, RuntimeModel as _};
     use crate::unwind::{DwarfRegister, RDI, RSI, RegisterFile};
     let model = super::PythonRuntime {
+        free_threaded: false,
+        entry: None,
+        evaluation: Vec::new(),
         version: crate::image::python::PyVersion(0x030e_00f0),
         reading: Err("no heap is needed for the hook ABI".into()),
     };
@@ -1199,8 +1206,17 @@ fn agent_reports_are_read_from_the_calling_threads_registers() {
     let mut registers = RegisterFile::new([(RDI, 1), (RSI, 42), (DwarfRegister::new(1), 0)]);
     assert_eq!(
         model.hook_event(&stop, hook, &registers),
-        Ok(HookEvent::Breakpoint { number: 42 })
+        Ok(HookEvent::Breakpoint { number: 41 })
     );
+    // The native ABI reserves zero; the controller's site IDs begin at zero.
+    registers.set(RSI, 1);
+    assert_eq!(
+        model.hook_event(&stop, hook, &registers),
+        Ok(HookEvent::Breakpoint { number: 0 })
+    );
+    registers.set(RSI, 0);
+    assert!(model.hook_event(&stop, hook, &registers).is_err());
+    registers.set(RSI, 42);
     registers.set(RDI, 2);
     assert_eq!(
         model.hook_event(&stop, hook, &registers),

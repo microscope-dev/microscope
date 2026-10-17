@@ -1112,6 +1112,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         inferior.repairs.clear();
         inferior.loader_site = None;
         inferior.runtime_hooks.clear();
+        let agent_cleanup = inferior.retire_agents_after_exit();
         inferior.managed = super::managed::ManagedSites::default();
         inferior.stack_moves.clear();
         inferior.indirect = super::indirect::IndirectFunctions::default();
@@ -1142,7 +1143,11 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .exec_unsupported = true;
         }
 
-        self.begin_visible_stop(pid, StopReason::Exec { followed })
+        let reason = agent_cleanup.map_or_else(
+            |description| StopReason::RuntimeEvent { description },
+            |()| StopReason::Exec { followed },
+        );
+        self.begin_visible_stop(pid, reason)
     }
 }
 
@@ -1324,6 +1329,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.discard_watchpoints();
             let pending = self.settle_stopped_fork_children();
             let mut inferior = self.inferior.take().ok_or(Error::NotRunning)?;
+            self.agent_cleanup_error = inferior.retire_agents_after_exit().err();
             let edits = inferior.take_pending_edits();
             let killed = std::mem::take(&mut inferior.killed_children);
             let waiter = inferior.waiter.take();
@@ -1365,11 +1371,19 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
 
             if let Some(reply) = self.shutdown_reply.take() {
-                let _ = reply.send(Ok(()));
+                let _ = reply.send(
+                    self.agent_cleanup_error
+                        .take()
+                        .map_or(Ok(()), |reason| Err(Error::RuntimeAgent(reason))),
+                );
             }
 
             if let Some(reply) = self.kill_reply.take() {
-                let _ = reply.send(Ok(()));
+                let _ = reply.send(
+                    self.agent_cleanup_error
+                        .take()
+                        .map_or(Ok(()), |reason| Err(Error::RuntimeAgent(reason))),
+                );
             }
 
             self.settle_pending_edits(edits);
@@ -1502,7 +1516,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         let Some(inferior) = self.inferior.as_ref() else {
             // Children the ended inferior forked are released first.
             if self.orphans.is_none() {
-                self.finish_shutdown(Ok(()));
+                let outcome = self
+                    .agent_cleanup_error
+                    .take()
+                    .map_or(Ok(()), |reason| Err(Error::RuntimeAgent(reason)));
+                self.finish_shutdown(outcome);
             }
 
             return;
@@ -2030,6 +2048,9 @@ impl<P: LinuxTraceOps> Controller<P> {
             && !is_vanished_tracee(&error)
         {
             first_error.get_or_insert(error);
+        }
+        if let Err(reason) = self.prepare_agents_for_detach() {
+            first_error.get_or_insert(Error::RuntimeAgent(reason));
         }
         if let Err(error) = self.disarm_for_detach()
             && !is_vanished_tracee(&error)

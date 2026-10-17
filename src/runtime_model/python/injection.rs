@@ -15,6 +15,13 @@ pub(super) struct Candidate {
     pub(super) native: TargetThreadId,
 }
 
+#[derive(Debug)]
+pub(super) struct Plan {
+    pub(super) thread: ThreadId,
+    pub(super) state: threads::ThreadState,
+    pub(super) writes: [RuntimeWrite; 3],
+}
+
 struct ReadAccounting<'a> {
     payer: &'a dyn super::objects::Charge,
     limited: Cell<bool>,
@@ -28,52 +35,33 @@ impl super::objects::Charge for ReadAccounting<'_> {
     }
 }
 
-/// Outcomes of this attempt, not permanent runtime capabilities. The
-/// lifecycle owner decides whether and when to retry.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub(super) enum AgentFailure {
-    #[error("the Python interpreter has not finished initialization")]
-    Initializing,
-    #[error("no thread is running Python")]
-    NoThread,
-    #[error("the Python thread already has a pending remote-debugging request")]
-    PendingRequest,
-    #[error("the Python remote-debugging script slot at {address} has not been cleared")]
-    UnclearedSlot { address: VirtualAddress },
-    #[error("{0}")]
-    ReadLimit(Arc<str>),
-    #[error("{0}")]
-    Unavailable(Arc<str>),
-    #[error("{0}")]
-    Refused(Arc<str>),
-}
+pub(super) use crate::runtime_model::AgentFailure;
 
-impl From<Arc<str>> for AgentFailure {
-    fn from(reason: Arc<str>) -> Self {
-        Self::Unavailable(reason)
-    }
-}
-
-impl From<&'static str> for AgentFailure {
-    fn from(reason: &'static str) -> Self {
-        Self::Refused(reason.into())
-    }
-}
-
-/// The caller first establishes that the target build supports PEP 768;
-/// the configuration flag below is policy, not proof of compiled support.
+/// The configuration flag below establishes policy, not a working handler.
+/// Only a matching acknowledgement through the owned companion proves that
+/// the target build consumed this request. The controller bounds that wait.
 /// Candidates are live threads the caller proved are executing Python,
 /// ordered by preference. This computes a request, never makes a write.
 /// The caller owns outstanding generations and must await acknowledgement
 /// before preparing another request. Its eligibility proof must exclude a
 /// thread consuming a PEP 768 request, including the path-copy window.
 /// Acknowledgement must precede clearing the old script slot for reuse.
+#[cfg(test)]
 pub(super) fn plan(
     reader: &Reader<'_>,
     runtime: VirtualAddress,
     script: &str,
     candidates: &[Candidate],
 ) -> Result<Vec<RuntimeWrite>, AgentFailure> {
+    prepare(reader, runtime, script, candidates).map(|plan| plan.writes.into())
+}
+
+pub(super) fn prepare(
+    reader: &Reader<'_>,
+    runtime: VirtualAddress,
+    script: &str,
+    candidates: &[Candidate],
+) -> Result<Plan, AgentFailure> {
     let mut fallback = crate::inspection::InspectionBudget::new(crate::InspectionLimits::default());
     let fallback = super::values::Budget::new(&mut fallback);
     let accounting = ReadAccounting {
@@ -97,7 +85,7 @@ fn compute(
     runtime: VirtualAddress,
     script: &str,
     candidates: &[Candidate],
-) -> Result<Vec<RuntimeWrite>, AgentFailure> {
+) -> Result<Plan, AgentFailure> {
     let field = |field| {
         reader.layout.field(field).ok_or_else(|| {
             AgentFailure::Refused(
@@ -142,7 +130,7 @@ fn compute(
         return Err("CPython has an invalid initialization flag".into());
     }
     let breaker = ranges[2].start;
-    let state = select_thread(reader, runtime, candidates)?;
+    let (state, thread) = select_thread(reader, runtime, candidates)?;
 
     let add = |base: VirtualAddress, offset: u64| {
         base.get()
@@ -185,11 +173,15 @@ fn compute(
     path.push(0);
     // Publish the request last. The controller applies these in order at
     // an all-stop, checking every expected byte before it changes any.
-    Ok(vec![
-        change(ranges[1].start, path)?,
-        change(pending, 1_i32.to_le_bytes().to_vec())?,
-        change(breaker, (breaker_value | bit).to_le_bytes().to_vec())?,
-    ])
+    Ok(Plan {
+        thread,
+        state,
+        writes: [
+            change(ranges[1].start, path)?,
+            change(pending, 1_i32.to_le_bytes().to_vec())?,
+            change(breaker, (breaker_value | bit).to_le_bytes().to_vec())?,
+        ],
+    })
 }
 
 /// The three control spans, checked before any process write.
@@ -250,7 +242,7 @@ fn select_thread(
     reader: &Reader<'_>,
     runtime: VirtualAddress,
     candidates: &[Candidate],
-) -> Result<threads::ThreadState, AgentFailure> {
+) -> Result<(threads::ThreadState, ThreadId), AgentFailure> {
     let first = reader.field_word(runtime, Field::RuntimeInterpretersHead)?;
     if first == 0 {
         return Err(AgentFailure::NoThread);
@@ -290,7 +282,7 @@ fn select_thread(
             ambiguous = true;
             continue;
         }
-        return Ok(*state);
+        return Ok((*state, candidate.thread));
     }
     if ambiguous {
         Err("each matching injection candidate has more than one CPython thread state".into())

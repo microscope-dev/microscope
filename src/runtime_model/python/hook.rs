@@ -10,10 +10,6 @@ pub const CONTROL_CAPACITY: u32 = 64 * 1024;
 pub const CONTROL_SIZE: usize = CONTROL_HEADER + CONTROL_CAPACITY as usize;
 pub const CONTROL_MAGIC: &[u8; 8] = b"MICPYC02";
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "runtime agent installation consumes this")
-)]
 #[expect(
     clippy::too_many_lines,
     reason = "one fixed ELF layout keeps offsets auditable together"

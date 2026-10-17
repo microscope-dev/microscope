@@ -61,13 +61,6 @@ pub(super) use tls::CLibrary;
 use tls::TlsModule;
 
 mod activation;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the P4.7 lifecycle owner is integrated separately"
-    )
-)]
 mod agent_files;
 mod async_frames;
 pub use async_frames::resume_address;
@@ -112,6 +105,7 @@ mod recorded;
 mod registers;
 mod returns;
 mod run_control;
+mod runtime_agents;
 mod runtime_steps;
 mod runtimes;
 mod signals;
@@ -874,6 +868,12 @@ enum Edit {
     /// Set aside the watches of tasks whose stacks a runtime is moving, and
     /// place those whose moves finished on their new stacks.
     FollowStacks,
+    ArmAgents,
+    AgentReport {
+        runtime: crate::RuntimeId,
+        generation: u64,
+        failure: Option<Arc<str>>,
+    },
 }
 
 struct PublicStop {
@@ -1012,6 +1012,7 @@ struct Inferior {
 
     /// The breakpoint locations runtimes manage that user breakpoints own.
     managed: managed::ManagedSites,
+    agents: BTreeMap<crate::RuntimeId, runtime_agents::Installation>,
 
     /// The number the next step a runtime arms takes. A number is never
     /// reused in a process, so a stale step's end names none.
@@ -1094,6 +1095,7 @@ impl Inferior {
             runtime_hooks: BTreeMap::new(),
             stack_moves: stack_watches::StackMoves::default(),
             managed: managed::ManagedSites::default(),
+            agents: BTreeMap::new(),
             next_runtime_step: 0,
             runtime_step: None,
             indirect: indirect::IndirectFunctions::default(),
@@ -1476,6 +1478,7 @@ struct Controller<P: InspectionOps> {
     /// or detach, and the controller exits once the inferior is gone.
     shutting_down: bool,
     shutdown_reply: Option<Reply<()>>,
+    agent_cleanup_error: Option<Arc<str>>,
 
     /// The client waiting for a killed inferior to be gone.
     kill_reply: Option<Reply<()>>,
@@ -1621,6 +1624,7 @@ impl<P: InspectionOps> Controller<P> {
             attach_rescans: 0,
             shutting_down: false,
             shutdown_reply: None,
+            agent_cleanup_error: None,
             kill_reply: None,
             orphans: None,
             held_children: None,
@@ -1653,6 +1657,15 @@ impl<P: InspectionOps> Controller<P> {
     /// only delay. Waits for one when `block` holds and none is queued.
     fn next_message(&self, block: bool) -> Option<ControllerMessage> {
         self.drain_messages();
+        if self.inferior.as_ref().is_some_and(|inferior| {
+            inferior.agents.values().any(|installation| {
+                installation
+                    .deadline()
+                    .is_some_and(|deadline| deadline <= std::time::Instant::now())
+            })
+        }) {
+            return Some(ControllerMessage::AgentTimeout);
+        }
         let mut pending = self.pending.borrow_mut();
         if let Some(preempting) = pending
             .iter()
@@ -1672,10 +1685,32 @@ impl<P: InspectionOps> Controller<P> {
         }
 
         drop(pending);
-        if block {
-            self.messages.borrow_mut().blocking_recv()
-        } else {
-            None
+        if !block {
+            return None;
+        }
+        loop {
+            let deadline = self.inferior.as_ref().and_then(|inferior| {
+                inferior
+                    .agents
+                    .values()
+                    .filter_map(runtime_agents::Installation::deadline)
+                    .min()
+            });
+            let Some(deadline) = deadline else {
+                return self.messages.borrow_mut().blocking_recv();
+            };
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return Some(ControllerMessage::AgentTimeout);
+            }
+            match self.messages.borrow_mut().try_recv() {
+                Ok(message) => return Some(message),
+                Err(mpsc::error::TryRecvError::Disconnected) => return None,
+                Err(mpsc::error::TryRecvError::Empty) => {}
+            }
+            // Poll only while an agent acknowledgement is outstanding. The
+            // controller still serves requests promptly, on its owner thread.
+            thread::sleep((deadline - now).min(std::time::Duration::from_millis(5)));
         }
     }
 
@@ -1741,6 +1776,12 @@ impl<P: LinuxTraceOps> Controller<P> {
                 #[cfg(debug_assertions)]
                 assert!(!injected, "a panic injected by {PANIC_AFTER}");
                 keeps_running
+            }
+            ControllerMessage::AgentTimeout => {
+                if let Err(error) = self.agent_timeout(std::time::Instant::now()) {
+                    self.fail_inferior(error);
+                }
+                true
             }
             ControllerMessage::Wait(status) => {
                 let _span = crate::span!("wait");

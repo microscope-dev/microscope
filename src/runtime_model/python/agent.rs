@@ -6,10 +6,6 @@ pub const SOURCE: &str = include_str!("agent.py");
 /// A bootstrap whose caller supplies `__microscope_library`,
 /// `__microscope_generation`, and `__microscope_probes` in its namespace.
 /// Keeping this separate also lets a cooperative fixture load the agent.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "agent injection consumes this in P4.7")
-)]
 pub fn bootstrap() -> Result<String, serde_json::Error> {
     let source = serde_json::to_string(SOURCE)?;
     Ok(format!(
@@ -48,10 +44,6 @@ except BaseException:
 pub type Probe<'a> = (&'a str, u8, u64, &'a str, u32, &'a str);
 
 /// A standalone whole-state script, executable with fresh globals.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "agent injection consumes this in P4.7")
-)]
 pub fn script(
     library: &str,
     generation: u64,

@@ -284,6 +284,12 @@ pub enum Error {
     #[error("cannot step from the selected frame: {0}")]
     FrameStepUnsupported(Arc<str>),
 
+    #[error("runtime agent operation failed: {0}")]
+    RuntimeAgent(Arc<str>),
+
+    #[error("cannot resume the requested scope: {0}")]
+    RuntimeResumeUnsupported(Arc<str>),
+
     #[error("an advance runs to a location, so it is requested with the location")]
     AdvanceWithoutLocation,
 

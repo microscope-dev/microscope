@@ -10,6 +10,12 @@
 //! process control, debug-information parsing, I/O, clocks, and threads out
 //! of it, and keeps every language's runtime in a module of its own.
 
+mod agents;
+pub use agents::{
+    AgentFailure, AgentRequestTicket, AgentRetirement, AgentRetirementProof, PreparedAgentRequest,
+    RuntimeAgent, TargetProcessId,
+};
+
 pub mod futures;
 mod go;
 mod python;
@@ -554,13 +560,6 @@ pub struct RuntimeException {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum HookPlace {
     /// At this address in the runtime's own image.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no runtime yet uses an internal hook in its own image"
-        )
-    )]
     Own(ImageAddress),
 
     /// At the function exported under this name by a companion image: one
@@ -587,6 +586,8 @@ pub struct RuntimeWrite {
 /// What a thread that entered one of a runtime's internal hooks reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HookEvent {
+    /// A safe entry point at which installation can be retried.
+    AgentEntry,
     /// A configuration failed after its source was consumed. The owner
     /// may retire that generation's artifacts, but cannot claim it armed.
     AgentFailed {
@@ -794,6 +795,10 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
     /// debugger of its own events, each armed for as long as the runtime
     /// is loaded, whatever stops. At each hit, [`Self::hook_event`] says
     /// whether the thread stops.
+    fn agent(&self) -> Option<&dyn RuntimeAgent> {
+        None
+    }
+
     fn internal_hooks(&self) -> &[HookPlace] {
         &[]
     }

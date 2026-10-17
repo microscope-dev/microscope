@@ -9,7 +9,7 @@ fn candidate(controller: u64, native: u64) -> Candidate {
     }
 }
 
-fn target() -> (Process, u64, u64, u64) {
+pub(super) fn target() -> (Process, u64, u64, u64) {
     shaped(192, 64)
 }
 

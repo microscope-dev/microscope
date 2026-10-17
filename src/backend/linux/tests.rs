@@ -956,8 +956,9 @@ const EXIT_EVENT: i32 = libc::SIGTRAP | (libc::PTRACE_EVENT_EXIT << 8);
 /// registers as Linux exposes them, records every native effect, and
 /// injects failures and SIGKILL races.
 #[derive(Default)]
-struct FakeTrace {
+pub(super) struct FakeTrace {
     actions: RefCell<Vec<String>>,
+    pub(super) memory_write_failure: RefCell<Option<u32>>,
     registers: RefCell<BTreeMap<Pid, [u64; 8]>>,
 
     /// Fails a write of `(thread, register)` after skipping that many
@@ -1384,6 +1385,12 @@ impl LinuxTraceOps for FakeTrace {
 
     fn write_word(&self, pid: Pid, address: u64, value: u64) -> Result<()> {
         self.record(format!("write_word {pid} {address:#x} {value:#x}"));
+        if let Some(remaining) = self.memory_write_failure.borrow_mut().as_mut() {
+            if *remaining == 0 {
+                return Err(backend_error(LinuxError::System(Errno::EIO)));
+            }
+            *remaining -= 1;
+        }
         Ok(())
     }
 
@@ -1597,8 +1604,8 @@ impl LinuxTraceOps for FakeTrace {
     }
 }
 
-struct WatchHarness {
-    controller: Controller<FakeTrace>,
+pub(super) struct WatchHarness {
+    pub(super) controller: Controller<FakeTrace>,
     events: broadcast::Receiver<DebuggerEvent>,
     threads: Vec<Pid>,
 }
@@ -1825,7 +1832,7 @@ impl WatchHarness {
     }
 }
 
-fn watch_harness(thread_count: i32) -> WatchHarness {
+pub(super) fn watch_harness(thread_count: i32) -> WatchHarness {
     watch_harness_of(thread_count, &virtual_step_image())
 }
 
@@ -5226,7 +5233,8 @@ fn a_step_resumed_to_hit_a_breakpoint_disabled_while_running_ends_where_it_stand
 /// A runtime whose threads run the tasks a test sets, so run control's
 /// following of a task is tested without any language's runtime.
 #[derive(Debug, Default)]
-struct ScriptedRuntime {
+pub(super) struct ScriptedRuntime {
+    pub(super) agent: Option<Arc<dyn crate::runtime_model::RuntimeAgent>>,
     running: std::sync::Mutex<BTreeMap<crate::ThreadId, u64>>,
 
     /// The runtime's internal hooks.
@@ -5266,6 +5274,10 @@ impl ScriptedRuntime {
 }
 
 impl crate::runtime_model::RuntimeModel for ScriptedRuntime {
+    fn agent(&self) -> Option<&dyn crate::runtime_model::RuntimeAgent> {
+        self.agent.as_deref()
+    }
+
     fn tasks(
         &self,
         _stop: &dyn crate::runtime_model::RuntimeStop,
@@ -8162,6 +8174,7 @@ fn inspection_of_a_stop_waits_behind_run_control_queued_after_it() {
         .map(|message| match message {
             ControllerMessage::Request(request) => request.describe(),
             ControllerMessage::Wait(_) => "wait".to_owned(),
+            ControllerMessage::AgentTimeout => "agent timeout".to_owned(),
         })
         .collect::<Vec<_>>();
     let served = served.iter().map(String::as_str).collect::<Vec<_>>();
@@ -8207,6 +8220,7 @@ fn inspection_of_a_stop_waits_behind_run_control_queued_after_it() {
         .map(|message| match message {
             ControllerMessage::Request(request) => request.describe(),
             ControllerMessage::Wait(_) => "wait".to_owned(),
+            ControllerMessage::AgentTimeout => "agent timeout".to_owned(),
         })
         .collect::<Vec<_>>();
     assert_eq!(served, ["pause 5000", "evaluate `interrupted`"]);

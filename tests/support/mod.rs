@@ -38,8 +38,9 @@ use tokio::time::timeout;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
-// Event delivery depends on waiter and controller OS threads being scheduled.
-const EVENT_TIMEOUT: Duration = Duration::from_secs(20);
+// Event delivery includes cold shared-library metadata loading on the
+// controller, which can exceed twenty seconds under the stress gate.
+const EVENT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long a scenario's check of a stop may take, all its requests
 /// together.

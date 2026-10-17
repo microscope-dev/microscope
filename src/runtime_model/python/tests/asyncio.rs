@@ -570,6 +570,9 @@ fn current_task_and_context_use_proven_identity_and_refuse_missing_proof() {
         .target_ids
         .insert(collision, crate::runtime_model::TargetThreadId::new(8));
     let model = super::super::PythonRuntime {
+        free_threaded: false,
+        entry: None,
+        evaluation: Vec::new(),
         version: crate::image::python::PyVersion(0x030e_00f0),
         reading: Ok(super::super::Reading {
             runtime: crate::AddressRange {

@@ -77,20 +77,28 @@ impl<P: LinuxTraceOps> Controller<P> {
                         let address = runtime.module.virtual_address(hook.address).ok()?;
                         Some((address, HookPurpose::Exception(*hook)))
                     });
-                let internal = runtime.model.internal_hooks().iter().flat_map(|&hook| {
-                    let addresses = match hook {
-                        HookPlace::Own(address) => runtime
-                            .module
-                            .virtual_address(address)
-                            .ok()
+                let internal = runtime
+                    .model
+                    .internal_hooks()
+                    .iter()
+                    .copied()
+                    .chain(self.agent_entry_hook(runtime))
+                    .flat_map(|hook| {
+                        let addresses = match hook {
+                            HookPlace::Own(address) => runtime
+                                .module
+                                .virtual_address(address)
+                                .ok()
+                                .into_iter()
+                                .collect(),
+                            HookPlace::Companion(name) => {
+                                self.exported_functions(inferior, runtime.id, name)
+                            }
+                        };
+                        addresses
                             .into_iter()
-                            .collect(),
-                        HookPlace::Companion(name) => self.exported_functions(inferior, name),
-                    };
-                    addresses
-                        .into_iter()
-                        .map(move |address| (address, HookPurpose::Internal(hook)))
-                });
+                            .map(move |address| (address, HookPurpose::Internal(hook)))
+                    });
 
                 // An internal hook asks at every hit, so it outranks an
                 // exception's hook at the same function.
@@ -144,9 +152,17 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     /// Where each loaded image that exports the function `name` has it.
-    fn exported_functions(&self, inferior: &super::Inferior, name: &str) -> Vec<VirtualAddress> {
+    fn exported_functions(
+        &self,
+        inferior: &super::Inferior,
+        runtime: RuntimeId,
+        name: &str,
+    ) -> Vec<VirtualAddress> {
         self.loaded_images(inferior)
             .filter_map(|(module, image)| {
+                if !Self::agent_companion_matches(inferior, runtime, image) {
+                    return None;
+                }
                 let symbol = image.symbols_named(name).find(|symbol| {
                     symbol.exported() && symbol.kind() == crate::SymbolKind::Function
                 })?;
@@ -198,10 +214,30 @@ impl<P: LinuxTraceOps> Controller<P> {
                     model.hook_event(stop, hook, registers)
                 });
                 match event {
-                    Ok(HookEvent::Continue | HookEvent::Armed { .. }) => None,
-                    Ok(HookEvent::AgentFailed { description, .. }) => {
-                        Some(StopReason::RuntimeEvent { description })
-                    }
+                    Ok(HookEvent::Continue) => None,
+                    Ok(HookEvent::AgentEntry) => self
+                        .agent_entry(site.runtime)
+                        .err()
+                        .map(|description| StopReason::RuntimeEvent { description }),
+                    Ok(HookEvent::Armed { generation }) => self
+                        .queue_agent_report(site.runtime, generation, None)
+                        .err()
+                        .map(|description| StopReason::RuntimeEvent { description }),
+                    Ok(HookEvent::AgentFailed {
+                        generation,
+                        description,
+                    }) => match self.queue_agent_report(
+                        site.runtime,
+                        generation,
+                        Some(Arc::clone(&description)),
+                    ) {
+                        Ok(true) => Some(StopReason::RuntimeEvent { description }),
+                        Ok(false) => None,
+                        Err(cleanup) => Some(StopReason::RuntimeEvent {
+                            description: format!("{description}; source cleanup failed: {cleanup}")
+                                .into(),
+                        }),
+                    },
                     Ok(HookEvent::Exception { filter, report }) => self
                         .exception_stops
                         .stops(filter.id)

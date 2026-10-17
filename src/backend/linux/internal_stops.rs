@@ -148,6 +148,16 @@ impl<P: LinuxTraceOps> Controller<P> {
                 let _ = self.refresh_libraries();
             }
             Edit::FollowStacks => self.follow_stacks(),
+            Edit::AgentReport {
+                runtime,
+                generation,
+                failure,
+            } => self.apply_agent_report(runtime, generation, failure.as_ref()),
+            Edit::ArmAgents => {
+                if self.sync_runtime_arming() {
+                    self.publish_breakpoints_changed();
+                }
+            }
         }
     }
 
@@ -453,7 +463,10 @@ impl Edit {
             Self::AddCatchpoint { reply, .. } | Self::RemoveCatchpoint { reply, .. } => {
                 let _ = reply.send(Err(error));
             }
-            Self::RefreshModules | Self::FollowStacks => {}
+            Self::RefreshModules
+            | Self::FollowStacks
+            | Self::ArmAgents
+            | Self::AgentReport { .. } => {}
         }
     }
 }

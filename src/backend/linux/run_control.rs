@@ -273,6 +273,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         validate_public_stop(inferior, Some(stop_id))?;
         validate_resumable(inferior)?;
         scoped_threads(inferior, scope)?;
+        self.validate_agent_resume(scope)?;
         self.sync_debug_registers()?;
         self.refresh_watch_baselines()?;
 
@@ -326,6 +327,9 @@ impl<P: LinuxTraceOps> Controller<P> {
             resume_threads,
         });
         inferior.repairs = collect_repairs(inferior);
+        for installation in inferior.agents.values_mut() {
+            installation.start_deadline(std::time::Instant::now());
+        }
 
         if let Err(error) = self.advance_execution() {
             // SIGKILL took threads out of the stop as they were resumed: the
@@ -1873,6 +1877,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         );
         stop.returned = returned;
         inferior.public_stop = Some(stop);
+        for installation in inferior.agents.values_mut() {
+            installation.pause_deadline(std::time::Instant::now());
+        }
         let execution = inferior.active.take().map(|active| active.id);
         let process_id = process_id(inferior.tgid);
         if matches!(reason, StopReason::LanguageException(_)) {

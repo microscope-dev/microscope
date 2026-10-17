@@ -199,7 +199,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .runtime_step
             .as_ref()
             .filter(|(stepping, _)| *stepping == runtime)
-            .map(|(_, step)| step);
+            .map(|(_, step)| step.clone());
         let Some(bound) = self
             .runtimes(inferior)
             .into_iter()
@@ -215,9 +215,12 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         let arming = Arming {
             breakpoints: &breakpoints,
-            step,
+            step: step.as_ref(),
             exceptions: self.exception_stops,
         };
+        if bound.model.agent().is_some() {
+            return self.arm_agent(&bound, &arming);
+        }
         let writes =
             self.with_runtime_stop(inferior, &bound, inferior.memory_thread(), |stop| {
                 bound.model.arm(stop, &arming)

@@ -935,6 +935,9 @@ impl SimController {
         let message = self.controller.next_message(false)?;
         let (description, trap) = match &message {
             ControllerMessage::Request(request) => (request.describe(), None),
+            ControllerMessage::AgentTimeout => {
+                ("runtime agent acknowledgement deadline".into(), None)
+            }
             ControllerMessage::Wait(event) => (
                 format!("wait {}", wait_status(event)),
                 match *event {

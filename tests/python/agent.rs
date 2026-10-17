@@ -400,3 +400,541 @@ async fn user_reentry_and_interruptions_are_visible_at_the_native_boundary() {
         }
     }
 }
+
+#[tokio::test]
+async fn a_python_line_breakpoint_installs_without_cooperation_and_retires_its_files() {
+    use crate::session::PythonSession;
+    use microscope::{BreakpointOptions, BreakpointSpec, ExitStatus, LineNumber, StopReason};
+    let source = python::fixture("control.py");
+    let text = std::fs::read_to_string(&source).expect("read fixture");
+    let line = LineNumber::new(
+        text.lines()
+            .position(|line| line.contains("# TARGET_LINE"))
+            .expect("marked line") as u64
+            + 1,
+    )
+    .expect("nonzero line");
+    for interpreter in ["3.14", "3.14t", "3.15", "3.15t"] {
+        let (mut session, reason, _) = PythonSession::launch_to_stop(
+            interpreter,
+            "control.py",
+            &[],
+            vec![(
+                BreakpointSpec::Source {
+                    path: source.clone(),
+                    line,
+                },
+                BreakpointOptions {
+                    pending: true,
+                    ..BreakpointOptions::default()
+                },
+            )],
+        )
+        .await;
+        assert!(
+            matches!(reason, StopReason::Breakpoint { address: None, ref hits } if hits.len() == 1),
+            "{interpreter}: {reason:?}: {}",
+            session.output()
+        );
+        let trace = session
+            .scenario
+            .operation(
+                "Python breakpoint backtrace",
+                session.scenario.handle().backtrace(),
+            )
+            .await;
+        assert!(
+            trace
+                .frames
+                .iter()
+                .any(
+                    |frame| frame.recorded.as_ref().is_some_and(|recorded| recorded
+                        .function
+                        .as_ref()
+                        == "target"
+                        && recorded
+                            .place
+                            .as_ref()
+                            .is_some_and(|place| u64::from(place.line) == line.get()))
+                ),
+            "{interpreter}: {trace:#?}"
+        );
+        let output = session.output();
+        let library = output
+            .lines()
+            .find_map(|line| line.strip_prefix("AGENT LIBRARY "))
+            .expect("the application reports the installed transport's private path");
+        let directory = std::path::Path::new(library)
+            .parent()
+            .expect("private parent")
+            .to_owned();
+        let entries = std::fs::read_dir(&directory)
+            .expect("agent directory")
+            .map(|entry| entry.expect("owned file").file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            entries,
+            [std::ffi::OsString::from("hook.so")],
+            "acknowledged source has been retired"
+        );
+        assert_eq!(
+            session.scenario.resume_to_stop().await,
+            StopReason::Exited(ExitStatus::Code(0)),
+            "{interpreter}"
+        );
+        assert!(
+            session.output().contains("CONTROL RESULT 42"),
+            "{interpreter}: {}",
+            session.output()
+        );
+        session.shutdown().await;
+        assert!(
+            !directory.exists(),
+            "{interpreter}: leaked {}",
+            directory.display()
+        );
+    }
+}
+
+fn control_line(fixture: &str, marker: &str) -> microscope::BreakpointSpec {
+    let path = python::fixture(fixture);
+    let text = std::fs::read_to_string(&path).expect("read fixture");
+    let line = text
+        .lines()
+        .position(|line| line.contains(marker))
+        .expect("marked line") as u64
+        + 1;
+    microscope::BreakpointSpec::Source {
+        path,
+        line: microscope::LineNumber::new(line).expect("nonzero line"),
+    }
+}
+
+#[tokio::test]
+async fn automatic_configuration_is_pending_until_acknowledged_and_edits_supersede_old_sites() {
+    use crate::session::PythonSession;
+    use microscope::{BreakpointOptions, ExitStatus, StopReason};
+    for interpreter in ["3.14", "3.14t", "3.15", "3.15t"] {
+        let (mut session, reason, _) = PythonSession::launch_to_stop(
+            interpreter,
+            "control_reconfigure.py",
+            &[],
+            vec![(
+                control_line("control_reconfigure.py", "# FIRST_LINE"),
+                BreakpointOptions {
+                    pending: true,
+                    ..BreakpointOptions::default()
+                },
+            )],
+        )
+        .await;
+        assert!(
+            matches!(reason, StopReason::Breakpoint { .. }),
+            "{interpreter}: {reason:?}"
+        );
+        let snapshot = session.scenario.snapshot().await;
+        let first = snapshot.breakpoints.first().expect("first site");
+        assert!(
+            first.pending_locations.is_empty(),
+            "{interpreter}: {first:?}"
+        );
+        let first = first.id;
+        let second = session
+            .scenario
+            .add_breakpoint_spec(control_line("control_reconfigure.py", "# SECOND_LINE"))
+            .await;
+        assert!(
+            !second.pending_locations.is_empty(),
+            "publication alone cannot establish readiness: {second:?}"
+        );
+        session.scenario.remove_breakpoint(first).await;
+        for _ in 0..3 {
+            let reason = session.scenario.resume_to_stop().await;
+            assert!(
+                matches!(reason, StopReason::Breakpoint { ref hits, .. } if hits.len() == 1 && hits[0].breakpoint == second.id),
+                "{interpreter}: {reason:?}: {}",
+                session.output()
+            );
+            let snapshot = session.scenario.snapshot().await;
+            assert!(
+                snapshot.breakpoints[0].pending_locations.is_empty(),
+                "{interpreter}: {:?}",
+                snapshot.breakpoints
+            );
+        }
+        session.scenario.remove_breakpoint(second.id).await;
+        assert_eq!(
+            session.scenario.resume_to_stop().await,
+            StopReason::Exited(ExitStatus::Code(0)),
+            "{interpreter}: {}",
+            session.output()
+        );
+        session.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn a_free_threaded_monitoring_agent_refuses_thread_only_resume_without_consuming_the_stop() {
+    use crate::session::PythonSession;
+    use microscope::{BreakpointOptions, ExceptionDisposition, ResumeScope, StopReason, ThreadId};
+    for interpreter in ["3.14t", "3.15t"] {
+        let (mut session, reason, _) = PythonSession::launch_to_stop(
+            interpreter,
+            "control.py",
+            &[],
+            vec![(
+                control_line("control.py", "# TARGET_LINE"),
+                BreakpointOptions {
+                    pending: true,
+                    ..BreakpointOptions::default()
+                },
+            )],
+        )
+        .await;
+        assert!(
+            matches!(reason, StopReason::Breakpoint { .. }),
+            "{interpreter}: {reason:?}"
+        );
+        let snapshot = session.scenario.snapshot().await;
+        let stop = snapshot.stop_id.expect("public stop");
+        let microscope::InferiorState::Stopped { process_id, .. } = snapshot.inferior else {
+            panic!("not stopped")
+        };
+        let result = session
+            .scenario
+            .attempt(
+                "thread-only resume refusal",
+                session.scenario.handle().continue_execution(
+                    stop,
+                    ResumeScope::Thread(ThreadId::new(process_id.get())),
+                    ExceptionDisposition::Pass,
+                ),
+            )
+            .await;
+        assert!(
+            result.is_err(),
+            "{interpreter}: unsafe thread-only resume was accepted: {result:?}"
+        );
+        assert!(result.unwrap_err().to_string().contains("process-wide"));
+        assert_eq!(session.scenario.snapshot().await.stop_id, Some(stop));
+        session.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn an_automatic_agent_detaches_disarms_and_can_be_installed_by_a_new_session() {
+    use crate::session::PythonSession;
+    use microscope::StopReason;
+    for interpreter in ["3.14", "3.14t", "3.15", "3.15t"] {
+        let (mut session, _) =
+            PythonSession::attach_at(interpreter, "control_attach.py", "initial").await;
+        session
+            .scenario
+            .add_breakpoint_spec(control_line("control_attach.py", "# TARGET_LINE"))
+            .await;
+        session.go_on().await;
+        let reason = session.finish_run().await;
+        assert!(
+            matches!(reason, StopReason::Breakpoint { .. }),
+            "{interpreter}: {reason:?}: {}",
+            session.output()
+        );
+        let trace = session.scenario.snapshot().await;
+        assert!(trace.breakpoints[0].pending_locations.is_empty());
+        let mut session = session.reattach_at("detached").await;
+        assert!(
+            session
+                .output()
+                .contains("DETACHED TOOLS [None, None, None, None, None, None]"),
+            "{interpreter}: {}",
+            session.output()
+        );
+        session
+            .scenario
+            .add_breakpoint_spec(control_line("control_attach.py", "# TARGET_LINE"))
+            .await;
+        session.go_on().await;
+        let reason = session.finish_run().await;
+        assert!(
+            matches!(reason, StopReason::Breakpoint { .. }),
+            "{interpreter}: {reason:?}: {}",
+            session.output()
+        );
+        session.detach_and_finish().await;
+    }
+}
+
+#[tokio::test]
+async fn exec_retires_old_agent_files_and_reinstalls_before_the_next_requested_line() {
+    use crate::session::PythonSession;
+    use microscope::{BreakpointOptions, ExitStatus, StopReason};
+    for interpreter in ["3.14", "3.14t", "3.15", "3.15t"] {
+        let (mut session, reason, _) = PythonSession::launch_to_stop(
+            interpreter,
+            "control_exec.py",
+            &[],
+            vec![(
+                control_line("control_exec.py", "# TARGET_LINE"),
+                BreakpointOptions {
+                    pending: true,
+                    ..BreakpointOptions::default()
+                },
+            )],
+        )
+        .await;
+        assert!(
+            matches!(reason, StopReason::Breakpoint { .. }),
+            "{interpreter}: {reason:?}"
+        );
+        let reason = session.scenario.resume_to_stop().await;
+        assert_eq!(
+            reason,
+            StopReason::Exec { followed: true },
+            "{interpreter}: {}",
+            session.output()
+        );
+        let output = session.output();
+        let old = output
+            .lines()
+            .find_map(|line| line.strip_prefix("AGENT LIBRARY "))
+            .expect("first installation");
+        let old = std::path::Path::new(old).parent().expect("agent parent");
+        assert!(
+            !old.exists(),
+            "{interpreter}: exec retained {}",
+            old.display()
+        );
+        let reason = session.scenario.resume_to_stop().await;
+        assert!(
+            matches!(reason, StopReason::Breakpoint { .. }),
+            "{interpreter}: {reason:?}: {}",
+            session.output()
+        );
+        assert_eq!(
+            session.scenario.resume_to_stop().await,
+            StopReason::Exited(ExitStatus::Code(0)),
+            "{interpreter}: {}",
+            session.output()
+        );
+        let output = session.output();
+        let paths = output
+            .lines()
+            .filter_map(|line| line.strip_prefix("AGENT LIBRARY "))
+            .collect::<Vec<_>>();
+        assert_eq!(paths.len(), 2, "{interpreter}: {output}");
+        assert_ne!(paths[0], paths[1]);
+        assert!(paths.iter().all(|path| {
+            !std::path::Path::new(path)
+                .parent()
+                .expect("agent parent")
+                .exists()
+        }));
+        session.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn exhausted_monitoring_tools_report_failure_and_preserve_application_tools() {
+    use crate::session::PythonSession;
+    use microscope::StopReason;
+    for interpreter in ["3.14", "3.14t", "3.15", "3.15t"] {
+        let (mut session, _) =
+            PythonSession::attach_at(interpreter, "control_failure.py", "initial").await;
+        session
+            .scenario
+            .add_breakpoint_spec(control_line("control_failure.py", "# TARGET_LINE"))
+            .await;
+        session.go_on().await;
+        let reason = session.finish_run().await;
+        assert!(
+            matches!(reason, StopReason::RuntimeEvent { ref description } if description.contains("tool") && description.contains("generation")),
+            "{interpreter}: {reason:?}: {}",
+            session.output()
+        );
+        let snapshot = session.scenario.snapshot().await;
+        assert!(!snapshot.breakpoints[0].pending_locations.is_empty());
+        assert!(
+            snapshot.breakpoints[0].pending_locations[0]
+                .reason
+                .contains("tool"),
+            "{interpreter}: {:?}",
+            snapshot.breakpoints
+        );
+        assert_eq!(
+            session.scenario.resume_to_stop().await,
+            StopReason::Exited(microscope::ExitStatus::Code(0)),
+            "{interpreter}: {}",
+            session.output()
+        );
+        assert!(session.output().contains("APPLICATION TOOLS ['application-0', 'application-1', 'application-2', 'application-3', 'application-4', 'application-5']"), "{interpreter}: {}", session.output());
+        session.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn a_missing_agent_acknowledgement_has_a_bounded_visible_failure() {
+    use crate::session::PythonSession;
+    use microscope::StopReason;
+    let (mut session, _) = PythonSession::attach_at("3.14", "control_noack.py", "initial").await;
+    session
+        .scenario
+        .add_breakpoint_spec(control_line("control_noack.py", "# FIRST_LINE"))
+        .await;
+    session.go_on().await;
+    let reason = session.finish_run().await;
+    assert!(
+        matches!(reason, StopReason::Breakpoint { .. }),
+        "{reason:?}"
+    );
+    session.resume().await;
+    session.stop_at("faulted").await;
+    session
+        .scenario
+        .add_breakpoint_spec(control_line("control_noack.py", "# SECOND_LINE"))
+        .await;
+    session.go_on().await;
+    // The shared execution deadline allows scheduling under the stress
+    // gate; unit tests separately prove the exact five-second running budget.
+    let reason = session.finish_run().await;
+    assert!(
+        matches!(reason, StopReason::RuntimeEvent { ref description } if description.contains("acknowledgement") && description.contains("timed out")),
+        "{reason:?}"
+    );
+    let snapshot = session.scenario.snapshot().await;
+    assert!(
+        snapshot
+            .breakpoints
+            .iter()
+            .all(|site| !site.pending_locations.is_empty())
+    );
+    assert!(
+        snapshot
+            .breakpoints
+            .iter()
+            .all(|site| site.pending_locations[0].reason.contains("timed out"))
+    );
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn removing_all_sites_then_reactivating_uses_a_fresh_source_request() {
+    use crate::session::PythonSession;
+    use microscope::{BreakpointOptions, ExitStatus, StopReason};
+    for interpreter in ["3.14", "3.14t", "3.15", "3.15t"] {
+        let (mut session, reason, _) = PythonSession::launch_to_stop(
+            interpreter,
+            "control_reconfigure.py",
+            &[],
+            vec![(
+                control_line("control_reconfigure.py", "# FIRST_LINE"),
+                BreakpointOptions {
+                    pending: true,
+                    ..BreakpointOptions::default()
+                },
+            )],
+        )
+        .await;
+        assert!(
+            matches!(reason, StopReason::Breakpoint { .. }),
+            "{interpreter}: {reason:?}"
+        );
+        for marker in ["# FIRST_LINE", "# SECOND_LINE"] {
+            session.scenario.remove_all_breakpoints().await;
+            let site = session
+                .scenario
+                .add_breakpoint_spec(control_line("control_reconfigure.py", marker))
+                .await;
+            assert!(!site.pending_locations.is_empty());
+            let reason = session.scenario.resume_to_stop().await;
+            assert!(
+                matches!(reason, StopReason::Breakpoint { ref hits, .. } if hits.len() == 1 && hits[0].breakpoint == site.id),
+                "{interpreter}: {reason:?}: {}",
+                session.output()
+            );
+        }
+        session.scenario.remove_all_breakpoints().await;
+        assert_eq!(
+            session.scenario.resume_to_stop().await,
+            StopReason::Exited(ExitStatus::Code(0)),
+            "{interpreter}: {}",
+            session.output()
+        );
+        session.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn unsupported_python_injection_is_visible_even_for_pending_breakpoints() {
+    use crate::session::PythonSession;
+    use microscope::BreakpointOptions;
+    for interpreter in ["3.12", "3.13", "3.13t"] {
+        let (session, _) =
+            PythonSession::attach_at(interpreter, "control_attach.py", "initial").await;
+        let site = session
+            .scenario
+            .operation(
+                "unsupported pending breakpoint",
+                session.scenario.handle().add_breakpoint_with(
+                    control_line("control_attach.py", "# TARGET_LINE"),
+                    BreakpointOptions {
+                        pending: true,
+                        ..BreakpointOptions::default()
+                    },
+                ),
+            )
+            .await;
+        assert!(
+            !site.pending_locations.is_empty(),
+            "{interpreter}: unsupported injection lost its reason: {site:?}"
+        );
+        assert!(
+            site.pending_locations[0].reason.contains("PEP 768"),
+            "{interpreter}: {site:?}"
+        );
+        session.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn automatic_agents_use_target_process_ids_in_a_nested_pid_namespace() {
+    use crate::session::PythonSession;
+    use microscope::StopReason;
+    for interpreter in ["3.14", "3.15t"] {
+        let (mut session, _) = PythonSession::attach_in_pid_namespace_at(
+            interpreter,
+            "control_attach.py",
+            "initial",
+            &["--namespace"],
+        )
+        .await;
+        session
+            .scenario
+            .add_breakpoint_spec(control_line("control_attach.py", "# TARGET_LINE"))
+            .await;
+        session.go_on().await;
+        let reason = session.finish_run().await;
+        assert!(
+            matches!(reason, StopReason::Breakpoint { .. }),
+            "{interpreter}: {reason:?}: {}",
+            session.output()
+        );
+        let mut session = session.reattach_at("detached").await;
+        assert!(
+            session
+                .output()
+                .contains("DETACHED TOOLS [None, None, None, None, None, None]")
+        );
+        session
+            .scenario
+            .add_breakpoint_spec(control_line("control_attach.py", "# TARGET_LINE"))
+            .await;
+        session.go_on().await;
+        let reason = session.finish_run().await;
+        assert!(
+            matches!(reason, StopReason::Breakpoint { .. }),
+            "{interpreter}: {reason:?}: {}",
+            session.output()
+        );
+        session.detach_and_finish().await;
+    }
+}

@@ -145,6 +145,8 @@ pub fn process_start_time(process: i32) -> Option<u64> {
 pub enum ControllerMessage {
     Request(Request),
     Wait(linux::WaitEvent),
+    /// The controller reached an outstanding agent request deadline.
+    AgentTimeout,
 }
 
 impl ControllerMessage {
@@ -154,7 +156,8 @@ impl ControllerMessage {
     pub(crate) const fn preempts_inspection(&self) -> bool {
         matches!(
             self,
-            Self::Wait(_)
+            Self::AgentTimeout
+                | Self::Wait(_)
                 | Self::Request(
                     Request::Continue { .. }
                         | Request::Step { .. }

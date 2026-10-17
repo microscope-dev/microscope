@@ -97,6 +97,14 @@ pub(super) trait InspectionOps {
 }
 
 pub(super) trait LinuxTraceOps: InspectionOps {
+    fn agent_files(
+        &self,
+        _pid: Pid,
+        _library: &[u8],
+    ) -> std::result::Result<Box<dyn super::agent_files::AgentFiles>, Arc<str>> {
+        Err("this target does not support runtime agent files".into())
+    }
+
     fn spawn(&self, executable: &Path, options: LaunchOptions) -> Result<Pid>;
 
     fn spawn_waiter(&self, messages: mpsc::Sender<ControllerMessage>) -> Result<Waiter>;
@@ -443,6 +451,15 @@ impl InspectionOps for LinuxPtrace {
 }
 
 impl LinuxTraceOps for LinuxPtrace {
+    fn agent_files(
+        &self,
+        pid: Pid,
+        library: &[u8],
+    ) -> std::result::Result<Box<dyn super::agent_files::AgentFiles>, Arc<str>> {
+        self.assert_owner_thread();
+        super::agent_files::create(pid, library)
+    }
+
     fn spawn_waiter(&self, messages: mpsc::Sender<ControllerMessage>) -> Result<Waiter> {
         self.assert_owner_thread();
         let waiter = spawn_waiter(messages)?;

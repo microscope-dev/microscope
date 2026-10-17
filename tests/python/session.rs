@@ -320,6 +320,11 @@ impl PythonSession {
         lines
     }
 
+    /// Starts the stopped fixture without releasing any application checkpoint.
+    pub async fn resume(&mut self) {
+        self.running = Some(self.scenario.start_resuming().await);
+    }
+
     /// Lets the fixture go on past the checkpoint it parked at.
     #[allow(
         dead_code,
@@ -328,6 +333,16 @@ impl PythonSession {
     pub async fn go_on(&mut self) {
         self.input.write_all(b"\n").expect("release the fixture");
         self.running = Some(self.scenario.start_resuming().await);
+    }
+
+    /// Waits for the current execution to reach an observable public stop.
+    pub async fn finish_run(&mut self) -> StopReason {
+        let running = self.running.take().expect("running fixture");
+        tokio::time::timeout(CHECKPOINT_DEADLINE, running)
+            .await
+            .expect("execution deadline")
+            .expect("run task")
+            .expect("run result")
     }
 
     /// The stop the fixture is held at.
@@ -387,6 +402,53 @@ impl PythonSession {
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
         assert!(status.success(), "detached fixture failed: {status}");
+    }
+
+    /// Detaches at a breakpoint, waits for an application checkpoint and
+    /// attaches a new debugger while retaining the external process owner.
+    pub async fn reattach_at(mut self, name: &str) -> Self {
+        let InferiorState::Stopped {
+            process_id: process,
+            ..
+        } = self.scenario.snapshot().await.inferior
+        else {
+            panic!("reattach starts at a public stop")
+        };
+        let context = self.context();
+        let Self {
+            scenario,
+            interpreter,
+            fixture,
+            output,
+            input,
+            attached,
+            _scratch: scratch,
+            running,
+        } = self;
+        assert!(running.is_none());
+        scenario.shutdown().await;
+        reported(&output, name, &context).await;
+        let debug_files = DebugFileOptions {
+            directories: python::debug_directory(&interpreter).into_iter().collect(),
+            ..DebugFileOptions::default()
+        };
+        let debugger = tokio::time::timeout(
+            CHECKPOINT_DEADLINE,
+            Debugger::attach_with(process, None, &debug_files),
+        )
+        .await
+        .expect("reattach deadline")
+        .expect("reattach fixture");
+        Self {
+            scenario: Scenario::attached(context, debugger),
+            interpreter,
+            fixture,
+            output,
+            input,
+            attached,
+            _scratch: scratch,
+            running: None,
+        }
     }
 
     /// Ends the fixture and the debugger.
