@@ -6,11 +6,12 @@
 use std::sync::Arc;
 
 use super::super::code::CodeTable;
-use super::super::objects::{Blocks, Reader};
+use super::super::objects::Reader;
 use super::super::values::{Budget, Types, Values};
 use super::{Process, SMALL, UNMAPPED, layout};
 use crate::image::python::{Constant, Field};
 use crate::inspection::InspectionBudget;
+use crate::runtime_model::StopMemory;
 use crate::runtime_model::{
     InterpretedChild, InterpretedKind, InterpretedLocal, InterpretedSlot, InterpretedValue,
 };
@@ -435,7 +436,7 @@ pub(super) fn with_runtime<R>(
 ) -> R {
     let mut inspection = InspectionBudget::new(limits);
     let budget = Budget::new(&mut inspection);
-    let blocks = Blocks::default();
+    let blocks = StopMemory::default();
     let values = Values {
         reader: Reader {
             stop: &process.memory,

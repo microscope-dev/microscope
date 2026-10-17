@@ -224,9 +224,9 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
         &mut self,
         names: &[Arc<str>],
         object: VirtualAddress,
-    ) -> Option<Arc<Presentation>> {
+    ) -> Result<Option<Arc<Presentation>>, Stop> {
         let frame = self.frame;
-        let bound = frame
+        let Some(bound) = frame
             .controller
             .runtimes(frame.inferior())
             .into_iter()
@@ -235,25 +235,38 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
                     .model
                     .object_types()
                     .is_some_and(|types| names.iter().any(|name| **name == *types.native))
-            })?;
+            })
+        else {
+            return Ok(None);
+        };
 
         let budget = &mut *self.budget;
-        let (_, state) = frame.with_stop(&bound, |stop| {
-            let slot = bound.model.interpreted_value(stop, object, budget);
-            super::interpreted::present_slot(
-                (frame.stop_id, frame.root().context, frame.resolved().id),
-                &bound,
-                slot,
-            )
+        let slot = frame.with_stop(&bound, |stop| {
+            bound.model.interpreted_value(stop, object, budget)
         });
-        match state {
-            VariableState::Available { presentation, .. } => presentation,
+        Ok(match self.present_interpreted(&bound, slot)? {
+            (_, VariableState::Available { presentation, .. }) => presentation,
             _ => None,
-        }
+        })
     }
 
-    /// An interpreter's object, as inspection presents it.
+    /// An interpreter's object, as inspection presents it: through the view
+    /// its class has.
     pub(super) fn interpreted_present(
+        &mut self,
+        runtime: RuntimeId,
+        object: VirtualAddress,
+    ) -> Result<InspectedValue, Stop> {
+        let bound = self.frame.bound(runtime).map_err(Stop::Failed)?;
+        let slot = self.interpreted(runtime, |bound, stop, budget| {
+            bound.model.interpreted_value(stop, object, budget)
+        })?;
+        let (type_info, state) = self.present_interpreted(&bound, slot)?;
+        Ok(crate::eval::target::Machine::finish(self, type_info, state))
+    }
+
+    /// An interpreter's object as the debugger presents it without a view.
+    pub(super) fn interpreted_present_stored(
         &mut self,
         runtime: RuntimeId,
         object: VirtualAddress,

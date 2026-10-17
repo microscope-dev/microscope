@@ -97,7 +97,8 @@ v => children: [0] = 10, [1] = 20, [2] = 30, capacity = 4, [raw]
 A value expands to its elements, then the view's fields, then `[raw]`, the
 value as stored, whose children are its members.
 
-The language is `c`, `c++`, `rust`, `go`, `zig`, `odin`, `d`, `nim`, `ada`, or `any`. A file that does
+The language is `c`, `c++`, `rust`, `go`, `zig`, `odin`, `d`, `nim`, `ada`, `python`
+(see [Python objects](#python-objects)), or `any`. A file that does
 not begin with its version is refused, and a view with an error is skipped
 while the rest of its file is read:
 
@@ -646,6 +647,67 @@ kernel run that took to `FILE`, and `microscope views replay FILE` runs the
 kernels again, the built-in one each names or the module given with
 `--kernel FILE.wasm`, and fails unless each does what it did.
 
+## Python objects
+
+A `python` view presents the objects of a Python class. Its pattern names the
+class by its module's path and its qualified name, as
+`collections::OrderedDict` or `app::**::Point` does. A Python variable has
+no type of its own, so a view is chosen as each object is presented, once
+for each class at each stop. The class is tried first, then the classes it
+derives from, in the order Python looks attributes up in, so the view of
+`enum::Enum` presents the members of every enum. A view of `any` language
+never presents a Python object.
+
+`self` is the object, and an attribute is written `self.name`, as Python
+writes it; a bare name is only a `let` or a capture. Expressions follow
+Python's rules ([Expressions](expressions.md#python-values)): an attribute is
+read as `object.__getattribute__` finds it, and a property, or anything
+else only Python code could compute, is refused. An object's attributes are
+known only once it is presented, so an attribute it lacks is a problem
+then, with the reason, as a failed check is.
+
+```microscope-view-example
+microscope-views 1
+view python app::Point {
+    show record { x = self.x, y = self.y }
+    summary "Point({self.x}, {self.y})"
+}
+view python enum::Enum {
+    show record { name = self._name_, value = self._value_ }
+}
+---
+point => Point(3, 4)
+point => children: x = 3, y = 4, [raw]
+red => {name: 'RED', value: 1}
+gone => problem: the `app.Point` has no attribute `x`
+number => unbound: no view's pattern names the type
+```
+
+A view that does not `show` presents the object as microscope does without
+a view, with the view's fields after the object's own children.
+
+```microscope-view-example
+microscope-views 1
+view python app::Point {
+    field sum = self.x + self.y
+}
+view any app::Point {
+    show empty("not Python")
+}
+---
+point => <app.Point object>
+point => children: sum = 7, [raw]
+```
+
+```microscope-view-example
+microscope-views 1
+view python app::Point {
+    show value(x)
+}
+---
+point => unbound: `x` is neither
+```
+
 ## Choosing a view
 
 Each view whose pattern names a value's type is bound against the type, in
@@ -905,6 +967,11 @@ The built-in views cover:
   `std.typecons.Nullable` as its value or `null`.
 - Nim: strings as their text, and seqs as their elements.
 - Ada: GNAT's `Unbounded_String` as its text.
+- Python: an `enum.Enum` member, an `IntEnum`'s too, as its name and value; a
+  `fractions.Fraction` as `str` writes it; and a `pathlib` path as its text,
+  once Python has made it. The types the standard library writes in C, such
+  as `collections.deque`, `datetime.datetime`, and `decimal.Decimal`, need no
+  view ([Python](languages.md#python)).
 
 Some values need no view, because their debug information says what they
 are:

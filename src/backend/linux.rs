@@ -79,6 +79,7 @@ mod inspection;
 mod internal_stops;
 mod interpreted;
 mod interpreted_values;
+mod interpreted_views;
 mod invariants;
 mod language_exceptions;
 mod libraries;
@@ -860,6 +861,10 @@ struct PublicStop {
     /// The frames each runtime interprets on the threads, read once asked
     /// for; forgotten once the debugger writes memory.
     interpreted: interpreted::InterpretedCache,
+
+    /// The memory runtime models read at the stop; forgotten once the
+    /// debugger writes memory.
+    memory: crate::runtime_model::StopMemory,
 
     /// What the function a step out finished returned.
     returned: Option<returns::Returned>,
@@ -2686,6 +2691,7 @@ impl PublicStop {
             task_locators: RefCell::default(),
             task_sets: RefCell::default(),
             interpreted: RefCell::default(),
+            memory: crate::runtime_model::StopMemory::default(),
             returned: None,
         }
     }

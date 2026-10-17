@@ -7,7 +7,8 @@ decides what it equals, and objects of every way CPython keeps attributes:
 in values inline or kept apart, in a dict, and in slots, with the
 descriptors and hooks whose code decides what an attribute is. Objects of
 classes deriving from built-in types hold those types' values, and some
-types define their own items and lengths.
+types define their own items and lengths. A dataclass's fields come first
+among its attributes, in the order it defines them.
 
 Besides each expression's result, the checkpoint reports the attributes of
 each local whose class the fixture defines, as truth.attributes() gives
@@ -17,6 +18,7 @@ them:
 """
 
 import collections
+import dataclasses
 import enum
 import os
 import sys
@@ -169,6 +171,26 @@ class Derived(Base):
 Pair = collections.namedtuple("Pair", "left right")
 
 
+@dataclasses.dataclass(slots=True)
+class Slim:
+    """A dataclass whose fields are slots, which CPython sorts."""
+
+    zed: int
+    alpha: str
+
+
+@dataclasses.dataclass
+class Late:
+    """A dataclass with a field and an attribute set after its fields."""
+
+    b: int
+    a: int = dataclasses.field(init=False)
+
+    def __post_init__(self):
+        self.extra = 1
+        self.a = 2
+
+
 # The instance locals whose dicts are never made, each with the names of its
 # attributes: reading an object's __dict__ makes one, after which CPython
 # reads its attributes through it, not from where it keeps them.
@@ -238,6 +260,8 @@ def values():
     derived.kept = 5
     pair_nt = Pair(1, "b")
     ordered = collections.OrderedDict(a=1)
+    slim = Slim(3, "a")
+    late = Late(1)
     length = len
     append = numbers.append
     klass = Point

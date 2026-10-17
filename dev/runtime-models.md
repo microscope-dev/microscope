@@ -21,7 +21,7 @@ their own, join native backtraces as interpreted frames.
 | `src/backend/linux/runtimes.rs`, `src/backend/linux/async_frames.rs`, `src/backend/linux/frames.rs` | Stop-scoped runtime snapshots and logical stacks |
 | `tests/go/`, `tests/tokio/`, `tests/python/` | Runtime integration suites |
 | `tests/fixtures/go/`, `tests/fixtures/rust/tokio/`, `tests/fixtures/python/` | Programs that expose scheduler, task, and frame states |
-| `views/` | Built-in Go, Rust, and Tokio value views |
+| `views/` | Built-in Go, Rust, Tokio, and Python value views |
 
 ## Boundary
 
@@ -234,10 +234,11 @@ frame numbers stay stable.
 `frozenset`, modules, functions, built-in functions, and code objects. An
 object is identified by its type object, which the module's symbols name. Its
 first bytes are read at once (`objects::Head`), and each read is charged to
-the inspection budget. A reading keeps the 256-byte blocks it has read
-(`objects::Blocks`): a page holds whole blocks, so a block is readable
-wherever its bytes are, and the fields of one object, a table's entries, and
-objects allocated together cost one read. `text.rs` writes each value's
+the inspection budget. The stop keeps the 256-byte blocks every reading has
+read (`StopMemory`, which a write forgets): a page holds whole blocks, so a
+block is readable wherever its bytes are, and the fields of one object, a
+table's entries, and objects allocated together cost one read for the whole
+stop, however many views and expansions read them. `text.rs` writes each value's
 summary as `repr` would. A summary is bounded in depth, items, objects, and
 characters, and says where it stopped. The backend presents values as
 language-neutral presentations, whose children page through an
@@ -250,10 +251,29 @@ it: a managed dict before the object, with 3.12's tagged values pointer or
 3.13's inline values after it, sharing keys with the class's other instances;
 or a dict at a positive `tp_dictoffset`. Its `__slots__` follow, read through
 each class's member descriptors. A static built-in type's dict is in its
-interpreter's state, found by the index `tp_subclasses` keeps. A class whose
-bases lead to a built-in type other than `object` holds that type's value,
-which it is presented as, with its attributes after its items. A cell's
-variable is the object it holds.
+interpreter's state, found by the index `tp_subclasses` keeps; from 3.13 a
+static type of an extension the interpreter manages, as `_datetime`'s, is at
+that index among those types' states, where the built-in types' state there
+names another type. A class whose bases lead to a type C defines (static,
+or a heap type with `Py_TPFLAGS_IMMUTABLETYPE`) other than `object` holds
+that type's value, which it is presented as, with its attributes after its
+items. A dataclass's fields come first among its attributes, in the order of
+its `__dataclass_fields__`. A cell's variable is the object it holds.
+
+`library.rs` reads the standard library's types that only C defines, whose
+structures `scripts/cpython-layouts.c` copies: `collections.deque`,
+`defaultdict`, and `OrderedDict`, `datetime`'s five types, and
+`decimal.Decimal`. A type is one only where C defines it and its module,
+name, and `tp_basicsize` are the copied structure's. Each is written as its
+type's own C `repr` writes it, with the name of the object's type its C
+uses. An `OrderedDict`'s items follow its list of nodes, each of whose key
+is found in the dict by identity and the node's hash. A `Decimal` is
+written as libmpdec's `mpd_to_sci` writes it with capitals.
+
+Python classes are presented through views as well (`views/python-std.views`;
+[Views of dynamic types](evaluation-and-views.md#views-of-dynamic-types)).
+`truth.canonical` mirrors each built-in view and each library type's `repr`,
+so the fixtures compare every presented value whole.
 
 **Interpreted frames in the debugger.** An interpreted frame has
 `FrameKind::Interpreted` and a `RecordedFrame` with its function, language,

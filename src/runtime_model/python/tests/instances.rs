@@ -983,25 +983,42 @@ fn a_class_whose_getattro_is_neither_generic_nor_a_hook_is_refused() {
 
 #[test]
 fn a_static_builtin_types_class_attribute_is_found_in_the_dict_its_interpreter_keeps() {
+    for extension in [false, true] {
+        a_managed_static_types_class_attribute_is_found(extension);
+    }
+}
+
+/// A static type's class attribute, which its interpreter keeps in the
+/// state at its index among the built-in types', or for a type of an
+/// extension the interpreter manages, as `_datetime`'s, among theirs, where
+/// the built-in types' state at that index is another type's.
+fn a_managed_static_types_class_attribute_is_found(extension: bool) {
     let mut process = Process::new(layout());
     let (types, _) = world(&mut process);
     let answer = process.int(types.int, 42);
     let dict = text_dict(&mut process, &types, &[("answer", answer)]);
-
-    // The interpreter keeps the dict of the first static type, in the state
-    // that follows its header.
-    let interpreter = process.alloc(64);
-    let state = interpreter + process.offset(Field::InterpreterStaticTypes);
-    let dict_at = state + process.offset(Field::StaticTypeStateDict);
-    process.memory.write(dict_at, dict, 8);
-    let runtime = process.alloc(SMALL);
-    process.word(runtime, Field::RuntimeInterpretersHead, interpreter);
-
     let flagged = new_type(&mut process, &types, "Flagged");
     process.word(flagged, Field::TypeFlags, STATIC_BUILTIN);
     process.word(flagged, Field::TypeSubclasses, 1);
     let mro = process.tuple(types.tuple, &[flagged]);
     process.word(flagged, Field::TypeMro, mro);
+
+    // The interpreter keeps the state of the first static type after its
+    // header.
+    let interpreter = process.alloc(128);
+    let builtin = interpreter + process.offset(Field::InterpreterStaticTypes);
+    let state = if extension {
+        process.memory.write(builtin, types.int.get(), 8);
+        interpreter + process.offset(Field::InterpreterStaticExtensionTypes)
+    } else {
+        builtin
+    };
+    process.memory.write(state, flagged, 8);
+    process
+        .memory
+        .write(state + process.offset(Field::StaticTypeStateDict), dict, 8);
+    let runtime = process.alloc(SMALL);
+    process.word(runtime, Field::RuntimeInterpretersHead, interpreter);
 
     let found = with_runtime(
         &process,
@@ -1016,7 +1033,11 @@ fn a_static_builtin_types_class_attribute_is_found_in_the_dict_its_interpreter_k
             )
         },
     );
-    assert_eq!(found, Ok(VirtualAddress::new(answer)));
+    assert_eq!(
+        found,
+        Ok(VirtualAddress::new(answer)),
+        "extension: {extension}"
+    );
 }
 
 #[test]

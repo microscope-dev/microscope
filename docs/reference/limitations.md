@@ -61,7 +61,10 @@ narrower limits and report them when used.
 - Python expressions read names, attributes, items, keys, and lengths, and
   compute with numbers, text, and truth values. They never run code in the
   program, so properties, methods, and a class's own `__getattr__`,
-  `__getitem__`, `__len__`, and `__repr__` are refused or not used. Python is
+  `__getitem__`, `__len__`, and `__repr__` are refused or not used, and so is a
+  key a `defaultdict` holds no value for. A type an extension defines in C,
+  other than the standard library's that microscope reads, shows its type and
+  address. Python is
   not supported yet for breakpoints by file and line, stepping, Python
   exceptions as catchpoints, asyncio tasks, and Python stacks in profiles.
 - Runtime support follows known compiler and runtime layouts. Unknown versions

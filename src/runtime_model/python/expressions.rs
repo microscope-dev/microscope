@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use super::code::{CodeId, CodeTable};
 use super::instances::Class;
+use super::library::Library;
 use super::objects::{Problem, Record, malformed};
 use super::text;
 use super::values::{Dict, Object, Values, exact};
@@ -190,39 +191,23 @@ impl Values<'_, '_> {
             read => (read, None),
         };
 
+        // A library type's dict finds its items as a dict does, but for
+        // the keys it holds none for, which its type may make values of.
+        let (read, class) = match read {
+            Object::Library {
+                class: library,
+                value,
+                ..
+            } if value.dict().is_some() => (
+                value.dict().map_or(Object::Nothing, Object::Dict),
+                class.or(Some(library)),
+            ),
+            read => (read, class),
+        };
+
         match read {
             Object::List { items, length } | Object::Tuple { items, length } => {
-                let index = match key {
-                    InterpretedKey::Int(index) => *index,
-                    InterpretedKey::Bool(value) => i128::from(*value),
-                    _ => {
-                        return Err(refused(
-                            ErrorKind::Type,
-                            format!(
-                                "a `{}` is indexed by integers, not by {}",
-                                type_text(&read),
-                                key_kind(key)
-                            ),
-                        ));
-                    }
-                };
-
-                let position = if index < 0 {
-                    index.checked_add(i128::from(length))
-                } else {
-                    Some(index)
-                }
-                .and_then(|position| u64::try_from(position).ok())
-                .filter(|position| *position < length)
-                .ok_or_else(|| {
-                    refused(
-                        ErrorKind::Bounds,
-                        format!(
-                            "the `{}` holds {length} items, and {index} indexes none of them",
-                            type_text(&read)
-                        ),
-                    )
-                })?;
+                let position = position(key, length, &read)?;
                 let item = self
                     .items(items, position, position + 1)
                     .map_err(|problem| self.unavailable(problem))?;
@@ -230,6 +215,24 @@ impl Values<'_, '_> {
                     Some(item) if *item != VirtualAddress::new(0) => Ok(*item),
                     _ => Err(self.unavailable(malformed(object, &type_text(&read)))),
                 }
+            }
+            Object::Library {
+                value:
+                    Library::Deque {
+                        block,
+                        index,
+                        length,
+                        ..
+                    },
+                ..
+            } => {
+                let position = position(key, length, &read)?;
+                let item = self
+                    .deque_items((block, index, length), position..position + 1)
+                    .map_err(|problem| self.unavailable(problem))?;
+                item.first()
+                    .copied()
+                    .ok_or_else(|| self.unavailable(malformed(object, "deque")))
             }
             Object::Dict(dict) => match self.lookup(dict, key)? {
                 Some(value) => Ok(value),
@@ -260,11 +263,48 @@ impl Values<'_, '_> {
             _ => Err(refused(
                 ErrorKind::Type,
                 format!(
-                    "microscope finds the items of a list, tuple, or dict, not of a `{}`",
+                    "microscope finds the items of a list, tuple, dict, or deque, not of a `{}`",
                     type_text(&read)
                 ),
             )),
         }
+    }
+
+    /// The value `dict` holds for the very object at `key`, whose hash is
+    /// `hash`, or `None` where it holds no value for that object: found as
+    /// CPython's lookup finds a key it holds, by identity, which compares
+    /// no keys and so runs no code.
+    pub(super) fn identical(
+        &self,
+        dict: Dict,
+        key: VirtualAddress,
+        hash: i64,
+    ) -> Result<Option<VirtualAddress>, Problem> {
+        let mask = (1_u64 << dict.log2_size) - 1;
+        let mut slot = hash.cast_unsigned() & mask;
+        let mut perturb = hash.cast_unsigned();
+        for _ in 0..=mask.saturating_mul(2).saturating_add(64) {
+            let bytes = self.reader.bytes(
+                dict.indices.wrapping_add(slot * dict.index_width),
+                dict.index_width,
+            )?;
+            let index = signed(&bytes).ok_or_else(|| malformed(dict.object, "dict"))?;
+            if index == EMPTY_SLOT {
+                return Ok(None);
+            }
+
+            if let Ok(index) = u64::try_from(index) {
+                let entry = self.entry(dict, index)?;
+                if entry.key == key && entry.value != VirtualAddress::new(0) {
+                    return Ok(Some(entry.value));
+                }
+            }
+
+            perturb >>= PERTURB_SHIFT;
+            slot = slot.wrapping_mul(5).wrapping_add(perturb).wrapping_add(1) & mask;
+        }
+
+        Err(malformed(dict.object, "dict"))
     }
 
     /// The value `dict` holds for `key`, or `None` when it holds none.
@@ -566,6 +606,7 @@ impl Values<'_, '_> {
                 (InterpretedKind::Sequence { length: *length }, None)
             }
             Object::Dict(Dict { length, .. }) => (InterpretedKind::Map { length: *length }, None),
+            Object::Library { value, .. } => (value.kind(), None),
             Object::Instance { .. }
             | Object::Class { .. }
             | Object::Module { .. }
@@ -647,16 +688,61 @@ impl Values<'_, '_> {
             | Object::Tuple { length, .. }
             | Object::Dict(Dict { length, .. })
             | Object::Set { used: length, .. } => Ok(length),
+            Object::Library { ref value, .. } => match value.kind() {
+                InterpretedKind::Sequence { length } | InterpretedKind::Map { length } => {
+                    Ok(length)
+                }
+                _ => Err(refused(
+                    ErrorKind::Type,
+                    format!("a `{}` has no length", type_text(&read)),
+                )),
+            },
             read => Err(refused(
                 ErrorKind::Type,
                 format!(
-                    "microscope reads the length of a str, bytes, list, tuple, dict, or set, \
-                     not of a `{}`",
+                    "microscope reads the length of a str, bytes, list, tuple, dict, set, or \
+                     deque, not of a `{}`",
                     type_text(&read)
                 ),
             )),
         }
     }
+}
+
+/// The position in a sequence of `length` items, `read`, that `key`
+/// indexes, as Python counts a negative index from its end.
+fn position(key: &InterpretedKey, length: u64, read: &Object) -> Result<u64, InterpretedFailure> {
+    let index = match key {
+        InterpretedKey::Int(index) => *index,
+        InterpretedKey::Bool(value) => i128::from(*value),
+        _ => {
+            return Err(refused(
+                ErrorKind::Type,
+                format!(
+                    "a `{}` is indexed by integers, not by {}",
+                    type_text(read),
+                    key_kind(key)
+                ),
+            ));
+        }
+    };
+
+    if index < 0 {
+        index.checked_add(i128::from(length))
+    } else {
+        Some(index)
+    }
+    .and_then(|position| u64::try_from(position).ok())
+    .filter(|position| *position < length)
+    .ok_or_else(|| {
+        refused(
+            ErrorKind::Bounds,
+            format!(
+                "the `{}` holds {length} items, and {index} indexes none of them",
+                type_text(read)
+            ),
+        )
+    })
 }
 
 /// Why a key of the type named `name` refuses a lookup of `key`.

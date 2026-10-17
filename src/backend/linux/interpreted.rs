@@ -12,6 +12,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use super::evaluation::StopMachine;
 use super::frames::{FrameRegisters, FrameScope, ResolvedFrame, StackRoot};
 use super::native::InspectionOps;
 use super::runtimes::BoundRuntime;
@@ -24,16 +25,16 @@ use crate::model::{ValueStorage, ViewChildren};
 use crate::protocol::PresentedFrame;
 use crate::runtime_model::{
     Driven, InterpretedChild, InterpretedFrame, InterpretedKind, InterpretedSlot,
-    InterpretedStacks, InterpretedValue, Partial,
+    InterpretedStacks, InterpretedValue, Partial, interpreted_identity,
 };
 use crate::{
-    AddressValue, ArgumentOrigin, CallFrameUnavailableReason, CodeRole, DereferenceState, Error,
-    ExecutionContext, FloatValue, FrameKind, LoadedModule, MapKey, Presentation, PresentedCount,
-    PresentedShape, RecordedFrame, Result, RuntimeId, ScalarValue, SourceLanguage, StackFrame,
-    StackFrameId, StackSegment, StopId, TypeIdentity, TypeInfo, TypeKind, ValueChild,
-    ValueChildPage, ValueChildQuery, ValueChildRelationship, ValueChildren, ValueChildrenReference,
-    Variable, VariableKind, VariableQuery, VariableState, VariableUnavailableReason, VariableValue,
-    VariableValueSource, ViewName, ViewProblem, VirtualAddress,
+    AddressValue, CallFrameUnavailableReason, CodeRole, DereferenceState, Error, ExecutionContext,
+    FloatValue, FrameKind, LoadedModule, MapKey, Presentation, PresentedCount, PresentedShape,
+    RecordedFrame, Result, RuntimeId, ScalarValue, SourceLanguage, StackFrame, StackFrameId,
+    StackSegment, StopId, TypeInfo, TypeKind, ValueChild, ValueChildPage, ValueChildQuery,
+    ValueChildRelationship, ValueChildren, ValueChildrenReference, Variable, VariableKind,
+    VariableQuery, VariableState, VariableUnavailableReason, VariableValue, VariableValueSource,
+    ViewName, ViewProblem, VirtualAddress,
 };
 
 /// An interpreted frame of a trace, and the runtime that interprets it.
@@ -363,14 +364,9 @@ impl<P: InspectionOps> Controller<P> {
                 bound.model.interpreted_locals(runtime_stop, frame, budget)
             })
             .map_err(Error::VariableRuntime)?;
-        let origin = Origin {
-            stop,
-            context: root.context,
-            frame: resolved,
-            runtime,
-            module: bound.module,
-        };
-
+        let frame = self.resolve_frame(inferior, root, resolved)?;
+        let scope = self.frame_for(inferior, stop, root, &frame);
+        let mut machine = StopMachine::new(&scope, budget, true);
         let mut variables = Vec::new();
         for local in locals {
             if let VariableQuery::Name(name) = query
@@ -381,11 +377,13 @@ impl<P: InspectionOps> Controller<P> {
 
             // Once a read has exhausted the budget, the rest of the locals
             // show that they were not read, as they were not.
-            if budget.exhaustion().is_none() && budget.consume_variable_value().is_err() {
+            if machine.budget.exhaustion().is_none()
+                && machine.budget.consume_variable_value().is_err()
+            {
                 break;
             }
 
-            let (type_info, state) = origin.slot(local.slot);
+            let (type_info, state) = machine.interpreted_state(&bound, local.slot)?;
             variables.push(Variable {
                 kind: if local.parameter {
                     VariableKind::Parameter
@@ -438,23 +436,20 @@ impl<P: InspectionOps> Controller<P> {
                     .interpreted_children(runtime_stop, object, start..end, budget)
             })
             .map_err(Error::VariableRuntime)?;
-        let origin = Origin {
-            stop: reference.stop_id,
-            context: reference.context,
-            frame: reference.frame,
-            runtime: children.runtime,
-            module: bound.module,
-        };
-
+        let frame = self.resolve_frame(inferior, root, reference.frame)?;
+        let scope = self.frame_for(inferior, reference.stop_id, root, &frame);
+        let mut machine = StopMachine::new(&scope, budget, true);
         let mut page = Vec::new();
         for (index, child) in (start..).zip(read) {
-            if budget.exhaustion().is_none() && budget.consume_value_nodes(1).is_err() {
+            if machine.budget.exhaustion().is_none()
+                && machine.budget.consume_value_nodes(1).is_err()
+            {
                 break;
             }
 
             page.push(match child {
                 InterpretedChild::Element(slot) => {
-                    let (type_info, state) = origin.slot(slot);
+                    let (type_info, state) = machine.interpreted_state(&bound, slot)?;
                     ValueChild {
                         relationship: ValueChildRelationship::Element { index },
                         type_info: type_info.unwrap_or_else(untyped),
@@ -462,7 +457,7 @@ impl<P: InspectionOps> Controller<P> {
                     }
                 }
                 InterpretedChild::Attribute { name, value } => {
-                    let (type_info, state) = origin.slot(value);
+                    let (type_info, state) = machine.interpreted_state(&bound, value)?;
                     ValueChild {
                         relationship: ValueChildRelationship::Field { name },
                         type_info: type_info.unwrap_or_else(untyped),
@@ -470,8 +465,8 @@ impl<P: InspectionOps> Controller<P> {
                     }
                 }
                 InterpretedChild::Entry { key, value } => {
-                    let (key_type, key_state) = origin.slot(key);
-                    let (type_info, state) = origin.slot(value);
+                    let (key_type, key_state) = machine.interpreted_state(&bound, key)?;
+                    let (type_info, state) = machine.interpreted_state(&bound, value)?;
                     ValueChild {
                         relationship: ValueChildRelationship::Entry {
                             index,
@@ -492,8 +487,8 @@ impl<P: InspectionOps> Controller<P> {
             offset: start,
             total: reference.total,
             children: page.into(),
-            completion: budget.completion(),
-            usage: budget.usage(),
+            completion: machine.budget.completion(),
+            usage: machine.budget.usage(),
         })
     }
 }
@@ -514,6 +509,25 @@ pub(super) fn present_slot(
         module: runtime.module,
     }
     .slot(slot)
+}
+
+/// The capability of the children of the object at `object`, which
+/// `runtime` read at the frame `frame` of `context` at the stop `stop`: its
+/// `elements` elements or entries, then its `fields` attributes.
+pub(super) fn children_reference(
+    (stop, context, frame): (StopId, ExecutionContext, StackFrameId),
+    runtime: &BoundRuntime,
+    object: VirtualAddress,
+    (elements, fields): (u64, u64),
+) -> ValueChildrenReference {
+    Origin {
+        stop,
+        context,
+        frame,
+        runtime: runtime.id,
+        module: runtime.module,
+    }
+    .children(object, elements, fields)
 }
 
 impl Origin {
@@ -661,16 +675,11 @@ fn python_type(value: &InterpretedValue) -> TypeInfo {
         kind: TypeKind::Opaque {
             description: "a Python object".into(),
         },
-        identity: Some(Arc::new(TypeIdentity {
-            language: SourceLanguage::Python,
-            path: value.module.iter().cloned().collect(),
-            inline_namespaces: Arc::from([]),
-            base: Arc::clone(&value.type_name),
-            arguments: Arc::from([]),
-            pack: None,
-            origin: ArgumentOrigin::None,
-            go: None,
-        })),
+        identity: Some(Arc::new(interpreted_identity(
+            SourceLanguage::Python,
+            value.module.as_deref(),
+            &value.type_name,
+        ))),
     }
 }
 

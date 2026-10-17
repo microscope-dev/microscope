@@ -24,12 +24,17 @@ pub enum Captured {
 /// The arguments a pattern captured, by name.
 pub type Captures = Vec<(String, Captured)>;
 
-/// Whether a view of `language` applies to a type of `actual`.
+/// Whether a view of `language` applies to a type of `actual`. A view of
+/// any language presents values of compiled languages' types, whose
+/// members it names, never Python objects.
 #[must_use]
 pub const fn language_matches(language: Language, actual: SourceLanguage) -> bool {
     matches!(
         (language, actual),
-        (Language::Any, _)
+        (Language::Any, actual) if !matches!(actual, SourceLanguage::Python)
+    ) || matches!(
+        (language, actual),
+        (Language::Python, SourceLanguage::Python)
             | (Language::C, SourceLanguage::C)
             | (Language::Cpp, SourceLanguage::Cpp)
             | (Language::Rust, SourceLanguage::Rust)

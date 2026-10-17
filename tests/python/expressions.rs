@@ -26,14 +26,14 @@ enum Expect {
 /// An expression as each language writes it, and what microscope must do
 /// with it.
 #[derive(Debug, Clone, Copy)]
-struct Case {
-    python: &'static str,
-    microscope: &'static str,
+pub struct Case {
+    pub python: &'static str,
+    pub microscope: &'static str,
     expect: Expect,
 }
 
 /// An expression both languages write alike, on which they agree.
-const fn agrees(text: &'static str) -> Case {
+pub const fn agrees(text: &'static str) -> Case {
     Case {
         python: text,
         microscope: text,
@@ -42,7 +42,7 @@ const fn agrees(text: &'static str) -> Case {
 }
 
 /// An expression both languages write alike, which microscope refuses.
-const fn refuses(text: &'static str, kind: ExpressionErrorKind) -> Case {
+pub const fn refuses(text: &'static str, kind: ExpressionErrorKind) -> Case {
     Case {
         python: text,
         microscope: text,
@@ -208,6 +208,7 @@ const CASES: &[Case] = &[
     agrees("counts[\"a\"]"),
     agrees("plain_dict[\"b\"]"),
     agrees("plain_dict[\"q\"]"),
+    agrees("ordered[\"a\"]"),
     agrees("len(text)"),
     agrees("color._value_"),
     agrees("derived.kept"),
@@ -221,7 +222,6 @@ const CASES: &[Case] = &[
     refuses("counts[\"zz\"]", ExpressionErrorKind::Unsupported),
     refuses("indexed[0]", ExpressionErrorKind::Unsupported),
     refuses("len(indexed)", ExpressionErrorKind::Unsupported),
-    refuses("ordered[\"a\"]", ExpressionErrorKind::Unsupported),
     refuses("Color[\"RED\"]", ExpressionErrorKind::Unsupported),
     refuses("len(Color)", ExpressionErrorKind::Unsupported),
     refuses("list[0]", ExpressionErrorKind::Unsupported),
@@ -322,7 +322,7 @@ fn standing_for(exception: &str) -> Option<ExpressionErrorKind> {
 }
 
 /// Checks what microscope gave for a case against what CPython gave.
-fn check(case: &Case, reported: &str, outcome: &Outcome) -> Result<(), String> {
+pub fn check(case: &Case, reported: &str, outcome: &Outcome) -> Result<(), String> {
     // A type error says Python's own operation is one.
     if case.expect == Expect::Refuses(ExpressionErrorKind::Type) && reported != "!TypeError" {
         return Err(format!(
@@ -352,7 +352,7 @@ fn check(case: &Case, reported: &str, outcome: &Outcome) -> Result<(), String> {
 
 /// What CPython gave for each expression the fixture evaluated, by its
 /// text.
-fn reported_results(truth: &[Vec<String>]) -> std::collections::BTreeMap<&str, &str> {
+pub fn reported_results(truth: &[Vec<String>]) -> std::collections::BTreeMap<&str, &str> {
     truth
         .iter()
         .filter(|fields| fields[0] == "evaluated")
@@ -469,20 +469,17 @@ async fn each_expression_gives_what_cpython_gave_in_the_frame() {
 
         for (name, reported) in reported_attributes(&truth) {
             let variable = local(&variables, name, &stop);
-            let children = match &variable.state {
-                VariableState::Available {
-                    presentation: Some(presentation),
-                    ..
-                } => match &presentation.children {
-                    ValueChildren::Available(reference) => {
-                        let total = u32::try_from(reference.total())
-                            .expect("a fixture's object has few children");
-                        stop.children(reference, 0, total).await
-                    }
-                    _ => Vec::new(),
-                },
-                state => panic!("{}: {name} is not presented: {state:?}", stop.context),
-            };
+            let mut children = all_children(&stop, &variable.state).await;
+
+            // A view presents the object as something else; it is still
+            // the object as stored one step away.
+            if let Some(raw) = children
+                .iter()
+                .find(|child| matches!(child.relationship, ValueChildRelationship::Raw))
+            {
+                children = all_children(&stop, &raw.state.clone()).await;
+            }
+
             if let Err(lie) = check_attributes(&shown_attributes(&children), &reported) {
                 lies.push(format!("{name}: {lie}"));
             }
@@ -493,8 +490,26 @@ async fn each_expression_gives_what_cpython_gave_in_the_frame() {
     }
 }
 
+/// Every child of a presented value.
+pub async fn all_children(stop: &Stop<'_>, state: &VariableState) -> Vec<ValueChild> {
+    match state {
+        VariableState::Available {
+            presentation: Some(presentation),
+            ..
+        } => match &presentation.children {
+            ValueChildren::Available(reference) => {
+                let total =
+                    u32::try_from(reference.total()).expect("a fixture's object has few children");
+                stop.children(reference, 0, total).await
+            }
+            _ => Vec::new(),
+        },
+        state => panic!("{}: a value is not presented: {state:?}", stop.context),
+    }
+}
+
 /// The local `name` of `variables`, which the frame must have.
-fn local<'v>(variables: &'v [Variable], name: &str, stop: &Stop<'_>) -> &'v Variable {
+pub fn local<'v>(variables: &'v [Variable], name: &str, stop: &Stop<'_>) -> &'v Variable {
     variables
         .iter()
         .find(|variable| &*variable.name == name)

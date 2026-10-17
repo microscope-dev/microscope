@@ -16,6 +16,7 @@ mod code;
 mod expressions;
 mod frames;
 mod instances;
+mod library;
 mod linetable;
 mod objects;
 mod text;
@@ -29,8 +30,8 @@ use super::{
     Crossing, Driven, DynamicValue, InterpretedChild, InterpretedFailure, InterpretedLocal,
     InterpretedName, InterpretedOperand, InterpretedSlot, InterpretedStacks, InterpretedStep,
     InterpretedThread, Partial, RuntimeException, RuntimeHook, RuntimeImage, RuntimeModel,
-    RuntimeSignals, RuntimeStop, StartedTask, StoredValue, TaskContext, TaskPage, TaskRef,
-    TaskStarter, ThreadActivity, Unbound,
+    RuntimeSignals, RuntimeStop, StartedTask, StopMemory, StoredValue, TaskContext, TaskPage,
+    TaskRef, TaskStarter, ThreadActivity, Unbound,
 };
 use crate::demangle::split_from;
 use crate::image::python::{EVALUATION_LOOP, Field, PyVersion, PythonLayout, TAIL_CALL_PREFIX};
@@ -213,13 +214,15 @@ impl Reading {
         let runtime = loaded(self.runtime.start)?;
 
         let budget = values::Budget::new(budget);
-        let blocks = objects::Blocks::default();
+        // Blocks read at the stop are kept while it lasts, where the debugger
+        // keeps them, and while this read lasts otherwise.
+        let read_now = StopMemory::default();
         let values = values::Values {
             reader: objects::Reader {
                 stop,
                 layout: &self.layout,
                 charge: Some(&budget),
-                blocks: Some(&blocks),
+                blocks: Some(stop.memory().unwrap_or(&read_now)),
             },
             types,
             budget: &budget,
@@ -617,6 +620,19 @@ impl RuntimeModel for PythonRuntime {
     ) -> Result<u64, InterpretedFailure> {
         self.expressions()?
             .interpreted(stop, budget, |values, _| values.length(object))
+    }
+
+    fn interpreted_lineage(
+        &self,
+        stop: &dyn RuntimeStop,
+        class: VirtualAddress,
+        budget: &mut InspectionBudget,
+    ) -> Result<Vec<crate::TypeIdentity>, InterpretedFailure> {
+        self.expressions()?.interpreted(stop, budget, |values, _| {
+            values
+                .lineage(class)
+                .map_err(|problem| values.unavailable(problem))
+        })
     }
 
     fn object_types(&self) -> Option<crate::runtime_model::ObjectTypes> {

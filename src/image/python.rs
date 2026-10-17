@@ -66,11 +66,15 @@ entries! {
         /// The states an interpreter keeps of the static built-in types,
         /// from the first to the end of the last, each of
         /// [`Field::StaticTypeStateSize`] bytes, and where each keeps its
-        /// type's dict.
+        /// type and its type's dict. From 3.13 it keeps the static types
+        /// of extensions it manages as well, as `_datetime`'s, apart.
         InterpreterStaticTypes = "interpreter_state.static_types",
         InterpreterStaticTypesEnd = "interpreter_state.static_types_end",
+        InterpreterStaticExtensionTypes = "interpreter_state.static_extension_types",
+        InterpreterStaticExtensionTypesEnd = "interpreter_state.static_extension_types_end",
         StaticTypeStateSize = "static_type_state.size",
         StaticTypeStateDict = "static_type_state.tp_dict",
+        StaticTypeStateType = "static_type_state.type",
 
         ThreadSize = "thread_state.size",
         ThreadPrev = "thread_state.prev",
@@ -223,6 +227,60 @@ entries! {
         UnicodeAsciiSize = "unicode_object.asciiobject_size",
         UnicodeCompactSize = "unicode_object.compactunicodeobject_size",
         UnicodeData = "unicode_object.data",
+
+        /// The standard library's types that only their own C defines
+        /// (`scripts/cpython-layouts.c` copies them), and the sizes their
+        /// types give their objects, which tell them from others of the
+        /// same name. A `collections.deque` keeps its items in blocks of
+        /// [`Constant::DequeBlockLength`], linked to the right, the first
+        /// item at `leftindex` of its first block.
+        DequeLeftBlock = "deque_object.leftblock",
+        DequeLeftIndex = "deque_object.leftindex",
+        DequeMaxlen = "deque_object.maxlen",
+        DequeObjectSize = "deque_object.size",
+        DequeBlockData = "deque_block.data",
+        DequeBlockRightLink = "deque_block.rightlink",
+        DefaultDictFactory = "defdict_object.default_factory",
+        DefaultDictObjectSize = "defdict_object.size",
+
+        /// An `OrderedDict` keeps its order in a list of nodes, each
+        /// holding a key of its dict and the key's hash.
+        OrderedDictFirst = "odict_object.od_first",
+        OrderedDictObjectSize = "odict_object.size",
+        OrderedDictNodeKey = "odict_node.key",
+        OrderedDictNodeHash = "odict_node.hash",
+        OrderedDictNodeNext = "odict_node.next",
+
+        /// `datetime`'s objects keep their fields packed in bytes, and a
+        /// time or datetime its tzinfo only where `hastzinfo` says so.
+        DateHasTzinfo = "date_object.hastzinfo",
+        DateData = "date_object.data",
+        DateObjectSize = "date_object.size",
+        TimeData = "time_object.data",
+        TimeFold = "time_object.fold",
+        TimeTzinfo = "time_object.tzinfo",
+        TimeObjectSize = "time_object.size",
+        DateTimeData = "datetime_object.data",
+        DateTimeFold = "datetime_object.fold",
+        DateTimeTzinfo = "datetime_object.tzinfo",
+        DateTimeObjectSize = "datetime_object.size",
+        DeltaDays = "delta_object.days",
+        DeltaSeconds = "delta_object.seconds",
+        DeltaMicroseconds = "delta_object.microseconds",
+        DeltaObjectSize = "delta_object.size",
+        TimeZoneOffset = "timezone_object.offset",
+        TimeZoneName = "timezone_object.name",
+        TimeZoneObjectSize = "timezone_object.size",
+
+        /// A `decimal.Decimal` keeps libmpdec's number: its sign and kind
+        /// in `flags`, its exponent, and its coefficient's digits in words
+        /// of 19 decimal digits each, least significant first.
+        DecimalFlags = "decimal_object.dec.flags",
+        DecimalExponent = "decimal_object.dec.exp",
+        DecimalDigits = "decimal_object.dec.digits",
+        DecimalLength = "decimal_object.dec.len",
+        DecimalData = "decimal_object.dec.data",
+        DecimalObjectSize = "decimal_object.size",
     }
 }
 
@@ -283,6 +341,13 @@ entries! {
 
         /// The member type of a slot, which keeps an object or none.
         MemberObjectEx = "Py_T_OBJECT_EX",
+
+        /// The bit of `tp_flags` that marks a type whose attributes cannot
+        /// be set: every type defined in C, as no class is.
+        TypeImmutableBit = "Py_TPFLAGS_IMMUTABLETYPE",
+
+        /// How many items each block of a `collections.deque` holds.
+        DequeBlockLength = "BLOCKLEN",
     }
 }
 

@@ -46,8 +46,24 @@ _DEPTH = 6
 _ITEMS = 64
 
 # The flag of a class a program defines, as opposed to a type CPython or
-# an extension does.
+# an extension does, and of a type an extension defines on the heap, whose
+# attributes cannot be set, as no class's can.
 _HEAPTYPE = 1 << 9
+_IMMUTABLETYPE = 1 << 8
+
+# The standard library's types that only C defines, which microscope reads
+# itself (src/runtime_model/python/library.rs), by module and name.
+_LIBRARY = {
+    ("collections", "deque"),
+    ("collections", "defaultdict"),
+    ("collections", "OrderedDict"),
+    ("datetime", "date"),
+    ("datetime", "time"),
+    ("datetime", "datetime"),
+    ("datetime", "timedelta"),
+    ("datetime", "timezone"),
+    ("decimal", "Decimal"),
+}
 
 _print_lock = threading.Lock()
 
@@ -94,20 +110,29 @@ def _string(text):
 def canonical(value, _depth=0, _seen=None):
     """The text microscope must present a value as.
 
-    A value of a built-in type is Python's repr of it for None, bools, ints
-    at any size, floats (the shortest text that reads back as the same
-    float), strings (escaping only what _string does), and bytes, and for
-    lists, tuples, dicts (in insertion order), sets, and frozensets (in
-    iteration order) of those; so is a value of a class deriving from one,
-    as that type's own repr gives it. A class, a module, a function, a
-    built-in function, and a code object show their names, and any other
-    object its type's module and qualified name and its address.
+    A value of a class a built-in view presents (views/python-std.views)
+    is as that view presents it: _viewed() says how. A value of one of the
+    standard library's types that only C defines is that type's own repr
+    of it, as _library_text() gives it. A value of a built-in
+    type is Python's repr of it for None, bools, ints at any size, floats
+    (the shortest text that reads back as the same float), strings
+    (escaping only what _string does), and bytes, and for lists, tuples,
+    dicts (in insertion order), sets, and frozensets (in iteration order) of
+    those; so is a value of a class deriving from one, as that type's own
+    repr gives it. A class, a module, a function, a built-in function, and
+    a code object show their names, and any other object its type's module
+    and qualified name and its address.
     """
     seen = set() if _seen is None else _seen
     kind = type(value)
     base = _laid_out(kind)
     if value is None:
         return "None"
+    viewed = _viewed(value, lambda item: canonical(item, _depth + 1, seen))
+    if viewed is not None:
+        return viewed
+    if (base.__module__, base.__qualname__) in _LIBRARY and _defined_in_c(base):
+        return _library_text(value, base, _depth, seen)
     if base in (bool, int, float, bytes):
         return base.__repr__(value)
     if base is str:
@@ -154,11 +179,127 @@ def canonical(value, _depth=0, _seen=None):
         seen.discard(id(value))
 
 
+def _view_of(kind):
+    """The built-in view that presents kind's instances, by the name of
+    the class in its method resolution order whose view it is, as
+    microscope chooses it: the first class a view's pattern names."""
+    for klass in type.__getattribute__(kind, "__mro__"):
+        module, name = klass.__module__, klass.__qualname__
+        if (module, name) in (("enum", "Enum"), ("fractions", "Fraction")):
+            return name
+        if name == "PurePath" and (module == "pathlib" or module.startswith("pathlib.")):
+            return name
+    return None
+
+
+def _viewed(value, inner):
+    """The text a built-in view presents value as, or None where none
+    presents it. inner gives the text of a value the view shows."""
+    view = _view_of(type(value))
+    held = lambda name: object.__getattribute__(value, name)  # noqa: E731
+    if view == "Enum":
+        return "{name: %s, value: %s}" % (inner(held("_name_")), inner(held("_value_")))
+    if view == "Fraction":
+        numerator, denominator = held("_numerator"), held("_denominator")
+        if denominator == 1:
+            return inner(numerator)
+        return "%s/%s" % (inner(numerator), inner(denominator))
+    if view == "PurePath":
+        return inner(held("_str"))
+    return None
+
+
+def _library_text(value, base, depth, seen):
+    """The text of value, of the library type base or of a class deriving
+    from it, as base's own repr writes it, with the names of value's type
+    its C uses: the name alone for a collection, and for a datetime type
+    its tp_name, which a static type qualifies by its module. A Decimal's
+    exponent is written E, as the default context writes it."""
+    kind = type(value)
+    short = kind.__name__
+    full = short if kind.__flags__ & _HEAPTYPE else "%s.%s" % (kind.__module__, short)
+    name = base.__qualname__
+    get = lambda field: getattr(base, field).__get__(value, base)  # noqa: E731
+    inner = lambda item: canonical(item, depth + 1, seen)  # noqa: E731
+    if name in ("deque", "defaultdict", "OrderedDict"):
+        if depth >= _DEPTH:
+            raise ValueError("a fixture's value nests deeper than canonical() shows")
+        if id(value) in seen:
+            if name == "deque":
+                return "[...]"
+            if name == "defaultdict":
+                factory = get("default_factory")
+                return "%s(%s, {...})" % (short, "None" if factory is None else inner(factory))
+            return "..."
+        seen.add(id(value))
+        try:
+            return _collection_text(value, base, short, inner, get)
+        finally:
+            seen.discard(id(value))
+    if name == "date":
+        return "%s(%d, %d, %d)" % (full, get("year"), get("month"), get("day"))
+    if name in ("time", "datetime"):
+        clock = [get("hour"), get("minute"), get("second"), get("microsecond")]
+        while len(clock) > 2 and not clock[-1]:
+            clock.pop()
+        arguments = ", ".join(map(str, clock))
+        if name == "datetime":
+            arguments = "%d, %d, %d, %s" % (get("year"), get("month"), get("day"), arguments)
+        tzinfo = "" if get("tzinfo") is None else ", tzinfo=" + inner(get("tzinfo"))
+        fold = ", fold=%d" % get("fold") if get("fold") else ""
+        if name == "time":
+            return "%s(%s%s%s)" % (full, arguments, tzinfo, fold)
+        return "%s(%s%s%s)" % (full, arguments, fold, tzinfo)
+    if name == "timedelta":
+        parts = [(field, get(field)) for field in ("days", "seconds", "microseconds")]
+        shown = ", ".join("%s=%d" % (field, part) for field, part in parts if part)
+        return "%s(%s)" % (full, shown or "0")
+    if name == "timezone":
+        if value is base.utc:
+            return full + ".utc"
+        return "%s(%s)" % (full, ", ".join(map(inner, value.__getinitargs__())))
+    decimal = sys.modules[base.__module__]
+    with decimal.localcontext() as context:
+        context.capitals = 1
+        return "Decimal('%s')" % base.__str__(value)
+
+
+def _collection_text(value, base, short, inner, get):
+    """The text of a deque, defaultdict, or OrderedDict, value, of the type
+    base or a class deriving from it: an OrderedDict's items in the order
+    its own iteration gives, which is its list's, not its dict's."""
+    name = base.__qualname__
+    if name == "deque":
+        items = list(base.__iter__(value))
+    elif name == "OrderedDict":
+        items = [(key, dict.__getitem__(value, key)) for key in base.__iter__(value)]
+    else:
+        items = list(dict.items(value))
+    if len(items) > _ITEMS:
+        raise ValueError("a fixture's container holds more than canonical() shows")
+    if name == "deque":
+        listed = "[" + ", ".join(map(inner, items)) + "]"
+        maxlen = get("maxlen")
+        if maxlen is None:
+            return "%s(%s)" % (short, listed)
+        return "%s(%s, maxlen=%d)" % (short, listed, maxlen)
+    pairs = "{" + ", ".join(inner(key) + ": " + inner(item) for key, item in items) + "}"
+    if name == "defaultdict":
+        factory = get("default_factory")
+        return "%s(%s, %s)" % (short, "None" if factory is None else inner(factory), pairs)
+    return "%s(%s)" % (short, pairs) if items else short + "()"
+
+
+def _defined_in_c(kind):
+    """Whether C defines kind, as it does every type but a class."""
+    return not kind.__flags__ & _HEAPTYPE or bool(kind.__flags__ & _IMMUTABLETYPE)
+
+
 def _laid_out(kind):
     """The type kind's instances are laid out as: the first its bases lead
-    to that no program defines, which is the built-in type whose value they
-    hold, if they hold one."""
-    while kind.__flags__ & _HEAPTYPE:
+    to that C defines, which is the built-in or library type whose value
+    they hold, if they hold one."""
+    while not _defined_in_c(kind):
         kind = kind.__base__
     return kind
 
@@ -180,11 +321,22 @@ def _mangle(klass, name):
     return name
 
 
+def _dataclass_fields(kind):
+    """The names of the fields of the dataclass kind is, in the order it
+    defines them, or None where it is none."""
+    for klass in kind.__mro__:
+        fields = type.__getattribute__(klass, "__dict__").get("__dataclass_fields__")
+        if fields is not None:
+            return [name for name in fields if type(name) is str] if type(fields) is dict else None
+    return None
+
+
 def attributes(value):
     """An object's attributes, each a name and its value, as microscope
     shows them: those its dict holds, in insertion order, then those its
     slots hold, each class's from the most derived on, in the sorted order
-    CPython keeps a class's slots in. A slot is read by its own class's
+    CPython keeps a class's slots in; but a dataclass's fields first, in
+    the order it defines them. A slot is read by its own class's
     descriptor, and one whose name a more derived class's slot takes is
     left out, whatever either holds."""
     try:
@@ -208,6 +360,9 @@ def attributes(value):
                 found.append((slot, descriptor.__get__(value, klass)))
             except AttributeError:
                 pass
+    fields = _dataclass_fields(type(value))
+    if fields is not None:
+        found.sort(key=lambda item: fields.index(item[0]) if item[0] in fields else len(fields))
     return found
 
 

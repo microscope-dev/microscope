@@ -12,6 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "datetime.h"
+
 #include "internal/pycore_code.h"
 #include "internal/pycore_dict.h"
 #include "internal/pycore_long.h"
@@ -26,6 +28,81 @@
 #else
 #include "internal/pycore_frame.h"
 #endif
+
+/* The standard library's types that only their own C defines, copied as
+ * 3.12 to 3.15 define them: collections.deque and defaultdict, from
+ * Modules/_collectionsmodule.c; OrderedDict, from Objects/odictobject.c;
+ * datetime.timezone, from Modules/_datetimemodule.c; and decimal.Decimal,
+ * from Modules/_decimal/_decimal.c, with libmpdec's number as its 64-bit
+ * builds define it in mpdecimal.h. conformance.rs checks the first three
+ * against the runtime's DWARF; the others are in extension modules. */
+#define MICROSCOPE_BLOCKLEN 64
+#define MICROSCOPE_MAXFREEBLOCKS 16
+
+typedef struct microscope_block {
+    struct microscope_block *leftlink;
+    PyObject *data[MICROSCOPE_BLOCKLEN];
+    struct microscope_block *rightlink;
+} microscope_block;
+
+typedef struct {
+    PyObject_VAR_HEAD
+    microscope_block *leftblock;
+    microscope_block *rightblock;
+    Py_ssize_t leftindex;
+    Py_ssize_t rightindex;
+    size_t state;
+    Py_ssize_t maxlen;
+    Py_ssize_t numfreeblocks;
+    microscope_block *freeblocks[MICROSCOPE_MAXFREEBLOCKS];
+    PyObject *weakreflist;
+} microscope_deque;
+
+typedef struct {
+    PyDictObject dict;
+    PyObject *default_factory;
+} microscope_defdict;
+
+typedef struct microscope_odict_node {
+    PyObject *key;
+    Py_hash_t hash;
+    struct microscope_odict_node *next;
+    struct microscope_odict_node *prev;
+} microscope_odict_node;
+
+typedef struct {
+    PyDictObject od_dict;
+    microscope_odict_node *od_first;
+    microscope_odict_node *od_last;
+    microscope_odict_node **od_fast_nodes;
+    Py_ssize_t od_fast_nodes_size;
+    void *od_resize_sentinel;
+    size_t od_state;
+    PyObject *od_inst_dict;
+    PyObject *od_weakreflist;
+} microscope_odict;
+
+typedef struct {
+    PyObject_HEAD
+    PyObject *offset;
+    PyObject *name;
+} microscope_timezone;
+
+typedef struct {
+    uint8_t flags;
+    int64_t exp;
+    int64_t digits;
+    int64_t len;
+    int64_t alloc;
+    uint64_t *data;
+} microscope_mpd;
+
+typedef struct {
+    PyObject_HEAD
+    Py_hash_t hash;
+    microscope_mpd dec;
+    uint64_t data[4];
+} microscope_decimal;
 
 static void fail(const char *what, unsigned long long value) {
     fprintf(stderr, "%s = %llu does not fit\n", what, value);
@@ -173,12 +250,19 @@ int main(int argc, char **argv) {
                                          + sizeof(((PyInterpreterState *)0)->types.builtins.initialized));
     FIELD(StaticTypeStateSize, sizeof(managed_static_type_state));
     FIELD(StaticTypeStateDict, offsetof(managed_static_type_state, tp_dict));
+    FIELD(StaticTypeStateType, offsetof(managed_static_type_state, type));
+    FIELD(InterpreterStaticExtensionTypes,
+          offsetof(PyInterpreterState, types.for_extensions.initialized));
+    FIELD(InterpreterStaticExtensionTypesEnd,
+          offsetof(PyInterpreterState, types.for_extensions.initialized)
+              + sizeof(((PyInterpreterState *)0)->types.for_extensions.initialized));
 #else
     FIELD(InterpreterStaticTypes, offsetof(PyInterpreterState, types.builtins));
     FIELD(InterpreterStaticTypesEnd, offsetof(PyInterpreterState, types.builtins)
                                          + sizeof(((PyInterpreterState *)0)->types.builtins));
     FIELD(StaticTypeStateSize, sizeof(static_builtin_state));
     FIELD(StaticTypeStateDict, offsetof(static_builtin_state, tp_dict));
+    FIELD(StaticTypeStateType, offsetof(static_builtin_state, type));
 #endif
     FIELD(TypeGetattro, offsetof(PyTypeObject, tp_getattro));
     FIELD(TypeDescrGet, offsetof(PyTypeObject, tp_descr_get));
@@ -238,6 +322,44 @@ int main(int argc, char **argv) {
     FIELD(UnicodeAsciiSize, sizeof(PyASCIIObject));
     FIELD(UnicodeCompactSize, sizeof(PyCompactUnicodeObject));
     FIELD(UnicodeData, offsetof(PyUnicodeObject, data));
+
+    FIELD(DequeLeftBlock, offsetof(microscope_deque, leftblock));
+    FIELD(DequeLeftIndex, offsetof(microscope_deque, leftindex));
+    FIELD(DequeMaxlen, offsetof(microscope_deque, maxlen));
+    FIELD(DequeObjectSize, sizeof(microscope_deque));
+    FIELD(DequeBlockData, offsetof(microscope_block, data));
+    FIELD(DequeBlockRightLink, offsetof(microscope_block, rightlink));
+    FIELD(DefaultDictFactory, offsetof(microscope_defdict, default_factory));
+    FIELD(DefaultDictObjectSize, sizeof(microscope_defdict));
+    FIELD(OrderedDictFirst, offsetof(microscope_odict, od_first));
+    FIELD(OrderedDictObjectSize, sizeof(microscope_odict));
+    FIELD(OrderedDictNodeKey, offsetof(microscope_odict_node, key));
+    FIELD(OrderedDictNodeHash, offsetof(microscope_odict_node, hash));
+    FIELD(OrderedDictNodeNext, offsetof(microscope_odict_node, next));
+    FIELD(DateHasTzinfo, offsetof(PyDateTime_Date, hastzinfo));
+    FIELD(DateData, offsetof(PyDateTime_Date, data));
+    FIELD(DateObjectSize, sizeof(PyDateTime_Date));
+    FIELD(TimeData, offsetof(PyDateTime_Time, data));
+    FIELD(TimeFold, offsetof(PyDateTime_Time, fold));
+    FIELD(TimeTzinfo, offsetof(PyDateTime_Time, tzinfo));
+    FIELD(TimeObjectSize, sizeof(PyDateTime_Time));
+    FIELD(DateTimeData, offsetof(PyDateTime_DateTime, data));
+    FIELD(DateTimeFold, offsetof(PyDateTime_DateTime, fold));
+    FIELD(DateTimeTzinfo, offsetof(PyDateTime_DateTime, tzinfo));
+    FIELD(DateTimeObjectSize, sizeof(PyDateTime_DateTime));
+    FIELD(DeltaDays, offsetof(PyDateTime_Delta, days));
+    FIELD(DeltaSeconds, offsetof(PyDateTime_Delta, seconds));
+    FIELD(DeltaMicroseconds, offsetof(PyDateTime_Delta, microseconds));
+    FIELD(DeltaObjectSize, sizeof(PyDateTime_Delta));
+    FIELD(TimeZoneOffset, offsetof(microscope_timezone, offset));
+    FIELD(TimeZoneName, offsetof(microscope_timezone, name));
+    FIELD(TimeZoneObjectSize, sizeof(microscope_timezone));
+    FIELD(DecimalFlags, offsetof(microscope_decimal, dec.flags));
+    FIELD(DecimalExponent, offsetof(microscope_decimal, dec.exp));
+    FIELD(DecimalDigits, offsetof(microscope_decimal, dec.digits));
+    FIELD(DecimalLength, offsetof(microscope_decimal, dec.len));
+    FIELD(DecimalData, offsetof(microscope_decimal, dec.data));
+    FIELD(DecimalObjectSize, sizeof(microscope_decimal));
     printf("        ],\n");
 
     printf("        constants: &[\n");
@@ -288,6 +410,8 @@ int main(int argc, char **argv) {
     CONSTANT(ManagedDictTagged, 1);
 #endif
     CONSTANT(MemberObjectEx, Py_T_OBJECT_EX);
+    CONSTANT(TypeImmutableBit, __builtin_ctzl(Py_TPFLAGS_IMMUTABLETYPE));
+    CONSTANT(DequeBlockLength, MICROSCOPE_BLOCKLEN);
     printf("        ],\n");
 
     printf("    },\n");

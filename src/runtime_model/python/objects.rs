@@ -3,13 +3,11 @@
 //! that cannot be read or is not what the layout says is an error that
 //! names it, never a guess.
 
-use std::cell::RefCell;
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::VirtualAddress;
 use crate::image::python::{Constant, Field, PythonLayout};
-use crate::runtime_model::RuntimeStop;
+use crate::runtime_model::{RuntimeStop, StopMemory};
 
 /// The longest string read, in characters: names and paths are far
 /// shorter.
@@ -26,10 +24,8 @@ const MAX_C_STRING: u64 = 256;
 /// the debugger presents, and the text of a short string.
 const HEAD: usize = 64;
 
-/// The size and alignment of a block of memory [`Blocks`] keeps. A page
-/// holds whole blocks, so a block is readable wherever any of its bytes
-/// are.
-pub(super) const BLOCK: usize = 256;
+/// The size of a block of memory a reader reads at once.
+pub(super) const BLOCK: usize = StopMemory::BLOCK;
 
 /// A problem reading the process, as one line.
 pub(super) type Problem = Arc<str>;
@@ -40,14 +36,6 @@ pub(super) trait Charge {
     fn charge(&self, bytes: usize) -> Result<(), Problem>;
 }
 
-/// The blocks of a stopped process's memory read so far, each `None`
-/// where it could not be read. The memory of a stopped process does not
-/// change, so a field near one read before, as an object's fields, the
-/// entries of a table, and the objects allocated together are, costs no
-/// more reads.
-#[derive(Default)]
-pub(super) struct Blocks(RefCell<BTreeMap<u64, Option<Box<[u8]>>>>);
-
 /// The memory of a stopped process, read by a layout, and what pays for
 /// the reads, if anything does.
 #[derive(Clone, Copy)]
@@ -57,8 +45,9 @@ pub(super) struct Reader<'a> {
     pub(super) charge: Option<&'a dyn Charge>,
 
     /// Where the blocks read are kept, if they are: reads of at most a
-    /// block are then read by the block, from those kept where they can be.
-    pub(super) blocks: Option<&'a Blocks>,
+    /// block are then read by the block, from those kept where they can be,
+    /// at no cost.
+    pub(super) blocks: Option<&'a StopMemory>,
 }
 
 impl<'a> Reader<'a> {
@@ -129,39 +118,22 @@ impl<'a> Reader<'a> {
     }
 
     /// Copies into `into` what the block that holds `at` holds from `at`
-    /// on, as much as fits, reading the block if it was not read before:
-    /// how many bytes it copied, or `None` where the block cannot be read.
+    /// on, as much as fits, reading and paying for the block if it was not
+    /// read before: how many bytes it copied, or `None` where the block
+    /// cannot be read.
     fn copy_block(
         &self,
-        blocks: &Blocks,
+        blocks: &StopMemory,
         at: u64,
         into: &mut [u8],
     ) -> Result<Option<usize>, Problem> {
-        let start = at - at % BLOCK as u64;
-        let mut kept = blocks.0.borrow_mut();
-        let block = match kept.entry(start) {
-            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                if let Some(charge) = self.charge {
-                    charge.charge(BLOCK)?;
-                }
-
-                let mut bytes = vec![0; BLOCK].into_boxed_slice();
-                let read = self.stop.read(VirtualAddress::new(start), &mut bytes);
-                entry.insert(read.then_some(bytes))
+        blocks.copy(at, into, |start, bytes| {
+            if let Some(charge) = self.charge {
+                charge.charge(bytes.len())?;
             }
-        };
 
-        let Some(held) = block
-            .as_deref()
-            .and_then(|block| block.get(usize::try_from(at - start).ok()?..))
-        else {
-            return Ok(None);
-        };
-
-        let copied = held.len().min(into.len());
-        into[..copied].copy_from_slice(&held[..copied]);
-        Ok(Some(copied))
+            Ok(self.stop.read(start, bytes))
+        })
     }
 
     /// The NUL-terminated string at `address`, of at most

@@ -22,3 +22,4 @@ mod locals;
 mod oracles;
 mod session;
 mod stacks;
+mod views;

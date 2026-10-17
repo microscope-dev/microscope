@@ -1,10 +1,11 @@
 //! The values of Python's built-in types, as the debugger presents them:
 //! `None`, `bool`, `int` at any size, `float`, `str`, `bytes`, `list`,
 //! `tuple`, `dict`, `set`, and `frozenset`, each by its exact type, and
-//! classes and modules by their names. An object of any other type, a
-//! subclass of one of those included, is shown as Python's default `repr`
-//! shows it, by its type's name and its address, with its attributes for
-//! children ([`super::instances`]).
+//! classes and modules by their names, and the standard library's types
+//! that only C defines as their own `repr` writes them ([`super::library`]).
+//! An object of any other type, a subclass of one of those included, is
+//! shown as Python's default `repr` shows it, by its type's name and its
+//! address, with its attributes for children ([`super::instances`]).
 //!
 //! A value's summary is its text in Python's notation ([`super::text`]),
 //! nesting containers to [`SUMMARY_DEPTH`] and showing [`SUMMARY_ITEMS`]
@@ -19,6 +20,7 @@ use std::sync::Arc;
 
 use super::code::{CodeId, CodeTable};
 use super::instances::Class;
+use super::library::Library;
 use super::objects::{Charge, Head, Problem, Reader, Record, malformed};
 use super::text;
 use crate::VirtualAddress;
@@ -32,7 +34,7 @@ use crate::{InspectionExhaustion, VariableUnavailableReason};
 /// How deep a summary nests containers, and how many items of each it
 /// shows.
 const SUMMARY_DEPTH: usize = 6;
-const SUMMARY_ITEMS: u64 = 64;
+pub(super) const SUMMARY_ITEMS: u64 = 64;
 
 /// The most objects one summary reads.
 const SUMMARY_OBJECTS: usize = 512;
@@ -186,8 +188,18 @@ pub(super) enum Object {
         line: i32,
     },
 
+    /// An object of one of the standard library's types that only C
+    /// defines ([`super::library`]), `class`, by the name the C of its
+    /// own type gives that type, and its value.
+    Library {
+        class: Arc<Class>,
+        name: Arc<str>,
+        value: Library,
+    },
+
     /// An object of any other type, and the value of a built-in type it
-    /// holds, as one of a class deriving from `int` or `tuple` does.
+    /// holds, as one of a class deriving from `int` or `tuple` does, or
+    /// of a library type.
     Instance {
         class: Arc<Class>,
         base: Option<Box<Self>>,
@@ -249,7 +261,7 @@ pub(super) struct Entry {
 /// Where a summary is: how many objects it has read, the containers it is
 /// within, and why it shows less than all, if it does.
 #[derive(Default)]
-struct Summary {
+pub(super) struct Summary {
     objects: usize,
     within: Vec<VirtualAddress>,
     problem: Option<Problem>,
@@ -388,6 +400,7 @@ impl Values<'_, '_> {
 
     fn presented(&self, address: VirtualAddress) -> Result<InterpretedValue, Problem> {
         let object = self.object(address)?;
+        let class = VirtualAddress::new(self.reader.field_word(address, Field::ObjectType)?);
         let (module, type_name) = Self::type_name(&object);
         let (kind, attributes) = match &object {
             Object::Instance { class, base } => (
@@ -406,6 +419,7 @@ impl Values<'_, '_> {
         let text = self.text(address, &object, 0, &mut summary);
         Ok(InterpretedValue {
             object: address,
+            class,
             module,
             type_name,
             kind,
@@ -434,6 +448,7 @@ impl Values<'_, '_> {
                 length: dict.length,
             },
             Object::Set { used, .. } => InterpretedKind::Sequence { length: *used },
+            Object::Library { value, .. } => value.kind(),
             Object::Instance { .. } => InterpretedKind::Instance,
             Object::Class { .. }
             | Object::Module { .. }
@@ -529,6 +544,38 @@ impl Values<'_, '_> {
                 })?;
                 Ok(children)
             }
+            Object::Library {
+                value:
+                    Library::Deque {
+                        block,
+                        index,
+                        length,
+                        ..
+                    },
+                ..
+            } => Ok(self
+                .deque_items((block, index, length), range)?
+                .into_iter()
+                .map(|item| InterpretedChild::Element(self.value(item)))
+                .collect()),
+            Object::Library {
+                value: Library::DefaultDict { dict, .. },
+                ..
+            } => self.contents(object, &Object::Dict(dict), range),
+            Object::Library {
+                value: Library::OrderedDict { dict, first },
+                ..
+            } => {
+                let mut children = Vec::new();
+                self.linked_entries((dict, first), range, |entry| {
+                    children.push(InterpretedChild::Entry {
+                        key: self.value(entry.key),
+                        value: self.value(entry.value),
+                    });
+                    Ok(())
+                })?;
+                Ok(children)
+            }
             _ => Err(format!("the object at {object:#x} holds no items").into()),
         }
     }
@@ -553,11 +600,21 @@ impl Values<'_, '_> {
         }
 
         let class = self.class(ty)?;
+        if let Some(object) = self.library(&head, &class, ty)? {
+            return Ok(object);
+        }
+
         let base = match self.static_base(&class)? {
-            Some(base) => self.built_in(&head, base)?.map(Box::new),
+            Some(base) => match self.built_in(&head, base)? {
+                Some(base) => Some(base),
+                None => self.library(&head, &self.class(base)?, ty)?,
+            },
             None => None,
         };
-        Ok(Object::Instance { class, base })
+        Ok(Object::Instance {
+            class,
+            base: base.map(Box::new),
+        })
     }
 
     /// The object the head is of, read as the built-in type `ty` keeps its
@@ -689,7 +746,7 @@ impl Values<'_, '_> {
 
     /// The type of the built-in value `object` is, which an instance's
     /// class derives from; `None` for an instance or a class.
-    pub(super) const fn built_in_type(&self, object: &Object) -> Option<VirtualAddress> {
+    pub(super) fn built_in_type(&self, object: &Object) -> Option<VirtualAddress> {
         let types = &self.types;
         Some(match object {
             Object::Nothing => types.none,
@@ -707,6 +764,7 @@ impl Values<'_, '_> {
             Object::Function { .. } => types.function,
             Object::Builtin { .. } => types.builtin,
             Object::Code { .. } => types.code,
+            Object::Library { class, .. } => class.address,
             Object::Class { .. } | Object::Instance { .. } => return None,
         })
     }
@@ -758,7 +816,7 @@ impl Values<'_, '_> {
     }
 
     /// The `dict` the head is of, as far as reading its entries needs it.
-    fn dict(&self, head: &Head<'_, '_>) -> Result<Object, Problem> {
+    pub(super) fn dict(&self, head: &Head<'_, '_>) -> Result<Object, Problem> {
         let address = head.address();
         let length = length(head.field_word(Field::DictUsed)?, address)?;
         let values = head.field_word(Field::DictValues)?;
@@ -1127,9 +1185,9 @@ impl Values<'_, '_> {
             Object::Function { .. } => builtin("function"),
             Object::Builtin { .. } => builtin("builtin_function_or_method"),
             Object::Code { .. } => builtin("code"),
-            Object::Class { meta: class, .. } | Object::Instance { class, .. } => {
-                (class.module.clone(), Arc::clone(&class.name))
-            }
+            Object::Class { meta: class, .. }
+            | Object::Library { class, .. }
+            | Object::Instance { class, .. } => (class.module.clone(), Arc::clone(&class.name)),
         }
     }
 
@@ -1216,6 +1274,7 @@ impl Values<'_, '_> {
             Object::Code { name, file, line } => {
                 format!("<code object {name} at {address:#x}, file \"{file}\", line {line}>")
             }
+            Object::Library { name, value, .. } => self.library_text(name, value, depth, summary),
             Object::Instance {
                 base: Some(base), ..
             } => self.text(address, base, depth, summary),
@@ -1227,7 +1286,12 @@ impl Values<'_, '_> {
 
     /// The text of the object at `address` as an item of a container in
     /// a summary, where it is `depth` containers deep.
-    fn item_text(&self, address: VirtualAddress, depth: usize, summary: &mut Summary) -> String {
+    pub(super) fn item_text(
+        &self,
+        address: VirtualAddress,
+        depth: usize,
+        summary: &mut Summary,
+    ) -> String {
         if summary.objects >= SUMMARY_OBJECTS {
             note(
                 summary,
@@ -1245,22 +1309,35 @@ impl Values<'_, '_> {
             }
         };
 
-        let container = matches!(
-            object,
-            Object::List { .. } | Object::Tuple { .. } | Object::Dict(_) | Object::Set { .. }
-        );
+        // An object of a class deriving from a container is that
+        // container, as its type's `repr` shows it.
+        let held = match &object {
+            Object::Instance {
+                base: Some(base), ..
+            } => base,
+            object => object,
+        };
+        let container = match held {
+            Object::List { .. } | Object::Tuple { .. } | Object::Dict(_) | Object::Set { .. } => {
+                true
+            }
+            Object::Library { value, .. } => value.contains(),
+            _ => false,
+        };
         if !container {
             return self.text(address, &object, depth, summary);
         }
 
         // A container within itself, as Python's repr shows it.
         if summary.within.contains(&address) {
-            return match object {
-                Object::List { .. } => "[...]",
-                Object::Dict(_) => "{...}",
-                _ => "...",
-            }
-            .to_owned();
+            return match held {
+                Object::List { .. } => "[...]".to_owned(),
+                Object::Dict(_) => "{...}".to_owned(),
+                Object::Library { name, value, .. } => {
+                    self.recurring_library_text(name, value, depth, summary)
+                }
+                _ => "...".to_owned(),
+            };
         }
 
         if depth >= SUMMARY_DEPTH {
@@ -1281,12 +1358,26 @@ impl Values<'_, '_> {
         &self,
         items: VirtualAddress,
         length: u64,
+        brackets: (&str, &str),
+        depth: usize,
+        summary: &mut Summary,
+    ) -> String {
+        let items = self.items(items, 0, length.min(SUMMARY_ITEMS));
+        self.listed(items, length, brackets, depth, summary)
+    }
+
+    /// The text of a sequence of `length` items, of which `items` are the
+    /// first read, between `open` and `close`.
+    pub(super) fn listed(
+        &self,
+        items: Result<Vec<VirtualAddress>, Problem>,
+        length: u64,
         (open, close): (&str, &str),
         depth: usize,
         summary: &mut Summary,
     ) -> String {
         let shown = length.min(SUMMARY_ITEMS);
-        let (mut texts, whole) = match self.items(items, 0, shown) {
+        let (mut texts, whole) = match items {
             Ok(items) => self.until_spent(items.len(), summary, |index, summary| {
                 self.item_text(items[index], depth + 1, summary)
             }),
@@ -1315,12 +1406,25 @@ impl Values<'_, '_> {
         text
     }
 
-    fn dict_text(&self, dict: Dict, depth: usize, summary: &mut Summary) -> String {
+    pub(super) fn dict_text(&self, dict: Dict, depth: usize, summary: &mut Summary) -> String {
         let mut pairs = Vec::new();
         let read = self.entries(dict, 0..SUMMARY_ITEMS, |entry| {
             pairs.push((entry.key, entry.value));
             Ok(())
         });
+        self.pairs_text((&pairs, read), dict.length, depth, summary)
+    }
+
+    /// The text of a mapping of `length` items, of which `pairs` are the
+    /// keys and values of the first read, and `read` why no more were, if
+    /// it failed.
+    pub(super) fn pairs_text(
+        &self,
+        (pairs, read): (&[(VirtualAddress, VirtualAddress)], Result<(), Problem>),
+        length: u64,
+        depth: usize,
+        summary: &mut Summary,
+    ) -> String {
         let (mut texts, whole) = self.until_spent(pairs.len(), summary, |index, summary| {
             let (key, value) = pairs[index];
             let key = self.item_text(key, depth + 1, summary);
@@ -1332,7 +1436,7 @@ impl Values<'_, '_> {
             texts.push("...".to_owned());
         } else if !whole {
             texts.push("...".to_owned());
-        } else if dict.length > SUMMARY_ITEMS {
+        } else if length > SUMMARY_ITEMS {
             note(
                 summary,
                 format!("a summary shows {SUMMARY_ITEMS} items of each container"),
@@ -1435,7 +1539,7 @@ impl Values<'_, '_> {
 }
 
 /// Notes why a summary shows less than all, keeping the first reason.
-fn note(summary: &mut Summary, problem: String) {
+pub(super) fn note(summary: &mut Summary, problem: String) {
     if summary.problem.is_none() {
         summary.problem = Some(problem.into());
     }

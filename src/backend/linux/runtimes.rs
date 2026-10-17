@@ -92,6 +92,9 @@ struct ProcessStop<'a, P> {
 
     /// The sets of tasks threads drive, once found at this stop.
     task_sets: Vec<u64>,
+
+    /// The memory read at the published stop, if the process is at one.
+    memory: Option<&'a crate::runtime_model::StopMemory>,
 }
 
 impl<P: InspectionOps> RuntimeStop for ProcessStop<'_, P> {
@@ -116,6 +119,10 @@ impl<P: InspectionOps> RuntimeStop for ProcessStop<'_, P> {
             }
             _ => false,
         }
+    }
+
+    fn memory(&self) -> Option<&crate::runtime_model::StopMemory> {
+        self.memory
     }
 
     fn thread_pointer(&self, thread: ThreadId) -> Option<u64> {
@@ -280,6 +287,7 @@ impl<P: InspectionOps> Controller<P> {
                     found.as_ref().map(|found| found.sets.to_vec())
                 })
                 .unwrap_or_default(),
+            memory: inferior.public_stop.as_ref().map(|stop| &stop.memory),
         })
     }
 

@@ -225,6 +225,11 @@ pub enum BoundShape<St> {
     /// A record whose members are its children, before the view's fields.
     Record(Vec<BoundField<St>>),
 
+    /// An interpreter's object as the debugger presents it without a view,
+    /// lending its children, as a view of one that does not `show` presents
+    /// it.
+    Stored,
+
     /// What a pointer points to, as a type that may be chosen at run time.
     Dynamic {
         pointer: ViewProgram<St>,
@@ -417,13 +422,43 @@ impl std::fmt::Display for Rejection {
     }
 }
 
+/// What a view presents: values of one of the program's types, or an
+/// interpreter's objects, whose types only their values know.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelfType {
+    Program(TypeReference),
+
+    /// An object of an interpreted language, as a Python view presents:
+    /// `self` is a value of a dynamic type, and its attributes are written
+    /// `self.name`, as the language writes them.
+    Dynamic,
+}
+
+impl SelfType {
+    /// The program type, for a view of one.
+    #[must_use]
+    pub const fn program(self) -> Option<TypeReference> {
+        match self {
+            Self::Program(reference) => Some(reference),
+            Self::Dynamic => None,
+        }
+    }
+
+    const fn ty(self) -> Ty {
+        match self {
+            Self::Program(reference) => Ty::Program(reference),
+            Self::Dynamic => Ty::Dynamic,
+        }
+    }
+}
+
 /// The scope a view's expressions bind in: its generators' variables, its
 /// `let`s, the values its pattern captured, `self`, and `self`'s members.
 /// Types are its captures and `type`s, then the program's. Nothing the
 /// frame names is visible, so a view means the same at every stop.
 pub struct ViewScope<'a, S: Scope> {
     base: &'a S,
-    self_type: TypeReference,
+    self_type: SelfType,
     captures: &'a Captures,
 
     /// The set the view came from, whose kernels it calls before the
@@ -440,7 +475,7 @@ pub struct ViewScope<'a, S: Scope> {
 impl<'a, S: Scope> ViewScope<'a, S> {
     pub const fn new(
         base: &'a S,
-        self_type: TypeReference,
+        self_type: SelfType,
         captures: &'a Captures,
         set: &'a super::ViewSet,
     ) -> Self {
@@ -456,8 +491,9 @@ impl<'a, S: Scope> ViewScope<'a, S> {
     }
 
     fn self_name(&self) -> String {
-        self.base
-            .type_info(self.self_type)
+        self.self_type
+            .program()
+            .and_then(|reference| self.base.type_info(reference))
             .map_or_else(|| "self".to_owned(), |info| info.name.to_string())
     }
 }
@@ -522,14 +558,22 @@ impl<S: Scope> Scope for ViewScope<'_, S> {
             None => {}
         }
 
+        let self_type = match self.self_type {
+            SelfType::Program(reference) => reference,
+            SelfType::Dynamic if name == "self" => return Ok(Lookup::Dynamic(ViewObject::This)),
+            // An object's attributes are named through `self`, so that
+            // what an object happens to hold never shadows a name.
+            SelfType::Dynamic => return Ok(Lookup::NotFound),
+        };
+
         if name == "self" {
             return Ok(Lookup::Object {
                 object: ViewObject::This,
-                ty: Ok(self.self_type),
+                ty: Ok(self_type),
             });
         }
 
-        match self.base.plan(self.self_type, StepKind::Member(name)) {
+        match self.base.plan(self_type, StepKind::Member(name)) {
             Ok(Planned { step, result, .. }) => Ok(Lookup::Object {
                 object: ViewObject::Member(step),
                 ty: result.ok_or_else(|| {
@@ -578,6 +622,10 @@ impl<S: Scope> Scope for ViewScope<'_, S> {
         None
     }
 
+    fn plan_dynamic(&self, step: StepKind<'_>) -> Result<Self::Step, Refusal> {
+        self.base.plan_dynamic(step)
+    }
+
     fn types_with_base(&self, base: &str) -> Vec<TypeReference> {
         self.base.types_with_base(base)
     }
@@ -597,8 +645,8 @@ impl<S: Scope> Scope for ViewScope<'_, S> {
     }
 }
 
-/// Binds `view`, from `set`, against `self_type`, whose identity its
-/// pattern matched, capturing `captures`.
+/// Binds `view`, from `set`, against what it presents, `self_type`, whose
+/// identity its pattern matched, capturing `captures`.
 #[expect(
     clippy::too_many_lines,
     reason = "each statement binds in its own arm, in the order the view writes them"
@@ -606,7 +654,7 @@ impl<S: Scope> Scope for ViewScope<'_, S> {
 pub fn bind<S: Scope>(
     view: &Arc<View>,
     set: &super::ViewSet,
-    self_type: TypeReference,
+    self_type: SelfType,
     captures: &Captures,
     base: &S,
 ) -> Result<BoundView<S::Step>, Rejection> {
@@ -716,7 +764,7 @@ pub fn bind<S: Scope>(
         .find(|(name, ..)| name.as_ref() == "self")
     {
         Some((_, BoundFormat::Utf8, line))
-            if suits(BoundFormat::Utf8, &Ty::Program(scope.self_type), &scope).is_ok() =>
+            if suits(BoundFormat::Utf8, &scope.self_type.ty(), &scope).is_ok() =>
         {
             Some(bind_text_source(&synthetic("self", *line)?, &scope)?)
         }
@@ -900,7 +948,11 @@ fn members<S: Scope>(
     scope: &mut ViewScope<'_, S>,
     line: u32,
 ) -> Result<BoundShape<S::Step>, Rejection> {
-    let record = representation(scope, scope.self_type)
+    let SelfType::Program(self_type) = scope.self_type else {
+        return Ok(BoundShape::Stored);
+    };
+
+    let record = representation(scope, self_type)
         .ok()
         .and_then(|(_, info)| match &info.kind {
             TypeKind::Record { members, bases, .. } => {
@@ -1003,7 +1055,7 @@ fn bind_format<S: Scope>(
 pub fn check_extension<St>(
     base: &BoundView<St>,
     extension: &BoundView<St>,
-    self_type: TypeReference,
+    self_type: SelfType,
     types: &dyn TypeSource,
 ) -> Result<(), Rejection> {
     let mut named = base.named_programs();
@@ -1013,10 +1065,10 @@ pub fn check_extension<St>(
 
 /// What a view's `self` format writes: the value a `value` shape presents,
 /// or else the value itself.
-fn presented<St>(shape: &BoundShape<St>, self_type: TypeReference) -> Ty {
+fn presented<St>(shape: &BoundShape<St>, self_type: SelfType) -> Ty {
     match shape {
         BoundShape::Value(program) => program.result().clone(),
-        _ => Ty::Program(self_type),
+        _ => self_type.ty(),
     }
 }
 
@@ -1801,7 +1853,9 @@ fn known_types<S: Scope>(scope: &ViewScope<'_, S>) -> Captures {
 /// language of the type the view presents.
 fn candidates<S: Scope>(pattern: &Pattern, scope: &ViewScope<'_, S>) -> Vec<TypeReference> {
     let language = scope
-        .type_info(scope.self_type)
+        .self_type
+        .program()
+        .and_then(|reference| scope.type_info(reference))
         .and_then(|info| info.identity.as_ref().map(|identity| identity.language));
     scope
         .types_with_base(&pattern.base)

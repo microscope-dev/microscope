@@ -220,6 +220,26 @@ Checks state invariants such as length not exceeding capacity. On failure,
 show raw storage and the failed check. Producing a plausible logical container
 from contradictory metadata is not acceptable.
 
+## Views of dynamic types
+
+A `python` view's pattern matches the identity `interpreted_identity` gives a
+class: its module's segments and its qualified name's, all but the last as
+the path, which `language_matches` lets only `python` select; `any` never
+selects an interpreted type. A dynamic value's class is known only at a
+stop, so `choose_dynamic` chooses for each class at each stop, trying the
+identities of its MRO in order (`RuntimeModel::interpreted_lineage`), and
+`Views` keeps the choice per stop, runtime, and class address
+(`ClassChoices`), because a freed class's address can name another.
+
+The view binds once for the class with `SelfType::Dynamic`: `self` is a
+`Lookup::Dynamic` value, bare names are only lets and captures, and every
+attribute is a step checked as it runs, so a missing attribute is a problem
+of the value rather than a reason the view did not bind. A view without
+`show` has `BoundShape::Stored`, which presents the object as the debugger
+does without a view (`Machine::present_stored`) and adds the view's fields.
+`src/backend/linux/interpreted_views.rs` runs the view in the inspection's
+share and pages its children through the runtime (`InterpretedView`).
+
 ## Kernels
 
 View kernels are compiled WebAssembly with a narrow host protocol for reads

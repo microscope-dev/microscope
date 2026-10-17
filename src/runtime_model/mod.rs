@@ -185,6 +185,75 @@ pub trait RuntimeStop {
     fn task_sets(&self) -> Vec<u64> {
         Vec::new()
     }
+
+    /// The memory read at this stop so far, which lasts as long as the
+    /// stop, where the debugger keeps it: none while the program runs, as
+    /// between the stops it publishes.
+    fn memory(&self) -> Option<&StopMemory> {
+        None
+    }
+}
+
+/// Memory of a stopped process read so far, in aligned blocks of
+/// [`StopMemory::BLOCK`] bytes, each as read or as unreadable. A stopped
+/// process's memory does not change, so a read near one made before, as an
+/// object's fields, a table's entries, and the objects allocated together
+/// are, reads nothing more. Whoever keeps one forgets it once the program
+/// runs or the debugger writes to it.
+#[derive(Debug, Default)]
+pub struct StopMemory {
+    blocks: std::cell::RefCell<std::collections::BTreeMap<u64, Option<Box<[u8]>>>>,
+}
+
+impl StopMemory {
+    /// The size and alignment of a block. A page holds whole blocks, so a
+    /// block is readable wherever any of its bytes are.
+    pub const BLOCK: usize = 256;
+
+    /// The most blocks kept, 4 MiB of them; past that, blocks are read as
+    /// they are needed and not kept.
+    const MAX_BLOCKS: usize = 1 << 14;
+
+    /// Copies into `into` what the block that holds `at` holds from `at`
+    /// on, as much as fits, reading the block with `read` if it was not
+    /// read before: how many bytes it copied, or `None` where the block
+    /// cannot be read. `read` fills a block from its start, saying whether
+    /// it could, or fails as the caller's reads do.
+    pub fn copy<E>(
+        &self,
+        at: u64,
+        into: &mut [u8],
+        read: impl FnOnce(VirtualAddress, &mut [u8]) -> Result<bool, E>,
+    ) -> Result<Option<usize>, E> {
+        let block = Self::BLOCK as u64;
+        let start = at - at % block;
+        let offset = usize::try_from(at - start).unwrap_or(Self::BLOCK);
+        let copy = |held: &[u8], into: &mut [u8]| {
+            let held = held.get(offset..)?;
+            let copied = held.len().min(into.len());
+            into[..copied].copy_from_slice(&held[..copied]);
+            Some(copied)
+        };
+
+        if let Some(kept) = self.blocks.borrow().get(&start) {
+            return Ok(kept.as_deref().and_then(|held| copy(held, into)));
+        }
+
+        let mut bytes = vec![0; Self::BLOCK].into_boxed_slice();
+        let read = read(VirtualAddress::new(start), &mut bytes)?.then_some(bytes);
+        let copied = read.as_deref().and_then(|held| copy(held, into));
+        let mut blocks = self.blocks.borrow_mut();
+        if blocks.len() < Self::MAX_BLOCKS {
+            blocks.insert(start, read);
+        }
+
+        Ok(copied)
+    }
+
+    /// Forgets every block, once the memory may have changed.
+    pub fn forget(&self) {
+        self.blocks.borrow_mut().clear();
+    }
 }
 
 /// An address in a task's code.
@@ -726,6 +795,19 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         None
     }
 
+    /// The identities of the class at `class` and of each class it derives
+    /// from, in the order the language looks attributes up in, which
+    /// choose the view that presents its objects.
+    fn interpreted_lineage(
+        &self,
+        stop: &dyn RuntimeStop,
+        class: VirtualAddress,
+        budget: &mut InspectionBudget,
+    ) -> Result<Vec<crate::TypeIdentity>, InterpretedFailure> {
+        let _ = (stop, class, budget);
+        Err(InterpretedFailure::interprets_nothing())
+    }
+
     /// The interpreter's object at `object`, presented as a variable's
     /// value is.
     fn interpreted_value(
@@ -932,10 +1014,43 @@ pub struct ObjectTypes {
     pub cast: &'static str,
 }
 
+/// The identity of an interpreted language's class: its module's path and
+/// its qualified name's, with the last part of its qualified name as its
+/// base, as `collections.OrderedDict` and `app.Outer.Inner` are named, and
+/// a view's pattern `collections::OrderedDict` names the first.
+#[must_use]
+pub fn interpreted_identity(
+    language: crate::SourceLanguage,
+    module: Option<&str>,
+    qualified: &str,
+) -> crate::TypeIdentity {
+    let mut path: Vec<Arc<str>> = module
+        .into_iter()
+        .flat_map(|module| module.split('.'))
+        .chain(qualified.split('.'))
+        .map(Arc::from)
+        .collect();
+    let base = path.pop().unwrap_or_else(|| Arc::from(qualified));
+    crate::TypeIdentity {
+        language,
+        path: path.into(),
+        inline_namespaces: Arc::from([]),
+        base,
+        arguments: Arc::from([]),
+        pack: None,
+        origin: crate::ArgumentOrigin::None,
+        go: None,
+    }
+}
+
 /// An object the interpreter keeps, as the debugger presents it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct InterpretedValue {
     pub object: VirtualAddress,
+
+    /// The address of the object's class, which names the class for as long
+    /// as the stop lasts.
+    pub class: VirtualAddress,
 
     /// The object's type: the module that defines it, where the debugger
     /// knows it, and its name there.

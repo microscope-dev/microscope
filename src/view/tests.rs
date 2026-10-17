@@ -28,7 +28,46 @@ fn world() -> World {
     add_containers(&mut world);
     add_others(&mut world);
     add_linked(&mut world);
+    add_python(&mut world);
     world
+}
+
+/// Python objects, whose types only their values know: `point`, an
+/// `app.Point` whose attributes `x` and `y` hold 3 and 4; `red`, a member of
+/// the enum `app.Color`, named `RED` and holding 1; `gone`, an `app.Point`
+/// with no attributes; and `number`, the int 7.
+fn add_python(world: &mut World) {
+    use crate::eval::fake::Dynamic;
+
+    let x = world.dynamic(Dynamic::Int(3));
+    let y = world.dynamic(Dynamic::Int(4));
+    let name = world.dynamic(Dynamic::Str("RED"));
+    let value = world.dynamic(Dynamic::Int(1));
+    let instance = |type_name, bases, attributes| Dynamic::Instance {
+        type_name,
+        bases,
+        attributes,
+    };
+
+    for (variable, value) in [
+        (
+            "point",
+            instance("app.Point", Vec::new(), vec![("x", x), ("y", y)]),
+        ),
+        (
+            "red",
+            instance(
+                "app.Color",
+                vec!["enum.Enum"],
+                vec![("_name_", name), ("_value_", value)],
+            ),
+        ),
+        ("gone", instance("app.Point", Vec::new(), Vec::new())),
+        ("number", Dynamic::Int(7)),
+    ] {
+        let index = world.dynamic(value);
+        world.dynamic_variable(variable, index);
+    }
 }
 
 /// Hand-rolled C vectors and text.
@@ -787,10 +826,35 @@ fn formatted_and_linked(world: &mut World, int: TypeReference, tagged: TypeRefer
     world.variable("slot", handle, &ints([2]));
 }
 
+/// The identities of the classes of the world's object at `index`.
+fn lineage(world: &World, index: usize) -> Vec<crate::TypeIdentity> {
+    world
+        .lineage(index)
+        .iter()
+        .map(|class| {
+            let (module, name) = class.rsplit_once('.').expect("a qualified class");
+            crate::runtime_model::interpreted_identity(SourceLanguage::Python, Some(module), name)
+        })
+        .collect()
+}
+
 /// What a value shows as an example writes it.
 fn example_outcome(views: &ViewSet, name: &str, outcome: &str) -> String {
     let mut world = world();
-    let choice = choose(views, world.type_of(name), &world);
+    let (choice, this) = world.dynamic_index(name).map_or_else(
+        || {
+            (
+                choose(views, world.type_of(name), &world),
+                place(&world, name),
+            )
+        },
+        |index| {
+            (
+                super::choose_dynamic(&[views], &lineage(&world, index), &world),
+                Place::Dynamic(index),
+            )
+        },
+    );
     let Some(bound) = choice.bound else {
         return choice.candidates.first().map_or_else(
             || "unbound: no view's pattern names the type".to_owned(),
@@ -835,7 +899,6 @@ fn example_outcome(views: &ViewSet, name: &str, outcome: &str) -> String {
         return format!("unbound visualizers: {}", unbound.join("; "));
     }
 
-    let this = place(&world, name);
     let mut checkpoints = Checkpoints::default();
     let presented = match present(&bound, &mut world, this.clone(), &mut checkpoints) {
         Ok(presented) => presented,

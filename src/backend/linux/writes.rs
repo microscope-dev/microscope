@@ -60,6 +60,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             stop.task_locators.borrow_mut().clear();
             stop.task_sets.borrow_mut().take();
             stop.interpreted.borrow_mut().clear();
+            stop.memory.forget();
         }
 
         if length > MAX_PUBLIC_MEMORY_WRITE {
@@ -269,6 +270,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         stop.task_locators.borrow_mut().clear();
         stop.task_sets.borrow_mut().take();
         stop.interpreted.borrow_mut().clear();
+        stop.memory.forget();
         let process_id = process_id(inferior.tgid);
         self.bump_revision();
         Ok((

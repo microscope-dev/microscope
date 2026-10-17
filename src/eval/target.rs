@@ -466,6 +466,17 @@ pub trait Machine: TypeSource {
     /// The value at a place, as inspection presents it.
     fn present(&mut self, at: &Self::Place) -> Result<InspectedValue, Stop>;
 
+    /// The interpreter's object at a place as the debugger presents it
+    /// without a view, as the view that presents it and does not `show`
+    /// lends it.
+    fn present_stored(&mut self, at: &Self::Place) -> Result<InspectedValue, Stop> {
+        let _ = at;
+        Err(Stop::Refused(Refusal::new(
+            ErrorKind::Unsupported,
+            "this machine holds no interpreter's objects",
+        )))
+    }
+
     /// A computed value of program type, from its bytes.
     fn present_bytes(&mut self, ty: TypeReference, bytes: &[u8]) -> Result<InspectedValue, Stop>;
 

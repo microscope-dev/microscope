@@ -16,12 +16,14 @@
 
 use std::sync::Arc;
 
+use super::library::LibraryType;
 use super::objects::{Problem, malformed};
 use super::values::{Dict, Object, Values};
-use crate::VirtualAddress;
 use crate::eval::error::ErrorKind;
 use crate::image::python::{Constant, Field};
+use crate::runtime_model::interpreted_identity;
 use crate::runtime_model::{InterpretedFailure, InterpretedKey};
+use crate::{SourceLanguage, TypeIdentity, VariableUnavailableReason, VirtualAddress};
 
 /// The most attributes of one instance read.
 const MAX_ATTRIBUTES: u64 = 1 << 16;
@@ -39,6 +41,10 @@ pub(super) struct Class {
     /// The module that defines it, and its qualified name there.
     pub(super) module: Option<Arc<str>>,
     pub(super) name: Arc<str>,
+
+    /// The standard library's type that only C defines it is, if it is
+    /// one ([`super::library`]).
+    pub(super) library: Option<LibraryType>,
 }
 
 impl Class {
@@ -121,11 +127,14 @@ impl Values<'_, '_> {
             }
         };
 
+        let library =
+            self.library_type(ty, self.defined_in_c(flags), (module.as_deref(), &name))?;
         let class = Arc::new(Class {
             address: ty,
             flags,
             module,
             name,
+            library,
         });
         self.classes.borrow_mut().insert(ty, Arc::clone(&class));
         Ok(class)
@@ -176,18 +185,34 @@ impl Values<'_, '_> {
                 )?,
             );
             let size = reader.offset(Field::StaticTypeStateSize)?;
-            let first = reader.offset(Field::InterpreterStaticTypes)?;
-            let end = reader.offset(Field::InterpreterStaticTypesEnd)?;
-            let state = index
-                .checked_mul(size)
-                .and_then(|at| at.checked_add(first))
-                .filter(|at| at.checked_add(size).is_some_and(|last| last <= end))
-                .ok_or_else(bad)?;
-            reader.word(
-                interpreter
-                    .wrapping_add(state)
-                    .wrapping_add(reader.offset(Field::StaticTypeStateDict)?),
-            )?
+            let state = |(first, end): (Field, Field)| -> Result<VirtualAddress, Problem> {
+                let (first, end) = (reader.offset(first)?, reader.offset(end)?);
+                index
+                    .checked_mul(size)
+                    .and_then(|at| at.checked_add(first))
+                    .filter(|at| at.checked_add(size).is_some_and(|last| last <= end))
+                    .map(|at| interpreter.wrapping_add(at))
+                    .ok_or_else(bad)
+            };
+
+            // A static type of an extension the interpreter manages, as
+            // `_datetime`'s from 3.13, has its state at its index among
+            // theirs, where the built-in types' state there is another's.
+            let mut kept = state((
+                Field::InterpreterStaticTypes,
+                Field::InterpreterStaticTypesEnd,
+            ))?;
+            if reader.word(kept.wrapping_add(reader.offset(Field::StaticTypeStateType)?))?
+                != ty.get()
+                && reader.layout.has(Field::InterpreterStaticExtensionTypes)
+            {
+                kept = state((
+                    Field::InterpreterStaticExtensionTypes,
+                    Field::InterpreterStaticExtensionTypesEnd,
+                ))?;
+            }
+
+            reader.word(kept.wrapping_add(reader.offset(Field::StaticTypeStateDict)?))?
         } else {
             reader.field_word(ty, Field::TypeDict)?
         };
@@ -202,13 +227,20 @@ impl Values<'_, '_> {
         }
     }
 
-    /// The static type the instances of `class` are laid out as: the first
-    /// that is no class its bases lead to, as `int` is for a class deriving
-    /// from it, or `object` for most classes; `None` for a static type,
-    /// which is its own.
+    /// Whether a type of `flags` is defined in C, as a static type is, and
+    /// a heap type whose attributes cannot be set, which no class is.
+    const fn defined_in_c(&self, flags: u64) -> bool {
+        !self.flagged(flags, Constant::TypeHeapBit)
+            || self.flagged(flags, Constant::TypeImmutableBit)
+    }
+
+    /// The type defined in C the instances of `class` are laid out as: the
+    /// first its bases lead to, as `int` is for a class deriving from it,
+    /// or `object` for most classes; `None` for a type defined in C, which
+    /// is its own.
     pub(super) fn static_base(&self, class: &Class) -> Result<Option<VirtualAddress>, Problem> {
         let reader = &self.reader;
-        if !self.flagged(class.flags, Constant::TypeHeapBit) {
+        if self.defined_in_c(class.flags) {
             return Ok(None);
         }
 
@@ -220,7 +252,7 @@ impl Values<'_, '_> {
             }
 
             let flags = reader.field_word(ty, Field::TypeFlags)?;
-            if !self.flagged(flags, Constant::TypeHeapBit) {
+            if self.defined_in_c(flags) {
                 return Ok(Some(ty));
             }
         }
@@ -256,8 +288,9 @@ impl Values<'_, '_> {
 
     /// What an object of `class`, holding the built-in value `base` if it
     /// holds one, is taken as for the special method `name`, which Python
-    /// calls on it: its base where the base's type's own method is the one
-    /// found. The object is refused where another type defines `name`,
+    /// calls on it: its base where the method found is the one the base's
+    /// type has, its own or one it inherits, as an `OrderedDict` has
+    /// `dict`'s `__getitem__`. The object is refused where another type defines `name`,
     /// whose code would run, and is a type error where none does, as in
     /// Python, which `doing` describes, as "has no items".
     pub(super) fn special(
@@ -268,9 +301,19 @@ impl Values<'_, '_> {
         doing: &str,
     ) -> Result<Object, InterpretedFailure> {
         let found = self.type_attribute(class, name)?.map(|(owner, _)| owner);
-        let base_type = base.as_deref().and_then(|base| self.built_in_type(base));
+        let inherited = match (
+            found,
+            base.as_deref().and_then(|base| self.built_in_type(base)),
+        ) {
+            (Some(owner), Some(base_type)) => {
+                self.derives(base_type, owner).map_err(|problem| {
+                    InterpretedFailure::Unavailable(VariableUnavailableReason::Interpreted(problem))
+                })?
+            }
+            _ => false,
+        };
         match (found, base) {
-            (Some(owner), Some(base)) if Some(owner) == base_type => Ok(*base),
+            (Some(_), Some(base)) if inherited => Ok(*base),
             (Some(_), _) => Err(refused(
                 ErrorKind::Unsupported,
                 format!(
@@ -283,6 +326,23 @@ impl Values<'_, '_> {
                 format!("a `{}` defines no `{name}`", class.qualified()),
             )),
         }
+    }
+
+    /// The identities of the class at `class` and of each class it derives
+    /// from, in its method resolution order.
+    pub(super) fn lineage(&self, class: VirtualAddress) -> Result<Vec<TypeIdentity>, Problem> {
+        let class = self.class(class)?;
+        self.mro(&class)?
+            .into_iter()
+            .map(|ty| {
+                let class = self.class(ty)?;
+                Ok(interpreted_identity(
+                    SourceLanguage::Python,
+                    class.module.as_deref(),
+                    &class.name,
+                ))
+            })
+            .collect()
     }
 
     /// The types `class` finds its attributes in, in order: its method
@@ -492,9 +552,61 @@ impl Values<'_, '_> {
     }
 
     /// The attributes `range` of the instance at `object`, of `class`, in
-    /// the order [`Self::attribute_count`] counts them: each one's name and
-    /// value.
+    /// the order [`Self::attribute_count`] counts them, each one's name and
+    /// value; but a dataclass's fields first, in the order it defines them,
+    /// which its `__init__` and `repr` follow, as its slots do not.
     pub(super) fn attributes(
+        &self,
+        object: VirtualAddress,
+        class: &Class,
+        range: std::ops::Range<u64>,
+    ) -> Result<Vec<(Arc<str>, VirtualAddress)>, Problem> {
+        let Some(fields) = self.dataclass_fields(class)? else {
+            return self.stored_attributes(object, class, range);
+        };
+
+        let mut attributes = self.stored_attributes(object, class, 0..MAX_ATTRIBUTES)?;
+        attributes.sort_by_key(|(name, _)| {
+            fields
+                .iter()
+                .position(|field| field == name)
+                .unwrap_or(fields.len())
+        });
+        let start = usize::try_from(range.start).unwrap_or(usize::MAX);
+        let end = usize::try_from(range.end).unwrap_or(usize::MAX);
+        Ok(attributes
+            .into_iter()
+            .skip(start)
+            .take(end.saturating_sub(start))
+            .collect())
+    }
+
+    /// The names of the fields of the dataclass `class` is, in the order it
+    /// defines them, or `None` where it is none: the keys of the dict of
+    /// `__dataclass_fields__` it finds, which `dataclasses` keeps in that
+    /// order.
+    fn dataclass_fields(&self, class: &Class) -> Result<Option<Vec<Arc<str>>>, Problem> {
+        let found = self
+            .type_attribute(class, "__dataclass_fields__")
+            .map_err(problem)?;
+        let Some((_, fields)) = found else {
+            return Ok(None);
+        };
+
+        let Object::Dict(dict) = self.object(fields)? else {
+            return Ok(None);
+        };
+
+        let mut names = Vec::new();
+        self.entries(dict, 0..MAX_ATTRIBUTES, |entry| {
+            names.extend(self.str_text(entry.key));
+            Ok(())
+        })?;
+        Ok(Some(names))
+    }
+
+    /// [`Self::attributes`] in the order the instance keeps them.
+    fn stored_attributes(
         &self,
         object: VirtualAddress,
         class: &Class,

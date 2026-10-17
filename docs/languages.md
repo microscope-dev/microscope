@@ -132,10 +132,32 @@ An instance of a class shows its type and address, as Python's default
 insertion order, then those its `__slots__` hold. An instance of a class
 that derives from a built-in type, such as a `namedtuple` or an `IntEnum`
 member, shows that type's value and expands into its items, then its
-attributes. Classes, modules, functions, built-in functions and methods,
-and code objects show as Python's `repr` names them. Nothing runs in the
-program, so a class's own `__repr__` is not used. Any other object shows
-its type and address.
+attributes. A dataclass's fields come first among its attributes, in the
+order it defines them. Classes, modules, functions, built-in functions and
+methods, and code objects show as Python's `repr` names them. Nothing runs
+in the program, so a class's own `__repr__` is not used. Any other object
+shows its type and address.
+
+The standard library's types that only C defines show as their own `repr`
+writes them: `collections.deque`, `defaultdict`, and `OrderedDict`, which
+expand into their items, an `OrderedDict`'s in the order `move_to_end`
+gives them; `datetime`'s `date`, `time`, `datetime`, `timedelta`, and
+`timezone`; and `decimal.Decimal`, whose exponent is written `E`, as the
+default context writes it. An object of a class deriving from one of them
+shows its value too. The [built-in views](views.md#python-objects) present an
+enum's member as its name and value, a `fractions.Fraction` as `str` writes
+it, and a `pathlib` path as its text once Python has made it, which any use
+of the path as a file name does:
+
+```text
+(collections.deque) bounded = deque([0, 1, 2], maxlen=5)
+(collections.OrderedDict) ordered = OrderedDict({'c': 3, 'a': 1, 'd': 4})
+(datetime.datetime) utc_moment = datetime.datetime(2000, 1, 1, 0, 0, tzinfo=datetime.timezone.utc)
+(decimal.Decimal) small = Decimal('1E-7')
+(__main__.Color) color = {name: 'RED', value: 1}
+(fractions.Fraction) half = 1/2
+(pathlib.PosixPath) home = '/home'
+```
 
 A summary reads at most 6 containers deep, 64 items of each container, and 1024
 characters of a string. It says when it stops short. `pp` lays containers out
@@ -149,9 +171,9 @@ function shares (a cell) shows the value the cell holds.
 
 In a Python frame, a name is the frame's local, then a global of its module,
 then a built-in, as Python finds it. `::name` skips to the native program's
-globals. Expressions index lists and tuples, find a dict's keys as Python's
-own lookup finds them, read attributes, take `len`, compare, and compute
-with numbers:
+globals. Expressions index lists, tuples, and deques, find the keys of a
+dict, a `defaultdict`, or an `OrderedDict` as Python's own lookup finds them,
+read attributes, take `len`, compare, and compute with numbers:
 
 ```text
 (microscope) print numbers[-1]

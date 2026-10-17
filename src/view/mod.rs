@@ -31,11 +31,11 @@ use crate::eval::target::Scope;
 use crate::eval::types::TypeSource;
 use crate::{TypeInfo, TypeReference, ViewName};
 
-use bind::{BoundView, Rejection};
+use bind::{BoundView, Rejection, SelfType};
 use syntax::View;
 
 /// The view files built into microscope, in the order they are tried.
-const BUILT_IN: [(&str, &str); 16] = [
+const BUILT_IN: [(&str, &str); 17] = [
     (
         "libstdc++.views",
         include_str!("../../views/libstdc++.views"),
@@ -70,6 +70,10 @@ const BUILT_IN: [(&str, &str); 16] = [
         include_str!("../../views/go-containers.views"),
     ),
     ("glibc.views", include_str!("../../views/glibc.views")),
+    (
+        "python-std.views",
+        include_str!("../../views/python-std.views"),
+    ),
 ];
 
 /// The kernels built into microscope: each one's name, the source it is built
@@ -409,98 +413,136 @@ pub fn choose_among<S: Scope>(sets: &[&ViewSet], ty: TypeReference, scope: &S) -
             continue;
         };
 
-        let mut candidates = Vec::new();
-        for views in sets {
-            // A Go type is also named by its kind, as every map is by `map`.
-            let mut found = views
-                .by_base
-                .get(identity.base.as_ref())
-                .into_iter()
-                .flatten()
-                .chain(
-                    pattern::go_kind_word(identity)
-                        .and_then(|kind| views.by_base.get(kind))
-                        .into_iter()
-                        .flatten(),
-                )
-                .copied()
-                .collect::<Vec<_>>();
-            found.sort_unstable();
-            found.dedup();
-            candidates.extend(found.into_iter().map(|index| (&views.views[index], *views)));
-        }
-
-        let mut base = None;
-        let mut extensions = Vec::new();
-        for (view, set) in candidates {
-            // Views after the one that binds are not tried; `extend`s are.
-            if base.is_some() && !view.extend {
-                continue;
-            }
-
-            if !pattern::language_matches(view.language, identity.language) {
-                continue;
-            }
-
-            let Some(captures) = pattern::matches(&view.pattern, identity, scope) else {
-                continue;
-            };
-
-            match bind::bind(view, set, ty, &captures, scope) {
-                Ok(bound) if view.extend => extensions.push((view, set, captures, bound)),
-                Ok(bound) => {
-                    choice.candidates.push(Candidate {
-                        name: name_of(view),
-                        rejection: None,
-                    });
-                    base = Some(bound);
-                }
-                Err(rejection) => choice.candidates.push(Candidate {
-                    name: name_of(view),
-                    rejection: Some(rejection),
-                }),
-            }
-        }
-
-        // `extend`s with no view to add to add to the value's members.
-        if base.is_none()
-            && let Some((view, set, captures, _)) = extensions.first()
+        if let Some(bound) =
+            choose_identity(sets, identity, SelfType::Program(ty), scope, &mut choice)
         {
-            let members = Arc::new(View {
-                extend: false,
-                statements: Vec::new(),
-                ..(***view).clone()
-            });
-            match bind::bind(&members, set, ty, captures, scope) {
-                Ok(bound) => base = Some(bound),
-                Err(rejection) => choice.candidates.push(Candidate {
-                    name: name_of(view),
-                    rejection: Some(rejection),
-                }),
-            }
+            choice.bound = Some(Arc::new(bound));
+            return choice;
         }
-
-        let Some(mut base) = base else {
-            continue;
-        };
-
-        for (view, _, _, extension) in extensions {
-            let rejection = bind::check_extension(&base, &extension, ty, scope).err();
-            if rejection.is_none() {
-                base.extensions.push(Arc::new(extension));
-            }
-
-            choice.candidates.push(Candidate {
-                name: name_of(view),
-                rejection,
-            });
-        }
-
-        choice.bound = Some(Arc::new(base));
-        return choice;
     }
 
     choice
+}
+
+/// Chooses the view for an interpreter's objects of a class whose lineage
+/// is `lineage`: the class's identity, then each class it derives from, in
+/// the order the language looks attributes up in. The first identity a
+/// view of the language binds for presents the objects, as an enum's
+/// members are presented by the view of the enum class they derive from.
+/// The view binds once for every object of the class, since `self` is a
+/// value of a dynamic type.
+pub fn choose_dynamic<S: Scope>(
+    sets: &[&ViewSet],
+    lineage: &[crate::TypeIdentity],
+    scope: &S,
+) -> Choice<S::Step> {
+    let mut choice = Choice::default();
+    for identity in lineage {
+        if let Some(bound) = choose_identity(sets, identity, SelfType::Dynamic, scope, &mut choice)
+        {
+            choice.bound = Some(Arc::new(bound));
+            return choice;
+        }
+    }
+
+    choice
+}
+
+/// Binds the views whose patterns name `identity`, in the sets' order,
+/// against `self_type`, adding each one tried to `choice`'s candidates:
+/// the first that binds, with every `extend` that adds to it, or `None`.
+fn choose_identity<S: Scope>(
+    sets: &[&ViewSet],
+    identity: &crate::TypeIdentity,
+    self_type: SelfType,
+    scope: &S,
+    choice: &mut Choice<S::Step>,
+) -> Option<BoundView<S::Step>> {
+    let mut candidates = Vec::new();
+    for views in sets {
+        // A Go type is also named by its kind, as every map is by `map`.
+        let mut found = views
+            .by_base
+            .get(identity.base.as_ref())
+            .into_iter()
+            .flatten()
+            .chain(
+                pattern::go_kind_word(identity)
+                    .and_then(|kind| views.by_base.get(kind))
+                    .into_iter()
+                    .flatten(),
+            )
+            .copied()
+            .collect::<Vec<_>>();
+        found.sort_unstable();
+        found.dedup();
+        candidates.extend(found.into_iter().map(|index| (&views.views[index], *views)));
+    }
+
+    let mut base = None;
+    let mut extensions = Vec::new();
+    for (view, set) in candidates {
+        // Views after the one that binds are not tried; `extend`s are.
+        if base.is_some() && !view.extend {
+            continue;
+        }
+
+        if !pattern::language_matches(view.language, identity.language) {
+            continue;
+        }
+
+        let Some(captures) = pattern::matches(&view.pattern, identity, scope) else {
+            continue;
+        };
+
+        match bind::bind(view, set, self_type, &captures, scope) {
+            Ok(bound) if view.extend => extensions.push((view, set, captures, bound)),
+            Ok(bound) => {
+                choice.candidates.push(Candidate {
+                    name: name_of(view),
+                    rejection: None,
+                });
+                base = Some(bound);
+            }
+            Err(rejection) => choice.candidates.push(Candidate {
+                name: name_of(view),
+                rejection: Some(rejection),
+            }),
+        }
+    }
+
+    // `extend`s with no view to add to add to the value's members.
+    if base.is_none()
+        && let Some((view, set, captures, _)) = extensions.first()
+    {
+        let members = Arc::new(View {
+            extend: false,
+            statements: Vec::new(),
+            ..(***view).clone()
+        });
+        match bind::bind(&members, set, self_type, captures, scope) {
+            Ok(bound) => base = Some(bound),
+            Err(rejection) => choice.candidates.push(Candidate {
+                name: name_of(view),
+                rejection: Some(rejection),
+            }),
+        }
+    }
+
+    let mut base = base?;
+    for (view, _, _, extension) in extensions {
+        let rejection = bind::check_extension(&base, &extension, self_type, scope).err();
+        if rejection.is_none() {
+            base.extensions.push(Arc::new(extension));
+        }
+
+        choice.candidates.push(Candidate {
+            name: name_of(view),
+            rejection,
+        });
+    }
+
+    Some(base)
 }
 
 /// A type and the types its typedefs and qualifiers stand for, outermost

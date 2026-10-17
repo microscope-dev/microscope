@@ -187,8 +187,11 @@ pub enum Dynamic {
     List(Vec<usize>),
     Tuple(Vec<usize>),
     Dict(Vec<(usize, usize)>),
+    /// An instance of a class, named as its module qualifies it, as
+    /// `app.Point` is, deriving from `bases`, named so too.
     Instance {
         type_name: &'static str,
+        bases: Vec<&'static str>,
         attributes: Vec<(&'static str, usize)>,
     },
 }
@@ -1706,6 +1709,10 @@ impl Machine for World {
         Ok(self.inspected(at.ty(), state))
     }
 
+    fn present_stored(&mut self, at: &Place) -> Result<InspectedValue, Stop> {
+        self.present(at)
+    }
+
     fn present_bytes(&mut self, ty: TypeReference, bytes: &[u8]) -> Result<InspectedValue, Stop> {
         let state = self.available(ty, VariableValueSource::Computed, bytes.to_vec());
         Ok(self.inspected(ty, state))
@@ -1831,6 +1838,39 @@ impl World {
     pub fn dynamic(&mut self, value: Dynamic) -> usize {
         self.dynamic.push(value);
         self.dynamic.len() - 1
+    }
+
+    /// The value the variable `name` of a dynamic type holds, if it is one.
+    pub fn dynamic_index(&self, name: &str) -> Option<usize> {
+        self.objects
+            .iter()
+            .find(|object| object.name == name)
+            .and_then(|object| match object.storage {
+                Storage::Dynamic(index) => Some(index),
+                _ => None,
+            })
+    }
+
+    /// The classes of the value at `index`, each named as its module
+    /// qualifies it: its own, then each it derives from, in Python's order,
+    /// ending at `builtins.object`. A built-in type is `builtins`'.
+    pub fn lineage(&self, index: usize) -> Vec<String> {
+        let value = &self.dynamic[index];
+        let bases = match value {
+            Dynamic::Instance { bases, .. } => {
+                bases.iter().map(|base| (*base).to_owned()).collect()
+            }
+            _ => Vec::new(),
+        };
+        let own = match value {
+            Dynamic::Instance { type_name, .. } => (*type_name).to_owned(),
+            value => format!("builtins.{}", value.type_name()),
+        };
+
+        std::iter::once(own)
+            .chain(bases)
+            .chain(std::iter::once("builtins.object".to_owned()))
+            .collect()
     }
 
     /// A variable of a dynamic type, holding the value at `index`.
@@ -2143,6 +2183,7 @@ pub fn python() -> World {
         "point",
         Dynamic::Instance {
             type_name: "Point",
+            bases: Vec::new(),
             attributes: vec![("x", x), ("y", y)],
         },
     );

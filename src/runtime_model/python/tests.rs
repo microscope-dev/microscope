@@ -78,12 +78,16 @@ fn object_model(layout: &mut PythonLayout) {
         (Field::InterpreterStaticTypesEnd, 64),
         (Field::StaticTypeStateSize, 16),
         (Field::StaticTypeStateDict, 8),
+        (Field::StaticTypeStateType, 0),
+        (Field::InterpreterStaticExtensionTypes, 64),
+        (Field::InterpreterStaticExtensionTypesEnd, 96),
     ];
     for (field, offset) in fields {
         layout.set_field(field, offset);
     }
 
     layout.set_constant(Constant::TypeHeapBit, 9);
+    layout.set_constant(Constant::TypeImmutableBit, 8);
     layout.set_constant(Constant::TypeStaticBuiltinBit, 1);
     layout.set_constant(Constant::TypeTypeSubclassBit, 31);
     layout.set_constant(Constant::TypeManagedDictBit, 4);
@@ -969,7 +973,7 @@ fn reads_in_a_block_read_before_cost_nothing_and_bytes_in_a_block_not_mapped_who
     let layout = layout();
     let mut inspection = InspectionBudget::new(InspectionLimits::default());
     let budget = super::values::Budget::new(&mut inspection);
-    let blocks = objects::Blocks::default();
+    let blocks = crate::runtime_model::StopMemory::default();
     {
         let reader = Reader {
             stop: &memory,

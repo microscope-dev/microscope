@@ -101,6 +101,16 @@ const fn member(field: Field, minor: u32) -> Option<Member> {
         Field::StaticTypeStateSize => ("managed_static_type_state", &[]),
         Field::StaticTypeStateDict if before_13 => ("static_builtin_state", &["tp_dict"]),
         Field::StaticTypeStateDict => ("managed_static_type_state", &["tp_dict"]),
+        Field::StaticTypeStateType if before_13 => ("static_builtin_state", &["type"]),
+        Field::StaticTypeStateType => ("managed_static_type_state", &["type"]),
+        Field::InterpreterStaticExtensionTypes if !before_13 => (
+            "PyInterpreterState",
+            &["types", "for_extensions", "initialized"],
+        ),
+        Field::InterpreterStaticExtensionTypesEnd if !before_13 => (
+            "PyInterpreterState",
+            &["types", "for_extensions", "initialized", END],
+        ),
         Field::TypeGetattro => ("PyTypeObject", &["tp_getattro"]),
         Field::TypeDescrGet => ("PyTypeObject", &["tp_descr_get"]),
         Field::TypeDescrSet => ("PyTypeObject", &["tp_descr_set"]),
@@ -157,14 +167,87 @@ const fn member(field: Field, minor: u32) -> Option<Member> {
         Field::UnicodeAsciiSize => ("PyASCIIObject", &[]),
         Field::UnicodeCompactSize => ("PyCompactUnicodeObject", &[]),
         Field::UnicodeData => ("PyUnicodeObject", &["data"]),
+        Field::DequeLeftBlock => ("dequeobject", &["leftblock"]),
+        Field::DequeLeftIndex => ("dequeobject", &["leftindex"]),
+        Field::DequeMaxlen => ("dequeobject", &["maxlen"]),
+        Field::DequeObjectSize => ("dequeobject", &[]),
+        Field::DequeBlockData => ("BLOCK", &["data"]),
+        Field::DequeBlockRightLink => ("BLOCK", &["rightlink"]),
+        Field::DefaultDictFactory => ("defdictobject", &["default_factory"]),
+        Field::DefaultDictObjectSize => ("defdictobject", &[]),
+        Field::OrderedDictFirst => ("_odictobject", &["od_first"]),
+        Field::OrderedDictObjectSize => ("_odictobject", &[]),
+        Field::OrderedDictNodeKey => ("_odictnode", &["key"]),
+        Field::OrderedDictNodeHash => ("_odictnode", &["hash"]),
+        Field::OrderedDictNodeNext => ("_odictnode", &["next"]),
         // Threads before 3.15 have no base frame, and from 3.13 none
-        // keeps a C frame.
+        // keeps a C frame; 3.12 manages no extension's static types.
         Field::ThreadBaseFrame
         | Field::CframeCurrentFrame
+        | Field::InterpreterStaticExtensionTypes
+        | Field::InterpreterStaticExtensionTypesEnd
         | Field::DictValuesCapacity
         | Field::DictValuesSize
         | Field::DictValuesValid => return None,
+        Field::DateHasTzinfo => ("PyDateTime_Date", &["hastzinfo"]),
+        Field::DateData => ("PyDateTime_Date", &["data"]),
+        Field::DateObjectSize => ("PyDateTime_Date", &[]),
+        Field::TimeData => ("PyDateTime_Time", &["data"]),
+        Field::TimeFold => ("PyDateTime_Time", &["fold"]),
+        Field::TimeTzinfo => ("PyDateTime_Time", &["tzinfo"]),
+        Field::TimeObjectSize => ("PyDateTime_Time", &[]),
+        Field::DateTimeData => ("PyDateTime_DateTime", &["data"]),
+        Field::DateTimeFold => ("PyDateTime_DateTime", &["fold"]),
+        Field::DateTimeTzinfo => ("PyDateTime_DateTime", &["tzinfo"]),
+        Field::DateTimeObjectSize => ("PyDateTime_DateTime", &[]),
+        Field::DeltaDays => ("PyDateTime_Delta", &["days"]),
+        Field::DeltaSeconds => ("PyDateTime_Delta", &["seconds"]),
+        Field::DeltaMicroseconds => ("PyDateTime_Delta", &["microseconds"]),
+        Field::DeltaObjectSize => ("PyDateTime_Delta", &[]),
+        Field::TimeZoneOffset => ("PyDateTime_TimeZone", &["offset"]),
+        Field::TimeZoneName => ("PyDateTime_TimeZone", &["name"]),
+        Field::TimeZoneObjectSize => ("PyDateTime_TimeZone", &[]),
+        Field::DecimalFlags => ("PyDecObject", &["dec", "flags"]),
+        Field::DecimalExponent => ("PyDecObject", &["dec", "exp"]),
+        Field::DecimalDigits => ("PyDecObject", &["dec", "digits"]),
+        Field::DecimalLength => ("PyDecObject", &["dec", "len"]),
+        Field::DecimalData => ("PyDecObject", &["dec", "data"]),
+        Field::DecimalObjectSize => ("PyDecObject", &[]),
     })
+}
+
+/// Whether a field is of a type an extension module defines, whose debug
+/// information is the extension's rather than the runtime's: `datetime`'s,
+/// whose layouts come from its public header, and `decimal.Decimal`'s,
+/// which tests/python/views.rs checks by the values its objects show.
+const fn in_extension(field: Field) -> bool {
+    matches!(
+        field,
+        Field::DateHasTzinfo
+            | Field::DateData
+            | Field::DateObjectSize
+            | Field::TimeData
+            | Field::TimeFold
+            | Field::TimeTzinfo
+            | Field::TimeObjectSize
+            | Field::DateTimeData
+            | Field::DateTimeFold
+            | Field::DateTimeTzinfo
+            | Field::DateTimeObjectSize
+            | Field::DeltaDays
+            | Field::DeltaSeconds
+            | Field::DeltaMicroseconds
+            | Field::DeltaObjectSize
+            | Field::TimeZoneOffset
+            | Field::TimeZoneName
+            | Field::TimeZoneObjectSize
+            | Field::DecimalFlags
+            | Field::DecimalExponent
+            | Field::DecimalDigits
+            | Field::DecimalLength
+            | Field::DecimalData
+            | Field::DecimalObjectSize
+    )
 }
 
 /// The enumerator each constant DWARF describes is, by its C name. The
@@ -334,6 +417,10 @@ fn each_described_interpreter_agrees_with_its_dwarf() {
             let Some(at) = layout.field(field) else {
                 continue;
             };
+
+            if in_extension(field) {
+                continue;
+            }
 
             let member = member(field, minor)
                 .unwrap_or_else(|| panic!("{name}: no C member for {}", field.name()));

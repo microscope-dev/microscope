@@ -321,6 +321,18 @@ impl<M: Machine> Machine for ViewMachine<'_, M> {
         self.base.present(at)
     }
 
+    fn present_stored(&mut self, at: &Self::Place) -> Result<InspectedValue, Stop> {
+        self.base.present_stored(at)
+    }
+
+    fn dynamic_at(&mut self, ty: &str, address: u64) -> Result<Self::Place, Stop> {
+        self.base.dynamic_at(ty, address)
+    }
+
+    fn load_dynamic(&mut self, at: &Self::Place) -> Result<crate::eval::target::Loaded, Stop> {
+        self.base.load_dynamic(at)
+    }
+
     fn present_bytes(&mut self, ty: TypeReference, bytes: &[u8]) -> Result<InspectedValue, Stop> {
         self.base.present_bytes(ty, bytes)
     }
@@ -897,6 +909,10 @@ pub fn present<M: Machine>(
             let place = dynamic_place(pointer, ty, &mut machine)?;
             Presented::value(machine.present(&place)?)
         }
+        BoundShape::Stored => {
+            let this = machine.this.clone();
+            Presented::value(machine.base.present_stored(&this)?)
+        }
         BoundShape::If { .. } | BoundShape::Unmatched { .. } => {
             return Err(internal("`if` and `match` are resolved"));
         }
@@ -906,8 +922,10 @@ pub fn present<M: Machine>(
 
     // Text the view writes `self` as presents the value, which keeps the
     // children its shape gives it.
-    if !matches!(shape, BoundShape::Value(_) | BoundShape::Text { .. })
-        && let Some(text) = self_text(bound, &mut machine)?
+    if !matches!(
+        shape,
+        BoundShape::Value(_) | BoundShape::Text { .. } | BoundShape::Stored
+    ) && let Some(text) = self_text(bound, &mut machine)?
     {
         presented.shape = PresentedShape::Text;
         presented.summary = summary::quoted(&text);
@@ -1402,6 +1420,7 @@ pub fn length<M: Machine>(
                 .ok_or_else(|| refused(NO_LENGTH))
         }
         BoundShape::Record(_) => Err(refused("a record has no length")),
+        BoundShape::Stored => Err(refused(NO_LENGTH)),
         BoundShape::If { .. } | BoundShape::Unmatched { .. } => {
             Err(internal("`if` and `match` are resolved"))
         }

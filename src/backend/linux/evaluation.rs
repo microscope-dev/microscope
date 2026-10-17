@@ -146,6 +146,19 @@ impl fmt::Debug for StopStep {
     }
 }
 
+/// The step from an interpreter's object to an attribute or an item, which
+/// the machine takes by the object's type as it runs.
+pub(super) fn plan_interpreted(step: StepKind<'_>) -> std::result::Result<StopStep, Refusal> {
+    match step {
+        StepKind::Member(name) => Ok(StopStep::Attribute(name.into())),
+        StepKind::Entry => Ok(StopStep::Item),
+        _ => Err(Refusal::new(
+            ErrorKind::Type,
+            "an interpreter's object has attributes and items",
+        )),
+    }
+}
+
 /// Where a value of one module's types is.
 #[derive(Debug, Clone)]
 pub(super) struct StopPlace {
@@ -817,14 +830,7 @@ impl<P: InspectionOps> Scope for Frame<'_, P> {
     }
 
     fn plan_dynamic(&self, step: StepKind<'_>) -> std::result::Result<StopStep, Refusal> {
-        match step {
-            StepKind::Member(name) => Ok(StopStep::Attribute(name.into())),
-            StepKind::Entry => Ok(StopStep::Item),
-            _ => Err(Refusal::new(
-                ErrorKind::Type,
-                "an interpreter's object has attributes and items",
-            )),
-        }
+        plan_interpreted(step)
     }
 
     fn register(&self, name: &str) -> Option<Register> {
@@ -1446,6 +1452,15 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
         let module = self.module(at.module)?;
         let value = self.materialize(module, &at.located)?;
         self.presented(value)
+    }
+
+    fn present_stored(&mut self, at: &Place) -> std::result::Result<InspectedValue, Stop> {
+        match at {
+            Place::Native(_) => self.present(at),
+            Place::Interpreted { runtime, object } => {
+                self.interpreted_present_stored(*runtime, *object)
+            }
+        }
     }
 
     fn present_bytes(
