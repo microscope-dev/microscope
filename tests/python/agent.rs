@@ -941,10 +941,9 @@ async fn exec_retires_a_launch_bootstrap() {
         session.pause().await;
         let breakpoints = session.scenario.snapshot().await.breakpoints;
         assert!(
-            breakpoints[0]
-                .pending_locations
-                .iter()
-                .any(|place| place.reason.contains("need microscope to launch the interpreter")),
+            breakpoints[0].pending_locations.iter().any(|place| place
+                .reason
+                .contains("need microscope to launch the interpreter")),
             "{interpreter}: {breakpoints:?}"
         );
         session.go_on().await;

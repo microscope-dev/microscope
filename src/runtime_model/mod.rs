@@ -19,7 +19,7 @@ pub use agents::{
 pub mod futures;
 mod go;
 mod python;
-pub(crate) use python::BOOTSTRAP_DIRECTORY_PREFIX as PYTHON_BOOTSTRAP_PREFIX;
+pub use python::BOOTSTRAP_DIRECTORY_PREFIX as PYTHON_BOOTSTRAP_PREFIX;
 mod records;
 mod rust;
 pub mod thread_ids;
