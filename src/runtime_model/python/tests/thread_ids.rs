@@ -46,6 +46,19 @@ fn world() -> (Process, u64) {
 }
 
 fn model(process: &Process, runtime: u64) -> super::super::PythonRuntime {
+    model_with(
+        process,
+        runtime,
+        Err("not needed for frames or labels".into()),
+    )
+}
+
+/// A model of `process`'s runtime at `runtime` that knows `types`.
+fn model_with(
+    process: &Process,
+    runtime: u64,
+    types: Result<[crate::ImageAddress; 23], Arc<str>>,
+) -> super::super::PythonRuntime {
     super::super::PythonRuntime {
         free_threaded: false,
         entries: Vec::new(),
@@ -58,7 +71,7 @@ fn model(process: &Process, runtime: u64) -> super::super::PythonRuntime {
             },
             layout: process.layout.clone(),
             code_type: crate::ImageAddress::new(process.code_type),
-            types: Err("not needed for frames or labels".into()),
+            types,
             secret: None,
             code: std::sync::Mutex::new(CodeTable::default()),
         }),
@@ -128,4 +141,41 @@ fn duplicate_host_entries_are_deduplicated_but_excessive_catalogs_are_bounded() 
     assert!(ids.resolve(0).is_err());
     process.memory.threads = (1..=16385).map(ThreadId::new).collect();
     assert!(super::super::threads::ThreadIds::new(&process.memory).is_err());
+}
+
+/// A watched frame is gone only where its thread's whole chain was read
+/// without it: a thread state that cannot be read proves nothing.
+#[test]
+fn a_watched_frame_is_gone_only_where_every_thread_state_is_read() {
+    let mut process = Process::new(layout());
+    let types = process.builtin_types().images();
+    let code = process.code("main", 1, &[(2, 0)]);
+    let other = process.code("other", 1, &[(2, 0)]);
+    let entry = process.entry(0);
+    let frame = process.frame(entry, code, process.instruction(code, 0));
+    let state = process.thread_state(0, frame, 7);
+    let interpreter = process.interpreter(0, 0, state);
+    let runtime = process.runtime(interpreter);
+    process.memory.threads = vec![HOST];
+    process
+        .memory
+        .target_ids
+        .insert(HOST, TargetThreadId::new(7));
+    let runs = |process: &Process, frame: u64, code: u64| {
+        model_with(process, runtime, Ok(types)).interpreted_frame_runs(
+            &process.memory,
+            HOST,
+            VirtualAddress::new(frame),
+            VirtualAddress::new(code),
+        )
+    };
+    assert_eq!(runs(&process, frame, code), Ok(true));
+    assert_eq!(runs(&process, frame, other), Ok(false), "another code");
+    assert_eq!(runs(&process, entry, code), Ok(false), "no such frame");
+
+    process.word(interpreter, Field::InterpreterThreadsHead, 0xdead_0000);
+    assert!(
+        runs(&process, frame, code).is_err(),
+        "an unread thread list"
+    );
 }

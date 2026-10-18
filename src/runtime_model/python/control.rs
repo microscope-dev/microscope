@@ -159,13 +159,18 @@ impl super::Reading {
             .load(self.code_type)
             .ok_or_else(|| Arc::<str>::from("CPython's code type lies outside the process"))?;
         self.read_values(stop, None, |values, table| {
-            let (states, _) = threads::thread_states(&values.reader, values.runtime)?;
+            let (states, gaps) = threads::thread_states(&values.reader, values.runtime)?;
             let identities = threads::ThreadIds::new(stop)?;
             let state = states
                 .iter()
                 .filter(|state| state.frame.is_some())
                 .find(|state| identities.resolve(state.native) == Ok(thread))
-                .ok_or("the stepping thread runs no Python")?;
+                .ok_or_else(|| -> Arc<str> {
+                    gaps.first().map_or_else(
+                        || "the stepping thread runs no Python".into(),
+                        |gap| format!("the stepping thread's state cannot be read: {gap}").into(),
+                    )
+                })?;
             let mut walk = frames::Walk {
                 reader: values.reader,
                 code: table,

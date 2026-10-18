@@ -1125,3 +1125,36 @@ fn a_stack_reference_reads_its_object_and_a_tagged_integer_is_unreadable() {
         ]
     );
 }
+
+impl Types {
+    /// The types' addresses as a model's `Reading` keeps them, at the image
+    /// addresses of a process loaded with no bias.
+    pub(super) fn images(&self) -> [crate::ImageAddress; 23] {
+        [
+            self.none,
+            self.bool,
+            self.int,
+            self.float,
+            self.str,
+            self.bytes,
+            self.list,
+            self.tuple,
+            self.dict,
+            self.set,
+            self.frozenset,
+            self.cell,
+            self.module,
+            self.function,
+            self.builtin,
+            self.coroutine,
+            self.generator,
+            self.code,
+            self.class,
+            self.member,
+            self.wrapper,
+            self.method,
+            self.generic_getattr,
+        ]
+        .map(|address| crate::ImageAddress::new(address.get()))
+    }
+}

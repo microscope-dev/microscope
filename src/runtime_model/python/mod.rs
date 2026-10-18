@@ -1188,7 +1188,7 @@ impl RuntimeModel for PythonRuntime {
             .load(reading.code_type)
             .ok_or_else(|| Arc::<str>::from("CPython's code type lies outside the process"))?;
         reading.read_values(stop, None, |values, table| {
-            let (states, _) = threads::thread_states(&values.reader, values.runtime)?;
+            let (states, gaps) = threads::thread_states(&values.reader, values.runtime)?;
             let identities = threads::ThreadIds::new(stop)?;
             let mut walk = frames::Walk {
                 reader: values.reader,
@@ -1199,14 +1199,19 @@ impl RuntimeModel for PythonRuntime {
                 .iter()
                 .filter(|state| identities.resolve(state.native) == Ok(thread))
             {
-                let (frames, _) = walk.thread(state);
+                let (frames, end) = walk.thread(state);
                 if frames.iter().any(|running| running.frame == frame) {
                     let record = values.reader.record(frame, Field::FrameSize)?;
                     let (running, _) = walk.code_of(&record)?;
                     return Ok(running == code);
                 }
+                // The frame may be past where the walk ended.
+                if let Some(end) = end {
+                    return Err(end);
+                }
             }
-            Ok(false)
+            // The frame may be in a thread state that could not be read.
+            gaps.first().map_or(Ok(false), |gap| Err(Arc::clone(gap)))
         })
     }
 

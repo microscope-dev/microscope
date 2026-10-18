@@ -1053,6 +1053,19 @@ fn thread_states_lists_every_thread_of_every_interpreter() {
 }
 
 #[test]
+fn an_unreadable_interpreter_is_a_gap_and_keeps_the_interpreters_before_it() {
+    let mut process = Process::new(layout());
+    let thread = process.thread_state(0, 0x4000, 100);
+    let unmapped = 0xdead_0000;
+    let interpreter = process.interpreter(7, unmapped, thread);
+    let runtime = process.runtime(interpreter);
+
+    let (states, gaps) = states_of(&process, runtime);
+    assert_eq!(states, [(100, 7, Some(0x4000))]);
+    assert_eq!(gaps.len(), 1, "the gaps: {gaps:?}");
+}
+
+#[test]
 fn an_interpreter_list_that_loops_is_a_gap_and_keeps_the_interpreters_before_it() {
     let mut process = Process::new(layout());
     let thread = process.thread_state(0, 0x4000, 100);

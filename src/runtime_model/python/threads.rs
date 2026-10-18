@@ -56,16 +56,28 @@ pub(super) fn thread_states(
             break;
         }
 
-        let id = reader
-            .field_word(interpreter, Field::InterpreterId)?
-            .cast_signed();
+        // An interpreter that cannot be read ends the list, but not the
+        // threads of those before it.
+        let id = match reader.field_word(interpreter, Field::InterpreterId) {
+            Ok(id) => id.cast_signed(),
+            Err(problem) => {
+                gaps.push(problem);
+                break;
+            }
+        };
         if let Err(problem) = interpreter_threads(reader, interpreter, id, &mut states) {
             gaps.push(problem);
         }
 
-        next = Some(reader.field_word(interpreter, Field::InterpreterNext)?)
-            .filter(|address| *address != 0)
-            .map(VirtualAddress::new);
+        next = match reader.field_word(interpreter, Field::InterpreterNext) {
+            Ok(next) => Some(next)
+                .filter(|address| *address != 0)
+                .map(VirtualAddress::new),
+            Err(problem) => {
+                gaps.push(problem);
+                break;
+            }
+        };
     }
 
     Ok((states, gaps))
