@@ -648,9 +648,12 @@ impl Processor {
         state
             .mapped
             .retain(|mapped| mapped.end <= mmap.start || mapped.start >= end);
-        state
-            .jit
-            .mapped(mmap.start, end, perf::jit::is_anonymous_code(mmap));
+        state.jit.mapped(
+            mmap.start,
+            end,
+            perf::jit::is_anonymous_code(mmap),
+            mmap.time,
+        );
         let Some((image, bias)) = image else {
             return;
         };
@@ -961,7 +964,9 @@ impl Processor {
                 .iter()
                 .any(|mapped| (mapped.start..mapped.end).contains(&address))
         });
-        let refreshed = process.jit.refresh(sample.pid.get(), unmapped, descriptors);
+        let refreshed = process
+            .jit
+            .refresh(sample.pid.get(), sample.time, unmapped, descriptors);
         if let Some(problem) = process.jit.take_problem() {
             self.builder.setting(
                 &format!("perf map {}", sample.pid),

@@ -1003,7 +1003,8 @@ fn stack_copy(
 /// How far behind a drain records are processed.
 const WATERMARK_DELAY: u64 = 20_000_000;
 
-fn monotonic() -> u64 {
+/// Now, by `CLOCK_MONOTONIC`, which times what perf records.
+pub(super) fn monotonic() -> u64 {
     nix::time::clock_gettime(nix::time::ClockId::CLOCK_MONOTONIC).map_or(0, |time| {
         u64::try_from(time.tv_sec()).unwrap_or(0) * 1_000_000_000
             + u64::try_from(time.tv_nsec()).unwrap_or(0)
