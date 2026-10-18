@@ -348,10 +348,13 @@ impl Decode<'_, '_> {
                     self.punct("}");
                 }
 
-                if length >= 33 {
+                // strace prints the byte after slice_ctrl once the length
+                // covers slice_ctrl, as zero when the length stops short of
+                // it, so a 32-byte registration prints it too.
+                if length >= 32 {
                     self.punct(", ");
                     self.field("__reserved");
-                    self.number(b.u8(32)?);
+                    self.number(if length >= 33 { b.u8(32)? } else { 0 });
                 }
 
                 if length > 33 {
