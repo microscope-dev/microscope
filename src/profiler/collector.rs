@@ -56,6 +56,7 @@ impl std::fmt::Display for ProbeSelection {
 #[derive(Debug, Clone)]
 pub struct Found {
     pub module: u32,
+    pub path: Arc<str>,
     pub bias: crate::LoadBias,
     pub table: Arc<Table>,
 }
@@ -81,12 +82,17 @@ struct Ring {
 struct Instance {
     control: u64,
     module: u32,
+    path: Arc<str>,
 
     /// Whether the program may define sites as it runs (ABI 2).
     defines: bool,
 
     /// How many of its run-time sites have been read.
     defined: u32,
+
+    /// Whether it was said that the program defined every run-time site
+    /// its table holds, so that the sites it defines after are not.
+    full: bool,
 
     /// Whether its control block says microscope listens, which it does
     /// once any site is on.
@@ -228,8 +234,10 @@ impl Collector {
         let mut instance = Instance {
             control,
             module: found.module,
+            path: Arc::clone(&found.path),
             defines: found.table.abi >= 2,
             defined: 0,
+            full: false,
             on: false,
             sites: HashMap::default(),
             states: Vec::new(),
@@ -302,6 +310,17 @@ impl Collector {
                 return;
             }
         };
+
+        let most = u32::try_from(abi::MOST_RUNTIME_SITES).unwrap_or(u32::MAX);
+        if count >= most && !self.instances[index].full {
+            self.instances[index].full = true;
+            let text = format!(
+                "{}: the program defined all {most} of its run-time sites, so the sites \
+                 it defines after them record nothing",
+                self.instances[index].path
+            );
+            processor.probe_problem(&text);
+        }
 
         let pid = self.pid;
         let text = |address: u64, length: u32| {
@@ -663,8 +682,10 @@ mod tests {
         collector.instances.push(Instance {
             control: 0x1000,
             module: 0,
+            path: "probes".into(),
             defines: false,
             defined: 0,
+            full: false,
             on: true,
             sites: HashMap::default(),
             states: Vec::new(),

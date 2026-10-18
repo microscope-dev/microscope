@@ -229,7 +229,10 @@ A program can also define sites as it runs, as a language that names its
 work at run time does. Recording every site, such a site is on from its
 definition. Recording sites by name, it is switched on, by the same names,
 when the recording next reads the program, so its first uses can go
-unrecorded. A program that defines more than 4096 sites gets no more.
+unrecorded. A program that defines more than 4096 sites gets no more, and
+the profile reports it. Each distinct name is a separate site, so give a
+value that changes, such as a request's id, as a label's value rather than
+in a name.
 
 ### Instrument a Python program
 

@@ -660,6 +660,7 @@ impl Processor {
         {
             let found = Found {
                 module: self.images[image].module,
+                path: String::from_utf8_lossy(mmap.path).into(),
                 bias,
                 table: Arc::clone(table),
             };
@@ -1282,6 +1283,12 @@ impl Processor {
     pub fn probe_site(&mut self, module: u32, site: &SiteRecord) -> u32 {
         self.builder
             .site(&site.name, &site.file, site.line, module, site.kind)
+    }
+
+    /// Says why some of the program's instrumentation is not recorded.
+    pub fn probe_problem(&mut self, text: &str) {
+        self.builder
+            .marker(self.latest.cast_signed(), MarkerKind::Probes, text);
     }
 
     /// The row of a thread whose ring holds instrumentation.

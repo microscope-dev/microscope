@@ -454,6 +454,16 @@ fn the_python_package_records_what_the_program_marks() {
         .filter_map(|marker| marker.text)
         .collect::<Vec<_>>();
     assert_eq!(said, ["round 0", "round 1", "round 2"]);
+
+    // The sites past the table's last record nothing, and the profile
+    // says so.
+    let problems = profile.probe_problems();
+    assert!(
+        problems
+            .iter()
+            .any(|(_, problem)| problem.contains("all 4096 of its run-time sites")),
+        "{problems:?}"
+    );
 }
 
 /// Without its native library the package still imports, and every mark

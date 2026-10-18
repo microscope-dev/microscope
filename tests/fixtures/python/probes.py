@@ -1,6 +1,7 @@
 """A program instrumented with microscope's Python package: it waits until
 microscope listens, then marks its work every way the package can, and ends
-by timing the calls of its own module.
+by timing the calls of its own module, then defines more sites than the
+library holds.
 """
 import os
 import sys
@@ -66,4 +67,9 @@ other.work()  # Not traced, so off where it begins.
 traced.work()  # Traced, though its code equals the other's.
 microscope.trace_calls('elsewhere')
 other.work()  # Traced from now on.
+
+# A name made anew for each use is a site of its own, until every site the
+# library's table holds is taken.
+for number in range(4100):
+    microscope.label(f'request {number}', number)
 print('PROBES DONE', flush=True)
