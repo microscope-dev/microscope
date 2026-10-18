@@ -782,7 +782,12 @@ impl<P: LinuxTraceOps> Controller<P> {
                     &mut installation,
                     generation,
                     AgentRetirementProof::Acknowledged,
-                )?;
+                )
+                .map_err(|error| match failure {
+                    // What the agent said is why the configuration failed.
+                    Some(reason) => Arc::from(format!("{reason}; {error}")),
+                    None => error,
+                })?;
             }
             installation.deadline = None;
             installation.expired = false;
