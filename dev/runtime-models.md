@@ -746,7 +746,10 @@ read at their distance from it.
 **Code and lines.** Each frame's code object is decoded once per runtime into
 `code::CodeTable`: its qualified name, file, first line, and line table. The
 table survives stops, so each row is proved again where it is used: the object
-must still be a code object with the same identity. `linetable.rs` decodes
+must still be a code object with the same identity. A frame the profiler's
+walker read in the kernel carries the object's qualified-name and line-table
+pointers and first line, which its row must match: an object put in a freed
+one's place, as `exec` makes, has a line table of its own. `linetable.rs` decodes
 `co_linetable` to the line of the frame's instruction. A free-threaded 3.14+
 frame may run a thread-local copy of the bytecode, which `tlbc_index` selects.
 

@@ -232,6 +232,7 @@ __noinline int py_walk(const struct py_layout *layout, struct py_stack *stack, u
 		out->pad = 0;
 		out->code = 0;
 		out->qualname = 0;
+		out->linetable = 0;
 		out->first_line = 0;
 		out->offset = PY_NO_OFFSET;
 
@@ -239,6 +240,7 @@ __noinline int py_walk(const struct py_layout *layout, struct py_stack *stack, u
 		if (owner != layout->owner_entry) {
 			u64 code = py_code(layout, executable);
 			if (!code || py_word(code + layout->code_qualname, &out->qualname) ||
+			    py_word(code + layout->code_linetable, &out->linetable) ||
 			    py_int(code + layout->code_firstlineno, &out->first_line)) {
 				header->end = PY_END_UNREADABLE;
 				break;

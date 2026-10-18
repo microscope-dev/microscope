@@ -32,7 +32,9 @@ use crate::debug_info::DebugInfo;
 use crate::image::python::PythonLayout;
 use crate::model::{Pid, Tid};
 use crate::runtime_model::thread_ids::ThreadIds;
-use crate::runtime_model::{self, InterpretedFrame, RuntimeImage, RuntimeModel, SampledFrame};
+use crate::runtime_model::{
+    self, InterpretedFrame, RuntimeImage, RuntimeModel, SampledCode, SampledFrame,
+};
 use crate::{LoadBias, LoadedModule, VirtualAddress};
 
 /// How long past a record of frames the drain may still bring its sample:
@@ -345,7 +347,11 @@ fn sampled_frames(stack: &PyStack<'_>) -> Vec<SampledFrame> {
         .iter()
         .map(|frame| SampledFrame {
             code: VirtualAddress::new(frame.code),
-            proof: (frame.qualname, frame.first_line),
+            proof: SampledCode {
+                qualname: frame.qualname,
+                linetable: frame.linetable,
+                first_line: frame.first_line,
+            },
             offset: (frame.offset != NO_OFFSET).then_some(i64::from(frame.offset)),
             owner: frame.owner,
         })

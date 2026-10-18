@@ -15,6 +15,7 @@ use super::linetable;
 use super::objects::{Problem, Reader, Record, malformed};
 use crate::VirtualAddress;
 use crate::image::python::{Constant, Field};
+use crate::runtime_model::SampledCode;
 
 crate::model::id_type!(CodeId, "A code object's row in one process's code table.");
 crate::model::id_type!(NameId, "A string in one process's code table.");
@@ -218,11 +219,13 @@ impl CodeTable {
         &self.rows[id.index()]
     }
 
-    /// Whether the row `id` is of the code object whose qualified-name
-    /// pointer and first line were `proof` when they were read.
-    pub(super) fn proves(&self, id: CodeId, (qualname, first_line): (u64, i32)) -> bool {
+    /// Whether the row `id` is of the code object a walker in the kernel
+    /// read as `sampled`.
+    pub(super) fn proves(&self, id: CodeId, sampled: SampledCode) -> bool {
         let proof = self.row(id).proof;
-        proof.qualname == qualname && proof.first_line == first_line
+        proof.qualname == sampled.qualname
+            && proof.linetable == sampled.linetable
+            && proof.first_line == sampled.first_line
     }
 
     /// The locals of the code object in row `id`, in the order its frames

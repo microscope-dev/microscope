@@ -310,6 +310,7 @@ struct py_layout {
 	u32 frame_tlbc_index;
 	u32 code_qualname;
 	u32 code_firstlineno;
+	u32 code_linetable;
 	u32 code_code_adaptive;
 	// In a free-threaded build, a code object's copies of its bytecode:
 	// their array, its size, and its entries.
@@ -327,7 +328,6 @@ struct py_layout {
 	u32 interp_next;
 	u32 interp_threads_head;
 	u32 thread_next;
-	u32 pad;
 	// Where the process keeps _PyRuntime.
 	u64 runtime;
 	// The device and inode of the process's pid namespace, whose ids its
@@ -379,12 +379,13 @@ enum py_gil {
 // Where an instruction offset could not be read.
 #define PY_NO_OFFSET ((s32)0x80000000)
 
-// One interpreter frame. The code object's qualified-name pointer and
-// first line prove, when microscope reads it later, that it is the object
-// the frame ran.
+// One interpreter frame. The code object's qualified-name and line-table
+// pointers and first line prove, when microscope reads it later, that it is
+// the object the frame ran.
 struct py_frame {
 	u64 code;
 	u64 qualname;
+	u64 linetable;
 	// The byte offset of the frame's instruction from the start of the
 	// bytecode it runs, or PY_NO_OFFSET.
 	s32 offset;
