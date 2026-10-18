@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { firstBreakpointPlace, knownBreakpointPlaces } from "../breakpoints";
+import { firstBreakpointPlace, knownBreakpointPlaces, PENDING } from "../breakpoints";
 import { useRequest } from "../data";
 import { controls } from "../model";
 import type { Breakpoint, WatchAccess, Watchpoint } from "../protocol";
@@ -70,7 +70,8 @@ export function placeLabel(breakpoint: Breakpoint): string {
     const more = count > 1 ? ` +${count - 1}` : "";
     return `${fileName(place.path)}:${place.line}${more}`;
   }
-  return breakpoint.location;
+  const asked = /^(.*\/)?([^/]+:\d+)$/.exec(breakpoint.location);
+  return asked?.[2] ?? breakpoint.location;
 }
 
 /** A breakpoint's active locations, or why it remains pending. */
@@ -81,7 +82,7 @@ export function breakpointTitle(breakpoint: Breakpoint): string {
   if (breakpoint.pending) {
     return [places, breakpoint.pending.message].filter(Boolean).join("\n");
   }
-  return places || `${breakpoint.location}: no loaded code has it yet`;
+  return places || `${breakpoint.location}: ${PENDING}`;
 }
 
 function Row({
@@ -152,7 +153,11 @@ function Row({
           </>
         )}
       </div>
-      {breakpoint.pending && <div className="row sub">{breakpoint.pending.message}</div>}
+      {breakpoint.pending ? (
+        <div className="row sub">{breakpoint.pending.message}</div>
+      ) : (
+        pending && <div className="row sub">{PENDING}</div>
+      )}
       {detail && <div className="row sub">{detail}</div>}
       {error && <div className="row sub error">{error}</div>}
     </li>

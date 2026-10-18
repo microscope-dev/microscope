@@ -103,3 +103,39 @@ test.describe("a Python program's own files", () => {
     await expect(source).toContainText("def stocked(");
   });
 });
+
+test.describe("a breakpoint in a script named relatively", () => {
+  const uat = path.join(root, "tests", "fixtures", "python", "uat.py");
+  const area = readFileSync(uat, "utf8")
+    .split("\n")
+    .findIndex((line) => line.endsWith("# AREA_LINE"));
+  // As one types it, from the repository: Python records the script under
+  // the working directory with its `./`.
+  test.use({ program: [python, "--", "./tests/fixtures/python/uat.py"] });
+
+  test("waits for its code, then is marked where it stops", async ({ page, microscope }) => {
+    await join(page, microscope.link);
+    const source = page.getByTestId("source");
+    await expect(source).toHaveAttribute("data-path", uat);
+    await source.locator(".cm-line", { hasText: "result = side * side" }).click();
+    await page.keyboard.press("F9");
+
+    // No code is loaded at the line yet, and the page says so.
+    const breakpoints = page.getByTestId("breakpoints");
+    await expect(breakpoints).toContainText(`uat.py:${area + 1}`);
+    await expect(breakpoints).not.toContainText(root);
+    await expect(breakpoints).toContainText("pending until a module with its code loads");
+    const waiting = page.locator(".cm-breakpoints .dot.pending");
+    await expect(waiting).toHaveCount(1);
+    await expect(waiting).toHaveAttribute("title", /pending until a module with its code loads/);
+
+    await page.keyboard.press("F5");
+    await expect(page.locator(".cm-frame-line")).toContainText("result = side * side");
+    // The stop is in the file the breakpoint was set in, which shows it set.
+    await expect(page.locator(".file-tab")).toHaveCount(1);
+    await expect(source).toHaveAttribute("data-path", uat);
+    await expect(page.locator(".cm-breakpoints .dot.plain")).toHaveCount(1);
+    await expect(page.locator(".cm-breakpoints .dot.pending")).toHaveCount(0);
+    await expect(breakpoints).not.toContainText("pending");
+  });
+});

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { breakpointAt, firstBreakpointPlace, knownBreakpointPlaces } from "../src/breakpoints";
+import {
+  breakpointAt,
+  firstBreakpointPlace,
+  knownBreakpointPlaces,
+  PENDING,
+} from "../src/breakpoints";
 import type { Breakpoint, Place } from "../src/protocol";
 import { breakpointTitle, placeLabel } from "../src/ui/Breakpoints";
 import { breakpointLines } from "../src/ui/CodeArea";
@@ -41,7 +46,7 @@ describe("runtime breakpoint arming", () => {
   it("shows the arming reason and source while no location is ready", () => {
     const breakpoint = waiting();
     expect(breakpointTitle(breakpoint)).toContain(reason);
-    expect(breakpointTitle(breakpoint)).not.toContain("no loaded code");
+    expect(breakpointTitle(breakpoint)).not.toContain(PENDING);
     expect(placeLabel(breakpoint)).toBe("app.py:3");
   });
 
@@ -60,7 +65,8 @@ describe("runtime breakpoint arming", () => {
   it("accepts an older server without arming metadata and a recovered breakpoint", () => {
     const breakpoint = waiting();
     delete breakpoint.pending;
-    expect(breakpointTitle(breakpoint)).toContain("no loaded code has it yet");
+    expect(breakpointTitle(breakpoint)).toBe(`/src/app.py:3: ${PENDING}`);
+    expect(placeLabel(breakpoint)).toBe("app.py:3");
     expect(breakpointAt([breakpoint], "/src/app.py", 3)?.id).toBe(1);
     expect(breakpointAt([breakpoint], "/src/app.py", 4)).toBeUndefined();
     breakpoint.places = [source];

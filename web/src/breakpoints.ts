@@ -1,6 +1,9 @@
 // Resolved intent includes ready placements and runtime locations awaiting arming.
 import type { Breakpoint, Place } from "./protocol";
 
+/** What a breakpoint no loaded code has waits for, as the CLI says it. */
+export const PENDING = "pending until a module with its code loads";
+
 export function knownBreakpointPlaces(breakpoint: Breakpoint): readonly Place[] {
   const pending = breakpoint.pending?.places;
   return pending?.length

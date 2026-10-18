@@ -369,3 +369,35 @@ async fn a_python_programs_own_files_are_listed_and_read_before_it_runs() {
 /// A breakpoint set in the file the page opens before a Python program runs,
 /// at the path it opened, is in that file once the program stops there: the
 /// stop, the breakpoint, and the file the page opened name one path.
+#[tokio::test]
+async fn a_breakpoint_set_in_the_opened_script_is_in_it_at_the_stop() {
+    let interpreter = python::interpreter("3.14");
+    let web = Web::start(
+        "python-gutter",
+        &[
+            interpreter.to_str().expect("a UTF-8 path"),
+            "--",
+            "./tests/fixtures/python/uat.py",
+        ],
+    );
+    let mut tab = web.control("tab").await;
+    tab.state("the program loaded", |state| state["session"].is_string())
+        .await;
+    let sources = tab.ok("sources", json!(null)).await;
+    let opened = sources["entry"]["path"].clone();
+    let area = line("# AREA_LINE");
+    let location = format!("{}:{area}", opened.as_str().expect("a path"));
+    tab.ok("addBreakpoint", json!({"location": location})).await;
+
+    tab.ok("continue", json!({})).await;
+    let hit = tab.inferior("stopped").await;
+    assert_eq!(hit["inferior"]["place"]["path"], opened, "{hit}");
+    let breakpoint = &hit["breakpoints"][0];
+    let places = breakpoint["places"].as_array().expect("places");
+    assert!(
+        places
+            .iter()
+            .any(|place| place["path"] == opened && place["line"] == area),
+        "{breakpoint}"
+    );
+}

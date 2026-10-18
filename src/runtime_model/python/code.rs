@@ -151,7 +151,7 @@ impl CodeTable {
         };
 
         let qualname = reader.string(pointer(Field::CodeQualname)?)?;
-        let file = reader.string(pointer(Field::CodeFilename)?)?;
+        let file = source_path(reader.string(pointer(Field::CodeFilename)?)?);
         let lines = reader.bytes_object(pointer(Field::CodeLinetable)?)?;
         let names = reader.tuple(pointer(Field::CodeLocalsplusnames)?)?;
         let kinds = reader.bytes_object(pointer(Field::CodeLocalspluskinds)?)?;
@@ -310,6 +310,25 @@ fn proof(header: &Record<'_>) -> Result<CodeProof, Problem> {
     })
 }
 
+/// A code object's file name as the path it names: CPython makes a script
+/// named relatively absolute by joining it to the working directory, so
+/// `python ./app.py` compiles `/work/./app.py`. Dropping `.` and repeated
+/// separators names the same file; `..` is kept, since through a link it
+/// names another. Names that are no absolute path, such as `<string>`,
+/// are kept as they are.
+fn source_path(file: Arc<str>) -> Arc<str> {
+    let path = std::path::Path::new(&*file);
+    if !path.is_absolute() {
+        return file;
+    }
+
+    let normal = path.components().collect::<std::path::PathBuf>();
+    match normal.to_str() {
+        Some(normal) if normal != &*file => Arc::from(normal),
+        _ => file,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,5 +357,21 @@ mod tests {
             lines: Span::since(0, 4).expect("a span"),
         });
         table.check_invariants();
+    }
+
+    /// A script named relatively compiles with a `.` in its path, and its
+    /// frames name the file without it, as breakpoints and listings do.
+    #[test]
+    fn a_code_objects_path_drops_its_current_directories() {
+        for (file, path) in [
+            ("/work/./app.py", "/work/app.py"),
+            ("/work//pkg/./mod.py", "/work/pkg/mod.py"),
+            ("/work/../other/app.py", "/work/../other/app.py"),
+            ("/work/app.py", "/work/app.py"),
+            ("<string>", "<string>"),
+            ("./relative.py", "./relative.py"),
+        ] {
+            assert_eq!(&*super::source_path(Arc::from(file)), path, "{file}");
+        }
     }
 }

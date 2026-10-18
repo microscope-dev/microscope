@@ -24,6 +24,7 @@ import {
   WidgetType,
 } from "@codemirror/view";
 import { useEffect, useRef } from "react";
+import { PENDING } from "../../breakpoints";
 import { expressionAt } from "../../expressions";
 import { highlighting, language } from "./languages";
 
@@ -105,6 +106,9 @@ class BreakpointMarker extends GutterMarker {
   override toDOM(): Node {
     const dot = document.createElement("span");
     dot.className = `dot ${this.kind}`;
+    if (this.kind === "pending") {
+      dot.title = PENDING;
+    }
     return dot;
   }
 }

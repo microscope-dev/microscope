@@ -333,7 +333,9 @@ another. `py::run` is still a native function in a `py` namespace.
 
 Python code loads when the program imports it, so a Python breakpoint stays
 pending until the interpreter has loaded microscope's agent and armed it. Its
-pending reason says what it is waiting for. Remote debugging that was turned
+pending reason says what it is waiting for. In the browser, a pending
+breakpoint is a hollow dot until then, and a filled one once it is armed.
+Remote debugging that was turned
 off in the interpreter (`PYTHON_DISABLE_REMOTE_DEBUG` or
 `-X disable-remote-debug`) is one such reason; stacks and values still work.
 Python 3.12 and 3.13 cannot be asked to run the agent. When microscope
