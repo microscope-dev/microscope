@@ -669,7 +669,9 @@ mod bpf {
         // The recording runs in a process of its own, which the test cannot
         // watch for samples as it records: it runs for `running`.
         let scratch = crate::support::ScratchDir::new("python-bpf");
-        let output = scratch.path().join(format!("{interpreter}-{fixture}.usprof"));
+        let output = scratch
+            .path()
+            .join(format!("{interpreter}-{fixture}.usprof"));
         let mut child = Command::new(launcher())
             .arg(env!("CARGO_BIN_EXE_microscope"))
             .arg("record")
