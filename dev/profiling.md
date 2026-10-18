@@ -91,6 +91,9 @@ covers becomes a module of its own (`src/debug_info/perf_map.rs`,
 `src/profiler/jit.rs`). The map is append-only and written while it is read,
 so the recorder reads on from where it stopped, and only when a sample lands in
 anonymous code no function it named covers; the sample is then unwound again.
+The process writes the map, so one read takes at most 16 MiB of it, and the
+next goes on from there, and at most 64 MiB of its functions' code; a function
+past that has no code, so no frames, and the `perf map PID` setting says so.
 A read that finds nothing new, of the map or of the registered objects below,
 is not made again for 20 ms of the samples' time unless the process maps
 something: a foreign-function library's callbacks run in anonymous code no

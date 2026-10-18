@@ -24,6 +24,14 @@ use crate::debug_info::perf_map::{self, Jitted};
 /// entry, so a frame further in than this has none.
 const CODE_READ: u64 = 64 * 1024;
 
+/// The most of the map read at once: it is read on from there the next
+/// time.
+const MAP_READ: u64 = 16 << 20;
+
+/// The most bytes of functions' code read at once, past which a function
+/// has none, and so no frames.
+const CODES_READ: u64 = 64 << 20;
+
 /// The most bytes of registered objects read at once.
 const OBJECTS_READ: u64 = 64 << 20;
 
@@ -334,7 +342,13 @@ impl Jit {
     /// Reads the lines written since the last read, with each new
     /// function's code, and returns whether there were any.
     fn read_on(&mut self, pid: u32) -> bool {
-        let (path, bytes) = match perf::jit::read_map(pid, self.read) {
+        self.read_on_within(pid, MAP_READ, CODES_READ)
+    }
+
+    /// Reads on as [`Self::read_on`] does, at most `limit` bytes of the
+    /// map and `codes` bytes of its functions' code.
+    fn read_on_within(&mut self, pid: u32, limit: u64, mut codes: u64) -> bool {
+        let (path, bytes) = match perf::jit::read_map(pid, self.read, limit) {
             Ok(read) => read,
             Err(MapError::Absent) => return false,
             Err(problem) => {
@@ -346,14 +360,25 @@ impl Jit {
         self.path = Some(path);
         let read = super::session::monotonic();
         let (entries, used) = perf_map::parse(&bytes);
+        if used == 0 && bytes.len() as u64 == limit {
+            self.problem = Some(format!("a line of it is longer than {limit} bytes"));
+        }
+
         self.read += used as u64;
         let any = !entries.is_empty();
+        let mut unread = 0_usize;
         for entry in entries {
             let length = (entry.end - entry.start).min(CODE_READ);
-            let mut code = vec![0; usize::try_from(length).unwrap_or(0)];
-            let code = perf::read_memory(pid, entry.start, &mut code)
-                .ok()
-                .map(|read| Arc::from(&code[..read.min(code.len())]));
+            let code = if length <= codes {
+                codes -= length;
+                let mut code = vec![0; usize::try_from(length).unwrap_or(0)];
+                perf::read_memory(pid, entry.start, &mut code)
+                    .ok()
+                    .map(|read| Arc::from(&code[..read.min(code.len())]))
+            } else {
+                unread += 1;
+                None
+            };
             let overlapped: Vec<u64> = self
                 .functions
                 .range(..entry.end)
@@ -378,6 +403,12 @@ impl Jit {
                     read,
                 },
             );
+        }
+
+        if unread > 0 {
+            self.problem.get_or_insert_with(|| {
+                format!("the code of {unread} of its functions was past what one read takes")
+            });
         }
 
         any
@@ -523,6 +554,54 @@ mod tests {
         // A mapping over its code: what is there now is made again.
         jit.mapped(0x7000_0000, 0x7000_2000, true, 0);
         assert_eq!(refresh(&mut jit, code, &|| vec![at]).len(), 1);
+    }
+
+    /// A read takes at most so much of the map, and the next read goes on
+    /// from there; and at most so much of its functions' code, past which a
+    /// function has none. A line longer than a read takes is a problem.
+    #[test]
+    fn a_read_of_the_map_is_bounded() {
+        struct Removed(String);
+        impl Drop for Removed {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        static CODE: [u8; 32] = [0xcc; 32];
+        let pid = std::process::id();
+        let path = format!("/tmp/perf-{pid}.map");
+        let start = CODE.as_ptr() as u64;
+        let map = format!("{start:x} 10 first\n{:x} 10 second\n", start + 0x10);
+        std::fs::write(&path, &map).expect("write the map");
+        let _removed = Removed(path);
+        let first = map.find('\n').expect("a line") as u64 + 1;
+
+        let mut jit = Jit::default();
+        assert!(jit.read_on_within(pid, first + 4, CODES_READ));
+        assert_eq!(jit.functions.len(), 1);
+        assert_eq!(jit.read, first);
+        assert!(jit.read_on_within(pid, MAP_READ, CODES_READ));
+        assert_eq!(jit.functions.len(), 2);
+        assert!(jit.take_problem().is_none());
+
+        let mut jit = Jit::default();
+        assert!(jit.read_on_within(pid, MAP_READ, 0x10));
+        let codes: Vec<bool> = jit
+            .functions
+            .values()
+            .map(|named| named.function.code.is_some())
+            .collect();
+        assert_eq!(codes, [true, false]);
+        let problem = jit.take_problem().expect("a problem");
+        assert!(
+            problem.contains("the code of 1 of its functions"),
+            "{problem}"
+        );
+
+        let mut jit = Jit::default();
+        assert!(!jit.read_on_within(pid, 4, CODES_READ));
+        let problem = jit.take_problem().expect("a problem");
+        assert!(problem.contains("longer than 4 bytes"), "{problem}");
     }
 
     /// A registered object that places no code is not a module, and the
