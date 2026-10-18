@@ -24,7 +24,7 @@ use crate::{
 
 use super::activation::TaskStack;
 use super::frames::{RootOrigin, StackRoot};
-use super::memory::read_logical_memory;
+use super::memory::read_logical_block;
 use super::native::InspectionOps;
 use super::signals::Signal;
 use super::{
@@ -169,7 +169,7 @@ impl<P: InspectionOps> RuntimeStop for ProcessStop<'_, P> {
             usage.set(counted);
         }
 
-        match read_logical_memory(
+        match read_logical_block(
             self.ptrace,
             self.reader,
             self.breakpoints,
