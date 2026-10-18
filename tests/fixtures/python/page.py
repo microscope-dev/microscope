@@ -30,7 +30,8 @@ class Shelf:
 
 @contextmanager
 def stocked():
-    shelf = Shelf("north")
+    aisle = "north    end"
+    shelf = Shelf(aisle)
     shelf.add(Item("bolt", 0.25, 120, ["metal", "small"]))  # STOCK_LINE
     shelf.add(Item("nut", 0.10, 40))
     shelf.add(Item("gear", 4.50, 7, ["metal"]))

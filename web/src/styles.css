@@ -1654,6 +1654,8 @@ textarea.input {
   font: inherit;
   text-align: left;
   text-overflow: ellipsis;
+  /* A value's spaces are part of it, and it stays on one line. */
+  white-space: pre;
 }
 
 .value-text.editable {
