@@ -752,6 +752,52 @@ mod bpf {
         );
     }
 
+    /// A program that replaces itself with another interpreter is read by
+    /// the new one's modules: the spinners' samples of the program it
+    /// runs hold their Python frames by line.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
+    fn a_program_an_exec_replaces_is_read_by_its_own_interpreter() {
+        let lines = lines();
+        let scratch = crate::support::ScratchDir::new("python-bpf-exec");
+        let output = scratch.path().join("exec.usprof");
+        let mut child = Command::new(launcher())
+            .arg(env!("CARGO_BIN_EXE_microscope"))
+            .args(["record", "--python", "bpf", "--output"])
+            .arg(&output)
+            .arg("--")
+            .arg(python::interpreter("3.12"))
+            .args(["-I", "-B"])
+            .arg(python::fixture("exec_profiled.py"))
+            .arg(python::interpreter("3.14"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("run microscope");
+        std::thread::sleep(Duration::from_secs(3));
+        child
+            .stdin
+            .take()
+            .expect("its input")
+            .write_all(b"\n")
+            .expect("release the program");
+        let finished = child.wait_with_output().expect("microscope finishes");
+        assert!(
+            finished.status.success(),
+            "{}",
+            String::from_utf8_lossy(&finished.stderr)
+        );
+        let profile = Profile::read(&output).expect("read the profile").profile;
+        let python = paths(&profile, Source::Samples, Look::Python);
+        let spinning: u64 = python
+            .iter()
+            .filter(|(path, _)| spins(path, &lines))
+            .map(|(_, weight)| weight)
+            .sum();
+        assert!(spinning > 0, "no sample through work: {python:#?}");
+    }
+
     /// Each CPU sample of a spinner holds its Python frames by line,
     /// spliced before the activations of the interpreter's loop that run
     /// them: the Python look is `spin` calling `work`, with no frame of the

@@ -175,6 +175,18 @@ impl Jit {
         }
     }
 
+    /// Forgets all the process's code, which a new program replaced. The
+    /// map is the same file, whose pid the new program keeps, and the new
+    /// program's lines follow the old one's, so it is read on from where
+    /// it was.
+    pub fn exec(&mut self) {
+        *self = Self {
+            read: self.read,
+            path: self.path.take(),
+            ..Self::default()
+        };
+    }
+
     /// Whether the anonymous range that holds `address`, if any, needs its
     /// module made again: the map named functions in it since, or none
     /// covers `address`, so the map may have more.
@@ -484,6 +496,26 @@ mod tests {
                 .collect::<Vec<_>>(),
             [(0x1000, 0x2000), (0x3000, 0x5000)]
         );
+    }
+
+    /// A new program has none of the old one's code, and reads the map on
+    /// from where the old one's lines end.
+    #[test]
+    fn a_new_program_forgets_the_old_ones_code() {
+        let mut jit = Jit::default();
+        jit.mapped(0x1000, 0x2000, true, 0);
+        jit.functions.insert(
+            0x1000,
+            Named {
+                function: function(0x1000, 0x1010),
+                read: 0,
+            },
+        );
+        jit.read = 40;
+        jit.exec();
+        assert!(!jit.needs(0x1008));
+        assert!(!jit.covers(0x1008));
+        assert_eq!(jit.read, 40);
     }
 
     /// A mapping over a function the map named before the mapping was made

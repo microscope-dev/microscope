@@ -55,9 +55,8 @@ fn find_interpreter(
     process: &ProcessState,
     images: &[Image],
 ) {
-    let mapped = process.mapped.len();
-    if interpreted.stale(pid, mapped) {
-        interpreted.find(pid, mapped, &modules_in(process, images));
+    if interpreted.stale(pid, process.mappings) {
+        interpreted.find(pid, process.mappings, &modules_in(process, images));
     }
 }
 
@@ -103,6 +102,10 @@ struct Mapped {
 #[derive(Debug, Default)]
 struct ProcessState {
     mapped: Vec<Mapped>,
+
+    /// How many mappings the process has made, which tells its modules
+    /// apart from what they were, as their number may not.
+    mappings: u64,
     threads: BTreeSet<Tid>,
     jit: Jit,
 }
@@ -547,8 +550,14 @@ impl Processor {
                 let thread = self.thread(pid, tid, at);
                 self.builder.thread_name(thread, &name);
                 if exec {
-                    // A new program replaces the address space.
-                    self.processes.entry(pid).or_default().mapped.clear();
+                    // A new program replaces the address space, and the
+                    // interpreter and compiled code it held.
+                    let state = self.processes.entry(pid).or_default();
+                    state.mapped.clear();
+                    state.jit.exec();
+                    if let Some(interpreted) = &mut self.interpreted {
+                        interpreted.forget(pid);
+                    }
 
                     // Its instrumentation went with it; the new program's
                     // is found as it maps.
@@ -648,6 +657,7 @@ impl Processor {
         state
             .mapped
             .retain(|mapped| mapped.end <= mmap.start || mapped.start >= end);
+        state.mappings += 1;
         state.jit.mapped(
             mmap.start,
             end,

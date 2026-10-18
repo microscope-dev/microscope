@@ -54,10 +54,10 @@ struct Runtime {
     state: Option<VirtualAddress>,
 }
 
-/// What a process's modules said of its interpreter, when it mapped
-/// `mapped` of them.
+/// What a process's modules said of its interpreter, when it had made
+/// `mappings`.
 struct Found {
-    mapped: usize,
+    mappings: u64,
     runtime: Option<Runtime>,
 }
 
@@ -126,16 +126,16 @@ impl Interpreted {
     }
 
     /// Whether what process `pid`'s modules say of its interpreter must
-    /// be read again, now that it maps `mapped`.
-    pub(super) fn stale(&self, pid: Pid, mapped: usize) -> bool {
+    /// be read again, now that it has made `mappings` in all.
+    pub(super) fn stale(&self, pid: Pid, mappings: u64) -> bool {
         self.found
             .get(&pid)
-            .is_none_or(|found| found.mapped != mapped)
+            .is_none_or(|found| found.mappings != mappings)
     }
 
-    /// Reads what process `pid`'s `modules`, `mapped` in all, say of its
-    /// interpreter.
-    pub(super) fn find(&mut self, pid: Pid, mapped: usize, modules: &[(LoadedModule, DebugInfo)]) {
+    /// Reads what process `pid`'s `modules` say of its interpreter, once it
+    /// has made `mappings`.
+    pub(super) fn find(&mut self, pid: Pid, mappings: u64, modules: &[(LoadedModule, DebugInfo)]) {
         let runtime = modules.iter().find_map(|(loaded, info)| {
             let image: Arc<dyn RuntimeImage + Send + Sync> = Arc::clone(&info.image) as _;
             let python = image.python()?;
@@ -152,7 +152,7 @@ impl Interpreted {
             })
         });
 
-        self.found.insert(pid, Found { mapped, runtime });
+        self.found.insert(pid, Found { mappings, runtime });
     }
 
     /// Whether a native frame of process `pid` that runs the function or
