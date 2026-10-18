@@ -528,6 +528,17 @@ impl Collector {
             processor.probe_problem(&text);
         }
 
+        // A program that exits defined its last sites before it said so,
+        // perhaps since this drain read its definitions: their records are
+        // in the rings read below.
+        if block.exiting && instance.defines {
+            self.define(processor, index);
+            if self.gone {
+                return false;
+            }
+        }
+
+        let instance = &mut self.instances[index];
         let dropped = block.dropped.saturating_sub(instance.dropped);
         instance.dropped = instance.dropped.max(block.dropped);
         processor
@@ -871,6 +882,69 @@ mod tests {
         assert_eq!(on, 1, "the site stays off");
         let problems = processor.snapshot().markers;
         assert_eq!(problems.len(), 1, "{problems:?}");
+    }
+
+    /// A program that defines a site and records it just before it exits
+    /// has both read before it is told it may go: a read that finds it
+    /// exiting reads its definitions again, though a read began just
+    /// before it defined the site.
+    #[test]
+    fn a_site_defined_as_the_program_exits_is_read_with_its_records() {
+        use std::io::{BufRead as _, Write as _};
+
+        let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("build/test-programs/probes")
+            .canonicalize()
+            .expect("run `just build-test-programs`");
+        let mut child = std::process::Command::new(&program)
+            .arg("exiting")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("the program");
+        let pid = child.id();
+        let mut processor = record::Processor::new(DebugFileSearch::default(), 64);
+        let found = found(pid, &program, &mut processor);
+        let control = found
+            .bias
+            .wrapping_load(crate::ImageAddress::new(found.table.control))
+            .get();
+        let mut collector = Collector::new(
+            pid,
+            ProbeSelection::All,
+            std::time::Duration::from_secs(600),
+        );
+        collector.adopt(&mut processor, &found);
+        collector.drain(&mut processor);
+        let mut lines = std::io::BufReader::new(child.stdout.take().expect("its output")).lines();
+        assert_eq!(
+            lines.next().expect("a line").expect("its text"),
+            "LISTENING"
+        );
+
+        // The drain's definitions are read; then the program defines a
+        // site, records it, and waits as it exits.
+        writeln!(child.stdin.take().expect("its input")).expect("let it go");
+        assert_eq!(lines.next().expect("a line").expect("its text"), "DONE");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let mut word = [0; 4];
+            perf::read_memory(pid, control + 44, &mut word).expect("its control block");
+            if word != [0; 4] {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the program never exited"
+            );
+            std::thread::yield_now();
+        }
+        assert!(collector.read_instance(&mut processor, 0));
+        child.wait().expect("its exit");
+
+        let builder = processor.builder();
+        assert_eq!(builder.account(AccountKind::ProbeMalformed as u32), 0);
+        assert_eq!(builder.account(AccountKind::ProbeEvents as u32), 2);
     }
 
     /// A process can exit between the reads of its registry and of its

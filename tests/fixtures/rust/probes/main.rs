@@ -60,6 +60,7 @@ fn main() {
             let _zone = zone!("after");
         }
         "quiet" => quiet(),
+        "exiting" => exiting(),
         "cost-on" => cost(count()),
         mode => panic!("unknown mode {mode}"),
     }
@@ -220,6 +221,19 @@ fn defines() {
         println!("SITE {:#x}", std::ptr::from_ref(site).addr() + 1);
         std::io::stdout().flush().expect("flush");
     }
+}
+
+/// Once a line arrives, defines a site, records a zone of it, and exits,
+/// waiting at its exit for microscope to read what it wrote.
+fn exiting() {
+    println!("LISTENING");
+    std::io::stdout().flush().expect("flush");
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line).expect("a line");
+    let site = define(abi::SITE_ZONE, "last", "app.py", 1).expect("a zone");
+    drop(site.zone());
+    println!("DONE");
+    std::io::stdout().flush().expect("flush");
 }
 
 fn spin(rounds: u64) -> u64 {
