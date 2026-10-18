@@ -511,6 +511,10 @@ and the agent. A hit's stop selects, and its condition and log message read,
 the innermost ordinary frame that is not the runtime's own source
 (`Controller::blamed_frame`), as an exception's stop does. A backtrace folds
 frame 0 when it is an interpreter's machinery and another frame is selected.
+DAP deemphasizes the source of each frame above the selected one. VS Code
+ignores that hint at a stop it was told was a breakpoint or a step: it
+focuses the first frame that has a source. At those stops the frames have no
+source at all (`dap::inspect`'s `FOCUSED_REGARDLESS`).
 `tests/python/breakpoints.rs` arms every kind in one run per build, beside
 probes that must not match, and checks each stop's exact hits.
 

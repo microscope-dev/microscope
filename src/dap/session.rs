@@ -296,6 +296,9 @@ pub(super) struct Stop {
     pub context: ExecutionContext,
     pub reason: StopReason,
 
+    /// The reason the client was told, as its stopped event named it.
+    pub told: &'static str,
+
     /// The frame of the stopped context the debugger selected, as at an
     /// exception the frame that raised it; the innermost otherwise.
     pub selected: StackFrameId,
@@ -1748,6 +1751,7 @@ impl Session {
         };
 
         body["reason"] = kind.into();
+        let told = kind;
         if let Some(description) = description {
             body["description"] = description.into();
         }
@@ -1761,6 +1765,7 @@ impl Session {
             thread,
             context,
             reason,
+            told,
             selected,
         });
         self.client.event("stopped", body).await

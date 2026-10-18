@@ -24,20 +24,28 @@ fn configuration(markers: &[&str]) -> Configuration {
     }
 }
 
-/// The frame VS Code focuses as a thread stops: the first whose source is
-/// there to show and not deemphasized, which passes over the agent's frames
-/// and the interpreter's.
+/// The frame VS Code focuses as a thread stops, as its
+/// `Thread.getTopStackFrame` chooses it: the first with a source. Only at a
+/// stop for another reason than a breakpoint or a step does it pass over a
+/// frame whose hint, or else its source's, is `subtle` or `deemphasize`. So
+/// at a breakpoint or step the agent's and the interpreter's frames must
+/// have no source.
 fn focused(dap: &mut Dap, stop: &Stopped) -> Value {
     let trace = dap.request(
         "stackTrace",
         json!({"threadId": stop.thread, "startFrame": 0, "levels": 64}),
     );
+    let regardless = ["breakpoint", "step", "function breakpoint"].contains(&stop.reason.as_str());
     trace["stackFrames"]
         .as_array()
         .expect("frames")
         .iter()
         .find(|frame| {
-            frame["source"].is_object() && frame["source"]["presentationHint"] != "deemphasize"
+            let hint = frame
+                .get("presentationHint")
+                .unwrap_or_else(|| &frame["source"]["presentationHint"]);
+            frame["source"].is_object()
+                && (regardless || (hint != "subtle" && hint != "deemphasize"))
         })
         .cloned()
         .unwrap_or_else(|| panic!("no frame has source to focus: {trace}"))

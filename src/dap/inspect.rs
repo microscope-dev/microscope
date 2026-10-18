@@ -55,6 +55,10 @@ fn thread_name(
         ))
 }
 
+/// The stop reasons at which VS Code focuses the first frame with a source
+/// whatever its hint, as its `Thread.getTopStackFrame` does.
+const FOCUSED_REGARDLESS: [&str; 3] = ["breakpoint", "step", "function breakpoint"];
+
 impl Session {
     pub(super) async fn threads(&mut self) -> Result<Value, ErrorBody> {
         if let Some(stop) = self.stop.clone()
@@ -341,9 +345,18 @@ impl Session {
 
             // Clients focus the first frame whose source is not
             // deemphasized, so the frames above the one the debugger
-            // selected at the stop are.
+            // selected at the stop are. At a breakpoint or a step, VS Code
+            // focuses the first frame with any source, so there they have
+            // none, as where an agent's or an interpreter's frames are
+            // above the program's.
             if context == stop.context && frame.id < stop.selected && body["source"].is_object() {
-                body["source"]["presentationHint"] = "deemphasize".into();
+                if FOCUSED_REGARDLESS.contains(&stop.told) {
+                    if let Some(body) = body.as_object_mut() {
+                        body.remove("source");
+                    }
+                } else {
+                    body["source"]["presentationHint"] = "deemphasize".into();
+                }
             }
 
             // An iterator recedes behind the loop whose body it runs.

@@ -777,6 +777,52 @@ async function goroutinesStepsPanicsAndStacks() {
     await stop(stacks.session);
 }
 
+/**
+ * A Python program, launched as its interpreter with the script: a
+ * breakpoint in the `.py` file, a step by lines, and an exception the
+ * program raises, each shown at the program's frame. 3.14 takes the agent
+ * by PEP 768, and 3.12 through the launch bootstrap.
+ */
+async function pythonBreakpointsStepsAndExceptions() {
+    const script = path.join(root, 'tests/fixtures/python/uat.py');
+    // The frame VS Code focused at a stop, as the adapter described it.
+    const shown = async (session, threadId, item) => {
+        const { stackFrames } = await session.customRequest('stackTrace', { threadId });
+        return stackFrames.find((frame) => frame.id === item.frameId);
+    };
+    for (const build of ['3.14', '3.12']) {
+        vscode.debug.addBreakpoints([sourceBreakpoint(script, '# AREA_LINE')]);
+        const { session, threadId, frame: focusedAtLaunch } = await launchToStop({
+            name: `vscode-python-${build}`,
+            program: path.join(process.env.MICROSCOPE_CPYTHON, build, 'python'),
+            args: ['-P', '-s', '-B', script],
+        }, 'breakpoint');
+        let frame = await shown(session, threadId, focusedAtLaunch);
+        assert.strictEqual(frame?.name, 'area', build);
+        assert.strictEqual(frame.line, lineOf(script, '# AREA_LINE') + 1, build);
+
+        const stepped = event('stopped', (body) => body.reason === 'step');
+        await vscode.commands.executeCommand('workbench.action.debug.stepOver');
+        await stepped;
+        frame = await shown(session, threadId, await focus());
+        assert.strictEqual(frame?.name, 'area', build);
+        assert.strictEqual(frame.line, lineOf(script, '# AREA_LINE') + 2, build);
+
+        // The filter is a checkbox in the breakpoints view, which has no
+        // command.
+        await session.customRequest('setExceptionBreakpoints', { filters: ['python-raised'] });
+        const raised = event('stopped', (body) => body.reason === 'exception');
+        await vscode.commands.executeCommand('workbench.action.debug.continue');
+        await raised;
+        frame = await shown(session, threadId, await focus());
+        assert.strictEqual(frame?.name, 'fail', build);
+        const exception = await session.customRequest('exceptionInfo', { threadId });
+        assert.match(exception.description, /the shape is wrong/, build);
+        await session.customRequest('setExceptionBreakpoints', { filters: [] });
+        await finish(0);
+    }
+}
+
 /** Pausing stops every thread, which VS Code lists by name. */
 async function pauseAndThreads() {
     const breakpoint = new vscode.FunctionBreakpoint('worker_breakpoint');
@@ -1081,6 +1127,7 @@ exports.run = async function run() {
             stepIntoByInstructionAndRunToCursor, conditionsHitCountsLogpointsAndRefusals,
             consoleWatchHoverHexadecimalAndInlineValues, completionsAndLocations, dataBreakpointsAndTheirModes,
             dataBreakpointConditions, crashAtASignal, goroutinesStepsPanicsAndStacks,
+            pythonBreakpointsStepsAndExceptions,
             pauseAndThreads, librariesAndTheirSources, runInTheIntegratedTerminal, attachToAProcess,
             pickAProcess, followAForkedChild, openACoreDump, refuseBadConfigurationsAndOfferPrograms,
         ]) {
