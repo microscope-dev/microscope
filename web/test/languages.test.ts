@@ -83,6 +83,25 @@ describe("stream languages", () => {
     expect(of(found, "number")).toEqual(["0x1f", "1.5e-3j", "0"]);
   });
 
+  it("read Python's soft keywords only where they begin statements", () => {
+    const found = tokens(
+      "a.py",
+      [
+        "match command:",
+        "    case [x, *rest]:",
+        "        type Point = tuple[int, int]",
+        "match = re.match(pattern, text)",
+        "kind = type(value)",
+        "self.type = 1",
+        "case(1)",
+        "match x:  # a comment: here",
+        "type == 1",
+        "type Pair[T] = tuple[T, T]",
+      ].join("\n"),
+    );
+    expect(of(found, "keyword")).toEqual(["match", "case", "type", "match", "type"]);
+  });
+
   it("tell Ada's characters from its attributes", () => {
     const found = tokens("a.adb", 'Last := Items\'Last; -- end\nC := \'q\'; S := "a""b"; BEGIN');
     expect(of(found, "comment")).toEqual(["-- end"]);

@@ -607,6 +607,60 @@ const PYTHON_KEYWORDS: &[&str] = &[
     "try", "type", "while", "with", "yield",
 ];
 
+/// Whether a Python keyword at the end of `text[..end]` is one there.
+/// `match`, `case`, and `type` are soft: keywords only where they begin
+/// the statement they name, a `match` or `case` ending in a colon or a
+/// `type` alias. Elsewhere they are names, as `type(x)` calls one.
+fn python_soft_keyword_holds(text: &[u8], word: &str, end: usize, line_start: bool) -> bool {
+    if !matches!(word, "match" | "case" | "type") {
+        return true;
+    }
+
+    if !line_start {
+        return false;
+    }
+
+    let line_end = text[end..]
+        .iter()
+        .position(|&byte| byte == b'\n')
+        .map_or(text.len(), |offset| end + offset);
+    let rest = &text[end..line_end];
+    let after = rest.trim_ascii_start();
+    if word == "type" {
+        // `type Name = ...` or `type Name[T] = ...`.
+        let name = after
+            .iter()
+            .take_while(|&&byte| is_identifier(byte))
+            .count();
+        let tail = after[name..].trim_ascii_start();
+        return after.len() < rest.len()
+            && name > 0
+            && (tail.starts_with(b"[") || tail.starts_with(b"=") && !tail.starts_with(b"=="));
+    }
+
+    // A name assigned, annotated, or used as an object is no statement.
+    if after.first().is_some_and(|byte| b"=:.,)".contains(byte)) {
+        return false;
+    }
+
+    // The statement's colon ends its line, before any comment.
+    let mut quote = None;
+    let mut code = rest.len();
+    for (offset, &byte) in rest.iter().enumerate() {
+        match (quote, byte) {
+            (None, b'#') => {
+                code = offset;
+                break;
+            }
+            (None, b'\'' | b'"') => quote = Some(byte),
+            (Some(open), _) if byte == open => quote = None,
+            _ => {}
+        }
+    }
+
+    rest[..code].trim_ascii_end().ends_with(b":")
+}
+
 /// The prefixes a Python string may begin with, in any case.
 const PYTHON_STRING_PREFIXES: &[&[u8]] = &[
     b"", b"r", b"u", b"b", b"f", b"t", b"rb", b"br", b"fr", b"rf", b"tr", b"rt",
@@ -870,7 +924,8 @@ fn tokens(text: &[u8], language: Language) -> Vec<Span> {
                     .any(|keyword| keyword.eq_ignore_ascii_case(word))
             } else {
                 language.keywords().contains(&word)
-            };
+            } && (language != Language::Python
+                || python_soft_keyword_holds(text, word, index, line_start));
 
             keyword.then_some(Kind::Keyword)
         } else if byte == b'#' && line_start && matches!(language, Language::C | Language::Cpp) {
@@ -1235,6 +1290,45 @@ mod tests {
             [
                 of(&[("char", Keyword), ("\"open", String)]),
                 of(&[("int", Keyword)]),
+            ]
+        );
+    }
+
+    /// `match`, `case`, and `type` are keywords only where a statement
+    /// they begin is: elsewhere they are names, as `type(x)` calls one.
+    #[test]
+    fn python_soft_keywords_are_keywords_only_where_they_begin_statements() {
+        use Kind::{Comment, Keyword, Number};
+
+        let python = "match command:
+    case [x, *rest]:
+        type Point = tuple[int, int]
+match = re.match(pattern, text)
+kind = type(value)
+self.type = 1
+case(1)
+type
+match (x):
+match x:  # a comment: here
+match = 1  # here:
+type Pair[T] = tuple[T, T]
+type == 1";
+        assert_eq!(
+            shown(python, Language::Python),
+            [
+                of(&[("match", Keyword)]),
+                of(&[("case", Keyword)]),
+                of(&[("type", Keyword)]),
+                of(&[]),
+                of(&[]),
+                of(&[("1", Number)]),
+                of(&[("1", Number)]),
+                of(&[]),
+                of(&[("match", Keyword)]),
+                of(&[("match", Keyword), ("# a comment: here", Comment)]),
+                of(&[("1", Number), ("# here:", Comment)]),
+                of(&[("type", Keyword)]),
+                of(&[("1", Number)]),
             ]
         );
     }

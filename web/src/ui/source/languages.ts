@@ -317,6 +317,30 @@ const PYTHON_KEYWORDS = new Set(
   ).split(" "),
 );
 
+/** Whether a Python keyword just read is one where it stands. `match`,
+ * `case`, and `type` are soft: keywords only where they begin the statement
+ * they name, a `match` or `case` ending in a colon or a `type` alias.
+ * Elsewhere they are names, as `type(x)` calls one. */
+function pythonKeywordHolds(stream: StringStream): boolean {
+  const word = stream.current();
+  if (word !== "match" && word !== "case" && word !== "type") {
+    return true;
+  }
+  if (stream.string.slice(0, stream.start).trim() !== "") {
+    return false;
+  }
+  const rest = stream.string.slice(stream.pos);
+  if (word === "type") {
+    return /^[ \t]+[A-Za-z_]\w*\s*(?:\[|=(?!=))/.test(rest);
+  }
+  if (/^\s*[=:.,)]/.test(rest)) {
+    return false;
+  }
+  // The statement's colon ends its line, before any comment.
+  const code = rest.match(/^(?:[^#'"]|'[^']*'|"[^"]*")*/)?.[0] ?? rest;
+  return code.trimEnd().endsWith(":");
+}
+
 /** Python's string prefixes, in any case, before the quote that opens a string. */
 const PYTHON_STRING_START = /^(?:rb|br|fr|rf|tr|rt|[rubft])?(?=['"])/i;
 
@@ -379,7 +403,7 @@ const python = StreamLanguage.define<PythonState>({
       return "number";
     }
     if (stream.match(/^[A-Za-z_]\w*/)) {
-      if (PYTHON_KEYWORDS.has(stream.current())) {
+      if (PYTHON_KEYWORDS.has(stream.current()) && pythonKeywordHolds(stream)) {
         return "keyword";
       }
       return stream.peek() === "(" ? "variableName.function" : "variableName";
