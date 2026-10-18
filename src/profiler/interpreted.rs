@@ -452,9 +452,24 @@ pub(super) fn splice(native: &[(u32, bool)], segments: &[Vec<u32>]) -> Option<Ve
     Some(spliced)
 }
 
+/// Whether interpreted frames that cannot be known leave a stack of
+/// `native` frames short: only where an activation of the interpreter's
+/// loop could run them. A thread that is in no activation, as a library's
+/// worker thread is, runs no interpreted frames.
+pub(super) fn unknown_cuts(native: &[(u32, bool)]) -> bool {
+    native.iter().any(|&(_, activation)| activation)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_stack_in_the_loop_can_lack_interpreted_frames() {
+        assert!(unknown_cuts(&[(1, false), (2, true), (3, false)]));
+        assert!(!unknown_cuts(&[(1, false), (3, false)]));
+        assert!(!unknown_cuts(&[]));
+    }
 
     /// Each segment goes before its activation, innermost with innermost;
     /// where the two differ in number, nothing is placed.

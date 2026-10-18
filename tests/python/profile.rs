@@ -644,8 +644,20 @@ mod bpf {
     /// The fixture's profile under `interpreter` by the BPF engine, from
     /// a recording that lets the program go after `running`.
     fn recorded(interpreter: &str, running: Duration) -> Profile {
+        recorded_with(interpreter, "profiled.py", &[], running)
+    }
+
+    /// `fixture`'s profile under `interpreter` by the BPF engine, run with
+    /// `environment`, from a recording that lets the program go after
+    /// `running`.
+    fn recorded_with(
+        interpreter: &str,
+        fixture: &str,
+        environment: &[(&str, &std::ffi::OsStr)],
+        running: Duration,
+    ) -> Profile {
         let output = std::env::temp_dir().join(format!(
-            "microscope-bpf-{}-{interpreter}.usprof",
+            "microscope-bpf-{}-{interpreter}-{fixture}.usprof",
             std::process::id()
         ));
         let mut child = Command::new(launcher())
@@ -657,8 +669,13 @@ mod bpf {
             .arg(&output)
             .arg("--")
             .arg(python::interpreter(interpreter))
-            .args(["-I", "-B"])
-            .arg(python::fixture("profiled.py"))
+            .args(if environment.is_empty() {
+                ["-I", "-B"].as_slice()
+            } else {
+                ["-s", "-B"].as_slice()
+            })
+            .arg(python::fixture(fixture))
+            .envs(environment.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -680,6 +697,49 @@ mod bpf {
         let profile = Profile::read(&output).expect("read the profile").profile;
         let _ = std::fs::remove_file(&output);
         profile
+    }
+
+    /// A thread that never enters the interpreter's loop, as a library's
+    /// worker thread does, runs no Python frames: its samples are whole,
+    /// not cut short by frames that cannot be known.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
+    fn threads_that_run_no_python_have_no_unknown_frames() {
+        let site = python::interpreter("3.14").with_file_name("site");
+        let environment = [
+            ("PYTHONPATH", site.as_os_str()),
+            ("OMP_NUM_THREADS", std::ffi::OsStr::new("2")),
+        ];
+        recorded_with(
+            "3.14",
+            "workers.py",
+            &environment,
+            Duration::from_millis(200),
+        );
+        let profile = recorded_with("3.14", "workers.py", &environment, Duration::from_secs(1));
+        let stacks = profile.stacks();
+        let workers = stacks
+            .iter()
+            .filter(|stack| {
+                stack
+                    .functions
+                    .iter()
+                    .any(|function| function == "gomp_thread_start")
+            })
+            .collect::<Vec<_>>();
+        assert!(!workers.is_empty(), "no samples on workers: {stacks:#?}");
+        let unknown = workers
+            .iter()
+            .filter(|stack| {
+                stack.ending == StackEnding::Truncated("interpreted frames unknown".into())
+            })
+            .count();
+        assert_eq!(
+            unknown,
+            0,
+            "{unknown} of {} workers' samples",
+            workers.len()
+        );
     }
 
     /// Each CPU sample of a spinner holds its Python frames by line,

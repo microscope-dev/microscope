@@ -224,7 +224,9 @@ the refresh or a reused thread id, the walker looks through every
 interpreter's states for the one that names the thread (`py_find`). None, more
 than one, or a search past its bound gives unknown frames, never another
 thread's. A sample before the layout is known ends in
-`Truncation::InterpretedUnknown`. Code objects are named and proved as each
+`Truncation::InterpretedUnknown`, but only where its native stack has an
+activation of the interpreter's loop (`interpreted::unknown_cuts`): a thread
+in none, as a library's worker thread is, runs no Python frames. Code objects are named and proved as each
 record is drained (`RuntimeModel::sampled_frames`), while the program most
 likely still runs; one freed since is unreadable. The syscall engine shares
 the walker (`dev/syscalls.md`). Segments go before the activations of the

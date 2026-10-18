@@ -1143,7 +1143,7 @@ impl Processor {
             }
             Sampled::Unknown => {
                 self.frames.extend(natives);
-                return Some(Truncation::InterpretedUnknown);
+                return interpreted::unknown_cuts(native).then_some(Truncation::InterpretedUnknown);
             }
             Sampled::Frames { frames, ended } => (frames, ended),
         };
