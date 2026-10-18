@@ -55,8 +55,17 @@ def _load():
         return None
     site = ctypes.c_void_p
     text = (ctypes.c_char_p, ctypes.c_size_t)
+    try:
+        abi = library.microscope_probes_abi
+    except AttributeError as error:
+        problem = f'the probes library at {path} is not one this package uses: {error}'
+        return None
+    abi.restype = ctypes.c_uint16
+    abi.argtypes = ()
+    if abi() < 2:
+        problem = f'the probes library at {path} has no run-time sites'
+        return None
     signatures = {
-        'microscope_probes_abi': (ctypes.c_uint16, ()),
         'microscope_probes_listening': (ctypes.c_bool, ()),
         'microscope_probes_define': (site, (ctypes.c_uint8, *text, *text, ctypes.c_uint32)),
         'microscope_probes_on': (ctypes.c_bool, (site,)),
@@ -75,9 +84,6 @@ def _load():
             function.argtypes = arguments
     except AttributeError as error:
         problem = f'the probes library at {path} is not one this package uses: {error}'
-        return None
-    if library.microscope_probes_abi() < 2:
-        problem = f'the probes library at {path} has no run-time sites'
         return None
     return library
 
@@ -229,14 +235,21 @@ def trace_calls(prefix):
     modules under it, from now on, as a zone named by its module and
     qualified name. A generator's or coroutine's zone ends as it suspends
     and begins again as it resumes. It needs Python 3.12's monitoring and
-    its profiler tool, which it takes; calling it again adds a prefix."""
+    its profiler tool, which it takes; calling it again adds a prefix.
+    Without the probes library it does nothing."""
     global _traced
+    if not isinstance(prefix, str):
+        raise TypeError(f'a prefix names a module, not {prefix!r}')
     monitoring = getattr(sys, 'monitoring', None)
     if monitoring is None:
         raise RuntimeError('trace_calls needs Python 3.12 or later')
+    if _library is None:
+        return
     if _traced is None:
         _traced = _Tracer(monitoring)
-    _traced.prefixes = (*_traced.prefixes, prefix)
+        _traced.prefixes = (prefix,)
+    else:
+        _traced.add(prefix)
 
 
 class _Tracer:
@@ -244,7 +257,11 @@ class _Tracer:
     a zone's site; any other's events are disabled where they begin."""
 
     def __init__(self, monitoring):
+        self.monitoring = monitoring
         self.prefixes = ()
+        # By the code's identity, with the code, since equal code objects
+        # may be of different files: (code, site), whose site is 0 for
+        # code not traced.
         self.sites = {}
         self.stacks = threading.local()
         tool = monitoring.PROFILER_ID
@@ -262,15 +279,24 @@ class _Tracer:
         monitoring.set_events(tool, events.PY_START | events.PY_RESUME | events.PY_RETURN
                               | events.PY_YIELD | events.PY_THROW | events.PY_UNWIND)
 
+    def add(self, prefix):
+        """Traces the modules `prefix` names too, including code already
+        seen, whose events were disabled where it began."""
+        with _defining:
+            self.prefixes = (*self.prefixes, prefix)
+            self.sites = {key: entry for key, entry in self.sites.items() if entry[1]}
+        self.monitoring.restart_events()
+
     def site(self, code):
-        site = self.sites.get(code)
-        if site is None:
-            module = sys._getframe(2).f_globals.get('__name__')
-            traced = isinstance(module, str) and module != __name__ and any(
-                module == prefix or module.startswith(prefix + '.') for prefix in self.prefixes)
-            site = _site(_ZONE, f'{module}.{code.co_qualname}', code.co_filename,
-                         code.co_firstlineno) if traced else 0
-            self.sites[code] = site
+        entry = self.sites.get(id(code))
+        if entry is not None:
+            return entry[1]
+        module = sys._getframe(2).f_globals.get('__name__')
+        traced = isinstance(module, str) and module != __name__ and any(
+            module == prefix or module.startswith(prefix + '.') for prefix in self.prefixes)
+        site = _site(_ZONE, f'{module}.{code.co_qualname}', code.co_filename,
+                     code.co_firstlineno) if traced else 0
+        self.sites[id(code)] = (code, site)
         return site
 
     def stack(self):
@@ -305,4 +331,4 @@ class _Tracer:
         if stack and stack[-1][0] is code:
             _, began = stack.pop()
             if began:
-                _library.microscope_probes_zone_end(self.sites[code])
+                _library.microscope_probes_zone_end(self.sites[id(code)][1])

@@ -434,6 +434,10 @@ fn the_python_package_records_what_the_program_marks() {
     assert!(depths[0] < depths[1] && depths[1] == depths[2], "{zones:?}");
     assert_eq!(named("__main__.numbers").len(), 3, "{zones:?}");
     assert!(named("coroutine").is_empty(), "{zones:?}");
+    // Equal code in two modules is two sites, and a prefix added later
+    // reaches code that ran before it.
+    assert_eq!(named("__main__.traced.work").len(), 1, "{zones:?}");
+    assert_eq!(named("elsewhere.work").len(), 1, "{zones:?}");
 
     let plotted = profile
         .plots()
@@ -472,6 +476,7 @@ with microscope.zone('block'), microscope.label('key', 1):
     microscope.frame()
     microscope.trigger('why')
 microscope.trace_calls('__main__')
+assert sys.monitoring.get_tool(sys.monitoring.PROFILER_ID) is None
 assert load() == 1
 print('NO LIBRARY OK')
 ";
