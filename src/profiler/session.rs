@@ -376,14 +376,20 @@ impl Walker {
         }
     }
 
-    /// Counts the records the rings had no room for.
+    /// Counts the records the rings had no room for, or says why they
+    /// cannot be counted.
     fn finish(&self, processor: &mut record::Processor) {
         let builder = processor.builder();
-        let had = builder.account(AccountKind::InterpretedLost as u32);
-        builder.count(
-            AccountKind::InterpretedLost as u32,
-            self.sampler.lost().saturating_sub(had),
-        );
+        match self.sampler.lost() {
+            Ok(lost) => {
+                let had = builder.account(AccountKind::InterpretedLost as u32);
+                builder.count(
+                    AccountKind::InterpretedLost as u32,
+                    lost.saturating_sub(had),
+                );
+            }
+            Err(error) => builder.setting("python lost records", &format!("not counted: {error}")),
+        }
     }
 }
 

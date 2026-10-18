@@ -563,11 +563,11 @@ impl Sampler {
     }
 
     /// How many records found no room in their rings.
-    #[must_use]
-    pub fn lost(&self) -> u64 {
+    pub fn lost(&self) -> Result<u64, SamplerError> {
         self.lost
             .get(&0, 0)
-            .map_or(0, |counts| counts.iter().copied().sum())
+            .map(|counts| counts.iter().copied().sum())
+            .map_err(load_error)
     }
 }
 
