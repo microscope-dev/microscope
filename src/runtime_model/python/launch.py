@@ -71,8 +71,9 @@ def _microscope_bootstrap(wake, here):
                 run(os.fsdecode(line))
 
     try:
-        while True:
-            take(os.read(channel, 4096))
+        while data := os.read(channel, 4096):
+            take(data)
+        return  # microscope is gone, and no writer is left.
     except BlockingIOError:
         pass
     os.set_blocking(channel, True)
