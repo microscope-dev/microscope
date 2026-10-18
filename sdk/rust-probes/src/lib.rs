@@ -61,7 +61,7 @@ pub mod abi {
     /// | 0 | magic `USCOPEPR` |
     /// | 8 | ABI version, `u16` |
     /// | 10 | clock, `u16`: a `CLOCK_` constant, set by microscope |
-    /// | 12 | enable, `u32`: set by microscope |
+    /// | 12 | enable, `u32`: set by microscope: [`ENABLED`], with [`ENABLE_DEFINED`] |
     /// | 16 | ring size, `u32`, as a power of two of records: set by microscope |
     /// | 20 | rings, `u32`: how many of the registry's slots threads took |
     /// | 24 | heartbeat, `u64`: microscope's `CLOCK_MONOTONIC`, written as it reads |
@@ -81,6 +81,13 @@ pub mod abi {
 
     /// ABI 2 adds run-time sites; ABI 1 is the same without them.
     pub const ABI: u16 = 2;
+
+    /// The enable word's bit that microscope listens.
+    pub const ENABLED: u32 = 1;
+
+    /// The enable word's bit that every run-time site is on as it is
+    /// defined, as when microscope records every site (ABI 2).
+    pub const ENABLE_DEFINED: u32 = 2;
 
     /// Record times are nanoseconds of `CLOCK_MONOTONIC`.
     pub const CLOCK_MONOTONIC: u16 = 1;
@@ -251,6 +258,9 @@ pub mod abi {
 
 #[cfg(feature = "enabled")]
 mod probes;
+
+#[cfg(feature = "c")]
+mod c;
 
 /// Whether microscope is recording the program's instrumentation: every site
 /// it chose is on.

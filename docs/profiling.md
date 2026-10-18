@@ -223,9 +223,42 @@ all discovered sites by default. `--probes off`, a comma-separated list, or a
 name ending in `*` limits what is enabled.
 
 A program can also define sites as it runs, as a language that names its
-work at run time does. It is switched on, by the same names, when the
-recording next reads the program, so its first uses can go unrecorded. A
-program that defines more than 4096 sites gets no more.
+work at run time does. Recording every site, such a site is on from its
+definition. Recording sites by name, it is switched on, by the same names,
+when the recording next reads the program, so its first uses can go
+unrecorded. A program that defines more than 4096 sites gets no more.
+
+### Instrument a Python program
+
+The `microscope` package in `sdk/python` marks a Python program's work as the
+SDK's macros mark a native program's:
+
+```python
+import microscope
+
+@microscope.zone("handle")
+def handle(request):
+    with microscope.label("route", request.route):
+        with microscope.zone("query"):
+            rows = query(request)
+        microscope.plot("rows", len(rows))
+        return render(rows)
+```
+
+`message(name, text)`, `frame()`, and `trigger(why)` complete it, and
+`listening()` says whether a recording reads the program. A zone cannot
+decorate a coroutine or generator, whose waits other work fills.
+`microscope.trace_calls("app")` times every call of the functions of `app` and
+the modules under it as zones named by module and function, using Python
+3.12's profiler monitoring tool; it is the program's own choice, as microscope
+never adds instrumentation to a Python program.
+
+The package loads the probes SDK's shared library, built with
+`cargo rustc --release --features c --crate-type cdylib` in
+`sdk/rust-probes`, from `libmicroscope_probes.so` beside the package or from
+`MICROSCOPE_PROBES_LIBRARY`. Without it, every mark does nothing and
+`microscope.problem` says why. It works with every Python 3 version and GIL
+mode; nothing is written unless a recording switches a site on.
 
 > TODO: write a short public probes tutorial after the SDK has a supported
 > installation and versioning story.

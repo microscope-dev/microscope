@@ -1960,6 +1960,12 @@ run_cached_build "$rust_fixtures_dir/embedded-views" "$output_dir/embedded-views
 run_cached_build sdk/rust-probes "$output_dir/libmicroscope_probes.rlib" "$rust_sdk_metadata" \
     rustc --edition=2024 -D warnings -C opt-level=2 --crate-type rlib --crate-name microscope_probes \
     --cfg 'feature="enabled"' sdk/rust-probes/src/lib.rs -o "$output_dir/libmicroscope_probes.rlib"
+# The same, as the shared library the Python package loads; its name keeps
+# its build's intermediate files apart from the rlib's.
+run_cached_build sdk/rust-probes "$output_dir/libmicroscope_probes_c.so" "$rust_sdk_metadata" \
+    rustc --edition=2024 -D warnings -C opt-level=2 --crate-type cdylib --crate-name microscope_probes \
+    --cfg 'feature="enabled"' --cfg 'feature="c"' sdk/rust-probes/src/lib.rs \
+    -o "$output_dir/libmicroscope_probes_c.so"
 run_cached_build "$rust_fixtures_dir/probes" "$output_dir/probes" "$rust_sdk_metadata" \
     rustc --edition=2024 -D warnings -C debuginfo=2 -C opt-level=2 --crate-name probes \
     --extern "microscope_probes=$output_dir/libmicroscope_probes.rlib" \

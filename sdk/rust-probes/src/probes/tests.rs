@@ -386,6 +386,15 @@ fn a_run_time_site_writes_by_its_key_only_while_on() {
     );
     assert_eq!(text(&events[2]), b"said");
 
+    CONTROL
+        .enable
+        .store(abi::ENABLED | abi::ENABLE_DEFINED, Ordering::Release);
+    let late = define(abi::SITE_FRAME, "dynamic.late", "app.py", 11).unwrap();
+    assert!(
+        late.on(),
+        "on from its definition while every site is recorded"
+    );
+
     disable();
-    assert!(!zone.on() && !message.on());
+    assert!(!zone.on() && !message.on() && !late.on());
 }

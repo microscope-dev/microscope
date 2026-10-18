@@ -156,6 +156,9 @@ pub fn define(kind: u8, name: &str, file: &str, line: u32) -> Option<&'static Si
         site.file_length.store(file.len() as u32, Ordering::Relaxed);
     }
     site.key.store(abi::RUNTIME_KEY | index, Ordering::Relaxed);
+    if CONTROL.enable.load(Ordering::Acquire) & abi::ENABLE_DEFINED != 0 {
+        site.state.store(1, Ordering::Relaxed);
+    }
 
     // Whole before it is counted, and counted before microscope is told
     // where to look.
@@ -340,6 +343,17 @@ impl Zone {
     }
 }
 
+impl Zone {
+    /// Whether the zone began, leaving it to end as a separate call: for a
+    /// caller across a language boundary, which ends it itself.
+    #[cfg(feature = "c")]
+    pub(crate) fn began(self) -> bool {
+        let began = self.0.is_some();
+        core::mem::forget(self);
+        began
+    }
+}
+
 impl Drop for Zone {
     #[inline(always)]
     fn drop(&mut self) {
@@ -360,6 +374,16 @@ impl Label {
     pub fn begin(state: &'static AtomicU8, value: &dyn fmt::Display) -> Self {
         let began = __on(state) && text(site(state), abi::LABEL_BEGIN, format_args!("{value}"));
         Self(began.then(|| site(state)), PhantomData)
+    }
+}
+
+impl Label {
+    /// Whether the label began, leaving it to end as a separate call.
+    #[cfg(feature = "c")]
+    pub(crate) fn began(self) -> bool {
+        let began = self.0.is_some();
+        core::mem::forget(self);
+        began
     }
 }
 

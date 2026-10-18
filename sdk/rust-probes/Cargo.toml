@@ -8,5 +8,8 @@ license = "MIT OR Apache-2.0"
 [features]
 # Without it, every macro expands to nothing.
 enabled = []
+# C entry points to run-time sites, for a shared library another language
+# loads, as microscope's Python package does.
+c = ["enabled"]
 
 [dependencies]

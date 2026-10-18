@@ -254,9 +254,19 @@ line, name and file, and its own state byte; records name it by
 from the control block, must then lie within 2^30, so the key spaces never
 meet. The collector keeps an ABI 2 module though no static site is selected,
 rereads the table's count at each drain, selects new sites by name as each
-is defined, and switches the control block on once any site is on. A
-malformed table or record is counted as malformed. The decoder still reads
-ABI 1, which has no table.
+is defined, and switches the control block on once any site is on. Recording
+every site, it also sets `ENABLE_DEFINED` in the enable word, and the SDK
+switches each run-time site on as it is defined, so a site used at once is
+not missed until the next drain. A malformed table or record is counted as
+malformed. The decoder still reads ABI 1, which has no table.
+
+The SDK's `c` feature exports C entry points to run-time sites
+(`sdk/rust-probes/src/c.rs`), which the Python package in `sdk/python` loads
+with ctypes from the SDK built as a cdylib. A site is the pointer
+`microscope_probes_define` gives; a zone or label that began ends by its own
+call. `tests/python/profile.rs` records `tests/fixtures/python/probes.py`,
+which uses every mark and `trace_calls`, and checks the package without its
+library.
 
 Probe writers must remain safe when no recorder exists, when the recorder is
 killed, and when a reader falls behind. The timeout turns instrumentation off

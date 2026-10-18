@@ -388,6 +388,13 @@ impl Collector {
             (control + 48, 0_u32.to_le_bytes().to_vec()),
             (control + 52, self.timeout.to_le_bytes().to_vec()),
         ];
+        // Recording every site, a run-time site is on from its definition,
+        // not only once the collector next reads it.
+        let enable = if self.selection == ProbeSelection::All {
+            abi::ENABLED | abi::ENABLE_DEFINED
+        } else {
+            abi::ENABLED
+        };
         let instance = &mut self.instances[index];
         instance.dropped = registry.0.dropped;
         instance.rings = rings;
@@ -398,7 +405,7 @@ impl Collector {
                 .states
                 .iter()
                 .all(|&state| perf::write_memory(self.pid, state, &[1]).is_ok())
-            && perf::write_memory(self.pid, control + 12, &1_u32.to_le_bytes()).is_ok();
+            && perf::write_memory(self.pid, control + 12, &enable.to_le_bytes()).is_ok();
         record!(
             "probes: switched on {} sites of module {} at {control:#x}: {on}",
             instance.states.len(),

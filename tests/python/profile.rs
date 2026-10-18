@@ -335,6 +335,122 @@ fn arbitrary_kernel_names_preserve_live_and_stopped_python_profiles() {
     }
 }
 
+/// A program instrumented with the `microscope` package is recorded as one
+/// instrumented with the Rust SDK is: its zones nest as its blocks and calls
+/// did, its labels, plots, and messages land on its thread, and the calls
+/// `trace_calls` times are zones named by module and qualified name, a
+/// generator's ending as it suspends.
+#[test]
+fn the_python_package_records_what_the_program_marks() {
+    let mut command = Command::new(python::interpreter("3.14"));
+    command
+        .args(["-I", "-B"])
+        .arg(python::fixture("probes.py"))
+        .env(
+            "MICROSCOPE_PROBES_LIBRARY",
+            crate::support::Scenario::fixture("libmicroscope_probes_c.so"),
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::null());
+    let recording = record(command, &RecordOptions::default()).expect("record");
+    assert!(recording.status.success(), "{}", recording.status);
+    let profile = recording.profile;
+    let counts = profile.probe_counts();
+    assert!(!counts.lost() && counts.malformed == 0, "{counts:?}");
+
+    let zones = profile.zones();
+    let named = |name: &str| {
+        zones
+            .iter()
+            .filter(|zone| zone.name == name)
+            .collect::<Vec<_>>()
+    };
+    let rounds = named("round");
+    assert_eq!(
+        rounds
+            .iter()
+            .map(|zone| zone.value.as_deref())
+            .collect::<Vec<_>>(),
+        [Some("0"), Some("1"), Some("2")],
+        "{zones:?}"
+    );
+    let (load, parse) = (named("load"), named("parse"));
+    assert_eq!((load.len(), parse.len()), (3, 3), "{zones:?}");
+    for ((round, load), parse) in rounds.iter().zip(&load).zip(&parse) {
+        assert!(
+            round.depth < load.depth && load.depth < parse.depth,
+            "{zones:?}"
+        );
+        assert!(
+            load.start <= parse.start && parse.end <= load.end,
+            "{zones:?}"
+        );
+    }
+    let fib = named("__main__.fib");
+    let mut depths = fib.iter().map(|zone| zone.depth).collect::<Vec<_>>();
+    depths.sort_unstable();
+    assert_eq!(depths.len(), 3, "{zones:?}");
+    assert!(depths[0] < depths[1] && depths[1] == depths[2], "{zones:?}");
+    assert_eq!(named("__main__.numbers").len(), 3, "{zones:?}");
+    assert!(named("coroutine").is_empty(), "{zones:?}");
+
+    let plotted = profile
+        .plots()
+        .into_iter()
+        .map(|plot| (plot.name, plot.value))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        plotted,
+        [1.0, 2.0, 3.0].map(|value| ("rows".to_owned(), value))
+    );
+    let said = profile
+        .program_markers()
+        .into_iter()
+        .filter_map(|marker| marker.text)
+        .collect::<Vec<_>>();
+    assert_eq!(said, ["round 0", "round 1", "round 2"]);
+}
+
+/// Without its native library the package still imports, and every mark
+/// does nothing, as with no recording; `problem` says why.
+#[test]
+fn the_python_package_without_its_library_does_nothing_and_says_why() {
+    let sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/python");
+    let script = r"
+import sys
+sys.path.insert(0, sys.argv[1])
+import microscope
+assert 'could not be loaded' in microscope.problem, microscope.problem
+@microscope.zone('load')
+def load():
+    return 1
+assert load() == 1 and not microscope.listening()
+with microscope.zone('block'), microscope.label('key', 1):
+    microscope.plot('rows', 1)
+    microscope.message('said', 'text')
+    microscope.frame()
+    microscope.trigger('why')
+microscope.trace_calls('__main__')
+assert load() == 1
+print('NO LIBRARY OK')
+";
+    let output = Command::new(python::interpreter("3.14"))
+        .args(["-I", "-B", "-c", script])
+        .arg(sdk)
+        .env(
+            "MICROSCOPE_PROBES_LIBRARY",
+            "/nonexistent/libmicroscope_probes.so",
+        )
+        .output()
+        .expect("run the interpreter");
+    let printed = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && printed.contains("NO LIBRARY OK"),
+        "{printed}{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// Whether this process holds `CAP_BPF` and `CAP_PERFMON`, as the BPF
 /// engine needs.
 fn privileged() -> bool {

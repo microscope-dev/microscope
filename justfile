@@ -88,7 +88,7 @@ lint:
     CARGO_PROFILE_RELEASE_INCREMENTAL=true cargo clippy --release --all-targets --all-features -- -D warnings
     cargo check --quiet --manifest-path fuzz/Cargo.toml
     cargo fmt --check --manifest-path sdk/rust-probes/Cargo.toml
-    CARGO_TARGET_DIR="$PWD/target/sdk-probes" cargo clippy --quiet --manifest-path sdk/rust-probes/Cargo.toml --all-targets --features enabled -- -D warnings
+    CARGO_TARGET_DIR="$PWD/target/sdk-probes" cargo clippy --quiet --manifest-path sdk/rust-probes/Cargo.toml --all-targets --features c -- -D warnings
     cargo fmt --check --manifest-path loom/Cargo.toml
     CARGO_TARGET_DIR="$PWD/target/loom" cargo clippy --quiet --manifest-path loom/Cargo.toml --all-targets -- -D warnings
 
@@ -103,7 +103,7 @@ lint:
 [doc("Builds the native test fixtures and runs the Rust test suite.")]
 test *ARGS: cache-warm
     ulimit -c 0; test_threads="$(nproc)"; if (( test_threads > {{max_test_threads}} )); then test_threads={{max_test_threads}}; fi; MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features tools --test-threads "$test_threads" "$@"
-    if (( $# == 0 )); then cargo test --doc; CARGO_TARGET_DIR="$PWD/target/sdk-probes" cargo test --quiet --manifest-path sdk/rust-probes/Cargo.toml --features enabled; fi
+    if (( $# == 0 )); then cargo test --doc; CARGO_TARGET_DIR="$PWD/target/sdk-probes" cargo test --quiet --manifest-path sdk/rust-probes/Cargo.toml --features c; fi
 
 # Runs the BPF engine's tests, which need CAP_BPF and CAP_PERFMON, starting
 # microscope through LAUNCHER: the microscope-bpf wrapper
@@ -138,7 +138,7 @@ miri *ARGS: && (miri-seeds miri_seeds ARGS)
     cargo miri setup >/dev/null
     MIRIFLAGS="-Zmiri-strict-provenance" cargo miri test --quiet --test miri --test miri_global_allocator -- --skip concurrent "$@"
     export CARGO_TARGET_DIR="$PWD/target/sdk-probes"
-    MIRIFLAGS="-Zmiri-strict-provenance" cargo miri test --quiet --manifest-path sdk/rust-probes/Cargo.toml --features enabled --lib -- --skip concurrent "$@"
+    MIRIFLAGS="-Zmiri-strict-provenance" cargo miri test --quiet --manifest-path sdk/rust-probes/Cargo.toml --features c --lib -- --skip concurrent "$@"
 
 # Runs the Miri tests named `concurrent` under SEEDS, a range of seeds, each a
 # different schedule and weak-memory outcome. Seeds run at once, so only a
@@ -153,7 +153,7 @@ miri-seeds SEEDS *ARGS:
     seeds() { grep -v '^Trying seed: ' || true; }
     cargo miri test --quiet --test miri --test miri_global_allocator -- concurrent "${filters[@]}" 2>&1 >/dev/null | seeds
     export CARGO_TARGET_DIR="$PWD/target/sdk-probes"
-    cargo miri test --quiet --manifest-path sdk/rust-probes/Cargo.toml --features enabled --lib -- concurrent "${filters[@]}" 2>&1 >/dev/null | seeds
+    cargo miri test --quiet --manifest-path sdk/rust-probes/Cargo.toml --features c --lib -- concurrent "${filters[@]}" 2>&1 >/dev/null | seeds
 
 # Runs the loom models in loom/, which check concurrent protocols under every
 # schedule of a few threads with at most BOUND preemptions each. Each
