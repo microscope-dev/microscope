@@ -271,6 +271,7 @@ function SourceFile({ shown }: { shown: Shown }) {
   const frameSource = shownFrame?.source?.path === shown.path ? shownFrame.source : null;
   const inline = useInlineValues(
     live,
+    shown.path,
     source.data?.path === shown.path ? source.data.text : undefined,
     live ? (frameSource?.line ?? null) : null,
     frameSource?.first ?? null,

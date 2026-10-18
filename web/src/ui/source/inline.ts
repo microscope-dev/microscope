@@ -20,19 +20,21 @@ const MOST = 12;
 
 /**
  * The expressions each line near `line` shows, closest lines winning, and
- * none before `first`, where the frame's function begins, when it is known.
+ * none before `first`, where the frame's function begins, when it is known,
+ * of the source at `path`.
  */
 export function inlineExpressions(
   text: string,
   line: number,
   first: number | null = null,
+  path?: string,
 ): Map<number, string[]> {
   const lines = text.split("\n");
   const shown = new Map<number, string[]>();
   const seen = new Set<string>();
   let count = 0;
   for (let number = line; number >= Math.max(1, line - BEFORE, first ?? 1); number -= 1) {
-    const found = expressionsIn(lines[number - 1] ?? "").filter((expression) => {
+    const found = expressionsIn(lines[number - 1] ?? "", path).filter((expression) => {
       if (seen.has(expression) || count >= MOST) {
         return false;
       }
@@ -56,9 +58,11 @@ export function shownInline(row: Row): boolean {
   return !row.truncated && !row.text.startsWith("{") && !row.text.startsWith("<unavailable");
 }
 
-/** The inline values at `at`'s frame, by line, once they arrive. */
+/** The inline values at `at`'s frame, by line, once they arrive, in the
+ * source at `path`. */
 export function useInlineValues(
   at: At | null,
+  path: string,
   text: string | undefined,
   line: number | null,
   first: number | null,
@@ -67,8 +71,9 @@ export function useInlineValues(
   // A change to a value asks again.
   const writes = useModel((model) => model.state?.writes);
   const wanted = useMemo(
-    () => (at && text && line ? inlineExpressions(text, line, first) : new Map<number, string[]>()),
-    [at, text, line, first],
+    () =>
+      at && text && line ? inlineExpressions(text, line, first, path) : new Map<number, string[]>(),
+    [at, path, text, line, first],
   );
   // The values shown belong to one stop and one count of writes.
   const [values, setValues] = useState<{

@@ -1,5 +1,8 @@
 // Expressions in source text: what a hover evaluates, and the names and
-// member chains whose values show beside the lines just run.
+// member chains whose values show beside the lines just run. Python source,
+// which its path names, is read by Python's words, comments, and strings.
+
+import { isPythonPath, PYTHON_KEYWORDS, pythonKeywordHolds } from "./python";
 
 const NAME = /[A-Za-z_][A-Za-z0-9_]*/y;
 
@@ -27,12 +30,21 @@ export interface Found {
 const isNameCharacter = (character: string | undefined) =>
   character !== undefined && /[A-Za-z0-9_]/.test(character);
 
+/** Whether `word`, at `from` to `to` in `line` of the source at `path`, is
+ * a keyword there. */
+function isKeyword(word: string, line: string, from: number, to: number, path?: string): boolean {
+  if (!isPythonPath(path)) {
+    return KEYWORDS.has(word);
+  }
+  return PYTHON_KEYWORDS.has(word) && pythonKeywordHolds(word, line.slice(0, from), line.slice(to));
+}
+
 /**
  * The expression a hover at `column` names: the name under it, with the
  * members and pointers before it, such as `req->value`. Null over anything
  * that is not a value's name.
  */
-export function expressionAt(line: string, column: number): Found | null {
+export function expressionAt(line: string, column: number, path?: string): Found | null {
   if (!isNameCharacter(line[column])) {
     return null;
   }
@@ -45,7 +57,7 @@ export function expressionAt(line: string, column: number): Found | null {
     to += 1;
   }
   const word = line.slice(from, to);
-  if (/^\d/.test(word) || KEYWORDS.has(word)) {
+  if (/^\d/.test(word) || isKeyword(word, line, from, to, path)) {
     return null;
   }
   // The members before it: `a.b->` then the name.
@@ -68,22 +80,27 @@ export function expressionAt(line: string, column: number): Found | null {
   return { text: line.slice(start, to), from: start, to };
 }
 
-/** The line without comments, strings, and characters. */
-function code(line: string): string {
+/** The line without comments, strings, and characters, each string or
+ * character a space; in Python, without `#` comments, nor the prefixes, as
+ * the `f` of an f-string, that strings begin with. */
+function code(line: string, python: boolean): string {
   let result = "";
   let index = 0;
   while (index < line.length) {
     const character = line[index] as string;
-    if (line.startsWith("//", index)) {
+    if (python ? character === "#" : line.startsWith("//", index)) {
       break;
     }
-    if (line.startsWith("/*", index)) {
+    if (!python && line.startsWith("/*", index)) {
       const end = line.indexOf("*/", index + 2);
       index = end < 0 ? line.length : end + 2;
       result += " ";
       continue;
     }
     if (character === '"' || character === "'") {
+      if (python) {
+        result = result.replace(/(^|[^A-Za-z0-9_])(?:rb|br|fr|rf|tr|rt|[rubft])$/i, "$1");
+      }
       let end = index + 1;
       while (end < line.length && line[end] !== character) {
         end += line[end] === "\\" ? 2 : 1;
@@ -103,8 +120,9 @@ function code(line: string): string {
  * leaving out calls, keywords, types after `struct`, and constants written
  * in capitals.
  */
-export function expressionsIn(line: string): string[] {
-  const text = code(line);
+export function expressionsIn(line: string, path?: string): string[] {
+  const python = isPythonPath(path);
+  const text = code(line, python);
   const found: string[] = [];
   let index = 0;
   let previous = "";
@@ -136,7 +154,7 @@ export function expressionsIn(line: string): string[] {
     if (
       !call &&
       !constant &&
-      !KEYWORDS.has(word) &&
+      !isKeyword(word, text, index, index + word.length, path) &&
       !TAGS.has(previous) &&
       !found.includes(chain)
     ) {

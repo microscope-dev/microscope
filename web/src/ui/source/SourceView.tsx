@@ -266,6 +266,9 @@ export function SourceView({
   // Handlers change every render; the editor calls through these.
   const handlers = useRef({ onGutter, onLineNumber, onCursor, onHover });
   handlers.current = { onGutter, onLineNumber, onCursor, onHover };
+  // The path the text is of, which says how to read a hovered word.
+  const shownPath = useRef(path);
+  shownPath.current = path;
 
   useEffect(() => {
     if (!parent.current) {
@@ -324,7 +327,9 @@ export function SourceView({
             async (current, position) => {
               const evaluate = handlers.current.onHover;
               const line = current.state.doc.lineAt(position);
-              const found = evaluate ? expressionAt(line.text, position - line.from) : null;
+              const found = evaluate
+                ? expressionAt(line.text, position - line.from, shownPath.current)
+                : null;
               if (!evaluate || !found) {
                 return null;
               }
