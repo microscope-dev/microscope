@@ -258,6 +258,14 @@ that copy against the `.AsyncioDebug` section `_asyncio` publishes for
 external debuggers, which lives in an extension module the Python runtime's
 own image does not carry. A task's number is its address, Python's `id()`.
 
+A task's context is read without walking the lists, because a snapshot asks
+for the context of each task, and walking them every time would cost
+O(tasks²). A task is listed while its node lies between neighbours that link
+back to it: CPython links a task when it makes it and clears the node when
+it frees it. It runs on the thread whose state names it. When some thread
+state's running task can't be read, the task's context is an error, because
+that thread may be running it.
+
 A task no thread runs is suspended in its coroutine: a coroutine or generator
 in the state `FRAME_SUSPENDED_YIELD_FROM` awaits the object below the top of
 its embedded frame's stack (`Constant::GeneratorAwaitedDepth`: 1, or 2 from

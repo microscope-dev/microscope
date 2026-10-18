@@ -130,6 +130,7 @@ entries! {
         /// have exited.
         InterpreterAsyncioTasksHead = "interpreter_state.asyncio_tasks_head",
         LlistNext = "llist_node.next",
+        LlistPrev = "llist_node.prev",
 
         /// 3.12's `_PyCFrame.current_frame`.
         CframeCurrentFrame = "cframe.current_frame",

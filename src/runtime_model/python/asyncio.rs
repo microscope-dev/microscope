@@ -83,44 +83,11 @@ impl Values<'_, '_> {
             gaps: Vec::new(),
         };
 
-        let mut ids = None;
+        found.running = self.running_tasks(states, &mut found.gaps);
         let mut interpreters = Vec::new();
         for state in states {
             if !interpreters.contains(&(state.interpreter_state, state.interpreter)) {
                 interpreters.push((state.interpreter_state, state.interpreter));
-            }
-
-            match self.running_task(state) {
-                Ok(Some(task)) => {
-                    let ids = ids.get_or_insert_with(|| {
-                        let ids = super::threads::ThreadIds::new(self.reader.stop);
-                        if let Err(problem) = &ids {
-                            found.gaps.push(Arc::clone(problem));
-                        }
-                        ids
-                    });
-                    let thread = ids
-                        .as_ref()
-                        .map_err(Arc::clone)
-                        .and_then(|ids| ids.resolve(state.native));
-                    if ids.is_ok()
-                        && let Err(problem) = &thread
-                    {
-                        found.gaps.push(Arc::clone(problem));
-                    }
-                    if let std::collections::btree_map::Entry::Vacant(slot) =
-                        found.running.entry(task)
-                    {
-                        slot.insert(thread);
-                    } else {
-                        let problem: Problem =
-                            "asyncio reports one task running in multiple thread states".into();
-                        found.running.insert(task, Err(Arc::clone(&problem)));
-                        found.gaps.push(problem);
-                    }
-                }
-                Ok(None) => {}
-                Err(problem) => found.gaps.push(problem),
             }
 
             let whose = format!("Python native thread {}", state.native);
@@ -141,6 +108,83 @@ impl Values<'_, '_> {
         }
 
         found
+    }
+
+    /// The thread running each task the threads of `states` run, adding
+    /// to `gaps` why one may be missing.
+    pub(super) fn running_tasks(
+        &self,
+        states: &[ThreadState],
+        gaps: &mut Vec<Problem>,
+    ) -> BTreeMap<VirtualAddress, Result<ThreadId, Problem>> {
+        let mut running = BTreeMap::new();
+        let mut ids = None;
+        for state in states {
+            match self.running_task(state) {
+                Ok(Some(task)) => {
+                    let ids = ids.get_or_insert_with(|| {
+                        let ids = super::threads::ThreadIds::new(self.reader.stop);
+                        if let Err(problem) = &ids {
+                            gaps.push(Arc::clone(problem));
+                        }
+                        ids
+                    });
+                    let thread = ids
+                        .as_ref()
+                        .map_err(Arc::clone)
+                        .and_then(|ids| ids.resolve(state.native));
+                    if ids.is_ok()
+                        && let Err(problem) = &thread
+                    {
+                        gaps.push(Arc::clone(problem));
+                    }
+                    if let std::collections::btree_map::Entry::Vacant(slot) = running.entry(task) {
+                        slot.insert(thread);
+                    } else {
+                        let problem: Problem =
+                            "asyncio reports one task running in multiple thread states".into();
+                        running.insert(task, Err(Arc::clone(&problem)));
+                        gaps.push(problem);
+                    }
+                }
+                Ok(None) => {}
+                Err(problem) => gaps.push(problem),
+            }
+        }
+
+        running
+    }
+
+    /// Whether the object at `task` is a task asyncio lists: one whose
+    /// node lies between neighbors that link back to it, since asyncio
+    /// links each task into a list as it makes it and unlinks it, clearing
+    /// its node, as it frees it. Only its own list's nodes are read, so a
+    /// snapshot that asks this of each task reads each list once.
+    pub(super) fn is_listed_task(&self, task: VirtualAddress) -> Result<bool, Problem> {
+        let reader = &self.reader;
+        if !self.is_task(task)? {
+            return Ok(false);
+        }
+
+        let next = reader.offset(Field::LlistNext)?;
+        let prev = reader.offset(Field::LlistPrev)?;
+        let node = task.wrapping_add(reader.offset(Field::TaskNode)?);
+        let after = VirtualAddress::new(reader.word(node.wrapping_add(next))?);
+        let before = VirtualAddress::new(reader.word(node.wrapping_add(prev))?);
+        if after == VirtualAddress::new(0) && before == VirtualAddress::new(0) {
+            return Ok(false);
+        }
+
+        let back = reader.word(after.wrapping_add(prev))?;
+        let forth = reader.word(before.wrapping_add(next))?;
+        if back != node.get() || forth != node.get() {
+            return Err(format!(
+                "the task at {task:#x} lies in a list whose neighbors do not link back to it"
+            )
+            .into());
+        }
+
+        Ok(true)
     }
 
     /// The task the thread of `state` runs, if it runs one.

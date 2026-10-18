@@ -223,6 +223,9 @@ struct Memory {
     bytes: BTreeMap<u64, u8>,
     threads: Vec<ThreadId>,
     target_ids: BTreeMap<ThreadId, Option<crate::runtime_model::TargetThreadId>>,
+
+    /// How many reads were made, for the tests of how much a read costs.
+    reads: std::cell::Cell<usize>,
 }
 
 impl Memory {
@@ -241,6 +244,7 @@ impl Memory {
 
 impl RuntimeStop for Memory {
     fn read(&self, address: VirtualAddress, bytes: &mut [u8]) -> bool {
+        self.reads.set(self.reads.get() + 1);
         for (index, byte) in (0..).zip(bytes.iter_mut()) {
             let Some(read) = address
                 .get()

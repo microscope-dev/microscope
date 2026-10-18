@@ -284,6 +284,7 @@ int main(int argc, char **argv) {
     FIELD(ThreadAsyncioTasksHead, offsetof(_PyThreadStateImpl, asyncio_tasks_head));
     FIELD(InterpreterAsyncioTasksHead, offsetof(PyInterpreterState, asyncio_tasks_head));
     FIELD(LlistNext, offsetof(struct llist_node, next));
+    FIELD(LlistPrev, offsetof(struct llist_node, prev));
     FIELD(TaskState, offsetof(microscope_task, task_state));
     FIELD(TaskAwaitedBy, offsetof(microscope_task, task_awaited_by));
     FIELD(TaskIsTask, offsetof(microscope_task, task_is_task));
