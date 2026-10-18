@@ -11,7 +11,7 @@ use crate::debug_info::gdb_jit::{self, Registered};
 use crate::{LoadBias, MemoryReadCompletion, VirtualAddress};
 
 use super::Controller;
-use super::memory::read_logical_memory;
+use super::memory::read_logical_block;
 use super::native::LinuxTraceOps;
 
 /// The most bytes read of all objects at one stop. A frame in the code of
@@ -45,7 +45,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let mut budget = MAX_TOTAL_BYTES;
         for descriptor in descriptors {
             let read = |address: u64, size: usize| {
-                let read = read_logical_memory(
+                let read = read_logical_block(
                     &self.ptrace,
                     pid,
                     &inferior.breakpoints,

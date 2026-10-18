@@ -286,16 +286,15 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Numbers each of the `observed` modules not yet registered, in the
     /// order they were observed, whether or not it will load.
     fn number_new_modules(&mut self, observed: Vec<(PathBuf, LoadBias)>) -> Result<Vec<NewModule>> {
-        let mut new = Vec::new();
-        for (path, load_bias) in observed {
-            let known = self
-                .modules
-                .values()
-                .any(|module| module.image.path() == path && module.loaded.load_bias == load_bias);
-            if known {
-                continue;
-            }
+        let known = self.known_modules();
+        let unknown = observed
+            .into_iter()
+            .filter(|(path, load_bias)| !known.contains(&(path.as_path(), *load_bias)))
+            .collect::<Vec<_>>();
+        drop(known);
 
+        let mut new = Vec::new();
+        for (path, load_bias) in unknown {
             let module_id = crate::ModuleId::new(self.next_module_id);
             self.next_module_id = self
                 .next_module_id
@@ -310,6 +309,14 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         Ok(new)
+    }
+
+    /// Each registered module's path and load bias.
+    fn known_modules(&self) -> BTreeSet<(&Path, LoadBias)> {
+        self.modules
+            .values()
+            .map(|module| (module.image.path(), module.loaded.load_bias))
+            .collect()
     }
 
     /// The code that moved since the modules were refreshed, as the memory
@@ -339,6 +346,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         files: &[(PathBuf, LoadBias)],
         vdso: Option<&Range<u64>>,
     ) -> Vec<MovedCode> {
+        let mut mapped = BTreeMap::<&Path, Vec<LoadBias>>::new();
+        for (file, bias) in files {
+            mapped.entry(file).or_default().push(*bias);
+        }
+        let known = self.known_modules();
         self.modules
             .values()
             .filter(|module| module.loaded.id != crate::ModuleId::new(0))
@@ -352,19 +364,15 @@ impl<P: LinuxTraceOps> Controller<P> {
                     return (to != from.start).then_some(MovedCode { from, to });
                 }
 
-                let biases = files
-                    .iter()
-                    .filter(|(file, _)| file == path)
-                    .map(|&(_, bias)| bias);
-                if biases.clone().any(|observed| observed == bias) {
+                let biases = mapped.get(path).map_or(&[][..], Vec::as_slice);
+                if biases.contains(&bias) {
                     return None;
                 }
 
-                let mut new = biases.filter(|&observed| {
-                    !self.modules.values().any(|other| {
-                        other.image.path() == path && other.loaded.load_bias == observed
-                    })
-                });
+                let mut new = biases
+                    .iter()
+                    .copied()
+                    .filter(|&observed| !known.contains(&(path, observed)));
                 match (new.next(), new.next()) {
                     (Some(moved), None) => Some(MovedCode {
                         from,
