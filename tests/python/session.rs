@@ -615,3 +615,25 @@ pub fn as_integer(scalar: &ScalarValue) -> Option<i128> {
         _ => None,
     }
 }
+
+/// The matrix is every interpreter the dev shell provides, so that one the
+/// flake adds is tested, or this says it is not.
+#[test]
+fn the_matrix_is_every_interpreter_the_dev_shell_provides() {
+    let root = std::env::var_os("MICROSCOPE_CPYTHON")
+        .expect("MICROSCOPE_CPYTHON names the interpreters; run tests in the dev shell");
+    let mut provided: Vec<String> = std::fs::read_dir(root)
+        .expect("the interpreters' directory")
+        .map(|entry| {
+            entry
+                .expect("an interpreter")
+                .file_name()
+                .into_string()
+                .expect("a UTF-8 name")
+        })
+        .collect();
+    provided.sort();
+    let mut matrix = MATRIX.map(str::to_owned).to_vec();
+    matrix.sort();
+    assert_eq!(matrix, provided);
+}
