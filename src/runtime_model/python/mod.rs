@@ -31,6 +31,7 @@ mod text;
 mod threads;
 mod values;
 
+pub use agent::BOOTSTRAP_DIRECTORY_PREFIX;
 pub use exceptions::EXCEPTION_FILTERS;
 
 use std::sync::{Arc, Mutex};

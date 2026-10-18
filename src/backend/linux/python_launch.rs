@@ -88,7 +88,8 @@ impl PythonLaunch {
             .and_then(|mut file| file.read_exact(&mut random))
             .map_err(problem)?;
         let directory = parent.join(format!(
-            ".microscope-python-{:032x}",
+            "{}{:032x}",
+            crate::runtime_model::PYTHON_BOOTSTRAP_PREFIX,
             u128::from_le_bytes(random)
         ));
         nix::unistd::mkdir(&directory, Mode::S_IRWXU).map_err(problem)?;

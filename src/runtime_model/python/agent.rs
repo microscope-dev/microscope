@@ -12,6 +12,18 @@ pub fn is_agent_filename(filename: &str) -> bool {
     filename.starts_with(FILENAME_PREFIX) && filename.ends_with('>')
 }
 
+/// How the name of the directory of a launch's bootstrap for CPython 3.12
+/// and 3.13 begins, which holds it as `sitecustomize.py`.
+pub const BOOTSTRAP_DIRECTORY_PREFIX: &str = ".microscope-python-";
+
+/// Whether code compiled under `filename` is a launch bootstrap's.
+pub fn is_bootstrap_filename(filename: &str) -> bool {
+    filename
+        .strip_suffix("/sitecustomize.py")
+        .and_then(|directory| directory.rsplit_once('/'))
+        .is_some_and(|(_, name)| name.starts_with(BOOTSTRAP_DIRECTORY_PREFIX))
+}
+
 /// A bootstrap whose caller supplies `__microscope_library`,
 /// `__microscope_generation`, and `__microscope_probes` in its namespace,
 /// and may supply `__microscope_step` and `__microscope_exceptions`.
@@ -391,6 +403,22 @@ mod tests {
             "/srv/<microscope agent x>.py",
         ] {
             assert!(!super::is_agent_filename(filename), "{filename}");
+        }
+    }
+
+    #[test]
+    fn only_a_launch_bootstraps_sitecustomize_is_the_bootstraps() {
+        assert!(super::is_bootstrap_filename(
+            "/tmp/.microscope-python-0123abcd/sitecustomize.py"
+        ));
+        for filename in [
+            "/srv/sitecustomize.py",
+            "/tmp/.microscope-python-0123abcd/app.py",
+            "/tmp/.microscope-python-0123abcd/sitecustomize.pyc",
+            "sitecustomize.py",
+            "/srv/.microscope-python-x/lib/sitecustomize.py",
+        ] {
+            assert!(!super::is_bootstrap_filename(filename), "{filename}");
         }
     }
 

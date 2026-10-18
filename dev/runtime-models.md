@@ -326,8 +326,10 @@ the original `PYTHONPATH` in `MICROSCOPE_PYTHON_WAKE` and
 - It runs, on the main thread, each script already written. The first
   arming happens at the loader stop, before `site` runs, so pending
   breakpoints are armed before the program's code.
-- It starts one `_thread` thread, which blocks reading the FIFO and runs
-  each later script with fresh globals, as PEP 768 does.
+- It starts one `_thread` thread, which names itself `microscope`, blocks
+  reading the FIFO, and runs each later script with fresh globals, as PEP
+  768 does. Its frames, like the agent's, have `CodeRole::Interpreter`
+  (`agent::is_bootstrap_filename`).
 
 It then imports the `sitecustomize` it hid. A request is one line, written
 whole; a full FIFO is refused. One that is retired without acknowledgement

@@ -79,6 +79,13 @@ def _microscope_bootstrap(wake, here):
     os.set_blocking(channel, True)
 
     def waiting():
+        try:
+            # So that a thread list tells the debugger's thread from the
+            # program's.
+            with open(f'/proc/self/task/{_thread.get_native_id()}/comm', 'w') as file:
+                file.write('microscope')
+        except OSError:
+            pass
         while True:
             try:
                 data = os.read(channel, 4096)
