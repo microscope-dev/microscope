@@ -404,6 +404,25 @@ pub fn fuzz_dwarf_expression(data: &[u8]) {
     debug_info::fuzz_dwarf_expression(data);
 }
 
+/// How `event` ends `execution`, if it does: with a stop or an exit, or, as
+/// a detach does any execution, cancelled.
+fn execution_end(event: DebuggerEvent, execution: ExecutionId) -> Option<Result<StopReason>> {
+    match event {
+        DebuggerEvent::InferiorStopped {
+            execution_id: Some(event_execution),
+            reason,
+            ..
+        } if event_execution == execution => Some(Ok(reason)),
+        DebuggerEvent::InferiorExited {
+            execution_id: Some(event_execution),
+            status,
+            ..
+        } if event_execution == execution => Some(Ok(StopReason::Exited(status))),
+        DebuggerEvent::InferiorDetached { .. } => Some(Err(Error::RequestCancelled)),
+        _ => None,
+    }
+}
+
 const REQUEST_CAPACITY: usize = 32;
 const EVENT_CAPACITY: usize = 256;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -2090,6 +2109,14 @@ impl DebuggerHandle {
     /// concurrent shutdown, or if the controller exits. Every handle keeps
     /// the event channel open, so the controller's request queue closing is
     /// what reveals its exit.
+    ///
+    /// Falling behind loses the oldest events, and the one that ends
+    /// `execution` is most likely newer: a burst of them, as a stop that
+    /// loads many modules sends, comes before it. So a lag asks the
+    /// controller whether `execution` still runs. If it does, its end is
+    /// still to come; if not, every event before the answer is already
+    /// sent, and those still held are searched for its end, which fails
+    /// only where it was lost.
     async fn wait_for_execution(
         &self,
         events: &mut broadcast::Receiver<DebuggerEvent>,
@@ -2102,22 +2129,38 @@ impl DebuggerHandle {
                 () = self.requests.closed() => return Err(Error::RequestCancelled),
             };
 
-            match event {
-                Ok(DebuggerEvent::InferiorStopped {
-                    execution_id: Some(event_execution),
-                    reason,
-                    ..
-                }) if event_execution == execution => return Ok(reason),
-                Ok(DebuggerEvent::InferiorExited {
-                    execution_id: Some(event_execution),
-                    status,
-                    ..
-                }) if event_execution == execution => return Ok(StopReason::Exited(status)),
-                Ok(DebuggerEvent::InferiorDetached { .. })
-                | Err(broadcast::error::RecvError::Closed) => return Err(Error::RequestCancelled),
-                Ok(_) => {}
-                Err(broadcast::error::RecvError::Lagged(count)) => {
-                    return Err(Error::EventStreamLagged(count));
+            let lagged = match event {
+                Ok(event) => match execution_end(event, execution) {
+                    Some(end) => return end,
+                    None => continue,
+                },
+                Err(broadcast::error::RecvError::Closed) => return Err(Error::RequestCancelled),
+                Err(broadcast::error::RecvError::Lagged(count)) => count,
+            };
+
+            if let InferiorState::Running {
+                execution_id: Some(running),
+                ..
+            } = self.snapshot().await?.inferior
+                && running == execution
+            {
+                continue;
+            }
+
+            loop {
+                match events.try_recv() {
+                    Ok(event) => {
+                        if let Some(end) = execution_end(event, execution) {
+                            return end;
+                        }
+                    }
+                    Err(broadcast::error::TryRecvError::Lagged(_)) => {}
+                    Err(broadcast::error::TryRecvError::Closed) => {
+                        return Err(Error::RequestCancelled);
+                    }
+                    Err(broadcast::error::TryRecvError::Empty) => {
+                        return Err(Error::EventStreamLagged(lagged));
+                    }
                 }
             }
         }

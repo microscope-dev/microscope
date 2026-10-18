@@ -6068,3 +6068,19 @@ fn catch_syscall_stops_where_strace_would_print_and_reads_the_call() {
         ],
     );
 }
+
+/// A client that falls behind the debugger's events, as one does when a
+/// stop loads more modules at once than the events it holds, as CPython's
+/// JIT can register, still learns how its execution ended.
+#[test]
+fn a_run_that_misses_events_still_stops() {
+    let output = microscope_command()
+        .args(["--batch", "--eval", "break main", "--eval", "run", BASIC])
+        .env("MICROSCOPE_EVENT_CAPACITY", "2")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .stdin(Stdio::null())
+        .output()
+        .expect("run microscope");
+    let stdout = assert_success(output);
+    assert!(stdout.contains("stopped at breakpoint 1"), "{stdout}");
+}

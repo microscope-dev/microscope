@@ -1855,6 +1855,11 @@ impl Cli {
                 renderer.paint(Role::Warning, "warning"),
                 renderer.paint(Role::Metadata, format::condition_owner(owner))
             )),
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => lines.push(format!(
+                "{}: missed {missed} events, so lines about signals, logged messages, \
+                 conditions, and library views may be missing",
+                renderer.paint(Role::Warning, "warning"),
+            )),
             _ => {}
         };
 
