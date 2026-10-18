@@ -42,7 +42,10 @@ copied memory end. A truncated stack records its reason.
 Code a just-in-time compiler generates has no file. A program that writes a
 perf map, `/tmp/perf-PID.map`, names it: stacks go on through the functions
 the map names, under those names. For Python, run the interpreter with
-`-X perf`.
+`-X perf`. A compiler that registers its code through the GDB JIT interface,
+as CPython 3.15's JIT does, names it too, and its call-frame information
+unwinds it. Both are read from the running program when a sample lands in the
+code, so code a program runs just before it exits can stay unnamed.
 
 ## Read a profile
 

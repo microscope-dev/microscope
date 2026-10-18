@@ -21,6 +21,7 @@ mod breakpoints;
 mod expressions;
 mod extension;
 mod gallery;
+mod jit;
 mod layouts;
 mod locals;
 mod oracles;

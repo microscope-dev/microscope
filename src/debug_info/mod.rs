@@ -17,6 +17,7 @@ mod dispatch;
 mod dwarf;
 #[cfg(target_os = "linux")]
 mod elf;
+pub mod gdb_jit;
 #[cfg(target_os = "linux")]
 pub mod gopclntab;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -647,6 +648,20 @@ pub(crate) fn load_module_bytes(
     search: &DebugFileSearch,
 ) -> Result<DebugInfo> {
     dwarf::load_bytes(path, data, id, search)
+}
+
+/// Loads an image a process holds only in memory for a while, as a JIT
+/// compiler's objects, without the cache.
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "the private debug-info edge is shared by sibling backend modules"
+)]
+pub(crate) fn load_transient_bytes(
+    path: &Path,
+    data: &[u8],
+    id: crate::ModuleImageId,
+) -> Result<DebugInfo> {
+    dwarf::load_transient_bytes(path, data, id)
 }
 
 #[cfg(test)]

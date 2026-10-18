@@ -12,7 +12,7 @@ use super::calls::Branch;
 use super::collector::Found;
 use super::frame_pointers::{CallSites, call_sites};
 use super::interpreted::{self, Interpreted, Sampled, Walked};
-use super::jit::{Jit, Stale};
+use super::jit::{Jit, JitCode, Stale};
 use super::probes::{self, Event, SiteRecord, Stacks};
 use super::tasks::{InterpretedWait, Snapshot, WaitFrame};
 use crate::backend::perf::{self, decode};
@@ -22,7 +22,7 @@ use crate::capture::records::{
 };
 
 use crate::capture::{Capture, CaptureBuilder};
-use crate::debug_info::{DebugFileSearch, DebugInfo};
+use crate::debug_info::{DebugFileSearch, DebugInfo, gdb_jit};
 use crate::model::{Pid, Tid};
 use crate::unwind::UnwindModule;
 use crate::unwind::sample::{FrameRules, SampledState, StackEnd, unwind_sample};
@@ -83,11 +83,12 @@ struct Image {
     /// Its instrumentation, if its file has any.
     probes: Option<Arc<probes::Table>>,
 
-    /// Whether it is anonymous code a perf map names, which no file holds
-    /// for a viewer to symbolize it from later: its frames are symbolized
-    /// as they are recorded, and its frames outside every function it
-    /// names are frames of no module.
-    perf_map: bool,
+    /// Whether it is anonymous code a perf map or a JIT compiler's
+    /// registered object names, which no file holds for a viewer to
+    /// symbolize it from later: its frames are symbolized as they are
+    /// recorded, and its frames outside every function it names are frames
+    /// of no module.
+    anonymous: bool,
 }
 
 /// One executable mapping of a process.
@@ -771,7 +772,7 @@ impl Processor {
             id,
             module,
             probes,
-            perf_map: false,
+            anonymous: false,
         });
         image
     }
@@ -793,10 +794,6 @@ impl Processor {
             digest.write(function.entry.name.as_bytes());
         }
 
-        let size = stale.end - stale.start;
-        let module =
-            self.builder
-                .module(&stale.path, None, digest.finish_128().to_le_bytes(), size);
         let info = crate::debug_info::perf_map::load(
             std::path::Path::new(&stale.path),
             id,
@@ -804,15 +801,55 @@ impl Processor {
             &stale.functions,
         )
         .ok();
+        let code = stale.start..stale.end;
+        self.anonymous_module(
+            pid,
+            time,
+            (id, &stale.path, digest.finish_128()),
+            code,
+            info,
+        );
+        self.loading += thread_cpu().saturating_sub(began);
+    }
+
+    /// Makes the module of an object a JIT compiler registered, mapped at
+    /// the addresses its code runs at, in place of what they held.
+    fn jit_object_module(&mut self, pid: Pid, time: u64, object: &JitCode) {
+        let began = thread_cpu();
+        let id = ModuleImageId::new(u32::try_from(self.images.len()).unwrap_or(u32::MAX));
+        let info = crate::debug_info::load_transient_bytes(
+            std::path::Path::new(&object.path),
+            &object.bytes,
+            id,
+        )
+        .ok();
+        let digest = twox_hash::XxHash3_128::oneshot(&object.bytes);
+        let code = object.start..object.end;
+        self.anonymous_module(pid, time, (id, &object.path, digest), code, info);
+        self.loading += thread_cpu().saturating_sub(began);
+    }
+
+    /// Maps the module of anonymous code `id` named `path`, which `digest`
+    /// identifies, over `code`, replacing whatever the process mapped there.
+    fn anonymous_module(
+        &mut self,
+        pid: Pid,
+        time: u64,
+        (id, path, digest): (ModuleImageId, &str, u128),
+        code: std::ops::Range<u64>,
+        info: Option<DebugInfo>,
+    ) {
+        let module = self
+            .builder
+            .module(path, None, digest.to_le_bytes(), code.end - code.start);
         let image = self.images.len();
         self.images.push(Image {
             info,
             id,
             module,
             probes: None,
-            perf_map: true,
+            anonymous: true,
         });
-        self.loading += thread_cpu().saturating_sub(began);
 
         let loaded = LoadedModule {
             id: ModuleId::new(self.next_module),
@@ -822,18 +859,18 @@ impl Processor {
         self.next_module += 1;
         let process = self.builder.process(pid, time.cast_signed());
         let held = &mut self.processes.entry(pid).or_default().mapped;
-        held.retain(|mapped| mapped.end <= stale.start || mapped.start >= stale.end);
+        held.retain(|mapped| mapped.end <= code.start || mapped.start >= code.end);
         held.push(Mapped {
-            start: stale.start,
-            end: stale.end,
+            start: code.start,
+            end: code.end,
             image,
             loaded,
         });
         self.builder.mapping(Mapping {
             process: process.into(),
             module: module.into(),
-            start: stale.start.into(),
-            end: stale.end.into(),
+            start: code.start.into(),
+            end: code.end.into(),
             file_offset: 0.into(),
             bias: 0.into(),
             time: time.cast_signed().into(),
@@ -902,7 +939,28 @@ impl Processor {
                     .skip(1)
                     .map(|address| address.wrapping_sub(1)),
             );
-        let stale = process.jit.refresh(sample.pid.get(), addresses);
+        let images = &self.images;
+        let mapped = &process.mapped;
+        let descriptors = || {
+            let descriptors: BTreeSet<u64> = mapped
+                .iter()
+                .filter_map(|mapped| Some((mapped, images[mapped.image].info.as_ref()?)))
+                .flat_map(|(mapped, info)| {
+                    info.image
+                        .symbols_named(gdb_jit::DESCRIPTOR)
+                        .filter_map(|symbol| mapped.loaded.virtual_address(symbol.address()).ok())
+                        .map(crate::VirtualAddress::get)
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            descriptors.into_iter().collect()
+        };
+        let unmapped = addresses.filter(|&address| {
+            !mapped
+                .iter()
+                .any(|mapped| (mapped.start..mapped.end).contains(&address))
+        });
+        let refreshed = process.jit.refresh(sample.pid.get(), unmapped, descriptors);
         if let Some(problem) = process.jit.take_problem() {
             self.builder.setting(
                 &format!("perf map {}", sample.pid),
@@ -910,11 +968,15 @@ impl Processor {
             );
         }
 
-        for stale in &stale {
+        for stale in &refreshed.stale {
             self.perf_map_module(sample.pid, sample.time, stale);
         }
 
-        !stale.is_empty()
+        for object in &refreshed.objects {
+            self.jit_object_module(sample.pid, sample.time, object);
+        }
+
+        !refreshed.stale.is_empty() || !refreshed.objects.is_empty()
     }
 
     fn sample(&mut self, sample: &decode::Sample<'_>) {
@@ -1539,7 +1601,7 @@ impl Processor {
     /// a file's, and only in a function it names in anonymous code's.
     fn names(&self, owner: &Mapped, address: u64) -> bool {
         let image = &self.images[owner.image];
-        !image.perf_map
+        !image.anonymous
             || image
                 .info
                 .as_ref()
@@ -1580,7 +1642,7 @@ impl Processor {
             .images
             .iter()
             .enumerate()
-            .filter(|(_, image)| image.perf_map || !self.symbols_later)
+            .filter(|(_, image)| image.anonymous || !self.symbols_later)
             .map(|(index, image)| (image.module, index))
             .collect();
         if images.is_empty() {

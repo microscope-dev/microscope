@@ -103,6 +103,12 @@ shown and not folded. `bt -r` shows every frame. The
 choose whether backtraces show them by default. `up` and `down` pass over
 folded frames; `frame N` selects any frame by its level.
 
+CPython 3.15's JIT, on under `PYTHON_JIT=1`, writes each trace it compiles to
+memory and registers it through the GDB JIT interface. Each registered trace
+is a module of its own: a stack goes on through its code, named
+`py::jit:executor` and folded with the interpreter's frames, and its Python
+frames appear before the evaluation loop that entered it.
+
 `list`, `frame`, `where`, `context`, and `edit` work in a Python frame. They
 read the file at the path the interpreter recorded, through source path maps
 like any other source. `where` prints a location such as `containers at
@@ -419,7 +425,8 @@ message; an exception class that defines `__str__` shows its type alone.
 
 `microscope record --python snapshot` or `--python live` reads each thread's
 Python frames, by line, beside the samples, with which thread holds the GIL.
-A task snapshot records each waiting asyncio task's coroutine frames. See
+A task snapshot records each waiting asyncio task's coroutine frames. Samples
+in the code of CPython 3.15's JIT unwind through it, as stacks do. See
 [Record Python programs](profiling.md#record-python-programs).
 
 ### System calls

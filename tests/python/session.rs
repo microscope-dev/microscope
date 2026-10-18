@@ -93,15 +93,16 @@ impl Streams {
     }
 }
 
-/// The interpreter's arguments that run `fixture` with `arguments`.
-fn command(fixture: &str, arguments: &[&str]) -> Vec<std::ffi::OsString> {
+/// The interpreter's arguments that run `fixture` with `arguments`,
+/// isolated from the user's site and the script's directory, and from
+/// `PYTHON*` variables unless it is `configured` by them.
+fn command(fixture: &str, arguments: &[&str], configured: bool) -> Vec<std::ffi::OsString> {
     // Fixtures write no bytecode beside their sources, which would make
     // the fixtures' build think they changed.
-    let mut command = vec![
-        "-I".into(),
-        "-B".into(),
-        python::fixture(fixture).into_os_string(),
-    ];
+    let isolation: &[&str] = if configured { &["-P", "-s"] } else { &["-I"] };
+    let mut command: Vec<std::ffi::OsString> = isolation.iter().map(Into::into).collect();
+    command.push("-B".into());
+    command.push(python::fixture(fixture).into_os_string());
     command.extend(arguments.iter().map(Into::into));
     command
 }
@@ -130,6 +131,17 @@ async fn reported(output: &std::path::Path, name: &str, context: &str) -> Vec<Ve
 impl PythonSession {
     /// Launches `fixture` with `arguments` under `interpreter`, running.
     pub async fn launch(interpreter: &str, fixture: &str, arguments: &[&str]) -> Self {
+        Self::launch_with(interpreter, fixture, arguments, &[]).await
+    }
+
+    /// Launches `fixture` with `arguments` under `interpreter`, running,
+    /// with each variable of `environment` set.
+    pub async fn launch_with(
+        interpreter: &str,
+        fixture: &str,
+        arguments: &[&str],
+        environment: &[(&str, &str)],
+    ) -> Self {
         let streams = Streams::new();
         let debug_files = DebugFileOptions {
             directories: python::debug_directory(interpreter).into_iter().collect(),
@@ -142,7 +154,11 @@ impl PythonSession {
         );
         let running = scenario
             .start_running_with(LaunchOptions {
-                arguments: command(fixture, arguments),
+                arguments: command(fixture, arguments, !environment.is_empty()),
+                environment: environment
+                    .iter()
+                    .map(|(name, value)| ((*name).into(), Some((*value).into())))
+                    .collect(),
                 stdin: Some(Stdio::from(streams.reader)),
                 stdout: Some(Stdio::from(streams.file)),
                 stderr: Some(Stdio::from(streams.errors)),
@@ -193,7 +209,7 @@ impl PythonSession {
         let events = scenario.handle().subscribe();
         let reason = scenario
             .run_with_to_stop(LaunchOptions {
-                arguments: command(fixture, arguments),
+                arguments: command(fixture, arguments, false),
                 stdin: Some(Stdio::from(streams.reader)),
                 stdout: Some(Stdio::from(streams.file)),
                 stderr: Some(Stdio::from(streams.errors)),
@@ -259,7 +275,7 @@ impl PythonSession {
         };
         let child = Ended(
             command
-                .args(self::command(fixture, arguments))
+                .args(self::command(fixture, arguments, false))
                 .stdin(Stdio::from(streams.reader))
                 .stdout(Stdio::from(streams.file))
                 .stderr(Stdio::from(streams.errors))

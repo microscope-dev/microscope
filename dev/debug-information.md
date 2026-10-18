@@ -15,6 +15,7 @@ layouts, and ABI rules stay behind this boundary.
 | `src/debug_info/x86_64.rs` | Architecture-specific register and unwind rules |
 | `src/debug_info/x86_64/frames.rs` | Frames of undescribed code, proved from its instructions |
 | `src/debug_info/perf_map.rs` | Perf maps: names and frames of code a compiler generated |
+| `src/debug_info/gdb_jit.rs`, `src/backend/linux/jit_objects.rs` | Objects a JIT compiler registers through the GDB JIT interface |
 | `src/debug_info/cpython.rs`, `src/debug_info/cpython/` | CPython's runtime layout: its offsets table, generated layouts, and their checks |
 | `src/image/` | Validated immutable table image and checked views |
 | `src/model/image.rs`, `src/model/image/` | Public image model and location types |
@@ -136,6 +137,17 @@ For a core dump, notes and mappings describe the original process. Use build
 IDs and recorded identity to find matching files under their original paths,
 a sysroot, or module search directories. `allow-module-mismatch` is a public
 opt-out from proof, not permission for ordinary loading to guess.
+
+Two kinds of module live only in memory. The vDSO is one. The other is each
+object a JIT compiler registers through the GDB JIT interface, as CPython
+3.15's JIT does. The controller walks the list in each
+`__jit_debug_descriptor` at every published stop, through
+`debug_info::gdb_jit`. It reads each object's ELF image, loads it uncached at
+load bias zero, and names it for its address and a hash of its bytes, so
+replaced code is a new module. Such an image has no program headers, so its
+address range is its allocated sections'. A list read while the compiler
+changes it is read as far as it is sound; what could not be read is
+recorded, and a frame in unread code stays unnamed.
 
 An ELF build ID identifies file content for lookup; it is not a runtime module
 ID. `ModuleId` identifies one public session binding. `ModuleImageId`

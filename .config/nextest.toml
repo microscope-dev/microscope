@@ -23,3 +23,13 @@ perf-rings = { max-threads = 2 }
 [[profile.default.overrides]]
 filter = 'test(/(^|::)bpf::/)'
 test-group = 'perf-rings'
+
+# Each stopped snapshot's debugger reads every library's debug information
+# again, which `just stress`, with no image cache, makes take seconds of
+# every CPU: one recording at a time leaves the other tests the CPUs.
+[test-groups.python-snapshots]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = 'test(/^profile::stopped_snapshots_find/)'
+test-group = 'python-snapshots'

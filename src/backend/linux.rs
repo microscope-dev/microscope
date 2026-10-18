@@ -83,6 +83,7 @@ mod interpreted;
 mod interpreted_values;
 mod interpreted_views;
 mod invariants;
+mod jit_objects;
 mod language_exceptions;
 mod libraries;
 mod lifecycle;

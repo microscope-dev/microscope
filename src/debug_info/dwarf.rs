@@ -860,7 +860,7 @@ pub fn load(
     let (data, _) = crate::image::backing::read_input(path)?;
     crate::count!("input_bytes", data.len());
     drop(phase);
-    load_bytes_on_pool(path, &data, image_id, search)
+    load_bytes_on_pool(path, &data, image_id, search, crate::cache::current())
 }
 
 pub fn load_bytes(
@@ -870,7 +870,20 @@ pub fn load_bytes(
     search: &super::DebugFileSearch,
 ) -> Result<DebugInfo> {
     let _load = crate::span!("load", "{}", path.display());
-    load_bytes_on_pool(path, data, image_id, search)
+    load_bytes_on_pool(path, data, image_id, search, crate::cache::current())
+}
+
+/// Loads the debug information of an image that lives only as long as a
+/// process keeps it in memory, as a JIT compiler's objects do, which no
+/// other session would read from the cache.
+pub fn load_transient_bytes(
+    path: &Path,
+    data: &[u8],
+    image_id: crate::ModuleImageId,
+) -> Result<DebugInfo> {
+    let _load = crate::span!("load", "{}", path.display());
+    let search = super::DebugFileSearch::default();
+    load_bytes_on_pool(path, data, image_id, &search, None)
 }
 
 /// Loads an image's debug information on the loader's workers.
@@ -879,8 +892,8 @@ fn load_bytes_on_pool(
     data: &[u8],
     image_id: crate::ModuleImageId,
     search: &super::DebugFileSearch,
+    cache: Option<&crate::cache::ImageCache>,
 ) -> Result<DebugInfo> {
-    let cache = crate::cache::current();
     crate::pool::install(|| {
         load_debug_info(path, data, image_id, search, LoadLimits::default(), cache)
     })
@@ -1827,6 +1840,14 @@ fn image_address_range(
                 .checked_add(segment.size())
                 .ok_or(gimli::Error::AddressOverflow)?,
         );
+    }
+
+    // An image with no program headers, as a JIT compiler writes one to
+    // memory, lies where its allocated sections say.
+    if start == u64::MAX
+        && let Some(allocated) = super::gdb_jit::allocated_range(object)?
+    {
+        (start, end) = (allocated.start, allocated.end);
     }
 
     if start == u64::MAX {

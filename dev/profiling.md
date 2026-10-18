@@ -23,7 +23,7 @@ over those layers. The browser reads the same profile and analysis results.
 | `src/profiler/tasks.rs`, `src/profiler/calls.rs`, `src/profiler/frame_pointers.rs` | Task and thread snapshots, and stack reconstruction |
 | `src/backend/linux/reaped.rs` | The exit status of a recorded program that a snapshot's debugger reaped |
 | `src/backend/linux/bpf/sampler.bpf.c`, `src/backend/linux/bpf/python.bpf.h`, `src/backend/linux/bpf/sampler.rs`, `src/profiler/interpreted.rs` | The BPF engine for Python stacks: its program, walker, loader, and splice |
-| `src/profiler/jit.rs`, `src/debug_info/perf_map.rs` | Perf maps: anonymous code as modules |
+| `src/profiler/jit.rs`, `src/debug_info/perf_map.rs`, `src/debug_info/gdb_jit.rs` | Perf maps and registered JIT objects: anonymous code as modules |
 | `src/profiler/annotate.rs`, `src/profiler/symbols.rs`, `src/profiler/zones.rs` | Symbol, source, and instrumentation annotation |
 | `src/profiler/formats/` | Chrome, folded-stack, and pprof output |
 | `src/capture/` | Validated capture file format and table builder |
@@ -106,6 +106,19 @@ describes, so its functions are symbolized as they are recorded, never later,
 and a frame in a range outside every function it names belongs to no module.
 A map made before its process began was written by an earlier process with
 its pid, and is not read; the capture's `perf map PID` setting says why.
+
+A compiler that registers objects through the GDB JIT interface, as CPython
+3.15's JIT does, describes its code fully. Each object is an ELF image whose
+sections lie at the addresses its code runs at, with symbols and call-frame
+information, and it becomes a module of its own over its code. The recorder
+reads the objects when a sample lands in code nothing names. That includes
+code in no mapping the recording saw, since a busy ring can lose the mapping's
+record. It reads them again only when the descriptors' bytes changed since,
+or when a mapping replaced an object's code. A process whose modules hold no
+`__jit_debug_descriptor` is never read. A range that holds registered objects
+is theirs alone: no perf-map module is made over it. The objects are read
+from the running process, so a program that exits before the recorder
+ingests its samples leaves them unnamed, and those stacks end short.
 
 ## Symbolization now and later
 

@@ -99,6 +99,11 @@ narrower limits and report them when used.
   128 Python frames a sample. A live read holds Python frames only, and leaves
   out a thread whose frames change as it reads them. Only CPython 3.15 and
   later say which threads wait for the GIL.
+- Code a JIT compiler registers through the GDB JIT interface is read at each
+  stop, and by a profile when a sample lands in it, without a breakpoint on
+  the compiler's registration. A profile cannot read the code of a program
+  that has already exited, so a short program's last samples in it end
+  short. At most 64 MiB of registered objects are read at a time.
 - Runtime support follows known compiler and runtime layouts. Unknown versions
   can leave tasks or logical frames unavailable.
 - Built-in views cover selected standard-library and runtime types, not every

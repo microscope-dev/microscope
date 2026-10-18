@@ -208,6 +208,9 @@ pub fn symbol_role(name: &str) -> CodeRole {
         "__restore_rt" => CodeRole::SignalTrampoline,
         // Rust's intrinsic that calls code under `catch_unwind`.
         "__rust_try" => CodeRole::RuntimeInternal,
+        // Each trace CPython's JIT compiles, as the object it registers
+        // names it; the trace runs its loop's frames.
+        "py::jit:executor" => CodeRole::Interpreter,
         _ => CodeRole::Ordinary,
     }
 }
@@ -489,6 +492,7 @@ mod tests {
         }
 
         assert_eq!(symbol_role("_PyEval_EvalFrameDefault"), CodeRole::Ordinary);
+        assert_eq!(symbol_role("py::jit:executor"), CodeRole::Interpreter);
     }
 
     /// Only the compilers' own suffixes name a part: a number alone, an
