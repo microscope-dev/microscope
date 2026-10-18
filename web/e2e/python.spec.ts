@@ -83,3 +83,23 @@ test.describe("an exception chosen as the program runs", () => {
     expect(await program.evaluate((name) => name.clientWidth >= name.scrollWidth / 2)).toBe(true);
   });
 });
+
+test.describe("a Python program's own files", () => {
+  const uat = path.join(root, "tests", "fixtures", "python", "uat.py");
+  test.use({ program: [python, "--", uat] });
+
+  test("open on the script and from Ctrl+P before it runs", async ({ page, microscope }) => {
+    await join(page, microscope.link);
+    const source = page.getByTestId("source");
+    await expect(source).toHaveAttribute("data-path", uat);
+    await expect(source).toContainText("def area(side):");
+
+    await page.keyboard.press("Control+p");
+    await page.keyboard.type("page.py");
+    const results = page.getByRole("listbox", { name: "Results" });
+    await expect(results.getByRole("option").first()).toContainText("page.py");
+    await page.keyboard.press("Enter");
+    await expect(source).toHaveAttribute("data-path", /\/page\.py$/);
+    await expect(source).toContainText("def stocked(");
+  });
+});

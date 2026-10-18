@@ -17,6 +17,7 @@ use super::protocol::{
 use super::session::Failure;
 use crate::cli::format;
 use crate::cli::terminal::Renderer;
+use crate::present::python_files::Project;
 
 /// A thread or task as a message names it.
 pub fn executes(execution: ExecutionContext) -> String {
@@ -164,7 +165,10 @@ async fn frame_of(
     }
 }
 
-pub async fn sources(images: &Images) -> SourceFiles {
+/// The files the page can show: those debug information names, a Python
+/// program's own, and those its frames recorded.
+pub async fn sources(images: &Images, python: Option<Project>) -> SourceFiles {
+    let recorded = images.recorded_paths();
     let images = images.with_sources().await;
     let mut files = BTreeSet::new();
     for image in &images {
@@ -172,24 +176,60 @@ pub async fn sources(images: &Images) -> SourceFiles {
             files.insert(file.path.display().to_string());
         }
     }
+    files.extend(recorded.iter().map(|path| path.display().to_string()));
+
+    let mut note = None;
+    let mut script = None;
+    if let Some(project) = python {
+        script = project.script.clone();
+        let directories = project.directories.clone();
+        // A program run from a large directory has many files to read.
+        let listing = tokio::task::spawn_blocking(move || project.files()).await;
+        match listing {
+            Ok(listing) => {
+                files.extend(listing.files.iter().map(|path| path.display().to_string()));
+                if !listing.complete {
+                    note = Some(format!(
+                        "only the first {} Python files under {} are listed",
+                        listing.files.len(),
+                        directories
+                            .iter()
+                            .map(|directory| directory.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+            }
+            Err(error) => note = Some(format!("the Python files could not be listed: {error}")),
+        }
+    }
 
     // The executable's image comes first; Go names its main function
-    // main.main.
-    let entry = images.first().and_then(|image| {
-        let main = ["main", "main.main"]
-            .into_iter()
-            .find_map(|name| image.function_named(name).ok())?;
-        let declared = main.declaration()?;
-        Some(SourceLine {
-            path: image.source_file(declared.file)?.path.display().to_string(),
-            line: declared.line.get(),
-            column: None,
-            first: Some(declared.line.get()),
+    // main.main. A Python program begins at its script.
+    let script = script.map(|script| SourceLine {
+        path: script.display().to_string(),
+        line: 1,
+        column: None,
+        first: None,
+    });
+    let entry = script.or_else(|| {
+        images.first().and_then(|image| {
+            let main = ["main", "main.main"]
+                .into_iter()
+                .find_map(|name| image.function_named(name).ok())?;
+            let declared = main.declaration()?;
+            Some(SourceLine {
+                path: image.source_file(declared.file)?.path.display().to_string(),
+                line: declared.line.get(),
+                column: None,
+                first: Some(declared.line.get()),
+            })
         })
     });
     SourceFiles {
         files: files.into_iter().collect(),
         entry,
+        note,
     }
 }
 
@@ -307,6 +347,7 @@ fn rank(name: &str, query: &str) -> Option<u8> {
 pub async fn source(
     handle: &DebuggerHandle,
     images: &Images,
+    python: Option<&Project>,
     path: &str,
 ) -> Result<SourceText, Failure> {
     let recorded = Path::new(path);
@@ -329,7 +370,9 @@ pub async fn source(
     let (read, text) = match found {
         Some(file) => handle.read_source_file(&file).await?,
         // Its runtime knows which lines run code only as it loads them.
-        None if images.recorded(recorded) => {
+        None if images.recorded(recorded)
+            || python.is_some_and(|project| project.holds(recorded)) =>
+        {
             handle.read_recorded_source(recorded).await?
         }
         None => {

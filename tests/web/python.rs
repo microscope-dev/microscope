@@ -308,3 +308,64 @@ async fn a_tasks_frames_fold_the_machinery_that_steps_it() {
 /// Before a Python program runs, the page lists and reads the Python files
 /// of the directory Python imports the script's modules from, opens on the
 /// script, and still reads nothing else.
+#[tokio::test]
+async fn a_python_programs_own_files_are_listed_and_read_before_it_runs() {
+    let script = python::fixture("uat.py");
+    let directory = script.parent().expect("the fixtures' directory");
+    let interpreter = python::interpreter("3.14");
+    let web = Web::start(
+        "python-files",
+        &[
+            interpreter.to_str().expect("a UTF-8 path"),
+            "--",
+            script.to_str().expect("a UTF-8 path"),
+        ],
+    );
+    let mut tab = web.control("tab").await;
+    tab.state("the program loaded", |state| state["session"].is_string())
+        .await;
+
+    let sources = tab.ok("sources", json!(null)).await;
+    let files = sources["files"]
+        .as_array()
+        .expect("files")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    let named = |name: &str| directory.join(name).display().to_string();
+    for listed in [
+        named("uat.py"),
+        named("page.py"),
+        named("site/sitecustomize.py"),
+    ] {
+        assert!(files.contains(&listed.as_str()), "{listed} in {sources}");
+    }
+    assert!(
+        files.iter().all(|file| !file.contains("__pycache__")),
+        "{sources}"
+    );
+    assert_eq!(sources["entry"]["path"], named("uat.py"), "{sources}");
+    assert_eq!(sources["entry"]["line"], 1, "{sources}");
+
+    let page = tab.ok("source", json!({"path": named("page.py")})).await;
+    assert!(
+        page["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("def stocked(")),
+        "{page}"
+    );
+    for refused in [
+        "/etc/passwd".to_owned(),
+        named("../../../src/runtime_model/python/agent.py"),
+    ] {
+        let (kind, _) = tab
+            .request("source", json!({"path": refused}))
+            .await
+            .expect_err("a file outside the program's own");
+        assert_eq!(kind, "invalid", "{refused}");
+    }
+}
+
+/// A breakpoint set in the file the page opens before a Python program runs,
+/// at the path it opened, is in that file once the program stops there: the
+/// stop, the breakpoint, and the file the page opened name one path.

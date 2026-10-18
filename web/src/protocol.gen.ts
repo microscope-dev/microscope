@@ -390,13 +390,19 @@ first: number | null, };
 
 export type SourceFiles = { 
 /**
- * Paths as the debug information records them, sorted.
+ * Paths as the debug information records them, then a Python
+ * program's own files and those its frames recorded, sorted.
  */
 files: Array<string>, 
 /**
- * Where the program's main function is declared, when it has one.
+ * Where the program's main function is declared, or a Python program's
+ * script begins.
  */
-entry: SourceLine | null, };
+entry: SourceLine | null, 
+/**
+ * Why the list is not every file, when it is not.
+ */
+note: string | null, };
 
 export type FunctionQuery = { query: string, 
 /**

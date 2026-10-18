@@ -529,7 +529,8 @@ impl Session {
             }
             Request::Sources => {
                 let (_, images) = self.current_images().await?;
-                Ok(to_value(&inspect::sources(&images).await))
+                let python = self.python_project().await;
+                Ok(to_value(&inspect::sources(&images, python).await))
             }
             Request::Functions(query) => {
                 let (_, images) = self.current_images().await?;
@@ -537,7 +538,10 @@ impl Session {
             }
             Request::Source(protocol::SourcePath { path }) => {
                 let (handle, images) = self.current_images().await?;
-                Ok(to_value(&inspect::source(&handle, &images, &path).await?))
+                let python = self.python_project().await;
+                Ok(to_value(
+                    &inspect::source(&handle, &images, python.as_ref(), &path).await?,
+                ))
             }
             Request::Scopes(at) => Ok(to_value(&self.reader(connection).await?.scopes(at).await?)),
             Request::Children(of) => Ok(to_value(&protocol::Rows {
@@ -1106,6 +1110,38 @@ impl Session {
             .as_ref()
             .map(|target| (target.handle.clone(), Arc::clone(&target.images)))
             .ok_or_else(|| Failure::new(ErrorKind::Invalid, "nothing is being debugged"))
+    }
+
+    /// Where a launched Python program's own files are, as its interpreter
+    /// begins `sys.path`; none for any other program, or one attached to.
+    async fn python_project(&self) -> Option<crate::present::python_files::Project> {
+        let (handle, spec) = self
+            .target
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|target| Some((target.handle.clone(), target.launch.clone()?)))?;
+        if !crate::present::debug_information::interprets_python(handle.module_image()) {
+            return None;
+        }
+
+        let cwd = match spec.cwd {
+            Some(cwd) => cwd,
+            None => std::env::current_dir().ok()?,
+        };
+        // The program's environment is this one, with the launch's changes.
+        let pythonpath = spec
+            .environment
+            .iter()
+            .rev()
+            .find(|(name, _)| name == "PYTHONPATH")
+            .map(|(_, value)| value.clone())
+            .or_else(|| std::env::var_os("PYTHONPATH"));
+        Some(crate::present::python_files::Project::of(
+            &spec.arguments,
+            &cwd,
+            pythonpath.as_deref(),
+        ))
     }
 
     async fn current_handle(&self) -> Result<DebuggerHandle, Failure> {

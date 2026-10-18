@@ -1,7 +1,7 @@
 //! The debugger's state as the page receives it: where the program stopped,
 //! its breakpoints and where they landed, and the stops so far.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -27,7 +27,7 @@ pub struct Images {
     /// The source files a runtime recorded for frames the page was shown,
     /// such as a Python program's, which no debug information names. The
     /// page may read these, and debug information's files, and no others.
-    recorded: Mutex<HashSet<PathBuf>>,
+    recorded: Mutex<BTreeSet<PathBuf>>,
 }
 
 impl Images {
@@ -63,6 +63,16 @@ impl Images {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .contains(path)
+    }
+
+    /// The files frames the page was shown recorded, as `recorded` takes them.
+    pub fn recorded_paths(&self) -> Vec<PathBuf> {
+        self.recorded
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .cloned()
+            .collect()
     }
 
     /// Forgets every image: a new process numbers its modules again.

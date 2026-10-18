@@ -2048,11 +2048,16 @@ pub struct SourceLine {
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct SourceFiles {
-    /// Paths as the debug information records them, sorted.
+    /// Paths as the debug information records them, then a Python
+    /// program's own files and those its frames recorded, sorted.
     pub files: Vec<String>,
 
-    /// Where the program's main function is declared, when it has one.
+    /// Where the program's main function is declared, or a Python program's
+    /// script begins.
     pub entry: Option<SourceLine>,
+
+    /// Why the list is not every file, when it is not.
+    pub note: Option<String>,
 }
 
 /// The answer to `functions`.

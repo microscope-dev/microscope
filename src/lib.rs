@@ -1632,7 +1632,8 @@ impl DebuggerHandle {
     /// Reads the source file at the `recorded` path a language runtime gave
     /// one of the program's frames, as [`StackFrame::recorded`] has it, or
     /// will give it, through the handle's [`SourcePathMap`]. A client that
-    /// serves files to others reads only paths its frames named this way.
+    /// serves files to others reads only paths its frames named this way,
+    /// or that are the program's own by rules it can state.
     pub async fn read_recorded_source(&self, recorded: &Path) -> Result<(PathBuf, String)> {
         self.read_source(recorded).await
     }

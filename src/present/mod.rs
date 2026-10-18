@@ -13,6 +13,7 @@ pub mod complete;
 mod completing;
 pub mod debug_information;
 pub mod frames;
+pub mod python_files;
 pub mod syscalls;
 
 use std::collections::{BTreeMap, BTreeSet};

@@ -59,6 +59,8 @@ function Open({ mode }: { mode: Mode }) {
   const [selected, setSelected] = useState(0);
   const list = useId();
   const groups = useGroups(mode, query.trim());
+  // Why the files listed are not all of them, when they are not.
+  const note = useRequest("sources", mode === "files" ? undefined : null).data?.note;
   const items = groups.flatMap((group) => group.items);
   const chosen = Math.min(selected, Math.max(items.length - 1, 0));
   const run = (item: Item | undefined) => {
@@ -140,6 +142,11 @@ function Open({ mode }: { mode: Mode }) {
             </div>
           ))}
         </div>
+        {note && (
+          <div className="palette-note" role="note">
+            {note}
+          </div>
+        )}
       </div>
     </div>
   );

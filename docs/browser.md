@@ -25,6 +25,17 @@ The workspace can show source, disassembly, memory, values, registers,
 breakpoints, threads, tasks, signals, the console, and drawings. The command
 palette lists available actions and keyboard shortcuts.
 
+Ctrl+P opens a file: any source file the program's debug information names,
+and for a Python program launched from the page or `microscope web`, its own
+files. Those are the `.py` files under the directories Python searches before
+the standard library: the script's directory, or the working directory for
+`-c` and `-m`, and each `PYTHONPATH` directory unless `-E` or `-I` is given.
+Caches, hidden directories, `node_modules`, `site-packages`, and virtual
+environments are skipped, and links are not followed. Before the program
+runs, the page opens on the script. A standard library or installed
+package's file can be opened once a stack shows one of its frames. A very
+large tree is listed in part, and the palette says so.
+
 The stack marks each frame with a short language mark, such as `py`, `c`, `rs`,
 or `go`, where its function or interpreter says which language it is. Each run
 of a runtime's frames folds into one row, such as "6 frames of the runtime
