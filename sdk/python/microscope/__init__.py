@@ -15,7 +15,8 @@ plots, messages, labels, frames, and triggers.
 
 Each name is a site, which the package defines the first time it is used,
 where it is used. A site is off until a microscope recording switches it on,
-by its name, and an off site costs a check. Nothing is sent anywhere: an on
+by its name, and an off site costs a check of its state byte, which the
+package reads in place. Nothing is sent anywhere: an on
 site writes a few bytes into its thread's ring in the program's own memory,
 which microscope reads from outside, and every site switches itself off once
 microscope stops reading. Without a recording, nothing is written.
@@ -93,19 +94,25 @@ _sites = {}
 _defining = threading.Lock()
 
 
+_NO_SITE = (0, None)
+
+
 def _site(kind, name, file, line):
-    """The site of `kind` named `name` at `file`'s `line`, or None."""
+    """The site of `kind` named `name` at `file`'s `line`, and its state
+    byte, nonzero while it is on; (0, None) where there is none."""
     key = (kind, name, file, line)
     site = _sites.get(key)
     if site is not None or _library is None:
-        return site
+        return site or _NO_SITE
     with _defining:
         site = _sites.get(key)
         if site is None:
             name_bytes = str(name).encode('utf-8', 'replace')
             file_bytes = str(file).encode('utf-8', 'replace')
-            site = _library.microscope_probes_define(
-                kind, name_bytes, len(name_bytes), file_bytes, len(file_bytes), line) or 0
+            address = _library.microscope_probes_define(
+                kind, name_bytes, len(name_bytes), file_bytes, len(file_bytes), line)
+            # The ABI puts a run-time site's state byte at its offset 1.
+            site = (address, ctypes.c_ubyte.from_address(address + 1)) if address else _NO_SITE
             _sites[key] = site
     return site
 
@@ -125,15 +132,16 @@ class zone:
     """A span of the thread's time named `name`: a `with` block, or each call
     of a function it decorates."""
 
-    __slots__ = ('_site', '_began')
+    __slots__ = ('_site', '_state', '_began')
 
     def __init__(self, name):
-        self._site = _site(_ZONE, name, *_caller())
+        self._site, self._state = _site(_ZONE, name, *_caller())
         self._began = []
 
     def __enter__(self):
-        site = self._site
-        self._began.append(bool(site) and _library.microscope_probes_zone_begin(site))
+        state = self._state
+        self._began.append(state is not None and state.value != 0
+                           and _library.microscope_probes_zone_begin(self._site))
         return self
 
     def __exit__(self, *exception):
@@ -147,12 +155,12 @@ class zone:
             # Other tasks run on the thread while it waits, inside its zone.
             raise TypeError('a zone is a span of one thread, and cannot span what a '
                             'coroutine or generator awaits or yields')
-        site = self._site
+        site, state = self._site, self._state
         if not site:
             return function
 
         def zoned(*arguments, **keywords):
-            began = _library.microscope_probes_zone_begin(site)
+            began = state.value != 0 and _library.microscope_probes_zone_begin(site)
             try:
                 return function(*arguments, **keywords)
             finally:
@@ -172,18 +180,18 @@ class label:
     """Labels the thread's time `name=value` for a `with` block: samples and
     zones inside it carry the label. The value is cut to 256 bytes."""
 
-    __slots__ = ('_site', '_value', '_began')
+    __slots__ = ('_site', '_state', '_value', '_began')
 
     def __init__(self, name, value):
-        self._site = _site(_LABEL, name, *_caller())
+        self._site, self._state = _site(_LABEL, name, *_caller())
         self._value = value
         self._began = False
 
     def __enter__(self):
-        site = self._site
-        if site and _library.microscope_probes_on(site):
+        state = self._state
+        if state is not None and state.value != 0:
             text = str(self._value).encode('utf-8', 'replace')
-            self._began = _library.microscope_probes_label_begin(site, text, len(text))
+            self._began = _library.microscope_probes_label_begin(self._site, text, len(text))
         return self
 
     def __exit__(self, *exception):
@@ -195,8 +203,8 @@ class label:
 
 def plot(name, value):
     """A value of the series `name`."""
-    site = _site(_PLOT, name, *_caller())
-    if site and _library.microscope_probes_on(site):
+    site, state = _site(_PLOT, name, *_caller())
+    if state is not None and state.value != 0:
         _library.microscope_probes_plot(site, float(value))
 
 
@@ -204,8 +212,8 @@ def message(name, text):
     """A message on the thread's timeline at the site `name`, cut to 256
     bytes. Its text is formed whether or not the site is on; pass a
     callable to form it only while it is."""
-    site = _site(_MESSAGE, name, *_caller())
-    if site and _library.microscope_probes_on(site):
+    site, state = _site(_MESSAGE, name, *_caller())
+    if state is not None and state.value != 0:
         if callable(text):
             text = text()
         encoded = str(text).encode('utf-8', 'replace')
@@ -214,16 +222,16 @@ def message(name, text):
 
 def frame(name='frame'):
     """The end of a frame, for a program that works in frames."""
-    site = _site(_FRAME, name, *_caller())
-    if site:
+    site, state = _site(_FRAME, name, *_caller())
+    if state is not None and state.value != 0:
         _library.microscope_probes_event(site)
 
 
 def trigger(why):
     """Asks microscope to save the recording's window around this moment,
     when it keeps one."""
-    site = _site(_TRIGGER, why, *_caller())
-    if site:
+    site, state = _site(_TRIGGER, why, *_caller())
+    if state is not None and state.value != 0:
         _library.microscope_probes_event(site)
 
 
@@ -260,8 +268,8 @@ class _Tracer:
         self.monitoring = monitoring
         self.prefixes = ()
         # By the code's identity, with the code, since equal code objects
-        # may be of different files: (code, site), whose site is 0 for
-        # code not traced.
+        # may be of different files: (code, site, state), whose site is 0
+        # for code not traced.
         self.sites = {}
         self.stacks = threading.local()
         tool = monitoring.PROFILER_ID
@@ -287,17 +295,18 @@ class _Tracer:
             self.sites = {key: entry for key, entry in self.sites.items() if entry[1]}
         self.monitoring.restart_events()
 
-    def site(self, code):
+    def entry(self, code):
+        """The code's (code, site, state)."""
         entry = self.sites.get(id(code))
         if entry is not None:
-            return entry[1]
+            return entry
         module = sys._getframe(2).f_globals.get('__name__')
         traced = isinstance(module, str) and module != __name__ and any(
             module == prefix or module.startswith(prefix + '.') for prefix in self.prefixes)
-        site = _site(_ZONE, f'{module}.{code.co_qualname}', code.co_filename,
-                     code.co_firstlineno) if traced else 0
-        self.sites[id(code)] = (code, site)
-        return site
+        site, state = _site(_ZONE, f'{module}.{code.co_qualname}', code.co_filename,
+                            code.co_firstlineno) if traced else _NO_SITE
+        entry = self.sites[id(code)] = (code, site, state)
+        return entry
 
     def stack(self):
         stack = getattr(self.stacks, 'calls', None)
@@ -306,23 +315,24 @@ class _Tracer:
         return stack
 
     def begin(self, code, offset):
-        site = self.site(code)
+        _, site, state = self.entry(code)
         if not site:
             return self.disable
-        self.stack().append((code, _library.microscope_probes_zone_begin(site)))
+        self.stack().append(
+            (code, state.value != 0 and _library.microscope_probes_zone_begin(site)))
 
     def thrown(self, code, offset, exception):
         # A generator thrown into resumes; nothing can be disabled here.
-        if self.site(code):
+        if self.entry(code)[1]:
             self.begin(code, offset)
 
     def end(self, code, offset, value):
-        if not self.site(code):
+        if not self.entry(code)[1]:
             return self.disable
         self.finish(code)
 
     def unwind(self, code, offset, exception):
-        if self.site(code):
+        if self.entry(code)[1]:
             self.finish(code)
 
     def finish(self, code):
