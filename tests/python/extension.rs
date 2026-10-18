@@ -59,6 +59,20 @@ async fn native_frame(stop: &Stop<'_>, thread: u64, function: &str) -> StopConte
     at(frame.id)
 }
 
+/// Each object CPython reported, by name, with its text: at least one.
+fn reported_objects<'a>(truth: &'a [Vec<String>], context: &str) -> Vec<(&'a str, &'a str)> {
+    let objects: Vec<_> = truth
+        .iter()
+        .filter(|fields| fields[0] == "object")
+        .map(|fields| (fields[1].as_str(), fields[2].as_str()))
+        .collect();
+    assert!(
+        !objects.is_empty(),
+        "{context}: CPython reported no objects"
+    );
+    objects
+}
+
 /// Each `PyObject *` the extension's frame holds is the Python value
 /// CPython reported for it, a null one is a null pointer, and expressions
 /// reach into an object through `(py)`, on each interpreter the extension
@@ -93,11 +107,10 @@ async fn a_native_frames_python_objects_are_the_values_cpython_reported() {
                 .unwrap_or_else(|| panic!("{}: no local {name}: {variables:#?}", stop.context))
         };
 
-        for fields in truth.iter().filter(|fields| fields[0] == "object") {
-            let (name, text) = (&fields[1], &fields[2]);
+        for (name, text) in reported_objects(&truth, &stop.context) {
             assert_eq!(
                 presented(&variable(name).state),
-                Some(text.as_str()),
+                Some(text),
                 "{}: {name} is {:?}",
                 stop.context,
                 variable(name).state

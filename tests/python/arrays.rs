@@ -120,6 +120,7 @@ async fn each_array_shows_its_elements_and_reads_its_numbers_at_once() {
         let locals = reported_locals(&truth);
         let reported = locals
             .get(&(printer, "values".to_owned()))
+            .filter(|reported| !reported.is_empty())
             .unwrap_or_else(|| panic!("{}: CPython reported no values frame", stop.context));
         for (name, text) in reported {
             let variable = local(&variables, name, &stop);
@@ -131,7 +132,13 @@ async fn each_array_shows_its_elements_and_reads_its_numbers_at_once() {
             }
         }
 
-        for (name, reported) in reported_children(&truth) {
+        let children = reported_children(&truth);
+        assert!(
+            !children.is_empty(),
+            "{}: CPython reported no children",
+            stop.context
+        );
+        for (name, reported) in children {
             let variable = local(&variables, name, &stop);
             let shown: Vec<String> = all_children(&stop, &variable.state)
                 .await

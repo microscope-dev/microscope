@@ -13,10 +13,16 @@ const FIXTURE: &str = "bootstrap.py";
 
 #[tokio::test]
 async fn a_launch_bootstrap_is_invisible_and_takes_breakpoints_as_the_program_runs() {
+    for interpreter in ["3.12", "3.13"] {
+        launch_bootstrap_is_invisible_and_takes_breakpoints(interpreter).await;
+    }
+}
+
+async fn launch_bootstrap_is_invisible_and_takes_breakpoints(interpreter: &str) {
     let site = python::fixture("site");
     let site = site.to_str().expect("a UTF-8 fixture path");
     let mut session =
-        PythonSession::launch_with("3.12", FIXTURE, &[], &[("PYTHONPATH", site)]).await;
+        PythonSession::launch_with(interpreter, FIXTURE, &[], &[("PYTHONPATH", site)]).await;
     session.wait_for_output("READY").await;
     let context = session.context();
     let output = session.output();
