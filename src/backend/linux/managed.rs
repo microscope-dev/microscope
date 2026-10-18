@@ -210,13 +210,18 @@ impl<P: LinuxTraceOps> Controller<P> {
             .as_ref()
             .filter(|(stepping, _)| *stepping == runtime)
             .map(|(_, step)| step.clone());
+        let assignment = inferior
+            .runtime_assignment
+            .as_ref()
+            .filter(|(assigning, _)| *assigning == runtime)
+            .map(|(_, assignment)| assignment.clone());
         let Some(bound) = self
             .runtimes(inferior)
             .into_iter()
             .find(|bound| bound.id == runtime)
         else {
             // A runtime that is gone took what it was armed with.
-            return if breakpoints.is_empty() && step.is_none() {
+            return if breakpoints.is_empty() && step.is_none() && assignment.is_none() {
                 Ok(())
             } else {
                 Err("the runtime is no longer loaded".into())
@@ -226,6 +231,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let arming = Arming {
             breakpoints: &breakpoints,
             step: step.as_ref(),
+            assignment: assignment.as_ref(),
             exceptions: self.exception_stops,
         };
         if bound.model.agent().is_some() {

@@ -91,7 +91,11 @@ narrower limits and report them when used.
   main thread only the main module's exceptions are uncaught: one leaving an
   `atexit` callback or other code C calls there does not stop.
   Exceptions raised while the agent itself runs, as while it compares a
-  breakpoint's keys, do not stop.
+  breakpoint's keys, do not stop. A Python variable is given a value only
+  on CPython 3.14 or later with the GIL, at a stop the agent made, while its
+  thread is the interpreter's only one. Only a variable of the frame takes
+  one, not a global, attribute, or item, and an object only as another name
+  of the frame holds it.
 - A profile's Python stacks (`record --python`) come from the BPF engine,
   which needs `CAP_BPF` and `CAP_PERFMON`, or from snapshots that stop the
   program or read it as it runs. The BPF engine's first samples of a program

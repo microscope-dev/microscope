@@ -256,6 +256,9 @@ impl<P: LinuxTraceOps> Controller<P> {
                         number,
                         description,
                     }) => self.runtime_step_end(pid, site.runtime, number, Some(description)),
+                    Ok(HookEvent::Assigned { number, failure }) => {
+                        self.runtime_assignment_end(pid, site.runtime, number, failure)
+                    }
                     Ok(HookEvent::StepCalls { number, target }) => {
                         self.step_into_native(pid, site.runtime, number, target);
                         None

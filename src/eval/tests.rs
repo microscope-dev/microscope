@@ -4,7 +4,7 @@
 use super::bind::{Mode, bind};
 use super::error::ExpressionError;
 use super::fake::world;
-use super::interp::{Failure, Outcome, run};
+use super::interp::{Assigned, Failure, Outcome, run};
 use super::number::Float;
 use super::syntax::Expression;
 use crate::{FloatValue, IntegerValue, ScalarValue, VariableState, VariableValue};
@@ -170,6 +170,15 @@ fn evaluate(world_name: &str, text: &str) -> String {
             }
         }
         Ok(Outcome::Range { start, end, .. }) => format!("range {start}..{end}"),
+        // The runtime stores what a dynamic variable is given.
+        Ok(Outcome::AssignDynamic { value, .. }) => match value {
+            Assigned::Integer(value) => format!("gives {value}"),
+            Assigned::Float(value) => format!("gives {value:?}"),
+            Assigned::Bool(value) => format!("gives {value}"),
+            Assigned::Text(text) => format!("gives {text:?}"),
+            Assigned::Nothing => "gives None".to_owned(),
+            Assigned::Object(_) => "gives an object".to_owned(),
+        },
         Ok(Outcome::Assign { .. } | Outcome::AssignRegister { .. }) => {
             "an assignment the world did not make".to_owned()
         }
@@ -248,7 +257,9 @@ fn outcome(world: &mut super::fake::World, text: &str) -> String {
             (state, cause) => format!("{state:?} at {cause:?}"),
         },
         Ok(Outcome::Range { start, end, .. }) => format!("range {start}..{end}"),
-        Ok(Outcome::Assign { .. } | Outcome::AssignRegister { .. }) => "an assignment".to_owned(),
+        Ok(
+            Outcome::Assign { .. } | Outcome::AssignRegister { .. } | Outcome::AssignDynamic { .. },
+        ) => "an assignment".to_owned(),
         Err(Failure::Expression(error)) => format!("error {error}"),
         Err(Failure::Debugger(error)) => format!("failure {error}"),
     }

@@ -58,6 +58,12 @@ pub type Probe<'a> = (&'a str, u8, u64, &'a str, u32, &'a str);
 /// its frame has, and its code's address.
 pub type Step = (u64, u8, u64, u32, u64);
 
+/// The assignment's wire record: number, native thread, how many callers
+/// its frame has, its code's address, the variable's name, and the value,
+/// as `["int", "DECIMAL"]`, `["float", BITS]`, `["bool", 0 or 1]`,
+/// `["str", TEXT]`, `["none"]`, or `["object", ADDRESS]`.
+pub type Assignment = (u64, u64, u32, u64, String, serde_json::Value);
+
 /// The exceptions that stop, one bit each, as the agent numbers them in its
 /// commands and reports: each raised, and each uncaught.
 pub const RAISED: u64 = 1;
@@ -139,6 +145,32 @@ pub enum Report {
         generation: u64,
         failure: Failure,
     },
+    /// The assignment is made, or why it could not be.
+    Assigned {
+        number: u64,
+        failure: Option<AssignmentFailure>,
+    },
+}
+
+/// Why the agent could not make an assignment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssignmentFailure {
+    /// The frame is not where microscope found it.
+    Frame,
+    /// No name of the frame finds the value's object any more.
+    Object,
+    /// The interpreter refused to store it.
+    Refused,
+}
+
+impl AssignmentFailure {
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Frame => "the frame is no longer where microscope found it",
+            Self::Object => "no name of the frame finds the value's object any more",
+            Self::Refused => "the interpreter refused to store the value",
+        }
+    }
 }
 
 /// Why the agent could not follow a step.
@@ -218,6 +250,15 @@ pub fn decode(event: u64, number: u64, argument: u64) -> Result<Report, std::syn
         (5, number, callable) if number != 0 && callable != 0 => {
             Ok(Report::StepCalls { number, callable })
         }
+        (6, number, status @ 0..=3) if number != 0 => Ok(Report::Assigned {
+            number,
+            failure: match status {
+                0 => None,
+                1 => Some(AssignmentFailure::Frame),
+                2 => Some(AssignmentFailure::Object),
+                _ => Some(AssignmentFailure::Refused),
+            },
+        }),
         (3, generation, 1..=6) => Ok(Report::Failed {
             generation,
             failure: match argument {
@@ -296,6 +337,41 @@ mod tests {
             super::StepLoss::Late.description(),
         );
         assert!(!frame.is_empty() && !late.is_empty() && frame != late);
+    }
+
+    /// The agent numbers an assignment's outcomes as the runtime does, and
+    /// reads the command's assignment as the runtime writes it.
+    #[test]
+    fn the_agent_numbers_assignments_as_the_runtime_does() {
+        for (status, failure) in [
+            (1, super::AssignmentFailure::Frame),
+            (2, super::AssignmentFailure::Object),
+            (3, super::AssignmentFailure::Refused),
+        ] {
+            assert!(super::SOURCE.contains(&format!("return [(6, number, {status})]")));
+            assert_eq!(
+                super::decode(6, 8, status),
+                Ok(super::Report::Assigned {
+                    number: 8,
+                    failure: Some(failure)
+                })
+            );
+            assert!(!failure.description().is_empty());
+        }
+        assert!(super::SOURCE.contains("return [(6, number, 0)]"));
+        assert!(super::decode(6, 8, 4).is_err());
+        let assignment: super::Assignment = (
+            1,
+            2,
+            0,
+            3,
+            "x".to_owned(),
+            serde_json::json!(["int", "-12"]),
+        );
+        assert_eq!(
+            serde_json::to_string(&assignment).ok().as_deref(),
+            Some(r#"[1,2,0,3,"x",["int","-12"]]"#)
+        );
     }
 
     /// Only the name the bootstrap compiles the agent under is the agent's;

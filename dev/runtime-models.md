@@ -514,6 +514,56 @@ over its end, through a builtin and a stripped twin of the extension, and out
 from a native breakpoint while the agent watches no line, on each build the
 extension is built for.
 
+**Assignments.** The binder makes `name = value`, and a compound
+assignment, to a variable of dynamic type an `Op::Assign` whose value the
+interpreter turns into `Assigned`: an exact integer, a binary64 float that
+holds the value exactly, a truth value, UTF-8 text, `None`, or an object an
+expression reached (a `Place::Interpreted`). Anything else is refused there.
+`Controller::assign_interpreted` (`backend/linux/assignments.rs`) refuses,
+before anything runs, any of these:
+
+- a target that is not a variable of the frame's code
+  (`InterpretedName::Variable`);
+- a frame no thread runs;
+- a runtime without an agent, or a free-threaded one
+  (`process_scope_required`);
+- a thread its agent did not stop (`at_agent_hook`), or one with a pending
+  signal;
+- an interpreter with any thread state other than the frame's thread's
+  (`RuntimeModel::sole_thread`), which reads the whole list and refuses
+  when it cannot;
+- an agent that does not take commands (`agent_takes_commands`).
+
+The last two keep the write exact. The agent's lock or the GIL could be
+held by another stopped thread, and running the frame's thread alone would
+then deadlock or race.
+
+`RuntimeAssignment` joins the arming beside the step. `Reading::assignment`
+turns it into the command's fifth element, `[number, native thread, depth,
+code id, name, value]`, where `value` is `["int", DECIMAL]`,
+`["float", BITS]`, `["bool", 0|1]`, `["str", TEXT]`, `["none"]`, or
+`["object", ADDRESS]`. Only the frame's thread runs, as
+`ActiveKind::RuntimeAssignment`. The command is read as the agent's hook
+returns, whatever events the agent monitors, so a ready agent takes it even
+with only exceptions armed; a source request never carries an assignment.
+
+The agent makes it in `assigning` once per number, on that thread, through
+`frame.f_locals[name] = value`. It takes an object only where a name of the
+frame's locals, globals, or builtins, or `None`, `True`, or `False`, still
+holds that id, and never casts an address. The object the variable held is
+kept in `_kept` until the next callback, so that nothing it frees runs while
+other threads are stopped. It reports `(6, number, status)`: 0 made, 1 the
+frame is gone, 2 no name finds the object, 3 the interpreter refused.
+
+`HookEvent::Assigned` ends the execution with `StopReason::Assignment`,
+which ranks with a step's end. `publish_stop` selects the variable's frame
+and, after the stop event, `answer_assignment` replies with the target read
+again at the new stop, or with why it was not made. The stop that ends it
+disarms it. A stop for any other reason answers that the assignment was not
+made, and a process that ends answers likewise.
+`tests/python/assignments.rs` gives each kind of value, checks the
+program prints them, and checks each refusal leaves the stop as it was.
+
 **Watchpoints.** A watch expression of dynamic type is accepted only when
 it names an interpreted frame's variable and nothing more
 (`Program::named_object`). `RuntimeModel::interpreted_watch` returns the

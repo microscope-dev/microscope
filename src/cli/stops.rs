@@ -136,6 +136,7 @@ const fn in_code(reason: &StopReason) -> bool {
             | StopReason::RuntimeEvent { .. }
             | StopReason::Pause
             | StopReason::Jump
+            | StopReason::Assignment
     )
 }
 

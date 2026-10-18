@@ -229,6 +229,22 @@ divides integers into a fraction and floors a remainder, so an integer `/`,
 and `%` of a negative number or a float, are refused.
 [Expressions](expressions.md#python-values) gives the rules.
 
+`set var`, the console, and an editor's **Set Value** give a variable of a
+Python frame a number, text, a truth value, `None`, or an object another
+name holds. This works on CPython 3.14 or later built with the GIL, at a stop
+microscope's agent made, while the frame's thread is the interpreter's only
+thread:
+
+```text
+(microscope) set var count = 41
+(int) count = 41
+(microscope) set var held = other
+(list) held = [1, 2]
+```
+
+Elsewhere it is refused, since another thread could be using what it
+changes. [Assignment](expressions.md#assignment) says why.
+
 ### C extensions
 
 In a native frame of a CPython process, such as a C extension's function, a

@@ -778,6 +778,10 @@ impl RuntimeModel for PythonRuntime {
                         target,
                     }
                 }),
+            agent::Report::Assigned { number, failure } => super::HookEvent::Assigned {
+                number: number - 1,
+                failure: failure.map(|failure| failure.description().into()),
+            },
             agent::Report::Exception { bit, address } => super::HookEvent::Exception {
                 filter: exceptions::filter(bit)
                     .ok_or_else(|| Arc::<str>::from("invalid Python agent exception report"))?,
@@ -1202,6 +1206,21 @@ impl RuntimeModel for PythonRuntime {
                 }
             }
             Ok(false)
+        })
+    }
+
+    fn sole_thread(&self, stop: &dyn RuntimeStop, thread: ThreadId) -> Result<bool, Arc<str>> {
+        let reading = self.reading()?;
+        reading.read_values(stop, None, |values, _| {
+            let (states, gaps) = threads::thread_states(&values.reader, values.runtime)?;
+            if let Some(gap) = gaps.first() {
+                return Err(format!("the interpreter's threads cannot all be read: {gap}").into());
+            }
+            let identities = threads::ThreadIds::new(stop)?;
+            Ok(match states.as_slice() {
+                [state] => identities.resolve(state.native) == Ok(thread),
+                _ => false,
+            })
         })
     }
 

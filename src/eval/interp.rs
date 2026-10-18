@@ -40,6 +40,10 @@ pub enum Outcome<P> {
         span: Span,
     },
 
+    /// A value to give a variable of a dynamic type, which its runtime
+    /// stores.
+    AssignDynamic { value: Assigned<P>, span: Span },
+
     /// A value to store in a register: its bytes, as wide as the register.
     AssignRegister {
         register: Register,
@@ -53,6 +57,18 @@ pub enum Outcome<P> {
         start: i128,
         end: i128,
     },
+}
+
+/// A value a variable of a dynamic type is given: one the evaluator
+/// computed, or an object its runtime keeps, as another variable holds it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Assigned<P> {
+    Integer(Exact),
+    Float(f64),
+    Bool(bool),
+    Text(String),
+    Nothing,
+    Object(P),
 }
 
 /// Why running produced nothing.
@@ -918,6 +934,14 @@ impl<M: Machine> Interpreter<'_, M> {
         value: &Node<M::Object, M::Step>,
         span: Span,
     ) -> Result<Outcome<M::Place>, Halt> {
+        if matches!(target.ty, Ty::Dynamic) {
+            let assigned = self.eval(value)?;
+            return Ok(Outcome::AssignDynamic {
+                value: Self::assigned(assigned, value.span)?,
+                span,
+            });
+        }
+
         let fitted = self.eval(value)?;
         if let Op::Register(register) = &target.op {
             return Ok(Outcome::AssignRegister {
@@ -937,6 +961,48 @@ impl<M: Machine> Interpreter<'_, M> {
             whole: matches!(target.op, Op::Object(_)),
             span,
         })
+    }
+
+    /// What a variable of a dynamic type is given for `value`: a number
+    /// exactly as computed, text that is whole UTF-8, or an object as
+    /// another variable holds it.
+    fn assigned(value: Value<M::Place>, span: Span) -> Result<Assigned<M::Place>, Halt> {
+        let refuse = |what: &str| {
+            Self::error(
+                span,
+                ErrorKind::Assignment,
+                format!("{what} cannot be given to a variable of a dynamic type"),
+            )
+        };
+        let float = |float: Float| {
+            let wide = float.convert(FloatFormat::Binary64);
+            let same = float.is_nan()
+                || wide.convert(float.format()).compare(float) == Some(std::cmp::Ordering::Equal);
+            match (same, wide.to_value()) {
+                (true, crate::FloatValue::Binary64(bits)) => {
+                    Ok(Assigned::Float(f64::from_bits(bits)))
+                }
+                _ => Err(refuse("a float wider than 64 bits")),
+            }
+        };
+
+        match value {
+            Value::Int(integer) => Ok(Assigned::Integer(integer.value())),
+            Value::Float(value) => float(value),
+            Value::Bool(value) => Ok(Assigned::Bool(value)),
+            Value::Text(bytes) => String::from_utf8(bytes)
+                .map(Assigned::Text)
+                .map_err(|_| refuse("text that is not UTF-8")),
+            Value::Place(place) => Ok(Assigned::Object(place)),
+            Value::Loaded(loaded) => match loaded.value {
+                LoadedValue::Nothing => Ok(Assigned::Nothing),
+                LoadedValue::Bool(value) => Ok(Assigned::Bool(value)),
+                LoadedValue::Int(value) => Ok(Assigned::Integer(value)),
+                LoadedValue::Float(value) => float(value),
+                _ => Err(refuse("a value of this type")),
+            },
+            Value::Raw(_) | Value::Pointer(_) => Err(refuse("a value of a program's type")),
+        }
     }
 
     /// A value converted to `ty` only if `ty` holds it exactly.

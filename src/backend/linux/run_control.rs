@@ -601,7 +601,10 @@ impl<P: LinuxTraceOps> Controller<P> {
 
                 self.continue_scope_threads()
             }
-            ActiveKind::Launch | ActiveKind::Continue | ActiveKind::RuntimeStep { .. } => {
+            ActiveKind::Launch
+            | ActiveKind::Continue
+            | ActiveKind::RuntimeStep { .. }
+            | ActiveKind::RuntimeAssignment { .. } => {
                 for pid in resume_threads {
                     self.continue_thread(pid)?;
                 }
@@ -1847,6 +1850,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         self.end_runtime_step();
+        self.end_runtime_assignment();
 
         // An image exec(2) replaced has no loader rendezvous to follow.
         let exec_replaced = self
@@ -1938,6 +1942,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         } else if let Some(frame) = watched {
             self.select_interpreted_frame(triggering_thread, frame);
         }
+        self.select_assigned_frame(&reason);
 
         self.bump_revision();
         if self.attach_reply.is_some() {
@@ -1947,6 +1952,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             });
         }
 
+        let reason_published = reason.clone();
         let _ = self.events.send(DebuggerEvent::InferiorStopped {
             revision: self.revision,
             process_id,
@@ -1965,6 +1971,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         if let Some(reply) = self.attach_reply.take() {
             let _ = reply.send(Ok(stop_id));
         }
+        self.answer_assignment(stop_id, &reason_published);
 
         Ok(())
     }

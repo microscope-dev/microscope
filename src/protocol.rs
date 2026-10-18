@@ -1762,6 +1762,10 @@ pub enum StopReason {
     /// its program counter, without running.
     Jump,
 
+    /// A language runtime's agent assigned a variable of the selected frame
+    /// as its thread, the only one, ran to make it.
+    Assignment,
+
     /// Execution stopped because of an exception.
     Exception(ExceptionInfo),
 

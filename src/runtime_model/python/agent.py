@@ -13,6 +13,17 @@ the debugger may end it. A step back (3) begins where the thread runs native
 code the frame called, and ends at the thread's next line in that frame or a
 caller.
 
+An assignment is (number, thread, depth, code, name, value): on the thread
+whose native ID is `thread`, the frame with `depth` callers that runs the
+code whose id is `code` gives its variable `name` the value, which is
+["int", DECIMAL], ["float", BITS], ["bool", 0 or 1], ["str", TEXT], ["none"],
+or ["object", ID]: the object with that id that the frame's locals, globals,
+or builtins hold, or None, True, or False. No other object is taken, so an id
+that names nothing any more is never followed. It is made once, where its
+thread is stopped, and no code of the program's runs as it is; the object
+the variable held is kept until the thread's next callback, so that nothing
+it frees runs while other threads are stopped.
+
 Exceptions are bits: RAISED (1) reports each exception raised in Python code
 or reaching it; UNCAUGHT (2) each that leaves a thread's outermost Python
 frame. A report carries the exception and a message formed without running
@@ -81,6 +92,16 @@ FRAME, CALLER, THREAD, DONE = 0, 1, 2, 3
 # A coroutine's or async generator's frame yields as it suspends at an
 # await; its step goes on to its next line rather than leaving it.
 SUSPENDS = 0x80 | 0x100 | 0x200
+
+# The configured assignment, the number of the last one made, and the
+# objects assignments replaced, until their thread's next callback.
+assignment = None
+assigned = 0
+_kept = []
+# Values an assignment names by kind, and those it may take by identity.
+ASSIGNED = ("int", "float", "bool", "str", "none", "object")
+_SINGLETONS = (None, True, False)
+_MISSING = object()
 
 # Which exceptions report.
 raising = 0
@@ -255,8 +276,79 @@ def bind(frame):
 
 
 def waiting(frame, started, event=None):
-    """Binds a configured step waiting for this thread, from where it is, in
-    a callback or call that began at generation `started`, at `event`."""
+    """Makes a configured assignment and binds a configured step waiting
+    for this thread, from where it is, in a callback or call that began at
+    generation `started`, at `event`."""
+    return assigning(frame) + step_waiting(frame, started, event)
+
+
+def assigning(frame):
+    """Makes the configured assignment if it is this thread's and not yet
+    made, in the frame of the chain `frame` is in that it names."""
+    global assigned
+    if (assignment is None or assignment[0] <= assigned
+            or assignment[1] != _thread.get_native_id()):
+        return []
+    number, _, depth, code, name, value = assignment
+    assigned = number
+    chain = []
+    while frame is not None:
+        chain.append(frame)
+        frame = frame.f_back
+    index = len(chain) - 1 - depth
+    if not 0 <= index < len(chain) or id(chain[index].f_code) != code:
+        return [(6, number, 1)]  # The frame is not where it was found.
+    target = chain[index]
+    given = assigned_value(target, value)
+    if given is _MISSING:
+        return [(6, number, 2)]  # No name of the frame finds the object.
+    if sys.version_info < (3, 13):
+        return [(6, number, 3)]  # A function's f_locals is only a copy.
+    try:
+        variables = target.f_locals
+        old = variables.get(name, _MISSING)
+        variables[name] = given
+    except Exception:
+        return [(6, number, 3)]  # The interpreter refused it.
+    if old is not _MISSING:
+        _kept.append(old)
+    return [(6, number, 0)]
+
+
+def assigned_value(frame, value):
+    """The object an assignment's value names, from what the frame's names
+    hold where it names an object; otherwise the value it makes."""
+    kind = value[0]
+    if kind == "int":
+        return int(value[1])
+    if kind == "float":
+        return ctypes.c_double.from_buffer_copy(value[1].to_bytes(8, 'little')).value
+    if kind == "bool":
+        return value[1] == 1
+    if kind == "str":
+        return value[1]
+    if kind == "none":
+        return None
+    for candidate in _SINGLETONS:
+        if id(candidate) == value[1]:
+            return candidate
+    for names in (frame.f_locals, frame.f_globals, frame.f_builtins):
+        for candidate in names.values():
+            if id(candidate) == value[1]:
+                return candidate
+    return _MISSING
+
+
+def release():
+    """Lets go the objects assignments replaced, as their thread runs on."""
+    with lock:
+        kept = _kept[:]
+        _kept.clear()
+    del kept
+
+
+def step_waiting(frame, started, event):
+    """Binds a configured step waiting for this thread."""
     global stepping
     if (tool is None or step is None or stepping is not None
             or step[2] != _thread.get_native_id()):
@@ -472,13 +564,15 @@ def pending():
         if not 0 < length <= CONTROL_CAPACITY:
             raise CommandError('invalid microscope command length')
         decoded = request(bytes(_control[CONTROL_HEADER:CONTROL_HEADER + length]))
-        if (type(decoded) is not list or len(decoded) not in (2, 3, 4)
+        if (type(decoded) is not list or len(decoded) not in (2, 3, 4, 5)
                 or type(decoded[0]) is not int or decoded[0] != wanted_generation):
             raise CommandError('invalid microscope command generation')
         wanted_step = decoded[2] if len(decoded) >= 3 else None
         wanted_exceptions = decoded[3] if len(decoded) >= 4 else 0
+        wanted_assignment = decoded[4] if len(decoded) == 5 else None
         return configure(_owner, wanted_generation, decoded[1], wanted_step=wanted_step,
-                         wanted_exceptions=wanted_exceptions)
+                         wanted_exceptions=wanted_exceptions,
+                         wanted_assignment=wanted_assignment)
     except (CommandError, json.JSONDecodeError, UnicodeDecodeError):
         return failed(wanted_generation)
     except BaseException:
@@ -682,6 +776,8 @@ def callback(event):
                 except Exception:
                     _local.suppressed = (generation, _owner, hook)
             return None
+        if _kept:
+            release()
         _local.busy = True
         _local.suppressed = None
         _local.interruption = None
@@ -771,9 +867,9 @@ def transport(library):
 
 
 def configure(library, wanted_generation, wanted_probes, replacement=None,
-              wanted_step=None, wanted_exceptions=0):
+              wanted_step=None, wanted_exceptions=0, wanted_assignment=None):
     global _library, hook, generation, tool, probes, _owner, _control, _sequence
-    global step, stepping, step_generation, raising
+    global step, stepping, step_generation, raising, assignment
     if type(wanted_generation) is not int or not 0 <= wanted_generation < 2**64:
         raise CommandError("invalid microscope generation")
     if library == _owner and wanted_generation <= generation:
@@ -803,6 +899,8 @@ def configure(library, wanted_generation, wanted_probes, replacement=None,
         wanted_step = tuple(wanted_step)
     if type(wanted_exceptions) is not int or not 0 <= wanted_exceptions <= RAISED | UNCAUGHT:
         raise CommandError("invalid microscope exceptions")
+    if wanted_assignment is not None:
+        wanted_assignment = valid_assignment(wanted_assignment)
 
     if library != _owner and replacement is None:
         raise RuntimeError("microscope transport owner changed during preparation")
@@ -815,6 +913,7 @@ def configure(library, wanted_generation, wanted_probes, replacement=None,
         _library, hook, _control, _sequence = replacement
         _owner = library
     generation = wanted_generation
+    assignment = wanted_assignment
     if not wanted_probes and wanted_step is None and not wanted_exceptions:
         return (0, generation, 6)  # 6 means no tool is registered.
 
@@ -853,6 +952,31 @@ def configure(library, wanted_generation, wanted_probes, replacement=None,
         interrupted(generation)
         raise
     return (0, generation, tool)
+
+
+def valid_assignment(wanted):
+    """The assignment `wanted` names, refused unless whole and in range."""
+    if (type(wanted) not in (list, tuple) or len(wanted) != 6
+            or any(type(field) is not int for field in wanted[:4])
+            or not 0 < wanted[0] < 2**64 or not 0 < wanted[1] < 2**64
+            or not 0 <= wanted[2] < 2**32 or not 0 < wanted[3] < 2**64
+            or type(wanted[4]) is not str or type(wanted[5]) not in (list, tuple)
+            or not wanted[5] or wanted[5][0] not in ASSIGNED):
+        raise CommandError("invalid microscope assignment")
+    value = tuple(wanted[5])
+    kind = value[0]
+    valid = (
+        (kind == "none" and len(value) == 1)
+        or (len(value) == 2 and (
+            (kind == "int" and type(value[1]) is str and 0 < len(value[1]) <= 40
+             and value[1].lstrip('-').isdigit() and value[1].isascii())
+            or (kind in ("float", "object") and type(value[1]) is int
+                and 0 <= value[1] < 2**64)
+            or (kind == "bool" and value[1] in (0, 1) and type(value[1]) is int)
+            or (kind == "str" and type(value[1]) is str))))
+    if not valid:
+        raise CommandError("invalid microscope assignment value")
+    return tuple(wanted[:5]) + (value,)
 
 
 def apply(library, wanted_generation, wanted_probes, wanted_step=None, wanted_exceptions=0):

@@ -36,6 +36,17 @@ impl<O, S> Program<O, S> {
         }
     }
 
+    /// The data object an assignment stores in, when it names it alone.
+    pub fn assigned_object(&self) -> Option<&O> {
+        match &self.root.op {
+            Op::Assign { target, .. } => match &target.op {
+                Op::Object(object) => Some(object),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// The data object whose storage holds the result, when the result is
     /// part of one: reached from it through members and array elements
     /// only, never through a pointer.

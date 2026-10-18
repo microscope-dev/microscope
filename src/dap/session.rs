@@ -2853,6 +2853,7 @@ fn describe_stop(reason: &StopReason) -> (&'static str, Option<String>, Option<S
         | StopReason::FutureDropped { .. } => describe_step_stop(reason),
         StopReason::Pause => ("pause", None, None),
         StopReason::Jump => ("goto", None, None),
+        StopReason::Assignment => ("step", None, Some("the variable was assigned".to_owned())),
         StopReason::Entry | StopReason::Attach => ("entry", None, None),
         StopReason::LanguageException(exception) => (
             "exception",

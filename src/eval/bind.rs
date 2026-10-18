@@ -2016,6 +2016,43 @@ impl<'a, S: Scope> Binder<'a, S> {
 
     // ---- Assignment ----
 
+    /// `target = value` for a variable of a dynamic type, which takes
+    /// whatever value its runtime makes of the value's, as the runtime
+    /// decides when it is stored.
+    fn dynamic_assignment(
+        &mut self,
+        op: Option<BinaryOp>,
+        target: Bound<S>,
+        value: NodeId,
+        span: Span,
+    ) -> BindResult<S> {
+        if !matches!(target.op, Op::Object(_)) {
+            return Err(Self::error(
+                target.span,
+                ErrorKind::NotAnLvalue,
+                format!(
+                    "`{}` is part of a value of a dynamic type; only a variable is assigned",
+                    self.quote(target.span)
+                ),
+            ));
+        }
+
+        let value = self.bind_beside(value, None)?;
+        let value = match op {
+            None => value,
+            Some(op) => self.binary_bound(op, target.clone(), value, span)?,
+        };
+        let value = self.operand(value)?;
+        self.node(
+            Op::Assign {
+                target: Box::new(target),
+                value: Box::new(value),
+            },
+            Ty::Dynamic,
+            span,
+        )
+    }
+
     /// `target = value`, or `target op= value`, which must be the whole
     /// expression.
     fn assignment(
@@ -2032,14 +2069,7 @@ impl<'a, S: Scope> Binder<'a, S> {
 
         let target = self.settle(target)?;
         if matches!(target.ty, Ty::Dynamic) {
-            return Err(Self::error(
-                target.span,
-                ErrorKind::Unsupported,
-                format!(
-                    "`{}` has a dynamic type, whose values microscope does not change",
-                    self.quote(target.span)
-                ),
-            ));
+            return self.dynamic_assignment(op, target, value, span);
         }
 
         if !target.is_place() || !matches!(target.ty, Ty::Program(_)) {

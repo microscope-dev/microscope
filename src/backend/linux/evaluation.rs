@@ -73,6 +73,21 @@ enum ObjectRef {
 }
 
 impl StopObject {
+    /// The runtime, frame, and slot of the interpreted frame's variable
+    /// this names, when it names one.
+    pub(super) const fn interpreted_variable(
+        &self,
+    ) -> Option<(crate::RuntimeId, VirtualAddress, u32)> {
+        match self.key {
+            ObjectRef::Interpreted {
+                runtime,
+                frame,
+                name: crate::runtime_model::InterpretedName::Variable(slot),
+            } => Some((runtime, frame, slot)),
+            _ => None,
+        }
+    }
+
     /// A global of a module.
     pub(super) const fn global(module: ModuleId, key: ObjectKey) -> Self {
         Self {
@@ -1568,6 +1583,22 @@ enum Evaluated {
         bytes: Vec<u8>,
         span: Span,
     },
+
+    /// Give the variable a frame's runtime keeps, which `target` names
+    /// when the expression names one alone, `value`.
+    WriteDynamic {
+        target: Option<StopObject>,
+        value: crate::eval::interp::Assigned<Place>,
+        span: Span,
+    },
+}
+
+/// How an assignment went: made, with the event that follows its reply
+/// when it moved a thread; or begun, as a runtime's agent makes it while
+/// its thread runs, whose stop answers.
+pub(super) enum Assigning {
+    Made(Box<Evaluation>, Option<DebuggerEvent>),
+    Running,
 }
 
 /// An interpreter failure as the debugger's error.
@@ -1590,10 +1621,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         frame: StackFrameId,
         expression: &Expression,
         limits: crate::InspectionLimits,
-    ) -> Result<(Evaluation, Option<DebuggerEvent>)> {
+    ) -> Result<Assigning> {
+        let made = |(evaluation, moved)| Assigning::Made(Box::new(evaluation), moved);
         let (target, bytes, whole, span) =
             match self.run_expression(stop_id, root, frame, expression, Mode::Assign, limits)? {
-                Evaluated::Done(evaluation) => return Ok((*evaluation, None)),
+                Evaluated::Done(evaluation) => return Ok(Assigning::Made(evaluation, None)),
                 Evaluated::Write {
                     target,
                     bytes,
@@ -1605,9 +1637,27 @@ impl<P: LinuxTraceOps> Controller<P> {
                     bytes,
                     span,
                 } => {
-                    return self.assign_register(
-                        stop_id, root, frame, expression, limits, &register, &bytes, span,
-                    );
+                    return self
+                        .assign_register(
+                            stop_id, root, frame, expression, limits, &register, &bytes, span,
+                        )
+                        .map(made);
+                }
+                Evaluated::WriteDynamic {
+                    target,
+                    value,
+                    span,
+                } => {
+                    return self
+                        .assign_interpreted(
+                            stop_id,
+                            root,
+                            (expression, limits),
+                            target,
+                            value,
+                            span,
+                        )
+                        .map(|()| Assigning::Running);
                 }
             };
         let refused = |reason: String| {
@@ -1669,7 +1719,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         self.read_assigned(stop_id, root, frame, expression, limits)
-            .map(|evaluation| (evaluation, None))
+            .map(|evaluation| made((evaluation, None)))
     }
 
     /// Stores an assignment's bytes in a register of a frame that shares
@@ -1741,7 +1791,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// assignment's own mode, which run control waiting cannot interrupt:
     /// the write is made, and serving the request again would make it
     /// twice.
-    fn read_assigned(
+    pub(super) fn read_assigned(
         &self,
         stop_id: StopId,
         root: &StackRoot,
@@ -1772,7 +1822,9 @@ impl<P: InspectionOps> Controller<P> {
     ) -> Result<Evaluation> {
         match self.run_expression(stop_id, root, frame, expression, mode, limits)? {
             Evaluated::Done(evaluation) => Ok(*evaluation),
-            Evaluated::Write { span, .. } | Evaluated::WriteRegister { span, .. } => {
+            Evaluated::Write { span, .. }
+            | Evaluated::WriteRegister { span, .. }
+            | Evaluated::WriteDynamic { span, .. } => {
                 Err(Error::Expression(crate::ExpressionError::new(
                     ErrorKind::Mode,
                     span,
@@ -1834,6 +1886,11 @@ impl<P: InspectionOps> Controller<P> {
             } => Evaluated::WriteRegister {
                 register,
                 bytes,
+                span,
+            },
+            Outcome::AssignDynamic { value, span } => Evaluated::WriteDynamic {
+                target: program.assigned_object().copied(),
+                value,
                 span,
             },
         })

@@ -979,6 +979,10 @@ pub fn stop(reason: &StopReason, renderer: Renderer) -> String {
             "{} where the thread was moved to resume",
             stopped(Role::Current)
         ),
+        StopReason::Assignment => format!(
+            "{} where the thread assigned the variable",
+            stopped(Role::Current)
+        ),
         StopReason::Exception(info) => format!(
             "{} by {}",
             stopped(Role::Error),

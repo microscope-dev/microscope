@@ -53,6 +53,7 @@ enum State {
 struct Desired {
     breakpoints: Vec<crate::runtime_model::ManagedArm>,
     step: Option<crate::runtime_model::RuntimeStep>,
+    assignment: Option<crate::runtime_model::RuntimeAssignment>,
     exceptions: crate::ExceptionStops,
 }
 
@@ -61,6 +62,7 @@ impl From<&Arming<'_>> for Desired {
         Self {
             breakpoints: arming.breakpoints.to_vec(),
             step: arming.step.cloned(),
+            assignment: arming.assignment.cloned(),
             exceptions: arming.exceptions,
         }
     }
@@ -142,6 +144,9 @@ impl Installation {
         // An unread command was published only to an active agent, which
         // still holds the configuration before it.
         (matches!(self.state, State::Ready) && active) || self.replaceable()
+    }
+    const fn ready(&self) -> bool {
+        matches!(self.state, State::Ready) && self.library.is_some()
     }
 
     pub(super) fn pause_deadline(&mut self, now: Instant) {
@@ -275,6 +280,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     let arming = Arming {
                         breakpoints: &[],
                         step: None,
+                        assignment: None,
                         exceptions: crate::ExceptionStops::default(),
                     };
                     let writes = self.with_runtime_stop(
@@ -443,7 +449,13 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .as_ref()
                 .and_then(|sent| sent.step.as_ref())
                 != arming.step;
-        if installation.commands() && !returning {
+        // An assignment is sent only where the agent stopped a thread,
+        // which reads a command as its hook returns; a script would run
+        // where the thread next enters the interpreter, after its code.
+        if arming.assignment.is_some() && !installation.commands() && !installation.ready() {
+            return Err("the runtime's agent takes an assignment only as a command".into());
+        }
+        if (installation.commands() || arming.assignment.is_some()) && !returning {
             let library = installation
                 .library
                 .as_deref()
@@ -729,6 +741,43 @@ impl<P: LinuxTraceOps> Controller<P> {
         result
     }
 
+    /// Whether the runtime's agent takes a command where it stopped a
+    /// thread: it is loaded and ready, or holds an unread command that a
+    /// new one replaces. Its stopped thread reads the command as its hook
+    /// returns, whatever events it monitors.
+    pub(super) fn agent_takes_commands(&self, runtime: RuntimeId) -> bool {
+        self.inferior
+            .as_ref()
+            .and_then(|inferior| inferior.agents.get(&runtime))
+            .is_some_and(|installation| {
+                installation.library.is_some()
+                    && (matches!(installation.state, State::Ready) || installation.replaceable())
+            })
+    }
+
+    /// Whether the runtime's agent has been sent the active assignment as
+    /// a command, which the thread it stopped reads as its hook returns.
+    pub(super) fn agent_assignment_sent(&self, runtime: RuntimeId) -> bool {
+        let Some(inferior) = self.inferior.as_ref() else {
+            return false;
+        };
+        let assignment = inferior
+            .runtime_assignment
+            .as_ref()
+            .filter(|(assigning, _)| *assigning == runtime)
+            .map(|(_, assignment)| assignment);
+        inferior.agents.get(&runtime).is_some_and(|installation| {
+            matches!(installation.state, State::Awaiting { source: false, .. })
+                && !installation.expired
+                && assignment.is_some()
+                && installation
+                    .sent
+                    .as_ref()
+                    .and_then(|sent| sent.assignment.as_ref())
+                    == assignment
+        })
+    }
+
     /// Whether the runtime's agent has been sent the active step, and has
     /// only to acknowledge it: the step has begun.
     pub(super) fn agent_step_sent(&self, runtime: RuntimeId) -> bool {
@@ -784,6 +833,11 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .as_ref()
                 .filter(|(runtime, _)| *runtime == bound.id)
                 .map(|(_, step)| step),
+            assignment: inferior
+                .runtime_assignment
+                .as_ref()
+                .filter(|(runtime, _)| *runtime == bound.id)
+                .map(|(_, assignment)| assignment),
             exceptions: self.exception_stops,
         };
         if !agent.wanted(&arming) {
@@ -1275,6 +1329,7 @@ mod tests {
         installation.sent = Some(Desired {
             breakpoints: first.to_vec(),
             step: None,
+            assignment: None,
             exceptions: crate::ExceptionStops::default(),
         });
         harness
@@ -1287,6 +1342,7 @@ mod tests {
         let arming = |breakpoints| Arming {
             breakpoints,
             step: None,
+            assignment: None,
             exceptions: crate::ExceptionStops::default(),
         };
         assert!(
@@ -1327,11 +1383,13 @@ mod tests {
         let active = Some(Desired {
             breakpoints: vec![function_arm(0, "first")],
             step: None,
+            assignment: None,
             exceptions: crate::ExceptionStops::default(),
         });
         let idle = Some(Desired {
             breakpoints: Vec::new(),
             step: None,
+            assignment: None,
             exceptions: crate::ExceptionStops::default(),
         });
         for (state, sent, restricted) in [
@@ -1405,6 +1463,7 @@ mod tests {
             let arming = Arming {
                 breakpoints: &[],
                 step: None,
+                assignment: None,
                 exceptions: crate::ExceptionStops::default(),
             };
             let error = harness
@@ -1653,11 +1712,13 @@ mod tests {
         let disarmed = Desired {
             breakpoints: vec![function_arm(0, "first")],
             step: None,
+            assignment: None,
             exceptions: crate::ExceptionStops::default(),
         };
         let step = Desired {
             breakpoints: vec![function_arm(0, "first")],
             step: Some(stepping(1)),
+            assignment: None,
             exceptions: crate::ExceptionStops::default(),
         };
         let mut installation = Installation::new();
@@ -1700,6 +1761,7 @@ mod tests {
         ready.sent = Some(Desired {
             breakpoints: Vec::new(),
             step: None,
+            assignment: None,
             exceptions: crate::ExceptionStops::default(),
         });
         assert!(!ready.commands());
@@ -1762,6 +1824,7 @@ mod tests {
         installation.sent = Some(Desired {
             breakpoints: Vec::new(),
             step: Some(stepping(1)),
+            assignment: None,
             exceptions: crate::ExceptionStops::default(),
         });
         let inferior = harness.controller.inferior.as_mut().unwrap();

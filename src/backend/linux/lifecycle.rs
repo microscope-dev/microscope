@@ -1340,6 +1340,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.discard_watchpoints();
             let pending = self.settle_stopped_fork_children();
             let mut inferior = self.inferior.take().ok_or(Error::NotRunning)?;
+            Self::abandon_assignment(&mut inferior);
             self.agent_cleanup_error = inferior.retire_agents_after_exit().err();
             let edits = inferior.take_pending_edits();
             let killed = std::mem::take(&mut inferior.killed_children);

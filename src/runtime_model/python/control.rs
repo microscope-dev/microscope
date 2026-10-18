@@ -4,7 +4,7 @@ use std::sync::Arc;
 use super::{PythonRuntime, agent, exceptions, frames, hook, injection, objects, threads, values};
 use crate::image::python::{Field, PythonLayout};
 use crate::runtime_model::{
-    AgentFailure, AgentRequestTicket, AgentRetirement, AgentRetirementProof, Arming,
+    AgentFailure, AgentRequestTicket, AgentRetirement, AgentRetirementProof, Arming, AssignedValue,
     PreparedAgentRequest, RuntimeAgent, RuntimeStop, RuntimeWrite, TargetProcessId,
 };
 use crate::{ImageAddress, ThreadId, VirtualAddress};
@@ -133,23 +133,26 @@ fn probes<'a>(arming: &Arming<'a>) -> Result<Vec<agent::Probe<'a>>, Arc<str>> {
         .collect()
 }
 
-/// Where a step begins, as the agent finds its frame: the native thread as
-/// CPython numbers it, how many callers the frame has, and its code.
+/// Where a step begins, or an assignment is made, as the agent finds its
+/// frame: the native thread as CPython numbers it, how many callers the
+/// frame has, its code, and the name of the variable asked for, if any.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct StepOrigin {
     native: u64,
     depth: u32,
     code: VirtualAddress,
+    name: Option<Arc<str>>,
 }
 
 impl super::Reading {
     /// Where the step from the interpreted frame at `frame` on `thread`
-    /// begins.
+    /// begins, with the name of the frame's variable in `slot`, if any.
     fn step_origin(
         &self,
         stop: &dyn RuntimeStop,
         thread: ThreadId,
         frame: VirtualAddress,
+        slot: Option<u32>,
     ) -> Result<StepOrigin, Arc<str>> {
         let code_type = stop
             .load_bias()
@@ -182,13 +185,59 @@ impl super::Reading {
             let depth = u32::try_from(frames.len() - 1 - index)
                 .map_err(|_| "the stepping frame has too many callers")?;
             let record = values.reader.record(frame, Field::FrameSize)?;
-            let (code, _) = walk.code_of(&record)?;
+            let (code, id) = walk.code_of(&record)?;
+            let name = slot
+                .map(|slot| {
+                    let local = usize::try_from(slot)
+                        .ok()
+                        .and_then(|slot| table.locals(id).get(slot))
+                        .ok_or("the variable is not the frame's")?;
+                    Ok::<_, Arc<str>>(Arc::clone(table.name(local.name)))
+                })
+                .transpose()?;
             Ok(StepOrigin {
                 native: state.native,
                 depth,
                 code,
+                name,
             })
         })
+    }
+
+    /// The assignment the agent is armed with, if one is asked.
+    fn assignment(
+        &self,
+        stop: &dyn RuntimeStop,
+        arming: &Arming<'_>,
+    ) -> Result<Option<agent::Assignment>, Arc<str>> {
+        let Some(asked) = arming.assignment else {
+            return Ok(None);
+        };
+        // The native ABI reserves zero; the controller's numbers begin at it.
+        let number = asked
+            .number
+            .checked_add(1)
+            .ok_or_else(|| Arc::<str>::from("Python assignment identifiers are exhausted"))?;
+        let origin = self.step_origin(stop, asked.thread, asked.frame, Some(asked.slot))?;
+        let name = origin
+            .name
+            .ok_or_else(|| Arc::<str>::from("the variable is not the frame's"))?;
+        let value = match &asked.value {
+            AssignedValue::Integer(decimal) => serde_json::json!(["int", decimal.as_ref()]),
+            AssignedValue::Float(bits) => serde_json::json!(["float", bits]),
+            AssignedValue::Bool(value) => serde_json::json!(["bool", u8::from(*value)]),
+            AssignedValue::Text(text) => serde_json::json!(["str", text.as_ref()]),
+            AssignedValue::Nothing => serde_json::json!(["none"]),
+            AssignedValue::Object(address) => serde_json::json!(["object", address.get()]),
+        };
+        Ok(Some((
+            number,
+            origin.native,
+            origin.depth,
+            origin.code.get(),
+            name.to_string(),
+            value,
+        )))
     }
 
     /// The C function the callable at `callable` runs, where it is a
@@ -239,7 +288,7 @@ impl super::Reading {
             .number
             .checked_add(1)
             .ok_or_else(|| Arc::<str>::from("Python step identifiers are exhausted"))?;
-        let origin = self.step_origin(stop, active.thread, active.frame)?;
+        let origin = self.step_origin(stop, active.thread, active.frame, None)?;
         Ok(Some((
             number,
             kind,
@@ -319,16 +368,18 @@ impl RuntimeAgent for PythonRuntime {
         generation: u64,
         arming: &Arming<'_>,
     ) -> Result<Vec<RuntimeWrite>, Arc<str>> {
-        let stepping = self.reading()?.step(stop, arming)?;
+        let reading = self.reading()?;
+        let stepping = reading.step(stop, arming)?;
+        let assignment = reading.assignment(stop, arming)?;
         let exceptions = exceptions::bits(arming.exceptions);
         command(
             stop,
             control,
-            previous,
-            generation,
+            (previous, generation),
             &probes(arming)?,
             stepping,
             exceptions,
+            assignment,
         )
     }
     fn process_scope_required(&self) -> bool {
@@ -337,6 +388,7 @@ impl RuntimeAgent for PythonRuntime {
     fn wanted(&self, arming: &Arming<'_>) -> bool {
         !arming.breakpoints.is_empty()
             || arming.step.is_some()
+            || arming.assignment.is_some()
             || exceptions::bits(arming.exceptions) != 0
     }
 }
@@ -344,11 +396,11 @@ impl RuntimeAgent for PythonRuntime {
 pub(super) fn command(
     stop: &dyn RuntimeStop,
     control: VirtualAddress,
-    previous: u64,
-    generation: u64,
+    (previous, generation): (u64, u64),
     probes: &[agent::Probe<'_>],
     stepping: Option<agent::Step>,
     exceptions: u64,
+    assignment: Option<agent::Assignment>,
 ) -> Result<Vec<RuntimeWrite>, Arc<str>> {
     if generation <= previous || !control.get().is_multiple_of(8) {
         return Err("the Python command sequence or alignment is invalid".into());
@@ -364,7 +416,13 @@ pub(super) fn command(
     {
         return Err("the Python command header or acknowledged sequence changed".into());
     }
-    let payload = serde_json::to_vec(&(generation, probes, stepping, exceptions))
+    let payload = assignment
+        .map_or_else(
+            || serde_json::to_vec(&(generation, probes, stepping, exceptions)),
+            |assignment| {
+                serde_json::to_vec(&(generation, probes, stepping, exceptions, assignment))
+            },
+        )
         .map_err(|failure| Arc::<str>::from(failure.to_string()))?;
     let length = u32::try_from(payload.len())
         .ok()

@@ -788,7 +788,6 @@ big                    => 1361129467683753853853498429727072845824 : int
 big + 1                => error arithmetic at `big`
 *count                 => error type at `count`
 count->real            => error type at `count`
-assign: count = 1      => error unsupported at `count`
 ```
 
 ## Assignment
@@ -828,6 +827,47 @@ assign: ptr = 0        => 0x0 : S*
 assign: ptr = 1.5      => error type at `1.5`
 assign: s = s          => error type at `s`
 assign: r = 3          => 3 : int
+```
+
+In a Python frame, `=` and the compound operators give a variable of the
+frame a new value, as `frame.f_locals[name] = value` would. The value is an
+integer, a float, a truth value, `None`, or text that microscope computes,
+or an object another name of the frame already holds: `held = other` makes
+both names hold the same list. microscope's agent stores it on the frame's
+thread, which runs alone until the agent reports the store. The stop is then
+published again, under a new stop, with the variable's frame selected. The
+result is the variable read again. None of the program's code runs. The
+object the variable held before is released once its thread runs on.
+
+```text
+(microscope) set var count = 41
+(int) count = 41
+(microscope) set var count += 1
+(int) count = 42
+(microscope) set var name = "after"
+(str) name = 'after'
+(microscope) set var held = other
+(list) held = [1, 2]
+```
+
+The assignment is made only where it can be exact. That means CPython 3.14
+or later, built with the GIL, and a stop that the agent made: a Python
+breakpoint, the end of a Python step, or a Python exception. The frame's
+thread must also be the only thread the interpreter runs. Anywhere else, the
+assignment is refused and nothing runs:
+
+- Another thread could be holding the objects it changes.
+- A free-threaded interpreter's threads can reach those objects at any time.
+- A native stop leaves the thread somewhere the agent cannot act.
+
+A global, an attribute, an item, text that is not UTF-8, and a value of one
+of the program's native types are refused too.
+
+```microscope-example
+world: python
+assign: point.x = 1    => error not-an-lvalue at `point.x`
+assign: name = "\xff"  => error assignment at `"\xff"`
+assign: count = &point => error assignment at `&point`
 ```
 
 A register is assigned the same way. It holds an unsigned number of its own

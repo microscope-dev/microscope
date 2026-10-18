@@ -17,7 +17,8 @@ fn slot(sequence: u64) -> (Memory, VirtualAddress) {
 fn command_publication_is_bounded_expected_and_last() {
     let (memory, address) = slot(7);
     let probes = [("LINE", 1, 42, "quote\"\\\n.py", 13, "")];
-    let writes = control::command(&memory, address, 7, 8, &probes, None, 0).expect("command");
+    let writes =
+        control::command(&memory, address, (7, 8), &probes, None, 0, None).expect("command");
     assert_eq!(writes.len(), 3);
     assert_eq!(writes[0].address, address.checked_add(32).unwrap());
     assert_eq!(writes[1].address, address.checked_add(16).unwrap());
@@ -36,7 +37,8 @@ fn command_publication_is_bounded_expected_and_last() {
     );
     // A step travels with the probes it is armed beside.
     let step = (5, control_step::OVER, 7, 2, 0x1000);
-    let writes = control::command(&memory, address, 7, 8, &probes, Some(step), 3).expect("command");
+    let writes =
+        control::command(&memory, address, (7, 8), &probes, Some(step), 3, None).expect("command");
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&writes[0].bytes).unwrap(),
         serde_json::json!([8, probes, [5, 1, 7, 2, 4096], 3])
@@ -54,33 +56,42 @@ fn corrupt_changed_unreadable_and_overflowing_command_slots_are_refused() {
         let (mut memory, address) = slot(7);
         memory.fill(HEAP + offset, &[byte]);
         assert!(
-            control::command(&memory, address, 7, 8, &[], None, 0).is_err(),
+            control::command(&memory, address, (7, 8), &[], None, 0, None).is_err(),
             "{offset}"
         );
     }
     let (mut memory, address) = slot(7);
     for next in [0, 6, 7] {
-        assert!(control::command(&memory, address, 7, next, &[], None, 0).is_err());
+        assert!(control::command(&memory, address, (7, next), &[], None, 0, None).is_err());
     }
     assert!(
-        control::command(&memory, address.checked_add(1).unwrap(), 7, 8, &[], None, 0).is_err()
+        control::command(
+            &memory,
+            address.checked_add(1).unwrap(),
+            (7, 8),
+            &[],
+            None,
+            0,
+            None
+        )
+        .is_err()
     );
     assert!(
         control::command(
             &memory,
             VirtualAddress::new(u64::MAX - 7),
-            7,
-            8,
+            (7, 8),
             &[],
             None,
-            0
+            0,
+            None
         )
         .is_err()
     );
     memory.bytes.remove(&(HEAP + 32));
-    assert!(control::command(&memory, address, 7, 8, &[], None, 0).is_err());
+    assert!(control::command(&memory, address, (7, 8), &[], None, 0, None).is_err());
     memory.bytes.remove(&(HEAP + 20));
-    assert!(control::command(&memory, address, 7, 8, &[], None, 0).is_err());
+    assert!(control::command(&memory, address, (7, 8), &[], None, 0, None).is_err());
 }
 
 #[test]
@@ -91,11 +102,11 @@ fn oversized_configuration_is_refused_without_truncation() {
         control::command(
             &memory,
             address,
-            0,
-            1,
+            (0, 1),
             &[("LINE", 1, 1, &path, 1, "")],
             None,
-            0
+            0,
+            None
         )
         .unwrap_err()
         .contains("bounded")
@@ -106,7 +117,7 @@ proptest! {
     #[test]
     fn arbitrary_generations_preserve_sequence_bits(previous in any::<u64>(), next in any::<u64>()) {
         let (memory, address) = slot(previous);
-        match control::command(&memory, address, previous, next, &[], None, 0) {
+        match control::command(&memory, address, (previous, next), &[], None, 0, None) {
             Ok(writes) => {
                 prop_assert!(next > previous);
                 prop_assert_eq!(&writes[2].expected, &previous.to_le_bytes());

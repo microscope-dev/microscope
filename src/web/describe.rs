@@ -512,6 +512,7 @@ const fn reason_kind(reason: &StopReason) -> &'static str {
         StopReason::FutureDropped { .. } => "futureDropped",
         StopReason::Pause => "pause",
         StopReason::Jump => "jump",
+        StopReason::Assignment => "assignment",
         StopReason::Exception(_) => "exception",
         StopReason::LanguageException(_) => "languageException",
         StopReason::RuntimeEvent { .. } => "runtimeEvent",

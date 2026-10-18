@@ -633,6 +633,13 @@ pub enum HookEvent {
     /// to call native code at `target`, where it ends if the code is the
     /// program's own and described.
     StepCalls { number: u64, target: VirtualAddress },
+
+    /// The assignment the runtime was armed with under this number is
+    /// made, or, with why, could not be.
+    Assigned {
+        number: u64,
+        failure: Option<Arc<str>>,
+    },
 }
 
 /// Everything a runtime's internal hooks are to report.
@@ -644,8 +651,43 @@ pub struct Arming<'a> {
     /// The step the runtime arms and judges, if one is active.
     pub step: Option<&'a RuntimeStep>,
 
+    /// The assignment the runtime's agent is to make, if one is asked.
+    pub assignment: Option<&'a RuntimeAssignment>,
+
     /// Which exceptions stop.
     pub exceptions: crate::protocol::ExceptionStops,
+}
+
+/// An assignment a runtime's agent makes to a variable of an interpreted
+/// frame, on the frame's thread, as Python's stores through the frame's
+/// locals.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeAssignment {
+    /// The number the runtime reports the assignment by.
+    pub number: u64,
+
+    /// The thread whose interpreted frame at `frame` holds the variable,
+    /// by its slot among the frame's.
+    pub thread: ThreadId,
+    pub frame: VirtualAddress,
+    pub slot: u32,
+    pub value: AssignedValue,
+}
+
+/// What a variable of an interpreted frame is given: a value the runtime
+/// makes, or the object at an address, which the agent takes only where a
+/// name of the frame still finds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AssignedValue {
+    /// An integer, in decimal.
+    Integer(Arc<str>),
+
+    /// A binary64 float, by its bits.
+    Float(u64),
+    Bool(bool),
+    Text(Arc<str>),
+    Nothing,
+    Object(VirtualAddress),
 }
 
 /// A step a runtime arms and judges itself, as Python's agent steps by the
@@ -1074,6 +1116,13 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
     ) -> Result<bool, Arc<str>> {
         let _ = (stop, thread, frame, code);
         Err("the runtime interprets no frames".into())
+    }
+
+    /// Whether `thread` is the only thread the runtime knows, which alone
+    /// may run its agent's code while every other thread is stopped.
+    fn sole_thread(&self, stop: &dyn RuntimeStop, thread: ThreadId) -> Result<bool, Arc<str>> {
+        let _ = (stop, thread);
+        Err("the runtime cannot say which threads run it".into())
     }
 
     /// The object a watched variable whose word is `bits` holds, none when

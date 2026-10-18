@@ -62,6 +62,7 @@ use tls::TlsModule;
 
 mod activation;
 mod agent_files;
+mod assignments;
 mod async_frames;
 pub use async_frames::resume_address;
 mod awaits;
@@ -764,6 +765,14 @@ enum ActiveKind {
         /// The number the runtime reports the step's end by.
         number: u64,
     },
+
+    /// An assignment a runtime's agent makes on `thread`, the only thread
+    /// that runs, which ends where the agent reports it under `number`.
+    RuntimeAssignment {
+        thread: Pid,
+        runtime: crate::RuntimeId,
+        number: u64,
+    },
 }
 
 struct ActiveExecution {
@@ -1033,6 +1042,13 @@ struct Inferior {
 
     /// The step a runtime is armed with, and the runtime, while one runs.
     runtime_step: Option<(crate::RuntimeId, crate::runtime_model::RuntimeStep)>,
+
+    /// The number the next assignment a runtime's agent makes takes; the
+    /// assignment it is armed with, and the runtime; and the request that
+    /// waits for it.
+    next_runtime_assignment: u64,
+    runtime_assignment: Option<(crate::RuntimeId, crate::runtime_model::RuntimeAssignment)>,
+    assignment: Option<assignments::PendingAssignment>,
     indirect: indirect::IndirectFunctions,
     watch: WatchState,
 
@@ -1111,6 +1127,9 @@ impl Inferior {
             agents: BTreeMap::new(),
             next_runtime_step: 0,
             runtime_step: None,
+            next_runtime_assignment: 0,
+            runtime_assignment: None,
+            assignment: None,
             indirect: indirect::IndirectFunctions::default(),
             watch: WatchState::default(),
             terminating: None,
@@ -2044,12 +2063,15 @@ impl<P: LinuxTraceOps> Controller<P> {
                     self.evaluate_assigning(stop_id, &root, frame, &expression, limits)
                 });
                 match result {
-                    Ok((evaluation, moved)) => {
-                        let _ = reply.send(Ok(evaluation));
+                    Ok(evaluation::Assigning::Made(evaluation, moved)) => {
+                        let _ = reply.send(Ok(*evaluation));
                         if let Some(moved) = moved {
                             let _ = self.events.send(moved);
                         }
                     }
+                    // The runtime's agent makes it as its thread runs, and
+                    // its stop answers.
+                    Ok(evaluation::Assigning::Running) => self.await_assignment(reply),
                     Err(error) => {
                         let _ = reply.send(Err(error));
                     }
