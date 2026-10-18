@@ -28,7 +28,7 @@ pub struct Control {
     exiting: AtomicU32,
     flushed: AtomicU32,
     timeout: AtomicU32,
-    reserved: [u32; 2],
+    sites: AtomicPtr<Sites>,
     registry: [AtomicPtr<Header>; abi::MOST_RINGS],
 }
 
@@ -49,11 +49,186 @@ static CONTROL: Control = Control {
     exiting: AtomicU32::new(0),
     flushed: AtomicU32::new(0),
     timeout: AtomicU32::new(0),
-    reserved: [0; 2],
+    sites: AtomicPtr::new(ptr::null_mut()),
     registry: [const { AtomicPtr::new(ptr::null_mut()) }; abi::MOST_RINGS],
 };
 
 const _: () = assert!(core::mem::offset_of!(Control, registry) == abi::CONTROL_SIZE);
+const _: () = assert!(core::mem::offset_of!(Control, sites) == 56);
+
+/// The run-time sites: [`abi::SITES_HEADER`]'s header, then the records.
+#[repr(C, align(16))]
+struct Sites {
+    magic: u32,
+    version: u8,
+    reserved: [u8; 3],
+    capacity: u32,
+    count: AtomicU32,
+    records: [Site; abi::MOST_RUNTIME_SITES],
+}
+
+/// A site a program defines as it runs, which [`define`] gives.
+#[repr(C)]
+pub struct Site {
+    kind: AtomicU8,
+    pub(crate) state: AtomicU8,
+    flags: AtomicU16,
+    line: AtomicU32,
+    name: AtomicU64,
+    name_length: AtomicU32,
+    file_length: AtomicU32,
+    file: AtomicU64,
+
+    /// Its key, which the ABI leaves out.
+    key: AtomicU32,
+    reserved: [AtomicU32; 3],
+}
+
+const _: () = assert!(core::mem::size_of::<Site>() == abi::RUNTIME_SITE_SIZE);
+const _: () = assert!(core::mem::offset_of!(Sites, records) == abi::SITES_HEADER);
+
+static SITES: Sites = Sites {
+    magic: abi::SITES_MAGIC,
+    version: abi::SITES_VERSION,
+    reserved: [0; 3],
+    #[expect(clippy::cast_possible_truncation, reason = "the table is small")]
+    capacity: abi::MOST_RUNTIME_SITES as u32,
+    count: AtomicU32::new(0),
+    records: [const {
+        Site {
+            kind: AtomicU8::new(abi::SITE_NONE),
+            state: AtomicU8::new(0),
+            flags: AtomicU16::new(0),
+            line: AtomicU32::new(0),
+            name: AtomicU64::new(0),
+            name_length: AtomicU32::new(0),
+            file_length: AtomicU32::new(0),
+            file: AtomicU64::new(0),
+            key: AtomicU32::new(0),
+            reserved: [const { AtomicU32::new(0) }; 3],
+        }
+    }; abi::MOST_RUNTIME_SITES],
+};
+
+/// The run-time sites defined so far, with their name and file, which also
+/// keeps one definition at a time.
+type Definitions = Vec<(&'static str, &'static str, &'static Site)>;
+static DEFINED: std::sync::Mutex<Definitions> = std::sync::Mutex::new(Vec::new());
+
+/// The run-time site of `kind`, a `SITE_` constant other than
+/// [`abi::SITE_NONE`], named `name` at `file`'s `line`: the one defined
+/// before with all four, or a new one. None when the kind is not one,
+/// either text is longer than [`abi::MOST_SITE_TEXT`], or every site is
+/// taken. It is off until microscope switches it on, as a static site is.
+pub fn define(kind: u8, name: &str, file: &str, line: u32) -> Option<&'static Site> {
+    let longest = abi::MOST_SITE_TEXT as usize;
+    if !(abi::SITE_ZONE..=abi::SITE_TRIGGER).contains(&kind)
+        || name.len() > longest
+        || file.len() > longest
+    {
+        return None;
+    }
+
+    let mut defined = DEFINED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Few sites are defined, each once, so a search costs little.
+    if let Some(&(_, _, site)) = defined.iter().find(|(named, at, site)| {
+        *named == name && *at == file && site.is(kind) && site.line.load(Ordering::Relaxed) == line
+    }) {
+        return Some(site);
+    }
+
+    let index = SITES.count.load(Ordering::Relaxed);
+    let site = SITES.records.get(index as usize)?;
+
+    // Its texts live as long as the program, as a static site's do.
+    let name: &'static str = Box::leak(name.to_owned().into_boxed_str());
+    let file: &'static str = Box::leak(file.to_owned().into_boxed_str());
+    let address = |text: &str| ptr::from_ref(text).addr() as u64;
+    site.kind.store(kind, Ordering::Relaxed);
+    site.line.store(line, Ordering::Relaxed);
+    site.name.store(address(name), Ordering::Relaxed);
+    site.file.store(address(file), Ordering::Relaxed);
+    #[expect(clippy::cast_possible_truncation, reason = "a text is bounded")]
+    {
+        site.name_length.store(name.len() as u32, Ordering::Relaxed);
+        site.file_length.store(file.len() as u32, Ordering::Relaxed);
+    }
+    site.key.store(abi::RUNTIME_KEY | index, Ordering::Relaxed);
+
+    // Whole before it is counted, and counted before microscope is told
+    // where to look.
+    SITES.count.store(index + 1, Ordering::Release);
+    CONTROL
+        .sites
+        .store(ptr::from_ref(&SITES).cast_mut(), Ordering::Release);
+    defined.push((name, file, site));
+    Some(site)
+}
+
+impl Site {
+    /// Whether microscope switched the site on.
+    #[must_use]
+    #[inline]
+    pub fn on(&self) -> bool {
+        self.state.load(Ordering::Relaxed) != 0
+    }
+
+    pub(crate) fn key(&self) -> u32 {
+        self.key.load(Ordering::Relaxed)
+    }
+
+    fn is(&self, kind: u8) -> bool {
+        self.kind.load(Ordering::Relaxed) == kind
+    }
+
+    /// A span of the thread's time, from here until the guard drops, at a
+    /// zone's site.
+    pub fn zone(&self) -> Zone {
+        let began =
+            self.is(abi::SITE_ZONE) && self.on() && write(self.key(), abi::ZONE_BEGIN, 0, &[]);
+        Zone(began.then(|| self.key()), PhantomData)
+    }
+
+    /// The end of a frame, at a frame's site, or a trigger, at a trigger's.
+    pub fn event(&self) {
+        let kind = if self.is(abi::SITE_FRAME) {
+            abi::FRAME
+        } else if self.is(abi::SITE_TRIGGER) {
+            abi::TRIGGER
+        } else {
+            return;
+        };
+        if self.on() {
+            write(self.key(), kind, 0, &[]);
+        }
+    }
+
+    /// A value of the series, at a plot's site.
+    pub fn plot(&self, value: f64) {
+        if self.is(abi::SITE_PLOT) && self.on() {
+            write(self.key(), abi::PLOT, 0, &value.to_le_bytes());
+        }
+    }
+
+    /// A message on the thread's timeline, at a message's site, cut to 256
+    /// bytes.
+    pub fn message(&self, message: fmt::Arguments<'_>) {
+        if self.is(abi::SITE_MESSAGE) && self.on() {
+            text(self.key(), abi::MESSAGE, message);
+        }
+    }
+
+    /// Labels the thread's time `name=value` until the guard drops, at a
+    /// label's site.
+    pub fn label(&self, value: &dyn fmt::Display) -> Label {
+        let began = self.is(abi::SITE_LABEL)
+            && self.on()
+            && text(self.key(), abi::LABEL_BEGIN, format_args!("{value}"));
+        Label(began.then(|| self.key()), PhantomData)
+    }
+}
 
 /// A ring's header; its records follow it.
 #[repr(C, align(128))]
@@ -154,14 +329,14 @@ type ThreadBound = PhantomData<*const ()>;
 
 /// The zone [`zone!`](crate::zone) opens, which ends when it drops.
 #[must_use = "a zone ends when its guard drops"]
-pub struct Zone(Option<&'static AtomicU8>, ThreadBound);
+pub struct Zone(Option<u32>, ThreadBound);
 
 impl Zone {
     #[doc(hidden)]
     #[inline(always)]
     pub fn begin(state: &'static AtomicU8) -> Self {
-        let began = __on(state) && write(state, abi::ZONE_BEGIN, 0, &[]);
-        Self(began.then_some(state), PhantomData)
+        let began = __on(state) && write(site(state), abi::ZONE_BEGIN, 0, &[]);
+        Self(began.then(|| site(state)), PhantomData)
     }
 }
 
@@ -169,30 +344,30 @@ impl Drop for Zone {
     #[inline(always)]
     fn drop(&mut self) {
         // A zone that began ends, whether or not its site is still on.
-        if let Some(state) = self.0 {
-            end(state, abi::ZONE_END);
+        if let Some(key) = self.0 {
+            end(key, abi::ZONE_END);
         }
     }
 }
 
 /// The label [`label!`](crate::label) opens, which ends when it drops.
 #[must_use = "a label ends when its guard drops"]
-pub struct Label(Option<&'static AtomicU8>, ThreadBound);
+pub struct Label(Option<u32>, ThreadBound);
 
 impl Label {
     #[doc(hidden)]
     #[inline(always)]
     pub fn begin(state: &'static AtomicU8, value: &dyn fmt::Display) -> Self {
-        let began = __on(state) && text(state, abi::LABEL_BEGIN, format_args!("{value}"));
-        Self(began.then_some(state), PhantomData)
+        let began = __on(state) && text(site(state), abi::LABEL_BEGIN, format_args!("{value}"));
+        Self(began.then(|| site(state)), PhantomData)
     }
 }
 
 impl Drop for Label {
     #[inline(always)]
     fn drop(&mut self) {
-        if let Some(state) = self.0 {
-            end(state, abi::LABEL_END);
+        if let Some(key) = self.0 {
+            end(key, abi::LABEL_END);
         }
     }
 }
@@ -200,33 +375,33 @@ impl Drop for Label {
 /// Ends a zone or label out of line, so that a guard whose site was off
 /// drops to one test, which the compiler then inlines.
 #[inline(never)]
-fn end(state: &'static AtomicU8, kind: u8) {
-    write(state, kind, 0, &[]);
+pub(crate) fn end(key: u32, kind: u8) {
+    write(key, kind, 0, &[]);
 }
 
 #[doc(hidden)]
 #[inline(always)]
 pub fn __event(state: &'static AtomicU8, kind: u8) {
     if __on(state) {
-        write(state, kind, 0, &[]);
+        write(site(state), kind, 0, &[]);
     }
 }
 
 #[doc(hidden)]
 #[inline]
 pub fn __plot(state: &'static AtomicU8, value: f64) {
-    write(state, abi::PLOT, 0, &value.to_le_bytes());
+    write(site(state), abi::PLOT, 0, &value.to_le_bytes());
 }
 
 #[doc(hidden)]
 #[inline(never)]
 pub fn __message(state: &'static AtomicU8, message: fmt::Arguments<'_>) {
-    text(state, abi::MESSAGE, message);
+    text(site(state), abi::MESSAGE, message);
 }
 
 /// Writes an event whose argument is `text`, cut to its longest.
 #[inline(never)]
-fn text(state: &'static AtomicU8, kind: u8, text: fmt::Arguments<'_>) -> bool {
+fn text(key: u32, kind: u8, text: fmt::Arguments<'_>) -> bool {
     let mut cut = Cut {
         bytes: [0; abi::MOST_TEXT],
         length: 0,
@@ -236,7 +411,7 @@ fn text(state: &'static AtomicU8, kind: u8, text: fmt::Arguments<'_>) -> bool {
     let _ = fmt::write(&mut cut, text);
     let text = &cut.bytes[..cut.length];
     #[expect(clippy::cast_possible_truncation, reason = "a text is short")]
-    write(state, kind, text.len() as u32, text)
+    write(key, kind, text.len() as u32, text)
 }
 
 /// A text, cut where it would pass its longest, at a character's start.
@@ -263,11 +438,11 @@ impl fmt::Write for Cut {
     }
 }
 
-/// Writes one event of `kind` from the site whose state byte is `state` to
-/// the thread's ring: a record, and `more` in the records after it.
-/// Whether the ring took it.
+/// Writes one event of `kind` from the site whose key is `site` to the
+/// thread's ring: a record, and `more` in the records after it. Whether
+/// the ring took it.
 #[inline(always)]
-fn write(state: &'static AtomicU8, kind: u8, argument: u32, more: &[u8]) -> bool {
+fn write(site: u32, kind: u8, argument: u32, more: &[u8]) -> bool {
     let mut slot = RING.with(Cell::get);
     if let Slot::Unset = slot {
         slot = acquire();
@@ -288,7 +463,6 @@ fn write(state: &'static AtomicU8, kind: u8, argument: u32, more: &[u8]) -> bool
     compiler_fence(Ordering::SeqCst);
     let time = now(header.clock.load(Ordering::Relaxed));
     let head = header.head.load(Ordering::Relaxed);
-    let site = site(state);
     let mut record = [0; abi::RECORD];
     record[..8].copy_from_slice(&time.to_le_bytes());
     record[8..12].copy_from_slice(&site.to_le_bytes());
@@ -334,10 +508,13 @@ impl Ring {
     }
 }
 
-/// A site's key: its state byte's offset from the control block.
+/// A static site's key: its state byte's offset from the control block.
 #[inline(always)]
 fn site(state: &'static AtomicU8) -> u32 {
-    #[expect(clippy::cast_possible_truncation, reason = "a module is under 2 GiB")]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a module is under 1 GiB, as ABI 2 requires"
+    )]
     let offset =
         (ptr::from_ref(state).addr() as i64 - ptr::from_ref(&CONTROL).addr() as i64) as i32;
     offset.cast_unsigned()
@@ -438,6 +615,10 @@ static SITE: &AtomicU8 = crate::__site!(crate::abi::SITE_NONE, "microscope_probe
 fn disable() {
     CONTROL.enable.store(0, Ordering::Relaxed);
     switch_sites_off();
+    let defined = SITES.count.load(Ordering::Acquire) as usize;
+    for site in SITES.records.iter().take(defined) {
+        site.state.store(0, Ordering::Relaxed);
+    }
     let _ = SITE;
 }
 

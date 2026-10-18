@@ -312,3 +312,80 @@ fn concurrent_threads_reuse_the_rings_a_reader_frees() {
         );
     }
 }
+
+/// A run-time site is a record microscope can read where the control block
+/// says, whole before it is counted; defined again it is the same site; it
+/// writes only while on, by its key, only what its kind writes; and it
+/// switches off with every other site.
+#[test]
+fn a_run_time_site_writes_by_its_key_only_while_on() {
+    let _serial = listen();
+    let zone = define(abi::SITE_ZONE, "dynamic.load", "app.py", 7).unwrap();
+    let message = define(abi::SITE_MESSAGE, "dynamic.say", "app.py", 9).unwrap();
+    assert!(ptr::eq(
+        zone,
+        define(abi::SITE_ZONE, "dynamic.load", "app.py", 7).unwrap()
+    ));
+    assert!(!ptr::eq(
+        zone,
+        define(abi::SITE_ZONE, "dynamic.load", "app.py", 8).unwrap()
+    ));
+    assert!(define(abi::SITE_NONE, "none", "app.py", 1).is_none());
+    assert!(define(abi::SITE_TRIGGER + 1, "unknown", "app.py", 1).is_none());
+    let long = "x".repeat(abi::MOST_SITE_TEXT as usize + 1);
+    assert!(define(abi::SITE_ZONE, &long, "app.py", 1).is_none());
+
+    // Where microscope finds it, as the ABI lays it out.
+    let sites = CONTROL.sites.load(Ordering::Acquire);
+    assert!(ptr::eq(sites, &SITES));
+    assert_eq!(SITES.magic, abi::SITES_MAGIC);
+    let count = SITES.count.load(Ordering::Acquire);
+    let index = (0..count)
+        .find(|&index| ptr::eq(&SITES.records[index as usize], zone))
+        .unwrap();
+    assert_eq!(zone.kind.load(Ordering::Relaxed), abi::SITE_ZONE);
+    assert_eq!(zone.line.load(Ordering::Relaxed), 7);
+    let (name, _, _) = *DEFINED
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(_, _, site)| ptr::eq(*site, zone))
+        .unwrap();
+    assert_eq!(name, "dynamic.load");
+    assert_eq!(
+        zone.name.load(Ordering::Relaxed),
+        name.as_ptr().addr() as u64
+    );
+    assert_eq!(zone.name_length.load(Ordering::Relaxed), 12);
+    let key = abi::RUNTIME_KEY | index;
+
+    let ring = std::thread::spawn(move || {
+        drop(zone.zone());
+        zone.state.store(1, Ordering::Relaxed);
+        message.state.store(1, Ordering::Relaxed);
+        drop(zone.zone());
+        zone.message(format_args!("not a zone's"));
+        zone.plot(1.0);
+        message.message(format_args!("said"));
+        mine()
+    })
+    .join()
+    .unwrap();
+    let events = read(ring, 0).0;
+    let written = events
+        .iter()
+        .map(|event| (event.site, event.kind))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        written,
+        [
+            (key, abi::ZONE_BEGIN),
+            (key, abi::ZONE_END),
+            (message.key(), abi::MESSAGE)
+        ]
+    );
+    assert_eq!(text(&events[2]), b"said");
+
+    disable();
+    assert!(!zone.on() && !message.on());
+}

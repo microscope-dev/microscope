@@ -246,6 +246,18 @@ The probes SDK places a static site table and shared ring protocol in the
 program. The recorder discovers selected sites, enables them through the
 control structure, and decodes records from the ring.
 
+ABI 2 adds run-time sites: `microscope_probes::define` appends a record to a
+fixed table of 4096 in the program, whose address the control block holds at
+offset 56 once the first is defined. Each record carries the site's kind,
+line, name and file, and its own state byte; records name it by
+`RUNTIME_KEY` plus its index. A static site's key, its state byte's offset
+from the control block, must then lie within 2^30, so the key spaces never
+meet. The collector keeps an ABI 2 module though no static site is selected,
+rereads the table's count at each drain, selects new sites by name as each
+is defined, and switches the control block on once any site is on. A
+malformed table or record is counted as malformed. The decoder still reads
+ABI 1, which has no table.
+
 Probe writers must remain safe when no recorder exists, when the recorder is
 killed, and when a reader falls behind. The timeout turns instrumentation off
 after reader loss. Changes to record layout require coordinated SDK, decoder,

@@ -222,6 +222,11 @@ The probes SDK lets a program mark named work and values. Recording enables
 all discovered sites by default. `--probes off`, a comma-separated list, or a
 name ending in `*` limits what is enabled.
 
+A program can also define sites as it runs, as a language that names its
+work at run time does. It is switched on, by the same names, when the
+recording next reads the program, so its first uses can go unrecorded. A
+program that defines more than 4096 sites gets no more.
+
 > TODO: write a short public probes tutorial after the SDK has a supported
 > installation and versioning story.
 

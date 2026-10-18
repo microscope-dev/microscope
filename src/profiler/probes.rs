@@ -26,14 +26,18 @@ use crate::model::Tid;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Table {
     pub control: u64,
+
+    /// Its ABI version, from 2 of which the program may define sites as it
+    /// runs.
+    pub abi: u16,
     pub sites: Vec<SiteRecord>,
 }
 
 /// One site, as its module's file describes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SiteRecord {
-    /// What records call it: its state byte's offset from the control
-    /// block.
+    /// What records call it: a static site's state byte's offset from the
+    /// control block, or a run-time site's key.
     pub key: u32,
     pub kind: u8,
     pub line: u32,
@@ -45,7 +49,7 @@ pub struct SiteRecord {
 }
 
 /// The longest name or file a site may have.
-const MOST_NAME: u32 = 4096;
+const MOST_NAME: u32 = abi::MOST_SITE_TEXT;
 
 /// The most records one event takes: a longest text and its record.
 pub const MOST_EVENT_RECORDS: u64 = 1 + abi::MOST_TEXT.div_ceil(15) as u64;
@@ -61,16 +65,7 @@ pub fn table(file: &object::File<'_>) -> Result<Option<Table>, String> {
         .ok()
         .filter(|data| data.len() >= abi::CONTROL_SIZE)
         .ok_or("its control block is cut short")?;
-    if block[..8] != abi::MAGIC {
-        return Err("its control block is not one".into());
-    }
-
-    let version = u16::from_le_bytes([block[8], block[9]]);
-    if version != abi::ABI {
-        return Err(format!(
-            "its probes are ABI version {version}, which this microscope does not read"
-        ));
-    }
+    let version = version(block)?;
 
     let sites = file
         .section_by_name("microscope_sites")
@@ -106,6 +101,7 @@ pub fn table(file: &object::File<'_>) -> Result<Option<Table>, String> {
 
     let mut table = Table {
         control: control.address(),
+        abi: version,
         sites: Vec::new(),
     };
 
@@ -133,10 +129,10 @@ pub fn table(file: &object::File<'_>) -> Result<Option<Table>, String> {
         }
 
         let state = (at + 24).wrapping_add_signed(i64::from(field(24).cast_signed()));
-        let key = i32::try_from(state.wrapping_sub(table.control).cast_signed())
-            .map_err(|_| "a site's state is too far from its control block")?;
+        let key = static_key(version, state.wrapping_sub(table.control).cast_signed())
+            .ok_or("a site's state is too far from its control block")?;
         table.sites.push(SiteRecord {
-            key: key.cast_unsigned(),
+            key,
             kind,
             line: field(4),
             name: text(at + 8, &record[8..16], "name")?,
@@ -148,11 +144,105 @@ pub fn table(file: &object::File<'_>) -> Result<Option<Table>, String> {
     Ok(Some(table))
 }
 
+/// The ABI version of the control block `block`: 1, without run-time
+/// sites, or 2.
+fn version(block: &[u8]) -> Result<u16, String> {
+    if block.len() < abi::CONTROL_SIZE || block[..8] != abi::MAGIC {
+        return Err("its control block is not one".into());
+    }
+
+    let version = u16::from_le_bytes([block[8], block[9]]);
+    if !(1..=abi::ABI).contains(&version) {
+        return Err(format!(
+            "its probes are ABI version {version}, which this microscope does not read"
+        ));
+    }
+
+    Ok(version)
+}
+
+/// The key of a static site of ABI `version` whose state byte is `offset`
+/// from its control block. From ABI 2 it leaves run-time sites theirs.
+fn static_key(version: u16, offset: i64) -> Option<u32> {
+    let near = version < 2 || (-abi::MOST_STATIC_OFFSET..abi::MOST_STATIC_OFFSET).contains(&offset);
+    i32::try_from(offset)
+        .ok()
+        .filter(|_| near)
+        .map(i32::cast_unsigned)
+}
+
+/// How many run-time sites the table whose header is `bytes` counts.
+pub fn runtime_sites(bytes: &[u8]) -> Result<u32, &'static str> {
+    if bytes.len() < abi::SITES_HEADER
+        || bytes[..4] != abi::SITES_MAGIC.to_le_bytes()
+        || bytes[4] != abi::SITES_VERSION
+    {
+        return Err("the run-time sites are not a table this microscope reads");
+    }
+
+    let word = |offset: usize| {
+        u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap_or_default())
+    };
+    let most = u32::try_from(abi::MOST_RUNTIME_SITES).unwrap_or(u32::MAX);
+    Ok(word(12).min(word(8)).min(most))
+}
+
+/// Where the run-time site `index` of the table at `table` lies.
+pub const fn runtime_site_address(table: u64, index: u32) -> u64 {
+    table + (abi::SITES_HEADER + index as usize * abi::RUNTIME_SITE_SIZE) as u64
+}
+
+/// The run-time site `index` of the table at `table`, from its `record`;
+/// `text` reads the bytes of its name and file from the program.
+pub fn runtime_site(
+    table: u64,
+    index: u32,
+    record: &[u8],
+    mut text: impl FnMut(u64, u32) -> Option<Vec<u8>>,
+) -> Result<SiteRecord, String> {
+    if record.len() < abi::RUNTIME_SITE_SIZE || u64::from(index) >= abi::MOST_RUNTIME_SITES as u64 {
+        return Err("a run-time site is cut short".into());
+    }
+
+    let kind = record[0];
+    if !(abi::SITE_ZONE..=abi::SITE_TRIGGER).contains(&kind) {
+        return Err(format!("a run-time site has unknown kind {kind}"));
+    }
+
+    let word = |offset: usize| {
+        u32::from_le_bytes(record[offset..offset + 4].try_into().unwrap_or_default())
+    };
+    let long = |offset: usize| {
+        u64::from_le_bytes(record[offset..offset + 8].try_into().unwrap_or_default())
+    };
+    let mut read = |address: u64, length: u32, what: &str| -> Result<String, String> {
+        if length > MOST_NAME {
+            return Err(format!("a run-time site's {what} is too long"));
+        }
+
+        let bytes = text(address, length)
+            .ok_or_else(|| format!("a run-time site's {what} cannot be read"))?;
+        String::from_utf8(bytes).map_err(|_| format!("a run-time site's {what} is not UTF-8"))
+    };
+
+    Ok(SiteRecord {
+        key: abi::RUNTIME_KEY | index,
+        kind,
+        line: word(4),
+        name: read(long(8), word(16), "name")?,
+        file: read(long(24), word(20), "file")?,
+        state: runtime_site_address(table, index) + 1,
+    })
+}
+
 /// What a control block says, past its magic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Control {
     /// How many of the registry's slots threads took.
     pub rings: u32,
+
+    /// Where its run-time sites are, or zero.
+    pub sites: u64,
     pub dropped: u64,
     pub exiting: bool,
 }
@@ -172,6 +262,7 @@ pub fn control(bytes: &[u8]) -> Result<Control, &'static str> {
         rings: word(20)
             .min(capacity)
             .min(u32::try_from(abi::MOST_RINGS).unwrap_or(u32::MAX)),
+        sites: u64::from_le_bytes(bytes[56..64].try_into().unwrap_or_default()),
         dropped: u64::from_le_bytes(bytes[32..40].try_into().unwrap_or_default()),
         exiting: word(44) != 0,
     })
@@ -920,6 +1011,110 @@ mod tests {
 
         for state in [abi::RING_FREE, abi::RING_CLAIMED] {
             assert_eq!(header(state, 0), Ok(0));
+        }
+    }
+
+    /// A run-time site reads as the ABI lays it out, by its key, its state
+    /// byte inside its record; what breaks the ABI is refused, never read
+    /// past or guessed at.
+    #[test]
+    fn run_time_sites_read_as_the_abi_lays_them_out_or_are_refused() {
+        let mut header = [0; abi::SITES_HEADER];
+        header[..4].copy_from_slice(&abi::SITES_MAGIC.to_le_bytes());
+        header[4] = abi::SITES_VERSION;
+        header[8..12].copy_from_slice(&4_u32.to_le_bytes());
+        header[12..16].copy_from_slice(&9_u32.to_le_bytes());
+        assert_eq!(runtime_sites(&header), Ok(4), "never more than it holds");
+        header[4] = abi::SITES_VERSION + 1;
+        assert!(runtime_sites(&header).is_err());
+        assert!(runtime_sites(&header[..8]).is_err());
+
+        let mut record = [0; abi::RUNTIME_SITE_SIZE];
+        record[0] = abi::SITE_ZONE;
+        record[4..8].copy_from_slice(&7_u32.to_le_bytes());
+        record[8..16].copy_from_slice(&0x5000_u64.to_le_bytes());
+        record[16..20].copy_from_slice(&4_u32.to_le_bytes());
+        record[20..24].copy_from_slice(&6_u32.to_le_bytes());
+        record[24..32].copy_from_slice(&0x6000_u64.to_le_bytes());
+        let texts = |address: u64, length: u32| match (address, length) {
+            (0x5000, 4) => Some(b"load".to_vec()),
+            (0x6000, 6) => Some(b"app.py".to_vec()),
+            (0x7000, _) => Some(vec![0xff]),
+            _ => None,
+        };
+        let site = runtime_site(0x1000, 2, &record, texts).unwrap();
+        assert_eq!(
+            site,
+            SiteRecord {
+                key: abi::RUNTIME_KEY | 2,
+                kind: abi::SITE_ZONE,
+                line: 7,
+                name: "load".into(),
+                file: "app.py".into(),
+                state: 0x1000 + 16 + 2 * 48 + 1,
+            }
+        );
+
+        let broken = |change: &dyn Fn(&mut [u8; abi::RUNTIME_SITE_SIZE])| {
+            let mut record = record;
+            change(&mut record);
+            runtime_site(0x1000, 2, &record, texts).unwrap_err()
+        };
+        assert!(broken(&|record| record[0] = abi::SITE_NONE).contains("kind"));
+        assert!(
+            broken(&|record| record[16..20].copy_from_slice(&5000_u32.to_le_bytes()))
+                .contains("too long")
+        );
+        assert!(
+            broken(&|record| record[16..20].copy_from_slice(&5_u32.to_le_bytes()))
+                .contains("cannot be read")
+        );
+        assert!(
+            broken(&|record| record[8..16].copy_from_slice(&0x7000_u64.to_le_bytes()))
+                .contains("UTF-8")
+        );
+        assert!(runtime_site(0x1000, 2, &record[..40], texts).is_err());
+        let last = u32::try_from(abi::MOST_RUNTIME_SITES).unwrap();
+        assert!(runtime_site(0x1000, last, &record, texts).is_err());
+    }
+
+    /// A control block of ABI 1, which programs built before run-time sites
+    /// carry, reads as one of ABI 2 does; no other version does.
+    #[test]
+    fn control_blocks_of_abi_1_and_2_are_read() {
+        let block = |version: u16| {
+            let mut block = [0; abi::CONTROL_SIZE];
+            block[..8].copy_from_slice(&abi::MAGIC);
+            block[8..10].copy_from_slice(&version.to_le_bytes());
+            block
+        };
+        assert_eq!(version(&block(1)), Ok(1));
+        assert_eq!(version(&block(2)), Ok(2));
+        assert!(version(&block(0)).unwrap_err().contains("ABI version 0"));
+        assert!(version(&block(3)).is_err());
+        assert!(version(&block(2)[..32]).is_err());
+    }
+
+    /// From ABI 2 a static site's state byte lies within 2^30 of its control
+    /// block, so its key never meets a run-time site's; ABI 1 keeps the
+    /// whole `i32`.
+    #[test]
+    fn static_keys_leave_run_time_sites_their_keys_from_abi_2() {
+        let far = abi::MOST_STATIC_OFFSET;
+        assert_eq!(static_key(2, -8), Some((-8_i32).cast_unsigned()));
+        assert_eq!(
+            static_key(2, far - 1),
+            Some(u32::try_from(far - 1).unwrap())
+        );
+        assert_eq!(static_key(2, far), None);
+        assert_eq!(static_key(2, -far - 1), None);
+        assert_eq!(static_key(1, far), Some(u32::try_from(far).unwrap()));
+        assert_eq!(static_key(1, 1 << 31), None);
+        for offset in [-far, far - 1] {
+            assert_ne!(
+                static_key(2, offset).unwrap() & 0xc000_0000,
+                abi::RUNTIME_KEY
+            );
         }
     }
 }

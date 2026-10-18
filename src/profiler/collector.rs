@@ -80,6 +80,17 @@ struct Ring {
 /// One module's instrumentation in the recorded process.
 struct Instance {
     control: u64,
+    module: u32,
+
+    /// Whether the program may define sites as it runs (ABI 2).
+    defines: bool,
+
+    /// How many of its run-time sites have been read.
+    defined: u32,
+
+    /// Whether its control block says microscope listens, which it does
+    /// once any site is on.
+    on: bool,
 
     /// Each key's site row.
     sites: HashMap<u32, u32>,
@@ -148,8 +159,21 @@ impl Collector {
         self.anchors.push(perf::tsc_anchor());
         let heartbeat = monotonic().to_le_bytes();
         for index in 0..self.instances.len() {
-            let control = self.instances[index].control;
-            if perf::write_memory(self.pid, control + 24, &heartbeat).is_err()
+            if self.instances[index].defines {
+                self.define(processor, index);
+            }
+            let instance = &self.instances[index];
+            if !instance.on && !instance.states.is_empty() {
+                self.switch_on(index);
+            }
+            if self.gone {
+                return;
+            }
+            let instance = &self.instances[index];
+            if !instance.on {
+                continue;
+            }
+            if perf::write_memory(self.pid, instance.control + 24, &heartbeat).is_err()
                 || !self.read_instance(processor, index)
             {
                 self.gone = true;
@@ -170,7 +194,9 @@ impl Collector {
                 let _ = perf::write_memory(self.pid, state, &[0]);
             }
 
-            let _ = perf::write_memory(self.pid, instance.control + 12, &0_u32.to_le_bytes());
+            if instance.on {
+                let _ = perf::write_memory(self.pid, instance.control + 12, &0_u32.to_le_bytes());
+            }
         }
 
         self.drain(processor);
@@ -193,13 +219,18 @@ impl Collector {
         self.gone = false;
     }
 
-    /// Switches on a module's sites: the rings its threads already have
-    /// are read from where they are now.
+    /// Takes a module's instrumentation, and switches on its sites the
+    /// recording selects. A module that may define sites as it runs is
+    /// kept though none is selected yet.
     fn adopt(&mut self, processor: &mut Processor, found: &Found) {
         let image = |address| crate::ImageAddress::new(address);
         let control = found.bias.wrapping_load(image(found.table.control)).get();
         let mut instance = Instance {
             control,
+            module: found.module,
+            defines: found.table.abi >= 2,
+            defined: 0,
+            on: false,
             sites: HashMap::default(),
             states: Vec::new(),
             rings: BTreeMap::new(),
@@ -216,16 +247,119 @@ impl Collector {
             }
         }
 
-        if instance.states.is_empty() {
+        let defines = instance.defines && self.selection != ProbeSelection::Off;
+        if instance.states.is_empty() && !defines {
             return;
         }
 
+        self.instances.push(instance);
+        let index = self.instances.len() - 1;
+        if self.instances[index].defines {
+            self.define(processor, index);
+        }
+        if !self.instances[index].states.is_empty() {
+            self.switch_on(index);
+        }
+    }
+
+    /// Reads the sites a module defined as it ran since they were last
+    /// read, and switches on those the recording selects; once its
+    /// control block is on, at once.
+    fn define(&mut self, processor: &mut Processor, index: usize) {
+        let control = self.instances[index].control;
+        let mut block = [0; abi::CONTROL_SIZE];
+        let table = match perf::read_memory(self.pid, control, &mut block) {
+            Ok(read) => probes::control(&block[..read]).map_or(0, |block| block.sites),
+            Err(error) => {
+                self.gone |= gone(&error);
+                return;
+            }
+        };
+        if table == 0 {
+            return;
+        }
+
+        let mut header = [0; abi::SITES_HEADER];
+        let count = match perf::read_memory(self.pid, table, &mut header) {
+            Ok(read) => probes::runtime_sites(&header[..read]),
+            Err(error) => {
+                self.gone |= gone(&error);
+                return;
+            }
+        };
+        let count = match count {
+            Ok(count) => count,
+            // Only the flight recorder, which release builds leave out,
+            // reads the problem; the profile counts it.
+            #[cfg_attr(not(debug_assertions), expect(unused_variables))]
+            Err(problem) => {
+                // Read once: a table that breaks the ABI stays broken.
+                record!("probes: module {}: {problem}", self.instances[index].module);
+                processor
+                    .builder()
+                    .count(AccountKind::ProbeMalformed as u32, 1);
+                self.instances[index].defines = false;
+                return;
+            }
+        };
+
+        let pid = self.pid;
+        let text = |address: u64, length: u32| {
+            let mut bytes = vec![0; length as usize];
+            perf::read_memory(pid, address, &mut bytes)
+                .ok()
+                .filter(|&read| read == bytes.len())
+                .map(|_| bytes)
+        };
+        let mut switched = Vec::new();
+        while self.instances[index].defined < count {
+            let site = self.instances[index].defined;
+            self.instances[index].defined += 1;
+            let mut record = [0; abi::RUNTIME_SITE_SIZE];
+            let address = probes::runtime_site_address(table, site);
+            let read = perf::read_memory(pid, address, &mut record)
+                .map_err(|error| error.to_string())
+                .and_then(|read| probes::runtime_site(table, site, &record[..read], text));
+            let site = match read {
+                Ok(site) => site,
+                #[cfg_attr(not(debug_assertions), expect(unused_variables))]
+                Err(problem) => {
+                    // Its records name a key no site has, and are counted.
+                    record!("probes: module {}: {problem}", self.instances[index].module);
+                    processor
+                        .builder()
+                        .count(AccountKind::ProbeMalformed as u32, 1);
+                    continue;
+                }
+            };
+            let instance = &mut self.instances[index];
+            let row = processor.probe_site(instance.module, &site);
+            instance.sites.insert(site.key, row);
+            if self.selection.selects(&site.name) {
+                instance.states.push(site.state);
+                switched.push(site.state);
+            }
+        }
+
+        if self.instances[index].on
+            && !switched
+                .iter()
+                .all(|&state| perf::write_memory(pid, state, &[1]).is_ok())
+        {
+            self.gone = true;
+        }
+    }
+
+    /// Switches a module's sites on: the rings its threads already have are
+    /// read from where they are now.
+    fn switch_on(&mut self, index: usize) {
+        let control = self.instances[index].control;
         let Some(registry) = self.registry(control) else {
             self.gone = true;
             return;
         };
 
-        instance.dropped = registry.0.dropped;
+        let mut rings = BTreeMap::new();
         for address in registry.1 {
             if let Ok(Some(header)) = self.header(address) {
                 if header.state == abi::RING_RETIRED {
@@ -233,7 +367,7 @@ impl Collector {
                         perf::write_memory(self.pid, address + 12, &abi::RING_FREE.to_le_bytes());
                 }
 
-                instance.rings.insert(
+                rings.insert(
                     address,
                     Ring {
                         tail: header.head,
@@ -254,6 +388,9 @@ impl Collector {
             (control + 48, 0_u32.to_le_bytes().to_vec()),
             (control + 52, self.timeout.to_le_bytes().to_vec()),
         ];
+        let instance = &mut self.instances[index];
+        instance.dropped = registry.0.dropped;
+        instance.rings = rings;
         let on = writes
             .iter()
             .all(|(address, bytes)| perf::write_memory(self.pid, *address, bytes).is_ok())
@@ -265,11 +402,10 @@ impl Collector {
         record!(
             "probes: switched on {} sites of module {} at {control:#x}: {on}",
             instance.states.len(),
-            found.module
+            instance.module
         );
-        if on {
-            self.instances.push(instance);
-        } else {
+        instance.on = on;
+        if !on {
             self.gone = true;
         }
     }
@@ -519,6 +655,10 @@ mod tests {
             Collector::new(pid, ProbeSelection::All, std::time::Duration::from_secs(1));
         collector.instances.push(Instance {
             control: 0x1000,
+            module: 0,
+            defines: false,
+            defined: 0,
+            on: true,
             sites: HashMap::default(),
             states: Vec::new(),
             rings: BTreeMap::from([(0x2000, Ring::default()), (0x3000, Ring::default())]),

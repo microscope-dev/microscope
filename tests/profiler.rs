@@ -2293,6 +2293,45 @@ fn a_recording_switches_on_only_the_sites_it_names() {
     assert!(profile.plots().is_empty() && profile.program_markers().is_empty());
 }
 
+/// Sites a program defines as it runs are switched on as the recording
+/// selects them by name, those defined before it listens and after, and
+/// their events land as a static site's do, though no static site is on.
+#[test]
+fn sites_a_program_defines_as_it_runs_are_recorded_as_selected() {
+    let options = RecordOptions {
+        probes: ProbeSelection::Named(vec!["dynamic.*".into()]),
+        ..RecordOptions::default()
+    };
+
+    let (profile, _) = record_probes(&["defined"], &options);
+    let counts = profile.probe_counts();
+    assert!(!counts.lost(), "{counts:?}");
+    let zones = profile.zones();
+    assert!(
+        zones.iter().all(|zone| zone.name == "dynamic.load"),
+        "{zones:?}"
+    );
+    assert_eq!(zones.len(), 3, "{zones:?}");
+    let plotted = profile
+        .plots()
+        .into_iter()
+        .map(|plot| (plot.name, plot.value))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        plotted,
+        [0.0, 1.0, 2.0].map(|value| ("dynamic.rows".to_owned(), value))
+    );
+    let said = profile
+        .program_markers()
+        .into_iter()
+        .map(|marker| (marker.name, marker.text))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        said,
+        [("dynamic.late".to_owned(), Some("defined late".to_owned()))]
+    );
+}
+
 /// A profile recorded with its symbols left for later holds only build
 /// ids and addresses. Opened where its program's file is gone, a module
 /// keeps its addresses and says why, until a debug directory holds a file
