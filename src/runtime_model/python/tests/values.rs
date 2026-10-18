@@ -688,11 +688,11 @@ fn an_int_of_more_digits_than_it_reads_is_shown_by_its_size() {
     let big = process.long(types.int, tag, &[]);
 
     let shown = read_value(&process, types, big);
-    assert_eq!(shown.summary.as_ref(), "<int of 1025 digits>");
+    assert_eq!(shown.summary.as_ref(), "<int of 1025 30-bit digits>");
     assert_eq!(shown.kind, InterpretedKind::Int(None));
     assert_eq!(
         shown.problem.as_deref(),
-        Some("an int of more than 1024 digits is shown by its size")
+        Some("an int of more than 1024 30-bit digits is shown by its size")
     );
     assert_builtin(&shown, "int");
 }

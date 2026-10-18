@@ -1146,7 +1146,8 @@ impl Values<'_, '_> {
         let slots = mask + 1;
         if slots > MAX_SET_SLOTS {
             return Err(format!(
-                "the set at {object:#x} has a table of {slots} slots, more than {MAX_SET_SLOTS}                  are read"
+                "the set at {object:#x} has a table of {slots} slots, more than the \
+                 {MAX_SET_SLOTS} read"
             )
             .into());
         }
@@ -1262,11 +1263,16 @@ impl Values<'_, '_> {
             Object::Bool(false) => "False".to_owned(),
             Object::Int { negative, digits } => text::int(*negative, digits, self.shift()),
             Object::LargeInt { digits } => {
+                // CPython's digits, each of `shift` bits, not decimal ones.
+                let shift = self.shift();
                 note(
                     summary,
-                    format!("an int of more than {MAX_INT_DIGITS} digits is shown by its size"),
+                    format!(
+                        "an int of more than {MAX_INT_DIGITS} {shift}-bit digits is shown by its \
+                         size"
+                    ),
                 );
-                format!("<int of {digits} digits>")
+                format!("<int of {digits} {shift}-bit digits>")
             }
             Object::Float(value) => text::float(*value),
             Object::Str { points, length } => {
