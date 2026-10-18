@@ -6,6 +6,7 @@ command slot, as the controller replaces an unread command at a stop. Each
 step names its frame by its thread, its callers, and its code, as the
 controller does.
 """
+import _thread
 import asyncio
 import json
 import sys
@@ -369,11 +370,19 @@ elif mode == 'late':
     agent.apply(library, agent.generation + 1, probes)
     target_thread = threading.get_native_id()
     frame_depth = depth(sys._getframe())
-    configured = threading.Thread(target=lambda: agent.apply(
-        library, agent.generation + 1, probes,
-        [7, OVER, target_thread, frame_depth + 1, id(straight.__code__)]))
-    configured.start()
-    configured.join(10)
+    # This thread waits in C, not in threading's Python, whose first calls
+    # are callbacks of this thread's that the configuration could land in.
+    done = _thread.allocate_lock()
+    done.acquire()
+
+    def configure():
+        try:
+            agent.apply(library, agent.generation + 1, probes,
+                        [7, OVER, target_thread, frame_depth + 1, id(straight.__code__)])
+        finally:
+            done.release()
+    _thread.start_new_thread(configure, ())
+    assert done.acquire(timeout=10), 'the configuration never ended'
     assert straight() == 3
     assert (1, 900, 0) in reports and (2, 7, 2) in reports, reports
     assert not any(report[0] == 2 and report[2] == 0 for report in reports), reports
