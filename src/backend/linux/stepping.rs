@@ -36,10 +36,10 @@ use crate::disassembly::{AssemblySyntax, ControlFlow, RawDecode, decoder_for};
 
 use super::memory::read_logical_memory;
 use super::{
-    ActiveKind, BreakpointOwner, Controller, EpilogueTraversal, ExpectedStop, Inferior, LinuxError,
-    NativeThreadState, Resume, ReturnTraversal, StepStart, backend_error, debug_thread_id,
-    is_superseded, process_id, steps_instructions, validate_process, validate_public_stop,
-    validate_resumable, validate_stopped_thread,
+    ActiveKind, BreakpointOwner, Controller, Edit, EpilogueTraversal, ExpectedStop, Inferior,
+    LinuxError, NativeThreadState, Resume, ReturnTraversal, StepStart, backend_error,
+    debug_thread_id, is_superseded, process_id, steps_instructions, validate_process,
+    validate_public_stop, validate_resumable, validate_stopped_thread,
 };
 
 impl<P: LinuxTraceOps> Controller<P> {
@@ -243,7 +243,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// caller rather than stepping through: a stack switch, whose call-frame
     /// information cannot follow it, or the runtime's own machinery when
     /// the step may not enter it.
-    fn stopped_where_step_leaves(&self, pid: Pid) -> Result<bool> {
+    pub(super) fn stopped_where_step_leaves(&self, pid: Pid) -> Result<bool> {
         let registers = self.ptrace.registers(pid)?;
         let enters_runtime = self.step_enters_runtime();
         Ok(match self.code_role(VirtualAddress::new(registers.rip)) {
@@ -621,6 +621,12 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.retire_returned_plan(pid)?;
         if !steps_instructions(kind) && self.begin_epilogue_traversal(pid)? {
             return self.start_user_step(pid, kind);
+        }
+
+        if self.source_step_returned_to_runtime(pid, mode)? {
+            self.let_step_run_on()?;
+            self.queue_internal_edit(Edit::ReturnToRuntime { pid })?;
+            return self.finish_barrier_if_ready();
         }
 
         if self.source_step_returned_to_undescribed_code(pid, mode)? {
@@ -2166,11 +2172,12 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     /// What the physical function holding `address` is to stepping, not
-    /// any function inlined into it there.
+    /// any function inlined into it there, in whichever loaded module holds
+    /// it; `None` when no module does.
     pub(super) fn code_role(&self, address: VirtualAddress) -> Option<CodeRole> {
         let inferior = self.inferior.as_ref()?;
-        let image = inferior.loaded_module.image_address(address).ok()?;
-        Some(self.module_image.code_role(image))
+        let (image, address) = self.module_holding(inferior, address)?;
+        Some(image.code_role(address))
     }
 
     pub(super) fn image_location(&self, address: VirtualAddress) -> Option<ImageLocation> {
@@ -2193,11 +2200,15 @@ pub(super) const fn innermost_frame(native: &libc::user_regs_struct) -> FrameCon
 const STEPS_OVER: &str = "a step into a new task runs as a step over";
 
 /// Whether code in this role is a language runtime's own: its machinery,
-/// its outermost frames, and what it enters by a trap.
+/// an interpreter's, its outermost frames, and what it enters by a trap.
 pub(super) const fn is_runtime_role(role: CodeRole) -> bool {
     matches!(
         role,
-        CodeRole::RuntimeInternal | CodeRole::Outermost | CodeRole::TrapEntry | CodeRole::Dispatch
+        CodeRole::RuntimeInternal
+            | CodeRole::Outermost
+            | CodeRole::TrapEntry
+            | CodeRole::Dispatch
+            | CodeRole::Interpreter
     )
 }
 

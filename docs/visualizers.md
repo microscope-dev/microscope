@@ -155,7 +155,8 @@ is 3.
   pointer, as a Go map is.
 - **Bulk data is read at once.** `bytes(PTR, LEN)` is one read of memory,
   and a sequence of numbers that lies in one run of memory, as an array's,
-  a `Vec`'s, or a `std::vector`'s elements do, is read at once too. Both
+  a `Vec`'s, a `std::vector`'s, or a numpy array's elements do, is read
+  at once too. Both
   travel to the page as bytes, never as text.
 
 ## Renderers

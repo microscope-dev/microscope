@@ -109,12 +109,12 @@ IDs such as `c1`, or `all` where the command permits it.
 
 | Command | Purpose |
 |---|---|
-| `bt` | Show the selected stack |
+| `bt [-r]` | Show the selected stack; `-r` shows the runtime and interpreter frames it folds |
 | `frame N`, `up`, `down` | Select a frame |
 | `threads`, `thread ID` | List or select native threads |
 | `goroutines`, `goroutine ID` | List or select Go goroutines |
 | `tasks`, `task ID` | List or select runtime tasks |
-| `locals`, `args` | Show variables in the selected frame |
+| `print`, `pp` | With no expression, show the selected frame's variables |
 
 ### Values and machine state
 
@@ -138,6 +138,7 @@ IDs such as `c1`, or `all` where the command permits it.
 |---|---|
 | `set NAME VALUE` | Change a session setting |
 | `show NAME` | Show a session setting |
+| `set runtime-frames on\|off` | Show a runtime's and an interpreter's own frames in backtraces, or fold them |
 | `handle SIGNAL ...` | Set stop, print, and delivery policy |
 | `signals` | List signal policy |
 | `source FILE` | Run commands from a file |

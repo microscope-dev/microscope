@@ -8,6 +8,7 @@ use std::process::Stdio;
 
 use microscope::{LaunchOptions, StopReason, TaskPage, TaskState};
 
+use crate::support::truth::Report;
 use crate::support::{Scenario, ScratchDir};
 
 const FIXTURE: &str = "tokio-scale-o0";
@@ -47,13 +48,12 @@ async fn a_hundred_thousand_tasks_are_listed_at_a_bounded_cost_a_page() {
         matches!(reason, StopReason::Breakpoint { .. }),
         "{reason:?}"
     );
-    let truth = std::fs::read_to_string(&output).expect("the output");
-    let expected = truth
+    let expected = Report::read(&output)
         .lines()
-        .filter_map(|line| line.strip_prefix("TRUTH\ttask\t"))
-        .map(|line| {
-            line.split('\t')
-                .next()
+        .filter(|fields| fields.first().is_some_and(|kind| kind == "task"))
+        .map(|fields| {
+            fields
+                .get(1)
                 .and_then(|id| id.parse::<u64>().ok())
                 .expect("a task's id")
         })

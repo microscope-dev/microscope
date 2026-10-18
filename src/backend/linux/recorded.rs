@@ -100,6 +100,22 @@ impl Display for Described<'_> {
 }
 
 impl<P: InspectionOps> InspectionOps for Recorded<P> {
+    fn target_thread_id(
+        &self,
+        process: Pid,
+        thread: Pid,
+    ) -> Option<crate::runtime_model::TargetThreadId> {
+        self.0.target_thread_id(process, thread)
+    }
+
+    fn target_thread_ids(
+        &self,
+        process: Pid,
+        threads: &[Pid],
+    ) -> Vec<(Pid, crate::runtime_model::TargetThreadId)> {
+        self.0.target_thread_ids(process, threads)
+    }
+
     fn read_word(&self, pid: Pid, address: u64) -> Result<u64> {
         self.0.read_word(pid, address)
     }
@@ -135,6 +151,25 @@ impl<P: InspectionOps> InspectionOps for Recorded<P> {
 }
 
 impl<P: LinuxTraceOps> LinuxTraceOps for Recorded<P> {
+    fn agent_files(
+        &self,
+        pid: Pid,
+        library: &[u8],
+    ) -> std::result::Result<Box<dyn super::agent_files::AgentFiles>, Arc<str>> {
+        record!("create runtime agent files for {pid}");
+        self.0.agent_files(pid, library)
+    }
+
+    fn python_launch(
+        &self,
+        executable: &Path,
+        environment: &mut Vec<(std::ffi::OsString, Option<std::ffi::OsString>)>,
+    ) -> std::result::Result<Option<super::python_launch::PythonLaunch>, Arc<str>> {
+        let launch = self.0.python_launch(executable, environment);
+        record!("python launch bootstrap: {launch:?}");
+        launch
+    }
+
     fn spawn(&self, executable: &Path, options: LaunchOptions) -> Result<Pid> {
         record!("spawn {} {:?}", executable.display(), options.arguments);
         let pid = self.0.spawn(executable, options);

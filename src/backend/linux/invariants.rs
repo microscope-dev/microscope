@@ -36,6 +36,51 @@ impl<P: InspectionOps> Controller<P> {
         if let Some(inferior) = &self.inferior {
             inferior.check_invariants(self.shutting_down);
             self.check_watchpoint_ids(inferior);
+            self.check_managed(inferior);
+        }
+    }
+
+    /// Each managed location is owned by enabled breakpoints that list it,
+    /// and while sites are live, each location an enabled breakpoint lists
+    /// is owned by it.
+    fn check_managed(&self, inferior: &Inferior) {
+        let lists = |breakpoint: &crate::Breakpoint, location: &crate::ManagedLocation| {
+            super::breakpoints::managed_locations(breakpoint).any(|listed| listed == location)
+        };
+        for (location, owners) in inferior.managed.owned() {
+            debug_assert!(!owners.is_empty(), "a managed location has no owners");
+            for &owner in owners {
+                debug_assert!(
+                    self.breakpoints
+                        .iter()
+                        .any(|breakpoint| breakpoint.id == owner
+                            && breakpoint.enabled
+                            && lists(breakpoint, location)),
+                    "breakpoint {owner} owns a managed location it does not list while enabled"
+                );
+            }
+        }
+
+        let sites_live = self.launch_reply.is_none()
+            && self.attach_reply.is_none()
+            && inferior
+                .threads
+                .iter()
+                .all(|(&pid, thread)| inferior.settled(pid, thread));
+        if sites_live {
+            for breakpoint in self
+                .breakpoints
+                .iter()
+                .filter(|breakpoint| breakpoint.enabled)
+            {
+                for location in super::breakpoints::managed_locations(breakpoint) {
+                    debug_assert!(
+                        inferior.managed.owns(location, breakpoint.id),
+                        "breakpoint {} lists a managed location it does not own",
+                        breakpoint.id
+                    );
+                }
+            }
         }
     }
 

@@ -7,6 +7,8 @@ use std::collections::BTreeSet;
 use super::gopclntab::{GoFunctionFacts, SpecialFunction};
 use std::path::PathBuf;
 
+use crate::demangle::split_from;
+use crate::image::python;
 use crate::{CodeRole, FunctionInfo, SourceLanguage};
 
 /// The file Go declares the code it generates in: wrappers, but also
@@ -195,17 +197,152 @@ fn go_loop_parent(name: &str) -> Option<&str> {
         .then_some(parent)
 }
 
-/// The role of code that only a linker symbol describes.
+/// The role of code that only a linker symbol describes. A part a
+/// compiler split off a function, or a copy it specialized, plays the
+/// function's role.
 pub fn symbol_role(name: &str) -> CodeRole {
-    match name {
+    match split_from(name) {
         // The process's entry point, which nothing calls.
         "_start" => CodeRole::Outermost,
         // glibc's `sa_restorer`, which a signal handler returns to.
         "__restore_rt" => CodeRole::SignalTrampoline,
         // Rust's intrinsic that calls code under `catch_unwind`.
         "__rust_try" => CodeRole::RuntimeInternal,
+        // Each trace CPython's JIT compiles, as the object it registers
+        // names it; the trace runs its loop's frames.
+        "py::jit:executor" => CodeRole::Interpreter,
         _ => CodeRole::Ordinary,
     }
+}
+
+/// CPython's evaluation loop, the functions that enter it, and the call
+/// machinery between it and the functions it calls or that call it, as
+/// its C names them. A backtrace shows the Python frames a loop runs in
+/// its place; the rest only passes calls along. The names are CPython's
+/// own, which other programs may reuse, so only an image that carries a
+/// Python runtime gives them this role (see `super::cpython`).
+const CPYTHON_MACHINERY: [&str; 87] = [
+    // The evaluation loop, and what enters it.
+    python::EVALUATION_LOOP,
+    "_PyEval_EvalFrame",
+    "_PyEval_Vector",
+    "PyEval_EvalCode",
+    "PyEval_EvalCodeEx",
+    "_PyEval_EvalFrameDefault_impl",
+    // Calls, between frames and into C functions.
+    "_PyFunction_Vectorcall",
+    "_PyObject_VectorcallTstate",
+    "PyObject_Vectorcall",
+    "PyObject_VectorcallDict",
+    "_PyObject_VectorcallDictTstate",
+    "_PyObject_FastCallDictTstate",
+    "PyObject_VectorcallMethod",
+    "_PyObject_Call",
+    "PyObject_Call",
+    "_PyObject_Call_Prepend",
+    "_PyObject_MakeTpCall",
+    "_PyVectorcall_Call",
+    "PyVectorcall_Call",
+    "PyObject_CallOneArg",
+    "PyObject_CallNoArgs",
+    "_PyObject_CallNoArgs",
+    "PyObject_CallObject",
+    "PyObject_CallFunctionObjArgs",
+    "PyObject_CallMethodObjArgs",
+    "object_vacall",
+    "method_vectorcall",
+    "method_vectorcall_FASTCALL",
+    "method_vectorcall_FASTCALL_KEYWORDS",
+    "method_vectorcall_FASTCALL_KEYWORDS_METHOD",
+    "method_vectorcall_NOARGS",
+    "method_vectorcall_O",
+    "method_vectorcall_VARARGS",
+    "method_vectorcall_VARARGS_KEYWORDS",
+    "cfunction_call",
+    "cfunction_vectorcall_FASTCALL",
+    "cfunction_vectorcall_FASTCALL_KEYWORDS",
+    "cfunction_vectorcall_FASTCALL_KEYWORDS_METHOD",
+    "cfunction_vectorcall_NOARGS",
+    "cfunction_vectorcall_O",
+    "slot_tp_call",
+    "vectorcall_method",
+    "vectorcall_unbound",
+    "call_unbound",
+    "call_unbound_noarg",
+    // What resumes a generator or coroutine, which runs its frame.
+    "PyIter_Send",
+    "PyGen_am_send",
+    "gen_send",
+    "gen_send_ex",
+    "gen_send_ex2",
+    "gen_iternext",
+    // What runs a Python function a thread or a context begins in.
+    "context_run",
+    "thread_run",
+    "pythread_wrapper",
+    // The interpreter's own start, which runs the main module.
+    "Py_BytesMain",
+    "Py_RunMain",
+    "pymain_main",
+    "pymain_run_python",
+    "pymain_run_file",
+    "pymain_run_file_obj",
+    "pymain_run_module",
+    "pymain_run_command",
+    "_PyRun_SimpleFileObject",
+    "_PyRun_AnyFileObject",
+    "PyRun_AnyFileExFlags",
+    "PyRun_SimpleFileExFlags",
+    "pyrun_file",
+    "run_mod",
+    "run_eval_code_obj",
+    "PyRun_StringFlags",
+    // What calls a sys.monitoring tool's callbacks for an event.
+    "call_one_instrument",
+    "call_instrumentation_vector",
+    "call_instrumentation_vector_protected",
+    "_Py_call_instrumentation",
+    "_Py_call_instrumentation_arg",
+    "_Py_call_instrumentation_2args",
+    "_Py_call_instrumentation_jump",
+    "_Py_call_instrumentation_exc2",
+    "_Py_call_instrumentation_line",
+    "_Py_call_instrumentation_instruction",
+    "do_monitor_exc",
+    "monitor_raise",
+    "monitor_reraise",
+    "monitor_unwind",
+    "monitor_handled",
+    "monitor_throw",
+    "_PyEval_MonitorRaise",
+];
+
+/// The role CPython's code at a symbol or function of this name plays, in
+/// an image that carries a Python runtime, or `None` for code of its own
+/// role. A part split off a function plays the function's role.
+pub fn cpython_role(name: &str) -> Option<CodeRole> {
+    let name = split_from(name);
+    (CPYTHON_MACHINERY.contains(&name) || name.starts_with(python::TAIL_CALL_PREFIX))
+        .then_some(CodeRole::Interpreter)
+}
+
+/// What `_asyncio`, CPython's accelerator for asyncio, steps a task's
+/// coroutine through: the event loop calls it, and it resumes the coroutine.
+const ASYNCIO_MACHINERY: [&str; 6] = [
+    "task_step",
+    "task_step_impl",
+    "task_step_handle_result_impl",
+    "task_wakeup",
+    "task_wakeup_lock_held",
+    "TaskStepMethWrapper_call",
+];
+
+/// The role `_asyncio`'s code at a symbol or function of this name plays,
+/// in the module that is `_asyncio`, or `None` for code of its own role.
+pub fn asyncio_role(name: &str) -> Option<CodeRole> {
+    ASYNCIO_MACHINERY
+        .contains(&split_from(name))
+        .then_some(CodeRole::Interpreter)
 }
 
 /// The role of a function Go compiled or assembled, following the runtime's
@@ -324,4 +461,99 @@ fn is_exported_runtime(name: &str) -> bool {
         .unwrap_or(receiver);
     let exported = |text: &str| text.starts_with(|first: char| first.is_ascii_uppercase());
     exported(function) && (receiver.is_empty() || exported(receiver))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// GCC and LLVM move a function's cold paths into a symbol of their
+    /// own, and GCC names specialized copies; each plays the role of the
+    /// function it came from, which an image without DWARF knows only by
+    /// the symbol's name.
+    #[test]
+    fn split_off_parts_and_copies_play_their_functions_role() {
+        for name in [
+            "_start.cold",
+            "_start.cold.1",
+            "_start.part.0",
+            "_start.isra.0",
+            "_start.constprop.3",
+            "_start.lto_priv.0",
+            "_start.isra.0.cold",
+            "_start.constprop.0.isra.0.part.2",
+        ] {
+            assert_eq!(symbol_role(name), CodeRole::Outermost, "{name}");
+        }
+
+        assert_eq!(symbol_role("__restore_rt.cold"), CodeRole::SignalTrampoline);
+    }
+
+    /// CPython's evaluation loop, with the parts GCC splits off it, and its
+    /// call machinery are the interpreter's; the functions it calls, such
+    /// as `time.sleep`'s, are not.
+    #[test]
+    fn cpythons_loop_and_call_machinery_are_the_interpreters() {
+        for name in [
+            "_PyEval_EvalFrameDefault",
+            "_PyEval_EvalFrameDefault.cold",
+            "cfunction_vectorcall_O",
+            "method_vectorcall",
+            "thread_run",
+            "Py_RunMain",
+            "_TAIL_CALL_CALL",
+            "_TAIL_CALL_CALL_BUILTIN_FAST.warm",
+            "PyGen_am_send.lto_priv.0",
+        ] {
+            assert_eq!(cpython_role(name), Some(CodeRole::Interpreter), "{name}");
+        }
+
+        for name in [
+            "time_sleep",
+            "pysleep",
+            "builtin_exec",
+            "main",
+            "_PyEval_Vector2",
+        ] {
+            assert_eq!(cpython_role(name), None, "{name}");
+        }
+
+        assert_eq!(symbol_role("_PyEval_EvalFrameDefault"), CodeRole::Ordinary);
+        assert_eq!(symbol_role("py::jit:executor"), CodeRole::Interpreter);
+    }
+
+    /// `_asyncio`'s task stepping is the interpreter's machinery; the
+    /// futures it completes are not.
+    #[test]
+    fn asyncios_task_stepping_is_the_interpreters() {
+        for name in [
+            "task_step",
+            "task_step_impl.isra.0",
+            "TaskStepMethWrapper_call",
+        ] {
+            assert_eq!(asyncio_role(name), Some(CodeRole::Interpreter), "{name}");
+        }
+
+        for name in ["future_set_result", "_asyncio_Future_result", "task_step_x"] {
+            assert_eq!(asyncio_role(name), None, "{name}");
+        }
+    }
+
+    /// Only the compilers' own suffixes name a part: a number alone, an
+    /// unknown suffix, or a suffix with nothing before it names a function
+    /// of its own.
+    #[test]
+    fn other_dotted_names_are_functions_of_their_own() {
+        for name in [
+            "_start.1",
+            "_start.hot",
+            "_start.cold.x",
+            ".cold",
+            "cold",
+            "_start.",
+            "_start..cold",
+        ] {
+            assert_eq!(symbol_role(name), CodeRole::Ordinary, "{name}");
+        }
+    }
 }

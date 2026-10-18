@@ -123,8 +123,8 @@ pub use model::{
     ByteOrder, CBaseType, CallFrameUnavailableReason, CodeInstanceId, CodeInstanceInfo,
     CodeInstanceKind, CodeRole, ColumnNumber, CoroutineInfo, CoroutineKind, CoroutineState,
     CoroutineStateKind, DebugFile, DebugInformation, DereferenceReference, DereferenceState,
-    DereferenceUnavailableReason, DereferencedValue, EmbeddedSymbolTable, EntryProvenance,
-    EntryValueUnavailableReason, EnumerationOrigin, Enumerator, ExecutionContext,
+    DereferenceUnavailableReason, DereferencedValue, DrivenFrames, EmbeddedSymbolTable,
+    EntryProvenance, EntryValueUnavailableReason, EnumerationOrigin, Enumerator, ExecutionContext,
     ExecutionLocation, FloatValue, FrameKind, FunctionGenerics, FunctionId, FunctionInfo,
     GlobalVariableCandidate, GlobalVariableId, GlobalVariableInfo, GlobalVariablePage,
     GlobalVariableReference, GlobalVariableType, GlobalVariableVisibility, GoKind,
@@ -132,19 +132,20 @@ pub use model::{
     InlineChain, InlineFrameLookup, InspectedValue, InspectionCompletion, InspectionExhaustion,
     InspectionLimit, InspectionLimits, InspectionUsage, IntegerValue, LineNumber, LineSequenceId,
     LoadBias, LoadedGlobalVariableInfo, LoadedModule, LoadedModuleRecord, LoadedModuleSnapshot,
-    MapKey, MemoryRead, MemoryReadCompletion, MemoryReadUnavailableReason, ModuleAddress, ModuleId,
-    ModuleImage, ModuleImageId, NamedTypeRelationship, OptimizedOutReason, PointerWidth,
-    Presentation, PresentedCount, PresentedShape, RecordKind, RecordMember, RecordMemberLayout,
-    RecordedPlace, ReferenceKind, RegisterDescriptor, RegisterId, RegisterRole, RegisterSnapshot,
-    RegisterValue, ResumePoint, ResumePoints, RuntimeDimension, RuntimeId, ScalarValue, SectionId,
-    SectionInfo, SectionLocation, ShapeUnresolvedReason, SliceWords, SourceContext, SourceFile,
-    SourceFileId, SourceLanguage, SourceLine, SourceLocation, StackFrame, StackFrameId,
-    StackSegment, StateMember, StatementFlags, StatementRow, SymbolBinding, SymbolExtent,
-    SymbolExtentProvenance, SymbolId, SymbolInfo, SymbolKind, SymbolLocation, SymbolTableSources,
-    TargetDescription, TaskCursor, TaskId, TaskLocation, TaskPage, TaskSnapshot, TaskState,
-    TextCompletion, TextSummary, ThreadActivity, ThreadId, ThreadLocal, TlsUnavailableReason,
+    ManagedLocation, ManagedPlace, MapKey, MemoryRead, MemoryReadCompletion,
+    MemoryReadUnavailableReason, ModuleAddress, ModuleId, ModuleImage, ModuleImageId,
+    NamedTypeRelationship, OptimizedOutReason, PointerWidth, Presentation, PresentedCount,
+    PresentedShape, RecordKind, RecordMember, RecordMemberLayout, RecordedFrame, RecordedPlace,
+    ReferenceKind, RegisterDescriptor, RegisterId, RegisterRole, RegisterSnapshot, RegisterValue,
+    ResumePoint, ResumePoints, RuntimeDimension, RuntimeId, ScalarValue, SectionId, SectionInfo,
+    SectionLocation, ShapeUnresolvedReason, SliceWords, SourceContext, SourceFile, SourceFileId,
+    SourceLanguage, SourceLine, SourceLocation, StackFrame, StackFrameId, StackSegment,
+    StateMember, StatementFlags, StatementRow, SymbolBinding, SymbolExtent, SymbolExtentProvenance,
+    SymbolId, SymbolInfo, SymbolKind, SymbolLocation, SymbolTableSources, TargetDescription,
+    TaskCursor, TaskId, TaskLocation, TaskPage, TaskSnapshot, TaskState, TextCompletion,
+    TextSummary, ThreadActivity, ThreadId, ThreadLocal, TlsUnavailableReason, TrapAddress,
     TypeArgument, TypeId, TypeIdentity, TypeInfo, TypeKind, TypeModifier, TypeNode, TypeReference,
-    UnfollowedFuture, UnsupportedVariableFeature, UnwindTermination, ValueAccessUnavailableReason,
+    Unfollowed, UnsupportedVariableFeature, UnwindTermination, ValueAccessUnavailableReason,
     ValueBitRange, ValueChild, ValueChildPage, ValueChildRelationship, ValueChildren,
     ValueChildrenReference, Variable, VariableInvalidReason, VariableKind, VariableMalformedKind,
     VariableMalformedReason, VariableSnapshot, VariableState, VariableUnavailableReason,
@@ -160,13 +161,13 @@ pub use protocol::{
     ExceptionInfo, ExceptionStops, ExecutionId, ExitStatus, FramePresentation, GlobalVariableQuery,
     HeldChild, HeldProcess, HitComparison, HitCondition, InferiorState, InvalidatedWatchpoint,
     KernelSource, LanguageException, LanguageExceptionKind, LaunchOptions, LogPart,
-    MAX_DRAWING_BYTES, ModuleIdentity, NumberKind, Numbers, PresentedFrame, ProcessId, Renderer,
-    ResolvedBreakpointLocation, ResumeScope, SignalPolicy, StateSnapshot, StepKind, StepTarget,
-    StopId, StopReason, SyscallStop, TaskEnding, ThreadSnapshot, ThreadState, TypeViews,
-    ValueChildQuery, VariableQuery, ViewCandidate, ViewCheck, ViewExplanation, VisualizerBinding,
-    VisualizerInput, VisualizerInputs, VisualizerValue, WatchAccess, WatchScope, WatchTarget,
-    Watchpoint, WatchpointCapabilities, WatchpointHit, WatchpointId, WatchpointInvalidation,
-    WatchpointOptions, WatchpointSpec,
+    MAX_DRAWING_BYTES, ModuleIdentity, NumberKind, Numbers, PendingBreakpointLocation,
+    PresentedFrame, ProcessId, Renderer, ResolvedBreakpointLocation, ResumeScope, SignalPolicy,
+    StateSnapshot, StepKind, StepTarget, StopId, StopReason, SyscallStop, TaskEnding,
+    ThreadSnapshot, ThreadState, TypeViews, ValueChildQuery, VariableQuery, ViewCandidate,
+    ViewCheck, ViewExplanation, VisualizerBinding, VisualizerInput, VisualizerInputs,
+    VisualizerValue, WatchAccess, WatchScope, WatchTarget, Watchpoint, WatchpointCapabilities,
+    WatchpointHit, WatchpointId, WatchpointInvalidation, WatchpointOptions, WatchpointSpec,
 };
 
 pub use runtime_model::TASK_NOUNS;
@@ -1565,10 +1566,24 @@ impl DebuggerHandle {
             .cloned()
             .ok_or(Error::SourceLocationUnavailable)?;
 
-        let (path, contents) = self.read_source(&file.path).await?;
+        self.source_around(file.path, location.line, location.column, radius)
+            .await
+    }
+
+    /// Reads the source lines within `radius` of `line` of the file at the
+    /// `recorded` path.
+    async fn source_around(
+        &self,
+        recorded: Arc<PathBuf>,
+        line: LineNumber,
+        column: Option<ColumnNumber>,
+        radius: u32,
+    ) -> Result<SourceContext> {
+        let (path, contents) = self.read_source(&recorded).await?;
 
         let all_lines: Vec<_> = contents.lines().collect();
-        let line = location.line.get();
+        let number = line;
+        let line = number.get();
         let target = usize::try_from(line)
             .ok()
             .and_then(|line| line.checked_sub(1))
@@ -1599,9 +1614,10 @@ impl DebuggerHandle {
             .into();
 
         Ok(SourceContext {
-            file,
+            recorded,
             path: Arc::new(path),
-            location,
+            line: number,
+            column,
             lines,
         })
     }
@@ -1611,6 +1627,15 @@ impl DebuggerHandle {
     /// files the debug information names can be read this way.
     pub async fn read_source_file(&self, file: &SourceFile) -> Result<(PathBuf, String)> {
         self.read_source(&file.path).await
+    }
+
+    /// Reads the source file at the `recorded` path a language runtime gave
+    /// one of the program's frames, as [`StackFrame::recorded`] has it, or
+    /// will give it, through the handle's [`SourcePathMap`]. A client that
+    /// serves files to others reads only paths its frames named this way,
+    /// or that are the program's own by rules it can state.
+    pub async fn read_recorded_source(&self, recorded: &Path) -> Result<(PathBuf, String)> {
+        self.read_source(recorded).await
     }
 
     /// Reads the first candidate for a recorded source path that exists. A
@@ -2200,14 +2225,35 @@ impl StopView<'_> {
         let (module, source) = match self.location().await {
             Ok(location) => (location.module, location.image.source),
             // A suspended task's frame with no code to locate still waits
-            // at a line.
-            Err(Error::FrameSuspended) => {
+            // at a line, and an interpreted frame runs one its runtime
+            // recorded.
+            Err(Error::FrameSuspended | Error::FrameInterpreted) => {
                 let trace = self.backtrace().await?;
                 let frame = trace
                     .frames
                     .iter()
                     .find(|frame| frame.id == self.context.frame)
                     .ok_or(Error::SourceLocationUnavailable)?;
+                if let Some(place) = frame
+                    .recorded
+                    .as_ref()
+                    .and_then(|recorded| recorded.place.as_ref())
+                {
+                    let line = LineNumber::new(u64::from(place.line))
+                        .ok_or(Error::SourceLocationUnavailable)?;
+                    let column = ColumnNumber::new(u64::from(place.column));
+                    if place.path.starts_with('<') && place.path.ends_with('>') {
+                        return Err(Error::SourceNotAFile {
+                            name: Arc::clone(&place.path),
+                        });
+                    }
+                    let recorded = Arc::new(PathBuf::from(&*place.path));
+                    return self
+                        .handle
+                        .source_around(recorded, line, column, radius)
+                        .await;
+                }
+
                 (
                     frame.module.ok_or(Error::SourceLocationUnavailable)?,
                     frame.source.clone(),

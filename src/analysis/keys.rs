@@ -65,6 +65,10 @@ pub struct Keys<'a> {
     kinds: Vec<KeyKind>,
     roles: Vec<CodeRole>,
 
+    /// Whether each key is of an interpreted frame, by key; keys made
+    /// after the frames' are of none.
+    interpreted: Vec<bool>,
+
     /// Each key's task root, or [`NONE`] for a key that roots none.
     tasks: Vec<u32>,
 
@@ -82,6 +86,72 @@ pub struct Keys<'a> {
 
     /// Each task's labels, by its row.
     task_labels: Vec<Vec<u32>>,
+}
+
+/// Adds the keys of `frame`, innermost first, to `flat`, each made by
+/// `key`.
+fn frame_keys(
+    capture: &Capture,
+    granularity: Granularity,
+    frame: u32,
+    key: &mut impl FnMut(KeyKind) -> u32,
+    flat: &mut Vec<u32>,
+) {
+    let record = &capture.frames[frame as usize];
+    if record.kind == FrameKind::Truncated as u8 {
+        let reason = Truncation::from_number(record.address.get()).map_or(0, |reason| reason as u8);
+        flat.push(key(KeyKind::Truncation {
+            reason,
+            module: record.module.get(),
+        }));
+        return;
+    }
+
+    let lines = capture.frame_lines(frame);
+    let named = FrameKind::from_number(record.kind).is_some_and(FrameKind::named);
+    let lines = match granularity {
+        // A frame keyed by a string has no address to show: its line
+        // stands for one.
+        Granularity::Address if named => lines,
+        Granularity::Address => &[][..],
+        // The function the code is compiled into is the last line.
+        Granularity::PhysicalFunction => lines.last().map_or(&[][..], std::slice::from_ref),
+        Granularity::Function | Granularity::Line => lines,
+    };
+
+    if lines.is_empty() {
+        flat.push(key(KeyKind::Address { frame }));
+    }
+
+    let by_line =
+        granularity == Granularity::Line || (granularity == Granularity::Address && named);
+    for line in lines {
+        let function = line.function.get();
+        flat.push(key(if by_line {
+            KeyKind::Line {
+                function,
+                file: line.file.get(),
+                line: line.number.get(),
+            }
+        } else {
+            KeyKind::Function { function }
+        }));
+    }
+}
+
+/// Whether each of `keys` keys is of an interpreted frame, given each
+/// frame's keys, which frame `i`'s are `flat[starts[i]..starts[i + 1]]`.
+fn interpreted(capture: &Capture, starts: &[u32], flat: &[u32], keys: usize) -> Vec<bool> {
+    let mut interpreted = vec![false; keys];
+    for (frame, record) in capture.frames.iter().enumerate() {
+        if record.kind == FrameKind::Interpreted as u8 {
+            for &key in &flat[starts[frame] as usize..starts[frame + 1] as usize] {
+                interpreted[key as usize] = true;
+            }
+        }
+    }
+
+    interpreted
 }
 
 /// The role of a key's code; keys of no code are ordinary.
@@ -113,46 +183,13 @@ impl<'a> Keys<'a> {
 
         let mut starts = Vec::with_capacity(capture.frames.len() + 1);
         let mut flat = Vec::with_capacity(capture.frames.len());
-        for (frame, record) in capture.frames.iter().enumerate() {
+        for frame in 0..index(capture.frames.len()) {
             starts.push(index(flat.len()));
-            let frame = index(frame);
-            if record.kind == FrameKind::Truncated as u8 {
-                let reason =
-                    Truncation::from_number(record.address.get()).map_or(0, |reason| reason as u8);
-                flat.push(key(KeyKind::Truncation {
-                    reason,
-                    module: record.module.get(),
-                }));
-                continue;
-            }
-
-            let lines = capture.frame_lines(frame);
-            let lines = match granularity {
-                Granularity::Address => &[][..],
-                // The function the code is compiled into is the last line.
-                Granularity::PhysicalFunction => lines.last().map_or(&[][..], std::slice::from_ref),
-                Granularity::Function | Granularity::Line => lines,
-            };
-
-            if lines.is_empty() {
-                flat.push(key(KeyKind::Address { frame }));
-            }
-
-            for line in lines {
-                let function = line.function.get();
-                flat.push(key(if granularity == Granularity::Line {
-                    KeyKind::Line {
-                        function,
-                        file: line.file.get(),
-                        line: line.number.get(),
-                    }
-                } else {
-                    KeyKind::Function { function }
-                }));
-            }
+            frame_keys(capture, granularity, frame, &mut key, &mut flat);
         }
 
         starts.push(index(flat.len()));
+        let interpreted = interpreted(capture, &starts, &flat, kinds.len());
         let mut roles: Vec<CodeRole> = kinds.iter().map(|kind| code_role(capture, *kind)).collect();
 
         // A task is rooted by function, whatever the granularity.
@@ -205,6 +242,7 @@ impl<'a> Keys<'a> {
             flat,
             kinds,
             roles,
+            interpreted,
             tasks,
             groups,
             labels: found.labels,
@@ -279,6 +317,12 @@ impl<'a> Keys<'a> {
         self.roles[key as usize]
     }
 
+    /// Whether a key is of a frame an interpreter runs.
+    #[must_use]
+    pub fn interpreted(&self, key: u32) -> bool {
+        self.interpreted.get(key as usize).copied().unwrap_or(false)
+    }
+
     /// The root of a task whose outermost code of its own is `key`'s.
     #[must_use]
     pub fn task(&self, key: u32) -> Option<u32> {
@@ -350,6 +394,9 @@ impl<'a> Keys<'a> {
             } => {
                 let name = capture.string(capture.functions[function as usize].name.get());
                 match file {
+                    // Code with no line, as a library without debug
+                    // information has, is its function alone.
+                    NONE if line == 0 => name.to_owned(),
                     NONE => format!("{name}:{line}"),
                     file => {
                         let path = capture.string(file);

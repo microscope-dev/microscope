@@ -182,3 +182,38 @@ fn languages_stay_at_their_seams() {
         }
     }
 }
+
+#[test]
+fn thread_identity_evidence_is_read_once_and_forgotten_after_memory_changes() {
+    let memory = super::StopMemory::default();
+    let calls = std::cell::Cell::new(0);
+    let read = || {
+        calls.set(calls.get() + 1);
+        vec![(
+            crate::ThreadId::new(5000),
+            super::TargetThreadId::new(7).unwrap(),
+        )]
+    };
+    let first = memory.thread_identities(&[crate::ThreadId::new(5000)], read);
+    let second = memory.thread_identities(&[crate::ThreadId::new(5000)], read);
+    assert!(std::sync::Arc::ptr_eq(&first, &second));
+    assert_eq!(calls.get(), 1);
+    memory.forget();
+    assert_eq!(
+        &*memory.thread_identities(&[crate::ThreadId::new(5000)], read),
+        &*first
+    );
+    assert_eq!(calls.get(), 2);
+}
+
+#[test]
+fn partial_identity_evidence_can_be_retried_at_the_same_stop() {
+    let memory = super::StopMemory::default();
+    let host = crate::ThreadId::new(5000);
+    let target = super::TargetThreadId::new(7).unwrap();
+    assert!(memory.thread_identities(&[host], Vec::new).is_empty());
+    assert_eq!(
+        &*memory.thread_identities(&[host], || vec![(host, target)]),
+        &[(host, target)]
+    );
+}

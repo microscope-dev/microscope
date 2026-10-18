@@ -265,7 +265,7 @@ async fn check_frame_truth(scenario: &mut Scenario, variant: &str, argc: i128) {
             let context_lines = scenario
                 .operation("source", scenario.handle().source_context(1))
                 .await;
-            assert_eq!(context_lines.location.line.get(), line, "{context}");
+            assert_eq!(context_lines.line.get(), line, "{context}");
             assert_eq!(context_lines.lines.len(), 3, "{context}");
         }
     }
@@ -939,7 +939,7 @@ async fn explicit_contexts_inspect_any_frame_without_selecting_it() {
     );
     let source = scenario.operation("source", view.source_context(0)).await;
     assert_eq!(
-        source.location.line.get(),
+        source.line.get(),
         frames[recursion]
             .source
             .as_ref()
@@ -1508,7 +1508,7 @@ async fn shared_library_and_c_library_caller_frames_are_selectable() {
         "{source:?}"
     );
     assert_eq!(
-        source.location.line.get(),
+        source.line.get(),
         fixture_line(
             "tests/fixtures/c/module-frames/library.c",
             "return callback(adjusted) + 1;"

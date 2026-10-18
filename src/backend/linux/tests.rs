@@ -548,7 +548,7 @@ fn user_breakpoint_supersedes_a_coincident_exception_barrier() {
     inferior.public_stop = None;
     inferior.barrier = Some(StopBarrier::visible(pid, StopReason::Exception(exception)));
     let breakpoint = StopReason::Breakpoint {
-        address: VirtualAddress::new(0x20),
+        address: Some(VirtualAddress::new(0x20)),
         hits: Arc::from([BreakpointHit {
             breakpoint: BreakpointId::new(1),
             hit_count: 1,
@@ -734,9 +734,12 @@ fn queued_signals_are_read_from_the_named_unblocked_pending_set() {
         format!(
             "Name:\tworker\nShdPnd:\t0000000000020010\nSigPnd:\t{pending}\nSigBlk:\t{blocked}\n"
         )
+        .into_bytes()
     };
 
-    let trap = |status: &str| queued_in_status(status, Signal::SIGTRAP, SignalQueue::Thread);
+    let trap = |status: &[u8]| {
+        queued_in_status(status, Signal::SIGTRAP, SignalQueue::Thread).expect("valid masks")
+    };
     assert!(trap(&status("0000000000000010", "0000000000000000")));
     assert!(trap(&status("0000000000010110", "0000000000000100")));
     assert!(
@@ -747,23 +750,53 @@ fn queued_signals_are_read_from_the_named_unblocked_pending_set() {
         !trap(&status("0000000000000000", "0000000000000000")),
         "a process-wide trap is not the thread's own"
     );
-    let shared = |status: &str| queued_in_status(status, Signal::SIGCONT, SignalQueue::Process);
+    let shared = |status: &[u8]| {
+        queued_in_status(status, Signal::SIGCONT, SignalQueue::Process).expect("valid masks")
+    };
     assert!(shared(&status("0000000000000000", "0000000000000000")));
     assert!(!shared(&status("0000000000000000", "0000000000020000")));
-    assert!(!trap("SigPnd:\tnot-hex\n"));
-    assert!(!trap(""));
+    assert_eq!(
+        queued_in_status(b"SigPnd:\tnot-hex\n", Signal::SIGTRAP, SignalQueue::Thread),
+        None
+    );
+    assert_eq!(
+        queued_in_status(b"", Signal::SIGTRAP, SignalQueue::Thread),
+        None
+    );
+}
+
+#[test]
+fn pending_signals_with_unreadable_blocking_masks_are_not_classified() {
+    let status = b"SigPnd: 0000000000000010\nSigBlk: invalid\n";
+    assert_eq!(
+        queued_in_status(status, Signal::SIGTRAP, SignalQueue::Thread),
+        None,
+        "a malformed blocking mask cannot prove the trap is unblocked"
+    );
+}
+
+#[test]
+fn malformed_detach_evidence_is_unknown_instead_of_not_held() {
+    let status =
+        b"TracerPid: 0\nSigPnd: 0000000000040000\nShdPnd: 0000000000000000\nSigBlk: invalid\n";
+    assert_eq!(held_in_status(status, b"42 (child) R 1 "), None);
+    assert_eq!(held_in_status(b"", b""), None);
 }
 
 #[test]
 fn a_process_is_held_while_untraced_and_stopped_or_about_to_stop() {
+    let held_in_status = |status: &[u8], stat: &[u8]| {
+        super::native::held_in_status(status, stat).expect("valid held-process evidence")
+    };
     let status = |state: &str, tracer: &str, pending: &str| {
         format!(
             "Name:\tchild\nState:\t{state}\nTracerPid:\t{tracer}\nSigPnd:\t{pending}\n\
              ShdPnd:\t0000000000000000\nSigBlk:\t0000000000000000\n"
         )
+        .into_bytes()
     };
 
-    let stat = |state: &str| format!("4242 (child) {state} 4241 4242 4241 0 -1");
+    let stat = |state: &str| format!("4242 (child) {state} 4241 4242 4241 0 -1").into_bytes();
     let none = "0000000000000000";
     let stop = "0000000000040000";
     assert!(held_in_status(
@@ -786,7 +819,6 @@ fn a_process_is_held_while_untraced_and_stopped_or_about_to_stop() {
         !held_in_status(&status("S (sleeping)", "0", none), &stat("S")),
         "something let it run"
     );
-    assert!(!held_in_status("", ""));
 }
 
 #[test]
@@ -924,8 +956,9 @@ const EXIT_EVENT: i32 = libc::SIGTRAP | (libc::PTRACE_EVENT_EXIT << 8);
 /// registers as Linux exposes them, records every native effect, and
 /// injects failures and SIGKILL races.
 #[derive(Default)]
-struct FakeTrace {
+pub(super) struct FakeTrace {
     actions: RefCell<Vec<String>>,
+    pub(super) memory_write_failure: RefCell<Option<u32>>,
     registers: RefCell<BTreeMap<Pid, [u64; 8]>>,
 
     /// Fails a write of `(thread, register)` after skipping that many
@@ -940,9 +973,11 @@ struct FakeTrace {
     discard_writes: bool,
     siginfo: RefCell<BTreeMap<Pid, SignalMetadata>>,
     program_counters: RefCell<BTreeMap<Pid, u64>>,
+    target_ids: BTreeMap<Pid, Option<crate::runtime_model::TargetThreadId>>,
 
     /// Threads holding a SIGTRAP queued behind an interrupt stop.
     queued_traps: RefCell<BTreeSet<Pid>>,
+    queue_error: Option<(Pid, SignalQueue)>,
 
     /// Threads past their exit, which no interrupt reaches, whose exit
     /// status is due.
@@ -1002,6 +1037,9 @@ struct FakeTrace {
     /// their debug information loads.
     libraries: RefCell<BTreeMap<PathBuf, (crate::LoadBias, bool)>>,
 
+    /// The symbols each library's image names; others name none.
+    library_symbols: RefCell<BTreeMap<PathBuf, Vec<crate::SymbolInfo>>>,
+
     /// Statuses the kernel holds that no waiter has taken.
     unreaped: RefCell<BTreeMap<Pid, WaitEvent>>,
 }
@@ -1016,7 +1054,7 @@ impl FakeTrace {
     }
 
     /// Takes the actions, and returns whether any begins with `prefix`.
-    fn took(&self, prefix: &str) -> bool {
+    pub(super) fn took(&self, prefix: &str) -> bool {
         self.take_actions()
             .iter()
             .any(|action| action.starts_with(prefix))
@@ -1078,7 +1116,7 @@ impl FakeTrace {
         Ok(())
     }
 
-    fn take_actions(&self) -> Vec<String> {
+    pub(super) fn take_actions(&self) -> Vec<String> {
         std::mem::take(&mut *self.actions.borrow_mut())
     }
 
@@ -1108,6 +1146,18 @@ impl FakeTrace {
 }
 
 impl InspectionOps for FakeTrace {
+    fn target_thread_id(
+        &self,
+        _process: Pid,
+        thread: Pid,
+    ) -> Option<crate::runtime_model::TargetThreadId> {
+        // This fixture's default kernel has one PID namespace; tests can
+        // supply a nested or unavailable mapping explicitly.
+        self.target_ids.get(&thread).copied().unwrap_or_else(|| {
+            crate::runtime_model::TargetThreadId::new(u64::try_from(thread.as_raw()).ok()?)
+        })
+    }
+
     fn read_word(&self, pid: Pid, address: u64) -> Result<u64> {
         if *self.kill_at_read.borrow() == Some((pid, address)) {
             self.kill_at_read.borrow_mut().take();
@@ -1292,7 +1342,15 @@ impl LinuxTraceOps for FakeTrace {
                         start: ImageAddress::new(0),
                         end: ImageAddress::new(0x1000),
                     },
-                    crate::model::ModuleMetadata::default(),
+                    crate::model::ModuleMetadata {
+                        symbols: self
+                            .library_symbols
+                            .borrow()
+                            .get(path)
+                            .cloned()
+                            .unwrap_or_default(),
+                        ..crate::model::ModuleMetadata::default()
+                    },
                 )
                 .unwrap();
                 let binding = crate::model::Binding {
@@ -1327,6 +1385,12 @@ impl LinuxTraceOps for FakeTrace {
 
     fn write_word(&self, pid: Pid, address: u64, value: u64) -> Result<()> {
         self.record(format!("write_word {pid} {address:#x} {value:#x}"));
+        if let Some(remaining) = self.memory_write_failure.borrow_mut().as_mut() {
+            if *remaining == 0 {
+                return Err(backend_error(LinuxError::System(Errno::EIO)));
+            }
+            *remaining -= 1;
+        }
         Ok(())
     }
 
@@ -1400,6 +1464,9 @@ impl LinuxTraceOps for FakeTrace {
     }
 
     fn signal_mask(&self, pid: Pid) -> Result<u64> {
+        if self.vanished.borrow().contains(&pid) {
+            return Err(backend_error(LinuxError::System(Errno::ESRCH)));
+        }
         Ok(self.signal_masks.borrow().get(&pid).copied().unwrap_or(0))
     }
 
@@ -1423,6 +1490,13 @@ impl LinuxTraceOps for FakeTrace {
     }
 
     fn queued_signal(&self, pid: Pid, signal: Signal, queue: SignalQueue) -> Result<bool> {
+        if self.queue_error == Some((pid, queue)) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "malformed signal masks",
+            )
+            .into());
+        }
         Ok(match (signal, queue) {
             (Signal::SIGTRAP, SignalQueue::Thread) => self.queued_traps.borrow().contains(&pid),
             (Signal::SIGCONT, SignalQueue::Process) => {
@@ -1530,14 +1604,14 @@ impl LinuxTraceOps for FakeTrace {
     }
 }
 
-struct WatchHarness {
-    controller: Controller<FakeTrace>,
+pub(super) struct WatchHarness {
+    pub(super) controller: Controller<FakeTrace>,
     events: broadcast::Receiver<DebuggerEvent>,
     threads: Vec<Pid>,
 }
 
 impl WatchHarness {
-    fn trace(&self) -> &FakeTrace {
+    pub(super) fn trace(&self) -> &FakeTrace {
         &self.controller.ptrace
     }
 
@@ -1550,7 +1624,7 @@ impl WatchHarness {
         self.inferior().origin = InferiorOrigin::Attached;
     }
 
-    fn stop_id(&self) -> StopId {
+    pub(super) fn stop_id(&self) -> StopId {
         self.controller
             .inferior
             .as_ref()
@@ -1563,6 +1637,17 @@ impl WatchHarness {
     fn event(&mut self, pid: Pid, event: i32) -> Result<()> {
         self.controller
             .process_wait(WaitEvent::PtraceEvent(pid, Signal::SIGTRAP, event))
+    }
+
+    /// Adds a breakpoint by `spec` while every thread is stopped.
+    fn add_spec(&mut self, spec: BreakpointSpec) -> Result<Breakpoint> {
+        self.edit(|reply| Edit::AddBreakpoint {
+            spec,
+            options: Box::default(),
+            reply,
+        })
+        .try_recv()
+        .expect("reply")
     }
 
     /// Adds a breakpoint at `address` while every thread is stopped.
@@ -1636,8 +1721,14 @@ impl WatchHarness {
             .count()
     }
 
+    fn breakpoint_events(&mut self) -> usize {
+        std::iter::from_fn(|| self.events.try_recv().ok())
+            .filter(|event| matches!(event, DebuggerEvent::BreakpointsChanged { .. }))
+            .count()
+    }
+
     /// Marks every thread running inside a process-wide continue.
-    fn start_continue(&mut self) {
+    pub(super) fn start_continue(&mut self) {
         let inferior = self.controller.inferior.as_mut().expect("inferior");
         inferior.public_stop = None;
         inferior.active = Some(ActiveExecution {
@@ -1654,7 +1745,7 @@ impl WatchHarness {
 
     /// Delivers the SIGSTOP each still-running thread was asked for. A
     /// thread that stopped for another reason keeps its SIGSTOP pending.
-    fn settle_requested_stops(&mut self) {
+    pub(super) fn settle_requested_stops(&mut self) {
         let requested = self
             .controller
             .inferior
@@ -1741,7 +1832,7 @@ impl WatchHarness {
     }
 }
 
-fn watch_harness(thread_count: i32) -> WatchHarness {
+pub(super) fn watch_harness(thread_count: i32) -> WatchHarness {
     watch_harness_of(thread_count, &virtual_step_image())
 }
 
@@ -1757,6 +1848,7 @@ fn watch_harness_of(thread_count: i32, image: &Arc<ModuleImage>) -> WatchHarness
         SessionLease::detached(),
         crate::backend::ExecutableSource {
             display_path: Arc::new(PathBuf::from("/test/watch")),
+            launch_path: Arc::new(PathBuf::from("/test/watch")),
             data: sectionless_elf(),
             identity: FileIdentity { inode: 0 },
             process_start_time: None,
@@ -2175,6 +2267,7 @@ fn stale_status_is_never_consulted_outside_debug_exceptions() {
         },
     );
     harness.controller.breakpoints.push(Breakpoint {
+        pending_locations: Arc::from([]),
         id: BreakpointId::new(1),
         spec: BreakpointSpec::Address(VirtualAddress::new(0x40)),
         locations: Arc::from([]),
@@ -2195,7 +2288,7 @@ fn stale_status_is_never_consulted_outside_debug_exceptions() {
     assert_eq!(
         harness.public_reason(),
         Some(StopReason::Breakpoint {
-            address: VirtualAddress::new(0x40),
+            address: Some(VirtualAddress::new(0x40)),
             hits: Arc::from([BreakpointHit {
                 breakpoint: BreakpointId::new(1),
                 hit_count: 1,
@@ -3604,6 +3697,68 @@ fn a_held_process_attached_is_continued_and_the_program_never_sees_why() {
     ));
 }
 
+#[test]
+fn unreadable_signal_queue_stops_attach_draining_before_resuming_any_thread() {
+    let mut harness = watch_harness(2);
+    harness.attached();
+    harness
+        .trace()
+        .queued_traps
+        .borrow_mut()
+        .insert(harness.threads[0]);
+    harness.controller.ptrace.queue_error = Some((harness.threads[1], SignalQueue::Thread));
+    harness.trace().take_actions();
+    let error = harness
+        .controller
+        .drain_queued_traps()
+        .expect_err("queue evidence is required");
+    assert!(error.to_string().contains("malformed signal masks"));
+    assert!(
+        harness.trace().take_actions().is_empty(),
+        "no thread may run on unknown queue evidence"
+    );
+}
+
+#[test]
+fn a_failed_sigcont_queue_read_restores_the_mask_and_still_detaches() {
+    let mut harness = watch_harness(1);
+    let pid = harness.threads[0];
+    harness
+        .add(0xf000, 8)
+        .expect("arm a watchpoint before detach");
+    harness.attached();
+    harness.inferior().held = Some(HeldStop::Continued);
+    let original = 0xffff_ffff_fffb_feff;
+    harness
+        .trace()
+        .signal_masks
+        .borrow_mut()
+        .insert(pid, original);
+    harness.controller.ptrace.queue_error = Some((pid, SignalQueue::Process));
+    harness.trace().take_actions();
+    let (reply, result) = tokio::sync::oneshot::channel();
+    harness.controller.begin_shutdown(Some(reply));
+    let error = result
+        .blocking_recv()
+        .expect("shutdown replied")
+        .expect_err("the queue read failed");
+    assert!(error.to_string().contains("malformed signal masks"));
+    assert_eq!(
+        harness.trace().signal_masks.borrow().get(&pid),
+        Some(&original)
+    );
+    let actions = harness.trace().take_actions();
+    assert!(
+        actions.contains(&format!("write {pid} dr7=0x0")),
+        "hardware disarmed: {actions:?}"
+    );
+    assert!(
+        actions.contains(&format!("detach {pid} None")),
+        "detached: {actions:?}"
+    );
+    assert!(harness.controller.inferior.is_none());
+}
+
 /// A held process detached before it ever ran still holds the `SIGCONT`
 /// that ended its stop, which it would take untraced. The detach takes it
 /// first, unblocking it for the while in a fork child still inside `fork`,
@@ -4235,6 +4390,7 @@ const HIT_SITE: u64 = 0x40;
 fn hit_harness(thread_count: i32, hit_condition: &str) -> WatchHarness {
     let mut harness = watch_harness(thread_count);
     harness.controller.breakpoints.push(Breakpoint {
+        pending_locations: Arc::from([]),
         id: BreakpointId::new(1),
         spec: BreakpointSpec::Address(VirtualAddress::new(HIT_SITE)),
         locations: Arc::from([ResolvedBreakpointLocation {
@@ -4301,7 +4457,7 @@ impl WatchHarness {
 
 fn site_hit(hit_count: u64) -> StopReason {
     StopReason::Breakpoint {
-        address: VirtualAddress::new(HIT_SITE),
+        address: Some(VirtualAddress::new(HIT_SITE)),
         hits: Arc::from([BreakpointHit {
             breakpoint: BreakpointId::new(1),
             hit_count,
@@ -4767,7 +4923,7 @@ fn a_hit_on_a_breakpoint_that_survives_the_edit_is_published_with_its_owners() {
             ..
         } if *execution == ExecutionId::new(2)
             && thread_id.get() == 5001
-            && address.get() == 0x40
+            && *address == Some(VirtualAddress::new(0x40))
             && hits.iter().map(|hit| hit.breakpoint).eq([kept.id])
     )));
 }
@@ -5078,8 +5234,30 @@ fn a_step_resumed_to_hit_a_breakpoint_disabled_while_running_ends_where_it_stand
 /// A runtime whose threads run the tasks a test sets, so run control's
 /// following of a task is tested without any language's runtime.
 #[derive(Debug, Default)]
-struct ScriptedRuntime {
+pub(super) struct ScriptedRuntime {
+    pub(super) agent: Option<Arc<dyn crate::runtime_model::RuntimeAgent>>,
     running: std::sync::Mutex<BTreeMap<crate::ThreadId, u64>>,
+
+    /// The runtime's internal hooks.
+    internal: Vec<crate::runtime_model::HookPlace>,
+
+    /// The hook each hit was asked of, in turn.
+    asked: std::sync::Mutex<Vec<crate::runtime_model::HookPlace>>,
+
+    /// What the runtime was armed with, each time it was.
+    armed: std::sync::Mutex<Vec<Vec<crate::runtime_model::ManagedArm>>>,
+
+    /// A scripted refusal while arming, after resolution succeeded.
+    arm_failure: std::sync::Mutex<Option<Arc<str>>>,
+    mixed_function: bool,
+
+    /// The step the runtime was armed with, each time it was.
+    steps: std::sync::Mutex<Vec<Option<crate::runtime_model::RuntimeStep>>>,
+
+    /// What each hit of an internal hook reports, in turn.
+    events: std::sync::Mutex<
+        std::collections::VecDeque<std::result::Result<crate::runtime_model::HookEvent, Arc<str>>>,
+    >,
 }
 
 impl ScriptedRuntime {
@@ -5089,9 +5267,18 @@ impl ScriptedRuntime {
             .expect("the script")
             .insert(debug_thread_id(thread), task);
     }
+
+    /// Scripts what the next hit of an internal hook reports.
+    fn reports(&self, event: std::result::Result<crate::runtime_model::HookEvent, Arc<str>>) {
+        self.events.lock().expect("the script").push_back(event);
+    }
 }
 
 impl crate::runtime_model::RuntimeModel for ScriptedRuntime {
+    fn agent(&self) -> Option<&dyn crate::runtime_model::RuntimeAgent> {
+        self.agent.as_deref()
+    }
+
     fn tasks(
         &self,
         _stop: &dyn crate::runtime_model::RuntimeStop,
@@ -5220,6 +5407,86 @@ impl crate::runtime_model::RuntimeModel for ScriptedRuntime {
 
     fn task_noun(&self) -> &'static str {
         "task"
+    }
+
+    fn internal_hooks(&self) -> &[crate::runtime_model::HookPlace] {
+        &self.internal
+    }
+
+    fn hook_event(
+        &self,
+        _stop: &dyn crate::runtime_model::RuntimeStop,
+        hook: crate::runtime_model::HookPlace,
+        _registers: &RegisterFile,
+    ) -> std::result::Result<crate::runtime_model::HookEvent, Arc<str>> {
+        self.asked.lock().expect("the script").push(hook);
+        self.events
+            .lock()
+            .expect("the script")
+            .pop_front()
+            .unwrap_or_else(|| Err("the script reports no more hits".into()))
+    }
+
+    /// The script runs files named `*.scripted`, and refuses `refused.scripted`.
+    fn resolve_breakpoint(
+        &self,
+        _stop: &dyn crate::runtime_model::RuntimeStop,
+        spec: &BreakpointSpec,
+    ) -> Option<std::result::Result<Vec<crate::ManagedPlace>, Arc<str>>> {
+        if self.mixed_function
+            && matches!(spec, BreakpointSpec::Function(name) if name == "physical")
+        {
+            return Some(Ok(vec![crate::ManagedPlace::Function {
+                name: "physical".into(),
+            }]));
+        }
+        let BreakpointSpec::Source { path, line } = spec else {
+            return None;
+        };
+
+        let name = path.to_str()?;
+        if name == "refused.scripted" {
+            return Some(Err("the script refuses the file".into()));
+        }
+
+        name.ends_with(".scripted").then(|| {
+            Ok(vec![crate::ManagedPlace::Line {
+                path: name.into(),
+                line: u32::try_from(line.get()).expect("a small line"),
+            }])
+        })
+    }
+
+    /// Arming writes how many locations the runtime is armed with to the
+    /// byte at 0x7000. The script steps by line, never by instruction.
+    fn arm(
+        &self,
+        _stop: &dyn crate::runtime_model::RuntimeStop,
+        arming: &crate::runtime_model::Arming<'_>,
+    ) -> std::result::Result<Vec<crate::runtime_model::RuntimeWrite>, Arc<str>> {
+        if let Some(reason) = self.arm_failure.lock().expect("the script").as_ref() {
+            return Err(Arc::clone(reason));
+        }
+        if arming
+            .step
+            .is_some_and(|step| step.kind == StepKind::Instruction)
+        {
+            return Err("the script steps by line".into());
+        }
+
+        self.armed
+            .lock()
+            .expect("the script")
+            .push(arming.breakpoints.to_vec());
+        self.steps
+            .lock()
+            .expect("the script")
+            .push(arming.step.cloned());
+        Ok(vec![crate::runtime_model::RuntimeWrite {
+            address: VirtualAddress::new(0x7000),
+            expected: vec![0],
+            bytes: vec![u8::try_from(arming.breakpoints.len()).expect("few arms")],
+        }])
     }
 }
 
@@ -5417,6 +5684,1095 @@ fn a_step_follows_its_task_to_another_thread_and_passes_the_others() {
             .iter()
             .any(|event| matches!(event, DebuggerEvent::InferiorStopped { .. })),
         "neither hit is reported"
+    );
+}
+
+/// Binds `runtime` to the harness's executable.
+fn scripted_runtime(harness: &WatchHarness, runtime: ScriptedRuntime) -> Arc<ScriptedRuntime> {
+    let runtime = Arc::new(runtime);
+    let image = Arc::clone(&harness.controller.module_image);
+    harness
+        .controller
+        .runtime_models
+        .borrow_mut()
+        .insert(image.id(), vec![Ok(Arc::clone(&runtime) as _)]);
+    runtime
+}
+
+/// Checks that `hitting` steps over the trap it hit while its siblings
+/// wait, and that every thread then continues.
+fn steps_over_alone(harness: &mut WatchHarness, hitting: Pid) {
+    assert!(
+        harness
+            .trace()
+            .take_actions()
+            .contains(&format!("step {hitting}")),
+        "the thread is stepped over the trap"
+    );
+    harness
+        .trap(hitting, libc::TRAP_TRACE, debug_registers::STATUS_IDLE)
+        .expect("the repair step");
+    let actions = harness.trace().take_actions();
+    for thread in harness.threads.clone() {
+        assert!(
+            actions.contains(&format!("continue {thread} None")),
+            "{actions:?}"
+        );
+    }
+}
+
+/// A runtime's internal hook is armed whatever exceptions stop, and each
+/// hit asks the runtime whether its thread stops: a hit that goes on is
+/// stepped over unseen, an exception stops when its filter does, and a
+/// hit whose report cannot be read stops and says so.
+#[test]
+fn a_runtime_hook_asks_at_each_hit_whether_its_thread_stops() {
+    const HOOK: u64 = 0x40;
+    let mut harness = watch_harness(2);
+    harness.controller.unwind_info = Arc::new(FlatUnwindInfo);
+    let hitting = harness.threads[0];
+    let runtime = scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            internal: vec![crate::runtime_model::HookPlace::Own(ImageAddress::new(
+                HOOK,
+            ))],
+            ..ScriptedRuntime::default()
+        },
+    );
+    let filter = &crate::runtime_model::EXCEPTION_FILTERS[3];
+    harness
+        .controller
+        .set_exception_stops(crate::protocol::ExceptionStops::NONE)
+        .expect("no exception stops");
+    harness
+        .controller
+        .sync_runtime_hooks()
+        .expect("arm the hook");
+    assert!(
+        harness
+            .inferior()
+            .breakpoints
+            .get(&VirtualAddress::new(HOOK))
+            .is_some_and(|site| site.owners.contains(&BreakpointOwner::Runtime)),
+        "the hook is armed with no exception stopping"
+    );
+
+    let exception = || crate::runtime_model::HookEvent::Exception {
+        filter,
+        report: crate::runtime_model::RuntimeException {
+            message: "boom".into(),
+            value: None,
+        },
+    };
+
+    let hit = |harness: &mut WatchHarness| {
+        harness.start_continue();
+        harness.trace().take_actions();
+        harness.hit_at(hitting, HOOK).expect("the hook's trap");
+        harness.settle_requested_stops();
+        harness.stopped()
+    };
+
+    runtime.reports(Ok(crate::runtime_model::HookEvent::Continue));
+    assert_eq!(hit(&mut harness), None, "a hit that goes on is unseen");
+    steps_over_alone(&mut harness, hitting);
+
+    runtime.reports(Ok(exception()));
+    assert_eq!(
+        hit(&mut harness),
+        None,
+        "an exception that does not stop is unseen"
+    );
+    steps_over_alone(&mut harness, hitting);
+
+    harness
+        .controller
+        .set_exception_stops(
+            crate::protocol::ExceptionStops::NONE
+                .with(filter.id, true)
+                .expect("a filter"),
+        )
+        .expect("the exception stops");
+    runtime.reports(Ok(exception()));
+    assert_eq!(
+        hit(&mut harness),
+        Some((
+            debug_thread_id(hitting),
+            StopReason::LanguageException(crate::protocol::LanguageException {
+                kind: filter.kind,
+                message: "boom".into(),
+                value: None,
+            })
+        )),
+        "an exception that stops is reported"
+    );
+
+    runtime.reports(Err("the mailbox is unreadable".into()));
+    let unreadable = hit(&mut harness);
+    assert!(
+        matches!(
+            &unreadable,
+            Some((_, StopReason::RuntimeEvent { description }))
+                if description.contains("the mailbox is unreadable")
+        ),
+        "a hit whose report is unreadable stops and says why: {unreadable:?}"
+    );
+}
+
+/// A runtime's internal hook may be a function a companion image exports,
+/// as a library the runtime loads beside its own: it is armed once the
+/// image loads, asked of by that name at each hit, and gone with the image.
+#[test]
+fn a_runtime_hook_in_a_companion_image_is_armed_while_it_is_loaded() {
+    const HOOK: crate::runtime_model::HookPlace =
+        crate::runtime_model::HookPlace::Companion("scripted_hook");
+    let mut harness = watch_harness(1);
+    harness.controller.unwind_info = Arc::new(FlatUnwindInfo);
+    let hitting = harness.threads[0];
+    let runtime = scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            internal: vec![HOOK],
+            ..ScriptedRuntime::default()
+        },
+    );
+    let armed = |harness: &mut WatchHarness| {
+        harness
+            .inferior()
+            .breakpoints
+            .iter()
+            .filter(|(_, site)| site.owners.contains(&BreakpointOwner::Runtime))
+            .map(|(&address, _)| address.get())
+            .collect::<Vec<_>>()
+    };
+    harness.controller.sync_runtime_hooks().expect("sync");
+    assert_eq!(
+        armed(&mut harness),
+        [0_u64; 0],
+        "no image exports the hook yet"
+    );
+
+    let library = PathBuf::from("/lib/libhook.so");
+    harness
+        .trace()
+        .libraries
+        .borrow_mut()
+        .insert(library.clone(), (crate::LoadBias::new(0x7300_0000), true));
+    harness.trace().library_symbols.borrow_mut().insert(
+        library.clone(),
+        vec![crate::SymbolInfo {
+            id: crate::SymbolId::new(0),
+            name: "scripted_hook".into(),
+            address: ImageAddress::new(0x100),
+            kind: crate::SymbolKind::Function,
+            binding: crate::SymbolBinding::Global,
+            exported: true,
+            extent: None,
+            storage: None,
+            role: crate::CodeRole::Ordinary,
+        }],
+    );
+    harness
+        .controller
+        .refresh_libraries()
+        .expect("the library loads");
+    assert_eq!(armed(&mut harness), [0x7300_0100]);
+
+    runtime.reports(Ok(crate::runtime_model::HookEvent::Continue));
+    harness.start_continue();
+    harness.trace().take_actions();
+    harness
+        .hit_at(hitting, 0x7300_0100)
+        .expect("the hook's trap");
+    assert_eq!(harness.stopped(), None);
+    assert_eq!(*runtime.asked.lock().expect("the script"), [HOOK]);
+    steps_over_alone(&mut harness, hitting);
+
+    harness.trace().libraries.borrow_mut().remove(&library);
+    harness
+        .controller
+        .refresh_libraries()
+        .expect("the library unloads");
+    assert_eq!(
+        armed(&mut harness),
+        [0_u64; 0],
+        "the hook goes with its image"
+    );
+    assert!(harness.inferior().runtime_hooks.is_empty());
+}
+
+/// A runtime resolves a breakpoint in code it runs itself to a location it
+/// manages, which has no address: the runtime is armed with it as it is
+/// added and removed, and a hit its hook reports by the location's number
+/// stops as a breakpoint's, with no address. A number the runtime was not
+/// armed with is no breakpoint's.
+#[test]
+fn a_runtime_resolves_arms_and_reports_a_managed_breakpoint() {
+    const HOOK: u64 = 0x40;
+    let mut harness = watch_harness(1);
+    harness.controller.unwind_info = Arc::new(FlatUnwindInfo);
+    let hitting = harness.threads[0];
+    let runtime = scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            internal: vec![crate::runtime_model::HookPlace::Own(ImageAddress::new(
+                HOOK,
+            ))],
+            ..ScriptedRuntime::default()
+        },
+    );
+    harness
+        .controller
+        .sync_runtime_hooks()
+        .expect("arm the hook");
+    let source = |path: &str| BreakpointSpec::Source {
+        path: path.into(),
+        line: crate::LineNumber::new(3).expect("a line"),
+    };
+    let add = |harness: &mut WatchHarness, spec| harness.add_spec(spec);
+
+    let refused = add(&mut harness, source("refused.scripted"));
+    assert!(
+        matches!(&refused, Err(Error::RuntimeBreakpoint(reason)) if reason.contains("refuses")),
+        "{refused:?}"
+    );
+
+    harness.trace().take_actions();
+    let breakpoint = add(&mut harness, source("app.scripted")).expect("added");
+    let place = crate::ManagedPlace::Line {
+        path: "app.scripted".into(),
+        line: 3,
+    };
+    let runtime_id = crate::RuntimeId::new(harness.inferior().loaded_module.id.get() * 4);
+    assert_eq!(
+        breakpoint
+            .locations
+            .iter()
+            .map(|resolved| resolved.location.clone())
+            .collect::<Vec<_>>(),
+        [crate::BreakpointLocation::Managed(crate::ManagedLocation {
+            runtime: runtime_id,
+            place: place.clone(),
+        })]
+    );
+    assert_eq!(
+        runtime.armed.lock().expect("the script").last(),
+        Some(&vec![crate::runtime_model::ManagedArm { number: 0, place }])
+    );
+    let pid = harness.inferior().memory_thread();
+    assert!(
+        harness
+            .trace()
+            .take_actions()
+            .contains(&format!("write_word {pid} 0x7000 0x1")),
+        "arming's writes are made"
+    );
+
+    let hit = |harness: &mut WatchHarness, numbers: &[u64]| {
+        runtime.reports(Ok(crate::runtime_model::HookEvent::Breakpoint {
+            numbers: numbers.to_vec(),
+        }));
+        harness.start_continue();
+        harness.trace().take_actions();
+        harness.hit_at(hitting, HOOK).expect("the hook's trap");
+        harness.settle_requested_stops();
+        harness.stopped()
+    };
+    assert_eq!(hit(&mut harness, &[7]), None, "no breakpoint has number 7");
+    steps_over_alone(&mut harness, hitting);
+    assert_eq!(
+        hit(&mut harness, &[0]),
+        Some((
+            debug_thread_id(hitting),
+            StopReason::Breakpoint {
+                address: None,
+                hits: Arc::from([BreakpointHit {
+                    breakpoint: breakpoint.id,
+                    hit_count: 1,
+                }]),
+            }
+        ))
+    );
+
+    harness
+        .edit(|reply| Edit::RemoveBreakpoint {
+            id: breakpoint.id,
+            reply,
+        })
+        .try_recv()
+        .expect("reply")
+        .expect("removed");
+    assert_eq!(
+        runtime.armed.lock().expect("the script").last(),
+        Some(&Vec::new()),
+        "the runtime is armed with nothing once the breakpoint is gone"
+    );
+}
+
+/// One event's hits of several managed locations stop once, for every
+/// breakpoint that owns one, as at one native address; a number no location
+/// has adds nothing.
+#[test]
+fn one_report_of_several_managed_hits_stops_once_for_them_all() {
+    const HOOK: u64 = 0x40;
+    let mut harness = watch_harness(1);
+    harness.controller.unwind_info = Arc::new(FlatUnwindInfo);
+    let hitting = harness.threads[0];
+    let runtime = scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            internal: vec![crate::runtime_model::HookPlace::Own(ImageAddress::new(
+                HOOK,
+            ))],
+            ..ScriptedRuntime::default()
+        },
+    );
+    harness
+        .controller
+        .sync_runtime_hooks()
+        .expect("arm the hook");
+    let source = |path: &str| BreakpointSpec::Source {
+        path: path.into(),
+        line: crate::LineNumber::new(3).expect("a line"),
+    };
+    let first = harness.add_spec(source("app.scripted")).expect("added");
+    let second = harness.add_spec(source("other.scripted")).expect("added");
+
+    runtime.reports(Ok(crate::runtime_model::HookEvent::Breakpoint {
+        numbers: vec![1, 7, 0],
+    }));
+    harness.start_continue();
+    harness.hit_at(hitting, HOOK).expect("the hook's trap");
+    harness.settle_requested_stops();
+    let mut hits = vec![
+        BreakpointHit {
+            breakpoint: first.id,
+            hit_count: 1,
+        },
+        BreakpointHit {
+            breakpoint: second.id,
+            hit_count: 1,
+        },
+    ];
+    hits.sort_by_key(|hit| hit.breakpoint);
+    assert_eq!(
+        harness.stopped(),
+        Some((
+            debug_thread_id(hitting),
+            StopReason::Breakpoint {
+                address: None,
+                hits: Arc::from(hits),
+            }
+        ))
+    );
+}
+
+/// A runtime whose arming changed has not accepted the change until it is
+/// armed, as when an error ends an edit between claiming and arming.
+#[test]
+fn a_managed_change_not_yet_armed_is_not_shown_ready() {
+    let mut harness = watch_harness(1);
+    scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            internal: vec![crate::runtime_model::HookPlace::Own(ImageAddress::new(
+                0x40,
+            ))],
+            ..ScriptedRuntime::default()
+        },
+    );
+    let breakpoint = harness
+        .add_spec(BreakpointSpec::Source {
+            path: "pending.scripted".into(),
+            line: crate::LineNumber::new(3).expect("line"),
+        })
+        .expect("armed");
+    assert!(breakpoint.pending_locations.is_empty());
+    let crate::BreakpointLocation::Managed(location) = &breakpoint.locations[0].location else {
+        panic!("a managed location: {breakpoint:?}");
+    };
+    harness
+        .controller
+        .inferior
+        .as_mut()
+        .expect("inferior")
+        .managed
+        .mark_stale(location.runtime);
+    let snapshot = harness.controller.snapshot();
+    assert_eq!(snapshot.breakpoints[0].pending_locations.len(), 1);
+    assert_eq!(snapshot.breakpoints[0].ready_locations().count(), 0);
+    let _ = harness.controller.sync_runtime_arming();
+    let snapshot = harness.controller.snapshot();
+    assert!(snapshot.breakpoints[0].pending_locations.is_empty());
+}
+
+/// Resolution does not prove the runtime accepted its arming. Public
+/// replies and snapshots retain the location and expose the failure.
+#[test]
+fn managed_arming_failures_remain_visible_until_recovery() {
+    let mut harness = watch_harness(1);
+    let runtime = scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            internal: vec![crate::runtime_model::HookPlace::Own(ImageAddress::new(
+                0x40,
+            ))],
+            arm_failure: std::sync::Mutex::new(Some("the scripted runtime is initializing".into())),
+            ..ScriptedRuntime::default()
+        },
+    );
+    let breakpoint = harness
+        .add_spec(BreakpointSpec::Source {
+            path: "pending.scripted".into(),
+            line: crate::LineNumber::new(3).expect("line"),
+        })
+        .expect("resolved intent is retained");
+    assert_eq!(breakpoint.locations.len(), 1);
+    let expected: Arc<[crate::PendingBreakpointLocation]> =
+        Arc::from([crate::PendingBreakpointLocation {
+            location: breakpoint.locations[0].location.clone(),
+            reason: "the scripted runtime is initializing".into(),
+        }]);
+    assert_eq!(breakpoint.pending_locations, expected);
+    assert_eq!(breakpoint.ready_locations().count(), 0);
+    let snapshot = harness.controller.snapshot();
+    assert_eq!(snapshot.breakpoints[0].pending_locations, expected);
+    assert!(runtime.armed.lock().expect("the script").is_empty());
+    while harness.events.try_recv().is_ok() {}
+
+    *runtime.arm_failure.lock().expect("the script") = None;
+    harness.controller.rearm_reporting_runtimes();
+    let snapshot = harness.controller.snapshot();
+    assert!(snapshot.breakpoints[0].pending_locations.is_empty());
+    assert_eq!(snapshot.breakpoints[0].ready_locations().count(), 1);
+    assert_eq!(harness.breakpoint_events(), 1);
+}
+
+#[test]
+fn pending_managed_locations_survive_edits_and_notify_only_when_the_reason_changes() {
+    let mut harness = watch_harness(1);
+    let runtime = scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            internal: vec![crate::runtime_model::HookPlace::Own(ImageAddress::new(
+                0x40,
+            ))],
+            arm_failure: std::sync::Mutex::new(Some("waiting".into())),
+            ..ScriptedRuntime::default()
+        },
+    );
+    let breakpoint = harness
+        .add_spec(BreakpointSpec::Source {
+            path: "pending.scripted".into(),
+            line: crate::LineNumber::new(3).expect("line"),
+        })
+        .expect("breakpoint");
+    assert_eq!(
+        harness
+            .add_spec(breakpoint.spec.clone())
+            .expect("duplicate"),
+        breakpoint
+    );
+    let disabled = harness
+        .controller
+        .set_breakpoint_enabled(breakpoint.id, false)
+        .expect("disable");
+    assert!(disabled.pending_locations.is_empty());
+    let enabled = harness
+        .controller
+        .set_breakpoint_enabled(breakpoint.id, true)
+        .expect("enable");
+    assert_eq!(enabled.pending_locations, breakpoint.pending_locations);
+    let unchanged = harness
+        .controller
+        .set_breakpoint_enabled(breakpoint.id, true)
+        .expect("already enabled");
+    assert_eq!(unchanged.pending_locations, breakpoint.pending_locations);
+    let edited = harness
+        .controller
+        .set_breakpoint_condition(breakpoint.id, None)
+        .expect("edit");
+    assert_eq!(edited.pending_locations, breakpoint.pending_locations);
+    harness.breakpoint_events();
+    harness.controller.rearm_reporting_runtimes();
+    assert_eq!(
+        harness.breakpoint_events(),
+        0,
+        "the same refusal changes nothing"
+    );
+    *runtime.arm_failure.lock().expect("the script") = Some("tool IDs occupied".into());
+    harness.controller.rearm_reporting_runtimes();
+    assert_eq!(harness.breakpoint_events(), 1);
+    assert_eq!(
+        &*harness.controller.snapshot().breakpoints[0].pending_locations[0].reason,
+        "tool IDs occupied"
+    );
+}
+
+#[test]
+fn mixed_breakpoint_readiness_is_projected_in_replies_and_snapshots() {
+    let mut lines = crate::image::lines::LineTables::default();
+    lines.begin_sequence().expect("one sequence");
+    lines
+        .push_row(&crate::image::lines::Row {
+            address: 0x20,
+            file: Some(crate::SourceFileId::new(0)),
+            line: 3,
+            statement: true,
+            prologue_end: true,
+            ..Default::default()
+        })
+        .expect("one statement");
+    lines
+        .push_range(
+            AddressRange {
+                start: ImageAddress::new(0x20),
+                end: ImageAddress::new(0x30),
+            },
+            0,
+            true,
+        )
+        .expect("one range");
+    lines
+        .push_row(&crate::image::lines::Row {
+            address: 0x30,
+            end_sequence: true,
+            ..Default::default()
+        })
+        .expect("end sequence");
+    let image = lined_test_image(&[(0, None, None, (0, 0x100))], lines);
+    let mut harness = watch_harness_of(1, &image);
+    let _runtime = scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            mixed_function: true,
+            arm_failure: std::sync::Mutex::new(Some("not confirmed".into())),
+            ..ScriptedRuntime::default()
+        },
+    );
+    let breakpoint = harness
+        .add_spec(BreakpointSpec::Function("physical".into()))
+        .expect("mixed resolution");
+    assert_eq!(breakpoint.locations.len(), 2);
+    assert_eq!(breakpoint.pending_locations.len(), 1);
+    let ready = breakpoint.ready_locations().collect::<Vec<_>>();
+    assert_eq!(ready.len(), 1);
+    assert!(matches!(
+        ready[0].location,
+        crate::BreakpointLocation::Image(_)
+    ));
+    assert!(matches!(
+        breakpoint.pending_locations[0].location,
+        crate::BreakpointLocation::Managed(_)
+    ));
+    assert_eq!(harness.controller.snapshot().breakpoints[0], breakpoint);
+}
+
+#[test]
+fn removed_breakpoint_definitions_have_no_pending_arming() {
+    for all in [false, true] {
+        let mut harness = watch_harness(1);
+        let _runtime = scripted_runtime(
+            &harness,
+            ScriptedRuntime {
+                arm_failure: std::sync::Mutex::new(Some("configuration refused".into())),
+                ..ScriptedRuntime::default()
+            },
+        );
+        let breakpoint = harness
+            .add_spec(BreakpointSpec::Source {
+                path: "pending.scripted".into(),
+                line: crate::LineNumber::new(3).expect("line"),
+            })
+            .expect("breakpoint");
+        assert_eq!(breakpoint.pending_locations.len(), 1);
+        let removed = if all {
+            harness
+                .controller
+                .remove_all_breakpoints()
+                .expect("remove all")
+                .to_vec()
+        } else {
+            vec![
+                harness
+                    .controller
+                    .remove_breakpoint(breakpoint.id)
+                    .expect("remove"),
+            ]
+        };
+        assert_eq!(removed.len(), 1);
+        assert!(
+            removed[0].pending_locations.is_empty(),
+            "removed definition: {removed:?}"
+        );
+        assert!(harness.controller.snapshot().breakpoints.is_empty());
+    }
+}
+
+#[test]
+fn a_module_refresh_publishes_new_managed_arming_state_once() {
+    let mut harness = watch_harness(1);
+    let breakpoint = harness
+        .edit(|reply| Edit::AddBreakpoint {
+            spec: BreakpointSpec::Source {
+                path: "pending.scripted".into(),
+                line: crate::LineNumber::new(3).expect("line"),
+            },
+            options: Box::new(crate::BreakpointOptions {
+                pending: true,
+                ..Default::default()
+            }),
+            reply,
+        })
+        .try_recv()
+        .expect("reply")
+        .expect("pending intent");
+    assert!(breakpoint.locations.is_empty());
+    harness.breakpoint_events();
+    let _runtime = scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            arm_failure: std::sync::Mutex::new(Some("configuration refused".into())),
+            ..ScriptedRuntime::default()
+        },
+    );
+    harness.controller.refresh_libraries().expect("refresh");
+    let snapshot = harness.controller.snapshot();
+    assert_eq!(snapshot.breakpoints[0].locations.len(), 1);
+    assert_eq!(snapshot.breakpoints[0].pending_locations.len(), 1);
+    assert_eq!(harness.breakpoint_events(), 1);
+}
+
+/// A refusal leaves the whole desired configuration unconfirmed. The
+/// earlier configuration can remain effective, so its hits still count.
+#[test]
+fn unconfirmed_runtime_arming_still_judges_hits_from_the_previous_configuration() {
+    let mut harness = watch_harness(1);
+    harness.controller.unwind_info = Arc::new(FlatUnwindInfo);
+    let hitting = harness.threads[0];
+    let runtime = scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            internal: vec![crate::runtime_model::HookPlace::Own(ImageAddress::new(
+                0x40,
+            ))],
+            ..ScriptedRuntime::default()
+        },
+    );
+    harness.controller.sync_runtime_hooks().expect("hook");
+    let source = |path: &str| BreakpointSpec::Source {
+        path: path.into(),
+        line: crate::LineNumber::new(3).expect("line"),
+    };
+    let first = harness.add_spec(source("first.scripted")).expect("first");
+    assert!(first.pending_locations.is_empty());
+    *runtime.arm_failure.lock().expect("the script") = Some("new configuration refused".into());
+    let second = harness
+        .add_spec(source("second.scripted"))
+        .expect("second intent");
+    assert_eq!(second.pending_locations.len(), 1);
+    assert_eq!(
+        harness.controller.snapshot().breakpoints[0]
+            .pending_locations
+            .len(),
+        1
+    );
+    runtime.reports(Ok(crate::runtime_model::HookEvent::Breakpoint {
+        numbers: vec![0],
+    }));
+    harness.start_continue();
+    harness
+        .hit_at(hitting, 0x40)
+        .expect("previously armed hook");
+    harness.settle_requested_stops();
+    assert!(
+        matches!(harness.stopped(), Some((_, StopReason::Breakpoint { hits, .. })) if hits[0].breakpoint == first.id)
+    );
+    // Site numbers survive changes to the desired list. A deleted site's
+    // stale hook names no owner, never the remaining site's breakpoint.
+    harness
+        .controller
+        .remove_breakpoint(first.id)
+        .expect("remove first");
+    let report = |harness: &mut WatchHarness, number| {
+        runtime.reports(Ok(crate::runtime_model::HookEvent::Breakpoint {
+            numbers: vec![number],
+        }));
+        harness
+            .controller
+            .runtime_hook_stop(hitting, VirtualAddress::new(0x40))
+    };
+    assert_eq!(report(&mut harness, 0), None);
+    assert!(
+        matches!(report(&mut harness, 1), Some(StopReason::Breakpoint { hits, .. }) if hits[0].breakpoint == second.id)
+    );
+    harness
+        .controller
+        .set_breakpoint_enabled(second.id, false)
+        .expect("disable");
+    assert_eq!(report(&mut harness, 1), None);
+    harness
+        .controller
+        .set_breakpoint_enabled(second.id, true)
+        .expect("enable with a new site number");
+    assert_eq!(report(&mut harness, 1), None);
+    harness
+        .controller
+        .remove_all_breakpoints()
+        .expect("remove all");
+    assert_eq!(report(&mut harness, 2), None);
+}
+
+#[test]
+fn runtime_step_arming_updates_breakpoint_confirmation() {
+    let mut harness = watch_harness(1);
+    harness.controller.unwind_info = Arc::new(FlatUnwindInfo);
+    let pid = harness.threads[0];
+    let runtime = scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            internal: vec![crate::runtime_model::HookPlace::Own(ImageAddress::new(
+                0x40,
+            ))],
+            arm_failure: std::sync::Mutex::new(Some("initializing".into())),
+            ..ScriptedRuntime::default()
+        },
+    );
+    harness.controller.sync_runtime_hooks().expect("hook");
+    harness
+        .add_spec(BreakpointSpec::Source {
+            path: "pending.scripted".into(),
+            line: crate::LineNumber::new(3).expect("line"),
+        })
+        .expect("breakpoint");
+    assert_eq!(
+        harness.controller.snapshot().breakpoints[0]
+            .pending_locations
+            .len(),
+        1
+    );
+    let runtime_id = crate::RuntimeId::new(harness.inferior().loaded_module.id.get() * 4);
+    *runtime.arm_failure.lock().expect("the script") = None;
+    harness.breakpoint_events();
+    harness
+        .controller
+        .begin_runtime_step(
+            process_id(pid),
+            harness.stop_id(),
+            pid,
+            (runtime_id, VirtualAddress::new(0x9000)),
+            StepKind::OverSource,
+            ResumeScope::Process(process_id(pid)),
+            ExceptionDisposition::Pass,
+        )
+        .expect("step confirms the whole arming");
+    assert!(
+        harness.controller.snapshot().breakpoints[0]
+            .pending_locations
+            .is_empty()
+    );
+    assert_eq!(harness.breakpoint_events(), 1);
+
+    // Failure to remove the step also leaves the whole configuration
+    // unconfirmed. Old step events are still rejected by execution id.
+    *runtime.arm_failure.lock().expect("the script") = Some("cannot disarm".into());
+    runtime.reports(Ok(crate::runtime_model::HookEvent::StepEnded { number: 0 }));
+    harness.hit_at(pid, 0x40).expect("step ended");
+    harness.settle_requested_stops();
+    let events = harness.published();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        DebuggerEvent::InferiorStopped {
+            reason: StopReason::Step { .. },
+            ..
+        }
+    )));
+    assert_eq!(
+        &*harness.controller.snapshot().breakpoints[0].pending_locations[0].reason,
+        "cannot disarm"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, DebuggerEvent::BreakpointsChanged { .. }))
+            .count(),
+        1
+    );
+    *runtime.arm_failure.lock().expect("the script") = None;
+    harness.controller.rearm_reporting_runtimes();
+    assert!(
+        harness.controller.snapshot().breakpoints[0]
+            .pending_locations
+            .is_empty()
+    );
+    assert_eq!(harness.breakpoint_events(), 1);
+}
+
+/// A step a runtime arms runs every thread, and ends only where the
+/// runtime reports its end on the step's own thread: another thread's
+/// report, or a report of another step, goes on unseen. The runtime is
+/// armed with the step as it begins, and with none as the stop that ends
+/// it forms. A step the runtime cannot make is refused, and nothing runs.
+#[test]
+fn a_runtime_step_ends_where_its_runtime_reports_it_on_its_thread() {
+    const HOOK: u64 = 0x40;
+    let mut harness = watch_harness(2);
+    harness.controller.unwind_info = Arc::new(FlatUnwindInfo);
+    let (stepping, other) = (harness.threads[0], harness.threads[1]);
+    let runtime = scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            internal: vec![crate::runtime_model::HookPlace::Own(ImageAddress::new(
+                HOOK,
+            ))],
+            ..ScriptedRuntime::default()
+        },
+    );
+    harness
+        .controller
+        .sync_runtime_hooks()
+        .expect("arm the hook");
+    let runtime_id = crate::RuntimeId::new(harness.inferior().loaded_module.id.get() * 4);
+    let frame = (runtime_id, VirtualAddress::new(0x9000));
+    let step = |harness: &mut WatchHarness, kind| {
+        let stop = harness.stop_id();
+        harness.controller.begin_runtime_step(
+            process_id(stepping),
+            stop,
+            stepping,
+            frame,
+            kind,
+            ResumeScope::Process(process_id(stepping)),
+            ExceptionDisposition::Pass,
+        )
+    };
+
+    harness.trace().take_actions();
+    let refused = step(&mut harness, StepKind::Instruction);
+    assert!(
+        matches!(&refused, Err(Error::FrameStepUnsupported(reason)) if reason.contains("by line")),
+        "{refused:?}"
+    );
+    assert!(!harness.trace().took("continue"), "nothing runs");
+    assert_eq!(
+        harness.breakpoint_events(),
+        0,
+        "a refused step leaves readiness unchanged"
+    );
+
+    // The refused step took number 0, which no step takes again.
+    step(&mut harness, StepKind::OverSource).expect("the step begins");
+    assert_eq!(
+        runtime.steps.lock().expect("the script").last(),
+        Some(&Some(crate::runtime_model::RuntimeStep {
+            number: 1,
+            kind: StepKind::OverSource,
+            thread: debug_thread_id(stepping),
+            frame: frame.1,
+            returning: false,
+        }))
+    );
+    let actions = harness.trace().take_actions();
+    for thread in [stepping, other] {
+        assert!(
+            actions.contains(&format!("continue {thread} None")),
+            "{actions:?}"
+        );
+    }
+
+    let ended = |harness: &mut WatchHarness, thread, number| {
+        runtime.reports(Ok(crate::runtime_model::HookEvent::StepEnded { number }));
+        harness.hit_at(thread, HOOK).expect("the hook's trap");
+        harness.settle_requested_stops();
+        harness.stopped()
+    };
+    assert_eq!(ended(&mut harness, other, 1), None, "another thread's");
+    steps_over_alone(&mut harness, other);
+    assert_eq!(ended(&mut harness, stepping, 0), None, "another step's");
+    steps_over_alone(&mut harness, stepping);
+    assert_eq!(
+        ended(&mut harness, stepping, 1),
+        Some((
+            debug_thread_id(stepping),
+            StopReason::Step {
+                kind: StepKind::OverSource
+            }
+        ))
+    );
+    assert_eq!(
+        runtime.steps.lock().expect("the script").last(),
+        Some(&None),
+        "the runtime is disarmed"
+    );
+}
+
+/// A step the runtime reports it could follow no further stops as an
+/// incomplete step, with the runtime's reason, on the step's own thread.
+#[test]
+fn a_runtime_step_it_cannot_follow_stops_incomplete_with_its_reason() {
+    const HOOK: u64 = 0x40;
+    let mut harness = watch_harness(1);
+    harness.controller.unwind_info = Arc::new(FlatUnwindInfo);
+    let stepping = harness.threads[0];
+    let runtime = scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            internal: vec![crate::runtime_model::HookPlace::Own(ImageAddress::new(
+                HOOK,
+            ))],
+            ..ScriptedRuntime::default()
+        },
+    );
+    harness
+        .controller
+        .sync_runtime_hooks()
+        .expect("arm the hook");
+    let runtime_id = crate::RuntimeId::new(harness.inferior().loaded_module.id.get() * 4);
+    let stop = harness.stop_id();
+    harness
+        .controller
+        .begin_runtime_step(
+            process_id(stepping),
+            stop,
+            stepping,
+            (runtime_id, VirtualAddress::new(0x9000)),
+            StepKind::Out,
+            ResumeScope::Process(process_id(stepping)),
+            ExceptionDisposition::Pass,
+        )
+        .expect("the step begins");
+    runtime.reports(Ok(crate::runtime_model::HookEvent::StepIncomplete {
+        number: 0,
+        description: "its frame is gone".into(),
+    }));
+    harness.hit_at(stepping, HOOK).expect("the hook's trap");
+    harness.settle_requested_stops();
+    assert_eq!(
+        harness.stopped(),
+        Some((
+            debug_thread_id(stepping),
+            StopReason::StepIncomplete {
+                kind: StepKind::Out,
+                description: "its frame is gone".into(),
+            }
+        ))
+    );
+    assert_eq!(
+        runtime.steps.lock().expect("the script").last(),
+        Some(&None),
+        "the runtime is disarmed"
+    );
+}
+
+/// A runtime that reports events through internal hooks is armed again
+/// when which exceptions stop changes, since its arming says which do, and
+/// not when they stay as they were.
+#[test]
+fn a_runtime_is_armed_again_when_which_exceptions_stop_changes() {
+    let mut harness = watch_harness(1);
+    let runtime = scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            internal: vec![crate::runtime_model::HookPlace::Own(ImageAddress::new(
+                0x40,
+            ))],
+            ..ScriptedRuntime::default()
+        },
+    );
+    let stops = crate::protocol::ExceptionStops::NONE;
+    harness
+        .controller
+        .set_exception_stops(stops)
+        .expect("no exception stops");
+    let armings = |runtime: &ScriptedRuntime| runtime.armed.lock().expect("the script").len();
+    let before = armings(&runtime);
+
+    let filter = &crate::runtime_model::EXCEPTION_FILTERS[3];
+    harness
+        .controller
+        .set_exception_stops(stops.with(filter.id, true).expect("a filter"))
+        .expect("the exception stops");
+    assert_eq!(armings(&runtime), before + 1, "armed again");
+
+    harness
+        .controller
+        .set_exception_stops(stops.with(filter.id, true).expect("a filter"))
+        .expect("the same stops");
+    assert_eq!(armings(&runtime), before + 1, "nothing changed");
+}
+
+/// The writes a runtime model asks for are made while every thread is
+/// stopped, each only where memory still holds what the model read there,
+/// and all of them or none. A trap's hidden byte is what the model read.
+#[test]
+fn a_runtimes_writes_are_made_only_to_the_memory_it_read() {
+    let mut harness = watch_harness(2);
+    let pid = harness.inferior().memory_thread();
+    let write = |address: u64, expected: &[u8], bytes: &[u8]| crate::runtime_model::RuntimeWrite {
+        address: VirtualAddress::new(address),
+        expected: expected.to_vec(),
+        bytes: bytes.to_vec(),
+    };
+    harness.store(0x6000, 0x0807_0605_0403_0201);
+    harness.store(0x6008, 0x1817_1615_1413_1211);
+    harness.add_breakpoint(0x40);
+    harness.trace().take_actions();
+
+    // Memory that changed since the model read it takes none of the writes.
+    let refused = harness.controller.write_for_runtime(&[
+        write(0x6000, &[1, 2], &[0xaa, 0xbb]),
+        write(0x6008, &[0x99], &[0xcc]),
+    ]);
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|reason| reason.contains("0x6008") && reason.contains("no longer holds")),
+        "{refused:?}"
+    );
+    assert!(
+        !harness
+            .trace()
+            .take_actions()
+            .iter()
+            .any(|action| action.starts_with("write_word")),
+        "nothing is written"
+    );
+
+    harness
+        .controller
+        .write_for_runtime(&[
+            write(0x6000, &[1, 2], &[0xaa, 0xbb]),
+            write(0x6009, &[0x12], &[0xcc]),
+        ])
+        .expect("the writes are made");
+    let actions = harness.trace().take_actions();
+    for expected in [
+        format!("write_word {pid} 0x6000 0x80706050403bbaa"),
+        format!("write_word {pid} 0x6008 0x181716151413cc11"),
+    ] {
+        assert!(actions.contains(&expected), "{expected} in {actions:?}");
+    }
+
+    // The trap at 0x40 hides the byte the model reads there, which the
+    // write replaces under the trap.
+    let original = harness.inferior().breakpoints[&VirtualAddress::new(0x40)].original_byte;
+    harness
+        .controller
+        .write_for_runtime(&[write(0x40, &[original], &[0x55])])
+        .expect("the hidden byte is written");
+    assert_eq!(
+        harness.inferior().breakpoints[&VirtualAddress::new(0x40)].original_byte,
+        0x55
+    );
+
+    // A running thread could change what was read.
+    harness.start_continue();
+    assert!(
+        harness
+            .controller
+            .write_for_runtime(&[write(0x6000, &[0xaa], &[1])])
+            .is_err()
     );
 }
 
@@ -5641,6 +6997,8 @@ fn a_store_that_changes_nothing_resumes_only_its_own_thread() {
                 hit_count: 1,
                 previous: Some(word(7)),
                 current: Some(word(9)),
+                previous_value: None,
+                current_value: None,
             }]),
         })
     );
@@ -5699,6 +7057,8 @@ fn declined_watch_hits_are_counted_and_resume_only_their_thread() {
                 hit_count: 3,
                 previous: Some(word(2)),
                 current: Some(word(3)),
+                previous_value: None,
+                current_value: None,
             }]),
         })
     );
@@ -5791,6 +7151,8 @@ fn a_declined_change_keeps_the_bytes_a_siblings_pending_hit_reports_from() {
                 hit_count: 1,
                 previous: Some(word(7)),
                 current: Some(word(10)),
+                previous_value: None,
+                current_value: None,
             }]),
         })
     );
@@ -5991,6 +7353,8 @@ fn watched_bytes_becoming_unreadable_or_readable_are_changes() {
                     hit_count,
                     previous,
                     current,
+                    previous_value: None,
+                    current_value: None,
                 }]),
             }),
             "readable: {readable}"
@@ -6979,6 +8343,7 @@ fn inspection_of_a_stop_waits_behind_run_control_queued_after_it() {
         .map(|message| match message {
             ControllerMessage::Request(request) => request.describe(),
             ControllerMessage::Wait(_) => "wait".to_owned(),
+            ControllerMessage::AgentTimeout => "agent timeout".to_owned(),
         })
         .collect::<Vec<_>>();
     let served = served.iter().map(String::as_str).collect::<Vec<_>>();
@@ -7024,6 +8389,7 @@ fn inspection_of_a_stop_waits_behind_run_control_queued_after_it() {
         .map(|message| match message {
             ControllerMessage::Request(request) => request.describe(),
             ControllerMessage::Wait(_) => "wait".to_owned(),
+            ControllerMessage::AgentTimeout => "agent timeout".to_owned(),
         })
         .collect::<Vec<_>>();
     assert_eq!(served, ["pause 5000", "evaluate `interrupted`"]);
@@ -7236,4 +8602,84 @@ fn new_modules_load_together_and_register_in_observation_order() {
         .collect::<Vec<_>>();
     assert_eq!(loads, ["load_modules /lib/libb.so#4 /lib/libd.so#5"]);
     assert_eq!(loaded(&mut harness), [(5, "/lib/libd.so".into())]);
+}
+
+/// Stepping knows the role of code in any loaded module, not only in the
+/// program's own: a source step leaves a library's runtime machinery for
+/// its caller as it leaves the program's.
+#[test]
+fn a_step_leaves_runtime_machinery_in_a_library() {
+    let mut harness = watch_harness(1);
+    let library = PathBuf::from("/lib/libruntime.so");
+    harness
+        .trace()
+        .libraries
+        .borrow_mut()
+        .insert(library.clone(), (crate::LoadBias::new(0x7300_0000), true));
+    let symbol = |id, name: &str, start, role| crate::SymbolInfo {
+        id: crate::SymbolId::new(id),
+        name: name.into(),
+        address: ImageAddress::new(start),
+        kind: crate::SymbolKind::Function,
+        binding: crate::SymbolBinding::Global,
+        exported: true,
+        extent: Some(crate::SymbolExtent {
+            range: AddressRange {
+                start: ImageAddress::new(start),
+                end: ImageAddress::new(start + 0x100),
+            },
+            provenance: crate::SymbolExtentProvenance::Declared,
+        }),
+        storage: None,
+        role,
+    };
+    harness.trace().library_symbols.borrow_mut().insert(
+        library,
+        vec![
+            symbol(0, "machinery", 0x100, crate::CodeRole::RuntimeInternal),
+            symbol(1, "ordinary", 0x200, crate::CodeRole::Ordinary),
+        ],
+    );
+    harness.controller.refresh_modules().unwrap();
+
+    let pid = harness.threads[0];
+    let at = |harness: &WatchHarness, address: u64| {
+        harness.trace().set_pc(pid, address);
+        harness
+            .controller
+            .stopped_where_step_leaves(pid)
+            .expect("the thread's registers")
+    };
+    assert!(at(&harness, 0x7300_0150), "in the library's machinery");
+    assert!(!at(&harness, 0x7300_0250), "in the library's ordinary code");
+    assert_eq!(
+        harness
+            .controller
+            .code_role(VirtualAddress::new(0x7300_0180)),
+        Some(crate::CodeRole::RuntimeInternal)
+    );
+    assert_eq!(
+        harness
+            .controller
+            .code_role(VirtualAddress::new(0x7400_0000)),
+        None,
+        "no module holds the address"
+    );
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn recorded_identity_batches_preserve_nested_and_unknown_thread_mappings() {
+    let host = Pid::from_raw(5000);
+    let collision = Pid::from_raw(7);
+    let target = crate::runtime_model::TargetThreadId::new(7).unwrap();
+    let edge = super::recorded::Recorded(FakeTrace {
+        target_ids: BTreeMap::from([(host, Some(target)), (collision, None)]),
+        ..FakeTrace::default()
+    });
+    assert_eq!(
+        edge.target_thread_ids(host, &[collision, host]),
+        [(host, target)]
+    );
+    assert_eq!(edge.target_thread_id(host, collision), None);
 }

@@ -10,6 +10,8 @@
 
 pub mod flight_recordings;
 mod memory_cap;
+pub mod python;
+pub mod truth;
 
 use std::future::Future;
 use std::io::{BufRead as _, BufReader, Write as _};
@@ -36,8 +38,9 @@ use tokio::time::timeout;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
-// Event delivery depends on waiter and controller OS threads being scheduled.
-const EVENT_TIMEOUT: Duration = Duration::from_secs(20);
+// Event delivery includes cold shared-library metadata loading on the
+// controller, which can exceed twenty seconds under the stress gate.
+const EVENT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long a scenario's check of a stop may take, all its requests
 /// together.
@@ -613,6 +616,20 @@ impl Scenario {
         task
     }
 
+    /// Launches with explicit options and returns once the inferior runs,
+    /// with what ends the run.
+    pub async fn start_running_with(
+        &mut self,
+        options: LaunchOptions,
+    ) -> JoinHandle<Result<StopReason>> {
+        let task = self.spawn_request(&format!("run {options:?}"), |handle| async move {
+            handle.run_with(options).await
+        });
+        self.wait_for(|event| matches!(event, DebuggerEvent::InferiorContinued { .. }))
+            .await;
+        task
+    }
+
     /// Launches and returns as soon as the inferior exists, which may be
     /// before its initial exec stop has been processed.
     pub async fn start_launching(&mut self) -> JoinHandle<Result<StopReason>> {
@@ -895,7 +912,10 @@ pub fn signal_thread(process: ProcessId, thread: microscope::ThreadId, signal: n
 /// Returns the address of a breakpoint stop, failing on any other stop.
 pub fn breakpoint_address(reason: &StopReason) -> VirtualAddress {
     match reason {
-        StopReason::Breakpoint { address, .. } => *address,
+        StopReason::Breakpoint {
+            address: Some(address),
+            ..
+        } => *address,
         other => panic!("expected a breakpoint stop, got {other:?}"),
     }
 }

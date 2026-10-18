@@ -52,6 +52,8 @@ export interface Results {
   removeWatchpoint: null;
   signals: P.Signals;
   setSignal: null;
+  exceptions: P.Exceptions;
+  setException: null;
   modules: P.Modules;
   functions: P.Functions;
   tasks: P.TaskList;

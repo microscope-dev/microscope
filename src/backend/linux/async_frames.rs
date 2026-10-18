@@ -14,23 +14,25 @@ use crate::eval::target::Machine;
 use crate::inspection::InspectionBudget;
 use crate::model::{FrameMetadata, ValueStorage};
 use crate::protocol::{PresentedFrame, StopId};
+use crate::runtime_model::Driven;
 use crate::runtime_model::futures::{self, AsyncFrameKind, ChainEnd};
 
 use crate::{
-    Backtrace, CallFrameUnavailableReason, CodeInstanceKind, CodeRole, CoroutineInfo, Error,
-    FrameKind, ImageAddress, InspectionLimits, InspectionUsage, LoadedModule, ModuleImage,
+    Backtrace, CallFrameUnavailableReason, CodeInstanceKind, CodeRole, CoroutineInfo, DrivenFrames,
+    Error, FrameKind, ImageAddress, InspectionLimits, InspectionUsage, LoadedModule, ModuleImage,
     PresentedShape, RecordMemberLayout, Result, StackFrame, StackFrameId, StackSegment,
-    TypeReference, UnfollowedFuture, UnwindTermination, Variable, VariableKind, VariableQuery,
+    TypeReference, Unfollowed, UnwindTermination, Variable, VariableKind, VariableQuery,
     VariableState, VariableUnavailableReason, VirtualAddress,
 };
 
 use super::evaluation::{StopMachine, StopPlace};
 use super::frames::{
-    Expanded, FrameOrigin, FrameRegisters, FrameScope, PhysicalStack, ResolvedFrame, RootOrigin,
-    StackRoot, UnwindModule,
+    Expanded, FrameOrigin, FrameRegisters, FrameScope, FrameSource, PhysicalStack, ResolvedFrame,
+    RootOrigin, StackRoot, UnwindModule,
 };
 
 use super::inspection::variable_context;
+use super::interpreted::{Placed, interpreted_frame};
 use super::native::InspectionOps;
 use super::{Controller, Inferior, RuntimeModule};
 
@@ -236,7 +238,7 @@ impl<P: InspectionOps> Controller<P> {
             },
         };
 
-        match machine.present(&place).ok()?.state {
+        match machine.present(&place.into()).ok()?.state {
             VariableState::Available {
                 presentation: Some(presentation),
                 ..
@@ -291,11 +293,13 @@ impl<P: InspectionOps> Controller<P> {
         }
     }
 
-    /// A stack's frames with the chain of awaits of each future a runtime's
-    /// frame drives spliced in before that frame, all renumbered, and why
-    /// any such chain is shown in part or not at all. A future being
-    /// polled runs on the stack itself, so a driver below a frame that
-    /// runs a coroutine is left as it is.
+    /// A stack's frames with what a runtime's frames drive spliced in
+    /// before each, all renumbered, and why any is shown in part or not at
+    /// all: the chain of awaits of each future one polls, and the segment
+    /// of interpreted frames each activation of an interpreter's loop runs
+    /// (see [`super::interpreted`]). A future being polled runs on the
+    /// stack itself, so a driver below a frame that runs a coroutine is
+    /// left as it is.
     pub(super) fn splice_driven(
         &self,
         inferior: &Inferior,
@@ -305,28 +309,23 @@ impl<P: InspectionOps> Controller<P> {
         expanded: Expanded,
     ) -> Result<Expanded> {
         let runtimes = self.runtimes(inferior);
-        let variable_of = |frame: &StackFrame| {
-            let function = frame.function.as_ref()?;
+        let drivers = drivers(&expanded.trace.frames, |frame, inner| {
             runtimes
                 .iter()
-                .filter(|runtime| Some(runtime.module.id) == frame.module)
-                .find_map(|runtime| runtime.model.driven_future(function))
-        };
+                .enumerate()
+                .filter(|(_, runtime)| {
+                    Some(runtime.module.id) == frame.module
+                        && runtime.model.driver_role() == Some(frame.role)
+                })
+                .find_map(|(index, runtime)| Some((runtime.model.driven(frame, inner)?, index)))
+        });
 
-        let mut polling = false;
-        let mut drivers = Vec::new();
-        for (index, frame) in expanded.trace.frames.iter().enumerate() {
-            if !polling && let Some(variable) = variable_of(frame) {
-                drivers.push((index, variable));
-            }
-
-            polling |= frame
-                .function
-                .as_ref()
-                .is_some_and(|function| function.coroutine.is_some());
-        }
-
-        if drivers.is_empty() {
+        let mut placement = self.placement(inferior, root, &runtimes, &drivers);
+        let drivers: Vec<(usize, Driven)> = drivers
+            .into_iter()
+            .map(|(frame, driven, _)| (frame, driven))
+            .collect();
+        if drivers.is_empty() && placement.is_empty() {
             return Ok(expanded);
         }
 
@@ -337,10 +336,13 @@ impl<P: InspectionOps> Controller<P> {
             expanded.trace.unfollowed.len()
         );
 
-        let mut frames = Vec::with_capacity(expanded.trace.frames.len());
-        let mut origins = Vec::with_capacity(frames.capacity());
-        let mut futures = expanded.futures.clone();
-        let mut unfollowed = expanded.trace.unfollowed.to_vec();
+        let mut spliced = Spliced {
+            frames: Vec::with_capacity(expanded.trace.frames.len()),
+            origins: Vec::with_capacity(expanded.trace.frames.len()),
+            futures: expanded.futures.clone(),
+            interpreted: expanded.interpreted.clone(),
+            unfollowed: expanded.trace.unfollowed.to_vec(),
+        };
         let mut drivers = drivers.into_iter().peekable();
 
         // Frames of one runtime may each drive the same future, as its
@@ -351,8 +353,18 @@ impl<P: InspectionOps> Controller<P> {
         let mut unread = None;
         let mut lost = Vec::new();
         for (index, frame) in expanded.trace.frames.iter().enumerate() {
-            let here = |frames: &Vec<StackFrame>| frame_u32(frames.len()).map(StackFrameId::new);
-            if let Some((_, variable)) = drivers.next_if(|(driver, _)| *driver == index) {
+            let activation = expanded.origins[index].activation;
+            for driven in placement.placed.remove(&index).unwrap_or_default() {
+                spliced.push_interpreted(driven, frame.segment, activation);
+            }
+
+            if let Some(reason) = placement.notes.remove(&index) {
+                spliced.note(DrivenFrames::Interpreted, reason)?;
+            }
+
+            if let Some((_, Driven::Future { variable })) =
+                drivers.next_if(|(driver, _)| *driver == index)
+            {
                 let driver = StackFrameId::new(frame_u32(index)?);
                 match self.driven_chain(inferior, root, stack, modules, &expanded, driver, variable)
                 {
@@ -363,27 +375,24 @@ impl<P: InspectionOps> Controller<P> {
                                 let mut built =
                                     async_frame(module.image.as_ref(), &module.loaded, 0, &future);
                                 built.segment = StackSegment::Future;
-                                frames.push(built);
-                                origins.push(FrameOrigin {
-                                    activation: expanded.origins[index].activation,
-                                    jump: None,
-                                    future: Some(futures.len()),
+                                spliced.frames.push(built);
+                                spliced.origins.push(FrameOrigin {
+                                    activation,
+                                    source: FrameSource::Future(spliced.futures.len()),
                                 });
-                                futures.push(future);
+                                spliced.futures.push(future);
                             }
 
                             if let Some(reason) = end_reason(&chain.end) {
-                                unfollowed.push(UnfollowedFuture {
-                                    driver: here(&frames)?,
-                                    reason,
-                                });
+                                spliced.note(DrivenFrames::Future, reason)?;
                             }
                         }
                     }
                     Err(Unread { reason, declared }) => {
                         if unread.is_none() {
-                            unread = Some(UnfollowedFuture {
-                                driver: here(&frames)?,
+                            unread = Some(Unfollowed {
+                                driver: spliced.here()?,
+                                driven: DrivenFrames::Future,
                                 reason,
                             });
                         }
@@ -393,33 +402,29 @@ impl<P: InspectionOps> Controller<P> {
                 }
             }
 
-            frames.push(frame.clone());
-            origins.push(expanded.origins[index]);
+            spliced.frames.push(frame.clone());
+            spliced.origins.push(expanded.origins[index]);
         }
 
         if shown.is_empty() {
-            unfollowed.extend(unread);
+            spliced.unfollowed.extend(unread);
         } else {
             lost.clear();
         }
 
-        for (level, frame) in frames.iter_mut().enumerate() {
-            let level = frame_u32(level)?;
-            frame.level = level;
-            frame.id = StackFrameId::new(level);
+        // Frames whose place is unknown follow every frame of the stack,
+        // and stand for its outermost.
+        if let (Some(reason), Some(outermost)) = (
+            placement.unplaced_reason.take(),
+            stack.frames.len().checked_sub(1),
+        ) {
+            spliced.note(DrivenFrames::Interpreted, reason)?;
+            for driven in placement.unplaced {
+                spliced.push_interpreted(driven, StackSegment::Unplaced, outermost);
+            }
         }
 
-        let spliced = Expanded {
-            trace: Backtrace {
-                frames: frames.into(),
-                unfollowed: unfollowed.into(),
-                ..expanded.trace
-            },
-            origins,
-            futures,
-            lost,
-        };
-
+        let spliced = spliced.expanded(expanded.trace, lost)?;
         spliced.check_invariants(stack.frames.len());
         Ok(spliced)
     }
@@ -624,6 +629,113 @@ fn end_reason(end: &ChainEnd) -> Option<Arc<str>> {
     }
 }
 
+/// A trace with frames spliced in, as it is built.
+struct Spliced {
+    frames: Vec<StackFrame>,
+    origins: Vec<FrameOrigin>,
+    futures: Vec<futures::AsyncFrame>,
+    interpreted: Vec<Placed>,
+    unfollowed: Vec<Unfollowed>,
+}
+
+impl Spliced {
+    /// Interpreted code is machinery only when it is the debugger's own
+    /// agent, which calls nothing but the debugger's hook: what runs inside
+    /// it is machinery too.
+    fn hide_inside_agent(&mut self) {
+        let Some(agent) = self.frames.iter().position(|frame| {
+            matches!(frame.kind, FrameKind::Interpreted { .. })
+                && frame.role == CodeRole::Interpreter
+        }) else {
+            return;
+        };
+
+        for frame in &mut self.frames[..agent] {
+            if matches!(frame.role, CodeRole::Ordinary | CodeRole::Wrapper) {
+                frame.role = CodeRole::Interpreter;
+            }
+        }
+    }
+
+    /// The frame the next frame pushed will be.
+    fn here(&self) -> Result<StackFrameId> {
+        frame_u32(self.frames.len()).map(StackFrameId::new)
+    }
+
+    /// Notes that the frames the next frame pushed drives are not all
+    /// shown, and why.
+    fn note(&mut self, frames: DrivenFrames, reason: Arc<str>) -> Result<()> {
+        let driver = self.here()?;
+        self.unfollowed.push(Unfollowed {
+            driver,
+            driven: frames,
+            reason,
+        });
+        Ok(())
+    }
+
+    /// Pushes an interpreted frame on the stack `segment`, which the
+    /// physical frame `activation` runs or stands for.
+    fn push_interpreted(&mut self, frame: Placed, segment: StackSegment, activation: usize) {
+        self.frames.push(interpreted_frame(&frame.frame, segment));
+        self.origins.push(FrameOrigin {
+            activation,
+            source: FrameSource::Interpreted(self.interpreted.len()),
+        });
+        self.interpreted.push(frame);
+    }
+
+    /// The finished trace, its frames numbered by their levels.
+    fn expanded(mut self, trace: Backtrace, lost: Vec<TypeReference>) -> Result<Expanded> {
+        self.hide_inside_agent();
+        for (level, frame) in self.frames.iter_mut().enumerate() {
+            let level = frame_u32(level)?;
+            frame.level = level;
+            frame.id = StackFrameId::new(level);
+        }
+
+        Ok(Expanded {
+            trace: Backtrace {
+                frames: self.frames.into(),
+                unfollowed: self.unfollowed.into(),
+                ..trace
+            },
+            origins: self.origins,
+            futures: self.futures,
+            interpreted: self.interpreted,
+            lost,
+        })
+    }
+}
+
+/// Each frame of `frames`, innermost first, that drives frames the stack
+/// does not show, with what `driven` says it drives, given the frame inner
+/// to it, and who says so. A future being polled runs on the stack itself,
+/// so a frame below one that runs a coroutine drives no future the stack
+/// does not already show.
+fn drivers<R>(
+    frames: &[StackFrame],
+    driven: impl Fn(&StackFrame, Option<&StackFrame>) -> Option<(Driven, R)>,
+) -> Vec<(usize, Driven, R)> {
+    let mut polling = false;
+    let mut drivers = Vec::new();
+    for (index, frame) in frames.iter().enumerate() {
+        let inner = index.checked_sub(1).and_then(|inner| frames.get(inner));
+        match driven(frame, inner) {
+            Some((Driven::Future { .. }, _)) if polling => {}
+            Some((driving, by)) => drivers.push((index, driving, by)),
+            None => {}
+        }
+
+        polling |= frame
+            .function
+            .as_ref()
+            .is_some_and(|function| function.coroutine.is_some());
+    }
+
+    drivers
+}
+
 /// The variables a coroutine of type `ty` at `object` holds in `state`.
 fn saved<'a>(
     coroutine: &'a CoroutineInfo,
@@ -739,4 +851,128 @@ pub fn resume_address(
 
     let points = image.resume_points(instance.id())?.ok()?;
     Some(points.point(state)?.address)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A frame of code in `role` that no debug information describes, or
+    /// of an async function's coroutine when `coroutine`.
+    fn frame(level: u32, role: CodeRole, coroutine: bool) -> StackFrame {
+        let mut frame = StackFrame::new(level, FrameKind::Physical, None, VirtualAddress::new(1));
+        frame.role = role;
+        frame.function = coroutine.then(|| crate::FunctionInfo {
+            id: crate::FunctionId::new(level),
+            name: "poll".into(),
+            linkage_name: None,
+            declaration: None,
+            language: crate::SourceLanguage::Rust,
+            role,
+            enclosing: None,
+            coroutine: Some(crate::TypeId::new(0)),
+            generics: Arc::from([]),
+            main_subprogram: false,
+        });
+        frame
+    }
+
+    /// Drivers are found by what the model says of a frame, which a
+    /// frame's code role alone can decide, and a future polled within a
+    /// coroutine's poll is not driven again.
+    #[test]
+    fn drivers_are_the_frames_a_model_says_drive_and_no_future_runs_within() {
+        let future = Driven::Future { variable: "future" };
+        let driven = |frame: &StackFrame, _: Option<&StackFrame>| {
+            (frame.role == CodeRole::RuntimeInternal).then_some((future, ()))
+        };
+        let frames = [
+            frame(0, CodeRole::Ordinary, false),
+            frame(1, CodeRole::RuntimeInternal, false),
+            frame(2, CodeRole::Ordinary, true),
+            frame(3, CodeRole::RuntimeInternal, false),
+        ];
+        assert_eq!(drivers(&frames, driven), [(1, future, ())]);
+        assert_eq!(drivers(&frames[3..], driven), [(0, future, ())]);
+        assert!(drivers(&frames, |_, _| None::<(Driven, ())>).is_empty());
+
+        // An interpreter's loop runs its frames on the stack, wherever it
+        // is; whether one does may turn on the frame it called.
+        let interpreted = |frame: &StackFrame, _: Option<&StackFrame>| {
+            (frame.role != CodeRole::Ordinary).then_some((Driven::Interpreted, ()))
+        };
+        assert_eq!(
+            drivers(&frames, interpreted),
+            [(1, Driven::Interpreted, ()), (3, Driven::Interpreted, ())]
+        );
+        let calling = |frame: &StackFrame, inner: Option<&StackFrame>| {
+            (frame.role != CodeRole::Ordinary && inner.is_some_and(|inner| inner.level == 2))
+                .then_some((Driven::Interpreted, ()))
+        };
+        assert_eq!(drivers(&frames, calling), [(3, Driven::Interpreted, ())]);
+    }
+
+    /// What runs inside the debugger's agent, the innermost interpreted
+    /// frame that is machinery, is machinery too; the program's frames
+    /// outside it, and stacks without it, keep their roles.
+    #[test]
+    fn frames_inside_the_agent_are_machinery() {
+        let interpreted = |level, role| {
+            let mut frame = frame(level, role, false);
+            frame.kind = FrameKind::Interpreted {
+                frame: VirtualAddress::new(0x1000),
+            };
+            frame
+        };
+        let roles = |frames: Vec<StackFrame>| {
+            let mut spliced = Spliced {
+                frames,
+                origins: Vec::new(),
+                futures: Vec::new(),
+                interpreted: Vec::new(),
+                unfollowed: Vec::new(),
+            };
+            spliced.hide_inside_agent();
+            spliced
+                .frames
+                .iter()
+                .map(|frame| frame.role)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            roles(vec![
+                frame(0, CodeRole::Ordinary, false),
+                frame(1, CodeRole::Wrapper, false),
+                frame(2, CodeRole::RuntimeInternal, false),
+                interpreted(3, CodeRole::Interpreter),
+                frame(4, CodeRole::Interpreter, false),
+                interpreted(5, CodeRole::Ordinary),
+                interpreted(6, CodeRole::Interpreter),
+            ]),
+            [
+                CodeRole::Interpreter,
+                CodeRole::Interpreter,
+                CodeRole::RuntimeInternal,
+                CodeRole::Interpreter,
+                CodeRole::Interpreter,
+                CodeRole::Ordinary,
+                CodeRole::Interpreter,
+            ]
+        );
+
+        // A native frame the interpreter runs is not the agent.
+        let unchanged = vec![
+            frame(0, CodeRole::Ordinary, false),
+            frame(1, CodeRole::Interpreter, false),
+            interpreted(2, CodeRole::Ordinary),
+        ];
+        assert_eq!(
+            roles(unchanged),
+            [
+                CodeRole::Ordinary,
+                CodeRole::Interpreter,
+                CodeRole::Ordinary
+            ]
+        );
+    }
 }

@@ -13,3 +13,23 @@ priority = 50
 # `just stress` with SOAK_MINUTES runs one test for as long as it is told to.
 [profile.soak]
 slow-timeout = { period = "60s", terminate-after = 1440 }
+
+# The BPF engines' tests each map perf rings on every CPU, which count
+# against this user's perf memory (kernel.perf_event_mlock_kb on each CPU,
+# then RLIMIT_MEMLOCK): more than two at once can run out of it.
+[test-groups]
+perf-rings = { max-threads = 2 }
+
+[[profile.default.overrides]]
+filter = 'test(/(^|::)bpf::/)'
+test-group = 'perf-rings'
+
+# Each stopped snapshot's debugger reads every library's debug information
+# again, which `just stress`, with no image cache, makes take seconds of
+# every CPU: one recording at a time leaves the other tests the CPUs.
+[test-groups.python-snapshots]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = 'test(/^profile::stopped_snapshots_find/)'
+test-group = 'python-snapshots'

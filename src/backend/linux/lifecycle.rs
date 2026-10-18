@@ -59,11 +59,16 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    fn launch(&mut self, options: LaunchOptions, reply: Reply<ExecutionId>) {
+    fn launch(&mut self, mut options: LaunchOptions, reply: Reply<ExecutionId>) {
         let stop_at_entry = options.stop_at_entry;
+        // A bootstrap that cannot be made leaves only the agent unavailable.
+        let python = self
+            .ptrace
+            .python_launch(&self.executable, &mut options.environment)
+            .transpose();
         let started = self
             .ptrace
-            .spawn(&self.executable, options)
+            .spawn(&self.launch_path, options)
             .and_then(|pid| {
                 self.ptrace
                     .spawn_waiter(self.message_sender.clone())
@@ -76,6 +81,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         match started {
             Ok((pid, waiter)) => {
                 self.begin_launch(InferiorOrigin::Launched, pid, stop_at_entry, waiter, reply);
+                let python = python
+                    .map(|launch| launch.and_then(|launch| launch.launched(pid).map(|()| launch)));
+                if let Some(inferior) = self.inferior.as_mut() {
+                    inferior.python_launch = python;
+                }
             }
             Err(error) => {
                 let _ = reply.send(Err(error));
@@ -1112,6 +1122,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         inferior.repairs.clear();
         inferior.loader_site = None;
         inferior.runtime_hooks.clear();
+        let agent_cleanup = inferior.retire_agents_after_exit();
+        let had_arming_reasons = !inferior.managed.unarmed.is_empty();
+        inferior.managed = super::managed::ManagedSites::default();
         inferior.stack_moves.clear();
         inferior.indirect = super::indirect::IndirectFunctions::default();
 
@@ -1140,8 +1153,22 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .ok_or(Error::NotRunning)?
                 .exec_unsupported = true;
         }
+        // Arming the new image publishes reasons it reports, but not that
+        // the old image's reasons are gone.
+        if had_arming_reasons
+            && self
+                .inferior
+                .as_ref()
+                .is_some_and(|inferior| inferior.managed.unarmed.is_empty())
+        {
+            self.publish_breakpoints_changed();
+        }
 
-        self.begin_visible_stop(pid, StopReason::Exec { followed })
+        let reason = agent_cleanup.map_or_else(
+            |description| StopReason::RuntimeEvent { description },
+            |()| StopReason::Exec { followed },
+        );
+        self.begin_visible_stop(pid, reason)
     }
 }
 
@@ -1171,19 +1198,21 @@ impl<P: LinuxTraceOps> Controller<P> {
             })
             .map(|(&pid, _)| pid)
             .collect::<Vec<_>>();
-        let mut resumed = false;
+        // Validate every queue before resuming any thread. A later read
+        // failure must leave the all-stop intact for shutdown cleanup.
+        let mut queued = Vec::new();
         for pid in candidates {
-            if !self
+            if self
                 .ptrace
                 .queued_signal(pid, Signal::SIGTRAP, SignalQueue::Thread)?
             {
-                continue;
+                queued.push(pid);
             }
-
-            self.resume_to_drain(pid)?;
-            resumed = true;
         }
-
+        let resumed = !queued.is_empty();
+        for pid in queued {
+            self.resume_to_drain(pid)?;
+        }
         Ok(resumed)
     }
 
@@ -1244,7 +1273,13 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
 
         if inferior.held == Some(HeldStop::Continued) {
-            let mask = self.ptrace.signal_mask(thread)?;
+            let mask = match self.ptrace.signal_mask(thread) {
+                Err(error) if is_vanished_tracee(&error) => {
+                    inferior.thread_mut(thread)?.state = NativeThreadState::Running;
+                    return Ok(true);
+                }
+                result => result?,
+            };
             let continued = 1 << (Signal::SIGCONT.number() - 1);
             if mask & continued != 0 {
                 match self.ptrace.set_signal_mask(thread, mask & !continued) {
@@ -1315,6 +1350,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.discard_watchpoints();
             let pending = self.settle_stopped_fork_children();
             let mut inferior = self.inferior.take().ok_or(Error::NotRunning)?;
+            Self::abandon_assignment(&mut inferior);
+            self.agent_cleanup_error = inferior.retire_agents_after_exit().err();
             let edits = inferior.take_pending_edits();
             let killed = std::mem::take(&mut inferior.killed_children);
             let waiter = inferior.waiter.take();
@@ -1356,11 +1393,19 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
 
             if let Some(reply) = self.shutdown_reply.take() {
-                let _ = reply.send(Ok(()));
+                let _ = reply.send(
+                    self.agent_cleanup_error
+                        .take()
+                        .map_or(Ok(()), |reason| Err(Error::RuntimeAgent(reason))),
+                );
             }
 
             if let Some(reply) = self.kill_reply.take() {
-                let _ = reply.send(Ok(()));
+                let _ = reply.send(
+                    self.agent_cleanup_error
+                        .take()
+                        .map_or(Ok(()), |reason| Err(Error::RuntimeAgent(reason))),
+                );
             }
 
             self.settle_pending_edits(edits);
@@ -1394,7 +1439,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         let process_id = process_id(inferior.tgid);
         let owned_execution = inferior.active.as_ref().is_some_and(|active| {
             matches!(active.scope, ResumeScope::Thread(thread) if thread == thread_id)
-                || matches!(active.kind, ActiveKind::Step { owner, .. } if owner.thread == pid)
+                || matches!(
+                    active.kind,
+                    ActiveKind::Step { owner, .. } | ActiveKind::RuntimeStep { owner, .. }
+                        if owner.thread == pid
+                )
         });
 
         // A thread resumed alone to reach its awaited breakpoint holds its
@@ -1489,7 +1538,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         let Some(inferior) = self.inferior.as_ref() else {
             // Children the ended inferior forked are released first.
             if self.orphans.is_none() {
-                self.finish_shutdown(Ok(()));
+                let outcome = self
+                    .agent_cleanup_error
+                    .take()
+                    .map_or(Ok(()), |reason| Err(Error::RuntimeAgent(reason)));
+                self.finish_shutdown(outcome);
             }
 
             return;
@@ -1751,8 +1804,22 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .threads
                 .iter()
                 .all(|(&pid, thread)| inferior.settled(pid, thread));
-        if ready && !self.drain_queued_traps()? && !self.drain_held_continue()? {
-            self.detach_inferior();
+        if ready {
+            let draining = self.drain_queued_traps().and_then(|resumed| {
+                if resumed {
+                    Ok(true)
+                } else {
+                    self.drain_held_continue()
+                }
+            });
+            match draining {
+                Ok(false) => self.detach_inferior(),
+                Ok(true) => {}
+                // Queue evidence can be unavailable even at an all-stop.
+                // Report it, but still remove instrumentation and detach.
+                Err(error) if self.sites_live() => self.detach_inferior_reporting(Some(error)),
+                Err(error) => return Err(error),
+            }
         }
 
         Ok(())
@@ -1978,6 +2045,10 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// with breakpoints or debug registers still armed. The first failure is
     /// reported in the shutdown reply.
     pub(super) fn detach_inferior(&mut self) {
+        self.detach_inferior_reporting(None);
+    }
+
+    fn detach_inferior_reporting(&mut self, mut first_error: Option<Error>) {
         debug_assert!(
             self.inferior.as_ref().is_some_and(|inferior| {
                 inferior
@@ -1991,10 +2062,23 @@ impl<P: LinuxTraceOps> Controller<P> {
         // Every thread was stopped, and only SIGKILL takes one out of its
         // stop: a thread that refuses to be written belongs to a process
         // that is ending, where what is left can never run.
-        let mut first_error = self
-            .disarm_for_detach()
-            .err()
-            .filter(|error| !is_vanished_tracee(error));
+        // A queue read can fail after SIGCONT was temporarily unblocked.
+        // Restore its mask even when draining could not finish.
+        if let Some(HeldStop::Draining { thread, mask }) =
+            self.inferior.as_ref().and_then(|inferior| inferior.held)
+            && let Err(error) = self.ptrace.set_signal_mask(thread, mask)
+            && !is_vanished_tracee(&error)
+        {
+            first_error.get_or_insert(error);
+        }
+        if let Err(reason) = self.prepare_agents_for_detach() {
+            first_error.get_or_insert(Error::RuntimeAgent(reason));
+        }
+        if let Err(error) = self.disarm_for_detach()
+            && !is_vanished_tracee(&error)
+        {
+            first_error.get_or_insert(error);
+        }
         let Some(mut inferior) = self.inferior.take() else {
             self.answer_kill();
             self.finish_shutdown(first_error.map_or(Err(Error::NotRunning), Err));

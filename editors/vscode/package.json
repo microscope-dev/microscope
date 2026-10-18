@@ -1,7 +1,7 @@
 {
   "name": "microscope",
   "displayName": "microscope",
-  "description": "Debug native Linux programs written in C, C++, Rust, Go, and Zig with microscope",
+  "description": "Debug native Linux programs written in C, C++, Rust, Go, and Zig, and Python programs, with microscope",
   "version": "0.1.0",
   "publisher": "microscope",
   "license": "MIT",
@@ -73,13 +73,14 @@
       { "language": "FortranFixedForm" },
       { "language": "d" },
       { "language": "nim" },
-      { "language": "ada" }
+      { "language": "ada" },
+      { "language": "python" }
     ],
     "debuggers": [
       {
         "type": "microscope",
         "label": "microscope",
-        "languages": ["c", "cpp", "rust", "go", "zig", "odin", "FortranFreeForm", "FortranFixedForm", "d", "nim", "ada"],
+        "languages": ["c", "cpp", "rust", "go", "zig", "odin", "FortranFreeForm", "FortranFixedForm", "d", "nim", "ada", "python"],
         "variables": {
           "pickProcess": "microscope.pickProcess"
         },
@@ -319,6 +320,18 @@
               "name": "Launch in terminal",
               "program": "^\"\\${workspaceFolder}/${1:a.out}\"",
               "console": "integratedTerminal"
+            }
+          },
+          {
+            "label": "microscope: Launch a Python script",
+            "description": "Run the open Python file with an interpreter, CPython 3.14 or later for breakpoints and steps.",
+            "body": {
+              "type": "microscope",
+              "request": "launch",
+              "name": "Launch Python script",
+              "program": "${1:/usr/bin/python3}",
+              "args": ["^\"\\${file}\""],
+              "cwd": "^\"\\${workspaceFolder}\""
             }
           },
           {

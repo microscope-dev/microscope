@@ -3,22 +3,30 @@
 microscope presents language-level work as tasks and logical stacks without
 making the public debugger depend on one runtime. Go goroutines and tokio tasks
 use the same public concepts even though their metadata, scheduling, stack
-shape, and saved state differ.
+shape, and saved state differ. CPython's frames, which run no machine code of
+their own, join native backtraces as interpreted frames.
 
 ## Code map
 
 | Path | What lives there |
 | --- | --- |
 | `src/runtime_model/mod.rs`, `src/runtime_model/records.rs` | Neutral runtime records and discovery interface |
+| `src/runtime_model/thread_ids.rs` | Shared proof-based host/target identity resolution, including ambiguity and bounds |
 | `src/runtime_model/go/` | Go runtime layout and goroutine discovery |
 | `src/runtime_model/tokio/` | Tokio runtime, task, and future discovery |
 | `src/runtime_model/futures.rs`, `src/runtime_model/rust/` | Rust future inspection and shared Rust rules |
+| `src/runtime_model/python/` | CPython's threads, frames, code objects, line tables, and built-in values |
+| `src/runtime_model/python/agent.rs`, `agent.py`, `hook.rs` | Whole-state scripts, monitoring transport, native hook ELF and ABI |
+| `src/runtime_model/python/injection.rs` | Bounded PEP 768 request preparation |
+| `src/backend/linux/agent_files.rs` | Private target-namespace artifacts and explicit acknowledgement/exit cleanup |
+| `src/backend/linux/runtime_agents.rs` | Controller-owned agent installations, generations, acknowledgements, and detach |
+| `src/backend/linux/interpreted.rs` | Interpreted frames placed in backtraces, and their variables |
 | `src/debug_info/coroutines.rs`, `src/debug_info/roles.rs` | Static coroutine and code-role metadata |
 | `src/image/resumes.rs` | Validated resume-point tables |
 | `src/backend/linux/runtimes.rs`, `src/backend/linux/async_frames.rs`, `src/backend/linux/frames.rs` | Stop-scoped runtime snapshots and logical stacks |
-| `tests/go/`, `tests/tokio/` | Runtime integration suites |
-| `tests/fixtures/go/`, `tests/fixtures/rust/tokio/` | Programs that expose scheduler and task states |
-| `views/` | Built-in Go, Rust, and Tokio value views |
+| `tests/go/`, `tests/tokio/`, `tests/python/` | Runtime integration suites |
+| `tests/fixtures/go/`, `tests/fixtures/rust/tokio/`, `tests/fixtures/python/` | Programs that expose scheduler, task, and frame states |
+| `views/` | Built-in Go, Rust, Tokio, and Python value views |
 
 ## Boundary
 
@@ -56,6 +64,11 @@ process may contain more than one supported instance.
 
 A **logical frame** represents source execution in a task even when no native
 machine frame currently exists for it.
+
+An **interpreted frame** is a frame an interpreter keeps in its own record,
+such as a CPython `_PyInterpreterFrame`. It has a function, file, and line the
+interpreter recorded, and variables, but no registers, no address, and no code
+in any module image.
 
 ## Stop-scoped snapshots
 
@@ -104,6 +117,67 @@ symbol matching in the provider.
 The session setting for entering or skipping runtime code applies to these
 roles. Skipping must not hide a user function merely because its name happens
 to resemble a runtime helper.
+
+## Runtime breakpoints
+
+A runtime model names the runtime functions run control keeps a breakpoint
+at, which `BreakpointOwner::Runtime` owns and `language_exceptions.rs`
+installs:
+
+- `hooks()` lists the functions that report an exception as they are
+  entered, such as Go's `gopanic`. Each is armed only while its exception
+  filter stops.
+- `internal_hooks()` lists functions a runtime calls to tell the debugger
+  of its own events. Each stays armed while its runtime is loaded, and at
+  every hit `hook_event` reads what the thread reports and says whether it
+  stops (`HookEvent`). A hit that goes on is stepped over unseen. A report
+  that cannot be read stops with `StopReason::RuntimeEvent`, and says why.
+  A hook is at an address in the runtime's own image, or at a function a
+  companion image exports (`HookPlace::Companion`). A companion is a
+  library the runtime loads beside its own, as Python's agent loads its hook
+  library. Its hook is armed in each loaded image that exports the name, and
+  goes when the image unloads.
+
+Both are judged when no user breakpoint at the site stops, and before a
+step's plan meets the thread. The private sites run control keeps for itself,
+such as Go's stack mover, are separate owners.
+
+A managed location is a runtime's line or function rather than a trap
+address. `managed.rs` records its owners and arms the runtime with its whole
+configuration. Resolution alone does not prove that arming succeeded.
+`Breakpoint.pending_locations` exposes each resolved location whose runtime
+could not accept arming, without discarding the desired location. Public
+replies and snapshots derive these reasons from the controller's current
+arming state; `ready_locations()` filters them for clients. A refusal leaves
+that runtime's whole current configuration unconfirmed. Earlier instrumentation
+may still report hits, which retain their logical ownership and hit policy.
+An agent's acknowledged sites are the exception: while a newer configuration
+awaits acknowledgement, the agent holds one configuration or the other, so a
+location both name stays ready (`Installation::confirms`). Only a failure
+report or a timeout makes them pending, so an editor does not gray out every
+breakpoint while a step's command is acknowledged.
+Every whole-state arm, including step setup and cleanup, updates the same
+readiness record. Recovery or a changed reason publishes `BreakpointsChanged`, while an unchanged refusal
+does not. Disabling a breakpoint excludes it from the arming request.
+
+The CLI, DAP, and browser share the pending explanation in
+`src/present/breakpoints.rs`. A partly armed breakpoint retains its ready
+locations and reports the others. The browser adds optional `pending`
+metadata and lists only ready placements in `places`; absent metadata keeps
+older messages and open tabs usable.
+
+## Runtime writes
+
+A runtime model never writes: `RuntimeStop` only reads. A model that needs
+the process changed, as installing Python's agent sets fields of a thread
+state, returns `RuntimeWrite`s. Each carries the bytes the model read there.
+`Controller::write_for_runtime` checks every expected byte before making the
+first write, while every thread is stopped. A kernel write failure can leave
+earlier bytes changed; its error reports the partial progress. A caller must
+retain any artifacts a partially published request might still consume until
+it proves cancellation, acknowledgement, or target exit. A trap byte is hidden,
+as for any write. Every runtime write goes through that one function, which
+records it.
 
 ## Resume points
 
@@ -170,6 +244,621 @@ state clearly when they require unstable runtime instrumentation.
 Pinned and boxed futures, trait-object erasure, combinators, and compiler
 layout changes are common sources of partial chains. Each traversal step needs
 a concrete type and storage relationship. Stop where proof ends.
+
+## asyncio
+
+From 3.14, CPython links every `asyncio.Task` into a circular list in the
+state of the thread that made it, and moves the list of an exiting thread
+into its interpreter's. A thread's state names the task it runs.
+`src/runtime_model/python/asyncio.rs` walks those lists, bounded and checked
+for loops, and takes an object as a task only where its type is, or derives
+from, the C type `_asyncio.Task` with objects of exactly the size of the
+`TaskObj` the layouts copy (`scripts/cpython-layouts.c`). conformance.rs checks
+that copy against the `.AsyncioDebug` section `_asyncio` publishes for
+external debuggers, which lives in an extension module the Python runtime's
+own image does not carry. A task's number is its address, Python's `id()`.
+
+A task no thread runs is suspended in its coroutine: a coroutine or generator
+in the state `FRAME_SUSPENDED_YIELD_FROM` awaits the object below the top of
+its embedded frame's stack (`Constant::GeneratorAwaitedDepth`: 1, or 2 from
+3.15, whose `GET_ITER` pushes an index above it). The chain ends at the first
+object no coroutine is, such as a future, or at a coroutine resting at its
+start or a bare `yield`. Its frames, innermost first, are the task's
+`TaskContext::Interpreted`, which the backend roots as
+`RootOrigin::Interpreted`: each frame resolves as an interpreted frame
+(`FrameScope::Interpreted`), so locals, expressions, and children work as in
+a thread's Python frames, and a reason the chain ends early is the trace's
+`BrokenAwaitChain`. A running task is `TaskContext::OnThread`.
+
+`tests/fixtures/python/tasks.py` reports every task `asyncio.all_tasks()`
+lists in each loop, with its state, what it awaits, who awaits it
+(`capture_call_graph`), and each coroutine's frame and locals by `cr_await`;
+`tests/python/tasks.rs` compares them on 3.14 and 3.15, with and without the
+GIL.
+
+## CPython
+
+CPython inspection reads the interpreter from outside, as a core dump allows,
+and puts no code in the process. It covers CPython 3.12 through 3.15, with the
+GIL and free-threaded. The monitoring agent below is a separate transport for
+execution control; inspection and profiling do not load it.
+
+**Injection preparation.** `python/injection.rs` computes PEP 768 writes from
+one stopped state and a preference-ordered list of threads the caller has
+proved execute Python, with both controller and target-namespace thread IDs.
+The caller first proves the build supports PEP 768; the runtime configuration
+flag controls policy and cannot establish compiled support for custom embedders.
+Every write carries its expected bytes. The preparer
+uses the caller's read budget, with a bounded default when none is supplied,
+and refuses finalization, malformed control spans, reserved flags, and multiple
+interpreters, including ones without thread states. It passes over a thread
+with an occupied request or an uncleared script slot, which CPython never
+clears, and returns that reason only when no candidate is free. Read limits and unavailable memory have distinct outcomes;
+the caller decides when to retry. Initialization and a lack of eligible threads
+are retryable waits. The caller owns outstanding generations across all threads
+and must await acknowledgement before clearing a previous slot or preparing the
+next request. Candidate eligibility must exclude CPython's request-consumption
+and path-copy window.
+
+**Launch bootstrap (3.12 and 3.13).** These versions have no PEP 768
+request, so `PythonRuntime::bootstrapped` makes `inject` return a request
+with no writes and `bootstrapped` set, and `eligible_thread` names any thread.
+The controller hands the script's path to the launch's bootstrap
+(`backend/linux/python_launch.rs`), and refuses the request when there is no
+bootstrap.
+
+When the executable is CPython 3.12 or 3.13, `LinuxTraceOps::python_launch`
+prepares one before the spawn. The version comes from a `libpython3.12` or
+`libpython3.13` the executable needs, or from its own `Py_Version`. The
+bootstrap is a private `/tmp/.microscope-python-*` directory that holds:
+
+- `sitecustomize.py`, from `python/launch.py`;
+- a FIFO, which microscope holds open for reading and writing;
+- `pid`, the process the launch made, written before it runs.
+
+The launch prepends the directory to `PYTHONPATH`, and names the FIFO and
+the original `PYTHONPATH` in `MICROSCOPE_PYTHON_WAKE` and
+`MICROSCOPE_PYTHON_PATH`. The bootstrap first restores both variables and
+`sys.path`. Only in the process named in `pid` does it then go on:
+
+- It records the main thread's ident as `_microscope_bootstrap.main`, since
+  3.12 has no `_thread._get_main_thread_ident`.
+- It runs, on the main thread, each script already written. The first
+  arming happens at the loader stop, before `site` runs, so pending
+  breakpoints are armed before the program's code.
+- It starts one `_thread` thread, which blocks reading the FIFO and runs
+  each later script with fresh globals, as PEP 768 does.
+
+It then imports the `sitecustomize` it hid. A request is one line, written
+whole; a full FIFO is refused. One that is retired without acknowledgement
+is read back out of the FIFO (`withdraw_bootstrap`). One the bootstrap
+already took stays unconfirmed, since it may yet run. A thread-scoped
+resume is refused while one is outstanding, since only the bootstrap's
+thread takes it. An unacknowledged request times out with
+`BOOTSTRAP_TIMED_OUT`, which names `-I`, `-E`, and `-S`. A step back is
+refused, since it cannot run on its own thread, so the native step runs on.
+
+Before 3.14, `free_tool_id` leaves a tool's callbacks and events, so `clear`
+removes them first. 3.12's function `f_locals` is a copy, so assignments are
+refused there. 3.13t immortalizes, and so stops listing, every existing code
+object once a second thread starts, so `gc.get_objects` cannot find running
+code. The model and the agent both refuse it.
+
+`tests/python/bootstrap.rs` checks that the program and its child see their
+own `PYTHONPATH`, `sys.path`, and `sitecustomize`, and that a breakpoint set
+while the program runs reaches the hidden thread. The breakpoint and step
+suites run on 3.12 and 3.13, and the agent's fixture modes run there too.
+
+**Agent transport.** `python/agent.py` translates explicitly configured
+`sys.monitoring` probes into calls to `microscope_python_hook`.
+`python/agent.rs` builds standalone whole-state scripts; the source executes
+once in `_microscope_agent` in `sys.modules`, so fresh script namespaces share
+one generation and installation. Atomic `dict.setdefault` publishes a module
+with its lock before source initialization; that lock serializes initialization
+and configuration. The atomic publication relies on CPython's guarantee for
+[built-in string dictionary keys](https://docs.python.org/3.14/builtins/threadsafety.html#thread-safety-for-dict-objects).
+Older or identical generations from the same library owner do nothing.
+A replacement owner starts a new generation sequence. Library loading occurs
+outside the configuration lock, avoiding an inversion with the dynamic loader.
+An empty configuration frees the tool ID, its local/global events, and its
+callbacks. No tool is registered while idle. The agent prefers ID 0, tries
+other free IDs, and reports exhaustion without changing another tool.
+
+The transport's flat probes specify an event, report kind, number, and
+file/line/qualified-name selectors. A qualified name matches itself or its
+last dotted parts, so `area` matches `Shape.area` and `outer.<locals>.area`
+but `rea` matches neither. A relative path matches filenames that end with its
+whole components. An absolute path matches its own filename exactly, or an
+absolute filename with the same final component that `os.path.realpath`
+resolves to the same file; each such comparison is resolved once per
+configuration. The runtime supplies event policy;
+conditions, hit counts, expressions, step ownership, and exception judgments
+remain debugger work. `PY_START`, `PY_RESUME`, and `PY_THROW` discover code
+objects; local events apply only to matching code, including frames running
+at installation and generators
+or coroutines that were already suspended when configuration changed.
+A free-threaded build never reads another thread's frames, which that thread
+can change or free concurrently. Its collector tracks code objects, so
+configuration instead takes every live code object from `gc.get_objects()`,
+which lists them while every thread is at a safe point, and instruments the
+matching ones, running or not. That costs about 30–50 ns per live object, once
+per configuration. A build whose collector does not track code refuses to load
+the agent. Freshly instrumented code first clears events a freed tool left
+on it, which would otherwise keep that tool's disabled locations disabled.
+With the GIL, frames running at installation are walked directly.
+Discovery keeps weak references keyed by code identity, because code equality
+can ignore the filename. Each code object is instrumented once per generation,
+and zero masks require no instrumentation call. Callbacks never return
+`DISABLE`: CPython can process an older callback's return after a newer
+configuration, disabling its locations. Freeing the old tool ID resets its
+local-event version, so configuration needs no global `restart_events()` and
+avoids global reactivation of other tools' disabled locations. CPython can
+reactivate their disabled locations on code microscope instruments with the
+same event; their registrations and event masks remain intact. Unrelated code
+stays disabled. While armed, discovery still takes
+one Python callback per function entry, resumption, or thrown-in exception;
+matching code takes local callbacks at each enabled event, including
+nonmatching lines. Idle unregisters everything. The agent ignores the events of
+its own code, the functions its own namespace defines; one it imports, as
+`os.path.realpath`, is the program's to break in.
+
+`python/hook.rs` generates a small ELF shared library, including its export
+and unwind information. It needs no target compiler or libpython. Its dynamic
+section is writable, because glibc before 2.35 relocates it in place. Its function
+is a no-op without a debugger. At entry its three unsigned 64-bit arguments
+are in rdi/rsi/rdx: kind, number, argument. Kind 0 acknowledges a generation
+(argument 0–5 is the tool ID; 6 means idle), 1 reports breakpoint hits, 2 a
+step's end by its nonzero number (argument 0: it stopped where it should;
+1: the frame it begins in was not found on its thread; 2: its thread ran on
+before the agent could bind it), and 3 reports an
+error (argument 1: tool exhaustion; 2: callback/configuration failure with
+confirmed disarming; 3: cleanup failed and prior state is unconfirmed;
+4: initialization failed and any previous installation is unconfirmed;
+5: observable user reentry makes monitoring coverage unconfirmed;
+6: a user interruption is reported and re-raised, with the agent disarmed),
+and 4 an exception: the number is its kind's bit (1 raised, 2 uncaught) and
+the argument the address of three words, the exception's address and its
+message's address and byte length, which the calling thread keeps alive while
+it is in the hook. Error
+reports retain the failed generation. One breakpoint hit is a nonzero number
+with a zero argument. Several hits of one event are one report, so they stop
+once together as hits at one native address do: the number is their count (2
+to 4096) and the argument the address of an array of that many nonzero
+numbers, which the calling thread keeps alive while it is in the hook.
+Malformed reports produce a visible runtime stop. The frame comes from the
+stopped thread's interpreter state.
+
+The library also exports a bounded 64 KiB command slot and a sequence reader
+that uses one aligned native 64-bit load. The header carries magic, sequence,
+payload length and capacity; payloads are JSON whole configurations. The
+controller publishes payload and length before sequence while all threads are
+stopped, with one outstanding request until its acknowledgement. Only detach
+publishes over an unacknowledged request: its empty configuration is the
+last, and nothing awaits it. Callbacks
+check that sequence under the configuration lock. Configuration acknowledgements
+can immediately accept another command in an iterative loop, so repeated edits
+do not grow the Python stack. A malformed command disarms and reports its
+generation, including invalid reserved header bytes. Before decoding, a
+strict UTF-8 decoding and a string-aware scan bound container nesting to eight levels, and the integer
+parser bounds tokens to 20 characters; malformed input cannot exhaust the
+recursive decoder or reach Python's integer-string conversion limit. When any
+thread replaces the configuration while a callback reports, the callback
+reports what its event hits under the replacement and has not reported yet;
+sites keep their numbers across configurations. Discovery
+failure supersedes an acknowledgement that has not yet been sent. Observable
+user reentry during configuration disarms with an explicit coverage failure.
+Non-Exception interruptions (including cancellation) are reported and re-raised.
+Command decoding distinguishes malformed requests from unexpected exceptions,
+so an ordinary exception raised by a user signal handler during decoding is
+also preserved. Ordinary faults during instrumentation remain contained and
+reported as configuration failures. Delayed interruption and reentry handling
+cannot disarm a newer generation. The outer exception boundary captures
+interruptions after hooks as well as inside decoding and discovery; a
+superseded operation reports unconfirmed cleanup without changing its successor. An idle agent has no callbacks: activating it again requires
+source injection. The first source configuration loads a pristine companion
+whose published sequence is zero; subsequent commands use its slot. Generations
+are monotonic within one library owner, and controller hook binding must
+distinguish owners.
+A forked child, which no debugger traces, is disarmed by the agent's
+`after_in_child` fork hook, which frees its tool. Its `before` hook takes the
+agent's lock for the fork, and `after_in_parent` releases it, so no other
+thread holds it in the child: the child's earlier fork handlers, such as
+`threading`'s, run monitored, and their callbacks would otherwise wait
+forever for a thread that does not exist there. The child reinitializes the
+lock. The controller removes the child's traps before releasing it.
+The bootstrap reports initialization failures through its request's own library,
+even when an incompatible interpreter-local module already exists.
+A single lock serializes configuration and callbacks on free-threaded builds,
+and captures each report's hook before releasing the lock. That keeps an old
+report bound to its original sink if a later owner replaces it. The lock is
+released before every native report. Callback failures disarm the agent
+and report the failure instead of raising into the program.
+
+**Installation.** `backend/linux/runtime_agents.rs` owns one installation per
+runtime: its files, one outstanding generation, and the PEP 768 request's
+ticket. An idle agent, or one not yet installed, is configured by a source
+request; an armed one through its command slot. A source request goes to a
+thread that is running Python: its instruction is in the evaluation loop, or
+in a tail-call build in any instruction's function, or at one of the model's
+entries. The entries are the loop and its first instruction's function where
+something calls them, and `_PyFunction_Vectorcall` and `PyEval_EvalCode`,
+which enter the loop where LTO and PGO inline it into them, as in
+python-build-standalone's tail-call builds of 3.14 and 3.15. With no such
+thread at a stop, the controller arms the entries and configures the agent at
+the first thread that reaches one once the interpreter is initialized. Each source request
+revalidates the private files through the thread that will read it. A
+location stays pending until the matching acknowledgement. A change refused
+before any write reaches the target keeps the acknowledged configuration,
+which the agent still holds. Acknowledgements must arrive within five seconds
+of running time; public and internal stops do not count. A free-threaded
+interpreter needs every thread resumed while an agent is configuring or armed,
+because monitoring changes stop its world. Detach cancels an unconsumed
+request and disarms an armed agent before removing traps; exit and exec
+remove the files.
+`tests/python/agent.rs` checks the real monitoring API on 3.14/3.15 in both GIL
+modes and the native register/all-stop boundary through `Scenario`.
+
+**Breakpoints.** `PythonRuntime::resolve_breakpoint` claims a source path
+ending in `.py`, without its `.` components, as a line probe, and a function
+named `py:NAME` as a `PY_START` probe; `py::run` remains a native name. The
+CLI adds such breakpoints pending, as their code loads only as the program
+imports it. The agent's code is compiled under the filename
+`<microscope agent LIBRARY>` (`agent::is_agent_filename`), so its interpreted
+frames have `CodeRole::Interpreter`; splicing gives every frame inside the
+innermost such frame, the hook and ctypes among them, that role too, and
+`CPYTHON_MACHINERY` names the monitoring dispatch between the program's frame
+and the agent. A hit's stop selects, and its condition and log message read,
+the innermost ordinary frame that is not the runtime's own source
+(`Controller::blamed_frame`), as an exception's stop does. A backtrace folds
+frame 0 when it is an interpreter's machinery and another frame is selected.
+DAP deemphasizes the source of each frame above the selected one. VS Code
+ignores that hint at a stop it was told was a breakpoint or a step: it
+focuses the first frame that has a source. At those stops the frames have no
+source at all (`dap::inspect`'s `FOCUSED_REGARDLESS`).
+`tests/python/breakpoints.rs` arms every kind in one run per build, beside
+probes that must not match, and checks each stop's exact hits.
+
+**Stepping.** Python steps by lines: into, over, and out, which
+`Reading::step` turns into the command's third element, `[number, kind,
+native thread, depth, code id]`, where depth counts the frame's callers and
+the code id is its code object's address. A step begins only from where an
+agent stopped the thread (`Controller::at_agent_hook`), as at a breakpoint it
+reported or a step's end, because the thread must be inside a callback for
+the agent to bind the step before it runs on; elsewhere it is refused with
+why. A source step or a step out from the innermost frame, as DAP always
+sends, steps the frame the agent's report blames
+(`Controller::reported_frame`), not its hook. A step is begun
+once its command is published, and a command no thread has read since its
+stop may be replaced, so a step after a step at one stop works. The agent
+binds the frame object on its own thread after the callback emits, matching
+the native thread, depth, and code; a late bind or a missing frame ends the
+step with `StepIncomplete` and its reason. It then follows phases: in the
+frame, LINE (over and into, and into globally on the thread), `PY_RETURN`,
+`PY_YIELD` and a global `PY_UNWIND`; in the caller after a return or unwind,
+INSTRUCTION until an instruction that has a line, such as the call's or a
+handler's; and, past the thread's outermost frame, global LINE on the thread.
+A yield of a coroutine or async generator suspends without leaving it, so a
+step over an `await` stays with the task, and into one is over it. A step's
+stop selects the blamed frame as a breakpoint's does.
+`tests/fixtures/python/agent_stepping.py` drives each phase through the real
+monitoring API, and `tests/python/stepping.rs` takes every kind in one run per
+build, ending with a step refused from a pause.
+
+**Stepping into C and back.** A step into also takes CALL in its frame. For
+a callable that may run the program's own C, a built-in function or method
+or a method descriptor other than `builtins`' and its types', the agent
+reports `(5, number, id(callable))`. `Reading::native_callee` reads the C
+function from the callable's `PyMethodDef`, and `Controller::step_into_native`
+traps the function's first statement as part of the step's plan, unless the
+function is the runtime's own or no debug information describes it; then the
+step goes on in Python. A native step over or out whose frame returns into
+the interpreter of a runtime with an agent
+(`Controller::source_step_returned_to_runtime`) becomes, at an internal stop
+(`Edit::ReturnToRuntime`), that runtime's step back, kind 3, from the
+thread's innermost Python frame: the agent ends it at the thread's next LINE
+in that frame or a caller. A thread in C may run no callback that would read
+a command, so a step back is sent by a source request on its own thread,
+which runs at the eval-breaker check after the call returns. It is sent even
+over an unread command, whose older generation the agent then ignores, and
+the callback that ends it binds a step configured at its stop. Where it
+cannot be sent, the native step runs on, as into any code without source.
+`tests/python/stepping.rs` steps into an extension's function, out of it and
+over its end, through a builtin and a stripped twin of the extension, and out
+from a native breakpoint while the agent watches no line, on each build the
+extension is built for.
+
+**Assignments.** The binder makes `name = value`, and a compound
+assignment, to a variable of dynamic type an `Op::Assign` whose value the
+interpreter turns into `Assigned`: an exact integer, a binary64 float that
+holds the value exactly, a truth value, UTF-8 text, `None`, or an object an
+expression reached (a `Place::Interpreted`). Anything else is refused there.
+`Controller::assign_interpreted` (`backend/linux/assignments.rs`) refuses,
+before anything runs, any of these:
+
+- a target that is not a variable of the frame's code
+  (`InterpretedName::Variable`);
+- a frame no thread runs;
+- a runtime without an agent, or a free-threaded one
+  (`process_scope_required`);
+- a thread its agent did not stop (`at_agent_hook`), or one with a pending
+  signal;
+- an interpreter with any thread state other than the frame's thread's
+  (`RuntimeModel::sole_thread`), which reads the whole list and refuses
+  when it cannot;
+- an agent that does not take commands (`agent_takes_commands`).
+
+The last two keep the write exact. The agent's lock or the GIL could be
+held by another stopped thread, and running the frame's thread alone would
+then deadlock or race.
+
+`RuntimeAssignment` joins the arming beside the step. `Reading::assignment`
+turns it into the command's fifth element, `[number, native thread, depth,
+code id, name, value]`, where `value` is `["int", DECIMAL]`,
+`["float", BITS]`, `["bool", 0|1]`, `["str", TEXT]`, `["none"]`, or
+`["object", ADDRESS]`. Only the frame's thread runs, as
+`ActiveKind::RuntimeAssignment`. The command is read as the agent's hook
+returns, whatever events the agent monitors, so a ready agent takes it even
+with only exceptions armed; a source request never carries an assignment.
+
+The agent makes it in `assigning` once per number, on that thread, through
+`frame.f_locals[name] = value`. It takes an object only where a name of the
+frame's locals, globals, or builtins, or `None`, `True`, or `False`, still
+holds that id, and never casts an address. The object the variable held is
+kept in `_kept` until the next callback, so that nothing it frees runs while
+other threads are stopped. It reports `(6, number, status)`: 0 made, 1 the
+frame is gone, 2 no name finds the object, 3 the interpreter refused.
+
+`HookEvent::Assigned` ends the execution with `StopReason::Assignment`,
+which ranks with a step's end. `publish_stop` selects the variable's frame
+and, after the stop event, `answer_assignment` replies with the target read
+again at the new stop, or with why it was not made. The stop that ends it
+disarms it. A stop for any other reason answers that the assignment was not
+made, and a process that ends answers likewise.
+`tests/python/assignments.rs` gives each kind of value, checks the
+program prints them, and checks each refusal leaves the stop as it was.
+
+**Watchpoints.** A watch expression of dynamic type is accepted only when
+it names an interpreted frame's variable and nothing more
+(`Program::named_object`). `RuntimeModel::interpreted_watch` returns the
+word in `localsplus` that holds the variable's object, with the code object
+the frame runs; it refuses a cell or free variable and a frame its thread
+does not own. The watch's scope is `WatchScope::Interpreted`. Its bytes are
+observed through `interpreted_watched`, which untags a stack reference, so
+the object's address stands for the word and a store of the same object is
+no change; its value is the object's summary, kept from the last
+observation, since the old object may be freed by the store. The frame is
+live while its thread's chain holds it running the same code
+(`interpreted_frame_runs`), checked at each stop and at each unchanged hit:
+a new frame in the same place writes every slot before it joins the chain,
+which ends the watch even where it stores what the slot held. A frame that
+cannot be read keeps its watch, unproven. The stop selects the watched
+frame, and `stopped_location` resolves an innermost interpreted frame, one
+a stop in the loop itself has, through the trace rather than the program
+counter. `tests/python/watches.rs` watches from a checkpoint on 3.12, 3.13t,
+3.14, 3.15t and standalone-3.14.
+
+**Exceptions.** `python-raised` and `python-uncaught` are the model's
+`EXCEPTION_FILTERS`, off by default so that nothing runs in the process until
+asked. The command's fourth element is their bits (`exceptions::bits`), and
+`RuntimeAgent::wanted` installs the agent for them alone; a runtime whose
+agent is not installed is marked stale as each module loads, so a filter
+chosen before the program runs arms it. Raised arms global `RAISE`; since
+`RAISE` fires again in each frame an exception unwinds into, a frame whose
+traceback goes on into a frame it called (`tb_next.tb_frame.f_back is
+frame`) does not report. Uncaught arms global `PY_UNWIND` and reports an
+exception leaving the main module's code on the main thread (a `<module>`
+frame whose globals name `__main__` and whose callers are only runpy's, as
+for `-m`), the first frame of any other thread, or a frame whose caller is
+`threading.Thread._bootstrap_inner`, which hands what a thread raises to
+`threading.excepthook`; `SystemExit` is left alone. Any other frame with no
+Python caller on the main thread returns to C, which may handle what it
+raises: the interpreter catches the `ZipImportError` and `ImportError` its
+path hooks raise as `site` starts, and reports an `atexit` callback's as
+ignored. The agent forms the
+message without running the program's code: the type's qualified name, by
+`type`'s own descriptors, and its text only where the class's `__str__`,
+found through the MRO's dictionaries, is `BaseException`'s or `KeyError`'s
+and its only argument an exact `str`, cut at 1000 characters with `…`. An
+uncaught report adds where its traceback's innermost entry raised it. The
+value is `(py)ADDRESS`. Exceptions during the agent's own work, which runs
+with its busy flag set, are not reported and are not interference.
+`tests/fixtures/python/agent_exceptions.py` checks each rule in process;
+`tests/python/stepping.rs` stops at both kinds after its steps, and a CLI
+test stops at an uncaught exception chosen alone before `run`.
+`tests/dap/python.rs` drives a breakpoint, steps, and an uncaught exception
+as VS Code does, launched on 3.14 and attached on 3.15t, and checks that a
+confirmed breakpoint never shows as pending again while the agent runs.
+
+**Layout.** The module that carries the runtime, `libpython` or an executable
+that links it, has a `.PyRuntime` section. From 3.13 its `_Py_DebugOffsets`
+table gives most field offsets; `debug_info::cpython` reads it by name under a
+schema per minor version (`schemas.rs`) and completes it from a layout
+generated from the headers of a build of that version (`layouts.gen.rs`): the
+build whose layout agrees with the table wherever both name a field, since
+patch releases change what the table leaves out. 3.12 has no table, so
+only a release whose generated layout microscope has checked is read. Any other
+version is refused by name. The layout, its constants, and why it cannot be
+read are stored in the image's `PythonRuntime` record (`src/image/python.rs`),
+so the runtime model never sees a version number. This is the stated exception
+to Go's "from DWARF by name, never from a table of versions" rule:
+generated constants cover only what the target's own table leaves out.
+[Debug information](debug-information.md#cpython) describes how each layout is
+checked.
+
+**Binding.** `runtime_model::python::detect` binds every module that carries a
+runtime. A runtime whose layout is unknown is still bound, without a reader: it
+finds its loop's activations and reports why their frames are missing, so a
+backtrace says so instead of silently showing native frames only.
+
+**Threads and frames.** At a stop, the model walks `_PyRuntime`'s interpreters
+and each one's thread states (`threads.rs`), and maps each to a native thread
+by its `native_thread_id` through `RuntimeStop::target_thread_id`. Target
+IDs and debugger `ThreadId`s occupy different namespaces. The Linux edge
+checks the proc mount's namespace and the thread's process membership before
+using the innermost `NSpid`; missing evidence never implies identity. Batched
+lookups anchor one proc mount and share its namespace check; the mapping has
+an explicit 16384-host-thread resource bound. Published stops retain the
+identity evidence with `StopMemory`, invalidated with its memory blocks, so
+per-thread activity queries do not repeat proc reads. Cores
+read the target ID from the saved thread's TCB with an unambiguous glibc
+`_thread_db_pthread_tid` descriptor, resolved once for the immutable core.
+Missing descriptors, unreadable TCBs,
+and ambiguous mappings produce gaps. A running asyncio task keeps its running
+state when its host thread is unknown, with an explanation and no guessed
+thread or parked-frame context. The simulator supplies its explicit single
+namespace mapping.
+
+Linux stat/status readers decode selected numeric fields from bytes. A kernel
+command name can end in a partial UTF-8 character or contain parentheses and
+newlines; it must not prevent attach, identity checks, signal handling, detach,
+or profiling. Signal queue classification requires both the pending and blocking
+masks; a missing or malformed mask is an error, never an unblocked signal.
+
+A thread's chain of frames begins at its current frame (3.12: through its `_PyCFrame`). `frames.rs` walks it innermost first.
+Frames the thread owns run code; the interpreter's entry frame ends each
+segment that one activation of the evaluation loop runs. The walk ends on a
+loop, an unknown owner, or an unreadable frame, and says why. From 3.15 every
+chain ends at the thread's base frame, so one that ends before it says it was
+read as it changed: a live profile leaves such a thread out.
+
+**The GIL.** `gil.rs` reads who holds each interpreter's GIL, which
+`RuntimeModel::thread_labels` gives as `gil=held` and `gil=waiting`. From
+3.15 each thread state's `holds_gil` and `gil_requested` say so. Before
+that, only the GIL itself does: it is locked, and `last_holder` is the
+thread state that took it; nothing says who waits. A free-threaded build's
+`enabled` may be 0, and then no thread has a label. The GIL is
+`ceval.gil`'s, which may be another interpreter's; the table gives `locked`
+and `last_holder` from the start of the interpreter's own copy, so they are
+read at their distance from it.
+
+**Code and lines.** Each frame's code object is decoded once per runtime into
+`code::CodeTable`: its qualified name, file, first line, and line table. The
+table survives stops, so each row is proved again where it is used: the object
+must still be a code object with the same identity. `linetable.rs` decodes
+`co_linetable` to the line of the frame's instruction. A free-threaded 3.14+
+frame may run a thread-local copy of the bytecode, which `tlbc_index` selects.
+
+**Splicing.** `RuntimeModel::driven` recognizes the activations of the
+evaluation loop, by the names `RuntimeModel::activation` judges, which the
+profiler's BPF engine and syscall stacks, having only symbols, ask directly: `_PyEval_EvalFrameDefault`, or, in a build whose loop
+tail-calls a function for each instruction, those functions. Such a loop
+enters its first instruction's function with a call, and PGO inlines the loop
+into `_PyFunction_Vectorcall` and `_PyEval_Vector` but not into `gen_send_ex`,
+so a loop frame whose inner frame is an instruction's function is the same
+activation and does not count again. `interpreted.rs` places each segment of a thread's frames just
+before the activation that runs it, innermost first. Placement is proved by
+count: when the thread's segments and activations differ in number, or the
+thread runs frames in several interpreters' states, the frames are shown
+together on `StackSegment::Unplaced` with the reason, never paired by guess.
+A thread that runs interpreted frames is unwound whole to place them, so
+frame numbers stay stable.
+
+**Values.** `values.rs` reads the built-in types the model presents: `None`,
+`bool`, `int`, `float`, `str`, `bytes`, `list`, `tuple`, `dict`, `set`,
+`frozenset`, modules, functions, built-in functions, and code objects. An
+object is identified by its type object, which the module's symbols name. Its
+first bytes are read at once (`objects::Head`), and each read is charged to
+the inspection budget. The stop keeps the 256-byte blocks every reading has
+read (`StopMemory`, which a write forgets): a page holds whole blocks, so a
+block is readable wherever its bytes are, and the fields of one object, a
+table's entries, and objects allocated together cost one read for the whole
+stop, however many views and expansions read them. `text.rs` writes each value's
+summary as `repr` would. A summary is bounded in depth, items, objects, and
+characters, and says where it stopped. The backend presents values as
+language-neutral presentations, whose children page through an
+`InterpretedChildren` capability; clients see no Python object model.
+
+`instances.rs` reads everything else as CPython's object model lays it out. A
+class's identity is its `__module__` and `ht_qualname`, or a static type's
+`tp_name`. An instance's attributes are its dict, wherever the class keeps
+it: a managed dict before the object, with 3.12's tagged values pointer or
+3.13's inline values after it, sharing keys with the class's other instances;
+or a dict at a positive `tp_dictoffset`. Its `__slots__` follow, read through
+each class's member descriptors. A static built-in type's dict is in its
+interpreter's state, found by the index `tp_subclasses` keeps; from 3.13 a
+static type of an extension the interpreter manages, as `_datetime`'s, is at
+that index among those types' states, where the built-in types' state there
+names another type. A class whose bases lead to a type C defines (static,
+or a heap type with `Py_TPFLAGS_IMMUTABLETYPE`) other than `object` holds
+that type's value, which it is presented as, with its attributes after its
+items. A dataclass's fields come first among its attributes, in the order of
+its `__dataclass_fields__`. A cell's variable is the object it holds.
+
+`library.rs` reads the standard library's types that only C defines, whose
+structures `scripts/cpython-layouts.c` copies: `collections.deque`,
+`defaultdict`, and `OrderedDict`, `datetime`'s five types, and
+`decimal.Decimal`. A type is one only where C defines it and its module,
+name, and `tp_basicsize` are the copied structure's. Each is written as its
+type's own C `repr` writes it, with the name of the object's type its C
+uses. An `OrderedDict`'s items follow its list of nodes, each of whose key
+is found in the dict by identity and the node's hash. A `Decimal` is
+written as libmpdec's `mpd_to_sci` writes it with capitals.
+
+`numpy.rs` reads `numpy.ndarray`, whose fields after the object's header
+are numpy's public `PyArrayObject_fields`; `Field::ObjectSize` gives where
+the header ends. An array is one where its type passes the library test
+with a `tp_basicsize` at least that header and its fields. Its dtype's type
+number and byte order decide its element: `bool`, the integers, `float32`,
+and `float64` are read, and any other dtype, or big-endian elements, makes
+the array `Element::Unread`, shown by its shape with the reason as its
+problem. An array's rows are parts of it: an `InterpretedValue` carries the
+index path (`part`) from the object, and `RuntimeModel::interpreted_children`
+takes `(object, part)`, so a row is paged without Python making the row's
+view object. An element is an `InterpretedSlot::Number`, a value as the
+machine keeps it, which the backend presents as a base type. A value's
+`InterpretedArray` gives its data, shape, strides, and element, and
+`contiguous()` gives the one run of memory a one-axis array lies in, which
+`Controller::numbers` reads at once for a drawing.
+
+Python classes are presented through views as well (`views/python-std.views`;
+[Views of dynamic types](evaluation-and-views.md#views-of-dynamic-types)).
+`truth.canonical` mirrors each built-in view and each library type's `repr`,
+so the fixtures compare every presented value whole.
+
+**Interpreted frames in the debugger.** An interpreted frame has
+`FrameKind::Interpreted` and a `RecordedFrame` with its function, language,
+and place. Locating it is `Error::FrameInterpreted`. Its source context reads
+the recorded path. Clients fold the interpreter's frames
+(`CodeRole::Interpreter`) between Python frames, with the rule in
+`src/present/frames.rs`.
+
+**Expressions.** A name in a Python frame binds as a dynamic value
+([Dynamic types](evaluation-and-views.md#dynamic-types)).
+`expressions.rs` resolves it as Python does: a variable of the frame's code
+(`InterpretedName::Variable`, read at run time from its slot), then the
+frame's `f_globals`, then its `f_builtins` (`InterpretedName::Object`, found
+at bind time). `src/backend/linux/interpreted_values.rs` adapts the trait's
+methods to the evaluator's machine. An item of a list or tuple is found by
+index, and a dict's key by CPython's own lookup: the key's hash, then the
+table's probe sequence, comparing only the keys of equal hash it passes. A key
+of `None`, `bool`, `int`, `float`, `str`, `bytes`, or `tuple` compares by value;
+meeting a key of any other type with an equal hash refuses the lookup, since
+only its `__eq__` could compare it. A number's hash is computed as CPython
+computes it. A `str`'s is SipHash-1-3 keyed by `_Py_HashSecret`, used only once a
+`str` key of the dict proves that hashing with the secret gives the hash the
+key keeps. Without a known hash, as for a NaN key, every entry is compared,
+and a key of another type is ruled out only by the hash its entry keeps.
+An attribute is found as `PyObject_GenericGetAttr` finds it, only for a class
+whose `tp_getattro` is that function, or whose `__getattribute__` is the
+wrapper of it and which defines `__getattr__`, which then refuses a miss: a
+data descriptor of the class's MRO first, of which only a member descriptor
+(a slot) is read, then the instance's dict, then a class attribute that does
+not bind. A module's attribute is in its dict, and a class's in its MRO when
+its metaclass is `type`. `x[i]` and `len(x)` on an instance use its built-in
+value only where the class's MRO finds the special method on the built-in
+type itself; any other definition refuses them, and none is a type error, as
+Python's is.
+
+A runtime model whose objects native code also holds names them through
+`RuntimeModel::object_types`: the native type a pointer to an object has
+(`PyObject`) and the cast that reaches one (`py`). Presentation shows a native
+pointer whose pointee's typedef chain reaches that type as the object it points
+to, through the same `interpreted_value` path a Python frame's local takes. In
+the evaluator, the binder reads `(py)x` as a cast whenever
+`Scope::dynamic_type` accepts the name, including where `(py)&x` could
+otherwise be a bitwise and, and binds it to `Op::Interpreted`, which runs
+`Machine::dynamic_at` on the address. The result is a `Place::Interpreted` like
+any Python value, so every operation on Python values applies to it.
 
 ## Expressions and values in tasks
 

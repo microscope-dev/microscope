@@ -12,7 +12,8 @@ high-value scenarios over assertions that restate implementation details.
 | `tests/support/flight_recordings.rs`, `memory_cap.rs` | Failure artifacts and per-process memory limits |
 | `tests/debugger/` | Public debugger workflows |
 | `tests/dap/`, `tests/web/` | Client protocol and server behavior |
-| `tests/go/`, `tests/tokio/` | Runtime-specific integration suites |
+| `tests/go/`, `tests/tokio/`, `tests/python/` | Runtime-specific integration suites |
+| `tests/support/truth.rs`, `tests/fixtures/python/truth.py` | Fixtures' reports of themselves, and their reader |
 | `tests/fixtures/` | Native source programs, view files, and fixture packages |
 | `tests/golden/` | Deterministic simulator programs and manifests |
 | `scripts/build-test-programs.sh`, `scripts/golden.sh` | Fixture and golden-program builds |
@@ -28,6 +29,10 @@ completed fix.
 
 Run focused tests while developing. Run the full gate once the change is
 ready. Expensive sweeps and stress runs should not follow every edit.
+
+Namespace scenarios require unprivileged user, PID and mount namespaces.
+The pinned shell includes `util-linux`. A host policy that blocks `unshare`
+is a test setup failure; run the gate where these namespace scenarios can run.
 
 ## Debugger scenarios
 
@@ -226,6 +231,61 @@ relevant to the behavior. Common dimensions are:
 Avoid a Cartesian product without a reason. Pick a compact set where each
 variant covers a distinct producer or ABI behavior. Document that reason next
 to the fixture list or test table.
+
+## Truth fixtures
+
+A runtime fixture can report what its own runtime knows at a checkpoint, as
+`TRUTH` lines on its output: each thread's frames, each frame's locals in a
+canonical text, and its code objects' lines. A test stops the fixture there and
+compares the debugger's public results against the report. Expected values come
+from the program as it runs, never from an earlier run of microscope, so they
+stay right when a line moves or an interpreter changes.
+`tests/support/truth.rs` reads the lines for the Go, tokio, and Python suites.
+
+Each comparison returns what disagrees rather than asserting, and each suite
+proves its comparisons fail on the lies they look for. The Python suite feeds
+its checks a dropped frame, a wrong line, a swapped thread, a wrong value, and
+a missing local in `tests/python/oracles.rs`.
+
+### Python
+
+`tests/fixtures/python/truth.py` prints a checkpoint's report and parks every
+thread until the test lets it go, or aborts for a core dump with `--abort`.
+Fixtures run with `-I -B`, so the environment cannot change them and they write
+no bytecode beside their sources. `tests/python/session.rs` launches or
+attaches to one under a named interpreter.
+
+The interpreters come from the flake and are gathered in `MICROSCOPE_CPYTHON`:
+3.12, 3.13, 3.13t, 3.14, 3.14t, 3.15, 3.15t, Debian's 3.13, and Ubuntu's 3.12.
+A missing interpreter fails the test. Each scenario family runs only where its
+subject differs between them: stacks and locals on every interpreter, attach
+on the 3.14 pair, cores on one interpreter per frame shape. The build saves a
+core of each core fixture with its report beside it, as
+`build/test-programs/python-*.core` and `.core.log`. Every interpreter must
+present the same locals alike; a difference fails the test.
+
+The values gallery, `tests/fixtures/python/values.py`, prints the gallery
+format the native languages use, one `TRUTH CHECKPOINT PATH summary VALUE`
+line per value, then calls the C extension's `reached`. A path is an
+expression both Python and microscope read, so double-quoted. The test stops
+there through a pending native breakpoint whose condition reads the
+function's argument through `(py)`, which proves conditions over Python
+values at native breakpoints, and evaluates each path in the Python caller.
+The extension is built per interpreter by `scripts/build-test-programs.sh`.
+
+`tests/python/profile.rs` records `tests/fixtures/python/profiled.py`, two
+threads that spin in Python and one that sleeps, with each Python engine on
+3.12, 3.14, 3.14t, and 3.15. The lines it checks are marked in the fixture by
+a `# LINE name` comment, which the test finds in the source. Recording runs
+until the profile so far holds what the test checks, or a deadline, then
+releases the program by its standard input. `just test` warms the image
+cache; without it, a stopped snapshot reloads the interpreter's debug
+information each time and holds the program for seconds. Its `bpf` module
+records through the `microscope-bpf` wrapper and runs only under
+`just test-bpf`; without the privileges, the suite checks that the BPF engine
+refuses and names the one it lacks. The BPF records' layouts, their
+decoding, and their pairing with samples are unit tests that need no
+privilege (`backend::bpf::sampler`, `profiler::record`).
 
 ## Unit tests
 

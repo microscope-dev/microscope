@@ -162,6 +162,12 @@ pub enum Request {
     /// Changes what the debugger does with one signal.
     SetSignal(SignalPolicy),
 
+    /// The exceptions language runtimes report, and whether each stops.
+    Exceptions,
+
+    /// Chooses whether the exceptions one filter passes stop.
+    SetException(ExceptionChoice),
+
     /// The modules the program has loaded.
     Modules,
 
@@ -680,6 +686,15 @@ pub enum WatchAccess {
     Read,
 }
 
+/// Whether the exceptions a filter passes stop the program.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct ExceptionChoice {
+    /// The filter, such as `python-uncaught`.
+    pub id: String,
+    pub on: bool,
+}
+
 /// What the debugger does with one signal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
@@ -963,9 +978,9 @@ pub struct ProfileQuery {
     #[serde(default)]
     pub invert: bool,
 
-    /// The frames threads ran, rather than each async task's own stack.
+    /// How each stack's frames are seen.
     #[serde(default)]
-    pub native: bool,
+    pub look: ProfileLook,
 
     #[serde(default)]
     pub granularity: ProfileGranularity,
@@ -1031,6 +1046,24 @@ pub enum TransformOp {
 
     /// Merges the function's calls of itself.
     Collapse,
+}
+
+/// How a query sees each stack's frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub enum ProfileLook {
+    /// Each async task's frames as a stack of their own, an interpreter's
+    /// frames among the frames that run them.
+    #[default]
+    Logical,
+
+    /// The frames threads ran, which an interpreter's frames are not.
+    Native,
+
+    /// As the logical look, from each stack's outermost interpreted frame
+    /// in, without the interpreter's own frames.
+    Python,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -1193,6 +1226,10 @@ pub struct ProfileSummary {
 
     /// The tasks task snapshots found, most weight first.
     pub tasks: Vec<ProfileTask>,
+
+    /// Whether its stacks hold frames an interpreter runs, which a query's
+    /// `python` look shows as their code sees them.
+    pub interpreted: bool,
 
     /// Task snapshots taken, the nanoseconds they held the program
     /// stopped, and the samples they named the task of.
@@ -1676,6 +1713,11 @@ pub enum Inferior {
         thread: u64,
         reason: StopReason,
 
+        /// The thread's frame the stop selects, which a tab opens on: the
+        /// innermost, or the program's frame where a language runtime's
+        /// agent stopped it.
+        frame: u32,
+
         /// Where that thread stopped.
         place: Option<Place>,
     },
@@ -1721,6 +1763,9 @@ pub struct StopEntry {
     pub stop: u64,
     pub thread: u64,
     pub reason: StopReason,
+
+    /// The thread's frame the stop selects, and where that frame is.
+    pub frame: u32,
     pub place: Option<Place>,
 
     /// Who ran the program to it, when someone did.
@@ -1745,8 +1790,31 @@ pub struct Breakpoint {
     /// Hits in the current process, including those that did not stop.
     pub hits: u64,
 
-    /// Where it resolved; none while no loaded code has it.
+    /// Ready locations; runtime arming problems are described in `pending`.
     pub places: Vec<Place>,
+
+    // Additive and omitted for native breakpoints; old tabs still see
+    // only ready places and therefore render unarmed breakpoints pending.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub pending: Option<PendingBreakpoint>,
+}
+
+/// Runtime locations whose desired arming has not been accepted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct PendingBreakpoint {
+    pub message: String,
+    pub places: Vec<PendingBreakpointPlace>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct PendingBreakpointPlace {
+    pub place: Place,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1888,8 +1956,29 @@ pub struct Process {
 pub struct Backtrace {
     pub frames: Vec<Frame>,
 
+    /// The runs of frames of a runtime's or an interpreter's machinery
+    /// the stack folds into a line each, as the CLI's `bt` does, with the
+    /// innermost frame shown.
+    pub folds: Vec<FrameRun>,
+
     /// Why the stack ends early, when the unwinder could not finish it.
     pub incomplete: Option<String>,
+}
+
+/// Frames in a row, by their indices in [`Backtrace::frames`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct FrameRun {
+    pub first: u32,
+    pub count: u32,
+}
+
+/// The language of the code a frame runs: a short mark, and its name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct FrameLanguage {
+    pub mark: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1910,8 +1999,11 @@ pub struct Frame {
     pub module: Option<String>,
     pub source: Option<SourceLine>,
 
-    /// For a frame that drives a future whose awaits the stack does not
-    /// show in full, why.
+    /// The language of its code, where its function or interpreter says.
+    pub language: Option<FrameLanguage>,
+
+    /// For a frame that drives frames the stack does not show in full,
+    /// the note that says so and why.
     pub unfollowed: Option<String>,
 }
 
@@ -1935,6 +2027,9 @@ pub enum FrameKind {
 
     /// The future a suspended task's innermost async function awaits.
     Awaited,
+
+    /// A frame of an interpreted language, whose code is in no module.
+    Interpreted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1943,17 +2038,26 @@ pub struct SourceLine {
     pub path: String,
     pub line: u64,
     pub column: Option<u64>,
+
+    /// The line of the same file the frame's function begins at, where its
+    /// runtime or debug information says.
+    pub first: Option<u64>,
 }
 
 /// The answer to `sources`.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct SourceFiles {
-    /// Paths as the debug information records them, sorted.
+    /// Paths as the debug information records them, then a Python
+    /// program's own files and those its frames recorded, sorted.
     pub files: Vec<String>,
 
-    /// Where the program's main function is declared, when it has one.
+    /// Where the program's main function is declared, or a Python program's
+    /// script begins.
     pub entry: Option<SourceLine>,
+
+    /// Why the list is not every file, when it is not.
+    pub note: Option<String>,
 }
 
 /// The answer to `functions`.
@@ -2465,6 +2569,28 @@ pub struct Signals {
 
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
+pub struct Exceptions {
+    pub filters: Vec<ExceptionFilter>,
+}
+
+/// The exceptions one filter of a language runtime passes.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct ExceptionFilter {
+    /// The name it is chosen by, such as `python-uncaught`.
+    pub id: String,
+    pub language: String,
+
+    /// A few words naming what stops, and a sentence saying where.
+    pub label: String,
+    pub description: String,
+
+    /// Whether they stop the program.
+    pub on: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct Modules {
     pub modules: Vec<Module>,
 }
@@ -2544,6 +2670,8 @@ mod tests {
         Place::decl,
         StopEntry::decl,
         Breakpoint::decl,
+        PendingBreakpoint::decl,
+        PendingBreakpointPlace::decl,
         Thread::decl,
         ErrorBody::decl,
         ErrorKind::decl,
@@ -2559,8 +2687,10 @@ mod tests {
         Process::decl,
         ShareLink::decl,
         Backtrace::decl,
+        FrameRun::decl,
         Frame::decl,
         FrameKind::decl,
+        FrameLanguage::decl,
         SourceLine::decl,
         SourceFiles::decl,
         FunctionQuery::decl,
@@ -2603,6 +2733,9 @@ mod tests {
         Registers::decl,
         Register::decl,
         Signals::decl,
+        Exceptions::decl,
+        ExceptionFilter::decl,
+        ExceptionChoice::decl,
         Modules::decl,
         Module::decl,
         StopAt::decl,
@@ -2626,6 +2759,7 @@ mod tests {
         ProfileTransform::decl,
         TransformOp::decl,
         ProfileGranularity::decl,
+        ProfileLook::decl,
         ProfileTimelineQuery::decl,
         ProfileSummary::decl,
         ProfileThread::decl,

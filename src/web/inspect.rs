@@ -8,15 +8,16 @@ use microscope::{
     UnwindTermination,
 };
 
-use super::describe::{Images, frame_name, hex};
+use super::describe::{Images, hex};
 use super::protocol::{
-    self, Backtrace, ErrorKind, Frame, FunctionMatch, FunctionQuery, Functions, SourceFiles,
-    SourceLine, SourceText,
+    self, Backtrace, ErrorKind, Frame, FrameLanguage, FrameRun, FunctionMatch, FunctionQuery,
+    Functions, SourceFiles, SourceLine, SourceText,
 };
 
 use super::session::Failure;
 use crate::cli::format;
 use crate::cli::terminal::Renderer;
+use crate::present::python_files::Project;
 
 /// A thread or task as a message names it.
 pub fn executes(execution: ExecutionContext) -> String {
@@ -66,10 +67,12 @@ pub async fn context(
     Ok(context)
 }
 
+/// A thread's or task's frames, folded around frame `selected`.
 pub async fn backtrace(
     handle: &DebuggerHandle,
     images: &Images,
     at: protocol::ThreadAt,
+    selected: u32,
 ) -> Result<Backtrace, Failure> {
     let trace = handle
         .at(innermost(at.stop, at.execution()))
@@ -80,8 +83,18 @@ pub async fn backtrace(
         frames.push(frame_of(images, &trace, frame).await);
     }
 
+    let folds = crate::present::frames::folds(&trace, trace.frames.len(), selected)
+        .into_iter()
+        .filter_map(|run| {
+            Some(FrameRun {
+                first: u32::try_from(run.start).ok()?,
+                count: u32::try_from(run.len()).ok()?,
+            })
+        })
+        .collect();
     Ok(Backtrace {
         frames,
+        folds,
         incomplete: (trace.termination != UnwindTermination::Complete)
             .then(|| trace.termination.to_string()),
     })
@@ -98,17 +111,33 @@ async fn frame_of(
         None => None,
     };
 
-    let source = frame.source.as_ref().and_then(|location| {
-        let file = image.as_ref()?.source_file(location.file)?;
-        Some(SourceLine {
-            path: file.path.display().to_string(),
-            line: location.line.get(),
-            column: location.column.map(microscope::ColumnNumber::get),
-        })
+    let place = crate::present::frames::place(frame, image.as_deref());
+    images.note_recorded(frame, place.as_ref());
+    let first = frame.recorded.as_ref().map_or_else(
+        || {
+            frame
+                .function
+                .as_ref()
+                .and_then(|function| function.declaration.as_ref())
+                .filter(|declared| {
+                    frame
+                        .source
+                        .as_ref()
+                        .is_some_and(|source| source.file == declared.file)
+                })
+                .map(|declared| declared.line.get())
+        },
+        |recorded| recorded.first_line.map(u64::from),
+    );
+    let source = place.map(|place| SourceLine {
+        path: place.path.display().to_string(),
+        line: place.line,
+        column: place.column,
+        first,
     });
     Frame {
         index: frame.id.get(),
-        name: frame_name(frame, image.as_deref()),
+        name: crate::present::frames::name(frame, image.as_deref()),
         kind: match frame.kind {
             FrameKind::Physical => protocol::FrameKind::Physical,
             FrameKind::Inline => protocol::FrameKind::Inline,
@@ -116,6 +145,7 @@ async fn frame_of(
             FrameKind::TailCall => protocol::FrameKind::TailCall,
             FrameKind::Async { .. } => protocol::FrameKind::Async,
             FrameKind::Awaited { .. } => protocol::FrameKind::Awaited,
+            FrameKind::Interpreted { .. } => protocol::FrameKind::Interpreted,
         },
         address: frame.instruction.map(|address| hex(address.get())),
         module: image
@@ -123,15 +153,22 @@ async fn frame_of(
             .and_then(|image| image.path().file_name())
             .map(|name| name.to_string_lossy().into_owned()),
         source,
+        language: crate::present::frames::language(frame).map(|(mark, name)| FrameLanguage {
+            mark: mark.to_owned(),
+            name: name.to_owned(),
+        }),
         unfollowed: trace
             .unfollowed
             .iter()
-            .find(|future| future.driver == frame.id)
-            .map(|future| future.reason.to_string()),
+            .find(|note| note.driver == frame.id)
+            .map(|note| crate::present::frames::unfollowed(note, "the next frame")),
     }
 }
 
-pub async fn sources(images: &Images) -> SourceFiles {
+/// The files the page can show: those debug information names, a Python
+/// program's own, and those its frames recorded.
+pub async fn sources(images: &Images, python: Option<Project>) -> SourceFiles {
+    let recorded = images.recorded_paths();
     let images = images.with_sources().await;
     let mut files = BTreeSet::new();
     for image in &images {
@@ -139,23 +176,60 @@ pub async fn sources(images: &Images) -> SourceFiles {
             files.insert(file.path.display().to_string());
         }
     }
+    files.extend(recorded.iter().map(|path| path.display().to_string()));
+
+    let mut note = None;
+    let mut script = None;
+    if let Some(project) = python {
+        script = project.script.clone();
+        let directories = project.directories.clone();
+        // A program run from a large directory has many files to read.
+        let listing = tokio::task::spawn_blocking(move || project.files()).await;
+        match listing {
+            Ok(listing) => {
+                files.extend(listing.files.iter().map(|path| path.display().to_string()));
+                if !listing.complete {
+                    note = Some(format!(
+                        "only the first {} Python files under {} are listed",
+                        listing.files.len(),
+                        directories
+                            .iter()
+                            .map(|directory| directory.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+            }
+            Err(error) => note = Some(format!("the Python files could not be listed: {error}")),
+        }
+    }
 
     // The executable's image comes first; Go names its main function
-    // main.main.
-    let entry = images.first().and_then(|image| {
-        let main = ["main", "main.main"]
-            .into_iter()
-            .find_map(|name| image.function_named(name).ok())?;
-        let declared = main.declaration()?;
-        Some(SourceLine {
-            path: image.source_file(declared.file)?.path.display().to_string(),
-            line: declared.line.get(),
-            column: None,
+    // main.main. A Python program begins at its script.
+    let script = script.map(|script| SourceLine {
+        path: script.display().to_string(),
+        line: 1,
+        column: None,
+        first: None,
+    });
+    let entry = script.or_else(|| {
+        images.first().and_then(|image| {
+            let main = ["main", "main.main"]
+                .into_iter()
+                .find_map(|name| image.function_named(name).ok())?;
+            let declared = main.declaration()?;
+            Some(SourceLine {
+                path: image.source_file(declared.file)?.path.display().to_string(),
+                line: declared.line.get(),
+                column: None,
+                first: Some(declared.line.get()),
+            })
         })
     });
     SourceFiles {
         files: files.into_iter().collect(),
         entry,
+        note,
     }
 }
 
@@ -269,10 +343,11 @@ fn rank(name: &str, query: &str) -> Option<u8> {
 }
 
 /// Reads a file the debug information names, with the lines any module
-/// can break at.
+/// can break at, or one a runtime recorded for a frame the page was shown.
 pub async fn source(
     handle: &DebuggerHandle,
     images: &Images,
+    python: Option<&Project>,
     path: &str,
 ) -> Result<SourceText, Failure> {
     let recorded = Path::new(path);
@@ -292,13 +367,21 @@ pub async fn source(
         found.get_or_insert_with(|| file.clone());
     }
 
-    let file = found.ok_or_else(|| {
-        Failure::new(
-            ErrorKind::Invalid,
-            format!("the debug information names no source file {path}"),
-        )
-    })?;
-    let (read, text) = handle.read_source_file(&file).await?;
+    let (read, text) = match found {
+        Some(file) => handle.read_source_file(&file).await?,
+        // Its runtime knows which lines run code only as it loads them.
+        None if images.recorded(recorded)
+            || python.is_some_and(|project| project.holds(recorded)) =>
+        {
+            handle.read_recorded_source(recorded).await?
+        }
+        None => {
+            return Err(Failure::new(
+                ErrorKind::Invalid,
+                format!("the debug information names no source file {path}"),
+            ));
+        }
+    };
     Ok(SourceText {
         path: path.to_owned(),
         read: read.display().to_string(),

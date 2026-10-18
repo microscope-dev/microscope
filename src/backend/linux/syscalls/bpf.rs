@@ -5,9 +5,10 @@
 //! the bytes behind its arguments, and send one record per call through a
 //! ring buffer.
 //!
-//! The programs (`bpf/*.bpf.c`) are built by `build.rs` and embedded.
-//! Records and map values cross the boundary as the plain structures of
-//! `bpf/records.h`, which this module mirrors field for field; a test
+//! The program (`src/backend/linux/bpf/syscalls.bpf.c`) is built by
+//! `build.rs` and embedded. Records and map values cross the boundary as
+//! the plain structures of `bpf/records.h`, which this module mirrors
+//! field for field; a test
 //! compares both layouts through the object's BTF. Decoding a record is
 //! pure. Everything else, from naming a call to printing it, is shared
 //! with the ptrace engine.
@@ -26,6 +27,7 @@ use aya::{Btf, Ebpf, EbpfLoader};
 use aya_obj::btf::BtfKind;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
+use super::super::bpf::sampler::{self, PythonLayouts};
 use super::super::perf;
 use super::Sink;
 use super::budget::{Budget, CAPPED_BYTES, CAPPED_ELEMENTS, Step};
@@ -67,6 +69,7 @@ const RECORD_EXIT: u32 = 5;
 const RECORD_SIGNAL: u32 = 6;
 const RECORD_FILE: u32 = 7;
 const RECORD_STACK: u32 = 8;
+const RECORD_PY_STACK: u32 = 9;
 
 const MAKES_RESULT: u8 = 1;
 const MAKES_PAIR: u8 = 2;
@@ -476,6 +479,13 @@ pub enum Record {
 
     /// The stack of the thread whose call or signal follows.
     Stack(SampledStack),
+
+    /// The Python frames of the thread whose stack came before, as the
+    /// walker wrote them, to read when the stack is unwound.
+    Python {
+        thread: Tid,
+        record: Vec<u8>,
+    },
 }
 
 /// A thread's stack as the kernel saw it, to unwind.
@@ -608,6 +618,10 @@ pub fn decode(bytes: &[u8]) -> Result<Record, DecodeError> {
             }))
         }
         RECORD_STACK => stack_record(header, bytes),
+        RECORD_PY_STACK => Ok(Record::Python {
+            thread: Tid::new(header.tid),
+            record: bytes.to_vec(),
+        }),
         RECORD_FILE => {
             let raw: RawFileRecord = read(bytes)?;
             let start = size_of::<RawFileRecord>();
@@ -880,14 +894,9 @@ impl Probe {
         let release = nix::sys::utsname::uname()
             .map(|name| name.release().to_string_lossy().into_owned())
             .unwrap_or_default();
-        let capabilities = std::fs::read_to_string("/proc/self/status")
+        let capabilities = super::super::proc_status::read_path("/proc/self/status")
             .ok()
-            .and_then(|status| {
-                status
-                    .lines()
-                    .find_map(|line| line.strip_prefix("CapEff:"))
-                    .and_then(|bits| u64::from_str_radix(bits.trim(), 16).ok())
-            })
+            .and_then(|status| super::super::proc_status::hex_field(&status, b"CapEff:"))
             .unwrap_or(0);
         let lockdown = std::fs::read_to_string("/sys/kernel/security/lockdown")
             .ok()
@@ -908,6 +917,21 @@ impl Probe {
 
     const fn has(&self, capability: u32) -> bool {
         self.capabilities & (1 << capability) != 0
+    }
+
+    /// Which of `CAP_BPF` and `CAP_PERFMON`, which every BPF engine needs,
+    /// this process lacks, as the end of a sentence about it: `None` when
+    /// it has both.
+    #[must_use]
+    pub const fn lacks_privileges(&self) -> Option<&'static str> {
+        let bpf = self.has(CAP_BPF) || self.has(CAP_SYS_ADMIN);
+        let perfmon = self.has(CAP_PERFMON) || self.has(CAP_SYS_ADMIN);
+        match (bpf, perfmon) {
+            (true, true) => None,
+            (false, false) => Some("has neither"),
+            (false, true) => Some("lacks CAP_BPF"),
+            (true, false) => Some("lacks CAP_PERFMON"),
+        }
     }
 
     /// Whether the engine can run, or the one specific reason it cannot,
@@ -934,16 +958,7 @@ impl Probe {
             ));
         }
 
-        let bpf = self.has(CAP_BPF) || self.has(CAP_SYS_ADMIN);
-        let perfmon = self.has(CAP_PERFMON) || self.has(CAP_SYS_ADMIN);
-        let missing = match (bpf, perfmon) {
-            (true, true) => None,
-            (false, false) => Some("has neither"),
-            (false, true) => Some("lacks CAP_BPF"),
-            (true, false) => Some("lacks CAP_PERFMON"),
-        };
-
-        if let Some(missing) = missing {
+        if let Some(missing) = self.lacks_privileges() {
             let token = self.token.as_ref().map_or_else(String::new, |path| {
                 format!(
                     "\n  {} offers a BPF token, which microscope cannot use: aya, which loads its \
@@ -1753,6 +1768,9 @@ fn run(
         entries: BTreeMap::new(),
         stacks: options.stacks.clone(),
         sampled: BTreeMap::new(),
+        python: BTreeMap::new(),
+        layouts: None,
+        laid_out: BTreeSet::new(),
         mappings,
         batch: Vec::new(),
         perf: Vec::new(),
@@ -1933,6 +1951,15 @@ struct Reader<'a> {
     /// Each thread's stack, until the call or signal it precedes.
     sampled: BTreeMap<Tid, SampledStack>,
 
+    /// Each thread's Python frames, which follow its stack.
+    python: BTreeMap<Tid, Vec<u8>>,
+
+    /// The walker's layouts, when stacks were asked for and the kernel's
+    /// process ids are microscope's, and the processes given one or found
+    /// to have none.
+    layouts: Option<PythonLayouts>,
+    laid_out: BTreeSet<Pid>,
+
     /// What the traced processes map, as they map it, for their stacks.
     mappings: Vec<perf::Events>,
     batch: Vec<Record>,
@@ -1960,6 +1987,13 @@ impl Reader<'_> {
                 .ok_or_else(|| missing("EVENTS"))?,
         )
         .map_err(load_error)?;
+
+        // The walker finds a process's layout by the kernel's process id,
+        // which is the one microscope sees only in the initial namespace;
+        // elsewhere, Python frames stay unknown, and the stacks say so.
+        if self.stacks.is_some() && sampler::check_namespace().is_ok() {
+            self.layouts = Some(PythonLayouts::take(&mut loaded.ebpf).map_err(load_error)?);
+        }
         let mut stopping = false;
         let mut last_tick = monotonic();
         loop {
@@ -2128,6 +2162,7 @@ impl Reader<'_> {
         }
 
         self.map();
+        self.lay_out();
         for record in std::mem::take(&mut batch) {
             self.handle(record);
         }
@@ -2169,6 +2204,9 @@ impl Reader<'_> {
         let mut stacks = stacks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Processes that began or replaced their images, whose layouts are
+        // read again.
+        let mut fresh = Vec::new();
         for (_, offset) in records {
             match perf::decode::next(&self.perf[offset..]) {
                 Some(Ok((perf::decode::Record::Mmap(mmap), _))) if mmap.executable => {
@@ -2180,17 +2218,75 @@ impl Reader<'_> {
                         pid, exec: true, ..
                     },
                     _,
-                ))) => stacks.forget(pid),
+                ))) => {
+                    stacks.forget(pid);
+                    fresh.push(pid);
+                }
                 Some(Ok((perf::decode::Record::Fork { pid, ppid, .. }, _))) if pid != ppid => {
                     stacks.forked(ppid, pid);
+                    fresh.push(pid);
                 }
                 _ => {}
             }
+        }
+
+        drop(stacks);
+        for process in fresh {
+            self.forget_layout(process);
+            self.laid_out.remove(&process);
+        }
+    }
+
+    /// Gives the walker the layout of each process that runs Python and
+    /// has none yet: it maps its interpreter before any of its threads
+    /// runs Python code.
+    fn lay_out(&mut self) {
+        let (Some(layouts), Some(stacks)) = (&mut self.layouts, &self.stacks) else {
+            return;
+        };
+
+        let mut stacks = stacks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for process in stacks.processes() {
+            if self.laid_out.contains(&process) {
+                continue;
+            }
+
+            let Some(layout) = stacks.python_layout(process) else {
+                continue;
+            };
+
+            self.laid_out.insert(process);
+            let set = layout.and_then(|layout| {
+                layouts
+                    .set(process.get(), &layout)
+                    .map_err(|error| error.to_string())
+            });
+            match set {
+                Ok(()) => {}
+                // Only the flight recorder, which release builds leave
+                // out, reads why.
+                #[cfg_attr(not(debug_assertions), expect(unused_variables))]
+                Err(why) => record!("syscalls bpf: python {process}: {why}"),
+            }
+        }
+
+        drop(stacks);
+    }
+
+    /// Forgets the layout of `process`, which exited or replaced its image.
+    fn forget_layout(&mut self, process: Pid) {
+        if self.laid_out.contains(&process)
+            && let Some(layouts) = &mut self.layouts
+        {
+            layouts.forget(process.get());
         }
     }
 
     /// Unwinds the stack the kernel sent before a thread's call or signal.
     fn unwind(&mut self, thread: Tid) -> Option<CallStack> {
+        let python = self.python.remove(&thread);
         let sampled = self.sampled.remove(&thread)?;
         let stacks = self.stacks.as_ref()?;
         let mut stacks = stacks
@@ -2203,13 +2299,18 @@ impl Reader<'_> {
                 stack: &sampled.copy,
                 chain: &sampled.chain,
             },
+            python.as_deref(),
         ))
     }
 
     fn handle(&mut self, record: Record) {
         match record {
             Record::Stack(stack) => {
+                self.python.remove(&stack.thread);
                 self.sampled.insert(stack.thread, stack);
+            }
+            Record::Python { thread, record } => {
+                self.python.insert(thread, record);
             }
             Record::Entry(entry) => {
                 self.entries.insert(entry.thread, entry);
@@ -2260,6 +2361,7 @@ impl Reader<'_> {
                         }
 
                         self.live.remove(process);
+                        self.forget_layout(*process);
                     }
                     _ => {}
                 }
@@ -2332,143 +2434,69 @@ mod tests {
 
     use crate::syscalls::captures::MOST_BYTES;
 
-    /// The object's BTF: each struct's size and its members' names and
-    /// byte offsets.
-    fn btf_structs() -> BTreeMap<String, (u32, Vec<(String, u32)>)> {
-        use object::{Object as _, ObjectSection as _};
-        let file = object::File::parse(OBJECT).expect("the object parses");
-        let section = file.section_by_name(".BTF").expect("a .BTF section");
-        let data = section.data().expect("its bytes");
-        let u32_at = |at: usize| u32::from_le_bytes(data[at..at + 4].try_into().expect("4"));
-        let header_len = u32_at(4) as usize;
-        let (type_off, type_len) = (u32_at(8) as usize, u32_at(12) as usize);
-        let str_off = u32_at(16) as usize;
-        let types = header_len + type_off;
-        let strings = header_len + str_off;
-        let name = |offset: u32| {
-            let start = strings + offset as usize;
-            let end = start + data[start..].iter().position(|&b| b == 0).expect("NUL");
-            String::from_utf8_lossy(&data[start..end]).into_owned()
-        };
-
-        let mut structs = BTreeMap::new();
-        let mut at = types;
-        while at < types + type_len {
-            let (name_off, info, size) = (u32_at(at), u32_at(at + 4), u32_at(at + 8));
-            let kind = (info >> 24) & 0x1f;
-            let vlen = (info & 0xffff) as usize;
-            at += 12;
-
-            // Each kind's trailing data, by the BTF format.
-            let trailing = match kind {
-                1 | 14 | 15 | 17 => 4,
-                3 => 12,
-                4 | 5 => 12 * vlen,
-                6 | 13 => 8 * vlen,
-                19 => 16 * vlen,
-                _ => 0,
-            };
-
-            if kind == 4 {
-                let members = (0..vlen)
-                    .map(|index| {
-                        let member = at + index * 12;
-                        (name(u32_at(member)), (u32_at(member + 8) & 0x00ff_ffff) / 8)
-                    })
-                    .collect();
-                structs.insert(name(name_off), (size, members));
-            }
-
-            at += trailing;
-        }
-
-        structs
-    }
-
-    macro_rules! layout {
-        ($type:ty, $c:literal, [$($field:ident),*]) => {
-            (
-                $c,
-                size_of::<$type>(),
-                vec![$((stringify!($field), std::mem::offset_of!($type, $field))),*],
-            )
-        };
-    }
-
     #[test]
     fn records_h_and_the_decoders_agree_field_for_field() {
-        let structs = btf_structs();
-        let layouts = [
-            layout!(
+        crate::backend::linux::bpf::assert_mirrors!(
+            OBJECT,
+            (
                 RawArgCopy,
                 "arg_copy",
                 [kind, when, writes, count, count_arg, pad, size, limit]
             ),
-            layout!(
+            (
                 RawCallSpec,
                 "call_spec",
                 [selected, moves, makes, makes_arg, forks, pad, stat, args]
             ),
-            layout!(
+            (
                 RawFileRecord,
                 "file_record",
                 [header, fd, mode, ino, magic, rdev, len, cloexec, pad]
             ),
-            layout!(RawConfig, "config", [flags, elements, sample, rows]),
-            layout!(
+            (RawConfig, "config", [flags, elements, sample, rows]),
+            (
                 RawEntry,
                 "entry",
                 [entered, args, nr, tgid, abi, flags, pad]
             ),
-            layout!(RawRecord, "record", [kind, size, tid, tgid]),
-            layout!(RawInFlightRecord, "in_flight_record", [tid, pad, entry]),
-            layout!(
+            (RawRecord, "record", [kind, size, tid, tgid]),
+            (RawInFlightRecord, "in_flight_record", [tid, pad, entry]),
+            (
                 RawCallRecord,
                 "call_record",
                 [header, entered, exited, ret, args, nr, abi, flags, captures]
             ),
-            layout!(
+            (
                 RawCaptureHeader,
                 "capture_header",
                 [arg, when, state, pad, len, wanted, pad2]
             ),
-            layout!(
+            (
                 RawSpawnRecord,
                 "spawn_record",
                 [header, time, child, child_tgid]
             ),
-            layout!(RawExecRecord, "exec_record", [header, time, former, len]),
-            layout!(RawExitRecord, "exit_record", [header, time, code, last]),
-            layout!(
+            (RawExecRecord, "exec_record", [header, time, former, len]),
+            (RawExitRecord, "exit_record", [header, time, code, last]),
+            (
                 RawSignalRecord,
                 "signal_record",
                 [header, time, signal, pad, info]
             ),
-            layout!(
+            (
                 RawStatValue,
                 "stat_value",
                 [
                     calls, errors, timed, total_ns, min_ns, max_ns, bytes, log2_ns
                 ]
             ),
-            layout!(RawErrnoKey, "errno_key", [slot, err]),
-            layout!(
+            (RawErrnoKey, "errno_key", [slot, err]),
+            (
                 RawStackRecord,
                 "stack_record",
                 [header, frames, copied, regs]
             ),
-        ];
-        for (name, size, fields) in layouts {
-            let (c_size, c_fields) = structs
-                .get(name)
-                .unwrap_or_else(|| panic!("records.h has no struct {name}"));
-            assert_eq!(*c_size as usize, size, "struct {name}'s size");
-            let rust: Vec<(String, u32)> = fields
-                .into_iter()
-                .map(|(field, offset)| (field.to_owned(), u32::try_from(offset).expect("small")))
-                .collect();
-            assert_eq!(c_fields, &rust, "struct {name}'s fields");
-        }
+        );
     }
 
     fn call_bytes(kind: u32, flags: u8, captures: &[(u8, u8, &[u8])]) -> Vec<u8> {
@@ -2508,6 +2536,29 @@ mod tests {
         let mut bytes = record.as_bytes().to_vec();
         bytes.extend_from_slice(&tail);
         bytes
+    }
+
+    /// A record of Python frames decodes whole, its bytes kept to read when
+    /// its thread's stack is unwound, and one cut short is refused.
+    #[test]
+    fn a_record_of_python_frames_decodes_whole() {
+        let header = RawRecord {
+            kind: RECORD_PY_STACK,
+            size: 24,
+            tid: 7,
+            tgid: 5,
+        };
+        let mut bytes = header.as_bytes().to_vec();
+        bytes.extend([1; 8]);
+        bytes.extend([2; 4]);
+        assert_eq!(
+            decode(&bytes),
+            Ok(Record::Python {
+                thread: Tid::new(7),
+                record: bytes[..24].to_vec(),
+            })
+        );
+        assert_eq!(decode(&bytes[..20]), Err(DecodeError::Short(20)));
     }
 
     #[test]

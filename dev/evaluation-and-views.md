@@ -12,6 +12,7 @@ shape. Keep these layers separate.
 | `src/eval/syntax/` | Lexer, parser, syntax tree, and canonical printing |
 | `src/eval/bind.rs`, `src/eval/ir.rs` | Name and type binding into target-neutral IR |
 | `src/eval/interp.rs`, `src/eval/number.rs`, `src/eval/target.rs` | Evaluation, exact numeric rules, and target traits |
+| `src/eval/dynamic.rs` | The rules of operations on values of a dynamic type |
 | `src/inspection.rs` | Bounded conversion from located values to public value trees |
 | `src/backend/linux/evaluation.rs`, `src/backend/linux/inspection.rs` | Debugger implementations of evaluation and inspection access |
 | `src/view/syntax.rs`, `src/view/bind.rs`, `src/view/run.rs` | View parsing, binding, and execution |
@@ -63,6 +64,40 @@ override them.
 
 A bound name records the declaration and location operation needed at run
 time. It does not cache the value from the stop used during binding.
+
+## Dynamic types
+
+A variable of an interpreted language, such as Python, has no static type:
+its value's type is whatever object it holds when the expression runs. Such
+a name binds through `Lookup::Dynamic` to `Ty::Dynamic`, and binding defers
+every decision about it to the run:
+
+- A member or an item plans a step through `Scope::plan_dynamic`, which the
+  machine takes from the object it reaches (`Machine::step` and `entry`).
+- An operand is loaded with `Machine::load_dynamic`, which gives the
+  object's type name and a neutral `LoadedValue`: nothing, a truth value, an
+  exact integer, a float, text, bytes, a collection's length, or an object.
+- Arithmetic, comparisons, truth, and keys follow `src/eval/dynamic.rs`.
+  Numbers keep microscope's exact rules, with truth values as 0 and 1. An
+  operation a language defines differently from microscope, such as Python's
+  integer `/` or floored `%`, is refused rather than computed the other way.
+- A value that only its own type's code could compare or compute with, such
+  as a list or an instance, is refused. The evaluator never asks the runtime
+  to run code. A refusal is a type error only where the language's own
+  operation would be one, as Python's `None + 1` is; where an operand's type
+  could give a value, as text joined with text or an object's own operator
+  does, it is unsupported.
+
+A program is bound once and may run on values of different types, so every
+check happens as it runs. A dynamic value is not assigned, not watched, and
+has no size; `&x` is the object's address as a `void*`. The reverse is a
+cast to a name `Scope::dynamic_type` accepts, such as `(py)p`: it binds to
+`Op::Interpreted`, whose operand is a pointer or an integer, and runs
+`Machine::dynamic_at` to reach the object at that address as a dynamic
+value. The binder chooses the cast reading of `(py)&x` and `(py)-x` by the
+same test, when no value in scope is named `py`. The fake world
+`python` in `src/eval/fake.rs` holds dynamic values for the evaluator's own
+tests and the reference's examples.
 
 ## Exact arithmetic
 
@@ -185,6 +220,26 @@ Checks state invariants such as length not exceeding capacity. On failure,
 show raw storage and the failed check. Producing a plausible logical container
 from contradictory metadata is not acceptable.
 
+## Views of dynamic types
+
+A `python` view's pattern matches the identity `interpreted_identity` gives a
+class: its module's segments and its qualified name's, all but the last as
+the path, which `language_matches` lets only `python` select; `any` never
+selects an interpreted type. A dynamic value's class is known only at a
+stop, so `choose_dynamic` chooses for each class at each stop, trying the
+identities of its MRO in order (`RuntimeModel::interpreted_lineage`), and
+`Views` keeps the choice per stop, runtime, and class address
+(`ClassChoices`), because a freed class's address can name another.
+
+The view binds once for the class with `SelfType::Dynamic`: `self` is a
+`Lookup::Dynamic` value, bare names are only lets and captures, and every
+attribute is a step checked as it runs, so a missing attribute is a problem
+of the value rather than a reason the view did not bind. A view without
+`show` has `BoundShape::Stored`, which presents the object as the debugger
+does without a view (`Machine::present_stored`) and adds the view's fields.
+`src/backend/linux/interpreted_views.rs` runs the view in the inspection's
+share and pages its children through the runtime (`InterpretedView`).
+
 ## Kernels
 
 View kernels are compiled WebAssembly with a narrow host protocol for reads
@@ -210,7 +265,13 @@ on target type, not value magnitude: a 64-bit integer remains a bigint even
 when small. Any unavailable input prevents the renderer from receiving a
 misleading partial object.
 
-Bulk byte and number reads have a separate hard byte limit. Shape count,
+Bulk byte and number reads have a separate hard byte limit. A sequence's
+numbers are read at once only where they lie in one run of memory: a native
+array or slice by its type, a view's sequence by its `contiguous` run, and
+an interpreted object by the `InterpretedArray` its runtime gives. A view
+presenting another value lends that value's run when it keeps every
+element. A view bound to an interpreted object has no native place, so its
+own elements are never read at once, only an array the runtime describes. Shape count,
 dimensions, strings, and pixel buffers are validated before rendering.
 
 The terminal and DAP clients expose ordinary presented values but do not run

@@ -676,6 +676,7 @@ mod tests {
                     .replace("\\$", "$");
                 let text = with_defaults(&text)
                     .replace("${workspaceFolder}", "/workspace")
+                    .replace("${file}", "/workspace/main.py")
                     .replace("${command:pickProcess}", "1234");
                 assert!(!text.contains('$'), "unexpanded {text}");
                 Value::String(text)

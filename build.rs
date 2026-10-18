@@ -84,12 +84,12 @@ fn sources_digest(manifest: &Path) {
     );
 }
 
-/// Compiles `src/backend/linux/syscalls/bpf/*.bpf.c` into `OUT_DIR`, with the
+/// Compiles `src/backend/linux/bpf/*.bpf.c` into `OUT_DIR`, with the
 /// unwrapped clang and only the headers the flake names, so that the objects
 /// depend on nothing of the host's. Outside the dev shell the build stops
 /// and says which variable is missing; it never looks for another compiler.
 fn bpf_programs(manifest: &Path, out: &Path) {
-    let directory = manifest.join("src/backend/linux/syscalls/bpf");
+    let directory = manifest.join("src/backend/linux/bpf");
     println!("cargo::rerun-if-changed={}", directory.display());
     let variable = |name: &str| {
         println!("cargo::rerun-if-env-changed={name}");

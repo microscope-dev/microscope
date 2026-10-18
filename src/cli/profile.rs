@@ -12,8 +12,8 @@ use super::format::plural;
 use anyhow::{Context, Result};
 use microscope::profiler::budget::Budget;
 use microscope::profiler::{
-    Format, GapReason, Preset, ProbeSelection, Profile, RecordOptions, SampleSource, Save,
-    StackCopy, StackView, Watch,
+    Format, GapReason, Granularity, Preset, ProbeSelection, Profile, PythonEngine, RecordOptions,
+    SampleSource, Save, Source, StackCopy, StackView, Watch,
 };
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -99,6 +99,16 @@ pub struct RecordArgs {
     #[arg(long, requires = "task_snapshots")]
     live_snapshots: bool,
 
+    /// Read where a Python program's threads are, by ENGINE: `bpf` walks
+    /// each sampled thread's Python frames as the sample is taken, which
+    /// needs `CAP_BPF` and `CAP_PERFMON`; `snapshot[=SECONDS]` stops the
+    /// program every SECONDS (0.1 if not given) and reads each thread's
+    /// stack, Python and native; `live[=SECONDS]` reads each thread's
+    /// Python frames every SECONDS (0.01 if not given) as the program runs,
+    /// leaving out each that changes while read.
+    #[arg(long, value_name = "ENGINE")]
+    python: Option<String>,
+
     /// Keep only the last SECONDS of the recording. SIGUSR2 saves the
     /// window as it is to FILE-1.usprof, FILE-2.usprof, and so on, as the
     /// recording goes on; FILE gets the last window.
@@ -171,9 +181,17 @@ pub struct ReportArgs {
     #[arg(long, default_value_t = 20)]
     limit: usize,
 
-    /// Show the frames threads ran, not each async task's own stack.
+    #[command(flatten)]
+    look: LookArgs,
+
+    /// Show where snapshots found tasks and threads, each weighted by the
+    /// time it stands for, rather than the CPU samples.
     #[arg(long)]
-    native: bool,
+    waits: bool,
+
+    /// Tell frames apart by their lines, not only their functions.
+    #[arg(long)]
+    lines: bool,
 
     /// Hide call-tree nodes below this percentage of the total.
     #[arg(long, value_name = "PERCENT", default_value_t = 1.0)]
@@ -215,9 +233,74 @@ pub struct ConvertArgs {
     #[arg(long, value_name = "FORMAT")]
     to: Option<Format>,
 
-    /// Write the frames threads ran, not each async task's own stack.
-    #[arg(long)]
+    #[command(flatten)]
+    look: LookArgs,
+}
+
+/// How a report or a conversion sees each stack's frames.
+#[derive(Debug, clap::Args)]
+pub struct LookArgs {
+    /// The frames threads ran, not each async task's own stack.
+    #[arg(long, conflicts_with = "python")]
     native: bool,
+
+    /// Each stack as its Python code sees it: from its outermost Python
+    /// frame in, without the interpreter's own frames.
+    #[arg(long)]
+    python: bool,
+}
+
+impl LookArgs {
+    const fn view(&self) -> StackView {
+        if self.native {
+            StackView::Native
+        } else if self.python {
+            StackView::Python
+        } else {
+            StackView::Logical
+        }
+    }
+}
+
+/// How often each Python engine that reads the program reads it, unless
+/// told: a stopped snapshot holds the program for tens of milliseconds
+/// as its debugger attaches, and a live one costs it nothing.
+const SNAPSHOT_EVERY: Duration = Duration::from_millis(100);
+const LIVE_EVERY: Duration = Duration::from_millis(10);
+
+/// The engine `--python ENGINE` names.
+fn python_engine(engine: &str) -> Result<PythonEngine> {
+    let (name, seconds) = engine
+        .split_once('=')
+        .map_or((engine, None), |(name, seconds)| (name, Some(seconds)));
+    let every = |unless: Duration| -> Result<Duration> {
+        let Some(seconds) = seconds else {
+            return Ok(unless);
+        };
+
+        let seconds: f64 = seconds
+            .parse()
+            .with_context(|| format!("--python {engine}: {seconds} is not a number of seconds"))?;
+        let every = Duration::try_from_secs_f64(seconds).context("--python")?;
+        anyhow::ensure!(
+            !every.is_zero(),
+            "--python {engine}: reads take some time apart"
+        );
+        Ok(every)
+    };
+
+    match name {
+        "bpf" if seconds.is_none() => Ok(PythonEngine::Bpf),
+        "snapshot" => Ok(PythonEngine::Snapshot {
+            every: every(SNAPSHOT_EVERY)?,
+        }),
+        "live" => Ok(PythonEngine::Live {
+            every: every(LIVE_EVERY)?,
+        }),
+        _ => anyhow::bail!(
+            "--python {engine}: the engines are bpf, snapshot[=SECONDS], and live[=SECONDS]"
+        ),
+    }
 }
 
 /// Runs `microscope convert`.
@@ -250,11 +333,7 @@ fn convert(args: &ConvertArgs) -> Result<()> {
         );
     }
 
-    let view = if args.native {
-        StackView::Native
-    } else {
-        StackView::Logical
-    };
+    let view = args.look.view();
 
     let bytes = read
         .profile
@@ -397,6 +476,10 @@ fn options(args: &RecordArgs) -> Result<RecordOptions> {
         anyhow::ensure!(!every.is_zero(), "--task-snapshots is a number of seconds");
         options.task_snapshots = Some(every);
         options.live_snapshots = args.live_snapshots;
+    }
+
+    if let Some(engine) = &args.python {
+        options.python = Some(python_engine(engine)?);
     }
 
     if let Some(seconds) = args.window {
@@ -636,11 +719,7 @@ fn report(args: &ReportArgs, out: &mut impl std::io::Write) -> Result<()> {
     let read =
         Profile::read(&args.file).with_context(|| format!("reading {}", args.file.display()))?;
     let mut profile = read.profile;
-    let view = if args.native {
-        StackView::Native
-    } else {
-        StackView::Logical
-    };
+    let view = args.look.view();
 
     if read.truncated {
         writeln!(
@@ -662,7 +741,19 @@ fn report(args: &ReportArgs, out: &mut impl std::io::Write) -> Result<()> {
         syscall_summary(&profile, out)?;
     }
 
-    let total = profile.total_weight();
+    let (source, total) = if args.waits {
+        let waited = profile.task_waits().iter().map(|wait| wait.weight).sum();
+        (Source::Waits, waited)
+    } else {
+        (Source::Samples, profile.total_weight())
+    };
+
+    let granularity = if args.lines {
+        Granularity::Line
+    } else {
+        Granularity::Function
+    };
+
     let percent = |value: u64| {
         if total == 0 {
             0.0
@@ -673,7 +764,7 @@ fn report(args: &ReportArgs, out: &mut impl std::io::Write) -> Result<()> {
 
     writeln!(out)?;
     if args.tree {
-        let tree = profile.call_tree(view);
+        let tree = profile.call_tree_of(view, source, granularity);
         let mut depth = vec![0_usize; tree.len()];
 
         // Each node with its children after it, depth first.
@@ -717,7 +808,11 @@ fn report(args: &ReportArgs, out: &mut impl std::io::Write) -> Result<()> {
         }
     } else {
         writeln!(out, "{:>7} {:>7}  function", "own", "total")?;
-        for cost in profile.top(view).iter().take(args.limit) {
+        for cost in profile
+            .top_of(view, source, granularity)
+            .iter()
+            .take(args.limit)
+        {
             writeln!(
                 out,
                 "{:6.2}% {:6.2}%  {}",
@@ -791,24 +886,20 @@ fn cost(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
     if live > 0 {
         writeln!(
             out,
-            "{} read where its tasks wait as it ran, leaving out {} that changed while read.",
-            plural(live, "task snapshot"),
-            plural(changed, "task"),
+            "{} read where its tasks wait and its threads are as it ran, leaving out {} that \
+             changed while read.",
+            plural(live, "snapshot"),
+            plural(changed, "task or thread"),
         )?;
     }
 
     let stopped = snapshots - live;
     if stopped > 0 {
-        let why = if live > 0 {
-            "to learn its threads and read where its tasks wait"
-        } else {
-            "to read where its tasks wait"
-        };
-
         writeln!(
             out,
-            "{} held the program stopped for {:.3} s, {:.1} ms each, {why}.",
-            plural(stopped, "task snapshot"),
+            "{} held the program stopped for {:.3} s, {:.1} ms each, to read where its tasks \
+             wait or its threads are.",
+            plural(stopped, "snapshot"),
             seconds(held),
             held as f64 / 1e6 / stopped as f64,
         )?;

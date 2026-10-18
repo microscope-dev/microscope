@@ -1299,7 +1299,7 @@ async fn inspection_budgets_report_typed_partial_results_at_each_public_boundary
         Err(microscope::Error::InvalidInspectionLimit {
             resource: microscope::InspectionLimit::MemoryReads,
             value: 0,
-            maximum: 1_024,
+            maximum: 4_096,
         })
     ));
 

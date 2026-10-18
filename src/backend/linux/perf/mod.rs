@@ -4,6 +4,7 @@
 //! lifetimes to that CPU's ring.
 
 pub mod decode;
+pub mod jit;
 pub mod sys;
 
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -90,8 +91,29 @@ pub struct Events {
     rings: Vec<sys::Ring>,
     pages: usize,
 
+    /// The CPU of each ring, in their order.
+    cpus: Vec<u32>,
+
     /// Events that write to the rings of others on their CPUs.
     followers: Vec<OwnedFd>,
+}
+
+/// The fields of each record a BPF program writes through an [`Output`],
+/// in the kernel's order: those of a sample's that come first, then the
+/// program's bytes.
+pub const OUTPUT_SAMPLE_TYPE: u64 = sys::sample::IDENTIFIER
+    | sys::sample::TID
+    | sys::sample::TIME
+    | sys::sample::CPU
+    | sys::sample::RAW;
+
+/// A CPU's BPF output event, which writes to that CPU's ring, and its
+/// identifier, which each of its records begins with.
+#[derive(Debug)]
+pub struct Output {
+    pub cpu: u32,
+    pub fd: OwnedFd,
+    pub id: u64,
 }
 
 /// The most bytes a sample of `stack_bytes` can take: its fixed fields,
@@ -128,6 +150,7 @@ impl Events {
         Ok(Self {
             rings,
             pages,
+            cpus,
             followers: Vec::new(),
         })
     }
@@ -175,6 +198,7 @@ impl Events {
                             owner = Some(Self {
                                 rings,
                                 pages,
+                                cpus: cpus.clone(),
                                 followers: Vec::new(),
                             });
                         }
@@ -222,6 +246,46 @@ impl Events {
     /// Data pages each ring has.
     pub const fn pages(&self) -> usize {
         self.pages
+    }
+
+    /// Runs the BPF program `program` as each event, and each event a
+    /// thread inherits from one later, takes a sample, before the kernel
+    /// writes it.
+    pub fn run_program(&self, program: std::os::fd::BorrowedFd<'_>) -> std::io::Result<()> {
+        for fd in self.rings.iter().map(sys::Ring::fd).chain(&self.followers) {
+            sys::set_bpf(fd, program)?;
+        }
+
+        Ok(())
+    }
+
+    /// Opens a BPF output event on each CPU that writes to that CPU's
+    /// ring, so that what a program writes through it lies beside the
+    /// samples it is written for.
+    pub fn outputs(&self) -> Result<Vec<Output>, OpenError> {
+        let attr = sys::Attr {
+            size: sys::ATTR_SIZE,
+            kind: sys::TYPE_SOFTWARE,
+            config: sys::COUNT_SW_BPF_OUTPUT,
+            sample_period: 1,
+            sample_type: OUTPUT_SAMPLE_TYPE,
+            flags: sys::flag::USE_CLOCKID,
+            clockid: libc::CLOCK_MONOTONIC,
+            ..sys::Attr::default()
+        };
+
+        self.rings
+            .iter()
+            .zip(&self.cpus)
+            .map(|(ring, &cpu)| {
+                let failed = |source| OpenError::Event { cpu, source };
+                let fd =
+                    sys::open(&attr, -1, i32::try_from(cpu).unwrap_or(i32::MAX)).map_err(failed)?;
+                sys::set_output(&fd, ring.fd()).map_err(failed)?;
+                let id = sys::id(&fd).map_err(failed)?;
+                Ok(Output { cpu, fd, id })
+            })
+            .collect()
     }
 
     /// Appends every ring's new records to `out`, a ring's whole records
@@ -515,14 +579,15 @@ pub struct LaunchOptions {
 /// The child waits between fork and exec until its events are open. A
 /// thread of its own spawns it, because spawning returns only after the
 /// exec, and stays to wait for its exit: the child dies with that thread.
-/// `held` runs while it waits, its events open, so that what `held` starts
-/// sees it from its first instruction too; an error from `held` ends the
-/// child before it executes.
+/// `held` runs while it waits, given its pid and its events, so that what
+/// `held` starts or attaches to the events sees it from its first
+/// instruction too; an error from `held` ends the child before it
+/// executes.
 pub fn launch(
     mut command: Command,
     options: &EventOptions,
     launch: LaunchOptions,
-    held: impl FnOnce(u32) -> Result<(), String>,
+    held: impl FnOnce(u32, &Events) -> Result<(), String>,
 ) -> Result<Launched, LaunchError> {
     let (pid_read, pid_write) = pipe()?;
     let (go_read, go_write) = pipe()?;
@@ -536,12 +601,12 @@ pub fn launch(
 
             // The child holds its own copies until it executes.
             drop((pid_write, go_read));
-            let mut child = spawned?;
+            let child = spawned?;
             let _ = executing.send(());
 
             // A task snapshot traces the child from this process, which any
             // wait for it here would take the stops of: wait for its exit
-            // alone, then reap it.
+            // alone, then reap it once no snapshot holds it (see `reaped`).
             let exit = super::native::pidfd_open(nix::unistd::Pid::from_raw(
                 i32::try_from(child.id()).unwrap_or(i32::MAX),
             ));
@@ -549,7 +614,8 @@ pub fn launch(
                 sys::wait_readable(exit);
             }
 
-            child.wait()
+            super::reaped::REAPED.wait_unheld(child.id());
+            reap(child)
         })
         .map_err(LaunchError::Spawn)?;
     let mut pid = [0_u8; 4];
@@ -565,6 +631,9 @@ pub fn launch(
 
     let pid = u32::from_le_bytes(pid);
     record!("perf launch: {pid} waits at its gate");
+
+    // Until the gate opens the child cannot exit.
+    super::reaped::REAPED.watch(pid);
 
     // Until the gate opens the child can neither execute nor exit, so the
     // descriptor names it and no other process.
@@ -591,7 +660,7 @@ pub fn launch(
         }
     };
 
-    if let Err(why) = held(pid) {
+    if let Err(why) = held(pid, &events) {
         record!("perf launch: closing {pid}'s gate unopened: {why}");
         drop(go_write);
         let _ = spawner.join();
@@ -607,6 +676,31 @@ pub fn launch(
         killer,
         executed,
     })
+}
+
+/// How long after finding its child reaped a launch waits for the thread
+/// that reaped it to leave its status.
+const REAPED_PATIENCE: Duration = Duration::from_secs(5);
+
+/// Reaps `child`, or takes its status from the thread of this process that
+/// reaped it first.
+fn reap(mut child: std::process::Child) -> std::io::Result<std::process::ExitStatus> {
+    use std::os::unix::process::ExitStatusExt as _;
+    let pid = child.id();
+    match child.wait() {
+        Err(error) if error.raw_os_error() == Some(libc::ECHILD) => super::reaped::REAPED
+            .take(pid, REAPED_PATIENCE)
+            .map(std::process::ExitStatus::from_raw)
+            .ok_or_else(|| {
+                std::io::Error::other(format!(
+                    "program {pid} was reaped by a wait that left no status: {error}"
+                ))
+            }),
+        waited => {
+            super::reaped::REAPED.forget(pid);
+            waited
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -686,7 +780,7 @@ pub fn is_vdso(mmap: &decode::Mmap<'_>) -> bool {
 /// needs privileges, or for the program itself, its `exe`.
 pub fn identify(mmap: &decode::Mmap<'_>) -> Option<(PathBuf, crate::LoadBias)> {
     use std::os::unix::ffi::OsStrExt;
-    if !mmap.executable || !mmap.path.starts_with(b"/") {
+    if !mmap.executable || !mmap.path.starts_with(b"/") || jit::is_anonymous_code(mmap) {
         return None;
     }
 
@@ -731,7 +825,8 @@ pub struct Mapped {
 }
 
 /// The executable mappings of process `pid` now, which the records of an
-/// attach began after.
+/// attach began after. Anonymous ones are named `//anon`, as perf's
+/// records name them.
 pub fn mappings(pid: u32) -> std::io::Result<Vec<Mapped>> {
     let maps = std::fs::read(format!("/proc/{pid}/maps"))?;
     let mut mappings = Vec::new();
@@ -762,7 +857,9 @@ pub fn mappings(pid: u32) -> std::io::Result<Vec<Mapped>> {
         let inode = std::str::from_utf8(inode)
             .ok()
             .and_then(|inode| inode.parse().ok());
-        if executable && !path.is_empty() {
+        // Anonymous code, as perf's records name it.
+        let path = if path.is_empty() { b"//anon" } else { path };
+        if executable {
             mappings.push(Mapped {
                 start,
                 end,

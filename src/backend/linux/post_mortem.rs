@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::thread::{self, JoinHandle};
 
 use nix::libc;
@@ -49,6 +49,7 @@ pub(super) struct CoreTarget {
 
     /// Loaded images whose symbols locate the C library's thread structures.
     symbol_modules: Vec<SymbolModule>,
+    thread_id_descriptor: OnceLock<Option<u64>>,
 }
 
 struct SymbolModule {
@@ -112,6 +113,34 @@ impl CoreTarget {
 }
 
 impl InspectionOps for CoreTarget {
+    fn target_thread_id(
+        &self,
+        _process: Pid,
+        thread: Pid,
+    ) -> Option<crate::runtime_model::TargetThreadId> {
+        self.thread(thread).ok()?;
+        // Core writers can record host IDs while CPython retains inner
+        // namespace IDs. Read the saved TCB instead of assuming equality.
+        let descriptor = self.thread_id_descriptor.get_or_init(|| {
+            let mut descriptors = self
+                .symbol_modules
+                .iter()
+                .flat_map(|module| {
+                    module.image.symbols().filter_map(|symbol| {
+                        (symbol.name() == "_thread_db_pthread_tid")
+                            .then(|| module.load_bias.load(symbol.address()))
+                            .flatten()
+                            .map(VirtualAddress::get)
+                    })
+                })
+                .collect::<BTreeSet<_>>();
+            (descriptors.len() == 1)
+                .then(|| descriptors.pop_first())
+                .flatten()
+        });
+        tls::target_thread_id(self, thread, (*descriptor)?)
+    }
+
     fn read_word(&self, pid: Pid, address: u64) -> Result<u64> {
         self.read_memory_word(pid, address)
             .map_err(|error| match error {
@@ -213,6 +242,21 @@ struct PlacedFile {
 
     /// Dump-time addresses whose file bytes are the process's memory.
     read_only: Vec<Range<u64>>,
+}
+
+/// The dump's executable as a session keeps it, which nothing launches.
+fn dump_executable(file: ImageFile) -> crate::backend::Executable {
+    let path = Arc::new(file.path);
+    crate::backend::ExecutableSource {
+        display_path: Arc::clone(&path),
+        launch_path: path,
+        identity: FileIdentity { inode: file.inode },
+        data: file.data,
+        process_start_time: None,
+        // Every module a dump has is loaded already.
+        debug_files: crate::debug_info::DebugFileSearch::default(),
+    }
+    .described()
 }
 
 /// The module file chosen for one recorded image.
@@ -799,21 +843,12 @@ pub fn open_core(
     let target = CoreTarget {
         memory: CoreMemory::new(Arc::new(core), backings),
         symbol_modules,
+        thread_id_descriptor: OnceLock::new(),
     };
 
     let image = Arc::clone(&main_debug.image);
     let main_loaded = LoadedModule::main(image.id(), main_file.load_bias);
-    let executable = crate::backend::ExecutableSource {
-        display_path: Arc::new(main_file.path.clone()),
-        identity: FileIdentity {
-            inode: main_file.inode,
-        },
-        data: main_file.data,
-        process_start_time: None,
-        // Every module a dump has is loaded already.
-        debug_files: crate::debug_info::DebugFileSearch::default(),
-    }
-    .described();
+    let executable = dump_executable(main_file);
     let (ready_sender, ready) = std::sync::mpsc::sync_channel(1);
     let controller = thread::Builder::new()
         .name(POST_MORTEM_THREAD_NAME.into())

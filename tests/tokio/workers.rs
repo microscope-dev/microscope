@@ -17,6 +17,7 @@ use microscope::{
 
 use crate::invariants::checked;
 use crate::stops::{backtrace, integer, line};
+use crate::support::truth::Report;
 use crate::support::{Scenario, ScratchDir};
 
 const BUILDS: [&str; 4] = [
@@ -196,8 +197,8 @@ impl Truth {
         let mut truth = Self::default();
         let number = |field: &str| field.parse::<u64>().expect("a number");
         let thread = |field: &str| ThreadId::new(number(field));
-        for line in text.lines().filter_map(|line| line.strip_prefix("TRUTH\t")) {
-            let fields = line.split('\t').collect::<Vec<_>>();
+        for fields in Report::parse(text).lines() {
+            let fields = fields.iter().map(String::as_str).collect::<Vec<_>>();
             match fields[..] {
                 ["task", id, awaits, _] => {
                     let awaits = awaits.split(',').map(str::to_owned).collect();

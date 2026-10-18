@@ -1,9 +1,10 @@
-//! The perf event system calls and the ring buffers events write to. The
-//! profiler's only unsafe code is here.
+//! The perf event system calls and the ring buffers events write to, and
+//! the one BPF map update aya cannot make. The profiler's only unsafe code
+//! is here.
 
 #![allow(unsafe_code, reason = "perf events are system calls and shared memory")]
 
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use nix::libc;
@@ -49,6 +50,9 @@ pub const COUNT_SW_CPU_CLOCK: u64 = 0;
 
 /// An event that counts nothing, for the records of mappings and threads.
 pub const COUNT_SW_DUMMY: u64 = 9;
+
+/// An event BPF programs write records through.
+pub const COUNT_SW_BPF_OUTPUT: u64 = 10;
 
 /// A write breakpoint, which only the simulator's conformance tests set.
 #[cfg(test)]
@@ -101,6 +105,8 @@ pub mod sample {
 
     pub const PERIOD: u64 = 1 << 8;
 
+    pub const RAW: u64 = 1 << 10;
+
     pub const REGS_USER: u64 = 1 << 12;
 
     pub const STACK_USER: u64 = 1 << 13;
@@ -112,6 +118,14 @@ const FLAG_FD_CLOEXEC: libc::c_ulong = 1 << 3;
 const IOC_ENABLE: libc::Ioctl = 0x2400;
 const IOC_DISABLE: libc::Ioctl = 0x2401;
 const IOC_SET_OUTPUT: libc::Ioctl = 0x2405;
+
+/// `_IOR('$', 7, __u64 *)`.
+const IOC_ID: libc::Ioctl = 0x8008_2407_u32 as libc::Ioctl;
+
+/// `_IOW('$', 8, __u32)`.
+const IOC_SET_BPF: libc::Ioctl = 0x4004_2408;
+
+const BPF_MAP_UPDATE_ELEM: libc::c_long = 2;
 
 /// `read_format`: each read also gives how many samples the event lost.
 pub const FORMAT_LOST: u64 = 1 << 4;
@@ -204,6 +218,76 @@ pub fn set_output(fd: &OwnedFd, ring: &OwnedFd) -> std::io::Result<()> {
     // SAFETY: the request takes the descriptor of another perf event, and
     // both descriptors are perf events this process owns.
     let result = unsafe { libc::ioctl(fd.as_raw_fd(), IOC_SET_OUTPUT, ring.as_raw_fd()) };
+    if result < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    Ok(())
+}
+
+/// The kernel's identifier of an event, which each of its samples that
+/// asks for it begins with.
+pub fn id(fd: &OwnedFd) -> std::io::Result<u64> {
+    let mut id = 0_u64;
+
+    // SAFETY: the request writes one u64 through the pointer, which points
+    // at a u64 that outlives the call; the descriptor is a perf event this
+    // process owns.
+    let result = unsafe { libc::ioctl(fd.as_raw_fd(), IOC_ID, std::ptr::from_mut(&mut id)) };
+    if result < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    Ok(id)
+}
+
+/// Runs the BPF program `program` as the event takes each sample, before
+/// the kernel writes it. Events inherited from the event later run it too.
+pub fn set_bpf(fd: &OwnedFd, program: BorrowedFd<'_>) -> std::io::Result<()> {
+    // SAFETY: the request takes a program's descriptor as an integer, and
+    // both descriptors are open and this process's.
+    let result = unsafe { libc::ioctl(fd.as_raw_fd(), IOC_SET_BPF, program.as_raw_fd()) };
+    if result < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    Ok(())
+}
+
+/// `union bpf_attr` as `BPF_MAP_UPDATE_ELEM` reads it.
+#[repr(C)]
+struct MapUpdate {
+    map_fd: u32,
+    pad: u32,
+    key: u64,
+    value: u64,
+    flags: u64,
+}
+
+/// Puts the event `event` in slot `slot` of the perf event array `map`, so
+/// that a program's output for that CPU goes through it.
+pub fn set_output_slot(map: BorrowedFd<'_>, slot: u32, event: &OwnedFd) -> std::io::Result<()> {
+    let value = u32::try_from(event.as_raw_fd()).map_err(|_| std::io::Error::other("fd"))?;
+    let attr = MapUpdate {
+        map_fd: u32::try_from(map.as_raw_fd()).map_err(|_| std::io::Error::other("fd"))?,
+        pad: 0,
+        key: std::ptr::from_ref(&slot) as u64,
+        value: std::ptr::from_ref(&value) as u64,
+        flags: 0,
+    };
+
+    // SAFETY: `attr` is the update the call reads, of the size given, and
+    // its key and value point at u32s, as a perf event array's are, that
+    // outlive the call. The kernel only reads them.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_bpf,
+            BPF_MAP_UPDATE_ELEM,
+            std::ptr::from_ref(&attr),
+            std::mem::size_of::<MapUpdate>(),
+        )
+    };
+
     if result < 0 {
         return Err(std::io::Error::last_os_error());
     }

@@ -61,7 +61,7 @@ pub mod abi {
     /// | 0 | magic `USCOPEPR` |
     /// | 8 | ABI version, `u16` |
     /// | 10 | clock, `u16`: a `CLOCK_` constant, set by microscope |
-    /// | 12 | enable, `u32`: set by microscope |
+    /// | 12 | enable, `u32`: set by microscope: [`ENABLED`], with [`ENABLE_DEFINED`] |
     /// | 16 | ring size, `u32`, as a power of two of records: set by microscope |
     /// | 20 | rings, `u32`: how many of the registry's slots threads took |
     /// | 24 | heartbeat, `u64`: microscope's `CLOCK_MONOTONIC`, written as it reads |
@@ -70,6 +70,7 @@ pub mod abi {
     /// | 44 | exiting, `u32`: set as the program exits |
     /// | 48 | flushed, `u32`: set by microscope once it has read every ring since |
     /// | 52 | timeout, `u32`: milliseconds without a heartbeat before every site switches itself off, set by microscope; zero is [`STALE_NANOSECONDS`] |
+    /// | 56 | the run-time sites' address, `u64`, or zero before the program defines one (ABI 2) |
     /// | 64 | the registry: each ring's address, `u64`, or zero |
     ///
     /// A thread sets a ring's slot after it counts it in `rings`, so a slot
@@ -78,7 +79,15 @@ pub mod abi {
     /// it has read every ring, so that the last records are not lost with it.
     pub const MAGIC: [u8; 8] = *b"USCOPEPR";
 
-    pub const ABI: u16 = 1;
+    /// ABI 2 adds run-time sites; ABI 1 is the same without them.
+    pub const ABI: u16 = 2;
+
+    /// The enable word's bit that microscope listens.
+    pub const ENABLED: u32 = 1;
+
+    /// The enable word's bit that every run-time site is on as it is
+    /// defined, as when microscope records every site (ABI 2).
+    pub const ENABLE_DEFINED: u32 = 2;
 
     /// Record times are nanoseconds of `CLOCK_MONOTONIC`.
     pub const CLOCK_MONOTONIC: u16 = 1;
@@ -119,6 +128,54 @@ pub mod abi {
 
     pub const SITE_TRIGGER: u8 = 6;
 
+    /// The longest name or file a site may have.
+    pub const MOST_SITE_TEXT: u32 = 4096;
+
+    /// Run-time sites, which a program defines as it runs, as a language
+    /// that names its zones at run time does: a 16-byte header, then
+    /// records of [`RUNTIME_SITE_SIZE`] bytes:
+    ///
+    /// | Offset | Field |
+    /// | --- | --- |
+    /// | 0 | magic, `u32`: [`SITES_MAGIC`] |
+    /// | 4 | version, `u8`: [`SITES_VERSION`] |
+    /// | 8 | capacity, `u32`: how many records follow |
+    /// | 12 | count, `u32`: how many are defined, set after each is whole |
+    ///
+    /// The records are append-only and never change once counted, but for
+    /// their state bytes.
+    pub const SITES_MAGIC: u32 = u32::from_le_bytes(*b"USST");
+
+    pub const SITES_VERSION: u8 = 1;
+
+    pub const SITES_HEADER: usize = 16;
+
+    /// A run-time site's record:
+    ///
+    /// | Offset | Field |
+    /// | --- | --- |
+    /// | 0 | kind, `u8`: a `SITE_` constant |
+    /// | 1 | state byte, `u8`: zero is off |
+    /// | 2 | flags, `u16` |
+    /// | 4 | line, `u32` |
+    /// | 8 | name's address, `u64` |
+    /// | 16 | name's length, `u32` |
+    /// | 20 | file's length, `u32` |
+    /// | 24 | file's address, `u64` |
+    ///
+    /// Its records name it [`RUNTIME_KEY`] plus its index. A static site's
+    /// key, its state byte's offset from the control block, lies within
+    /// 2^30 of it either way, so the two never meet.
+    pub const RUNTIME_SITE_SIZE: usize = 48;
+
+    pub const MOST_RUNTIME_SITES: usize = 4096;
+
+    pub const RUNTIME_KEY: u32 = 1 << 31;
+
+    /// The farthest a static site's state byte may be from the control
+    /// block in ABI 2.
+    pub const MOST_STATIC_OFFSET: i64 = 1 << 30;
+
     /// A ring: a 128-byte header, then `2^size` records of 16 bytes:
     ///
     /// | Offset | Field |
@@ -155,8 +212,9 @@ pub mod abi {
 
     pub const MOST_RINGS: usize = 1024;
 
-    /// A record, 16 bytes: time `u64`, site `u32` (its state byte's offset
-    /// from the control block), kind `u8`, and an argument, `u24`. A plot's
+    /// A record, 16 bytes: time `u64`, site `u32` (a static site's state
+    /// byte's offset from the control block, or a run-time site's key),
+    /// kind `u8`, and an argument, `u24`. A plot's
     /// value, and a message's or label's bytes, take the records after it,
     /// each of kind [`CONTINUED`] and fifteen bytes of the rest: bytes 0 to
     /// 12, then 13 to 16.
@@ -200,6 +258,9 @@ pub mod abi {
 
 #[cfg(feature = "enabled")]
 mod probes;
+
+#[cfg(feature = "c")]
+mod c;
 
 /// Whether microscope is recording the program's instrumentation: every site
 /// it chose is on.

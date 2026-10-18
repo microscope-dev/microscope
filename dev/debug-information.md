@@ -13,6 +13,10 @@ layouts, and ABI rules stay behind this boundary.
 | `src/debug_info/elf.rs`, `src/debug_info/separate.rs` | ELF metadata and separate debug-file discovery |
 | `src/debug_info/gopclntab.rs`, `src/debug_info/gopclntab/` | Go table decoding and Go-specific unwind data |
 | `src/debug_info/x86_64.rs` | Architecture-specific register and unwind rules |
+| `src/debug_info/x86_64/frames.rs` | Frames of undescribed code, proved from its instructions |
+| `src/debug_info/perf_map.rs` | Perf maps: names and frames of code a compiler generated |
+| `src/debug_info/gdb_jit.rs`, `src/backend/linux/jit_objects.rs` | Objects a JIT compiler registers through the GDB JIT interface |
+| `src/debug_info/cpython.rs`, `src/debug_info/cpython/` | CPython's runtime layout: its offsets table, generated layouts, and their checks |
 | `src/image/` | Validated immutable table image and checked views |
 | `src/model/image.rs`, `src/model/image/` | Public image model and location types |
 | `src/cache.rs` | Persistent image cache and cache-key construction |
@@ -134,6 +138,17 @@ IDs and recorded identity to find matching files under their original paths,
 a sysroot, or module search directories. `allow-module-mismatch` is a public
 opt-out from proof, not permission for ordinary loading to guess.
 
+Two kinds of module live only in memory. The vDSO is one. The other is each
+object a JIT compiler registers through the GDB JIT interface, as CPython
+3.15's JIT does. The controller walks the list in each
+`__jit_debug_descriptor` at every published stop, through
+`debug_info::gdb_jit`. It reads each object's ELF image, loads it uncached at
+load bias zero, and names it for its address and a hash of its bytes, so
+replaced code is a new module. Such an image has no program headers, so its
+address range is its allocated sections'. A list read while the compiler
+changes it is read as far as it is sound; what could not be read is
+recorded, and a frame in unread code stays unnamed.
+
 An ELF build ID identifies file content for lookup; it is not a runtime module
 ID. `ModuleId` identifies one public session binding. `ModuleImageId`
 identifies immutable image content in the model. Keep these roles separate.
@@ -234,6 +249,19 @@ interpret CFI. Go stack transitions and signal frames add explicit transition
 rules at their edges. PLT stubs, which mold and lld leave without CFI, get a
 rule decoded at load: how many words each stub instruction finds pushed.
 
+GCC's epilogues pop the registers a caller keeps but leave the CFI rules that
+name their slots, now below the stack pointer, until the function returns. A
+sample's copy of the stack begins at the stack pointer, so those slots are
+unreadable there. The `RestoredFrames` table, decoded at load, records the
+instructions where the code proves the registers already hold the caller's
+values. Only rows whose frame is gone (CFA = rsp+8) yet still name a slot are
+read, from the row's first instruction. Code that runs straight to `ret`
+without writing rsp or a callee-saved register proves all of them. Otherwise,
+a `pop` or `leave` that ends the previous row and loads the slot the row names
+at CFA-16 proves that one register, until the code writes it or may branch.
+The proofs only decide what a failed slot read means; memory that holds the
+slot, as a live process's does, is still read.
+
 Each step yields a caller or a typed termination. Terminations include normal
 stack ends as well as missing memory, missing registers, unsupported rules,
 cycles, and bounds. Keep the frames already established when the next one
@@ -255,9 +283,47 @@ Language providers can add static facts without changing clients:
 - Type-name normalization handles compiler spellings used by expressions and
   views.
 
+- CPython's `.PyRuntime` section and its symbols give the layout the Python
+  runtime model reads, and the roles of the evaluation loop and its call
+  machinery.
+
 These facts belong in image tables when they depend only on module bytes. Live
 runtime traversal belongs in the runtime model and reads them through the
 bound module.
+
+### CPython
+
+`debug_info::cpython` finds the runtime in a module's `.PyRuntime` section and
+its version in `Py_Version`. From 3.13 the section begins with
+`_Py_DebugOffsets`, whose offsets are read by name under the minor version's
+schema in `cpython/schemas.rs`. The fields it lacks come from
+`cpython/layouts.gen.rs`, which `scripts/cpython-layouts.sh` generates by
+compiling `scripts/cpython-layouts.c` against each interpreter's headers in
+`MICROSCOPE_CPYTHON`. Patch releases change structures the table does not
+describe: 3.14.8's interpreter state is 24 bytes longer than 3.14.4's from its
+garbage collector's state on. So the generated layout is the one, among the
+builds of the minor version, that agrees with the table on every field both
+name. A table no build agrees with is refused, and so is one that builds
+agree with but lay out differently where the table is silent. A prerelease is read only by a layout generated for that
+exact release. 3.12 has no table, so its layout is the generated one for its
+exact release. Every layout is validated before it is stored: each required
+field is present and lies within its structure, and no structure read whole
+exceeds a bound.
+
+Each layout is checked three ways, so a new release that moves a field fails
+in one place:
+
+- against its headers, by `tests/python/layouts.rs`: the generated file is
+  current, each schema is its version's `_Py_DebugOffsets`, and the widths and
+  tags the readers assume are the headers';
+- against the target's own table, by
+  `each_interpreter_in_the_matrix_agrees_with_its_headers`;
+- against DWARF, for each interpreter with a debug output, by
+  `cpython/conformance.rs`.
+
+When a new CPython release arrives, add it to the flake's interpreter set, run
+`scripts/cpython-layouts.sh` in the dev shell, add a schema if its minor
+version is new, and run these tests.
 
 ## Load testing
 

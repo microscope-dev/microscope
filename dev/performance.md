@@ -127,7 +127,14 @@ baseline checkout, toolchain, CPU policy, and fixture set fixed.
 
 `just profile-overhead` interleaves bare and recorded runs of reference
 workloads. It measures target work, service latency where applicable, and
-microscope resource use under each preset.
+microscope resource use under each preset. The Python workload
+(`tests/fixtures/python/overhead.py`, `--only python`) also runs under the
+production preset with each Python engine: `prod+live` and `prod+snapshot`
+everywhere, and `prod+bpf` only where the tool itself holds `CAP_BPF` and
+`CAP_PERFMON`. A stopped snapshot holds the program for the time its
+debugger takes to attach, so `prod+snapshot` costs what its pauses do: about
+16% at one snapshot every 100 ms in the recorded baseline, against under 1%
+for `prod+live`.
 
 Run it on an otherwise quiet machine with the pinned environment. Look at the
 distribution and noise, not only one ratio. A change smaller than observed

@@ -11,6 +11,7 @@ mod drawing;
 mod inspecting;
 mod lowlevel;
 mod profiles;
+mod python;
 mod running;
 mod sessions;
 mod syscalls;

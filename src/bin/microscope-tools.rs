@@ -150,7 +150,7 @@ struct OverheadArgs {
     #[arg(long, default_value_t = 3.0)]
     window: f64,
 
-    /// Only these workloads: c, go, tokio, or probes.
+    /// Only these workloads: c, go, tokio, probes, or python.
     #[arg(long, value_delimiter = ',')]
     only: Vec<String>,
 
@@ -464,7 +464,7 @@ fn overhead_table(
 ) -> String {
     use std::fmt::Write as _;
     let mut table = String::from(
-        "workload  setup        rate/s     cost   noise      p99 microscope cpu     memory\n",
+        "workload  setup                rate/s     cost   noise      p99 microscope cpu     memory\n",
     );
     for summary in summaries {
         let was = base.and_then(|base| {
@@ -492,7 +492,7 @@ fn overhead_table(
             .map_or_else(|| "-".to_owned(), |rss| format!("{} MiB", rss >> 20));
         let _ = writeln!(
             table,
-            "{:<9} {:<6} {:>12.1} {cost} {:>6.2}% {p99:>8} {cpu:>14} {rss:>10}",
+            "{:<9} {:<14} {:>12.1} {cost} {:>6.2}% {p99:>8} {cpu:>14} {rss:>10}",
             summary.workload, summary.setup, summary.rate, summary.noise_percent
         );
     }

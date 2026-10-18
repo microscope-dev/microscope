@@ -15,11 +15,15 @@
 //!   `cost-on COUNT` waits until it does.
 //! - `rate`: zones without end, a line for every hundred, listened to or
 //!   not.
+//! - `defined`: sites defined as it runs, as a language that names its
+//!   zones at run time does: three rounds of a zone, a plot, and a zone
+//!   in another name, then a message whose site it defines once microscope
+//!   listens.
 
 use std::io::Write as _;
 use std::time::{Duration, Instant};
 
-use microscope_probes::{frame, label, message, plot, trigger, zone};
+use microscope_probes::{abi, define, frame, label, message, plot, trigger, zone};
 
 fn main() {
     let arguments: Vec<String> = std::env::args().collect();
@@ -33,6 +37,10 @@ fn main() {
     }
     if arguments[1] == "rate" {
         rate();
+        return;
+    }
+    if arguments[1] == "defined" {
+        defined();
         return;
     }
     wait_until_listening();
@@ -176,6 +184,26 @@ fn rate() {
             return;
         }
     }
+}
+
+fn defined() {
+    let load = define(abi::SITE_ZONE, "dynamic.load", "app.py", 3).expect("a zone");
+    let rows = define(abi::SITE_PLOT, "dynamic.rows", "app.py", 4).expect("a plot");
+    let other = define(abi::SITE_ZONE, "other", "app.py", 5).expect("a zone");
+    wait_until_listening();
+    for round in 0..3_u32 {
+        let _load = load.zone();
+        rows.plot(f64::from(round));
+        let _other = other.zone();
+    }
+
+    let late = define(abi::SITE_MESSAGE, "dynamic.late", "app.py", 9).expect("a message");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !late.on() {
+        assert!(Instant::now() < deadline, "microscope never switched it on");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    late.message(format_args!("defined {}", "late"));
 }
 
 fn spin(rounds: u64) -> u64 {

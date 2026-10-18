@@ -636,7 +636,9 @@ derive_dwz() {
     [[ "$layout" == split ]] && output="$directory/split/shapes"
     [[ "$layout" == dwarf5 ]] && output="$directory/dwarf5/shapes"
     local version
-    version=$(dwz --version | head -n 1)
+    # sed reads all input, where head would exit early and the tool's
+    # SIGPIPE fail the pipeline; the same holds for each version below.
+    version=$(dwz --version | sed -n 1p)
     run_cached_build "$directory/plain" "$output" \
         "derivation=dwz-v1"$'\n'"layout=${layout}"$'\n'"dwz=${version}" \
         bash -c "$script" _ "$directory" "$layout"
@@ -830,7 +832,7 @@ build_d_fixture() {
         ldc2 -g -w "$@" "-od=${output}.objects" "-of=${output}" "$source"
     )
     if [[ -z "$d_version" ]]; then
-        d_version=$(ldc2 --version | head -n 1)
+        d_version=$(ldc2 --version | sed -n 1p)
     fi
     run_cached_build "$source" "$output" \
         "compiler=${d_version}"$'\n'"target=x86_64-linux" \
@@ -848,7 +850,7 @@ build_nim_fixture() {
         "$@" "--nimcache:${output}.nimcache" "--out:${output}" "$source"
     )
     if [[ -z "$nim_version" ]]; then
-        nim_version=$(nim --version | head -n 1)
+        nim_version=$(nim --version | sed -n 1p)
     fi
     run_cached_build "$source" "$output" \
         "compiler=${nim_version}"$'\n'"target=x86_64-linux" \
@@ -867,7 +869,7 @@ build_ada_fixture() {
         gnatmake -q -g -gnat2022 -gnatwa -gnatwe "$@" -o "${PWD}/${output}" "${PWD}/${source}"
     )
     if [[ -z "$ada_version" ]]; then
-        ada_version=$(gnatmake --version | head -n 1)
+        ada_version=$(gnatmake --version | sed -n 1p)
     fi
     mkdir -p "${output}.objects"
     run_cached_build "$source" "$output" \
@@ -1098,7 +1100,7 @@ core_signature() {
     printf -v command_text '%q ' "$@"
     printf 'generator=gcore-v2\ngdb=%s\nsignal=%s\nfilter=%s\ncommand=%s\n' \
         "$gdb_version" "$signal" "$filter" "$command_text"
-    stat -L --format='%n %Y %s' "${input_paths[@]}"
+    stat -L --format='%n %Y %s' "${input_paths[@]}" "$stack_guard_mappings"
 }
 
 core_is_current() {
@@ -1153,6 +1155,7 @@ make_core() {
         -ex 'set disable-randomization off' \
         -ex 'set pagination off' \
         -ex 'set confirm off' \
+        -ex "set exec-wrapper ${stack_guard_mappings}" \
         -ex 'run' \
         -ex 'printf "microscope-signal=%d\n", $_siginfo.si_signo' \
         -ex "gcore ${temporary}" \
@@ -1171,8 +1174,9 @@ make_core() {
         rm -f "$temporary"
         exit 1
     fi
-    # gcore saves zeros for the whole of a mapping it fails to read. No
-    # process can read the vsyscall page, which no test reads either.
+    # gcore saves nothing of a mapping past the first read that fails, which
+    # stack-guard-mappings keeps glibc's guards of threads' stacks from making.
+    # No process can read the vsyscall page, which no test reads either.
     if grep -F 'Memory read failed for corefile section' <<<"$log" |
         grep -Fv ' at 0xffffffffff600000.' >/dev/null; then
         printf 'error: gcore could not read all of %s:\n%s\n' "$temporary" "$log" >&2
@@ -1209,7 +1213,7 @@ suite_is_current() {
     [[ -f "$suite_stamp" && -f "$suite_outputs" ]] || return 1
     [[ "$(<"$suite_stamp")" == "$signature" ]] || return 1
     [[ -z "$(find "$fixtures_dir" sdk views/kernels scripts/gosym-oracle \
-        scripts/coroutine-oracle "${BASH_SOURCE[0]}" \
+        scripts/coroutine-oracle scripts/stack-guard-mappings.c "${BASH_SOURCE[0]}" \
         "$frame_oracle_script" -newer "$suite_stamp" -print -quit)" ]] \
         || return 1
     local output
@@ -1434,6 +1438,12 @@ fi
 # Written before building so sources edited during this run are newer than the
 # stamp that the final rename publishes.
 printf '%s\n' "$signature" >"${suite_stamp}.tmp"
+# Every core's program runs under it (make_core), the tokio fixtures' too:
+# it is built before they start, which wait on no job of this shell's.
+readonly stack_guard_mappings="$output_dir/stack-guard-mappings"
+build_fixture gcc scripts/stack-guard-mappings.c "$stack_guard_mappings" -O2
+wait_builds
+
 build_tokio_fixtures &
 readonly tokio_build=$!
 
@@ -1950,6 +1960,12 @@ run_cached_build "$rust_fixtures_dir/embedded-views" "$output_dir/embedded-views
 run_cached_build sdk/rust-probes "$output_dir/libmicroscope_probes.rlib" "$rust_sdk_metadata" \
     rustc --edition=2024 -D warnings -C opt-level=2 --crate-type rlib --crate-name microscope_probes \
     --cfg 'feature="enabled"' sdk/rust-probes/src/lib.rs -o "$output_dir/libmicroscope_probes.rlib"
+# The same, as the shared library the Python package loads; its name keeps
+# its build's intermediate files apart from the rlib's.
+run_cached_build sdk/rust-probes "$output_dir/libmicroscope_probes_c.so" "$rust_sdk_metadata" \
+    rustc --edition=2024 -D warnings -C opt-level=2 --crate-type cdylib --crate-name microscope_probes \
+    --cfg 'feature="enabled"' --cfg 'feature="c"' sdk/rust-probes/src/lib.rs \
+    -o "$output_dir/libmicroscope_probes_c.so"
 run_cached_build "$rust_fixtures_dir/probes" "$output_dir/probes" "$rust_sdk_metadata" \
     rustc --edition=2024 -D warnings -C debuginfo=2 -C opt-level=2 --crate-name probes \
     --extern "microscope_probes=$output_dir/libmicroscope_probes.rlib" \
@@ -2513,6 +2529,37 @@ for variant in gcc-o0 clang-o2 gcc-o2-nopie; do
         "$inputs" "$program" segv
     generate_core "$output_dir/crash-${variant}-abort.core" 6 "$default_core_filter" \
         "$inputs" "$program" abort
+done
+# A Python program's threads at a checkpoint, which aborts there, under
+# interpreters that each lay their frames out or call their loop their own
+# way: a nixpkgs build, a free-threaded one, a tail-calling one, and a
+# distribution's. Each core's log keeps what the program reported.
+if [[ -z "${MICROSCOPE_CPYTHON-}" ]]; then
+    printf 'error: MICROSCOPE_CPYTHON is unset; build inside the Nix shell\n' >&2
+    exit 1
+fi
+# A C extension that holds Python objects in a native frame, built against
+# each interpreter's own headers, as an extension is: the frame's objects are
+# laid out as that interpreter lays them out.
+for interpreter in 3.12 3.14 3.14t 3.15; do
+    mkdir -p "$output_dir/python-extension-${interpreter}"
+    build_program gcc "$fixtures_dir/python/extension.c" \
+        "$output_dir/python-extension-${interpreter}/microscope_extension.so" \
+        -std=c17 -Wall -Wextra -Werror -shared -fPIC -O0 -g \
+        "-I$MICROSCOPE_CPYTHON/$interpreter/include"
+    # Its stripped twin, whose functions nothing describes.
+    build_program gcc "$fixtures_dir/python/extension.c" \
+        "$output_dir/python-extension-${interpreter}/microscope_bare.so" \
+        -std=c17 -Wall -Wextra -Werror -shared -fPIC -O0 -g0 -s -DMODULE=microscope_bare \
+        "-I$MICROSCOPE_CPYTHON/$interpreter/include"
+done
+for interpreter in 3.13 3.14t 3.15 debian-3.13; do
+    python="$MICROSCOPE_CPYTHON/$interpreter/python"
+    for fixture in stacks locals; do
+        generate_core "$output_dir/python-${fixture}-${interpreter}.core" 6 "$default_core_filter" \
+            "$fixtures_dir/python/${fixture}.py $fixtures_dir/python/truth.py $python" \
+            "$python" -I -B "$fixtures_dir/python/${fixture}.py" --abort
+    done
 done
 generate_core "$output_dir/crash-gcc-o0-headerless.core" 11 "$headerless_core_filter" \
     "$output_dir/crash-gcc-o0 $output_dir/libcrash.so" "$output_dir/crash-gcc-o0" segv

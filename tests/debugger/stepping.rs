@@ -1369,7 +1369,11 @@ async fn instruction_step_explicitly_delivers_a_pending_signal() {
 async fn instruction_step_executes_the_instruction_hidden_by_a_breakpoint() {
     let mut scenario = Scenario::new("instruction step", Scenario::fixture("basic"));
     scenario.add_breakpoint("breakpoint_target").await;
-    let StopReason::Breakpoint { address, .. } = scenario.run_to_stop().await else {
+    let StopReason::Breakpoint {
+        address: Some(address),
+        ..
+    } = scenario.run_to_stop().await
+    else {
         panic!("expected breakpoint")
     };
 
@@ -1970,7 +1974,7 @@ async fn nested_inline_breakpoints_hit_together_present_the_innermost() {
     let loop_head = VirtualAddress::new(0x40_1334);
     let mut reason = scenario.run_to_stop().await;
     for _ in 0..16 {
-        if matches!(&reason, StopReason::Breakpoint { address, hits } if *address == loop_head && hits.len() == 2)
+        if matches!(&reason, StopReason::Breakpoint { address, hits } if *address == Some(loop_head) && hits.len() == 2)
         {
             break;
         }
@@ -1979,7 +1983,7 @@ async fn nested_inline_breakpoints_hit_together_present_the_innermost() {
     }
 
     assert!(
-        matches!(&reason, StopReason::Breakpoint { address, hits } if *address == loop_head && hits.len() == 2),
+        matches!(&reason, StopReason::Breakpoint { address, hits } if *address == Some(loop_head) && hits.len() == 2),
         "the golden binary changed: {reason:?}"
     );
     let presentation = scenario

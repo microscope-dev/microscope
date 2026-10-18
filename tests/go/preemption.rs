@@ -50,7 +50,11 @@ async fn spinning(fixture: &str) -> (Scenario, Receiver<DebuggerEvent>, VirtualA
         })
         .await;
     let events = scenario.handle().subscribe();
-    let StopReason::Breakpoint { address, .. } = scenario.run_to_stop().await else {
+    let StopReason::Breakpoint {
+        address: Some(address),
+        ..
+    } = scenario.run_to_stop().await
+    else {
         panic!("{fixture}: no breakpoint stop");
     };
 
@@ -83,7 +87,7 @@ async fn preemption_waits_while_a_thread_steps_over_its_breakpoint() {
         for _ in 0..ROUNDS {
             let reason = scenario.resume_to_stop().await;
             assert!(
-                matches!(reason, StopReason::Breakpoint { address: hit, .. } if hit == address),
+                matches!(reason, StopReason::Breakpoint { address: Some(hit), .. } if hit == address),
                 "{fixture}: {reason:?}"
             );
         }

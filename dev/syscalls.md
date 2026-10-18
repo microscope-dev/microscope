@@ -13,7 +13,7 @@ formats, counts, or saves it.
 | `src/syscalls/` | Neutral model: events, call tables, argument specs, the filter language, descriptors, processes, and statistics |
 | `src/present/syscalls/` | strace's text format and the `-c` table, shared by the CLI and the browser |
 | `src/backend/linux/syscalls/ptrace.rs`, `seccomp.rs`, `info.rs`, `launch.rs` | The ptrace engine |
-| `src/backend/linux/syscalls/bpf.rs`, `bpf/syscalls.bpf.c`, `bpf/records.h` | The BPF engine: its loader and its kernel programs |
+| `src/backend/linux/syscalls/bpf.rs`, `src/backend/linux/bpf/syscalls.bpf.c`, `bpf/records.h` | The BPF engine: its loader and its kernel programs |
 | `src/backend/linux/syscalls/budget.rs`, `cgroup.rs`, `continuous.rs`, `stacks.rs`, `capture.rs` | Budgets, cgroup targets, continuous traces, stacks, and captures |
 | `src/backend/linux/catchpoints.rs` | Debugger catchpoints |
 | `src/cli/syscalls.rs` | The `microscope syscalls` command |
@@ -57,12 +57,49 @@ sees the fork or clone event that made it. Until that event arrives, the
 tracee is held stopped (and its end, if it ends, is kept), so the trace
 always announces a tracee before anything it does.
 
+## Interpreted frames
+
+A `CallStack` holds native addresses and, in `interpreted`, the frames an
+interpreter ran, each naming the native frame it shows before. `Stacks` finds
+a process's interpreter once per mapping, by `runtime_model::detect`, and
+gives each process its own model, which learns that process's code objects.
+
+At a ptrace stop the thread is stopped, so its Python frames are exact:
+`Stacks::unwind_live` reads them through the runtime model over a
+`profiler::LiveStop` of that one thread. Each segment goes just before its
+activation of the interpreter's loop, which `RuntimeModel::activation` picks
+out by symbol name, as the debugger does: CPython's other machinery, such as
+`_PyEval_Vector`, is not an activation. Where segments and activations differ
+in number, the frames follow the native ones and the stack ends with
+`InterpretedUnplaced`. A thread in the loop whose frames could not be read ends
+with `InterpretedUnknown`. A native truncation wins over both. A capture
+records each frame as an `Interpreted` frame row, and a call's site is its
+innermost interpreted frame with a line, if any.
+
+The BPF engine's programs run the sampler's walker (`python.bpf.h`) in
+`send_stack`, after the native stack, and send its frames as a
+`RECORD_PY_STACK` record, which the reader pairs with the next call or signal
+of its thread, as it pairs the stack. Dropping stacks under the budget drops
+them too. The walker reads a process by its `py_layout` in `LAYOUTS`. The
+reader sets that layout once per process, as soon as the process's mappings
+show its interpreter (`Stacks::python_layout`), and sets it again after an exec
+or a fork. Python need not be running yet: the layout holds the image's
+offsets, where the process keeps `_PyRuntime`, and its pid namespace. The
+walker then finds the thread's state itself. It reads every interpreter's
+states for the one whose `native_thread_id` is the thread's id in that
+namespace (`bpf_get_ns_current_pid_tgid`). A thread that starts after the
+layout was set is found the same way. No state, more than one, or a search
+past its bound gives unknown frames. `Stacks::unwind_sampled` names the frames
+through `RuntimeModel::sampled_frames` and places them by the same rule as
+`unwind_live`. The kernel's process ids key the map, so the reader sets
+layouts only when microscope runs in the initial PID namespace.
+
 ## The BPF engine
 
-The kernel programs are C in `src/backend/linux/syscalls/bpf/`. `build.rs`
-compiles them with the clang that the dev shell names in `MICROSCOPE_BPF_CLANG`,
-against the headers in `MICROSCOPE_BPF_INCLUDE`, and embeds the objects. aya
-loads them. `records.h` is the record layout shared with the Rust decoders,
+The kernel programs are C in `src/backend/linux/bpf/`, a directory the
+syscall programs share with the profiler's. `build.rs` compiles them with the
+clang that the dev shell names in `MICROSCOPE_BPF_CLANG`, against the headers
+in `MICROSCOPE_BPF_INCLUDE`, and embeds the objects. aya loads them. `records.h` is the record layout shared with the Rust decoders,
 and a test compares the two through the object's BTF.
 
 Rules the engine keeps:
@@ -141,7 +178,7 @@ The simulator models catch stops with rules K-SYS-1 to K-SYS-6 in
 
 ## Captures
 
-`-o FILE.usprof` writes a capture, the profiler's file format, at revision 8.
+`-o FILE.usprof` writes a capture, the profiler's file format, at revision 9.
 `capture.rs` writes the calls; `src/profiler/syscalls.rs` reads them back into
 events, so the browser and `microscope report` reuse the same presentation.
 
@@ -158,6 +195,14 @@ With `--window` or `--continuous`, each saved file gets its own span's calls.
   engine, which needs no privilege. Its `bpf` module runs the dual-engine
   tests through `just test-bpf`.
 - `tests/catchpoints.rs` covers catchpoints through `Scenario`.
+- `tests/python/syscalls.rs` traces `tests/fixtures/python/syscalls.py` with
+  `-k` on three interpreters. It checks each call's Python lines, a second
+  activation that C began, the text, and a saved trace's call site. It also
+  checks a catchpoint's backtrace. Its `bpf` module holds the BPF engine to
+  the same frames, with `-k=dwarf`, after the fixture's `--settle` second.
+- The BPF tests each map perf rings on every CPU, which count against the
+  user's perf memory, so nextest runs at most two at once (the `perf-rings`
+  group in `.config/nextest.toml`).
 - The browser's view is covered by `tests/web/syscalls.rs`, Vitest, and
   `web/e2e/syscalls.spec.ts`.
 

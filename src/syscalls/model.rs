@@ -242,9 +242,49 @@ pub struct CallStack {
     /// Why it ends short of its outermost frame, as a
     /// [`Truncation`](crate::capture::records::Truncation)'s number.
     pub truncated: Option<u8>,
+
+    /// The frames an interpreter ran on the thread, innermost first, each
+    /// before the native frame that runs it.
+    #[serde(default)]
+    pub interpreted: Arc<[InterpretedCall]>,
+}
+
+/// A frame an interpreter ran, as its runtime recorded it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterpretedCall {
+    /// The index in [`CallStack::addresses`] of the frame it shows before:
+    /// the activation of the interpreter's loop that runs it, or the
+    /// stack's end, where the activation is unknown, which the stack's
+    /// truncation says.
+    pub before: u32,
+    pub function: Arc<str>,
+    pub file: Option<Arc<str>>,
+
+    /// The line it runs, or zero where it is unknown.
+    pub line: u32,
+
+    /// The line its function's code begins at.
+    pub first_line: Option<u32>,
 }
 
 impl CallStack {
+    /// Every frame of the stack, innermost first: `Ok` a native frame's
+    /// index in [`Self::addresses`], `Err` an interpreted frame, each just
+    /// before the native frame it names.
+    pub fn frames(&self) -> impl Iterator<Item = Result<usize, &InterpretedCall>> {
+        let mut interpreted = self.interpreted.iter().peekable();
+        (0..=self.addresses.len()).flat_map(move |index| {
+            let mut before = Vec::new();
+            while let Some(call) = interpreted.next_if(|call| call.before as usize <= index) {
+                before.push(Err(call));
+            }
+
+            before
+                .into_iter()
+                .chain((index < self.addresses.len()).then_some(Ok(index)))
+        })
+    }
+
     /// Why the stack ends short of its outermost frame, if it does.
     #[must_use]
     pub fn truncation(&self) -> Option<crate::capture::records::Truncation> {

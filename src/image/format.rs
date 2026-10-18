@@ -15,7 +15,7 @@ pub const FORMAT_VERSION: u32 = 1;
 /// What the tables mean. Bump it with any change to how metadata is
 /// normalized, even one that changes no record's layout, such as a
 /// demangling rule, so that no cached image built before is used.
-pub const NORMALIZATION_REVISION: u32 = 2;
+pub const NORMALIZATION_REVISION: u32 = 6;
 
 /// Every table starts at a multiple of this.
 pub const TABLE_ALIGNMENT: usize = 64;
@@ -369,11 +369,18 @@ pub enum TableKind {
     /// How many words each PLT stub instruction finds pushed, for lookups
     /// by address.
     StubFrames = 96,
+
+    /// The Python runtime the module carries.
+    PythonRuntime = 97,
+
+    /// The instructions at which a function has restored registers its
+    /// caller keeps, by which, for lookups by address.
+    RestoredFrames = 98,
 }
 
 impl TableKind {
     /// Every kind, in the order tables are laid out.
-    pub const ALL: [Self; 96] = [
+    pub const ALL: [Self; 98] = [
         Self::Strings,
         Self::Files,
         Self::LineAddresses,
@@ -470,6 +477,8 @@ impl TableKind {
         Self::EmbeddedViews,
         Self::RuntimeDimensions,
         Self::StubFrames,
+        Self::PythonRuntime,
+        Self::RestoredFrames,
     ];
 
     pub const COUNT: usize = Self::ALL.len();

@@ -8,9 +8,9 @@ export type Envelope = {
 /**
  * Chosen by the tab; the answer carries it back.
  */
-id: number, } & ({ "method": "setName", "params": SetName } | { "method": "share", "params": Share } | { "method": "completePath", "params": CompletePath } | { "method": "processes" } | { "method": "launch", "params": Launch } | { "method": "attach", "params": Attach } | { "method": "openCore", "params": OpenCore } | { "method": "end" } | { "method": "continue", "params": Continue } | { "method": "pause" } | { "method": "kill" } | { "method": "restart" } | { "method": "step", "params": Step } | { "method": "stepTargets", "params": ThreadAt } | { "method": "jump", "params": Jump } | { "method": "setFocus", "params": SetFocus } | { "method": "backtrace", "params": ThreadAt } | { "method": "sources" } | { "method": "source", "params": SourcePath } | { "method": "addBreakpoint", "params": AddBreakpoint } | { "method": "editBreakpoint", "params": EditBreakpoint } | { "method": "removeBreakpoint", "params": BreakpointRef } | { "method": "input", "params": Input } | { "method": "scopes", "params": FrameAt } | { "method": "children", "params": ChildrenOf } | { "method": "evaluate", "params": Evaluate } | { "method": "setValue", "params": SetValue } | { "method": "complete", "params": Complete } | { "method": "console", "params": ConsoleLine } | { "method": "disassemble", "params": Disassemble } | { "method": "readMemory", "params": ReadMemory } | { "method": "writeMemory", "params": WriteMemory } | { "method": "registers", "params": FrameAt } | { "method": "addWatchpoint", "params": AddWatchpoint } | { "method": "editWatchpoint", "params": EditWatchpoint } | { "method": "removeWatchpoint", "params": WatchpointRef } | { "method": "signals" } | { "method": "setSignal", "params": SignalPolicy } | { "method": "modules" } | { "method": "functions", "params": FunctionQuery } | { "method": "tasks", "params": StopAt } | { "method": "draw", "params": Draw } | { "method": "renderer", "params": RendererRef } | { "method": "renderers" } | { "method": "reloadViews" } | { "method": "profile", "params": ProfileRef } | { "method": "profileTree", "params": ProfileQuery } | { "method": "profileFunctions", "params": ProfileQuery } | { "method": "profileTimeline", "params": ProfileTimelineQuery } | { "method": "profileZones", "params": ProfileZonesQuery } | { "method": "profileZoneStats", "params": ProfileZoneStatsQuery } | { "method": "profileLines", "params": ProfileFunctionQuery } | { "method": "profileCode", "params": ProfileFunctionQuery } | { "method": "recordProfile", "params": RecordProfile } | { "method": "stopRecording", "params": ProfileRef } | { "method": "syscallSummary", "params": SyscallSummaryQuery } | { "method": "syscallRate", "params": SyscallRateQuery } | { "method": "syscallHeatmap", "params": SyscallHeatmapQuery } | { "method": "syscallDetail", "params": SyscallDetailQuery } | { "method": "syscallLog", "params": SyscallLogQuery } | { "method": "syscallCall", "params": SyscallCallQuery } | { "method": "syscallLanes", "params": SyscallLanesQuery } | { "method": "syscallFiles", "params": SyscallQuery } | { "method": "syscallNetwork", "params": SyscallQuery } | { "method": "syscallProcesses", "params": SyscallQuery } | { "method": "syscallInFlight", "params": SyscallInFlightQuery });
+id: number, } & ({ "method": "setName", "params": SetName } | { "method": "share", "params": Share } | { "method": "completePath", "params": CompletePath } | { "method": "processes" } | { "method": "launch", "params": Launch } | { "method": "attach", "params": Attach } | { "method": "openCore", "params": OpenCore } | { "method": "end" } | { "method": "continue", "params": Continue } | { "method": "pause" } | { "method": "kill" } | { "method": "restart" } | { "method": "step", "params": Step } | { "method": "stepTargets", "params": ThreadAt } | { "method": "jump", "params": Jump } | { "method": "setFocus", "params": SetFocus } | { "method": "backtrace", "params": ThreadAt } | { "method": "sources" } | { "method": "source", "params": SourcePath } | { "method": "addBreakpoint", "params": AddBreakpoint } | { "method": "editBreakpoint", "params": EditBreakpoint } | { "method": "removeBreakpoint", "params": BreakpointRef } | { "method": "input", "params": Input } | { "method": "scopes", "params": FrameAt } | { "method": "children", "params": ChildrenOf } | { "method": "evaluate", "params": Evaluate } | { "method": "setValue", "params": SetValue } | { "method": "complete", "params": Complete } | { "method": "console", "params": ConsoleLine } | { "method": "disassemble", "params": Disassemble } | { "method": "readMemory", "params": ReadMemory } | { "method": "writeMemory", "params": WriteMemory } | { "method": "registers", "params": FrameAt } | { "method": "addWatchpoint", "params": AddWatchpoint } | { "method": "editWatchpoint", "params": EditWatchpoint } | { "method": "removeWatchpoint", "params": WatchpointRef } | { "method": "signals" } | { "method": "setSignal", "params": SignalPolicy } | { "method": "exceptions" } | { "method": "setException", "params": ExceptionChoice } | { "method": "modules" } | { "method": "functions", "params": FunctionQuery } | { "method": "tasks", "params": StopAt } | { "method": "draw", "params": Draw } | { "method": "renderer", "params": RendererRef } | { "method": "renderers" } | { "method": "reloadViews" } | { "method": "profile", "params": ProfileRef } | { "method": "profileTree", "params": ProfileQuery } | { "method": "profileFunctions", "params": ProfileQuery } | { "method": "profileTimeline", "params": ProfileTimelineQuery } | { "method": "profileZones", "params": ProfileZonesQuery } | { "method": "profileZoneStats", "params": ProfileZoneStatsQuery } | { "method": "profileLines", "params": ProfileFunctionQuery } | { "method": "profileCode", "params": ProfileFunctionQuery } | { "method": "recordProfile", "params": RecordProfile } | { "method": "stopRecording", "params": ProfileRef } | { "method": "syscallSummary", "params": SyscallSummaryQuery } | { "method": "syscallRate", "params": SyscallRateQuery } | { "method": "syscallHeatmap", "params": SyscallHeatmapQuery } | { "method": "syscallDetail", "params": SyscallDetailQuery } | { "method": "syscallLog", "params": SyscallLogQuery } | { "method": "syscallCall", "params": SyscallCallQuery } | { "method": "syscallLanes", "params": SyscallLanesQuery } | { "method": "syscallFiles", "params": SyscallQuery } | { "method": "syscallNetwork", "params": SyscallQuery } | { "method": "syscallProcesses", "params": SyscallQuery } | { "method": "syscallInFlight", "params": SyscallInFlightQuery });
 
-export type Request = { "method": "setName", "params": SetName } | { "method": "share", "params": Share } | { "method": "completePath", "params": CompletePath } | { "method": "processes" } | { "method": "launch", "params": Launch } | { "method": "attach", "params": Attach } | { "method": "openCore", "params": OpenCore } | { "method": "end" } | { "method": "continue", "params": Continue } | { "method": "pause" } | { "method": "kill" } | { "method": "restart" } | { "method": "step", "params": Step } | { "method": "stepTargets", "params": ThreadAt } | { "method": "jump", "params": Jump } | { "method": "setFocus", "params": SetFocus } | { "method": "backtrace", "params": ThreadAt } | { "method": "sources" } | { "method": "source", "params": SourcePath } | { "method": "addBreakpoint", "params": AddBreakpoint } | { "method": "editBreakpoint", "params": EditBreakpoint } | { "method": "removeBreakpoint", "params": BreakpointRef } | { "method": "input", "params": Input } | { "method": "scopes", "params": FrameAt } | { "method": "children", "params": ChildrenOf } | { "method": "evaluate", "params": Evaluate } | { "method": "setValue", "params": SetValue } | { "method": "complete", "params": Complete } | { "method": "console", "params": ConsoleLine } | { "method": "disassemble", "params": Disassemble } | { "method": "readMemory", "params": ReadMemory } | { "method": "writeMemory", "params": WriteMemory } | { "method": "registers", "params": FrameAt } | { "method": "addWatchpoint", "params": AddWatchpoint } | { "method": "editWatchpoint", "params": EditWatchpoint } | { "method": "removeWatchpoint", "params": WatchpointRef } | { "method": "signals" } | { "method": "setSignal", "params": SignalPolicy } | { "method": "modules" } | { "method": "functions", "params": FunctionQuery } | { "method": "tasks", "params": StopAt } | { "method": "draw", "params": Draw } | { "method": "renderer", "params": RendererRef } | { "method": "renderers" } | { "method": "reloadViews" } | { "method": "profile", "params": ProfileRef } | { "method": "profileTree", "params": ProfileQuery } | { "method": "profileFunctions", "params": ProfileQuery } | { "method": "profileTimeline", "params": ProfileTimelineQuery } | { "method": "profileZones", "params": ProfileZonesQuery } | { "method": "profileZoneStats", "params": ProfileZoneStatsQuery } | { "method": "profileLines", "params": ProfileFunctionQuery } | { "method": "profileCode", "params": ProfileFunctionQuery } | { "method": "recordProfile", "params": RecordProfile } | { "method": "stopRecording", "params": ProfileRef } | { "method": "syscallSummary", "params": SyscallSummaryQuery } | { "method": "syscallRate", "params": SyscallRateQuery } | { "method": "syscallHeatmap", "params": SyscallHeatmapQuery } | { "method": "syscallDetail", "params": SyscallDetailQuery } | { "method": "syscallLog", "params": SyscallLogQuery } | { "method": "syscallCall", "params": SyscallCallQuery } | { "method": "syscallLanes", "params": SyscallLanesQuery } | { "method": "syscallFiles", "params": SyscallQuery } | { "method": "syscallNetwork", "params": SyscallQuery } | { "method": "syscallProcesses", "params": SyscallQuery } | { "method": "syscallInFlight", "params": SyscallInFlightQuery };
+export type Request = { "method": "setName", "params": SetName } | { "method": "share", "params": Share } | { "method": "completePath", "params": CompletePath } | { "method": "processes" } | { "method": "launch", "params": Launch } | { "method": "attach", "params": Attach } | { "method": "openCore", "params": OpenCore } | { "method": "end" } | { "method": "continue", "params": Continue } | { "method": "pause" } | { "method": "kill" } | { "method": "restart" } | { "method": "step", "params": Step } | { "method": "stepTargets", "params": ThreadAt } | { "method": "jump", "params": Jump } | { "method": "setFocus", "params": SetFocus } | { "method": "backtrace", "params": ThreadAt } | { "method": "sources" } | { "method": "source", "params": SourcePath } | { "method": "addBreakpoint", "params": AddBreakpoint } | { "method": "editBreakpoint", "params": EditBreakpoint } | { "method": "removeBreakpoint", "params": BreakpointRef } | { "method": "input", "params": Input } | { "method": "scopes", "params": FrameAt } | { "method": "children", "params": ChildrenOf } | { "method": "evaluate", "params": Evaluate } | { "method": "setValue", "params": SetValue } | { "method": "complete", "params": Complete } | { "method": "console", "params": ConsoleLine } | { "method": "disassemble", "params": Disassemble } | { "method": "readMemory", "params": ReadMemory } | { "method": "writeMemory", "params": WriteMemory } | { "method": "registers", "params": FrameAt } | { "method": "addWatchpoint", "params": AddWatchpoint } | { "method": "editWatchpoint", "params": EditWatchpoint } | { "method": "removeWatchpoint", "params": WatchpointRef } | { "method": "signals" } | { "method": "setSignal", "params": SignalPolicy } | { "method": "exceptions" } | { "method": "setException", "params": ExceptionChoice } | { "method": "modules" } | { "method": "functions", "params": FunctionQuery } | { "method": "tasks", "params": StopAt } | { "method": "draw", "params": Draw } | { "method": "renderer", "params": RendererRef } | { "method": "renderers" } | { "method": "reloadViews" } | { "method": "profile", "params": ProfileRef } | { "method": "profileTree", "params": ProfileQuery } | { "method": "profileFunctions", "params": ProfileQuery } | { "method": "profileTimeline", "params": ProfileTimelineQuery } | { "method": "profileZones", "params": ProfileZonesQuery } | { "method": "profileZoneStats", "params": ProfileZoneStatsQuery } | { "method": "profileLines", "params": ProfileFunctionQuery } | { "method": "profileCode", "params": ProfileFunctionQuery } | { "method": "recordProfile", "params": RecordProfile } | { "method": "stopRecording", "params": ProfileRef } | { "method": "syscallSummary", "params": SyscallSummaryQuery } | { "method": "syscallRate", "params": SyscallRateQuery } | { "method": "syscallHeatmap", "params": SyscallHeatmapQuery } | { "method": "syscallDetail", "params": SyscallDetailQuery } | { "method": "syscallLog", "params": SyscallLogQuery } | { "method": "syscallCall", "params": SyscallCallQuery } | { "method": "syscallLanes", "params": SyscallLanesQuery } | { "method": "syscallFiles", "params": SyscallQuery } | { "method": "syscallNetwork", "params": SyscallQuery } | { "method": "syscallProcesses", "params": SyscallQuery } | { "method": "syscallInFlight", "params": SyscallInFlightQuery };
 
 export type SetName = { name: string, };
 
@@ -224,6 +224,12 @@ stop: number,
  */
 thread: number, reason: StopReason, 
 /**
+ * The thread's frame the stop selects, which a tab opens on: the
+ * innermost, or the program's frame where a language runtime's
+ * agent stopped it.
+ */
+frame: number, 
+/**
  * Where that thread stopped.
  */
 place: Place | null, } | { "state": "exited", description: string, } | { "state": "detached", pid: number, };
@@ -248,7 +254,11 @@ address: string, function: string | null,
  */
 path: string | null, line: number | null, };
 
-export type StopEntry = { stop: number, thread: number, reason: StopReason, place: Place | null, 
+export type StopEntry = { stop: number, thread: number, reason: StopReason, 
+/**
+ * The thread's frame the stop selects, and where that frame is.
+ */
+frame: number, place: Place | null, 
 /**
  * Who ran the program to it, when someone did.
  */
@@ -268,9 +278,13 @@ location: string, condition: string | null, hitCondition: string | null, logMess
  */
 hits: number, 
 /**
- * Where it resolved; none while no loaded code has it.
+ * Ready locations; runtime arming problems are described in `pending`.
  */
-places: Array<Place>, };
+places: Array<Place>, pending?: PendingBreakpoint, };
+
+export type PendingBreakpoint = { message: string, places: Array<PendingBreakpointPlace>, };
+
+export type PendingBreakpointPlace = { place: Place, reason: string, };
 
 export type Thread = { id: number, name: string | null, stopped: boolean, };
 
@@ -323,9 +337,17 @@ export type ShareLink = { url: string, };
 
 export type Backtrace = { frames: Array<Frame>, 
 /**
+ * The runs of frames of a runtime's or an interpreter's machinery
+ * the stack folds into a line each, as the CLI's `bt` does, with the
+ * innermost frame shown.
+ */
+folds: Array<FrameRun>, 
+/**
  * Why the stack ends early, when the unwinder could not finish it.
  */
 incomplete: string | null, };
+
+export type FrameRun = { first: number, count: number, };
 
 export type Frame = { 
 /**
@@ -346,24 +368,41 @@ address: string | null,
  */
 module: string | null, source: SourceLine | null, 
 /**
- * For a frame that drives a future whose awaits the stack does not
- * show in full, why.
+ * The language of its code, where its function or interpreter says.
+ */
+language: FrameLanguage | null, 
+/**
+ * For a frame that drives frames the stack does not show in full,
+ * the note that says so and why.
  */
 unfollowed: string | null, };
 
-export type FrameKind = "physical" | "inline" | "signal" | "tailCall" | "async" | "awaited";
+export type FrameKind = "physical" | "inline" | "signal" | "tailCall" | "async" | "awaited" | "interpreted";
 
-export type SourceLine = { path: string, line: number, column: number | null, };
+export type FrameLanguage = { mark: string, name: string, };
+
+export type SourceLine = { path: string, line: number, column: number | null, 
+/**
+ * The line of the same file the frame's function begins at, where its
+ * runtime or debug information says.
+ */
+first: number | null, };
 
 export type SourceFiles = { 
 /**
- * Paths as the debug information records them, sorted.
+ * Paths as the debug information records them, then a Python
+ * program's own files and those its frames recorded, sorted.
  */
 files: Array<string>, 
 /**
- * Where the program's main function is declared, when it has one.
+ * Where the program's main function is declared, or a Python program's
+ * script begins.
  */
-entry: SourceLine | null, };
+entry: SourceLine | null, 
+/**
+ * Why the list is not every file, when it is not.
+ */
+note: string | null, };
 
 export type FunctionQuery = { query: string, 
 /**
@@ -657,6 +696,28 @@ role: string | null, };
 
 export type Signals = { signals: Array<SignalPolicy>, };
 
+export type Exceptions = { filters: Array<ExceptionFilter>, };
+
+export type ExceptionFilter = { 
+/**
+ * The name it is chosen by, such as `python-uncaught`.
+ */
+id: string, language: string, 
+/**
+ * A few words naming what stops, and a sentence saying where.
+ */
+label: string, description: string, 
+/**
+ * Whether they stop the program.
+ */
+on: boolean, };
+
+export type ExceptionChoice = { 
+/**
+ * The filter, such as `python-uncaught`.
+ */
+id: string, on: boolean, };
+
 export type Modules = { modules: Array<Module>, };
 
 export type Module = { id: number, name: string, path: string, 
@@ -865,9 +926,9 @@ transforms: Array<ProfileTransform>,
  */
 invert: boolean, 
 /**
- * The frames threads ran, rather than each async task's own stack.
+ * How each stack's frames are seen.
  */
-native: boolean, granularity: ProfileGranularity, 
+look: ProfileLook, granularity: ProfileGranularity, 
 /**
  * What a tree or functions answer compares itself with.
  */
@@ -878,6 +939,8 @@ export type ProfileTransform = { op: TransformOp, name: string, };
 export type TransformOp = "focus" | "merge" | "drop" | "collapse";
 
 export type ProfileGranularity = "function" | "physical" | "line" | "address";
+
+export type ProfileLook = "logical" | "native" | "python";
 
 export type ProfileTimelineQuery = { 
 /**
@@ -932,9 +995,9 @@ transforms: Array<ProfileTransform>,
  */
 invert: boolean, 
 /**
- * The frames threads ran, rather than each async task's own stack.
+ * How each stack's frames are seen.
  */
-native: boolean, granularity: ProfileGranularity, 
+look: ProfileLook, granularity: ProfileGranularity, 
 /**
  * What a tree or functions answer compares itself with.
  */
@@ -1004,6 +1067,11 @@ budgetChanges: Array<ProfileMarker>,
  * The tasks task snapshots found, most weight first.
  */
 tasks: Array<ProfileTask>, 
+/**
+ * Whether its stacks hold frames an interpreter runs, which a query's
+ * `python` look shows as their code sees them.
+ */
+interpreted: boolean, 
 /**
  * Task snapshots taken, the nanoseconds they held the program
  * stopped, and the samples they named the task of.
@@ -1234,9 +1302,9 @@ transforms: Array<ProfileTransform>,
  */
 invert: boolean, 
 /**
- * The frames threads ran, rather than each async task's own stack.
+ * How each stack's frames are seen.
  */
-native: boolean, granularity: ProfileGranularity, 
+look: ProfileLook, granularity: ProfileGranularity, 
 /**
  * What a tree or functions answer compares itself with.
  */

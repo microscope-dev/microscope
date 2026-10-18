@@ -42,6 +42,26 @@ use super::{
 /// Read-only access to a stopped target's registers, memory, and thread-local
 /// storage. Live tracing and post-mortem targets share every inspection path.
 pub(super) trait InspectionOps {
+    /// A thread's id in its own namespace, if the edge proves the mapping.
+    fn target_thread_id(
+        &self,
+        _process: Pid,
+        _thread: Pid,
+    ) -> Option<crate::runtime_model::TargetThreadId> {
+        None
+    }
+
+    fn target_thread_ids(
+        &self,
+        process: Pid,
+        threads: &[Pid],
+    ) -> Vec<(Pid, crate::runtime_model::TargetThreadId)> {
+        threads
+            .iter()
+            .filter_map(|&thread| Some((thread, self.target_thread_id(process, thread)?)))
+            .collect()
+    }
+
     fn read_word(&self, pid: Pid, address: u64) -> Result<u64>;
 
     fn read_memory_word(
@@ -77,7 +97,27 @@ pub(super) trait InspectionOps {
 }
 
 pub(super) trait LinuxTraceOps: InspectionOps {
+    fn agent_files(
+        &self,
+        _pid: Pid,
+        _library: &[u8],
+    ) -> std::result::Result<Box<dyn super::agent_files::AgentFiles>, Arc<str>> {
+        Err("this target does not support runtime agent files".into())
+    }
+
     fn spawn(&self, executable: &Path, options: LaunchOptions) -> Result<Pid>;
+
+    /// Prepares the bootstrap through which a launch of `executable` takes
+    /// the Python agent, when it is CPython 3.12 or 3.13, and sets the
+    /// variables that lead the interpreter to it in `environment`.
+    fn python_launch(
+        &self,
+        executable: &Path,
+        environment: &mut Vec<(std::ffi::OsString, Option<std::ffi::OsString>)>,
+    ) -> std::result::Result<Option<super::python_launch::PythonLaunch>, Arc<str>> {
+        let _ = (executable, environment);
+        Ok(None)
+    }
 
     fn spawn_waiter(&self, messages: mpsc::Sender<ControllerMessage>) -> Result<Waiter>;
 
@@ -334,6 +374,37 @@ impl LinuxPtrace {
 }
 
 impl InspectionOps for LinuxPtrace {
+    fn target_thread_id(
+        &self,
+        process: Pid,
+        thread: Pid,
+    ) -> Option<crate::runtime_model::TargetThreadId> {
+        super::proc_status::target_thread_id(
+            u32::try_from(process.as_raw()).ok()?,
+            u32::try_from(thread.as_raw()).ok()?,
+        )
+    }
+
+    fn target_thread_ids(
+        &self,
+        process: Pid,
+        threads: &[Pid],
+    ) -> Vec<(Pid, crate::runtime_model::TargetThreadId)> {
+        let Ok(process) = u32::try_from(process.as_raw()) else {
+            return Vec::new();
+        };
+        let threads = threads
+            .iter()
+            .filter_map(|thread| u32::try_from(thread.as_raw()).ok())
+            .collect::<Vec<_>>();
+        super::proc_status::target_thread_ids(process, &threads)
+            .into_iter()
+            .filter_map(|(thread, target)| {
+                Some((Pid::from_raw(i32::try_from(thread).ok()?), target))
+            })
+            .collect()
+    }
+
     fn read_word(&self, pid: Pid, address: u64) -> Result<u64> {
         self.assert_owner_thread();
         let value = ptrace::read(pid, address as ptrace::AddressType)
@@ -392,6 +463,15 @@ impl InspectionOps for LinuxPtrace {
 }
 
 impl LinuxTraceOps for LinuxPtrace {
+    fn agent_files(
+        &self,
+        pid: Pid,
+        library: &[u8],
+    ) -> std::result::Result<Box<dyn super::agent_files::AgentFiles>, Arc<str>> {
+        self.assert_owner_thread();
+        super::agent_files::create(pid, library)
+    }
+
     fn spawn_waiter(&self, messages: mpsc::Sender<ControllerMessage>) -> Result<Waiter> {
         self.assert_owner_thread();
         let waiter = spawn_waiter(messages)?;
@@ -542,6 +622,14 @@ impl LinuxTraceOps for LinuxPtrace {
         Ok(mappings)
     }
 
+    fn python_launch(
+        &self,
+        executable: &Path,
+        environment: &mut Vec<(std::ffi::OsString, Option<std::ffi::OsString>)>,
+    ) -> std::result::Result<Option<super::python_launch::PythonLaunch>, Arc<str>> {
+        super::python_launch::PythonLaunch::prepare(executable, environment)
+    }
+
     fn spawn(&self, executable: &Path, options: LaunchOptions) -> Result<Pid> {
         self.assert_owner_thread();
         let mut command = ProcessCommand::new(executable);
@@ -670,13 +758,19 @@ impl LinuxTraceOps for LinuxPtrace {
 
     fn queued_signal(&self, pid: Pid, signal: Signal, queue: SignalQueue) -> Result<bool> {
         self.assert_owner_thread();
-        let status = match fs::read_to_string(format!("/proc/{pid}/status")) {
+        let status = match super::proc_status::read_path(format!("/proc/{pid}/status")) {
             Ok(status) => status,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) if super::proc_status::gone(&error) => return Ok(false),
             Err(error) => return Err(error.into()),
         };
 
-        Ok(queued_in_status(&status, signal, queue))
+        queued_in_status(&status, signal, queue).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("/proc/{pid}/status has missing or malformed signal masks"),
+            )
+            .into()
+        })
     }
 
     fn executable(&self, pid: Pid, address: VirtualAddress) -> Result<bool> {
@@ -747,24 +841,16 @@ pub(super) enum SignalQueue {
     Process,
 }
 
-/// Whether `/proc/<tid>/status` shows `signal` pending in `queue` and not
-/// blocked by the thread. A malformed mask is treated as nothing queued.
-pub(super) fn queued_in_status(status: &str, signal: Signal, queue: SignalQueue) -> bool {
-    let mask = |field: &str| {
-        status
-            .lines()
-            .find_map(|line| line.strip_prefix(field))
-            .and_then(|value| u64::from_str_radix(value.trim(), 16).ok())
-            .unwrap_or(0)
-    };
-
-    let bit = 1 << (signal.number() - 1);
+/// Whether the selected pending signal is unblocked. Missing or malformed
+/// masks are unknown, never evidence that a signal can safely be drained.
+pub(super) fn queued_in_status(status: &[u8], signal: Signal, queue: SignalQueue) -> Option<bool> {
     let pending = match queue {
-        SignalQueue::Thread => mask("SigPnd:"),
-        SignalQueue::Process => mask("ShdPnd:"),
+        SignalQueue::Thread => super::proc_status::hex_field(status, b"SigPnd:")?,
+        SignalQueue::Process => super::proc_status::hex_field(status, b"ShdPnd:")?,
     };
-
-    pending & bit != 0 && mask("SigBlk:") & bit == 0
+    let blocked = super::proc_status::hex_field(status, b"SigBlk:")?;
+    let bit = 1 << (signal.number() - 1);
+    Some(pending & bit != 0 && blocked & bit == 0)
 }
 
 /// The `struct user` offset of one debug register, as `PTRACE_PEEKUSER` and
@@ -862,9 +948,9 @@ fn tgkill(process: Pid, thread: Pid, signal: Signal) -> Result<()> {
 /// tracer has it, and it is stopped by job control or has the `SIGSTOP`
 /// that stops it still pending.
 pub(super) fn process_held(process: Pid, start_time: u64) -> Result<bool> {
-    let read = |file: &str| match fs::read_to_string(format!("/proc/{process}/{file}")) {
+    let read = |file: &str| match super::proc_status::read_path(format!("/proc/{process}/{file}")) {
         Ok(contents) => Ok(Some(contents)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) if super::proc_status::gone(&error) => Ok(None),
         Err(error) => Err(Error::from(error)),
     };
 
@@ -879,7 +965,16 @@ pub(super) fn process_held(process: Pid, start_time: u64) -> Result<bool> {
     // Read after both, the start time proves that they described the
     // process that was held.
     let same = crate::backend::process_start_time(process.as_raw()) == Some(start_time);
-    Ok(same && held_in_status(&status, &stat))
+    if !same {
+        return Ok(false);
+    }
+    held_in_status(&status, &stat).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("/proc/{process} has missing or malformed held-process evidence"),
+        )
+        .into()
+    })
 }
 
 /// Ends the job-control stop of `process` with `SIGCONT` if it is still
@@ -910,20 +1005,12 @@ pub(super) fn continue_held(process: Pid, start_time: u64) -> Result<bool> {
 /// job control. The status shows the state before the pending signals, so
 /// a thread that takes `SIGSTOP` in between, which stops it at once, shows
 /// neither there; the state the later stat shows is current.
-pub(super) fn held_in_status(status: &str, stat: &str) -> bool {
-    let untraced = status
-        .lines()
-        .find_map(|line| line.strip_prefix("TracerPid:"))
-        .map(str::trim)
-        == Some("0");
-    let stopping = [SignalQueue::Thread, SignalQueue::Process]
-        .into_iter()
-        .any(|queue| queued_in_status(status, Signal::SIGSTOP, queue));
-    let stopped = stat
-        .rsplit_once(')')
-        .and_then(|(_, fields)| fields.split_whitespace().next())
-        == Some("T");
-    untraced && (stopping || stopped)
+pub(super) fn held_in_status(status: &[u8], stat: &[u8]) -> Option<bool> {
+    let tracer = super::proc_status::tracer_pid(status)?;
+    let stopped = super::proc_status::stat_state(stat)? == b'T';
+    let thread = queued_in_status(status, Signal::SIGSTOP, SignalQueue::Thread)?;
+    let process = queued_in_status(status, Signal::SIGSTOP, SignalQueue::Process)?;
+    Some(tracer == 0 && (thread || process || stopped))
 }
 
 pub(super) fn pidfd_open(process: Pid) -> std::result::Result<std::os::fd::OwnedFd, Errno> {
@@ -1028,7 +1115,15 @@ pub(super) fn wait_for(
     let event = match waited {
         Ok(None) => return Ok(None),
         Ok(Some((child, status))) => {
-            WaitEvent::decode(Pid::from_raw(child.as_raw_nonzero().get()), status.as_raw())
+            let pid = child.as_raw_nonzero().get();
+
+            // A child that exited is gone for its owner, which may wait
+            // for it elsewhere in this process.
+            if status.exited() || status.signaled() {
+                super::reaped::REAPED.leave(pid.cast_unsigned(), status.as_raw());
+            }
+
+            WaitEvent::decode(Pid::from_raw(pid), status.as_raw())
         }
         Err(error) => Err(errno(error)),
     };
@@ -1054,11 +1149,9 @@ pub(super) fn ptrace_with_signal(
 
 pub(super) fn thread_group_id(pid: Pid) -> Result<Pid> {
     let path = format!("/proc/{pid}/status");
-    let status = fs::read_to_string(&path)?;
-    status
-        .lines()
-        .find_map(|line| line.strip_prefix("Tgid:"))
-        .and_then(|value| value.trim().parse::<i32>().ok())
+    let status = super::proc_status::read_path(&path)?;
+    super::proc_status::tgid(&status)
+        .and_then(|group| i32::try_from(group).ok())
         .map(Pid::from_raw)
         .ok_or_else(|| backend_error(LinuxError::ProcFile(path)))
 }
@@ -1091,14 +1184,10 @@ pub(super) fn interrupt_outcome(pid: Pid, result: nix::Result<()>) -> Result<boo
 
 /// The thread tracing `pid`, from its `/proc` status.
 fn tracer_of(pid: Pid) -> Option<Pid> {
-    let status = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-    status
-        .lines()
-        .find_map(|line| line.strip_prefix("TracerPid:"))?
-        .trim()
-        .parse()
-        .ok()
-        .filter(|&tracer| tracer != 0)
+    let status = super::proc_status::read_path(format!("/proc/{pid}/status")).ok()?;
+    super::proc_status::tracer_pid(&status)
+        .filter(|tracer| *tracer != 0)
+        .and_then(|tracer| i32::try_from(tracer).ok())
         .map(Pid::from_raw)
 }
 
@@ -1106,13 +1195,9 @@ fn tracer_of(pid: Pid) -> Option<Pid> {
 /// in the thread list for a moment, and `PTRACE_SEIZE` refuses it with
 /// `EPERM`.
 fn thread_has_exited(pid: Pid) -> bool {
-    match fs::read_to_string(format!("/proc/{pid}/stat")) {
-        // Fields resume after the command name's final parenthesis.
-        Ok(stat) => stat
-            .rsplit_once(')')
-            .and_then(|(_, fields)| fields.split_whitespace().next())
-            .is_some_and(|state| matches!(state, "Z" | "X")),
-        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+    match super::proc_status::read_path(format!("/proc/{pid}/stat")) {
+        Ok(stat) => matches!(super::proc_status::stat_state(&stat), Some(b'Z' | b'X')),
+        Err(error) => super::proc_status::gone(&error),
     }
 }
 

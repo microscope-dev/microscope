@@ -7,6 +7,7 @@
 //! starts threads.
 
 pub mod bind;
+mod dynamic;
 pub mod error;
 #[cfg(any(test, feature = "fuzzing"))]
 pub mod fake;

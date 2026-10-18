@@ -71,13 +71,11 @@ const DRIVERS: [(&str, &str); 3] = [
     ),
 ];
 
-/// The variable that holds the future `function` drives, if it is one of
-/// tokio's functions that drive one.
-pub(super) fn driven_future(function: &crate::FunctionInfo) -> Option<&'static str> {
-    if function.role != crate::CodeRole::RuntimeInternal {
-        return None;
-    }
-
+/// The variable that holds the future `frame` drives, if its function is
+/// one of tokio's functions that drive one. Only the function's debug
+/// information can read the variable.
+pub(super) fn driven_future(frame: &crate::StackFrame) -> Option<&'static str> {
+    let function = frame.function.as_ref()?;
     let demangled = crate::demangle::demangle(function.linkage_name.as_deref()?)?;
     let path = crate::demangle::rust_path(&demangled)?;
     DRIVERS

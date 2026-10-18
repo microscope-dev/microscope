@@ -397,7 +397,7 @@ mod tests {
                 id: ThreadId::new(1000),
                 state: ThreadState::Stopped {
                     reason: (!hits.is_empty()).then(|| StopReason::Breakpoint {
-                        address: VirtualAddress::new(0x1000),
+                        address: Some(VirtualAddress::new(0x1000)),
                         hits,
                     }),
                 },
@@ -406,6 +406,7 @@ mod tests {
             }]),
             presentation: None,
             breakpoints: Arc::from([Breakpoint {
+                pending_locations: Arc::from([]),
                 id: BreakpointId::new(1),
                 spec: BreakpointSpec::Function("f".into()),
                 locations: Arc::from([]),

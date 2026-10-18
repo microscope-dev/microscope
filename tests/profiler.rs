@@ -1,6 +1,7 @@
 mod support;
 
 use std::io::Write as _;
+use std::os::unix::process::ExitStatusExt as _;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -1052,6 +1053,138 @@ fn a_stack_through_the_vdso_goes_on_to_its_callers() {
     );
 }
 
+/// Removes a process's perf map when dropped: CPython leaves its own.
+struct PerfMap(Option<u32>);
+
+impl Drop for PerfMap {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0 {
+            let _ = std::fs::remove_file(format!("/tmp/perf-{pid}.map"));
+        }
+    }
+}
+
+const PERF_MAP_LEAF_SAMPLES: usize = 32;
+
+fn perf_map_leaf(stack: &SampledStack) -> Option<usize> {
+    stack
+        .functions
+        .iter()
+        .position(|function| function.starts_with("py::leaf:"))
+}
+
+/// Stops and reaps the owned fixture after collecting real leaf evidence.
+fn sample_perf_map(version: &str) -> (microscope::profiler::Recording, Option<i64>) {
+    let mut command = Command::new(support::python::interpreter(version));
+    command
+        .args(["-I", "-X", "perf"])
+        .arg(support::python::fixture("perf.py"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // Startup and descheduling take an unbounded fraction of a fixed
+    // wall interval under stress. Collect actual leaf evidence instead.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let mut stopped_at = None;
+    let stop = AtomicBool::new(false);
+    let recording = record_watched(
+        command,
+        &RecordOptions::preset(Preset::Maximum),
+        &mut Watch {
+            every: Duration::from_millis(50),
+            publish: &mut |profile| {
+                let through = profile
+                    .stacks()
+                    .iter()
+                    .filter(|stack| perf_map_leaf(stack).is_some())
+                    .count();
+                if stopped_at.is_none()
+                    && (through >= PERF_MAP_LEAF_SAMPLES || std::time::Instant::now() >= deadline)
+                {
+                    stopped_at = Some(profile.span().1);
+                    stop.store(true, Ordering::Relaxed);
+                }
+            },
+            stop: &stop,
+            save: None,
+        },
+    )
+    .expect("record");
+    (recording, stopped_at)
+}
+
+/// CPython under `-X perf` enters each Python function that C calls
+/// through a trampoline of its own, in anonymous memory its perf map
+/// names. 3.12's keeps no frame pointer and later ones do; a stack goes on
+/// through either, named, to the interpreter's callers.
+#[test]
+fn a_stack_through_a_perf_maps_code_goes_on_to_its_callers() {
+    for version in ["3.12", "3.13", "3.14"] {
+        let (recording, stopped_at) = sample_perf_map(version);
+        let stacks = recording.profile.stacks();
+        let _map = PerfMap(stacks.first().map(|stack| stack.pid));
+        assert_eq!(
+            recording.status.signal(),
+            Some(nix::libc::SIGKILL),
+            "{version}"
+        );
+        assert_eq!(
+            recording
+                .profile
+                .setting(&format!("perf map {}", stacks[0].pid)),
+            None,
+            "{version}"
+        );
+
+        let mut through = 0;
+        for stack in &stacks {
+            let context = format!("{version}: {stack:?}");
+            assert_ne!(
+                stack.ending,
+                StackEnding::Truncated("unmapped return address".into()),
+                "{context}"
+            );
+            let Some(leaf) = perf_map_leaf(stack) else {
+                continue;
+            };
+
+            through += 1;
+            assert!(
+                stack.functions[leaf + 1..]
+                    .iter()
+                    .any(|function| function.starts_with("py::<module>:")),
+                "{context}"
+            );
+            assert_eq!(stack.ending, StackEnding::Complete, "{context}");
+        }
+
+        assert!(
+            through >= PERF_MAP_LEAF_SAMPLES,
+            "{version}: {through} of {} samples through leaf",
+            stacks.len()
+        );
+        let first = stacks
+            .iter()
+            .filter(|stack| perf_map_leaf(stack).is_some())
+            .min_by_key(|stack| stack.time)
+            .expect("leaf was observed");
+        let end = stopped_at.expect("the recorder stopped the fixture");
+        let window: Vec<_> = stacks
+            .iter()
+            .filter(|stack| stack.tid == first.tid && (first.time..=end).contains(&stack.time))
+            .collect();
+        let named = window
+            .iter()
+            .filter(|stack| perf_map_leaf(stack).is_some())
+            .count();
+        assert_eq!(
+            named,
+            window.len(),
+            "{version}: every leaf-window sample must name leaf"
+        );
+    }
+}
+
 /// Attaches to `process`, then, once the events are open, releases it, or
 /// when `stopping`, stops the recording, which records until it ends.
 fn attach_and_release(
@@ -1664,6 +1797,85 @@ fn live_task_snapshots_find_goroutines_waiting_without_a_pause() {
     assert_receivers_wait(&profile);
 }
 
+/// A live task snapshot reads the runtime of every module the program
+/// maps, not only its executable's: a C program's Go library carries the
+/// runtime, whose goroutine waits until the host calls into it.
+#[test]
+fn live_task_snapshots_read_a_runtime_in_a_library() {
+    let waiting = |profile: &Profile| {
+        profile.task_waits().iter().any(|wait| {
+            wait.functions
+                .iter()
+                .any(|function| function == "main.waiting")
+        })
+    };
+
+    let profile = snapshot_until(Command::new(Scenario::fixture("go-host")), true, waiting);
+    let (taken, paused, failed) = profile.task_snapshots();
+    assert!(
+        paused == 0 && failed == 0,
+        "{taken} {paused} {failed}: {:?}",
+        profile.task_snapshot_problems()
+    );
+    assert_eq!(profile.live_snapshots().0, taken);
+    assert!(
+        waiting(&profile),
+        "no live snapshot found the library's goroutine: {:?}",
+        profile.task_snapshot_problems()
+    );
+}
+
+/// A program that exits as a task snapshot attaches to it or detaches from
+/// it ends its recording with its own status, and leaves no snapshot's
+/// debugger behind: the recording reaps it only once no snapshot holds it,
+/// so the debugger sees its exit itself, and the status the debugger reaps
+/// is the recording's. Once a snapshot is taken, the interpreter exits
+/// while snapshots take most of its time attaching to it.
+#[test]
+fn a_program_that_exits_around_a_snapshot_keeps_its_status() {
+    let options = RecordOptions {
+        task_snapshots: Some(Duration::from_millis(1)),
+        ..RecordOptions::default()
+    };
+
+    for _ in 0..10 {
+        let (reader, mut writer) = std::io::pipe().expect("pipe");
+        let mut command = Command::new(support::python::interpreter("3.15"));
+        command
+            .args(["-I", "-c", "import sys; sys.stdin.readline()"])
+            .stdin(reader);
+        let stop = AtomicBool::new(false);
+        let mut released = false;
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let recording = record_watched(
+            command,
+            &options,
+            &mut Watch {
+                every: Duration::from_millis(5),
+                publish: &mut |profile| {
+                    let taken = profile.task_snapshots().0 > 0;
+                    if !released && (taken || std::time::Instant::now() > deadline) {
+                        writer.write_all(b"\n").expect("release the program");
+                        released = true;
+                    }
+                },
+                stop: &stop,
+                save: None,
+            },
+        )
+        .expect("record");
+        assert_eq!(recording.status.code(), Some(0), "{}", recording.status);
+        let (taken, _, failed) = recording.profile.task_snapshots();
+        assert!(taken > 0, "no snapshot was taken");
+        assert_eq!(
+            failed,
+            0,
+            "{:?}",
+            recording.profile.task_snapshot_problems()
+        );
+    }
+}
+
 /// A task snapshot taken while the budget has sampling paused falls inside
 /// that pause: the gaps the two leave stay apart and in time order, as a
 /// saved capture needs them.
@@ -1717,9 +1929,13 @@ fn snapshots_in_a_budget_pause_leave_gaps_apart() {
     );
 }
 
+/// How long a recording holds its program for a profile to be ready
+/// before it releases it anyway, and the test fails on what it lacks.
+const READY_DEADLINE: Duration = Duration::from_secs(20);
+
 /// Records `command` with a task snapshot every 50 ms, `live` or stopping
-/// it, holding it until a profile so far is `ready`, then writing a line
-/// to release it.
+/// it, holding it until a profile so far is `ready`, or the deadline, then
+/// writing a line to release it.
 fn snapshot_until(
     mut command: Command,
     live: bool,
@@ -1738,13 +1954,14 @@ fn snapshot_until(
 
     let stop = AtomicBool::new(false);
     let mut released = false;
+    let deadline = std::time::Instant::now() + READY_DEADLINE;
     let recording = record_watched(
         command,
         &options,
         &mut Watch {
             every: Duration::from_millis(20),
             publish: &mut |profile| {
-                if !released && ready(&profile) {
+                if !released && (ready(&profile) || std::time::Instant::now() > deadline) {
                     writer.write_all(b"\n").expect("release the program");
                     released = true;
                 }
@@ -1816,22 +2033,16 @@ fn follows_a_tokio_tasks_awaits(live: bool) {
     command.arg("hold");
 
     // Tokio is found through its threads' thread pointers, which a live
-    // recording's first snapshot stops the program to learn: more
-    // snapshots than stopped it finding the task means a live one did.
-    let found = |profile: &Profile| {
-        let times: std::collections::BTreeSet<i64> =
-            at_gate(profile).iter().map(|wait| wait.time).collect();
-        let (taken, _, _) = profile.task_snapshots();
-        let stopped = taken - profile.live_snapshots().0;
-        times.len() as u64 > if live { stopped } else { 0 }
-    };
-
-    let profile = snapshot_until(command, live, found);
+    // snapshot learns from the C library's lists of its threads.
+    let profile = snapshot_until(command, live, |profile| !at_gate(profile).is_empty());
     let (taken, _, failed) = profile.task_snapshots();
     let (read_live, _) = profile.live_snapshots();
     assert_eq!(failed, 0, "{:?}", profile.task_snapshot_problems());
-    assert_eq!(read_live > 0, live, "{taken} {read_live}");
-    assert!(taken > read_live, "{taken} {read_live}");
+    assert_eq!(
+        read_live,
+        if live { taken } else { 0 },
+        "a live recording never stops the program"
+    );
     let waits = at_gate(&profile);
     assert!(!waits.is_empty());
     for wait in waits {
@@ -2080,6 +2291,45 @@ fn a_recording_switches_on_only_the_sites_it_names() {
         profile.zones().into_iter().map(|zone| zone.name).collect();
     assert_eq!(names, ["leaf".to_owned(), "outer".to_owned()].into());
     assert!(profile.plots().is_empty() && profile.program_markers().is_empty());
+}
+
+/// Sites a program defines as it runs are switched on as the recording
+/// selects them by name, those defined before it listens and after, and
+/// their events land as a static site's do, though no static site is on.
+#[test]
+fn sites_a_program_defines_as_it_runs_are_recorded_as_selected() {
+    let options = RecordOptions {
+        probes: ProbeSelection::Named(vec!["dynamic.*".into()]),
+        ..RecordOptions::default()
+    };
+
+    let (profile, _) = record_probes(&["defined"], &options);
+    let counts = profile.probe_counts();
+    assert!(!counts.lost(), "{counts:?}");
+    let zones = profile.zones();
+    assert!(
+        zones.iter().all(|zone| zone.name == "dynamic.load"),
+        "{zones:?}"
+    );
+    assert_eq!(zones.len(), 3, "{zones:?}");
+    let plotted = profile
+        .plots()
+        .into_iter()
+        .map(|plot| (plot.name, plot.value))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        plotted,
+        [0.0, 1.0, 2.0].map(|value| ("dynamic.rows".to_owned(), value))
+    );
+    let said = profile
+        .program_markers()
+        .into_iter()
+        .map(|marker| (marker.name, marker.text))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        said,
+        [("dynamic.late".to_owned(), Some("defined late".to_owned()))]
+    );
 }
 
 /// A profile recorded with its symbols left for later holds only build

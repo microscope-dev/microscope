@@ -30,6 +30,18 @@ use crate::{ImageAddress, LoadBias, VirtualAddress};
 mod glibc;
 mod musl;
 
+/// A core's thread notes may use a different PID namespace than the
+/// target's runtime. The libc descriptor must have one verified provider.
+pub(super) fn target_thread_id(
+    services: &dyn ProcessServices,
+    thread: Pid,
+    descriptor: u64,
+) -> Option<crate::runtime_model::TargetThreadId> {
+    crate::runtime_model::TargetThreadId::new(
+        glibc::target_thread_id(services, thread, descriptor).ok()?,
+    )
+}
+
 /// The prefix of the file name of musl's dynamic loader, which is also its
 /// C library: `ld-musl-x86_64.so.1` on x86-64.
 const MUSL_LOADER_PREFIX: &[u8] = b"ld-musl-";
@@ -190,6 +202,19 @@ pub(super) fn tls_address(
 #[cfg(feature = "fuzzing")]
 pub(super) fn fuzz_glibc(data: &[u8]) {
     glibc::fuzz(data);
+}
+
+/// Each thread's id and thread pointer in a process that uses glibc,
+/// which may be running: glibc's lists of its threads, read from memory
+/// without stopping it. A thread whose control block does not point to
+/// itself, as one being made or freed may not, is left out.
+pub(in crate::backend) fn running_thread_pointers(pid: Pid) -> Result<Vec<(u64, u64)>, String> {
+    let process = LiveProcess { pid };
+    let threads = glibc::thread_pointers(&process).map_err(|error| error.to_string())?;
+    Ok(threads
+        .into_iter()
+        .filter(|&(_, pointer)| read_word(&process, Some(pointer)) == Ok(pointer))
+        .collect())
 }
 
 /// The thread pointer of `thread`, which addresses its control block once

@@ -364,7 +364,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         "set",
         [],
         "set [var] <assignment...>",
-        "Change a number, truth value, enumeration, or pointer, such as set var x = y + 1; set views on|off shows values as their views present them or as stored; set step-runtime on|off makes steps stop in a language runtime's own code or pass over it"
+        "Change a number, truth value, enumeration, or pointer, such as set var x = y + 1; set views on|off shows values as their views present them or as stored; set step-runtime on|off makes steps stop in a language runtime's own code or pass over it; set runtime-frames on|off makes backtraces show a runtime's and an interpreter's own frames or fold them"
     ),
     command!(
         Views,
@@ -490,7 +490,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         "backtrace",
         ["bt"],
         "backtrace [-r]",
-        "Show the selected thread's or task's stack; -r shows the runtime frames it folds"
+        "Show the selected thread's or task's stack; -r shows the runtime and interpreter frames it folds"
     ),
     command!(
         Frame,
@@ -746,7 +746,7 @@ impl Cli {
             Command::Context => self.context().await?,
             Command::Edit => self.edit().await?,
             Command::Backtrace => match arguments.as_slice() {
-                [] => self.backtrace(None, false).await?,
+                [] => self.backtrace(None, self.shows_runtime_frames()).await?,
                 ["-r"] => self.backtrace(None, true).await?,
                 _ => return Err(spec.usage_error()),
             },
@@ -1020,7 +1020,7 @@ impl Cli {
                 .transpose()?,
             enabled: !parsed.disabled,
             temporary,
-            ..microscope::BreakpointOptions::default()
+            pending: is_python(&location),
         };
 
         let address = matches!(location, BreakpointSpec::Address(_));
@@ -1139,6 +1139,11 @@ impl Cli {
     /// function or source file that no loaded module has.
     async fn suggest(&self, error: microscope::Error) -> anyhow::Error {
         let hint = match &error {
+            microscope::Error::FunctionNotFound(name)
+                if let Some(hint) = python_name_hint(name, self.debugger.module_image()) =>
+            {
+                Some(hint)
+            }
             microscope::Error::FunctionNotFound(name) => {
                 let images = self.loaded_images().await;
                 let names = images.iter().flat_map(|image| {
@@ -1220,8 +1225,8 @@ impl Cli {
                     .map(|record| record.module)
             });
         let mut placed = Vec::new();
-        for resolved in breakpoint.locations.iter() {
-            placed.push(self.place(resolved.location, main).await);
+        for resolved in breakpoint.ready_locations() {
+            placed.push(self.place(resolved.location.clone(), main).await);
         }
 
         placed
@@ -1233,13 +1238,26 @@ impl Cli {
         main: Option<microscope::LoadedModule>,
     ) -> format::Placed {
         let mut placed = format::Placed {
-            location,
+            location: location.clone(),
             function: None,
             source: None,
             module: None,
         };
 
         let (image, address) = match location {
+            // A runtime's location is where the runtime says it is.
+            microscope::BreakpointLocation::Managed(managed) => {
+                match managed.place {
+                    microscope::ManagedPlace::Line { path, line } => {
+                        placed.source = microscope::LineNumber::new(u64::from(line)).map(|line| {
+                            (std::sync::Arc::new(std::path::PathBuf::from(&*path)), line)
+                        });
+                    }
+                    microscope::ManagedPlace::Function { name } => placed.function = Some(name),
+                }
+
+                return placed;
+            }
             microscope::BreakpointLocation::Image(address) => {
                 if let Some(runtime) = main.and_then(|main| main.virtual_address(address).ok()) {
                     placed.location = microscope::BreakpointLocation::Virtual(runtime);
@@ -2157,6 +2175,17 @@ impl Cli {
             ));
         }
 
+        if let Some(setting @ ("on" | "off")) = text.strip_prefix("runtime-frames ").map(str::trim)
+        {
+            self.runtime_frames
+                .store(setting == "on", std::sync::atomic::Ordering::Relaxed);
+            return Ok(if setting == "on" {
+                "backtraces show every runtime frame".to_owned()
+            } else {
+                "backtraces fold runtime frames".to_owned()
+            });
+        }
+
         if let Some(setting @ ("on" | "off")) = text.strip_prefix("step-runtime ").map(str::trim) {
             self.debugger.set_step_into_runtime(setting == "on").await?;
             return Ok(if setting == "on" {
@@ -2470,9 +2499,24 @@ impl Cli {
 
     /// Selects a frame and shows it with its source.
     async fn frame(&self, target: FrameTarget) -> Result<String> {
-        let selected = u64::from(self.selected_level().await?);
+        let selected_level = self.selected_level().await?;
+        let selected = u64::from(selected_level);
         let trace = self.debugger.backtrace().await?;
         let outermost = trace.frames.len().saturating_sub(1) as u64;
+
+        // Moving between frames passes over those a backtrace folds.
+        let folded = if self.shows_runtime_frames() {
+            Vec::new()
+        } else {
+            crate::present::frames::folded_frames(&trace, selected_level)
+        };
+        let shown = |level: &u64| {
+            !usize::try_from(*level)
+                .ok()
+                .and_then(|index| folded.get(index))
+                .is_some_and(|folded| *folded)
+        };
+        let steps = |count: u64| usize::try_from(count).unwrap_or(usize::MAX);
         let level = match target {
             FrameTarget::Selected => selected,
             FrameTarget::Level(level) if level > outermost => {
@@ -2488,9 +2532,22 @@ impl Cli {
                     trace.termination
                 )
             }
-            FrameTarget::Outward(count) => selected.saturating_add(count).min(outermost),
+            FrameTarget::Outward(count) => (selected + 1..=outermost)
+                .filter(shown)
+                .take(steps(count))
+                .last()
+                .ok_or_else(|| {
+                    anyhow!(
+                        "the outermost frame shown is selected; `bt -r` shows the runtime's frames past it"
+                    )
+                })?,
             FrameTarget::Inward(_) if selected == 0 => bail!("the innermost frame is selected"),
-            FrameTarget::Inward(count) => selected.saturating_sub(count),
+            FrameTarget::Inward(count) => (0..selected)
+                .rev()
+                .filter(shown)
+                .take(steps(count))
+                .last()
+                .unwrap_or(0),
         };
 
         let index = trace
@@ -2513,7 +2570,11 @@ impl Cli {
             false,
             renderer,
         );
-        if frame.source.is_some() {
+        let placed = frame
+            .recorded
+            .as_ref()
+            .is_some_and(|recorded| recorded.place.is_some());
+        if frame.source.is_some() || placed {
             output.push('\n');
             match self.source_context().await {
                 Ok(context) => output.push_str(&self.source_listing(&context, true).await),
@@ -2552,6 +2613,17 @@ impl Cli {
                         format_args!("{:#018x}", self.selected_instruction().await?)
                     )
                 ));
+            }
+            // An interpreted frame is where its interpreter recorded it.
+            Err(microscope::Error::FrameInterpreted) => {
+                let selected = self.debugger.snapshot().await?.selected_frame;
+                let trace = self.debugger.backtrace().await?;
+                let frame = trace
+                    .frames
+                    .iter()
+                    .find(|frame| Some(frame.id) == selected)
+                    .ok_or_else(|| anyhow!("the selected frame is not in the backtrace"))?;
+                return Ok(format::interpreted_location(frame, renderer));
             }
             Err(error) => return Err(error.into()),
         };
@@ -2615,7 +2687,7 @@ impl Cli {
     pub(super) async fn source_context(&self) -> microscope::Result<microscope::SourceContext> {
         let [before, after] = self.settings.config.source.context;
         let mut context = self.debugger.source_context(before.max(after)).await?;
-        let line = context.location.line.get();
+        let line = context.line.get();
         let first = line.saturating_sub(u64::from(before));
         let last = line.saturating_add(u64::from(after));
         context.lines = context
@@ -2625,6 +2697,13 @@ impl Cli {
             .cloned()
             .collect();
         Ok(context)
+    }
+
+    /// Whether backtraces show every runtime frame, as `set runtime-frames`
+    /// or the settings chose.
+    pub(super) fn shows_runtime_frames(&self) -> bool {
+        self.runtime_frames
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The selected thread's backtrace, of at most `limit` frames.
@@ -2660,7 +2739,7 @@ impl Cli {
         let context = self.source_context().await?;
         let path = std::path::absolute(&*context.path)?;
         let quoted = shell_quoted(&path.to_string_lossy());
-        let line = context.location.line.to_string();
+        let line = context.line.to_string();
         let template = &self.settings.config.ui.editor;
         #[expect(
             clippy::literal_string_with_formatting_args,
@@ -2736,7 +2815,7 @@ impl Cli {
             for breakpoint in snapshot.breakpoints.iter() {
                 for placed in self.placed(breakpoint).await {
                     if let Some((path, line)) = placed.source
-                        && path == context.file.path
+                        && path == context.recorded
                     {
                         let enabled = marks.entry(line).or_insert(false);
                         *enabled |= breakpoint.enabled;
@@ -3182,12 +3261,22 @@ fn parse_watch_location(argument: &str, spec: &CommandSpec) -> Result<Option<Wat
     }))
 }
 
-/// Parses a breakpoint location: a function, `0xaddress`, `file:line`, or
-/// `file:function`, or `None` when a file or its location is missing. The
-/// `::` of a qualified name such as `ns::run` never separates a file.
+/// Parses a breakpoint location: a function, `py:function`, `0xaddress`,
+/// `file:line`, or `file:function`, or `None` when a file or its location is
+/// missing. The `::` of a qualified name such as `ns::run` never separates a
+/// file.
 pub fn parse_breakpoint_location(argument: &str) -> Result<Option<BreakpointSpec>> {
     if argument.starts_with("0x") {
         return Ok(Some(BreakpointSpec::Address(parse_address(argument)?)));
+    }
+
+    // A Python function, such as `py:Shape.area`, but not a native function
+    // in a `py` namespace, such as `py::run`.
+    if argument
+        .strip_prefix("py:")
+        .is_some_and(|name| !name.starts_with(':'))
+    {
+        return Ok(Some(BreakpointSpec::Function(argument.to_owned())));
     }
 
     let bytes = argument.as_bytes();
@@ -3217,6 +3306,34 @@ pub fn parse_breakpoint_location(argument: &str) -> Result<Option<BreakpointSpec
             function: location.to_owned(),
         },
     }))
+}
+
+/// Whether a breakpoint is in Python code, which loads as the program
+/// imports it, so nothing can be checked against before then: it is kept
+/// pending until it is armed, rather than refused.
+pub fn is_python(location: &BreakpointSpec) -> bool {
+    match location {
+        BreakpointSpec::Source { path, .. } => {
+            path.extension().is_some_and(|extension| extension == "py")
+        }
+        BreakpointSpec::Function(name) => name
+            .strip_prefix("py:")
+            .is_some_and(|name| !name.starts_with(':')),
+        _ => false,
+    }
+}
+
+/// How to name a Python function, for a bare name no native function has
+/// in a program that runs Python: a bare name is always a native one's.
+pub fn python_name_hint(name: &str, program: &microscope::ModuleImage) -> Option<String> {
+    let dotted = name.split('.').all(|part| {
+        !part.is_empty()
+            && part
+                .chars()
+                .all(|character| character == '_' || character.is_alphanumeric())
+    });
+    (dotted && crate::present::debug_information::interprets_python(program))
+        .then(|| format!("a Python function is named with `py:`, as in `py:{name}`"))
 }
 
 /// Joins two parts of a command's output, either of which may be empty.
@@ -3347,6 +3464,34 @@ impl Cli {
         Ok((deleted, others))
     }
 
+    /// The exceptions that stop, as `catch` or another client of this
+    /// console last chose them.
+    pub fn exception_stops(&self) -> microscope::ExceptionStops {
+        *self
+            .exceptions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Chooses whether the exceptions the filter named `id` passes stop, and
+    /// returns the stops chosen.
+    pub async fn set_exception_stop(
+        &self,
+        id: &str,
+        stops: bool,
+    ) -> Result<microscope::ExceptionStops> {
+        let chosen = self
+            .exception_stops()
+            .with(id, stops)
+            .ok_or_else(|| anyhow!("no runtime reports exceptions as '{id}'"))?;
+        self.debugger.set_exception_stops(chosen).await?;
+        *self
+            .exceptions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = chosen;
+        Ok(chosen)
+    }
+
     /// Lists the exceptions runtimes report and whether each stops, or
     /// shows one, or chooses whether it does.
     async fn catch(&self, arguments: &[&str], rest: &str, spec: &CommandSpec) -> Result<String> {
@@ -3354,10 +3499,7 @@ impl Cli {
             return self.catch_syscall(rest, spec).await;
         }
 
-        let current = *self
-            .exceptions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current = self.exception_stops();
         let filters = microscope::ExceptionStops::filters();
         let (shown, stops) = match arguments {
             [] => (filters.iter().collect::<Vec<_>>(), current),
@@ -3375,16 +3517,8 @@ impl Cli {
                 let stops = match choice {
                     [] => current,
                     ["on" | "off"] => {
-                        let chosen =
-                            current.with(filter.id, choice[0] == "on").ok_or_else(|| {
-                                anyhow!("exception filter '{}' cannot be set", filter.id)
-                            })?;
-                        self.debugger.set_exception_stops(chosen).await?;
-                        *self
-                            .exceptions
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) = chosen;
-                        chosen
+                        self.set_exception_stop(filter.id, choice[0] == "on")
+                            .await?
                     }
                     _ => return Err(spec.usage_error()),
                 };
@@ -3637,6 +3771,38 @@ mod tests {
             parse("main.cpp:ns::run").expect("qualified file function"),
             BreakpointSpec::FileFunction { path, function }
                 if path == std::path::Path::new("main.cpp") && function == "ns::run"
+        ));
+
+        // Python breakpoints are kept pending; native ones are checked.
+        for (location, python) in [
+            ("app.py:12", true),
+            ("pkg/app.py:12", true),
+            ("py:main", true),
+            ("py:Shape.area", true),
+            ("py::run", false),
+            ("main", false),
+            ("main.c:12", false),
+            ("app.pyc:12", false),
+            ("0x10", false),
+        ] {
+            let spec = parse(location).expect("a location");
+            assert_eq!(is_python(&spec), python, "{location}");
+        }
+
+        // Python functions keep their prefix, which no file has.
+        for name in ["py:main", "py:Shape.area", "py:outer.<locals>.area", "py:"] {
+            assert_eq!(
+                parse(name).expect("Python function"),
+                BreakpointSpec::Function(name.to_owned())
+            );
+        }
+        assert_eq!(
+            parse("py::run").expect("native function"),
+            BreakpointSpec::Function("py::run".to_owned())
+        );
+        assert!(matches!(
+            parse("py.py:12").expect("source"),
+            BreakpointSpec::Source { line, .. } if line.get() == 12
         ));
     }
 

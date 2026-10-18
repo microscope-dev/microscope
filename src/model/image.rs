@@ -68,6 +68,9 @@ pub struct ModuleMetadata {
     /// storage.
     pub thread_local_storage: bool,
 
+    /// The Python runtime the module carries.
+    pub python: Option<crate::image::python::PythonRuntime>,
+
     /// Integer constants the debug information declares by name, such as a
     /// Go package's `const`s, Rust trait objects' vtables, and the
     /// compilers and versions that produced the debug information, as each
@@ -369,6 +372,8 @@ fn seal_image(
     if let Some(unwind) = &metadata.unwind {
         crate::image::unwind::add_to(&mut builder, &mut strings, unwind)?;
     }
+
+    crate::image::python::add_to(&mut builder, &mut strings, metadata.python.as_ref())?;
 
     builder
         .bytes(
@@ -1137,6 +1142,12 @@ impl ModuleImage {
 
     fn declarations(&self) -> crate::image::declarations::DeclarationView<'_> {
         crate::image::declarations::DeclarationView::new(&self.tables)
+    }
+
+    /// The Python runtime the module carries, if it carries one.
+    #[must_use]
+    pub fn python_runtime(&self) -> Option<crate::image::python::PythonRuntime> {
+        crate::image::python::runtime(&self.tables)
     }
 
     /// The distinct producers of the image's debug information, such as

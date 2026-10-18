@@ -13,6 +13,7 @@ use microscope::{
 
 use crate::invariants::checked;
 use crate::stops::{evaluated, line};
+use crate::support::truth::Report;
 use crate::support::{Scenario, ScratchDir};
 
 const SOURCE: &str = "panics/src/main.rs";
@@ -59,11 +60,9 @@ async fn launched(fixture: &str, case: &str, stops: Option<ExceptionStops>) -> L
 impl Launched {
     /// The `TRUTH` lines the fixture printed so far, each split at tabs.
     fn truth(&self) -> Vec<Vec<String>> {
-        std::fs::read_to_string(&self.output)
-            .expect("the fixture's output")
+        Report::read(&self.output)
             .lines()
-            .filter_map(|line| line.strip_prefix("TRUTH\t"))
-            .map(|line| line.split('\t').map(str::to_owned).collect())
+            .map(<[String]>::to_vec)
             .collect()
     }
 

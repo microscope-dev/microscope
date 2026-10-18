@@ -52,3 +52,33 @@ fn the_model_stays_pure() {
 
     assert!(sources.len() >= 8, "the model's sources were found");
 }
+
+/// A stack's interpreted frames show before the native frame each names,
+/// in order, and those past its last native frame after it.
+#[test]
+fn interpreted_frames_interleave_with_native_ones_where_they_go() {
+    use std::sync::Arc;
+
+    use super::{CallStack, InterpretedCall};
+
+    let call = |function: &str, before| InterpretedCall {
+        before,
+        function: function.into(),
+        file: None,
+        line: 0,
+        first_line: None,
+    };
+    let stack = CallStack {
+        addresses: Arc::from([10, 11, 12]),
+        truncated: None,
+        interpreted: Arc::from([call("a", 1), call("b", 1), call("c", 2), call("d", 3)]),
+    };
+    let shown: Vec<String> = stack
+        .frames()
+        .map(|frame| match frame {
+            Ok(index) => index.to_string(),
+            Err(call) => call.function.to_string(),
+        })
+        .collect();
+    assert_eq!(shown, ["0", "a", "b", "1", "c", "2", "d"]);
+}

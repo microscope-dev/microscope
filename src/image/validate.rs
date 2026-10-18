@@ -108,7 +108,7 @@ pub(super) fn contents(image: &Image) -> Result<(), ImageError> {
         tables.boundaries(image.table())
     };
 
-    let families: [(&'static str, Validation); 12] = [
+    let families: [(&'static str, Validation); 13] = [
         ("validate.symbols", super::symbols::validate),
         ("validate.functions", super::functions::validate),
         ("validate.unwind", super::unwind::validate),
@@ -121,6 +121,7 @@ pub(super) fn contents(image: &Image) -> Result<(), ImageError> {
         ("validate.type_facts", super::type_facts::validate),
         ("validate.resumes", super::resumes::validate),
         ("validate.declarations", super::declarations::validate),
+        ("validate.python", super::python::validate),
     ];
     let family = |&(name, validate): &(&'static str, Validation)| {
         let _phase = crate::timings::span(name, None, None);

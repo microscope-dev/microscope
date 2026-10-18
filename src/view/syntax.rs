@@ -101,7 +101,10 @@ pub enum Language {
     Nim,
     Ada,
 
-    /// Every language.
+    /// Python, whose objects' types only their values know.
+    Python,
+
+    /// Every compiled language.
     Any,
 }
 
@@ -117,6 +120,7 @@ impl Language {
             "d" => Self::D,
             "nim" => Self::Nim,
             "ada" => Self::Ada,
+            "python" => Self::Python,
             "any" => Self::Any,
             _ => return None,
         })
@@ -883,7 +887,10 @@ impl<'a> Parser<'a> {
             .next()
             .unwrap_or_default();
         let language = Language::parse(language_word).ok_or_else(|| {
-            self.error("expected a language: `c`, `c++`, `rust`, `go`, `zig`, or `any`")
+            self.error(
+                "expected a language: `c`, `c++`, `rust`, `go`, `zig`, `odin`, `d`, `nim`, `ada`, \
+                 `python`, or `any`",
+            )
         })?;
         self.position += language_word.len();
         self.skip_inline();

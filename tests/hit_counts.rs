@@ -164,7 +164,10 @@ async fn colocated_hit_conditions_each_count_every_hit() {
     let mut reason = scenario.run_to_stop().await;
     let site = sites(&scenario, &first).await;
     while let StopReason::Breakpoint { address, hits } = &reason {
-        assert_eq!([*address], site[..]);
+        assert_eq!(
+            [*address],
+            site.iter().copied().map(Some).collect::<Vec<_>>()[..]
+        );
 
         // The program's own call number names the hit.
         let hit = global(&scenario, "last_call").await + 1;
@@ -355,7 +358,11 @@ async fn one_breakpoints_hits_are_numbered_across_all_its_locations() {
         let mut reason = scenario.run_to_stop().await;
         let sites = sites(&scenario, &shared).await;
         let mut expected = 3;
-        while let StopReason::Breakpoint { address, .. } = &reason {
+        while let StopReason::Breakpoint {
+            address: Some(address),
+            ..
+        } = &reason
+        {
             assert_eq!(
                 hits(&reason),
                 [BreakpointHit {

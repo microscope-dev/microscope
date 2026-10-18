@@ -1045,6 +1045,23 @@ enum WatchedScalar {
     Address,
 }
 
+/// A watch hit's values before and after the access: an interpreted
+/// variable's as its runtime presented them, and others' as their bytes
+/// read as the watched type.
+pub fn hit_values(
+    hit: &microscope::WatchpointHit,
+    type_info: Option<&TypeInfo>,
+    image: Option<&ModuleImage>,
+) -> (String, String) {
+    let shown = |value: Option<&str>, bytes: Option<&[u8]>| {
+        value.map_or_else(|| watched_bytes(bytes, type_info, image), str::to_owned)
+    };
+    (
+        shown(hit.previous_value.as_deref(), hit.previous.as_deref()),
+        shown(hit.current_value.as_deref(), hit.current.as_deref()),
+    )
+}
+
 /// Renders watched bytes as a scalar when the type resolves to one in the
 /// main image, and as little-endian hexadecimal otherwise.
 pub fn watched_bytes(

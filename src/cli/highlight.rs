@@ -23,6 +23,7 @@ pub enum Language {
     D,
     Nim,
     Ada,
+    Python,
 }
 
 const C_KEYWORDS: &[&str] = &[
@@ -599,6 +600,17 @@ const ADA_KEYWORDS: &[&str] = &[
     "with",
     "xor",
 ];
+const PYTHON_KEYWORDS: &[&str] = &[
+    "False", "None", "True", "and", "as", "assert", "async", "await", "break", "case", "class",
+    "continue", "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if",
+    "import", "in", "is", "lambda", "match", "nonlocal", "not", "or", "pass", "raise", "return",
+    "try", "type", "while", "with", "yield",
+];
+
+/// The prefixes a Python string may begin with, in any case.
+const PYTHON_STRING_PREFIXES: &[&[u8]] = &[
+    b"", b"r", b"u", b"b", b"f", b"t", b"rb", b"br", b"fr", b"rf", b"tr", b"rt",
+];
 
 impl Language {
     /// The language a file's extension names. A `.h` header is C's.
@@ -618,6 +630,7 @@ impl Language {
             "d" | "di" => Self::D,
             "nim" | "nims" => Self::Nim,
             "adb" | "ads" => Self::Ada,
+            "py" | "pyi" => Self::Python,
             _ => return None,
         })
     }
@@ -634,6 +647,7 @@ impl Language {
             Self::D => D_KEYWORDS,
             Self::Nim => NIM_KEYWORDS,
             Self::Ada => ADA_KEYWORDS,
+            Self::Python => PYTHON_KEYWORDS,
         }
     }
 
@@ -646,7 +660,7 @@ impl Language {
     const fn line_comment(self) -> &'static [u8] {
         match self {
             Self::Fortran => b"!",
-            Self::Nim => b"#",
+            Self::Nim | Self::Python => b"#",
             Self::Ada => b"--",
             _ => b"//",
         }
@@ -660,7 +674,7 @@ impl Language {
             Self::Rust | Self::Odin => &[(b"/*", b"*/", true)],
             Self::D => &[(b"/*", b"*/", false), (b"/+", b"+/", true)],
             Self::Nim => &[(b"#[", b"]#", true)],
-            Self::Zig | Self::Fortran | Self::Ada => &[],
+            Self::Zig | Self::Fortran | Self::Ada | Self::Python => &[],
         }
     }
 
@@ -806,6 +820,12 @@ fn tokens(text: &[u8], language: Language) -> Vec<Span> {
                 .saturating_add(1)
                 .min(text.len());
             Some(Kind::String)
+        } else if let Some(end) = (language == Language::Python && !previous_is_identifier)
+            .then(|| python_string_end(text, index))
+            .flatten()
+        {
+            index = end;
+            Some(Kind::String)
         } else if let Some(end) = (!previous_is_identifier)
             .then(|| raw_string_end(text, index, language))
             .flatten()
@@ -926,6 +946,44 @@ const fn quoted_end(text: &[u8], start: usize, quote: u8, spans_lines: bool) -> 
             b'\n' if !spans_lines => return index,
             byte if byte == quote => return index + 1,
             _ => index += 1,
+        }
+    }
+
+    text.len()
+}
+
+/// Where a Python string from `start` ends, after its closing quotes, if a
+/// prefix and a quote begin there. A string quoted once ends with its line
+/// unless a backslash escapes the newline, which Python continues.
+fn python_string_end(text: &[u8], start: usize) -> Option<usize> {
+    let quote_index = PYTHON_STRING_PREFIXES.iter().find_map(|prefix| {
+        let end = start + prefix.len();
+        let quote = *text.get(end)?;
+        (matches!(quote, b'"' | b'\'') && text.get(start..end)?.eq_ignore_ascii_case(prefix))
+            .then_some(end)
+    })?;
+
+    let quote = text[quote_index];
+    if text[quote_index..].starts_with(&[quote; 3]) {
+        Some(triple_quoted_end(text, quote_index, quote))
+    } else {
+        Some(quoted_end(text, quote_index, quote, false))
+    }
+}
+
+/// Where a triple-quoted string from `start`, which opens with three
+/// `quote`s, ends after its closing three. Escapes count, and the string
+/// may span lines.
+fn triple_quoted_end(text: &[u8], start: usize, quote: u8) -> usize {
+    let closing = [quote; 3];
+    let mut index = start + 3;
+    while index < text.len() {
+        if text[index] == b'\\' {
+            index += 2;
+        } else if text[index..].starts_with(&closing) {
+            return index + 3;
+        } else {
+            index += 1;
         }
     }
 
@@ -1178,6 +1236,55 @@ mod tests {
                 of(&[("char", Keyword), ("\"open", String)]),
                 of(&[("int", Keyword)]),
             ]
+        );
+    }
+
+    #[test]
+    fn python_strings_span_lines_and_take_their_prefixes() {
+        use Kind::{Comment, Keyword, Number, String};
+
+        // A single-quoted string ends with its line, a triple-quoted one
+        // spans lines, and a `#` or a lone `'` inside a string is its text.
+        let python = r#"def f(): return 'it' # note
+t = rb'\d' + f"{x}" + "a#b"
+n = 0x1f + 1.5e-3j
+s = """one
+it's "two"
+three""" + '''a
+b''' if x else 0
+@cache"#;
+        assert_eq!(
+            shown(python, Language::Python),
+            [
+                of(&[
+                    ("def", Keyword),
+                    ("return", Keyword),
+                    ("'it'", String),
+                    ("# note", Comment),
+                ]),
+                of(&[
+                    ("rb'\\d'", String),
+                    ("f\"{x}\"", String),
+                    ("\"a#b\"", String)
+                ]),
+                of(&[("0x1f", Number), ("1.5e-3j", Number)]),
+                of(&[("\"\"\"one", String)]),
+                of(&[("it's \"two\"", String)]),
+                of(&[("three\"\"\"", String), ("'''a", String)]),
+                of(&[
+                    ("b'''", String),
+                    ("if", Keyword),
+                    ("else", Keyword),
+                    ("0", Number),
+                ]),
+                of(&[]),
+            ]
+        );
+
+        let unterminated = "x = 'open\ny = 1";
+        assert_eq!(
+            shown(unterminated, Language::Python),
+            [of(&[("'open", String)]), of(&[("1", Number)])]
         );
     }
 

@@ -466,8 +466,9 @@ async fn the_checks_fail_on_a_future_nothing_drives() {
         trace.frames = frames.into();
     });
     let misplaced = thread_sabotage(&|trace| {
-        trace.unfollowed = Arc::from([microscope::UnfollowedFuture {
+        trace.unfollowed = Arc::from([microscope::Unfollowed {
             driver: StackFrameId::INNERMOST,
+            driven: microscope::DrivenFrames::Future,
             reason: "unread".into(),
         }]);
     });

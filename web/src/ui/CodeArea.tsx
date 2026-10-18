@@ -4,8 +4,10 @@
 // shows its instructions instead.
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { askedAt, breakpointAt, knownBreakpointPlaces, namesFile } from "../breakpoints";
 import { cache, useRequest } from "../data";
 import { followedLook, formatPlace, inView, parsePlace, showingSource, type View } from "../focus";
+import { stopNote } from "../follow";
 import { controls } from "../model";
 import type { Breakpoint, Row } from "../protocol";
 import { useConnection, useModel } from "../store";
@@ -232,15 +234,21 @@ export function breakpointLines(
       : breakpoint.condition || breakpoint.hitCondition
         ? "conditional"
         : "plain";
+    for (const pending of breakpoint.pending?.places ?? []) {
+      const place = pending.place;
+      if (place.path && namesFile(place.path, path) && place.line && !lines.has(place.line)) {
+        lines.set(place.line, "pending");
+      }
+    }
     for (const place of breakpoint.places) {
-      if (place.path === path && place.line) {
+      if (place.path && namesFile(place.path, path) && place.line) {
         lines.set(place.line, kind);
       }
     }
     // One set at a line no code has yet shows where it was asked for.
-    const asked = /^(.*):(\d+)$/.exec(breakpoint.location);
-    if (breakpoint.places.length === 0 && asked && asked[1] === path) {
-      lines.set(Number(asked[2]), "pending");
+    const asked = askedAt(breakpoint, path);
+    if (knownBreakpointPlaces(breakpoint).length === 0 && asked && !lines.has(asked)) {
+      lines.set(asked, "pending");
     }
   }
   return lines;
@@ -260,11 +268,12 @@ function SourceFile({ shown }: { shown: Shown }) {
   const shownFrame = at
     ? trace?.frames.find((candidate) => candidate.index === at.frame)
     : undefined;
-  const frameLine = shownFrame?.source?.path === shown.path ? shownFrame.source.line : null;
+  const frameSource = shownFrame?.source?.path === shown.path ? shownFrame.source : null;
   const inline = useInlineValues(
     live,
     source.data?.path === shown.path ? source.data.text : undefined,
-    live ? frameLine : null,
+    live ? (frameSource?.line ?? null) : null,
+    frameSource?.first ?? null,
   );
 
   const marks = useMemo((): Marks => {
@@ -278,8 +287,14 @@ function SourceFile({ shown }: { shown: Shown }) {
         frame && frame.index > 0 && frame.source?.path === shown.path ? frame.source.line : null,
       selection: shown.selection,
       inline,
+      note: (() => {
+        const text = at ? stopNote(state, at) : null;
+        return text && frame?.source?.path === shown.path
+          ? { line: frame.source.line, text }
+          : null;
+      })(),
     };
-  }, [trace, at, state.breakpoints, shown, source.data, inline]);
+  }, [trace, at, state, shown, source.data, inline]);
 
   if (source.error) {
     return (
@@ -297,9 +312,7 @@ function SourceFile({ shown }: { shown: Shown }) {
       return;
     }
     setError(null);
-    const existing = state.breakpoints.find((breakpoint) =>
-      breakpoint.places.some((place) => place.path === shown.path && place.line === line),
-    );
+    const existing = breakpointAt(state.breakpoints, shown.path, line);
     const request = existing
       ? connection.request("removeBreakpoint", { id: existing.id })
       : connection.request("addBreakpoint", { location: `${shown.path}:${line}` });

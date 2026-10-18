@@ -154,6 +154,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         let (vdso, vdso_image) = self.observe_vdso(pid, mappings.vdso.as_ref()).unzip();
         observed.extend(vdso);
         let mut vdso_image = vdso_image.flatten();
+        let (jit, jit_objects) = self.observe_jit_objects(pid);
+        observed.extend(jit);
         observed.sort();
         observed.dedup();
 
@@ -173,7 +175,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let new = self.number_new_modules(observed)?;
-        let mut loads = self.load_observed(&new, vdso_image.take()).into_iter();
+        let mut loads = self
+            .load_observed(&new, vdso_image.take(), jit_objects)
+            .into_iter();
         for (path, load_bias, module_id, image_id) in new {
             // A file that is no module the debugger can describe leaves its
             // frames unnamed.
@@ -373,29 +377,31 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     /// Loads the metadata of new modules, each result where its module is
-    /// in `new`: the vDSO's from `vdso_image`, read from memory, and every
-    /// other's from its file, all at once.
+    /// in `new`: the vDSO's from `vdso_image` and each JIT compiler's
+    /// object's from `jit_objects`, read from memory, and every other's
+    /// from its file, all at once.
     fn load_observed(
         &self,
         new: &[NewModule],
         mut vdso_image: Option<Vec<u8>>,
+        mut jit_objects: BTreeMap<PathBuf, Vec<u8>>,
     ) -> Vec<Result<DebugInfo>> {
-        let mut vdso = None;
+        let mut in_memory = BTreeMap::new();
         let mut files = Vec::new();
         for (index, (path, _, _, image)) in new.iter().enumerate() {
-            match vdso_image.take_if(|_| path.as_os_str() == VDSO_NAME) {
-                Some(data) => {
-                    vdso = Some((
-                        index,
-                        crate::debug_info::load_module_bytes(
-                            path,
-                            &data,
-                            *image,
-                            &crate::debug_info::DebugFileSearch::default(),
-                        ),
-                    ));
-                }
-                None => files.push((path.clone(), *image)),
+            if let Some(data) = vdso_image.take_if(|_| path.as_os_str() == VDSO_NAME) {
+                let load = crate::debug_info::load_module_bytes(
+                    path,
+                    &data,
+                    *image,
+                    &crate::debug_info::DebugFileSearch::default(),
+                );
+                in_memory.insert(index, load);
+            } else if let Some(data) = jit_objects.remove(path) {
+                let load = crate::debug_info::load_transient_bytes(path, &data, *image);
+                in_memory.insert(index, load);
+            } else {
+                files.push((path.clone(), *image));
             }
         }
 
@@ -406,11 +412,12 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
         .into_iter();
         (0..new.len())
-            .map(|index| match vdso.take_if(|(at, _)| *at == index) {
-                Some((_, load)) => load,
-                None => files
-                    .next()
-                    .unwrap_or_else(|| Err(Error::internal("a load for each file"))),
+            .map(|index| {
+                in_memory.remove(&index).unwrap_or_else(|| {
+                    files
+                        .next()
+                        .unwrap_or_else(|| Err(Error::internal("a load for each file")))
+                })
             })
             .collect()
     }

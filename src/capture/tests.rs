@@ -1,4 +1,4 @@
-use super::builder::LineInput;
+use super::builder::{InterpretedPlace, LineInput};
 use super::*;
 use crate::model::{Pid, Tid};
 
@@ -26,12 +26,20 @@ fn sample_capture(offset: i64) -> Capture {
             role: 0,
         }],
     );
+    let handle = builder.interpreted(&InterpretedPlace {
+        function: "Server.handle",
+        file: Some("server.py"),
+        line: 12,
+        declared: Some(10),
+    });
     let deep = builder.stack(&[work, main]);
     let shallow = builder.stack(&[main]);
     let broken = builder.stack(&[work, cut]);
+    let python = builder.stack(&[handle, work, main]);
     builder.sample(main_thread, offset + 5, 1000, deep, NONE);
     builder.sample(main_thread, offset + 2, 1000, shallow, NONE);
     builder.sample(worker, offset + 3, 1000, broken, NONE);
+    builder.sample(worker, offset + 4, 1000, python, NONE);
     builder.off_cpu(worker, offset + 4, 2, false);
     builder.off_cpu(worker, offset + 1, 1, true);
     builder.count(AccountKind::LostSamples as u32, 2);
@@ -149,7 +157,7 @@ fn a_capture_seals_reads_back_and_files_merge_chunks_by_identity() {
     assert_eq!(merged.frames.len(), capture.frames.len());
     assert_eq!(merged.stacks.len(), capture.stacks.len());
     assert_eq!(merged.threads.len(), 2);
-    assert_eq!(merged.samples.len(), 6);
+    assert_eq!(merged.samples.len(), 8);
     assert_eq!(merged.zones.len(), 2);
     assert_eq!(merged.gaps.len(), 2);
     assert_eq!(merged.account(AccountKind::LostSamples as u32), 4);
@@ -163,6 +171,103 @@ fn a_capture_seals_reads_back_and_files_merge_chunks_by_identity() {
     let first_chunk = 16 + 8 + capture.seal().expect("seal").as_bytes().len();
     let read = file::read(&bytes[..first_chunk + 100]).expect("read a file cut in a chunk");
     assert_eq!((read.chunks, read.truncated), (1, true));
+}
+
+/// An interpreted frame is keyed by its function, file, and line, and its
+/// function by where its code begins, so that functions of one name in two
+/// files, or at two places in one, stay apart, while one function's lines
+/// share it. A capture rebuilt from others keys them by their text, not by
+/// where each kept it.
+#[test]
+fn interpreted_frames_keep_their_functions_apart_through_a_merge() {
+    let places = [
+        ("handle", Some("a.py"), 12, Some(10)),
+        ("handle", Some("a.py"), 14, Some(10)),
+        ("handle", Some("b.py"), 12, Some(10)),
+        ("handle", Some("a.py"), 31, Some(30)),
+        ("handle", None, 0, None),
+    ];
+    let build = |padding: &str| {
+        let mut builder = CaptureBuilder::new();
+
+        // Moves every later string, so that the captures keep the same text
+        // at different ids.
+        builder.string(padding);
+        let frames: Vec<u32> = places
+            .iter()
+            .map(|&(function, file, line, declared)| {
+                builder.interpreted(&InterpretedPlace {
+                    function,
+                    file,
+                    line,
+                    declared,
+                })
+            })
+            .collect();
+        let again = builder.interpreted(&InterpretedPlace {
+            function: "handle",
+            file: Some("a.py"),
+            line: 12,
+            declared: Some(10),
+        });
+        assert_eq!(again, frames[0], "one place is one frame");
+        let thread = builder.thread(Pid::new(1), Tid::new(1), 0);
+        let stack = builder.stack(&frames);
+        builder.sample(thread, 1, 1, stack, NONE);
+        builder.finish()
+    };
+
+    let shown = |capture: &Capture| {
+        assert_eq!(capture.validate(), Ok(()));
+        capture
+            .frames
+            .iter()
+            .enumerate()
+            .map(|(frame, record)| {
+                assert_eq!(record.kind, FrameKind::Interpreted as u8);
+                assert_eq!(record.module.get(), NONE);
+                let [line] = capture.frame_lines(u32::try_from(frame).expect("a frame")) else {
+                    panic!("frame {frame} has one line");
+                };
+                let function = &capture.functions[line.function.get() as usize];
+                (
+                    line.function.get(),
+                    capture.string(function.name.get()).to_owned(),
+                    capture.string(line.file.get()).to_owned(),
+                    line.number.get(),
+                    capture.string(function.file.get()).to_owned(),
+                    function.line.get(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let capture = build("");
+    let rows = shown(&capture);
+    assert_eq!(
+        rows.iter()
+            .map(|row| (row.1.as_str(), row.2.as_str(), row.3, row.4.as_str(), row.5))
+            .collect::<Vec<_>>(),
+        [
+            ("handle", "a.py", 12, "a.py", 10),
+            ("handle", "a.py", 14, "a.py", 10),
+            ("handle", "b.py", 12, "b.py", 10),
+            ("handle", "a.py", 31, "a.py", 30),
+            ("handle", "", 0, "", 0),
+        ]
+    );
+    let functions: Vec<u32> = rows.iter().map(|row| row.0).collect();
+    assert_eq!(functions[0], functions[1], "one function's two lines");
+    let distinct: std::collections::BTreeSet<u32> = functions.iter().copied().collect();
+    assert_eq!(distinct.len(), 4, "four functions: {functions:?}");
+
+    let mut merged = CaptureBuilder::new();
+    merged.absorb(&capture);
+    merged.absorb(&build("a string that moves the rest"));
+    let merged = merged.finish();
+    assert_eq!(shown(&merged), rows);
+    assert_eq!(merged.samples.len(), 2);
+    assert_eq!(merged.stacks.len(), capture.stacks.len());
 }
 
 /// Two zones of one span nest as they were recorded: the one recorded
@@ -315,6 +420,17 @@ fn validation_rejects_every_out_of_bounds_reference() {
     let mut broken = valid.clone();
     broken.syscall_notes[0].kind = 0;
     assert!(broken.validate().is_err(), "a note of no kind");
+    let mut broken = valid.clone();
+    let named = broken
+        .frames
+        .iter()
+        .position(|frame| frame.kind == FrameKind::Interpreted as u8)
+        .expect("an interpreted frame");
+    broken.frames[named].address = u64::MAX.into();
+    assert!(broken.validate().is_err(), "an interpreted frame of no key");
+    let mut broken = valid.clone();
+    broken.frames[named].kind = 6;
+    assert!(broken.validate().is_err(), "a frame of no kind");
     let mut broken = valid;
     broken.strings.pop();
     assert!(broken.validate().is_err(), "an unterminated string pool");

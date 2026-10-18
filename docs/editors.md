@@ -34,6 +34,21 @@ A launch entry has this shape:
 }
 ```
 
+To debug a Python program, launch its interpreter with the script as an
+argument; breakpoints in `.py` files, steps, and the Python exception filters
+need CPython 3.14 or later, or a launched 3.12 or 3.13 (see
+[Python](languages.md#python)):
+
+```json
+{
+  "type": "microscope",
+  "request": "launch",
+  "name": "Debug script",
+  "program": "/usr/bin/python3",
+  "args": ["${file}"]
+}
+```
+
 Use `"request": "attach"` with a process ID to attach. Core-dump sessions use
 the microscope-specific core setting described by the extension when installed.
 

@@ -30,6 +30,17 @@ pub struct LineInput<'a> {
     pub role: u8,
 }
 
+/// Where an interpreted frame is: its function, and the line it runs of
+/// the file its code is in, which its function's code begins at line
+/// `declared` of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InterpretedPlace<'a> {
+    pub function: &'a str,
+    pub file: Option<&'a str>,
+    pub line: u32,
+    pub declared: Option<u32>,
+}
+
 /// Builds a capture as a recording proceeds.
 #[derive(Debug, Default, Clone)]
 pub struct CaptureBuilder {
@@ -322,6 +333,41 @@ impl CaptureBuilder {
                 line: 0,
                 column: 0,
                 declared: None,
+                role: 0,
+            };
+
+            self.symbolize(frame, NONE, &[line]);
+        }
+
+        frame
+    }
+
+    /// The frame of an interpreted function at a line of its source, whose
+    /// code is in no module. Its function is declared at the file and line
+    /// its code begins at, so that functions of one name in two files, or
+    /// two of one file, stay apart.
+    pub fn interpreted(&mut self, place: &InterpretedPlace<'_>) -> u32 {
+        let file = place.file.unwrap_or_default();
+
+        // The file's length makes the key unambiguous whatever the names
+        // hold.
+        let key = format!(
+            "{}\t{}\t{}\t{}{file}{}",
+            place.line,
+            place.declared.map_or(-1, i64::from),
+            file.len(),
+            u8::from(place.file.is_some()),
+            place.function
+        );
+        let name = self.string(&key);
+        let frame = self.frame(FrameKind::Interpreted, NONE, u64::from(name), 0);
+        if !self.symbolized(frame) {
+            let line = LineInput {
+                function: place.function,
+                file: place.file,
+                line: place.line,
+                column: 0,
+                declared: place.file.zip(place.declared),
                 role: 0,
             };
 
@@ -909,8 +955,16 @@ impl CaptureBuilder {
         for frame in &capture.frames {
             let kind = FrameKind::from_number(frame.kind).unwrap_or(FrameKind::Native);
             let module = map.module(frame.module.get());
+
+            // A frame keyed by a string is keyed by the string's text, not
+            // by where the other capture kept it.
+            let address = match u32::try_from(frame.address.get()) {
+                Ok(name) if kind.named() => u64::from(self.copy_string(capture, name)),
+                _ => frame.address.get(),
+            };
+
             map.frames
-                .push(self.frame(kind, module, frame.address.get(), frame.role));
+                .push(self.frame(kind, module, address, frame.role));
         }
 
         for (frame, &new) in map.frames.iter().enumerate() {

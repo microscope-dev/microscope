@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { firstBreakpointPlace, knownBreakpointPlaces, PENDING } from "../breakpoints";
+import { useRequest } from "../data";
 import { controls } from "../model";
 import type { Breakpoint, WatchAccess, Watchpoint } from "../protocol";
 import { useConnection, useModel } from "../store";
@@ -51,6 +53,7 @@ export function Breakpoints() {
         )}
         {control && <Adder />}
         {control && <WatchAdder />}
+        <Exceptions control={control} />
         {!control && breakpoints.length + state.watchpoints.length === 0 && (
           <div className="empty">No breakpoints.</div>
         )}
@@ -61,12 +64,25 @@ export function Breakpoints() {
 
 /** Where a breakpoint is, as briefly as it can be said. */
 export function placeLabel(breakpoint: Breakpoint): string {
-  const place = breakpoint.places[0];
+  const place = firstBreakpointPlace(breakpoint);
   if (place?.path && place.line) {
-    const more = breakpoint.places.length > 1 ? ` +${breakpoint.places.length - 1}` : "";
+    const count = knownBreakpointPlaces(breakpoint).length;
+    const more = count > 1 ? ` +${count - 1}` : "";
     return `${fileName(place.path)}:${place.line}${more}`;
   }
-  return breakpoint.location;
+  const asked = /^(.*\/)?([^/]+:\d+)$/.exec(breakpoint.location);
+  return asked?.[2] ?? breakpoint.location;
+}
+
+/** A breakpoint's active locations, or why it remains pending. */
+export function breakpointTitle(breakpoint: Breakpoint): string {
+  const places = breakpoint.places
+    .map((at) => `${at.function ?? at.address} ${at.path ? `${at.path}:${at.line}` : ""}`)
+    .join("\n");
+  if (breakpoint.pending) {
+    return [places, breakpoint.pending.message].filter(Boolean).join("\n");
+  }
+  return places || `${breakpoint.location}: ${PENDING}`;
 }
 
 function Row({
@@ -81,7 +97,7 @@ function Row({
   const connection = useConnection();
   const showSource = useShowSource();
   const [error, setError] = useState<string | null>(null);
-  const place = breakpoint.places[0];
+  const place = firstBreakpointPlace(breakpoint);
   const pending = breakpoint.places.length === 0;
   const kind = breakpoint.logMessage ? "log" : breakpoint.condition ? "conditional" : "plain";
   const detail = breakpoint.logMessage
@@ -100,16 +116,7 @@ function Row({
         <button
           type="button"
           className="link-row"
-          title={
-            pending
-              ? `${breakpoint.location}: no loaded code has it yet`
-              : breakpoint.places
-                  .map(
-                    (at) =>
-                      `${at.function ?? at.address} ${at.path ? `${at.path}:${at.line}` : ""}`,
-                  )
-                  .join("\n")
-          }
+          title={breakpointTitle(breakpoint)}
           disabled={!place?.path}
           onClick={() => place?.path && place.line && showSource(place.path, place.line)}
         >
@@ -146,6 +153,11 @@ function Row({
           </>
         )}
       </div>
+      {breakpoint.pending ? (
+        <div className="row sub">{breakpoint.pending.message}</div>
+      ) : (
+        pending && <div className="row sub">{PENDING}</div>
+      )}
       {detail && <div className="row sub">{detail}</div>}
       {error && <div className="row sub error">{error}</div>}
     </li>
@@ -446,5 +458,53 @@ function WatchAdder() {
       </select>
       {error && <div className="error">{error}</div>}
     </form>
+  );
+}
+
+/**
+ * The exceptions language runtimes report, each of which stops the program
+ * once chosen: a list a program in one language mostly ignores, so it is
+ * folded until opened, saying how many are on.
+ */
+function Exceptions({ control }: { control: boolean }) {
+  const session = useModel((model) => model.state?.session);
+  const exceptions = useRequest("exceptions", session ? undefined : null);
+  const connection = useConnection();
+  const [error, setError] = useState<string | null>(null);
+  const filters = exceptions.data?.filters;
+  if (!filters) {
+    return null;
+  }
+  const on = filters.filter((filter) => filter.on).length;
+  return (
+    <details className="exceptions" data-testid="exceptions">
+      <summary>
+        Exceptions{" "}
+        <span className="count">
+          {on} of {filters.length} on
+        </span>
+      </summary>
+      {error && <div className="error">{error}</div>}
+      <ul className="rows">
+        {filters.map((filter) => (
+          <li key={filter.id} className="row" title={filter.description}>
+            <label>
+              <input
+                type="checkbox"
+                checked={filter.on}
+                disabled={!control}
+                onChange={(event) => {
+                  setError(null);
+                  connection
+                    .request("setException", { id: filter.id, on: event.target.checked })
+                    .catch((failure: Error) => setError(failure.message));
+                }}
+              />{" "}
+              {filter.label}
+            </label>
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }

@@ -6,7 +6,7 @@ use crate::{Error, Result};
 
 mod image;
 
-pub use image::{Binding, seal};
+pub use image::{Binding, SealError, seal};
 pub use image::{ModuleImage, ModuleMetadata, PackageInfo, ThreadLocal};
 
 macro_rules! address_type {
@@ -270,6 +270,7 @@ macro_rules! id_type {
 
             /// Returns the dense index within the owning collection.
             #[must_use]
+            #[allow(dead_code, reason = "a crate's own identifier may only index")]
             pub const fn get(self) -> u32 {
                 self.0
             }
@@ -281,13 +282,15 @@ macro_rules! id_type {
             }
         }
 
-        impl fmt::Display for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        impl ::std::fmt::Display for $name {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
                 self.0.fmt(f)
             }
         }
     };
 }
+
+pub(crate) use id_type;
 
 /// Defines a public `u64` identifier with numeric conversions and `Display`.
 macro_rules! numeric_id {
@@ -535,6 +538,10 @@ pub enum StackSegment {
     /// drives, such as the one a runtime's `block_on` polls, which is
     /// suspended between its polls.
     Future,
+
+    /// Interpreted frames the thread runs whose place among its machine
+    /// frames is unknown, shown after them.
+    Unplaced,
 }
 
 /// What a stopped thread runs for a language runtime.
@@ -1369,6 +1376,9 @@ pub enum SourceLanguage {
     /// Ada, of any standard.
     Ada,
 
+    /// Python, which an interpreter runs rather than a compiler's code.
+    Python,
+
     /// Another language, by its DWARF language code.
     Other(u16),
 
@@ -1790,14 +1800,17 @@ pub struct InspectionLimits {
 
 impl Default for InspectionLimits {
     /// Enough for a frame's values and the text they hold: text is charged
-    /// to the same budget, up to [`TextSummary::MAX_BYTES`] per value.
+    /// to the same budget, up to [`TextSummary::MAX_BYTES`] per value. An
+    /// interpreted frame's values are objects reached through pointers, as
+    /// each one's type and the dict that names it are, which take many
+    /// small reads.
     fn default() -> Self {
         Self {
             variables: 256,
             value_nodes: 512,
             aggregate_depth: 64,
-            memory_reads: 256,
-            memory_bytes: 64 * 1_024,
+            memory_reads: 1_024,
+            memory_bytes: 256 * 1_024,
             expression_work: 5_120_000,
         }
     }
@@ -2350,6 +2363,10 @@ pub enum CallFrameUnavailableReason {
     /// The frame is a suspended task's: its future holds its state, and it
     /// has no place on any stack.
     Suspended,
+
+    /// The frame is interpreted: the interpreter holds its state, and it
+    /// has no machine frame of its own.
+    Interpreted,
 }
 
 /// Why the value a parameter held on entry cannot be recovered from the
@@ -2550,6 +2567,13 @@ pub enum VariableUnavailableReason {
         line: LineNumber,
     },
 
+    /// An interpreted variable has no value: it is not yet assigned, or it
+    /// was deleted.
+    Unbound,
+
+    /// The interpreter's object cannot be read, and why.
+    Interpreted(Arc<str>),
+
     /// A runtime-sized array or slice index is outside its current bounds.
     IndexOutOfBounds {
         /// Requested source index.
@@ -2628,6 +2652,9 @@ impl fmt::Display for VariableUnavailableReason {
             Self::CallFrameUnavailable(CallFrameUnavailableReason::Suspended) => {
                 formatter.write_str("the frame is suspended, and is on no stack")
             }
+            Self::CallFrameUnavailable(CallFrameUnavailableReason::Interpreted) => {
+                formatter.write_str("the frame is interpreted, and has no machine frame")
+            }
             Self::EntryValue(reason) => {
                 write!(formatter, "the entry value is unavailable: {reason}")
             }
@@ -2703,6 +2730,10 @@ impl fmt::Display for VariableUnavailableReason {
                 "{:?} limit {} exhausted after {} while requesting {}",
                 exhaustion.resource, exhaustion.limit, exhaustion.used, exhaustion.requested
             ),
+            Self::Unbound => {
+                formatter.write_str("the variable is unbound: not yet assigned, or deleted")
+            }
+            Self::Interpreted(reason) => write!(formatter, "the interpreter's object: {reason}"),
             Self::IndexOutOfBounds {
                 index,
                 lower_bound,
@@ -3746,15 +3777,19 @@ pub struct SourceLine {
 /// Source lines surrounding an execution location.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceContext {
-    /// The source file the debug information names.
-    pub file: SourceFile,
+    /// The source path as it was recorded: by the debug information, or by
+    /// the runtime that runs an interpreted frame.
+    pub recorded: Arc<PathBuf>,
 
     /// The file that was read: the recorded path, or where a source path
     /// map found it.
     pub path: Arc<PathBuf>,
 
-    /// The execution location within the file.
-    pub location: SourceLocation,
+    /// The execution location's one-based line within the file.
+    pub line: LineNumber,
+
+    /// The location's one-based column, when it was recorded.
+    pub column: Option<ColumnNumber>,
 
     /// Contiguous source lines ordered by line number.
     pub lines: Arc<[SourceLine]>,
@@ -4019,6 +4054,12 @@ pub enum CodeRole {
     /// task may have left the thread, so a stack it switched from ends at
     /// the switch.
     Dispatch,
+
+    /// An interpreter's evaluation loop, or the machinery through which it
+    /// calls and is called, which runs the interpreted frames a backtrace
+    /// shows in its place: a backtrace hides it unless asked, and a step
+    /// passes through it.
+    Interpreter,
 }
 
 /// Describes whether a function instance is emitted out of line or inlined.
@@ -4464,13 +4505,59 @@ pub enum InlineFrameLookup {
 }
 
 /// The address space in which a breakpoint was resolved.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BreakpointLocation {
     /// A location relative to an immutable module image.
     Image(ImageAddress),
 
     /// An absolute location in a running process.
     Virtual(VirtualAddress),
+
+    /// A location a language runtime arms and reports itself, with no
+    /// address, as Python's agent stops at a line of Python code.
+    Managed(ManagedLocation),
+}
+
+impl BreakpointLocation {
+    /// The location's trap address in the program's own image or the
+    /// process, when it has one.
+    #[must_use]
+    pub const fn address(&self) -> Option<TrapAddress> {
+        match self {
+            Self::Image(address) => Some(TrapAddress::Image(*address)),
+            Self::Virtual(address) => Some(TrapAddress::Virtual(*address)),
+            Self::Managed(_) => None,
+        }
+    }
+}
+
+/// Where a breakpoint location's trap is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TrapAddress {
+    /// Relative to the program's own image.
+    Image(ImageAddress),
+
+    /// An absolute address in a running process.
+    Virtual(VirtualAddress),
+}
+
+/// A breakpoint location a language runtime manages.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ManagedLocation {
+    /// The runtime that arms it.
+    pub runtime: RuntimeId,
+    pub place: ManagedPlace,
+}
+
+/// Where a runtime's managed breakpoint stops.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ManagedPlace {
+    /// Before the runtime runs a line of the source file at `path`, as the
+    /// runtime records the file's path.
+    Line { path: Arc<str>, line: u32 },
+
+    /// As the runtime begins a function of this name.
+    Function { name: Arc<str> },
 }
 
 /// A resolved execution location in a running process.
@@ -4518,6 +4605,11 @@ pub enum FrameKind {
         object: VirtualAddress,
         ty: TypeReference,
     },
+
+    /// A frame of an interpreted language that a thread runs, whose state
+    /// is the interpreter's record of it at `frame`. Its code is in no
+    /// image, so it has a recorded place and locals but no registers.
+    Interpreted { frame: VirtualAddress },
 }
 
 impl FrameKind {
@@ -4527,6 +4619,31 @@ impl FrameKind {
     pub const fn is_suspended(self) -> bool {
         matches!(self, Self::Async { .. } | Self::Awaited { .. })
     }
+
+    /// Whether the frame is machine code's, with registers: neither a
+    /// suspended task's nor an interpreted one.
+    #[must_use]
+    pub const fn has_registers(self) -> bool {
+        !self.is_suspended() && !matches!(self, Self::Interpreted { .. })
+    }
+}
+
+/// The function and place of a frame whose code is in no image, as its
+/// runtime recorded them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedFrame {
+    pub function: Arc<str>,
+
+    /// The language of the code the frame runs.
+    pub language: SourceLanguage,
+
+    /// Where the frame is, when its runtime knows.
+    pub place: Option<RecordedPlace>,
+
+    /// The line of the place's file the function's code begins at, when
+    /// its runtime knows: two functions of one name in one file differ in
+    /// it.
+    pub first_line: Option<u32>,
 }
 
 /// A platform-independent stack frame.
@@ -4577,6 +4694,11 @@ pub struct StackFrame {
     /// the view that presents it summarizes it; `None` for any other frame,
     /// or a future no view presents.
     pub awaiting: Option<Arc<str>>,
+
+    /// The function and place of a frame whose code is in no image, as an
+    /// [`FrameKind::Interpreted`] frame's, which has no function, source,
+    /// or symbol of its own.
+    pub recorded: Option<RecordedFrame>,
 }
 
 pub struct FrameMetadata {
@@ -4629,6 +4751,7 @@ impl StackFrame {
             symbol: metadata.symbol,
             role: metadata.role,
             awaiting: None,
+            recorded: None,
         }
     }
 }
@@ -4727,20 +4850,31 @@ pub struct Backtrace {
     /// The completion or failure reason for the trace.
     pub termination: UnwindTermination,
 
-    /// The futures frames of the trace drive whose chains of awaits it
-    /// shows in part or not at all.
-    pub unfollowed: Arc<[UnfollowedFuture]>,
+    /// The frames that frames of the trace drive which it shows in part
+    /// or not at all.
+    pub unfollowed: Arc<[Unfollowed]>,
 }
 
-/// A future a frame drives whose chain of awaits a backtrace does not show
-/// in full.
+/// Frames a frame drives that a backtrace does not show in full.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UnfollowedFuture {
-    /// The frame that drives the future.
+pub struct Unfollowed {
+    /// The frame that drives them; for interpreted frames whose place in
+    /// the stack is unknown, the first of them.
     pub driver: StackFrameId,
+    pub driven: DrivenFrames,
 
-    /// Why the chain is not shown, or where it ends.
+    /// Why they are not shown, or where they end.
     pub reason: Arc<str>,
+}
+
+/// What frames a frame drives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrivenFrames {
+    /// The chain of awaits of a future it polls.
+    Future,
+
+    /// The frames an activation of an interpreter's loop runs.
+    Interpreted,
 }
 
 impl Backtrace {
@@ -4749,14 +4883,24 @@ impl Backtrace {
     /// runtime's own traceback shows a task: where it waits, not how. The
     /// future a suspended task awaits runs no code, and is never one; nor
     /// is a frame past a runtime's dispatch, which runs the runtime's code
-    /// for the thread, not the task's.
+    /// for the thread, not the task's. In a stack that runs interpreted
+    /// code, native code with no source is the system's beneath the
+    /// interpreter, as a system call's, not the program's.
     #[must_use]
     pub fn user_frame(&self) -> Option<&StackFrame> {
+        let interprets = self
+            .frames
+            .iter()
+            .any(|frame| matches!(frame.kind, FrameKind::Interpreted { .. }));
         self.frames
             .iter()
             .take_while(|frame| frame.role != CodeRole::Dispatch)
             .find(|frame| {
-                frame.role == CodeRole::Ordinary && !matches!(frame.kind, FrameKind::Awaited { .. })
+                frame.role == CodeRole::Ordinary
+                    && !matches!(frame.kind, FrameKind::Awaited { .. })
+                    && (!interprets
+                        || matches!(frame.kind, FrameKind::Interpreted { .. })
+                        || frame.source.is_some())
             })
     }
 

@@ -1,7 +1,9 @@
 // The BPF engine's kernel side (plans/syscalls.html). It filters by
 // process, timestamps each chosen call's entry, and at its exit counts it,
 // copies the bytes behind its arguments as its spec says, and sends one
-// record. microscope decodes and interprets everything in Rust.
+// record. microscope decodes and interprets everything in Rust. With
+// stacks, a thread of a Python process microscope told it of sends its
+// Python frames after its stack, read by the sampler's walker.
 //
 // The verifier proves these programs terminate and touch only what they
 // may; they keep to bounded loops, no tail calls, and per-CPU scratch for
@@ -12,6 +14,7 @@
 #include <bpf/bpf_core_read.h>
 
 #include "kernel_types.h"
+#include "python.bpf.h"
 
 #define TS_COMPAT 0x0002
 #define X32_SYSCALL_BIT 0x40000000
@@ -161,6 +164,23 @@ struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 	__uint(max_entries, 16 << 20);
 } EVENTS SEC(".maps");
+
+// Each Python process's layout, by its process id as the kernel's initial
+// pid namespace numbers it.
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 1024);
+	__type(key, u32);
+	__type(value, struct py_layout);
+} LAYOUTS SEC(".maps");
+
+// Where each CPU builds a record of Python frames.
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, struct py_stack);
+} PY_SCRATCH SEC(".maps");
 
 
 // `value & mask`, computed where the verifier sees it: the barrier keeps
@@ -673,6 +693,34 @@ static __always_inline void send_file(u32 tid, u32 tgid, s32 fd)
 		lost();
 }
 
+// Sends the current thread's Python frames, when microscope told the walker
+// its process's layout, after its stack.
+static __always_inline void send_python(u32 tid, u32 tgid)
+{
+	u32 host = bpf_get_current_pid_tgid() >> 32, zero = 0;
+	struct py_layout *layout = bpf_map_lookup_elem(&LAYOUTS, &host);
+	if (!layout)
+		return;
+	struct py_stack *stack = bpf_map_lookup_elem(&PY_SCRATCH, &zero);
+	if (!stack)
+		return;
+	struct py_stack_record *header = &stack->header;
+	header->header.kind = RECORD_PY_STACK;
+	header->header.tid = tid;
+	header->header.tgid = tgid;
+	header->pad = 0;
+	py_walk(layout, stack, 0);
+	u32 frames = header->frames;
+	if (frames > PY_FRAMES)
+		frames = PY_FRAMES;
+	u64 size = sizeof(struct py_stack_record) + (u64)frames * sizeof(struct py_frame);
+	header->header.size = size;
+	if (size > sizeof(struct py_stack))
+		return;
+	if (bpf_ringbuf_output(&EVENTS, stack, size, 0))
+		lost();
+}
+
 // Sends the stack of the current thread, whose user registers `regs`
 // holds, before the call or signal record that follows: the kernel's
 // walk of its frame pointers, and with CONFIG_STACK_COPY, a copy of its
@@ -727,6 +775,7 @@ static __always_inline void send_stack(void *ctx, u32 tid, u32 tgid, struct pt_r
 	record->header.size = size;
 	if (bpf_ringbuf_output(&EVENTS, buffer->data, bounded(size, 16383), 0))
 		lost();
+	send_python(tid, tgid);
 }
 
 // Describes the descriptors a call made, as its spec says.

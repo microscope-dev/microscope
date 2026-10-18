@@ -1,6 +1,8 @@
 //! Decodes the records perf events write, for the one sample layout the
-//! recorder asks for. Decoding is pure: a record that does not fit its own
-//! size is malformed, never read past.
+//! recorder asks for, and the records BPF programs write beside them
+//! through output events, which their identifiers tell apart. Decoding is
+//! pure: a record that does not fit its own size is malformed, never read
+//! past.
 
 use super::sys::sample;
 use crate::model::{Pid, Tid};
@@ -111,6 +113,16 @@ pub struct Mmap<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Record<'a> {
     Sample(Sample<'a>),
+
+    /// The bytes a BPF program wrote through an output event, on the CPU
+    /// whose ring holds them, as the thread it ran for.
+    Output {
+        pid: Pid,
+        tid: Tid,
+        time: u64,
+        cpu: u32,
+        data: &'a [u8],
+    },
     Mmap(Mmap<'a>),
 
     /// A thread's name, set or, when `exec`, changed by an exec.
@@ -164,7 +176,8 @@ impl Record<'_> {
         match self {
             Self::Sample(sample) => Some(sample.time),
             Self::Mmap(mmap) => Some(mmap.time),
-            Self::Comm { time, .. }
+            Self::Output { time, .. }
+            | Self::Comm { time, .. }
             | Self::Fork { time, .. }
             | Self::Exit { time, .. }
             | Self::Lost { time, .. }
@@ -229,8 +242,17 @@ fn field<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], Malform
 }
 
 /// The record at the start of `bytes` and its length, or `None` at the
-/// end.
+/// end, where no output events write.
 pub fn next(bytes: &[u8]) -> Option<Result<(Record<'_>, usize), Malformed>> {
+    next_of(bytes, &[])
+}
+
+/// The record at the start of `bytes` and its length, or `None` at the
+/// end, where the output events whose identifiers are `outputs` write.
+pub fn next_of<'a>(
+    bytes: &'a [u8],
+    outputs: &[u64],
+) -> Option<Result<(Record<'a>, usize), Malformed>> {
     if bytes.is_empty() {
         return None;
     }
@@ -251,11 +273,21 @@ pub fn next(bytes: &[u8]) -> Option<Result<(Record<'_>, usize), Malformed>> {
     }
 
     let body = &bytes[8..size];
-    Some(decode(kind, misc, body).map(|record| (record, size)))
+    Some(decode(kind, misc, body, outputs).map(|record| (record, size)))
 }
 
-fn decode(kind: u32, misc: u16, body: &[u8]) -> Result<Record<'_>, Malformed> {
+fn decode<'a>(
+    kind: u32,
+    misc: u16,
+    body: &'a [u8],
+    outputs: &[u64],
+) -> Result<Record<'a>, Malformed> {
     if kind == RECORD_SAMPLE {
+        let identifier = u64::from_le_bytes(field(body, 0)?);
+        if outputs.contains(&identifier) {
+            return decode_output(body);
+        }
+
         return decode_sample(body).map(Record::Sample);
     }
 
@@ -389,16 +421,99 @@ fn decode_sample(body: &[u8]) -> Result<Sample<'_>, Malformed> {
     })
 }
 
+/// A record an output event wrote: [`super::OUTPUT_SAMPLE_TYPE`]'s fields.
+fn decode_output(body: &[u8]) -> Result<Record<'_>, Malformed> {
+    let mut fields = Fields { bytes: body };
+    let _identifier = fields.u64()?;
+    let (pid, tid) = fields.pair()?;
+    let time = fields.u64()?;
+    let (cpu, _) = fields.pair()?;
+    let size = fields.take(4)?;
+    let size = u32::from_le_bytes(size.try_into().map_err(|_| Malformed)?);
+    let data = fields.take(usize::try_from(size).map_err(|_| Malformed)?)?;
+    Ok(Record::Output {
+        pid: Pid::new(pid),
+        tid: Tid::new(tid),
+        time,
+        cpu,
+        data,
+    })
+}
+
 /// Decodes every record of `data` until one is malformed.
 #[cfg(feature = "fuzzing")]
 pub fn fuzz(data: &[u8]) {
     let mut offset = 0;
-    while let Some(Ok((record, length))) = next(&data[offset..]) {
+    while let Some(Ok((record, length))) = next_of(&data[offset..], &[7]) {
         if let Record::Sample(sample) = record {
             let _ = sample.user_chain().count() + sample.registers.iter().count();
         }
 
         let _ = record.time();
         offset += length;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A sample record, as an event of `identifier` writes it: the fields
+    /// before its own, then `rest`.
+    fn sample_record(identifier: u64, rest: &[u8]) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(&identifier.to_le_bytes());
+        body.extend_from_slice(&7_u32.to_le_bytes());
+        body.extend_from_slice(&8_u32.to_le_bytes());
+        body.extend_from_slice(&1000_u64.to_le_bytes());
+        body.extend_from_slice(&3_u32.to_le_bytes());
+        body.extend_from_slice(&0_u32.to_le_bytes());
+        body.extend_from_slice(rest);
+        let mut record = Vec::new();
+        record.extend_from_slice(&RECORD_SAMPLE.to_le_bytes());
+        record.extend_from_slice(&0_u16.to_le_bytes());
+        record.extend_from_slice(&u16::try_from(8 + body.len()).expect("small").to_le_bytes());
+        record.extend_from_slice(&body);
+        record
+    }
+
+    /// An output event's record is told from a sample by its identifier,
+    /// and carries the program's bytes, padding and all; one whose bytes
+    /// overrun the record is malformed.
+    #[test]
+    fn an_output_events_records_are_told_from_samples_by_their_identifier() {
+        let mut raw = 4_u32.to_le_bytes().to_vec();
+        raw.extend_from_slice(b"abcd");
+        let record = sample_record(42, &raw);
+        let Some(Ok((
+            Record::Output {
+                pid,
+                tid,
+                time,
+                cpu,
+                data,
+            },
+            length,
+        ))) = next_of(&record, &[41, 42])
+        else {
+            panic!("an output record");
+        };
+
+        assert_eq!(length, record.len());
+        assert_eq!((pid.get(), tid.get(), time, cpu), (7, 8, 1000, 3));
+        assert_eq!(data, b"abcd");
+
+        // Read as a sample, its bytes are a sample's, which they do not fit.
+        assert!(!matches!(
+            next(&record),
+            Some(Ok((Record::Output { .. }, _)))
+        ));
+
+        let mut overrun = 9_u32.to_le_bytes().to_vec();
+        overrun.extend_from_slice(b"abcd");
+        assert_eq!(
+            next_of(&sample_record(42, &overrun), &[42]),
+            Some(Err(Malformed))
+        );
     }
 }

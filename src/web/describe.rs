@@ -1,14 +1,15 @@
 //! The debugger's state as the page receives it: where the program stopped,
 //! its breakpoints and where they landed, and the stops so far.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use microscope::{
-    BreakpointLocation, BreakpointSpec, DebuggerHandle, ImageAddress, InferiorState, LoadBias,
-    ModuleId, ModuleImage, StackFrame, StackFrameId, StateSnapshot, StopContext, StopReason,
-    VirtualAddress,
+    BreakpointLocation, BreakpointSpec, DebuggerHandle, ExecutionContext, ImageAddress,
+    InferiorState, LoadBias, ModuleId, ModuleImage, StackFrame, StackFrameId, StateSnapshot,
+    StopContext, StopReason, VirtualAddress,
 };
 
 use super::protocol::{self, Inferior, Place, State, StopEntry, Thread};
@@ -22,6 +23,11 @@ const STOP_HISTORY: usize = 100;
 pub struct Images {
     handle: DebuggerHandle,
     cache: Mutex<HashMap<ModuleId, Arc<ModuleImage>>>,
+
+    /// The source files a runtime recorded for frames the page was shown,
+    /// such as a Python program's, which no debug information names. The
+    /// page may read these, and debug information's files, and no others.
+    recorded: Mutex<BTreeSet<PathBuf>>,
 }
 
 impl Images {
@@ -29,7 +35,44 @@ impl Images {
         Self {
             handle,
             cache: Mutex::default(),
+            recorded: Mutex::default(),
         }
+    }
+
+    /// Notes the file a runtime recorded for `frame`, at `place`, as one the
+    /// page was shown. A runtime's `<string>` and the like name no file.
+    pub fn note_recorded(
+        &self,
+        frame: &StackFrame,
+        place: Option<&crate::present::frames::FramePlace>,
+    ) {
+        if let Some(place) = place.filter(|_| frame.recorded.is_some())
+            && !place.path.to_string_lossy().starts_with('<')
+        {
+            self.recorded
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(place.path.clone());
+        }
+    }
+
+    /// Whether a frame the page was shown runs code from the file at the
+    /// `path` its runtime recorded.
+    pub fn recorded(&self, path: &Path) -> bool {
+        self.recorded
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(path)
+    }
+
+    /// The files frames the page was shown recorded, as `recorded` takes them.
+    pub fn recorded_paths(&self) -> Vec<PathBuf> {
+        self.recorded
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .cloned()
+            .collect()
     }
 
     /// Forgets every image: a new process numbers its modules again.
@@ -101,20 +144,15 @@ impl Images {
             None => None,
         };
 
-        let path = frame.source.as_ref().and_then(|location| {
-            let file = image.as_ref()?.source_file(location.file)?;
-            Some(file.path.display().to_string())
-        });
+        let place = crate::present::frames::place(frame, image.as_deref());
+        self.note_recorded(frame, place.as_ref());
         Place {
             address: frame
                 .instruction
                 .map_or_else(String::new, |address| hex(address.get())),
-            function: Some(frame_name(frame, image.as_deref())),
-            line: path
-                .as_ref()
-                .and(frame.source.as_ref())
-                .map(|location| location.line.get()),
-            path,
+            function: Some(crate::present::frames::name(frame, image.as_deref())),
+            line: place.as_ref().map(|place| place.line),
+            path: place.map(|place| place.path.display().to_string()),
         }
     }
 }
@@ -123,26 +161,6 @@ impl Images {
 fn symbol_name(image: &ModuleImage, address: ImageAddress) -> Option<String> {
     let symbol = image.symbolize(address)?;
     Some(format::code_name(None, Some(&symbol)))
-}
-
-/// A frame's name: its function or symbol, or else its address and module.
-pub fn frame_name(frame: &StackFrame, image: Option<&ModuleImage>) -> String {
-    if let Some(awaited) = format::awaited_frame(image, frame) {
-        return awaited;
-    }
-
-    if frame.function.is_some() || frame.symbol.is_some() {
-        return format::code_name(frame.function.as_ref(), frame.symbol.as_ref());
-    }
-
-    let module = image
-        .and_then(|image| image.path().file_name())
-        .map(|name| format!(" in {}", name.to_string_lossy()))
-        .unwrap_or_default();
-    frame.instruction.map_or_else(
-        || format!("a suspended frame{module}"),
-        |address| format!("{address:#x}{module}"),
-    )
 }
 
 pub fn hex(address: u64) -> String {
@@ -244,14 +262,23 @@ impl Describer {
                 thread_id,
                 reason,
             } => {
+                // The controller selects a frame other than the innermost
+                // where a runtime's agent stopped the thread.
+                let selected = match snapshot.selected {
+                    Some(ExecutionContext::Thread(selected)) if selected == *thread_id => {
+                        snapshot.selected_frame.unwrap_or(StackFrameId::INNERMOST)
+                    }
+                    _ => StackFrameId::INNERMOST,
+                };
                 let entry = self
-                    .stop_entry(stop_id.get(), thread_id.get(), reason)
+                    .stop_entry(stop_id.get(), thread_id.get(), reason, selected)
                     .await;
                 Inferior::Stopped {
                     pid: process_id.get(),
                     stop: stop_id.get(),
                     thread: thread_id.get(),
                     reason: entry.reason,
+                    frame: entry.frame,
                     place: entry.place,
                 }
             }
@@ -286,7 +313,13 @@ impl Describer {
     }
 
     /// The history's entry for a stop, made when the stop is first seen.
-    async fn stop_entry(&mut self, stop: u64, thread: u64, reason: &StopReason) -> StopEntry {
+    async fn stop_entry(
+        &mut self,
+        stop: u64,
+        thread: u64,
+        reason: &StopReason,
+        selected: StackFrameId,
+    ) -> StopEntry {
         if let Some(entry) = self.stops.iter().rev().find(|entry| entry.stop == stop) {
             return entry.clone();
         }
@@ -297,12 +330,22 @@ impl Describer {
             frame: StackFrameId::INNERMOST,
         };
 
-        let place = match self.handle.at(context).backtrace().await {
-            Ok(trace) => match trace.frames.first() {
-                Some(frame) => Some(self.images.place_of_frame(frame).await),
-                None => None,
-            },
-            Err(_) => None,
+        let (frame, place) = match self.handle.at(context).backtrace().await {
+            Ok(trace) => {
+                let shown = trace
+                    .frames
+                    .iter()
+                    .find(|frame| frame.id == selected)
+                    .or_else(|| trace.frames.first());
+                match shown {
+                    Some(shown) => (
+                        shown.id.get(),
+                        Some(self.images.place_of_frame(shown).await),
+                    ),
+                    None => (0, None),
+                }
+            }
+            Err(_) => (0, None),
         };
 
         let cause = self
@@ -317,6 +360,7 @@ impl Describer {
                 kind: reason_kind(reason).to_owned(),
                 description: plain(reason),
             },
+            frame,
             place,
             by: cause.as_ref().map(|cause| cause.name.clone()),
             action: cause.map(|cause| cause.action),
@@ -333,9 +377,10 @@ impl Describer {
     async fn breakpoint(&self, breakpoint: &microscope::Breakpoint) -> protocol::Breakpoint {
         let mut places = Vec::with_capacity(breakpoint.locations.len());
         for location in breakpoint.locations.iter() {
-            places.push(self.breakpoint_place(breakpoint, location).await);
+            places.push((location, self.breakpoint_place(breakpoint, location).await));
         }
 
+        let (places, pending) = breakpoint_places(breakpoint, places);
         protocol::Breakpoint {
             id: breakpoint.id.get(),
             location: breakpoint.spec.to_string(),
@@ -346,6 +391,7 @@ impl Describer {
             log_message: breakpoint.log_message.as_ref().map(ToString::to_string),
             hits: breakpoint.hit_count,
             places,
+            pending,
         }
     }
 
@@ -356,26 +402,45 @@ impl Describer {
         breakpoint: &microscope::Breakpoint,
         resolved: &microscope::ResolvedBreakpointLocation,
     ) -> Place {
-        let (image, address, shown) = match (resolved.location, resolved.library) {
+        let (image, address, shown) = match (&resolved.location, resolved.library) {
             (BreakpointLocation::Image(address), _) => (
                 Some(Arc::clone(self.handle.module_image())),
-                address,
+                *address,
                 // Before the program runs, there is no virtual address yet.
                 self.main_bias()
                     .await
-                    .map_or_else(|| address.get(), |bias| bias.wrapping_load(address).get()),
+                    .map_or_else(|| address.get(), |bias| bias.wrapping_load(*address).get()),
             ),
             (BreakpointLocation::Virtual(address), Some(library)) => {
                 let bias = self.bias_of(library).await;
                 match (self.images.get(library).await, bias) {
                     (Some(image), Some(bias)) => {
-                        (Some(image), bias.wrapping_unload(address), address.get())
+                        (Some(image), bias.wrapping_unload(*address), address.get())
                     }
                     _ => (None, ImageAddress::new(0), address.get()),
                 }
             }
             (BreakpointLocation::Virtual(address), None) => {
-                return self.place_of_address(address).await;
+                return self.place_of_address(*address).await;
+            }
+
+            // A runtime's location has no address: it is where the runtime
+            // says it is.
+            (BreakpointLocation::Managed(managed), _) => {
+                return match &managed.place {
+                    microscope::ManagedPlace::Line { path, line } => Place {
+                        address: String::new(),
+                        function: None,
+                        path: Some(path.to_string()),
+                        line: Some(u64::from(*line)),
+                    },
+                    microscope::ManagedPlace::Function { name } => Place {
+                        address: String::new(),
+                        function: Some(name.to_string()),
+                        path: None,
+                        line: None,
+                    },
+                };
             }
         };
 
@@ -517,13 +582,160 @@ const fn reason_kind(reason: &StopReason) -> &'static str {
         StopReason::FutureDropped { .. } => "futureDropped",
         StopReason::Pause => "pause",
         StopReason::Jump => "jump",
+        StopReason::Assignment => "assignment",
         StopReason::Exception(_) => "exception",
         StopReason::LanguageException(_) => "languageException",
+        StopReason::RuntimeEvent { .. } => "runtimeEvent",
         StopReason::ProgramBreakpoint { .. } => "programBreakpoint",
         StopReason::Exec { .. } => "exec",
         StopReason::ThreadExited { .. } => "threadExited",
         StopReason::Unclassifiable { .. } => "unclassifiable",
         StopReason::Exited(_) => "exited",
         StopReason::CoreDump { .. } => "coreDump",
+    }
+}
+
+/// Partitions queried metadata without losing the arming failure or presenting
+/// an unarmed runtime location as a ready placement.
+fn breakpoint_places(
+    breakpoint: &microscope::Breakpoint,
+    places: Vec<(&microscope::ResolvedBreakpointLocation, Place)>,
+) -> (Vec<Place>, Option<protocol::PendingBreakpoint>) {
+    debug_assert_eq!(
+        places.len(),
+        breakpoint.locations.len(),
+        "breakpoint metadata covers every resolved location"
+    );
+    let mut ready = Vec::new();
+    let mut pending = Vec::new();
+    for (resolved, place) in places {
+        if let Some(issue) = breakpoint
+            .pending_locations
+            .iter()
+            .find(|pending| pending.location == resolved.location)
+        {
+            pending.push(protocol::PendingBreakpointPlace {
+                place,
+                reason: issue.reason.to_string(),
+            });
+        } else {
+            ready.push(place);
+        }
+    }
+    let pending = crate::present::breakpoints::pending_message(breakpoint).map(|message| {
+        protocol::PendingBreakpoint {
+            message,
+            places: pending,
+        }
+    });
+    (ready, pending)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn web_breakpoints_keep_pending_locations_separate_from_ready_places() {
+        let location = microscope::BreakpointLocation::Managed(microscope::ManagedLocation {
+            runtime: microscope::RuntimeId::new(1),
+            place: microscope::ManagedPlace::Line {
+                path: "/src/app.py".into(),
+                line: 3,
+            },
+        });
+        let mut breakpoint = microscope::Breakpoint {
+            id: microscope::BreakpointId::new(1),
+            spec: microscope::BreakpointSpec::Function("managed".into()),
+            locations: Arc::from([microscope::ResolvedBreakpointLocation {
+                location: location.clone(),
+                code_instances: Arc::from([]),
+                library: None,
+            }]),
+            pending_locations: Arc::from([microscope::PendingBreakpointLocation {
+                location,
+                reason: "waiting for an acknowledgement".into(),
+            }]),
+            hit_condition: None,
+            condition: None,
+            log_message: None,
+            hit_count: 0,
+            enabled: true,
+            temporary: false,
+        };
+        let source = Place {
+            address: String::new(),
+            function: None,
+            path: Some("/src/app.py".into()),
+            line: Some(3),
+        };
+        let (ready, pending) = breakpoint_places(
+            &breakpoint,
+            vec![(&breakpoint.locations[0], source.clone())],
+        );
+        assert!(ready.is_empty());
+        let pending = pending.expect("visible pending state");
+        assert!(pending.message.contains("acknowledgement"));
+        assert_eq!(pending.places[0].place, source);
+        let json = serde_json::to_value(&pending).expect("wire state");
+        assert_eq!(
+            json["places"][0]["reason"],
+            "waiting for an acknowledgement"
+        );
+
+        let native = microscope::ResolvedBreakpointLocation {
+            location: microscope::BreakpointLocation::Virtual(VirtualAddress::new(0x1234)),
+            code_instances: Arc::from([]),
+            library: None,
+        };
+        let mut locations = breakpoint.locations.to_vec();
+        locations.push(native);
+        breakpoint.locations = locations.into();
+        let native = Place {
+            address: "0x1234".into(),
+            function: None,
+            path: None,
+            line: None,
+        };
+        let queried = || {
+            vec![
+                (&breakpoint.locations[0], source.clone()),
+                (&breakpoint.locations[1], native.clone()),
+            ]
+        };
+        let (ready, pending) = breakpoint_places(&breakpoint, queried());
+        assert_eq!(ready, vec![native.clone()]);
+        assert!(
+            pending
+                .expect("partial arming")
+                .message
+                .contains("some locations pending")
+        );
+        breakpoint.pending_locations = Arc::from([]);
+        let (ready, pending) = breakpoint_places(
+            &breakpoint,
+            vec![
+                (&breakpoint.locations[0], source.clone()),
+                (&breakpoint.locations[1], native.clone()),
+            ],
+        );
+        assert_eq!(ready, vec![source, native]);
+        assert!(pending.is_none());
+        let wire = protocol::Breakpoint {
+            id: 1,
+            location: "managed".into(),
+            condition: None,
+            hit_condition: None,
+            log_message: None,
+            hits: 0,
+            places: ready,
+            pending,
+        };
+        assert!(
+            serde_json::to_value(&wire)
+                .expect("wire state")
+                .get("pending")
+                .is_none()
+        );
     }
 }

@@ -22,6 +22,7 @@ pub mod index;
 pub mod lines;
 pub mod locations;
 pub mod packages;
+pub mod python;
 pub mod resumes;
 mod schema;
 mod strings;

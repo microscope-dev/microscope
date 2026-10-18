@@ -408,6 +408,15 @@ fn wait_status(event: &WaitEvent) -> String {
 }
 
 impl InspectionOps for SimTrace {
+    fn target_thread_id(
+        &self,
+        _process: Pid,
+        thread: Pid,
+    ) -> Option<crate::runtime_model::TargetThreadId> {
+        // The kernel model has one PID namespace and uses these IDs.
+        crate::runtime_model::TargetThreadId::new(u64::try_from(thread.as_raw()).ok()?)
+    }
+
     fn read_word(&self, pid: Pid, address: u64) -> Result<u64> {
         self.kernel()
             .peek(tid(pid), address)
@@ -887,6 +896,7 @@ impl SimController {
             SessionLease::detached(),
             ExecutableSource {
                 display_path: Arc::new(PathBuf::from(&*executable.path)),
+                launch_path: Arc::new(PathBuf::from(&*executable.path)),
                 data: Arc::clone(&executable.data),
                 identity: FileIdentity {
                     inode: executable.inode,
@@ -926,6 +936,9 @@ impl SimController {
         let message = self.controller.next_message(false)?;
         let (description, trap) = match &message {
             ControllerMessage::Request(request) => (request.describe(), None),
+            ControllerMessage::AgentTimeout => {
+                ("runtime agent acknowledgement deadline".into(), None)
+            }
             ControllerMessage::Wait(event) => (
                 format!("wait {}", wait_status(event)),
                 match *event {
@@ -990,9 +1003,10 @@ impl SimController {
                         breakpoint.locations.iter().filter_map(|resolved| {
                             super::breakpoints::runtime_breakpoint_address(
                                 inferior,
-                                resolved.location,
+                                &resolved.location,
                             )
                             .ok()
+                            .flatten()
                         })
                     })
                     .map(VirtualAddress::get)

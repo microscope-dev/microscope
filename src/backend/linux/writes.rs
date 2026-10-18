@@ -5,8 +5,10 @@ use std::sync::Arc;
 use nix::unistd::Pid;
 
 use crate::protocol::{BreakpointSpec, DebuggerEvent, ExecutionId, Reply, StopId, StopReason};
+use crate::runtime_model::RuntimeWrite;
 use crate::{CodeInstanceId, Error, ModuleId, ProcessId, Result, VirtualAddress};
 
+use super::memory::read_logical_memory;
 use super::native::LinuxTraceOps;
 use super::{
     Controller, LinuxError, backend_error, debug_thread_id, process_id, validate_process,
@@ -40,6 +42,81 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.write_memory_as(pid, address, bytes)
     }
 
+    /// Checks all expected bytes before making a runtime's writes, while
+    /// every thread is stopped. A kernel write failure can leave earlier
+    /// bytes changed; the error reports that partial progress.
+    pub(super) fn write_for_runtime(
+        &mut self,
+        writes: &[RuntimeWrite],
+    ) -> std::result::Result<(), Arc<str>> {
+        let inferior = self
+            .inferior
+            .as_ref()
+            .ok_or_else(|| Arc::<str>::from("the process is gone"))?;
+        if !inferior
+            .threads
+            .iter()
+            .all(|(&pid, thread)| inferior.settled(pid, thread))
+        {
+            return Err("the process is running".into());
+        }
+
+        let pid = inferior.memory_thread();
+        for write in writes {
+            if write.expected.len() != write.bytes.len() {
+                return Err(format!(
+                    "the write at {} replaces {} bytes with {}",
+                    write.address,
+                    write.expected.len(),
+                    write.bytes.len()
+                )
+                .into());
+            }
+
+            let held = read_logical_memory(
+                &self.ptrace,
+                pid,
+                &inferior.breakpoints,
+                write.address,
+                write.expected.len(),
+            )
+            .map_err(|error| -> Arc<str> {
+                format!("the memory at {} cannot be read: {error}", write.address).into()
+            })?;
+            if held.bytes != write.expected {
+                return Err(format!(
+                    "the memory at {} no longer holds what the runtime read",
+                    write.address
+                )
+                .into());
+            }
+        }
+
+        for (made, write) in writes.iter().enumerate() {
+            record!(
+                "a runtime writes {} bytes at {}",
+                write.bytes.len(),
+                write.address
+            );
+            let written = self
+                .write_memory_as(pid, write.address, &write.bytes)
+                .map_err(|error| error.to_string());
+            if written != Ok(write.bytes.len() as u64) {
+                let error =
+                    written.map_or_else(|error| error, |count| format!("{count} bytes were"));
+                return Err(format!(
+                    "the memory at {} could not be written ({error}), after {made} of the \
+                     runtime's {} writes were made",
+                    write.address,
+                    writes.len()
+                )
+                .into());
+            }
+        }
+
+        Ok(())
+    }
+
     /// Writes memory through a stopped thread; see [`Self::write_memory`].
     pub(super) fn write_memory_as(
         &mut self,
@@ -59,6 +136,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         {
             stop.task_locators.borrow_mut().clear();
             stop.task_sets.borrow_mut().take();
+            stop.interpreted.borrow_mut().clear();
+            stop.memory.forget();
         }
 
         if length > MAX_PUBLIC_MEMORY_WRITE {
@@ -267,6 +346,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         stop.presentations.insert(pid, presentation);
         stop.task_locators.borrow_mut().clear();
         stop.task_sets.borrow_mut().take();
+        stop.interpreted.borrow_mut().clear();
+        stop.memory.forget();
         let process_id = process_id(inferior.tgid);
         self.bump_revision();
         Ok((

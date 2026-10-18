@@ -66,6 +66,11 @@ pub enum Error {
     #[error("breakpoint {0} was not found")]
     BreakpointNotFound(u64),
 
+    /// A language runtime runs code the breakpoint names, but cannot stop
+    /// there, for the reason given.
+    #[error("the runtime cannot stop there: {0}")]
+    RuntimeBreakpoint(Arc<str>),
+
     #[error("invalid hit condition: {0}")]
     InvalidHitCondition(String),
 
@@ -193,6 +198,11 @@ pub enum Error {
     #[error("process identifier {0} is invalid")]
     InvalidProcessId(u64),
 
+    /// A program named without a directory that neither the current
+    /// directory nor `PATH` has.
+    #[error("no program named '{}' is in the current directory or on PATH", .0.display())]
+    ProgramNotFound(PathBuf),
+
     #[error(
         "process {0} has several threads; only a single-threaded process can be launched through"
     )]
@@ -230,6 +240,9 @@ pub enum Error {
 
     #[error("the frame is a suspended task's: it has no registers and runs no code")]
     FrameSuspended,
+
+    #[error("the frame is interpreted: it has no registers and no machine code")]
+    FrameInterpreted,
 
     #[error("the frames of task {task} are unavailable: {reason}")]
     TaskUnavailable {
@@ -276,6 +289,12 @@ pub enum Error {
     #[error("cannot step from the selected frame: {0}")]
     FrameStepUnsupported(Arc<str>),
 
+    #[error("runtime agent operation failed: {0}")]
+    RuntimeAgent(Arc<str>),
+
+    #[error("cannot resume the requested scope: {0}")]
+    RuntimeResumeUnsupported(Arc<str>),
+
     #[error("an advance runs to a location, so it is requested with the location")]
     AdvanceWithoutLocation,
 
@@ -313,6 +332,11 @@ pub enum Error {
 
     #[error("source file {path} does not exist{}", missing_source_detail(.path, .tried))]
     SourceFileMissing { path: PathBuf, tried: Vec<PathBuf> },
+
+    /// The code was compiled from text with no file, which its runtime
+    /// names in angle brackets, as Python names code from `-c` `<string>`.
+    #[error("the code was compiled from {name}, which names no file")]
+    SourceNotAFile { name: Arc<str> },
 
     #[error("a source path rule needs a nonempty prefix to replace")]
     EmptySourcePathPrefix,

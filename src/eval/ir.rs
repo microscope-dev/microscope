@@ -1,9 +1,11 @@
 //! A bound expression: a tree whose every node has a type, whose every
 //! conversion is explicit, and whose names are resolved.
 
+use std::sync::Arc;
+
 use super::number::{BitOperator, Float, FloatFormat, FloatOperator, IntType, Integer};
 use super::syntax::Span;
-use super::syntax::ast::BinaryOp;
+use super::syntax::ast::{BinaryOp, UnaryOp};
 use super::target::Register;
 use super::types::Ty;
 use crate::TypeReference;
@@ -24,6 +26,25 @@ impl<O, S> Program<O, S> {
     /// when a value is needed.
     pub const fn is_place(&self) -> bool {
         self.root.is_place()
+    }
+
+    /// The data object the program names, when it names nothing more.
+    pub const fn named_object(&self) -> Option<&O> {
+        match &self.root.op {
+            Op::Object(object) => Some(object),
+            _ => None,
+        }
+    }
+
+    /// The data object an assignment stores in, when it names it alone.
+    pub fn assigned_object(&self) -> Option<&O> {
+        match &self.root.op {
+            Op::Assign { target, .. } => match &target.op {
+                Op::Object(object) => Some(object),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// The data object whose storage holds the result, when the result is
@@ -103,7 +124,9 @@ impl<O, S> Node<O, S> {
                 base.mentions(test) || indices.iter().any(|index| index.mentions(test))
             }
             Op::Holds { base, .. } => base.mentions(test),
-            Op::At { address, .. } | Op::Raw { address } => address.mentions(test),
+            Op::At { address, .. } | Op::Raw { address } | Op::Interpreted { address, .. } => {
+                address.mentions(test)
+            }
             Op::Load(operand)
             | Op::AddressOf(operand)
             | Op::Decay(operand)
@@ -114,8 +137,10 @@ impl<O, S> Node<O, S> {
             | Op::Fit(operand)
             | Op::Convert { operand, .. }
             | Op::Length { operand, .. }
-            | Op::Capacity { operand, .. } => operand.mentions(test),
+            | Op::Capacity { operand, .. }
+            | Op::DynamicUnary { operand, .. } => operand.mentions(test),
             Op::Arithmetic { left, right, .. }
+            | Op::DynamicArithmetic { left, right, .. }
             | Op::FloatArithmetic { left, right, .. }
             | Op::Bitwise { left, right, .. }
             | Op::Compare { left, right, .. }
@@ -150,7 +175,12 @@ impl<O, S> Node<O, S> {
     pub const fn is_place(&self) -> bool {
         matches!(
             self.op,
-            Op::Object(_) | Op::Step { .. } | Op::Entry { .. } | Op::At { .. } | Op::Raw { .. }
+            Op::Object(_)
+                | Op::Step { .. }
+                | Op::Entry { .. }
+                | Op::At { .. }
+                | Op::Raw { .. }
+                | Op::Interpreted { .. }
         ) || matches!(&self.op, Op::Choose { places: true, .. })
     }
 }
@@ -186,6 +216,10 @@ pub enum Comparison {
 
     /// Two strings.
     Texts,
+
+    /// Values one of which has a dynamic type, compared by the types they
+    /// have when they run.
+    Dynamic,
 }
 
 /// A conversion of a value to another type.
@@ -227,6 +261,10 @@ pub enum Length {
 
     /// The length of a string the expression computed.
     Bytes,
+
+    /// The length a value of a dynamic type has, as its language measures
+    /// it.
+    Dynamic,
 }
 
 /// How `cap` measures.
@@ -286,6 +324,13 @@ pub enum Op<O, S> {
         address: Box<Node<O, S>>,
     },
 
+    /// The interpreter's object a computed pointer points at, as a cast to
+    /// the dynamic type `ty` takes it.
+    Interpreted {
+        ty: Arc<str>,
+        address: Box<Node<O, S>>,
+    },
+
     /// The value at a place.
     Load(Box<Node<O, S>>),
     Register(Register),
@@ -308,6 +353,20 @@ pub enum Op<O, S> {
         op: BinaryOp,
         left: Box<Node<O, S>>,
         right: Box<Node<O, S>>,
+    },
+
+    /// `+ - * / % & | ^ << >>` of values one of which has a dynamic type,
+    /// by the rules of the types they have when they run.
+    DynamicArithmetic {
+        op: BinaryOp,
+        left: Box<Node<O, S>>,
+        right: Box<Node<O, S>>,
+    },
+
+    /// `-` or `~` of a value of a dynamic type.
+    DynamicUnary {
+        op: UnaryOp,
+        operand: Box<Node<O, S>>,
     },
 
     /// Float arithmetic in the node's format.

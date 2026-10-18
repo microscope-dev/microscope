@@ -9,7 +9,7 @@ use nix::unistd::Pid;
 use crate::debug_info::{TailJump, VariableRuntimeError};
 use crate::model::FrameMetadata;
 use crate::protocol::{FramePresentation, PresentedFrame, StepKind, StopId, StopReason};
-use crate::runtime_model::{Crossing, futures};
+use crate::runtime_model::{Crossing, InterpretedFrame, futures};
 use crate::unwind::{
     CallerProvider, CallerResult, DEFAULT_MAX_FRAMES, FrameContext, MemoryReader, RETURN_ADDRESS,
     RSP, RegisterFile, collect_frames,
@@ -105,7 +105,11 @@ impl<P: InspectionOps> Controller<P> {
         // Every instance a breakpoint hit lies in the one chain, outermost
         // first. Where several hit together, the stop presents the
         // innermost, as gdb does; the others are its callers.
-        if let Some(StopReason::Breakpoint { address, .. }) = reason {
+        if let Some(StopReason::Breakpoint {
+            address: Some(address),
+            ..
+        }) = reason
+        {
             let hit = self.breakpoint_code_instances(inferior, *address)?;
             if let Some(target) = location
                 .physical_instance
@@ -172,7 +176,7 @@ impl<P: InspectionOps> Controller<P> {
             };
 
             for resolved in breakpoint.locations.iter() {
-                if runtime_breakpoint_address(inferior, resolved.location)? == address {
+                if runtime_breakpoint_address(inferior, &resolved.location)? == Some(address) {
                     instances.extend(resolved.code_instances.iter().copied());
                 }
             }
@@ -195,7 +199,9 @@ impl<P: InspectionOps> Controller<P> {
             return self.outer_frame_location(inferior, root, frame);
         };
 
-        if frame.get() != 0 {
+        // A thread stopped in an interpreter's loop has the frame the loop
+        // runs innermost, before the loop's own.
+        if frame.get() != 0 || self.interprets_on(inferior, root) {
             return self.outer_frame_location(inferior, root, frame);
         }
 
@@ -236,6 +242,8 @@ impl<P: InspectionOps> Controller<P> {
     pub(super) fn backtrace(&self, stop_id: StopId, root: &StackRoot) -> Result<Backtrace> {
         let inferior = self.stopped_root(stop_id, root)?;
         let mut trace = if let Some(trace) = self.async_backtrace(inferior, root)? {
+            trace
+        } else if let Some(trace) = super::interpreted::task_backtrace(root)? {
             trace
         } else {
             let presentation = self.root_presentation(root)?;
@@ -362,6 +370,7 @@ impl<P: InspectionOps> Controller<P> {
                 ..
             } => (None, registers.clone(), *after_call, Vec::new()),
             RootOrigin::Suspended { .. } => return Err(Error::FrameSuspended),
+            RootOrigin::Interpreted { .. } => return Err(Error::FrameInterpreted),
         };
 
         let instruction = registers
@@ -461,11 +470,21 @@ impl<P: InspectionOps> Controller<P> {
             return Ok(resolved);
         }
 
+        if let Some(resolved) = super::interpreted::resolve_task_frame(root, frame)? {
+            return Ok(resolved);
+        }
+
         let level = frame.get() as usize;
 
         // Every activation presents at least one logical frame, so unwinding
-        // one activation per level always reaches the requested frame.
-        let max_frames = level.saturating_add(1).min(DEFAULT_MAX_FRAMES);
+        // one activation per level always reaches the requested frame; but
+        // interpreted frames are placed by every activation of their loop,
+        // so a thread that runs them is unwound as its backtrace is.
+        let max_frames = if self.interprets_on(inferior, root) {
+            DEFAULT_MAX_FRAMES
+        } else {
+            level.saturating_add(1).min(DEFAULT_MAX_FRAMES)
+        };
         let stack = self.physical_stack(inferior, root, max_frames)?;
         let modules = self.unwind_modules(inferior);
 
@@ -515,14 +534,22 @@ impl<P: InspectionOps> Controller<P> {
             });
         };
 
-        let FrameOrigin {
-            activation,
-            jump,
-            future,
-        } = expanded.origins[level];
-        if let Some(future) = future {
-            return Ok(self.suspended_frame(frame, selected, &expanded.futures[future]));
-        }
+        let FrameOrigin { activation, source } = expanded.origins[level];
+        let jump = match source {
+            FrameSource::Activation => None,
+            FrameSource::TailCall(module, address) => Some((module, address)),
+            FrameSource::Future(future) => {
+                return Ok(self.suspended_frame(frame, selected, &expanded.futures[future]));
+            }
+            FrameSource::Interpreted(index) => {
+                return Ok(super::interpreted::resolved(
+                    frame,
+                    selected,
+                    activation,
+                    &expanded.interpreted[index],
+                ));
+            }
+        };
 
         let physical = &stack.frames[activation];
         let code = jump.or_else(|| {
@@ -537,12 +564,14 @@ impl<P: InspectionOps> Controller<P> {
                     .code_instance
                     .ok_or_else(|| Error::internal("inline frames name their code instance"))?,
             ),
-            // A thread's stack has no suspended frames.
+            // A thread's stack has no suspended frames, and an interpreted
+            // frame's state is no activation's.
             FrameKind::Physical
             | FrameKind::Signal
             | FrameKind::TailCall
             | FrameKind::Async { .. }
-            | FrameKind::Awaited { .. } => PresentedFrame::Physical,
+            | FrameKind::Awaited { .. }
+            | FrameKind::Interpreted { .. } => PresentedFrame::Physical,
         };
 
         // Only code a function describes has a source scope.
@@ -554,7 +583,8 @@ impl<P: InspectionOps> Controller<P> {
                 | FrameKind::Signal
                 | FrameKind::TailCall
                 | FrameKind::Async { .. }
-                | FrameKind::Awaited { .. },
+                | FrameKind::Awaited { .. }
+                | FrameKind::Interpreted { .. },
                 Some(_),
             ) => FrameScope::Function,
         };
@@ -661,6 +691,9 @@ impl<P: InspectionOps> Controller<P> {
     ) -> Result<ExecutionLocation> {
         let resolved = self.resolve_frame(inferior, root, frame)?;
         let selected = resolved.frame.ok_or(Error::AmbiguousInlineFrame)?;
+        if matches!(selected.kind, FrameKind::Interpreted { .. }) {
+            return Err(Error::FrameInterpreted);
+        }
 
         // A suspended frame whose resume address is unknown has no code to
         // locate.
@@ -1039,16 +1072,38 @@ pub(super) fn source_line_changed(
 pub(super) struct FrameOrigin {
     /// The physical activation whose state the frame has, or, for a frame
     /// whose function left by a tail call, the one whose state replaced it;
-    /// for a future's frame, the one that drives it.
+    /// for a frame a runtime's frame drives, the one that drives it.
     pub(super) activation: usize,
 
-    /// For a frame whose function left by a tail call, the module and an
-    /// address within its jump.
-    pub(super) jump: Option<(ModuleId, ImageAddress)>,
+    pub(super) source: FrameSource,
+}
 
-    /// For a frame of a future a frame drives, the future, in
-    /// [`Expanded::futures`].
-    pub(super) future: Option<usize>,
+impl FrameOrigin {
+    const fn of(activation: usize) -> Self {
+        Self {
+            activation,
+            source: FrameSource::Activation,
+        }
+    }
+}
+
+/// What a logical frame's state is read from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FrameSource {
+    /// Its activation: the activation's own function, or one inlined
+    /// into it.
+    Activation,
+
+    /// A function that left by a tail call, by its module and an address
+    /// within its jump.
+    TailCall(ModuleId, ImageAddress),
+
+    /// A future its activation drives, in [`Expanded::futures`].
+    Future(usize),
+
+    /// An interpreted frame its activation runs, or that its thread runs
+    /// where its place is unknown, in [`Expanded::interpreted`].
+    Interpreted(usize),
 }
 
 /// A stack's logical frames, and where each comes from.
@@ -1058,6 +1113,9 @@ pub(super) struct Expanded {
 
     /// The futures whose frames the trace shows, where frames drive them.
     pub(super) futures: Vec<futures::AsyncFrame>,
+
+    /// The interpreted frames the trace shows.
+    pub(super) interpreted: Vec<super::interpreted::Placed>,
 
     /// The declared types of the futures frames drive that cannot be read.
     pub(super) lost: Vec<crate::TypeReference>,
@@ -1091,12 +1149,15 @@ impl Expanded {
                 origin.activation
             );
             debug_assert!(
-                origin
-                    .future
-                    .is_none_or(|future| future < self.futures.len()),
-                "the frame at {level} drives future {:?} of {}",
-                origin.future,
-                self.futures.len()
+                match origin.source {
+                    FrameSource::Future(future) => future < self.futures.len(),
+                    FrameSource::Interpreted(frame) => frame < self.interpreted.len(),
+                    FrameSource::Activation | FrameSource::TailCall(..) => true,
+                },
+                "the frame at {level} is {:?} of {} futures and {} interpreted frames",
+                origin.source,
+                self.futures.len(),
+                self.interpreted.len()
             );
         }
 
@@ -1127,14 +1188,7 @@ fn expand_inline_backtrace(
     for (activation, physical) in stack.frames.iter().enumerate() {
         let first = frames.len();
         let code = expand_activation(stack, activation, modules, presentation, &mut frames)?;
-        origins.resize(
-            frames.len(),
-            FrameOrigin {
-                activation,
-                jump: None,
-                future: None,
-            },
-        );
+        origins.resize(frames.len(), FrameOrigin::of(activation));
 
         // A signal interrupted its frame rather than calling it.
         if let Some((module, address)) = code
@@ -1159,8 +1213,7 @@ fn expand_inline_backtrace(
                     frames.len(),
                     FrameOrigin {
                         activation,
-                        jump: Some((module.loaded.id, jump.lookup)),
-                        future: None,
+                        source: FrameSource::TailCall(module.loaded.id, jump.lookup),
                     },
                 );
             }
@@ -1180,6 +1233,7 @@ fn expand_inline_backtrace(
         },
         origins,
         futures: Vec::new(),
+        interpreted: Vec::new(),
         lost: Vec::new(),
     };
 
@@ -1397,6 +1451,16 @@ pub(super) enum RootOrigin {
         module: LoadedModule,
         reader: Pid,
     },
+
+    /// A suspended task whose frames the interpreter of the runtime
+    /// `runtime` keeps, innermost first, and why they end before the
+    /// task's outermost, if they do.
+    Interpreted {
+        runtime: crate::RuntimeId,
+        frames: Arc<[InterpretedFrame]>,
+        end: Option<Arc<str>>,
+        reader: Pid,
+    },
 }
 
 impl StackRoot {
@@ -1413,7 +1477,8 @@ impl StackRoot {
         match self.origin {
             RootOrigin::Thread(pid)
             | RootOrigin::Saved { reader: pid, .. }
-            | RootOrigin::Suspended { reader: pid, .. } => pid,
+            | RootOrigin::Suspended { reader: pid, .. }
+            | RootOrigin::Interpreted { reader: pid, .. } => pid,
         }
     }
 
@@ -1421,7 +1486,9 @@ impl StackRoot {
     pub(super) const fn thread(&self) -> Option<Pid> {
         match self.origin {
             RootOrigin::Thread(pid) => Some(pid),
-            RootOrigin::Saved { .. } | RootOrigin::Suspended { .. } => None,
+            RootOrigin::Saved { .. }
+            | RootOrigin::Suspended { .. }
+            | RootOrigin::Interpreted { .. } => None,
         }
     }
 }
@@ -1460,6 +1527,13 @@ pub(super) enum FrameScope {
         object: VirtualAddress,
         ty: TypeReference,
         state: u64,
+    },
+
+    /// An interpreted frame's, which `runtime`'s interpreter keeps at
+    /// `frame`.
+    Interpreted {
+        runtime: crate::RuntimeId,
+        frame: VirtualAddress,
     },
 }
 

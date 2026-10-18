@@ -296,6 +296,9 @@ pub(super) struct Stop {
     pub context: ExecutionContext,
     pub reason: StopReason,
 
+    /// The reason the client was told, as its stopped event named it.
+    pub told: &'static str,
+
     /// The frame of the stopped context the debugger selected, as at an
     /// exception the frame that raised it; the innermost otherwise.
     pub selected: StackFrameId,
@@ -1748,6 +1751,7 @@ impl Session {
         };
 
         body["reason"] = kind.into();
+        let told = kind;
         if let Some(description) = description {
             body["description"] = description.into();
         }
@@ -1761,6 +1765,7 @@ impl Session {
             thread,
             context,
             reason,
+            told,
             selected,
         });
         self.client.event("stopped", body).await
@@ -2298,19 +2303,20 @@ impl Session {
             };
         }
 
-        if breakpoint.locations.is_empty() {
+        if breakpoint.ready_locations().next().is_none() {
             return State::Pending {
                 breakpoint: breakpoint.id,
-                message: format!(
+                message: crate::present::breakpoints::pending_message(breakpoint).unwrap_or_else(|| format!(
                     "no loaded module has code for {}; the breakpoint resolves when one that does loads",
                     breakpoint.spec
-                ),
+                )),
             };
         }
 
         State::Resolved {
             breakpoint: breakpoint.id,
             placement: self.placement(breakpoint).await,
+            message: crate::present::breakpoints::pending_message(breakpoint),
         }
     }
 
@@ -2321,14 +2327,28 @@ impl Session {
             return Placement::default();
         };
 
-        let Some(first) = breakpoint.locations.first() else {
+        let Some(first) = breakpoint.ready_locations().next() else {
             return Placement::default();
         };
 
         // A location's image, and its address there.
-        let (image, address, virtual_address) = match (first.location, first.library) {
+        let (image, address, virtual_address) = match (&first.location, first.library) {
             (microscope::BreakpointLocation::Image(address), _) => {
-                (Arc::clone(handle.module_image()), address, None)
+                (Arc::clone(handle.module_image()), *address, None)
+            }
+
+            // A runtime's location has no address: it is where the runtime
+            // says it is.
+            (microscope::BreakpointLocation::Managed(managed), _) => {
+                return Placement {
+                    source: match &managed.place {
+                        microscope::ManagedPlace::Line { path, line } => {
+                            Some((self.local_path(Path::new(&**path)), u64::from(*line)))
+                        }
+                        microscope::ManagedPlace::Function { .. } => None,
+                    },
+                    address: None,
+                };
             }
             (microscope::BreakpointLocation::Virtual(address), Some(library)) => {
                 let bias = handle.loaded_modules().await.ok().and_then(|snapshot| {
@@ -2340,7 +2360,7 @@ impl Session {
                 });
                 match (self.image(library).await, bias) {
                     (Some(image), Some(bias)) => {
-                        (image, bias.wrapping_unload(address), Some(address))
+                        (image, bias.wrapping_unload(*address), Some(*address))
                     }
                     _ => {
                         return Placement {
@@ -2381,8 +2401,13 @@ impl Session {
     fn breakpoint_json(&self, group: &Group, entry: &Entry) -> Value {
         let mut body = json!({"id": entry.id});
         let (message, reason) = match &entry.state {
-            State::Resolved { placement, .. } => {
+            State::Resolved {
+                placement, message, ..
+            } => {
                 body["verified"] = true.into();
+                if let Some(message) = message {
+                    body["message"] = message.clone().into();
+                }
                 if let Some((path, line)) = &placement.source {
                     body["line"] = self.line_to_client(*line).into();
                     body["source"] = match group {
@@ -2827,38 +2852,25 @@ pub(super) fn stop_kind(reason: &StopReason) -> &'static str {
 
 fn describe_stop(reason: &StopReason) -> (&'static str, Option<String>, Option<String>) {
     match reason {
-        StopReason::Step { .. } => ("step", None, None),
-        StopReason::StepIncomplete { description, .. } => (
-            "step",
-            Some(format!(
-                "the step stopped before it completed: {description}"
-            )),
-            Some("step incomplete".to_owned()),
-        ),
-        StopReason::TaskEnded { task, ending, .. } => {
-            let ending = match ending {
-                microscope::TaskEnding::Finished => "finished",
-                microscope::TaskEnding::Cancelled => "was cancelled",
-            };
-
-            (
-                "step",
-                Some(format!("the step's task {task} {ending}")),
-                Some(format!("task {task} {ending}")),
-            )
-        }
-        StopReason::FutureDropped { .. } => (
-            "step",
-            Some("the future the step waited for was dropped".to_owned()),
-            Some("future dropped".to_owned()),
-        ),
+        StopReason::Step { .. }
+        | StopReason::StepIncomplete { .. }
+        | StopReason::TaskEnded { .. }
+        | StopReason::FutureDropped { .. } => describe_step_stop(reason),
         StopReason::Pause => ("pause", None, None),
         StopReason::Jump => ("goto", None, None),
+        StopReason::Assignment => ("step", None, Some("the variable was assigned".to_owned())),
         StopReason::Entry | StopReason::Attach => ("entry", None, None),
         StopReason::LanguageException(exception) => (
             "exception",
             Some(exception.message.to_string()),
             Some(language_exception_text(exception.kind).to_owned()),
+        ),
+        StopReason::RuntimeEvent { description } => (
+            "exception",
+            Some(format!(
+                "the runtime reported an event that could not be read: {description}"
+            )),
+            Some("unreadable runtime event".to_owned()),
         ),
         StopReason::ProgramBreakpoint { address } => (
             "exception",
@@ -2929,6 +2941,37 @@ fn describe_stop(reason: &StopReason) -> (&'static str, Option<String>, Option<S
     }
 }
 
+/// The `stopped` event's reason, description, and text for a step's end.
+fn describe_step_stop(reason: &StopReason) -> (&'static str, Option<String>, Option<String>) {
+    match reason {
+        StopReason::StepIncomplete { description, .. } => (
+            "step",
+            Some(format!(
+                "the step stopped before it completed: {description}"
+            )),
+            Some("step incomplete".to_owned()),
+        ),
+        StopReason::TaskEnded { task, ending, .. } => {
+            let ending = match ending {
+                microscope::TaskEnding::Finished => "finished",
+                microscope::TaskEnding::Cancelled => "was cancelled",
+            };
+
+            (
+                "step",
+                Some(format!("the step's task {task} {ending}")),
+                Some(format!("task {task} {ending}")),
+            )
+        }
+        StopReason::FutureDropped { .. } => (
+            "step",
+            Some("the future the step waited for was dropped".to_owned()),
+            Some("future dropped".to_owned()),
+        ),
+        _ => ("step", None, None),
+    }
+}
+
 /// What a client shows for each kind of exception a runtime reports.
 pub(super) const fn language_exception_text(
     kind: microscope::LanguageExceptionKind,
@@ -2955,6 +2998,62 @@ mod tests {
             command: command.to_owned(),
             arguments,
         }
+    }
+
+    #[tokio::test]
+    async fn a_resolved_runtime_location_is_pending_until_arming_recovers() {
+        let (outgoing, _messages) = mpsc::channel(8);
+        let mut session = Session::new(Client::new(outgoing), Cancelled::default());
+        let location = microscope::BreakpointLocation::Managed(microscope::ManagedLocation {
+            runtime: microscope::RuntimeId::new(1),
+            place: microscope::ManagedPlace::Line {
+                path: "app.scripted".into(),
+                line: 3,
+            },
+        });
+        let mut breakpoint = microscope::Breakpoint {
+            id: microscope::BreakpointId::new(1),
+            spec: microscope::BreakpointSpec::Function("managed".into()),
+            locations: Arc::from([microscope::ResolvedBreakpointLocation {
+                location: location.clone(),
+                code_instances: Arc::from([]),
+                library: None,
+            }]),
+            pending_locations: Arc::from([microscope::PendingBreakpointLocation {
+                location,
+                reason: "waiting for a runtime acknowledgement".into(),
+            }]),
+            hit_condition: None,
+            condition: None,
+            log_message: None,
+            hit_count: 0,
+            enabled: true,
+            temporary: false,
+        };
+        assert!(matches!(session.state_of(&breakpoint).await,
+            State::Pending { message, .. } if message.contains("runtime acknowledgement")));
+        breakpoint.enabled = false;
+        assert!(matches!(
+            session.state_of(&breakpoint).await,
+            State::Disabled { .. }
+        ));
+        breakpoint.enabled = true;
+        let mut locations = breakpoint.locations.to_vec();
+        locations.push(microscope::ResolvedBreakpointLocation {
+            location: microscope::BreakpointLocation::Virtual(VirtualAddress::new(0x1234)),
+            code_instances: Arc::from([]),
+            library: None,
+        });
+        breakpoint.locations = locations.into();
+        assert!(matches!(
+            session.state_of(&breakpoint).await,
+            State::Resolved { message: Some(message), .. } if message.contains("some locations pending") && message.contains("runtime acknowledgement")
+        ));
+        breakpoint.pending_locations = Arc::from([]);
+        assert!(matches!(
+            session.state_of(&breakpoint).await,
+            State::Resolved { .. }
+        ));
     }
 
     #[test]

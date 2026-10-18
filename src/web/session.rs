@@ -99,7 +99,11 @@ impl From<microscope::Error> for Failure {
             | Error::NotRunning
             | Error::AlreadyRunning
             | Error::AlreadyStopped => ErrorKind::NotStopped,
+            // A frame the interpreter or a suspended task holds has no
+            // machine state, which is how such a frame is, not a failure.
             Error::PostMortemTarget
+            | Error::FrameInterpreted
+            | Error::FrameSuspended
             | Error::UnsupportedWatchAccess(..)
             | Error::DisassemblyUnsupported(..)
             | Error::HardwareWatchpointsUnavailable(..)
@@ -433,6 +437,7 @@ impl Session {
                 | Request::Registers(_)
                 | Request::StepTargets(_)
                 | Request::Signals
+                | Request::Exceptions
                 | Request::Modules
                 | Request::Functions(_)
                 | Request::Tasks(_)
@@ -471,6 +476,7 @@ impl Session {
             | Request::EditWatchpoint(_)
             | Request::RemoveWatchpoint(_)
             | Request::SetSignal(_) => return self.low_level(connection, request).await,
+            Request::SetException(choice) => Some(self.set_exception(&choice).await?),
             Request::ReloadViews => {
                 self.reload_views(connection).await?;
                 return Ok(Value::Null);
@@ -512,7 +518,10 @@ impl Session {
             Request::Share(protocol::Share { role: wanted, to }) => self.share(role, wanted, &to),
             Request::Backtrace(at) => {
                 let (handle, images) = self.current_images().await?;
-                Ok(to_value(&inspect::backtrace(&handle, &images, at).await?))
+                let selected = self.stop_frame(&at);
+                Ok(to_value(
+                    &inspect::backtrace(&handle, &images, at, selected).await?,
+                ))
             }
             Request::Tasks(at) => {
                 let (handle, images) = self.current_images().await?;
@@ -520,7 +529,8 @@ impl Session {
             }
             Request::Sources => {
                 let (_, images) = self.current_images().await?;
-                Ok(to_value(&inspect::sources(&images).await))
+                let python = self.python_project().await;
+                Ok(to_value(&inspect::sources(&images, python).await))
             }
             Request::Functions(query) => {
                 let (_, images) = self.current_images().await?;
@@ -528,7 +538,10 @@ impl Session {
             }
             Request::Source(protocol::SourcePath { path }) => {
                 let (handle, images) = self.current_images().await?;
-                Ok(to_value(&inspect::source(&handle, &images, &path).await?))
+                let python = self.python_project().await;
+                Ok(to_value(
+                    &inspect::source(&handle, &images, python.as_ref(), &path).await?,
+                ))
             }
             Request::Scopes(at) => Ok(to_value(&self.reader(connection).await?.scopes(at).await?)),
             Request::Children(of) => Ok(to_value(&protocol::Rows {
@@ -566,28 +579,14 @@ impl Session {
             Request::ReadMemory(read) => Ok(to_value(
                 &lowlevel::read_memory(&self.current_handle().await?, &read).await?,
             )),
-            Request::StepTargets(at) => {
-                let handle = self.current_handle().await?;
-                let context = inspect::context(&handle, at.stop, at.execution(), 0).await?;
-                let targets = handle.at(context).step_targets().await?;
-                let hex = |address: microscope::VirtualAddress| format!("{:#x}", address.get());
-                Ok(to_value(&protocol::StepTargets {
-                    calls: targets
-                        .iter()
-                        .map(|target| protocol::StepCall {
-                            call: hex(target.call),
-                            callee: target.callee.as_deref().map(str::to_owned),
-                            target: target.target.map(hex),
-                        })
-                        .collect(),
-                }))
-            }
+            Request::StepTargets(at) => Ok(to_value(&self.step_targets(&at).await?)),
             Request::Registers(at) => Ok(to_value(&protocol::Registers {
                 registers: lowlevel::registers(&self.current_handle().await?, at).await?,
             })),
             Request::Signals => Ok(to_value(&protocol::Signals {
                 signals: lowlevel::signals(&self.current_handle().await?).await?,
             })),
+            Request::Exceptions => Ok(to_value(&self.exceptions().await?)),
             Request::Modules => {
                 let (handle, images) = self.current_images().await?;
                 Ok(to_value(&protocol::Modules {
@@ -716,8 +715,31 @@ impl Session {
                             "a breakpoint goes at a function, FILE:LINE, FILE:FUNCTION, or 0xADDRESS",
                         )
                     })?;
-                let options = options(add.condition, add.hit_condition, add.log_message)?;
-                let breakpoint = handle.add_breakpoint_with(spec, options).await?;
+                let options = BreakpointOptions {
+                    pending: crate::cli::commands::is_python(&spec),
+                    ..options(add.condition, add.hit_condition, add.log_message)?
+                };
+                let breakpoint =
+                    handle
+                        .add_breakpoint_with(spec, options)
+                        .await
+                        .map_err(|error| {
+                            let hint = match &error {
+                                microscope::Error::FunctionNotFound(name) => {
+                                    crate::cli::commands::python_name_hint(
+                                        name,
+                                        handle.module_image(),
+                                    )
+                                }
+                                _ => None,
+                            };
+                            match hint {
+                                Some(hint) => {
+                                    Failure::new(ErrorKind::Invalid, format!("{error}; {hint}"))
+                                }
+                                None => Failure::from(error),
+                            }
+                        })?;
                 self.notice(connection, format!("set breakpoint {}", breakpoint.id));
                 return Ok(to_value(&Added {
                     id: breakpoint.id.get(),
@@ -1090,12 +1112,130 @@ impl Session {
             .ok_or_else(|| Failure::new(ErrorKind::Invalid, "nothing is being debugged"))
     }
 
+    /// Where a launched Python program's own files are, as its interpreter
+    /// begins `sys.path`; none for any other program, or one attached to.
+    async fn python_project(&self) -> Option<crate::present::python_files::Project> {
+        let (handle, spec) = self
+            .target
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|target| Some((target.handle.clone(), target.launch.clone()?)))?;
+        if !crate::present::debug_information::interprets_python(handle.module_image()) {
+            return None;
+        }
+
+        let cwd = match spec.cwd {
+            Some(cwd) => cwd,
+            None => std::env::current_dir().ok()?,
+        };
+        // The program's environment is this one, with the launch's changes.
+        let pythonpath = spec
+            .environment
+            .iter()
+            .rev()
+            .find(|(name, _)| name == "PYTHONPATH")
+            .map(|(_, value)| value.clone())
+            .or_else(|| std::env::var_os("PYTHONPATH"));
+        Some(crate::present::python_files::Project::of(
+            &spec.arguments,
+            &cwd,
+            pythonpath.as_deref(),
+        ))
+    }
+
     async fn current_handle(&self) -> Result<DebuggerHandle, Failure> {
         self.target
             .lock()
             .await
             .as_ref()
             .map(|target| target.handle.clone())
+            .ok_or_else(|| Failure::new(ErrorKind::Invalid, "nothing is being debugged"))
+    }
+
+    /// The calls on the line a thread stopped at, which a step can go into.
+    async fn step_targets(
+        &self,
+        at: &protocol::ThreadAt,
+    ) -> Result<protocol::StepTargets, Failure> {
+        let handle = self.current_handle().await?;
+        let context = inspect::context(&handle, at.stop, at.execution(), 0).await?;
+        let targets = handle.at(context).step_targets().await?;
+        let hex = |address: microscope::VirtualAddress| format!("{:#x}", address.get());
+        Ok(protocol::StepTargets {
+            calls: targets
+                .iter()
+                .map(|target| protocol::StepCall {
+                    call: hex(target.call),
+                    callee: target.callee.as_deref().map(str::to_owned),
+                    target: target.target.map(hex),
+                })
+                .collect(),
+        })
+    }
+
+    /// The frame the stop `at` names selected on its thread, which the
+    /// thread's frames fold around; a task's stack selects none of its own.
+    fn stop_frame(&self, at: &protocol::ThreadAt) -> u32 {
+        if at.task.is_some() {
+            return 0;
+        }
+        self.state
+            .borrow()
+            .stops
+            .iter()
+            .find(|entry| entry.stop == at.stop && entry.thread == at.thread)
+            .map_or(0, |entry| entry.frame)
+    }
+
+    /// The exceptions runtimes report, and whether each stops, as this
+    /// session's console keeps them.
+    async fn exceptions(&self) -> Result<protocol::Exceptions, Failure> {
+        let console = self.shared_console().await?;
+        let stops = console.lock().await.exception_stops();
+        Ok(protocol::Exceptions {
+            filters: microscope::ExceptionStops::filters()
+                .iter()
+                .map(|filter| protocol::ExceptionFilter {
+                    id: filter.id.to_owned(),
+                    language: filter.language.to_owned(),
+                    label: filter.label.to_owned(),
+                    description: filter.description.to_owned(),
+                    on: stops.stops(filter.id),
+                })
+                .collect(),
+        })
+    }
+
+    /// Chooses whether one filter's exceptions stop, as the console's
+    /// `catch` does, and says so.
+    async fn set_exception(&self, choice: &protocol::ExceptionChoice) -> Result<String, Failure> {
+        let console = self.shared_console().await?;
+        console
+            .lock()
+            .await
+            .set_exception_stop(&choice.id, choice.on)
+            .await
+            .map_err(|error| Failure::new(ErrorKind::Invalid, format!("{error:#}")))?;
+        self.count(
+            |target| &target.settings,
+            |state, count| state.settings = count,
+        )
+        .await;
+        Ok(format!(
+            "{} stopping at {} exceptions",
+            if choice.on { "started" } else { "stopped" },
+            choice.id
+        ))
+    }
+
+    /// The session's console, which keeps what `catch` chose.
+    async fn shared_console(&self) -> Result<Arc<tokio::sync::Mutex<Cli>>, Failure> {
+        self.target
+            .lock()
+            .await
+            .as_ref()
+            .map(|target| Arc::clone(&target.console))
             .ok_or_else(|| Failure::new(ErrorKind::Invalid, "nothing is being debugged"))
     }
 
@@ -1277,11 +1417,18 @@ impl Session {
             })?;
         drop(console);
 
-        // `set` changes values the tabs show.
-        if crate::cli::commands::line_command(text)
-            .is_some_and(|(spec, _)| spec.command == crate::cli::commands::Command::Set)
-        {
-            self.wrote().await;
+        // `set` changes values the tabs show, and `catch` which exceptions
+        // stop.
+        match crate::cli::commands::line_command(text).map(|(spec, _)| spec.command) {
+            Some(crate::cli::commands::Command::Set) => self.wrote().await,
+            Some(crate::cli::commands::Command::Catch) => {
+                self.count(
+                    |target| &target.settings,
+                    |state, count| state.settings = count,
+                )
+                .await;
+            }
+            _ => {}
         }
 
         Ok(ConsoleResult {

@@ -860,7 +860,7 @@ pub fn load(
     let (data, _) = crate::image::backing::read_input(path)?;
     crate::count!("input_bytes", data.len());
     drop(phase);
-    load_bytes_on_pool(path, &data, image_id, search)
+    load_bytes_on_pool(path, &data, image_id, search, crate::cache::current())
 }
 
 pub fn load_bytes(
@@ -870,7 +870,20 @@ pub fn load_bytes(
     search: &super::DebugFileSearch,
 ) -> Result<DebugInfo> {
     let _load = crate::span!("load", "{}", path.display());
-    load_bytes_on_pool(path, data, image_id, search)
+    load_bytes_on_pool(path, data, image_id, search, crate::cache::current())
+}
+
+/// Loads the debug information of an image that lives only as long as a
+/// process keeps it in memory, as a JIT compiler's objects do, which no
+/// other session would read from the cache.
+pub fn load_transient_bytes(
+    path: &Path,
+    data: &[u8],
+    image_id: crate::ModuleImageId,
+) -> Result<DebugInfo> {
+    let _load = crate::span!("load", "{}", path.display());
+    let search = super::DebugFileSearch::default();
+    load_bytes_on_pool(path, data, image_id, &search, None)
 }
 
 /// Loads an image's debug information on the loader's workers.
@@ -879,8 +892,8 @@ fn load_bytes_on_pool(
     data: &[u8],
     image_id: crate::ModuleImageId,
     search: &super::DebugFileSearch,
+    cache: Option<&crate::cache::ImageCache>,
 ) -> Result<DebugInfo> {
-    let cache = crate::cache::current();
     crate::pool::install(|| {
         load_debug_info(path, data, image_id, search, LoadLimits::default(), cache)
     })
@@ -1480,6 +1493,21 @@ fn load_image(
         assign_go_symbol_roles(table, &mut symbols.symbols);
     }
 
+    if super::cpython::carries_runtime(&object) {
+        super::cpython::assign_roles(
+            &mut function_metadata.functions,
+            &mut symbols.symbols,
+            super::roles::cpython_role,
+        );
+    }
+    if super::cpython::is_asyncio(&object) {
+        super::cpython::assign_roles(
+            &mut function_metadata.functions,
+            &mut symbols.symbols,
+            super::roles::asyncio_role,
+        );
+    }
+
     Ok(Read {
         target,
         address_range: image_address_range(&object)?,
@@ -1509,6 +1537,7 @@ fn load_image(
             sections: super::elf::load_sections(&object),
             thread_local_storage: super::elf::has_thread_local_storage(&object),
             thread_locals: super::elf::load_thread_locals(&object),
+            python: super::cpython::runtime(&object),
             debug_information: match dwarf_use {
                 DwarfUse::Unusable(reason) => crate::DebugInformation::Unusable { reason },
                 DwarfUse::Read => match (split_units(&dwarf, &catalog)?, &locals_left_out) {
@@ -1552,6 +1581,12 @@ fn bind(
         variables: Arc::new(variables::DwarfVariableInfo::new(&image)),
         image,
     })
+}
+
+/// The variables of an image no DWARF describes: it has none, and says
+/// so as a module stripped of its DWARF does.
+pub(super) fn no_variables(image: &ModuleImage) -> Arc<dyn super::VariableInfo> {
+    Arc::new(variables::DwarfVariableInfo::new(image))
 }
 
 /// The bytes of the views a module carries for its own types.
@@ -1818,6 +1853,14 @@ fn image_address_range(
         );
     }
 
+    // An image with no program headers, as a JIT compiler writes one to
+    // memory, lies where its allocated sections say.
+    if start == u64::MAX
+        && let Some(allocated) = super::gdb_jit::allocated_range(object)?
+    {
+        (start, end) = (allocated.start, allocated.end);
+    }
+
     if start == u64::MAX {
         start = 0;
     }
@@ -1893,7 +1936,115 @@ fn load_unwind_info(
                     .is_none()
             })
     });
+    if target.architecture == Architecture::X86_64 {
+        let code: Vec<(u64, &[u8])> = object
+            .sections()
+            .filter(|section| section.kind() == object::SectionKind::Text)
+            .filter_map(|section| Some((section.address(), section.data().ok()?)))
+            .collect();
+        let sections = UnwindSections::of(&unwind);
+        let mut restored = restored_returns(&sections.eh_frame(), &sections.bases, &code);
+        restored.extend(restored_returns(
+            &sections.debug_frame(),
+            &sections.bases,
+            &code,
+        ));
+        unwind.restored = restored;
+    }
+
     Ok(unwind)
+}
+
+/// The instructions of `section`'s functions at which registers their
+/// callers keep are already restored, though the rules still name the
+/// slots they were saved in, each with the registers as bits of
+/// [`X86_64_CALLEE_SAVED_REGISTERS`]: GCC's epilogues pop them and leave
+/// those rules, and a sample's copy of the stack begins above the slots.
+/// Only a row whose frame is gone, its return address at the stack
+/// pointer, that still names such a slot is read, from its first
+/// instruction, which a row always begins at. Code that runs straight to
+/// its return holds every one; otherwise the `pop` or `leave` that freed
+/// the frame, the last instruction of the row before, restored the
+/// register it loaded from the slot the row names, until code writes it
+/// or may go elsewhere.
+fn restored_returns<'data, S>(
+    section: &S,
+    bases: &BaseAddresses,
+    code: &[(u64, &[u8])],
+) -> Vec<(AddressRange<ImageAddress>, u32)>
+where
+    S: UnwindSection<Reader<'data>>,
+{
+    let bytes = |start: u64, end: u64| {
+        code.iter().find_map(|&(address, data)| {
+            let from = usize::try_from(start.checked_sub(address)?).ok()?;
+            let to = usize::try_from(end.checked_sub(address)?).ok()?;
+            data.get(from..to)
+        })
+    };
+
+    let mut restored = Vec::new();
+    let mut context = UnwindContext::new();
+    let mut walk = section.entries(bases);
+    while let Ok(Some(entry)) = walk.next() {
+        let gimli::CieOrFde::Fde(partial) = entry else {
+            continue;
+        };
+        let Ok(fde) = partial.parse(S::cie_from_offset) else {
+            continue;
+        };
+        let Ok(mut rows) = fde.rows(section, bases, &mut context) else {
+            continue;
+        };
+
+        // The row before: where it starts, and whether its frame is gone.
+        let mut before: Option<(u64, bool)> = None;
+        while let Ok(Some(row)) = rows.next_row() {
+            let (start, end) = (row.start_address(), row.end_address());
+            let gone = matches!(
+                row.cfa(),
+                CfaRule::RegisterAndOffset { register, offset: 8 } if register.0 == X86_64_RSP
+            );
+            let slots: Vec<(u32, i64)> = row
+                .registers()
+                .filter_map(|(register, rule)| {
+                    let RegisterRule::Offset(offset) = rule else {
+                        return None;
+                    };
+                    let index = X86_64_CALLEE_SAVED_REGISTERS
+                        .iter()
+                        .position(|saved| *saved == DwarfRegister::from(*register))?;
+                    Some((1 << index, *offset))
+                })
+                .collect();
+            let proved = (gone && !slots.is_empty())
+                .then(|| bytes(start, end))
+                .flatten()
+                .and_then(|code| {
+                    if let Some(end) = super::x86_64::runs_to_return(code, start) {
+                        return Some((end, super::x86_64::ALL_CALLEE_SAVED));
+                    }
+
+                    // A pop of the slot just below the return address.
+                    let (from, _) = before.filter(|(_, gone)| !gone)?;
+                    let popped = super::x86_64::restored_by(bytes(from, start)?, from)?;
+                    slots
+                        .contains(&(popped, -16))
+                        .then(|| (super::x86_64::keeps(code, start, popped), popped))
+                });
+            if let Some((end, registers)) = proved.filter(|(end, _)| *end > start) {
+                let range = AddressRange {
+                    start: ImageAddress::new(start),
+                    end: ImageAddress::new(end),
+                };
+                restored.push((range, registers));
+            }
+
+            before = Some((start, gone));
+        }
+    }
+
+    restored
 }
 
 /// The call-frame sections as gimli reads them.
@@ -2124,13 +2275,14 @@ impl UnwindInfo for DwarfUnwindInfo {
         let view = self.view();
         let sections = UnwindSections::in_image(view);
         let clobbered = self.call_clobbered_registers(address);
+        let restored = view.restored(address);
         let result = unwind_from_section(
             &sections.eh_frame(),
             view.eh_frame_index(),
             &sections.bases,
             address,
             registers,
-            clobbered,
+            (clobbered, restored),
             memory,
         );
         let result = if matches!(result, Err(UnwindTermination::NoUnwindInfo { .. })) {
@@ -2140,7 +2292,7 @@ impl UnwindInfo for DwarfUnwindInfo {
                 &sections.bases,
                 address,
                 registers,
-                clobbered,
+                (clobbered, restored),
                 memory,
             )
         } else {
@@ -2244,7 +2396,7 @@ fn unwind_from_section<'data, S>(
     bases: &BaseAddresses,
     address: ImageAddress,
     registers: &RegisterFile,
-    clobbered: &[DwarfRegister],
+    (clobbered, restored): (&[DwarfRegister], u32),
     memory: &mut dyn MemoryReader,
 ) -> std::result::Result<UnwindStep, UnwindTermination>
 where
@@ -2281,11 +2433,19 @@ where
         match rules.apply(&mut caller, memory, register, rule) {
             // A register saved where memory cannot be read is unknown in
             // the caller, as an undefined one is: an epilogue's rules may
-            // still name a slot it popped, below a sample's copy. Only the
+            // still name a slot it popped, below a sample's copy. Where the
+            // code proves it restored the registers its caller keeps, the
+            // caller's value is the one the register holds. Only the
             // return address, without which there is no caller, ends the
             // unwind.
             Err(UnwindTermination::MemoryReadFailed { .. }) if register != return_register => {
-                caller.remove(register);
+                let proved = X86_64_CALLEE_SAVED_REGISTERS
+                    .iter()
+                    .position(|saved| *saved == register)
+                    .is_some_and(|index| restored & (1 << index) != 0);
+                if !proved || clobbered.contains(&register) {
+                    caller.remove(register);
+                }
             }
             result => result?,
         }
@@ -2357,6 +2517,15 @@ const X86_64_SYSV_CALL_CLOBBERED_REGISTERS: [DwarfRegister; 34] = DwarfRegister:
     0, 1, 2, 4, 5, 8, 9, 10, 11, 49, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
     32, 33, 34, 35, 36, 37, 38, 39, 40,
 ]);
+
+/// The DWARF numbers of the registers besides rsp the x86-64 System V ABI
+/// has a function return with as its caller left them: rbx, rbp, and
+/// r12-r15, in the order whose bits a restored return names them by.
+const X86_64_CALLEE_SAVED_REGISTERS: [DwarfRegister; 6] =
+    DwarfRegister::each([3, 6, 12, 13, 14, 15]);
+
+/// The DWARF number of x86-64's stack pointer.
+const X86_64_RSP: u16 = 7;
 
 /// The DWARF numbers of the registers Go code may overwrite: every System V
 /// call-clobbered register, and rbx, rbp, and r12-r15 too. Go's register ABI
@@ -4960,6 +5129,128 @@ mod tests {
         assert!(
             truncations >= 2,
             "only {truncations} sections ended mid-entry"
+        );
+    }
+
+    /// Functions shaped as GCC builds CPython's `_PyObject_Malloc` and
+    /// 3.15's handlers: after its `leave` or `pop rbp`, a function's rules
+    /// still name the slots that saved rbp and rbx, below the stack pointer
+    /// and so below a sample's copy of the stack. Where the code proves it
+    /// restored them, running straight to its return, the caller has the
+    /// values they hold; where it proves the `pop` restored rbp, until it
+    /// jumps, rbp only; without a proof, they are unknown.
+    #[test]
+    fn an_epilogue_that_restored_its_callers_registers_unwinds_from_a_samples_copy() {
+        use gimli::write::CallFrameInstruction;
+
+        // push rbp; mov rbp, rsp; push rbx; mov rbx, [rbp-8]; leave;
+        // xor edx, edx; xor ecx, ecx; ret
+        let mut code = vec![
+            0x55, 0x48, 0x89, 0xe5, 0x53, 0x48, 0x8b, 0x5d, 0xf8, 0xc9, 0x31, 0xd2, 0x31, 0xc9,
+            0xc3,
+        ];
+        // push rbp; mov rbp, rsp; sub rsp, 0x30; add rsp, 0x30; pop rbp;
+        // cmp qword [r8+rax*8], 0x1a01d40; je elsewhere; jmp [r8+rax*8]
+        let handler = [
+            0x55, 0x48, 0x89, 0xe5, 0x48, 0x83, 0xec, 0x30, 0x48, 0x83, 0xc4, 0x30, 0x5d, 0x49,
+            0x81, 0x3c, 0xc0, 0x40, 0x1d, 0xa0, 0x01, 0x0f, 0x84, 0x00, 0x10, 0x00, 0x00, 0x41,
+            0xff, 0x24, 0xc0,
+        ];
+        let (start, dispatch) = (0x1000, 0x2000);
+        let mut cie = gimli::write::CommonInformationEntry::new(TEST_ENCODING, 1, -8, Register(16));
+        cie.add_instruction(CallFrameInstruction::Cfa(Register(7), 8));
+        cie.add_instruction(CallFrameInstruction::Offset(Register(16), -8));
+        let mut table = gimli::write::FrameTable::default();
+        let cie = table.add_cie(cie);
+        let frame = |at: u64, length: usize, instructions: &[(u32, CallFrameInstruction)]| {
+            let length = u32::try_from(length).expect("short");
+            let mut fde = gimli::write::FrameDescriptionEntry::new(Address::Constant(at), length);
+            for (offset, instruction) in instructions {
+                fde.add_instruction(*offset, instruction.clone());
+            }
+            fde
+        };
+        let set_up = [
+            (1, CallFrameInstruction::CfaOffset(16)),
+            (1, CallFrameInstruction::Offset(Register(6), -16)),
+            (4, CallFrameInstruction::CfaRegister(Register(6))),
+        ];
+        let mut malloc = set_up.to_vec();
+        malloc.push((5, CallFrameInstruction::Offset(Register(3), -24)));
+        malloc.push((10, CallFrameInstruction::Cfa(Register(7), 8)));
+        table.add_fde(cie, frame(start, code.len(), &malloc));
+        let mut freed = set_up.to_vec();
+        freed.push((13, CallFrameInstruction::Cfa(Register(7), 8)));
+        table.add_fde(cie, frame(dispatch, handler.len(), &freed));
+        let mut written = gimli::write::DebugFrame(EndianVec::new(LittleEndian));
+        table.write_debug_frame(&mut written).expect("write");
+        let bytes = written.0.into_vec();
+        let section = DebugFrame::new(&bytes, RunTimeEndian::Little);
+        let bases = BaseAddresses::default();
+
+        let range = |from, to| AddressRange {
+            start: ImageAddress::new(from),
+            end: ImageAddress::new(to),
+        };
+        assert_eq!(
+            restored_returns(&section, &bases, &[(start, &code), (dispatch, &handler)]),
+            [
+                (range(start + 10, start + 15), 0x3f),
+                (range(dispatch + 13, dispatch + 27), 2),
+            ]
+        );
+
+        let stack = 0x7fff_0000;
+        let registers = RegisterFile::new([
+            (crate::unwind::RSP, stack),
+            (crate::unwind::RETURN_ADDRESS, start + 12),
+            (DwarfRegister::new(6), 0xf00d),
+            (DwarfRegister::new(3), 0xb0b),
+        ]);
+        let copy = || TestMemory {
+            values: std::iter::once((VirtualAddress::new(stack), 0x4242)).collect(),
+        };
+        let index = fde_index(&section, &bases);
+        let unwind = |restored, memory: &mut TestMemory| {
+            unwind_from_section(
+                &section,
+                index.lookup(),
+                &bases,
+                ImageAddress::new(start + 12),
+                &registers,
+                (&X86_64_SYSV_CALL_CLOBBERED_REGISTERS, restored),
+                memory,
+            )
+            .expect("a caller")
+        };
+        let kept = |step: &UnwindStep| {
+            [6, 3, 16].map(|register| step.registers.get(DwarfRegister::new(register)))
+        };
+
+        let step = unwind(0x3f, &mut copy());
+        assert_eq!(step.cfa, VirtualAddress::new(stack + 8));
+        assert_eq!(kept(&step), [Some(0xf00d), Some(0xb0b), Some(0x4242)]);
+        assert_eq!(
+            kept(&unwind(2, &mut copy())),
+            [Some(0xf00d), None, Some(0x4242)]
+        );
+        assert_eq!(kept(&unwind(0, &mut copy())), [None, None, Some(0x4242)]);
+
+        // Memory that still holds the slots is read, as a live unwind's is.
+        let mut live = copy();
+        live.values.insert(VirtualAddress::new(stack - 8), 0xbeef);
+        live.values.insert(VirtualAddress::new(stack - 16), 0xcafe);
+        assert_eq!(
+            kept(&unwind(0x3f, &mut live)),
+            [Some(0xbeef), Some(0xcafe), Some(0x4242)]
+        );
+
+        // Code that writes rbx on its way to the return proves only rbp,
+        // which its `leave` loaded.
+        code[13] = 0xdb;
+        assert_eq!(
+            restored_returns(&section, &bases, &[(start, &code)]),
+            [(range(start + 10, start + 14), 2)]
         );
     }
 

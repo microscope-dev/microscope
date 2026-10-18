@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use microscope::{
@@ -12,16 +12,17 @@ use microscope::{
     DisassemblyBlock, DisassemblyView, ExitStatus, FunctionInfo, FunctionOrigin,
     GlobalVariablePage, HitCondition, IndirectTarget, InstructionContent, InstructionReferenceKind,
     InstructionTokenKind, InvalidatedWatchpoint, LanguageException, LanguageExceptionKind,
-    LineNumber, LoadedModuleSnapshot, MemoryRead, MemoryReadCompletion, ModuleId, ModuleIdentity,
-    ModuleImage, RegisterSnapshot, SourceContext, SourceLine, StackFrame, StackSegment,
-    StateSnapshot, StepKind, StopReason, SymbolExtentProvenance, SymbolLocation, TargetBoundary,
-    TaskSnapshot, ThreadActivity, ThreadState, UnfollowedFuture, VirtualAddress, WatchScope,
-    Watchpoint, WatchpointHit, WatchpointInvalidation,
+    LineNumber, LoadedModuleSnapshot, ManagedPlace, MemoryRead, MemoryReadCompletion, ModuleId,
+    ModuleIdentity, ModuleImage, RegisterSnapshot, SourceContext, SourceLine, StackFrame,
+    StackSegment, StateSnapshot, StepKind, StopReason, SymbolExtentProvenance, SymbolLocation,
+    TargetBoundary, TaskSnapshot, ThreadActivity, ThreadState, Unfollowed, VirtualAddress,
+    WatchScope, Watchpoint, WatchpointHit, WatchpointInvalidation,
 };
 
 use super::commands::{COMMANDS, CommandSpec, aliases};
 use super::terminal::{Renderer, Role};
 use super::value::{self, bound_output};
+use crate::present::frames;
 
 const HEX_DUMP_BYTES_PER_LINE: usize = 16;
 
@@ -196,7 +197,7 @@ pub fn deleted(what: &str, renderer: Renderer) -> String {
     format!("{} {what}", renderer.paint(Role::Success, "deleted"))
 }
 
-fn breakpoint_location(location: BreakpointLocation, renderer: Renderer) -> String {
+fn breakpoint_location(location: &BreakpointLocation, renderer: Renderer) -> String {
     match location {
         BreakpointLocation::Image(address) => {
             format!("image address {}", renderer.paint(Role::Metadata, address))
@@ -207,6 +208,14 @@ fn breakpoint_location(location: BreakpointLocation, renderer: Renderer) -> Stri
                 renderer.paint(Role::Metadata, address)
             )
         }
+        BreakpointLocation::Managed(managed) => match &managed.place {
+            ManagedPlace::Line { path, line } => renderer
+                .paint(Role::Metadata, renderer.location(Path::new(&**path), line))
+                .to_string(),
+            ManagedPlace::Function { name } => {
+                format!("function {}", renderer.paint(Role::Name, name))
+            }
+        },
     }
 }
 
@@ -310,6 +319,16 @@ pub fn breakpoint(breakpoint: &Breakpoint, placed: &[Placed], renderer: Renderer
         );
     }
 
+    if let Some(pending) = crate::present::breakpoints::pending_message(breakpoint) {
+        if placed.is_empty() {
+            return format!(
+                "{heading}, {}{options}",
+                renderer.paint(Role::Warning, pending)
+            );
+        }
+        let _ = write!(options, ", {}", renderer.paint(Role::Warning, pending));
+    }
+
     if let [only] = placed {
         return format!("{heading} at {}{options}", self::placed(only, renderer));
     }
@@ -330,7 +349,7 @@ pub fn breakpoint(breakpoint: &Breakpoint, placed: &[Placed], renderer: Renderer
             let _ = write!(
                 output,
                 "\n  {}  {described}",
-                breakpoint_address(location.location, renderer)
+                breakpoint_address(&location.location, renderer)
             );
         }
     }
@@ -363,12 +382,16 @@ pub fn placed(placed: &Placed, renderer: Renderer) -> String {
         (None, Some((path, line))) => renderer
             .paint(Role::Metadata, renderer.location(path, line))
             .to_string(),
+        // A runtime's function has no address to be at.
+        (Some(_), None) if matches!(placed.location, BreakpointLocation::Managed(_)) => {
+            breakpoint_location(&placed.location, renderer)
+        }
         (Some(function), None) => format!(
             "{} at {}",
             renderer.paint(Role::Name, function),
-            breakpoint_address(placed.location, renderer)
+            breakpoint_address(&placed.location, renderer)
         ),
-        (None, None) => breakpoint_location(placed.location, renderer),
+        (None, None) => breakpoint_location(&placed.location, renderer),
     };
 
     if let Some(module) = &placed.module {
@@ -382,10 +405,13 @@ pub fn placed(placed: &Placed, renderer: Renderer) -> String {
     output
 }
 
-fn breakpoint_address(location: BreakpointLocation, renderer: Renderer) -> String {
+/// A location's address, or for one a runtime manages, which has none,
+/// that it is managed.
+fn breakpoint_address(location: &BreakpointLocation, renderer: Renderer) -> String {
     match location {
         BreakpointLocation::Image(address) => renderer.paint(Role::Metadata, address).to_string(),
         BreakpointLocation::Virtual(address) => renderer.paint(Role::Metadata, address).to_string(),
+        BreakpointLocation::Managed(_) => renderer.paint(Role::Metadata, "managed").to_string(),
     }
 }
 
@@ -452,7 +478,9 @@ pub fn breakpoints(rows: &[(&Breakpoint, Vec<Placed>)], renderer: Renderer) -> S
             options.push("temporary".to_owned());
         }
 
-        if placed.is_empty() {
+        if let Some(pending) = crate::present::breakpoints::pending_message(breakpoint) {
+            options.push(renderer.paint(Role::Warning, pending).to_string());
+        } else if placed.is_empty() {
             options.push(renderer.paint(Role::Warning, "pending").to_string());
         }
 
@@ -476,7 +504,7 @@ pub fn breakpoints(rows: &[(&Breakpoint, Vec<Placed>)], renderer: Renderer) -> S
                             } else {
                                 branch
                             },
-                            breakpoint_address(location.location, renderer),
+                            breakpoint_address(&location.location, renderer),
                             self::placed(location, renderer)
                         )
                     })
@@ -678,6 +706,9 @@ fn watch_scope_suffix(scope: &WatchScope) -> String {
         WatchScope::Task { task, activation } => {
             format!(" (frame {activation:#x} below the top of task {task}'s stack)")
         }
+        WatchScope::Interpreted { thread, frame, .. } => {
+            format!(" (interpreted frame {frame} of thread {thread})")
+        }
     }
 }
 
@@ -804,8 +835,7 @@ pub fn watchpoint_hits(
                 .iter()
                 .find(|watchpoint| watchpoint.id == hit.watchpoint);
             let type_info = watchpoint.and_then(|watchpoint| watchpoint.type_info.as_ref());
-            let old = value::watched_bytes(hit.previous.as_deref(), type_info, image);
-            let new = value::watched_bytes(hit.current.as_deref(), type_info, image);
+            let (old, new) = value::hit_values(hit, type_info, image);
             let thread = if index == 0 {
                 first.to_owned()
             } else {
@@ -949,12 +979,20 @@ pub fn stop(reason: &StopReason, renderer: Renderer) -> String {
             "{} where the thread was moved to resume",
             stopped(Role::Current)
         ),
+        StopReason::Assignment => format!(
+            "{} where the thread assigned the variable",
+            stopped(Role::Current)
+        ),
         StopReason::Exception(info) => format!(
             "{} by {}",
             stopped(Role::Error),
             exception(&info.description, info.code, renderer)
         ),
         StopReason::LanguageException(raised) => exception_summary(raised, renderer),
+        StopReason::RuntimeEvent { description } => format!(
+            "{} at the runtime's report of an event it could not read: {description}",
+            stopped(Role::Warning)
+        ),
         StopReason::ProgramBreakpoint { address } => format!(
             "{} by the program's breakpoint instruction at {}",
             stopped(Role::Current),
@@ -1187,7 +1225,7 @@ pub fn task_function(task: &TaskSnapshot, trace: &Backtrace) -> Option<String> {
                 .and_then(|entry| entry.function.as_deref())
                 .map(str::to_owned)
         },
-        |frame| Some(code_name(frame.function.as_ref(), frame.symbol.as_ref())),
+        |frame| Some(frames::code(frame)),
     )
 }
 
@@ -1209,10 +1247,7 @@ pub fn task_place(
                 )
             },
             |frame| {
-                let name = renderer.paint(
-                    Role::Name,
-                    code_name(frame.function.as_ref(), frame.symbol.as_ref()),
-                );
+                let name = renderer.paint(Role::Name, frames::code(frame));
                 frame_source(frame, images, renderer).map_or_else(
                     || name.to_string(),
                     |source| format!("{name} at {}", renderer.paint(Role::Metadata, source)),
@@ -1366,12 +1401,12 @@ pub fn source_context(
         lines.push(format!(
             "{}:{}",
             renderer.paint(Role::Metadata, renderer.path(&context.path)),
-            renderer.paint(Role::Current, context.location.line)
+            renderer.paint(Role::Current, context.line)
         ));
     }
 
     for line in context.lines.iter() {
-        let current = line.number == context.location.line;
+        let current = line.number == context.line;
         let (marker, role) = if current {
             (
                 renderer.paint(Role::Current, "=>").to_string(),
@@ -2166,16 +2201,16 @@ pub fn backtrace(
     let folded = if raw {
         Vec::new()
     } else {
-        runtime_runs(trace, shown, selected)
+        frames::folds(trace, shown, selected)
     };
 
     let note = |lines: &mut Vec<String>, frames: std::ops::Range<usize>| {
-        for future in trace.unfollowed.iter().filter(|future| {
-            usize::try_from(future.driver.get()).is_ok_and(|level| frames.contains(&level))
+        for note in trace.unfollowed.iter().filter(|note| {
+            usize::try_from(note.driver.get()).is_ok_and(|level| frames.contains(&level))
         }) {
             lines.push(
                 renderer
-                    .paint(Role::Warning, format_args!("    {}", unfollowed(future)))
+                    .paint(Role::Warning, format_args!("    {}", unfollowed(note)))
                     .to_string(),
             );
         }
@@ -2253,78 +2288,6 @@ pub fn backtrace(
     lines.join("\n")
 }
 
-/// The runs of a runtime's frames a backtrace folds into a line each,
-/// by index: two or more frames in a row on one stack of its machinery,
-/// its dispatch, and the wrappers between them, at least one the
-/// runtime's own; and every frame past the innermost dispatch, which runs
-/// the runtime's code for the thread rather than the task's. Where the
-/// stack stopped, and the selected frame, are always shown.
-fn runtime_runs(trace: &Backtrace, shown: usize, selected: u32) -> Vec<std::ops::Range<usize>> {
-    let frames = &trace.frames[..shown];
-
-    // A frame that drives a future is shown with it, or with why it is not.
-    let mut kept = trace
-        .frames
-        .windows(2)
-        .filter(|pair| {
-            pair[0].segment == StackSegment::Future && pair[1].segment != StackSegment::Future
-        })
-        .map(|pair| pair[1].level)
-        .chain(trace.unfollowed.iter().map(|future| future.driver.get()))
-        .collect::<BTreeSet<_>>();
-    kept.insert(selected);
-    let dispatch = frames
-        .iter()
-        .position(|frame| frame.role == CodeRole::Dispatch)
-        .filter(|at| frames[*at].level >= selected);
-    let Some(dispatch) = dispatch else {
-        return machinery_runs(frames, &kept);
-    };
-
-    let mut runs = machinery_runs(&frames[..=dispatch], &kept);
-    let below = dispatch + 1..frames.len();
-    if below.len() >= 2 {
-        // The dispatch frame joins the run that ends at it.
-        match runs.last_mut() {
-            Some(run) if run.end == below.start => run.end = below.end,
-            _ => runs.push(below),
-        }
-    }
-
-    runs
-}
-
-/// The runs [`runtime_runs`] folds by role alone.
-fn machinery_runs(frames: &[StackFrame], kept: &BTreeSet<u32>) -> Vec<std::ops::Range<usize>> {
-    let runtime =
-        |frame: &StackFrame| matches!(frame.role, CodeRole::RuntimeInternal | CodeRole::Dispatch);
-    let folds = |frame: &StackFrame| {
-        frame.level != 0
-            && !kept.contains(&frame.level)
-            && (runtime(frame) || frame.role == CodeRole::Wrapper)
-    };
-
-    let mut runs = Vec::new();
-    let mut start = 0;
-    while start < frames.len() {
-        let mut end = start;
-        while end < frames.len()
-            && folds(&frames[end])
-            && frames[end].segment == frames[start].segment
-        {
-            end += 1;
-        }
-
-        if end - start >= 2 && frames[start..end].iter().any(runtime) {
-            runs.push(start..end);
-        }
-
-        start = end.max(start + 1);
-    }
-
-    runs
-}
-
 /// Where a run of frames is: whose stack it is on, or the future the frame
 /// after it drives.
 pub const fn stack_label(segment: StackSegment) -> &'static str {
@@ -2334,17 +2297,14 @@ pub const fn stack_label(segment: StackSegment) -> &'static str {
         StackSegment::System => "on the runtime's stack",
         StackSegment::Signal => "on the signal stack",
         StackSegment::Future => "in the future the next frame drives",
+        StackSegment::Unplaced => "interpreted, where in the stack unknown",
     }
 }
 
-/// The line that says why the chain of awaits of the future the frame
-/// `driver` drives is shown in part or not at all.
-pub fn unfollowed(future: &UnfollowedFuture) -> String {
-    format!(
-        "the future #{} drives is not shown in full: {}",
-        future.driver.get(),
-        future.reason
-    )
+/// The line that says why the frames the frame `driver` drives are shown
+/// in part or not at all.
+pub fn unfollowed(note: &Unfollowed) -> String {
+    frames::unfollowed(note, &format!("#{}", note.driver.get()))
 }
 
 /// Renders one backtrace frame: its level, instruction, code, the level of
@@ -2495,16 +2455,16 @@ pub fn elide_arguments(name: &str) -> String {
     elided
 }
 
-/// What a frame runs, as a backtrace names it: its function or symbol, or,
-/// for the future a suspended task awaits, `awaiting` and that future's
-/// type.
+/// What a frame runs, as a backtrace names it: its function or symbol, or
+/// the function its runtime recorded, or, for the future a suspended task
+/// awaits, `awaiting` and that future's type.
 pub fn frame_code(frame: &StackFrame, images: &BTreeMap<ModuleId, Arc<ModuleImage>>) -> String {
     if let microscope::FrameKind::Awaited { ty, .. } = frame.kind {
         let image = images.values().find(|image| image.id() == ty.image);
         return awaited(image.map(AsRef::as_ref), ty);
     }
 
-    code_name(frame.function.as_ref(), frame.symbol.as_ref())
+    frames::code(frame)
 }
 
 /// The future of type `ty` a suspended task awaits, as its frame is named:
@@ -2535,17 +2495,29 @@ pub fn awaited_frame(image: Option<&ModuleImage>, frame: &StackFrame) -> Option<
     })
 }
 
-/// A frame's source file and line, from its module's image.
+/// Where an interpreted frame is, as `where` says: the function its
+/// interpreter recorded, and its file and line, where it recorded them.
+pub fn interpreted_location(frame: &StackFrame, renderer: Renderer) -> String {
+    let name = renderer.paint(Role::Name, frames::code(frame));
+    match frames::place(frame, None) {
+        Some(place) => format!(
+            "{name} at {}",
+            renderer.paint(Role::Metadata, renderer.location(&place.path, place.line))
+        ),
+        None => name.to_string(),
+    }
+}
+
+/// A frame's source file and line, as its runtime recorded them or from
+/// its module's image.
 fn frame_source(
     frame: &StackFrame,
     images: &BTreeMap<ModuleId, Arc<ModuleImage>>,
     renderer: Renderer,
 ) -> Option<String> {
-    let source = frame.source.as_ref()?;
-    images
-        .get(&frame.module?)?
-        .source_file(source.file)
-        .map(|file| renderer.location(&file.path, source.line))
+    let image = frame.module.and_then(|module| images.get(&module));
+    frames::place(frame, image.map(AsRef::as_ref))
+        .map(|place| renderer.location(&place.path, place.line))
 }
 
 pub fn globals(page: &GlobalVariablePage, renderer: Renderer) -> String {
@@ -2972,6 +2944,66 @@ mod tests {
             },
             bytes: bytes.into(),
         }
+    }
+
+    #[test]
+    fn runtime_breakpoint_waits_show_their_reason_and_partial_native_placement() {
+        let location = BreakpointLocation::Managed(microscope::ManagedLocation {
+            runtime: microscope::RuntimeId::new(1),
+            place: ManagedPlace::Line {
+                path: "app.scripted".into(),
+                line: 3,
+            },
+        });
+        let mut breakpoint = Breakpoint {
+            id: microscope::BreakpointId::new(1),
+            spec: microscope::BreakpointSpec::Source {
+                path: "app.scripted".into(),
+                line: LineNumber::new(3).expect("line"),
+            },
+            locations: Arc::from([microscope::ResolvedBreakpointLocation {
+                location: location.clone(),
+                code_instances: Arc::from([]),
+                library: None,
+            }]),
+            pending_locations: Arc::from([microscope::PendingBreakpointLocation {
+                location,
+                reason: "the runtime's tool IDs are occupied".into(),
+            }]),
+            hit_condition: None,
+            condition: None,
+            log_message: None,
+            hit_count: 0,
+            enabled: true,
+            temporary: false,
+        };
+        let renderer = Renderer::new(false);
+        let shown = super::breakpoint(&breakpoint, &[], renderer);
+        assert!(shown.contains("tool IDs are occupied"), "{shown}");
+        assert!(!shown.contains("until a module"), "{shown}");
+        let table = super::breakpoints(&[(&breakpoint, Vec::new())], renderer);
+        assert!(table.contains("tool IDs are occupied"), "{table}");
+
+        let location = BreakpointLocation::Virtual(VirtualAddress::new(0x1234));
+        let native = microscope::ResolvedBreakpointLocation {
+            location: location.clone(),
+            code_instances: Arc::from([]),
+            library: None,
+        };
+        let mut locations = breakpoint.locations.to_vec();
+        locations.push(native);
+        breakpoint.locations = locations.into();
+        let placed = Placed {
+            location,
+            function: None,
+            source: None,
+            module: None,
+        };
+        let shown = super::breakpoint(&breakpoint, &[placed], renderer);
+        assert!(
+            shown.contains("0x1234") && shown.contains("tool IDs are occupied"),
+            "{shown}"
+        );
     }
 
     #[test]

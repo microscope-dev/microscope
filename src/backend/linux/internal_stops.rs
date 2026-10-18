@@ -148,6 +148,17 @@ impl<P: LinuxTraceOps> Controller<P> {
                 let _ = self.refresh_libraries();
             }
             Edit::FollowStacks => self.follow_stacks(),
+            Edit::AgentReport {
+                runtime,
+                generation,
+                failure,
+            } => self.apply_agent_report(runtime, generation, failure.as_ref()),
+            Edit::ArmAgents => {
+                if self.sync_runtime_arming() {
+                    self.publish_breakpoints_changed();
+                }
+            }
+            Edit::ReturnToRuntime { pid } => self.return_to_runtime(pid),
         }
     }
 
@@ -199,6 +210,10 @@ impl<P: LinuxTraceOps> Controller<P> {
             ended: None,
             edits: Vec::new(),
         });
+        // An agent's acknowledgement budget counts only running time.
+        for installation in inferior.agents.values_mut() {
+            installation.pause_deadline(std::time::Instant::now());
+        }
         self.request_stops()
     }
 
@@ -214,6 +229,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         inferior.barrier = None;
         if inferior.active.is_none() {
             return Ok(());
+        }
+        for installation in inferior.agents.values_mut() {
+            installation.start_deadline(std::time::Instant::now());
         }
 
         match self.sync_debug_registers() {
@@ -453,7 +471,11 @@ impl Edit {
             Self::AddCatchpoint { reply, .. } | Self::RemoveCatchpoint { reply, .. } => {
                 let _ = reply.send(Err(error));
             }
-            Self::RefreshModules | Self::FollowStacks => {}
+            Self::RefreshModules
+            | Self::FollowStacks
+            | Self::ArmAgents
+            | Self::ReturnToRuntime { .. }
+            | Self::AgentReport { .. } => {}
         }
     }
 }

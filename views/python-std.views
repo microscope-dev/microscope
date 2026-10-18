@@ -1,0 +1,30 @@
+microscope-views 1
+
+# Python's standard library, of the classes it writes in Python. Verified
+# against CPython 3.12 to 3.15, by tests/fixtures/python/views.py. The types
+# it writes in C, such as collections.deque, are read by the runtime model.
+
+# An enum's member is its name and its value, whichever enum it is of: an
+# IntEnum's member too, though it is also an int.
+view python enum::Enum {
+    show record { name = self._name_, value = self._value_ }
+}
+
+# A fraction in lowest terms, as str() writes it: its numerator over its
+# denominator, or its numerator alone when that is 1.
+view python fractions::Fraction {
+    show if self._denominator == 1 {
+        empty("{self._numerator}")
+    } else {
+        empty("{self._numerator}/{self._denominator}")
+    }
+    field numerator = self._numerator
+    field denominator = self._denominator
+}
+
+# A path's text, once Python has made it: str() makes it, and so does every
+# use of the path as a file name. A path made but never used has only the
+# parts it was made from, which only Python's own code joins.
+view python pathlib::**::PurePath {
+    show value(self._str)
+}

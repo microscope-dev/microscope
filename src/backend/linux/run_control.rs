@@ -24,7 +24,7 @@ use super::loops::LoopReach;
 use super::native::{LinuxTraceOps, is_vanished_tracee};
 use super::new_task::NewTask;
 use super::{
-    ActiveExecution, ActiveKind, BreakpointOwner, ClassifiedStop, Controller, ExpectedStop,
+    ActiveExecution, ActiveKind, BreakpointOwner, ClassifiedStop, Controller, Edit, ExpectedStop,
     Inferior, LinuxError, NativeThreadState, PendingSignal, PublicStop, RepairGroup, Resume,
     ResumeGuard, StepOwner, StopBarrier, backend_error, debug_thread_id, exception_info,
     pending_exception_info, process_id, scoped_threads, steps_instructions, validate_process,
@@ -78,6 +78,33 @@ impl<P: LinuxTraceOps> Controller<P> {
                 return;
             }
         };
+
+        // At an agent's hook, the innermost frames are the agent's: a
+        // step by lines from the innermost, or out of it, begins at the
+        // program's frame the stop blames, which it selected.
+        let frame = match kind {
+            StepKind::IntoSource | StepKind::OverSource | StepKind::Out
+                if frame == StackFrameId::INNERMOST && into_call.is_none() =>
+            {
+                self.reported_frame(stop_id, pid).unwrap_or(frame)
+            }
+            _ => frame,
+        };
+        if into_call.is_none()
+            && let Some(interpreted) = self.interpreted_frame(stop_id, pid, frame)
+        {
+            let result = self.begin_runtime_step(
+                process_id,
+                stop_id,
+                pid,
+                interpreted,
+                kind,
+                scope,
+                exception,
+            );
+            self.reply_execution(result, scope, reply);
+            return;
+        }
 
         // A step into a chosen call executes the line up to it, never only
         // entering an inline frame.
@@ -162,7 +189,11 @@ impl<P: LinuxTraceOps> Controller<P> {
             });
         }
 
-        if frame.get() != 0 && kind != StepKind::Out {
+        // A runtime steps from a frame it interprets, wherever it is.
+        if frame.get() != 0
+            && kind != StepKind::Out
+            && self.interpreted_frame(stop_id, pid, frame).is_none()
+        {
             return Err(Error::FrameStepUnsupported(
                 "only stepping out applies to an outer frame; other steps begin at the innermost frame"
                     .into(),
@@ -234,7 +265,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.resolve_breakpoint(crate::BreakpointId::new(0), spec, false)?
             .locations
             .iter()
-            .map(|resolved| runtime_breakpoint_address(inferior, resolved.location))
+            .filter_map(|resolved| {
+                runtime_breakpoint_address(inferior, &resolved.location).transpose()
+            })
             .collect()
     }
 
@@ -251,6 +284,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         validate_public_stop(inferior, Some(stop_id))?;
         validate_resumable(inferior)?;
         scoped_threads(inferior, scope)?;
+        self.validate_agent_resume(scope)?;
         self.sync_debug_registers()?;
         self.refresh_watch_baselines()?;
 
@@ -304,6 +338,9 @@ impl<P: LinuxTraceOps> Controller<P> {
             resume_threads,
         });
         inferior.repairs = collect_repairs(inferior);
+        for installation in inferior.agents.values_mut() {
+            installation.start_deadline(std::time::Instant::now());
+        }
 
         if let Err(error) = self.advance_execution() {
             // SIGKILL took threads out of the stop as they were resumed: the
@@ -564,7 +601,10 @@ impl<P: LinuxTraceOps> Controller<P> {
 
                 self.continue_scope_threads()
             }
-            ActiveKind::Launch | ActiveKind::Continue => {
+            ActiveKind::Launch
+            | ActiveKind::Continue
+            | ActiveKind::RuntimeStep { .. }
+            | ActiveKind::RuntimeAssignment { .. } => {
                 for pid in resume_threads {
                     self.continue_thread(pid)?;
                 }
@@ -896,7 +936,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return self.begin_visible_stop(
                 pid,
                 StopReason::Breakpoint {
-                    address,
+                    address: Some(address),
                     hits: stopping,
                 },
             );
@@ -911,7 +951,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// stopped. Whatever else owns the site, such as the active step's
     /// plan, meets the thread there.
     fn arrive_unstopped(&mut self, pid: Pid, address: VirtualAddress) -> Result<()> {
-        if let Some(reason) = self.runtime_exception(pid, address) {
+        if let Some(reason) = self.runtime_hook_stop(pid, address) {
             return self.begin_visible_stop(pid, reason);
         }
 
@@ -941,6 +981,12 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         if let Some((_, kind)) = planned {
             return self.reach_plan_site(pid, address, kind);
+        }
+
+        // A runtime step into native code ends where its own thread enters
+        // the function it called.
+        if let Some(kind) = self.runtime_step_arrival(pid, address) {
+            return self.begin_visible_stop(pid, StopReason::Step { kind });
         }
 
         // A declined user hit, or another thread at a stepping plan's site,
@@ -1005,6 +1051,12 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         self.note_returned_activation(pid, mode)?;
+        if self.source_step_returned_to_runtime(pid, mode)? {
+            self.let_step_run_on()?;
+            self.queue_internal_edit(Edit::ReturnToRuntime { pid })?;
+            return self.go_on_without_plan(pid, address, None);
+        }
+
         if self.source_step_returned_to_undescribed_code(pid, mode)? {
             self.let_step_run_on()?;
             return self.go_on_without_plan(pid, address, None);
@@ -1733,9 +1785,10 @@ impl<P: LinuxTraceOps> Controller<P> {
             .threads
             .iter()
             .find_map(|(&pid, thread)| match thread.reason {
-                Some(StopReason::Breakpoint { address, .. }) if self.runs_step(owner, pid) => {
-                    Some((pid, address))
-                }
+                Some(StopReason::Breakpoint {
+                    address: Some(address),
+                    ..
+                }) if self.runs_step(owner, pid) => Some((pid, address)),
                 _ => None,
             })
     }
@@ -1796,6 +1849,9 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.cleanup_plan_breakpoints(execution)?;
         }
 
+        self.end_runtime_step();
+        self.end_runtime_assignment();
+
         // An image exec(2) replaced has no loader rendezvous to follow.
         let exec_replaced = self
             .inferior
@@ -1848,11 +1904,45 @@ impl<P: LinuxTraceOps> Controller<P> {
         );
         stop.returned = returned;
         inferior.public_stop = Some(stop);
+        for installation in inferior.agents.values_mut() {
+            installation.pause_deadline(std::time::Instant::now());
+        }
         let execution = inferior.active.take().map(|active| active.id);
         let process_id = process_id(inferior.tgid);
-        if matches!(reason, StopReason::LanguageException(_)) {
+        // A stop an agent reported is about the program's frame, not the
+        // agent's hook it entered; and a store to an interpreted variable is
+        // about the variable's frame, not the interpreter's code that made
+        // it.
+        let reported = match reason {
+            StopReason::LanguageException(_) | StopReason::Breakpoint { address: None, .. } => true,
+            StopReason::Step { .. } | StopReason::StepIncomplete { .. } => {
+                self.agent_hook(triggering_thread).is_some()
+            }
+            _ => false,
+        };
+        let watched = match reason {
+            StopReason::Watchpoint { ref hits } => hits.first().and_then(|hit| {
+                match self
+                    .inferior
+                    .as_ref()?
+                    .watch
+                    .watchpoints
+                    .get(&hit.watchpoint)?
+                    .watchpoint
+                    .scope
+                {
+                    crate::WatchScope::Interpreted { frame, .. } => Some(frame),
+                    _ => None,
+                }
+            }),
+            _ => None,
+        };
+        if reported {
             self.select_blamed_frame(triggering_thread);
+        } else if let Some(frame) = watched {
+            self.select_interpreted_frame(triggering_thread, frame);
         }
+        self.select_assigned_frame(&reason);
 
         self.bump_revision();
         if self.attach_reply.is_some() {
@@ -1862,6 +1952,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             });
         }
 
+        let reason_published = reason.clone();
         let _ = self.events.send(DebuggerEvent::InferiorStopped {
             revision: self.revision,
             process_id,
@@ -1880,6 +1971,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         if let Some(reply) = self.attach_reply.take() {
             let _ = reply.send(Ok(stop_id));
         }
+        self.answer_assignment(stop_id, &reason_published);
 
         Ok(())
     }

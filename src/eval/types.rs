@@ -41,6 +41,11 @@ pub enum Ty {
 
     /// The type of a string literal.
     Text,
+
+    /// A type only a value knows, as a Python variable's is: each
+    /// operation on the value finds it when it runs. Such values are
+    /// always places, or numbers and truth values computed from them.
+    Dynamic,
 }
 
 /// What can be done with a value of a type.
@@ -74,6 +79,9 @@ pub enum Category {
     Void,
     Null,
     Text,
+
+    /// A type only a value knows, which each operation finds when it runs.
+    Dynamic,
 
     /// A type the debugger cannot compute with, and why.
     Opaque(Arc<str>),
@@ -158,6 +166,7 @@ pub fn category(types: &dyn TypeSource, ty: &Ty) -> Category {
         Ty::Void => Category::Void,
         Ty::Null => Category::Null,
         Ty::Text => Category::Text,
+        Ty::Dynamic => Category::Dynamic,
     }
 }
 
@@ -299,7 +308,7 @@ pub fn size_of(types: &dyn TypeSource, ty: &Ty) -> Option<u64> {
         Ty::C(c) => types.c_base_type(*c).map(|base| base.byte_size),
         Ty::Bool => Some(1),
         Ty::Pointer(_) => Some(u64::from(types.pointer_size())),
-        Ty::Exact | Ty::Void | Ty::Null | Ty::Text => None,
+        Ty::Exact | Ty::Void | Ty::Null | Ty::Text | Ty::Dynamic => None,
     }
 }
 
@@ -318,6 +327,7 @@ pub fn type_name(types: &dyn TypeSource, ty: &Ty) -> String {
         Ty::Void => "void".to_owned(),
         Ty::Null => "null".to_owned(),
         Ty::Text => "string".to_owned(),
+        Ty::Dynamic => "dynamic".to_owned(),
     }
 }
 
@@ -351,6 +361,13 @@ fn int_name(int: IntType) -> String {
 /// The image that types the language itself defines claim.
 pub const LANGUAGE_IMAGE: ModuleImageId = ModuleImageId::new(u32::MAX);
 
+/// The identity of a type without one of its own, which no language or
+/// program type has.
+pub const UNIDENTIFIED: TypeReference = TypeReference {
+    image: LANGUAGE_IMAGE,
+    id: TypeId::new(u32::MAX),
+};
+
 /// The image ids at and above this one belong to the language: no loaded
 /// image has one. Pointers to a program type claim those below
 /// [`LANGUAGE_IMAGE`], one per pointee image and pointer depth.
@@ -377,7 +394,7 @@ fn language_type_id(leaf: &Ty, depth: u32) -> Option<u32> {
         Ty::Float(FloatFormat::Binary128) => 10,
         Ty::Int(int) => 16 + u32::from(int.width()) * 2 + u32::from(int.is_signed()),
         Ty::C(c) => 512 + *c as u32,
-        Ty::Program(_) | Ty::Pointer(_) => return None,
+        Ty::Program(_) | Ty::Pointer(_) | Ty::Dynamic => return None,
     };
 
     Some((depth << 20) + leaf)
@@ -394,12 +411,7 @@ pub fn type_reference(ty: &Ty) -> TypeReference {
 
     debug_assert!(depth < POINTER_DEPTHS, "a pointer {depth} deep");
 
-    // A type without an identity of its own claims one no language or program
-    // type has.
-    let unidentified = TypeReference {
-        image: LANGUAGE_IMAGE,
-        id: TypeId::new(u32::MAX),
-    };
+    let unidentified = UNIDENTIFIED;
 
     let Ty::Program(reference) = leaf else {
         return language_type_id(leaf, depth).map_or(unidentified, |id| TypeReference {
@@ -467,7 +479,7 @@ pub fn type_info(types: &dyn TypeSource, ty: &Ty) -> TypeInfo {
             },
             address_class: 0,
         },
-        Ty::Program(_) | Ty::Void | Ty::Null | Ty::Text => TypeKind::Unspecified,
+        Ty::Program(_) | Ty::Void | Ty::Null | Ty::Text | Ty::Dynamic => TypeKind::Unspecified,
     };
 
     TypeInfo {

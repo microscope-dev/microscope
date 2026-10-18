@@ -4,7 +4,7 @@
 //! knows; the bound model then answers through the stopped process's memory
 //! and threads, read as every other inspection reads them.
 
-use std::cell::Cell;
+use std::cell::{Cell, OnceCell};
 use std::sync::Arc;
 
 use nix::unistd::Pid;
@@ -75,9 +75,12 @@ fn runtime_id(module: crate::ModuleId, index: usize) -> Option<RuntimeId> {
         .map(RuntimeId::new)
 }
 
+type IdentityPairs = Arc<[(ThreadId, crate::runtime_model::TargetThreadId)]>;
+
 /// One stop of the process, as a runtime model reads it.
 struct ProcessStop<'a, P> {
     ptrace: &'a P,
+    process: Pid,
 
     /// A stopped thread, through which memory is read.
     reader: Pid,
@@ -92,9 +95,72 @@ struct ProcessStop<'a, P> {
 
     /// The sets of tasks threads drive, once found at this stop.
     task_sets: Vec<u64>,
+
+    /// The memory read at the published stop, if the process is at one.
+    memory: Option<&'a crate::runtime_model::StopMemory>,
+    identities: OnceCell<IdentityPairs>,
+}
+
+/// Provider mistakes must not make single and batch identity queries disagree.
+fn unique_target(
+    ids: &[(ThreadId, crate::runtime_model::TargetThreadId)],
+    thread: ThreadId,
+) -> Option<crate::runtime_model::TargetThreadId> {
+    let first = ids.partition_point(|(host, _)| *host < thread);
+    let rest = ids.get(first..)?;
+    let &(host, target) = rest.first()?;
+    (host == thread && rest.get(1).is_none_or(|(host, _)| *host != thread)).then_some(target)
+}
+
+impl<P: InspectionOps> ProcessStop<'_, P> {
+    fn thread_identities(&self) -> Arc<[(ThreadId, crate::runtime_model::TargetThreadId)]> {
+        Arc::clone(self.identities.get_or_init(|| {
+            let read = || {
+                let threads = self
+                    .threads
+                    .iter()
+                    .filter_map(|&thread| debug_pid(thread).ok())
+                    .collect::<Vec<_>>();
+                self.ptrace
+                    .target_thread_ids(self.process, &threads)
+                    .into_iter()
+                    .map(|(thread, target)| (debug_thread_id(thread), target))
+                    .collect::<Vec<_>>()
+            };
+            self.memory.map_or_else(
+                || {
+                    let mut ids = read();
+                    ids.sort_unstable();
+                    ids.dedup();
+                    ids.into()
+                },
+                |memory| memory.thread_identities(&self.threads, read),
+            )
+        }))
+    }
 }
 
 impl<P: InspectionOps> RuntimeStop for ProcessStop<'_, P> {
+    fn target_thread_id(&self, thread: ThreadId) -> Option<crate::runtime_model::TargetThreadId> {
+        if self.threads.binary_search(&thread).is_err() {
+            return None;
+        }
+        let ids = self.thread_identities();
+        unique_target(&ids, thread)
+    }
+
+    fn target_thread_ids(
+        &self,
+        threads: &[ThreadId],
+    ) -> Vec<(ThreadId, crate::runtime_model::TargetThreadId)> {
+        let ids = self.thread_identities();
+        threads
+            .iter()
+            .filter(|thread| self.threads.binary_search(thread).is_ok())
+            .filter_map(|&thread| Some((thread, unique_target(&ids, thread)?)))
+            .collect()
+    }
+
     fn read(&self, address: VirtualAddress, bytes: &mut [u8]) -> bool {
         if let Some(usage) = self.usage {
             let mut counted = usage.get();
@@ -116,6 +182,10 @@ impl<P: InspectionOps> RuntimeStop for ProcessStop<'_, P> {
             }
             _ => false,
         }
+    }
+
+    fn memory(&self) -> Option<&crate::runtime_model::StopMemory> {
+        self.memory
     }
 
     fn thread_pointer(&self, thread: ThreadId) -> Option<u64> {
@@ -177,7 +247,7 @@ impl<P: InspectionOps> Controller<P> {
             .collect()
     }
 
-    fn loaded_images<'a>(
+    pub(super) fn loaded_images<'a>(
         &'a self,
         inferior: &'a Inferior,
     ) -> impl Iterator<Item = (LoadedModule, &'a Arc<ModuleImage>)> {
@@ -187,6 +257,22 @@ impl<P: InspectionOps> Controller<P> {
                 .filter(|module| module.loaded.id != inferior.loaded_module.id)
                 .map(|module| (module.loaded, &module.image)),
         )
+    }
+
+    /// The image of the loaded module whose range holds `address`, and the
+    /// address within it.
+    pub(super) fn module_holding<'a>(
+        &'a self,
+        inferior: &'a Inferior,
+        address: VirtualAddress,
+    ) -> Option<(&'a Arc<ModuleImage>, ImageAddress)> {
+        self.loaded_images(inferior).find_map(|(module, image)| {
+            module
+                .image_address(address)
+                .ok()
+                .filter(|address| image.contains_address(*address))
+                .map(|address| (image, address))
+        })
     }
 
     fn bind_runtimes(
@@ -247,6 +333,7 @@ impl<P: InspectionOps> Controller<P> {
     ) -> T {
         read(&ProcessStop {
             ptrace: &self.ptrace,
+            process: inferior.tgid,
             reader,
             breakpoints: &inferior.breakpoints,
             bias: module.load_bias,
@@ -264,6 +351,8 @@ impl<P: InspectionOps> Controller<P> {
                     found.as_ref().map(|found| found.sets.to_vec())
                 })
                 .unwrap_or_default(),
+            memory: inferior.public_stop.as_ref().map(|stop| &stop.memory),
+            identities: OnceCell::new(),
         })
     }
 
@@ -823,6 +912,12 @@ impl<P: InspectionOps> Controller<P> {
                 module: runtime.module,
                 reader,
             },
+            Ok(Some(TaskContext::Interpreted { frames, end })) => RootOrigin::Interpreted {
+                runtime: runtime.id,
+                frames,
+                end,
+                reader,
+            },
             Ok(None) => return Ok(None),
             Err(reason) => return Err(Error::TaskUnavailable { task, reason }),
         };
@@ -844,5 +939,137 @@ impl<P: InspectionOps> Controller<P> {
             (None, ExecutionContext::Task(task)) => Err(Error::TaskParked(task)),
             (None, ExecutionContext::Thread(thread)) => Err(Error::UnknownThread(thread)),
         }
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    use crate::runtime_model::TargetThreadId;
+
+    struct Edge {
+        reads: Cell<usize>,
+        pairs: Vec<(Pid, TargetThreadId)>,
+    }
+
+    impl InspectionOps for Edge {
+        fn target_thread_ids(&self, _: Pid, _: &[Pid]) -> Vec<(Pid, TargetThreadId)> {
+            self.reads.set(self.reads.get() + 1);
+            self.pairs.clone()
+        }
+        fn read_word(&self, _: Pid, _: u64) -> Result<u64> {
+            Err(Error::internal("identity queries read no memory"))
+        }
+        fn registers(&self, _: Pid) -> Result<nix::libc::user_regs_struct> {
+            Err(Error::internal("identity queries read no registers"))
+        }
+    }
+
+    fn stop<'a>(
+        edge: &'a Edge,
+        sites: &'a std::collections::BTreeMap<VirtualAddress, BreakpointSite>,
+        memory: Option<&'a crate::runtime_model::StopMemory>,
+    ) -> ProcessStop<'a, Edge> {
+        ProcessStop {
+            ptrace: edge,
+            process: Pid::from_raw(5000),
+            reader: Pid::from_raw(5000),
+            breakpoints: sites,
+            bias: crate::LoadBias::default(),
+            usage: None,
+            threads: vec![ThreadId::new(7), ThreadId::new(5000)],
+            task_sets: Vec::new(),
+            memory,
+            identities: OnceCell::new(),
+        }
+    }
+
+    #[test]
+    fn identity_queries_share_one_batch_with_and_without_a_published_stop() {
+        let host = ThreadId::new(5000);
+        let target = TargetThreadId::new(7).unwrap();
+        let edge = Edge {
+            reads: Cell::new(0),
+            pairs: vec![
+                (Pid::from_raw(5000), target),
+                (Pid::from_raw(7), TargetThreadId::new(8).unwrap()),
+            ],
+        };
+        let sites = std::collections::BTreeMap::new();
+        let current = stop(&edge, &sites, None);
+        assert_eq!(current.target_thread_id(host), Some(target));
+        assert_eq!(current.target_thread_ids(&[host]), [(host, target)]);
+        assert_eq!(edge.reads.get(), 1);
+        let memory = crate::runtime_model::StopMemory::default();
+        assert_eq!(
+            stop(&edge, &sites, Some(&memory)).target_thread_id(host),
+            Some(target)
+        );
+        assert_eq!(
+            stop(&edge, &sites, Some(&memory)).target_thread_id(host),
+            Some(target)
+        );
+        assert_eq!(edge.reads.get(), 2);
+        memory.forget();
+        assert_eq!(
+            stop(&edge, &sites, Some(&memory)).target_thread_id(host),
+            Some(target)
+        );
+        assert_eq!(edge.reads.get(), 3);
+    }
+
+    #[test]
+    fn identity_cache_retries_when_a_provider_substitutes_an_unrequested_host() {
+        let host = ThreadId::new(5000);
+        let target = crate::runtime_model::TargetThreadId::new(7).unwrap();
+        let other = crate::runtime_model::TargetThreadId::new(8).unwrap();
+        let mut edge = Edge {
+            reads: Cell::new(0),
+            pairs: vec![(Pid::from_raw(5000), target), (Pid::from_raw(9), other)],
+        };
+        let sites = std::collections::BTreeMap::new();
+        let memory = crate::runtime_model::StopMemory::default();
+        assert_eq!(
+            stop(&edge, &sites, Some(&memory)).target_thread_id(host),
+            Some(target)
+        );
+        edge.pairs = vec![(Pid::from_raw(5000), target), (Pid::from_raw(7), other)];
+        assert_eq!(
+            stop(&edge, &sites, Some(&memory)).target_thread_id(ThreadId::new(7)),
+            Some(other)
+        );
+        assert_eq!(edge.reads.get(), 2);
+    }
+
+    #[test]
+    fn conflicting_host_pairs_are_rejected_by_single_and_batch_queries() {
+        let host = ThreadId::new(5000);
+        let edge = Edge {
+            reads: Cell::new(0),
+            pairs: vec![
+                (Pid::from_raw(5000), TargetThreadId::new(7).unwrap()),
+                (Pid::from_raw(5000), TargetThreadId::new(8).unwrap()),
+            ],
+        };
+        let sites = std::collections::BTreeMap::new();
+        let current = stop(&edge, &sites, None);
+        assert_eq!(current.target_thread_id(host), None);
+        assert!(current.target_thread_ids(&[host]).is_empty());
+        assert_eq!(edge.reads.get(), 1);
+        let memory = crate::runtime_model::StopMemory::default();
+        assert_eq!(
+            stop(&edge, &sites, Some(&memory)).target_thread_id(host),
+            None
+        );
+        assert!(
+            stop(&edge, &sites, Some(&memory))
+                .target_thread_ids(&[host])
+                .is_empty()
+        );
+        assert_eq!(
+            edge.reads.get(),
+            3,
+            "conflicting evidence is never retained across queries"
+        );
     }
 }

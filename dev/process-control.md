@@ -12,7 +12,7 @@ presents one all-stop process.
 | `src/backend/linux/lifecycle.rs`, `src/backend/linux/new_task.rs` | Launch, attach, fork, clone, exec, exit, and detach |
 | `src/backend/linux/classify.rs`, `src/backend/linux/internal_stops.rs` | Raw wait-status classification and internal stops |
 | `src/backend/linux/run_control.rs`, `src/backend/linux/stepping.rs`, `src/backend/linux/step_targets.rs` | Resume, pause, and stepping plans |
-| `src/backend/linux/breakpoints.rs`, `src/backend/linux/watchpoints.rs`, `src/backend/linux/writes.rs` | Breakpoint sites, hardware watches, and stopped-state writes |
+| `src/backend/linux/breakpoints.rs`, `src/backend/linux/managed.rs`, `src/backend/linux/watchpoints.rs`, `src/backend/linux/writes.rs` | Breakpoint sites and runtime arming, hardware watches, and stopped-state writes |
 | `src/backend/linux/signals.rs`, `src/backend/linux/awaits.rs` | Signal policy and asynchronous wait coordination |
 | `src/backend/linux/catchpoints.rs` | System call catchpoints; see [system call tracing](syscalls.md) |
 | `src/backend/linux/recorded.rs`, `src/backend/linux/sim_edge.rs` | Recorded native calls and the simulator boundary |
@@ -185,6 +185,17 @@ unrelated user breakpoint, hit a watchpoint, carry a signal, or expose a
 runtime transition the plan follows. Keep those cases explicit. “Trap means
 step complete” is not a valid rule.
 
+A step from a frame a runtime interprets, which has no instructions of its own
+to step, is a runtime step (`runtime_steps.rs`). Such a frame may be at any
+level. The runtime's arming gains the step, with a number never reused in
+the process. The execution,
+`ActiveKind::RuntimeStep`, runs threads as a continue does. It keeps the
+native step's owner, a thread or a task. The step ends only where the
+runtime's internal hook reports `HookEvent::StepEnded` with the step's number
+on a thread that runs the step. Any other report goes on unseen. The runtime
+is armed with no step as whatever stop ends the step forms. A runtime that
+cannot make a step refuses it, and nothing runs.
+
 ## Breakpoint installation and repair
 
 A software breakpoint replaces the first byte of an instruction with `int3`.
@@ -204,6 +215,27 @@ temporarily unpatched site.
 All user memory reads overlay original bytes at installed sites. Writes must
 update the original-byte model correctly so removing a breakpoint does not
 restore stale memory.
+
+## Managed breakpoint locations
+
+A runtime that runs code itself, as CPython runs Python, can resolve a
+breakpoint there. Resolution runs a list of resolvers: the native one over
+every loaded image, then `RuntimeModel::resolve_breakpoint` for each loaded
+runtime. A runtime's location is `BreakpointLocation::Managed`: a runtime and
+a line or function, with no address. Native and managed locations of one spec
+are combined. A spec only a runtime knows resolves through the runtime alone,
+and a runtime's refusal is the error when nothing else resolves it.
+
+Ownership follows the native split. `managed.rs` records which user
+breakpoints own each managed location, and numbers it. The number is never
+reused in a process. A runtime is armed whole (`Arming`) with its
+locations, its step, and which exceptions stop. The arming is redone whenever
+any of them changes. `RuntimeModel::arm` computes the writes, so a model keeps
+no state between armings, and `write_for_runtime` makes them at an all-stop.
+A runtime that cannot be armed keeps why. A hit comes through the runtime's
+internal hook as `HookEvent::Breakpoint` with the location's number. It is
+counted and judged as a trap's hit is, and stops as `StopReason::Breakpoint`
+with no address.
 
 ## Watchpoints
 

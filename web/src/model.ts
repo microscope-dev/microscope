@@ -134,3 +134,26 @@ export function targetName(state: State | null): string | null {
   }
   return program.slice(program.lastIndexOf("/") + 1);
 }
+
+/** A stop's kind, which the protocol spells as one word, in words. */
+export function stopKind(kind: string): string {
+  return kind.replace(/[A-Z]/g, (letter) => ` ${letter.toLowerCase()}`);
+}
+
+/**
+ * The program and its arguments, short: each path by its file name, as an
+ * interpreter's script is best known. The whole command is the target's.
+ */
+export function commandName(state: State | null): string | null {
+  const program = targetName(state);
+  if (!program) {
+    return null;
+  }
+  // An option's value, as in `--out=/tmp/x`, stays whole.
+  const shortened = (state?.target?.arguments ?? []).map((argument) =>
+    argument.includes("/") && !argument.startsWith("-")
+      ? argument.slice(argument.lastIndexOf("/") + 1)
+      : argument,
+  );
+  return [program, ...shortened].join(" ");
+}

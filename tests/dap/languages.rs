@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 
-use crate::dap::{Configuration, Dap, Profile, fixture, source};
+use crate::dap::{Configuration, Dap, Profile, fixture, line_of, source};
 
 /// Launches a program to its first stop, returning the stopped thread and
 /// its innermost frame.
@@ -296,4 +296,90 @@ fn stack_traces_show_the_functions_that_left_by_tail_calls() {
     let trace = dap.request("stackTrace", json!({"threadId": thread, "levels": 2}));
     assert_eq!(trace["stackFrames"][1]["name"], "main", "{trace:#?}");
     finish_running(dap, thread);
+}
+
+#[test]
+fn python_frames_show_their_recorded_source_and_their_locals() {
+    let mut dap = Dap::start("python");
+    let started = dap.begin(
+        Profile::VsCode,
+        (
+            "attach",
+            json!({"coreFile": fixture("python-locals-3.14t.core")}),
+        ),
+        &Configuration::default(),
+    );
+    dap.stopped(started.mark);
+
+    let threads = dap.request("threads", Value::Null);
+    let frame = threads["threads"]
+        .as_array()
+        .expect("threads")
+        .iter()
+        .find_map(|thread| {
+            let trace = dap.request(
+                "stackTrace",
+                json!({"threadId": thread["id"], "startFrame": 0, "levels": 64}),
+            );
+            trace["stackFrames"]
+                .as_array()
+                .expect("frames")
+                .iter()
+                .find(|frame| frame["name"] == "containers")
+                .cloned()
+        })
+        .expect("the frame of containers");
+
+    // An interpreted frame is where its interpreter recorded it, and runs
+    // no machine code of its own.
+    assert!(
+        frame["source"]["path"]
+            .as_str()
+            .is_some_and(|path| path.ends_with("tests/fixtures/python/locals.py")),
+        "{frame}"
+    );
+    // The checkpoint is the line before the function returns its locals.
+    let returns = line_of(&source("python/locals.py"), "return numbers, empty_list");
+    assert_eq!(frame["line"], returns - 1, "{frame}");
+    assert!(
+        frame.get("instructionPointerReference").is_none(),
+        "{frame}"
+    );
+
+    let scopes = dap.request("scopes", json!({"frameId": frame["id"]}));
+    let names: Vec<&str> = scopes["scopes"]
+        .as_array()
+        .expect("scopes")
+        .iter()
+        .filter_map(|scope| scope["name"].as_str())
+        .collect();
+    assert!(names.contains(&"Locals"), "{names:?}");
+    assert!(!names.contains(&"Registers"), "{names:?}");
+
+    let variables = frame_variables(&mut dap, &frame);
+    assert_eq!(variables["numbers"]["value"], "[1, 2, 3]", "{variables:#?}");
+    assert_eq!(variables["pair"]["value"], "(1, 'two')", "{variables:#?}");
+    assert!(variables["numbers"]["variablesReference"].as_i64() > Some(0));
+
+    // Expressions read the frame's objects in every context an editor
+    // evaluates in, and a container expands as a local does.
+    for context in ["watch", "hover", "repl"] {
+        let evaluate = |dap: &mut Dap, expression: &str| {
+            dap.request(
+                "evaluate",
+                json!({"expression": expression, "frameId": frame["id"], "context": context}),
+            )
+        };
+        let last = evaluate(&mut dap, "numbers[-1]");
+        assert_eq!(last["result"], "3", "{context}: {last}");
+        let found = evaluate(&mut dap, "by_name[\"b\"]");
+        assert_eq!(found["result"], "'two'", "{context}: {found}");
+        let nested = evaluate(&mut dap, "nested[2]");
+        assert_eq!(nested["result"], "{'k': [4]}", "{context}: {nested}");
+        assert!(
+            nested["variablesReference"].as_i64() > Some(0),
+            "{context}: {nested}"
+        );
+    }
+    dap.finish();
 }

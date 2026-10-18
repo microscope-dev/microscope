@@ -55,9 +55,8 @@ pub struct Query {
     /// Paths from the innermost frame out, so that the tree is of callers.
     pub invert: bool,
 
-    /// Each async task's frames as a stack of their own (see [`logical`]),
-    /// before any transform.
-    pub logical: bool,
+    /// How each path's frames are seen, before any transform.
+    pub look: Look,
 
     /// Roots each path, after its transforms, at the task it ran or waited
     /// in.
@@ -66,6 +65,23 @@ pub struct Query {
     /// Roots each path, after its transforms and outside any task, at its
     /// label of this key, or at the key's absence.
     pub by_label: Option<String>,
+}
+
+/// How a path's frames are seen.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Look {
+    /// The frames its thread ran, which an interpreter's frames are not:
+    /// its own frames that run them stand for them.
+    #[default]
+    Native,
+
+    /// Each async task's frames as a stack of their own (see [`logical`]),
+    /// an interpreter's frames among the frames that run them.
+    Logical,
+
+    /// As [`Look::Logical`], and as its interpreted code sees it (see
+    /// [`python`]).
+    Python,
 }
 
 /// One step of reshaping each sample's path, applied in order.
@@ -455,8 +471,13 @@ impl<'a> Paths<'a> {
             path.extend_from_slice(self.keys.frame(frame));
         }
 
-        if self.query.logical {
-            logical(self.keys, path);
+        match self.query.look {
+            Look::Native => path.retain(|key| !self.keys.interpreted(*key)),
+            Look::Logical => logical(self.keys, path),
+            Look::Python => {
+                logical(self.keys, path);
+                python(self.keys, path);
+            }
         }
 
         // Innermost first, as stacks are; a tree from the roots starts
@@ -535,6 +556,20 @@ fn logical(keys: &Keys<'_>, path: &mut Vec<u32>) {
     }
 
     path.retain(|key| keys.role(*key) != CodeRole::Wrapper);
+}
+
+/// Makes an innermost-first path the one its interpreted code sees: from
+/// its outermost interpreted frame in, without the interpreter's machinery
+/// that runs them, so that the interpreted frames each activation of the
+/// interpreter runs join, and native code they call stays where it was
+/// called. A path with no interpreted frame keeps its frames.
+fn python(keys: &Keys<'_>, path: &mut Vec<u32>) {
+    let Some(outermost) = path.iter().rposition(|key| keys.interpreted(*key)) else {
+        return;
+    };
+
+    path.truncate(outermost + 1);
+    path.retain(|key| keys.role(*key) != CodeRole::Interpreter);
 }
 
 /// The call tree of the samples `query` selects.

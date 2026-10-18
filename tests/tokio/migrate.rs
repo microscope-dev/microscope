@@ -15,6 +15,7 @@ use microscope::{
 use crate::invariants::checked;
 use crate::steps::stopped_task;
 use crate::stops::{integer, line, place};
+use crate::support::truth::Report;
 use crate::support::{Scenario, ScratchDir};
 use crate::workers::{activities, tasks};
 
@@ -35,17 +36,17 @@ async fn stopped_thread(scenario: &mut Scenario) -> ThreadId {
 
 /// The fields of the program's one `TRUTH` line of `kind`.
 fn reported(text: &str, kind: &str) -> Vec<u64> {
-    let fields = text
+    let report = Report::parse(text);
+    let fields = report
         .lines()
-        .filter_map(|line| line.strip_prefix("TRUTH\t"))
-        .filter_map(|line| line.strip_prefix(kind)?.strip_prefix('\t'))
+        .filter(|fields| fields.first().is_some_and(|first| first == kind))
         .collect::<Vec<_>>();
     let [fields] = fields[..] else {
         panic!("{kind}: {text}");
     };
 
-    fields
-        .split('\t')
+    fields[1..]
+        .iter()
         .map(|field| field.parse().expect("a number"))
         .collect()
 }

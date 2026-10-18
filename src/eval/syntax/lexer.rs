@@ -512,10 +512,23 @@ impl Lexer<'_> {
         };
 
         if self.peek() != Some(b'\'') {
-            return Err(self.error(
+            let error = self.error(
                 start,
                 "a character literal holds one character and a closing `'`",
-            ));
+            );
+            // Text in single quotes, as Python and JavaScript write it.
+            let quoted = self
+                .text
+                .get(start + 1..)
+                .and_then(|after| after.split_once('\''))
+                .map(|(text, _)| text)
+                .filter(|text| !text.contains(['"', '\\', '\n']));
+            return Err(match quoted {
+                Some(text) => {
+                    error.with_hint(format!("text goes in double quotes, as in `\"{text}\"`"))
+                }
+                None => error,
+            });
         }
 
         self.cursor += 1;

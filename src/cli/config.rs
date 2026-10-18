@@ -39,6 +39,7 @@ pub struct Config {
     pub print: Print,
     pub disassembly: Disassembly,
     pub step: Stepping,
+    pub backtrace: Backtraces,
     pub breakpoints: Breakpoints,
     pub debug_info: DebugInfo,
     pub history: History,
@@ -248,6 +249,24 @@ pub enum StepRuntime {
     #[default]
     Skip,
     Enter,
+}
+
+/// How backtraces show a language runtime's and an interpreter's own
+/// frames.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct Backtraces {
+    pub runtime: RuntimeFrames,
+}
+
+/// Whether a backtrace folds each run of a runtime's frames into a line,
+/// or shows every frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuntimeFrames {
+    #[default]
+    Fold,
+    Show,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]

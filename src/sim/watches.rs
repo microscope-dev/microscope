@@ -335,6 +335,8 @@ mod tests {
                 hit_count,
                 previous: None,
                 current: None,
+                previous_value: None,
+                current_value: None,
             })
             .collect::<Arc<[_]>>();
         StateSnapshot {

@@ -8,6 +8,8 @@ mod calls;
 mod collector;
 mod formats;
 mod frame_pointers;
+mod interpreted;
+mod jit;
 mod probes;
 mod record;
 pub(crate) use record::{OwnedLine, hex, symbolize as symbolize_lines};
@@ -18,6 +20,8 @@ mod symbols;
 mod syscalls;
 pub use syscalls::{RecordedEvent, RecordedSyscalls, SyscallPlace};
 mod tasks;
+pub(crate) use interpreted::{Sampled, read_record};
+pub(crate) use tasks::{InterpretedWait, LiveStop};
 mod zones;
 
 pub use crate::capture::records::GapReason;
@@ -40,7 +44,7 @@ pub use zones::{
 };
 
 pub use crate::analysis::{
-    CallTree, Cost, Costs, DiffCost, DiffTree, Granularity, KeyKind, Keys, Lanes, OffCpuLane,
+    CallTree, Cost, Costs, DiffCost, DiffTree, Granularity, KeyKind, Keys, Lanes, Look, OffCpuLane,
     PlotBin, PlotSeries, Query, Side, Source, Transform, ZoneAt, ZoneBlock, ZoneStats, diff_costs,
     diff_trees,
 };
@@ -157,6 +161,40 @@ impl std::fmt::Display for SampleSource {
     }
 }
 
+/// How a recording reads where a Python program's threads are. Each is
+/// chosen; a recording never switches from one to another by itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PythonEngine {
+    /// A BPF program walks each sampled thread's Python frames as the
+    /// sample is taken, which then holds them among its native frames: it
+    /// needs `CAP_BPF` and `CAP_PERFMON`.
+    Bpf,
+
+    /// Stops the program this often, through the debugger's attach, and
+    /// reads each thread's stack, its Python frames among its native ones,
+    /// as a task of its own, with the labels its runtime gives it.
+    Snapshot { every: std::time::Duration },
+
+    /// Reads each thread's Python frames this often as the program runs,
+    /// leaving out, and counting, each thread whose frames change as they
+    /// are read.
+    Live { every: std::time::Duration },
+}
+
+impl std::fmt::Display for PythonEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bpf => write!(f, "with BPF at each sample"),
+            Self::Snapshot { every } => {
+                write!(f, "stopped every {:.3} s", every.as_secs_f64())
+            }
+            Self::Live { every } => {
+                write!(f, "as the program runs, every {:.3} s", every.as_secs_f64())
+            }
+        }
+    }
+}
+
 /// How to record.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecordOptions {
@@ -198,6 +236,10 @@ pub struct RecordOptions {
     /// stopping it, leaving out each task that changes while read.
     pub live_snapshots: bool,
 
+    /// How to read where a Python program's threads are, beside its
+    /// samples: none never does.
+    pub python: Option<PythonEngine>,
+
     /// The instrumentation sites to switch on in a program built with
     /// microscope's probes SDK.
     pub probes: ProbeSelection,
@@ -237,6 +279,7 @@ impl RecordOptions {
             segment: None,
             task_snapshots: None,
             live_snapshots: false,
+            python: None,
             probes: ProbeSelection::All,
             probe_timeout: std::time::Duration::from_secs(10),
             debug_directories: Vec::new(),
@@ -279,6 +322,9 @@ pub enum RecordError {
     #[error("reading the program failed: {0}")]
     Program(String),
 
+    #[error("{0}")]
+    Python(String),
+
     #[error(
         "the program was not loaded where the breakpoint assumed (bias {expected:#x}, not {actual:#x}): its samples would be of another instruction"
     )]
@@ -294,7 +340,11 @@ pub struct Profile {
 /// The query of every sample, seen as `view` shows stacks.
 fn query(view: StackView) -> Query {
     Query {
-        logical: view == StackView::Logical,
+        look: match view {
+            StackView::Logical => Look::Logical,
+            StackView::Native => Look::Native,
+            StackView::Python => Look::Python,
+        },
         ..Query::default()
     }
 }
@@ -400,8 +450,15 @@ pub enum StackView {
     #[default]
     Logical,
 
-    /// The frames as the thread ran them.
+    /// The frames as the thread ran them: an interpreter's frames are not
+    /// among them, as its own frames that run them stand for them.
     Native,
+
+    /// As [`Self::Logical`], with each stack from its outermost
+    /// interpreted frame in, without the interpreter's own frames, which
+    /// run them: a stack as a Python programmer reads it, with the native
+    /// code it calls.
+    Python,
 }
 
 /// A thread a profile sampled, or saw leave its CPU.
@@ -600,24 +657,55 @@ impl Profile {
     /// What each function costs, most expensive first.
     #[must_use]
     pub fn top(&self, view: StackView) -> Vec<FunctionCost> {
-        let keys = self.keys(Granularity::Function);
-        keys.functions(&query(view))
-            .rows
-            .into_iter()
-            .map(|cost| FunctionCost {
-                name: keys.name(cost.key),
-                own: cost.own,
-                total: cost.total,
-            })
-            .collect()
+        self.top_of(view, Source::Samples, Granularity::Function)
+    }
+
+    /// What each function, or what `granularity` tells apart, costs of
+    /// `source`, most expensive first.
+    #[must_use]
+    pub fn top_of(
+        &self,
+        view: StackView,
+        source: Source,
+        granularity: Granularity,
+    ) -> Vec<FunctionCost> {
+        let keys = self.keys(granularity);
+        keys.functions(&Query {
+            source,
+            ..query(view)
+        })
+        .rows
+        .into_iter()
+        .map(|cost| FunctionCost {
+            name: keys.name(cost.key),
+            own: cost.own,
+            total: cost.total,
+        })
+        .collect()
     }
 
     /// The call tree, from the outermost callers in; parents come before
     /// their children.
     #[must_use]
     pub fn call_tree(&self, view: StackView) -> Vec<CallNode> {
-        let keys = self.keys(Granularity::Function);
-        let tree = keys.aggregate(&query(view));
+        self.call_tree_of(view, Source::Samples, Granularity::Function)
+    }
+
+    /// The call tree of `source`, its frames told apart as `granularity`
+    /// says, from the outermost callers in; parents come before their
+    /// children.
+    #[must_use]
+    pub fn call_tree_of(
+        &self,
+        view: StackView,
+        source: Source,
+        granularity: Granularity,
+    ) -> Vec<CallNode> {
+        let keys = self.keys(granularity);
+        let tree = keys.aggregate(&Query {
+            source,
+            ..query(view)
+        });
         (0..tree.len())
             .map(|node| CallNode {
                 parent: (tree.parent[node] != NONE).then_some(tree.parent[node] as usize),
@@ -867,6 +955,16 @@ impl Profile {
             account(AccountKind::SnapshotPause),
             account(AccountKind::SnapshotFailures),
         )
+    }
+
+    /// Whether any stack holds a frame an interpreter runs, which the
+    /// [`StackView::Python`] look shows as its code sees it.
+    #[must_use]
+    pub fn interpreted(&self) -> bool {
+        self.capture
+            .frames
+            .iter()
+            .any(|frame| frame.kind == FrameKind::Interpreted as u8)
     }
 
     /// How many task snapshots read the program as it ran, and how many

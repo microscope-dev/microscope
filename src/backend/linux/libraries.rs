@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use crate::protocol::BreakpointSpec;
-use crate::{Error, Result, VirtualAddress};
+use crate::{BreakpointLocation, Error, Result, VirtualAddress};
 
 use super::breakpoints::{remove_breakpoint_owner_from, runtime_breakpoint_address};
 use super::native::LinuxTraceOps;
@@ -80,15 +80,22 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.sync_stack_movers()?;
         self.learn_from_got(None);
         self.sync_resolvers()?;
-        self.reresolve_breakpoints(lost_locations)
+        let locations_changed = self.reresolve_breakpoints(lost_locations)?;
+        self.arm_new_agents();
+        let arming_changed = self.sync_runtime_arming();
+        if locations_changed || arming_changed {
+            self.publish_breakpoints_changed();
+        }
+        Ok(())
     }
 
     /// Re-resolves function and source breakpoints across the loaded
     /// images: a library that loaded may add locations, and one that
     /// unloaded takes its locations with it, which leaves a breakpoint with
-    /// none pending until a module with code for it loads. Publishes the
-    /// change, or one already `changed`.
-    fn reresolve_breakpoints(&mut self, mut changed: bool) -> Result<()> {
+    /// none pending until a module with code for it loads. Returns whether
+    /// locations changed; the caller arms them before publishing.
+    #[must_use = "publish changed locations after arming them"]
+    fn reresolve_breakpoints(&mut self, mut changed: bool) -> Result<bool> {
         for index in 0..self.breakpoints.len() {
             let breakpoint = &self.breakpoints[index];
 
@@ -98,13 +105,14 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
 
             let resolved = self
-                .resolve_in_modules(&breakpoint.spec)
-                .unwrap_or_else(|_| Arc::from([]));
+                .resolve_breakpoint(breakpoint.id, breakpoint.spec.clone(), true)
+                .map_or_else(|_| Arc::from([]), |resolved| resolved.locations);
             if resolved == breakpoint.locations {
                 continue;
             }
 
-            let owner = BreakpointOwner::User(breakpoint.id);
+            let id = breakpoint.id;
+            let owner = BreakpointOwner::User(id);
             let previous = std::mem::replace(
                 &mut self.breakpoints[index].locations,
                 Arc::clone(&resolved),
@@ -118,7 +126,15 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .iter()
                 .filter(|location| !resolved.contains(location))
             {
-                let address = runtime_breakpoint_address(inferior, location.location)?;
+                if let BreakpointLocation::Managed(managed) = &location.location {
+                    inferior.managed.release(managed, id);
+                    continue;
+                }
+
+                let Some(address) = runtime_breakpoint_address(inferior, &location.location)?
+                else {
+                    continue;
+                };
 
                 // An unmapped library's trap went with its memory.
                 if location
@@ -135,18 +151,22 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .iter()
                 .filter(|location| !previous.contains(location))
             {
-                let address = runtime_breakpoint_address(inferior, location.location)?;
+                if let BreakpointLocation::Managed(managed) = &location.location {
+                    inferior.managed.own(managed, id);
+                    continue;
+                }
+
+                let Some(address) = runtime_breakpoint_address(inferior, &location.location)?
+                else {
+                    continue;
+                };
                 let pid = inferior.memory_thread();
                 self.ptrace
                     .install_breakpoint(pid, &mut inferior.breakpoints, address, owner)?;
             }
         }
 
-        if changed {
-            self.publish_breakpoints_changed();
-        }
-
-        Ok(())
+        Ok(changed)
     }
 }
 

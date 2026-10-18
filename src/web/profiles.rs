@@ -12,9 +12,9 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use microscope::profiler::{
-    DiffCost, GapReason, Granularity, KeyKind, Keys, Lanes, MarkerKind, NO_KEY, NO_TASK, Preset,
-    Profile, Query, RecordOptions, SampleSource, Side, Source, Transform, Watch, diff_costs,
-    diff_trees, record_watched,
+    DiffCost, GapReason, Granularity, KeyKind, Keys, Lanes, Look, MarkerKind, NO_KEY, NO_TASK,
+    Preset, Profile, Query, RecordOptions, SampleSource, Side, Source, Transform, Watch,
+    diff_costs, diff_trees, record_watched,
 };
 use serde_json::{Value, json};
 use tokio::sync::{oneshot, watch};
@@ -23,7 +23,7 @@ use microscope::syscalls::InFlight;
 
 use super::protocol::{
     self, ErrorKind, ProfileBaseWeight, ProfileCost, ProfileFunctions, ProfileGranularity,
-    ProfileInfo, ProfileKey, ProfileKeyKind, ProfileLane, ProfileList, ProfileQuery,
+    ProfileInfo, ProfileKey, ProfileKeyKind, ProfileLane, ProfileList, ProfileLook, ProfileQuery,
     ProfileSetting, ProfileSource, ProfileSummary, ProfileTimeline, ProfileTree, RecordPreset,
     RecordProfile, RecordStarted, Request, Role, TransformOp,
 };
@@ -774,6 +774,7 @@ fn summary(entry: &Entry) -> ProfileSummary {
             .collect(),
         budget_changes: markers(profile.budget_changes(), start),
         tasks: tasks(profile),
+        interpreted: profile.interpreted(),
         snapshots: profile.task_snapshots().0,
         snapshot_pause: profile.task_snapshots().1,
         task_samples: profile.task_samples(),
@@ -953,7 +954,11 @@ fn resolve_in(
         by_label: query.by_label.clone(),
         transforms,
         invert: query.invert,
-        logical: !query.native,
+        look: match query.look {
+            ProfileLook::Logical => Look::Logical,
+            ProfileLook::Native => Look::Native,
+            ProfileLook::Python => Look::Python,
+        },
         by_task: query.by_task,
     })
 }

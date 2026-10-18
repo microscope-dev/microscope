@@ -520,28 +520,17 @@ impl Session {
                     crate::cli::format::watch_subject,
                 );
                 let type_info = watchpoint.and_then(|watchpoint| watchpoint.type_info.as_ref());
-                let value = |bytes: Option<&[u8]>| {
-                    crate::cli::value::watched_bytes(bytes, type_info, Some(image))
-                };
+                let (previous, current) =
+                    crate::cli::value::hit_values(hit, type_info, Some(image));
 
                 if hit.changed() {
-                    format!(
-                        "{subject} changed from {} to {}",
-                        value(hit.previous.as_deref()),
-                        value(hit.current.as_deref())
-                    )
+                    format!("{subject} changed from {previous} to {current}")
                 } else if watchpoint
                     .is_some_and(|watchpoint| watchpoint.access == WatchAccess::Write)
                 {
-                    format!(
-                        "{subject} was written; it is still {}",
-                        value(hit.current.as_deref())
-                    )
+                    format!("{subject} was written; it is still {current}")
                 } else {
-                    format!(
-                        "{subject} was accessed; it is {}",
-                        value(hit.current.as_deref())
-                    )
+                    format!("{subject} was accessed; it is {current}")
                 }
             })
             .collect::<Vec<_>>()
@@ -553,7 +542,7 @@ fn scope_text(scope: &WatchScope) -> String {
     match scope {
         WatchScope::Location | WatchScope::Static { .. } => String::new(),
         WatchScope::ThreadLocal { thread } => format!(", thread {thread}'s instance"),
-        WatchScope::Frame { .. } | WatchScope::Task { .. } => {
+        WatchScope::Frame { .. } | WatchScope::Task { .. } | WatchScope::Interpreted { .. } => {
             ", until its function returns".to_owned()
         }
     }

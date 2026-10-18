@@ -7,6 +7,12 @@
 //! oracle judges is what a profile would hold. Whether and how a run
 //! samples is drawn from [`Stream::Sample`] alone, so a seed that never
 //! samples chooses as it did before sampling existed.
+//!
+//! The BPF engine's records of Python frames, which a program on the
+//! sampler's events writes beside each sample, are not modeled: no
+//! simulated program runs CPython, whose frames the program walks. Their
+//! decoding and their pairing with samples are tested over synthesized
+//! records instead (`backend::bpf::sampler`, `profiler::record`).
 
 use super::choices::{Choices, Stream};
 use super::corpus::Variant;

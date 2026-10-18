@@ -4,7 +4,7 @@ use proptest::prelude::*;
 
 use super::*;
 use crate::capture::Capture;
-use crate::capture::builder::{CaptureBuilder, LineInput};
+use crate::capture::builder::{CaptureBuilder, InterpretedPlace, LineInput};
 use crate::capture::records::{FrameKind, NONE, Truncation};
 use crate::model::{Pid, Tid};
 
@@ -584,7 +584,7 @@ fn a_logical_stack_is_a_tasks_own_under_its_dispatch() {
         &capture,
         &keys,
         &Query {
-            logical: true,
+            look: Look::Logical,
             ..Query::default()
         },
     );
@@ -619,6 +619,150 @@ fn a_logical_stack_is_a_tasks_own_under_its_dispatch() {
         ])],
         1
     );
+}
+
+/// A Python program's capture: a sample of a mixed stack, its interpreted
+/// frames inside the activations of the interpreter that run them and
+/// calling native code, and one of a thread that runs no Python, with the
+/// frames of `Server.handle` and the native `decode` it calls.
+fn python_capture() -> (Capture, u32, u32) {
+    use crate::CodeRole::{Interpreter, Ordinary};
+    let mut builder = CaptureBuilder::new();
+    let module = builder.module("/bin/python3", None, [0; 16], 0);
+    let mut native = |name: &str, role: crate::CodeRole| {
+        let address = 0x100 * (builder.frames().len() as u64 + 1);
+        let frame = builder.frame(FrameKind::Native, module, address, 0);
+        builder.symbolize(
+            frame,
+            module,
+            &[LineInput {
+                role: crate::capture::records::role_number(role),
+                ..line(name)
+            }],
+        );
+        frame
+    };
+
+    let decode = native("decode", Ordinary);
+    let call = native("cfunction_vectorcall_O", Interpreter);
+    let evaluate = native("_PyEval_EvalFrameDefault", Interpreter);
+    let vectorcall = native("PyObject_Vectorcall", Interpreter);
+    let run = native("Py_RunMain", Interpreter);
+    let main = native("main", Ordinary);
+    let start = native("start_thread", Ordinary);
+    let work = native("work", Ordinary);
+    let mut python = |function: &str, line: u32, declared: u32| {
+        builder.interpreted(&InterpretedPlace {
+            function,
+            file: Some("/srv/server.py"),
+            line,
+            declared: Some(declared),
+        })
+    };
+
+    let handle = python("Server.handle", 12, 10);
+    let serve = python("serve", 30, 28);
+    let module_code = python("<module>", 40, 1);
+    let mixed = builder.stack(&[
+        decode,
+        call,
+        handle,
+        serve,
+        evaluate,
+        vectorcall,
+        module_code,
+        evaluate,
+        run,
+        main,
+    ]);
+    let plain = builder.stack(&[work, start]);
+    let thread = builder.thread(Pid::new(1), Tid::new(1), 0);
+    builder.sample(thread, 0, 1, mixed, NONE);
+    builder.sample(thread, 1, 2, plain, NONE);
+    (builder.finish(), handle, decode)
+}
+
+/// A Python program's stacks are mixed, its interpreted frames inside the
+/// activations of the interpreter that run them. The Python look shows
+/// them from the outermost in, without the interpreter, and with the native
+/// code they call; the native look shows only what the thread ran; and a
+/// stack with no interpreted frame is the same in every look.
+#[test]
+fn python_mixed_and_native_looks_of_one_stack() {
+    let (capture, handle, decode) = python_capture();
+    let names = |path: &[&str]| {
+        path.iter()
+            .map(|name| (*name).to_owned())
+            .collect::<Vec<_>>()
+    };
+
+    let keys = Keys::new(&capture, Granularity::Function);
+    let look = |look: Look| {
+        let query = Query {
+            look,
+            ..Query::default()
+        };
+        ending_paths(&aggregate(&capture, &keys, &query), &keys)
+    };
+
+    let plain = (names(&["start_thread", "work"]), 2);
+    assert_eq!(
+        look(Look::Python),
+        BTreeMap::from([
+            (names(&["<module>", "serve", "Server.handle", "decode"]), 1),
+            plain.clone(),
+        ])
+    );
+    assert_eq!(
+        look(Look::Logical),
+        BTreeMap::from([
+            (
+                names(&[
+                    "main",
+                    "Py_RunMain",
+                    "_PyEval_EvalFrameDefault",
+                    "<module>",
+                    "PyObject_Vectorcall",
+                    "_PyEval_EvalFrameDefault",
+                    "serve",
+                    "Server.handle",
+                    "cfunction_vectorcall_O",
+                    "decode",
+                ]),
+                1
+            ),
+            plain.clone(),
+        ])
+    );
+    assert_eq!(
+        look(Look::Native),
+        BTreeMap::from([
+            (
+                names(&[
+                    "main",
+                    "Py_RunMain",
+                    "_PyEval_EvalFrameDefault",
+                    "PyObject_Vectorcall",
+                    "_PyEval_EvalFrameDefault",
+                    "cfunction_vectorcall_O",
+                    "decode",
+                ]),
+                1
+            ),
+            plain,
+        ])
+    );
+
+    // An interpreted frame has no address: by address, it is its line.
+    let keys = Keys::new(&capture, Granularity::Address);
+    let shown: Vec<String> = keys
+        .frame(handle)
+        .iter()
+        .map(|key| keys.name(*key))
+        .collect();
+    assert_eq!(shown, ["Server.handle server.py:12"]);
+    assert!(keys.interpreted(keys.frame(handle)[0]));
+    assert!(!keys.interpreted(keys.frame(decode)[0]));
 }
 
 /// A sample: its thread, time, weight, and task choice.

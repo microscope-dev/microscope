@@ -58,6 +58,10 @@ pub enum Lookup<O> {
         ty: super::types::Ty,
     },
 
+    /// A variable whose type only its value knows, as a Python variable's
+    /// is: always a place, of type [`Ty::Dynamic`](super::types::Ty).
+    Dynamic(O),
+
     /// Several things the name could mean, each written as it is selected.
     Ambiguous(Vec<String>),
     NotFound,
@@ -159,6 +163,26 @@ pub trait Scope: TypeSource {
     /// The register a name, without its `$`, means.
     fn register(&self, name: &str) -> Option<Register>;
 
+    /// Plans a step from a value of a dynamic type, which reaches another:
+    /// [`StepKind::Member`] to an attribute, or [`StepKind::Entry`] to an
+    /// item by its key or index. The machine takes it at run time, through
+    /// [`Machine::step`] or [`Machine::entry`], by the value's type then.
+    fn plan_dynamic(&self, step: StepKind<'_>) -> Result<Self::Step, Refusal> {
+        let _ = step;
+        Err(Refusal::new(
+            ErrorKind::Unsupported,
+            "no value here has a dynamic type",
+        ))
+    }
+
+    /// Whether `name` is the dynamic type of an interpreter's objects, to
+    /// which a cast takes an address to reach into the object there, as
+    /// `py` is CPython's.
+    fn dynamic_type(&self, name: &str) -> bool {
+        let _ = name;
+        false
+    }
+
     /// The call that stopped the thread, where a system call did.
     fn call_values(&self) -> Option<&CallValues> {
         None
@@ -210,6 +234,9 @@ pub enum Key {
     Bool(bool),
     Address(u64),
     Text(Vec<u8>),
+
+    /// A dynamic language's value for nothing, such as Python's `None`.
+    Nothing,
 }
 
 impl Key {
@@ -268,6 +295,7 @@ impl Key {
                 VariableValue::Address(address) => Ok(address.address.get() == *wanted),
                 _ => Err(mismatch()),
             },
+            Self::Nothing => Err(mismatch()),
             Self::Text(wanted) => {
                 let Some(text) = text else {
                     return Err(mismatch());
@@ -295,6 +323,7 @@ impl Key {
             Self::Bool(value) => format!("`{value}`"),
             Self::Address(value) => format!("the address {value:#x}"),
             Self::Text(_) => "a string".to_owned(),
+            Self::Nothing => "the value for nothing".to_owned(),
         }
     }
 }
@@ -307,8 +336,42 @@ impl fmt::Display for Key {
             Self::Bool(value) => write!(formatter, "{value}"),
             Self::Address(value) => write!(formatter, "{value:#x}"),
             Self::Text(bytes) => write!(formatter, "{:?}", String::from_utf8_lossy(bytes)),
+            Self::Nothing => formatter.write_str("nothing"),
         }
     }
+}
+
+/// A value of a dynamic type, loaded where an operation needs its value:
+/// its type's name, which messages show, and what it holds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Loaded {
+    pub type_name: Arc<str>,
+    pub value: LoadedValue,
+}
+
+/// What a value of a dynamic type holds, as far as the evaluator computes
+/// with it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LoadedValue {
+    /// The value its language has for no value, as Python's `None`, which
+    /// equals only itself.
+    Nothing,
+    Bool(bool),
+    Int(Exact),
+    Float(Float),
+
+    /// Text, encoded as UTF-8, as far as it was read.
+    Text(TextSummary),
+    Bytes(TextSummary),
+
+    /// A built-in collection of `length` items, true when it holds any.
+    Collection {
+        length: u64,
+    },
+
+    /// Any other value, which is neither compared nor computed with, since
+    /// its type's own code decides what those mean.
+    Object,
 }
 
 /// Where the bytes of text are: its first byte's address, and how many.
@@ -403,6 +466,17 @@ pub trait Machine: TypeSource {
     /// The value at a place, as inspection presents it.
     fn present(&mut self, at: &Self::Place) -> Result<InspectedValue, Stop>;
 
+    /// The interpreter's object at a place as the debugger presents it
+    /// without a view, as the view that presents it and does not `show`
+    /// lends it.
+    fn present_stored(&mut self, at: &Self::Place) -> Result<InspectedValue, Stop> {
+        let _ = at;
+        Err(Stop::Refused(Refusal::new(
+            ErrorKind::Unsupported,
+            "this machine holds no interpreter's objects",
+        )))
+    }
+
     /// A computed value of program type, from its bytes.
     fn present_bytes(&mut self, ty: TypeReference, bytes: &[u8]) -> Result<InspectedValue, Stop>;
 
@@ -420,7 +494,8 @@ pub trait Machine: TypeSource {
 
     /// How many elements a value with no length of its own holds, or the
     /// length of its text, as a view presents it; `None` when no view
-    /// presents its type.
+    /// presents its type. A value of a dynamic type has the length its
+    /// language gives it, and one that has none is refused.
     fn presented_length(&mut self, at: &Self::Place) -> Result<Option<u64>, Stop> {
         let _ = at;
         Ok(None)
@@ -454,7 +529,9 @@ pub trait Machine: TypeSource {
 
     /// The place of the value a map at `from` holds for `key`, through a
     /// step a scope planned with [`StepKind::Entry`], or `None` when the
-    /// map holds no such key.
+    /// map holds no such key. For a value of a dynamic type, through a step
+    /// [`Scope::plan_dynamic`] planned, the item its language's indexing
+    /// finds, and a missing one is refused with why.
     fn entry(
         &mut self,
         from: &Self::Place,
@@ -485,6 +562,26 @@ pub trait Machine: TypeSource {
         Err(Stop::Refused(Refusal::new(
             ErrorKind::Unsupported,
             "no task is known here",
+        )))
+    }
+
+    /// The place of the interpreter's object at `address`, as a cast to its
+    /// dynamic type `ty` names it.
+    fn dynamic_at(&mut self, ty: &str, address: u64) -> Result<Self::Place, Stop> {
+        let _ = (ty, address);
+        Err(Stop::Refused(Refusal::new(
+            ErrorKind::Unsupported,
+            "this machine reads no interpreter's objects",
+        )))
+    }
+
+    /// What the place of a value of a dynamic type holds, for an operation
+    /// that needs its value.
+    fn load_dynamic(&mut self, at: &Self::Place) -> Result<Loaded, Stop> {
+        let _ = at;
+        Err(Stop::Refused(Refusal::new(
+            ErrorKind::Unsupported,
+            "this machine holds no values of a dynamic type",
         )))
     }
 

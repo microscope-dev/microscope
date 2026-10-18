@@ -1751,9 +1751,12 @@ fn catch_chooses_which_exceptions_stop() {
     assert_in_order(
         &stdout,
         &[
-            "unhandled      on   Unhandled Go panics\n",
-            "runtime-fatal  on   Fatal Go runtime errors\n",
-            "raised         off  Every Go panic\n",
+            "unhandled        on   Unhandled Go panics\n",
+            "runtime-fatal    on   Fatal Go runtime errors\n",
+            "raised           off  Every Go panic\n",
+            "rust-panic       on   Rust panics\n",
+            "python-raised    off  Every Python exception\n",
+            "python-uncaught  off  Uncaught Python exceptions\n",
             "raised  on   Every Go panic\n",
             "as an exception was raised",
             "panic: runtime error: invalid memory address or nil pointer dereference",
@@ -1818,8 +1821,7 @@ fn pp_fills_long_sequences_and_breaks_maps_by_width() {
     let wide = batch(&rust, &commands);
     assert!(
         wide.contains(
-            "  249, 250, <truncated: MemoryReads limit 256 after 256; requested 1>,\n\
-             \x20 <49 omitted>,\n\
+            "  249, 250, 251, 252, 253, 254, 255, <44 omitted>,\n\
              ]\n"
         ),
         "{wide}"
@@ -2514,7 +2516,7 @@ fn views_present_values_raw_is_one_step_away_and_info_view_explains() {
         &[
             "(Vec<i32, alloc::alloc::Global>) ints = len=3 [1, 2, 3]\n",
             "(Vec<u32, alloc::alloc::Global>) many = len=300 [0, 1, 2, 3, ",
-            " 249, 250, <truncated: MemoryReads limit 256 after 256; requested 1>, <49 omitted>]\n",
+            " 254, 255, <44 omitted>]\n",
             raw_ints,
             "}, len = 3}\n",
             "(Vec<alloc::string::String, alloc::alloc::Global>) words = len=2 [\"one\", \"two\"]\n",
@@ -4205,6 +4207,331 @@ fn frame_commands_move_through_caller_frames_and_show_their_source() {
         line.starts_with("#11 ") && line.contains(" in _start+0x")
     });
     line_index(&lines, outermost, |line| line.starts_with("#10 "));
+}
+
+/// An uncaught Python exception, chosen alone before the program runs,
+/// installs the agent with no breakpoint, and stops as the exception leaves
+/// the main thread's code: the stop says what it is and where it was
+/// raised, and the program then ends as Python ends it. The interpreter's
+/// own lack of debug information is no warning: the program is the script.
+#[test]
+fn an_uncaught_python_exception_stops_where_it_leaves_the_program() {
+    let interpreter = std::path::PathBuf::from(
+        std::env::var_os("MICROSCOPE_CPYTHON")
+            .expect("MICROSCOPE_CPYTHON names the interpreters; run tests in the dev shell"),
+    )
+    .join("3.14/python");
+    let interpreter = interpreter.to_str().expect("a UTF-8 path");
+    let source = "def boom():\n    raise ValueError('boom')\n\nboom()\n";
+    let program = [interpreter, "--", "-I", "-B", "-c", source];
+    let (stdout, stderr) = piped(
+        &program,
+        &["catch python-uncaught on", "run", "bt", "continue"],
+    );
+    let lines = stdout.lines().collect::<Vec<_>>();
+    let stopped = line_index(&lines, 0, |line| {
+        line == "stopped by an unhandled exception in <module> at <string>:4:"
+    });
+    let message = line_index(&lines, stopped, |line| {
+        line == "ValueError: boom, raised in boom at <string>:2"
+    });
+    assert_eq!(message, stopped + 1, "{stdout}");
+    line_index(&lines, message, |line| {
+        line == "source unavailable: the code was compiled from <string>, which names no file"
+    });
+    line_index(&lines, message, |line| {
+        line.starts_with('#') && line.ends_with("in <module> at <string>:4")
+    });
+    line_index(&lines, message, |line| {
+        line == "inferior exited with status 1"
+    });
+    assert!(stderr.contains("ValueError: boom"), "{stderr}");
+    assert!(!stderr.contains("no debug information"), "{stderr}");
+}
+
+/// Python breakpoints set before the program runs are kept pending, as its
+/// code loads only when it imports it, and stop in the program's own frame,
+/// with the debugger's agent and the interpreter folded, from which `next`
+/// steps the program's line; one in code the program never runs never
+/// stops. A native breakpoint is still checked.
+#[test]
+fn python_breakpoints_wait_for_their_code_and_stop_in_the_programs_frame() {
+    let interpreter = std::path::PathBuf::from(
+        std::env::var_os("MICROSCOPE_CPYTHON")
+            .expect("MICROSCOPE_CPYTHON names the interpreters; run tests in the dev shell"),
+    )
+    .join("3.14/python");
+    let interpreter = interpreter.to_str().expect("a UTF-8 path");
+    let program = [
+        interpreter,
+        "--",
+        "-I",
+        "-B",
+        "tests/fixtures/python/breakpoints.py",
+    ];
+    let (stdout, stderr) = piped(
+        &program,
+        &[
+            "break tests/fixtures/python/breakpoints.py:15 if index == 3",
+            "break py:Shape.area",
+            "break breakpoints_later.py:5",
+            "break py:rea",
+            "break missing.c:3",
+            "break accumulate",
+            "run",
+            "bt",
+            "print total",
+            "next",
+            "print square",
+            "continue",
+            "continue",
+            "info breakpoints",
+            "continue",
+        ],
+    );
+    let lines = stdout.lines().collect::<Vec<_>>();
+    let mut at = 0;
+    for number in 1..=4 {
+        at = line_index(&lines, at, |line| {
+            line.starts_with(&format!("breakpoint {number} set, pending until"))
+        });
+    }
+    assert!(
+        stderr.contains("no source file matching 'missing.c'"),
+        "{stderr}"
+    );
+    // A bare name is a native function's; the refusal says how to name the
+    // Python one.
+    assert!(
+        stderr.contains("no function named 'accumulate' was found")
+            && stderr.contains("`py:accumulate`"),
+        "{stderr}"
+    );
+
+    let stopped = line_index(&lines, at, |line| {
+        line == "stopped at breakpoint 1 (hit 4) in accumulate at tests/fixtures/python/breakpoints.py:15"
+    });
+    let folded = line_index(&lines, stopped, |line| {
+        line.starts_with("    … #0–#")
+            && line.ends_with("frames of the runtime; `bt -r` shows them")
+    });
+    let frame = line_index(&lines, folded, |line| {
+        line.starts_with('#')
+            && line.ends_with("in accumulate at tests/fixtures/python/breakpoints.py:15")
+    });
+    assert_eq!(
+        frame,
+        folded + 1,
+        "only the folded hook is inner:
+{stdout}"
+    );
+    let total = line_index(&lines, frame, |line| line == "(int) total = 3");
+    let next = line_index(&lines, total, |line| {
+        line == "stopped after source next in accumulate at tests/fixtures/python/breakpoints.py:16"
+    });
+    let square = line_index(&lines, next, |line| line == "(int) square = 4");
+    let method = line_index(&lines, square, |line| {
+        line.starts_with("stopped at breakpoint 2 (hit 1) in Shape.area at ")
+    });
+    let later = line_index(&lines, method, |line| {
+        line == "stopped at breakpoint 3 (hit 1) in later at tests/fixtures/python/breakpoints_later.py:5"
+    });
+    let never = line_index(&lines, later, |line| {
+        line.split_whitespace().collect::<Vec<_>>() == ["4", "+", "0", "function", "rea"]
+    });
+    let done = line_index(&lines, never, |line| line == "BREAKPOINTS DONE");
+    line_index(&lines, done, |line| line == "inferior exited with status 0");
+    assert!(!stdout.contains("microscope_python_hook"), "{stdout}");
+}
+
+/// A program named without a directory is found as a shell finds it, on
+/// `PATH`, when the current directory has no file of that name.
+#[test]
+fn a_program_named_alone_is_found_on_path() {
+    let interpreters = std::path::PathBuf::from(
+        std::env::var_os("MICROSCOPE_CPYTHON")
+            .expect("MICROSCOPE_CPYTHON names the interpreters; run tests in the dev shell"),
+    )
+    .join("3.14");
+    let path = std::env::join_paths(std::iter::once(interpreters).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .expect("a PATH");
+    let found = microscope_command()
+        .env("PATH", &path)
+        .args([
+            "--batch",
+            "--eval",
+            "run",
+            "python",
+            "--",
+            "-c",
+            "print('found on PATH')",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .stdin(Stdio::null())
+        .output()
+        .expect("run microscope");
+    let stdout = assert_success(found);
+    assert!(stdout.contains("found on PATH"), "{stdout}");
+
+    let missing = microscope_command()
+        .env("PATH", &path)
+        .args(["--batch", "--eval", "run", "no-such-program-anywhere"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .stdin(Stdio::null())
+        .output()
+        .expect("run microscope");
+    let stderr = String::from_utf8_lossy(&missing.stderr);
+    assert!(!missing.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("no-such-program-anywhere")
+            && stderr.contains("current directory")
+            && stderr.contains("PATH"),
+        "{stderr}"
+    );
+}
+
+/// A virtual environment's interpreter, a link to the one it was made from,
+/// runs as the environment's: Python finds its environment from the path it
+/// is run as, which an activated environment puts first on `PATH`.
+#[test]
+fn a_virtual_environments_python_runs_in_its_environment() {
+    let directory = support::ScratchDir::new("cli-venv");
+    let environment = directory.path().join("venv");
+    let interpreter = std::path::PathBuf::from(
+        std::env::var_os("MICROSCOPE_CPYTHON")
+            .expect("MICROSCOPE_CPYTHON names the interpreters; run tests in the dev shell"),
+    )
+    .join("3.14/python");
+    let made = Command::new(&interpreter)
+        .args(["-I", "-m", "venv", "--without-pip"])
+        .arg(&environment)
+        .output()
+        .expect("make a virtual environment");
+    assert!(made.status.success(), "{made:?}");
+    let path = std::env::join_paths(std::iter::once(environment.join("bin")).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    ))
+    .expect("a PATH");
+
+    let output = microscope_command()
+        .env("PATH", &path)
+        .args([
+            "--batch",
+            "--eval",
+            "run",
+            "python",
+            "--",
+            "-c",
+            "import sys; print('prefix', sys.prefix)",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .stdin(Stdio::null())
+        .output()
+        .expect("run microscope");
+    let stdout = assert_success(output);
+    assert!(
+        stdout.contains(&format!("prefix {}", environment.display())),
+        "{stdout}"
+    );
+}
+
+/// A Python program's core, whose Python frames call each other through
+/// the interpreter's frames on some of its threads.
+const PYTHON_CORE: &str = "build/test-programs/python-locals-3.14t.core";
+
+#[test]
+fn python_frames_show_their_source_and_fold_the_interpreters_frames() {
+    let log = fs::read_to_string(format!("{PYTHON_CORE}.log"))
+        .expect("the core's log; run `just build-test-programs`");
+    let report = support::truth::Report::parse(&log);
+    let parked = report.checkpoint("parked").expect("the core's checkpoint");
+    let frame = parked
+        .iter()
+        .find(|fields| fields[0] == "frame" && fields[3] == "containers")
+        .expect("the frame of containers");
+    let (thread, line) = (&frame[1], &frame[5]);
+    let place = format!("in containers at tests/fixtures/python/locals.py:{line}");
+
+    let thread = format!("thread {thread}");
+    let stdout = batch(&["--core", PYTHON_CORE], &[&thread, "bt"]);
+    let lines = stdout.lines().collect::<Vec<_>>();
+    let shown = line_index(&lines, 0, |shown| shown.ends_with(&place));
+    let level = lines[shown]
+        .split_whitespace()
+        .next()
+        .and_then(|level| level.strip_prefix('#'))
+        .expect("the frame's level");
+    line_index(&lines, 0, |line| {
+        line.contains("frames of the runtime; `bt -r` shows them")
+    });
+    assert!(
+        !stdout.contains("_PyEval_EvalFrameDefault"),
+        "the interpreter's frames fold:\n{stdout}"
+    );
+
+    // Moving between frames passes over the frames a backtrace folds,
+    // until they are shown.
+    let frame = format!("frame {level}");
+    let stdout = batch(
+        &["--core", PYTHON_CORE],
+        &[
+            &thread,
+            &frame,
+            "where",
+            "up",
+            "up",
+            "down",
+            "set runtime-frames on",
+            "up",
+        ],
+    );
+    let lines = stdout.lines().collect::<Vec<_>>();
+    let selected = line_index(&lines, 0, |shown| {
+        shown.starts_with(&format!("#{level} ")) && shown.ends_with(&place)
+    });
+    let marked = line_index(&lines, selected, |shown| {
+        shown.starts_with(&format!("=> {line} |"))
+    });
+    assert!(lines[marked].ends_with("gate.arrive()"), "{stdout}");
+    let location = line_index(&lines, marked, |shown| {
+        format!("in {shown}").ends_with(&place)
+    });
+    let run = line_index(&lines, location, |shown| {
+        shown.contains(" in Thread.run at ")
+    });
+    let bootstrap = line_index(&lines, run, |shown| {
+        shown.starts_with('#') && shown.contains(" in Thread._bootstrap_inner at ")
+    });
+    let back = line_index(&lines, bootstrap, |shown| {
+        shown.starts_with('#') && shown.contains(" in Thread.run at ")
+    });
+    line_index(&lines, back, |shown| {
+        shown.starts_with('#') && shown.contains(" in _PyEval_EvalFrameDefault+")
+    });
+
+    // Expressions read the frame's objects as Python finds them.
+    let stdout = batch(
+        &["--core", PYTHON_CORE],
+        &[
+            &thread,
+            &frame,
+            "print numbers[-1]",
+            "print by_name[\"b\"]",
+            "print numbers[0] + len(by_name) * 10",
+            "whatis numbers",
+        ],
+    );
+    let lines = stdout.lines().collect::<Vec<_>>();
+    let last = line_index(&lines, 0, |shown| shown == "(int) numbers[-1] = 3");
+    let found = line_index(&lines, last, |shown| {
+        shown == "(str) by_name[\"b\"] = 'two'"
+    });
+    let sum = line_index(&lines, found, |shown| {
+        shown == "(integer) numbers[0] + len(by_name) * 10 = 31"
+    });
+    line_index(&lines, sum, |shown| shown == "type = list");
 }
 
 #[test]

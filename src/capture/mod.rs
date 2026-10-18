@@ -33,7 +33,7 @@ pub struct CaptureFormat;
 
 /// What a capture's tables mean: bump it with any change to what is
 /// stored.
-pub const CAPTURE_REVISION: u32 = 8;
+pub const CAPTURE_REVISION: u32 = 10;
 
 impl Format for CaptureFormat {
     type Kind = CaptureTable;
@@ -333,8 +333,14 @@ impl Capture {
 
         for frame in &self.frames {
             index(frame.module.get(), self.modules.len(), "a frame's module")?;
-            if FrameKind::from_number(frame.kind).is_none() {
+            let Some(kind) = FrameKind::from_number(frame.kind) else {
                 return Err(format!("a frame has unknown kind {}", frame.kind));
+            };
+
+            if kind.named() {
+                let name = u32::try_from(frame.address.get())
+                    .map_err(|_| "a named frame's key names no string".to_owned())?;
+                string(name, "a named frame's key")?;
             }
 
             if role_of(frame.role).is_none() {

@@ -64,6 +64,12 @@ Use `info breakpoints` to list breakpoints, and `disable`, `enable`, or
 `delete` with a breakpoint number to manage one. `tbreak` creates a temporary
 breakpoint removed after its first hit.
 
+A resolved location can still be waiting for its language runtime to enable
+it. Pending locations show the reason; other locations of the same breakpoint
+can already be ready. Earlier instrumentation can still report hits while a
+new configuration waits for confirmation. The terminal, browser, and editor
+retain that distinction.
+
 `advance LOCATION` runs to a temporary source location in the current frame.
 
 ## Use watchpoints
@@ -140,9 +146,12 @@ locals
 print request
 ```
 
+Each run of a runtime's own frames, such as Go's or CPython's, folds into one
+line in `bt`. `bt -r` shows every frame.
+
 Use `threads` to list native threads and `thread ID` to select one. Programs
-with a supported runtime can also expose logical tasks such as goroutines and
-async Rust tasks. See [Languages](languages.md).
+with a supported runtime can also expose logical tasks such as goroutines,
+async Rust tasks, and asyncio tasks. See [Languages](languages.md).
 
 ## Inspect values
 

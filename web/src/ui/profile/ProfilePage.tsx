@@ -281,6 +281,21 @@ function ProfileHead() {
               />
               Async stacks
             </label>
+            {summary.interpreted ? (
+              <label
+                className="check"
+                title="Show each stack as its Python code sees it, without the interpreter's own frames"
+              >
+                <input
+                  type="checkbox"
+                  checked={look.py === "1"}
+                  onChange={(event) =>
+                    setLook((look) => withLook(look, "py", event.target.checked ? "1" : undefined))
+                  }
+                />
+                Python stacks
+              </label>
+            ) : null}
           </>
         ) : null}
         {snapshots ? (

@@ -525,8 +525,13 @@ pub struct Breakpoint {
     /// The user intent that created the breakpoint.
     pub spec: BreakpointSpec,
 
-    /// Every deduplicated location at which the breakpoint is installed.
+    /// Every deduplicated resolved location for the breakpoint.
     pub locations: Arc<[ResolvedBreakpointLocation]>,
+
+    /// Locations whose runtime has not confirmed the current whole
+    /// configuration. Earlier instrumentation may remain effective.
+    /// These describe the current inferior; the desired locations stay listed.
+    pub pending_locations: Arc<[PendingBreakpointLocation]>,
 
     /// Which hits stop execution; `None` stops at every hit.
     pub hit_condition: Option<HitCondition>,
@@ -556,6 +561,26 @@ pub struct Breakpoint {
 
     /// Whether the stop the breakpoint first causes deletes it.
     pub temporary: bool,
+}
+
+/// A resolved location whose runtime could not be armed, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingBreakpointLocation {
+    pub location: BreakpointLocation,
+    pub reason: Arc<str>,
+}
+
+impl Breakpoint {
+    /// Resolved locations with no current runtime-arming problem. The
+    /// breakpoint still needs to be enabled in a live process to hit.
+    pub fn ready_locations(&self) -> impl Iterator<Item = &ResolvedBreakpointLocation> {
+        self.locations.iter().filter(move |resolved| {
+            !self
+                .pending_locations
+                .iter()
+                .any(|pending| pending.location == resolved.location)
+        })
+    }
 }
 
 /// What a breakpoint does at a hit besides counting it. Every hit is
@@ -832,6 +857,19 @@ pub enum WatchScope {
         /// canonical frame address is, which a move keeps.
         activation: u64,
     },
+
+    /// A variable of one frame a runtime interprets, which ends when the
+    /// frame returns or unwinds.
+    Interpreted {
+        /// The thread running the frame.
+        thread: ThreadId,
+
+        /// The runtime that interprets it.
+        runtime: crate::RuntimeId,
+
+        /// Where its interpreter keeps the frame.
+        frame: VirtualAddress,
+    },
 }
 
 /// Debugger-internal evidence used to decide whether a frame-scoped object
@@ -860,6 +898,10 @@ pub struct WatchTarget {
     pub(crate) type_info: Option<crate::TypeInfo>,
     pub(crate) scope: WatchScope,
     pub(crate) frame: Option<FrameScopeEvidence>,
+
+    /// For an interpreted variable, the code its frame runs, which proves
+    /// the frame there is still the one that declared it.
+    pub(crate) code: Option<VirtualAddress>,
 }
 
 impl WatchTarget {
@@ -1002,6 +1044,13 @@ pub struct WatchpointHit {
 
     /// The watched bytes once every thread stopped, when readable.
     pub current: Option<Arc<[u8]>>,
+
+    /// For a watch of an interpreted variable, whose bytes name an object,
+    /// the value the variable held when last observed and holds now, as
+    /// its runtime presents them, when they could be read. The object it
+    /// held may be gone, so its value is the one read then.
+    pub previous_value: Option<Arc<str>>,
+    pub current_value: Option<Arc<str>>,
 }
 
 impl WatchpointHit {
@@ -1643,10 +1692,12 @@ pub enum StopReason {
 
     /// Execution reached an installed breakpoint.
     Breakpoint {
-        address: VirtualAddress,
+        /// Where the trap is; `None` at a location a runtime manages, which
+        /// has no address.
+        address: Option<VirtualAddress>,
 
-        /// Every logical breakpoint at the address whose hit condition this
-        /// hit met, in identifier order.
+        /// Every logical breakpoint at the location whose hit condition
+        /// this hit met, in identifier order.
         hits: Arc<[BreakpointHit]>,
     },
 
@@ -1711,12 +1762,24 @@ pub enum StopReason {
     /// its program counter, without running.
     Jump,
 
+    /// A language runtime's agent assigned a variable of the selected frame
+    /// as its thread, the only one, ran to make it.
+    Assignment,
+
     /// Execution stopped because of an exception.
     Exception(ExceptionInfo),
 
     /// A language runtime reported an exception: one its program raised, or
     /// a fatal error. The frame the runtime blames is selected.
     LanguageException(LanguageException),
+
+    /// A language runtime's own hook was entered, as it is to report an
+    /// event the user may stop at, but what the event is could not be
+    /// read, so the debugger stops rather than guess.
+    RuntimeEvent {
+        /// Why the event could not be read.
+        description: Arc<str>,
+    },
 
     /// The program executed a breakpoint instruction of its own, such as
     /// Go's `runtime.Breakpoint`. It resumes after the instruction.

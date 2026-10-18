@@ -1,7 +1,7 @@
 import { Outlet, useLocation } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { commandFor, isTextBox } from "../keys";
-import { targetName } from "../model";
+import { commandName } from "../model";
 import { useModel } from "../store";
 import { useCommands } from "./commands";
 import { KeyHelp } from "./KeyHelp";
@@ -11,7 +11,7 @@ import { Toolbar } from "./Toolbar";
 
 export function Shell() {
   const link = useModel((model) => model.link);
-  const name = useModel((model) => targetName(model.state));
+  const name = useModel((model) => commandName(model.state));
   const inferior = useModel((model) => model.state?.inferior.state);
   const location = useLocation();
   useKeys();

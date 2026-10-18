@@ -61,9 +61,12 @@ pub(super) use tls::CLibrary;
 use tls::TlsModule;
 
 mod activation;
+mod agent_files;
+mod assignments;
 mod async_frames;
 pub use async_frames::resume_address;
 mod awaits;
+pub mod bpf;
 mod breakpoints;
 mod callers;
 mod catchpoints;
@@ -77,11 +80,16 @@ mod frames;
 mod indirect;
 mod inspection;
 mod internal_stops;
+mod interpreted;
+mod interpreted_values;
+mod interpreted_views;
 mod invariants;
+mod jit_objects;
 mod language_exceptions;
 mod libraries;
 mod lifecycle;
 mod loops;
+mod managed;
 mod memory;
 mod modules;
 mod native;
@@ -92,11 +100,16 @@ mod panic_release;
 pub mod perf;
 mod post_mortem;
 mod presentation;
+mod proc_status;
+mod python_launch;
+pub mod reaped;
 #[cfg(debug_assertions)]
 mod recorded;
 mod registers;
 mod returns;
 mod run_control;
+mod runtime_agents;
+mod runtime_steps;
 mod runtimes;
 mod signals;
 #[cfg(any(test, feature = "sim"))]
@@ -182,6 +195,39 @@ pub fn fuzz_debug_register_plan(data: &[u8]) {
 #[cfg(feature = "fuzzing")]
 pub fn fuzz_glibc_tls(data: &[u8]) {
     tls::fuzz_glibc(data);
+}
+
+/// Each thread's id and thread pointer in process `pid`, which may be
+/// running, from its C library's own lists of its threads.
+pub fn running_thread_pointers(pid: u32) -> std::result::Result<Vec<(u32, u64)>, String> {
+    let pid = i32::try_from(pid).map_err(|_| format!("process {pid} has no Linux id"))?;
+    Ok(tls::running_thread_pointers(Pid::from_raw(pid))?
+        .into_iter()
+        .filter_map(|(tid, pointer)| Some((u32::try_from(tid).ok()?, pointer)))
+        .collect())
+}
+
+pub fn thread_start_time(process: crate::model::Pid, thread: crate::model::Tid) -> Option<u64> {
+    proc_status::thread_start_time(process, thread)
+}
+
+pub fn process_exited(process: crate::model::Pid) -> bool {
+    proc_status::process_exited(process)
+}
+
+pub fn process_start_time(process: i32) -> Option<u64> {
+    proc_status::process_start_time(process)
+}
+
+pub fn target_thread_ids(
+    process: u32,
+    threads: &[u32],
+) -> Vec<(u32, crate::runtime_model::TargetThreadId)> {
+    proc_status::target_thread_ids(process, threads)
+}
+
+pub fn target_thread_id(process: u32, thread: u32) -> Option<crate::runtime_model::TargetThreadId> {
+    proc_status::target_thread_id(process, thread)
 }
 
 /// The debug register slots, which the `u32` capability reports.
@@ -418,6 +464,11 @@ struct WatchRecord {
 
     /// The watched bytes when the debugger last observed them.
     observed: Option<Arc<[u8]>>,
+
+    /// For an interpreted variable, the value it held then, and the code
+    /// its frame runs.
+    value: Option<Arc<str>>,
+    code: Option<VirtualAddress>,
 
     /// For a watch on a task's stack, where on the stack it is.
     task: Option<stack_watches::TaskWatch>,
@@ -703,6 +754,26 @@ enum ActiveKind {
         /// an internal stop intervened.
         progress_owed: bool,
     },
+
+    /// A step through code a runtime runs itself, which the runtime arms
+    /// and judges: every thread runs, and the step ends where the runtime
+    /// reports its end on the step's own thread or task.
+    RuntimeStep {
+        owner: StepOwner,
+        kind: StepKind,
+        runtime: crate::RuntimeId,
+
+        /// The number the runtime reports the step's end by.
+        number: u64,
+    },
+
+    /// An assignment a runtime's agent makes on `thread`, the only thread
+    /// that runs, which ends where the agent reports it under `number`.
+    RuntimeAssignment {
+        thread: Pid,
+        runtime: crate::RuntimeId,
+        number: u64,
+    },
 }
 
 struct ActiveExecution {
@@ -813,6 +884,19 @@ enum Edit {
     /// Set aside the watches of tasks whose stacks a runtime is moving, and
     /// place those whose moves finished on their new stacks.
     FollowStacks,
+    ArmAgents,
+
+    /// Go on with the source step of thread `pid`, which returned from
+    /// native code into a runtime's interpreter, as that runtime's step
+    /// back to the Python that called the native code.
+    ReturnToRuntime {
+        pid: Pid,
+    },
+    AgentReport {
+        runtime: crate::RuntimeId,
+        generation: u64,
+        failure: Option<Arc<str>>,
+    },
 }
 
 struct PublicStop {
@@ -844,6 +928,14 @@ struct PublicStop {
     /// for, and why some may be missing; forgotten once the debugger
     /// writes memory.
     task_sets: RefCell<Option<runtimes::TaskSets>>,
+
+    /// The frames each runtime interprets on the threads, read once asked
+    /// for; forgotten once the debugger writes memory.
+    interpreted: interpreted::InterpretedCache,
+
+    /// The memory runtime models read at the stop; forgotten once the
+    /// debugger writes memory.
+    memory: crate::runtime_model::StopMemory,
 
     /// What the function a step out finished returned.
     returned: Option<returns::Returned>,
@@ -940,6 +1032,28 @@ struct Inferior {
     /// The runtime functions whose entry stops for an exception.
     runtime_hooks: BTreeMap<VirtualAddress, language_exceptions::HookSite>,
     stack_moves: stack_watches::StackMoves,
+
+    /// The breakpoint locations runtimes manage that user breakpoints own.
+    managed: managed::ManagedSites,
+    agents: BTreeMap<crate::RuntimeId, runtime_agents::Installation>,
+
+    /// The bootstrap a launch of CPython 3.12 or 3.13 gave it, which takes
+    /// the agent's scripts, or why it could not.
+    python_launch: Option<std::result::Result<python_launch::PythonLaunch, Arc<str>>>,
+
+    /// The number the next step a runtime arms takes. A number is never
+    /// reused in a process, so a stale step's end names none.
+    next_runtime_step: u64,
+
+    /// The step a runtime is armed with, and the runtime, while one runs.
+    runtime_step: Option<(crate::RuntimeId, crate::runtime_model::RuntimeStep)>,
+
+    /// The number the next assignment a runtime's agent makes takes; the
+    /// assignment it is armed with, and the runtime; and the request that
+    /// waits for it.
+    next_runtime_assignment: u64,
+    runtime_assignment: Option<(crate::RuntimeId, crate::runtime_model::RuntimeAssignment)>,
+    assignment: Option<assignments::PendingAssignment>,
     indirect: indirect::IndirectFunctions,
     watch: WatchState,
 
@@ -1014,6 +1128,14 @@ impl Inferior {
             loader_site: None,
             runtime_hooks: BTreeMap::new(),
             stack_moves: stack_watches::StackMoves::default(),
+            managed: managed::ManagedSites::default(),
+            agents: BTreeMap::new(),
+            python_launch: None,
+            next_runtime_step: 0,
+            runtime_step: None,
+            next_runtime_assignment: 0,
+            runtime_assignment: None,
+            assignment: None,
             indirect: indirect::IndirectFunctions::default(),
             watch: WatchState::default(),
             terminating: None,
@@ -1348,6 +1470,9 @@ enum LinuxError {
 struct Controller<P: InspectionOps> {
     _lease: SessionLease,
     executable: Arc<PathBuf>,
+
+    /// The path a launch runs, which may be a link to `executable`.
+    launch_path: Arc<PathBuf>,
     executable_identity: FileIdentity,
 
     /// The C library the executable runs on, whose structures locate TLS.
@@ -1394,6 +1519,7 @@ struct Controller<P: InspectionOps> {
     /// or detach, and the controller exits once the inferior is gone.
     shutting_down: bool,
     shutdown_reply: Option<Reply<()>>,
+    agent_cleanup_error: Option<Arc<str>>,
 
     /// The client waiting for a killed inferior to be gone.
     kill_reply: Option<Reply<()>>,
@@ -1512,6 +1638,7 @@ impl<P: InspectionOps> Controller<P> {
         Self {
             _lease: lease,
             executable: executable.display_path,
+            launch_path: executable.launch_path,
             c_library: executable.c_library,
             executable_identity: executable.identity,
             expected_process_start_time: executable.process_start_time,
@@ -1539,6 +1666,7 @@ impl<P: InspectionOps> Controller<P> {
             attach_rescans: 0,
             shutting_down: false,
             shutdown_reply: None,
+            agent_cleanup_error: None,
             kill_reply: None,
             orphans: None,
             held_children: None,
@@ -1571,6 +1699,15 @@ impl<P: InspectionOps> Controller<P> {
     /// only delay. Waits for one when `block` holds and none is queued.
     fn next_message(&self, block: bool) -> Option<ControllerMessage> {
         self.drain_messages();
+        if self.inferior.as_ref().is_some_and(|inferior| {
+            inferior.agents.values().any(|installation| {
+                installation
+                    .deadline()
+                    .is_some_and(|deadline| deadline <= std::time::Instant::now())
+            })
+        }) {
+            return Some(ControllerMessage::AgentTimeout);
+        }
         let mut pending = self.pending.borrow_mut();
         if let Some(preempting) = pending
             .iter()
@@ -1590,10 +1727,32 @@ impl<P: InspectionOps> Controller<P> {
         }
 
         drop(pending);
-        if block {
-            self.messages.borrow_mut().blocking_recv()
-        } else {
-            None
+        if !block {
+            return None;
+        }
+        loop {
+            let deadline = self.inferior.as_ref().and_then(|inferior| {
+                inferior
+                    .agents
+                    .values()
+                    .filter_map(runtime_agents::Installation::deadline)
+                    .min()
+            });
+            let Some(deadline) = deadline else {
+                return self.messages.borrow_mut().blocking_recv();
+            };
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return Some(ControllerMessage::AgentTimeout);
+            }
+            match self.messages.borrow_mut().try_recv() {
+                Ok(message) => return Some(message),
+                Err(mpsc::error::TryRecvError::Disconnected) => return None,
+                Err(mpsc::error::TryRecvError::Empty) => {}
+            }
+            // Poll only while an agent acknowledgement is outstanding. The
+            // controller still serves requests promptly, on its owner thread.
+            thread::sleep((deadline - now).min(std::time::Duration::from_millis(5)));
         }
     }
 
@@ -1659,6 +1818,12 @@ impl<P: LinuxTraceOps> Controller<P> {
                 #[cfg(debug_assertions)]
                 assert!(!injected, "a panic injected by {PANIC_AFTER}");
                 keeps_running
+            }
+            ControllerMessage::AgentTimeout => {
+                if let Err(error) = self.agent_timeout(std::time::Instant::now()) {
+                    self.fail_inferior(error);
+                }
+                true
             }
             ControllerMessage::Wait(status) => {
                 let _span = crate::span!("wait");
@@ -1908,12 +2073,15 @@ impl<P: LinuxTraceOps> Controller<P> {
                     self.evaluate_assigning(stop_id, &root, frame, &expression, limits)
                 });
                 match result {
-                    Ok((evaluation, moved)) => {
-                        let _ = reply.send(Ok(evaluation));
+                    Ok(evaluation::Assigning::Made(evaluation, moved)) => {
+                        let _ = reply.send(Ok(*evaluation));
                         if let Some(moved) = moved {
                             let _ = self.events.send(moved);
                         }
                     }
+                    // The runtime's agent makes it as its thread runs, and
+                    // its stop answers.
+                    Ok(evaluation::Assigning::Running) => self.await_assignment(reply),
                     Err(error) => {
                         let _ = reply.send(Err(error));
                     }
@@ -2564,7 +2732,7 @@ impl<P: InspectionOps> Controller<P> {
                 selected_frame: None,
                 threads: Arc::from([]),
                 presentation: None,
-                breakpoints: Arc::from(&*self.breakpoints),
+                breakpoints: self.breakpoint_snapshot(),
                 watchpoints: Arc::from([]),
                 catchpoints: self.catchpoints.values().cloned().collect(),
             };
@@ -2616,7 +2784,7 @@ impl<P: InspectionOps> Controller<P> {
                     .and_then(|pid| stop.presentations.get(&pid))
                     .cloned()
             }),
-            breakpoints: Arc::from(&*self.breakpoints),
+            breakpoints: self.breakpoint_snapshot(),
             watchpoints: inferior
                 .watch
                 .watchpoints
@@ -2669,6 +2837,8 @@ impl PublicStop {
             activities: RefCell::default(),
             task_locators: RefCell::default(),
             task_sets: RefCell::default(),
+            interpreted: RefCell::default(),
+            memory: crate::runtime_model::StopMemory::default(),
             returned: None,
         }
     }

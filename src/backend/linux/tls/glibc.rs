@@ -104,6 +104,10 @@ impl Glibc<'_> {
             )));
         };
 
+        self.field_at(name, address)
+    }
+
+    fn field_at(&self, name: &'static str, address: u64) -> Result<Field, TlsError> {
         let mut bytes = [0; 12];
         self.read(address, &mut bytes)?;
         let (words, _) = bytes.as_chunks::<4>();
@@ -156,17 +160,20 @@ impl Glibc<'_> {
         self.fetch(self.field(name)?, base, index)
     }
 
-    /// The head of the loader's list of DTV slotinfo arrays.
-    fn slotinfo_lists(&self) -> Result<u64, TlsError> {
-        // The list is in the loader's global state. A dynamically linked C
-        // library since 2.34 points at that state, which the loader exports
-        // itself before; a static one holds the list in its own variable.
-        let rtld_global = match self.symbol(C_LIBRARY, "__nptl_rtld_global") {
+    /// The loader's global state, which a dynamically linked C library
+    /// since 2.34 points at and the loader exports itself before; `None`
+    /// for a statically linked C library, which keeps what it holds in
+    /// variables of its own.
+    fn rtld_global(&self) -> Result<Option<u64>, TlsError> {
+        Ok(match self.symbol(C_LIBRARY, "__nptl_rtld_global") {
             Ok(pointer) => Some(self.fetch_named("_thread_db___nptl_rtld_global", pointer, 0)?),
             Err(_) => self.symbol(LOADER, "_rtld_global").ok(),
-        };
+        })
+    }
 
-        if let Some(rtld_global) = rtld_global {
+    /// The head of the loader's list of DTV slotinfo arrays.
+    fn slotinfo_lists(&self) -> Result<u64, TlsError> {
+        if let Some(rtld_global) = self.rtld_global()? {
             return self.fetch_named(
                 "_thread_db_rtld_global__dl_tls_dtv_slotinfo_list",
                 rtld_global,
@@ -252,6 +259,77 @@ impl Glibc<'_> {
 
         Ok(block)
     }
+}
+
+/// Reads the target-namespace TID from the saved thread's own TCB, using
+/// an unambiguous descriptor supplied by the core's verified images.
+pub(super) fn target_thread_id(
+    services: &dyn ProcessServices,
+    thread: Pid,
+    descriptor: u64,
+) -> Result<u64, TlsError> {
+    let glibc = Glibc { services };
+    let id = glibc.field_at("_thread_db_pthread_tid", descriptor)?;
+    if id.bits != 32 || id.count != 1 {
+        return Err(failed("the C library's thread id is not one pid_t"));
+    }
+    let pointer = thread_pointer(services, thread)?;
+    let tid = glibc.fetch(id, pointer, 0)?;
+    if tid == 0 || tid > i32::MAX as u64 {
+        return Err(failed("the saved thread has no live target-namespace id"));
+    }
+    Ok(tid)
+}
+
+/// The most threads glibc's lists hold before they count as corrupt.
+const MAX_THREADS: usize = 1 << 20;
+
+/// Each live thread's id and descriptor, which x86-64 glibc keeps at the
+/// thread's pointer: the loader's lists of the threads whose stacks the
+/// program gave, the first thread's among them, and of those whose stacks
+/// glibc allocated, walked as `td_ta_thr_iter` walks them. A thread that
+/// has exited, whose id glibc cleared, is left out.
+///
+/// The process may be running, so a list may change while it is read: a
+/// list that does not lead back to its head within the bound fails.
+pub(super) fn thread_pointers(services: &dyn ProcessServices) -> Result<Vec<(u64, u64)>, TlsError> {
+    let glibc = Glibc { services };
+    let rtld_global = glibc.rtld_global()?.ok_or_else(|| {
+        failed("a statically linked glibc keeps its thread lists in variables microscope does not read")
+    })?;
+
+    let next = glibc.field("_thread_db_list_t_next")?;
+    let link = glibc.field("_thread_db_pthread_list")?;
+    let id = glibc.field("_thread_db_pthread_tid")?;
+    let mut threads = Vec::new();
+    for list in [
+        "_thread_db_rtld_global__dl_stack_user",
+        "_thread_db_rtld_global__dl_stack_used",
+    ] {
+        let head = glibc.field(list)?.address(rtld_global, 0)?;
+        let mut node = glibc.fetch(next, head, 0)?;
+        let mut visited = BTreeSet::new();
+        while node != head {
+            if visited.len() == MAX_THREADS || !visited.insert(node) {
+                return Err(failed(format!("{list} does not lead back to its head")));
+            }
+
+            let descriptor = node
+                .checked_add_signed(-i64::from(link.offset))
+                .ok_or_else(|| failed(format!("a thread in {list} at {node:#x} overflows")))?;
+
+            // A pid_t: zero once the thread exited, and never negative for
+            // a thread.
+            let tid = glibc.fetch(id, descriptor, 0)?;
+            if tid != 0 && tid <= u64::from(i32::MAX.cast_unsigned()) {
+                threads.push((tid, descriptor));
+            }
+
+            node = glibc.fetch(next, node, 0)?;
+        }
+    }
+
+    Ok(threads)
 }
 
 /// The address of `offset` within the TLS block of the module whose loader
@@ -584,6 +662,105 @@ mod tests {
         static_library.word(0x2100_0000, FIRST_LIST);
         static_library.descriptor("_thread_db__dl_tls_dtv_slotinfo_list", 64, 1, 0);
         assert_eq!(static_library.address(), Ok(BLOCK + 0x24));
+    }
+
+    /// A process with glibc's two lists of threads in its loader state:
+    /// those on stacks the program gave and those on stacks glibc
+    /// allocated, each a list of (descriptor, thread id).
+    fn threaded(given: &[(u64, u64)], allocated: &[(u64, u64)]) -> Process {
+        const LIST: i32 = 0x2c0;
+        const TID: i32 = 0x2d0;
+        let mut process = Process::new(3, 0x5555_0000, 0x80);
+        process.descriptor("_thread_db_list_t_next", 64, 1, 0);
+        process.descriptor("_thread_db_pthread_list", 128, 1, LIST);
+        process.descriptor("_thread_db_pthread_tid", 32, 1, TID);
+        process.descriptor("_thread_db_rtld_global__dl_stack_user", 128, 1, 0x700);
+        process.descriptor("_thread_db_rtld_global__dl_stack_used", 128, 1, 0x710);
+        for (head, threads) in [
+            (RTLD_GLOBAL + 0x700, given),
+            (RTLD_GLOBAL + 0x710, allocated),
+        ] {
+            let mut previous = head;
+            for &(descriptor, tid) in threads {
+                let node = descriptor + u64::from(LIST.cast_unsigned());
+                process.word(previous, node);
+                process.write(
+                    descriptor + u64::from(TID.cast_unsigned()),
+                    &u32::try_from(tid).expect("a 32-bit id").to_le_bytes(),
+                );
+                previous = node;
+            }
+
+            process.word(previous, head);
+        }
+
+        process
+    }
+
+    #[test]
+    fn saved_thread_identity_comes_from_its_tcb_and_validated_descriptor() {
+        let mut process = Process::new(1, 0x5555_0000, 0x80);
+        process.descriptor("_thread_db_pthread_tid", 32, 1, 0x2d0);
+        process.write(THREAD_POINTER + 0x2d0, &7u32.to_le_bytes());
+        let descriptor = process.symbols["_thread_db_pthread_tid"];
+        // The note's ID is a host ID, not the target's ID of 7.
+        assert_eq!(
+            target_thread_id(&process, Pid::from_raw(5000), descriptor),
+            Ok(7)
+        );
+        for id in [0, u32::MAX, 1 << 31] {
+            process.write(THREAD_POINTER + 0x2d0, &id.to_le_bytes());
+            assert!(target_thread_id(&process, Pid::from_raw(5000), descriptor).is_err());
+        }
+        process.write(THREAD_POINTER + 0x2d0, &7u32.to_le_bytes());
+        for (bits, count) in [(64u32, 1u32), (32, 0), (32, 2), (0, 1)] {
+            process.write(descriptor, &bits.to_le_bytes());
+            process.write(descriptor + 4, &count.to_le_bytes());
+            assert!(target_thread_id(&process, Pid::from_raw(5000), descriptor).is_err());
+        }
+        process.write(descriptor, &32u32.to_le_bytes());
+        process.write(descriptor + 4, &1u32.to_le_bytes());
+        process.memory.remove(&(THREAD_POINTER + 0x2d0));
+        assert!(target_thread_id(&process, Pid::from_raw(5000), descriptor).is_err());
+        process.thread_pointer = 0;
+        assert!(target_thread_id(&process, Pid::from_raw(5000), descriptor).is_err());
+    }
+
+    #[test]
+    fn thread_pointers_follow_both_lists_of_threads() {
+        let process = threaded(
+            &[(0x7100_0000, 100)],
+            &[(0x7200_0000, 101), (0x7300_0000, 0)],
+        );
+        assert_eq!(
+            thread_pointers(&process),
+            Ok(vec![(100, 0x7100_0000), (101, 0x7200_0000)]),
+            "the exited thread, whose id is cleared, is left out"
+        );
+
+        assert_eq!(thread_pointers(&threaded(&[], &[])), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn a_thread_list_that_never_returns_fails() {
+        let mut cyclic = threaded(&[(0x7100_0000, 100), (0x7200_0000, 101)], &[]);
+        cyclic.word(0x7200_0000 + 0x2c0, 0x7100_0000 + 0x2c0);
+        let Err(TlsError::Failed(message)) = thread_pointers(&cyclic) else {
+            panic!("a cycle is not a list");
+        };
+
+        assert!(message.contains("_dl_stack_user"), "{message}");
+
+        let mut broken = threaded(&[(0x7100_0000, 100)], &[]);
+        broken.word(0x7100_0000 + 0x2c0, 0x9900_0000);
+        assert!(
+            thread_pointers(&broken).is_err(),
+            "an unreadable link fails"
+        );
+
+        let mut static_library = threaded(&[], &[]);
+        static_library.symbols.remove("__nptl_rtld_global");
+        assert!(thread_pointers(&static_library).is_err());
     }
 
     #[test]

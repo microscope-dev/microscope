@@ -98,6 +98,11 @@ program built without them gives short stacks; `-k=dwarf` copies part of the
 stack and unwinds it with the program's debug information instead. A stack
 that ends early says why.
 
+A Python program's stacks show each Python frame's function, file, and line,
+with either engine; see [Python](languages.md#system-calls). In ndjson, such
+a frame has `function`, `file`, and `line`, where a native frame has
+`symbol`.
+
 ## Save a trace and open it later
 
 When the `-o` file name ends in `.usprof`, microscope saves the whole trace:

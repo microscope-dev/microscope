@@ -3,3 +3,4 @@
 /result
 /target/
 /sdk/rust-probes/target/
+__pycache__/

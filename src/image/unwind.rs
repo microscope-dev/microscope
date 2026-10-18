@@ -70,6 +70,10 @@ pub mod unwind_flags {
 /// The most words a PLT stub is known to push before it jumps.
 pub const MOST_STUB_PUSHES: u32 = 2;
 
+/// The bits of every register a restored return may name: rbx, rbp, and
+/// r12-r15.
+pub const MOST_RESTORED_REGISTERS: u32 = 0x3f;
+
 /// The error offset of a section that could not be enumerated at all.
 pub const WHOLE_SECTION: u64 = u64::MAX;
 
@@ -155,6 +159,12 @@ pub struct Unwind {
     /// Each PLT stub instruction, by how many words the stub has pushed
     /// before it.
     pub stub_frames: Vec<(AddressRange<ImageAddress>, u32)>,
+
+    /// The instructions at which registers a function's caller keeps are
+    /// already restored, though its call-frame information still names
+    /// the slots it saved them in, each with the registers as bits of
+    /// rbx, rbp, and r12-r15.
+    pub restored: Vec<(AddressRange<ImageAddress>, u32)>,
 }
 
 /// Why unwinding information could not be encoded.
@@ -246,6 +256,10 @@ pub fn add_to<'a>(
         .owned_shared(
             TableKind::StubFrames,
             index::intervals(unwind.stub_frames.iter().copied()),
+        )
+        .owned_shared(
+            TableKind::RestoredFrames,
+            index::intervals(unwind.restored.iter().copied()),
         );
     if let Some(go) = go {
         let saves = go
@@ -415,6 +429,13 @@ impl<'a> UnwindView<'a> {
         index::containing(self.image.shared(TableKind::StubFrames), address).next()
     }
 
+    /// The registers its caller keeps that the function running `address`
+    /// has already restored there, as bits of rbx, rbp, and r12-r15.
+    pub fn restored(self, address: ImageAddress) -> u32 {
+        index::containing(self.image.shared(TableKind::RestoredFrames), address)
+            .fold(0, |registers, more| registers | more)
+    }
+
     /// Go's table, when the image has it.
     pub fn go(self) -> Option<(&'a [u8], GoTableFacts)> {
         let record = self.record?;
@@ -515,6 +536,10 @@ pub(super) fn validate(image: &Image) -> Result<(), String> {
         || !index::valid_intervals(
             image.shared(TableKind::StubFrames),
             MOST_STUB_PUSHES as usize + 1,
+        )
+        || !index::valid_intervals(
+            image.shared(TableKind::RestoredFrames),
+            MOST_RESTORED_REGISTERS as usize + 1,
         )
     {
         return Err("an unwinding index is malformed".into());

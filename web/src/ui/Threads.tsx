@@ -1,3 +1,4 @@
+import { openingFrame } from "../follow";
 import type { Inferior } from "../protocol";
 import { useGo } from "./navigation";
 import { useFocus } from "./Workspace";
@@ -37,7 +38,14 @@ export function Threads() {
                   className={`row button-row ${thread.id === shown ? "selected" : ""}`}
                   disabled={!choosable}
                   aria-current={thread.id === shown ? "true" : undefined}
-                  onClick={() => at && go({ stop: at.stop, thread: thread.id, frame: 0 })}
+                  onClick={() =>
+                    at &&
+                    go({
+                      stop: at.stop,
+                      thread: thread.id,
+                      frame: openingFrame(state, at.stop, thread.id),
+                    })
+                  }
                 >
                   <span className="dim">{thread.id}</span>
                   <span>{thread.name ?? "unnamed"}</span>
