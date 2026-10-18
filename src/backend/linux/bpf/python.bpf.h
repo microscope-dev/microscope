@@ -205,8 +205,10 @@ __noinline int py_walk(const struct py_layout *layout, struct py_stack *stack, u
 	header->end = PY_END_BOUNDED;
 	u32 count = 0;
 	for (u32 i = 0; i < PY_FRAMES; i++) {
+		// As the walk in userspace does, a chain with no frame at all ends
+		// where it should, whatever its base.
 		if (!frame) {
-			header->end = base ? PY_END_BEFORE_BASE : PY_END_COMPLETE;
+			header->end = base && i ? PY_END_BEFORE_BASE : PY_END_COMPLETE;
 			break;
 		}
 		if (base && frame == base) {
@@ -252,6 +254,10 @@ __noinline int py_walk(const struct py_layout *layout, struct py_stack *stack, u
 		count = i + 1;
 		frame = previous;
 	}
+
+	// A chain of exactly PY_FRAMES frames ends where the loop does.
+	if (header->end == PY_END_BOUNDED && (!frame || (base && frame == base)))
+		header->end = !frame && base ? PY_END_BEFORE_BASE : PY_END_COMPLETE;
 
 	header->frames = count;
 	return count;
