@@ -113,7 +113,11 @@ impl Files {
         std::fs::File::open("/dev/urandom")
             .and_then(|mut file| file.read_exact(&mut random))
             .map_err(problem)?;
-        let name = format!(".microscope-{:032x}", u128::from_le_bytes(random));
+        let name = format!(
+            "{}{:032x}",
+            crate::runtime_model::PYTHON_SCRIPT_PREFIX,
+            u128::from_le_bytes(random)
+        );
         mkdirat(&parent, name.as_str(), Mode::S_IRWXU).map_err(problem)?;
         let directory = match openat(
             &parent,
@@ -309,10 +313,12 @@ impl AgentFiles for Files {
         {
             self.remove_owned(&name)?;
         }
-        let name = format!("agent-{generation}.py");
+        let name = crate::runtime_model::python_script_name(generation);
         self.write(&name, source.as_bytes())?;
+        let path = format!("/tmp/{}/{name}", self.name);
+        debug_assert!(crate::runtime_model::is_python_script_filename(&path));
         self.scripts.insert(generation, name);
-        Ok(format!("/tmp/{}/agent-{generation}.py", self.name))
+        Ok(path)
     }
 
     fn anchor(&mut self, thread: Pid) -> Result<(), Arc<str>> {

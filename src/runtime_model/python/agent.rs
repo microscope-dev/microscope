@@ -24,6 +24,38 @@ pub fn is_bootstrap_filename(filename: &str) -> bool {
         .is_some_and(|(_, name)| name.starts_with(BOOTSTRAP_DIRECTORY_PREFIX))
 }
 
+/// How the name of the directory begins that holds the scripts the debugger
+/// has a process's interpreter run, in its `/tmp`; 32 hexadecimal digits
+/// end it.
+pub const SCRIPT_DIRECTORY_PREFIX: &str = ".microscope-";
+
+/// The name of the script of generation `generation` in that directory.
+pub fn script_name(generation: u64) -> String {
+    format!("agent-{generation}.py")
+}
+
+/// Whether code compiled under `filename` is a script's the debugger had
+/// the interpreter run, whose code sets the agent up.
+pub fn is_script_filename(filename: &str) -> bool {
+    let Some(rest) = filename.strip_prefix("/tmp/") else {
+        return false;
+    };
+    let Some((directory, file)) = rest.split_once('/') else {
+        return false;
+    };
+    let digits =
+        |text: &str, digit: fn(&u8) -> bool| !text.is_empty() && text.as_bytes().iter().all(digit);
+    directory
+        .strip_prefix(SCRIPT_DIRECTORY_PREFIX)
+        .is_some_and(|random| {
+            random.len() == 32 && digits(random, |byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        })
+        && file
+            .strip_prefix("agent-")
+            .and_then(|file| file.strip_suffix(".py"))
+            .is_some_and(|generation| digits(generation, u8::is_ascii_digit))
+}
+
 /// A bootstrap whose caller supplies `__microscope_library`,
 /// `__microscope_generation`, and `__microscope_probes` in its namespace,
 /// and may supply `__microscope_step` and `__microscope_exceptions`.
@@ -403,6 +435,30 @@ mod tests {
             "/srv/<microscope agent x>.py",
         ] {
             assert!(!super::is_agent_filename(filename), "{filename}");
+        }
+    }
+
+    #[test]
+    fn only_a_script_the_debugger_wrote_is_its_scripts() {
+        let directory = format!("{}{:032x}", super::SCRIPT_DIRECTORY_PREFIX, u128::MAX / 3);
+        for generation in [1, 42, u64::MAX] {
+            let name = super::script_name(generation);
+            assert!(super::is_script_filename(&format!(
+                "/tmp/{directory}/{name}"
+            )));
+        }
+        for filename in [
+            format!("/tmp/{directory}/agent-.py"),
+            format!("/tmp/{directory}/agent-1.pyc"),
+            format!("/tmp/{directory}/app.py"),
+            format!("/srv/{directory}/agent-1.py"),
+            format!("/tmp/{directory}x/agent-1.py"),
+            format!("/tmp/{}/agent-1.py", &directory[..directory.len() - 1]),
+            format!("/tmp/{}/agent-1.py", directory.to_uppercase()),
+            "/tmp/.microscope-python-0123abcd/agent-1.py".to_owned(),
+            "agent-1.py".to_owned(),
+        ] {
+            assert!(!super::is_script_filename(&filename), "{filename}");
         }
     }
 

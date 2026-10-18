@@ -386,7 +386,10 @@ impl Walk<'_, '_> {
 /// The part code compiled under `path` plays: only the agent's code and a
 /// launch bootstrap's are the debugger's machinery.
 fn role(path: &str) -> crate::CodeRole {
-    if super::agent::is_agent_filename(path) || super::agent::is_bootstrap_filename(path) {
+    if super::agent::is_agent_filename(path)
+        || super::agent::is_bootstrap_filename(path)
+        || super::agent::is_script_filename(path)
+    {
         crate::CodeRole::Interpreter
     } else {
         crate::CodeRole::Ordinary

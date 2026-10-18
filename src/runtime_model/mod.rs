@@ -20,6 +20,10 @@ pub mod futures;
 mod go;
 mod python;
 pub use python::BOOTSTRAP_DIRECTORY_PREFIX as PYTHON_BOOTSTRAP_PREFIX;
+pub use python::{
+    SCRIPT_DIRECTORY_PREFIX as PYTHON_SCRIPT_PREFIX,
+    is_script_filename as is_python_script_filename, script_name as python_script_name,
+};
 mod records;
 mod rust;
 pub mod thread_ids;

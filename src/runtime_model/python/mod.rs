@@ -31,7 +31,9 @@ mod text;
 mod threads;
 mod values;
 
-pub use agent::BOOTSTRAP_DIRECTORY_PREFIX;
+pub use agent::{
+    BOOTSTRAP_DIRECTORY_PREFIX, SCRIPT_DIRECTORY_PREFIX, is_script_filename, script_name,
+};
 pub use exceptions::EXCEPTION_FILTERS;
 
 use std::sync::{Arc, Mutex};

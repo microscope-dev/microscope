@@ -514,7 +514,9 @@ named `py:NAME` as a `PY_START` probe; `py::run` remains a native name. The
 CLI adds such breakpoints pending, as their code loads only as the program
 imports it. The agent's code is compiled under the filename
 `<microscope agent LIBRARY>` (`agent::is_agent_filename`), so its interpreted
-frames have `CodeRole::Interpreter`; splicing gives every frame inside the
+frames have `CodeRole::Interpreter`, as do those of the scripts that set it up,
+`/tmp/.microscope-HEX/agent-GENERATION.py` (`agent::is_script_filename`);
+splicing gives every frame inside the
 innermost such frame, the hook and ctypes among them, that role too, and
 `CPYTHON_MACHINERY` names the monitoring dispatch between the program's frame
 and the agent. A hit's stop selects, and its condition and log message read,
