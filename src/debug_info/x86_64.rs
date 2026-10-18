@@ -98,28 +98,73 @@ const MAX_RETURN_INSTRUCTIONS: usize = 32;
 /// Every register its caller keeps, as bits of [`CALLEE_SAVED`].
 pub(super) const ALL_CALLEE_SAVED: u32 = (1 << CALLEE_SAVED.len()) - 1;
 
-/// Where the near return ends that `code`, at `instruction_pointer`, runs
-/// straight to, writing neither rsp nor a register its caller keeps; `None`
-/// if it does not. At a return, as the ABI requires, those registers hold
-/// what the caller left in them, so code that runs straight to one without
-/// writing them holds those values already.
-pub(super) fn runs_to_return(code: &[u8], instruction_pointer: u64) -> Option<u64> {
-    let mut decoder = Decoder::with_ip(64, code, instruction_pointer, DecoderOptions::NONE);
-    let mut info = InstructionInfoFactory::new();
-    for _ in 0..MAX_RETURN_INSTRUCTIONS {
-        let instruction = decoded(&mut decoder)?;
-        let writes = written(&mut info, &instruction)
-            .any(|register| register == Register::RSP || CALLEE_SAVED.contains(&register));
-        if instruction.mnemonic() == Mnemonic::Ret && instruction.op_count() == 0 {
-            return Some(instruction.next_ip());
-        }
+/// Reads the code of epilogues, reusing one decoder's buffers for all of
+/// an image's: a load reads thousands.
+pub(super) struct Epilogues {
+    info: InstructionInfoFactory,
+}
 
-        if writes || instruction.flow_control() != FlowControl::Next {
-            return None;
+impl Epilogues {
+    pub(super) fn new() -> Self {
+        Self {
+            info: InstructionInfoFactory::new(),
         }
     }
 
-    None
+    /// Where the near return ends that `code`, at `instruction_pointer`, runs
+    /// straight to, writing neither rsp nor a register its caller keeps; `None`
+    /// if it does not. At a return, as the ABI requires, those registers hold
+    /// what the caller left in them, so code that runs straight to one without
+    /// writing them holds those values already.
+    pub(super) fn runs_to_return(&mut self, code: &[u8], instruction_pointer: u64) -> Option<u64> {
+        let mut decoder = Decoder::with_ip(64, code, instruction_pointer, DecoderOptions::NONE);
+        for _ in 0..MAX_RETURN_INSTRUCTIONS {
+            let instruction = decoded(&mut decoder)?;
+            let writes = written(&mut self.info, &instruction)
+                .any(|register| register == Register::RSP || CALLEE_SAVED.contains(&register));
+            if instruction.mnemonic() == Mnemonic::Ret && instruction.op_count() == 0 {
+                return Some(instruction.next_ip());
+            }
+
+            if writes || instruction.flow_control() != FlowControl::Next {
+                return None;
+            }
+        }
+
+        None
+    }
+
+    /// Where the run of `code`, at `instruction_pointer`, that keeps the
+    /// registers `kept`, bits of [`CALLEE_SAVED`], ends: before the first
+    /// instruction that writes one of them or rsp, or past the first that may
+    /// go elsewhere, as a code path a jump reaches proves nothing.
+    pub(super) fn keeps(&mut self, code: &[u8], instruction_pointer: u64, kept: u32) -> u64 {
+        let mut decoder = Decoder::with_ip(64, code, instruction_pointer, DecoderOptions::NONE);
+        let mut end = instruction_pointer;
+        for _ in 0..MAX_RETURN_INSTRUCTIONS {
+            let Some(instruction) = decoded(&mut decoder) else {
+                break;
+            };
+
+            let writes = written(&mut self.info, &instruction).any(|register| {
+                register == Register::RSP
+                    || CALLEE_SAVED
+                        .iter()
+                        .enumerate()
+                        .any(|(index, saved)| kept & (1 << index) != 0 && *saved == register)
+            });
+            if writes {
+                break;
+            }
+
+            end = instruction.next_ip();
+            if instruction.flow_control() != FlowControl::Next {
+                break;
+            }
+        }
+
+        end
+    }
 }
 
 /// The register its caller keeps, as a bit of [`CALLEE_SAVED`], that the
@@ -144,39 +189,6 @@ pub(super) fn restored_by(code: &[u8], instruction_pointer: u64) -> Option<u32> 
 
     let index = CALLEE_SAVED.iter().position(|saved| *saved == register)?;
     Some(1 << index)
-}
-
-/// Where the run of `code`, at `instruction_pointer`, that keeps the
-/// registers `kept`, bits of [`CALLEE_SAVED`], ends: before the first
-/// instruction that writes one of them or rsp, or past the first that may
-/// go elsewhere, as a code path a jump reaches proves nothing.
-pub(super) fn keeps(code: &[u8], instruction_pointer: u64, kept: u32) -> u64 {
-    let mut decoder = Decoder::with_ip(64, code, instruction_pointer, DecoderOptions::NONE);
-    let mut info = InstructionInfoFactory::new();
-    let mut end = instruction_pointer;
-    for _ in 0..MAX_RETURN_INSTRUCTIONS {
-        let Some(instruction) = decoded(&mut decoder) else {
-            break;
-        };
-
-        let writes = written(&mut info, &instruction).any(|register| {
-            register == Register::RSP
-                || CALLEE_SAVED
-                    .iter()
-                    .enumerate()
-                    .any(|(index, saved)| kept & (1 << index) != 0 && *saved == register)
-        });
-        if writes {
-            break;
-        }
-
-        end = instruction.next_ip();
-        if instruction.flow_control() != FlowControl::Next {
-            break;
-        }
-    }
-
-    end
 }
 
 /// The next whole instruction, or `None` at the end or before bytes that
@@ -541,9 +553,18 @@ mod tests {
         let tail = [
             0x31, 0xd2, 0x31, 0xc9, 0x31, 0xf6, 0x31, 0xff, 0x45, 0x31, 0xc0, 0xc3,
         ];
-        assert_eq!(runs_to_return(&tail, 0x14_5618), Some(0x14_5624));
-        assert_eq!(runs_to_return(&tail[8..], 0x14_5620), Some(0x14_5624));
-        assert_eq!(runs_to_return(&[0xc3], 0x1000), Some(0x1001));
+        assert_eq!(
+            Epilogues::new().runs_to_return(&tail, 0x14_5618),
+            Some(0x14_5624)
+        );
+        assert_eq!(
+            Epilogues::new().runs_to_return(&tail[8..], 0x14_5620),
+            Some(0x14_5624)
+        );
+        assert_eq!(
+            Epilogues::new().runs_to_return(&[0xc3], 0x1000),
+            Some(0x1001)
+        );
 
         let cases: [&[u8]; 9] = [
             // pop rbx; ret
@@ -566,7 +587,11 @@ mod tests {
             &[0x48, 0x89],
         ];
         for (index, code) in cases.into_iter().enumerate() {
-            assert_eq!(runs_to_return(code, 0x1000), None, "case {index}");
+            assert_eq!(
+                Epilogues::new().runs_to_return(code, 0x1000),
+                None,
+                "case {index}"
+            );
         }
     }
 
@@ -599,12 +624,21 @@ mod tests {
             0x49, 0x81, 0x3c, 0xc0, 0x40, 0x1d, 0xa0, 0x01, 0x0f, 0x84, 0x5c, 0xd1, 0xff, 0xff,
             0x41, 0xff, 0x24, 0xc0,
         ];
-        assert_eq!(keeps(&dispatch, 0x1a0_4bd6, RBP), 0x1a0_4be4);
+        assert_eq!(
+            Epilogues::new().keeps(&dispatch, 0x1a0_4bd6, RBP),
+            0x1a0_4be4
+        );
         // mov rbp, rdi; ret, which moves rsp
-        assert_eq!(keeps(&[0x48, 0x89, 0xfd, 0xc3], 0x1000, RBP), 0x1000);
-        assert_eq!(keeps(&[0x48, 0x89, 0xfd, 0xc3], 0x1000, RBX), 0x1003);
+        assert_eq!(
+            Epilogues::new().keeps(&[0x48, 0x89, 0xfd, 0xc3], 0x1000, RBP),
+            0x1000
+        );
+        assert_eq!(
+            Epilogues::new().keeps(&[0x48, 0x89, 0xfd, 0xc3], 0x1000, RBX),
+            0x1003
+        );
         // push rax
-        assert_eq!(keeps(&[0x50], 0x1000, RBX), 0x1000);
+        assert_eq!(Epilogues::new().keeps(&[0x50], 0x1000, RBX), 0x1000);
     }
 
     #[test]

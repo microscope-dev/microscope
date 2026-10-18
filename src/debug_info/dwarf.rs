@@ -1985,6 +1985,7 @@ where
 
     let mut restored = Vec::new();
     let mut context = UnwindContext::new();
+    let mut epilogues = super::x86_64::Epilogues::new();
     let mut walk = section.entries(bases);
     while let Ok(Some(entry)) = walk.next() {
         let gimli::CieOrFde::Fde(partial) = entry else {
@@ -2005,32 +2006,35 @@ where
                 row.cfa(),
                 CfaRule::RegisterAndOffset { register, offset: 8 } if register.0 == X86_64_RSP
             );
-            let slots: Vec<(u32, i64)> = row
-                .registers()
-                .filter_map(|(register, rule)| {
-                    let RegisterRule::Offset(offset) = rule else {
-                        return None;
-                    };
-                    let index = X86_64_CALLEE_SAVED_REGISTERS
-                        .iter()
-                        .position(|saved| *saved == DwarfRegister::from(*register))?;
-                    Some((1 << index, *offset))
-                })
-                .collect();
-            let proved = (gone && !slots.is_empty())
+            // The registers the row names slots of, and those whose slot
+            // is just below the return address.
+            let (mut slotted, mut below) = (0_u32, 0_u32);
+            for (register, rule) in row.registers() {
+                let RegisterRule::Offset(offset) = rule else {
+                    continue;
+                };
+                if let Some(index) = X86_64_CALLEE_SAVED_REGISTERS
+                    .iter()
+                    .position(|saved| *saved == DwarfRegister::from(*register))
+                {
+                    slotted |= 1 << index;
+                    if *offset == -16 {
+                        below |= 1 << index;
+                    }
+                }
+            }
+            let proved = (gone && slotted != 0)
                 .then(|| bytes(start, end))
                 .flatten()
                 .and_then(|code| {
-                    if let Some(end) = super::x86_64::runs_to_return(code, start) {
+                    if let Some(end) = epilogues.runs_to_return(code, start) {
                         return Some((end, super::x86_64::ALL_CALLEE_SAVED));
                     }
 
                     // A pop of the slot just below the return address.
                     let (from, _) = before.filter(|(_, gone)| !gone)?;
                     let popped = super::x86_64::restored_by(bytes(from, start)?, from)?;
-                    slots
-                        .contains(&(popped, -16))
-                        .then(|| (super::x86_64::keeps(code, start, popped), popped))
+                    (below & popped != 0).then(|| (epilogues.keeps(code, start, popped), popped))
                 });
             if let Some((end, registers)) = proved.filter(|(end, _)| *end > start) {
                 let range = AddressRange {
