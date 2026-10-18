@@ -112,8 +112,30 @@ impl Jit {
     /// Records a mapping of `start..end` made at `time`, which replaces
     /// whatever it overlaps, and is anonymous code when `anonymous`.
     pub fn mapped(&mut self, start: u64, end: u64, anonymous: bool, time: u64) {
-        self.ranges
-            .retain(|&range, held| held.end <= start || range >= end);
+        // What it does not overlap of a range is anonymous code still,
+        // whose module is made again.
+        let overlapped: Vec<(u64, Range)> = self
+            .ranges
+            .range(..end)
+            .rev()
+            .take_while(|(_, held)| held.end > start)
+            .map(|(&range, &held)| (range, held))
+            .collect();
+        for (range, held) in overlapped {
+            self.ranges.remove(&range);
+            let remnants = [(range, start.min(held.end)), (end.max(range), held.end)];
+            for (remnant, until) in remnants {
+                if remnant < until {
+                    self.ranges.insert(
+                        remnant,
+                        Range {
+                            end: until,
+                            current: false,
+                        },
+                    );
+                }
+            }
+        }
 
         // A function whose line was read before the mapping named what it
         // replaced. One read since may name what it holds: the map is read
@@ -404,9 +426,30 @@ mod tests {
                 .is_empty()
         );
 
-        // A mapping over the range replaces it.
+        // A mapping over part of the range replaces that part, and the
+        // module of the rest is made again.
         jit.mapped(0x1800, 0x2800, false, 0);
-        assert!(!jit.needs(0x1008));
+        assert!(!jit.needs(0x1808));
+        assert!(jit.needs(0x1008));
+    }
+
+    /// A mapping over part of an anonymous range leaves the rest of it
+    /// anonymous code, which the map may name.
+    #[test]
+    fn a_mapping_over_part_of_a_range_keeps_the_rest() {
+        let mut jit = Jit::default();
+        jit.mapped(0x1000, 0x5000, true, 0);
+        jit.mapped(0x2000, 0x3000, false, 0);
+        assert!(jit.needs(0x1008));
+        assert!(!jit.needs(0x2008), "file-backed");
+        assert!(jit.needs(0x4008));
+        assert_eq!(
+            jit.ranges
+                .iter()
+                .map(|(&start, range)| (start, range.end))
+                .collect::<Vec<_>>(),
+            [(0x1000, 0x2000), (0x3000, 0x5000)]
+        );
     }
 
     /// A mapping over a function the map named before the mapping was made
