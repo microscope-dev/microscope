@@ -74,7 +74,7 @@ fn refused(kind: ErrorKind, message: impl Into<Arc<str>>) -> InterpretedFailure 
 }
 
 /// Why a lookup the object model made failed, as a problem reading it.
-fn problem(failure: InterpretedFailure) -> Problem {
+pub(super) fn problem(failure: InterpretedFailure) -> Problem {
     match failure {
         InterpretedFailure::Refused(_, message) => message,
         InterpretedFailure::Unavailable(reason) => reason.to_string().into(),
@@ -149,6 +149,8 @@ impl Values<'_, '_> {
                 .map(char::from_u32)
                 .collect::<Option<String>>()
                 .map(Arc::from),
+            // Longer than a summary reads, as a generated class's name may be.
+            Object::Str { .. } => self.reader.string(object).ok(),
             _ => None,
         }
     }
@@ -198,18 +200,24 @@ impl Values<'_, '_> {
             // A static type of an extension the interpreter manages, as
             // `_datetime`'s from 3.13, has its state at its index among
             // theirs, where the built-in types' state there is another's.
+            let holds = |state: VirtualAddress| -> Result<bool, Problem> {
+                let at = state.wrapping_add(reader.offset(Field::StaticTypeStateType)?);
+                Ok(reader.word(at)? == ty.get())
+            };
             let mut kept = state((
                 Field::InterpreterStaticTypes,
                 Field::InterpreterStaticTypesEnd,
             ))?;
-            if reader.word(kept.wrapping_add(reader.offset(Field::StaticTypeStateType)?))?
-                != ty.get()
-                && reader.layout.has(Field::InterpreterStaticExtensionTypes)
-            {
+            if !holds(kept)? && reader.layout.has(Field::InterpreterStaticExtensionTypes) {
                 kept = state((
                     Field::InterpreterStaticExtensionTypes,
                     Field::InterpreterStaticExtensionTypesEnd,
                 ))?;
+            }
+
+            // A state that is another type's holds none of this one's.
+            if !holds(kept)? {
+                return Err(bad());
             }
 
             reader.word(kept.wrapping_add(reader.offset(Field::StaticTypeStateDict)?))?

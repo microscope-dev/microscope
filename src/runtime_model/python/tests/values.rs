@@ -720,6 +720,24 @@ fn a_str_longer_than_the_summary_shows_its_first_characters_and_a_lone_surrogate
     assert_eq!(shown.problem, None);
 }
 
+/// A name longer than a summary shows, as a class's qualified name may be,
+/// is read whole, up to the longest `str` read.
+#[test]
+fn a_name_longer_than_a_summary_is_read_whole() {
+    let mut process = Process::new(layout());
+    let types = process.builtin_types();
+    let name = "n".repeat(2000);
+    let long = process.str_object(types.str, &name);
+    let longest = process.str_object(types.str, &"n".repeat(5000));
+    let read = with_values(&process, types, InspectionLimits::default(), |values| {
+        (
+            values.str_text(VirtualAddress::new(long)),
+            values.str_text(VirtualAddress::new(longest)),
+        )
+    });
+    assert_eq!(read, (Some(name.as_str().into()), None));
+}
+
 #[test]
 fn lists_and_tuples_are_shown_with_their_items_in_order() {
     let mut process = Process::new(layout());

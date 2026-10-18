@@ -1313,7 +1313,7 @@ impl Values<'_, '_> {
                 used,
             } => self.set_text(address, (*table, *mask, *used), *frozen, depth, summary),
             Object::Class { this, .. } => format!("<class '{}'>", this.qualified()),
-            Object::Module { dict } => self.module_text(address, *dict),
+            Object::Module { dict } => self.module_text(address, *dict, summary),
             Object::Function { name } => format!("<function {name} at {address:#x}>"),
             Object::Builtin { name, bound: None } => format!("<built-in function {name}>"),
             Object::Builtin {
@@ -1539,18 +1539,41 @@ impl Values<'_, '_> {
         format!("{open}{}{close}", texts.join(", "))
     }
 
-    /// A module's text: its name, which its dict holds.
-    fn module_text(&self, address: VirtualAddress, dict: VirtualAddress) -> String {
+    /// A module's text: its name, which its dict holds, or why it has none.
+    fn module_text(
+        &self,
+        address: VirtualAddress,
+        dict: VirtualAddress,
+        summary: &mut Summary,
+    ) -> String {
         let name = match self.object(dict) {
-            Ok(Object::Dict(dict)) => self
-                .lookup(
-                    dict,
-                    &crate::runtime_model::InterpretedKey::Text(b"__name__".to_vec()),
-                )
-                .ok()
-                .flatten()
-                .and_then(|name| self.str_text(name)),
-            _ => None,
+            Ok(Object::Dict(dict)) => match self.lookup(
+                dict,
+                &crate::runtime_model::InterpretedKey::Text(b"__name__".to_vec()),
+            ) {
+                Ok(name) => name.and_then(|name| self.str_text(name)),
+                Err(failure) => {
+                    note(
+                        summary,
+                        format!(
+                            "a module's name cannot be read: {}",
+                            super::instances::problem(failure)
+                        ),
+                    );
+                    None
+                }
+            },
+            Ok(_) => {
+                note(summary, format!("the module at {address:#x} holds no dict"));
+                None
+            }
+            Err(problem) => {
+                note(
+                    summary,
+                    format!("a module's dict cannot be read: {problem}"),
+                );
+                None
+            }
         };
 
         name.map_or_else(
