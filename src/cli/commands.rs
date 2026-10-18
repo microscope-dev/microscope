@@ -1139,6 +1139,11 @@ impl Cli {
     /// function or source file that no loaded module has.
     async fn suggest(&self, error: microscope::Error) -> anyhow::Error {
         let hint = match &error {
+            microscope::Error::FunctionNotFound(name)
+                if let Some(hint) = python_name_hint(name, self.debugger.module_image()) =>
+            {
+                Some(hint)
+            }
             microscope::Error::FunctionNotFound(name) => {
                 let images = self.loaded_images().await;
                 let names = images.iter().flat_map(|image| {
@@ -3316,6 +3321,19 @@ fn is_python(location: &BreakpointSpec) -> bool {
             .is_some_and(|name| !name.starts_with(':')),
         _ => false,
     }
+}
+
+/// How to name a Python function, for a bare name no native function has
+/// in a program that runs Python: a bare name is always a native one's.
+pub fn python_name_hint(name: &str, program: &microscope::ModuleImage) -> Option<String> {
+    let dotted = name.split('.').all(|part| {
+        !part.is_empty()
+            && part
+                .chars()
+                .all(|character| character == '_' || character.is_alphanumeric())
+    });
+    (dotted && crate::present::debug_information::interprets_python(program))
+        .then(|| format!("a Python function is named with `py:`, as in `py:{name}`"))
 }
 
 /// Joins two parts of a command's output, either of which may be empty.

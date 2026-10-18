@@ -4212,7 +4212,8 @@ fn frame_commands_move_through_caller_frames_and_show_their_source() {
 /// An uncaught Python exception, chosen alone before the program runs,
 /// installs the agent with no breakpoint, and stops as the exception leaves
 /// the main thread's code: the stop says what it is and where it was
-/// raised, and the program then ends as Python ends it.
+/// raised, and the program then ends as Python ends it. The interpreter's
+/// own lack of debug information is no warning: the program is the script.
 #[test]
 fn an_uncaught_python_exception_stops_where_it_leaves_the_program() {
     let interpreter = std::path::PathBuf::from(
@@ -4245,6 +4246,7 @@ fn an_uncaught_python_exception_stops_where_it_leaves_the_program() {
         line == "inferior exited with status 1"
     });
     assert!(stderr.contains("ValueError: boom"), "{stderr}");
+    assert!(!stderr.contains("no debug information"), "{stderr}");
 }
 
 /// Python breakpoints set before the program runs are kept pending, as its
@@ -4275,6 +4277,7 @@ fn python_breakpoints_wait_for_their_code_and_stop_in_the_programs_frame() {
             "break breakpoints_later.py:5",
             "break py:rea",
             "break missing.c:3",
+            "break accumulate",
             "run",
             "bt",
             "print total",
@@ -4295,6 +4298,13 @@ fn python_breakpoints_wait_for_their_code_and_stop_in_the_programs_frame() {
     }
     assert!(
         stderr.contains("no source file matching 'missing.c'"),
+        "{stderr}"
+    );
+    // A bare name is a native function's; the refusal says how to name the
+    // Python one.
+    assert!(
+        stderr.contains("no function named 'accumulate' was found")
+            && stderr.contains("`py:accumulate`"),
         "{stderr}"
     );
 
