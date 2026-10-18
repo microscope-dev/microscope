@@ -201,16 +201,20 @@ before its sample; one whose sample never comes is dropped once the
 watermark passes it by `interpreted::PAIRING_SLACK`, as its sample was.
 
 The program reads each process through a `py_layout` the recorder fills from
-the interpreter's `PythonLayout` once its module is mapped, and begins each
-thread at the state a `tid → py_thread` map names, which the recorder
-refreshes every 20 ms from the interpreter's thread list
-(`RuntimeModel::walked_threads`). The walker checks the state's
-`native_thread_id` against the map's, so a reused thread id reads as stale,
-never as another thread's frames. A sample before either is known ends in
+the interpreter's `PythonLayout` once its module is mapped, with where the
+process keeps `_PyRuntime` and its pid namespace. It begins each thread at
+the state a `tid → py_thread` map names, which the recorder refreshes every
+20 ms from the interpreter's thread list (`RuntimeModel::walked_threads`),
+when that state's `native_thread_id` is the thread's id in its namespace
+(`bpf_get_ns_current_pid_tgid`). Otherwise, as for a thread that started since
+the refresh or a reused thread id, the walker looks through every
+interpreter's states for the one that names the thread (`py_find`). None, more
+than one, or a search past its bound gives unknown frames, never another
+thread's. A sample before the layout is known ends in
 `Truncation::InterpretedUnknown`. Code objects are named and proved as each
 record is drained (`RuntimeModel::sampled_frames`), while the program most
-likely still runs; one freed since is unreadable. Segments go before the
-activations of the
+likely still runs; one freed since is unreadable. The syscall engine shares
+the walker (`dev/syscalls.md`). Segments go before the activations of the
 interpreter's loop that run them, as the debugger places them, and where the
 two differ in number the frames follow the native ones and the stack ends in
 `Truncation::InterpretedUnplaced`. The record's GIL state becomes label spans,

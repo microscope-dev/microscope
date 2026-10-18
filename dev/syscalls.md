@@ -76,6 +76,24 @@ with `InterpretedUnknown`. A native truncation wins over both. A capture
 records each frame as an `Interpreted` frame row, and a call's site is its
 innermost interpreted frame with a line, if any.
 
+The BPF engine's programs run the sampler's walker (`python.bpf.h`) in
+`send_stack`, after the native stack, and send its frames as a
+`RECORD_PY_STACK` record, which the reader pairs with the next call or signal
+of its thread, as it pairs the stack. Dropping stacks under the budget drops
+them too. The walker reads a process by its `py_layout` in `LAYOUTS`. The
+reader sets that layout once per process, as soon as the process's mappings
+show its interpreter (`Stacks::python_layout`), and sets it again after an exec
+or a fork. Python need not be running yet: the layout holds the image's
+offsets, where the process keeps `_PyRuntime`, and its pid namespace. The
+walker then finds the thread's state itself. It reads every interpreter's
+states for the one whose `native_thread_id` is the thread's id in that
+namespace (`bpf_get_ns_current_pid_tgid`). A thread that starts after the
+layout was set is found the same way. No state, more than one, or a search
+past its bound gives unknown frames. `Stacks::unwind_sampled` names the frames
+through `RuntimeModel::sampled_frames` and places them by the same rule as
+`unwind_live`. The kernel's process ids key the map, so the reader sets
+layouts only when microscope runs in the initial PID namespace.
+
 ## The BPF engine
 
 The kernel programs are C in `src/backend/linux/bpf/`, a directory the
@@ -180,7 +198,11 @@ With `--window` or `--continuous`, each saved file gets its own span's calls.
 - `tests/python/syscalls.rs` traces `tests/fixtures/python/syscalls.py` with
   `-k` on three interpreters. It checks each call's Python lines, a second
   activation that C began, the text, and a saved trace's call site. It also
-  checks a catchpoint's backtrace.
+  checks a catchpoint's backtrace. Its `bpf` module holds the BPF engine to
+  the same frames, with `-k=dwarf`, after the fixture's `--settle` second.
+- The BPF tests each map perf rings on every CPU, which count against the
+  user's perf memory, so nextest runs at most two at once (the `perf-rings`
+  group in `.config/nextest.toml`).
 - The browser's view is covered by `tests/web/syscalls.rs`, Vitest, and
   `web/e2e/syscalls.spec.ts`.
 

@@ -1,11 +1,15 @@
 """System calls made from marked lines: on the main thread, and on a worker
 through a call into C that calls back into Python, so that the worker's
 stack has two activations of the interpreter's loop. Each opens a path that
-names the call."""
+names the call. With --settle, it first waits a second: the BPF engine
+reads the interpreter a moment after the program starts, and until then its
+calls' Python frames are unknown."""
 
 import contextvars
 import os
+import sys
 import threading
+import time
 
 
 def opens(path):
@@ -20,6 +24,9 @@ def through_c(path):
 def worker():
     through_c('/dev/null')  # WORKER
 
+
+if '--settle' in sys.argv:
+    time.sleep(1)
 
 thread = threading.Thread(target=worker)
 thread.start()

@@ -11,12 +11,17 @@ use std::sync::Arc;
 use foldhash::HashMap;
 
 use super::super::perf::{self, decode};
+use crate::backend::bpf::sampler::{self, RawPyLayout};
 use crate::capture::builder::{CaptureBuilder, InterpretedPlace, LineInput};
 use crate::capture::records::{FrameKind, NONE, Truncation};
 use crate::debug_info::{DebugFileSearch, DebugInfo};
 use crate::model::Pid;
-use crate::profiler::{InterpretedWait, LiveStop, OwnedLine, hex, symbolize_lines};
-use crate::runtime_model::{self, InterpretedStacks, RuntimeImage, RuntimeModel};
+use crate::profiler::{
+    InterpretedWait, LiveStop, OwnedLine, Sampled, hex, read_record, symbolize_lines,
+};
+use crate::runtime_model::{
+    self, InterpretedStacks, InterpretedThread, RuntimeImage, RuntimeModel,
+};
 use crate::syscalls::{CallStack, InterpretedCall};
 use crate::unwind::sample::{
     FrameRules, SampledFrame, SampledState, StackEnd, unwind_memory, unwind_sample,
@@ -231,6 +236,12 @@ impl Stacks {
         vdso
     }
 
+    /// The processes whose modules are known.
+    #[must_use]
+    pub fn processes(&self) -> Vec<Pid> {
+        self.processes.keys().copied().collect()
+    }
+
     /// Forgets a process's modules, as after it replaced its image: they
     /// are read again when a stack next needs them.
     pub fn forget(&mut self, process: Pid) {
@@ -298,11 +309,35 @@ impl Stacks {
         None
     }
 
+    /// The layout the BPF walker reads `process`'s interpreter by, if it
+    /// runs one microscope reads, or why it cannot be read so.
+    pub fn python_layout(&mut self, process: Pid) -> Option<Result<RawPyLayout, String>> {
+        self.interpreter(process)?;
+        let (python, bias) = self.processes.get(&process)?.iter().find_map(|mapped| {
+            self.runtimes.get(&(process, mapped.loaded.id))?.as_ref()?;
+            let python = mapped.image.info.as_ref()?.image.python_runtime()?;
+            Some((python, mapped.loaded.load_bias))
+        })?;
+        Some(sampler::process_layout(
+            python.layout.as_ref().map_err(AsRef::as_ref),
+            bias.load(python.runtime.start),
+            process.get(),
+        ))
+    }
+
     /// Unwinds a stack the kernel sampled: the registers, a copy of the
     /// stack from the stack pointer up, and the kernel's frame-pointer
-    /// walk, instruction first.
-    pub fn unwind_sampled(&mut self, process: Pid, sample: SampledState<'_>) -> CallStack {
+    /// walk, instruction first; and the interpreter's frames, from the
+    /// record of them the walker sent after it, if any, each segment
+    /// before the activation of the loop that runs it.
+    pub fn unwind_sampled(
+        &mut self,
+        process: Pid,
+        sample: SampledState<'_>,
+        python: Option<&[u8]>,
+    ) -> CallStack {
         self.cover(process, sample.chain.first().copied());
+        let runtime = self.interpreter(process);
         let modules: Vec<UnwindModule<'_>> = self
             .processes
             .get(&process)
@@ -318,7 +353,32 @@ impl Stacks {
             })
             .collect();
         let (frames, end) = unwind_sample(&modules, &mut self.rules, sample, MOST_FRAMES);
-        stack(&frames, end)
+        let mut stack = stack(&frames, end);
+        if let Some((model, bias)) = runtime {
+            let activations = activations(model.as_ref(), &modules, &frames);
+            let stop = LiveStop::memory(process.get(), bias);
+            let thread = crate::ThreadId::new(0);
+            let read = match read_record(model.as_ref(), &stop, python) {
+                Sampled::Frames { frames, ended } => InterpretedStacks {
+                    threads: vec![InterpretedThread {
+                        thread,
+                        interpreter: 0,
+                        frames: 0..frames.len(),
+                        end: ended.then(|| "the walker stopped before the outermost frame".into()),
+                    }],
+                    frames,
+                },
+                Sampled::None | Sampled::Unknown => InterpretedStacks::default(),
+            };
+            let (interpreted, truncation) =
+                place(&read, thread, &activations, stack.addresses.len());
+            stack.interpreted = interpreted.into();
+            stack.truncated = stack
+                .truncated
+                .or_else(|| truncation.map(|reason| reason as u8));
+        }
+
+        stack
     }
 
     /// Names each address of a stack of `process`'s.

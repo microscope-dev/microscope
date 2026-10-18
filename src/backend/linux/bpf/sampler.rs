@@ -73,6 +73,34 @@ pub struct RawPyLayout {
     code_array_entries: u32,
     stack_refs: u32,
     owner_entry: u32,
+    runtime_interpreters_head: u32,
+    interp_next: u32,
+    interp_threads_head: u32,
+    thread_next: u32,
+    pad: u32,
+    runtime: u64,
+    ns_dev: u64,
+    ns_ino: u64,
+}
+
+impl RawPyLayout {
+    /// The layout of process `pid`, whose `_PyRuntime` is at `runtime`:
+    /// its offsets, and the pid namespace that numbers its threads.
+    ///
+    /// # Errors
+    ///
+    /// When the process's pid namespace cannot be read, as when it exited.
+    pub fn of_process(self, pid: u32, runtime: u64) -> Result<Self, String> {
+        use std::os::unix::fs::MetadataExt;
+        let namespace = std::fs::metadata(format!("/proc/{pid}/ns/pid"))
+            .map_err(|error| format!("its pid namespace cannot be read: {error}"))?;
+        Ok(Self {
+            runtime,
+            ns_dev: namespace.dev(),
+            ns_ino: namespace.ino(),
+            ..self
+        })
+    }
 }
 
 /// `struct py_thread`.
@@ -216,6 +244,26 @@ pub fn decode(bytes: &[u8]) -> Result<PyStack<'_>, Malformed> {
     })
 }
 
+/// The layout the walker reads process `pid`'s CPython by, whose `layout`
+/// its image gives and whose runtime state is at `runtime`, or why it
+/// cannot.
+///
+/// # Errors
+///
+/// When the image gives no layout, the version lacks a field the walker
+/// needs, the runtime lies outside the process, or the process's pid
+/// namespace cannot be read.
+pub fn process_layout(
+    layout: Result<&PythonLayout, &str>,
+    runtime: Option<crate::VirtualAddress>,
+    pid: u32,
+) -> Result<RawPyLayout, String> {
+    let layout =
+        self::layout(layout?).map_err(|field| format!("CPython's layout has no {field}"))?;
+    let runtime = runtime.ok_or("CPython's runtime state lies outside the process")?;
+    layout.of_process(pid, runtime.get())
+}
+
 /// The layout the walker reads a CPython of `layout` by, or the field it
 /// needs that the version lacks.
 pub fn layout(layout: &PythonLayout) -> Result<RawPyLayout, &'static str> {
@@ -271,6 +319,14 @@ pub fn layout(layout: &PythonLayout) -> Result<RawPyLayout, &'static str> {
         code_array_entries: optional(Field::CodeArrayEntries),
         stack_refs: u32::from(layout.constant(Constant::StackRefs)),
         owner_entry: u32::from(layout.constant(Constant::OwnerEntry)),
+        runtime_interpreters_head: optional(Field::RuntimeInterpretersHead),
+        interp_next: optional(Field::InterpreterNext),
+        interp_threads_head: optional(Field::InterpreterThreadsHead),
+        thread_next: optional(Field::ThreadNext),
+        pad: 0,
+        runtime: 0,
+        ns_dev: 0,
+        ns_ino: 0,
     })
 }
 
@@ -330,11 +386,47 @@ pub fn check_namespace() -> Result<(), SamplerError> {
     }
 }
 
+/// A program's `LAYOUTS`: the layout the walker reads each Python
+/// process by, by its process id as the kernel's initial pid namespace
+/// numbers it.
+pub struct PythonLayouts(HashMap<MapData, u32, Bytes<LAYOUT_BYTES>>);
+
+impl PythonLayouts {
+    /// The map `LAYOUTS` of a program, which it gives up.
+    ///
+    /// # Errors
+    ///
+    /// When the program has no such map, or it is another kind.
+    pub fn take(ebpf: &mut Ebpf) -> Result<Self, SamplerError> {
+        let map = ebpf
+            .take_map("LAYOUTS")
+            .ok_or_else(|| load_error("the program has no LAYOUTS map"))?;
+        Ok(Self(HashMap::try_from(map).map_err(load_error)?))
+    }
+
+    /// Sets the layout the walker reads process `tgid`'s frames by.
+    ///
+    /// # Errors
+    ///
+    /// When the kernel refuses the update, as when the map is full.
+    pub fn set(&mut self, tgid: u32, layout: &RawPyLayout) -> Result<(), SamplerError> {
+        let mut value = [0; LAYOUT_BYTES];
+        value.copy_from_slice(layout.as_bytes());
+        self.0.insert(tgid, value, 0).map_err(load_error)
+    }
+
+    /// Forgets process `tgid`'s layout, as after it exited.
+    pub fn forget(&mut self, tgid: u32) {
+        // A process that is gone may be gone from the map already.
+        let _ = self.0.remove(&tgid);
+    }
+}
+
 /// The loaded program, attached to a recording's events, and its maps.
 pub struct Sampler {
     /// Holds the program, which the events run, and the maps.
     _ebpf: Ebpf,
-    layouts: HashMap<MapData, u32, Bytes<LAYOUT_BYTES>>,
+    layouts: PythonLayouts,
     threads: HashMap<MapData, u32, Bytes<THREAD_BYTES>>,
     lost: PerCpuArray<MapData, u64>,
 
@@ -405,7 +497,7 @@ impl Sampler {
                 .ok_or_else(|| load_error(format!("the program has no {name} map")))
         };
 
-        let layouts = HashMap::try_from(take("LAYOUTS")?).map_err(load_error)?;
+        let layouts = PythonLayouts(HashMap::try_from(take("LAYOUTS")?).map_err(load_error)?);
         let threads = HashMap::try_from(take("THREADS")?).map_err(load_error)?;
         let lost = PerCpuArray::try_from(take("LOST")?).map_err(load_error)?;
         let ids = outputs.iter().map(|output| output.id).collect();
@@ -429,9 +521,7 @@ impl Sampler {
     ///
     /// When the kernel refuses the update, as when the map is full.
     pub fn set_layout(&mut self, tgid: u32, layout: &RawPyLayout) -> Result<(), SamplerError> {
-        let mut value = [0; LAYOUT_BYTES];
-        value.copy_from_slice(layout.as_bytes());
-        self.layouts.insert(tgid, value, 0).map_err(load_error)
+        self.layouts.set(tgid, layout)
     }
 
     /// Sets the states of process `tgid`'s threads to `threads`, each
@@ -469,7 +559,7 @@ impl Sampler {
             let _ = self.threads.remove(&tid);
         }
 
-        let _ = self.layouts.remove(&tgid);
+        self.layouts.forget(tgid);
     }
 
     /// How many records found no room in their rings.
@@ -532,6 +622,14 @@ mod tests {
                     code_array_entries,
                     stack_refs,
                     owner_entry,
+                    runtime_interpreters_head,
+                    interp_next,
+                    interp_threads_head,
+                    thread_next,
+                    pad,
+                    runtime,
+                    ns_dev,
+                    ns_ino,
                 ]
             ),
             (RawPyThread, "py_thread", [state, native]),

@@ -273,8 +273,10 @@ struct errno_key {
 };
 
 // The offsets the Python walker reads a process's CPython by, each from the
-// start of its structure, or PY_ABSENT where the version has no such field.
-// PythonLayout fills them; the sampler keeps one per process in LAYOUTS.
+// start of its structure, or PY_ABSENT where the version has no such field,
+// and where the process keeps its runtime and which pid namespace numbers
+// its threads. PythonLayout fills the offsets; the sampler and the syscall
+// programs keep one per process in LAYOUTS.
 #define PY_ABSENT 0xffffffff
 
 struct py_layout {
@@ -319,14 +321,28 @@ struct py_layout {
 	// The owner of the frame each run of the evaluation loop pushes
 	// beneath the frames it runs, which runs no code of its own.
 	u32 owner_entry;
+	// The lists a thread's state is found in: the runtime's interpreters,
+	// and each interpreter's thread states.
+	u32 runtime_interpreters_head;
+	u32 interp_next;
+	u32 interp_threads_head;
+	u32 thread_next;
+	u32 pad;
+	// Where the process keeps _PyRuntime.
+	u64 runtime;
+	// The device and inode of the process's pid namespace, whose ids its
+	// thread states name their threads by.
+	u64 ns_dev;
+	u64 ns_ino;
 };
 
 // A thread's state, by its thread id as the program shows it to
-// microscope; THREADS holds one for each thread of a Python process.
+// microscope; THREADS holds one for each thread of a Python process, which
+// the walker tries before it looks through the process's states.
 struct py_thread {
 	u64 state;
 	// The thread's id as its own pid namespace numbers it, which the state
-	// names as its native_thread_id: a state that names another is stale.
+	// names as its native_thread_id.
 	u64 native;
 };
 
@@ -340,9 +356,10 @@ enum py_end {
 	PY_END_UNREADABLE = 2,
 	// Before the walk began: the process's layout is not yet known.
 	PY_END_NO_LAYOUT = 3,
-	// Before the walk began: no state is known for the thread.
+	// Before the walk began: no state, or more than one, names the thread.
 	PY_END_NO_THREAD = 4,
 	// Before the walk began: the state known for the thread is another's.
+	// The walker no longer ends so; it looks for the thread's state.
 	PY_END_STALE = 5,
 	// From 3.15, at no previous frame, before the base frame.
 	PY_END_BEFORE_BASE = 6,

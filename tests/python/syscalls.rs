@@ -278,3 +278,33 @@ async fn a_catchpoint_stops_with_the_python_frames_that_made_the_call() {
     assert_eq!(trace.frames[0].kind, FrameKind::Physical, "{trace:#?}");
     scenario.shutdown().await;
 }
+
+/// The BPF engine, whose program reads each call's Python frames as it
+/// returns, held to the frames the ptrace engine finds. It needs
+/// `CAP_BPF` and `CAP_PERFMON`, so it runs only through `just test-bpf`.
+mod bpf {
+    use super::*;
+
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
+    fn the_bpf_engine_names_the_python_lines_the_ptrace_engine_does() {
+        let launcher = std::env::var_os("MICROSCOPE_BPF_LAUNCHER")
+            .expect("MICROSCOPE_BPF_LAUNCHER names the microscope-bpf wrapper");
+        for interpreter in TRACED {
+            let mut command = Command::new(&launcher);
+            command.arg(env!("CARGO_BIN_EXE_microscope"));
+            // The engine unwinds native frames by a copy of the stack, as
+            // glibc's system call wrappers keep no frame pointer.
+            let traced = engine_command(
+                command,
+                "bpf",
+                interpreter,
+                &["-k=dwarf", "-k", "--format", "ndjson", "-o", "-"],
+            )
+            .arg("--settle")
+            .output()
+            .expect("run microscope");
+            check_frames(interpreter, &records(interpreter, &traced));
+        }
+    }
+}

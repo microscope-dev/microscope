@@ -1,19 +1,24 @@
 // The walker of a thread's CPython frames, which the sampler's program
-// runs at each sample (plans/python.html, "The BPF engine"). It reads the
-// chain from the thread's innermost frame by each frame's `previous`, and
-// writes one py_frame per frame, as py_layout places CPython's fields.
+// runs at each sample and the syscall programs at each call's stack
+// (plans/python.html, "The BPF engine"). It finds the thread's state, reads
+// the chain from the thread's innermost frame by each frame's `previous`,
+// and writes one py_frame per frame, as py_layout places CPython's fields.
 // microscope proves and names each frame's code object later; the walker
 // only copies.
 //
-// The walk is one global function, so the verifier checks it once for
-// every program that calls it. It reads only user memory, each read
-// failing whole, and ends at a bound.
+// The walk and the search for a state are global functions, so the
+// verifier checks each once for every program that calls it. They read
+// only user memory, each read failing whole, and end at a bound.
 #pragma once
 
 #include "records.h"
 
 // The most frames one record holds.
 #define PY_FRAMES 128
+
+// The most interpreters and thread states a search for a thread's state
+// steps through.
+#define PY_SEARCH 1024
 
 // A record of a thread's Python frames.
 struct py_stack {
@@ -103,30 +108,79 @@ static __always_inline u64 py_code(const struct py_layout *layout, u64 executabl
 	return executable & ~(u64)1;
 }
 
-// Reads the frames of the thread whose state is at `state`, which names
-// `native` as its native thread, into `stack`, as `layout` places their
-// fields. Returns the number of frames read.
-__noinline int py_walk(const struct py_layout *layout, struct py_stack *stack, u64 state,
-		       u64 native)
+// The current thread's id as the pid namespace `layout` names numbers it,
+// which its state names it by, or 0 if the thread is not in it.
+static __always_inline u64 py_native(const struct py_layout *layout)
+{
+	struct bpf_pidns_info ids = {};
+	if (bpf_get_ns_current_pid_tgid(layout->ns_dev, layout->ns_ino, &ids, sizeof(ids)))
+		return 0;
+	return ids.pid;
+}
+
+// The one state among every interpreter's that names `native` as its
+// thread, or 0 where none does, more than one does, or the search ends
+// before it has seen every state.
+__noinline u64 py_find(const struct py_layout *layout, u64 native)
+{
+	if (!layout || !native || !layout->runtime ||
+	    layout->runtime_interpreters_head == PY_ABSENT || layout->interp_next == PY_ABSENT ||
+	    layout->interp_threads_head == PY_ABSENT || layout->thread_next == PY_ABSENT)
+		return 0;
+
+	u64 interp = 0, state = 0, found = 0;
+	if (py_word(layout->runtime + layout->runtime_interpreters_head, &interp) || !interp ||
+	    py_word(interp + layout->interp_threads_head, &state))
+		return 0;
+	for (u32 i = 0; i < PY_SEARCH; i++) {
+		if (!state) {
+			if (py_word(interp + layout->interp_next, &interp))
+				return 0;
+			if (!interp)
+				return found;
+			if (py_word(interp + layout->interp_threads_head, &state))
+				return 0;
+			continue;
+		}
+
+		u64 named = 0;
+		if (py_word(state + layout->thread_native_id, &named))
+			return 0;
+		if (named == native) {
+			if (found)
+				return 0;
+			found = state;
+		}
+		if (py_word(state + layout->thread_next, &state))
+			return 0;
+	}
+
+	return 0;
+}
+
+// Reads the current thread's frames into `stack`, as `layout` places their
+// fields: from the state at `known`, if it names the thread, or else the
+// state the search finds. Returns the number of frames read.
+__noinline int py_walk(const struct py_layout *layout, struct py_stack *stack, u64 known)
 {
 	if (!layout || !stack)
 		return 0;
 
 	struct py_stack_record *header = &stack->header;
-	header->state = state;
+	header->state = 0;
 	header->running_task = 0;
 	header->frames = 0;
 	header->gil = PY_GIL_UNKNOWN;
 
-	u64 named = 0;
-	if (py_word(state + layout->thread_native_id, &named)) {
-		header->end = PY_END_UNREADABLE;
+	u64 native = py_native(layout), named = 0, state = known;
+	if (!state || py_word(state + layout->thread_native_id, &named) || named != native)
+		state = py_find(layout, native);
+	if (!native || !state) {
+		header->end = PY_END_NO_THREAD;
 		return 0;
 	}
-	if (named != native) {
-		header->end = PY_END_STALE;
-		return 0;
-	}
+
+	header->state = state;
 
 	header->gil = py_gil(layout, state);
 	if (layout->thread_running_task != PY_ABSENT)

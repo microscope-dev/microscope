@@ -43,11 +43,13 @@ pub(super) const PAIRING_SLACK: u64 = 10_000_000;
 /// interpreter's GIL carries, as task snapshots label threads.
 const GIL: &str = "gil";
 
-/// A process's interpreter that the engine reads, and its layout.
+/// A process's interpreter that the engine reads, its layout, and where
+/// the process keeps its runtime.
 struct Runtime {
     model: Arc<dyn RuntimeModel>,
     bias: LoadBias,
     layout: Result<PythonLayout, Arc<str>>,
+    state: Option<VirtualAddress>,
 }
 
 /// What a process's modules said of its interpreter, when it mapped
@@ -70,7 +72,7 @@ pub(super) type RecordKey = (Tid, u32, u64);
 
 /// What a sample's interpreted frames are.
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum Sampled {
+pub enum Sampled {
     /// Its process runs no interpreter the engine reads.
     None,
 
@@ -144,6 +146,7 @@ impl Interpreted {
                 model,
                 bias: loaded.load_bias,
                 layout: python.layout,
+                state: loaded.load_bias.load(python.runtime.start),
             })
         });
 
@@ -207,35 +210,19 @@ impl Interpreted {
             return Sampled::None;
         };
 
-        let Some(stack) = record.and_then(|bytes| sampler::decode(bytes).ok()) else {
-            return Sampled::Unknown;
-        };
-
-        let ended = match stack.end {
-            StackEnd::NoLayout | StackEnd::NoThread | StackEnd::Stale => return Sampled::Unknown,
-            StackEnd::Complete => false,
-            StackEnd::Bounded | StackEnd::Unreadable | StackEnd::BeforeBase => true,
-        };
-
         let stop = LiveStop::memory(pid.get(), runtime.bias);
-        let (frames, end) = runtime.model.sampled_frames(&stop, &sampled_frames(&stack));
-        Sampled::Frames {
-            frames,
-            ended: ended || end.is_some(),
-        }
+        read_record(runtime.model.as_ref(), &stop, record)
     }
 
     /// What process `pid`'s interpreter tells the program, read now, or
     /// `None` for a process that runs no interpreter the engine reads.
     pub(super) fn walked(&self, pid: Pid) -> Option<Walked> {
         let runtime = self.found.get(&pid)?.runtime.as_ref()?;
-        let layout = runtime
-            .layout
-            .as_ref()
-            .map_err(ToString::to_string)
-            .and_then(|layout| {
-                sampler::layout(layout).map_err(|field| format!("CPython's layout has no {field}"))
-            });
+        let layout = sampler::process_layout(
+            runtime.layout.as_ref().map_err(AsRef::as_ref),
+            runtime.state,
+            pid.get(),
+        );
         let stop = LiveStop::for_threads(pid.get(), runtime.bias);
         let hosts = match ThreadIds::new(&stop) {
             Ok(hosts) => hosts,
@@ -325,6 +312,30 @@ fn record_span(builder: &mut CaptureBuilder, thread: u32, span: Span) {
             reserved: 0.into(),
         },
     );
+}
+
+/// The interpreted frames a record of the walker's holds, if any, named
+/// and proved by `model` through `stop`, the process's memory read now.
+pub fn read_record(
+    model: &dyn RuntimeModel,
+    stop: &LiveStop<'_>,
+    record: Option<&[u8]>,
+) -> Sampled {
+    let Some(stack) = record.and_then(|bytes| sampler::decode(bytes).ok()) else {
+        return Sampled::Unknown;
+    };
+
+    let ended = match stack.end {
+        StackEnd::NoLayout | StackEnd::NoThread | StackEnd::Stale => return Sampled::Unknown,
+        StackEnd::Complete => false,
+        StackEnd::Bounded | StackEnd::Unreadable | StackEnd::BeforeBase => true,
+    };
+
+    let (frames, end) = model.sampled_frames(stop, &sampled_frames(&stack));
+    Sampled::Frames {
+        frames,
+        ended: ended || end.is_some(),
+    }
 }
 
 /// The frames of a record, as the runtime model reads them.

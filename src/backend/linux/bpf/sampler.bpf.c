@@ -77,10 +77,8 @@ int python_sample(struct bpf_perf_event_data *ctx)
 	struct py_thread *thread = bpf_map_lookup_elem(&THREADS, &tid);
 	if (!layout)
 		header->end = PY_END_NO_LAYOUT;
-	else if (!thread)
-		header->end = PY_END_NO_THREAD;
 	else
-		py_walk(layout, stack, thread->state, thread->native);
+		py_walk(layout, stack, thread ? thread->state : 0);
 
 	u32 frames = header->frames;
 	if (frames > PY_FRAMES)

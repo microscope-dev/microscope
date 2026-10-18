@@ -410,6 +410,13 @@ openat(AT_FDCWD, "settings.toml", O_RDONLY|O_CLOEXEC) = 3
 A saved trace keeps them, and the browser groups calls by the Python line that
 made them. A catchpoint's stop shows Python frames like any other stop.
 
+The BPF engine reads each call's Python frames in the kernel as the call
+returns. It finds the native frames by frame pointers, which glibc's system
+call wrappers do not keep, so with `-k` the Python frames follow the first
+native frame. Use `-k=dwarf` to place them among the native ones. The engine
+learns a program's interpreter a moment after the program starts; calls before
+then end with `interpreted frames unknown`.
+
 ### Not supported yet
 
 A Python step starts only from where microscope's agent stopped the thread.

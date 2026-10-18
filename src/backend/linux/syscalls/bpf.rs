@@ -27,6 +27,7 @@ use aya::{Btf, Ebpf, EbpfLoader};
 use aya_obj::btf::BtfKind;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
+use super::super::bpf::sampler::{self, PythonLayouts};
 use super::super::perf;
 use super::Sink;
 use super::budget::{Budget, CAPPED_BYTES, CAPPED_ELEMENTS, Step};
@@ -68,6 +69,7 @@ const RECORD_EXIT: u32 = 5;
 const RECORD_SIGNAL: u32 = 6;
 const RECORD_FILE: u32 = 7;
 const RECORD_STACK: u32 = 8;
+const RECORD_PY_STACK: u32 = 9;
 
 const MAKES_RESULT: u8 = 1;
 const MAKES_PAIR: u8 = 2;
@@ -477,6 +479,13 @@ pub enum Record {
 
     /// The stack of the thread whose call or signal follows.
     Stack(SampledStack),
+
+    /// The Python frames of the thread whose stack came before, as the
+    /// walker wrote them, to read when the stack is unwound.
+    Python {
+        thread: Tid,
+        record: Vec<u8>,
+    },
 }
 
 /// A thread's stack as the kernel saw it, to unwind.
@@ -609,6 +618,10 @@ pub fn decode(bytes: &[u8]) -> Result<Record, DecodeError> {
             }))
         }
         RECORD_STACK => stack_record(header, bytes),
+        RECORD_PY_STACK => Ok(Record::Python {
+            thread: Tid::new(header.tid),
+            record: bytes.to_vec(),
+        }),
         RECORD_FILE => {
             let raw: RawFileRecord = read(bytes)?;
             let start = size_of::<RawFileRecord>();
@@ -1755,6 +1768,9 @@ fn run(
         entries: BTreeMap::new(),
         stacks: options.stacks.clone(),
         sampled: BTreeMap::new(),
+        python: BTreeMap::new(),
+        layouts: None,
+        laid_out: BTreeSet::new(),
         mappings,
         batch: Vec::new(),
         perf: Vec::new(),
@@ -1935,6 +1951,15 @@ struct Reader<'a> {
     /// Each thread's stack, until the call or signal it precedes.
     sampled: BTreeMap<Tid, SampledStack>,
 
+    /// Each thread's Python frames, which follow its stack.
+    python: BTreeMap<Tid, Vec<u8>>,
+
+    /// The walker's layouts, when stacks were asked for and the kernel's
+    /// process ids are microscope's, and the processes given one or found
+    /// to have none.
+    layouts: Option<PythonLayouts>,
+    laid_out: BTreeSet<Pid>,
+
     /// What the traced processes map, as they map it, for their stacks.
     mappings: Vec<perf::Events>,
     batch: Vec<Record>,
@@ -1962,6 +1987,13 @@ impl Reader<'_> {
                 .ok_or_else(|| missing("EVENTS"))?,
         )
         .map_err(load_error)?;
+
+        // The walker finds a process's layout by the kernel's process id,
+        // which is the one microscope sees only in the initial namespace;
+        // elsewhere, Python frames stay unknown, and the stacks say so.
+        if self.stacks.is_some() && sampler::check_namespace().is_ok() {
+            self.layouts = Some(PythonLayouts::take(&mut loaded.ebpf).map_err(load_error)?);
+        }
         let mut stopping = false;
         let mut last_tick = monotonic();
         loop {
@@ -2130,6 +2162,7 @@ impl Reader<'_> {
         }
 
         self.map();
+        self.lay_out();
         for record in std::mem::take(&mut batch) {
             self.handle(record);
         }
@@ -2171,6 +2204,9 @@ impl Reader<'_> {
         let mut stacks = stacks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Processes that began or replaced their images, whose layouts are
+        // read again.
+        let mut fresh = Vec::new();
         for (_, offset) in records {
             match perf::decode::next(&self.perf[offset..]) {
                 Some(Ok((perf::decode::Record::Mmap(mmap), _))) if mmap.executable => {
@@ -2182,17 +2218,75 @@ impl Reader<'_> {
                         pid, exec: true, ..
                     },
                     _,
-                ))) => stacks.forget(pid),
+                ))) => {
+                    stacks.forget(pid);
+                    fresh.push(pid);
+                }
                 Some(Ok((perf::decode::Record::Fork { pid, ppid, .. }, _))) if pid != ppid => {
                     stacks.forked(ppid, pid);
+                    fresh.push(pid);
                 }
                 _ => {}
             }
+        }
+
+        drop(stacks);
+        for process in fresh {
+            self.forget_layout(process);
+            self.laid_out.remove(&process);
+        }
+    }
+
+    /// Gives the walker the layout of each process that runs Python and
+    /// has none yet: it maps its interpreter before any of its threads
+    /// runs Python code.
+    fn lay_out(&mut self) {
+        let (Some(layouts), Some(stacks)) = (&mut self.layouts, &self.stacks) else {
+            return;
+        };
+
+        let mut stacks = stacks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for process in stacks.processes() {
+            if self.laid_out.contains(&process) {
+                continue;
+            }
+
+            let Some(layout) = stacks.python_layout(process) else {
+                continue;
+            };
+
+            self.laid_out.insert(process);
+            let set = layout.and_then(|layout| {
+                layouts
+                    .set(process.get(), &layout)
+                    .map_err(|error| error.to_string())
+            });
+            match set {
+                Ok(()) => {}
+                // Only the flight recorder, which release builds leave
+                // out, reads why.
+                #[cfg_attr(not(debug_assertions), expect(unused_variables))]
+                Err(why) => record!("syscalls bpf: python {process}: {why}"),
+            }
+        }
+
+        drop(stacks);
+    }
+
+    /// Forgets the layout of `process`, which exited or replaced its image.
+    fn forget_layout(&mut self, process: Pid) {
+        if self.laid_out.contains(&process)
+            && let Some(layouts) = &mut self.layouts
+        {
+            layouts.forget(process.get());
         }
     }
 
     /// Unwinds the stack the kernel sent before a thread's call or signal.
     fn unwind(&mut self, thread: Tid) -> Option<CallStack> {
+        let python = self.python.remove(&thread);
         let sampled = self.sampled.remove(&thread)?;
         let stacks = self.stacks.as_ref()?;
         let mut stacks = stacks
@@ -2205,13 +2299,18 @@ impl Reader<'_> {
                 stack: &sampled.copy,
                 chain: &sampled.chain,
             },
+            python.as_deref(),
         ))
     }
 
     fn handle(&mut self, record: Record) {
         match record {
             Record::Stack(stack) => {
+                self.python.remove(&stack.thread);
                 self.sampled.insert(stack.thread, stack);
+            }
+            Record::Python { thread, record } => {
+                self.python.insert(thread, record);
             }
             Record::Entry(entry) => {
                 self.entries.insert(entry.thread, entry);
@@ -2262,6 +2361,7 @@ impl Reader<'_> {
                         }
 
                         self.live.remove(process);
+                        self.forget_layout(*process);
                     }
                     _ => {}
                 }
@@ -2436,6 +2536,29 @@ mod tests {
         let mut bytes = record.as_bytes().to_vec();
         bytes.extend_from_slice(&tail);
         bytes
+    }
+
+    /// A record of Python frames decodes whole, its bytes kept to read when
+    /// its thread's stack is unwound, and one cut short is refused.
+    #[test]
+    fn a_record_of_python_frames_decodes_whole() {
+        let header = RawRecord {
+            kind: RECORD_PY_STACK,
+            size: 24,
+            tid: 7,
+            tgid: 5,
+        };
+        let mut bytes = header.as_bytes().to_vec();
+        bytes.extend([1; 8]);
+        bytes.extend([2; 4]);
+        assert_eq!(
+            decode(&bytes),
+            Ok(Record::Python {
+                thread: Tid::new(7),
+                record: bytes[..24].to_vec(),
+            })
+        );
+        assert_eq!(decode(&bytes[..20]), Err(DecodeError::Short(20)));
     }
 
     #[test]

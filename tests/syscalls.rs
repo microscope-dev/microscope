@@ -4,7 +4,7 @@
 mod support;
 
 use std::collections::BTreeMap;
-use std::io::{BufRead as _, BufReader, Write as _};
+use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::mpsc;
@@ -1671,9 +1671,10 @@ mod bpf {
             .current_dir(directory.path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .expect("run microscope record");
+        let mut stderr = recording.stderr.take().expect("stderr");
         let mut stdout = BufReader::new(recording.stdout.take().expect("stdout"));
         let mut ready = String::new();
         stdout.read_line(&mut ready).expect("ready");
@@ -1688,7 +1689,12 @@ mod bpf {
 
         let mut input = recording.stdin.take().expect("stdin");
         for _ in 0..3 {
-            input.write_all(b"x").expect("a byte");
+            if let Err(error) = input.write_all(b"x") {
+                let mut said = String::new();
+                let _ = stderr.read_to_string(&mut said);
+                panic!("a byte: {error}: the recording ended: {said}");
+            }
+
             input.flush().expect("sent");
 
             // Polls for a file the recording writes and says nothing of.

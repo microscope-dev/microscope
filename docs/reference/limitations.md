@@ -52,6 +52,10 @@ narrower limits and report them when used.
 - Calls answered in the vDSO, such as `clock_gettime`, are not traced.
 - The BPF engine can drop calls under load and reports how many it lost.
 - A cgroup or container trace cannot show stacks.
+- The BPF engine's stacks show a Python program's frames only once it has
+  read the program's interpreter, a moment after the program starts, and
+  only when microscope runs in the initial PID namespace. Until then, and
+  otherwise, they end with `interpreted frames unknown`.
 - `record --syscalls` cannot be used with `--pid`.
 - While a debugger catchpoint exists, every system call stops its thread
   briefly.
