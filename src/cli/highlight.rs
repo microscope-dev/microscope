@@ -1019,11 +1019,90 @@ fn python_string_end(text: &[u8], start: usize) -> Option<usize> {
     })?;
 
     let quote = text[quote_index];
-    if text[quote_index..].starts_with(&[quote; 3]) {
+    let triple = text[quote_index..].starts_with(&[quote; 3]);
+    let prefix = &text[start..quote_index];
+    if prefix
+        .iter()
+        .any(|byte| matches!(byte, b'f' | b'F' | b't' | b'T'))
+    {
+        let raw = prefix.iter().any(|byte| matches!(byte, b'r' | b'R'));
+        return Some(formatted_end(text, quote_index, quote, triple, raw));
+    }
+
+    if triple {
         Some(triple_quoted_end(text, quote_index, quote))
     } else {
         Some(quoted_end(text, quote_index, quote, false))
     }
+}
+
+/// Where an f-string or t-string from `start`, which opens with `quote`,
+/// three of them where `triple`, ends after its closing quotes. From 3.12
+/// a field, between braces, holds an expression, which may hold strings in
+/// the string's own quotes and span lines, then after a `:` its format
+/// spec, which is text but for fields of its own; `{{` is a brace.
+fn formatted_end(text: &[u8], start: usize, quote: u8, triple: bool, raw: bool) -> usize {
+    /// What each open brace or bracket holds.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Open {
+        Field,
+        Spec,
+        Bracket,
+    }
+
+    let closing: &[u8] = if triple { &[quote; 3] } else { &[quote] };
+    let mut index = start + closing.len();
+    let mut open: Vec<Open> = Vec::new();
+    while index < text.len() {
+        let byte = text[index];
+        match open.last() {
+            None | Some(Open::Spec) => {
+                if byte == b'\\' && !raw {
+                    index += 2;
+                    continue;
+                }
+                if open.is_empty() && text[index..].starts_with(closing) {
+                    return index + closing.len();
+                }
+                if byte == b'\n' && !triple {
+                    return index;
+                }
+                match byte {
+                    b'{' if open.is_empty() && text.get(index + 1) == Some(&b'{') => index += 1,
+                    b'{' => open.push(Open::Field),
+                    b'}' if !open.is_empty() => {
+                        open.pop();
+                    }
+                    _ => {}
+                }
+                index += 1;
+            }
+            Some(&top) => {
+                // An expression, whose strings end none of this one.
+                if let Some(end) = (!is_identifier(text[index - 1]))
+                    .then(|| python_string_end(text, index))
+                    .flatten()
+                {
+                    index = end;
+                    continue;
+                }
+                match byte {
+                    b'(' | b'[' | b'{' => open.push(Open::Bracket),
+                    b')' | b']' | b'}' => {
+                        open.pop();
+                    }
+                    b':' if top == Open::Field => {
+                        open.pop();
+                        open.push(Open::Spec);
+                    }
+                    _ => {}
+                }
+                index += 1;
+            }
+        }
+    }
+
+    text.len()
 }
 
 /// Where a triple-quoted string from `start`, which opens with three
@@ -1329,6 +1408,47 @@ type == 1";
                 of(&[("1", Number), ("# here:", Comment)]),
                 of(&[("type", Keyword)]),
                 of(&[("1", Number)]),
+            ]
+        );
+    }
+
+    /// From 3.12 an f-string's fields may hold strings in its own quotes,
+    /// which end no string; `{{` is a brace, and opens no field.
+    #[test]
+    #[expect(
+        clippy::literal_string_with_formatting_args,
+        reason = "the texts are Python's f-strings"
+    )]
+    fn python_f_strings_hold_strings_in_their_fields() {
+        use Kind::{Number, String};
+
+        let python = r#"a = f"{d["key"]}" + 1
+b = f'{x!r:>{width}} {{y}}' + 2
+c = rf"{d['a'] + "}"}\d" + 3
+d = f"""{d["""
+x"""]}""" + 4
+e = "{d["k"]}" + 5
+g = f"{x:'>10}" + f'{x:{"w"}}' + 6
+h = f"{
+  x
+}" + 7"#;
+        assert_eq!(
+            shown(python, Language::Python),
+            [
+                of(&[(r#"f"{d["key"]}""#, String), ("1", Number)]),
+                of(&[("f'{x!r:>{width}} {{y}}'", String), ("2", Number)]),
+                of(&[(r#"rf"{d['a'] + "}"}\d""#, String), ("3", Number)]),
+                of(&[(r#"f"""{d[""""#, String)]),
+                of(&[(r#"x"""]}""""#, String), ("4", Number)]),
+                of(&[(r#""{d[""#, String), (r#""]}""#, String), ("5", Number)]),
+                of(&[
+                    (r#"f"{x:'>10}""#, String),
+                    (r#"f'{x:{"w"}}'"#, String),
+                    ("6", Number)
+                ]),
+                of(&[(r#"f"{"#, String)]),
+                of(&[("  x", String)]),
+                of(&[(r#"}""#, String), ("7", Number)]),
             ]
         );
     }

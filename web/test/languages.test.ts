@@ -83,6 +83,39 @@ describe("stream languages", () => {
     expect(of(found, "number")).toEqual(["0x1f", "1.5e-3j", "0"]);
   });
 
+  it("keep Python's f-strings whole around strings in their fields", () => {
+    const found = tokens(
+      "a.py",
+      [
+        `a = f"{d["key"]}" + 1`,
+        "b = f'{x!r:>{width}} {{y}}' + 2",
+        String.raw`c = rf"{d['a'] + "}"}\d" + 3`,
+        `d = f"""{d["""`,
+        `x"""]}""" + 4`,
+        `e = "{d["k"]}" + 5`,
+        `g = f"{x:'>10}" + f'{x:{"w"}}' + 6`,
+        `h = f"{`,
+        "  x",
+        `}" + 7`,
+      ].join("\n"),
+    );
+    expect(of(found, "string")).toEqual([
+      `f"{d["key"]}"`,
+      "f'{x!r:>{width}} {{y}}'",
+      String.raw`rf"{d['a'] + "}"}\d"`,
+      `f"""{d["""`,
+      `x"""]}"""`,
+      `"{d["`,
+      `"]}"`,
+      `f"{x:'>10}"`,
+      `f'{x:{"w"}}'`,
+      `f"{`,
+      "  x",
+      `}"`,
+    ]);
+    expect(of(found, "number")).toEqual(["1", "2", "3", "4", "5", "6", "7"]);
+  });
+
   it("read Python's soft keywords only where they begin statements", () => {
     const found = tokens(
       "a.py",
