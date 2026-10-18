@@ -205,6 +205,7 @@ fn monitoring_callbacks_survive_reconfiguration_and_code_reuse() {
                 "interrupt_race",
                 "reentry_race",
                 "fork",
+                "fork_again",
             ][..],
         ),
         (

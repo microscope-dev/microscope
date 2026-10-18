@@ -1041,8 +1041,11 @@ def forking():
     """Takes the lock as the process forks, so that no other thread holds
     it in the child, where that thread would not exist to release it. The
     child's earlier fork handlers run with the agent still armed, and their
-    callbacks take the lock again on this thread."""
-    _local.forking = False
+    callbacks take the lock again on this thread. A load retried after the
+    handlers were registered registers them again, so this runs again
+    holding the lock, and takes it only once."""
+    if getattr(_local, 'forking', False):
+        return
     lock.acquire()
     _local.forking = True
 
