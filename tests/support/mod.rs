@@ -39,8 +39,10 @@ use tokio::time::timeout;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
 // Event delivery includes cold shared-library metadata loading on the
-// controller, which can exceed twenty seconds under the stress gate.
-const EVENT_TIMEOUT: Duration = Duration::from_secs(30);
+// controller. Under the stress gate the first wave of Python tests all load
+// an interpreter's debug information before any has cached it, which takes
+// near thirty seconds.
+const EVENT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// How long a scenario's check of a stop may take, all its requests
 /// together.

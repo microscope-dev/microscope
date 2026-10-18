@@ -158,14 +158,18 @@ fn fixture_output(
             .spawn()
             .expect("run the agent fixture"),
     );
-    let deadline = Instant::now() + Duration::from_secs(30);
+    // A free-threaded build stops the world for each reconfiguration, so
+    // the chain of a thousand takes seconds alone, and under the stress
+    // gate most of a minute.
+    let deadline = Instant::now() + Duration::from_secs(90);
     let status = loop {
         if let Some(status) = child.0.try_wait().expect("wait for the fixture") {
             break status;
         }
         assert!(
             Instant::now() < deadline,
-            "{interpreter}: {fixture} timed out"
+            "{interpreter}: {fixture} {arguments:?} timed out: {}",
+            std::fs::read_to_string(output).unwrap_or_default()
         );
         std::thread::sleep(Duration::from_millis(10));
     };
