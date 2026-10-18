@@ -90,6 +90,9 @@ pub(super) struct Types {
     pub(super) member: VirtualAddress,
     pub(super) wrapper: VirtualAddress,
 
+    /// The type of a type's C method, as `list.append`.
+    pub(super) method: VirtualAddress,
+
     /// `PyObject_GenericGetAttr`, how a type that reads its instances'
     /// attributes as `object` does reads them.
     pub(super) generic_getattr: VirtualAddress,

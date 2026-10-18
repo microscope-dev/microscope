@@ -147,6 +147,8 @@ const fn member(field: Field, minor: u32) -> Option<Member> {
         Field::BuiltinMethod => ("PyCFunctionObject", &["m_ml"]),
         Field::BuiltinSelf => ("PyCFunctionObject", &["m_self"]),
         Field::MethodDefName => ("PyMethodDef", &["ml_name"]),
+        Field::MethodDefMeth => ("PyMethodDef", &["ml_meth"]),
+        Field::MethodDescrMethod => ("PyMethodDescrObject", &["d_method"]),
         Field::WrapperDescrWrapped => ("PyWrapperDescrObject", &["d_wrapped"]),
         Field::TupleItems => ("PyTupleObject", &["ob_item"]),
         Field::TupleSize => ("PyTupleObject", &["ob_base", "ob_size"]),

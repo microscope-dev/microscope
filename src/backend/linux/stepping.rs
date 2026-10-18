@@ -36,10 +36,10 @@ use crate::disassembly::{AssemblySyntax, ControlFlow, RawDecode, decoder_for};
 
 use super::memory::read_logical_memory;
 use super::{
-    ActiveKind, BreakpointOwner, Controller, EpilogueTraversal, ExpectedStop, Inferior, LinuxError,
-    NativeThreadState, Resume, ReturnTraversal, StepStart, backend_error, debug_thread_id,
-    is_superseded, process_id, steps_instructions, validate_process, validate_public_stop,
-    validate_resumable, validate_stopped_thread,
+    ActiveKind, BreakpointOwner, Controller, Edit, EpilogueTraversal, ExpectedStop, Inferior,
+    LinuxError, NativeThreadState, Resume, ReturnTraversal, StepStart, backend_error,
+    debug_thread_id, is_superseded, process_id, steps_instructions, validate_process,
+    validate_public_stop, validate_resumable, validate_stopped_thread,
 };
 
 impl<P: LinuxTraceOps> Controller<P> {
@@ -621,6 +621,12 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.retire_returned_plan(pid)?;
         if !steps_instructions(kind) && self.begin_epilogue_traversal(pid)? {
             return self.start_user_step(pid, kind);
+        }
+
+        if self.source_step_returned_to_runtime(pid, mode)? {
+            self.let_step_run_on()?;
+            self.queue_internal_edit(Edit::ReturnToRuntime { pid })?;
+            return self.finish_barrier_if_ready();
         }
 
         if self.source_step_returned_to_undescribed_code(pid, mode)? {

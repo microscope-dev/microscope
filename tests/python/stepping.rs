@@ -12,10 +12,12 @@ use microscope::{
     LanguageException, LanguageExceptionKind, LineNumber, StackFrame, StepKind, StopReason,
 };
 
+use crate::extension::extension_directory;
 use crate::session::PythonSession;
 use crate::support::python;
 
 const FIXTURE: &str = "stepping.py";
+const NATIVE: &str = "stepping_native.py";
 
 /// The line of `fixture` that carries `marker`.
 fn line(fixture: &str, marker: &str) -> LineNumber {
@@ -314,6 +316,132 @@ async fn every_kind_of_step(build: &str) {
         );
     }
     session.shutdown().await;
+}
+
+/// Checks the stop is `expected` and selects the extension's native
+/// `reached`, at a line its debug information describes.
+async fn assert_in_reached(
+    session: &mut PythonSession,
+    reason: &StopReason,
+    expected: &StopReason,
+) {
+    let context = session.context();
+    assert_eq!(reason, expected, "{context}: {}", session.output());
+    let (frame, _) = selected(session).await;
+    let function = frame.function.as_ref().map(|function| &*function.name);
+    assert!(
+        frame.recorded.is_none() && function == Some("reached") && frame.source.is_some(),
+        "{context}: {frame:?}"
+    );
+}
+
+/// From Python into the extension's C function, back out of it, and over
+/// its last line, each to the next line of the Python that called it; into
+/// what nothing describes, a builtin and a stripped extension's function,
+/// which run through to the next line; and out of the C function from a
+/// breakpoint there, where the agent, which has a breakpoint elsewhere,
+/// watches none of the program's lines.
+async fn steps_between_python_and_c(build: &str) {
+    let directory = extension_directory(build);
+    let (mut session, reason, _) = PythonSession::launch_to_stop(
+        build,
+        NATIVE,
+        &[&directory],
+        vec![at(NATIVE, "FIRST_CALL"), at(NATIVE, "UNUSED")],
+    )
+    .await;
+    let StopReason::Breakpoint {
+        address: None,
+        hits,
+    } = &reason
+    else {
+        panic!("{}: {reason:?}: {}", session.context(), session.output());
+    };
+    let first = hits[0].breakpoint;
+    assert_at(&mut session, &reason, &reason.clone(), "main", "FIRST_CALL").await;
+    session
+        .scenario
+        .operation(
+            "remove breakpoint",
+            session.scenario.handle().remove_breakpoint(first),
+        )
+        .await;
+    let into = stepped(StepKind::IntoSource);
+    let over = stepped(StepKind::OverSource);
+    let out = stepped(StepKind::Out);
+
+    let reason = step(&mut session, StepKind::IntoSource).await;
+    assert_in_reached(&mut session, &reason, &into).await;
+    let reason = step(&mut session, StepKind::Out).await;
+    assert_at(&mut session, &reason, &out, "main", "SECOND_CALL").await;
+
+    let reason = step(&mut session, StepKind::IntoSource).await;
+    assert_in_reached(&mut session, &reason, &into).await;
+    let mut reason = step(&mut session, StepKind::OverSource).await;
+    for _ in 0..8 {
+        if selected(&mut session).await.0.recorded.is_some() {
+            break;
+        }
+        reason = step(&mut session, StepKind::OverSource).await;
+    }
+    assert_at(&mut session, &reason, &over, "main", "COUNTED").await;
+
+    let reason = step(&mut session, StepKind::IntoSource).await;
+    assert_at(&mut session, &reason, &into, "main", "BARE_CALL").await;
+    let reason = step(&mut session, StepKind::IntoSource).await;
+    assert_at(&mut session, &reason, &into, "main", "THIRD_CALL").await;
+
+    // The call into Python on the way acknowledges the agent's idle
+    // configuration before the breakpoint stops the thread in C.
+    session
+        .scenario
+        .operation(
+            "add breakpoint",
+            session
+                .scenario
+                .handle()
+                .add_breakpoint(BreakpointSpec::Function("reached".to_owned())),
+        )
+        .await;
+    let reason = session.scenario.resume_to_stop().await;
+    assert!(
+        matches!(
+            reason,
+            StopReason::Breakpoint {
+                address: Some(_),
+                ..
+            }
+        ),
+        "{}: {reason:?}",
+        session.context()
+    );
+    assert_in_reached(&mut session, &reason, &reason.clone()).await;
+    let reason = step(&mut session, StepKind::Out).await;
+    assert_at(&mut session, &reason, &out, "main", "NATIVE_END").await;
+
+    let reason = session.scenario.resume_to_stop().await;
+    let output = session.output();
+    assert_eq!(
+        reason,
+        StopReason::Exited(ExitStatus::Code(0)),
+        "{}: {output}",
+        session.context()
+    );
+    assert!(
+        output.contains("NATIVE 2"),
+        "{}: {output}",
+        session.context()
+    );
+    session.shutdown().await;
+}
+
+/// On each build the extension is built for that PEP 768 injects the agent
+/// into.
+#[tokio::test]
+async fn steps_between_python_and_c_on_each_build() {
+    for build in ["3.14", "3.14t", "3.15"] {
+        steps_between_python_and_c(build).await;
+    }
 }
 
 // One test for each build PEP 768 injects the agent into, which the test

@@ -7,7 +7,11 @@ expressions are never evaluated here. Event policy belongs to the debugger.
 A step is (number, kind, thread, depth, code): it steps into (0), over (1),
 or out of (2) the frame with `depth` callers on the thread whose native ID is
 `thread`, which runs the code whose id is `code`. It binds to that frame on
-its thread, at the stop it begins from, and follows the frame object.
+its thread, at the stop it begins from, and follows the frame object. A step
+into reports each C function of the program's that the frame calls, where
+the debugger may end it. A step back (3) begins where the thread runs native
+code the frame called, and ends at the thread's next line in that frame or a
+caller.
 
 Exceptions are bits: RAISED (1) reports each exception raised in Python code
 or reaching it; UNCAUGHT (2) each that leaves a thread's outermost Python
@@ -19,6 +23,7 @@ import sys
 if sys.version_info < (3, 14):
     raise RuntimeError("microscope's monitoring transport requires CPython 3.14 or later")
 
+import builtins as _builtins
 import ctypes
 import gc
 import json
@@ -58,8 +63,9 @@ lock = _bootstrap_lock
 # Only these events have callback signatures this transport understands.
 LOCAL = ("LINE", "PY_START", "PY_RESUME", "PY_RETURN", "PY_YIELD")
 OTHER = ("RAISE", "PY_UNWIND", "PY_THROW")
-# Steps also watch a caller's instructions, which no probe names.
-STEPPING = ("INSTRUCTION",)
+# Steps also watch a caller's instructions, and a step into the calls its
+# frame makes, which no probe names.
+STEPPING = ("INSTRUCTION", "CALL")
 
 step = None
 # The generation that configured the step, which binds only in a callback or
@@ -70,7 +76,7 @@ step_generation = None
 stepping = None
 # The code the step adds local events to, and those events.
 stepped = None
-INTO, OVER, OUT = 0, 1, 2
+INTO, OVER, OUT, BACK = 0, 1, 2, 3
 FRAME, CALLER, THREAD, DONE = 0, 1, 2, 3
 # A coroutine's or async generator's frame yields as it suspends at an
 # await; its step goes on to its next line rather than leaving it.
@@ -90,6 +96,11 @@ _mro = type.__dict__['__mro__'].__get__
 _namespace = type.__dict__['__dict__'].__get__
 _BASE_STR = BaseException.__dict__['__str__']
 _KEY_STR = KeyError.__dict__['__str__']
+# A built-in function or method, and a type's C method.
+_BUILTIN = type(len)
+_METHOD = type(list.append)
+_bound_to = _BUILTIN.__dict__['__self__'].__get__
+_objclass = _METHOD.__dict__['__objclass__'].__get__
 # The code of the frame that runs a threading.Thread, which catches what
 # the thread raises and gives it to threading.excepthook.
 _bootstrap = None
@@ -195,6 +206,8 @@ def global_mask():
         mask |= events.PY_UNWIND
         if step[1] == INTO or stepping[0] == THREAD:
             mask |= events.LINE
+    elif step is not None and step[1] == BACK and stepping is None:
+        mask |= events.LINE
     if raising & RAISED:
         mask |= events.RAISE
     if raising & UNCAUGHT:
@@ -213,6 +226,8 @@ def watch(phase, frame):
         mask = events.PY_RETURN | events.PY_YIELD
         if step[1] != OUT:
             mask |= events.LINE
+        if step[1] == INTO:
+            mask |= events.CALL
         stepped = (frame.f_code, mask)
     elif phase == CALLER:
         stepped = (frame.f_code, events.INSTRUCTION)
@@ -239,17 +254,58 @@ def bind(frame):
     return []
 
 
-def waiting(frame, started):
+def waiting(frame, started, event=None):
     """Binds a configured step waiting for this thread, from where it is, in
-    a callback or call that began at generation `started`."""
+    a callback or call that began at generation `started`, at `event`."""
     global stepping
     if (tool is None or step is None or stepping is not None
             or step[2] != _thread.get_native_id()):
         return []
+    if step[1] == BACK:
+        return returned(frame, event)
     if step_generation <= started:
         stepping = [DONE, None]
         return [(2, step[0], 2)]  # Its thread ran on before the step began.
     return bind(frame)
+
+
+def returned(frame, event):
+    """Ends a step back at its thread's first line in its frame or a
+    caller: one with fewer callers, or as many and the frame's code. The
+    thread ran native code at the stop the step began at, so whatever it
+    runs next comes after that stop."""
+    global stepping
+    if event != 'LINE':
+        return []
+    depth = 0
+    caller = frame.f_back
+    while caller is not None:
+        depth += 1
+        caller = caller.f_back
+    if depth > step[3] or (depth == step[3] and id(frame.f_code) != step[4]):
+        return []
+    stepping = [DONE, None]
+    return finish()
+
+
+def native(callable):
+    """Whether a call of `callable` may run a C function of the program's
+    own, where a step into ends: a built-in function or method, or a type's
+    C method, other than the interpreter's built-ins and their types'."""
+    kind = type(callable)
+    if kind is _BUILTIN:
+        bound = _bound_to(callable)
+        if type(bound) is _MODULE:
+            return bound is not _builtins
+        return not builtin_type(type(bound))
+    if kind is _METHOD:
+        return not builtin_type(_objclass(callable))
+    return False
+
+
+def builtin_type(cls):
+    module = _module(cls)
+    return type(module) is str and module == 'builtins'
 
 
 def finish():
@@ -270,13 +326,21 @@ def leave(frame):
     return []
 
 
-def step_event(event, code, frame):
-    """What the bound step does at `event` in `frame`, running `code`."""
+def step_event(event, code, frame, arguments):
+    """What the bound step does at `event` in `frame`, running `code`, with
+    the event's `arguments`."""
     global step
     phase, target = stepping
     kind = step[1]
     if frame is target:
         if phase == FRAME:
+            if event == 'CALL':
+                # The debugger ends the step in the C function, if the
+                # program's code is there and described; the stack keeps
+                # the callable alive while the hook runs.
+                if kind == INTO and native(arguments[0]):
+                    return [(5, step[0], id(arguments[0]))]
+                return []
             if event == 'LINE' and kind != OUT:
                 return finish()
             if event == 'PY_YIELD' and code.co_flags & SUSPENDS:
@@ -636,7 +700,7 @@ def callback(event):
                             discover(code)
                         notices.extend(together(dispatch(event, code, location)))
                         if stepping is not None and stepping[0] != DONE:
-                            notices.extend(step_event(event, code, sys._getframe(1)))
+                            notices.extend(step_event(event, code, sys._getframe(1), unused))
                         if raising and event in ('RAISE', 'PY_UNWIND'):
                             notices.extend(exception_event(event, sys._getframe(1), unused[0]))
                     except Exception:
@@ -669,10 +733,17 @@ def callback(event):
             # thread runs on: either this thread consumed it at the stop, or
             # another did while this one waited for the lock.
             with lock:
-                notices = waiting(sys._getframe(1), started)
+                notices = waiting(sys._getframe(1), started, event)
                 report_hook, report_owner, report_generation = hook, _owner, generation
-            for notice in notices:
-                emit(notice, report_hook, report_owner, report_generation)
+            while notices:
+                notice = notices.pop(0)
+                if emit(notice, report_hook, report_owner, report_generation):
+                    # A step back ends here, and the step configured at its
+                    # stop begins here too.
+                    with lock:
+                        notices = waiting(sys._getframe(1), started, event)
+                        report_hook, report_owner, report_generation = (
+                            hook, _owner, generation)
         except BaseException:
             emit_interruption()
             raise
@@ -725,7 +796,7 @@ def configure(library, wanted_generation, wanted_probes, replacement=None,
     if wanted_step is not None:
         if (type(wanted_step) not in (list, tuple) or len(wanted_step) != 5
                 or any(type(field) is not int for field in wanted_step)
-                or not 0 < wanted_step[0] < 2**64 or wanted_step[1] not in (INTO, OVER, OUT)
+                or not 0 < wanted_step[0] < 2**64 or wanted_step[1] not in (INTO, OVER, OUT, BACK)
                 or not 0 < wanted_step[2] < 2**64 or not 0 <= wanted_step[3] < 2**32
                 or not 0 < wanted_step[4] < 2**64):
             raise CommandError("invalid microscope step")
@@ -774,6 +845,8 @@ def configure(library, wanted_generation, wanted_probes, replacement=None,
                 watch(stepping[0], stepping[1])
         else:
             step, step_generation = wanted_step, generation
+        # A step back waits for its thread's next line everywhere.
+        monitoring.set_events(tool, global_mask())
     except Exception:
         return failed(generation)
     except BaseException:

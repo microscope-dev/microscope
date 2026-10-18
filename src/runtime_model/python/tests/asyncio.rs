@@ -603,6 +603,7 @@ fn current_task_and_context_use_proven_identity_and_refuse_missing_proof() {
                 types.class,
                 types.member,
                 types.wrapper,
+                types.method,
                 types.generic_getattr,
             ]
             .map(|address| crate::ImageAddress::new(address.get()))),

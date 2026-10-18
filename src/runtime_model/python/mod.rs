@@ -127,7 +127,7 @@ fn evaluation(image: &(dyn RuntimeImage + Send + Sync)) -> Vec<AddressRange<Imag
 /// The symbols CPython exports the objects the model reads values by as:
 /// the type objects of the built-in types it presents, and the function
 /// that reads attributes as `object` does.
-const TYPES: [&str; 22] = [
+const TYPES: [&str; 23] = [
     "_PyNone_Type",
     "PyBool_Type",
     "PyLong_Type",
@@ -149,6 +149,7 @@ const TYPES: [&str; 22] = [
     "PyType_Type",
     "PyMemberDescr_Type",
     "PyWrapperDescr_Type",
+    "PyMethodDescr_Type",
     "PyObject_GenericGetAttr",
 ];
 
@@ -260,6 +261,7 @@ impl Reading {
             class,
             member,
             wrapper,
+            method,
             generic_getattr,
         ] = symbols.map(loaded);
         let types = values::Types {
@@ -284,6 +286,7 @@ impl Reading {
             class: class?,
             member: member?,
             wrapper: wrapper?,
+            method: method?,
             generic_getattr: generic_getattr?,
         };
         let runtime = loaded(self.runtime.start)?;
@@ -764,6 +767,17 @@ impl RuntimeModel for PythonRuntime {
                 number: number - 1,
                 description: reason.description().into(),
             },
+            // The step goes on in Python when the callable runs no C
+            // function of its own to step into.
+            agent::Report::StepCalls { number, callable } => self
+                .reading()?
+                .native_callee(stop, crate::VirtualAddress::new(callable))?
+                .map_or(super::HookEvent::Continue, |target| {
+                    super::HookEvent::StepCalls {
+                        number: number - 1,
+                        target,
+                    }
+                }),
             agent::Report::Exception { bit, address } => super::HookEvent::Exception {
                 filter: exceptions::filter(bit)
                     .ok_or_else(|| Arc::<str>::from("invalid Python agent exception report"))?,

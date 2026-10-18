@@ -98,10 +98,13 @@ pub trait RuntimeAgent: std::fmt::Debug + Send + Sync {
     fn entries(&self) -> &[ImageAddress];
 
     /// The controller prepares files in this particular thread's namespace.
+    /// A step back of `arming` begins where its thread runs native code
+    /// the runtime called, and binds on that thread, wherever it is.
     fn eligible_thread(
         &self,
         stop: &dyn RuntimeStop,
         preferred: Option<ThreadId>,
+        arming: &Arming<'_>,
     ) -> Result<ThreadId, AgentFailure>;
 
     fn script(
@@ -118,6 +121,7 @@ pub trait RuntimeAgent: std::fmt::Debug + Send + Sync {
         stop: &dyn RuntimeStop,
         script: &str,
         thread: ThreadId,
+        arming: &Arming<'_>,
     ) -> Result<PreparedAgentRequest, AgentFailure>;
 
     /// Payload and length precede the aligned sequence publication.

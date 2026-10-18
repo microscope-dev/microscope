@@ -80,7 +80,10 @@ narrower limits and report them when used.
   shape and dtype, and indexing an array is refused. Python breakpoints need
   CPython 3.14 or later with remote debugging allowed. Otherwise they stay
   pending. A Python step starts only where microscope's agent stopped
-  the thread, at a Python breakpoint or a step's end, and steps by lines. An
+  the thread, at a Python breakpoint or a step's end, and steps by lines;
+  a native step leaves C for Python only where its frame returns to the
+  interpreter. A step into C stops only in a function debug information
+  describes. An
   uncaught Python exception stops in the outermost frame it leaves, whose
   inner frames have returned; its message says where it was raised. On the
   main thread only the main module's exceptions are uncaught: one leaving an

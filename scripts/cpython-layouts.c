@@ -371,6 +371,8 @@ int main(int argc, char **argv) {
     FIELD(BuiltinMethod, offsetof(PyCFunctionObject, m_ml));
     FIELD(BuiltinSelf, offsetof(PyCFunctionObject, m_self));
     FIELD(MethodDefName, offsetof(PyMethodDef, ml_name));
+    FIELD(MethodDefMeth, offsetof(PyMethodDef, ml_meth));
+    FIELD(MethodDescrMethod, offsetof(PyMethodDescrObject, d_method));
     FIELD(WrapperDescrWrapped, offsetof(PyWrapperDescrObject, d_wrapped));
     FIELD(TupleItems, offsetof(PyTupleObject, ob_item));
     FIELD(TupleSize, offsetof(PyTupleObject, ob_base.ob_size));

@@ -491,6 +491,29 @@ stop selects the blamed frame as a breakpoint's does.
 monitoring API, and `tests/python/stepping.rs` takes every kind in one run per
 build, ending with a step refused from a pause.
 
+**Stepping into C and back.** A step into also takes CALL in its frame. For
+a callable that may run the program's own C, a built-in function or method
+or a method descriptor other than `builtins`' and its types', the agent
+reports `(5, number, id(callable))`. `Reading::native_callee` reads the C
+function from the callable's `PyMethodDef`, and `Controller::step_into_native`
+traps the function's first statement as part of the step's plan, unless the
+function is the runtime's own or no debug information describes it; then the
+step goes on in Python. A native step over or out whose frame returns into
+the interpreter of a runtime with an agent
+(`Controller::source_step_returned_to_runtime`) becomes, at an internal stop
+(`Edit::ReturnToRuntime`), that runtime's step back, kind 3, from the
+thread's innermost Python frame: the agent ends it at the thread's next LINE
+in that frame or a caller. A thread in C may run no callback that would read
+a command, so a step back is sent by a source request on its own thread,
+which runs at the eval-breaker check after the call returns. It is sent even
+over an unread command, whose older generation the agent then ignores, and
+the callback that ends it binds a step configured at its stop. Where it
+cannot be sent, the native step runs on, as into any code without source.
+`tests/python/stepping.rs` steps into an extension's function, out of it and
+over its end, through a builtin and a stripped twin of the extension, and out
+from a native breakpoint while the agent watches no line, on each build the
+extension is built for.
+
 **Exceptions.** `python-raised` and `python-uncaught` are the model's
 `EXCEPTION_FILTERS`, off by default so that nothing runs in the process until
 asked. The command's fourth element is their bits (`exceptions::bits`), and

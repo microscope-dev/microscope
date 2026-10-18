@@ -869,6 +869,13 @@ enum Edit {
     /// place those whose moves finished on their new stacks.
     FollowStacks,
     ArmAgents,
+
+    /// Go on with the source step of thread `pid`, which returned from
+    /// native code into a runtime's interpreter, as that runtime's step
+    /// back to the Python that called the native code.
+    ReturnToRuntime {
+        pid: Pid,
+    },
     AgentReport {
         runtime: crate::RuntimeId,
         generation: u64,

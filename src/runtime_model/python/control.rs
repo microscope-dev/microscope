@@ -10,14 +10,24 @@ use crate::runtime_model::{
 use crate::{ImageAddress, ThreadId, VirtualAddress};
 
 impl PythonRuntime {
+    /// Plans the source request `script` on an eligible thread, `only`
+    /// if given, `preferred` first: one that runs the loop or begins to,
+    /// whose next check of its eval breaker runs the request; or the
+    /// thread of a step back, which returns to the loop from the native
+    /// code it calls.
     fn prepare_agent(
         &self,
         stop: &dyn RuntimeStop,
         script: &str,
-        preferred: Option<ThreadId>,
-        only: Option<ThreadId>,
+        (preferred, only): (Option<ThreadId>, Option<ThreadId>),
+        arming: &Arming<'_>,
     ) -> Result<injection::Plan, AgentFailure> {
         let reading = self.reading()?;
+        let returning = arming
+            .step
+            .filter(|step| step.returning)
+            .map(|step| step.thread);
+        let preferred = returning.or(preferred);
         let mut evidence = Vec::new();
         let identities = threads::ThreadIds::read(stop.threads(), |catalog| {
             evidence = stop.target_thread_ids(catalog);
@@ -31,6 +41,9 @@ impl PythonRuntime {
                     || only.is_some_and(|only| only != thread)
                 {
                     return None;
+                }
+                if returning == Some(thread) {
+                    return Some(injection::Candidate { thread, native });
                 }
                 let instruction = stop.instruction(thread)?;
                 let at_entry = self
@@ -178,6 +191,33 @@ impl super::Reading {
         })
     }
 
+    /// The C function the callable at `callable` runs, where it is a
+    /// built-in function or method, or a type's C method; `None` for any
+    /// other callable.
+    pub(super) fn native_callee(
+        &self,
+        stop: &dyn RuntimeStop,
+        callable: VirtualAddress,
+    ) -> Result<Option<VirtualAddress>, Arc<str>> {
+        self.read_values(stop, None, |values, _| {
+            let reader = &values.reader;
+            let ty = VirtualAddress::new(reader.field_word(callable, Field::ObjectType)?);
+            let definition = if ty == values.types.builtin {
+                reader.field_word(callable, Field::BuiltinMethod)?
+            } else if ty == values.types.method {
+                reader.field_word(callable, Field::MethodDescrMethod)?
+            } else {
+                return Ok(None);
+            };
+            if definition == 0 {
+                return Err(objects::malformed(callable, "built-in function"));
+            }
+            let function =
+                reader.field_word(VirtualAddress::new(definition), Field::MethodDefMeth)?;
+            Ok((function != 0).then_some(VirtualAddress::new(function)))
+        })
+    }
+
     /// The step the agent is armed with, if one is active.
     fn step(
         &self,
@@ -188,6 +228,7 @@ impl super::Reading {
             return Ok(None);
         };
         let kind = match active.kind {
+            _ if active.returning => agent::BACK,
             crate::StepKind::IntoSource => agent::INTO,
             crate::StepKind::OverSource => agent::OVER,
             crate::StepKind::Out => agent::OUT,
@@ -223,8 +264,9 @@ impl RuntimeAgent for PythonRuntime {
         &self,
         stop: &dyn RuntimeStop,
         preferred: Option<ThreadId>,
+        arming: &Arming<'_>,
     ) -> Result<ThreadId, AgentFailure> {
-        self.prepare_agent(stop, "/", preferred, None)
+        self.prepare_agent(stop, "/", (preferred, None), arming)
             .map(|plan| plan.thread)
     }
     fn script(
@@ -256,8 +298,9 @@ impl RuntimeAgent for PythonRuntime {
         stop: &dyn RuntimeStop,
         script: &str,
         thread: ThreadId,
+        arming: &Arming<'_>,
     ) -> Result<PreparedAgentRequest, AgentFailure> {
-        let plan = self.prepare_agent(stop, script, Some(thread), Some(thread))?;
+        let plan = self.prepare_agent(stop, script, (Some(thread), Some(thread)), arming)?;
         let reading = self.reading()?;
         let runtime = stop
             .load_bias()

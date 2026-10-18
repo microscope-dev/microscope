@@ -63,10 +63,13 @@ pub type Step = (u64, u8, u64, u32, u64);
 pub const RAISED: u64 = 1;
 pub const UNCAUGHT: u64 = 2;
 
-/// A step's kinds, as the agent numbers them.
+/// A step's kinds, as the agent numbers them. A step back begins where
+/// its thread runs native code its frame called, and ends at the thread's
+/// next line in that frame or a caller.
 pub const INTO: u8 = 0;
 pub const OVER: u8 = 1;
 pub const OUT: u8 = 2;
+pub const BACK: u8 = 3;
 
 /// A standalone whole-state script, executable with fresh globals, which
 /// stops at the exceptions whose bits `exceptions` sets.
@@ -118,6 +121,12 @@ pub enum Report {
     StepLost {
         number: u64,
         reason: StepLoss,
+    },
+    /// The frame a step into is in calls the C function or method at
+    /// `callable`, which the stack keeps alive while the hook runs.
+    StepCalls {
+        number: u64,
+        callable: u64,
     },
     /// An exception of the kind `bit` names, [`RAISED`] or [`UNCAUGHT`], in
     /// a record at `address` that the calling thread keeps alive while it is
@@ -206,6 +215,9 @@ pub fn decode(event: u64, number: u64, argument: u64) -> Result<Report, std::syn
         (4, bit @ (RAISED | UNCAUGHT), address) if address != 0 => {
             Ok(Report::Exception { bit, address })
         }
+        (5, number, callable) if number != 0 && callable != 0 => {
+            Ok(Report::StepCalls { number, callable })
+        }
         (3, generation, 1..=6) => Ok(Report::Failed {
             generation,
             failure: match argument {
@@ -224,6 +236,24 @@ pub fn decode(event: u64, number: u64, argument: u64) -> Result<Report, std::syn
 #[cfg(test)]
 mod tests {
     use super::{Failure, Report, decode};
+
+    /// A step back crosses in a script as its kind, and a step into's call
+    /// of a C function crosses the hook as the callable's address.
+    #[test]
+    fn a_step_back_and_a_steps_c_call_cross_whole() {
+        let script = super::script("lib.so", 1, &[], Some((3, super::BACK, 7, 2, 0x1000)), 0)
+            .expect("serialize the step");
+        assert!(script.contains("__microscope_step = [3,3,7,2,4096]\n"));
+        assert_eq!(
+            decode(5, 3, 0x7000),
+            Ok(Report::StepCalls {
+                number: 3,
+                callable: 0x7000
+            })
+        );
+        assert!(decode(5, 0, 0x7000).is_err());
+        assert!(decode(5, 3, 0).is_err());
+    }
 
     #[test]
     fn a_whole_state_script_escapes_its_literals() {
@@ -253,10 +283,11 @@ mod tests {
     #[test]
     fn the_agent_numbers_steps_as_the_runtime_does() {
         assert!(super::SOURCE.contains(&format!(
-            "INTO, OVER, OUT = {}, {}, {}",
+            "INTO, OVER, OUT, BACK = {}, {}, {}, {}",
             super::INTO,
             super::OVER,
-            super::OUT
+            super::OUT,
+            super::BACK
         )));
         assert!(super::SOURCE.contains("return [(2, step[0], 1)]  # The step's frame"));
         assert!(super::SOURCE.contains("return [(2, step[0], 2)]  # Its thread ran on"));

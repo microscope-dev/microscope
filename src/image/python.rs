@@ -251,6 +251,11 @@ entries! {
         BuiltinSelf = "builtin_function.m_self",
         MethodDefName = "method_def.ml_name",
 
+        /// The C function a method definition calls, and the definition a
+        /// type's method descriptor, as `list.append`, calls through.
+        MethodDefMeth = "method_def.ml_meth",
+        MethodDescrMethod = "method_descr_object.d_method",
+
         /// The C function a slot's wrapper, as `int.__getattribute__`,
         /// wraps.
         WrapperDescrWrapped = "wrapper_descr_object.d_wrapped",

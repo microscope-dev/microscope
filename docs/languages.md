@@ -340,6 +340,12 @@ the caller. Each stops at a line of Python code and selects its frame:
   task's, even when other tasks run in between.
 - `step` stops in the first line of Python code the line calls, or as `next`
   does when it calls none. `step` on an `await` steps over it.
+- `step` on a line that calls a C extension's function stops at the
+  function's first line, in C, when debug information describes it. Python's
+  built-in functions, and C functions without debug information, are stepped
+  through, as code that is not the program's.
+- From such a C function, `next` past its last line, or `finish`, returns to
+  the Python that called it and stops at its next line.
 - `finish`, or an editor's step out, stops in the caller, at the call, once
   the frame returns. The
   caller of a task's outermost coroutine is the code that resumed it, often

@@ -2547,6 +2547,11 @@ for interpreter in 3.12 3.14 3.14t 3.15; do
         "$output_dir/python-extension-${interpreter}/microscope_extension.so" \
         -std=c17 -Wall -Wextra -Werror -shared -fPIC -O0 -g \
         "-I$MICROSCOPE_CPYTHON/$interpreter/include"
+    # Its stripped twin, whose functions nothing describes.
+    build_program gcc "$fixtures_dir/python/extension.c" \
+        "$output_dir/python-extension-${interpreter}/microscope_bare.so" \
+        -std=c17 -Wall -Wextra -Werror -shared -fPIC -O0 -g0 -s -DMODULE=microscope_bare \
+        "-I$MICROSCOPE_CPYTHON/$interpreter/include"
 done
 for interpreter in 3.13 3.14t 3.15 debian-3.13; do
     python="$MICROSCOPE_CPYTHON/$interpreter/python"

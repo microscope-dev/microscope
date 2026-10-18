@@ -24,7 +24,7 @@ use super::loops::LoopReach;
 use super::native::{LinuxTraceOps, is_vanished_tracee};
 use super::new_task::NewTask;
 use super::{
-    ActiveExecution, ActiveKind, BreakpointOwner, ClassifiedStop, Controller, ExpectedStop,
+    ActiveExecution, ActiveKind, BreakpointOwner, ClassifiedStop, Controller, Edit, ExpectedStop,
     Inferior, LinuxError, NativeThreadState, PendingSignal, PublicStop, RepairGroup, Resume,
     ResumeGuard, StepOwner, StopBarrier, backend_error, debug_thread_id, exception_info,
     pending_exception_info, process_id, scoped_threads, steps_instructions, validate_process,
@@ -980,6 +980,12 @@ impl<P: LinuxTraceOps> Controller<P> {
             return self.reach_plan_site(pid, address, kind);
         }
 
+        // A runtime step into native code ends where its own thread enters
+        // the function it called.
+        if let Some(kind) = self.runtime_step_arrival(pid, address) {
+            return self.begin_visible_stop(pid, StopReason::Step { kind });
+        }
+
         // A declined user hit, or another thread at a stepping plan's site,
         // which is not the user's to see. A source step that single-stepped
         // onto a declined site may end there, with the hit counted once;
@@ -1042,6 +1048,12 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         self.note_returned_activation(pid, mode)?;
+        if self.source_step_returned_to_runtime(pid, mode)? {
+            self.let_step_run_on()?;
+            self.queue_internal_edit(Edit::ReturnToRuntime { pid })?;
+            return self.go_on_without_plan(pid, address, None);
+        }
+
         if self.source_step_returned_to_undescribed_code(pid, mode)? {
             self.let_step_run_on()?;
             return self.go_on_without_plan(pid, address, None);

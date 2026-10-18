@@ -109,12 +109,23 @@ impl Installation {
     /// `None` when the agent is to be configured with it.
     fn settled(&self, wanted: &Desired) -> Option<Result<(), Arc<str>>> {
         let sent = self.sent.as_ref() == Some(wanted);
+        // A step back cannot wait for a command's acknowledgement, which
+        // comes only from a callback, none of which may run before the
+        // thread runs on past the step's end. Its source request carries
+        // the whole configuration, which the agent takes over the
+        // command's older generation.
+        let back = !self.expired
+            && matches!(self.state, State::Awaiting { source: false, .. })
+            && wanted.step.as_ref().is_some_and(|step| step.returning)
+            && self.sent.as_ref().and_then(|sent| sent.step.as_ref()) != wanted.step.as_ref();
         match &self.state {
-            State::Awaiting { .. } if !self.replaceable() || sent => Some(Err(if self.expired {
-                TIMED_OUT.into()
-            } else {
-                "waiting for the runtime agent to acknowledge its configuration".into()
-            })),
+            State::Awaiting { .. } if (!self.replaceable() && !back) || sent => {
+                Some(Err(if self.expired {
+                    TIMED_OUT.into()
+                } else {
+                    "waiting for the runtime agent to acknowledge its configuration".into()
+                }))
+            }
             State::Ready if sent => Some(Ok(())),
             State::Refused(reason) if sent => Some(Err(Arc::clone(reason))),
             _ => None,
@@ -423,7 +434,16 @@ impl<P: LinuxTraceOps> Controller<P> {
         let next = generation
             .checked_add(1)
             .ok_or("runtime agent generations are exhausted")?;
-        if installation.commands() {
+        // A step back binds on a thread in native code, where no monitoring
+        // callback may come to read a command: a source request runs there
+        // as the thread returns to the interpreter.
+        let returning = arming.step.is_some_and(|step| step.returning)
+            && installation
+                .sent
+                .as_ref()
+                .and_then(|sent| sent.step.as_ref())
+                != arming.step;
+        if installation.commands() && !returning {
             let library = installation
                 .library
                 .as_deref()
@@ -443,7 +463,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .and_then(|stop| stop.selected_thread)
             .map(debug_thread_id);
         let thread = self.with_runtime_stop(inferior, bound, inferior.memory_thread(), |stop| {
-            agent.eligible_thread(stop, preferred)
+            agent.eligible_thread(stop, preferred, arming)
         })?;
         let mut identities = self
             .ptrace
@@ -474,7 +494,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         })?;
         let path = files.script(generation, &source)?;
         let prepared = self.with_runtime_stop(inferior, bound, inferior.memory_thread(), |stop| {
-            agent.inject(stop, &path, thread)
+            agent.inject(stop, &path, thread, arming)
         });
         let prepared = match prepared {
             Ok(prepared) => prepared,
@@ -720,8 +740,11 @@ impl<P: LinuxTraceOps> Controller<P> {
             .as_ref()
             .filter(|(stepping, _)| *stepping == runtime)
             .map(|(_, step)| step);
+        // A step back is sent by a source request, which its thread runs
+        // as it returns to the interpreter; a command waits for a callback.
         inferior.agents.get(&runtime).is_some_and(|installation| {
-            matches!(installation.state, State::Awaiting { .. })
+            matches!(installation.state, State::Awaiting { source, .. }
+                if source || !step.is_some_and(|step| step.returning))
                 && step.is_some()
                 && installation
                     .sent
@@ -1150,6 +1173,7 @@ mod tests {
             &self,
             _: &dyn crate::runtime_model::RuntimeStop,
             _: Option<crate::ThreadId>,
+            _: &Arming<'_>,
         ) -> Result<crate::ThreadId, AgentFailure> {
             Ok(self.thread)
         }
@@ -1168,6 +1192,7 @@ mod tests {
             _: &dyn crate::runtime_model::RuntimeStop,
             _: &str,
             _: crate::ThreadId,
+            _: &Arming<'_>,
         ) -> Result<crate::runtime_model::PreparedAgentRequest, AgentFailure> {
             Ok(crate::runtime_model::PreparedAgentRequest {
                 writes: [0x100, 0x108]
@@ -1613,6 +1638,7 @@ mod tests {
             kind: crate::StepKind::OverSource,
             thread: crate::ThreadId::new(7),
             frame: crate::VirtualAddress::new(0x9000),
+            returning: false,
         }
     }
 

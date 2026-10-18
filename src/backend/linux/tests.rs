@@ -6569,6 +6569,7 @@ fn a_runtime_step_ends_where_its_runtime_reports_it_on_its_thread() {
             kind: StepKind::OverSource,
             thread: debug_thread_id(stepping),
             frame: frame.1,
+            returning: false,
         }))
     );
     let actions = harness.trace().take_actions();

@@ -158,6 +158,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     self.publish_breakpoints_changed();
                 }
             }
+            Edit::ReturnToRuntime { pid } => self.return_to_runtime(pid),
         }
     }
 
@@ -473,6 +474,7 @@ impl Edit {
             Self::RefreshModules
             | Self::FollowStacks
             | Self::ArmAgents
+            | Self::ReturnToRuntime { .. }
             | Self::AgentReport { .. } => {}
         }
     }

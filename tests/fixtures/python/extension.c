@@ -1,7 +1,8 @@
 /* A C extension that holds Python objects in a native frame's locals while
  * it calls back into Python, so that the frame, below the Python frames the
  * callback runs, shows each PyObject * as the Python value it points to;
- * and the native function a values gallery reaches its checkpoints in.
+ * and the native function a values gallery reaches its checkpoints in,
+ * which Python steps into.
  * Built against each interpreter's own headers. */
 
 #define PY_SSIZE_T_CLEAN
@@ -53,13 +54,23 @@ static PyModuleDef_Slot slots[] = {
     {0, NULL},
 };
 
+/* The module is microscope_extension unless the build names it otherwise,
+ * as a stripped twin is. */
+#ifndef MODULE
+#define MODULE microscope_extension
+#endif
+#define NAME_(module) #module
+#define NAME(module) NAME_(module)
+#define INIT_(module) PyInit_##module
+#define INIT(module) INIT_(module)
+
 static struct PyModuleDef module = {
     PyModuleDef_HEAD_INIT,
-    .m_name = "microscope_extension",
+    .m_name = NAME(MODULE),
     .m_methods = methods,
     .m_slots = slots,
 };
 
-PyMODINIT_FUNC PyInit_microscope_extension(void) {
+PyMODINIT_FUNC INIT(MODULE)(void) {
     return PyModuleDef_Init(&module);
 }

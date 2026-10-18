@@ -609,13 +609,6 @@ pub enum HookEvent {
     Armed { generation: u64 },
 
     /// Nothing the user sees: the thread goes on.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "reporters currently report readiness or user events"
-        )
-    )]
     Continue,
 
     /// An exception, which stops when its filter does.
@@ -635,6 +628,11 @@ pub enum HookEvent {
     /// The step the runtime was armed with under this number stopped where
     /// the runtime could no longer follow it, for this reason.
     StepIncomplete { number: u64, description: Arc<str> },
+
+    /// The step into the runtime was armed with under this number is about
+    /// to call native code at `target`, where it ends if the code is the
+    /// program's own and described.
+    StepCalls { number: u64, target: VirtualAddress },
 }
 
 /// Everything a runtime's internal hooks are to report.
@@ -663,6 +661,11 @@ pub struct RuntimeStep {
 
     /// The interpreted frame the step begins in.
     pub frame: VirtualAddress,
+
+    /// Whether the thread is in native code the frame called, from which a
+    /// native step returned to the runtime: the step ends at the thread's
+    /// next line in the frame or a caller.
+    pub returning: bool,
 }
 
 /// A managed breakpoint location a runtime is armed with: where it stops,

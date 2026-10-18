@@ -111,6 +111,7 @@ impl Process {
             class,
             member: self.type_object("member_descriptor"),
             wrapper: self.type_object("wrapper_descriptor"),
+            method: self.type_object("method_descriptor"),
             generic_getattr: VirtualAddress::new(self.alloc(16)),
         }
     }
