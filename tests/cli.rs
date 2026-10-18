@@ -4278,6 +4278,7 @@ fn python_breakpoints_wait_for_their_code_and_stop_in_the_programs_frame() {
             "break py:rea",
             "break missing.c:3",
             "break accumulate",
+            "break mian",
             "run",
             "bt",
             "print total",
@@ -4305,6 +4306,13 @@ fn python_breakpoints_wait_for_their_code_and_stop_in_the_programs_frame() {
     assert!(
         stderr.contains("no function named 'accumulate' was found")
             && stderr.contains("`py:accumulate`"),
+        "{stderr}"
+    );
+    // A native name misspelled is still found near its own.
+    assert!(
+        stderr.contains(
+            "did you mean 'main'? A Python function is named with `py:`, as in `py:mian`"
+        ),
         "{stderr}"
     );
 
