@@ -2233,6 +2233,11 @@ impl StopView<'_> {
                     let line = LineNumber::new(u64::from(place.line))
                         .ok_or(Error::SourceLocationUnavailable)?;
                     let column = ColumnNumber::new(u64::from(place.column));
+                    if place.path.starts_with('<') && place.path.ends_with('>') {
+                        return Err(Error::SourceNotAFile {
+                            name: Arc::clone(&place.path),
+                        });
+                    }
                     let recorded = Arc::new(PathBuf::from(&*place.path));
                     return self
                         .handle

@@ -79,6 +79,17 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
         };
 
+        // At an agent's hook, the innermost frames are the agent's: a
+        // step by lines from the innermost, or out of it, begins at the
+        // program's frame the stop blames, which it selected.
+        let frame = match kind {
+            StepKind::IntoSource | StepKind::OverSource | StepKind::Out
+                if frame == StackFrameId::INNERMOST && into_call.is_none() =>
+            {
+                self.reported_frame(stop_id, pid).unwrap_or(frame)
+            }
+            _ => frame,
+        };
         if into_call.is_none()
             && let Some(interpreted) = self.interpreted_frame(stop_id, pid, frame)
         {
@@ -1882,7 +1893,16 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
         let execution = inferior.active.take().map(|active| active.id);
         let process_id = process_id(inferior.tgid);
-        if matches!(reason, StopReason::LanguageException(_)) {
+        // A stop an agent reported is about the program's frame, not the
+        // agent's hook it entered.
+        let reported = match reason {
+            StopReason::LanguageException(_) | StopReason::Breakpoint { address: None, .. } => true,
+            StopReason::Step { .. } | StopReason::StepIncomplete { .. } => {
+                self.agent_hook(triggering_thread).is_some()
+            }
+            _ => false,
+        };
+        if reported {
             self.select_blamed_frame(triggering_thread);
         }
 

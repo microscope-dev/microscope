@@ -1020,7 +1020,7 @@ impl Cli {
                 .transpose()?,
             enabled: !parsed.disabled,
             temporary,
-            ..microscope::BreakpointOptions::default()
+            pending: is_python(&location),
         };
 
         let address = matches!(location, BreakpointSpec::Address(_));
@@ -3256,12 +3256,22 @@ fn parse_watch_location(argument: &str, spec: &CommandSpec) -> Result<Option<Wat
     }))
 }
 
-/// Parses a breakpoint location: a function, `0xaddress`, `file:line`, or
-/// `file:function`, or `None` when a file or its location is missing. The
-/// `::` of a qualified name such as `ns::run` never separates a file.
+/// Parses a breakpoint location: a function, `py:function`, `0xaddress`,
+/// `file:line`, or `file:function`, or `None` when a file or its location is
+/// missing. The `::` of a qualified name such as `ns::run` never separates a
+/// file.
 pub fn parse_breakpoint_location(argument: &str) -> Result<Option<BreakpointSpec>> {
     if argument.starts_with("0x") {
         return Ok(Some(BreakpointSpec::Address(parse_address(argument)?)));
+    }
+
+    // A Python function, such as `py:Shape.area`, but not a native function
+    // in a `py` namespace, such as `py::run`.
+    if argument
+        .strip_prefix("py:")
+        .is_some_and(|name| !name.starts_with(':'))
+    {
+        return Ok(Some(BreakpointSpec::Function(argument.to_owned())));
     }
 
     let bytes = argument.as_bytes();
@@ -3291,6 +3301,21 @@ pub fn parse_breakpoint_location(argument: &str) -> Result<Option<BreakpointSpec
             function: location.to_owned(),
         },
     }))
+}
+
+/// Whether a breakpoint is in Python code, which loads as the program
+/// imports it, so nothing can be checked against before then: it is kept
+/// pending until it is armed, rather than refused.
+fn is_python(location: &BreakpointSpec) -> bool {
+    match location {
+        BreakpointSpec::Source { path, .. } => {
+            path.extension().is_some_and(|extension| extension == "py")
+        }
+        BreakpointSpec::Function(name) => name
+            .strip_prefix("py:")
+            .is_some_and(|name| !name.starts_with(':')),
+        _ => false,
+    }
 }
 
 /// Joins two parts of a command's output, either of which may be empty.
@@ -3711,6 +3736,38 @@ mod tests {
             parse("main.cpp:ns::run").expect("qualified file function"),
             BreakpointSpec::FileFunction { path, function }
                 if path == std::path::Path::new("main.cpp") && function == "ns::run"
+        ));
+
+        // Python breakpoints are kept pending; native ones are checked.
+        for (location, python) in [
+            ("app.py:12", true),
+            ("pkg/app.py:12", true),
+            ("py:main", true),
+            ("py:Shape.area", true),
+            ("py::run", false),
+            ("main", false),
+            ("main.c:12", false),
+            ("app.pyc:12", false),
+            ("0x10", false),
+        ] {
+            let spec = parse(location).expect("a location");
+            assert_eq!(is_python(&spec), python, "{location}");
+        }
+
+        // Python functions keep their prefix, which no file has.
+        for name in ["py:main", "py:Shape.area", "py:outer.<locals>.area", "py:"] {
+            assert_eq!(
+                parse(name).expect("Python function"),
+                BreakpointSpec::Function(name.to_owned())
+            );
+        }
+        assert_eq!(
+            parse("py::run").expect("native function"),
+            BreakpointSpec::Function("py::run".to_owned())
+        );
+        assert!(matches!(
+            parse("py.py:12").expect("source"),
+            BreakpointSpec::Source { line, .. } if line.get() == 12
         ));
     }
 

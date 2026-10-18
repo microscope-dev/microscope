@@ -1,7 +1,7 @@
 //! PEP 768 bootstrap and the acknowledged native command transport.
 use std::sync::Arc;
 
-use super::{PythonRuntime, agent, frames, hook, injection, objects, threads, values};
+use super::{PythonRuntime, agent, exceptions, frames, hook, injection, objects, threads, values};
 use crate::image::python::{Field, PythonLayout};
 use crate::runtime_model::{
     AgentFailure, AgentRequestTicket, AgentRetirement, AgentRetirementProof, Arming,
@@ -97,9 +97,6 @@ impl PythonRuntime {
 }
 
 fn probes<'a>(arming: &Arming<'a>) -> Result<Vec<agent::Probe<'a>>, Arc<str>> {
-    if arming.step.is_some() {
-        return Err("Python stepping is not implemented".into());
-    }
     arming
         .breakpoints
         .iter()
@@ -118,6 +115,95 @@ fn probes<'a>(arming: &Arming<'a>) -> Result<Vec<agent::Probe<'a>>, Arc<str>> {
             }
         })
         .collect()
+}
+
+/// Where a step begins, as the agent finds its frame: the native thread as
+/// CPython numbers it, how many callers the frame has, and its code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StepOrigin {
+    native: u64,
+    depth: u32,
+    code: VirtualAddress,
+}
+
+impl super::Reading {
+    /// Where the step from the interpreted frame at `frame` on `thread`
+    /// begins.
+    fn step_origin(
+        &self,
+        stop: &dyn RuntimeStop,
+        thread: ThreadId,
+        frame: VirtualAddress,
+    ) -> Result<StepOrigin, Arc<str>> {
+        let code_type = stop
+            .load_bias()
+            .load(self.code_type)
+            .ok_or_else(|| Arc::<str>::from("CPython's code type lies outside the process"))?;
+        self.read_values(stop, None, |values, table| {
+            let (states, _) = threads::thread_states(&values.reader, values.runtime)?;
+            let identities = threads::ThreadIds::new(stop)?;
+            let state = states
+                .iter()
+                .filter(|state| state.frame.is_some())
+                .find(|state| identities.resolve(state.native) == Ok(thread))
+                .ok_or("the stepping thread runs no Python")?;
+            let mut walk = frames::Walk {
+                reader: values.reader,
+                code: table,
+                code_type,
+            };
+            // The agent counts the frame's callers, which must all be read.
+            let (frames, end) = walk.thread(state);
+            if let Some(end) = end {
+                return Err(
+                    format!("the stepping thread's frames cannot all be read: {end}").into(),
+                );
+            }
+            let index = frames
+                .iter()
+                .position(|candidate| candidate.frame == frame)
+                .ok_or("the stepping frame is not on its thread's stack")?;
+            let depth = u32::try_from(frames.len() - 1 - index)
+                .map_err(|_| "the stepping frame has too many callers")?;
+            let record = values.reader.record(frame, Field::FrameSize)?;
+            let (code, _) = walk.code_of(&record)?;
+            Ok(StepOrigin {
+                native: state.native,
+                depth,
+                code,
+            })
+        })
+    }
+
+    /// The step the agent is armed with, if one is active.
+    fn step(
+        &self,
+        stop: &dyn RuntimeStop,
+        arming: &Arming<'_>,
+    ) -> Result<Option<agent::Step>, Arc<str>> {
+        let Some(active) = arming.step else {
+            return Ok(None);
+        };
+        let kind = match active.kind {
+            crate::StepKind::IntoSource => agent::INTO,
+            crate::StepKind::OverSource => agent::OVER,
+            crate::StepKind::Out => agent::OUT,
+            _ => return Err("Python code steps by lines: into, over, or out".into()),
+        };
+        // The native ABI reserves zero; the controller's numbers begin at it.
+        let number = active
+            .number
+            .checked_add(1)
+            .ok_or_else(|| Arc::<str>::from("Python step identifiers are exhausted"))?;
+        let origin = self.step_origin(stop, active.thread, active.frame)?;
+        Ok(Some((
+            number,
+            kind,
+            origin.native,
+            origin.depth,
+            origin.code.get(),
+        )))
+    }
 }
 
 impl RuntimeAgent for PythonRuntime {
@@ -140,12 +226,15 @@ impl RuntimeAgent for PythonRuntime {
     }
     fn script(
         &self,
+        stop: &dyn RuntimeStop,
         library: &str,
         generation: u64,
         process: TargetProcessId,
         arming: &Arming<'_>,
     ) -> Result<String, Arc<str>> {
-        let source = agent::script(library, generation, &probes(arming)?)
+        let stepping = self.reading()?.step(stop, arming)?;
+        let exceptions = exceptions::bits(arming.exceptions);
+        let source = agent::script(library, generation, &probes(arming)?, stepping, exceptions)
             .map_err(|failure| Arc::<str>::from(failure.to_string()))?;
         let mut script = format!(
             "import os as __microscope_os\nif __microscope_os.getpid() == {}:\n",
@@ -184,10 +273,25 @@ impl RuntimeAgent for PythonRuntime {
         generation: u64,
         arming: &Arming<'_>,
     ) -> Result<Vec<RuntimeWrite>, Arc<str>> {
-        command(stop, control, previous, generation, &probes(arming)?)
+        let stepping = self.reading()?.step(stop, arming)?;
+        let exceptions = exceptions::bits(arming.exceptions);
+        command(
+            stop,
+            control,
+            previous,
+            generation,
+            &probes(arming)?,
+            stepping,
+            exceptions,
+        )
     }
     fn process_scope_required(&self) -> bool {
         self.free_threaded
+    }
+    fn wanted(&self, arming: &Arming<'_>) -> bool {
+        !arming.breakpoints.is_empty()
+            || arming.step.is_some()
+            || exceptions::bits(arming.exceptions) != 0
     }
 }
 
@@ -197,6 +301,8 @@ pub(super) fn command(
     previous: u64,
     generation: u64,
     probes: &[agent::Probe<'_>],
+    stepping: Option<agent::Step>,
+    exceptions: u64,
 ) -> Result<Vec<RuntimeWrite>, Arc<str>> {
     if generation <= previous || !control.get().is_multiple_of(8) {
         return Err("the Python command sequence or alignment is invalid".into());
@@ -212,7 +318,7 @@ pub(super) fn command(
     {
         return Err("the Python command header or acknowledged sequence changed".into());
     }
-    let payload = serde_json::to_vec(&(generation, probes))
+    let payload = serde_json::to_vec(&(generation, probes, stepping, exceptions))
         .map_err(|failure| Arc::<str>::from(failure.to_string()))?;
     let length = u32::try_from(payload.len())
         .ok()

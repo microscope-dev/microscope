@@ -261,6 +261,63 @@ elif mode == 'running':
     thread.join(10)
     assert not thread.is_alive() and results == [42], results
     assert reports == [(1, 47, 0)], reports
+elif mode == 'together':
+    # One event's breakpoint hits are one report, so they stop once; a
+    # single hit is reported whole.
+    import ctypes
+    def record(event, number, argument):
+        if event == 1 and argument:
+            numbers = (ctypes.c_uint64 * number).from_address(argument)
+            reports.append((1, tuple(numbers)))
+        else:
+            reports.append((event, number, argument))
+    agent.hook = record
+    same_line = ('LINE', 1, 43, __file__, line, '')
+    other_line = ('LINE', 1, 44, __file__, line + 99, '')
+    entry = ('PY_START', 1, 45, '', 0, 'target')
+    other_entry = ('PY_START', 1, 46, '', 0, 'arget')
+    agent.apply(library, 1, (probe, same_line, other_line, entry, other_entry))
+    reports.clear()
+    assert target() == 1
+    assert reports == [(1, 45, 0), (1, (42, 43))], reports
+elif mode == 'matching':
+    import os
+    import tempfile
+    same = agent.same_file
+    here = os.path.abspath(__file__)
+    name = os.path.basename(here)
+    directory = os.path.basename(os.path.dirname(here))
+    # An absolute path names one file; a relative one ends whole paths.
+    assert same(here, here)
+    assert same(name, here) and same(directory + '/' + name, here)
+    assert same(name, name) and same(name, directory + '/' + name)
+    assert not same(name[1:], here), 'only the end of a name'
+    assert not same('/elsewhere/' + name, here)
+    assert not same(here, name), 'a relative filename is not resolved'
+    assert not same(here + 'x', here)
+    # A link names the same file, from either side.
+    with tempfile.TemporaryDirectory() as linked:
+        link = os.path.join(linked, name)
+        os.symlink(here, link)
+        assert same(link, here) and same(here, link)
+        renamed = os.path.join(linked, 'renamed.py')
+        os.symlink(here, renamed)
+        assert not same(renamed, here), 'a link under another name is not resolved'
+        assert not same(os.path.join(linked, 'missing', name), here)
+
+    class Shape:
+        def area(self):
+            pass
+
+    def entry(qualname):
+        return ('PY_START', 1, 1, '', 0, qualname)
+    code = Shape.area.__code__
+    assert code.co_qualname == 'Shape.area', code.co_qualname
+    assert agent.matches(entry('Shape.area'), code)
+    assert agent.matches(entry('area'), code)
+    assert agent.matches(entry(''), code)
+    for qualname in ('rea', 'hape.area', 'Shape', 'area.Shape', 'Shape.area.x'):
+        assert not agent.matches(entry(qualname), code), qualname
 else:
     raise AssertionError(mode)
 agent.apply(library, 4, ())

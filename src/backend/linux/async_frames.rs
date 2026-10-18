@@ -309,7 +309,7 @@ impl<P: InspectionOps> Controller<P> {
         expanded: Expanded,
     ) -> Result<Expanded> {
         let runtimes = self.runtimes(inferior);
-        let drivers = drivers(&expanded.trace.frames, |frame| {
+        let drivers = drivers(&expanded.trace.frames, |frame, inner| {
             runtimes
                 .iter()
                 .enumerate()
@@ -317,7 +317,7 @@ impl<P: InspectionOps> Controller<P> {
                     Some(runtime.module.id) == frame.module
                         && runtime.model.driver_role() == Some(frame.role)
                 })
-                .find_map(|(index, runtime)| Some((runtime.model.driven(frame)?, index)))
+                .find_map(|(index, runtime)| Some((runtime.model.driven(frame, inner)?, index)))
         });
 
         let mut placement = self.placement(inferior, root, &runtimes, &drivers);
@@ -639,6 +639,24 @@ struct Spliced {
 }
 
 impl Spliced {
+    /// Interpreted code is machinery only when it is the debugger's own
+    /// agent, which calls nothing but the debugger's hook: what runs inside
+    /// it is machinery too.
+    fn hide_inside_agent(&mut self) {
+        let Some(agent) = self.frames.iter().position(|frame| {
+            matches!(frame.kind, FrameKind::Interpreted { .. })
+                && frame.role == CodeRole::Interpreter
+        }) else {
+            return;
+        };
+
+        for frame in &mut self.frames[..agent] {
+            if matches!(frame.role, CodeRole::Ordinary | CodeRole::Wrapper) {
+                frame.role = CodeRole::Interpreter;
+            }
+        }
+    }
+
     /// The frame the next frame pushed will be.
     fn here(&self) -> Result<StackFrameId> {
         frame_u32(self.frames.len()).map(StackFrameId::new)
@@ -669,6 +687,7 @@ impl Spliced {
 
     /// The finished trace, its frames numbered by their levels.
     fn expanded(mut self, trace: Backtrace, lost: Vec<TypeReference>) -> Result<Expanded> {
+        self.hide_inside_agent();
         for (level, frame) in self.frames.iter_mut().enumerate() {
             let level = frame_u32(level)?;
             frame.level = level;
@@ -690,17 +709,19 @@ impl Spliced {
 }
 
 /// Each frame of `frames`, innermost first, that drives frames the stack
-/// does not show, with what `driven` says it drives and who says so. A
-/// future being polled runs on the stack itself, so a frame below one that
-/// runs a coroutine drives no future the stack does not already show.
+/// does not show, with what `driven` says it drives, given the frame inner
+/// to it, and who says so. A future being polled runs on the stack itself,
+/// so a frame below one that runs a coroutine drives no future the stack
+/// does not already show.
 fn drivers<R>(
     frames: &[StackFrame],
-    driven: impl Fn(&StackFrame) -> Option<(Driven, R)>,
+    driven: impl Fn(&StackFrame, Option<&StackFrame>) -> Option<(Driven, R)>,
 ) -> Vec<(usize, Driven, R)> {
     let mut polling = false;
     let mut drivers = Vec::new();
     for (index, frame) in frames.iter().enumerate() {
-        match driven(frame) {
+        let inner = index.checked_sub(1).and_then(|inner| frames.get(inner));
+        match driven(frame, inner) {
             Some((Driven::Future { .. }, _)) if polling => {}
             Some((driving, by)) => drivers.push((index, driving, by)),
             None => {}
@@ -862,8 +883,9 @@ mod tests {
     #[test]
     fn drivers_are_the_frames_a_model_says_drive_and_no_future_runs_within() {
         let future = Driven::Future { variable: "future" };
-        let driven =
-            |frame: &StackFrame| (frame.role == CodeRole::RuntimeInternal).then_some((future, ()));
+        let driven = |frame: &StackFrame, _: Option<&StackFrame>| {
+            (frame.role == CodeRole::RuntimeInternal).then_some((future, ()))
+        };
         let frames = [
             frame(0, CodeRole::Ordinary, false),
             frame(1, CodeRole::RuntimeInternal, false),
@@ -872,15 +894,85 @@ mod tests {
         ];
         assert_eq!(drivers(&frames, driven), [(1, future, ())]);
         assert_eq!(drivers(&frames[3..], driven), [(0, future, ())]);
-        assert!(drivers(&frames, |_| None::<(Driven, ())>).is_empty());
+        assert!(drivers(&frames, |_, _| None::<(Driven, ())>).is_empty());
 
-        // An interpreter's loop runs its frames on the stack, wherever it is.
-        let interpreted = |frame: &StackFrame| {
+        // An interpreter's loop runs its frames on the stack, wherever it
+        // is; whether one does may turn on the frame it called.
+        let interpreted = |frame: &StackFrame, _: Option<&StackFrame>| {
             (frame.role != CodeRole::Ordinary).then_some((Driven::Interpreted, ()))
         };
         assert_eq!(
             drivers(&frames, interpreted),
             [(1, Driven::Interpreted, ()), (3, Driven::Interpreted, ())]
+        );
+        let calling = |frame: &StackFrame, inner: Option<&StackFrame>| {
+            (frame.role != CodeRole::Ordinary && inner.is_some_and(|inner| inner.level == 2))
+                .then_some((Driven::Interpreted, ()))
+        };
+        assert_eq!(drivers(&frames, calling), [(3, Driven::Interpreted, ())]);
+    }
+
+    /// What runs inside the debugger's agent, the innermost interpreted
+    /// frame that is machinery, is machinery too; the program's frames
+    /// outside it, and stacks without it, keep their roles.
+    #[test]
+    fn frames_inside_the_agent_are_machinery() {
+        let interpreted = |level, role| {
+            let mut frame = frame(level, role, false);
+            frame.kind = FrameKind::Interpreted {
+                frame: VirtualAddress::new(0x1000),
+            };
+            frame
+        };
+        let roles = |frames: Vec<StackFrame>| {
+            let mut spliced = Spliced {
+                frames,
+                origins: Vec::new(),
+                futures: Vec::new(),
+                interpreted: Vec::new(),
+                unfollowed: Vec::new(),
+            };
+            spliced.hide_inside_agent();
+            spliced
+                .frames
+                .iter()
+                .map(|frame| frame.role)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            roles(vec![
+                frame(0, CodeRole::Ordinary, false),
+                frame(1, CodeRole::Wrapper, false),
+                frame(2, CodeRole::RuntimeInternal, false),
+                interpreted(3, CodeRole::Interpreter),
+                frame(4, CodeRole::Interpreter, false),
+                interpreted(5, CodeRole::Ordinary),
+                interpreted(6, CodeRole::Interpreter),
+            ]),
+            [
+                CodeRole::Interpreter,
+                CodeRole::Interpreter,
+                CodeRole::RuntimeInternal,
+                CodeRole::Interpreter,
+                CodeRole::Interpreter,
+                CodeRole::Ordinary,
+                CodeRole::Interpreter,
+            ]
+        );
+
+        // A native frame the interpreter runs is not the agent.
+        let unchanged = vec![
+            frame(0, CodeRole::Ordinary, false),
+            frame(1, CodeRole::Interpreter, false),
+            interpreted(2, CodeRole::Ordinary),
+        ];
+        assert_eq!(
+            roles(unchanged),
+            [
+                CodeRole::Ordinary,
+                CodeRole::Interpreter,
+                CodeRole::Ordinary
+            ]
         );
     }
 }

@@ -44,13 +44,35 @@ if mode == 'drain':
             queued = True
             queue(2, (probe,))
     agent.hook = record
-    agent.apply(library, 1, (probe, ('LINE', 1, 43, __file__, probe[4], '')))
+    # A step's end is reported after the breakpoint hit at its line, so the
+    # configuration consumed at the hit supersedes it.
+    agent.apply(library, 1, (probe, ('LINE', 2, 43, __file__, probe[4], '')))
     records.clear()
     assert target() == 42
     assert [report[:2] for report in records] == [(1, 42), (0, 2)], records
     records.clear()
     assert target() == 42
     assert records == [(1, 42, 0)], records
+elif mode == 'drain_together':
+    # A configuration consumed at a report of several hits adds one at the
+    # same line; only the new hit is reported after it.
+    import ctypes
+    queued = False
+    def record(*report):
+        global queued
+        if report[0] == 1 and report[2]:
+            numbers = (ctypes.c_uint64 * report[1]).from_address(report[2])
+            report = (1, tuple(numbers))
+        records.append(report)
+        if report == (1, (42, 43)) and not queued:
+            queued = True
+            queue(2, (probe, ('LINE', 1, 43, __file__, probe[4], ''),
+                      ('LINE', 1, 44, __file__, probe[4], '')))
+    agent.hook = record
+    agent.apply(library, 1, (probe, ('LINE', 1, 43, __file__, probe[4], '')))
+    records.clear()
+    assert target() == 42
+    assert [report[:2] for report in records] == [(1, (42, 43)), (0, 2), (1, 44)], records
 elif mode == 'drain_race':
     entered, release = threading.Event(), threading.Event()
     errors = []
@@ -65,7 +87,9 @@ elif mode == 'drain_race':
         except BaseException as error:
             errors.append(error)
     agent.hook = record
-    agent.apply(library, 1, (probe, ('LINE', 1, 43, __file__, probe[4], '')))
+    # The step's end, reported after the hit, is superseded by another
+    # thread's configuration while the hit's report is in the hook.
+    agent.apply(library, 1, (probe, ('LINE', 2, 43, __file__, probe[4], '')))
     records.clear()
     worker = threading.Thread(target=run)
     worker.start()
@@ -76,7 +100,8 @@ elif mode == 'drain_race':
         release.set()
         worker.join(10)
     assert not worker.is_alive() and not errors, errors
-    assert not any(report == (1, 43, 0) for report in records), records
+    assert (1, 42, 0) in records, records
+    assert not any(report == (2, 43, 0) for report in records), records
 elif mode == 'malformed':
     agent.apply(library, 1, (probe,))
     generation = 2
@@ -287,6 +312,66 @@ elif mode in ('keyboard', 'exit', 'custom', 'cancelled', 'timeout'):
     assert caught, (mode, records)
     assert records == [(3, 2, 6)], records
     assert agent.tool is None
+elif mode == 'fork':
+    # A process forks while another thread holds the agent's lock in a
+    # callback: the fork waits for it, so the child, whose fork handlers
+    # run monitored before the agent's, never waits on a lock no thread of
+    # its own holds. The child is disarmed; the parent keeps its agent.
+    import _thread
+    import os
+    import select
+    import time
+    # Only `target` takes line events, so the module's own lines, which
+    # fork, run as uninstrumented code does, never waiting for the lock.
+    agent.apply(library, 1, (probe[:5] + ('target',),), None, agent.RAISED)
+    # Native locks, whose waits call no Python function the agent would
+    # take its lock to discover while the holder keeps it.
+    go, held = _thread.allocate_lock(), _thread.allocate_lock()
+    go.acquire()
+    held.acquire()
+
+    def holder():
+        go.acquire()
+        with agent.lock:
+            held.release()
+            time.sleep(0.2)
+
+    thread = threading.Thread(target=holder)
+    thread.start()
+    go.release()
+    held.acquire()
+    reading, writing = os.pipe()
+    child = os.fork()
+    if child == 0:
+        os.close(reading)
+        try:
+            records.clear()
+            target()
+            try:
+                raise ValueError('child')
+            except ValueError:
+                pass
+            with agent.lock:
+                pass
+            tools = [tool for tool in range(6) if sys.monitoring.get_tool(tool)]
+            disarmed = (agent.tool is None and not tools and not records
+                        and agent.probes == () and agent.raising == 0)
+            os.write(writing, b'disarmed' if disarmed else repr((tools, records)).encode())
+        finally:
+            os._exit(0)
+    os.close(writing)
+    thread.join()
+    ready, _, _ = select.select([reading], [], [], 10)
+    if not ready:
+        os.kill(child, 9)
+        os.waitpid(child, 0)
+        raise AssertionError('the forked child hung')
+    reported = os.read(reading, 1024)
+    _, status = os.waitpid(child, 0)
+    assert os.waitstatus_to_exitcode(status) == 0 and reported == b'disarmed', reported
+    records.clear()
+    target()
+    assert records == [(1, 42, 0)] and agent.tool is not None, records
 else:
     raise AssertionError(mode)
 agent.apply(library, agent.generation + 1, ())

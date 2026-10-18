@@ -910,7 +910,11 @@ impl RuntimeModel for TokioRuntime {
         Some(crate::CodeRole::RuntimeInternal)
     }
 
-    fn driven(&self, frame: &crate::StackFrame) -> Option<Driven> {
+    fn driven(
+        &self,
+        frame: &crate::StackFrame,
+        _inner: Option<&crate::StackFrame>,
+    ) -> Option<Driven> {
         future::driven_future(frame).map(|variable| Driven::Future { variable })
     }
 }

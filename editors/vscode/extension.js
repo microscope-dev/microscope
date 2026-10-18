@@ -12,7 +12,7 @@ const os = require('os');
 const path = require('path');
 const vscode = require('vscode');
 
-const LANGUAGES = ['c', 'cpp', 'rust', 'go', 'zig'];
+const LANGUAGES = ['c', 'cpp', 'rust', 'go', 'zig', 'python'];
 
 /** The microscope sessions running now. */
 const sessions = new Set();

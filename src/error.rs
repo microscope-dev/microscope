@@ -328,6 +328,11 @@ pub enum Error {
     #[error("source file {path} does not exist{}", missing_source_detail(.path, .tried))]
     SourceFileMissing { path: PathBuf, tried: Vec<PathBuf> },
 
+    /// The code was compiled from text with no file, which its runtime
+    /// names in angle brackets, as Python names code from `-c` `<string>`.
+    #[error("the code was compiled from {name}, which names no file")]
+    SourceNotAFile { name: Arc<str> },
+
     #[error("a source path rule needs a nonempty prefix to replace")]
     EmptySourcePathPrefix,
 

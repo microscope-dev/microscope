@@ -218,7 +218,7 @@ pub fn symbol_role(name: &str) -> CodeRole {
 /// its place; the rest only passes calls along. The names are CPython's
 /// own, which other programs may reuse, so only an image that carries a
 /// Python runtime gives them this role (see `super::cpython`).
-const CPYTHON_MACHINERY: [&str; 64] = [
+const CPYTHON_MACHINERY: [&str; 81] = [
     // The evaluation loop, and what enters it.
     python::EVALUATION_LOOP,
     "_PyEval_EvalFrame",
@@ -287,6 +287,24 @@ const CPYTHON_MACHINERY: [&str; 64] = [
     "run_mod",
     "run_eval_code_obj",
     "PyRun_StringFlags",
+    // What calls a sys.monitoring tool's callbacks for an event.
+    "call_one_instrument",
+    "call_instrumentation_vector",
+    "call_instrumentation_vector_protected",
+    "_Py_call_instrumentation",
+    "_Py_call_instrumentation_arg",
+    "_Py_call_instrumentation_2args",
+    "_Py_call_instrumentation_jump",
+    "_Py_call_instrumentation_exc2",
+    "_Py_call_instrumentation_line",
+    "_Py_call_instrumentation_instruction",
+    "do_monitor_exc",
+    "monitor_raise",
+    "monitor_reraise",
+    "monitor_unwind",
+    "monitor_handled",
+    "monitor_throw",
+    "_PyEval_MonitorRaise",
 ];
 
 /// The role CPython's code at a symbol or function of this name plays, in

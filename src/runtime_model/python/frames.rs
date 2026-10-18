@@ -142,6 +142,7 @@ impl Walk<'_, '_> {
             problem: None,
             first_line: None,
             outermost: false,
+            role: crate::CodeRole::Ordinary,
         };
 
         match self.located(frame) {
@@ -150,6 +151,7 @@ impl Walk<'_, '_> {
                 built.function = Some(std::sync::Arc::clone(self.code.name(row.qualname)));
                 built.first_line = u32::try_from(row.first_line).ok();
                 let path = std::sync::Arc::clone(self.code.name(row.file));
+                built.role = role(&path);
                 match line {
                     Ok(line) => {
                         built.place = Some(RecordedPlace {
@@ -288,6 +290,7 @@ impl Walk<'_, '_> {
             problem: None,
             first_line: None,
             outermost: false,
+            role: crate::CodeRole::Ordinary,
         };
 
         let located = self
@@ -315,6 +318,7 @@ impl Walk<'_, '_> {
         built.function = Some(std::sync::Arc::clone(self.code.name(row.qualname)));
         built.first_line = u32::try_from(row.first_line).ok();
         let path = std::sync::Arc::clone(self.code.name(row.file));
+        built.role = role(&path);
         let line = frame
             .offset
             .ok_or_else(|| -> Problem { "its instruction could not be read".into() })
@@ -376,5 +380,15 @@ impl Walk<'_, '_> {
                 )
                 .into()
             })
+    }
+}
+
+/// The part code compiled under `path` plays: only the agent's code is the
+/// debugger's machinery.
+fn role(path: &str) -> crate::CodeRole {
+    if super::agent::is_agent_filename(path) {
+        crate::CodeRole::Interpreter
+    } else {
+        crate::CodeRole::Ordinary
     }
 }

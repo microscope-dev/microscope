@@ -1859,12 +1859,8 @@ impl<P: InspectionOps> Controller<P> {
         let mut budget = InspectionBudget::new(crate::InspectionLimits::default());
         let presentation = self.presentation_for_thread(pid, Some(reason))?;
         let root = StackRoot::of_thread(pid);
-        let resolved = self.resolve_presented_frame(
-            inferior,
-            &root,
-            StackFrameId::INNERMOST,
-            Some(&presentation),
-        )?;
+        let frame = self.hit_frame(inferior, &root, reason, &presentation)?;
+        let resolved = self.resolve_presented_frame(inferior, &root, frame, Some(&presentation))?;
         let mut scope = self.frame_for(inferior, StopId::new(0), &root, &resolved);
 
         // The thread's recorded reason is not yet this hit's.
@@ -1888,6 +1884,36 @@ impl<P: InspectionOps> Controller<P> {
                 "a breakpoint's expression must have a value",
             ))),
         }
+    }
+
+    /// The frame a hit's condition and log message read: for a hit a
+    /// runtime reports through its hook, the program's frame it blames, as
+    /// its stop selects; for a trap, the innermost frame.
+    fn hit_frame(
+        &self,
+        inferior: &Inferior,
+        root: &StackRoot,
+        reason: &crate::StopReason,
+        presentation: &crate::protocol::FramePresentation,
+    ) -> Result<StackFrameId> {
+        if !matches!(reason, crate::StopReason::Breakpoint { address: None, .. }) {
+            return Ok(StackFrameId::INNERMOST);
+        }
+
+        let stack = self.physical_stack(inferior, root, crate::unwind::DEFAULT_MAX_FRAMES)?;
+        let modules = self.unwind_modules(inferior);
+        let trace = self
+            .expand_backtrace(
+                inferior,
+                root,
+                &stack,
+                crate::unwind::DEFAULT_MAX_FRAMES,
+                &modules,
+                Some(presentation),
+            )?
+            .trace;
+        self.blamed_frame(inferior, &trace)
+            .ok_or_else(|| Error::RuntimeAgent("the hit's frame is not in its stack".into()))
     }
 
     /// Resolves an expression at a stop to the memory it occupies and the

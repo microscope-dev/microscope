@@ -53,7 +53,10 @@ can make individual variables or goroutines unavailable.
 ## Python
 
 microscope reads the memory of a CPython interpreter and shows its Python frames
-in the native backtrace. Nothing runs inside the Python process.
+in the native backtrace. Stacks, values, and profiles run nothing inside the
+Python process. [Breakpoints](#breakpoints), [stepping](#stepping), and
+[exceptions](#exceptions) do: microscope asks the interpreter to load a small
+agent of its own, and only once one of them is set.
 
 microscope supports CPython 3.12, 3.13, 3.14, and 3.15, with the GIL and
 free-threaded builds (3.13t and later). It is tested with nixpkgs builds,
@@ -285,6 +288,104 @@ thread's Python frames' do:
 A running task's stack is its thread's. A suspended task cannot be stepped.
 Python 3.12 and 3.13 keep no list of their tasks, so they show none.
 
+### Breakpoints
+
+A breakpoint can be in Python code, on CPython 3.14 and later, whether you
+launch the program or attach to it:
+
+```text
+(microscope) break app.py:12
+(microscope) break py:Shape.area
+(microscope) break py:area if scale > 2
+```
+
+A path ending in `.py` names a line. An absolute path names that file, or a
+link to it under the same name. A relative path names every file whose path
+ends with it, by whole directories: `models.py` and `app/models.py` both match
+`/srv/app/models.py`, but `els.py` does not. `py:` names a function by its
+qualified name, as Python's `__qualname__` writes it, or by its last parts:
+`py:area` matches the method `Shape.area` and a function `area` nested in
+another. `py::run` is still a native function in a `py` namespace.
+
+Python code loads when the program imports it, so a Python breakpoint stays
+pending until the interpreter has loaded microscope's agent and armed it. Its
+pending reason says what it is waiting for. Remote debugging that was turned
+off in the interpreter (`PYTHON_DISABLE_REMOTE_DEBUG` or
+`-X disable-remote-debug`) is one such reason; stacks and values still work.
+Python 3.12 and 3.13 cannot be asked to run the agent, so their Python
+breakpoints stay pending.
+
+A child the program forks, as `multiprocessing` does, runs without microscope:
+its breakpoints and microscope's agent are removed from it. A wrapper that
+execs Python, such as a pyenv shim, is not followed into the interpreter;
+launch the interpreter itself, or attach to it.
+
+A hit selects the program's frame. The backtrace folds the frames inside it
+that report the hit: microscope's agent and the interpreter's own. Conditions, hit counts, and log
+messages work as they do for native breakpoints, and read the program's
+frame. Breakpoints that match the same line or function entry stop once
+together, as native breakpoints at one address do. When microscope detaches,
+the agent stops monitoring and the program runs as if microscope had never
+attached.
+
+### Stepping
+
+From a Python breakpoint, or where a step ended, `next` steps over a line of
+the selected frame, `step` into the line's first call, and `finish` out to
+the caller. Each stops at a line of Python code and selects its frame:
+
+- `next` over a call or an `await` stops at the frame's next line. An `await`
+  that suspends the coroutine stays with it, so the next stop is the same
+  task's, even when other tasks run in between.
+- `step` stops in the first line of Python code the line calls, or as `next`
+  does when it calls none. `step` on an `await` steps over it.
+- `finish`, or an editor's step out, stops in the caller, at the call, once
+  the frame returns. The
+  caller of a task's outermost coroutine is the code that resumed it, often
+  asyncio's event loop.
+- When an exception leaves the frame, the step stops in the frame that
+  catches it, at its handler.
+- A step past the thread's outermost frame stops at the next line the thread
+  runs.
+
+A Python step starts only where microscope's agent stopped the thread. From
+any other stop, such as an interrupt with the thread blocked in C, microscope
+refuses the step and says why; set a breakpoint and continue to it instead.
+If the thread runs on before the agent can follow it, the step stops
+incomplete, with the reason. Native steps in a Python process work as usual.
+
+### Exceptions
+
+Two exception filters stop at Python's exceptions. Both are off until you
+choose them, with `catch` or an editor's exception settings:
+
+```text
+(microscope) catch python-uncaught on
+(microscope) catch python-raised on
+```
+
+- `python-uncaught` stops where an exception leaves a thread's outermost
+  Python frame, before Python prints its traceback: the main module's code,
+  run as a script, with `-c`, or with `-m`; a `threading.Thread`'s `run`; or
+  a function another thread started with nothing in Python below it. The
+  frames it left have already returned, so the stop says where it was
+  raised: `ValueError: boom, raised in parse at /srv/app.py:12`.
+  `SystemExit` does not stop, as Python ends the program without a
+  traceback. Nor does an exception that leaves other code C called on the
+  main thread, which C may catch, as the interpreter does with the import
+  errors it meets as it starts, or which Python prints as ignored, as in an
+  `atexit` callback.
+- `python-raised` stops wherever Python code raises an exception, or an
+  exception raised in C reaches Python code, with the raising frame selected.
+  It stops once for each raise, not again in each frame the exception passes
+  through, and again when a handler raises it anew. It stops at exceptions
+  the program catches too, the standard library's among them.
+
+A stop names the exception as Python's traceback would, `KeyError: 'id'`,
+and an editor's exception view can inspect the exception itself. The text appears only when Python would print it
+without running the program's own code, as for the built-in exceptions with a
+message; an exception class that defines `__str__` shows its type alone.
+
 ### Profiling
 
 `microscope record --python snapshot` or `--python live` reads each thread's
@@ -294,9 +395,9 @@ A task snapshot records each waiting asyncio task's coroutine frames. See
 
 ### Not supported yet
 
-Python breakpoints, stepping through Python code, and Python exceptions as
-catchpoints are not supported yet. CPU samples do not hold Python frames
-themselves. [Known limits](reference/limitations.md) lists them all.
+A Python step starts only from where microscope's agent stopped the thread.
+An uncaught exception's stop shows the frames it has not yet left, not those
+of its traceback. CPU samples do not hold Python frames themselves. [Known limits](reference/limitations.md) lists them all.
 
 In editors, Python frames appear in the call stack with their source file and
 line, but no instruction reference. Their scopes are Arguments and Locals.

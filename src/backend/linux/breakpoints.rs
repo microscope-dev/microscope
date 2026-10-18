@@ -147,6 +147,17 @@ impl<P: InspectionOps> Controller<P> {
                         let BreakpointLocation::Managed(location) = &resolved.location else {
                             return None;
                         };
+                        // A site the runtime's agent acknowledged stays
+                        // armed while it confirms a change that keeps it.
+                        let confirmed = inferior.managed.number(location).is_some_and(|number| {
+                            inferior
+                                .agents
+                                .get(&location.runtime)
+                                .is_some_and(|agent| agent.confirms(number))
+                        });
+                        if confirmed {
+                            return None;
+                        }
                         // A change not yet armed, as after an edit that
                         // failed between claiming and arming, is unconfirmed.
                         let reason = match inferior.managed.unarmed.get(&location.runtime) {

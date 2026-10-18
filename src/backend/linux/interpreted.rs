@@ -29,7 +29,7 @@ use crate::runtime_model::{
     interpreted_identity,
 };
 use crate::{
-    AddressValue, Backtrace, BaseType, BaseTypeEncoding, CallFrameUnavailableReason, CodeRole,
+    AddressValue, Backtrace, BaseType, BaseTypeEncoding, CallFrameUnavailableReason,
     DereferenceState, Error, ExecutionContext, FloatValue, FrameKind, LoadedModule, MapKey,
     NumberKind, Presentation, PresentedCount, PresentedShape, RecordedFrame, Result, RuntimeId,
     ScalarValue, SourceLanguage, StackFrame, StackFrameId, StackSegment, StopId, TypeInfo,
@@ -268,7 +268,7 @@ pub(super) fn interpreted_frame(frame: &InterpretedFrame, segment: StackSegment)
             function: None,
             source: None,
             symbol: None,
-            role: CodeRole::Ordinary,
+            role: frame.role,
         },
     );
     built.segment = segment;

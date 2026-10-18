@@ -6,6 +6,8 @@
 //! step's plan is not. The runtime is disarmed at whatever stop ends the
 //! step.
 
+use std::sync::Arc;
+
 use nix::unistd::Pid;
 
 use crate::protocol::{
@@ -60,6 +62,19 @@ impl<P: LinuxTraceOps> Controller<P> {
         scope: ResumeScope,
         exception: ExceptionDisposition,
     ) -> Result<ExecutionId> {
+        // An agent binds a step to its frame where it stopped the thread:
+        // from anywhere else, the thread would run on unfollowed first.
+        let agent = self.inferior.as_ref().is_some_and(|inferior| {
+            self.runtimes(inferior)
+                .into_iter()
+                .any(|bound| bound.id == runtime && bound.model.agent().is_some())
+        });
+        if agent && !self.at_agent_hook(pid, runtime) {
+            return Err(Error::FrameStepUnsupported(
+                "the runtime steps from where its agent stopped the thread, as at a breakpoint it reported or a step's end".into(),
+            ));
+        }
+
         self.with_arming_notification(runtime, |controller| {
             let inferior = controller.inferior.as_mut().ok_or(Error::NotRunning)?;
             let number = inferior.next_runtime_step;
@@ -71,7 +86,10 @@ impl<P: LinuxTraceOps> Controller<P> {
                 frame,
             };
             inferior.runtime_step = Some((runtime, step));
-            if let Err(reason) = controller.arm_runtime(runtime) {
+            // An agent has begun the step once it has been sent it.
+            if let Err(reason) = controller.arm_runtime(runtime)
+                && !controller.agent_step_sent(runtime)
+            {
                 controller.disarm_runtime_step(runtime);
                 return Err(Error::FrameStepUnsupported(
                     format!("the runtime cannot step: {reason}").into(),
@@ -103,13 +121,15 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     /// Why thread `pid` stops where the runtime `runtime` reports the end
-    /// of its step numbered `number`: when that is the active step, and
-    /// `pid` runs it.
+    /// of its step numbered `number`, or, with a description, where it could
+    /// follow the step no further: when that is the active step, and `pid`
+    /// runs it.
     pub(super) fn runtime_step_end(
         &self,
         pid: Pid,
         runtime: RuntimeId,
         number: u64,
+        incomplete: Option<Arc<str>>,
     ) -> Option<StopReason> {
         let active = self.inferior.as_ref()?.active.as_ref()?;
         match active.kind {
@@ -119,7 +139,9 @@ impl<P: LinuxTraceOps> Controller<P> {
                 runtime: stepping,
                 number: step,
             } if stepping == runtime && step == number && self.runs_step(owner, pid) => {
-                Some(StopReason::Step { kind })
+                Some(incomplete.map_or(StopReason::Step { kind }, |description| {
+                    StopReason::StepIncomplete { kind, description }
+                }))
             }
             _ => None,
         }

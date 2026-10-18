@@ -1083,6 +1083,7 @@ fn a_thread_list_that_loops_is_a_gap_and_keeps_the_threads_before_it() {
 
 mod asyncio;
 mod control;
+mod exceptions;
 mod expressions;
 mod injection;
 mod instances;
@@ -1132,9 +1133,33 @@ fn an_unreadable_runtime_finds_its_loop_and_says_why_its_frames_are_missing() {
             role: crate::CodeRole::Interpreter,
         },
     );
-    assert_eq!(model.driven(&evaluating), Some(Driven::Interpreted));
+    assert_eq!(model.driven(&evaluating, None), Some(Driven::Interpreted));
+
+    // A loop that called its first instruction's function, which a build
+    // that tail-calls instructions' functions does, is one activation with
+    // it, which the function stands for, as it does where the loop is
+    // inlined into what enters it.
+    let named = |name: &str| crate::StackFrame {
+        symbol: evaluating
+            .symbol
+            .clone()
+            .map(|symbol| crate::SymbolLocation {
+                name: name.into(),
+                ..symbol
+            }),
+        ..evaluating.clone()
+    };
+    let instruction = named("_TAIL_CALL_start_frame");
+    let calling = named("gen_send_ex");
+    assert_eq!(model.driven(&instruction, None), Some(Driven::Interpreted));
+    assert_eq!(model.driven(&evaluating, Some(&instruction)), None);
+    assert_eq!(
+        model.driven(&evaluating, Some(&calling)),
+        Some(Driven::Interpreted)
+    );
+    assert_eq!(model.driven(&calling, None), None);
     evaluating.symbol = None;
-    assert_eq!(model.driven(&evaluating), None);
+    assert_eq!(model.driven(&evaluating, None), None);
 }
 
 #[test]
@@ -1206,22 +1231,56 @@ fn agent_reports_are_read_from_the_calling_threads_registers() {
     let mut registers = RegisterFile::new([(RDI, 1), (RSI, 42), (DwarfRegister::new(1), 0)]);
     assert_eq!(
         model.hook_event(&stop, hook, &registers),
-        Ok(HookEvent::Breakpoint { number: 41 })
+        Ok(HookEvent::Breakpoint { numbers: vec![41] })
     );
     // The native ABI reserves zero; the controller's site IDs begin at zero.
     registers.set(RSI, 1);
     assert_eq!(
         model.hook_event(&stop, hook, &registers),
-        Ok(HookEvent::Breakpoint { number: 0 })
+        Ok(HookEvent::Breakpoint { numbers: vec![0] })
     );
     registers.set(RSI, 0);
     assert!(model.hook_event(&stop, hook, &registers).is_err());
+
+    // Several hits of one event are an array the calling thread holds.
+    let mut holding = Memory::default();
+    holding.write(0x9000, 3, 8);
+    holding.write(0x9008, 1, 8);
+    holding.write(0x9010, 0, 8);
+    registers.set(RSI, 2);
+    registers.set(DwarfRegister::new(1), 0x9000);
+    assert_eq!(
+        model.hook_event(&holding, hook, &registers),
+        Ok(HookEvent::Breakpoint {
+            numbers: vec![2, 0]
+        })
+    );
+    // An unreadable array, and the reserved number zero, are errors.
+    assert!(model.hook_event(&stop, hook, &registers).is_err());
+    registers.set(RSI, 3);
+    assert!(model.hook_event(&holding, hook, &registers).is_err());
+    registers.set(DwarfRegister::new(1), 0);
+
     registers.set(RSI, 42);
     registers.set(RDI, 2);
+    // Step numbers are shifted as breakpoint numbers are.
     assert_eq!(
         model.hook_event(&stop, hook, &registers),
-        Ok(HookEvent::StepEnded { number: 42 })
+        Ok(HookEvent::StepEnded { number: 41 })
     );
+    registers.set(DwarfRegister::new(1), 1);
+    assert!(matches!(
+        model.hook_event(&stop, hook, &registers),
+        Ok(HookEvent::StepIncomplete { number: 41, ref description })
+            if description.contains("not where microscope found it")
+    ));
+    registers.set(DwarfRegister::new(1), 2);
+    assert!(matches!(
+        model.hook_event(&stop, hook, &registers),
+        Ok(HookEvent::StepIncomplete { number: 41, ref description })
+            if description.contains("ran on before the step began")
+    ));
+    registers.set(DwarfRegister::new(1), 0);
     registers.set(RDI, 0);
     assert_eq!(
         model.hook_event(&stop, hook, &registers),

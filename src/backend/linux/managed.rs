@@ -87,6 +87,11 @@ impl ManagedSites {
             .map(|(location, site)| (location, &site.owners))
     }
 
+    /// The number the runtime reports a hit of `location` by.
+    pub(super) fn number(&self, location: &ManagedLocation) -> Option<u64> {
+        self.sites.get(location).map(|site| site.number)
+    }
+
     /// What the runtime `runtime` is to be armed with.
     pub(super) fn arms(&self, runtime: RuntimeId) -> Vec<ManagedArm> {
         self.sites

@@ -1054,7 +1054,7 @@ impl FakeTrace {
     }
 
     /// Takes the actions, and returns whether any begins with `prefix`.
-    fn took(&self, prefix: &str) -> bool {
+    pub(super) fn took(&self, prefix: &str) -> bool {
         self.take_actions()
             .iter()
             .any(|action| action.starts_with(prefix))
@@ -1116,7 +1116,7 @@ impl FakeTrace {
         Ok(())
     }
 
-    fn take_actions(&self) -> Vec<String> {
+    pub(super) fn take_actions(&self) -> Vec<String> {
         std::mem::take(&mut *self.actions.borrow_mut())
     }
 
@@ -1611,7 +1611,7 @@ pub(super) struct WatchHarness {
 }
 
 impl WatchHarness {
-    fn trace(&self) -> &FakeTrace {
+    pub(super) fn trace(&self) -> &FakeTrace {
         &self.controller.ptrace
     }
 
@@ -1624,7 +1624,7 @@ impl WatchHarness {
         self.inferior().origin = InferiorOrigin::Attached;
     }
 
-    fn stop_id(&self) -> StopId {
+    pub(super) fn stop_id(&self) -> StopId {
         self.controller
             .inferior
             .as_ref()
@@ -5968,18 +5968,20 @@ fn a_runtime_resolves_arms_and_reports_a_managed_breakpoint() {
         "arming's writes are made"
     );
 
-    let hit = |harness: &mut WatchHarness, number| {
-        runtime.reports(Ok(crate::runtime_model::HookEvent::Breakpoint { number }));
+    let hit = |harness: &mut WatchHarness, numbers: &[u64]| {
+        runtime.reports(Ok(crate::runtime_model::HookEvent::Breakpoint {
+            numbers: numbers.to_vec(),
+        }));
         harness.start_continue();
         harness.trace().take_actions();
         harness.hit_at(hitting, HOOK).expect("the hook's trap");
         harness.settle_requested_stops();
         harness.stopped()
     };
-    assert_eq!(hit(&mut harness, 7), None, "no breakpoint has number 7");
+    assert_eq!(hit(&mut harness, &[7]), None, "no breakpoint has number 7");
     steps_over_alone(&mut harness, hitting);
     assert_eq!(
-        hit(&mut harness, 0),
+        hit(&mut harness, &[0]),
         Some((
             debug_thread_id(hitting),
             StopReason::Breakpoint {
@@ -6004,6 +6006,64 @@ fn a_runtime_resolves_arms_and_reports_a_managed_breakpoint() {
         runtime.armed.lock().expect("the script").last(),
         Some(&Vec::new()),
         "the runtime is armed with nothing once the breakpoint is gone"
+    );
+}
+
+/// One event's hits of several managed locations stop once, for every
+/// breakpoint that owns one, as at one native address; a number no location
+/// has adds nothing.
+#[test]
+fn one_report_of_several_managed_hits_stops_once_for_them_all() {
+    const HOOK: u64 = 0x40;
+    let mut harness = watch_harness(1);
+    harness.controller.unwind_info = Arc::new(FlatUnwindInfo);
+    let hitting = harness.threads[0];
+    let runtime = scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            internal: vec![crate::runtime_model::HookPlace::Own(ImageAddress::new(
+                HOOK,
+            ))],
+            ..ScriptedRuntime::default()
+        },
+    );
+    harness
+        .controller
+        .sync_runtime_hooks()
+        .expect("arm the hook");
+    let source = |path: &str| BreakpointSpec::Source {
+        path: path.into(),
+        line: crate::LineNumber::new(3).expect("a line"),
+    };
+    let first = harness.add_spec(source("app.scripted")).expect("added");
+    let second = harness.add_spec(source("other.scripted")).expect("added");
+
+    runtime.reports(Ok(crate::runtime_model::HookEvent::Breakpoint {
+        numbers: vec![1, 7, 0],
+    }));
+    harness.start_continue();
+    harness.hit_at(hitting, HOOK).expect("the hook's trap");
+    harness.settle_requested_stops();
+    let mut hits = vec![
+        BreakpointHit {
+            breakpoint: first.id,
+            hit_count: 1,
+        },
+        BreakpointHit {
+            breakpoint: second.id,
+            hit_count: 1,
+        },
+    ];
+    hits.sort_by_key(|hit| hit.breakpoint);
+    assert_eq!(
+        harness.stopped(),
+        Some((
+            debug_thread_id(hitting),
+            StopReason::Breakpoint {
+                address: None,
+                hits: Arc::from(hits),
+            }
+        ))
     );
 }
 
@@ -6318,7 +6378,7 @@ fn unconfirmed_runtime_arming_still_judges_hits_from_the_previous_configuration(
         1
     );
     runtime.reports(Ok(crate::runtime_model::HookEvent::Breakpoint {
-        number: 0,
+        numbers: vec![0],
     }));
     harness.start_continue();
     harness
@@ -6335,7 +6395,9 @@ fn unconfirmed_runtime_arming_still_judges_hits_from_the_previous_configuration(
         .remove_breakpoint(first.id)
         .expect("remove first");
     let report = |harness: &mut WatchHarness, number| {
-        runtime.reports(Ok(crate::runtime_model::HookEvent::Breakpoint { number }));
+        runtime.reports(Ok(crate::runtime_model::HookEvent::Breakpoint {
+            numbers: vec![number],
+        }));
         harness
             .controller
             .runtime_hook_stop(hitting, VirtualAddress::new(0x40))
@@ -6533,6 +6595,64 @@ fn a_runtime_step_ends_where_its_runtime_reports_it_on_its_thread() {
             debug_thread_id(stepping),
             StopReason::Step {
                 kind: StepKind::OverSource
+            }
+        ))
+    );
+    assert_eq!(
+        runtime.steps.lock().expect("the script").last(),
+        Some(&None),
+        "the runtime is disarmed"
+    );
+}
+
+/// A step the runtime reports it could follow no further stops as an
+/// incomplete step, with the runtime's reason, on the step's own thread.
+#[test]
+fn a_runtime_step_it_cannot_follow_stops_incomplete_with_its_reason() {
+    const HOOK: u64 = 0x40;
+    let mut harness = watch_harness(1);
+    harness.controller.unwind_info = Arc::new(FlatUnwindInfo);
+    let stepping = harness.threads[0];
+    let runtime = scripted_runtime(
+        &harness,
+        ScriptedRuntime {
+            internal: vec![crate::runtime_model::HookPlace::Own(ImageAddress::new(
+                HOOK,
+            ))],
+            ..ScriptedRuntime::default()
+        },
+    );
+    harness
+        .controller
+        .sync_runtime_hooks()
+        .expect("arm the hook");
+    let runtime_id = crate::RuntimeId::new(harness.inferior().loaded_module.id.get() * 4);
+    let stop = harness.stop_id();
+    harness
+        .controller
+        .begin_runtime_step(
+            process_id(stepping),
+            stop,
+            stepping,
+            (runtime_id, VirtualAddress::new(0x9000)),
+            StepKind::Out,
+            ResumeScope::Process(process_id(stepping)),
+            ExceptionDisposition::Pass,
+        )
+        .expect("the step begins");
+    runtime.reports(Ok(crate::runtime_model::HookEvent::StepIncomplete {
+        number: 0,
+        description: "its frame is gone".into(),
+    }));
+    harness.hit_at(stepping, HOOK).expect("the hook's trap");
+    harness.settle_requested_stops();
+    assert_eq!(
+        harness.stopped(),
+        Some((
+            debug_thread_id(stepping),
+            StopReason::StepIncomplete {
+                kind: StepKind::Out,
+                description: "its frame is gone".into(),
             }
         ))
     );

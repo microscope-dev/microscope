@@ -22,6 +22,7 @@ mod lifecycle;
 mod memory;
 mod output;
 mod panics;
+mod python;
 mod robustness;
 mod server;
 mod sources;

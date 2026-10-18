@@ -17,6 +17,7 @@ mod schemas;
 
 mod agent;
 mod arrays;
+mod breakpoints;
 mod expressions;
 mod extension;
 mod gallery;
@@ -26,5 +27,6 @@ mod oracles;
 mod profile;
 mod session;
 mod stacks;
+mod stepping;
 mod tasks;
 mod views;

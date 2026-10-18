@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use microscope::{
     Backtrace, BreakpointOptions, BreakpointSpec, DebugFileOptions, Debugger, DebuggerEvent,
-    ExecutionContext, InferiorState, LaunchOptions, ProcessId, StackFrameId, StopContext, StopId,
-    StopReason, ThreadId,
+    Evaluation, ExecutionContext, Expression, InferiorState, LaunchOptions, ProcessId, ScalarValue,
+    StackFrameId, StopContext, StopId, StopReason, ThreadId, VariableState, VariableValue,
 };
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
@@ -42,7 +42,7 @@ pub struct PythonSession {
 
     /// The interpreter's name in the matrix, as `3.13`.
     pub interpreter: String,
-    fixture: String,
+    pub fixture: String,
     output: PathBuf,
     input: std::io::PipeWriter,
     running: Option<JoinHandle<microscope::Result<StopReason>>>,
@@ -385,6 +385,46 @@ impl PythonSession {
         format!("{} {}", self.interpreter, self.fixture)
     }
 
+    /// How an expression's value presents in the selected frame, in brief.
+    pub async fn summary(&self, text: &str) -> String {
+        let context = self.context();
+        let expression = Expression::parse(text).expect("an expression");
+        let evaluation = self
+            .scenario
+            .operation(text, self.scenario.handle().evaluate(&expression))
+            .await;
+        match evaluation {
+            Evaluation::Value { value, .. } => match value.state {
+                VariableState::Available {
+                    presentation: Some(presentation),
+                    ..
+                } => presentation.summary.to_string(),
+                state => panic!("{context}: `{text}` presents nothing: {state:?}"),
+            },
+            other => panic!("{context}: `{text}` has no value: {other:?}"),
+        }
+    }
+
+    /// The integer an expression has in the selected frame.
+    pub async fn integer(&self, text: &str) -> i128 {
+        let context = self.context();
+        let expression = Expression::parse(text).expect("an expression");
+        let evaluation = self
+            .scenario
+            .operation(text, self.scenario.handle().evaluate(&expression))
+            .await;
+        let Evaluation::Value { value, .. } = evaluation else {
+            panic!("{context}: `{text}` has no value");
+        };
+        match value.state {
+            VariableState::Available {
+                value: VariableValue::Scalar(scalar),
+                ..
+            } if let Some(value) = as_integer(&scalar) => value,
+            state => panic!("{context}: `{text}` is not an integer: {state:?}"),
+        }
+    }
+
     /// Detaches, releases the checkpoint, and waits for a fixture whose
     /// contract is to exit after that checkpoint. The owned child is reaped.
     pub async fn detach_and_finish(mut self) {
@@ -456,5 +496,14 @@ impl PythonSession {
         drop(self.input);
         self.scenario.shutdown().await;
         drop(self.attached);
+    }
+}
+
+/// The integer a scalar holds, if it holds one.
+pub fn as_integer(scalar: &ScalarValue) -> Option<i128> {
+    match *scalar {
+        ScalarValue::Signed(value) => Some(value),
+        ScalarValue::Unsigned(value) => i128::try_from(value).ok(),
+        _ => None,
     }
 }

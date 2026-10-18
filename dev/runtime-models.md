@@ -151,6 +151,11 @@ replies and snapshots derive these reasons from the controller's current
 arming state; `ready_locations()` filters them for clients. A refusal leaves
 that runtime's whole current configuration unconfirmed. Earlier instrumentation
 may still report hits, which retain their logical ownership and hit policy.
+An agent's acknowledged sites are the exception: while a newer configuration
+awaits acknowledgement, the agent holds one configuration or the other, so a
+location both name stays ready (`Installation::confirms`). Only a failure
+report or a timeout makes them pending, so an editor does not gray out every
+breakpoint while a step's command is acknowledged.
 Every whole-state arm, including step setup and cleanup, updates the same
 readiness record. Recovery or a changed reason publishes `BreakpointsChanged`, while an unchanged refusal
 does not. Disabling a breakpoint excludes it from the arming request.
@@ -310,8 +315,14 @@ An empty configuration frees the tool ID, its local/global events, and its
 callbacks. No tool is registered while idle. The agent prefers ID 0, tries
 other free IDs, and reports exhaustion without changing another tool.
 
-The transport's flat probes specify an event, report kind, number, and exact
-file/line/qualified-name selectors. The runtime supplies event policy;
+The transport's flat probes specify an event, report kind, number, and
+file/line/qualified-name selectors. A qualified name matches itself or its
+last dotted parts, so `area` matches `Shape.area` and `outer.<locals>.area`
+but `rea` matches neither. A relative path matches filenames that end with its
+whole components. An absolute path matches its own filename exactly, or an
+absolute filename with the same final component that `os.path.realpath`
+resolves to the same file; each such comparison is resolved once per
+configuration. The runtime supplies event policy;
 conditions, hit counts, expressions, step ownership, and exception judgments
 remain debugger work. `PY_START`, `PY_RESUME`, and `PY_THROW` discover code
 objects; local events apply only to matching code, including frames running
@@ -338,22 +349,35 @@ same event; their registrations and event masks remain intact. Unrelated code
 stays disabled. While armed, discovery still takes
 one Python callback per function entry, resumption, or thrown-in exception;
 matching code takes local callbacks at each enabled event, including
-nonmatching lines. Idle unregisters everything.
+nonmatching lines. Idle unregisters everything. The agent ignores the events of
+its own code, the functions its own namespace defines; one it imports, as
+`os.path.realpath`, is the program's to break in.
 
 `python/hook.rs` generates a small ELF shared library, including its export
 and unwind information. It needs no target compiler or libpython. Its dynamic
 section is writable, because glibc before 2.35 relocates it in place. Its function
 is a no-op without a debugger. At entry its three unsigned 64-bit arguments
 are in rdi/rsi/rdx: kind, number, argument. Kind 0 acknowledges a generation
-(argument 0–5 is the tool ID; 6 means idle), 1 reports a breakpoint, 2 a step's
-completion (both require a nonzero number and zero argument), and 3 reports an
+(argument 0–5 is the tool ID; 6 means idle), 1 reports breakpoint hits, 2 a
+step's end by its nonzero number (argument 0: it stopped where it should;
+1: the frame it begins in was not found on its thread; 2: its thread ran on
+before the agent could bind it), and 3 reports an
 error (argument 1: tool exhaustion; 2: callback/configuration failure with
 confirmed disarming; 3: cleanup failed and prior state is unconfirmed;
 4: initialization failed and any previous installation is unconfirmed;
 5: observable user reentry makes monitoring coverage unconfirmed;
-6: a user interruption is reported and re-raised, with the agent disarmed). Error
-reports retain the failed generation. Malformed reports produce a visible
-runtime stop. The frame comes from the stopped thread's interpreter state.
+6: a user interruption is reported and re-raised, with the agent disarmed),
+and 4 an exception: the number is its kind's bit (1 raised, 2 uncaught) and
+the argument the address of three words, the exception's address and its
+message's address and byte length, which the calling thread keeps alive while
+it is in the hook. Error
+reports retain the failed generation. One breakpoint hit is a nonzero number
+with a zero argument. Several hits of one event are one report, so they stop
+once together as hits at one native address do: the number is their count (2
+to 4096) and the argument the address of an array of that many nonzero
+numbers, which the calling thread keeps alive while it is in the hook.
+Malformed reports produce a visible runtime stop. The frame comes from the
+stopped thread's interpreter state.
 
 The library also exports a bounded 64 KiB command slot and a sequence reader
 that uses one aligned native 64-bit load. The header carries magic, sequence,
@@ -386,6 +410,13 @@ source injection. The first source configuration loads a pristine companion
 whose published sequence is zero; subsequent commands use its slot. Generations
 are monotonic within one library owner, and controller hook binding must
 distinguish owners.
+A forked child, which no debugger traces, is disarmed by the agent's
+`after_in_child` fork hook, which frees its tool. Its `before` hook takes the
+agent's lock for the fork, and `after_in_parent` releases it, so no other
+thread holds it in the child: the child's earlier fork handlers, such as
+`threading`'s, run monitored, and their callbacks would otherwise wait
+forever for a thread that does not exist there. The child reinitializes the
+lock. The controller removes the child's traps before releasing it.
 The bootstrap reports initialization failures through its request's own library,
 even when an incompatible interpreter-local module already exists.
 A single lock serializes configuration and callbacks on free-threaded builds,
@@ -406,9 +437,83 @@ of running time; public and internal stops do not count. A free-threaded
 interpreter needs every thread resumed while an agent is configuring or armed,
 because monitoring changes stop its world. Detach cancels an unconsumed
 request and disarms an armed agent before removing traps; exit and exec
-remove the files. Breakpoint, step, and exception policy follow in P4.8–P4.10.
+remove the files.
 `tests/python/agent.rs` checks the real monitoring API on 3.14/3.15 in both GIL
 modes and the native register/all-stop boundary through `Scenario`.
+
+**Breakpoints.** `PythonRuntime::resolve_breakpoint` claims a source path
+ending in `.py`, without its `.` components, as a line probe, and a function
+named `py:NAME` as a `PY_START` probe; `py::run` remains a native name. The
+CLI adds such breakpoints pending, as their code loads only as the program
+imports it. The agent's code is compiled under the filename
+`<microscope agent LIBRARY>` (`agent::is_agent_filename`), so its interpreted
+frames have `CodeRole::Interpreter`; splicing gives every frame inside the
+innermost such frame, the hook and ctypes among them, that role too, and
+`CPYTHON_MACHINERY` names the monitoring dispatch between the program's frame
+and the agent. A hit's stop selects, and its condition and log message read,
+the innermost ordinary frame that is not the runtime's own source
+(`Controller::blamed_frame`), as an exception's stop does. A backtrace folds
+frame 0 when it is an interpreter's machinery and another frame is selected.
+`tests/python/breakpoints.rs` arms every kind in one run per build, beside
+probes that must not match, and checks each stop's exact hits.
+
+**Stepping.** Python steps by lines: into, over, and out, which
+`Reading::step` turns into the command's third element, `[number, kind,
+native thread, depth, code id]`, where depth counts the frame's callers and
+the code id is its code object's address. A step begins only from where an
+agent stopped the thread (`Controller::at_agent_hook`), as at a breakpoint it
+reported or a step's end, because the thread must be inside a callback for
+the agent to bind the step before it runs on; elsewhere it is refused with
+why. A source step or a step out from the innermost frame, as DAP always
+sends, steps the frame the agent's report blames
+(`Controller::reported_frame`), not its hook. A step is begun
+once its command is published, and a command no thread has read since its
+stop may be replaced, so a step after a step at one stop works. The agent
+binds the frame object on its own thread after the callback emits, matching
+the native thread, depth, and code; a late bind or a missing frame ends the
+step with `StepIncomplete` and its reason. It then follows phases: in the
+frame, LINE (over and into, and into globally on the thread), `PY_RETURN`,
+`PY_YIELD` and a global `PY_UNWIND`; in the caller after a return or unwind,
+INSTRUCTION until an instruction that has a line, such as the call's or a
+handler's; and, past the thread's outermost frame, global LINE on the thread.
+A yield of a coroutine or async generator suspends without leaving it, so a
+step over an `await` stays with the task, and into one is over it. A step's
+stop selects the blamed frame as a breakpoint's does.
+`tests/fixtures/python/agent_stepping.py` drives each phase through the real
+monitoring API, and `tests/python/stepping.rs` takes every kind in one run per
+build, ending with a step refused from a pause.
+
+**Exceptions.** `python-raised` and `python-uncaught` are the model's
+`EXCEPTION_FILTERS`, off by default so that nothing runs in the process until
+asked. The command's fourth element is their bits (`exceptions::bits`), and
+`RuntimeAgent::wanted` installs the agent for them alone; a runtime whose
+agent is not installed is marked stale as each module loads, so a filter
+chosen before the program runs arms it. Raised arms global `RAISE`; since
+`RAISE` fires again in each frame an exception unwinds into, a frame whose
+traceback goes on into a frame it called (`tb_next.tb_frame.f_back is
+frame`) does not report. Uncaught arms global `PY_UNWIND` and reports an
+exception leaving the main module's code on the main thread (a `<module>`
+frame whose globals name `__main__` and whose callers are only runpy's, as
+for `-m`), the first frame of any other thread, or a frame whose caller is
+`threading.Thread._bootstrap_inner`, which hands what a thread raises to
+`threading.excepthook`; `SystemExit` is left alone. Any other frame with no
+Python caller on the main thread returns to C, which may handle what it
+raises: the interpreter catches the `ZipImportError` and `ImportError` its
+path hooks raise as `site` starts, and reports an `atexit` callback's as
+ignored. The agent forms the
+message without running the program's code: the type's qualified name, by
+`type`'s own descriptors, and its text only where the class's `__str__`,
+found through the MRO's dictionaries, is `BaseException`'s or `KeyError`'s
+and its only argument an exact `str`, cut at 1000 characters with `…`. An
+uncaught report adds where its traceback's innermost entry raised it. The
+value is `(py)ADDRESS`. Exceptions during the agent's own work, which runs
+with its busy flag set, are not reported and are not interference.
+`tests/fixtures/python/agent_exceptions.py` checks each rule in process;
+`tests/python/stepping.rs` stops at both kinds after its steps, and a CLI
+test stops at an uncaught exception chosen alone before `run`.
+`tests/dap/python.rs` drives a breakpoint, steps, and an uncaught exception
+as VS Code does, launched on 3.14 and attached on 3.15t, and checks that a
+confirmed breakpoint never shows as pending again while the agent runs.
 
 **Layout.** The module that carries the runtime, `libpython` or an executable
 that links it, has a `.PyRuntime` section. From 3.13 its `_Py_DebugOffsets`
@@ -479,7 +584,11 @@ frame may run a thread-local copy of the bytecode, which `tlbc_index` selects.
 
 **Splicing.** `RuntimeModel::driven` recognizes the activations of the
 evaluation loop: `_PyEval_EvalFrameDefault`, or, in a build whose loop
-tail-calls a function for each instruction, those functions. `interpreted.rs` places each segment of a thread's frames just
+tail-calls a function for each instruction, those functions. Such a loop
+enters its first instruction's function with a call, and PGO inlines the loop
+into `_PyFunction_Vectorcall` and `_PyEval_Vector` but not into `gen_send_ex`,
+so a loop frame whose inner frame is an instruction's function is the same
+activation and does not count again. `interpreted.rs` places each segment of a thread's frames just
 before the activation that runs it, innermost first. Placement is proved by
 count: when the thread's segments and activations differ in number, or the
 thread runs frames in several interpreters' states, the frames are shown

@@ -4,7 +4,7 @@
 //! of a runtime's internal hooks, armed whatever stops, at whose every hit
 //! the runtime says whether the thread stops.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use nix::unistd::Pid;
@@ -15,7 +15,7 @@ use crate::{Error, LanguageExceptionKind, Result, RuntimeId, VirtualAddress};
 
 use super::breakpoints::remove_breakpoint_owner_from;
 use super::frames::StackRoot;
-use super::native::LinuxTraceOps;
+use super::native::{InspectionOps, LinuxTraceOps};
 use super::registers::x86_64_registers;
 use super::{BreakpointOwner, Controller, debug_thread_id};
 
@@ -246,28 +246,66 @@ impl<P: LinuxTraceOps> Controller<P> {
                             message: report.message,
                             value: report.value,
                         })),
-                    Ok(HookEvent::Breakpoint { number }) => {
-                        self.managed_hit(pid, site.runtime, number)
+                    Ok(HookEvent::Breakpoint { numbers }) => {
+                        self.managed_hit(pid, site.runtime, &numbers)
                     }
                     Ok(HookEvent::StepEnded { number }) => {
-                        self.runtime_step_end(pid, site.runtime, number)
+                        self.runtime_step_end(pid, site.runtime, number, None)
                     }
+                    Ok(HookEvent::StepIncomplete {
+                        number,
+                        description,
+                    }) => self.runtime_step_end(pid, site.runtime, number, Some(description)),
                     Err(description) => Some(StopReason::RuntimeEvent { description }),
                 }
             }
         }
     }
 
-    /// Why thread `pid` stops at a hit of the managed location the runtime
-    /// `runtime` numbers `number`, if a breakpoint that owns it stops.
-    /// One since removed is owned by none.
-    fn managed_hit(&mut self, pid: Pid, runtime: RuntimeId, number: u64) -> Option<StopReason> {
-        let owners = self
-            .inferior
+    /// The program's frame an agent's report blames, when thread `pid` is
+    /// at an agent's hook at the stop `stop_id`.
+    pub(super) fn reported_frame(
+        &self,
+        stop_id: crate::protocol::StopId,
+        pid: Pid,
+    ) -> Option<crate::StackFrameId> {
+        let inferior = self.inferior.as_ref()?;
+        self.agent_hook(pid)?;
+        let trace = self.backtrace(stop_id, &StackRoot::of_thread(pid)).ok()?;
+        self.blamed_frame(inferior, &trace)
+    }
+
+    /// The hook of the agent that stopped thread `pid`, if an agent did, as
+    /// at a breakpoint it reported or a step's end.
+    pub(super) fn agent_hook(&self, pid: Pid) -> Option<&HookSite> {
+        let registers = self.ptrace.registers(pid).ok()?;
+        self.inferior
             .as_ref()?
-            .managed
-            .site(runtime, number)
-            .map(|(_, owners)| owners.clone())?;
+            .runtime_hooks
+            .get(&VirtualAddress::new(registers.rip))
+            .filter(|site| matches!(site.purpose, HookPurpose::Internal(HookPlace::Companion(_))))
+    }
+
+    /// Whether thread `pid` is where the agent of the runtime `runtime`
+    /// stopped it, at the agent's hook, as at a breakpoint it reported.
+    pub(super) fn at_agent_hook(&self, pid: Pid, runtime: RuntimeId) -> bool {
+        self.agent_hook(pid)
+            .is_some_and(|site| site.runtime == runtime)
+    }
+
+    /// Why thread `pid` stops at one event's hits of the managed locations
+    /// the runtime `runtime` numbers `numbers`, if a breakpoint that owns
+    /// one stops. One since removed is owned by none.
+    fn managed_hit(&mut self, pid: Pid, runtime: RuntimeId, numbers: &[u64]) -> Option<StopReason> {
+        let managed = &self.inferior.as_ref()?.managed;
+        let owners: BTreeSet<_> = numbers
+            .iter()
+            .filter_map(|&number| managed.site(runtime, number))
+            .flat_map(|(_, owners)| owners.iter().copied())
+            .collect();
+        if owners.is_empty() {
+            return None;
+        }
         let hits = self.judge_hits(pid, &owners, None);
         (!hits.is_empty()).then_some(StopReason::Breakpoint {
             address: None,
@@ -306,9 +344,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         })
     }
 
-    /// Selects the frame a runtime's exception blames, the first one the
-    /// program wrote, below the runtime's own frames that report it and
-    /// the runtime's library code that raised it for the program.
+    /// Selects the frame a runtime's report blames: for an exception, the
+    /// first one the program wrote, below the runtime's own frames that
+    /// report it and the runtime's library code that raised it; for a hit
+    /// a runtime reports, the program's frame it happened in.
     pub(super) fn select_blamed_frame(&mut self, pid: Pid) {
         let Some(inferior) = self.inferior.as_ref() else {
             return;
@@ -323,6 +362,33 @@ impl<P: LinuxTraceOps> Controller<P> {
             return;
         };
 
+        let Some(frame) = self.blamed_frame(inferior, &trace) else {
+            return;
+        };
+
+        debug_assert_eq!(
+            context,
+            crate::ExecutionContext::Thread(debug_thread_id(pid))
+        );
+        if let Some(stop) = self
+            .inferior
+            .as_mut()
+            .and_then(|inferior| inferior.public_stop.as_mut())
+        {
+            stop.selected_frames.insert(context, frame);
+        }
+    }
+}
+
+impl<P: InspectionOps> Controller<P> {
+    /// The frame of `trace`, a stack that entered a runtime's hook, that
+    /// the hook's report blames: the innermost ordinary frame that is not
+    /// the runtime's own source.
+    pub(super) fn blamed_frame(
+        &self,
+        inferior: &super::Inferior,
+        trace: &crate::Backtrace,
+    ) -> Option<crate::StackFrameId> {
         // The runtime whose hook the thread entered.
         let runtime = trace
             .frames
@@ -346,26 +412,11 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .is_some_and(|file| runtime.model.own_source(&file.path))
         };
 
-        let Some(frame) = trace
+        trace
             .frames
             .iter()
             .find(|frame| frame.role == crate::CodeRole::Ordinary && !own(frame))
             .map(|frame| frame.id)
-        else {
-            return;
-        };
-
-        debug_assert_eq!(
-            context,
-            crate::ExecutionContext::Thread(debug_thread_id(pid))
-        );
-        if let Some(stop) = self
-            .inferior
-            .as_mut()
-            .and_then(|inferior| inferior.public_stop.as_mut())
-        {
-            stop.selected_frames.insert(context, frame);
-        }
     }
 }
 

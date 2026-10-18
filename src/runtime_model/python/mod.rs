@@ -16,6 +16,7 @@ mod agent;
 mod asyncio;
 mod code;
 mod control;
+mod exceptions;
 mod expressions;
 mod frames;
 mod gil;
@@ -29,6 +30,8 @@ mod objects;
 mod text;
 mod threads;
 mod values;
+
+pub use exceptions::EXCEPTION_FILTERS;
 
 use std::sync::{Arc, Mutex};
 
@@ -631,6 +634,12 @@ impl RuntimeModel for PythonRuntime {
             crate::BreakpointSpec::Source { path, line }
                 if path.extension().is_some_and(|extension| extension == "py") =>
             {
+                // As a native breakpoint's path does, a relative path
+                // matches the files that end with its components.
+                let path = path
+                    .components()
+                    .filter(|component| *component != std::path::Component::CurDir)
+                    .collect::<std::path::PathBuf>();
                 let Some(path) = path.to_str() else {
                     return Some(Err("the Python source path is not UTF-8".into()));
                 };
@@ -642,16 +651,18 @@ impl RuntimeModel for PythonRuntime {
                     line,
                 }
             }
-            crate::BreakpointSpec::Function(name) if name.starts_with("py:") => {
+            // `py::run` is a native function in a `py` namespace.
+            crate::BreakpointSpec::Function(name)
+                if let Some(name) = name.strip_prefix("py:")
+                    && !name.starts_with(':') =>
+            {
                 // The agent treats an empty name as any function.
-                if name.len() == 3 {
+                if name.is_empty() {
                     return Some(Err(
                         "a Python function breakpoint needs a function name".into()
                     ));
                 }
-                crate::ManagedPlace::Function {
-                    name: name[3..].into(),
-                }
+                crate::ManagedPlace::Function { name: name.into() }
             }
             _ => return None,
         };
@@ -667,7 +678,7 @@ impl RuntimeModel for PythonRuntime {
 
     fn hook_event(
         &self,
-        _stop: &dyn RuntimeStop,
+        stop: &dyn RuntimeStop,
         hook: super::HookPlace,
         registers: &RegisterFile,
     ) -> Result<super::HookEvent, Arc<str>> {
@@ -700,10 +711,40 @@ impl RuntimeModel for PythonRuntime {
                 )
                 .into(),
             },
-            agent::Report::Breakpoint { number } => {
-                super::HookEvent::Breakpoint { number: number - 1 }
+            agent::Report::Breakpoint { number } => super::HookEvent::Breakpoint {
+                numbers: vec![number - 1],
+            },
+            agent::Report::Breakpoints { count, address } => {
+                let mut bytes = vec![0; count * 8];
+                if !stop.read(crate::VirtualAddress::new(address), &mut bytes) {
+                    return Err(format!(
+                        "the Python agent's {count} breakpoint hits at {address:#x} are unreadable"
+                    )
+                    .into());
+                }
+                let numbers = bytes
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
+                    .map(|word| u64::from_le_bytes(*word).checked_sub(1))
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or_else(|| {
+                        Arc::<str>::from("the Python agent reported breakpoint hit zero")
+                    })?;
+                super::HookEvent::Breakpoint { numbers }
             }
-            agent::Report::StepEnded { number } => super::HookEvent::StepEnded { number },
+            agent::Report::StepEnded { number } => {
+                super::HookEvent::StepEnded { number: number - 1 }
+            }
+            agent::Report::StepLost { number, reason } => super::HookEvent::StepIncomplete {
+                number: number - 1,
+                description: reason.description().into(),
+            },
+            agent::Report::Exception { bit, address } => super::HookEvent::Exception {
+                filter: exceptions::filter(bit)
+                    .ok_or_else(|| Arc::<str>::from("invalid Python agent exception report"))?,
+                report: exceptions::read(stop, address)?,
+            },
         })
     }
 
@@ -939,16 +980,25 @@ impl RuntimeModel for PythonRuntime {
         Some(CodeRole::Interpreter)
     }
 
-    fn driven(&self, frame: &StackFrame) -> Option<Driven> {
-        let name = match (&frame.function, &frame.symbol) {
-            (Some(function), _) => &function.name,
-            (None, Some(symbol)) => &symbol.name,
-            (None, None) => return None,
-        };
+    fn driven(&self, frame: &StackFrame, inner: Option<&StackFrame>) -> Option<Driven> {
+        fn name(frame: &StackFrame) -> Option<&str> {
+            let name = match (&frame.function, &frame.symbol) {
+                (Some(function), _) => &function.name,
+                (None, Some(symbol)) => &symbol.name,
+                (None, None) => return None,
+            };
+            Some(split_from(name))
+        }
+        let instruction = |name: &str| name.starts_with(TAIL_CALL_PREFIX);
 
-        let name = split_from(name);
-        (name == EVALUATION_LOOP || name.starts_with(TAIL_CALL_PREFIX))
-            .then_some(Driven::Interpreted)
+        // A build that tail-calls a function for each instruction enters it
+        // from the loop with a call, so a loop the stack shows with the
+        // first instruction's function it called is one activation, which
+        // that function stands for: where the loop is inlined into what
+        // enters it, only the function shows.
+        let called = inner.and_then(name).is_some_and(instruction);
+        let name = name(frame)?;
+        (instruction(name) || (name == EVALUATION_LOOP && !called)).then_some(Driven::Interpreted)
     }
 
     fn interpreted(&self, stop: &dyn RuntimeStop) -> Option<Partial<InterpretedStacks>> {

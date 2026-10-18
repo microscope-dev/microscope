@@ -33,6 +33,12 @@ narrower limits and report them when used.
   registers.
 - Source stepping is only as precise as the compiler's line and inline-call
   information.
+- A program that runs itself again with exec is followed. One that execs a
+  different program, as a shell wrapper or a version manager's shim runs
+  Python, stops when it does, and microscope does not debug the new program:
+  launch that program itself.
+- A child the program forks runs on without microscope, which removes its
+  breakpoints, and a Python child's agent, from it first.
 - Core dumps are read-only.
 
 ## System calls
@@ -67,9 +73,16 @@ narrower limits and report them when used.
   other than the standard library's and numpy's arrays that microscope reads,
   shows its type and address. A numpy array of a dtype other than `bool`, an
   integer, `float32`, or `float64`, or of big-endian elements, shows only its
-  shape and dtype, and indexing an array is refused. Python is
-  not supported yet for breakpoints by file and line, stepping, and Python
-  exceptions as catchpoints.
+  shape and dtype, and indexing an array is refused. Python breakpoints need
+  CPython 3.14 or later with remote debugging allowed. Otherwise they stay
+  pending. A Python step starts only where microscope's agent stopped
+  the thread, at a Python breakpoint or a step's end, and steps by lines. An
+  uncaught Python exception stops in the outermost frame it leaves, whose
+  inner frames have returned; its message says where it was raised. On the
+  main thread only the main module's exceptions are uncaught: one leaving an
+  `atexit` callback or other code C calls there does not stop.
+  Exceptions raised while the agent itself runs, as while it compares a
+  breakpoint's keys, do not stop.
 - A profile's Python stacks (`record --python`) come from the BPF engine,
   which needs `CAP_BPF` and `CAP_PERFMON`, or from snapshots that stop the
   program or read it as it runs. The BPF engine's first samples of a program

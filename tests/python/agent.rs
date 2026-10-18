@@ -21,7 +21,7 @@ impl Drop for Reaped {
 mod hook;
 
 #[path = "../../src/runtime_model/python/agent.rs"]
-mod agent_source;
+pub mod agent_source;
 
 #[test]
 fn the_hook_is_a_loadable_exported_function() {
@@ -120,7 +120,7 @@ fn monitoring_reconfiguration_and_cleanup() {
     let standalone = scratch.path().join("standalone.py");
     std::fs::write(
         &standalone,
-        agent_source::script(library.to_str().expect("hook path"), 100, &[])
+        agent_source::script(library.to_str().expect("hook path"), 100, &[], None, 0)
             .expect("whole-state script"),
     )
     .expect("write script");
@@ -170,7 +170,10 @@ fn fixture_output(
         std::thread::sleep(Duration::from_millis(10));
     };
     let output = std::fs::read_to_string(output).expect("read fixture output");
-    assert!(status.success(), "{interpreter} {fixture}: {output}");
+    assert!(
+        status.success(),
+        "{interpreter} {fixture} {arguments:?} {status:?}: {output}"
+    );
     output
 }
 
@@ -181,73 +184,131 @@ fn monitoring_callbacks_survive_reconfiguration_and_code_reuse() {
     std::fs::write(&library, hook::library()).expect("write control companion");
     let source =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runtime_model/python/agent.py");
-    for interpreter in ["3.14", "3.14t", "3.15", "3.15t"] {
-        for (fixture, modes) in [
-            ("agent_races.py", &["capture", "disable"][..]),
-            ("agent_control.py", &["chain", "batch"][..]),
-            (
-                "agent_safety.py",
-                &[
-                    "drain",
-                    "drain_race",
-                    "hook_interrupt",
-                    "arming_fault",
-                    "reentry",
-                    "keyboard",
-                    "exit",
-                    "custom",
-                    "cancelled",
-                    "timeout",
-                    "malformed",
-                    "interrupt_race",
-                    "reentry_race",
-                ][..],
-            ),
-            (
-                "agent_discovery.py",
-                &[
-                    "repeat",
-                    "fault",
-                    "resumed",
-                    "delegated",
-                    "identity",
-                    "gc",
-                    "reused",
-                    "coexist",
-                    "coexist_matching",
-                    "running",
-                ][..],
-            ),
-        ] {
-            for mode in modes {
-                let output = scratch
-                    .path()
-                    .join(format!("{interpreter}-{fixture}-{mode}.out"));
-                let output = fixture_output(
-                    interpreter,
-                    fixture,
-                    &[
-                        source.as_os_str(),
-                        std::ffi::OsStr::new(mode),
-                        library.as_os_str(),
-                    ],
-                    &output,
-                );
-                let prefix = match fixture {
-                    "agent_races.py" => "RACE",
-                    "agent_control.py" => "CONTROL AGENT",
-                    "agent_safety.py" => "SAFETY AGENT",
-                    _ => "DISCOVERY",
-                };
-                assert!(
-                    output
-                        .lines()
-                        .any(|line| line == format!("{prefix} OK {mode}")),
-                    "{interpreter}: {output}"
-                );
-            }
+    let fixtures = [
+        ("agent_races.py", &["capture", "disable"][..]),
+        ("agent_control.py", &["chain", "batch"][..]),
+        (
+            "agent_safety.py",
+            &[
+                "drain",
+                "drain_together",
+                "drain_race",
+                "hook_interrupt",
+                "arming_fault",
+                "reentry",
+                "keyboard",
+                "exit",
+                "custom",
+                "cancelled",
+                "timeout",
+                "malformed",
+                "interrupt_race",
+                "reentry_race",
+                "fork",
+            ][..],
+        ),
+        (
+            "agent_stepping.py",
+            &[
+                "over",
+                "into",
+                "out",
+                "recursion",
+                "generator",
+                "coroutine",
+                "exception",
+                "outermost",
+                "mismatch",
+                "late",
+                "threads",
+                "reconfigured",
+                "malformed",
+            ][..],
+        ),
+        (
+            "agent_exceptions.py",
+            &["raised", "uncaught", "off", "internal", "malformed"][..],
+        ),
+        (
+            "agent_discovery.py",
+            &[
+                "repeat",
+                "fault",
+                "resumed",
+                "delegated",
+                "identity",
+                "gc",
+                "reused",
+                "coexist",
+                "coexist_matching",
+                "running",
+                "together",
+                "matching",
+            ][..],
+        ),
+    ];
+    // Every mode is a process of its own, and each build's modes run at
+    // once, as many as the machine runs.
+    let jobs: Vec<_> = ["3.14", "3.14t", "3.15", "3.15t"]
+        .into_iter()
+        .flat_map(|interpreter| {
+            fixtures.iter().flat_map(move |(fixture, modes)| {
+                modes.iter().map(move |mode| (interpreter, *fixture, *mode))
+            })
+        })
+        .collect();
+    run_modes(&jobs, &scratch, &library, &source);
+}
+
+/// Runs each fixture mode of `jobs`, by build, fixture, and mode, as a
+/// process of its own, as many at once as the machine runs, and checks
+/// each reports it passed.
+fn run_modes(
+    jobs: &[(&str, &str, &str)],
+    scratch: &ScratchDir,
+    library: &std::path::Path,
+    source: &std::path::Path,
+) {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let workers = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let next = &next;
+            scope.spawn(move || {
+                while let Some(&(interpreter, fixture, mode)) =
+                    jobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+                {
+                    let output = scratch
+                        .path()
+                        .join(format!("{interpreter}-{fixture}-{mode}.out"));
+                    let output = fixture_output(
+                        interpreter,
+                        fixture,
+                        &[
+                            source.as_os_str(),
+                            std::ffi::OsStr::new(mode),
+                            library.as_os_str(),
+                        ],
+                        &output,
+                    );
+                    let prefix = match fixture {
+                        "agent_races.py" => "RACE",
+                        "agent_control.py" => "CONTROL AGENT",
+                        "agent_safety.py" => "SAFETY AGENT",
+                        "agent_stepping.py" => "STEPPING AGENT",
+                        "agent_exceptions.py" => "EXCEPTIONS AGENT",
+                        _ => "DISCOVERY",
+                    };
+                    assert!(
+                        output
+                            .lines()
+                            .any(|line| line == format!("{prefix} OK {mode}")),
+                        "{interpreter}: {output}"
+                    );
+                }
+            });
         }
-    }
+    });
 }
 
 /// Ready reports are stepped over internally, a real callback delivers its
@@ -368,8 +429,30 @@ async fn bootstrap_failure_reports_its_generation_through_the_owned_library() {
     }
 }
 
+// One test for each build, which the test runner runs at once: a process
+// holds one debugger session.
+
 #[tokio::test]
-async fn user_reentry_and_interruptions_are_visible_at_the_native_boundary() {
+async fn user_reentry_and_interruptions_are_visible_at_the_native_boundary_on_3_14() {
+    user_reentry_and_interruptions_are_visible_at_the_native_boundary("3.14").await;
+}
+
+#[tokio::test]
+async fn user_reentry_and_interruptions_are_visible_at_the_native_boundary_on_3_14t() {
+    user_reentry_and_interruptions_are_visible_at_the_native_boundary("3.14t").await;
+}
+
+#[tokio::test]
+async fn user_reentry_and_interruptions_are_visible_at_the_native_boundary_on_3_15() {
+    user_reentry_and_interruptions_are_visible_at_the_native_boundary("3.15").await;
+}
+
+#[tokio::test]
+async fn user_reentry_and_interruptions_are_visible_at_the_native_boundary_on_3_15t() {
+    user_reentry_and_interruptions_are_visible_at_the_native_boundary("3.15t").await;
+}
+
+async fn user_reentry_and_interruptions_are_visible_at_the_native_boundary(interpreter: &str) {
     use crate::session::PythonSession;
     use microscope::{ExitStatus, StopReason};
     let scratch = ScratchDir::new("python-agent-safety-native");
@@ -377,7 +460,7 @@ async fn user_reentry_and_interruptions_are_visible_at_the_native_boundary() {
     std::fs::write(&library, hook::library()).expect("write companion");
     let source =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runtime_model/python/agent.py");
-    for interpreter in ["3.14", "3.14t", "3.15", "3.15t"] {
+    {
         for (mode, description) in [
             ("reentry", "monitoring coverage is unconfirmed"),
             ("keyboard", "interruption is preserved"),

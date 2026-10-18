@@ -104,6 +104,7 @@ pub trait RuntimeAgent: std::fmt::Debug + Send + Sync {
 
     fn script(
         &self,
+        stop: &dyn RuntimeStop,
         library: &str,
         generation: u64,
         process: TargetProcessId,
@@ -129,4 +130,11 @@ pub trait RuntimeAgent: std::fmt::Debug + Send + Sync {
 
     /// Configuration/discovery may require runtime cooperation by siblings.
     fn process_scope_required(&self) -> bool;
+
+    /// Whether `arming` asks anything of the agent, which is installed only
+    /// when something does: a breakpoint, a step, or, for a runtime whose
+    /// agent reports them, an exception that stops.
+    fn wanted(&self, arming: &Arming<'_>) -> bool {
+        !arming.breakpoints.is_empty() || arming.step.is_some()
+    }
 }

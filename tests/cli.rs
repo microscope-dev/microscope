@@ -1751,9 +1751,12 @@ fn catch_chooses_which_exceptions_stop() {
     assert_in_order(
         &stdout,
         &[
-            "unhandled      on   Unhandled Go panics\n",
-            "runtime-fatal  on   Fatal Go runtime errors\n",
-            "raised         off  Every Go panic\n",
+            "unhandled        on   Unhandled Go panics\n",
+            "runtime-fatal    on   Fatal Go runtime errors\n",
+            "raised           off  Every Go panic\n",
+            "rust-panic       on   Rust panics\n",
+            "python-raised    off  Every Python exception\n",
+            "python-uncaught  off  Uncaught Python exceptions\n",
             "raised  on   Every Go panic\n",
             "as an exception was raised",
             "panic: runtime error: invalid memory address or nil pointer dereference",
@@ -4204,6 +4207,131 @@ fn frame_commands_move_through_caller_frames_and_show_their_source() {
         line.starts_with("#11 ") && line.contains(" in _start+0x")
     });
     line_index(&lines, outermost, |line| line.starts_with("#10 "));
+}
+
+/// An uncaught Python exception, chosen alone before the program runs,
+/// installs the agent with no breakpoint, and stops as the exception leaves
+/// the main thread's code: the stop says what it is and where it was
+/// raised, and the program then ends as Python ends it.
+#[test]
+fn an_uncaught_python_exception_stops_where_it_leaves_the_program() {
+    let interpreter = std::path::PathBuf::from(
+        std::env::var_os("MICROSCOPE_CPYTHON")
+            .expect("MICROSCOPE_CPYTHON names the interpreters; run tests in the dev shell"),
+    )
+    .join("3.14/python");
+    let interpreter = interpreter.to_str().expect("a UTF-8 path");
+    let source = "def boom():\n    raise ValueError('boom')\n\nboom()\n";
+    let program = [interpreter, "--", "-I", "-B", "-c", source];
+    let (stdout, stderr) = piped(
+        &program,
+        &["catch python-uncaught on", "run", "bt", "continue"],
+    );
+    let lines = stdout.lines().collect::<Vec<_>>();
+    let stopped = line_index(&lines, 0, |line| {
+        line == "stopped by an unhandled exception in <module> at <string>:4:"
+    });
+    let message = line_index(&lines, stopped, |line| {
+        line == "ValueError: boom, raised in boom at <string>:2"
+    });
+    assert_eq!(message, stopped + 1, "{stdout}");
+    line_index(&lines, message, |line| {
+        line == "source unavailable: the code was compiled from <string>, which names no file"
+    });
+    line_index(&lines, message, |line| {
+        line.starts_with('#') && line.ends_with("in <module> at <string>:4")
+    });
+    line_index(&lines, message, |line| {
+        line == "inferior exited with status 1"
+    });
+    assert!(stderr.contains("ValueError: boom"), "{stderr}");
+}
+
+/// Python breakpoints set before the program runs are kept pending, as its
+/// code loads only when it imports it, and stop in the program's own frame,
+/// with the debugger's agent and the interpreter folded, from which `next`
+/// steps the program's line; one in code the program never runs never
+/// stops. A native breakpoint is still checked.
+#[test]
+fn python_breakpoints_wait_for_their_code_and_stop_in_the_programs_frame() {
+    let interpreter = std::path::PathBuf::from(
+        std::env::var_os("MICROSCOPE_CPYTHON")
+            .expect("MICROSCOPE_CPYTHON names the interpreters; run tests in the dev shell"),
+    )
+    .join("3.14/python");
+    let interpreter = interpreter.to_str().expect("a UTF-8 path");
+    let program = [
+        interpreter,
+        "--",
+        "-I",
+        "-B",
+        "tests/fixtures/python/breakpoints.py",
+    ];
+    let (stdout, stderr) = piped(
+        &program,
+        &[
+            "break tests/fixtures/python/breakpoints.py:15 if index == 3",
+            "break py:Shape.area",
+            "break breakpoints_later.py:5",
+            "break py:rea",
+            "break missing.c:3",
+            "run",
+            "bt",
+            "print total",
+            "next",
+            "print square",
+            "continue",
+            "continue",
+            "info breakpoints",
+            "continue",
+        ],
+    );
+    let lines = stdout.lines().collect::<Vec<_>>();
+    let mut at = 0;
+    for number in 1..=4 {
+        at = line_index(&lines, at, |line| {
+            line.starts_with(&format!("breakpoint {number} set, pending until"))
+        });
+    }
+    assert!(
+        stderr.contains("no source file matching 'missing.c'"),
+        "{stderr}"
+    );
+
+    let stopped = line_index(&lines, at, |line| {
+        line == "stopped at breakpoint 1 (hit 4) in accumulate at tests/fixtures/python/breakpoints.py:15"
+    });
+    let folded = line_index(&lines, stopped, |line| {
+        line.starts_with("    … #0–#")
+            && line.ends_with("frames of the runtime; `bt -r` shows them")
+    });
+    let frame = line_index(&lines, folded, |line| {
+        line.starts_with('#')
+            && line.ends_with("in accumulate at tests/fixtures/python/breakpoints.py:15")
+    });
+    assert_eq!(
+        frame,
+        folded + 1,
+        "only the folded hook is inner:
+{stdout}"
+    );
+    let total = line_index(&lines, frame, |line| line == "(int) total = 3");
+    let next = line_index(&lines, total, |line| {
+        line == "stopped after source next in accumulate at tests/fixtures/python/breakpoints.py:16"
+    });
+    let square = line_index(&lines, next, |line| line == "(int) square = 4");
+    let method = line_index(&lines, square, |line| {
+        line.starts_with("stopped at breakpoint 2 (hit 1) in Shape.area at ")
+    });
+    let later = line_index(&lines, method, |line| {
+        line == "stopped at breakpoint 3 (hit 1) in later at tests/fixtures/python/breakpoints_later.py:5"
+    });
+    let never = line_index(&lines, later, |line| {
+        line.split_whitespace().collect::<Vec<_>>() == ["4", "+", "0", "function", "rea"]
+    });
+    let done = line_index(&lines, never, |line| line == "BREAKPOINTS DONE");
+    line_index(&lines, done, |line| line == "inferior exited with status 0");
+    assert!(!stdout.contains("microscope_python_hook"), "{stdout}");
 }
 
 /// A Python program's core, whose Python frames call each other through

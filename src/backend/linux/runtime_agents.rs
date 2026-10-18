@@ -30,6 +30,15 @@ pub(super) struct Installation {
     expired: bool,
     request_thread: Option<crate::ThreadId>,
     remaining: Duration,
+    /// Whether any thread has run since the outstanding request was
+    /// published. A command no thread has run since is unread, and a newer
+    /// one can replace it, as a step begun at the stop that ended the last
+    /// replaces that stop's disarming.
+    exposed: bool,
+    /// The sites of the configuration the agent last acknowledged. While a
+    /// newer one is outstanding, the agent holds one or the other, so a site
+    /// both name stays armed.
+    confirmed: std::collections::BTreeSet<u64>,
 }
 
 #[derive(Debug)]
@@ -44,6 +53,7 @@ enum State {
 struct Desired {
     breakpoints: Vec<crate::runtime_model::ManagedArm>,
     step: Option<crate::runtime_model::RuntimeStep>,
+    exceptions: crate::ExceptionStops,
 }
 
 impl From<&Arming<'_>> for Desired {
@@ -51,6 +61,7 @@ impl From<&Arming<'_>> for Desired {
         Self {
             breakpoints: arming.breakpoints.to_vec(),
             step: arming.step.cloned(),
+            exceptions: arming.exceptions,
         }
     }
 }
@@ -70,6 +81,8 @@ impl Installation {
             expired: false,
             request_thread: None,
             remaining: ACK_TIMEOUT,
+            exposed: false,
+            confirmed: std::collections::BTreeSet::new(),
         }
     }
     pub(super) const fn deadline(&self) -> Option<Instant> {
@@ -77,11 +90,49 @@ impl Installation {
     }
 
     pub(super) fn start_deadline(&mut self, now: Instant) {
-        if matches!(self.state, State::Awaiting { .. }) && !self.expired && self.deadline.is_none()
-        {
+        if !matches!(self.state, State::Awaiting { .. }) {
+            return;
+        }
+        self.exposed = true;
+        if !self.expired && self.deadline.is_none() {
             self.deadline = Some(now + self.remaining);
         }
     }
+
+    /// Whether the outstanding request is a command no thread has run
+    /// since it was published, which the agent cannot have read.
+    const fn replaceable(&self) -> bool {
+        !self.exposed && matches!(self.state, State::Awaiting { source: false, .. })
+    }
+
+    /// How arming with `wanted` stands without configuring the agent, or
+    /// `None` when the agent is to be configured with it.
+    fn settled(&self, wanted: &Desired) -> Option<Result<(), Arc<str>>> {
+        let sent = self.sent.as_ref() == Some(wanted);
+        match &self.state {
+            State::Awaiting { .. } if !self.replaceable() || sent => Some(Err(if self.expired {
+                TIMED_OUT.into()
+            } else {
+                "waiting for the runtime agent to acknowledge its configuration".into()
+            })),
+            State::Ready if sent => Some(Ok(())),
+            State::Refused(reason) if sent => Some(Err(Arc::clone(reason))),
+            _ => None,
+        }
+    }
+
+    /// Whether the agent is configured through its command slot, which an
+    /// active agent reads, rather than by injecting a whole-state script.
+    fn commands(&self) -> bool {
+        let active = self
+            .sent
+            .as_ref()
+            .is_some_and(|sent| !sent.breakpoints.is_empty() || sent.step.is_some());
+        // An unread command was published only to an active agent, which
+        // still holds the configuration before it.
+        (matches!(self.state, State::Ready) && active) || self.replaceable()
+    }
+
     pub(super) fn pause_deadline(&mut self, now: Instant) {
         if let Some(deadline) = self.deadline.take() {
             self.remaining = deadline.saturating_duration_since(now);
@@ -90,6 +141,15 @@ impl Installation {
 
     pub(super) const fn needs_entry(&self) -> bool {
         matches!(self.state, State::Waiting)
+    }
+
+    /// Whether the site numbered `number` is armed whichever configuration
+    /// the agent now holds: it acknowledged it, and has failed nothing
+    /// since. A site the outstanding configuration drops is not asked about.
+    pub(super) fn confirms(&self, number: u64) -> bool {
+        matches!(self.state, State::Ready | State::Awaiting { .. })
+            && !self.expired
+            && self.confirmed.contains(&number)
     }
 }
 
@@ -291,22 +351,19 @@ impl<P: LinuxTraceOps> Controller<P> {
             .as_mut()
             .ok_or_else(|| Arc::<str>::from("the process is gone"))?;
         let previous = inferior.agents.remove(&bound.id);
-        if previous.is_none() && arming.breakpoints.is_empty() && arming.step.is_none() {
+        let asked = bound
+            .model
+            .agent()
+            .is_some_and(|agent| agent.wanted(arming));
+        if previous.is_none() && !asked {
             return Ok(());
         }
         let mut installation = previous.unwrap_or_else(Installation::new);
         let wanted = Desired::from(arming);
-        let result = match &installation.state {
-            State::Awaiting { .. } => Err(if installation.expired {
-                TIMED_OUT.into()
-            } else {
-                "waiting for the runtime agent to acknowledge its configuration".into()
-            }),
-            State::Ready if installation.sent.as_ref() == Some(&wanted) => Ok(()),
-            State::Refused(reason) if installation.sent.as_ref() == Some(&wanted) => {
-                Err(Arc::clone(reason))
-            }
-            _ => match self.configure_agent(bound, arming, &mut installation) {
+        let replaceable = installation.replaceable();
+        let result = match installation.settled(&wanted) {
+            Some(settled) => settled,
+            None => match self.configure_agent(bound, arming, &mut installation) {
                 Ok(()) => {
                     installation.sent = Some(wanted);
                     Err("waiting for the runtime agent to acknowledge its configuration".into())
@@ -320,8 +377,9 @@ impl<P: LinuxTraceOps> Controller<P> {
                     let reason: Arc<str> = reason.to_string().into();
                     // Still ready: no request reached the target, whose agent
                     // keeps the acknowledged configuration. The next arming
-                    // tries again.
-                    if !matches!(installation.state, State::Ready) {
+                    // tries again. A replacement that failed leaves the
+                    // command it would have replaced outstanding.
+                    if !matches!(installation.state, State::Ready) && !replaceable {
                         installation.sent = Some(wanted);
                         if !matches!(installation.state, State::Awaiting { .. }) {
                             installation.state = State::Refused(Arc::clone(&reason));
@@ -365,11 +423,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let next = generation
             .checked_add(1)
             .ok_or("runtime agent generations are exhausted")?;
-        let active = installation
-            .sent
-            .as_ref()
-            .is_some_and(|sent| !sent.breakpoints.is_empty() || sent.step.is_some());
-        if matches!(installation.state, State::Ready) && active {
+        if installation.commands() {
             let library = installation
                 .library
                 .as_deref()
@@ -415,7 +469,9 @@ impl<P: LinuxTraceOps> Controller<P> {
             .as_mut()
             .ok_or("the agent files are missing")?;
         let library = files.library()?.to_owned();
-        let source = agent.script(&library, generation, process, arming)?;
+        let source = self.with_runtime_stop(inferior, bound, inferior.memory_thread(), |stop| {
+            agent.script(stop, &library, generation, process, arming)
+        })?;
         let path = files.script(generation, &source)?;
         let prepared = self.with_runtime_stop(inferior, bound, inferior.memory_thread(), |stop| {
             agent.inject(stop, &path, thread)
@@ -436,6 +492,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             generation,
             source: true,
         };
+        installation.exposed = false;
         if let Err(reason) = self.write_for_runtime(&prepared.writes) {
             // No thread has resumed since preparation. Revalidate even a
             // partially written slot before retiring the unpublished source.
@@ -503,6 +560,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             generation,
             source: false,
         };
+        installation.exposed = false;
         result.map_err(AgentFailure::from)
     }
 
@@ -630,6 +688,14 @@ impl<P: LinuxTraceOps> Controller<P> {
             installation.deadline = None;
             installation.expired = false;
             installation.request_thread = None;
+            installation.confirmed = match failure {
+                None => installation
+                    .sent
+                    .iter()
+                    .flat_map(|sent| sent.breakpoints.iter().map(|arm| arm.number))
+                    .collect(),
+                Some(_) => std::collections::BTreeSet::new(),
+            };
             installation.state =
                 failure.map_or(State::Ready, |reason| State::Refused(Arc::clone(reason)));
             Ok(true)
@@ -641,6 +707,28 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
         }
         result
+    }
+
+    /// Whether the runtime's agent has been sent the active step, and has
+    /// only to acknowledge it: the step has begun.
+    pub(super) fn agent_step_sent(&self, runtime: RuntimeId) -> bool {
+        let Some(inferior) = self.inferior.as_ref() else {
+            return false;
+        };
+        let step = inferior
+            .runtime_step
+            .as_ref()
+            .filter(|(stepping, _)| *stepping == runtime)
+            .map(|(_, step)| step);
+        inferior.agents.get(&runtime).is_some_and(|installation| {
+            matches!(installation.state, State::Awaiting { .. })
+                && step.is_some()
+                && installation
+                    .sent
+                    .as_ref()
+                    .and_then(|sent| sent.step.as_ref())
+                    == step
+        })
     }
 
     pub(super) fn agent_entry(&mut self, runtime: RuntimeId) -> Result<(), Arc<str>> {
@@ -660,15 +748,43 @@ impl<P: LinuxTraceOps> Controller<P> {
         {
             return None;
         }
-        if inferior.managed.arms(bound.id).is_empty()
-            && inferior
+        let agent = bound.model.agent()?;
+        let breakpoints = inferior.managed.arms(bound.id);
+        let arming = Arming {
+            breakpoints: &breakpoints,
+            step: inferior
                 .runtime_step
                 .as_ref()
-                .is_none_or(|(runtime, _)| *runtime != bound.id)
-        {
+                .filter(|(runtime, _)| *runtime == bound.id)
+                .map(|(_, step)| step),
+            exceptions: self.exception_stops,
+        };
+        if !agent.wanted(&arming) {
             return None;
         }
-        bound.model.agent()?.entry().map(HookPlace::Own)
+        agent.entry().map(HookPlace::Own)
+    }
+
+    /// Marks each runtime whose agent is not installed to be armed, as when
+    /// the module that carries it loads: what it is to report may ask for
+    /// it before any breakpoint does, as an exception that stops does.
+    pub(super) fn arm_new_agents(&mut self) {
+        let Some(inferior) = self.inferior.as_ref() else {
+            return;
+        };
+        let new = self
+            .runtimes(inferior)
+            .into_iter()
+            .filter(|runtime| {
+                runtime.model.agent().is_some() && !inferior.agents.contains_key(&runtime.id)
+            })
+            .map(|runtime| runtime.id)
+            .collect::<Vec<_>>();
+        if let Some(inferior) = self.inferior.as_mut() {
+            for runtime in new {
+                inferior.managed.mark_stale(runtime);
+            }
+        }
     }
 
     pub(super) fn agent_companion_matches(
@@ -1030,6 +1146,7 @@ mod tests {
         }
         fn script(
             &self,
+            _: &dyn crate::runtime_model::RuntimeStop,
             _: &str,
             _: u64,
             _: TargetProcessId,
@@ -1124,6 +1241,7 @@ mod tests {
         installation.sent = Some(Desired {
             breakpoints: first.to_vec(),
             step: None,
+            exceptions: crate::ExceptionStops::default(),
         });
         harness
             .controller
@@ -1175,10 +1293,12 @@ mod tests {
         let active = Some(Desired {
             breakpoints: vec![function_arm(0, "first")],
             step: None,
+            exceptions: crate::ExceptionStops::default(),
         });
         let idle = Some(Desired {
             breakpoints: Vec::new(),
             step: None,
+            exceptions: crate::ExceptionStops::default(),
         });
         for (state, sent, restricted) in [
             (State::Ready, active.clone(), true),
@@ -1454,6 +1574,7 @@ mod tests {
                     .publish_agent_command(&bound, &mut installation, 2, 3, &writes);
             if successful_words == 3 {
                 result.expect("complete publication");
+                assert!(installation.replaceable(), "no thread has run since");
                 assert_eq!(installation.sequence, 2);
                 assert_eq!(installation.generation, Some(2));
                 assert!(matches!(
@@ -1477,6 +1598,156 @@ mod tests {
             );
         }
     }
+    fn stepping(number: u64) -> crate::runtime_model::RuntimeStep {
+        crate::runtime_model::RuntimeStep {
+            number,
+            kind: crate::StepKind::OverSource,
+            thread: crate::ThreadId::new(7),
+            frame: crate::VirtualAddress::new(0x9000),
+        }
+    }
+
+    /// A command published at a stop that no thread has run since is
+    /// unread: arming something else at that stop replaces it through the
+    /// command slot, as a step begun at the stop that ended the last one
+    /// replaces that stop's disarming. Once threads have run, the agent may
+    /// have read it, and arming waits for its acknowledgement. A source
+    /// request is never replaced.
+    #[test]
+    fn an_unread_command_is_replaced_and_a_read_one_awaited() {
+        let disarmed = Desired {
+            breakpoints: vec![function_arm(0, "first")],
+            step: None,
+            exceptions: crate::ExceptionStops::default(),
+        };
+        let step = Desired {
+            breakpoints: vec![function_arm(0, "first")],
+            step: Some(stepping(1)),
+            exceptions: crate::ExceptionStops::default(),
+        };
+        let mut installation = Installation::new();
+        installation.state = State::Awaiting {
+            generation: 3,
+            source: false,
+        };
+        installation.generation = Some(3);
+        installation.sent = Some(disarmed.clone());
+        assert!(installation.replaceable() && installation.commands());
+        assert_eq!(installation.settled(&step), None, "the step replaces it");
+        assert!(
+            matches!(installation.settled(&disarmed), Some(Err(reason)) if reason.contains("waiting")),
+            "the same configuration is already sent"
+        );
+
+        installation.start_deadline(Instant::now());
+        assert!(!installation.replaceable() && !installation.commands());
+        assert!(
+            matches!(installation.settled(&step), Some(Err(reason)) if reason.contains("waiting"))
+        );
+
+        let mut source = Installation::new();
+        source.state = State::Awaiting {
+            generation: 3,
+            source: true,
+        };
+        source.sent = Some(disarmed.clone());
+        assert!(!source.replaceable() && !source.commands());
+        assert!(matches!(source.settled(&step), Some(Err(_))));
+
+        // A ready agent is configured by command while it is active, and
+        // by a whole-state script once idle.
+        let mut ready = Installation::new();
+        ready.state = State::Ready;
+        ready.sent = Some(disarmed.clone());
+        assert!(ready.commands());
+        assert_eq!(ready.settled(&disarmed), Some(Ok(())));
+        assert_eq!(ready.settled(&step), None);
+        ready.sent = Some(Desired {
+            breakpoints: Vec::new(),
+            step: None,
+            exceptions: crate::ExceptionStops::default(),
+        });
+        assert!(!ready.commands());
+        assert!(!Installation::new().commands(), "nor before the first");
+    }
+
+    /// An agent binds a step to its frame where it stopped the thread: a
+    /// step from anywhere else is refused, and nothing runs.
+    #[test]
+    fn an_agent_steps_only_from_where_it_stopped_the_thread() {
+        let mut harness = watch_harness(1);
+        let pid = harness.controller.inferior.as_ref().unwrap().tgid;
+        let bound = scripted_agent(
+            &harness,
+            Agent {
+                thread: super::super::debug_thread_id(pid),
+                refuse: false,
+                process_scope: false,
+                calls: Arc::new(Mutex::new(Vec::new())),
+            },
+        );
+        harness.trace().take_actions();
+        let stop = harness.stop_id();
+        let refused = harness.controller.begin_runtime_step(
+            crate::ProcessId::new(pid.as_raw().cast_unsigned().into()),
+            stop,
+            pid,
+            (bound.id, crate::VirtualAddress::new(0x9000)),
+            crate::StepKind::OverSource,
+            crate::ResumeScope::Process(crate::ProcessId::new(pid.as_raw().cast_unsigned().into())),
+            crate::protocol::ExceptionDisposition::Pass,
+        );
+        assert!(
+            matches!(&refused, Err(crate::Error::FrameStepUnsupported(reason)) if reason.contains("where its agent stopped the thread")),
+            "{refused:?}"
+        );
+        assert!(!harness.trace().took("continue"), "nothing runs");
+        assert!(
+            harness
+                .controller
+                .inferior
+                .as_ref()
+                .unwrap()
+                .runtime_step
+                .is_none()
+        );
+    }
+
+    /// A step has begun once the agent has been sent it, and only that
+    /// step: not another, nor one the agent has been sent and acknowledged.
+    #[test]
+    fn a_step_has_begun_once_its_agent_is_sent_it() {
+        let mut harness = watch_harness(1);
+        let runtime = RuntimeId::new(0);
+        let mut installation = Installation::new();
+        installation.state = State::Awaiting {
+            generation: 3,
+            source: false,
+        };
+        installation.sent = Some(Desired {
+            breakpoints: Vec::new(),
+            step: Some(stepping(1)),
+            exceptions: crate::ExceptionStops::default(),
+        });
+        let inferior = harness.controller.inferior.as_mut().unwrap();
+        inferior.agents.insert(runtime, installation);
+        assert!(
+            !harness.controller.agent_step_sent(runtime),
+            "no step is active"
+        );
+        let inferior = harness.controller.inferior.as_mut().unwrap();
+        inferior.runtime_step = Some((runtime, stepping(1)));
+        assert!(harness.controller.agent_step_sent(runtime));
+        assert!(!harness.controller.agent_step_sent(RuntimeId::new(4)));
+        let inferior = harness.controller.inferior.as_mut().unwrap();
+        inferior.runtime_step = Some((runtime, stepping(2)));
+        assert!(!harness.controller.agent_step_sent(runtime), "another step");
+        let inferior = harness.controller.inferior.as_mut().unwrap();
+        inferior.runtime_step = Some((runtime, stepping(1)));
+        inferior.agents.get_mut(&runtime).unwrap().state = State::Ready;
+        assert!(!harness.controller.agent_step_sent(runtime), "acknowledged");
+    }
+
     #[test]
     fn uncertain_native_publication_adopts_its_sequence_only_after_an_owned_acknowledgement() {
         let mut harness = watch_harness(1);

@@ -132,7 +132,8 @@ pub fn folded_frames(trace: &Backtrace, selected: u32) -> Vec<bool> {
 /// stack of its machinery, an interpreter's included, its dispatch, and
 /// the wrappers between them, at least one the runtime's own; and every
 /// frame past the innermost dispatch, which runs the runtime's code for
-/// the thread rather than the task's. Where the stack stopped, and the
+/// the thread rather than the task's. Where the stack stopped, unless an
+/// interpreter's machinery beyond which another frame is selected, and the
 /// `selected` frame, are always shown.
 pub fn folds(trace: &Backtrace, shown: usize, selected: u32) -> Vec<std::ops::Range<usize>> {
     let frames = &trace.frames[..shown];
@@ -177,8 +178,11 @@ fn machinery_runs(frames: &[StackFrame], kept: &BTreeSet<u32>) -> Vec<std::ops::
             CodeRole::RuntimeInternal | CodeRole::Dispatch | CodeRole::Interpreter
         )
     };
+    // Where the stack stopped shows, unless it is an interpreter's
+    // machinery, such as the debugger's hook in a runtime's agent, beyond
+    // which the stop selected the frame it is about.
     let folds = |frame: &StackFrame| {
-        frame.level != 0
+        (frame.level != 0 || frame.role == CodeRole::Interpreter)
             && !kept.contains(&frame.level)
             && (runtime(frame) || frame.role == CodeRole::Wrapper)
     };
@@ -235,6 +239,47 @@ mod tests {
                 first_line: Some(1),
             }),
         }
+    }
+
+    /// A stack stopped in an interpreter's machinery, such as the hook of
+    /// the debugger's agent, folds it when the stop selects the program's
+    /// frame beyond it, and shows it when it is selected; a stack stopped in
+    /// a runtime's own code always shows where.
+    #[test]
+    fn where_a_stack_stopped_folds_only_as_machinery_beyond_the_selection() {
+        let frame = |level, role| StackFrame {
+            level,
+            role,
+            ..interpreted(None)
+        };
+        let trace = |roles: &[CodeRole]| Backtrace {
+            frames: (0..)
+                .zip(roles)
+                .map(|(level, role)| frame(level, *role))
+                .collect::<Vec<_>>()
+                .into(),
+            context: microscope::ExecutionContext::Thread(microscope::ThreadId::new(1)),
+            termination: microscope::UnwindTermination::Complete,
+            unfollowed: Arc::from([]),
+        };
+        let hook = trace(&[
+            CodeRole::Interpreter,
+            CodeRole::Interpreter,
+            CodeRole::Interpreter,
+            CodeRole::Ordinary,
+            CodeRole::Ordinary,
+        ]);
+        assert_eq!(folds(&hook, 5, 3), vec![0..3]);
+        assert_eq!(folds(&hook, 5, 0), vec![1..3]);
+        assert_eq!(folds(&hook, 5, 1), Vec::<std::ops::Range<usize>>::new());
+
+        let runtime = trace(&[
+            CodeRole::RuntimeInternal,
+            CodeRole::RuntimeInternal,
+            CodeRole::RuntimeInternal,
+            CodeRole::Ordinary,
+        ]);
+        assert_eq!(folds(&runtime, 4, 3), vec![1..3]);
     }
 
     #[test]

@@ -500,11 +500,13 @@ pub const TASK_NOUNS: [(&str, &str); 2] = [go::TASK_NOUN, self::tokio::TASK_NOUN
 
 /// The exceptions each runtime a model knows reports, which clients may
 /// choose to stop at before they know which runtimes a program has.
-pub const EXCEPTION_FILTERS: [ExceptionFilter; 4] = [
+pub const EXCEPTION_FILTERS: [ExceptionFilter; 6] = [
     go::EXCEPTION_FILTERS[0],
     go::EXCEPTION_FILTERS[1],
     go::EXCEPTION_FILTERS[2],
     rust::EXCEPTION_FILTERS[0],
+    python::EXCEPTION_FILTERS[0],
+    python::EXCEPTION_FILTERS[1],
 ];
 
 /// How a runtime uses the process's signals, by Linux signal number.
@@ -610,22 +612,22 @@ pub enum HookEvent {
     Continue,
 
     /// An exception, which stops when its filter does.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "Python exception policy is P4.10")
-    )]
     Exception {
         filter: &'static ExceptionFilter,
         report: RuntimeException,
     },
 
-    /// A hit of the managed breakpoint location the runtime was armed with
-    /// under this number.
-    Breakpoint { number: u64 },
+    /// Hits of the managed breakpoint locations the runtime was armed with
+    /// under these numbers, at one event of one thread, which stop once.
+    Breakpoint { numbers: Vec<u64> },
 
     /// The end of the step the runtime was armed with under this number,
     /// as the runtime judges it: the thread reached where the step stops.
     StepEnded { number: u64 },
+
+    /// The step the runtime was armed with under this number stopped where
+    /// the runtime could no longer follow it, for this reason.
+    StepIncomplete { number: u64, description: Arc<str> },
 }
 
 /// Everything a runtime's internal hooks are to report.
@@ -918,10 +920,10 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
     }
 
     /// What `frame`, one of the runtime's frames in its
-    /// [driver role](Self::driver_role), drives; `None` when it drives
-    /// nothing.
-    fn driven(&self, frame: &StackFrame) -> Option<Driven> {
-        let _ = frame;
+    /// [driver role](Self::driver_role), drives, given the frame `inner`
+    /// to it that it called; `None` when it drives nothing.
+    fn driven(&self, frame: &StackFrame, inner: Option<&StackFrame>) -> Option<Driven> {
+        let _ = (frame, inner);
         None
     }
 
@@ -1242,6 +1244,10 @@ pub struct InterpretedFrame {
     /// Whether it is the outermost of the frames one activation of the
     /// interpreter's loop runs.
     pub outermost: bool,
+
+    /// The part its code plays: the program's own, or the debugger's agent,
+    /// which a backtrace hides as the interpreter's machinery.
+    pub role: crate::CodeRole,
 }
 
 impl InterpretedStacks {

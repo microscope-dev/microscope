@@ -35,7 +35,9 @@ import os
 import sys
 import sysconfig
 import threading
+import time
 import types
+import _thread
 
 # A code object's flag for a function's frame, whose locals are its own.
 _CO_OPTIMIZED = 0x1
@@ -490,30 +492,57 @@ def _process():
 class Gate:
     """Where worker threads park until the process ends.
 
-    Each worker calls arrive() at its marker; the thread that checks the
-    process calls wait() until every worker has, so that every stack is still
-    while it is printed and while microscope reads it.
+    Each worker calls arrive() at its marker and parks, blocked in C; the
+    thread that checks the process calls wait() until every worker's stack is
+    still, so that it stays so while it is printed and while microscope reads
+    it. A worker that has only said it arrived is still running: in a
+    free-threaded build, its stack can change as it is printed.
     """
 
     def __init__(self, count):
         self._count = count
-        self._arrived = 0
+        self._parked = []
+        self._released = False
         self._condition = threading.Condition()
-        self._release = threading.Event()
 
     def arrive(self):
+        lock = _thread.allocate_lock()
+        lock.acquire()
         with self._condition:
-            self._arrived += 1
+            if self._released:
+                return
+            self._parked.append((threading.get_ident(), lock))
             self._condition.notify_all()
-        self._release.wait()
+        _park(lock)
 
     def wait(self):
         with self._condition:
-            while self._arrived < self._count:
+            while len(self._parked) < self._count:
                 self._condition.wait()
+            workers = [ident for ident, _ in self._parked]
+        # A worker in _park at its one line shows that line whether or not
+        # it has blocked yet, and keeps showing it until it is released.
+        deadline = time.monotonic() + 30
+        while not all(_parked(frame) for ident, frame in sys._current_frames().items()
+                      if ident in workers):
+            if time.monotonic() > deadline:
+                raise RuntimeError("a gate's worker did not park")
+            time.sleep(0.001)
 
     def release(self):
-        self._release.set()
+        with self._condition:
+            self._released = True
+            for _, lock in self._parked:
+                lock.release()
+
+
+def _park(lock):
+    lock.acquire()
+
+
+def _parked(frame):
+    return (frame.f_code is _park.__code__
+            and frame.f_lineno == _park.__code__.co_firstlineno + 1)
 
 
 def _frames(frame):

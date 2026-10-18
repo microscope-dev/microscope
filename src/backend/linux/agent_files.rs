@@ -475,6 +475,8 @@ mod tests {
             .script(1, "retry")
             .expect("no stale pending generation");
         assert_eq!(std::fs::read_to_string(retry).unwrap(), "retry");
+        files.close_after_target_exit().unwrap();
+        assert!(!directory.exists());
     }
 
     #[test]
@@ -497,6 +499,8 @@ mod tests {
             .script(1, "complete source")
             .expect("retry after failure");
         assert_eq!(std::fs::read_to_string(path).unwrap(), "complete source");
+        files.close_after_target_exit().unwrap();
+        assert!(!directory.exists());
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use super::super::agent as control_step;
 use super::super::{control, hook};
 use super::*;
 use proptest::prelude::*;
@@ -16,7 +17,7 @@ fn slot(sequence: u64) -> (Memory, VirtualAddress) {
 fn command_publication_is_bounded_expected_and_last() {
     let (memory, address) = slot(7);
     let probes = [("LINE", 1, 42, "quote\"\\\n.py", 13, "")];
-    let writes = control::command(&memory, address, 7, 8, &probes).expect("command");
+    let writes = control::command(&memory, address, 7, 8, &probes, None, 0).expect("command");
     assert_eq!(writes.len(), 3);
     assert_eq!(writes[0].address, address.checked_add(32).unwrap());
     assert_eq!(writes[1].address, address.checked_add(16).unwrap());
@@ -31,7 +32,14 @@ fn command_publication_is_bounded_expected_and_last() {
     );
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&writes[0].bytes).unwrap(),
-        serde_json::json!([8, probes])
+        serde_json::json!([8, probes, null, 0])
+    );
+    // A step travels with the probes it is armed beside.
+    let step = (5, control_step::OVER, 7, 2, 0x1000);
+    let writes = control::command(&memory, address, 7, 8, &probes, Some(step), 3).expect("command");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&writes[0].bytes).unwrap(),
+        serde_json::json!([8, probes, [5, 1, 7, 2, 4096], 3])
     );
     for write in writes {
         let mut held = vec![0; write.bytes.len()];
@@ -46,20 +54,33 @@ fn corrupt_changed_unreadable_and_overflowing_command_slots_are_refused() {
         let (mut memory, address) = slot(7);
         memory.fill(HEAP + offset, &[byte]);
         assert!(
-            control::command(&memory, address, 7, 8, &[]).is_err(),
+            control::command(&memory, address, 7, 8, &[], None, 0).is_err(),
             "{offset}"
         );
     }
     let (mut memory, address) = slot(7);
     for next in [0, 6, 7] {
-        assert!(control::command(&memory, address, 7, next, &[]).is_err());
+        assert!(control::command(&memory, address, 7, next, &[], None, 0).is_err());
     }
-    assert!(control::command(&memory, address.checked_add(1).unwrap(), 7, 8, &[]).is_err());
-    assert!(control::command(&memory, VirtualAddress::new(u64::MAX - 7), 7, 8, &[]).is_err());
+    assert!(
+        control::command(&memory, address.checked_add(1).unwrap(), 7, 8, &[], None, 0).is_err()
+    );
+    assert!(
+        control::command(
+            &memory,
+            VirtualAddress::new(u64::MAX - 7),
+            7,
+            8,
+            &[],
+            None,
+            0
+        )
+        .is_err()
+    );
     memory.bytes.remove(&(HEAP + 32));
-    assert!(control::command(&memory, address, 7, 8, &[]).is_err());
+    assert!(control::command(&memory, address, 7, 8, &[], None, 0).is_err());
     memory.bytes.remove(&(HEAP + 20));
-    assert!(control::command(&memory, address, 7, 8, &[]).is_err());
+    assert!(control::command(&memory, address, 7, 8, &[], None, 0).is_err());
 }
 
 #[test]
@@ -67,9 +88,17 @@ fn oversized_configuration_is_refused_without_truncation() {
     let (memory, address) = slot(0);
     let path = "x".repeat(hook::CONTROL_CAPACITY as usize);
     assert!(
-        control::command(&memory, address, 0, 1, &[("LINE", 1, 1, &path, 1, "")])
-            .unwrap_err()
-            .contains("bounded")
+        control::command(
+            &memory,
+            address,
+            0,
+            1,
+            &[("LINE", 1, 1, &path, 1, "")],
+            None,
+            0
+        )
+        .unwrap_err()
+        .contains("bounded")
     );
 }
 
@@ -77,7 +106,7 @@ proptest! {
     #[test]
     fn arbitrary_generations_preserve_sequence_bits(previous in any::<u64>(), next in any::<u64>()) {
         let (memory, address) = slot(previous);
-        match control::command(&memory, address, previous, next, &[]) {
+        match control::command(&memory, address, previous, next, &[], None, 0) {
             Ok(writes) => {
                 prop_assert!(next > previous);
                 prop_assert_eq!(&writes[2].expected, &previous.to_le_bytes());
@@ -224,4 +253,52 @@ fn a_python_function_breakpoint_needs_a_name() {
         resolve("py:main").expect("a Python function").as_deref(),
         Ok([crate::ManagedPlace::Function { name }]) if &**name == "main"
     ));
+    assert!(matches!(
+        resolve("py:outer.<locals>.area").expect("a Python function").as_deref(),
+        Ok([crate::ManagedPlace::Function { name }]) if &**name == "outer.<locals>.area"
+    ));
+    // A native function in a `py` namespace is not Python's.
+    assert!(resolve("py::run").is_none());
+    assert!(resolve("main").is_none());
+}
+
+/// A Python line breakpoint's path matches as a native one's does, so `.`
+/// components and repeated separators change nothing it names.
+#[test]
+fn a_python_line_breakpoint_path_ignores_its_dot_components() {
+    use crate::runtime_model::RuntimeModel as _;
+    let model = super::super::PythonRuntime {
+        version: crate::image::python::PyVersion(0x030e_00f0),
+        reading: Err("not needed to resolve".into()),
+        free_threaded: false,
+        entry: None,
+        evaluation: Vec::new(),
+    };
+    let memory = Memory::default();
+    let resolve = |path: &str| {
+        let line = crate::LineNumber::new(5).expect("a line");
+        model.resolve_breakpoint(
+            &memory,
+            &crate::BreakpointSpec::Source {
+                path: path.into(),
+                line,
+            },
+        )
+    };
+    for (requested, armed) in [
+        ("./pkg/./later.py", "pkg/later.py"),
+        ("later.py", "later.py"),
+        ("/srv//app/./later.py", "/srv/app/later.py"),
+        ("../later.py", "../later.py"),
+    ] {
+        assert!(
+            matches!(
+                resolve(requested).expect("a Python line").as_deref(),
+                Ok([crate::ManagedPlace::Line { path, line: 5 }]) if &**path == armed
+            ),
+            "{requested}"
+        );
+    }
+    assert!(resolve("later.pyc").is_none());
+    assert!(resolve("later").is_none());
 }
