@@ -158,8 +158,14 @@ mod tests {
         let pid = std::process::id();
         let own = own_pid(pid).expect("its own pid");
         let path = format!("/tmp/perf-{own}.map");
+        // A map there now was made by an earlier process with this pid,
+        // before this one began: it is not read, and, where it can be
+        // removed, the test goes on without it.
         if std::path::Path::new(&path).exists() {
-            return;
+            assert!(matches!(read_map(pid, 0), Err(MapError::Stale)));
+            if std::fs::remove_file(&path).is_err() {
+                return;
+            }
         }
 
         std::fs::write(&path, b"1000 10 first\n2000 1").expect("write the map");
