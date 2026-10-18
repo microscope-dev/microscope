@@ -1,6 +1,7 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { stopPath } from "../focus";
+import { stopKind } from "../model";
 import type { StopEntry } from "../protocol";
 import { useModel } from "../store";
 import { useTab } from "../tab";
@@ -43,11 +44,15 @@ export function Strip() {
               onClick={() =>
                 session &&
                 navigate({
-                  href: stopPath(session, { stop: entry.stop, thread: entry.thread, frame: 0 }),
+                  href: stopPath(session, {
+                    stop: entry.stop,
+                    thread: entry.thread,
+                    frame: entry.frame,
+                  }),
                 })
               }
             >
-              #{entry.stop} {entry.reason.kind} · {placeText(entry.place)}
+              #{entry.stop} {stopKind(entry.reason.kind)} · {placeText(entry.place)}
             </button>
           ))}
         </nav>

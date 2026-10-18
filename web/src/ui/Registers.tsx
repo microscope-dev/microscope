@@ -7,7 +7,7 @@ import { useRequest } from "../data";
 import type { At } from "../focus";
 import type { Register, Row } from "../protocol";
 import { isBoolean, read, write } from "../storage";
-import { hidden } from "./Values";
+import { errorClass, hidden } from "./Values";
 import { LinkedExpansion, ValueRow } from "./ValueTree";
 import { useFocus } from "./Workspace";
 
@@ -37,7 +37,7 @@ export function Registers() {
   if (why) {
     body = <div className="empty">{why}</div>;
   } else if (registers.error) {
-    body = <div className="empty error">{registers.error.message}</div>;
+    body = <div className={errorClass(registers.error)}>{registers.error.message}</div>;
   } else if (!registers.data) {
     body = <div className="empty">Reading registers…</div>;
   } else {

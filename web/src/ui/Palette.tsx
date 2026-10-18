@@ -5,7 +5,9 @@
 import { useId, useState } from "react";
 import { firstBreakpointPlace } from "../breakpoints";
 import { useRequest } from "../data";
+import { openingFrame } from "../follow";
 import { type Command, describe, LABELS } from "../keys";
+import { stopKind } from "../model";
 import { best, score } from "../palette";
 import { useConnection } from "../store";
 import { flash, tab, useTab } from "../tab";
@@ -303,7 +305,11 @@ function useGroups(mode: Mode, query: string): Group[] {
     run: () => {
       const inferior = state.inferior;
       if (inferior.state === "stopped") {
-        go({ stop: inferior.stop, thread: thread.id, frame: 0 });
+        go({
+          stop: inferior.stop,
+          thread: thread.id,
+          frame: openingFrame(state, inferior.stop, thread.id),
+        });
       } else {
         flash("Threads are shown while the program is stopped");
       }
@@ -322,9 +328,9 @@ function useGroups(mode: Mode, query: string): Group[] {
   }));
   const stops: Item[] = [...state.stops].reverse().map((entry) => ({
     id: `stop:${entry.stop}`,
-    label: `#${entry.stop} ${entry.reason.kind} · ${placeText(entry.place)}`,
+    label: `#${entry.stop} ${stopKind(entry.reason.kind)} · ${placeText(entry.place)}`,
     detail: entry.stop === at?.stop ? "shown" : undefined,
-    run: () => go({ stop: entry.stop, thread: entry.thread, frame: 0 }),
+    run: () => go({ stop: entry.stop, thread: entry.thread, frame: entry.frame }),
   }));
 
   // Functions come before the commands made from them, at equal rank.

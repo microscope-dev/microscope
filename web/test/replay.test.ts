@@ -3,8 +3,15 @@
 import { describe, expect, it, vi } from "vitest";
 import { action } from "../src/actions";
 import { Connection, type TransportHandlers } from "../src/connection";
-import { initialModel, type Model, type ModelEvent, reduce } from "../src/model";
-import type { ServerMessage } from "../src/protocol";
+import {
+  commandName,
+  initialModel,
+  type Model,
+  type ModelEvent,
+  reduce,
+  stopKind,
+} from "../src/model";
+import type { ServerMessage, State, Target } from "../src/protocol";
 import { shown } from "../src/ui/Status";
 import { binaries, received, transcript, transcriptNames } from "./transcripts";
 
@@ -63,6 +70,32 @@ describe("a program run to its exit", () => {
     expect(shown(final).label).toBe("Exited");
     expect(action("continue", final).enabled).toBe(true);
     expect(action("pause", final).enabled).toBe(false);
+  });
+
+  it("names the program and its file arguments by their file names", () => {
+    const state = final.state as State;
+    const target = state.target as Target;
+    const python = {
+      ...state,
+      target: {
+        ...target,
+        program: "/nix/store/x-python3/bin/python3.14",
+        arguments: ["-X", "dev", "/home/me/work/inventory.py", "--count=3"],
+      },
+    };
+    expect(commandName(python)).toBe("python3.14 -X dev inventory.py --count=3");
+    const relative = {
+      ...python,
+      target: { ...python.target, arguments: ["./tests/views.py", "--out=/tmp/x", "a/b"] },
+    } as State;
+    expect(commandName(relative)).toBe("python3.14 views.py --out=/tmp/x b");
+    expect(commandName(null)).toBeNull();
+  });
+
+  it("names what kind of stop each is in words", () => {
+    expect(stopKind("breakpoint")).toBe("breakpoint");
+    expect(stopKind("languageException")).toBe("language exception");
+    expect(stopKind("watchpointArmFailed")).toBe("watchpoint arm failed");
   });
 
   it("waited for continue before it started", () => {

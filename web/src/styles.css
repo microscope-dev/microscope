@@ -260,8 +260,9 @@ kbd {
   font: 10.5px / 1 var(--mono);
 }
 
-/* Tooltips still name the keys where the toolbar has no room for them. */
-@media (width < 1180px) {
+/* Tooltips still name the keys where the toolbar has no room for them.
+   They give way before the labels and the command the status names. */
+@media (width < 1600px) {
   .tb .hint {
     display: none;
   }
@@ -308,13 +309,18 @@ kbd {
   white-space: nowrap;
 }
 
+/* A long reason, such as an exception's message, gives way before the
+   command: the header's tooltip and the stops strip still say it whole. */
 .status .detail {
+  flex: 0 4 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .status .program {
+  flex: 0 1 auto;
+  min-width: 0;
   color: var(--ink);
   font: 12px var(--mono);
   overflow: hidden;
@@ -1421,6 +1427,20 @@ textarea.input {
   box-shadow: inset 3px 0 0 var(--pc-mark);
 }
 
+/* Why an exception stopped the program, under the line it stopped at. It
+   wraps, long paths too, rather than widen the lines it sits among. */
+.source-view .cm-stop-note {
+  max-width: 80ch;
+  overflow-wrap: anywhere;
+  margin: 2px 0 4px 2ch;
+  padding: 3px 8px;
+  border-left: 3px solid var(--error);
+  background: var(--error-bg);
+  color: var(--ink);
+  font: 12px var(--sans);
+  white-space: pre-wrap;
+}
+
 .source-view .cm-inline-values {
   margin-left: 18px;
   color: var(--ink-3);
@@ -2189,8 +2209,33 @@ textarea.input {
   gap: 4px;
 }
 
+/* The exceptions runtimes report, folded below the breakpoints. */
+.exceptions {
+  padding: 2px 4px 6px;
+  font-size: 12px;
+}
+
+.exceptions summary {
+  padding: 4px 6px;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.exceptions .count {
+  color: var(--ink-3);
+  font: 500 10.5px var(--mono);
+}
+
+.exceptions label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+/* In a narrow pane, the access goes below rather than squeezing the text. */
 .watch-adder .input:first-child {
-  flex: 1;
+  flex: 1 1 16em;
   min-width: 0;
 }
 

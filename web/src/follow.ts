@@ -14,6 +14,33 @@ export function latestStop(state: State): number | undefined {
 }
 
 /**
+ * The frame a tab opens on for `thread` at `stop`: on the thread that
+ * stopped, the frame the stop selects, which at a runtime agent's stop is
+ * the program's frame rather than the agent's; elsewhere the innermost.
+ */
+export function openingFrame(state: State, stop: number, thread: number): number {
+  const entry = state.stops.find((entry) => entry.stop === stop);
+  return entry?.thread === thread ? entry.frame : 0;
+}
+
+/** Stops whose reason the place they show does not say. */
+const EXCEPTIONS = new Set(["exception", "languageException"]);
+
+/**
+ * Why the program stopped, to say beside the line of the frame `at` shows,
+ * when that is the frame an exception's stop opened on: there the program
+ * did not choose to stop, and an uncaught exception's frames that raised it
+ * are gone.
+ */
+export function stopNote(state: State, at: At): string | null {
+  const entry = state.stops.find((candidate) => candidate.stop === at.stop);
+  if (!entry || entry.thread !== at.thread || entry.frame !== at.frame || at.task) {
+    return null;
+  }
+  return EXCEPTIONS.has(entry.reason.kind) ? entry.reason.description : null;
+}
+
+/**
  * Where to go now. `followed` is the latest stop as of the state before
  * this one, which a tab that was following was showing.
  */
@@ -29,7 +56,10 @@ export function follow(
     if (at?.stop === inferior.stop || !following) {
       return null;
     }
-    return { to: "stop", at: { stop: inferior.stop, thread: inferior.thread, frame: 0 } };
+    return {
+      to: "stop",
+      at: { stop: inferior.stop, thread: inferior.thread, frame: inferior.frame },
+    };
   }
   if (inferior.state === "running" || at === null || !following) {
     return null;

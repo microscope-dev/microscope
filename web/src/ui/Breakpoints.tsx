@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { firstBreakpointPlace, knownBreakpointPlaces } from "../breakpoints";
+import { useRequest } from "../data";
 import { controls } from "../model";
 import type { Breakpoint, WatchAccess, Watchpoint } from "../protocol";
 import { useConnection, useModel } from "../store";
@@ -52,6 +53,7 @@ export function Breakpoints() {
         )}
         {control && <Adder />}
         {control && <WatchAdder />}
+        <Exceptions control={control} />
         {!control && breakpoints.length + state.watchpoints.length === 0 && (
           <div className="empty">No breakpoints.</div>
         )}
@@ -451,5 +453,53 @@ function WatchAdder() {
       </select>
       {error && <div className="error">{error}</div>}
     </form>
+  );
+}
+
+/**
+ * The exceptions language runtimes report, each of which stops the program
+ * once chosen: a list a program in one language mostly ignores, so it is
+ * folded until opened, saying how many are on.
+ */
+function Exceptions({ control }: { control: boolean }) {
+  const session = useModel((model) => model.state?.session);
+  const exceptions = useRequest("exceptions", session ? undefined : null);
+  const connection = useConnection();
+  const [error, setError] = useState<string | null>(null);
+  const filters = exceptions.data?.filters;
+  if (!filters) {
+    return null;
+  }
+  const on = filters.filter((filter) => filter.on).length;
+  return (
+    <details className="exceptions" data-testid="exceptions">
+      <summary>
+        Exceptions{" "}
+        <span className="count">
+          {on} of {filters.length} on
+        </span>
+      </summary>
+      {error && <div className="error">{error}</div>}
+      <ul className="rows">
+        {filters.map((filter) => (
+          <li key={filter.id} className="row" title={filter.description}>
+            <label>
+              <input
+                type="checkbox"
+                checked={filter.on}
+                disabled={!control}
+                onChange={(event) => {
+                  setError(null);
+                  connection
+                    .request("setException", { id: filter.id, on: event.target.checked })
+                    .catch((failure: Error) => setError(failure.message));
+                }}
+              />{" "}
+              {filter.label}
+            </label>
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }

@@ -2,18 +2,17 @@
 {"message":{"breakpoints":[],"busy":"Loading <root>/build/test-programs/output-streams","inferior":{"state":"notStarted"},"revision":0,"session":null,"settings":0,"stops":[],"target":null,"threads":[],"type":"state","watchpoints":[],"writes":0},"to":"page"}
 {"message":{"profiles":[],"type":"profiles"},"to":"page"}
 {"message":{"people":[{"connection":1,"focus":null,"name":"tester","role":"control"}],"type":"presence"},"to":"page"}
-{"message":{"breakpoints":[],"busy":null,"inferior":{"state":"notStarted"},"revision":0,"session":"3d4d23e6","settings":0,"stops":[],"target":{"arguments":[],"kind":"launch","pid":null,"program":"<root>/build/test-programs/output-streams"},"threads":[],"type":"state","watchpoints":[],"writes":0},"to":"page"}
+{"message":{"breakpoints":[],"busy":null,"inferior":{"state":"notStarted"},"revision":0,"session":"49e78df5","settings":0,"stops":[],"target":{"arguments":[],"kind":"launch","pid":null,"program":"<root>/build/test-programs/output-streams"},"threads":[],"type":"state","watchpoints":[],"writes":0},"to":"page"}
 {"message":{"id":1,"method":"continue","params":{}},"to":"server"}
-{"message":{"breakpoints":[],"busy":null,"inferior":{"pid":1727859,"state":"running"},"revision":1,"session":"3d4d23e6","settings":0,"stops":[],"target":{"arguments":[],"kind":"launch","pid":null,"program":"<root>/build/test-programs/output-streams"},"threads":[{"id":1727859,"name":null,"stopped":false}],"type":"state","watchpoints":[],"writes":0},"to":"page"}
-{"message":{"breakpoints":[],"busy":null,"inferior":{"pid":1727859,"state":"running"},"revision":4,"session":"3d4d23e6","settings":0,"stops":[],"target":{"arguments":[],"kind":"launch","pid":null,"program":"<root>/build/test-programs/output-streams"},"threads":[{"id":1727859,"name":"output-streams","stopped":false}],"type":"state","watchpoints":[],"writes":0},"to":"page"}
+{"message":{"breakpoints":[],"busy":null,"inferior":{"pid":33802,"state":"running"},"revision":1,"session":"49e78df5","settings":0,"stops":[],"target":{"arguments":[],"kind":"launch","pid":null,"program":"<root>/build/test-programs/output-streams"},"threads":[{"id":33802,"name":null,"stopped":false}],"type":"state","watchpoints":[],"writes":0},"to":"page"}
 {"message":{"id":1,"result":null,"type":"result"},"to":"page"}
 {"message":{"id":2,"method":"input","params":{"eof":true,"text":""}},"to":"server"}
 {"message":{"connection":1,"name":"tester","text":"started the program","type":"notice"},"to":"page"}
+{"message":{"breakpoints":[],"busy":null,"inferior":{"pid":33802,"state":"running"},"revision":4,"session":"49e78df5","settings":0,"stops":[],"target":{"arguments":[],"kind":"launch","pid":null,"program":"<root>/build/test-programs/output-streams"},"threads":[{"id":33802,"name":"output-streams","stopped":false}],"type":"state","watchpoints":[],"writes":0},"to":"page"}
 {"message":{"id":2,"result":null,"type":"result"},"to":"page"}
-{"message":{"breakpoints":[],"busy":null,"inferior":{"pid":1727859,"state":"running"},"revision":5,"session":"3d4d23e6","settings":0,"stops":[],"target":{"arguments":[],"kind":"launch","pid":null,"program":"<root>/build/test-programs/output-streams"},"threads":[{"id":1727859,"name":"output-streams","stopped":false}],"type":"state","watchpoints":[],"writes":0},"to":"page"}
-{"message":{"stream":"stdout","text":"out 1\n","type":"output"},"to":"page"}
-{"message":{"stream":"stdout","text":"out 2\nout 3\n","type":"output"},"to":"page"}
+{"message":{"breakpoints":[],"busy":null,"inferior":{"pid":33802,"state":"running"},"revision":5,"session":"49e78df5","settings":0,"stops":[],"target":{"arguments":[],"kind":"launch","pid":null,"program":"<root>/build/test-programs/output-streams"},"threads":[{"id":33802,"name":"output-streams","stopped":false}],"type":"state","watchpoints":[],"writes":0},"to":"page"}
 {"message":{"stream":"stderr","text":"err 1\nerr 2\nerr 3\n","type":"output"},"to":"page"}
+{"message":{"stream":"stdout","text":"out 1\nout 2\nout 3\n","type":"output"},"to":"page"}
 {"message":{"stream":"stdout","text":"bad �� bytes, then ✓\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…","type":"output"},"to":"page"}
 {"message":{"stream":"stdout","text":"xxxx","type":"output"},"to":"page"}
 {"message":{"stream":"stdout","text":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…","type":"output"},"to":"page"}
@@ -48,19 +47,19 @@
 {"message":{"stream":"stdout","text":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…","type":"output"},"to":"page"}
 {"message":{"stream":"stdout","text":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…","type":"output"},"to":"page"}
 {"message":{"stream":"stdout","text":"xxxxxxxxxxxxxxxxxxxxxxx\nburst done\nstdin: eof\n","type":"output"},"to":"page"}
-{"message":{"breakpoints":[],"busy":null,"inferior":{"description":"exited with status 0","state":"exited"},"revision":9,"session":"3d4d23e6","settings":0,"stops":[],"target":{"arguments":[],"kind":"launch","pid":null,"program":"<root>/build/test-programs/output-streams"},"threads":[],"type":"state","watchpoints":[],"writes":0},"to":"page"}
+{"message":{"breakpoints":[],"busy":null,"inferior":{"state":"notStarted"},"revision":9,"session":"49e78df5","settings":0,"stops":[],"target":{"arguments":[],"kind":"launch","pid":null,"program":"<root>/build/test-programs/output-streams"},"threads":[],"type":"state","watchpoints":[],"writes":0},"to":"page"}
+{"message":{"breakpoints":[],"busy":null,"inferior":{"description":"exited with status 0","state":"exited"},"revision":9,"session":"49e78df5","settings":0,"stops":[],"target":{"arguments":[],"kind":"launch","pid":null,"program":"<root>/build/test-programs/output-streams"},"threads":[],"type":"state","watchpoints":[],"writes":0},"to":"page"}
 {"message":{"id":3,"method":"continue","params":{}},"to":"server"}
-{"message":{"breakpoints":[],"busy":null,"inferior":{"pid":1728365,"state":"running"},"revision":10,"session":"3d4d23e6","settings":0,"stops":[],"target":{"arguments":[],"kind":"launch","pid":null,"program":"<root>/build/test-programs/output-streams"},"threads":[{"id":1728365,"name":null,"stopped":false}],"type":"state","watchpoints":[],"writes":0},"to":"page"}
-{"message":{"breakpoints":[],"busy":null,"inferior":{"pid":1728365,"state":"running"},"revision":13,"session":"3d4d23e6","settings":0,"stops":[],"target":{"arguments":[],"kind":"launch","pid":null,"program":"<root>/build/test-programs/output-streams"},"threads":[{"id":1728365,"name":"output-streams","stopped":false}],"type":"state","watchpoints":[],"writes":0},"to":"page"}
+{"message":{"breakpoints":[],"busy":null,"inferior":{"pid":34516,"state":"running"},"revision":13,"session":"49e78df5","settings":0,"stops":[],"target":{"arguments":[],"kind":"launch","pid":null,"program":"<root>/build/test-programs/output-streams"},"threads":[{"id":34516,"name":"output-streams","stopped":false}],"type":"state","watchpoints":[],"writes":0},"to":"page"}
 {"message":{"id":3,"result":null,"type":"result"},"to":"page"}
 {"message":{"id":4,"method":"input","params":{"eof":true,"text":""}},"to":"server"}
 {"message":{"connection":1,"name":"tester","text":"started the program","type":"notice"},"to":"page"}
 {"message":{"id":4,"result":null,"type":"result"},"to":"page"}
-{"message":{"breakpoints":[],"busy":null,"inferior":{"pid":1728365,"state":"running"},"revision":14,"session":"3d4d23e6","settings":0,"stops":[],"target":{"arguments":[],"kind":"launch","pid":null,"program":"<root>/build/test-programs/output-streams"},"threads":[{"id":1728365,"name":"output-streams","stopped":false}],"type":"state","watchpoints":[],"writes":0},"to":"page"}
-{"message":{"stream":"stdout","text":"out 1\nout 2\nout 3\n","type":"output"},"to":"page"}
+{"message":{"breakpoints":[],"busy":null,"inferior":{"pid":34516,"state":"running"},"revision":14,"session":"49e78df5","settings":0,"stops":[],"target":{"arguments":[],"kind":"launch","pid":null,"program":"<root>/build/test-programs/output-streams"},"threads":[{"id":34516,"name":"output-streams","stopped":false}],"type":"state","watchpoints":[],"writes":0},"to":"page"}
 {"message":{"stream":"stderr","text":"err 1\nerr 2\nerr 3\n","type":"output"},"to":"page"}
+{"message":{"stream":"stdout","text":"out 1\nout 2\nout 3\n","type":"output"},"to":"page"}
 {"message":{"stream":"stdout","text":"bad �� bytes, then ✓\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…","type":"output"},"to":"page"}
-{"message":{"stream":"stdout","text":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…","type":"output"},"to":"page"}
+{"message":{"stream":"stdout","text":"xxxx","type":"output"},"to":"page"}
 {"message":{"stream":"stdout","text":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…","type":"output"},"to":"page"}
 {"message":{"stream":"stdout","text":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…","type":"output"},"to":"page"}
 {"message":{"stream":"stdout","text":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…","type":"output"},"to":"page"}
@@ -93,5 +92,5 @@
 {"message":{"stream":"stdout","text":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…","type":"output"},"to":"page"}
 {"message":{"stream":"stdout","text":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…","type":"output"},"to":"page"}
 {"message":{"stream":"stdout","text":"xxxxxxxxxxxxxxxxxxxxxxx\nburst done\nstdin: eof\n","type":"output"},"to":"page"}
-{"message":{"breakpoints":[],"busy":null,"inferior":{"state":"notStarted"},"revision":18,"session":"3d4d23e6","settings":0,"stops":[],"target":{"arguments":[],"kind":"launch","pid":null,"program":"<root>/build/test-programs/output-streams"},"threads":[],"type":"state","watchpoints":[],"writes":0},"to":"page"}
-{"message":{"breakpoints":[],"busy":null,"inferior":{"description":"exited with status 0","state":"exited"},"revision":18,"session":"3d4d23e6","settings":0,"stops":[],"target":{"arguments":[],"kind":"launch","pid":null,"program":"<root>/build/test-programs/output-streams"},"threads":[],"type":"state","watchpoints":[],"writes":0},"to":"page"}
+{"message":{"breakpoints":[],"busy":null,"inferior":{"state":"notStarted"},"revision":18,"session":"49e78df5","settings":0,"stops":[],"target":{"arguments":[],"kind":"launch","pid":null,"program":"<root>/build/test-programs/output-streams"},"threads":[],"type":"state","watchpoints":[],"writes":0},"to":"page"}
+{"message":{"breakpoints":[],"busy":null,"inferior":{"description":"exited with status 0","state":"exited"},"revision":18,"session":"49e78df5","settings":0,"stops":[],"target":{"arguments":[],"kind":"launch","pid":null,"program":"<root>/build/test-programs/output-streams"},"threads":[],"type":"state","watchpoints":[],"writes":0},"to":"page"}

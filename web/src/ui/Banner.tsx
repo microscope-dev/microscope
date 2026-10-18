@@ -60,7 +60,7 @@ export function Banner() {
               className="button primary small"
               onClick={() => {
                 tab.setState({ pinned: false });
-                go({ stop: now.stop, thread: now.thread, frame: 0 });
+                go({ stop: now.stop, thread: now.thread, frame: now.frame });
               }}
             >
               Go to stop #{now.stop}

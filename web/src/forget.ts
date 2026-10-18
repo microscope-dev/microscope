@@ -63,10 +63,18 @@ export function forget(before: Marks, after: Marks, answers: Cache, values: Reca
     // Code is memory too.
     answers.forget("disassemble ");
   }
-  // Signal policies change without a stop, and reloading views changes how
-  // values are presented and drawn.
+  // Signal policies and the exceptions that stop change without a stop, and
+  // reloading views changes how values are presented and drawn.
   if (before.settings !== after.settings) {
-    for (const method of ["signals ", "scopes ", "children ", "evaluate ", "draw ", "renderers "]) {
+    for (const method of [
+      "signals ",
+      "exceptions ",
+      "scopes ",
+      "children ",
+      "evaluate ",
+      "draw ",
+      "renderers ",
+    ]) {
       answers.forget(method);
     }
   }

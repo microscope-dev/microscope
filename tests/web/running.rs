@@ -162,6 +162,22 @@ async fn breakpoints_change_their_conditions_and_go_before_the_program_runs() {
         .await
         .expect_err("a function no module has");
     assert_eq!(kind, "failed");
+
+    // Python code loads only as the program imports it, so a Python
+    // breakpoint waits for it rather than being refused.
+    for location in ["app.py:12", "py:main"] {
+        tab.ok("addBreakpoint", json!({"location": location})).await;
+    }
+    let waiting = tab
+        .state("the Python breakpoints", |state| {
+            state["breakpoints"]
+                .as_array()
+                .is_some_and(|all| all.len() == 2)
+        })
+        .await;
+    for breakpoint in waiting["breakpoints"].as_array().into_iter().flatten() {
+        assert_eq!(breakpoint["places"], json!([]), "{breakpoint}");
+    }
     tab.save_traffic("breakpoints");
 }
 

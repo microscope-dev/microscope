@@ -66,10 +66,12 @@ pub async fn context(
     Ok(context)
 }
 
+/// A thread's or task's frames, folded around frame `selected`.
 pub async fn backtrace(
     handle: &DebuggerHandle,
     images: &Images,
     at: protocol::ThreadAt,
+    selected: u32,
 ) -> Result<Backtrace, Failure> {
     let trace = handle
         .at(innermost(at.stop, at.execution()))
@@ -80,7 +82,7 @@ pub async fn backtrace(
         frames.push(frame_of(images, &trace, frame).await);
     }
 
-    let folds = crate::present::frames::folds(&trace, trace.frames.len(), 0)
+    let folds = crate::present::frames::folds(&trace, trace.frames.len(), selected)
         .into_iter()
         .filter_map(|run| {
             Some(FrameRun {
@@ -108,10 +110,29 @@ async fn frame_of(
         None => None,
     };
 
-    let source = crate::present::frames::place(frame, image.as_deref()).map(|place| SourceLine {
+    let place = crate::present::frames::place(frame, image.as_deref());
+    images.note_recorded(frame, place.as_ref());
+    let first = frame.recorded.as_ref().map_or_else(
+        || {
+            frame
+                .function
+                .as_ref()
+                .and_then(|function| function.declaration.as_ref())
+                .filter(|declared| {
+                    frame
+                        .source
+                        .as_ref()
+                        .is_some_and(|source| source.file == declared.file)
+                })
+                .map(|declared| declared.line.get())
+        },
+        |recorded| recorded.first_line.map(u64::from),
+    );
+    let source = place.map(|place| SourceLine {
         path: place.path.display().to_string(),
         line: place.line,
         column: place.column,
+        first,
     });
     Frame {
         index: frame.id.get(),
@@ -163,6 +184,7 @@ pub async fn sources(images: &Images) -> SourceFiles {
             path: image.source_file(declared.file)?.path.display().to_string(),
             line: declared.line.get(),
             column: None,
+            first: Some(declared.line.get()),
         })
     });
     SourceFiles {
@@ -281,7 +303,7 @@ fn rank(name: &str, query: &str) -> Option<u8> {
 }
 
 /// Reads a file the debug information names, with the lines any module
-/// can break at.
+/// can break at, or one a runtime recorded for a frame the page was shown.
 pub async fn source(
     handle: &DebuggerHandle,
     images: &Images,
@@ -304,13 +326,19 @@ pub async fn source(
         found.get_or_insert_with(|| file.clone());
     }
 
-    let file = found.ok_or_else(|| {
-        Failure::new(
-            ErrorKind::Invalid,
-            format!("the debug information names no source file {path}"),
-        )
-    })?;
-    let (read, text) = handle.read_source_file(&file).await?;
+    let (read, text) = match found {
+        Some(file) => handle.read_source_file(&file).await?,
+        // Its runtime knows which lines run code only as it loads them.
+        None if images.recorded(recorded) => {
+            handle.read_recorded_source(recorded).await?
+        }
+        None => {
+            return Err(Failure::new(
+                ErrorKind::Invalid,
+                format!("the debug information names no source file {path}"),
+            ));
+        }
+    };
     Ok(SourceText {
         path: path.to_owned(),
         read: read.display().to_string(),

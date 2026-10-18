@@ -1,14 +1,15 @@
 //! The debugger's state as the page receives it: where the program stopped,
 //! its breakpoints and where they landed, and the stops so far.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use microscope::{
-    BreakpointLocation, BreakpointSpec, DebuggerHandle, ImageAddress, InferiorState, LoadBias,
-    ModuleId, ModuleImage, StackFrame, StackFrameId, StateSnapshot, StopContext, StopReason,
-    VirtualAddress,
+    BreakpointLocation, BreakpointSpec, DebuggerHandle, ExecutionContext, ImageAddress,
+    InferiorState, LoadBias, ModuleId, ModuleImage, StackFrame, StackFrameId, StateSnapshot,
+    StopContext, StopReason, VirtualAddress,
 };
 
 use super::protocol::{self, Inferior, Place, State, StopEntry, Thread};
@@ -22,6 +23,11 @@ const STOP_HISTORY: usize = 100;
 pub struct Images {
     handle: DebuggerHandle,
     cache: Mutex<HashMap<ModuleId, Arc<ModuleImage>>>,
+
+    /// The source files a runtime recorded for frames the page was shown,
+    /// such as a Python program's, which no debug information names. The
+    /// page may read these, and debug information's files, and no others.
+    recorded: Mutex<HashSet<PathBuf>>,
 }
 
 impl Images {
@@ -29,7 +35,34 @@ impl Images {
         Self {
             handle,
             cache: Mutex::default(),
+            recorded: Mutex::default(),
         }
+    }
+
+    /// Notes the file a runtime recorded for `frame`, at `place`, as one the
+    /// page was shown. A runtime's `<string>` and the like name no file.
+    pub fn note_recorded(
+        &self,
+        frame: &StackFrame,
+        place: Option<&crate::present::frames::FramePlace>,
+    ) {
+        if let Some(place) = place.filter(|_| frame.recorded.is_some())
+            && !place.path.to_string_lossy().starts_with('<')
+        {
+            self.recorded
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(place.path.clone());
+        }
+    }
+
+    /// Whether a frame the page was shown runs code from the file at the
+    /// `path` its runtime recorded.
+    pub fn recorded(&self, path: &Path) -> bool {
+        self.recorded
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(path)
     }
 
     /// Forgets every image: a new process numbers its modules again.
@@ -102,6 +135,7 @@ impl Images {
         };
 
         let place = crate::present::frames::place(frame, image.as_deref());
+        self.note_recorded(frame, place.as_ref());
         Place {
             address: frame
                 .instruction
@@ -218,14 +252,23 @@ impl Describer {
                 thread_id,
                 reason,
             } => {
+                // The controller selects a frame other than the innermost
+                // where a runtime's agent stopped the thread.
+                let selected = match snapshot.selected {
+                    Some(ExecutionContext::Thread(selected)) if selected == *thread_id => {
+                        snapshot.selected_frame.unwrap_or(StackFrameId::INNERMOST)
+                    }
+                    _ => StackFrameId::INNERMOST,
+                };
                 let entry = self
-                    .stop_entry(stop_id.get(), thread_id.get(), reason)
+                    .stop_entry(stop_id.get(), thread_id.get(), reason, selected)
                     .await;
                 Inferior::Stopped {
                     pid: process_id.get(),
                     stop: stop_id.get(),
                     thread: thread_id.get(),
                     reason: entry.reason,
+                    frame: entry.frame,
                     place: entry.place,
                 }
             }
@@ -260,7 +303,13 @@ impl Describer {
     }
 
     /// The history's entry for a stop, made when the stop is first seen.
-    async fn stop_entry(&mut self, stop: u64, thread: u64, reason: &StopReason) -> StopEntry {
+    async fn stop_entry(
+        &mut self,
+        stop: u64,
+        thread: u64,
+        reason: &StopReason,
+        selected: StackFrameId,
+    ) -> StopEntry {
         if let Some(entry) = self.stops.iter().rev().find(|entry| entry.stop == stop) {
             return entry.clone();
         }
@@ -271,12 +320,22 @@ impl Describer {
             frame: StackFrameId::INNERMOST,
         };
 
-        let place = match self.handle.at(context).backtrace().await {
-            Ok(trace) => match trace.frames.first() {
-                Some(frame) => Some(self.images.place_of_frame(frame).await),
-                None => None,
-            },
-            Err(_) => None,
+        let (frame, place) = match self.handle.at(context).backtrace().await {
+            Ok(trace) => {
+                let shown = trace
+                    .frames
+                    .iter()
+                    .find(|frame| frame.id == selected)
+                    .or_else(|| trace.frames.first());
+                match shown {
+                    Some(shown) => (
+                        shown.id.get(),
+                        Some(self.images.place_of_frame(shown).await),
+                    ),
+                    None => (0, None),
+                }
+            }
+            Err(_) => (0, None),
         };
 
         let cause = self
@@ -291,6 +350,7 @@ impl Describer {
                 kind: reason_kind(reason).to_owned(),
                 description: plain(reason),
             },
+            frame,
             place,
             by: cause.as_ref().map(|cause| cause.name.clone()),
             action: cause.map(|cause| cause.action),

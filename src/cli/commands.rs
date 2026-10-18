@@ -3311,7 +3311,7 @@ pub fn parse_breakpoint_location(argument: &str) -> Result<Option<BreakpointSpec
 /// Whether a breakpoint is in Python code, which loads as the program
 /// imports it, so nothing can be checked against before then: it is kept
 /// pending until it is armed, rather than refused.
-fn is_python(location: &BreakpointSpec) -> bool {
+pub fn is_python(location: &BreakpointSpec) -> bool {
     match location {
         BreakpointSpec::Source { path, .. } => {
             path.extension().is_some_and(|extension| extension == "py")
@@ -3464,6 +3464,34 @@ impl Cli {
         Ok((deleted, others))
     }
 
+    /// The exceptions that stop, as `catch` or another client of this
+    /// console last chose them.
+    pub fn exception_stops(&self) -> microscope::ExceptionStops {
+        *self
+            .exceptions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Chooses whether the exceptions the filter named `id` passes stop, and
+    /// returns the stops chosen.
+    pub async fn set_exception_stop(
+        &self,
+        id: &str,
+        stops: bool,
+    ) -> Result<microscope::ExceptionStops> {
+        let chosen = self
+            .exception_stops()
+            .with(id, stops)
+            .ok_or_else(|| anyhow!("no runtime reports exceptions as '{id}'"))?;
+        self.debugger.set_exception_stops(chosen).await?;
+        *self
+            .exceptions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = chosen;
+        Ok(chosen)
+    }
+
     /// Lists the exceptions runtimes report and whether each stops, or
     /// shows one, or chooses whether it does.
     async fn catch(&self, arguments: &[&str], rest: &str, spec: &CommandSpec) -> Result<String> {
@@ -3471,10 +3499,7 @@ impl Cli {
             return self.catch_syscall(rest, spec).await;
         }
 
-        let current = *self
-            .exceptions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current = self.exception_stops();
         let filters = microscope::ExceptionStops::filters();
         let (shown, stops) = match arguments {
             [] => (filters.iter().collect::<Vec<_>>(), current),
@@ -3492,16 +3517,8 @@ impl Cli {
                 let stops = match choice {
                     [] => current,
                     ["on" | "off"] => {
-                        let chosen =
-                            current.with(filter.id, choice[0] == "on").ok_or_else(|| {
-                                anyhow!("exception filter '{}' cannot be set", filter.id)
-                            })?;
-                        self.debugger.set_exception_stops(chosen).await?;
-                        *self
-                            .exceptions
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) = chosen;
-                        chosen
+                        self.set_exception_stop(filter.id, choice[0] == "on")
+                            .await?
                     }
                     _ => return Err(spec.usage_error()),
                 };

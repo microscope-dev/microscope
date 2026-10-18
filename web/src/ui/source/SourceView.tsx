@@ -48,6 +48,8 @@ export interface Marks {
   selection: { line: number; end: number } | null;
   /** Values beside the lines that compute them. */
   inline: ReadonlyMap<number, readonly InlineValue[]>;
+  /** Why the program stopped, under the line it says it of. */
+  note: { line: number; text: string } | null;
 }
 
 /** What a hover shows: a value and its type. */
@@ -78,6 +80,7 @@ const EMPTY: Marks = {
   frame: null,
   selection: null,
   inline: new Map(),
+  note: null,
 };
 
 const marksField = StateField.define<Marks>({
@@ -154,6 +157,23 @@ class Values extends WidgetType {
   }
 }
 
+/** Why the program stopped, as a line of its own under the one it stopped at. */
+class Note extends WidgetType {
+  constructor(readonly text: string) {
+    super();
+  }
+  override eq(other: WidgetType): boolean {
+    return other instanceof Note && other.text === this.text;
+  }
+  override toDOM(): HTMLElement {
+    const note = document.createElement("div");
+    note.className = "cm-stop-note";
+    note.setAttribute("role", "note");
+    note.textContent = this.text;
+    return note;
+  }
+}
+
 function hoverDom(expression: string, value: Hovered): HTMLElement {
   const dom = document.createElement("div");
   dom.className = "cm-value-tooltip";
@@ -191,6 +211,13 @@ function lineDecorations(state: EditorState): DecorationSet {
   }
   if (marks.pc !== null) {
     lines(marks.pc, marks.pc, "cm-pc-line");
+  }
+  if (marks.note && marks.note.line >= 1 && marks.note.line <= doc.lines) {
+    ranges.push(
+      Decoration.widget({ widget: new Note(marks.note.text), block: true, side: 1 }).range(
+        doc.line(marks.note.line).to,
+      ),
+    );
   }
   for (const [line, values] of marks.inline) {
     if (line >= 1 && line <= doc.lines && values.length > 0) {
@@ -230,6 +257,8 @@ export function SourceView({
   const parent = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const languageSlot = useRef(new Compartment());
+  // The text the view was last moved to a line in.
+  const revealedIn = useRef<string | null>(null);
   // Handlers change every render; the editor calls through these.
   const handlers = useRef({ onGutter, onLineNumber, onCursor, onHover });
   handlers.current = { onGutter, onLineNumber, onCursor, onHover };
@@ -342,12 +371,21 @@ export function SourceView({
       return;
     }
     const line = editor.state.doc.line(reveal);
-    // Only a line out of sight moves the view, so stepping nearby keeps it still.
+    // Only a line out of sight moves the view, so stepping nearby keeps it
+    // still. Text the editor has not yet shown has only estimated heights,
+    // which can place a line below the fold within sight, so it always moves.
+    const shown = revealedIn.current === text;
+    revealedIn.current = text;
     const block = editor.lineBlockAt(line.from);
     const { top, bottom } = editor.scrollDOM.getBoundingClientRect();
     const height = bottom - top;
     const scrolled = editor.scrollDOM.scrollTop;
-    if (height > 0 && block.top >= scrolled + 20 && block.bottom <= scrolled + height - 20) {
+    if (
+      shown &&
+      height > 0 &&
+      block.top >= scrolled + 20 &&
+      block.bottom <= scrolled + height - 20
+    ) {
       return;
     }
     editor.dispatch({ effects: EditorView.scrollIntoView(line.from, { y: "center" }) });

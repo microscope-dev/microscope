@@ -14,7 +14,7 @@ import { useConnection, useModel } from "../store";
 import { flash } from "../tab";
 import { useLook, useShowSource } from "./navigation";
 import { fileName } from "./paths";
-import { hidden } from "./Values";
+import { errorClass, hidden } from "./Values";
 import { useFocus } from "./Workspace";
 
 /** The syntax this browser reads, Intel unless AT&T was chosen. */
@@ -51,7 +51,9 @@ export function Disassembly() {
   if (why) {
     content = <div className="empty center-message">{why}</div>;
   } else if (answer.error) {
-    content = <div className="empty center-message error">{answer.error.message}</div>;
+    content = (
+      <div className={`${errorClass(answer.error)} center-message`}>{answer.error.message}</div>
+    );
   } else if (!disassembled) {
     content = <div className="empty center-message">Disassembling…</div>;
   } else {

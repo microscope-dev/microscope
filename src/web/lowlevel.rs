@@ -185,6 +185,7 @@ async fn source_line(images: &Images, instruction: &DisassembledInstruction) -> 
         path: image.source_file(location.file)?.path.display().to_string(),
         line: location.line.get(),
         column: location.column.map(microscope::ColumnNumber::get),
+        first: None,
     })
 }
 

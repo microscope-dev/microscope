@@ -20,6 +20,23 @@ function waiting(): Breakpoint {
   };
 }
 
+describe("a breakpoint set by a file's trailing path", () => {
+  it("marks that file, matched by whole trailing components, as the runtime does", () => {
+    const { pending: _, ...armed }: Breakpoint = {
+      ...waiting(),
+      location: "./pkg/app.py:3",
+      hits: 1,
+      places: [{ address: "", function: null, path: "pkg/app.py", line: 3 }],
+    };
+    expect(breakpointLines([armed], "/src/pkg/app.py").get(3)).toBe("plain");
+    expect(breakpointAt([armed], "/src/pkg/app.py", 3)?.id).toBe(1);
+    for (const other of ["/src/mypkg/app.py", "/src/pkg/myapp.py", "/src/app.py"]) {
+      expect(breakpointLines([armed], other).size).toBe(0);
+      expect(breakpointAt([armed], other, 3)).toBeUndefined();
+    }
+  });
+});
+
 describe("runtime breakpoint arming", () => {
   it("shows the arming reason and source while no location is ready", () => {
     const breakpoint = waiting();

@@ -2,7 +2,7 @@
 // checked against the stops real servers reported.
 
 import { describe, expect, it } from "vitest";
-import { follow, latestStop } from "../src/follow";
+import { follow, latestStop, stopNote } from "../src/follow";
 import type { State } from "../src/protocol";
 import { received } from "./transcripts";
 
@@ -24,6 +24,17 @@ describe("a tab at a stop", () => {
     expect(follow(second, { ...at(first), frame: 2 }, latestStop(first), false)).toEqual({
       to: "stop",
       at: at(second),
+    });
+  });
+
+  it("opens on the frame the stop selects, as at an agent's Python stop", () => {
+    const python = {
+      ...second,
+      inferior: { ...second.inferior, frame: 3 },
+    } as State;
+    expect(follow(python, at(first), latestStop(first), false)).toEqual({
+      to: "stop",
+      at: { ...at(second), frame: 3 },
     });
   });
 
@@ -53,5 +64,29 @@ describe("a tab on the session itself", () => {
     const [first] = stopped as [State];
     expect(follow(first, null, undefined, false)).toEqual({ to: "stop", at: at(first) });
     expect(follow(states[0] as State, null, undefined, false)).toBeNull();
+  });
+});
+
+describe("an exception's stop", () => {
+  const [, second] = stopped as [State, State];
+  const entry = second.stops.find((candidate) => candidate.stop === at(second).stop);
+  const description = "stopped by an unhandled exception: OutOfStock: only 9 gear left";
+  const raised = {
+    ...second,
+    stops: second.stops.map((candidate) =>
+      candidate === entry
+        ? { ...candidate, frame: 2, reason: { kind: "languageException", description } }
+        : candidate,
+    ),
+  } as State;
+
+  it("says why beside the frame it opened on, and only there", () => {
+    expect(stopNote(raised, { ...at(second), frame: 2 })).toBe(description);
+    expect(stopNote(raised, { ...at(second), frame: 3 })).toBeNull();
+    expect(stopNote(raised, { ...at(second), frame: 2, thread: at(second).thread + 1 })).toBeNull();
+  });
+
+  it("says nothing more at a stop whose place says why", () => {
+    expect(stopNote(second, at(second))).toBeNull();
   });
 });

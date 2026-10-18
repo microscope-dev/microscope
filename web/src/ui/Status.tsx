@@ -1,5 +1,5 @@
 import type { Model } from "../model";
-import { targetName } from "../model";
+import { commandName } from "../model";
 import { useModel } from "../store";
 
 interface Shown {
@@ -48,15 +48,16 @@ export function shown(model: Model): Shown {
 export function Status() {
   const model = useModel((model) => model);
   const { pill, label, detail } = shown(model);
-  const program = targetName(model.state);
+  const program = commandName(model.state);
+  const target = model.state?.target;
   return (
     <div className="status" data-testid="status">
       {program && (
-        <span className="program" title={model.state?.target?.program}>
+        <span
+          className="program"
+          title={target ? [target.program, ...target.arguments].join(" ") : undefined}
+        >
           {program}
-          {model.state?.target?.arguments.length
-            ? ` ${model.state.target.arguments.join(" ")}`
-            : ""}
         </span>
       )}
       <span className={`pill ${pill}`} data-state={pill}>

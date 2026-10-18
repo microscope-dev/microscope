@@ -3,7 +3,9 @@
 
 import { describe, expect, it } from "vitest";
 import { expressionAt, expressionsIn } from "../src/expressions";
+import type { Row } from "../src/protocol";
 import { childKey, Recall, toggled } from "../src/tree";
+import { inlineExpressions, shownInline } from "../src/ui/source/inline";
 
 describe("tree paths", () => {
   it("name each row by its scope and the names above it, whatever they hold", () => {
@@ -76,5 +78,41 @@ describe("expressions in source", () => {
     ]);
     expect(expressionsIn("    if (e == NULL) { status = -1; }")).toEqual(["e", "status"]);
     expect(expressionsIn('    printf("%d words", count); // n here')).toEqual(["count"]);
+  });
+});
+
+describe("inline values", () => {
+  const text = [
+    "    def add(self, item):",
+    "        self.items[item.name] = item",
+    "",
+    "    def take(self, name, count):",
+    "        item = self.items[name]",
+  ].join("\n");
+
+  it("come from the lines just run, and none before the frame's function", () => {
+    expect([...inlineExpressions(text, 5).keys()]).toEqual([5, 4, 2]);
+    expect([...inlineExpressions(text, 5, 4).keys()]).toEqual([5, 4]);
+  });
+
+  it("leave out what the tree says better: aggregates and unavailable values", () => {
+    const row = (text: string): Row => ({
+      name: "item",
+      text,
+      type: null,
+      path: "item",
+      children: null,
+      editable: false,
+      memory: null,
+      memoryBytes: null,
+      truncated: false,
+      drawings: [],
+    });
+    expect(shownInline(row("3"))).toBe(true);
+    expect(shownInline(row("'bolt'"))).toBe(true);
+    expect(shownInline(row("{x = 1}"))).toBe(false);
+    expect(shownInline(row("<unavailable: the variable is unbound: not yet assigned>"))).toBe(
+      false,
+    );
   });
 });

@@ -6,6 +6,7 @@
 import { useState } from "react";
 import { useRequest } from "../data";
 import type { At } from "../focus";
+import type { RequestError } from "../protocol";
 import { useLook } from "./navigation";
 import { Earlier, LinkedExpansion, messageRow, RowList, ValueRow } from "./ValueTree";
 import { type Focus, useFocus } from "./Workspace";
@@ -29,6 +30,15 @@ export function hidden(focus: Focus, what = "Values"): string | null {
     default:
       return null;
   }
+}
+
+/**
+ * The class of a pane's message for a request's error: what the frame does
+ * not have, such as an interpreted frame's registers, is said plainly, and
+ * only a failure in red.
+ */
+export function errorClass(error: RequestError): string {
+  return error.kind === "unsupported" ? "empty" : "empty error";
 }
 
 export function Variables() {
