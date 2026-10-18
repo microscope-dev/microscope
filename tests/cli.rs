@@ -4375,6 +4375,27 @@ fn a_program_named_alone_is_found_on_path() {
     let stdout = assert_success(found);
     assert!(stdout.contains("found on PATH"), "{stdout}");
 
+    // A directory of that name is no program, and leaves PATH to find it.
+    let directory = support::ScratchDir::new("cli-path-directory");
+    std::fs::create_dir(directory.path().join("python")).expect("make a directory");
+    let shadowed = microscope_command()
+        .env("PATH", &path)
+        .args([
+            "--batch",
+            "--eval",
+            "run",
+            "python",
+            "--",
+            "-c",
+            "print('found on PATH')",
+        ])
+        .current_dir(directory.path())
+        .stdin(Stdio::null())
+        .output()
+        .expect("run microscope");
+    let stdout = assert_success(shadowed);
+    assert!(stdout.contains("found on PATH"), "{stdout}");
+
     let missing = microscope_command()
         .env("PATH", &path)
         .args(["--batch", "--eval", "run", "no-such-program-anywhere"])
