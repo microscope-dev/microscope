@@ -954,10 +954,32 @@ impl Processor {
                     .frame(FrameKind::Native, NONE, frame.address.get(), 0),
             };
 
-            native.push((id, frame.role == CodeRole::Interpreter));
+            // Only the interpreter's own code can be its loop, or call
+            // from it.
+            let name = owner
+                .filter(|_| frame.role == CodeRole::Interpreter)
+                .and_then(|owner| {
+                    let info = self.images[owner.image].info.as_ref()?;
+                    let address = owner.loaded.load_bias.wrapping_unload(frame.address);
+                    Some(info.image.symbolize(address)?.name)
+                });
+            native.push((id, name));
         }
 
         let (interpreted, running) = self.sampled_interpreted(sample, thread);
+        let native: Vec<(u32, bool)> = (0..native.len())
+            .map(|index| {
+                let inner = index
+                    .checked_sub(1)
+                    .and_then(|inner| native[inner].1.as_deref());
+                let activation = native[index].1.as_deref().is_some_and(|name| {
+                    self.interpreted
+                        .as_ref()
+                        .is_some_and(|found| found.activation(sample.pid, name, inner))
+                });
+                (native[index].0, activation)
+            })
+            .collect();
 
         // The asyncio task the thread ran is claimed as a task kept in a
         // register is.

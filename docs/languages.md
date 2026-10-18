@@ -393,6 +393,23 @@ Python frames, by line, beside the samples, with which thread holds the GIL.
 A task snapshot records each waiting asyncio task's coroutine frames. See
 [Record Python programs](profiling.md#record-python-programs).
 
+### System calls
+
+`microscope syscalls -k` shows each call's Python frames among its native
+ones, before the evaluation loop that runs them, as a backtrace does:
+
+```text
+openat(AT_FDCWD, "settings.toml", O_RDONLY|O_CLOEXEC) = 3
+ > /usr/lib/libc.so.6(open+0x56) [0x117536]
+ > /usr/lib/libpython3.14.so.1.0(os_open+0x4a7) [0x3b9b87]
+ > load at /srv/app/settings.py:42
+ > main at /srv/app/server.py:10
+ > /usr/lib/libpython3.14.so.1.0(_PyEval_EvalFrameDefault+0x6955) [0x2b1b15]
+```
+
+A saved trace keeps them, and the browser groups calls by the Python line that
+made them. A catchpoint's stop shows Python frames like any other stop.
+
 ### Not supported yet
 
 A Python step starts only from where microscope's agent stopped the thread.

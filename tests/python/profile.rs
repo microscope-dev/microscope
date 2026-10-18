@@ -682,6 +682,18 @@ mod bpf {
                 "{interpreter}: {unknown} of {total} samples have unknown frames"
             );
 
+            // A sample can catch the loop as it begins or ends a frame,
+            // so a few may not place theirs; most place every segment.
+            let unplaced = profile
+                .truncations()
+                .into_iter()
+                .find(|(reason, _)| reason == "interpreted frames not placed among the native ones")
+                .map_or(0, |(_, count)| count);
+            assert!(
+                unplaced * 10 < total,
+                "{interpreter}: {unplaced} of {total} samples do not place their frames"
+            );
+
             let gil = gil_values(&profile);
             if interpreter.ends_with('t') {
                 assert_eq!(gil, Vec::<String>::new(), "{interpreter}");

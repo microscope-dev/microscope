@@ -989,16 +989,20 @@ impl RuntimeModel for PythonRuntime {
             };
             Some(split_from(name))
         }
-        let instruction = |name: &str| name.starts_with(TAIL_CALL_PREFIX);
+        self.activation(name(frame)?, inner.and_then(name))
+            .then_some(Driven::Interpreted)
+    }
+
+    fn activation(&self, name: &str, inner: Option<&str>) -> bool {
+        let instruction = |name: &str| split_from(name).starts_with(TAIL_CALL_PREFIX);
 
         // A build that tail-calls a function for each instruction enters it
         // from the loop with a call, so a loop the stack shows with the
         // first instruction's function it called is one activation, which
         // that function stands for: where the loop is inlined into what
         // enters it, only the function shows.
-        let called = inner.and_then(name).is_some_and(instruction);
-        let name = name(frame)?;
-        (instruction(name) || (name == EVALUATION_LOOP && !called)).then_some(Driven::Interpreted)
+        let called = inner.is_some_and(instruction);
+        instruction(name) || (split_from(name) == EVALUATION_LOOP && !called)
     }
 
     fn interpreted(&self, stop: &dyn RuntimeStop) -> Option<Partial<InterpretedStacks>> {

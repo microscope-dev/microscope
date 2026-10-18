@@ -11,12 +11,13 @@ use std::sync::Arc;
 use foldhash::HashMap;
 
 use super::super::perf::{self, decode};
-use crate::capture::builder::{CaptureBuilder, LineInput};
-use crate::capture::records::{FrameKind, NONE};
+use crate::capture::builder::{CaptureBuilder, InterpretedPlace, LineInput};
+use crate::capture::records::{FrameKind, NONE, Truncation};
 use crate::debug_info::{DebugFileSearch, DebugInfo};
 use crate::model::Pid;
-use crate::profiler::{OwnedLine, hex, symbolize_lines};
-use crate::syscalls::CallStack;
+use crate::profiler::{InterpretedWait, LiveStop, OwnedLine, hex, symbolize_lines};
+use crate::runtime_model::{self, InterpretedStacks, RuntimeImage, RuntimeModel};
+use crate::syscalls::{CallStack, InterpretedCall};
 use crate::unwind::sample::{
     FrameRules, SampledFrame, SampledState, StackEnd, unwind_memory, unwind_sample,
 };
@@ -106,6 +107,11 @@ pub struct Stacks {
     /// The vDSO's image, read from microscope's own, which the kernel maps
     /// alike into every process, and the address it links at.
     vdso: Vdso,
+
+    /// The interpreter each module of a process runs, if any, found as a
+    /// stack first needs it. Each process has its own, as a model learns
+    /// the code objects of the process it reads.
+    runtimes: HashMap<(Pid, ModuleId), Option<Arc<dyn RuntimeModel>>>,
 }
 
 impl std::fmt::Debug for Stacks {
@@ -158,6 +164,7 @@ impl Stacks {
             next_module: 0,
             next_image: 0,
             vdso: Vdso::Unread,
+            runtimes: HashMap::default(),
         }
     }
 
@@ -228,11 +235,13 @@ impl Stacks {
     /// are read again when a stack next needs them.
     pub fn forget(&mut self, process: Pid) {
         self.processes.remove(&process);
+        self.runtimes.retain(|&(of, _), _| of != process);
     }
 
     /// Unwinds a stopped thread's stack from its registers by DWARF
     /// number, reading its memory: its instruction, then each return
-    /// address, innermost first.
+    /// address, innermost first, and the frames an interpreter runs on it,
+    /// which stay as they are while it is stopped.
     pub fn unwind_live(
         &mut self,
         process: Pid,
@@ -243,9 +252,50 @@ impl Stacks {
             (register == crate::unwind::RETURN_ADDRESS).then_some(value)
         });
         self.cover(process, instruction);
+        let runtime = self.interpreter(process);
         let modules = self.modules(process);
         let (frames, end) = unwind_memory(&modules, registers, &mut Live(thread), MOST_FRAMES);
-        stack(&frames, end)
+        let mut stack = stack(&frames, end);
+        if let Some((model, bias)) = runtime
+            && let Some(read) =
+                model.interpreted(&LiveStop::for_thread(process.get(), thread, bias))
+        {
+            let activations = activations(model.as_ref(), &modules, &frames);
+            let thread = crate::ThreadId::new(u64::from(thread));
+            let (interpreted, truncation) =
+                place(&read.value, thread, &activations, stack.addresses.len());
+            stack.interpreted = interpreted.into();
+            stack.truncated = stack
+                .truncated
+                .or_else(|| truncation.map(|reason| reason as u8));
+        }
+
+        stack
+    }
+
+    /// The interpreter `process` runs, and the load bias of the module
+    /// that holds it, if it runs one microscope reads.
+    fn interpreter(&mut self, process: Pid) -> Option<(Arc<dyn RuntimeModel>, LoadBias)> {
+        for mapped in self.processes.get(&process)? {
+            let model = self
+                .runtimes
+                .entry((process, mapped.loaded.id))
+                .or_insert_with(|| {
+                    let info = mapped.image.info.as_ref()?;
+                    let image: Arc<dyn RuntimeImage + Send + Sync> = Arc::clone(&info.image) as _;
+                    image.python()?;
+                    let stop = LiveStop::memory(process.get(), mapped.loaded.load_bias);
+                    runtime_model::detect(&image)
+                        .into_iter()
+                        .flatten()
+                        .find(|model| model.walked_threads(&stop).is_some())
+                });
+            if let Some(model) = model {
+                return Some((Arc::clone(model), mapped.loaded.load_bias));
+            }
+        }
+
+        None
     }
 
     /// Unwinds a stack the kernel sampled: the registers, a copy of the
@@ -350,8 +400,22 @@ impl Stacks {
             self.cover(process, Some(first));
         }
 
-        let mut frames = Vec::with_capacity(stack.addresses.len() + 1);
-        for (index, &address) in stack.addresses.iter().enumerate() {
+        let mut frames = Vec::with_capacity(stack.addresses.len() + stack.interpreted.len() + 1);
+        for frame in stack.frames() {
+            let index = match frame {
+                Ok(index) => index,
+                Err(call) => {
+                    frames.push(builder.interpreted(&InterpretedPlace {
+                        function: &call.function,
+                        file: call.file.as_deref(),
+                        line: call.line,
+                        declared: call.first_line,
+                    }));
+                    continue;
+                }
+            };
+
+            let address = stack.addresses[index];
             let code = if index == 0 {
                 address
             } else {
@@ -421,7 +485,7 @@ impl Stacks {
 
     /// Reads what the process maps now from `/proc`.
     pub fn read_maps(&mut self, process: Pid) {
-        self.processes.remove(&process);
+        self.forget(process);
         self.cover(process, None);
     }
 
@@ -458,6 +522,7 @@ impl Stacks {
             modules.extend(self.module(&mmap));
         }
 
+        self.runtimes.retain(|&(of, _), _| of != process);
         self.processes.insert(process, modules);
     }
 
@@ -512,7 +577,104 @@ fn stack(frames: &[SampledFrame], end: StackEnd) -> CallStack {
             StackEnd::Complete => None,
             StackEnd::Truncated(reason, _) => Some(reason as u8),
         },
+        interpreted: Arc::default(),
     }
+}
+
+/// The indexes of the `frames` unwound through `modules` that are
+/// activations of `model`'s interpreter's loop, by the symbols they run.
+fn activations(
+    model: &dyn RuntimeModel,
+    modules: &[UnwindModule<'_>],
+    frames: &[SampledFrame],
+) -> Vec<usize> {
+    // Only the interpreter's own code can be its loop, or call from it.
+    let names: Vec<Option<Arc<str>>> = frames
+        .iter()
+        .map(|frame| {
+            let module = modules.get(frame.module?)?;
+            (frame.role == CodeRole::Interpreter).then_some(())?;
+            let address = module.loaded.load_bias.wrapping_unload(frame.address);
+            Some(module.image.symbolize(address)?.name)
+        })
+        .collect();
+    (0..frames.len())
+        .filter(|&index| {
+            let inner = index
+                .checked_sub(1)
+                .and_then(|inner| names[inner].as_deref());
+            names[index]
+                .as_deref()
+                .is_some_and(|name| model.activation(name, inner))
+        })
+        .collect()
+}
+
+/// The frames `stacks` names on `thread`, each segment an activation of
+/// the interpreter's loop runs just before that activation, the innermost
+/// before the innermost, where `activations` are the indexes of the
+/// native frames that are ones, innermost first; and where the frames say
+/// the stack ends short. Where the activations and segments differ in
+/// number, no segment's place is known, and the frames follow all
+/// `natives` native frames, as the debugger shows them
+/// (`backend::linux::interpreted`).
+fn place(
+    stacks: &InterpretedStacks,
+    thread: crate::ThreadId,
+    activations: &[usize],
+    natives: usize,
+) -> (Vec<InterpretedCall>, Option<Truncation>) {
+    let call = |frame, before: usize| {
+        let wait = InterpretedWait::of_frame(frame);
+        InterpretedCall {
+            before: u32::try_from(before).unwrap_or(u32::MAX),
+            function: wait.function,
+            file: wait.file,
+            line: wait.line,
+            first_line: wait.first_line,
+        }
+    };
+
+    let threads: Vec<_> = stacks
+        .threads
+        .iter()
+        .filter(|interpreted| interpreted.thread == thread)
+        .collect();
+    let [interpreted] = threads.as_slice() else {
+        let frames = threads
+            .iter()
+            .flat_map(|interpreted| stacks.frames_of(interpreted))
+            .map(|frame| call(frame, natives))
+            .collect::<Vec<_>>();
+        // A thread in the loop runs frames, which could not be read, and
+        // the frames of several states have no known order.
+        let truncation = if frames.is_empty() {
+            (!activations.is_empty()).then_some(Truncation::InterpretedUnknown)
+        } else {
+            Some(Truncation::InterpretedUnplaced)
+        };
+        return (frames, truncation);
+    };
+
+    let frames = stacks.frames_of(interpreted);
+    let segments: Vec<_> = frames.split_inclusive(|frame| frame.outermost).collect();
+    if segments.len() != activations.len() {
+        let frames = frames.iter().map(|frame| call(frame, natives)).collect();
+        return (frames, Some(Truncation::InterpretedUnplaced));
+    }
+
+    let placed = activations
+        .iter()
+        .zip(segments)
+        .flat_map(|(&activation, segment)| segment.iter().map(move |frame| call(frame, activation)))
+        .collect();
+    (
+        placed,
+        interpreted
+            .end
+            .is_some()
+            .then_some(Truncation::InterpretedEnded),
+    )
 }
 
 #[cfg(test)]
@@ -520,6 +682,81 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+
+    /// Interpreted frames named by their functions, each `true` the
+    /// outermost of its segment.
+    fn interpreted(thread: u64, frames: &[(&str, bool)]) -> InterpretedStacks {
+        InterpretedStacks {
+            threads: vec![runtime_model::InterpretedThread {
+                thread: crate::ThreadId::new(thread),
+                interpreter: 0,
+                frames: 0..frames.len(),
+                end: None,
+            }],
+            frames: frames
+                .iter()
+                .map(|&(function, outermost)| runtime_model::InterpretedFrame {
+                    frame: VirtualAddress::new(0x1000),
+                    language: crate::SourceLanguage::Python,
+                    function: Some(function.into()),
+                    place: Some(crate::RecordedPlace {
+                        path: "main.py".into(),
+                        line: 3,
+                        column: 0,
+                    }),
+                    problem: None,
+                    first_line: Some(1),
+                    outermost,
+                    role: CodeRole::Ordinary,
+                })
+                .collect(),
+        }
+    }
+
+    fn placed(placed: &(Vec<InterpretedCall>, Option<Truncation>)) -> Vec<(&str, u32)> {
+        placed
+            .0
+            .iter()
+            .map(|call| (call.function.as_ref(), call.before))
+            .collect()
+    }
+
+    /// Each segment goes before its activation, innermost with innermost.
+    /// Where the two differ in number, or the thread runs several states,
+    /// the frames follow the native ones and the stack says why; a thread
+    /// in the loop whose frames were not read says that.
+    #[test]
+    fn interpreted_frames_go_before_their_activations_or_say_why_not() {
+        let thread = crate::ThreadId::new(5);
+        let stacks = interpreted(5, &[("inner", false), ("middle", true), ("outer", true)]);
+        let found = place(&stacks, thread, &[2, 6], 9);
+        assert_eq!(placed(&found), [("inner", 2), ("middle", 2), ("outer", 6)]);
+        assert_eq!(found.1, None);
+
+        let found = place(&stacks, thread, &[2], 9);
+        assert_eq!(placed(&found), [("inner", 9), ("middle", 9), ("outer", 9)]);
+        assert_eq!(found.1, Some(Truncation::InterpretedUnplaced));
+
+        let mut ended = stacks.clone();
+        ended.threads[0].end = Some("unreadable".into());
+        assert_eq!(
+            place(&ended, thread, &[2, 6], 9).1,
+            Some(Truncation::InterpretedEnded)
+        );
+
+        let mut doubled = stacks.clone();
+        doubled.threads.push(doubled.threads[0].clone());
+        let found = place(&doubled, thread, &[2, 6], 9);
+        assert_eq!(found.0.len(), 6);
+        assert_eq!(found.1, Some(Truncation::InterpretedUnplaced));
+
+        let other = crate::ThreadId::new(6);
+        assert_eq!(
+            place(&stacks, other, &[2], 9),
+            (Vec::new(), Some(Truncation::InterpretedUnknown))
+        );
+        assert_eq!(place(&stacks, other, &[], 9), (Vec::new(), None));
+    }
 
     #[test]
     fn the_vdso_and_a_file_read_after_it_have_their_own_images() {

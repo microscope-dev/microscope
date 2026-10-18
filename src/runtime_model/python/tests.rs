@@ -1160,6 +1160,24 @@ fn an_unreadable_runtime_finds_its_loop_and_says_why_its_frames_are_missing() {
     assert_eq!(model.driven(&calling, None), None);
     evaluating.symbol = None;
     assert_eq!(model.driven(&evaluating, None), None);
+
+    // By name, as a stack read outside the debugger is named: of the
+    // interpreter's machinery, only its loop is one, a part split off it
+    // as well, and what enters the loop is not.
+    assert!(model.activation("_PyEval_EvalFrameDefault", None));
+    assert!(model.activation("_PyEval_EvalFrameDefault.cold", Some("os_open.lto_priv.0")));
+    assert!(!model.activation("_PyEval_EvalFrameDefault", Some("_TAIL_CALL_start_frame")));
+    assert!(model.activation("_TAIL_CALL_start_frame.lto_priv.0", None));
+    for entry in [
+        "_PyEval_Vector.constprop.0",
+        "PyEval_EvalCode",
+        "context_run",
+    ] {
+        assert!(
+            !model.activation(entry, Some("_PyEval_EvalFrameDefault")),
+            "{entry}"
+        );
+    }
 }
 
 #[test]

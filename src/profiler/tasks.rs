@@ -101,7 +101,7 @@ impl InterpretedWait {
     }
 
     /// An interpreted frame a runtime model read.
-    pub(super) fn of_frame(frame: &runtime_model::InterpretedFrame) -> Self {
+    pub fn of_frame(frame: &runtime_model::InterpretedFrame) -> Self {
         frame
             .function
             .as_ref()
@@ -770,7 +770,7 @@ fn threads(pid: u32) -> Vec<crate::ThreadId> {
 /// The running process, as a runtime model of one module reads it: its
 /// memory, and of its threads' registers, which run on, only the thread
 /// pointers learned.
-pub(super) struct LiveStop<'a> {
+pub struct LiveStop<'a> {
     pid: u32,
     bias: crate::LoadBias,
     threads: Vec<crate::ThreadId>,
@@ -793,9 +793,18 @@ impl LiveStop<'static> {
         }
     }
 
+    /// Process `pid`'s memory and its thread `tid` alone, as the runtime
+    /// model of a module loaded with `bias` reads them.
+    pub fn for_thread(pid: u32, tid: u32, bias: crate::LoadBias) -> Self {
+        Self {
+            threads: vec![crate::ThreadId::new(u64::from(tid))],
+            ..Self::memory(pid, bias)
+        }
+    }
+
     /// Process `pid`'s memory alone, as the runtime model of a module
     /// loaded with `bias` reads it: no thread of it.
-    pub(super) fn memory(pid: u32, bias: crate::LoadBias) -> Self {
+    pub fn memory(pid: u32, bias: crate::LoadBias) -> Self {
         Self {
             pid,
             bias,

@@ -26,7 +26,8 @@ use microscope::syscalls::fds::FdTable;
 use microscope::syscalls::filter::{self, Filter};
 use microscope::syscalls::stats::{Folded, SyscallStats, bytes_moved};
 use microscope::syscalls::{
-    Abi, CallStack, InFlight, Outcome, Pid, ProcessEnd, SyscallEvent, SyscallId, Tid, TraceEvent,
+    Abi, CallStack, InFlight, InterpretedCall, Outcome, Pid, ProcessEnd, SyscallEvent, SyscallId,
+    Tid, TraceEvent,
 };
 use serde_json::{Map, Value, json};
 
@@ -386,6 +387,31 @@ fn frame_text(frame: &Frame) -> String {
         (Some((module, address)), None) => format!("{module}() [{address:#x}]"),
         (None, _) => format!("[unmapped] [{:#x}]", frame.address),
     }
+}
+
+/// An interpreted frame as `-k` names it: its function, and where in its
+/// file it is, as the interpreter recorded them.
+fn interpreted_text(call: &InterpretedCall) -> String {
+    match (&call.file, call.line) {
+        (Some(file), 0) => format!("{} at {file}", call.function),
+        (Some(file), line) => format!("{} at {file}:{line}", call.function),
+        (None, _) => call.function.to_string(),
+    }
+}
+
+/// An interpreted frame as ndjson writes it.
+fn interpreted_json(call: &InterpretedCall) -> Value {
+    let mut object = Map::new();
+    object.insert("function".into(), call.function.as_ref().into());
+    if let Some(file) = &call.file {
+        object.insert("file".into(), file.as_ref().into());
+    }
+
+    if call.line != 0 {
+        object.insert("line".into(), call.line.into());
+    }
+
+    Value::Object(object)
 }
 
 /// The calls that end a thread or its process.
@@ -1660,8 +1686,9 @@ impl Printer {
         }
     }
 
-    /// A stack as ndjson writes it: each frame's module, its address there,
-    /// symbol, offset, and source line, and last, why it ends short.
+    /// A stack as ndjson writes it: each native frame's module, its
+    /// address there, symbol, offset, and source line; each interpreted
+    /// frame's function, file, and line; and last, why it ends short.
     fn stack_json(&self, process: Pid, stack: &CallStack) -> Value {
         let Some(stacks) = &self.stacks else {
             return Value::Null;
@@ -1671,9 +1698,14 @@ impl Printer {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .frames(process, &stack.addresses);
-        let mut array: Vec<Value> = frames
-            .iter()
-            .map(|frame| {
+        let mut array: Vec<Value> = stack
+            .frames()
+            .filter_map(|frame| {
+                let frame = match frame {
+                    Ok(index) => frames.get(index)?,
+                    Err(call) => return Some(interpreted_json(call)),
+                };
+
                 let mut object = Map::new();
 
                 // A frame in no module has only its virtual address.
@@ -1696,7 +1728,7 @@ impl Printer {
                     object.insert("line".into(), (*line).into());
                 }
 
-                Value::Object(object)
+                Some(Value::Object(object))
             })
             .collect();
         if let Some(reason) = stack.truncation() {
@@ -1713,14 +1745,20 @@ impl Printer {
             return Vec::new();
         };
 
-        let addresses = &stack.addresses[..stack.addresses.len().min(self.frame_limit)];
+        let shown: Vec<_> = stack.frames().take(self.frame_limit).collect();
+        let natives = shown.iter().filter(|frame| frame.is_ok()).count();
         let frames = stacks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .frames(process, addresses);
-        let mut lines: Vec<String> = frames
+            .frames(process, &stack.addresses[..natives]);
+        let mut lines: Vec<String> = shown
             .iter()
-            .map(|frame| {
+            .filter_map(|frame| {
+                let frame = match frame {
+                    Ok(index) => frames.get(*index)?,
+                    Err(call) => return Some(format!(" > {}", interpreted_text(call))),
+                };
+
                 let mut line = format!(" > {}", frame_text(frame));
                 if self.stack_lines
                     && let Some((file, number)) = &frame.source
@@ -1728,14 +1766,12 @@ impl Printer {
                     let _ = write!(line, " {file}:{number}");
                 }
 
-                line
+                Some(line)
             })
             .collect();
-        if addresses.len() < stack.addresses.len() {
-            lines.push(format!(
-                " > ... {} more frames",
-                stack.addresses.len() - addresses.len()
-            ));
+        let total = stack.addresses.len() + stack.interpreted.len();
+        if shown.len() < total {
+            lines.push(format!(" > ... {} more frames", total - shown.len()));
         } else if let Some(reason) = stack.truncation() {
             lines.push(format!(" > [stack ends: {}]", reason.describe()));
         }

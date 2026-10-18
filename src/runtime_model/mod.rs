@@ -927,6 +927,15 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         None
     }
 
+    /// Whether a native frame that runs the function or symbol `name` is
+    /// an activation of the runtime's interpreter's loop, given what the
+    /// frame it called runs, `inner`: the frame each segment of
+    /// [`Self::interpreted`]'s frames goes before.
+    fn activation(&self, name: &str, inner: Option<&str>) -> bool {
+        let _ = (name, inner);
+        false
+    }
+
     /// The frames the runtime's interpreter runs on the stop's threads,
     /// and why some threads' may be missing; `None` for a runtime that
     /// interprets nothing.

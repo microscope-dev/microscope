@@ -583,7 +583,8 @@ must still be a code object with the same identity. `linetable.rs` decodes
 frame may run a thread-local copy of the bytecode, which `tlbc_index` selects.
 
 **Splicing.** `RuntimeModel::driven` recognizes the activations of the
-evaluation loop: `_PyEval_EvalFrameDefault`, or, in a build whose loop
+evaluation loop, by the names `RuntimeModel::activation` judges, which the
+profiler's BPF engine and syscall stacks, having only symbols, ask directly: `_PyEval_EvalFrameDefault`, or, in a build whose loop
 tail-calls a function for each instruction, those functions. Such a loop
 enters its first instruction's function with a call, and PGO inlines the loop
 into `_PyFunction_Vectorcall` and `_PyEval_Vector` but not into `gen_send_ex`,

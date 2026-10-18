@@ -139,6 +139,16 @@ impl Interpreted {
         self.found.insert(pid, Found { mapped, runtime });
     }
 
+    /// Whether a native frame of process `pid` that runs the function or
+    /// symbol `name`, and called what runs `inner`, is an activation of
+    /// its interpreter's loop.
+    pub(super) fn activation(&self, pid: Pid, name: &str, inner: Option<&str>) -> bool {
+        self.found
+            .get(&pid)
+            .and_then(|found| found.runtime.as_ref())
+            .is_some_and(|runtime| runtime.model.activation(name, inner))
+    }
+
     /// Forgets process `pid`, which exited.
     pub(super) fn forget(&mut self, pid: Pid) {
         self.found.remove(&pid);

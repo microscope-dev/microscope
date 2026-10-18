@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use super::{Profile, StackEnding};
 use crate::capture::records::{
-    self, AccountKind, CallOutcome, NONE, NoteKind, UNSEEN, note_flags as flags,
+    self, AccountKind, CallOutcome, FrameKind, NONE, NoteKind, UNSEEN, note_flags as flags,
 };
 
 use crate::syscalls::stats::{Folded, SyscallStats};
@@ -333,7 +333,8 @@ impl Profile {
     /// Where a recorded stack's call came from: its innermost frame with a
     /// source line, as `recv · db.rs:212`. A C library without debug
     /// information has none, so this is the program's own code that made
-    /// the call.
+    /// the call. In a stack that holds an interpreter's frames, it is the
+    /// innermost of those, the program's own, not the interpreter's.
     #[must_use]
     pub fn syscall_site(&self, row: u32) -> Option<String> {
         let place = self.syscall_place(row)?;
@@ -341,11 +342,18 @@ impl Profile {
         Some(format!("{} · {file}:{}", place.function, place.line))
     }
 
-    /// The innermost frame of stack `row` with a source line.
+    /// The innermost frame of stack `row` with a source line, of its
+    /// interpreted frames if any has one.
     #[must_use]
     pub fn syscall_place(&self, row: u32) -> Option<SyscallPlace<'_>> {
         let capture = &self.capture;
-        capture.stack_frames(row).find_map(|frame| {
+        let interpreted = |frame: &u32| {
+            capture
+                .frames
+                .get(*frame as usize)
+                .is_some_and(|frame| frame.kind == FrameKind::Interpreted as u8)
+        };
+        let place = |frame: u32| {
             let line = capture
                 .frame_lines(frame)
                 .iter()
@@ -356,7 +364,12 @@ impl Profile {
                 file: capture.string(line.file.get()),
                 line: line.number.get(),
             })
-        })
+        };
+        capture
+            .stack_frames(row)
+            .filter(interpreted)
+            .find_map(place)
+            .or_else(|| capture.stack_frames(row).find_map(place))
     }
 }
 

@@ -57,6 +57,25 @@ sees the fork or clone event that made it. Until that event arrives, the
 tracee is held stopped (and its end, if it ends, is kept), so the trace
 always announces a tracee before anything it does.
 
+## Interpreted frames
+
+A `CallStack` holds native addresses and, in `interpreted`, the frames an
+interpreter ran, each naming the native frame it shows before. `Stacks` finds
+a process's interpreter once per mapping, by `runtime_model::detect`, and
+gives each process its own model, which learns that process's code objects.
+
+At a ptrace stop the thread is stopped, so its Python frames are exact:
+`Stacks::unwind_live` reads them through the runtime model over a
+`profiler::LiveStop` of that one thread. Each segment goes just before its
+activation of the interpreter's loop, which `RuntimeModel::activation` picks
+out by symbol name, as the debugger does: CPython's other machinery, such as
+`_PyEval_Vector`, is not an activation. Where segments and activations differ
+in number, the frames follow the native ones and the stack ends with
+`InterpretedUnplaced`. A thread in the loop whose frames could not be read ends
+with `InterpretedUnknown`. A native truncation wins over both. A capture
+records each frame as an `Interpreted` frame row, and a call's site is its
+innermost interpreted frame with a line, if any.
+
 ## The BPF engine
 
 The kernel programs are C in `src/backend/linux/bpf/`, a directory the
@@ -158,6 +177,10 @@ With `--window` or `--continuous`, each saved file gets its own span's calls.
   engine, which needs no privilege. Its `bpf` module runs the dual-engine
   tests through `just test-bpf`.
 - `tests/catchpoints.rs` covers catchpoints through `Scenario`.
+- `tests/python/syscalls.rs` traces `tests/fixtures/python/syscalls.py` with
+  `-k` on three interpreters. It checks each call's Python lines, a second
+  activation that C began, the text, and a saved trace's call site. It also
+  checks a catchpoint's backtrace.
 - The browser's view is covered by `tests/web/syscalls.rs`, Vitest, and
   `web/e2e/syscalls.spec.ts`.
 

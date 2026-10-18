@@ -28,5 +28,6 @@ mod profile;
 mod session;
 mod stacks;
 mod stepping;
+mod syscalls;
 mod tasks;
 mod views;
