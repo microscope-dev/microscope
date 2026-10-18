@@ -9,8 +9,8 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use microscope::profiler::{
-    Granularity, Look, Profile, PythonEngine, Query, RecordError, RecordOptions, Source, Watch,
-    record, record_watched,
+    Granularity, Look, Profile, PythonEngine, Query, RecordError, RecordOptions, Source,
+    StackEnding, Watch, record, record_watched,
 };
 
 use crate::support::python;
@@ -119,6 +119,9 @@ fn naps(path: &[String], lines: &BTreeMap<String, u32>) -> bool {
     let nap = format!("nap profiled.py:{}", lines["nap"]);
     path.contains(&nap)
 }
+
+/// How a stack names a frame whose code could not be read.
+const UNREADABLE: &str = "[an interpreted frame whose code could not be read]";
 
 /// Whether a function is the interpreter's loop: the switch it is
 /// compiled as, or one of the functions a tail-calling build makes of it.
@@ -641,7 +644,9 @@ mod bpf {
     /// them: the Python look is `spin` calling `work`, with no frame of the
     /// interpreter's, and the mixed stacks keep both. A GIL build's
     /// spinners hold its GIL in turn; a free-threaded build's is off. Only
-    /// the samples taken before the engine knew the program are unknown.
+    /// the samples taken before the engine knew the program are unknown,
+    /// and only those of its last moments, after the drain before it
+    /// exited, have code that could not be read.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
     fn samples_hold_each_threads_python_frames_by_line() {
@@ -659,39 +664,66 @@ mod bpf {
                 spinning * 2 > total,
                 "{interpreter}: {spinning} of {total} through work: {python:#?}"
             );
+            // A stack that ends short, its Python frames unknown or its
+            // native ones cut short, shows its native frames.
             for path in python.keys() {
                 assert!(
-                    !path.iter().any(|step| evaluates(step)),
+                    path.first().is_some_and(|end| end.starts_with('['))
+                        || !path.iter().any(|step| evaluates(step)),
                     "{interpreter}: the Python look shows the interpreter: {path:?}"
                 );
             }
 
-            let mixed = profile.stacks().into_iter().any(|stack| {
+            let stacks = profile.stacks();
+            let mixed = stacks.iter().any(|stack| {
                 stack.functions.iter().any(|function| function == "work")
                     && stack.functions.iter().any(|function| evaluates(function))
             });
             assert!(mixed, "{interpreter}: no mixed stack of work");
 
-            let unknown = profile
-                .truncations()
-                .into_iter()
-                .find(|(reason, _)| reason == "interpreted frames unknown")
-                .map_or(0, |(_, count)| count);
+            // Each count is of samples, as each stack is one.
+            let samples = stacks.len();
+            let ending = |reason: &str| {
+                stacks
+                    .iter()
+                    .filter(|stack| stack.ending == StackEnding::Truncated(reason.into()))
+                    .count()
+            };
+            let unknown = ending("interpreted frames unknown");
             assert!(
-                unknown * 10 < total,
-                "{interpreter}: {unknown} of {total} samples have unknown frames"
+                unknown * 10 < samples,
+                "{interpreter}: {unknown} of {samples} samples have unknown frames"
             );
 
             // A sample can catch the loop as it begins or ends a frame,
             // so a few may not place theirs; most place every segment.
-            let unplaced = profile
-                .truncations()
-                .into_iter()
-                .find(|(reason, _)| reason == "interpreted frames not placed among the native ones")
-                .map_or(0, |(_, count)| count);
+            let unplaced = ending("interpreted frames not placed among the native ones");
             assert!(
-                unplaced * 10 < total,
-                "{interpreter}: {unplaced} of {total} samples do not place their frames"
+                unplaced * 10 < samples,
+                "{interpreter}: {unplaced} of {samples} samples do not place their frames"
+            );
+
+            // GCC's epilogues pop the registers a caller keeps but leave
+            // the rules that name their slots, below a sample's copy of
+            // the stack; a sample there still reaches its caller.
+            let cut = ending("invalid caller");
+            assert!(
+                cut * 100 < samples,
+                "{interpreter}: {cut} of {samples} samples have an invalid caller"
+            );
+
+            let unreadable = stacks
+                .iter()
+                .filter(|stack| {
+                    stack
+                        .functions
+                        .iter()
+                        .any(|function| function == UNREADABLE)
+                })
+                .count();
+            assert!(
+                unreadable * 200 < samples,
+                "{interpreter}: {unreadable} of {samples} samples have frames that could not be read"
             );
 
             let gil = gil_values(&profile);

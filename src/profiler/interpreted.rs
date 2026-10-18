@@ -16,7 +16,10 @@
 //! them (`backend::linux::interpreted`): where the activations and segments
 //! differ in number, the frames follow the native ones, and the stack says
 //! so. A frame's code object is read and proved as the record is
-//! processed, while the program runs on, so one freed since is unreadable.
+//! drained, while the program most likely still runs: the record waits
+//! for the watermark to pass it before it is processed, by when the
+//! program may have exited. One freed since, or whose program exited
+//! before its record was drained, is unreadable.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -27,7 +30,7 @@ use crate::capture::CaptureBuilder;
 use crate::capture::records::{NONE, Zone};
 use crate::debug_info::DebugInfo;
 use crate::image::python::PythonLayout;
-use crate::model::Pid;
+use crate::model::{Pid, Tid};
 use crate::runtime_model::thread_ids::ThreadIds;
 use crate::runtime_model::{self, InterpretedFrame, RuntimeImage, RuntimeModel, SampledFrame};
 use crate::{LoadBias, LoadedModule, VirtualAddress};
@@ -61,6 +64,9 @@ struct Span {
     start: i64,
     end: i64,
 }
+
+/// A record of frames, by its thread, CPU, and time.
+pub(super) type RecordKey = (Tid, u32, u64);
 
 /// What a sample's interpreted frames are.
 #[derive(Debug, PartialEq, Eq)]
@@ -99,6 +105,10 @@ pub(super) struct Interpreted {
     pub(super) outputs: Vec<u64>,
     found: BTreeMap<Pid, Found>,
     spans: BTreeMap<u32, Span>,
+
+    /// The frames of each record drained but not yet processed, read as
+    /// it was drained.
+    drained: BTreeMap<RecordKey, Sampled>,
 }
 
 impl Interpreted {
@@ -107,6 +117,7 @@ impl Interpreted {
             outputs,
             found: BTreeMap::new(),
             spans: BTreeMap::new(),
+            drained: BTreeMap::new(),
         }
     }
 
@@ -154,9 +165,40 @@ impl Interpreted {
         self.found.remove(&pid);
     }
 
+    /// Reads the frames of `record`, of process `pid`, as it is drained.
+    /// A record held back to a later drain was read in the first.
+    pub(super) fn drained(&mut self, pid: Pid, key: RecordKey, record: &[u8]) {
+        if self.drained.contains_key(&key) {
+            return;
+        }
+
+        // A record lies four bytes into the sample that carries it, short
+        // of its fields' alignment; a copy aligns them.
+        let aligned = record.to_vec();
+        match self.sampled(pid, Some(&aligned)) {
+            Sampled::None => {}
+            sampled => {
+                self.drained.insert(key, sampled);
+            }
+        }
+    }
+
+    /// Forgets the frames of a record that goes with no sample.
+    pub(super) fn dropped(&mut self, key: RecordKey) {
+        self.drained.remove(&key);
+    }
+
     /// The interpreted frames of a sample of process `pid`, from the
-    /// record of frames paired with it, if any.
-    pub(super) fn sampled(&self, pid: Pid, record: Option<&[u8]>) -> Sampled {
+    /// record of frames paired with it, if any, as they were read when
+    /// it was drained.
+    pub(super) fn paired(&mut self, pid: Pid, record: Option<(RecordKey, &[u8])>) -> Sampled {
+        let drained = record.and_then(|(key, _)| self.drained.remove(&key));
+        drained.unwrap_or_else(|| self.sampled(pid, record.map(|(_, bytes)| bytes)))
+    }
+
+    /// The interpreted frames of a sample of process `pid`, from the
+    /// record of frames paired with it, if any, read now.
+    fn sampled(&self, pid: Pid, record: Option<&[u8]>) -> Sampled {
         let Some(runtime) = self
             .found
             .get(&pid)

@@ -237,6 +237,19 @@ interpret CFI. Go stack transitions and signal frames add explicit transition
 rules at their edges. PLT stubs, which mold and lld leave without CFI, get a
 rule decoded at load: how many words each stub instruction finds pushed.
 
+GCC's epilogues pop the registers a caller keeps but leave the CFI rules that
+name their slots, now below the stack pointer, until the function returns. A
+sample's copy of the stack begins at the stack pointer, so those slots are
+unreadable there. The `RestoredFrames` table, decoded at load, records the
+instructions where the code proves the registers already hold the caller's
+values. Only rows whose frame is gone (CFA = rsp+8) yet still name a slot are
+read, from the row's first instruction. Code that runs straight to `ret`
+without writing rsp or a callee-saved register proves all of them. Otherwise,
+a `pop` or `leave` that ends the previous row and loads the slot the row names
+at CFA-16 proves that one register, until the code writes it or may branch.
+The proofs only decide what a failed slot read means; memory that holds the
+slot, as a live process's does, is still read.
+
 Each step yields a caller or a typed termination. Terminations include normal
 stack ends as well as missing memory, missing registers, unsupported rules,
 cycles, and bounds. Keep the frames already established when the next one

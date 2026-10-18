@@ -583,6 +583,7 @@ fn the_schema_is_the_records_layout() {
         TableKind::DebugFrameIndex,
         TableKind::GoCode,
         TableKind::StubFrames,
+        TableKind::RestoredFrames,
     ] {
         assert_eq!(schema::record(kind), "Interval");
     }
@@ -597,7 +598,7 @@ fn the_schema_is_the_records_layout() {
     // layouts before reading tables; the container format is independent.
     assert_eq!(
         schema::layout_fingerprint(),
-        0xecff_22b5_201f_09dc,
+        0x574d_5db2_c37f_0fea,
         "the layout changed:\n{}",
         schema::schema_text()
     );
@@ -1431,6 +1432,20 @@ fn unwinding_tables_read_back_as_their_lookups() {
         );
     }
 
+    for (address, restored) in [
+        (0x34ff, 0),
+        (0x3500, 0x3f),
+        (0x350b, 0x3f),
+        (0x350c, 2),
+        (0x3510, 0),
+    ] {
+        assert_eq!(
+            view.restored(ImageAddress::new(address)),
+            restored,
+            "{address:#x}"
+        );
+    }
+
     let go = sample.go.unwrap();
     let (bytes, facts) = view.go().unwrap();
     assert_eq!((bytes, facts), (&*go.bytes, go.facts));
@@ -1501,6 +1516,11 @@ fn validation_rejects_unwinding_tables_that_disagree() {
         (
             "a stub that pushes more than any does",
             interval(TableKind::StubFrames, |i| i[2].value = 3.into()),
+            "unwinding index is malformed",
+        ),
+        (
+            "a restored register no ABI keeps",
+            interval(TableKind::RestoredFrames, |i| i[0].value = 0x40.into()),
             "unwinding index is malformed",
         ),
         (

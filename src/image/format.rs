@@ -372,11 +372,15 @@ pub enum TableKind {
 
     /// The Python runtime the module carries.
     PythonRuntime = 97,
+
+    /// The instructions at which a function has restored registers its
+    /// caller keeps, by which, for lookups by address.
+    RestoredFrames = 98,
 }
 
 impl TableKind {
     /// Every kind, in the order tables are laid out.
-    pub const ALL: [Self; 97] = [
+    pub const ALL: [Self; 98] = [
         Self::Strings,
         Self::Files,
         Self::LineAddresses,
@@ -474,6 +478,7 @@ impl TableKind {
         Self::RuntimeDimensions,
         Self::StubFrames,
         Self::PythonRuntime,
+        Self::RestoredFrames,
     ];
 
     pub const COUNT: usize = Self::ALL.len();

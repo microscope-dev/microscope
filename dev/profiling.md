@@ -208,8 +208,9 @@ refreshes every 20 ms from the interpreter's thread list
 `native_thread_id` against the map's, so a reused thread id reads as stale,
 never as another thread's frames. A sample before either is known ends in
 `Truncation::InterpretedUnknown`. Code objects are named and proved as each
-record is processed (`RuntimeModel::sampled_frames`), while the program runs
-on; one freed since is unreadable. Segments go before the activations of the
+record is drained (`RuntimeModel::sampled_frames`), while the program most
+likely still runs; one freed since is unreadable. Segments go before the
+activations of the
 interpreter's loop that run them, as the debugger places them, and where the
 two differ in number the frames follow the native ones and the stack ends in
 `Truncation::InterpretedUnplaced`. The record's GIL state becomes label spans,

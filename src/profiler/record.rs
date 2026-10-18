@@ -196,7 +196,7 @@ pub struct Processor {
     /// The BPF engine's Python frames, when it runs, and the record of
     /// them paired with the sample being processed.
     interpreted: Option<Interpreted>,
-    paired: Option<Vec<u8>>,
+    paired: Option<(interpreted::RecordKey, Vec<u8>)>,
 }
 
 /// A rolling window: how long it is, and its marks, each a moment and the
@@ -397,7 +397,7 @@ impl Processor {
         // A record of Python frames goes with the next sample of its
         // thread and CPU in its ring (see `interpreted`).
         let mut unpaired: Vec<((Tid, u32), u64, usize, usize)> = Vec::new();
-        let mut pairs: HashMap<usize, (usize, usize)> = HashMap::default();
+        let mut pairs: HashMap<usize, (interpreted::RecordKey, usize, usize)> = HashMap::default();
         let mut offset = 0;
         while let Some(next) = decode::next_of(&bytes[offset..], &outputs) {
             let Ok((record, length)) = next else {
@@ -407,8 +407,24 @@ impl Processor {
 
             let time = record.time().unwrap_or(self.latest);
             match record {
-                decode::Record::Output { tid, cpu, .. } => {
-                    unpaired.retain(|(key, ..)| *key != (tid, cpu));
+                decode::Record::Output {
+                    pid,
+                    tid,
+                    cpu,
+                    data,
+                    ..
+                } => {
+                    let interpreted = self.interpreted.as_mut();
+                    if let Some(interpreted) = interpreted {
+                        if let Some(index) = unpaired.iter().position(|(of, ..)| *of == (tid, cpu))
+                        {
+                            let (_, superseded, ..) = unpaired.remove(index);
+                            interpreted.dropped((tid, cpu, superseded));
+                        }
+
+                        interpreted.drained(pid, (tid, cpu, time), data);
+                    }
+
                     unpaired.push(((tid, cpu), time, offset, length));
                     offset += length;
                     continue;
@@ -416,8 +432,8 @@ impl Processor {
                 decode::Record::Sample(sample) => {
                     let key = (sample.tid, sample.cpu);
                     if let Some(index) = unpaired.iter().position(|(of, ..)| *of == key) {
-                        let (_, _, at, length) = unpaired.swap_remove(index);
-                        pairs.insert(offset, (at, length));
+                        let (_, time, at, length) = unpaired.swap_remove(index);
+                        pairs.insert(offset, ((key.0, key.1, time), at, length));
                     }
                 }
                 _ => {}
@@ -433,16 +449,17 @@ impl Processor {
             let record = &bytes[offset..offset + length];
             let pair = pairs
                 .get(&offset)
-                .map(|&(at, length)| &bytes[at..at + length]);
+                .map(|&(key, at, length)| (key, &bytes[at..at + length]));
             if watermark.is_some_and(|watermark| time > watermark) {
                 // A held-back sample keeps its frames before it.
-                self.carry.extend_from_slice(pair.unwrap_or_default());
+                self.carry
+                    .extend_from_slice(pair.map(|(_, pair)| pair).unwrap_or_default());
                 self.carry.extend_from_slice(record);
                 continue;
             }
 
-            self.paired = pair.and_then(|pair| match decode::next_of(pair, &outputs) {
-                Some(Ok((decode::Record::Output { data, .. }, _))) => Some(data.to_vec()),
+            self.paired = pair.and_then(|(key, pair)| match decode::next_of(pair, &outputs) {
+                Some(Ok((decode::Record::Output { data, .. }, _))) => Some((key, data.to_vec())),
                 _ => None,
             });
             if let Some(Ok((record, _))) = decode::next_of(record, &outputs) {
@@ -452,11 +469,13 @@ impl Processor {
 
         // A record whose sample may still come waits for it; one whose
         // sample the ring dropped goes with it.
-        for (_, time, at, length) in unpaired {
+        for ((tid, cpu), time, at, length) in unpaired {
             if watermark.is_some_and(|watermark| {
                 time.saturating_add(interpreted::PAIRING_SLACK) > watermark
             }) {
                 self.carry.extend_from_slice(&bytes[at..at + length]);
+            } else if let Some(interpreted) = &mut self.interpreted {
+                interpreted.dropped((tid, cpu, time));
             }
         }
 
@@ -1028,15 +1047,18 @@ impl Processor {
         }
 
         let stack = paired
-            .as_deref()
-            .and_then(|bytes| crate::backend::bpf::sampler::decode(bytes).ok());
+            .as_ref()
+            .and_then(|(_, bytes)| crate::backend::bpf::sampler::decode(bytes).ok());
         if let Some(stack) = &stack {
             let time = sample.time.cast_signed();
             interpreted.label(&mut self.builder, thread, (time, sample.period), stack.gil);
         }
 
         (
-            interpreted.sampled(sample.pid, paired.as_deref()),
+            interpreted.paired(
+                sample.pid,
+                paired.as_ref().map(|(key, bytes)| (*key, bytes.as_slice())),
+            ),
             stack.and_then(|stack| stack.running_task),
         )
     }
