@@ -80,8 +80,16 @@ noinline fn r_pair(n: i32) Pair {
     return value;
 }
 
+noinline fn r_void() void {
+    truth("returned-void", "r_void", "absent", "{s}", "");
+    reached("returned-void");
+    sink += 1;
+    std.mem.doNotOptimizeAway(&sink);
+}
+
 pub fn main(init: std.process.Init.Minimal) void {
     _ = init;
+    r_void();
     var n: i32 = 1;
     std.mem.doNotOptimizeAway(&n);
     var total: i64 = r_int(n);

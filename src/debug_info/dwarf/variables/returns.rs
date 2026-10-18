@@ -385,8 +385,11 @@ impl DwarfVariableInfo {
             }
         };
 
-        // A value of no size, as Rust's `()`, is nothing to show.
-        if self.size(ty).is_ok_and(|size| size == 0) {
+        // Void and zero-sized values have nothing to show.
+        if self.underlying(ty).is_ok_and(|info| {
+            matches!(info.kind, TypeKind::Unspecified) && info.name.as_ref() == "void"
+        }) || self.size(ty).is_ok_and(|size| size == 0)
+        {
             return Ok(None);
         }
 
