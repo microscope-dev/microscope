@@ -248,3 +248,63 @@ async fn python_frames_give_their_functions_first_lines_and_sources() {
 /// A coroutine an asyncio task runs is stepped by the interpreter's
 /// machinery, `_asyncio`'s included, which folds between it and the event
 /// loop's Python frames as it does between any two Python frames.
+#[tokio::test]
+async fn a_tasks_frames_fold_the_machinery_that_steps_it() {
+    let script = python::fixture("stepping.py");
+    let text = std::fs::read_to_string(&script).expect("read the fixture");
+    let marked = text
+        .lines()
+        .position(|line| line.ends_with("# TASK_END"))
+        .expect("a marked line")
+        + 1;
+    let interpreter = python::interpreter("3.14");
+    let web = Web::start(
+        "python-task",
+        &[
+            interpreter.to_str().expect("a UTF-8 path"),
+            "--",
+            script.to_str().expect("a UTF-8 path"),
+        ],
+    );
+    let mut tab = web.control("tab").await;
+    tab.state("the program loaded", |state| state["session"].is_string())
+        .await;
+    tab.ok(
+        "addBreakpoint",
+        json!({"location": format!("stepping.py:{marked}")}),
+    )
+    .await;
+    tab.ok("continue", json!({})).await;
+    let hit = tab.inferior("stopped").await;
+    let inferior = &hit["inferior"];
+    let trace = tab
+        .ok(
+            "backtrace",
+            json!({"stop": inferior["stop"], "thread": inferior["thread"]}),
+        )
+        .await;
+    let frames = trace["frames"].as_array().expect("frames");
+    let task = usize::try_from(inferior["frame"].as_u64().expect("a frame")).expect("an index");
+    assert_eq!(frames[task]["name"], "task", "{trace}");
+    let caller = (task + 1..frames.len())
+        .find(|&index| frames[index]["kind"] == "interpreted")
+        .unwrap_or_else(|| panic!("the event loop's frames: {trace}"));
+    let folded = |index: usize| {
+        trace["folds"].as_array().is_some_and(|folds| {
+            folds.iter().any(|fold| {
+                let first = fold["first"].as_u64().unwrap_or(u64::MAX);
+                let count = fold["count"].as_u64().unwrap_or(0);
+                (first..first + count).contains(&(index as u64))
+            })
+        })
+    };
+    let shown = (task + 1..caller)
+        .filter(|&index| !folded(index))
+        .map(|index| frames[index]["name"].clone())
+        .collect::<Vec<_>>();
+    assert!(shown.is_empty(), "machinery shown: {shown:?} in {trace}");
+}
+
+/// Before a Python program runs, the page lists and reads the Python files
+/// of the directory Python imports the script's modules from, opens on the
+/// script, and still reads nothing else.

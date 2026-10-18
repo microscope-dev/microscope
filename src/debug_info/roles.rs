@@ -221,7 +221,7 @@ pub fn symbol_role(name: &str) -> CodeRole {
 /// its place; the rest only passes calls along. The names are CPython's
 /// own, which other programs may reuse, so only an image that carries a
 /// Python runtime gives them this role (see `super::cpython`).
-const CPYTHON_MACHINERY: [&str; 81] = [
+const CPYTHON_MACHINERY: [&str; 87] = [
     // The evaluation loop, and what enters it.
     python::EVALUATION_LOOP,
     "_PyEval_EvalFrame",
@@ -269,6 +269,13 @@ const CPYTHON_MACHINERY: [&str; 81] = [
     "vectorcall_unbound",
     "call_unbound",
     "call_unbound_noarg",
+    // What resumes a generator or coroutine, which runs its frame.
+    "PyIter_Send",
+    "PyGen_am_send",
+    "gen_send",
+    "gen_send_ex",
+    "gen_send_ex2",
+    "gen_iternext",
     // What runs a Python function a thread or a context begins in.
     "context_run",
     "thread_run",
@@ -316,6 +323,25 @@ const CPYTHON_MACHINERY: [&str; 81] = [
 pub fn cpython_role(name: &str) -> Option<CodeRole> {
     let name = split_from(name);
     (CPYTHON_MACHINERY.contains(&name) || name.starts_with(python::TAIL_CALL_PREFIX))
+        .then_some(CodeRole::Interpreter)
+}
+
+/// What `_asyncio`, CPython's accelerator for asyncio, steps a task's
+/// coroutine through: the event loop calls it, and it resumes the coroutine.
+const ASYNCIO_MACHINERY: [&str; 6] = [
+    "task_step",
+    "task_step_impl",
+    "task_step_handle_result_impl",
+    "task_wakeup",
+    "task_wakeup_lock_held",
+    "TaskStepMethWrapper_call",
+];
+
+/// The role `_asyncio`'s code at a symbol or function of this name plays,
+/// in the module that is `_asyncio`, or `None` for code of its own role.
+pub fn asyncio_role(name: &str) -> Option<CodeRole> {
+    ASYNCIO_MACHINERY
+        .contains(&split_from(name))
         .then_some(CodeRole::Interpreter)
 }
 
@@ -477,6 +503,7 @@ mod tests {
             "Py_RunMain",
             "_TAIL_CALL_CALL",
             "_TAIL_CALL_CALL_BUILTIN_FAST.warm",
+            "PyGen_am_send.lto_priv.0",
         ] {
             assert_eq!(cpython_role(name), Some(CodeRole::Interpreter), "{name}");
         }
@@ -493,6 +520,23 @@ mod tests {
 
         assert_eq!(symbol_role("_PyEval_EvalFrameDefault"), CodeRole::Ordinary);
         assert_eq!(symbol_role("py::jit:executor"), CodeRole::Interpreter);
+    }
+
+    /// `_asyncio`'s task stepping is the interpreter's machinery; the
+    /// futures it completes are not.
+    #[test]
+    fn asyncios_task_stepping_is_the_interpreters() {
+        for name in [
+            "task_step",
+            "task_step_impl.isra.0",
+            "TaskStepMethWrapper_call",
+        ] {
+            assert_eq!(asyncio_role(name), Some(CodeRole::Interpreter), "{name}");
+        }
+
+        for name in ["future_set_result", "_asyncio_Future_result", "task_step_x"] {
+            assert_eq!(asyncio_role(name), None, "{name}");
+        }
     }
 
     /// Only the compilers' own suffixes name a part: a number alone, an

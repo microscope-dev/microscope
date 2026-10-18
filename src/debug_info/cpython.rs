@@ -489,12 +489,26 @@ fn py_version(object: &object::File<'_>) -> Option<u32> {
     Some(u32::from_le_bytes(bytes.try_into().ok()?))
 }
 
-/// Gives the interpreter's functions and symbols their role: the module
-/// carries a Python runtime, so CPython's names are CPython's code.
-pub(super) fn assign_roles(functions: &mut [FunctionInfo], symbols: &mut [SymbolInfo]) {
+/// Whether the module is `_asyncio`, CPython's accelerator for asyncio,
+/// which defines the extension's init function, built in or loaded.
+pub(super) fn is_asyncio(object: &object::File<'_>) -> bool {
+    object
+        .symbols()
+        .chain(object.dynamic_symbols())
+        .any(|symbol| symbol.name() == Ok("PyInit__asyncio") && symbol.is_definition())
+}
+
+/// Gives the interpreter's functions and symbols their role in a module
+/// whose names `role` knows to be CPython's code: one that carries a Python
+/// runtime, or `_asyncio`.
+pub(super) fn assign_roles(
+    functions: &mut [FunctionInfo],
+    symbols: &mut [SymbolInfo],
+    role: fn(&str) -> Option<CodeRole>,
+) {
     for function in functions {
         if function.role == CodeRole::Ordinary
-            && let Some(role) = super::roles::cpython_role(&function.name)
+            && let Some(role) = role(&function.name)
         {
             function.role = role;
         }
@@ -502,7 +516,7 @@ pub(super) fn assign_roles(functions: &mut [FunctionInfo], symbols: &mut [Symbol
 
     for symbol in symbols {
         if symbol.role == CodeRole::Ordinary
-            && let Some(role) = super::roles::cpython_role(&symbol.name)
+            && let Some(role) = role(&symbol.name)
         {
             symbol.role = role;
         }

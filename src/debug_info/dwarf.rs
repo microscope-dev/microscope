@@ -1494,7 +1494,18 @@ fn load_image(
     }
 
     if super::cpython::carries_runtime(&object) {
-        super::cpython::assign_roles(&mut function_metadata.functions, &mut symbols.symbols);
+        super::cpython::assign_roles(
+            &mut function_metadata.functions,
+            &mut symbols.symbols,
+            super::roles::cpython_role,
+        );
+    }
+    if super::cpython::is_asyncio(&object) {
+        super::cpython::assign_roles(
+            &mut function_metadata.functions,
+            &mut symbols.symbols,
+            super::roles::asyncio_role,
+        );
     }
 
     Ok(Read {
