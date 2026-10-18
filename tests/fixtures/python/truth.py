@@ -83,30 +83,10 @@ def report(*fields):
 
 
 def _string(text):
-    # Python's repr, but for the characters it escapes: a backslash, the
-    # quote, the C0 and C1 control characters, DEL, and lone surrogates,
-    # where repr also escapes those its version's Unicode database says do
-    # not print. It picks double quotes only for text that holds a single
-    # quote and no double. src/runtime_model/python/text.rs is the same.
-    quote = '"' if "'" in text and '"' not in text else "'"
-    escaped = []
-    for character in text:
-        code = ord(character)
-        if character in ("\\", quote):
-            escaped.append("\\" + character)
-        elif character == "\n":
-            escaped.append("\\n")
-        elif character == "\r":
-            escaped.append("\\r")
-        elif character == "\t":
-            escaped.append("\\t")
-        elif code < 0x20 or 0x7F <= code < 0xA0:
-            escaped.append("\\x%02x" % code)
-        elif 0xD800 <= code < 0xE000:
-            escaped.append("\\u%04x" % code)
-        else:
-            escaped.append(character)
-    return quote + "".join(escaped) + quote
+    # Python's repr: src/runtime_model/python/text.rs is the same, but for
+    # a character a later Unicode version than this interpreter's assigns,
+    # which no fixture holds.
+    return repr(text)
 
 
 def canonical(value, _depth=0, _seen=None):

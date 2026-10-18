@@ -58,6 +58,32 @@ fn the_generated_layouts_are_the_headers() {
     );
 }
 
+/// Fails when the checked-in table of the characters a `str`'s repr
+/// escapes is not what the script makes of the matrix's interpreters. Run
+/// `scripts/python-printable.sh` to make it again.
+#[test]
+fn the_escaped_characters_are_the_interpreters() {
+    const PRINTABLE: &str = "src/runtime_model/python/printable.gen.rs";
+    let scratch = ScratchDir::new("python-printable");
+    let made = scratch.path().join("printable.gen.rs");
+    let output = Command::new("bash")
+        .arg(root().join("scripts/python-printable.sh"))
+        .arg(&made)
+        .output()
+        .expect("run scripts/python-printable.sh");
+    assert!(
+        output.status.success(),
+        "scripts/python-printable.sh failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let made = std::fs::read_to_string(&made).expect("read the made table");
+    let checked_in = std::fs::read_to_string(root().join(PRINTABLE)).unwrap_or_default();
+    assert!(
+        made == checked_in,
+        "{PRINTABLE} is stale; rerun scripts/python-printable.sh in the dev shell"
+    );
+}
+
 /// What microscope assumes of every interpreter beyond the offsets its
 /// layouts give: the width it reads each field at, and how a stack
 /// reference tags what it holds. Each is checked by its name in the

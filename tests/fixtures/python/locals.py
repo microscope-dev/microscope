@@ -43,6 +43,7 @@ def scalars(gate):
     single_quoted = "it's"
     controls = "next line \x85 and \x9f"
     surrogate = "lone \udc80"
+    unprinted = "no\xa0break \u200b\u2028 \u202eright \ue000 \U000e0001"
     data = b"\x00\x01binary\xff'"
     no_data = b""
     gate.arrive()
@@ -50,7 +51,7 @@ def scalars(gate):
             huge_negative, half, tenth, large, precise, tiny, small_fraction,
             smaller_fraction, infinity, negative_infinity, negative_zero,
             not_a_number, text, empty, latin, wide, astral, escaped,
-            single_quoted, controls, surrogate, data, no_data)
+            single_quoted, controls, surrogate, unprinted, data, no_data)
 
 
 def containers(gate):
