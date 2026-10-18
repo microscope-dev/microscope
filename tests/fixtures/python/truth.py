@@ -267,8 +267,8 @@ def array_text(value):
     """The text of a numpy array: array(ELEMENTS, dtype=NAME), its
     elements as nested lists, each number as Python writes it, a float32
     with its own shortest digits; at most _ITEMS of each axis and _OBJECTS
-    numbers, past which it shows `...`. An array of elements microscope
-    does not read shows its shape and dtype alone."""
+    numbers and rows, past which it shows `...`. An array of elements
+    microscope does not read shows its shape and dtype alone."""
     numpy = sys.modules["numpy"]
     array = numpy.ndarray.view(value, numpy.ndarray)
     number = array.dtype.num
@@ -285,6 +285,7 @@ def array_text(value):
             return _number_text(part[()])
         if depth >= _DEPTH:
             return "..."
+        counted[0] += 1
         texts = []
         for index in range(min(len(part), _ITEMS)):
             if counted[0] >= _OBJECTS:

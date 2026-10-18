@@ -357,6 +357,9 @@ impl Values<'_, '_> {
             return "...".to_owned();
         }
 
+        // A row is an object of the summary as an element is, so that an
+        // array whose rows hold no elements is bounded too.
+        summary.objects += 1;
         let shown = length.min(SUMMARY_ITEMS);
         let mut texts = Vec::new();
         for index in 0..shown {
