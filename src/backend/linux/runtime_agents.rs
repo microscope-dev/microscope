@@ -3,6 +3,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const ACK_TIMEOUT: Duration = Duration::from_secs(5);
+const NOT_BOOTSTRAPPED: &str = "Python breakpoints on CPython 3.12 and 3.13 need microscope to \
+     launch the interpreter, whose launch bootstrap takes the agent; an interpreter it attached \
+     to or did not launch has none";
+const BOOTSTRAP_TIMED_OUT: &str = "the Python launch bootstrap did not take the agent's request; \
+     it runs only where the interpreter imports sitecustomize from PYTHONPATH, which -I, -E, and \
+     -S prevent";
 const TIMED_OUT: &str =
     "runtime agent acknowledgement timed out; configuration remains unconfirmed";
 
@@ -30,6 +36,9 @@ pub(super) struct Installation {
     expired: bool,
     request_thread: Option<crate::ThreadId>,
     remaining: Duration,
+    /// The script path of the outstanding request the launch bootstrap
+    /// takes, which no thread of the program's runs.
+    bootstrap: Option<String>,
     /// Whether any thread has run since the outstanding request was
     /// published. A command no thread has run since is unread, and a newer
     /// one can replace it, as a step begun at the stop that ended the last
@@ -83,6 +92,7 @@ impl Installation {
             expired: false,
             request_thread: None,
             remaining: ACK_TIMEOUT,
+            bootstrap: None,
             exposed: false,
             confirmed: std::collections::BTreeSet::new(),
         }
@@ -122,7 +132,9 @@ impl Installation {
             && self.sent.as_ref().and_then(|sent| sent.step.as_ref()) != wanted.step.as_ref();
         match &self.state {
             State::Awaiting { .. } if (!self.replaceable() && !back) || sent => {
-                Some(Err(if self.expired {
+                Some(Err(if self.expired && self.bootstrap.is_some() {
+                    BOOTSTRAP_TIMED_OUT.into()
+                } else if self.expired {
                     TIMED_OUT.into()
                 } else {
                     "waiting for the runtime agent to acknowledge its configuration".into()
@@ -192,7 +204,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let Some(inferior) = self.inferior.as_mut() else {
             return Ok(());
         };
-        let mut expired = false;
+        let mut expired = None;
         for (&runtime, installation) in &mut inferior.agents {
             if installation
                 .deadline
@@ -200,13 +212,18 @@ impl<P: LinuxTraceOps> Controller<P> {
             {
                 installation.expired = true;
                 installation.deadline = None;
-                inferior.managed.unarmed.insert(runtime, TIMED_OUT.into());
-                expired = true;
+                let reason = if installation.bootstrap.is_some() {
+                    BOOTSTRAP_TIMED_OUT
+                } else {
+                    TIMED_OUT
+                };
+                inferior.managed.unarmed.insert(runtime, reason.into());
+                expired = Some(reason);
             }
         }
-        if !expired {
+        let Some(reason) = expired else {
             return Ok(());
-        }
+        };
         let Some(thread) = inferior.threads.keys().next().copied() else {
             return Ok(());
         };
@@ -216,7 +233,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.raise_barrier(
             thread,
             crate::StopReason::RuntimeEvent {
-                description: TIMED_OUT.into(),
+                description: reason.into(),
             },
         )
     }
@@ -240,6 +257,9 @@ impl<P: LinuxTraceOps> Controller<P> {
                 continue;
             };
             let outcome = (|| {
+                if installation.ticket.is_some() {
+                    self.withdraw_bootstrap(&mut installation, AgentRetirementProof::Cancel)?;
+                }
                 if let Some(ticket) = installation.ticket.as_ref() {
                     let inferior = self.inferior.as_ref().ok_or("the process is gone")?;
                     let retirement = self.with_runtime_stop(
@@ -328,9 +348,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         if let crate::ResumeScope::Thread(thread) = scope
             && inferior.agents.values().any(|installation| {
                 matches!(installation.state, State::Awaiting { source: true, .. })
-                    && installation
-                        .request_thread
-                        .is_some_and(|consumer| consumer != thread)
+                    && (installation.bootstrap.is_some()
+                        || installation
+                            .request_thread
+                            .is_some_and(|consumer| consumer != thread))
             })
         {
             return Err(crate::Error::RuntimeResumeUnsupported(
@@ -515,6 +536,18 @@ impl<P: LinuxTraceOps> Controller<P> {
                 return Err(reason);
             }
         };
+        if prepared.bootstrapped {
+            let requested = match inferior.python_launch.as_ref() {
+                Some(Ok(launch)) => launch.request(&path),
+                Some(Err(reason)) => Err(Arc::clone(reason)),
+                None => Err(NOT_BOOTSTRAPPED.into()),
+            };
+            if let Err(reason) = requested {
+                files.acknowledge(generation)?;
+                return Err(AgentFailure::Refused(reason));
+            }
+            installation.bootstrap = Some(path);
+        }
         installation.library = Some(library.into());
         installation.request_thread = Some(thread);
         installation.ticket = Some(prepared.ticket);
@@ -603,6 +636,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         generation: u64,
         proof: AgentRetirementProof,
     ) -> Result<(), Arc<str>> {
+        self.withdraw_bootstrap(installation, proof)?;
         let inferior = self.inferior.as_ref().ok_or("the process is gone")?;
         let ticket = installation
             .ticket
@@ -622,6 +656,39 @@ impl<P: LinuxTraceOps> Controller<P> {
             .ok_or("the agent files are missing")?
             .acknowledge(generation)?;
         installation.ticket = None;
+        Ok(())
+    }
+
+    /// Reads the outstanding bootstrap request back out of the launch's
+    /// FIFO, unless the agent acknowledged it: one no thread ran since it
+    /// was written is there, and one the bootstrap took may yet run.
+    fn withdraw_bootstrap(
+        &self,
+        installation: &mut Installation,
+        proof: AgentRetirementProof,
+    ) -> Result<(), Arc<str>> {
+        let Some(path) = installation.bootstrap.as_deref() else {
+            return Ok(());
+        };
+        if proof != AgentRetirementProof::Acknowledged {
+            let launch = match self
+                .inferior
+                .as_ref()
+                .and_then(|inferior| inferior.python_launch.as_ref())
+            {
+                Some(Ok(launch)) => launch,
+                Some(Err(reason)) => return Err(Arc::clone(reason)),
+                None => return Err(NOT_BOOTSTRAPPED.into()),
+            };
+            if !launch.withdraw(path)? {
+                return Err(
+                    "the Python launch bootstrap took the request, which may yet run; \
+                     its configuration remains unconfirmed"
+                        .into(),
+                );
+            }
+        }
+        installation.bootstrap = None;
         Ok(())
     }
 
@@ -1260,6 +1327,7 @@ mod tests {
                     refuse: self.refuse,
                     calls: Arc::clone(&self.calls),
                 }),
+                bootstrapped: false,
             })
         }
         fn command(

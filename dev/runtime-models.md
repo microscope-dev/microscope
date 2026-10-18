@@ -300,6 +300,55 @@ and must await acknowledgement before clearing a previous slot or preparing the
 next request. Candidate eligibility must exclude CPython's request-consumption
 and path-copy window.
 
+**Launch bootstrap (3.12 and 3.13).** These versions have no PEP 768
+request, so `PythonRuntime::bootstrapped` makes `inject` return a request
+with no writes and `bootstrapped` set, and `eligible_thread` names any thread.
+The controller hands the script's path to the launch's bootstrap
+(`backend/linux/python_launch.rs`), and refuses the request when there is no
+bootstrap.
+
+When the executable is CPython 3.12 or 3.13, `LinuxTraceOps::python_launch`
+prepares one before the spawn. The version comes from a `libpython3.12` or
+`libpython3.13` the executable needs, or from its own `Py_Version`. The
+bootstrap is a private `/tmp/.microscope-python-*` directory that holds:
+
+- `sitecustomize.py`, from `python/launch.py`;
+- a FIFO, which microscope holds open for reading and writing;
+- `pid`, the process the launch made, written before it runs.
+
+The launch prepends the directory to `PYTHONPATH`, and names the FIFO and
+the original `PYTHONPATH` in `MICROSCOPE_PYTHON_WAKE` and
+`MICROSCOPE_PYTHON_PATH`. The bootstrap first restores both variables and
+`sys.path`. Only in the process named in `pid` does it then go on:
+
+- It records the main thread's ident as `_microscope_bootstrap.main`, since
+  3.12 has no `_thread._get_main_thread_ident`.
+- It runs, on the main thread, each script already written. The first
+  arming happens at the loader stop, before `site` runs, so pending
+  breakpoints are armed before the program's code.
+- It starts one `_thread` thread, which blocks reading the FIFO and runs
+  each later script with fresh globals, as PEP 768 does.
+
+It then imports the `sitecustomize` it hid. A request is one line, written
+whole; a full FIFO is refused. One that is retired without acknowledgement
+is read back out of the FIFO (`withdraw_bootstrap`). One the bootstrap
+already took stays unconfirmed, since it may yet run. A thread-scoped
+resume is refused while one is outstanding, since only the bootstrap's
+thread takes it. An unacknowledged request times out with
+`BOOTSTRAP_TIMED_OUT`, which names `-I`, `-E`, and `-S`. A step back is
+refused, since it cannot run on its own thread, so the native step runs on.
+
+Before 3.14, `free_tool_id` leaves a tool's callbacks and events, so `clear`
+removes them first. 3.12's function `f_locals` is a copy, so assignments are
+refused there. 3.13t immortalizes, and so stops listing, every existing code
+object once a second thread starts, so `gc.get_objects` cannot find running
+code. The model and the agent both refuse it.
+
+`tests/python/bootstrap.rs` checks that the program and its child see their
+own `PYTHONPATH`, `sys.path`, and `sitecustomize`, and that a breakpoint set
+while the program runs reaches the hidden thread. The breakpoint and step
+suites run on 3.12 and 3.13, and the agent's fixture modes run there too.
+
 **Agent transport.** `python/agent.py` translates explicitly configured
 `sys.monitoring` probes into calls to `microscope_python_hook`.
 `python/agent.rs` builds standalone whole-state scripts; the source executes

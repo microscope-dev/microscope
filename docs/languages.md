@@ -313,8 +313,9 @@ Python 3.12 and 3.13 keep no list of their tasks, so they show none.
 
 ### Breakpoints
 
-A breakpoint can be in Python code, on CPython 3.14 and later, whether you
-launch the program or attach to it:
+A breakpoint can be in Python code. On CPython 3.14 and later, that works
+whether you launch the program or attach to it. On 3.12 and 3.13, it works
+when microscope launches the interpreter:
 
 ```text
 (microscope) break app.py:12
@@ -335,8 +336,24 @@ pending until the interpreter has loaded microscope's agent and armed it. Its
 pending reason says what it is waiting for. Remote debugging that was turned
 off in the interpreter (`PYTHON_DISABLE_REMOTE_DEBUG` or
 `-X disable-remote-debug`) is one such reason; stacks and values still work.
-Python 3.12 and 3.13 cannot be asked to run the agent, so their Python
-breakpoints stay pending.
+Python 3.12 and 3.13 cannot be asked to run the agent. When microscope
+launches one of them, it gives the interpreter a `sitecustomize` through
+`PYTHONPATH` that takes the agent from microscope. That `sitecustomize`
+first restores `PYTHONPATH` and `sys.path`, so neither the program nor its
+children see the change, and then imports the program's own
+`sitecustomize`, if it has one. It keeps one idle thread waiting for
+microscope, which `threading` does not list. The bootstrap does not run in
+these cases:
+
+- an interpreter microscope attached to;
+- an interpreter started with `-I`, `-E`, or `-S`, which skip
+  `PYTHONPATH` or `site`;
+- one started through a wrapper.
+
+There, Python breakpoints stay pending with the reason. CPython 3.13's
+free-threaded build stops listing code to its collector once a second
+thread starts, so the agent could not find code that is already running.
+It takes no Python breakpoints; 3.14t does.
 
 A child the program forks, as `multiprocessing` does, runs without microscope:
 its breakpoints and microscope's agent are removed from it. A wrapper that

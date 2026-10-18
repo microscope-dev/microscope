@@ -16,14 +16,29 @@ def load(generation, probes):
     return sys.modules["_microscope_agent"]
 
 
-if sys.version_info < (3, 14):
+if sys.version_info < (3, 13):
+    # 3.12 cannot say which thread is the main one, which only the launch
+    # bootstrap, running on it, can record.
     try:
         load(1, ())
     except RuntimeError as error:
-        assert "requires CPython 3.14" in str(error)
+        assert "needs its launch bootstrap" in str(error)
     else:
-        raise AssertionError("an unsupported interpreter loaded the agent")
-    print("AGENT OK (unsupported version refused)")
+        raise AssertionError("3.12 loaded the agent without its bootstrap")
+    del sys.modules["_microscope_agent"]
+    sys.modules["_microscope_bootstrap"] = type(sys)("_microscope_bootstrap")
+    sys.modules["_microscope_bootstrap"].main = threading.get_ident()
+
+if "t" in sys.abiflags and sys.version_info < (3, 14):
+    # 3.13t stops listing code to its collector once a thread starts, so
+    # the agent could not find code already running.
+    try:
+        load(1, ())
+    except RuntimeError as error:
+        assert "3.13's free-threaded" in str(error), error
+    else:
+        raise AssertionError("3.13t loaded the agent")
+    print("AGENT OK (3.13t refused)")
     sys.exit(0)
 
 if "--failed-bootstrap" in sys.argv:
@@ -102,9 +117,10 @@ def bootstrap_race():
 if not native:
     bootstrap_race()
 
-gil = sys._is_gil_enabled()
+gil_enabled = getattr(sys, "_is_gil_enabled", lambda: True)
+gil = gil_enabled()
 agent = load(1, ())
-assert sys._is_gil_enabled() == gil, "loading the agent changed the GIL mode"
+assert gil_enabled() == gil, "loading the agent changed the GIL mode"
 assert agent.tool is None
 initial = [sys.monitoring.get_tool(i) for i in range(6)]
 # The actual native hook must be callable without a debugger.

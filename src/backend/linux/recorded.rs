@@ -160,6 +160,16 @@ impl<P: LinuxTraceOps> LinuxTraceOps for Recorded<P> {
         self.0.agent_files(pid, library)
     }
 
+    fn python_launch(
+        &self,
+        executable: &Path,
+        environment: &mut Vec<(std::ffi::OsString, Option<std::ffi::OsString>)>,
+    ) -> std::result::Result<Option<super::python_launch::PythonLaunch>, Arc<str>> {
+        let launch = self.0.python_launch(executable, environment);
+        record!("python launch bootstrap: {launch:?}");
+        launch
+    }
+
     fn spawn(&self, executable: &Path, options: LaunchOptions) -> Result<Pid> {
         record!("spawn {} {:?}", executable.display(), options.arguments);
         let pid = self.0.spawn(executable, options);

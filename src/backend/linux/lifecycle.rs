@@ -59,8 +59,13 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    fn launch(&mut self, options: LaunchOptions, reply: Reply<ExecutionId>) {
+    fn launch(&mut self, mut options: LaunchOptions, reply: Reply<ExecutionId>) {
         let stop_at_entry = options.stop_at_entry;
+        // A bootstrap that cannot be made leaves only the agent unavailable.
+        let python = self
+            .ptrace
+            .python_launch(&self.executable, &mut options.environment)
+            .transpose();
         let started = self
             .ptrace
             .spawn(&self.executable, options)
@@ -76,6 +81,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         match started {
             Ok((pid, waiter)) => {
                 self.begin_launch(InferiorOrigin::Launched, pid, stop_at_entry, waiter, reply);
+                let python = python
+                    .map(|launch| launch.and_then(|launch| launch.launched(pid).map(|()| launch)));
+                if let Some(inferior) = self.inferior.as_mut() {
+                    inferior.python_launch = python;
+                }
             }
             Err(error) => {
                 let _ = reply.send(Err(error));

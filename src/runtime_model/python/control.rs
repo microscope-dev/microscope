@@ -299,6 +299,29 @@ impl super::Reading {
     }
 }
 
+/// Why 3.13's free-threaded build takes no agent.
+const UNLISTED_CODE: &str = "CPython 3.13's free-threaded build stops listing code to its \
+     collector once a second thread starts, so the agent could not find code already running; \
+     Python breakpoints need 3.14t or a build with the GIL";
+
+impl PythonRuntime {
+    /// Whether the agent's scripts go to the launch bootstrap: CPython
+    /// before 3.14 has no PEP 768 request.
+    const fn bootstrapped(&self) -> bool {
+        self.version.minor() < 14
+    }
+
+    /// Refuses a build whose agent could not find the code running as it
+    /// is configured.
+    const fn agent_refused(&self) -> Option<&'static str> {
+        if self.free_threaded && self.version.minor() < 14 {
+            Some(UNLISTED_CODE)
+        } else {
+            None
+        }
+    }
+}
+
 impl RuntimeAgent for PythonRuntime {
     fn library(&self) -> Vec<u8> {
         hook::library()
@@ -315,6 +338,24 @@ impl RuntimeAgent for PythonRuntime {
         preferred: Option<ThreadId>,
         arming: &Arming<'_>,
     ) -> Result<ThreadId, AgentFailure> {
+        if let Some(reason) = self.agent_refused() {
+            return Err(AgentFailure::Refused(reason.into()));
+        }
+        if self.bootstrapped() {
+            // The bootstrap's own thread runs the script, wherever any
+            // other is; one that steps back must take it before it runs on.
+            if arming.step.is_some_and(|step| step.returning) {
+                return Err(AgentFailure::Refused(
+                    "CPython 3.12 and 3.13 cannot run a step back's request on its own thread"
+                        .into(),
+                ));
+            }
+            let threads = stop.threads();
+            return preferred
+                .filter(|thread| threads.contains(thread))
+                .or_else(|| threads.first().copied())
+                .ok_or(AgentFailure::NoThread);
+        }
         self.prepare_agent(stop, "/", (preferred, None), arming)
             .map(|plan| plan.thread)
     }
@@ -349,6 +390,13 @@ impl RuntimeAgent for PythonRuntime {
         thread: ThreadId,
         arming: &Arming<'_>,
     ) -> Result<PreparedAgentRequest, AgentFailure> {
+        if self.bootstrapped() {
+            return Ok(PreparedAgentRequest {
+                writes: Vec::new(),
+                ticket: Arc::new(crate::runtime_model::BootstrapTicket),
+                bootstrapped: true,
+            });
+        }
         let plan = self.prepare_agent(stop, script, (Some(thread), Some(thread)), arming)?;
         let reading = self.reading()?;
         let runtime = stop
@@ -358,6 +406,7 @@ impl RuntimeAgent for PythonRuntime {
         Ok(PreparedAgentRequest {
             ticket: ticket(&reading.layout, runtime, &plan),
             writes: plan.writes.into(),
+            bootstrapped: false,
         })
     }
     fn command(

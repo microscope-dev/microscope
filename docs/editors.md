@@ -36,7 +36,7 @@ A launch entry has this shape:
 
 To debug a Python program, launch its interpreter with the script as an
 argument; breakpoints in `.py` files, steps, and the Python exception filters
-need CPython 3.14 or later (see
+need CPython 3.14 or later, or a launched 3.12 or 3.13 (see
 [Python](languages.md#python)):
 
 ```json

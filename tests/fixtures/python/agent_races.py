@@ -3,6 +3,9 @@ import sys
 import threading
 import types
 
+# As the launch bootstrap records on 3.12, which cannot say which thread
+# is the main one.
+sys.modules.setdefault('_microscope_bootstrap', types.SimpleNamespace(main=threading.get_ident()))
 agent = types.ModuleType('race_agent')
 agent._bootstrap_lock = threading.RLock()
 exec(compile(open(sys.argv[1]).read(), sys.argv[1], 'exec'), agent.__dict__)

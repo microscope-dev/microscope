@@ -96,10 +96,24 @@ impl Streams {
 /// The interpreter's arguments that run `fixture` with `arguments`,
 /// isolated from the user's site and the script's directory, and from
 /// `PYTHON*` variables unless it is `configured` by them.
-fn command(fixture: &str, arguments: &[&str], configured: bool) -> Vec<std::ffi::OsString> {
+fn command(
+    interpreter: &str,
+    fixture: &str,
+    arguments: &[&str],
+    configured: bool,
+) -> Vec<std::ffi::OsString> {
+    // 3.12 and 3.13 take the agent through the launch bootstrap, which
+    // PYTHONPATH leads them to and `-I` would ignore.
+    let bootstrapped = ["3.12", "3.13"]
+        .iter()
+        .any(|version| interpreter.trim_end_matches('t').ends_with(version));
     // Fixtures write no bytecode beside their sources, which would make
     // the fixtures' build think they changed.
-    let isolation: &[&str] = if configured { &["-P", "-s"] } else { &["-I"] };
+    let isolation: &[&str] = if configured || bootstrapped {
+        &["-P", "-s"]
+    } else {
+        &["-I"]
+    };
     let mut command: Vec<std::ffi::OsString> = isolation.iter().map(Into::into).collect();
     command.push("-B".into());
     command.push(python::fixture(fixture).into_os_string());
@@ -154,7 +168,7 @@ impl PythonSession {
         );
         let running = scenario
             .start_running_with(LaunchOptions {
-                arguments: command(fixture, arguments, !environment.is_empty()),
+                arguments: command(interpreter, fixture, arguments, !environment.is_empty()),
                 environment: environment
                     .iter()
                     .map(|(name, value)| ((*name).into(), Some((*value).into())))
@@ -209,7 +223,7 @@ impl PythonSession {
         let events = scenario.handle().subscribe();
         let reason = scenario
             .run_with_to_stop(LaunchOptions {
-                arguments: command(fixture, arguments, false),
+                arguments: command(interpreter, fixture, arguments, false),
                 stdin: Some(Stdio::from(streams.reader)),
                 stdout: Some(Stdio::from(streams.file)),
                 stderr: Some(Stdio::from(streams.errors)),
@@ -275,7 +289,7 @@ impl PythonSession {
         };
         let child = Ended(
             command
-                .args(self::command(fixture, arguments, false))
+                .args(self::command(interpreter, fixture, arguments, false))
                 .stdin(Stdio::from(streams.reader))
                 .stdout(Stdio::from(streams.file))
                 .stderr(Stdio::from(streams.errors))

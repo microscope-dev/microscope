@@ -12,8 +12,8 @@
 
 mod agents;
 pub use agents::{
-    AgentFailure, AgentRequestTicket, AgentRetirement, AgentRetirementProof, PreparedAgentRequest,
-    RuntimeAgent, TargetProcessId,
+    AgentFailure, AgentRequestTicket, AgentRetirement, AgentRetirementProof, BootstrapTicket,
+    PreparedAgentRequest, RuntimeAgent, TargetProcessId,
 };
 
 pub mod futures;

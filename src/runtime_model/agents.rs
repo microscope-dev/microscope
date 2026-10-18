@@ -87,6 +87,26 @@ pub trait AgentRequestTicket: std::fmt::Debug + Send + Sync {
 pub struct PreparedAgentRequest {
     pub writes: Vec<RuntimeWrite>,
     pub ticket: Arc<dyn AgentRequestTicket>,
+
+    /// Whether the script goes to the bootstrap a launch gave the runtime,
+    /// rather than through `writes`, for a runtime that cannot be asked
+    /// to run a script.
+    pub bootstrapped: bool,
+}
+
+/// A request the launch bootstrap takes, which leaves the process's memory
+/// as it was: retiring it makes no write.
+#[derive(Debug)]
+pub struct BootstrapTicket;
+
+impl AgentRequestTicket for BootstrapTicket {
+    fn retire(
+        &self,
+        _stop: &dyn RuntimeStop,
+        _proof: AgentRetirementProof,
+    ) -> Result<AgentRetirement, Arc<str>> {
+        Ok(AgentRetirement::Retired(Vec::new()))
+    }
 }
 
 /// A runtime's optional transport. No model creates files or makes writes.

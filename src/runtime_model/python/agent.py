@@ -31,8 +31,8 @@ the program's code.
 """
 import sys
 
-if sys.version_info < (3, 14):
-    raise RuntimeError("microscope's monitoring transport requires CPython 3.14 or later")
+if sys.version_info < (3, 12):
+    raise RuntimeError("microscope's monitoring transport requires CPython 3.12 or later")
 
 import builtins as _builtins
 import ctypes
@@ -125,7 +125,16 @@ _objclass = _METHOD.__dict__['__objclass__'].__get__
 # The code of the frame that runs a threading.Thread, which catches what
 # the thread raises and gives it to threading.excepthook.
 _bootstrap = None
-_main_ident = _thread._get_main_thread_ident
+_main_ident = getattr(_thread, '_get_main_thread_ident', None)
+if _main_ident is None:
+    # CPython 3.12 cannot say which thread is the main one. The launch
+    # bootstrap that loads the agent there runs on it, and records it.
+    _MAIN = getattr(sys.modules.get('_microscope_bootstrap'), 'main', None)
+    if type(_MAIN) is not int:
+        raise RuntimeError("microscope's agent needs its launch bootstrap on CPython 3.12")
+
+    def _main_ident():
+        return _MAIN
 
 
 class CommandError(ValueError):
@@ -166,6 +175,17 @@ def same_file(path, filename):
 def clear():
     global tool, probes, step, stepping, stepped, raising
     if tool is not None:
+        if not hasattr(monitoring, 'clear_tool_id'):
+            # Before 3.14, freeing a tool leaves its callbacks and events.
+            monitoring.set_events(tool, 0)
+            for event in LOCAL + OTHER + STEPPING:
+                monitoring.register_callback(tool, getattr(events, event), None)
+            for reference in tuple(discovered.values()):
+                code = reference()
+                if code is not None and monitoring.get_local_events(tool, code):
+                    monitoring.set_local_events(tool, code, 0)
+            if stepped is not None:
+                monitoring.set_local_events(tool, stepped[0], 0)
         monitoring.free_tool_id(tool)
         tool = None
     probes = ()
@@ -1059,6 +1079,9 @@ while _pending:
 INTERNAL = frozenset(_internal)
 del _pending, _internal, _code
 CODE = type(matches.__code__)
+if FREE_THREADED and sys.version_info < (3, 14):
+    raise RuntimeError("microscope cannot find running code safely: 3.13's free-threaded "
+                       "collector stops listing code once a second thread starts")
 if FREE_THREADED and not gc.is_tracked(matches.__code__):
     raise RuntimeError("microscope cannot find running code safely: this "
                        "free-threaded build's collector does not track code")

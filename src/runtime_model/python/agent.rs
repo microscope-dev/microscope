@@ -35,7 +35,7 @@ try:
 except BaseException:
     # A consumed script must report initialization failure through its own
     # library, even if a previous agent owns the interpreter-local module.
-    if _sys.version_info >= (3, 14):
+    if _sys.version_info >= (3, 12):
         try:
             import ctypes as _ctypes
             _failure_library = _ctypes.PyDLL(__microscope_library)

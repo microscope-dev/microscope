@@ -427,9 +427,20 @@ async fn every_kind_of_breakpoint(build: &str) {
     run.session.shutdown().await;
 }
 
-// One test for each build PEP 768 injects the agent into. A process holds
-// one debugger session, and the test runner runs each test in its own
-// process, so the builds run at once.
+// One test for each build PEP 768 injects the agent into, and for each the
+// launch bootstrap gives it to. A process holds one debugger session, and
+// the test runner runs each test in its own process, so the builds run at
+// once.
+
+#[tokio::test]
+async fn every_kind_of_breakpoint_on_3_12() {
+    every_kind_of_breakpoint("3.12").await;
+}
+
+#[tokio::test]
+async fn every_kind_of_breakpoint_on_3_13() {
+    every_kind_of_breakpoint("3.13").await;
+}
 
 #[tokio::test]
 async fn every_kind_of_breakpoint_on_3_14() {

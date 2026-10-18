@@ -249,7 +249,7 @@ fn monitoring_callbacks_survive_reconfiguration_and_code_reuse() {
     ];
     // Every mode is a process of its own, and each build's modes run at
     // once, as many as the machine runs.
-    let jobs: Vec<_> = ["3.14", "3.14t", "3.15", "3.15t"]
+    let jobs: Vec<_> = ["3.12", "3.13", "3.14", "3.14t", "3.15", "3.15t"]
         .into_iter()
         .flat_map(|interpreter| {
             fixtures.iter().flat_map(move |(fixture, modes)| {
@@ -1050,8 +1050,15 @@ async fn unsupported_python_injection_is_visible_even_for_pending_breakpoints() 
             !site.pending_locations.is_empty(),
             "{interpreter}: unsupported injection lost its reason: {site:?}"
         );
+        // 3.12 and 3.13 take the agent only through a launch's bootstrap,
+        // and 3.13t not at all.
+        let reason = if interpreter == "3.13t" {
+            "free-threaded build stops listing code"
+        } else {
+            "need microscope to launch the interpreter"
+        };
         assert!(
-            site.pending_locations[0].reason.contains("PEP 768"),
+            site.pending_locations[0].reason.contains(reason),
             "{interpreter}: {site:?}"
         );
         session.shutdown().await;

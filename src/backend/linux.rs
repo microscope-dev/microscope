@@ -101,6 +101,7 @@ pub mod perf;
 mod post_mortem;
 mod presentation;
 mod proc_status;
+mod python_launch;
 pub mod reaped;
 #[cfg(debug_assertions)]
 mod recorded;
@@ -1036,6 +1037,10 @@ struct Inferior {
     managed: managed::ManagedSites,
     agents: BTreeMap<crate::RuntimeId, runtime_agents::Installation>,
 
+    /// The bootstrap a launch of CPython 3.12 or 3.13 gave it, which takes
+    /// the agent's scripts, or why it could not.
+    python_launch: Option<std::result::Result<python_launch::PythonLaunch, Arc<str>>>,
+
     /// The number the next step a runtime arms takes. A number is never
     /// reused in a process, so a stale step's end names none.
     next_runtime_step: u64,
@@ -1125,6 +1130,7 @@ impl Inferior {
             stack_moves: stack_watches::StackMoves::default(),
             managed: managed::ManagedSites::default(),
             agents: BTreeMap::new(),
+            python_launch: None,
             next_runtime_step: 0,
             runtime_step: None,
             next_runtime_assignment: 0,

@@ -444,8 +444,19 @@ async fn steps_between_python_and_c_on_each_build() {
     }
 }
 
-// One test for each build PEP 768 injects the agent into, which the test
-// runner runs at once: a process holds one debugger session.
+// One test for each build PEP 768 injects the agent into, and for each the
+// launch bootstrap gives it to, which the test runner runs at once: a
+// process holds one debugger session.
+
+#[tokio::test]
+async fn every_kind_of_step_on_3_12() {
+    every_kind_of_step("3.12").await;
+}
+
+#[tokio::test]
+async fn every_kind_of_step_on_3_13() {
+    every_kind_of_step("3.13").await;
+}
 
 #[tokio::test]
 async fn every_kind_of_step_on_3_14() {

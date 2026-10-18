@@ -78,8 +78,11 @@ narrower limits and report them when used.
   shows its type and address. A numpy array of a dtype other than `bool`, an
   integer, `float32`, or `float64`, or of big-endian elements, shows only its
   shape and dtype, and indexing an array is refused. Python breakpoints need
-  CPython 3.14 or later with remote debugging allowed. Otherwise they stay
-  pending. A Python step starts only where microscope's agent stopped
+  CPython 3.14 or later with remote debugging allowed, or a 3.12 or 3.13 that
+  microscope launched itself, without `-I`, `-E`, or `-S`. Otherwise they stay
+  pending. 3.13's free-threaded build takes none. On 3.12 and 3.13, a native
+  step does not become a Python step where its frame returns to the
+  interpreter. A Python step starts only where microscope's agent stopped
   the thread, at a Python breakpoint or a step's end, and steps by lines;
   a native step leaves C for Python only where its frame returns to the
   interpreter. A step into C stops only in a function debug information

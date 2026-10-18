@@ -18,6 +18,7 @@ mod schemas;
 mod agent;
 mod arrays;
 mod assignments;
+mod bootstrap;
 mod breakpoints;
 mod expressions;
 mod extension;
