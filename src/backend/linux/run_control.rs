@@ -86,7 +86,18 @@ impl<P: LinuxTraceOps> Controller<P> {
             StepKind::IntoSource | StepKind::OverSource | StepKind::Out
                 if frame == StackFrameId::INNERMOST && into_call.is_none() =>
             {
-                self.reported_frame(stop_id, pid).unwrap_or(frame)
+                match self.reported_frame(stop_id, pid) {
+                    Some(blamed) => blamed,
+                    // A native step from here would step the agent's own
+                    // machinery.
+                    None if self.agent_hook(pid).is_some() => {
+                        let _ = reply.send(Err(Error::FrameStepUnsupported(
+                            "the agent's stop names no frame of the program to step from".into(),
+                        )));
+                        return;
+                    }
+                    None => frame,
+                }
             }
             _ => frame,
         };
