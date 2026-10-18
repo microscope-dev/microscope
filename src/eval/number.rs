@@ -742,8 +742,20 @@ impl Float {
 
     /// The value in `format`, rounded to nearest, ties to even.
     pub fn convert(self, format: FloatFormat) -> Self {
+        self.rounded(format).0
+    }
+
+    /// The value in `format`, where it holds it exactly.
+    pub fn convert_exactly(self, format: FloatFormat) -> Option<Self> {
+        let (converted, loses_info) = self.rounded(format);
+        (!loses_info).then_some(converted)
+    }
+
+    /// The value in `format`, rounded to nearest, ties to even, and
+    /// whether rounding changed it.
+    fn rounded(self, format: FloatFormat) -> (Self, bool) {
         let mut loses_info = false;
-        each_format!(self, value => match format {
+        let converted = each_format!(self, value => match format {
             FloatFormat::Binary16 => Self::Binary16(value.convert(&mut loses_info).value),
             FloatFormat::BFloat16 => Self::BFloat16(value.convert(&mut loses_info).value),
             FloatFormat::Binary128 => Self::Binary128(value.convert(&mut loses_info).value),
@@ -752,7 +764,8 @@ impl Float {
             FloatFormat::X87Extended => {
                 Self::X87Extended(value.convert(&mut loses_info).value)
             }
-        })
+        });
+        (converted, loses_info)
     }
 
     /// The integer's nearest value in `format`, ties to even.

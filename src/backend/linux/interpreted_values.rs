@@ -294,8 +294,15 @@ pub(super) fn interpreted_key(key: &Key) -> Result<InterpretedKey, Stop> {
             ))
         })?),
         Key::Float(value) => {
-            let crate::FloatValue::Binary64(bits) = value.convert(FloatFormat::Binary64).to_value()
-            else {
+            // A value no binary64 holds equals none of the interpreter's.
+            let converted = value
+                .convert_exactly(FloatFormat::Binary64)
+                .ok_or_else(|| {
+                    refused(format!(
+                        "the key {value} is no binary64 float, which an interpreter's floats are"
+                    ))
+                })?;
+            let crate::FloatValue::Binary64(bits) = converted.to_value() else {
                 return Err(Stop::Failed(Error::internal(
                     "a float converted to binary64 is one",
                 )));
@@ -314,4 +321,31 @@ pub(super) fn interpreted_key(key: &Key) -> Result<InterpretedKey, Stop> {
             ));
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A float key is the interpreter's own float only where it is one
+    /// exactly: a wider value that rounds to one is no key it holds.
+    #[test]
+    fn a_float_key_is_an_interpreters_float_only_where_it_is_one_exactly() {
+        let key = |value: Float| interpreted_key(&Key::Float(value));
+        assert!(matches!(
+            key(Float::from_f32(1.5)),
+            Ok(InterpretedKey::Float(value)) if value.to_bits() == 1.5_f64.to_bits()
+        ));
+
+        // 1.5 + 2**-59 holds in an x87 value's 64 bits, not in binary64's 53.
+        let wider = Float::from_value(crate::FloatValue::X87Extended {
+            significand: 0xc000_0000_0000_0010,
+            sign_exponent: 0x3fff,
+        });
+        assert!(
+            matches!(key(wider), Err(Stop::Refused(_))),
+            "{:?}",
+            key(wider)
+        );
+    }
 }
