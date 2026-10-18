@@ -27,12 +27,13 @@ pub struct Project {
     pub directories: Vec<PathBuf>,
 }
 
-/// The Python files under a project's directories, and whether that is all
-/// of them.
+/// The Python files under a project's directories, whether that is all of
+/// them, and the directories that could not be read, which may hold more.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Listing {
     pub files: Vec<PathBuf>,
     pub complete: bool,
+    pub unreadable: Vec<PathBuf>,
 }
 
 /// What an interpreter's command line runs.
@@ -88,9 +89,10 @@ impl Project {
         }
     }
 
-    /// The Python files under the project's directories, nearest first, in
-    /// the order of their names, skipping caches, hidden directories,
-    /// virtual environments, and installed packages, and following no link.
+    /// The Python files under the project's directories, in the order of
+    /// their paths, skipping caches, hidden directories, virtual
+    /// environments, and installed packages, and following no link. A
+    /// listing cut short keeps the files nearest its directories.
     pub fn files(&self) -> Listing {
         self.files_within(MOST_FILES, MOST_ENTRIES)
     }
@@ -100,6 +102,7 @@ impl Project {
     fn files_within(&self, most_files: usize, most_entries: usize) -> Listing {
         let mut files = BTreeSet::new();
         let mut entries = 0;
+        let mut unreadable = Vec::new();
         let mut walked = BTreeSet::new();
         let mut queue = self.directories.iter().cloned().collect::<VecDeque<_>>();
         while let Some(directory) = queue.pop_front() {
@@ -107,10 +110,27 @@ impl Project {
                 continue;
             }
 
-            let Ok(read) = std::fs::read_dir(&directory) else {
-                continue;
+            // A directory that is not there holds no files; one that
+            // cannot be read may.
+            let read = match std::fs::read_dir(&directory) {
+                Ok(read) => read,
+                Err(error) => {
+                    if error.kind() != std::io::ErrorKind::NotFound {
+                        unreadable.push(directory);
+                    }
+                    continue;
+                }
             };
-            let mut children = read.filter_map(Result::ok).collect::<Vec<_>>();
+
+            // Read no more of a directory than the listing may take.
+            let mut children = Vec::new();
+            let mut whole = true;
+            for child in read.take(most_entries.saturating_sub(entries).saturating_add(1)) {
+                match child {
+                    Ok(child) => children.push(child),
+                    Err(_) => whole = false,
+                }
+            }
             children.sort_by_key(std::fs::DirEntry::file_name);
             for child in children {
                 entries += 1;
@@ -118,10 +138,12 @@ impl Project {
                     return Listing {
                         files: files.into_iter().collect(),
                         complete: false,
+                        unreadable,
                     };
                 }
 
                 let Ok(kind) = child.file_type() else {
+                    whole = false;
                     continue;
                 };
                 let path = child.path();
@@ -131,17 +153,24 @@ impl Project {
                     files.insert(path);
                 }
             }
+
+            if !whole {
+                unreadable.push(directory);
+            }
         }
 
         Listing {
             files: files.into_iter().collect(),
-            complete: true,
+            complete: unreadable.is_empty(),
+            unreadable,
         }
     }
 
     /// Whether `path` is one of the project's files: a Python file under
     /// one of its directories, through none that a listing skips, and no
-    /// link out of it.
+    /// link out of it. A link within a directory holds, though a listing,
+    /// which follows none, leaves it out: a frame may run a file through
+    /// one.
     pub fn holds(&self, path: &Path) -> bool {
         if !path.is_absolute() || !is_python(path) {
             return false;
@@ -357,5 +386,39 @@ mod tests {
         assert!(!project.files_within(100, 3).complete);
 
         std::fs::remove_dir_all(&root).expect("remove the scratch directory");
+    }
+
+    /// A directory that cannot be read leaves its files out of a listing
+    /// that says it is incomplete; one that is not there holds no files.
+    #[test]
+    fn a_listing_that_cannot_read_a_directory_is_incomplete() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = std::env::temp_dir().join(format!(
+            "microscope-python-unreadable-{}",
+            std::process::id()
+        ));
+        let locked = root.join("locked");
+        std::fs::create_dir_all(&locked).expect("a directory");
+        std::fs::write(root.join("main.py"), "").expect("a file");
+        let project = Project {
+            script: None,
+            directories: vec![root.clone(), root.join("absent")],
+        };
+        assert!(
+            project.files().complete,
+            "a directory that is not there holds no files"
+        );
+
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("lock it");
+        // Root reads any directory.
+        let readable = std::fs::read_dir(&locked).is_ok();
+        let listing = project.files();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755))
+            .expect("unlock it");
+        std::fs::remove_dir_all(&root).expect("remove the scratch directory");
+        assert_eq!(listing.files, vec![root.join("main.py")]);
+        assert_eq!(listing.complete, readable);
+        assert_eq!(listing.unreadable.is_empty(), readable);
     }
 }
