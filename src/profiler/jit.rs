@@ -298,18 +298,21 @@ impl Jit {
 
         let mut objects = BTreeMap::new();
         for object in registered.objects {
-            if let Some(code) = object.code() {
-                let path = object.name().to_string_lossy().into_owned();
-                objects.insert(
-                    code.start,
-                    JitCode {
-                        start: code.start,
-                        end: code.end,
-                        path,
-                        bytes: object.bytes.into(),
-                    },
-                );
-            }
+            let path = object.name().to_string_lossy().into_owned();
+            let Some(code) = object.code() else {
+                self.problem
+                    .get_or_insert_with(|| format!("registered object {path} places no code"));
+                continue;
+            };
+            objects.insert(
+                code.start,
+                JitCode {
+                    start: code.start,
+                    end: code.end,
+                    path,
+                    bytes: object.bytes.into(),
+                },
+            );
         }
 
         let new = objects
@@ -322,8 +325,8 @@ impl Jit {
         new
     }
 
-    /// Why the map was not read, the first time it is asked after a read
-    /// found a map that cannot be used.
+    /// Why the map, or a registered object, was not read, the first time
+    /// it is asked after a read found one that cannot be used.
     pub const fn take_problem(&mut self) -> Option<String> {
         self.problem.take()
     }
@@ -520,6 +523,25 @@ mod tests {
         // A mapping over its code: what is there now is made again.
         jit.mapped(0x7000_0000, 0x7000_2000, true, 0);
         assert_eq!(refresh(&mut jit, code, &|| vec![at]).len(), 1);
+    }
+
+    /// A registered object that places no code is not a module, and the
+    /// recording says so.
+    #[test]
+    fn a_registered_object_that_places_no_code_is_a_problem() {
+        let image = crate::debug_info::gdb_jit::test_image(0x7000_1000, 0);
+        let entry = Box::new([0, 0, image.as_ptr() as u64, image.len() as u64]);
+        let descriptor = Box::new([1_u64, 0, std::ptr::from_ref(&*entry) as u64]);
+        let at = std::ptr::from_ref(&*descriptor) as u64;
+        let mut jit = Jit::default();
+        let pid = std::process::id();
+        assert!(
+            jit.refresh(pid, 0, [0x7000_1008], || vec![at])
+                .objects
+                .is_empty()
+        );
+        let problem = jit.take_problem().expect("a problem");
+        assert!(problem.contains("places no code"), "{problem}");
     }
 
     /// After a read for code nothing names found nothing new, nothing is
