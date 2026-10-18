@@ -347,12 +347,16 @@ impl Collector {
         }
 
         let pid = self.pid;
+        let vanished = std::cell::Cell::new(false);
         let text = |address: u64, length: u32| {
             let mut bytes = vec![0; length as usize];
-            perf::read_memory(pid, address, &mut bytes)
-                .ok()
-                .filter(|&read| read == bytes.len())
-                .map(|_| bytes)
+            match perf::read_memory(pid, address, &mut bytes) {
+                Ok(read) => (read == bytes.len()).then_some(bytes),
+                Err(error) => {
+                    vanished.set(vanished.get() || gone(&error));
+                    None
+                }
+            }
         };
         let mut switched = Vec::new();
         while self.instances[index].defined < count {
@@ -371,6 +375,11 @@ impl Collector {
             };
             let site = match read {
                 Ok(site) => site,
+                // Its texts went with the process, which broke nothing.
+                Err(_) if vanished.get() => {
+                    self.gone = true;
+                    return;
+                }
                 #[cfg_attr(not(debug_assertions), expect(unused_variables))]
                 Err(problem) => {
                     // Its records name a key no site has, and are counted.
