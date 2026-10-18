@@ -450,3 +450,8 @@ async fn every_kind_of_breakpoint_on_3_15() {
 async fn every_kind_of_breakpoint_on_3_15t() {
     every_kind_of_breakpoint("3.15t").await;
 }
+
+#[tokio::test]
+async fn every_kind_of_breakpoint_on_standalone_3_14() {
+    every_kind_of_breakpoint("standalone-3.14").await;
+}

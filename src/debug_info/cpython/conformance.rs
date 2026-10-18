@@ -609,5 +609,8 @@ fn each_asyncio_build_agrees_with_its_debug_section() {
         checked.push(generated.name);
     }
 
-    assert_eq!(checked, ["3.14", "3.14t", "3.15", "3.15t"]);
+    assert_eq!(
+        checked,
+        ["3.14", "3.14t", "3.15", "3.15t", "standalone-3.14"]
+    );
 }

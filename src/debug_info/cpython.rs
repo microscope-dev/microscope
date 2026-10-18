@@ -216,8 +216,13 @@ fn describe(
     (version, flags, from_table(version, free_threaded, table))
 }
 
-/// The layout a 3.13 or later runtime's own table gives, completed by
-/// the layout generated for its minor version.
+/// The layout a 3.13 or later runtime's own table gives, completed by the
+/// layout generated for a build of its minor version whose structures it
+/// shares. Patch releases change structures the table does not describe,
+/// as 3.14.8's interpreter state is 24 bytes longer than 3.14.4's from its
+/// garbage collector's state on, so the build is the one whose layout
+/// agrees with the table on every field both name; and where builds that
+/// agree differ on a field the table leaves out, none is chosen.
 fn from_table(
     version: PyVersion,
     free_threaded: bool,
@@ -231,31 +236,11 @@ fn from_table(
         _ => return Err(unsupported(version)),
     };
 
-    // A prerelease's table may differ from its final release's, as
-    // 3.15.0b3's lacks a field 3.15.0's has.
-    let mut layout = if version.is_final() {
-        layouts::GENERATED
-            .iter()
-            .find(|generated| {
-                PyVersion(generated.version).minor() == version.minor()
-                    && generated.free_threaded == free_threaded
-            })
-            .map(Generated::layout)
-            .ok_or_else(|| -> Arc<str> {
-                format!(
-                    "microscope has no layout of {build}CPython 3.{}",
-                    version.minor()
-                )
-                .into()
-            })?
-    } else {
-        generated_exactly(version, free_threaded)?
-    };
-
     let end = TABLE_START + 8 * schema.len();
     let offsets = table
         .get(TABLE_START..end)
         .ok_or_else(|| -> Arc<str> { "its offsets table is cut short".into() })?;
+    let mut named = Vec::new();
     for (name, bytes) in schema.iter().zip(offsets.as_chunks::<8>().0) {
         let Some(field) = Field::named(name) else {
             continue;
@@ -278,6 +263,60 @@ fn from_table(
             return Err(format!("its table puts {name} at {offset}, past any structure").into());
         }
 
+        named.push((field, offset));
+    }
+
+    // A prerelease's table may differ from its final release's, as
+    // 3.15.0b3's lacks a field 3.15.0's has.
+    let candidates = if version.is_final() {
+        let candidates = layouts::GENERATED
+            .iter()
+            .filter(|generated| {
+                PyVersion(generated.version).minor() == version.minor()
+                    && generated.free_threaded == free_threaded
+            })
+            .map(|generated| (generated.name, generated.layout()))
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return Err(format!(
+                "microscope has no layout of {build}CPython 3.{}",
+                version.minor()
+            )
+            .into());
+        }
+        candidates
+    } else {
+        vec![("", generated_exactly(version, free_threaded)?)]
+    };
+
+    let builds = candidates
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut agreeing = candidates.into_iter().filter(|(_, layout)| {
+        named
+            .iter()
+            .all(|&(field, offset)| layout.field(field).is_none_or(|own| own == offset))
+    });
+    let Some((_, mut layout)) = agreeing.next() else {
+        return Err(format!(
+            "its offsets table disagrees with the layout of each build of {build}CPython 3.{} \
+             microscope has checked ({builds})",
+            version.minor()
+        )
+        .into());
+    };
+    if agreeing.any(|(_, other)| other != layout) {
+        return Err(format!(
+            "builds of {build}CPython 3.{} that agree with its offsets table lay out what \
+             the table leaves out differently ({builds})",
+            version.minor()
+        )
+        .into());
+    }
+
+    for (field, offset) in named {
         layout.set_field(field, offset);
     }
 
@@ -476,65 +515,127 @@ mod tests {
 
     const V3_12_13: u32 = 0x030c_0df0;
 
-    /// A 3.13 table: the cookie, the version, the flag, and each field of
-    /// 3.13's schema at a distinct offset, its position.
-    fn table(version: u32, free_threaded: bool, fields: usize) -> Vec<u8> {
+    /// A table: the cookie, the version, the flag, and each of the first
+    /// `fields` of `schema` where `layout` puts it, or else at a distinct
+    /// offset, its position.
+    fn table(
+        version: u32,
+        free_threaded: bool,
+        schema: &[&str],
+        fields: usize,
+        layout: &PythonLayout,
+    ) -> Vec<u8> {
         let mut bytes = COOKIE.to_vec();
         bytes.extend(u64::from(version).to_le_bytes());
         bytes.extend(u64::from(free_threaded).to_le_bytes());
-        for position in 0..fields {
-            bytes.extend((position as u64 + 8).to_le_bytes());
+        for (position, name) in schema.iter().enumerate().take(fields) {
+            let offset = Field::named(name)
+                .and_then(|field| layout.field(field))
+                .unwrap_or(position as u64 + 8);
+            bytes.extend(offset.to_le_bytes());
         }
 
         bytes
     }
 
+    /// The table of the build the matrix names `name`, by its layout.
+    fn table_of(name: &str, schema: &[&str]) -> (u32, Vec<u8>) {
+        let generated = layouts::GENERATED
+            .iter()
+            .find(|generated| generated.name == name)
+            .unwrap_or_else(|| panic!("{name} is in the matrix"));
+        let bytes = table(
+            generated.version,
+            generated.free_threaded,
+            schema,
+            schema.len(),
+            &generated.layout(),
+        );
+        (generated.version, bytes)
+    }
+
     #[test]
     fn a_table_gives_each_field_its_schema_names_and_the_rest_are_generated() {
-        let version = layouts::GENERATED
-            .iter()
-            .find(|generated| generated.name == "3.13")
-            .expect("3.13 is in the matrix")
-            .version;
-        let bytes = table(version, false, schemas::V3_13.len());
+        let (version, bytes) = table_of("3.13", schemas::V3_13);
         let (found, flags, layout) = describe(Some(&bytes), Some(version));
         assert_eq!(found, PyVersion(version));
         assert_eq!(flags, TARGET_TABLE | GENERATED_TABLE);
         let layout = layout.expect("a layout");
-        let at = |name| {
-            schemas::V3_13
-                .iter()
-                .position(|candidate| *candidate == name)
-                .map(|position| position as u64 + 8)
-        };
-        assert_eq!(layout.field(Field::ThreadNext), at("thread_state.next"));
+        let generated = generated("3.13").expect("3.13 is in the matrix");
         assert_eq!(
-            layout.field(Field::CodeQualname),
-            at("code_object.qualname")
+            layout.field(Field::ThreadNext),
+            generated.field(Field::ThreadNext)
         );
 
         // 3.13's table has no co_flags; the generated layout does.
-        assert!(at("code_object.co_flags").is_none());
+        assert!(!schemas::V3_13.contains(&"code_object.co_flags"));
         assert!(layout.has(Field::CodeFlags));
+    }
+
+    /// The build whose layout agrees with a table on every field both name
+    /// completes it, whichever patch release of its minor version it is,
+    /// as 3.14.8's interpreter state outgrew 3.14.4's; one no build agrees
+    /// with is refused, not read by the nearest.
+    #[test]
+    fn a_table_is_completed_by_the_build_it_agrees_with() {
+        let static_types = |name| {
+            let (version, bytes) = table_of(name, schemas::V3_14);
+            let layout = describe(Some(&bytes), Some(version)).2.expect("a layout");
+            layout.field(Field::InterpreterStaticTypes)
+        };
+        let older = generated("3.14").expect("3.14 is in the matrix");
+        let newer = generated("standalone-3.14").expect("standalone-3.14 is in the matrix");
+        assert_ne!(
+            older.field(Field::InterpreterStaticTypes),
+            newer.field(Field::InterpreterStaticTypes)
+        );
+        assert_eq!(
+            static_types("3.14"),
+            older.field(Field::InterpreterStaticTypes)
+        );
+        assert_eq!(
+            static_types("standalone-3.14"),
+            newer.field(Field::InterpreterStaticTypes)
+        );
+
+        let (version, mut bytes) = table_of("3.14", schemas::V3_14);
+        let at = TABLE_START
+            + 8 * schemas::V3_14
+                .iter()
+                .position(|name| *name == "interpreter_state.gil_runtime_state")
+                .expect("3.14's table places the GIL");
+        bytes[at..at + 8].copy_from_slice(&1u64.to_le_bytes());
+        let refused = describe(Some(&bytes), Some(version))
+            .2
+            .expect_err("no build agrees");
+        assert!(
+            refused.contains("disagrees with the layout of each build"),
+            "{refused}"
+        );
     }
 
     #[test]
     fn remote_debugging_fields_are_taken_from_each_targets_table() {
-        for (version, schema) in [(0x030e_00f0, schemas::V3_14), (0x030f_00f0, schemas::V3_15)] {
-            for free_threaded in [false, true] {
-                let bytes = table(version, free_threaded, schema.len());
-                let layout = describe(Some(&bytes), Some(version)).2.expect("layout");
-                for name in schema
+        for (name, schema) in [
+            ("3.14", schemas::V3_14),
+            ("3.14t", schemas::V3_14),
+            ("3.15", schemas::V3_15),
+            ("3.15t", schemas::V3_15),
+        ] {
+            let (version, bytes) = table_of(name, schema);
+            let layout = describe(Some(&bytes), Some(version)).2.expect("layout");
+            for entry in schema
+                .iter()
+                .filter(|entry| entry.starts_with("debugger_support."))
+            {
+                let field = Field::named(entry).unwrap_or_else(|| panic!("missing {entry}"));
+                let index = schema
                     .iter()
-                    .filter(|name| name.starts_with("debugger_support."))
-                {
-                    let field = Field::named(name).unwrap_or_else(|| panic!("missing {name}"));
-                    let index = schema
-                        .iter()
-                        .position(|entry| entry == name)
-                        .expect("in schema");
-                    assert_eq!(layout.field(field), Some(index as u64 + 8), "{name}");
-                }
+                    .position(|candidate| candidate == entry)
+                    .expect("in schema");
+                let at = TABLE_START + 8 * index;
+                let offset = u64::from_le_bytes(bytes[at..at + 8].try_into().expect("a word"));
+                assert_eq!(layout.field(field), Some(offset), "{name}: {entry}");
             }
         }
     }
@@ -550,13 +651,32 @@ mod tests {
         assert!(refused(None, Some(0x030b_04f0)).contains("3.11.4 is not supported"));
         assert!(refused(None, Some(0x030d_02f0)).contains("has no offsets table"));
         assert!(refused(None, None).contains("version is unknown"));
-        let next = table(0x0310_00f0, false, schemas::V3_15.len());
+        let none = PythonLayout::default();
+        let next = table(
+            0x0310_00f0,
+            false,
+            schemas::V3_15,
+            schemas::V3_15.len(),
+            &none,
+        );
         assert!(refused(Some(&next), Some(0x0310_00f0)).contains("3.16.0 is not supported"));
-        let beta = table(0x030f_00b3, false, schemas::V3_15.len());
+        let beta = table(
+            0x030f_00b3,
+            false,
+            schemas::V3_15,
+            schemas::V3_15.len(),
+            &none,
+        );
         assert!(refused(Some(&beta), Some(0x030f_00b3)).contains("3.15.0b3 is not a release"));
-        let cut = table(0x030d_0df0, false, 3);
+        let cut = table(0x030d_0df0, false, schemas::V3_13, 3, &none);
         assert!(refused(Some(&cut), None).contains("cut short"));
-        let other = table(0x030d_0df0, false, schemas::V3_13.len());
+        let other = table(
+            0x030d_0df0,
+            false,
+            schemas::V3_13,
+            schemas::V3_13.len(),
+            &none,
+        );
         assert!(refused(Some(&other), Some(0x030d_0cf0)).contains("is not its offsets table's"));
     }
 

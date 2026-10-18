@@ -82,7 +82,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     .internal_hooks()
                     .iter()
                     .copied()
-                    .chain(self.agent_entry_hook(runtime))
+                    .chain(self.agent_entry_hooks(runtime))
                     .flat_map(|hook| {
                         let addresses = match hook {
                             HookPlace::Own(address) => runtime

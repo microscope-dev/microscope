@@ -96,7 +96,7 @@ fn python_frames(record: &Value) -> Vec<(usize, String)> {
 
 /// The interpreters traced: before 3.13's debug offsets, a GIL build, and
 /// a free-threaded one.
-const TRACED: [&str; 3] = ["3.12", "3.14", "3.15t"];
+const TRACED: [&str; 4] = ["3.12", "3.14", "3.15t", "standalone-3.14"];
 
 /// The ndjson records of a trace.
 fn records(interpreter: &str, traced: &Output) -> Vec<Value> {

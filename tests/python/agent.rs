@@ -724,6 +724,66 @@ async fn a_free_threaded_monitoring_agent_refuses_thread_only_resume_without_con
     }
 }
 
+/// A thread that only runs Python never calls the loop's entry: the agent
+/// installs from where a pause finds it, among the loop's instructions,
+/// which a tail-call build runs as a function each.
+#[tokio::test]
+async fn an_agent_installs_from_a_thread_paused_among_the_loops_instructions() {
+    use crate::session::PythonSession;
+    use microscope::{StopReason, ThreadId};
+    for interpreter in ["3.14", "standalone-3.14", "3.15t"] {
+        let mut session = PythonSession::launch(interpreter, "control_spin.py", &[]).await;
+        let truth = session.stop_at("initial").await;
+        let main = truth
+            .iter()
+            .find(|fields| fields[0] == "thread" && fields[3] == "printer")
+            .and_then(|fields| fields[1].parse().ok())
+            .map(ThreadId::new)
+            .expect("the fixture names its main thread");
+        session.go_on().await;
+        session.wait_for_output("SPINNING").await;
+        // A pause can find the thread in a function the loop calls, as
+        // one that pops a frame: then let it run on a moment.
+        let mut attempts = 0;
+        loop {
+            session.pause().await;
+            let trace = session.backtrace(main).await;
+            // The innermost native code, past the Python frames the loop
+            // runs and the functions inlined into it.
+            let looping = trace
+                .frames
+                .iter()
+                .find_map(|frame| frame.symbol.as_ref())
+                .is_some_and(|symbol| {
+                    symbol.name.starts_with("_TAIL_CALL_")
+                        || symbol.name.starts_with("_PyEval_EvalFrameDefault")
+                });
+            if looping {
+                break;
+            }
+            attempts += 1;
+            assert!(
+                attempts < 100,
+                "{interpreter}: never paused in the loop: {trace:#?}"
+            );
+            session.resume().await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        session
+            .scenario
+            .add_breakpoint_spec(control_line("control_spin.py", "# TARGET_LINE"))
+            .await;
+        session.resume().await;
+        let reason = session.finish_run().await;
+        assert!(
+            matches!(reason, StopReason::Breakpoint { .. }),
+            "{interpreter}: {reason:?}: {}",
+            session.output()
+        );
+        session.shutdown().await;
+    }
+}
+
 #[tokio::test]
 async fn an_automatic_agent_detaches_disarms_and_can_be_installed_by_a_new_session() {
     use crate::session::PythonSession;

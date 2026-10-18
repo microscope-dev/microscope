@@ -79,25 +79,49 @@ pub fn detect(
         version: runtime.version,
         reading,
         free_threaded,
-        entry: image
-            .symbol(&format!("{TAIL_CALL_PREFIX}start_frame"))
-            .or_else(|| image.symbol(EVALUATION_LOOP))
-            .map(|symbol| symbol.address),
-        evaluation: [
-            format!("{TAIL_CALL_PREFIX}start_frame"),
-            EVALUATION_LOOP.to_owned(),
-            format!("{EVALUATION_LOOP}.cold"),
-        ]
-        .iter()
-        .filter_map(|name| {
-            let symbol = image.symbol(name)?;
-            Some(AddressRange {
-                start: symbol.address,
-                end: symbol.address.checked_add(symbol.size?)?,
-            })
-        })
-        .collect(),
+        entries: entries(image.as_ref()),
+        evaluation: evaluation(image.as_ref()),
     })))
+}
+
+/// Where a thread begins to run Python code: the evaluation loop, or a
+/// tail-call build's first instruction, where something calls them; and
+/// the calls that enter the loop where LTO and PGO inline it into them, as
+/// they do in tail-call builds: a function's call, and a module's code.
+fn entries(image: &(dyn RuntimeImage + Send + Sync)) -> Vec<ImageAddress> {
+    let mut entries = [
+        format!("{TAIL_CALL_PREFIX}start_frame"),
+        EVALUATION_LOOP.to_owned(),
+        "_PyFunction_Vectorcall".to_owned(),
+        "PyEval_EvalCode".to_owned(),
+    ]
+    .iter()
+    .filter_map(|name| image.symbol(name))
+    .map(|symbol| symbol.address)
+    .collect::<Vec<_>>();
+    entries.sort_unstable();
+    entries.dedup();
+    entries
+}
+
+/// The code that runs Python's instructions: the evaluation loop with the
+/// part GCC splits off it, and in a tail-call build each instruction's
+/// function, which run the loop between them.
+fn evaluation(image: &(dyn RuntimeImage + Send + Sync)) -> Vec<AddressRange<ImageAddress>> {
+    [
+        EVALUATION_LOOP.to_owned(),
+        format!("{EVALUATION_LOOP}.cold"),
+    ]
+    .iter()
+    .filter_map(|name| image.symbol(name))
+    .chain(image.functions_starting(TAIL_CALL_PREFIX))
+    .filter_map(|symbol| {
+        Some(AddressRange {
+            start: symbol.address,
+            end: symbol.address.checked_add(symbol.size?)?,
+        })
+    })
+    .collect()
 }
 
 /// The symbols CPython exports the objects the model reads values by as:
@@ -153,7 +177,7 @@ struct PythonRuntime {
     /// What reads its frames and values, or why nothing can.
     reading: Result<Reading, Arc<str>>,
     free_threaded: bool,
-    entry: Option<ImageAddress>,
+    entries: Vec<ImageAddress>,
     evaluation: Vec<AddressRange<ImageAddress>>,
 }
 
@@ -682,7 +706,7 @@ impl RuntimeModel for PythonRuntime {
         hook: super::HookPlace,
         registers: &RegisterFile,
     ) -> Result<super::HookEvent, Arc<str>> {
-        if matches!(hook, super::HookPlace::Own(address) if self.entry == Some(address)) {
+        if matches!(hook, super::HookPlace::Own(address) if self.entries.contains(&address)) {
             return Ok(super::HookEvent::AgentEntry);
         }
         if hook != super::HookPlace::Companion(hook::SYMBOL) {

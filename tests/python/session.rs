@@ -18,7 +18,7 @@ use crate::support::truth::Report;
 use crate::support::{Scenario, ScratchDir, python};
 
 /// Every interpreter in the matrix, as the flake names it.
-pub const MATRIX: [&str; 9] = [
+pub const MATRIX: [&str; 10] = [
     "3.12",
     "3.13",
     "3.13t",
@@ -28,6 +28,7 @@ pub const MATRIX: [&str; 9] = [
     "3.15t",
     "debian-3.13",
     "ubuntu-3.12",
+    "standalone-3.14",
 ];
 
 /// The interpreters whose fixtures' cores the build saves.
@@ -311,13 +312,32 @@ impl PythonSession {
     /// it, and returns what it reported there.
     pub async fn stop_at(&mut self, name: &str) -> Vec<Vec<String>> {
         let lines = reported(&self.output, name, &self.context()).await;
+        self.pause().await;
+        lines
+    }
+
+    /// Stops the running fixture wherever it is.
+    pub async fn pause(&mut self) {
         let running = self.running.take().expect("the fixture runs");
         self.scenario
             .operation("pause", self.scenario.handle().pause())
             .await;
         let ended = running.await.expect("the run task").expect("the run");
         assert_eq!(ended, StopReason::Pause, "{}", self.context());
-        lines
+    }
+
+    /// Waits for the fixture's output to contain `text`.
+    pub async fn wait_for_output(&self, text: &str) {
+        let began = Instant::now();
+        while !self.output().contains(text) {
+            assert!(
+                began.elapsed() < CHECKPOINT_DEADLINE,
+                "{}: no {text:?} in:\n{}",
+                self.context(),
+                self.output()
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     /// Starts the stopped fixture without releasing any application checkpoint.

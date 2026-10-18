@@ -18,7 +18,7 @@ use crate::support::python;
 /// The interpreters profiled: before 3.13's table, a GIL build that only
 /// names its holder, a free-threaded one with no GIL, and 3.15, whose
 /// threads say whether they wait for it.
-const PROFILED: [&str; 4] = ["3.12", "3.14", "3.14t", "3.15"];
+const PROFILED: [&str; 5] = ["3.12", "3.14", "3.14t", "3.15", "standalone-3.14"];
 
 /// How long a recording holds its program for a profile to be ready
 /// before it releases it anyway, and the test fails on what it lacks.
@@ -652,6 +652,10 @@ mod bpf {
     fn samples_hold_each_threads_python_frames_by_line() {
         let lines = lines();
         for interpreter in PROFILED {
+            // The engine names no Python frames until microscope has read
+            // the interpreter's image, which a cold image cache can make
+            // a tenth of the recording. A first recording fills it.
+            recorded(interpreter, Duration::from_millis(200));
             let profile = recorded(interpreter, Duration::from_secs(2));
             let python = paths(&profile, Source::Samples, Look::Python);
             let spinning: u64 = python

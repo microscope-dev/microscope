@@ -241,7 +241,7 @@ fn a_python_function_breakpoint_needs_a_name() {
         version: crate::image::python::PyVersion(0x030e_00f0),
         reading: Err("not needed to resolve".into()),
         free_threaded: false,
-        entry: None,
+        entries: Vec::new(),
         evaluation: Vec::new(),
     };
     let memory = Memory::default();
@@ -271,7 +271,7 @@ fn a_python_line_breakpoint_path_ignores_its_dot_components() {
         version: crate::image::python::PyVersion(0x030e_00f0),
         reading: Err("not needed to resolve".into()),
         free_threaded: false,
-        entry: None,
+        entries: Vec::new(),
         evaluation: Vec::new(),
     };
     let memory = Memory::default();

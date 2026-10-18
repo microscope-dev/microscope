@@ -69,6 +69,13 @@ pub trait RuntimeImage: std::fmt::Debug {
     /// A named object or function.
     fn symbol(&self, name: &str) -> Option<ImageSymbol>;
 
+    /// Every function whose symbol's name begins with `prefix` and records
+    /// its size.
+    fn functions_starting(&self, prefix: &str) -> Vec<ImageSymbol> {
+        let _ = prefix;
+        Vec::new()
+    }
+
     /// The one function whose symbol demangles to a name as people write
     /// it, such as `__rustc::rust_panic`, whose symbol carries a hash.
     fn function_answering(&self, name: &str) -> Option<ImageSymbol>;
@@ -1679,6 +1686,21 @@ impl RuntimeImage for ModuleImage {
             address: symbol.address(),
             size,
         })
+    }
+
+    fn functions_starting(&self, prefix: &str) -> Vec<ImageSymbol> {
+        self.symbols()
+            .filter(|symbol| {
+                symbol.kind() == crate::SymbolKind::Function && symbol.name().starts_with(prefix)
+            })
+            .filter_map(|symbol| {
+                let range = symbol.extent()?.range;
+                Some(ImageSymbol {
+                    address: symbol.address(),
+                    size: Some(range.end.get() - range.start.get()),
+                })
+            })
+            .collect()
     }
 
     /// Where a function breakpoint enters the function, once that is past

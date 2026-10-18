@@ -287,7 +287,12 @@ its version in `Py_Version`. From 3.13 the section begins with
 schema in `cpython/schemas.rs`. The fields it lacks come from
 `cpython/layouts.gen.rs`, which `scripts/cpython-layouts.sh` generates by
 compiling `scripts/cpython-layouts.c` against each interpreter's headers in
-`MICROSCOPE_CPYTHON`. A prerelease is read only by a layout generated for that
+`MICROSCOPE_CPYTHON`. Patch releases change structures the table does not
+describe: 3.14.8's interpreter state is 24 bytes longer than 3.14.4's from its
+garbage collector's state on. So the generated layout is the one, among the
+builds of the minor version, that agrees with the table on every field both
+name. A table no build agrees with is refused, and so is one that builds
+agree with but lay out differently where the table is silent. A prerelease is read only by a layout generated for that
 exact release. 3.12 has no table, so its layout is the generated one for its
 exact release. Every layout is validated before it is stored: each required
 field is present and lies within its structure, and no structure read whole

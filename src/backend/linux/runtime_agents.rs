@@ -739,16 +739,20 @@ impl<P: LinuxTraceOps> Controller<P> {
             .map_err(|error| error.to_string().into())
     }
 
-    pub(super) fn agent_entry_hook(&self, bound: &BoundRuntime) -> Option<HookPlace> {
-        let inferior = self.inferior.as_ref()?;
+    pub(super) fn agent_entry_hooks(&self, bound: &BoundRuntime) -> Vec<HookPlace> {
+        let Some(inferior) = self.inferior.as_ref() else {
+            return Vec::new();
+        };
         if inferior
             .agents
             .get(&bound.id)
             .is_some_and(|agent| !agent.needs_entry())
         {
-            return None;
+            return Vec::new();
         }
-        let agent = bound.model.agent()?;
+        let Some(agent) = bound.model.agent() else {
+            return Vec::new();
+        };
         let breakpoints = inferior.managed.arms(bound.id);
         let arming = Arming {
             breakpoints: &breakpoints,
@@ -760,9 +764,14 @@ impl<P: LinuxTraceOps> Controller<P> {
             exceptions: self.exception_stops,
         };
         if !agent.wanted(&arming) {
-            return None;
+            return Vec::new();
         }
-        agent.entry().map(HookPlace::Own)
+        agent
+            .entries()
+            .iter()
+            .copied()
+            .map(HookPlace::Own)
+            .collect()
     }
 
     /// Marks each runtime whose agent is not installed to be armed, as when
@@ -1134,8 +1143,8 @@ mod tests {
         fn control_symbol(&self) -> &'static str {
             "control"
         }
-        fn entry(&self) -> Option<crate::ImageAddress> {
-            None
+        fn entries(&self) -> &[crate::ImageAddress] {
+            &[]
         }
         fn eligible_thread(
             &self,

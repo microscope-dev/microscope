@@ -494,6 +494,16 @@
             hash = "sha256-r9AgpIDOF2fWrBtW6XtZxsBvheOpWkL2muFG0loHaJ4=";
           };
         }
+        # What uv installs for 3.14: linked into its executable, built by clang
+        # with LTO and PGO, and evaluating by tail calls, as 3.15 above does.
+        {
+          name = "standalone-3.14";
+          path = cpythonStandalone {
+            binary = "python3.14";
+            url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261013/cpython-3.14.8%2B20261013-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz";
+            hash = "sha256-2PqhtYhQa54+Wj9XgHuwVtU0oWQaaxDRW26j8LQTuWA=";
+          };
+        }
         { name = "debian-3.13"; path = cpythonDistribution { version = "3.13"; debs = debianDebs; }; }
         { name = "ubuntu-3.12"; path = cpythonDistribution { version = "3.12"; debs = ubuntuDebs; }; }
       ];

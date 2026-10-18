@@ -33,7 +33,10 @@ impl PythonRuntime {
                     return None;
                 }
                 let instruction = stop.instruction(thread)?;
-                let at_entry = self.entry.and_then(|entry| bias.load(entry)) == Some(instruction);
+                let at_entry = self
+                    .entries
+                    .iter()
+                    .any(|entry| bias.load(*entry) == Some(instruction));
                 let inside = self.evaluation.iter().any(|range| {
                     bias.load(range.start)
                         .zip(bias.load(range.end))
@@ -213,8 +216,8 @@ impl RuntimeAgent for PythonRuntime {
     fn control_symbol(&self) -> &'static str {
         hook::CONTROL_SYMBOL
     }
-    fn entry(&self) -> Option<ImageAddress> {
-        self.entry
+    fn entries(&self) -> &[ImageAddress] {
+        &self.entries
     }
     fn eligible_thread(
         &self,

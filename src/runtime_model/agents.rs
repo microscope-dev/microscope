@@ -93,7 +93,9 @@ pub struct PreparedAgentRequest {
 pub trait RuntimeAgent: std::fmt::Debug + Send + Sync {
     fn library(&self) -> Vec<u8>;
     fn control_symbol(&self) -> &'static str;
-    fn entry(&self) -> Option<ImageAddress>;
+    /// Where a thread begins to run the runtime's code, which the
+    /// controller watches while the agent waits for such a thread.
+    fn entries(&self) -> &[ImageAddress];
 
     /// The controller prepares files in this particular thread's namespace.
     fn eligible_thread(

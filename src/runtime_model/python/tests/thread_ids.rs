@@ -48,7 +48,7 @@ fn world() -> (Process, u64) {
 fn model(process: &Process, runtime: u64) -> super::super::PythonRuntime {
     super::super::PythonRuntime {
         free_threaded: false,
-        entry: None,
+        entries: Vec::new(),
         evaluation: Vec::new(),
         version: crate::image::python::PyVersion(0x030e_00f0),
         reading: Ok(super::super::Reading {

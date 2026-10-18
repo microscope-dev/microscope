@@ -1102,7 +1102,7 @@ fn an_unreadable_runtime_finds_its_loop_and_says_why_its_frames_are_missing() {
         "the Python frames cannot be read: CPython 3.16.0 is not supported".into();
     let model = super::PythonRuntime {
         free_threaded: false,
-        entry: None,
+        entries: Vec::new(),
         evaluation: Vec::new(),
         version: crate::image::python::PyVersion(0x0310_00f0),
         reading: Err(Arc::clone(&reason)),
@@ -1238,7 +1238,7 @@ fn agent_reports_are_read_from_the_calling_threads_registers() {
     use crate::unwind::{DwarfRegister, RDI, RSI, RegisterFile};
     let model = super::PythonRuntime {
         free_threaded: false,
-        entry: None,
+        entries: Vec::new(),
         evaluation: Vec::new(),
         version: crate::image::python::PyVersion(0x030e_00f0),
         reading: Err("no heap is needed for the hook ABI".into()),

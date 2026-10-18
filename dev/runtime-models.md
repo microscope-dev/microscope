@@ -428,7 +428,15 @@ and report the failure instead of raising into the program.
 **Installation.** `backend/linux/runtime_agents.rs` owns one installation per
 runtime: its files, one outstanding generation, and the PEP 768 request's
 ticket. An idle agent, or one not yet installed, is configured by a source
-request; an armed one through its command slot. Each source request
+request; an armed one through its command slot. A source request goes to a
+thread that is running Python: its instruction is in the evaluation loop, or
+in a tail-call build in any instruction's function, or at one of the model's
+entries. The entries are the loop and its first instruction's function where
+something calls them, and `_PyFunction_Vectorcall` and `PyEval_EvalCode`,
+which enter the loop where LTO and PGO inline it into them, as in
+python-build-standalone's tail-call builds of 3.14 and 3.15. With no such
+thread at a stop, the controller arms the entries and configures the agent at
+the first thread that reaches one once the interpreter is initialized. Each source request
 revalidates the private files through the thread that will read it. A
 location stays pending until the matching acknowledgement. A change refused
 before any write reaches the target keeps the acknowledged configuration,
@@ -519,7 +527,9 @@ confirmed breakpoint never shows as pending again while the agent runs.
 that links it, has a `.PyRuntime` section. From 3.13 its `_Py_DebugOffsets`
 table gives most field offsets; `debug_info::cpython` reads it by name under a
 schema per minor version (`schemas.rs`) and completes it from a layout
-generated from that version's headers (`layouts.gen.rs`). 3.12 has no table, so
+generated from the headers of a build of that version (`layouts.gen.rs`): the
+build whose layout agrees with the table wherever both name a field, since
+patch releases change what the table leaves out. 3.12 has no table, so
 only a release whose generated layout microscope has checked is read. Any other
 version is refused by name. The layout, its constants, and why it cannot be
 read are stored in the image's `PythonRuntime` record (`src/image/python.rs`),

@@ -61,8 +61,9 @@ agent of its own, and only once one of them is set.
 microscope supports CPython 3.12, 3.13, 3.14, and 3.15, with the GIL and
 free-threaded builds (3.13t and later). It is tested with nixpkgs builds,
 python-build-standalone (as uv installs), and Debian and Ubuntu builds. That
-includes statically linked, stripped interpreters, and builds with or without
-frame pointers. libpython may be a shared library or linked into the
+includes statically linked, stripped interpreters, builds with or without
+frame pointers, and builds whose evaluation loop tail-calls a function for each
+instruction, as python-build-standalone's 3.14 and 3.15 do. libpython may be a shared library or linked into the
 executable. Debug symbols for the interpreter are not required.
 
 Python works when you launch a program, attach to a process, or open a core
