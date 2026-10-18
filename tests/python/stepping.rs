@@ -107,6 +107,29 @@ const fn stepped(kind: StepKind) -> StopReason {
     StopReason::Step { kind }
 }
 
+/// Selects the frame running the Python function `function`.
+async fn select_python_frame(session: &PythonSession, function: &str) {
+    let trace = session
+        .scenario
+        .operation("backtrace", session.scenario.handle().backtrace())
+        .await;
+    let frame = trace
+        .frames
+        .iter()
+        .find(|frame| {
+            frame
+                .recorded
+                .as_ref()
+                .is_some_and(|recorded| &*recorded.function == function)
+        })
+        .unwrap_or_else(|| panic!("{}: no {function} frame: {trace:?}", session.context()))
+        .id;
+    session
+        .scenario
+        .operation("select", session.scenario.handle().select_frame(frame))
+        .await;
+}
+
 /// Steps out of the module's frame, at a stop the agent did not report,
 /// and checks the step is refused, with why.
 async fn refused_step_out_of_module(session: &PythonSession) {
@@ -215,6 +238,7 @@ async fn every_kind_of_step(build: &str) {
             at(FIXTURE, "CALLER_START"),
             at(FIXTURE, "TASK_AWAIT"),
             at(FIXTURE, "HANDLES_CALL"),
+            at(FIXTURE, "DEEP"),
         ],
     )
     .await;
@@ -285,6 +309,15 @@ async fn every_kind_of_step(build: &str) {
     let reason = step(&mut session, StepKind::OverSource).await;
     assert_at(&mut session, &reason, &over, "handles", "HANDLES_EXCEPT").await;
 
+    // Over a line of the caller selected, as pdb's `next` after `up`: the
+    // call's rest runs, and the caller stops at its next line.
+    let reason = session.scenario.resume_to_stop().await;
+    assert!(hit(&reason), "{}: {reason:?}", session.context());
+    assert_at(&mut session, &reason, &reason.clone(), "deep", "DEEP").await;
+    select_python_frame(&session, "shallow").await;
+    let reason = step(&mut session, StepKind::OverSource).await;
+    assert_at(&mut session, &reason, &over, "shallow", "SHALLOW_AFTER").await;
+
     // From a stop the agent did not report, the thread would run on
     // unfollowed before the step could begin: the step is refused, with
     // why, and nothing runs.
@@ -306,6 +339,7 @@ async fn every_kind_of_step(build: &str) {
         "OUTER 5",
         "TASK 2",
         "HANDLED True",
+        "SHALLOW 2",
         "CAUGHT caught",
         "STEPPING DONE",
     ] {

@@ -2196,7 +2196,10 @@ impl<P: InspectionOps> Controller<P> {
                 let _ = reply.send(Ok(self.snapshot()));
             }
             Request::StoppedSelection { reply } => {
-                let _ = reply.send(self.stopped_selection());
+                let _ = reply.send(self.stopped_selection().map(|mut selection| {
+                    selection.interpreted = self.selects_interpreted(&selection);
+                    selection
+                }));
             }
 
             Request::Backtrace {
@@ -2806,6 +2809,7 @@ impl<P: InspectionOps> Controller<P> {
             stop: stop.id,
             execution: stop.selected,
             frame: selected_frame(stop),
+            interpreted: false,
         })
     }
 }

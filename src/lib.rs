@@ -1261,7 +1261,10 @@ impl DebuggerHandle {
     /// the innermost frame, whichever frame is selected.
     pub async fn step(&self, kind: StepKind) -> Result<StopReason> {
         let selection = self.stopped_selection().await?;
-        let frame = if kind == StepKind::Out {
+        // A native step by lines begins at the innermost frame; a runtime
+        // steps the frame it interprets that is selected, as pdb's `next`
+        // after `up` does.
+        let frame = if kind == StepKind::Out || selection.interpreted {
             selection.frame
         } else {
             StackFrameId::INNERMOST
@@ -2449,4 +2452,8 @@ pub(crate) struct StoppedSelection {
     pub(crate) stop: StopId,
     pub(crate) execution: ExecutionContext,
     pub(crate) frame: StackFrameId,
+
+    /// Whether the selected frame is one a runtime interprets, which it
+    /// steps from wherever the frame is.
+    pub(crate) interpreted: bool,
 }
