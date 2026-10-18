@@ -336,6 +336,50 @@ fn a_task_no_thread_runs_is_done_waiting_or_ready_and_names_its_awaiters() {
     assert_eq!(read[0].number, done, "a task's number is its id()");
 }
 
+/// A task awaited by more than are named says how many entries of its
+/// set of awaiters were not read, which may hold futures as well as tasks.
+#[test]
+fn a_task_awaited_by_many_names_the_first_and_counts_the_entries_unread() {
+    use super::instances::{Slot, set_object};
+
+    let (mut process, types, ty) = world(TASK_SIZE);
+    let future = process.type_object("_asyncio.Future");
+    let mut slots = Vec::new();
+    let mut names = Vec::new();
+    for index in 0..70 {
+        let awaiter = if index == 3 || index == 40 {
+            process.object(future, 32)
+        } else {
+            let name = format!("t{index}");
+            let text = process.str_object(types.str, &name);
+            if index < 64 {
+                names.push(name);
+            }
+            process.task(ty, 0, text)
+        };
+        slots.push(Slot::Item(awaiter));
+    }
+    slots.extend((70..128).map(|_| Slot::Empty));
+    let set = set_object(&mut process, types.set, &slots);
+    let name = process.str_object(types.str, "awaited");
+    let awaited = process.task(ty, 0, name);
+    process.word(awaited, Field::TaskAwaitedBy, set);
+    process.put(awaited, Field::TaskAwaitedByIsSet, 1, 1);
+
+    let task = with_values(&process, types, InspectionLimits::default(), |values| {
+        values.task(VirtualAddress::new(awaited), None)
+    });
+    names.push("and 6 more entries not read".to_owned());
+    let expected: Arc<str> = names.join(", ").into();
+    assert_eq!(
+        task.labels
+            .iter()
+            .find(|(key, _)| &**key == "awaited_by")
+            .map(|(_, value)| value),
+        Some(&expected)
+    );
+}
+
 #[test]
 fn a_suspended_task_is_the_frames_of_its_chain_of_awaits_innermost_first() {
     let (mut process, types, ty) = world(TASK_SIZE);

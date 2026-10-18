@@ -340,7 +340,7 @@ fn code_object(process: &mut Process, types: &Types, name: &str, first_line: u32
 }
 
 /// A slot of a set's table.
-enum Slot {
+pub(super) enum Slot {
     /// Holds no key.
     Empty,
 
@@ -352,7 +352,7 @@ enum Slot {
 }
 
 /// A set or frozenset of type `ty`, whose table holds `slots` in order.
-fn set_object(process: &mut Process, ty: VirtualAddress, slots: &[Slot]) -> u64 {
+pub(super) fn set_object(process: &mut Process, ty: VirtualAddress, slots: &[Slot]) -> u64 {
     let object = process.object(ty, 48);
     let stride = process.offset(Field::SetEntrySize);
     let table = process.alloc(stride * slots.len() as u64);

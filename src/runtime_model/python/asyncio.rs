@@ -409,8 +409,9 @@ impl Values<'_, '_> {
                 Ok(())
             },
         )?;
+        // The entries left unread may be futures, as those read may.
         if used > MAX_AWAITERS {
-            awaiters.push(format!("and {} more", used - MAX_AWAITERS));
+            awaiters.push(format!("and {} more entries not read", used - MAX_AWAITERS));
         }
 
         Ok(awaiters)
