@@ -1470,6 +1470,9 @@ enum LinuxError {
 struct Controller<P: InspectionOps> {
     _lease: SessionLease,
     executable: Arc<PathBuf>,
+
+    /// The path a launch runs, which may be a link to `executable`.
+    launch_path: Arc<PathBuf>,
     executable_identity: FileIdentity,
 
     /// The C library the executable runs on, whose structures locate TLS.
@@ -1635,6 +1638,7 @@ impl<P: InspectionOps> Controller<P> {
         Self {
             _lease: lease,
             executable: executable.display_path,
+            launch_path: executable.launch_path,
             c_library: executable.c_library,
             executable_identity: executable.identity,
             expected_process_start_time: executable.process_start_time,

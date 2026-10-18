@@ -68,7 +68,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .transpose();
         let started = self
             .ptrace
-            .spawn(&self.executable, options)
+            .spawn(&self.launch_path, options)
             .and_then(|pid| {
                 self.ptrace
                     .spawn_waiter(self.message_sender.clone())

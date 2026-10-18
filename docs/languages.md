@@ -70,7 +70,7 @@ Python works when you launch a program, attach to a process, or open a core
 dump:
 
 ```sh
-microscope python3 app.py
+microscope python3 -- app.py
 microscope -p PID
 microscope --core core python3
 ```

@@ -4344,6 +4344,99 @@ fn python_breakpoints_wait_for_their_code_and_stop_in_the_programs_frame() {
     assert!(!stdout.contains("microscope_python_hook"), "{stdout}");
 }
 
+/// A program named without a directory is found as a shell finds it, on
+/// `PATH`, when the current directory has no file of that name.
+#[test]
+fn a_program_named_alone_is_found_on_path() {
+    let interpreters = std::path::PathBuf::from(
+        std::env::var_os("MICROSCOPE_CPYTHON")
+            .expect("MICROSCOPE_CPYTHON names the interpreters; run tests in the dev shell"),
+    )
+    .join("3.14");
+    let path = std::env::join_paths(std::iter::once(interpreters).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .expect("a PATH");
+    let found = microscope_command()
+        .env("PATH", &path)
+        .args([
+            "--batch",
+            "--eval",
+            "run",
+            "python",
+            "--",
+            "-c",
+            "print('found on PATH')",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .stdin(Stdio::null())
+        .output()
+        .expect("run microscope");
+    let stdout = assert_success(found);
+    assert!(stdout.contains("found on PATH"), "{stdout}");
+
+    let missing = microscope_command()
+        .env("PATH", &path)
+        .args(["--batch", "--eval", "run", "no-such-program-anywhere"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .stdin(Stdio::null())
+        .output()
+        .expect("run microscope");
+    let stderr = String::from_utf8_lossy(&missing.stderr);
+    assert!(!missing.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("no-such-program-anywhere")
+            && stderr.contains("current directory")
+            && stderr.contains("PATH"),
+        "{stderr}"
+    );
+}
+
+/// A virtual environment's interpreter, a link to the one it was made from,
+/// runs as the environment's: Python finds its environment from the path it
+/// is run as, which an activated environment puts first on `PATH`.
+#[test]
+fn a_virtual_environments_python_runs_in_its_environment() {
+    let directory = support::ScratchDir::new("cli-venv");
+    let environment = directory.path().join("venv");
+    let interpreter = std::path::PathBuf::from(
+        std::env::var_os("MICROSCOPE_CPYTHON")
+            .expect("MICROSCOPE_CPYTHON names the interpreters; run tests in the dev shell"),
+    )
+    .join("3.14/python");
+    let made = Command::new(&interpreter)
+        .args(["-I", "-m", "venv", "--without-pip"])
+        .arg(&environment)
+        .output()
+        .expect("make a virtual environment");
+    assert!(made.status.success(), "{made:?}");
+    let path = std::env::join_paths(std::iter::once(environment.join("bin")).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    ))
+    .expect("a PATH");
+
+    let output = microscope_command()
+        .env("PATH", &path)
+        .args([
+            "--batch",
+            "--eval",
+            "run",
+            "python",
+            "--",
+            "-c",
+            "import sys; print('prefix', sys.prefix)",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .stdin(Stdio::null())
+        .output()
+        .expect("run microscope");
+    let stdout = assert_success(output);
+    assert!(
+        stdout.contains(&format!("prefix {}", environment.display())),
+        "{stdout}"
+    );
+}
+
 /// A Python program's core, whose Python frames call each other through
 /// the interpreter's frames on some of its threads.
 const PYTHON_CORE: &str = "build/test-programs/python-locals-3.14t.core";

@@ -37,6 +37,11 @@ Launch a program by passing its executable and arguments:
 microscope ./hello -- first second
 ```
 
+A program named without a directory, such as `python3`, is found as gdb finds
+it: a file of that name in the current directory, or else the first one on
+`PATH`. It runs by the path it was named by, so the `python` of an activated
+virtual environment runs in that environment.
+
 microscope loads the program and opens a prompt:
 
 ```text

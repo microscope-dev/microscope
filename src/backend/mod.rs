@@ -35,6 +35,11 @@ pub struct FileIdentity {
 /// and kept only until its debug information is read.
 pub struct ExecutableSource {
     pub display_path: Arc<PathBuf>,
+
+    /// The path a launch runs: the one it was named by, links kept, as a
+    /// shell runs it. A virtual environment's interpreter is a link that
+    /// finds its environment from the path it runs as.
+    pub launch_path: Arc<PathBuf>,
     pub data: Arc<[u8]>,
     pub identity: FileIdentity,
 
@@ -53,6 +58,7 @@ impl ExecutableSource {
         Executable {
             c_library: linux::CLibrary::of_executable(&self.data),
             display_path: self.display_path,
+            launch_path: self.launch_path,
             identity: self.identity,
             process_start_time: self.process_start_time,
             debug_files: self.debug_files,
@@ -65,6 +71,7 @@ impl ExecutableSource {
 #[derive(Clone)]
 pub struct Executable {
     pub display_path: Arc<PathBuf>,
+    pub launch_path: Arc<PathBuf>,
     pub identity: FileIdentity,
     pub process_start_time: Option<u64>,
     pub debug_files: crate::debug_info::DebugFileSearch,
@@ -74,8 +81,39 @@ pub struct Executable {
 }
 
 pub fn executable_source(path: &Path) -> Result<ExecutableSource> {
-    let path = path.canonicalize()?;
-    read_executable_source(&path, path.clone(), None)
+    let named = std::path::absolute(program_file(path)?)?;
+    let path = named.canonicalize()?;
+    let mut source = read_executable_source(&path, path.clone(), None)?;
+    source.launch_path = Arc::new(named);
+    Ok(source)
+}
+
+/// The file a program names: its path, or for a name with no directory and
+/// no file of that name in the current directory, the first executable file
+/// of that name on `PATH`, as gdb finds it.
+fn program_file(path: &Path) -> Result<std::borrow::Cow<'_, Path>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let alone = matches!(
+        path.components().collect::<Vec<_>>().as_slice(),
+        [std::path::Component::Normal(_)]
+    );
+    if !alone || path.exists() {
+        return Ok(path.into());
+    }
+
+    std::env::var_os("PATH")
+        .and_then(|directories| {
+            std::env::split_paths(&directories)
+                .map(|directory| directory.join(path))
+                .find(|candidate| {
+                    fs::metadata(candidate).is_ok_and(|metadata| {
+                        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+                    })
+                })
+        })
+        .map(Into::into)
+        .ok_or_else(|| Error::ProgramNotFound(path.to_owned()))
 }
 
 /// Reads a running process's executable through `/proc`, which works even
@@ -119,8 +157,10 @@ fn read_executable_source(
     process_start_time: Option<u64>,
 ) -> Result<ExecutableSource> {
     let (data, stamp) = crate::image::backing::read_input(read_path)?;
+    let display_path = Arc::new(display_path);
     Ok(ExecutableSource {
-        display_path: Arc::new(display_path),
+        launch_path: Arc::clone(&display_path),
+        display_path,
         data: data.into(),
         identity: FileIdentity { inode: stamp.inode },
         process_start_time,

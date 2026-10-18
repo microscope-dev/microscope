@@ -1848,6 +1848,7 @@ fn watch_harness_of(thread_count: i32, image: &Arc<ModuleImage>) -> WatchHarness
         SessionLease::detached(),
         crate::backend::ExecutableSource {
             display_path: Arc::new(PathBuf::from("/test/watch")),
+            launch_path: Arc::new(PathBuf::from("/test/watch")),
             data: sectionless_elf(),
             identity: FileIdentity { inode: 0 },
             process_start_time: None,

@@ -896,6 +896,7 @@ impl SimController {
             SessionLease::detached(),
             ExecutableSource {
                 display_path: Arc::new(PathBuf::from(&*executable.path)),
+                launch_path: Arc::new(PathBuf::from(&*executable.path)),
                 data: Arc::clone(&executable.data),
                 identity: FileIdentity {
                     inode: executable.inode,

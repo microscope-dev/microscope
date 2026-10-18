@@ -244,6 +244,21 @@ struct PlacedFile {
     read_only: Vec<Range<u64>>,
 }
 
+/// The dump's executable as a session keeps it, which nothing launches.
+fn dump_executable(file: ImageFile) -> crate::backend::Executable {
+    let path = Arc::new(file.path);
+    crate::backend::ExecutableSource {
+        display_path: Arc::clone(&path),
+        launch_path: path,
+        identity: FileIdentity { inode: file.inode },
+        data: file.data,
+        process_start_time: None,
+        // Every module a dump has is loaded already.
+        debug_files: crate::debug_info::DebugFileSearch::default(),
+    }
+    .described()
+}
+
 /// The module file chosen for one recorded image.
 struct ImageFile {
     path: PathBuf,
@@ -833,17 +848,7 @@ pub fn open_core(
 
     let image = Arc::clone(&main_debug.image);
     let main_loaded = LoadedModule::main(image.id(), main_file.load_bias);
-    let executable = crate::backend::ExecutableSource {
-        display_path: Arc::new(main_file.path.clone()),
-        identity: FileIdentity {
-            inode: main_file.inode,
-        },
-        data: main_file.data,
-        process_start_time: None,
-        // Every module a dump has is loaded already.
-        debug_files: crate::debug_info::DebugFileSearch::default(),
-    }
-    .described();
+    let executable = dump_executable(main_file);
     let (ready_sender, ready) = std::sync::mpsc::sync_channel(1);
     let controller = thread::Builder::new()
         .name(POST_MORTEM_THREAD_NAME.into())

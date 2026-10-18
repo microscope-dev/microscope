@@ -198,6 +198,11 @@ pub enum Error {
     #[error("process identifier {0} is invalid")]
     InvalidProcessId(u64),
 
+    /// A program named without a directory that neither the current
+    /// directory nor `PATH` has.
+    #[error("no program named '{}' is in the current directory or on PATH", .0.display())]
+    ProgramNotFound(PathBuf),
+
     #[error(
         "process {0} has several threads; only a single-threaded process can be launched through"
     )]
