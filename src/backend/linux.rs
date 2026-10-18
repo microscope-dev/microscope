@@ -462,6 +462,11 @@ struct WatchRecord {
     /// The watched bytes when the debugger last observed them.
     observed: Option<Arc<[u8]>>,
 
+    /// For an interpreted variable, the value it held then, and the code
+    /// its frame runs.
+    value: Option<Arc<str>>,
+    code: Option<VirtualAddress>,
+
     /// For a watch on a task's stack, where on the stack it is.
     task: Option<stack_watches::TaskWatch>,
 }

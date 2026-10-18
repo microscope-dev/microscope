@@ -24,6 +24,15 @@ const PROFILED: [&str; 5] = ["3.12", "3.14", "3.14t", "3.15", "standalone-3.14"]
 /// before it releases it anyway, and the test fails on what it lacks.
 const READY_DEADLINE: Duration = Duration::from_secs(30);
 
+/// The snapshots a recording must hold, past its deadline, before it is
+/// released unready, and how long it may wait for them. Each stopped
+/// snapshot's debugger reads every library's debug information again,
+/// which `just stress`, with no image cache and every CPU busy, can make
+/// take most of the deadline; a recording released after one has shown
+/// nothing of the program.
+const ENOUGH_SNAPSHOTS: u64 = 10;
+const SNAPSHOT_DEADLINE: Duration = Duration::from_secs(100);
+
 /// How often each engine reads the program.
 const EVERY: Duration = Duration::from_millis(20);
 
@@ -175,14 +184,18 @@ fn record_until_with_args(
 
     let stop = AtomicBool::new(false);
     let mut released = false;
-    let deadline = Instant::now() + READY_DEADLINE;
+    let started = Instant::now();
     let recording = record_watched(
         command,
         &options,
         &mut Watch {
             every: Duration::from_millis(50),
             publish: &mut |profile| {
-                if !released && (ready(&profile) || Instant::now() > deadline) {
+                let waited = started.elapsed();
+                let given_up = waited > READY_DEADLINE
+                    && (profile.task_snapshots().0 >= ENOUGH_SNAPSHOTS
+                        || waited > SNAPSHOT_DEADLINE);
+                if !released && (ready(&profile) || given_up) {
                     writer.write_all(b"\n").expect("release the program");
                     released = true;
                 }
@@ -206,55 +219,80 @@ fn record_until_with_args(
 /// no frame of the interpreter's. A GIL build's spinners hold its GIL in
 /// turn, and from 3.15 one waits for it as the other holds it; a
 /// free-threaded build's GIL is off.
-#[test]
-fn stopped_snapshots_find_each_python_thread_by_line_and_who_holds_the_gil() {
+fn stopped_snapshots_find_each_python_thread_by_line_and_who_holds_the_gil(interpreter: &str) {
     let lines = lines();
-    for interpreter in PROFILED {
-        let free_threaded = interpreter.ends_with('t');
-        let wanted: &[&str] = match interpreter {
-            _ if free_threaded => &[],
-            "3.15" => &["held", "waiting"],
-            _ => &["held"],
-        };
+    let free_threaded = interpreter.ends_with('t');
+    let wanted: &[&str] = match interpreter {
+        _ if free_threaded => &[],
+        "3.15" => &["held", "waiting"],
+        _ => &["held"],
+    };
 
-        let ready = |profile: &Profile| {
-            let paths = python_paths(profile);
-            paths.keys().any(|path| spins(path, &lines))
-                && paths.keys().any(|path| naps(path, &lines))
-                && gil_values(profile) == wanted
-        };
+    let ready = |profile: &Profile| {
+        let paths = python_paths(profile);
+        paths.keys().any(|path| spins(path, &lines))
+            && paths.keys().any(|path| naps(path, &lines))
+            && gil_values(profile) == wanted
+    };
 
-        let profile = record_until(interpreter, PythonEngine::Snapshot { every: EVERY }, ready);
-        let (taken, paused, _) = profile.task_snapshots();
-        assert!(taken > 0 && paused > 0, "{interpreter}: {taken} {paused}");
-        let problems = profile.task_snapshot_problems();
-        assert!(problems.is_empty(), "{interpreter}: {problems:?}");
+    let profile = record_until(interpreter, PythonEngine::Snapshot { every: EVERY }, ready);
+    let (taken, paused, _) = profile.task_snapshots();
+    assert!(taken > 0 && paused > 0, "{interpreter}: {taken} {paused}");
+    let problems = profile.task_snapshot_problems();
+    assert!(problems.is_empty(), "{interpreter}: {problems:?}");
 
-        let paths = python_paths(&profile);
+    let paths = python_paths(&profile);
+    assert!(
+        paths.keys().any(|path| spins(path, &lines)),
+        "{interpreter}: no spinner in {paths:#?}"
+    );
+    assert!(
+        paths.keys().any(|path| naps(path, &lines)),
+        "{interpreter}: no napper in {paths:#?}"
+    );
+    for path in paths.keys() {
         assert!(
-            paths.keys().any(|path| spins(path, &lines)),
-            "{interpreter}: no spinner in {paths:#?}"
+            !path.iter().any(|step| evaluates(step)),
+            "{interpreter}: the Python look shows the interpreter: {path:?}"
         );
-        assert!(
-            paths.keys().any(|path| naps(path, &lines)),
-            "{interpreter}: no napper in {paths:#?}"
-        );
-        for path in paths.keys() {
-            assert!(
-                !path.iter().any(|step| evaluates(step)),
-                "{interpreter}: the Python look shows the interpreter: {path:?}"
-            );
-        }
-
-        // The mixed stacks hold the interpreter's frames that run them.
-        let mixed = profile.task_waits().into_iter().any(|wait| {
-            wait.noun == "thread"
-                && wait.functions.iter().any(|function| function == "work")
-                && wait.functions.iter().any(|function| evaluates(function))
-        });
-        assert!(mixed, "{interpreter}: no mixed stack of work");
-        assert_eq!(gil_values(&profile), wanted, "{interpreter}");
     }
+
+    // The mixed stacks hold the interpreter's frames that run them.
+    let mixed = profile.task_waits().into_iter().any(|wait| {
+        wait.noun == "thread"
+            && wait.functions.iter().any(|function| function == "work")
+            && wait.functions.iter().any(|function| evaluates(function))
+    });
+    assert!(mixed, "{interpreter}: no mixed stack of work");
+    assert_eq!(gil_values(&profile), wanted, "{interpreter}");
+}
+
+// One test for each profiled interpreter, since each recording may wait
+// long for its snapshots.
+
+#[test]
+fn stopped_snapshots_find_each_python_thread_by_line_and_who_holds_the_gil_on_3_12() {
+    stopped_snapshots_find_each_python_thread_by_line_and_who_holds_the_gil("3.12");
+}
+
+#[test]
+fn stopped_snapshots_find_each_python_thread_by_line_and_who_holds_the_gil_on_3_14() {
+    stopped_snapshots_find_each_python_thread_by_line_and_who_holds_the_gil("3.14");
+}
+
+#[test]
+fn stopped_snapshots_find_each_python_thread_by_line_and_who_holds_the_gil_on_3_14t() {
+    stopped_snapshots_find_each_python_thread_by_line_and_who_holds_the_gil("3.14t");
+}
+
+#[test]
+fn stopped_snapshots_find_each_python_thread_by_line_and_who_holds_the_gil_on_3_15() {
+    stopped_snapshots_find_each_python_thread_by_line_and_who_holds_the_gil("3.15");
+}
+
+#[test]
+fn stopped_snapshots_find_each_python_thread_by_line_and_who_holds_the_gil_on_standalone_3_14() {
+    stopped_snapshots_find_each_python_thread_by_line_and_who_holds_the_gil("standalone-3.14");
 }
 
 /// Live snapshots read each thread's Python frames as the program runs,

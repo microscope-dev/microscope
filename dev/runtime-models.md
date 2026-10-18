@@ -514,6 +514,26 @@ over its end, through a builtin and a stripped twin of the extension, and out
 from a native breakpoint while the agent watches no line, on each build the
 extension is built for.
 
+**Watchpoints.** A watch expression of dynamic type is accepted only when
+it names an interpreted frame's variable and nothing more
+(`Program::named_object`). `RuntimeModel::interpreted_watch` returns the
+word in `localsplus` that holds the variable's object, with the code object
+the frame runs; it refuses a cell or free variable and a frame its thread
+does not own. The watch's scope is `WatchScope::Interpreted`. Its bytes are
+observed through `interpreted_watched`, which untags a stack reference, so
+the object's address stands for the word and a store of the same object is
+no change; its value is the object's summary, kept from the last
+observation, since the old object may be freed by the store. The frame is
+live while its thread's chain holds it running the same code
+(`interpreted_frame_runs`), checked at each stop and at each unchanged hit:
+a new frame in the same place writes every slot before it joins the chain,
+which ends the watch even where it stores what the slot held. A frame that
+cannot be read keeps its watch, unproven. The stop selects the watched
+frame, and `stopped_location` resolves an innermost interpreted frame, one
+a stop in the loop itself has, through the trace rather than the program
+counter. `tests/python/watches.rs` watches from a checkpoint on 3.12, 3.13t,
+3.14, 3.15t and standalone-3.14.
+
 **Exceptions.** `python-raised` and `python-uncaught` are the model's
 `EXCEPTION_FILTERS`, off by default so that nothing runs in the process until
 asked. The command's fourth element is their bits (`exceptions::bits`), and

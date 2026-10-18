@@ -31,3 +31,4 @@ mod stepping;
 mod syscalls;
 mod tasks;
 mod views;
+mod watches;

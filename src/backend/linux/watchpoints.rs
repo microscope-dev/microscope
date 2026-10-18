@@ -16,6 +16,7 @@ use crate::protocol::{
     StopReason, WatchAccess, WatchScope, Watchpoint, WatchpointHit, WatchpointId,
     WatchpointInvalidation, WatchpointOptions, WatchpointSpec,
 };
+use crate::runtime_model::InterpretedSlot;
 
 use crate::unwind::{CallerProvider, CallerResult, DEFAULT_MAX_FRAMES, FrameContext};
 use crate::{
@@ -32,6 +33,10 @@ use super::{
     Controller, Inferior, LinuxError, NativeThreadState, WatchRecord, backend_error, debug_pid,
     debug_thread_id, validate_image_current,
 };
+
+/// The watched bytes as a watch observes them, and the value an
+/// interpreted variable's bytes name, as its runtime presents it.
+type Observation = (Option<Arc<[u8]>>, Option<Arc<str>>);
 
 impl<P: LinuxTraceOps> Controller<P> {
     pub(super) fn add_watchpoint(
@@ -53,7 +58,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         validate_image_current(inferior)?;
-        let (expression, address, byte_size, type_info, scope, frame) = match spec {
+        let (expression, address, byte_size, type_info, scope, frame, code) = match spec {
             WatchpointSpec::Target(target) => {
                 let target = *target;
 
@@ -70,11 +75,18 @@ impl<P: LinuxTraceOps> Controller<P> {
                     target.type_info,
                     target.scope,
                     target.frame,
+                    target.code,
                 )
             }
-            WatchpointSpec::Location { address, byte_size } => {
-                (None, address, byte_size, None, WatchScope::Location, None)
-            }
+            WatchpointSpec::Location { address, byte_size } => (
+                None,
+                address,
+                byte_size,
+                None,
+                WatchScope::Location,
+                None,
+                None,
+            ),
         };
 
         let task = self.task_watch(inferior, &scope, address)?;
@@ -91,7 +103,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .transpose()?;
 
         // Read before arming, so a failed read leaves nothing armed.
-        let observed = self.read_watched_bytes(address, byte_size)?;
+        let (observed, value) = self.observe(&scope, address, byte_size)?;
         if let Some(plan) = plan {
             self.arm_all_threads(plan)?;
         }
@@ -129,6 +141,8 @@ impl<P: LinuxTraceOps> Controller<P> {
                     watchpoint: watchpoint.clone(),
                     frame,
                     observed,
+                    value,
+                    code,
                     task,
                 },
             );
@@ -253,14 +267,14 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(());
         }
 
-        let observed =
-            self.read_watched_bytes(record.watchpoint.address, record.watchpoint.byte_size)?;
+        let (observed, value) = self.observe_record(record)?;
         if let Some(record) = self
             .inferior
             .as_mut()
             .and_then(|inferior| inferior.watch.watchpoints.get_mut(&id))
         {
             record.observed = observed;
+            record.value = value;
         }
 
         Ok(())
@@ -317,7 +331,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 )?)
             };
 
-            let observed = self.read_watched_bytes(watchpoint.address, watchpoint.byte_size)?;
+            let observed = self.observe_record(record)?;
             (plan, Some(observed))
         } else {
             (Some(inferior.watch.plan.without_watchpoint(id)), None)
@@ -333,8 +347,9 @@ impl<P: LinuxTraceOps> Controller<P> {
             .and_then(|inferior| inferior.watch.watchpoints.get_mut(&id))
             .ok_or_else(|| Error::internal("armed watchpoint is recorded"))?;
         record.watchpoint.enabled = enabled;
-        if let Some(observed) = observed {
+        if let Some((observed, value)) = observed {
             record.observed = observed;
+            record.value = value;
         }
 
         let watchpoint = record.watchpoint.clone();
@@ -565,19 +580,17 @@ impl<P: LinuxTraceOps> Controller<P> {
             .watch
             .watchpoints
             .iter()
-            .map(|(&id, record)| {
-                self.read_watched_bytes(record.watchpoint.address, record.watchpoint.byte_size)
-                    .map(|bytes| (id, bytes))
-            })
+            .map(|(&id, record)| self.observe_record(record).map(|observed| (id, observed)))
             .collect::<Result<Vec<_>>>()?;
         let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
-        for (id, bytes) in observed {
-            inferior
+        for (id, (bytes, value)) in observed {
+            let record = inferior
                 .watch
                 .watchpoints
                 .get_mut(&id)
-                .ok_or_else(|| Error::internal("watchpoint exists"))?
-                .observed = bytes;
+                .ok_or_else(|| Error::internal("watchpoint exists"))?;
+            record.observed = bytes;
+            record.value = value;
         }
 
         Ok(())
@@ -623,10 +636,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     .get(id)
                     .map(|record| (*id, record))
             })
-            .map(|(id, record)| {
-                self.read_watched_bytes(record.watchpoint.address, record.watchpoint.byte_size)
-                    .map(|bytes| (id, bytes))
-            })
+            .map(|(id, record)| self.observe_record(record).map(|observed| (id, observed)))
             .collect::<Result<BTreeMap<_, _>>>()?;
         let invalidated = invalid
             .iter()
@@ -647,12 +657,14 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .iter()
                 .filter_map(|(id, &hit_count)| {
                     let record = inferior.watch.watchpoints.get(id)?;
-                    current.get(id).map(|bytes| WatchpointHit {
+                    current.get(id).map(|(bytes, value)| WatchpointHit {
                         watchpoint: *id,
                         thread: debug_thread_id(pid),
                         hit_count,
                         previous: record.observed.clone(),
                         current: bytes.clone(),
+                        previous_value: record.value.clone(),
+                        current_value: value.clone(),
                     })
                 })
                 .collect::<Vec<_>>();
@@ -679,9 +691,10 @@ impl<P: LinuxTraceOps> Controller<P> {
             thread.reason = Some(reason);
         }
 
-        for (id, bytes) in current {
+        for (id, (bytes, value)) in current {
             if let Some(record) = inferior.watch.watchpoints.get_mut(&id) {
                 record.observed = bytes;
+                record.value = value;
             }
         }
 
@@ -736,6 +749,69 @@ impl<P: LinuxTraceOps> Controller<P> {
 }
 
 impl<P: InspectionOps> Controller<P> {
+    /// A watch's bytes as [`Self::observe`] reads them.
+    fn observe_record(&self, record: &WatchRecord) -> Result<Observation> {
+        let watchpoint = &record.watchpoint;
+        self.observe(&watchpoint.scope, watchpoint.address, watchpoint.byte_size)
+    }
+
+    /// The watched bytes, and an interpreted variable's value as its
+    /// runtime presents it. Such a variable's word names its object by an
+    /// address the runtime may tag; the object's address stands for its
+    /// bytes, so that a variable given the same object again is unchanged.
+    fn observe(
+        &self,
+        scope: &WatchScope,
+        address: VirtualAddress,
+        byte_size: u64,
+    ) -> Result<Observation> {
+        let bytes = self.read_watched_bytes(address, byte_size)?;
+        let WatchScope::Interpreted { runtime, .. } = scope else {
+            return Ok((bytes, None));
+        };
+        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let Some(bound) = self
+            .runtimes(inferior)
+            .into_iter()
+            .find(|bound| bound.id == *runtime)
+        else {
+            return Ok((bytes, None));
+        };
+        let Some(word) = bytes
+            .as_deref()
+            .and_then(|bytes| <[u8; 8]>::try_from(bytes).ok())
+            .map(u64::from_le_bytes)
+        else {
+            return Ok((bytes, None));
+        };
+
+        let object = match bound.model.interpreted_watched(word) {
+            Ok(object) => object,
+            Err(reason) => return Ok((bytes, Some(reason))),
+        };
+        let value = object.map_or_else(
+            || "unbound".into(),
+            |object| {
+                let mut budget =
+                    crate::inspection::InspectionBudget::new(crate::InspectionLimits::default());
+                let slot =
+                    self.with_runtime_stop(inferior, &bound, inferior.memory_thread(), |stop| {
+                        bound.model.interpreted_value(stop, object, &mut budget)
+                    });
+                match slot {
+                    InterpretedSlot::Value(value) => value.summary,
+                    InterpretedSlot::Unbound => "unbound".into(),
+                    InterpretedSlot::Unreadable(reason) => format!("unreadable: {reason}").into(),
+                    InterpretedSlot::Number(_) | InterpretedSlot::Limit(_) => {
+                        "not read within the inspection's limits".into()
+                    }
+                }
+            },
+        );
+        let object = object.map_or(0, VirtualAddress::get);
+        Ok((Some(Arc::from(object.to_le_bytes())), Some(value)))
+    }
+
     /// Reads the current watched bytes through a stopped thread, hiding
     /// software-breakpoint bytes. Unreadable memory is reported as `None`, as
     /// is memory no stopped thread can reach because each was killed out of
@@ -783,10 +859,11 @@ impl<P: InspectionOps> Controller<P> {
                 continue;
             };
 
+            // A store that ends an interpreted variable's frame, as a new
+            // frame's in its place, is the watch's end, changed or not.
             if record.watchpoint.access == WatchAccess::Change
-                && self
-                    .read_watched_bytes(record.watchpoint.address, record.watchpoint.byte_size)?
-                    == record.observed
+                && self.observe_record(record)?.0 == record.observed
+                && !matches!(self.interpreted_watch_live(inferior, record)?, Some(false))
             {
                 unchanged.insert(id);
             }
@@ -836,7 +913,69 @@ impl<P: InspectionOps> Controller<P> {
                 })?;
                 self.task_watch_invalidation(inferior, record, *task, *activation, evidence)?
             }
+            WatchScope::Interpreted { thread, .. } => {
+                if debug_pid(*thread).is_ok_and(|pid| inferior.threads.contains_key(&pid)) {
+                    matches!(self.interpreted_watch_live(inferior, record)?, Some(false))
+                        .then_some(WatchpointInvalidation::ScopeExited)
+                } else {
+                    Some(WatchpointInvalidation::OwnerThreadExited)
+                }
+            }
         })
+    }
+
+    /// Whether the frame of an interpreted variable a watch watches still
+    /// runs on its thread: `None` for another watch, and for one whose
+    /// frame cannot be read, which is kept rather than ended unproven.
+    #[cfg_attr(
+        not(debug_assertions),
+        expect(unused_variables, reason = "only recorded")
+    )]
+    fn interpreted_watch_live(
+        &self,
+        inferior: &Inferior,
+        record: &WatchRecord,
+    ) -> Result<Option<bool>> {
+        let WatchScope::Interpreted {
+            thread,
+            runtime,
+            frame,
+        } = record.watchpoint.scope
+        else {
+            return Ok(None);
+        };
+        let code = record
+            .code
+            .ok_or_else(|| Error::internal("an interpreted watch carries its frame's code"))?;
+        let Ok(pid) = debug_pid(thread) else {
+            return Ok(Some(false));
+        };
+        let Some(bound) = self
+            .runtimes(inferior)
+            .into_iter()
+            .find(|bound| bound.id == runtime)
+        else {
+            return Ok(Some(false));
+        };
+        let reader = if inferior.threads.contains_key(&pid) {
+            pid
+        } else {
+            inferior.memory_thread()
+        };
+        match self.with_runtime_stop(inferior, &bound, reader, |stop| {
+            bound
+                .model
+                .interpreted_frame_runs(stop, thread, frame, code)
+        }) {
+            Ok(runs) => Ok(Some(runs)),
+            Err(reason) => {
+                record!(
+                    "watchpoint {} keeps its frame unread: {reason}",
+                    record.watchpoint.id
+                );
+                Ok(None)
+            }
+        }
     }
 
     /// Whether the owner thread still executes the activation that declared

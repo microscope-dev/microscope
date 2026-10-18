@@ -171,6 +171,50 @@ impl Values<'_, '_> {
         }
     }
 
+    /// Where the variable in slot `slot` of the frame `frame` keeps its
+    /// object, to watch: a variable of a thread's frame that holds its
+    /// object itself, not in a cell a closure shares.
+    pub(super) fn watched(
+        &self,
+        table: &CodeTable,
+        code: CodeId,
+        frame: &Record<'_>,
+        slot: u32,
+    ) -> Result<VirtualAddress, InterpretedFailure> {
+        let layout = self.reader.layout;
+        let local = usize::try_from(slot)
+            .ok()
+            .and_then(|slot| table.locals(code).get(slot))
+            .ok_or_else(|| self.unavailable(malformed(frame.address, "frame")))?;
+        if local.kind & (layout.constant(Constant::FastCell) | layout.constant(Constant::FastFree))
+            != 0
+        {
+            return Err(refused(
+                ErrorKind::Unsupported,
+                "the variable is kept in a cell its closures share, which is not watched",
+            ));
+        }
+        let owner = frame
+            .number(Field::FrameOwner, 1)
+            .map_err(|problem| self.unavailable(problem))?;
+        if owner != u64::from(layout.constant(Constant::OwnerThread)) {
+            return Err(refused(
+                ErrorKind::Unsupported,
+                "a generator's or coroutine's variables live in its object, which outlives \
+                 each run of its frame, and are not watched",
+            ));
+        }
+        self.reader
+            .offset(Field::FrameLocalsplus)
+            .map(|start| {
+                frame
+                    .address
+                    .wrapping_add(start)
+                    .wrapping_add(u64::from(slot) * 8)
+            })
+            .map_err(|problem| self.unavailable(problem))
+    }
+
     /// The object a step from the object at `object` reaches.
     pub(super) fn step(
         &self,

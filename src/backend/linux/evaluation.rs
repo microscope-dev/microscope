@@ -41,7 +41,7 @@ use super::interpreted_values::interpreted_key;
 
 use super::native::{InspectionOps, LinuxTraceOps};
 use super::registers::x86_64_register_snapshot;
-use super::{Controller, Inferior, RuntimeModule, validate_image_current};
+use super::{Controller, Inferior, RuntimeModule, debug_thread_id, validate_image_current};
 
 /// A data object a frame names.
 #[derive(Debug, Clone, Copy)]
@@ -1934,11 +1934,7 @@ impl<P: InspectionOps> Controller<P> {
         let mut budget = InspectionBudget::new(crate::InspectionLimits::default());
         let mut machine = StopMachine::new(&scope, &mut budget, false);
         if matches!(program.result(), crate::eval::types::Ty::Dynamic) {
-            return Err(Error::WatchTargetUnsupported(
-                "an interpreter's object moves and changes as its interpreter likes; watch \
-                 native memory"
-                    .into(),
-            ));
+            return self.resolve_interpreted_watch(inferior, stop_id, pid, &program, expression);
         }
 
         let Outcome::Value { value, .. } = run(&program, &mut machine).map_err(failure)? else {
@@ -1978,6 +1974,71 @@ impl<P: InspectionOps> Controller<P> {
             type_info: value.type_info,
             scope: watch_scope,
             frame: evidence,
+            code: None,
+        })
+    }
+
+    /// Resolves a watch of an interpreted frame's variable, which `program`
+    /// names, to the word the variable keeps its object in, for as long as
+    /// the frame runs. An interpreter's objects themselves move and change
+    /// as it likes.
+    fn resolve_interpreted_watch(
+        &self,
+        inferior: &Inferior,
+        stop_id: StopId,
+        pid: Pid,
+        program: &crate::eval::ir::Program<StopObject, StopStep>,
+        expression: &Expression,
+    ) -> Result<crate::WatchTarget> {
+        let Some(StopObject {
+            key:
+                ObjectRef::Interpreted {
+                    runtime,
+                    frame,
+                    name: crate::runtime_model::InterpretedName::Variable(slot),
+                },
+            ..
+        }) = program.named_object()
+        else {
+            return Err(Error::WatchTargetUnsupported(
+                "an interpreter's objects move and change as its interpreter likes; watch a \
+                 variable of the frame, or native memory"
+                    .into(),
+            ));
+        };
+        let bound = self
+            .runtimes(inferior)
+            .into_iter()
+            .find(|bound| bound.id == *runtime)
+            .ok_or_else(|| Error::internal("an interpreted frame's runtime is bound"))?;
+        let mut budget = InspectionBudget::new(crate::InspectionLimits::default());
+        let watch = self
+            .with_runtime_stop(inferior, &bound, pid, |stop| {
+                bound
+                    .model
+                    .interpreted_watch(stop, *frame, *slot, &mut budget)
+            })
+            .map_err(|failure| {
+                Error::WatchTargetUnsupported(match failure {
+                    crate::runtime_model::InterpretedFailure::Refused(_, reason) => reason,
+                    crate::runtime_model::InterpretedFailure::Unavailable(reason) => {
+                        reason.to_string().into()
+                    }
+                })
+            })?;
+        Ok(crate::WatchTarget {
+            stop_id,
+            expression: expression.clone(),
+            address: watch.address,
+            byte_size: watch.byte_size,
+            type_info: None,
+            scope: crate::WatchScope::Interpreted {
+                thread: debug_thread_id(pid),
+                runtime: *runtime,
+                frame: *frame,
+            },
+            frame: None,
+            code: Some(watch.code),
         })
     }
 

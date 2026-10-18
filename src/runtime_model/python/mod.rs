@@ -38,10 +38,10 @@ use std::sync::{Arc, Mutex};
 use super::{
     Crossing, Driven, DynamicValue, InterpretedChild, InterpretedFailure, InterpretedFrame,
     InterpretedLocal, InterpretedName, InterpretedOperand, InterpretedSlot, InterpretedStacks,
-    InterpretedStep, InterpretedThread, Partial, RuntimeException, RuntimeHook, RuntimeImage,
-    RuntimeModel, RuntimeSignals, RuntimeStop, SampledFrame, StartedTask, StopMemory, StoredValue,
-    TaskContext, TaskPage, TaskRef, TaskStarter, ThreadActivity, ThreadLabels, Unbound,
-    WalkedThread,
+    InterpretedStep, InterpretedThread, InterpretedWatch, Partial, RuntimeException, RuntimeHook,
+    RuntimeImage, RuntimeModel, RuntimeSignals, RuntimeStop, SampledFrame, StartedTask, StopMemory,
+    StoredValue, TaskContext, TaskPage, TaskRef, TaskStarter, ThreadActivity, ThreadLabels,
+    Unbound, WalkedThread,
 };
 use crate::demangle::split_from;
 use crate::image::python::{EVALUATION_LOOP, Field, PyVersion, PythonLayout, TAIL_CALL_PREFIX};
@@ -346,7 +346,7 @@ impl Reading {
         read: impl FnOnce(
             &values::Values<'_, '_>,
             &code::CodeTable,
-            code::CodeId,
+            (VirtualAddress, code::CodeId),
             &objects::Record<'_>,
         ) -> Result<R, InterpretedFailure>,
     ) -> Result<R, InterpretedFailure> {
@@ -360,7 +360,7 @@ impl Reading {
                 .reader
                 .record(frame, Field::FrameSize)
                 .map_err(|problem| values.unavailable(problem))?;
-            let (_, code) = frames::Walk {
+            let code = frames::Walk {
                 reader: values.reader,
                 code: table,
                 code_type,
@@ -1126,10 +1126,12 @@ impl RuntimeModel for PythonRuntime {
         name: &str,
         budget: &mut InspectionBudget,
     ) -> Result<Option<InterpretedName>, InterpretedFailure> {
-        self.expressions()?
-            .interpreted_frame(stop, frame, budget, |values, table, code, record| {
-                values.name(table, code, record, name)
-            })
+        self.expressions()?.interpreted_frame(
+            stop,
+            frame,
+            budget,
+            |values, table, (_, code), record| values.name(table, code, record, name),
+        )
     }
 
     fn interpreted_variable(
@@ -1139,10 +1141,72 @@ impl RuntimeModel for PythonRuntime {
         slot: u32,
         budget: &mut InspectionBudget,
     ) -> Result<VirtualAddress, InterpretedFailure> {
-        self.expressions()?
-            .interpreted_frame(stop, frame, budget, |values, table, code, record| {
-                values.variable(table, code, record, slot)
-            })
+        self.expressions()?.interpreted_frame(
+            stop,
+            frame,
+            budget,
+            |values, table, (_, code), record| values.variable(table, code, record, slot),
+        )
+    }
+
+    fn interpreted_watch(
+        &self,
+        stop: &dyn RuntimeStop,
+        frame: VirtualAddress,
+        slot: u32,
+        budget: &mut InspectionBudget,
+    ) -> Result<InterpretedWatch, InterpretedFailure> {
+        self.expressions()?.interpreted_frame(
+            stop,
+            frame,
+            budget,
+            |values, table, (address, code), record| {
+                Ok(InterpretedWatch {
+                    address: values.watched(table, code, record, slot)?,
+                    byte_size: 8,
+                    code: address,
+                })
+            },
+        )
+    }
+
+    fn interpreted_frame_runs(
+        &self,
+        stop: &dyn RuntimeStop,
+        thread: ThreadId,
+        frame: VirtualAddress,
+        code: VirtualAddress,
+    ) -> Result<bool, Arc<str>> {
+        let reading = self.reading()?;
+        let code_type = stop
+            .load_bias()
+            .load(reading.code_type)
+            .ok_or_else(|| Arc::<str>::from("CPython's code type lies outside the process"))?;
+        reading.read_values(stop, None, |values, table| {
+            let (states, _) = threads::thread_states(&values.reader, values.runtime)?;
+            let identities = threads::ThreadIds::new(stop)?;
+            let mut walk = frames::Walk {
+                reader: values.reader,
+                code: table,
+                code_type,
+            };
+            for state in states
+                .iter()
+                .filter(|state| identities.resolve(state.native) == Ok(thread))
+            {
+                let (frames, _) = walk.thread(state);
+                if frames.iter().any(|running| running.frame == frame) {
+                    let record = values.reader.record(frame, Field::FrameSize)?;
+                    let (running, _) = walk.code_of(&record)?;
+                    return Ok(running == code);
+                }
+            }
+            Ok(false)
+        })
+    }
+
+    fn interpreted_watched(&self, bits: u64) -> Result<Option<VirtualAddress>, Arc<str>> {
+        values::reference(&self.reading()?.layout, bits)
     }
 
     fn interpreted_step(

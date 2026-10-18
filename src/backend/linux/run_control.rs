@@ -1906,7 +1906,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         let execution = inferior.active.take().map(|active| active.id);
         let process_id = process_id(inferior.tgid);
         // A stop an agent reported is about the program's frame, not the
-        // agent's hook it entered.
+        // agent's hook it entered; and a store to an interpreted variable is
+        // about the variable's frame, not the interpreter's code that made
+        // it.
         let reported = match reason {
             StopReason::LanguageException(_) | StopReason::Breakpoint { address: None, .. } => true,
             StopReason::Step { .. } | StopReason::StepIncomplete { .. } => {
@@ -1914,8 +1916,27 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
             _ => false,
         };
+        let watched = match reason {
+            StopReason::Watchpoint { ref hits } => hits.first().and_then(|hit| {
+                match self
+                    .inferior
+                    .as_ref()?
+                    .watch
+                    .watchpoints
+                    .get(&hit.watchpoint)?
+                    .watchpoint
+                    .scope
+                {
+                    crate::WatchScope::Interpreted { frame, .. } => Some(frame),
+                    _ => None,
+                }
+            }),
+            _ => None,
+        };
         if reported {
             self.select_blamed_frame(triggering_thread);
+        } else if let Some(frame) = watched {
+            self.select_interpreted_frame(triggering_thread, frame);
         }
 
         self.bump_revision();

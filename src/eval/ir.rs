@@ -28,6 +28,14 @@ impl<O, S> Program<O, S> {
         self.root.is_place()
     }
 
+    /// The data object the program names, when it names nothing more.
+    pub const fn named_object(&self) -> Option<&O> {
+        match &self.root.op {
+            Op::Object(object) => Some(object),
+            _ => None,
+        }
+    }
+
     /// The data object whose storage holds the result, when the result is
     /// part of one: reached from it through members and array elements
     /// only, never through a pointer.

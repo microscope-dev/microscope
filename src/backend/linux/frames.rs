@@ -199,7 +199,9 @@ impl<P: InspectionOps> Controller<P> {
             return self.outer_frame_location(inferior, root, frame);
         };
 
-        if frame.get() != 0 {
+        // A thread stopped in an interpreter's loop has the frame the loop
+        // runs innermost, before the loop's own.
+        if frame.get() != 0 || self.interprets_on(inferior, root) {
             return self.outer_frame_location(inferior, root, frame);
         }
 

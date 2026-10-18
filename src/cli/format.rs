@@ -706,6 +706,9 @@ fn watch_scope_suffix(scope: &WatchScope) -> String {
         WatchScope::Task { task, activation } => {
             format!(" (frame {activation:#x} below the top of task {task}'s stack)")
         }
+        WatchScope::Interpreted { thread, frame, .. } => {
+            format!(" (interpreted frame {frame} of thread {thread})")
+        }
     }
 }
 
@@ -832,8 +835,7 @@ pub fn watchpoint_hits(
                 .iter()
                 .find(|watchpoint| watchpoint.id == hit.watchpoint);
             let type_info = watchpoint.and_then(|watchpoint| watchpoint.type_info.as_ref());
-            let old = value::watched_bytes(hit.previous.as_deref(), type_info, image);
-            let new = value::watched_bytes(hit.current.as_deref(), type_info, image);
+            let (old, new) = value::hit_values(hit, type_info, image);
             let thread = if index == 0 {
                 first.to_owned()
             } else {

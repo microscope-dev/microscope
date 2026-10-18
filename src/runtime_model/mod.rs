@@ -1049,6 +1049,40 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         Err(InterpretedFailure::interprets_nothing())
     }
 
+    /// Where the variable in slot `slot` of the interpreted frame at
+    /// `frame` keeps the object it holds, to watch, and the code the frame
+    /// runs; or why the variable cannot be watched so.
+    fn interpreted_watch(
+        &self,
+        stop: &dyn RuntimeStop,
+        frame: VirtualAddress,
+        slot: u32,
+        budget: &mut InspectionBudget,
+    ) -> Result<InterpretedWatch, InterpretedFailure> {
+        let _ = (stop, frame, slot, budget);
+        Err(InterpretedFailure::interprets_nothing())
+    }
+
+    /// Whether `thread` still runs the interpreted frame at `frame`, which
+    /// runs `code`, as when its variable was watched.
+    fn interpreted_frame_runs(
+        &self,
+        stop: &dyn RuntimeStop,
+        thread: ThreadId,
+        frame: VirtualAddress,
+        code: VirtualAddress,
+    ) -> Result<bool, Arc<str>> {
+        let _ = (stop, thread, frame, code);
+        Err("the runtime interprets no frames".into())
+    }
+
+    /// The object a watched variable whose word is `bits` holds, none when
+    /// it holds none.
+    fn interpreted_watched(&self, bits: u64) -> Result<Option<VirtualAddress>, Arc<str>> {
+        let _ = bits;
+        Err("the runtime interprets no frames".into())
+    }
+
     /// The object a step from the interpreter's object at `object` reaches.
     fn interpreted_step(
         &self,
@@ -1533,6 +1567,18 @@ pub enum InterpretedChild {
         name: Arc<str>,
         value: InterpretedSlot,
     },
+}
+
+/// Where an interpreted frame's variable keeps the object it holds, which
+/// a watch of the variable watches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InterpretedWatch {
+    pub address: VirtualAddress,
+    pub byte_size: u64,
+
+    /// The code the frame runs, which tells a later frame at its address
+    /// from it.
+    pub code: VirtualAddress,
 }
 
 /// What a name means in an interpreted frame, as an expression binds it.

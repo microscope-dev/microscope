@@ -24,7 +24,7 @@ use super::library::Library;
 use super::objects::{Charge, Head, Problem, Reader, Record, malformed};
 use super::text;
 use crate::VirtualAddress;
-use crate::image::python::{Constant, Field};
+use crate::image::python::{Constant, Field, PythonLayout};
 use crate::inspection::InspectionBudget;
 use crate::runtime_model::{
     InterpretedChild, InterpretedKind, InterpretedLocal, InterpretedSlot, InterpretedValue,
@@ -373,20 +373,7 @@ impl Values<'_, '_> {
     /// The object a frame's slot for a local refers to, or `None` when it
     /// refers to none.
     pub(super) fn reference(&self, bits: u64) -> Result<Option<VirtualAddress>, Problem> {
-        if self.reader.layout.constant(Constant::StackRefs) == 0 {
-            return Ok(Some(bits)
-                .filter(|bits| *bits != 0)
-                .map(VirtualAddress::new));
-        }
-
-        // A stack reference: a pointer whose low bit counts references,
-        // or a tagged integer, which only the interpreter's own values are.
-        match bits & 3 {
-            0 | 1 if bits & !1 == 0 => Ok(None),
-            0 | 1 => Ok(Some(VirtualAddress::new(bits & !1))),
-            3 => Err("the variable holds a tagged integer, which only the interpreter uses".into()),
-            _ => Err(format!("the variable holds {bits:#x}, which is no reference").into()),
-        }
+        reference(self.reader.layout, bits)
     }
 
     /// The object at `object`, presented.
@@ -1623,5 +1610,27 @@ pub(super) fn exact(negative: bool, digits: &[u32], shift: u32) -> Option<i128> 
         0_i128.checked_sub_unsigned(magnitude)
     } else {
         i128::try_from(magnitude).ok()
+    }
+}
+
+/// The object a variable's word `bits` refers to, as `layout` lays a
+/// variable out, none for an unbound one.
+pub(super) fn reference(
+    layout: &PythonLayout,
+    bits: u64,
+) -> Result<Option<VirtualAddress>, Problem> {
+    if layout.constant(Constant::StackRefs) == 0 {
+        return Ok(Some(bits)
+            .filter(|bits| *bits != 0)
+            .map(VirtualAddress::new));
+    }
+
+    // A stack reference: a pointer whose low bit counts references, or a
+    // tagged integer, which only the interpreter's own values are.
+    match bits & 3 {
+        0 | 1 if bits & !1 == 0 => Ok(None),
+        0 | 1 => Ok(Some(VirtualAddress::new(bits & !1))),
+        3 => Err("the variable holds a tagged integer, which only the interpreter uses".into()),
+        _ => Err(format!("the variable holds {bits:#x}, which is no reference").into()),
     }
 }

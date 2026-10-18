@@ -361,6 +361,28 @@ refuses the step and says why; set a breakpoint and continue to it instead.
 If the thread runs on before the agent can follow it, the step stops
 incomplete, with the reason. Native steps in a Python process work as usual.
 
+### Watchpoints
+
+From a stop in a Python frame, `watch name` watches one of the frame's
+variables. Each assignment that gives it a different object stops in the
+frame, at the line that made it, with the value before and after:
+
+```text
+stopped by watchpoint 1 (change, hit 2) on total in count at app.py:4
+  old: 0
+  new: 1
+```
+
+An assignment of the object the variable already holds is no change. The
+watch ends when the frame returns or unwinds, and microscope says so. It
+works on every supported CPython, without the agent: from a breakpoint or a
+step, and also from a pause or a native stop with the frame selected.
+
+Only a variable itself is watched. An expression such as `total.real` or
+`items[0]` is refused, because CPython moves and replaces objects as it
+likes. So is a variable a closure shares through a cell, and a generator's
+or coroutine's variable, which lives in its object rather than its frame.
+
 ### Exceptions
 
 Two exception filters stop at Python's exceptions. Both are off until you

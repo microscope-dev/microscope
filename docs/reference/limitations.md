@@ -83,7 +83,9 @@ narrower limits and report them when used.
   the thread, at a Python breakpoint or a step's end, and steps by lines;
   a native step leaves C for Python only where its frame returns to the
   interpreter. A step into C stops only in a function debug information
-  describes. An
+  describes. A Python watchpoint watches a variable of a function's frame,
+  not an object an expression reaches, a closure's cell, or a generator's or
+  coroutine's variable. An
   uncaught Python exception stops in the outermost frame it leaves, whose
   inner frames have returned; its message says where it was raised. On the
   main thread only the main module's exceptions are uncaught: one leaving an

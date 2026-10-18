@@ -348,6 +348,37 @@ impl<P: LinuxTraceOps> Controller<P> {
         })
     }
 
+    /// Selects the frame of thread `pid` that its interpreter keeps at
+    /// `frame`, where the thread runs it.
+    pub(super) fn select_interpreted_frame(&mut self, pid: Pid, frame: crate::VirtualAddress) {
+        let Some(stop) = self
+            .inferior
+            .as_ref()
+            .and_then(|inferior| inferior.public_stop.as_ref())
+        else {
+            return;
+        };
+        let (stop_id, context) = (stop.id, stop.selected);
+        let Ok(trace) = self.backtrace(stop_id, &StackRoot::of_thread(pid)) else {
+            return;
+        };
+        let Some(id) = trace
+            .frames
+            .iter()
+            .find(|candidate| candidate.kind == crate::FrameKind::Interpreted { frame })
+            .map(|candidate| candidate.id)
+        else {
+            return;
+        };
+        if let Some(stop) = self
+            .inferior
+            .as_mut()
+            .and_then(|inferior| inferior.public_stop.as_mut())
+        {
+            stop.selected_frames.insert(context, id);
+        }
+    }
+
     /// Selects the frame a runtime's report blames: for an exception, the
     /// first one the program wrote, below the runtime's own frames that
     /// report it and the runtime's library code that raised it; for a hit

@@ -6996,6 +6996,8 @@ fn a_store_that_changes_nothing_resumes_only_its_own_thread() {
                 hit_count: 1,
                 previous: Some(word(7)),
                 current: Some(word(9)),
+                previous_value: None,
+                current_value: None,
             }]),
         })
     );
@@ -7054,6 +7056,8 @@ fn declined_watch_hits_are_counted_and_resume_only_their_thread() {
                 hit_count: 3,
                 previous: Some(word(2)),
                 current: Some(word(3)),
+                previous_value: None,
+                current_value: None,
             }]),
         })
     );
@@ -7146,6 +7150,8 @@ fn a_declined_change_keeps_the_bytes_a_siblings_pending_hit_reports_from() {
                 hit_count: 1,
                 previous: Some(word(7)),
                 current: Some(word(10)),
+                previous_value: None,
+                current_value: None,
             }]),
         })
     );
@@ -7346,6 +7352,8 @@ fn watched_bytes_becoming_unreadable_or_readable_are_changes() {
                     hit_count,
                     previous,
                     current,
+                    previous_value: None,
+                    current_value: None,
                 }]),
             }),
             "readable: {readable}"

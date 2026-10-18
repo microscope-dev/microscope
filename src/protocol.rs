@@ -857,6 +857,19 @@ pub enum WatchScope {
         /// canonical frame address is, which a move keeps.
         activation: u64,
     },
+
+    /// A variable of one frame a runtime interprets, which ends when the
+    /// frame returns or unwinds.
+    Interpreted {
+        /// The thread running the frame.
+        thread: ThreadId,
+
+        /// The runtime that interprets it.
+        runtime: crate::RuntimeId,
+
+        /// Where its interpreter keeps the frame.
+        frame: VirtualAddress,
+    },
 }
 
 /// Debugger-internal evidence used to decide whether a frame-scoped object
@@ -885,6 +898,10 @@ pub struct WatchTarget {
     pub(crate) type_info: Option<crate::TypeInfo>,
     pub(crate) scope: WatchScope,
     pub(crate) frame: Option<FrameScopeEvidence>,
+
+    /// For an interpreted variable, the code its frame runs, which proves
+    /// the frame there is still the one that declared it.
+    pub(crate) code: Option<VirtualAddress>,
 }
 
 impl WatchTarget {
@@ -1027,6 +1044,13 @@ pub struct WatchpointHit {
 
     /// The watched bytes once every thread stopped, when readable.
     pub current: Option<Arc<[u8]>>,
+
+    /// For a watch of an interpreted variable, whose bytes name an object,
+    /// the value the variable held when last observed and holds now, as
+    /// its runtime presents them, when they could be read. The object it
+    /// held may be gone, so its value is the one read then.
+    pub previous_value: Option<Arc<str>>,
+    pub current_value: Option<Arc<str>>,
 }
 
 impl WatchpointHit {
