@@ -580,6 +580,8 @@ before anything runs, any of these:
 - a frame no thread runs;
 - a runtime without an agent, or a free-threaded one
   (`process_scope_required`);
+- CPython 3.12 and 3.13 (`assignments_refused`), whose agent runs through
+  the launch bootstrap's own thread, and whose 3.12 `f_locals` is a copy;
 - a thread its agent did not stop (`at_agent_hook`), or one with a pending
   signal;
 - an interpreter with any thread state other than the frame's thread's

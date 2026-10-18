@@ -989,7 +989,7 @@ def valid_assignment(wanted):
         (kind == "none" and len(value) == 1)
         or (len(value) == 2 and (
             (kind == "int" and type(value[1]) is str and 0 < len(value[1]) <= 40
-             and value[1].lstrip('-').isdigit() and value[1].isascii())
+             and value[1].removeprefix('-').isdigit() and value[1].isascii())
             or (kind in ("float", "object") and type(value[1]) is int
                 and 0 <= value[1] < 2**64)
             or (kind == "bool" and value[1] in (0, 1) and type(value[1]) is int)

@@ -434,6 +434,14 @@ impl RuntimeAgent for PythonRuntime {
     fn process_scope_required(&self) -> bool {
         self.free_threaded
     }
+    fn assignments_refused(&self) -> Option<&'static str> {
+        // 3.12's f_locals is a copy, and the bootstrap's thread runs
+        // beside the program's, where no proof says what it holds.
+        self.bootstrapped().then_some(
+            "assignments need CPython 3.14 or later: 3.12 and 3.13 take the agent through a \
+             thread of its own, which may hold what an assignment changes",
+        )
+    }
     fn wanted(&self, arming: &Arming<'_>) -> bool {
         !arming.breakpoints.is_empty()
             || arming.step.is_some()

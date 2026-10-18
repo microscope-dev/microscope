@@ -167,6 +167,9 @@ impl<P: LinuxTraceOps> Controller<P> {
                 "a free-threaded interpreter's other threads may hold the objects it changes",
             ));
         }
+        if let Some(reason) = agent.assignments_refused() {
+            return Err(refused(span, reason));
+        }
         if !self.at_agent_hook(pid, runtime) {
             return Err(refused(
                 span,
