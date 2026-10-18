@@ -118,33 +118,10 @@ async fn over_in_the_selected_caller(session: &mut PythonSession) {
         session.context()
     );
     assert_at(session, &reason, &reason.clone(), "deep", "DEEP").await;
-    select_python_frame(session, "shallow").await;
+    session.select_python_frame("shallow").await;
     let reason = step(session, StepKind::OverSource).await;
     let over = stepped(StepKind::OverSource);
     assert_at(session, &reason, &over, "shallow", "SHALLOW_AFTER").await;
-}
-
-/// Selects the frame running the Python function `function`.
-async fn select_python_frame(session: &PythonSession, function: &str) {
-    let trace = session
-        .scenario
-        .operation("backtrace", session.scenario.handle().backtrace())
-        .await;
-    let frame = trace
-        .frames
-        .iter()
-        .find(|frame| {
-            frame
-                .recorded
-                .as_ref()
-                .is_some_and(|recorded| &*recorded.function == function)
-        })
-        .unwrap_or_else(|| panic!("{}: no {function} frame: {trace:?}", session.context()))
-        .id;
-    session
-        .scenario
-        .operation("select", session.scenario.handle().select_frame(frame))
-        .await;
 }
 
 /// Steps out of the module's frame, at a stop the agent did not report,

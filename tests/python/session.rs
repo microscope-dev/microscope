@@ -404,6 +404,29 @@ impl PythonSession {
         stop_id
     }
 
+    /// Selects the frame of the stop's thread that runs the Python
+    /// function `function`.
+    pub async fn select_python_frame(&self, function: &str) {
+        let trace = self
+            .scenario
+            .operation("backtrace", self.scenario.handle().backtrace())
+            .await;
+        let frame = trace
+            .frames
+            .iter()
+            .find(|frame| {
+                frame
+                    .recorded
+                    .as_ref()
+                    .is_some_and(|recorded| &*recorded.function == function)
+            })
+            .unwrap_or_else(|| panic!("{}: no {function} frame: {trace:?}", self.context()))
+            .id;
+        self.scenario
+            .operation("select", self.scenario.handle().select_frame(frame))
+            .await;
+    }
+
     /// A thread's backtrace at the stop it is held at.
     pub async fn backtrace(&mut self, thread: ThreadId) -> Backtrace {
         let stop = self.stop().await;
