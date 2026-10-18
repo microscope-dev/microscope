@@ -896,6 +896,68 @@ async fn exec_retires_old_agent_files_and_reinstalls_before_the_next_requested_l
     }
 }
 
+/// 3.12 and 3.13 take the agent only through a launch's bootstrap, which
+/// an exec ends: the bootstrap's files go with it, and the breakpoint says
+/// why it cannot be armed instead of waiting for a bootstrap that is gone.
+#[tokio::test]
+async fn exec_retires_a_launch_bootstrap() {
+    use crate::session::PythonSession;
+    use microscope::{BreakpointOptions, ExitStatus, StopReason};
+    for interpreter in ["3.12", "3.13"] {
+        let (mut session, reason, _) = PythonSession::launch_to_stop(
+            interpreter,
+            "control_exec.py",
+            &["--park"],
+            vec![(
+                control_line("control_exec.py", "# TARGET_LINE"),
+                BreakpointOptions {
+                    pending: true,
+                    ..BreakpointOptions::default()
+                },
+            )],
+        )
+        .await;
+        assert!(
+            matches!(reason, StopReason::Breakpoint { .. }),
+            "{interpreter}: {reason:?}"
+        );
+        assert_eq!(
+            session.scenario.resume_to_stop().await,
+            StopReason::Exec { followed: true },
+            "{interpreter}: {}",
+            session.output()
+        );
+        let output = session.output();
+        let bootstrap = output
+            .lines()
+            .find_map(|line| line.strip_prefix("BOOTSTRAP "))
+            .unwrap_or_else(|| panic!("{interpreter}: no bootstrap in:\n{output}"));
+        assert!(
+            !std::path::Path::new(bootstrap).exists(),
+            "{interpreter}: exec retained {bootstrap}"
+        );
+        session.resume().await;
+        session.wait_for_output("PARKED").await;
+        session.pause().await;
+        let breakpoints = session.scenario.snapshot().await.breakpoints;
+        assert!(
+            breakpoints[0]
+                .pending_locations
+                .iter()
+                .any(|place| place.reason.contains("need microscope to launch the interpreter")),
+            "{interpreter}: {breakpoints:?}"
+        );
+        session.go_on().await;
+        assert_eq!(
+            session.finish_run().await,
+            StopReason::Exited(ExitStatus::Code(0)),
+            "{interpreter}: {}",
+            session.output()
+        );
+        session.shutdown().await;
+    }
+}
+
 #[tokio::test]
 async fn exhausted_monitoring_tools_report_failure_and_preserve_application_tools() {
     use crate::session::PythonSession;
