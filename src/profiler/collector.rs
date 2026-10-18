@@ -120,6 +120,9 @@ pub struct Collector {
 
     /// Whether the process can no longer be read.
     gone: bool,
+
+    /// Whether the recording is ending, and so switches no site on.
+    finishing: bool,
 }
 
 impl Collector {
@@ -133,6 +136,7 @@ impl Collector {
                 .unwrap_or(u32::MAX)
                 .max(1),
             instances: Vec::new(),
+            finishing: false,
             anchors: Anchors::new(perf::tsc_anchor()),
             clock: if perf::tsc_is_the_clock() {
                 abi::CLOCK_TSC
@@ -169,7 +173,7 @@ impl Collector {
                 self.define(processor, index);
             }
             let instance = &self.instances[index];
-            if !instance.on && !instance.states.is_empty() {
+            if !instance.on && !instance.states.is_empty() && !self.finishing {
                 self.switch_on(index);
             }
             if self.gone {
@@ -195,17 +199,37 @@ impl Collector {
             return;
         }
 
+        // Once the control block says microscope has stopped, no site the
+        // program defines switches itself on, and the last read below
+        // finds every site defined before.
+        self.finishing = true;
         for instance in &self.instances {
-            for &state in &instance.states {
-                let _ = perf::write_memory(self.pid, state, &[0]);
-            }
-
             if instance.on {
                 let _ = perf::write_memory(self.pid, instance.control + 12, &0_u32.to_le_bytes());
             }
+
+            for &state in &instance.states {
+                let _ = perf::write_memory(self.pid, state, &[0]);
+            }
         }
 
+        let known: Vec<usize> = self
+            .instances
+            .iter()
+            .map(|instance| instance.states.len())
+            .collect();
         self.drain(processor);
+        if self.gone {
+            return;
+        }
+
+        // The sites the program defined since, which it may have switched
+        // on as it defined them.
+        for (instance, known) in self.instances.iter().zip(known) {
+            for &state in instance.states.iter().skip(known) {
+                let _ = perf::write_memory(self.pid, state, &[0]);
+            }
+        }
     }
 
     /// Forgets the instrumentation of the program the process replaced. Its
@@ -265,7 +289,7 @@ impl Collector {
         if self.instances[index].defines {
             self.define(processor, index);
         }
-        if !self.instances[index].states.is_empty() {
+        if !self.instances[index].states.is_empty() && !self.finishing {
             self.switch_on(index);
         }
     }
@@ -336,9 +360,15 @@ impl Collector {
             self.instances[index].defined += 1;
             let mut record = [0; abi::RUNTIME_SITE_SIZE];
             let address = probes::runtime_site_address(table, site);
-            let read = perf::read_memory(pid, address, &mut record)
-                .map_err(|error| error.to_string())
-                .and_then(|read| probes::runtime_site(table, site, &record[..read], text));
+            let read = match perf::read_memory(pid, address, &mut record) {
+                Ok(read) => probes::runtime_site(table, site, &record[..read], text),
+                // A process that has gone broke nothing.
+                Err(error) if gone(&error) => {
+                    self.gone = true;
+                    return;
+                }
+                Err(error) => Err(error.to_string()),
+            };
             let site = match read {
                 Ok(site) => site,
                 #[cfg_attr(not(debug_assertions), expect(unused_variables))]
@@ -361,6 +391,7 @@ impl Collector {
         }
 
         if self.instances[index].on
+            && !self.finishing
             && !switched
                 .iter()
                 .all(|&state| perf::write_memory(pid, state, &[1]).is_ok())
@@ -475,6 +506,19 @@ impl Collector {
         };
 
         let instance = &mut self.instances[index];
+        if block.enable == 0 && !self.finishing {
+            // Only the program clears it while microscope reads, once it
+            // has gone too long without a read. The next drain switches
+            // its sites on again.
+            instance.on = false;
+            let text = format!(
+                "{}: the program switched its sites off when microscope went more than {} ms \
+                 without reading them, and they recorded nothing until they were switched on again",
+                instance.path, self.timeout
+            );
+            processor.probe_problem(&text);
+        }
+
         let dropped = block.dropped.saturating_sub(instance.dropped);
         instance.dropped = instance.dropped.max(block.dropped);
         processor
@@ -665,6 +709,160 @@ mod tests {
     use super::*;
     use crate::debug_info::DebugFileSearch;
     use crate::profiler::record;
+
+    /// The instrumentation of process `pid`, which runs `program`, as a
+    /// recording finds it, its module one of `processor`'s.
+    fn found(pid: u32, program: &std::path::Path, processor: &mut Processor) -> Found {
+        use object::{Object as _, ObjectSegment as _};
+
+        let bytes = std::fs::read(program).expect("run `just build-test-programs`");
+        let file = object::File::parse(bytes.as_slice()).expect("an ELF file");
+        let table = probes::table(&file)
+            .expect("its instrumentation")
+            .expect("the probes SDK's control block");
+        // The mapping of the file's start is its first segment's.
+        let first = file
+            .segments()
+            .map(|segment| segment.address())
+            .min()
+            .expect("a segment");
+        let maps = std::fs::read_to_string(format!("/proc/{pid}/maps")).expect("its mappings");
+        let start = maps
+            .lines()
+            .find_map(|line| {
+                let fields: Vec<&str> = line.split_whitespace().collect();
+                (fields.len() == 6
+                    && fields[2] == "00000000"
+                    && std::path::Path::new(fields[5]) == program)
+                    .then(|| fields[0].split_once('-'))
+                    .flatten()
+                    .and_then(|(start, _)| u64::from_str_radix(start, 16).ok())
+            })
+            .expect("the mapping of the program's start");
+        Found {
+            module: processor.builder().module("probes", None, [0; 16], 0),
+            path: "probes".into(),
+            bias: crate::LoadBias::between(
+                crate::ImageAddress::new(first & !0xfff),
+                crate::VirtualAddress::new(start),
+            ),
+            table: Arc::new(table),
+        }
+    }
+
+    /// A site the program defines as a recording ends is off once it has
+    /// ended, though recording every site switched it on as it was
+    /// defined: the recording's last read switches no site on, and the
+    /// sites it finds are switched off.
+    #[test]
+    fn a_site_defined_as_a_recording_ends_is_off_once_it_has() {
+        use std::io::{BufRead as _, Write as _};
+
+        let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("build/test-programs/probes")
+            .canonicalize()
+            .expect("run `just build-test-programs`");
+        let mut child = std::process::Command::new(&program)
+            .arg("defines")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("the program");
+        let pid = child.id();
+        let mut names = child.stdin.take().expect("its input");
+        let mut lines = std::io::BufReader::new(child.stdout.take().expect("its output")).lines();
+        let mut define = |name: &str| {
+            writeln!(names, "{name}").expect("name a site");
+            let line = lines.next().expect("a site").expect("its line");
+            let address = line.strip_prefix("SITE 0x").expect("a site's address");
+            u64::from_str_radix(address, 16).expect("an address")
+        };
+        let state = |address: u64| {
+            let mut byte = [0];
+            perf::read_memory(pid, address, &mut byte).expect("its state");
+            byte[0]
+        };
+
+        let early = define("early");
+        let mut processor = record::Processor::new(DebugFileSearch::default(), 64);
+        let mut collector = Collector::new(
+            pid,
+            ProbeSelection::All,
+            std::time::Duration::from_secs(600),
+        );
+        let found = found(pid, &program, &mut processor);
+        collector.adopt(&mut processor, &found);
+        collector.drain(&mut processor);
+        assert_eq!(state(early), 1);
+
+        let late = define("late");
+        assert_eq!(
+            state(late),
+            1,
+            "recording every site, a site is on from its definition"
+        );
+        collector.finish(&mut processor, true);
+        let states = (state(early), state(late));
+        drop(names);
+        child.wait().expect("its exit");
+        assert_eq!(states, (0, 0), "a site is left on");
+    }
+
+    /// A program whose sites switched themselves off, as they do when
+    /// microscope goes too long without reading them, is switched on again
+    /// at the next read, which says what was lost.
+    #[test]
+    fn sites_that_switched_themselves_off_are_switched_on_again() {
+        use std::io::{BufRead as _, Write as _};
+
+        let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("build/test-programs/probes")
+            .canonicalize()
+            .expect("run `just build-test-programs`");
+        let mut child = std::process::Command::new(&program)
+            .arg("defines")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("the program");
+        let pid = child.id();
+        let mut names = child.stdin.take().expect("its input");
+        let mut lines = std::io::BufReader::new(child.stdout.take().expect("its output")).lines();
+        writeln!(names, "work").expect("name a site");
+        let line = lines.next().expect("a site").expect("its line");
+        let site = u64::from_str_radix(line.strip_prefix("SITE 0x").expect("an address"), 16)
+            .expect("an address");
+        let state = || {
+            let mut byte = [0];
+            perf::read_memory(pid, site, &mut byte).expect("its state");
+            byte[0]
+        };
+
+        let mut processor = record::Processor::new(DebugFileSearch::default(), 64);
+        let found = found(pid, &program, &mut processor);
+        let control = found
+            .bias
+            .wrapping_load(crate::ImageAddress::new(found.table.control));
+        let mut collector = Collector::new(
+            pid,
+            ProbeSelection::All,
+            std::time::Duration::from_secs(600),
+        );
+        collector.adopt(&mut processor, &found);
+        assert_eq!(state(), 1);
+
+        // What the program does once microscope has gone quiet.
+        perf::write_memory(pid, control.get() + 12, &0_u32.to_le_bytes()).expect("disable");
+        perf::write_memory(pid, site, &[0]).expect("switch the site off");
+        collector.drain(&mut processor);
+        collector.drain(&mut processor);
+        let on = state();
+        drop(names);
+        child.wait().expect("its exit");
+        assert_eq!(on, 1, "the site stays off");
+        let problems = processor.snapshot().markers;
+        assert_eq!(problems.len(), 1, "{problems:?}");
+    }
 
     /// A process can exit between the reads of its registry and of its
     /// rings, after its last records were read. Its rings are then gone,

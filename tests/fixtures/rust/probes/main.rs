@@ -19,6 +19,8 @@
 //!   zones at run time does: three rounds of a zone, a plot, and a zone
 //!   in another name, then a message whose site it defines once microscope
 //!   listens.
+//! - `defines`: for each name a line of its standard input gives, a zone's
+//!   site of that name, and a line with the address of its state byte.
 
 use std::io::Write as _;
 use std::time::{Duration, Instant};
@@ -37,6 +39,10 @@ fn main() {
     }
     if arguments[1] == "rate" {
         rate();
+        return;
+    }
+    if arguments[1] == "defines" {
+        defines();
         return;
     }
     if arguments[1] == "defined" {
@@ -204,6 +210,16 @@ fn defined() {
         std::thread::sleep(Duration::from_millis(1));
     }
     late.message(format_args!("defined {}", "late"));
+}
+
+fn defines() {
+    for name in std::io::stdin().lines() {
+        let name = name.expect("a name");
+        let site = define(abi::SITE_ZONE, &name, "app.py", 1).expect("a zone");
+        // The ABI puts a run-time site's state byte at its offset 1.
+        println!("SITE {:#x}", std::ptr::from_ref(site).addr() + 1);
+        std::io::stdout().flush().expect("flush");
+    }
 }
 
 fn spin(rounds: u64) -> u64 {
