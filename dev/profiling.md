@@ -124,8 +124,10 @@ sections lie at the addresses its code runs at, with symbols and call-frame
 information, and it becomes a module of its own over its code. The recorder
 reads the objects when a sample lands in code nothing names. That includes
 code in no mapping the recording saw, since a busy ring can lose the mapping's
-record. It reads them again only when the descriptors' bytes changed since,
-or when a mapping replaced an object's code. A process whose modules hold no
+record. It reads them again only when the bytes of the descriptors or of
+the entries they list changed since, or when a mapping replaced an object's
+code. A new object's entry may be where an old one's was, which leaves the
+descriptor's own bytes as they were. A process whose modules hold no
 `__jit_debug_descriptor` is never read. A range that holds registered objects
 is theirs alone: no perf-map module is made over it. The objects are read
 from the running process, so a program that exits before the recorder

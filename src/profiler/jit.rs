@@ -10,8 +10,8 @@
 //! code nothing names, and not again for a while after a read that found
 //! nothing new. A function's code is read with it: its frames are proved
 //! from the code as it is then. The registered objects are read
-//! again then too, when their descriptors changed since they were last
-//! read. A range that holds registered objects is theirs alone.
+//! again then too, when their descriptors or entries changed since they
+//! were last read. A range that holds registered objects is theirs alone.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -66,7 +66,8 @@ pub struct Jit {
 
     /// Each registered object, by where its code starts; the descriptors
     /// they are registered with, until the process maps something; and
-    /// the descriptors' bytes as they were when the objects were read.
+    /// the bytes of the descriptors and their entries as they were when
+    /// the objects were read.
     objects: BTreeMap<u64, JitCode>,
     descriptors: Option<Vec<u64>>,
     headers: Vec<u8>,
@@ -299,7 +300,7 @@ impl Jit {
         };
         let mut headers = Vec::new();
         for &descriptor in descriptors {
-            headers.extend(read(descriptor, gdb_jit::DESCRIPTOR_BYTES).unwrap_or_default());
+            gdb_jit::witness(descriptor, read, &mut headers);
         }
 
         if headers == self.headers {
@@ -586,6 +587,43 @@ mod tests {
         // A mapping over its code: what is there now is made again.
         jit.mapped(0x7000_0000, 0x7000_2000, true, 0);
         assert_eq!(refresh(&mut jit, code, &|| vec![at]).len(), 1);
+    }
+
+    /// A compiler that unregisters an object and registers another may
+    /// leave its descriptor's bytes as they were: the new object's entry
+    /// can be where the old one's was. The new object is still read.
+    #[test]
+    fn an_object_registered_at_a_reused_entry_is_read() {
+        let first = crate::debug_info::gdb_jit::test_image(0x7000_1000, 64);
+        let second = crate::debug_info::gdb_jit::test_image(0x7000_3000, 64);
+        let mut entry = Box::new([0, 0, first.as_ptr() as u64, first.len() as u64]);
+        let descriptor = Box::new([1_u64, 0, std::ptr::from_ref(&*entry) as u64]);
+        let at = std::ptr::from_ref(&*descriptor) as u64;
+        let pid = std::process::id();
+
+        let mut jit = Jit::default();
+        let mut time = 0;
+        let mut refresh = |jit: &mut Jit, address| {
+            time += QUIET;
+            jit.refresh(pid, time, [address], || vec![at]).objects
+        };
+        let objects = refresh(&mut jit, 0x7000_1008);
+        assert_eq!(objects.len(), 1);
+
+        // The same entry, now the second object's; the descriptor's bytes
+        // are as they were.
+        entry[2] = second.as_ptr() as u64;
+        entry[3] = second.len() as u64;
+        std::hint::black_box(&entry);
+        let objects = refresh(&mut jit, 0x7000_3008);
+        assert_eq!(
+            objects
+                .iter()
+                .map(|object| (object.start, object.end))
+                .collect::<Vec<_>>(),
+            [(0x7000_3000, 0x7000_3040)]
+        );
+        drop(descriptor);
     }
 
     /// A read takes at most so much of the map, and the next read goes on

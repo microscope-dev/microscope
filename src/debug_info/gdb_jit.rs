@@ -75,6 +75,38 @@ pub struct Registered {
     pub problems: Vec<String>,
 }
 
+/// Appends to `witness` the bytes of the descriptor at `descriptor` and of
+/// each entry it lists, which change whenever its compiler registers or
+/// unregisters an object: a new object's entry may be where an old one's
+/// was, leaving the descriptor's own bytes as they were.
+pub fn witness(
+    descriptor: u64,
+    mut read: impl FnMut(u64, usize) -> Option<Vec<u8>>,
+    witness: &mut Vec<u8>,
+) {
+    let Some(header) = read(descriptor, DESCRIPTOR_BYTES) else {
+        return;
+    };
+    let mut next = word(&header, 16).unwrap_or(0);
+    witness.extend(header);
+    let mut seen = std::collections::BTreeSet::new();
+    while next != 0 && seen.len() < MAX_OBJECTS && seen.insert(next) {
+        let Some(entry) = read(next, ENTRY_BYTES) else {
+            return;
+        };
+        next = word(&entry, 0).unwrap_or(0);
+        witness.extend(entry);
+    }
+}
+
+/// The little-endian word at `at` in `bytes`.
+fn word(bytes: &[u8], at: usize) -> Option<u64> {
+    bytes
+        .get(at..at + 8)
+        .and_then(|word| <[u8; 8]>::try_from(word).ok())
+        .map(u64::from_le_bytes)
+}
+
 /// The objects the descriptor at `descriptor` lists, reading at most
 /// `budget` bytes of them through `read`, which gives all the bytes asked
 /// for or none.
@@ -84,12 +116,6 @@ pub fn registered(
     mut read: impl FnMut(u64, usize) -> Option<Vec<u8>>,
     registered: &mut Registered,
 ) {
-    let word = |bytes: &[u8], at: usize| {
-        bytes
-            .get(at..at + 8)
-            .and_then(|word| <[u8; 8]>::try_from(word).ok())
-            .map(u64::from_le_bytes)
-    };
     let mut problem = |text: String| registered.problems.push(text);
 
     let Some(header) = read(descriptor, DESCRIPTOR_BYTES) else {
