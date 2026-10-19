@@ -75,7 +75,9 @@ async fn step_into_an_await_stops_at_the_futures_first_line() {
             ("// INTO: inherent", "inherent", "// STEP: inherent"),
             ("// INTO: recv", "shapes", "// STEP: recv-after"),
         ];
+
         let mut reason = stopped_at(&mut scenario, &awaits.map(|(from, _, _)| from)).await;
+
         for (from, function, to) in awaits {
             let context = format!("{fixture} {from}");
             assert!(
@@ -87,12 +89,15 @@ async fn step_into_an_await_stops_at_the_futures_first_line() {
                 ("shapes".to_owned(), line(SOURCE, from)),
                 "{context}"
             );
+
             step_in(&mut scenario, &context).await;
+
             assert_eq!(
                 place(&scenario).await,
                 (function.to_owned(), line(SOURCE, to)),
                 "{context}"
             );
+
             if to != "// STEP: recv-after" {
                 reason = scenario.resume_to_stop().await;
             }
@@ -114,18 +119,23 @@ async fn step_into_the_runtime_is_a_choice() {
         matches!(reason, StopReason::Breakpoint { .. }),
         "{reason:?}"
     );
+
     let entered = scenario
         .operation(
             "step into runtime",
             scenario.handle().set_step_into_runtime(true),
         )
         .await;
+
     assert!(!entered, "steps skip runtime code by default");
+
     step_in(&mut scenario, "on").await;
+
     let location = scenario
         .operation("location", scenario.handle().current_location())
         .await;
     let function = location.image.function.clone().expect("a function");
+
     assert_eq!(
         (&*function.name, function.role),
         ("recv", CodeRole::RuntimeInternal),
@@ -138,17 +148,22 @@ async fn step_into_the_runtime_is_a_choice() {
             scenario.handle().set_step_into_runtime(false),
         )
         .await;
+
     assert!(entered);
+
     let reason = scenario.resume_to_stop().await;
     assert!(
         matches!(reason, StopReason::Breakpoint { .. }),
         "{reason:?}"
     );
+
     assert_eq!(
         place(&scenario).await,
         ("shapes".to_owned(), line(SOURCE, "// INTO: recv-again"))
     );
+
     step_in(&mut scenario, "off").await;
+
     assert_eq!(
         place(&scenario).await,
         (
@@ -156,5 +171,6 @@ async fn step_into_the_runtime_is_a_choice() {
             line(SOURCE, "// STEP: recv-again-after")
         )
     );
+
     scenario.shutdown().await;
 }

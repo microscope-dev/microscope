@@ -71,6 +71,7 @@ fn injection_prefers_the_selected_eligible_thread_and_preserves_the_eval_breaker
     assert_eq!(writes[1].bytes, 1_u32.to_le_bytes());
     assert_eq!(writes[2].address.get(), second + 64);
     assert_eq!(writes[2].bytes, 32_u64.to_le_bytes());
+
     let writes = request(&process, runtime, "/a.py", &[100]).expect("injection");
     assert_eq!(writes[2].address.get(), first + 64);
     assert_eq!(writes[2].bytes, 0x4000_0000_0000_0124_u64.to_le_bytes());
@@ -115,6 +116,7 @@ fn injection_refuses_disabled_busy_missing_and_malformed_state() {
             .contains("disabled")
     );
     process.memory.write(interpreter + 24, 1, 4);
+
     for path in [
         "",
         "relative.py",
@@ -154,6 +156,7 @@ fn incomplete_lists_overlapping_fields_and_uninitialized_runtimes_are_refused() 
             .contains("loops")
     );
     process.word(first, Field::ThreadNext, 0);
+
     for (field, offset) in [
         (Field::DebugScript, 0),
         (Field::DebugScript, u64::from(u32::MAX) - 1),
@@ -174,6 +177,7 @@ fn incomplete_lists_overlapping_fields_and_uninitialized_runtimes_are_refused() 
         );
         process.layout.set_field(field, old);
     }
+
     for bit in [0, 3, 255] {
         process.layout.set_constant(Constant::DebugStopBit, bit);
         assert!(
@@ -207,6 +211,7 @@ fn another_interpreter_or_an_ambiguous_native_thread_is_refused() {
     process.word(first_interpreter, Field::InterpreterNext, 0);
     process.word(first, Field::ThreadNext, state);
     process.word(state, Field::ThreadNativeId, 100);
+
     for candidates in [&[100][..], &[100, 200][..]] {
         let result = super::super::injection::plan(
             &process.reader(),
@@ -294,10 +299,12 @@ fn the_callers_read_budget_is_preserved_and_a_default_budget_bounds_large_lists(
     );
 
     let mut next = 0;
+
     for number in 300..1800 {
         next = process.thread_state(next, 0x6000, number);
     }
     process.word(first, Field::ThreadNext, next);
+
     let result = super::super::injection::plan(
         &process.reader(),
         VirtualAddress::new(runtime),

@@ -81,8 +81,10 @@ impl Machine {
         let gone = kernel.ended.keys().chain(kernel.zombies.keys()).copied();
         self.ending.borrow_mut().extend(exiting.chain(gone));
         drop(kernel);
+
         let happenings = std::mem::take(&mut self.kernel.borrow_mut().happenings);
         let mut lines = Vec::new();
+
         for happening in happenings {
             match happening {
                 Happening::Cloned { parent, child } => {
@@ -211,6 +213,7 @@ impl Machine {
         let held = kernel.threads.get(&tid).is_some_and(|thread| {
             thread.state == State::JobStopped || thread.pending.contains(signals::SIGSTOP)
         });
+
         match parent.filter(|_| tracer == TRACER) {
             Some(Parent::Launcher) => marks.hit(Mark::Detached),
             Some(Parent::Process(_) | Parent::Init) if !held => {
@@ -257,14 +260,17 @@ impl Machine {
                     && process.group_exit.is_none()
             })?
             .0;
+
         kernel.processes.get_mut(&tgid)?.killed_externally = true;
         kernel
             .kill(tgid, libc::SIGKILL)
             .expect("a live process can be killed");
+
         self.killed.borrow_mut().insert(tgid);
         self.ending.borrow_mut().insert(tgid);
         self.faults.borrow_mut().fired = Some(self.step.get());
         self.marks.borrow_mut().hit(mark);
+
         Some(format!("fault: SIGKILL from outside to {tgid}"))
     }
 
@@ -276,6 +282,7 @@ impl Machine {
         let collected = waiter.borrow_mut().collect(&mut kernel, |ready| {
             *self.choices.borrow_mut().pick(Stream::Schedule, ready)
         });
+
         let mut line = if session == 0 {
             String::from("collect")
         } else {
@@ -320,6 +327,7 @@ impl Machine {
         let ran = kernel.run(tid, budget);
         self.ran.set(self.ran.get() + ran.executed);
         let state = kernel.threads.get(&tid).map(|thread| thread.state);
+
         format!(
             "run {tid} x{}{} -> {}",
             ran.executed,
@@ -359,6 +367,7 @@ impl Preemption for Machine {
             }
 
             let action = *self.choices.borrow_mut().pick(Stream::Preempt, &options);
+
             let line = match action {
                 Action::Run(tid) => {
                     let budget = self
@@ -379,6 +388,7 @@ impl Preemption for Machine {
             };
 
             record_inside_call(&format!("preempt: {line}"));
+
             for line in self.absorb() {
                 record_inside_call(&format!("preempt: {line}"));
             }

@@ -46,15 +46,18 @@ fn at(fixture: &str, marker: &str) -> (BreakpointSpec, BreakpointOptions) {
 async fn selected(session: &mut PythonSession) -> (StackFrame, Vec<StackFrame>) {
     let snapshot = session.scenario.snapshot().await;
     let id = snapshot.selected_frame.expect("a selected frame");
+
     let trace = session
         .scenario
         .operation("backtrace", session.scenario.handle().backtrace())
         .await;
+
     let index = trace
         .frames
         .iter()
         .position(|frame| frame.id == id)
         .expect("the selected frame is in the backtrace");
+
     (trace.frames[index].clone(), trace.frames[..index].to_vec())
 }
 
@@ -74,11 +77,13 @@ async fn assert_at(
         "{context}: at {function} {marker}: {}",
         session.output()
     );
+
     let (frame, inner) = selected(session).await;
     let recorded = frame
         .recorded
         .as_ref()
         .unwrap_or_else(|| panic!("{context}: the selected frame is not Python's: {frame:?}"));
+
     assert_eq!(
         (
             &*recorded.function,
@@ -90,6 +95,7 @@ async fn assert_at(
         ),
         "{context}: stopped at {reason:?}"
     );
+
     assert_eq!(frame.role, CodeRole::Ordinary, "{context}");
     assert!(
         inner
@@ -117,8 +123,11 @@ async fn over_in_the_selected_caller(session: &mut PythonSession) {
         "{}: {reason:?}",
         session.context()
     );
+
     assert_at(session, &reason, &reason.clone(), "deep", "DEEP").await;
+
     session.select_python_frame("shallow").await;
+
     let reason = step(session, StepKind::OverSource).await;
     let over = stepped(StepKind::OverSource);
     assert_at(session, &reason, &over, "shallow", "SHALLOW_AFTER").await;
@@ -131,6 +140,7 @@ async fn refused_step_out_of_module(session: &PythonSession) {
         .scenario
         .operation("backtrace", session.scenario.handle().backtrace())
         .await;
+
     let module = trace
         .frames
         .iter()
@@ -142,10 +152,12 @@ async fn refused_step_out_of_module(session: &PythonSession) {
         })
         .unwrap_or_else(|| panic!("{}: no module frame: {trace:?}", session.context()))
         .id;
+
     session
         .scenario
         .operation("select", session.scenario.handle().select_frame(module))
         .await;
+
     let refused = session.scenario.handle().step(StepKind::Out).await;
     assert!(
         matches!(&refused, Err(Error::FrameStepUnsupported(reason)) if reason.contains("where its agent stopped the thread")),
@@ -164,6 +176,7 @@ async fn exceptions(session: &mut PythonSession) {
             .try_fold(ExceptionStops::NONE, |stops, name| stops.with(name, true))
             .expect("known filters")
     };
+
     let context = session.context();
     session
         .scenario
@@ -175,8 +188,11 @@ async fn exceptions(session: &mut PythonSession) {
                 .set_exception_stops(choose(&["python-raised"])),
         )
         .await;
+
     session.go_on().await;
+
     let reason = session.finish_run().await;
+
     let StopReason::LanguageException(LanguageException {
         kind: LanguageExceptionKind::Raised,
         message,
@@ -185,8 +201,10 @@ async fn exceptions(session: &mut PythonSession) {
     else {
         panic!("{context}: {reason:?}: {}", session.output());
     };
+
     assert_eq!(&**message, "KeyError: 'missing'", "{context}");
     assert_at(session, &reason, &reason.clone(), "lookup", "LOOKUP").await;
+
     let summary = session.summary(value).await;
     assert!(
         summary.contains("KeyError"),
@@ -203,6 +221,7 @@ async fn exceptions(session: &mut PythonSession) {
                 .set_exception_stops(choose(&["python-uncaught"])),
         )
         .await;
+
     let reason = session.scenario.resume_to_stop().await;
     let StopReason::LanguageException(LanguageException {
         kind: LanguageExceptionKind::Unhandled,
@@ -212,12 +231,15 @@ async fn exceptions(session: &mut PythonSession) {
     else {
         panic!("{context}: {reason:?}: {}", session.output());
     };
+
     let raised = format!(
         "RuntimeError: worker failed, raised in worker at {}:{}",
         python::fixture(FIXTURE).display(),
         line(FIXTURE, "WORKER_RAISE")
     );
+
     assert_eq!(&**message, raised, "{context}");
+
     let (frame, _) = selected(session).await;
     let function = frame.recorded.as_ref().map(|recorded| &*recorded.function);
     assert_eq!(function, Some("Thread.run"), "{context}: {frame:?}");
@@ -236,6 +258,7 @@ async fn every_kind_of_step(build: &str) {
         ],
     )
     .await;
+
     let hit = |reason: &StopReason| matches!(reason, StopReason::Breakpoint { address: None, .. });
     assert!(
         hit(&reason),
@@ -243,6 +266,7 @@ async fn every_kind_of_step(build: &str) {
         session.context(),
         session.output()
     );
+
     let breakpoint = reason.clone();
     assert_at(&mut session, &reason, &breakpoint, "caller", "CALLER_START").await;
 
@@ -250,12 +274,15 @@ async fn every_kind_of_step(build: &str) {
     // the call, then on to its next line.
     let over = stepped(StepKind::OverSource);
     let into = stepped(StepKind::IntoSource);
+
     let reason = step(&mut session, StepKind::OverSource).await;
     assert_at(&mut session, &reason, &over, "caller", "CALLER_CALL").await;
     let reason = step(&mut session, StepKind::IntoSource).await;
     assert_at(&mut session, &reason, &into, "callee", "CALLEE_FIRST").await;
+
     let reason = step(&mut session, StepKind::OverSource).await;
     assert_at(&mut session, &reason, &over, "callee", "CALLEE_LAST").await;
+
     assert_eq!(
         (
             session.integer("value").await,
@@ -265,10 +292,12 @@ async fn every_kind_of_step(build: &str) {
         "{}: the callee's locals",
         session.context()
     );
+
     let reason = step(&mut session, StepKind::OverSource).await;
     assert_at(&mut session, &reason, &over, "caller", "CALLER_CALL").await;
     let reason = step(&mut session, StepKind::OverSource).await;
     assert_at(&mut session, &reason, &over, "caller", "CALLER_AFTER").await;
+
     assert_eq!(session.integer("result").await, 3, "{}", session.context());
 
     // Out of the frame, to its caller at the call.
@@ -300,6 +329,7 @@ async fn every_kind_of_step(build: &str) {
         "HANDLES_CALL",
     )
     .await;
+
     let reason = step(&mut session, StepKind::OverSource).await;
     assert_at(&mut session, &reason, &over, "handles", "HANDLES_EXCEPT").await;
     over_in_the_selected_caller(&mut session).await;
@@ -321,6 +351,7 @@ async fn every_kind_of_step(build: &str) {
         "{}: {output}",
         session.context()
     );
+
     for printed in [
         "OUTER 5",
         "TASK 2",
@@ -347,6 +378,7 @@ async fn assert_in_reached(
 ) {
     let context = session.context();
     assert_eq!(reason, expected, "{context}: {}", session.output());
+
     let (frame, _) = selected(session).await;
     let function = frame.function.as_ref().map(|function| &*function.name);
     assert!(
@@ -370,6 +402,7 @@ async fn steps_between_python_and_c(build: &str) {
         vec![at(NATIVE, "FIRST_CALL"), at(NATIVE, "UNUSED")],
     )
     .await;
+
     let StopReason::Breakpoint {
         address: None,
         hits,
@@ -377,8 +410,10 @@ async fn steps_between_python_and_c(build: &str) {
     else {
         panic!("{}: {reason:?}: {}", session.context(), session.output());
     };
+
     let first = hits[0].breakpoint;
     assert_at(&mut session, &reason, &reason.clone(), "main", "FIRST_CALL").await;
+
     session
         .scenario
         .operation(
@@ -386,17 +421,20 @@ async fn steps_between_python_and_c(build: &str) {
             session.scenario.handle().remove_breakpoint(first),
         )
         .await;
+
     let into = stepped(StepKind::IntoSource);
     let over = stepped(StepKind::OverSource);
     let out = stepped(StepKind::Out);
 
     let reason = step(&mut session, StepKind::IntoSource).await;
     assert_in_reached(&mut session, &reason, &into).await;
+
     let reason = step(&mut session, StepKind::Out).await;
     assert_at(&mut session, &reason, &out, "main", "SECOND_CALL").await;
 
     let reason = step(&mut session, StepKind::IntoSource).await;
     assert_in_reached(&mut session, &reason, &into).await;
+
     let mut reason = step(&mut session, StepKind::OverSource).await;
     for _ in 0..8 {
         if selected(&mut session).await.0.recorded.is_some() {
@@ -404,6 +442,7 @@ async fn steps_between_python_and_c(build: &str) {
         }
         reason = step(&mut session, StepKind::OverSource).await;
     }
+
     assert_at(&mut session, &reason, &over, "main", "COUNTED").await;
 
     let reason = step(&mut session, StepKind::IntoSource).await;
@@ -423,6 +462,7 @@ async fn steps_between_python_and_c(build: &str) {
                 .add_breakpoint(BreakpointSpec::Function("reached".to_owned())),
         )
         .await;
+
     let reason = session.scenario.resume_to_stop().await;
     assert!(
         matches!(
@@ -435,7 +475,9 @@ async fn steps_between_python_and_c(build: &str) {
         "{}: {reason:?}",
         session.context()
     );
+
     assert_in_reached(&mut session, &reason, &reason.clone()).await;
+
     let reason = step(&mut session, StepKind::Out).await;
     assert_at(&mut session, &reason, &out, "main", "NATIVE_END").await;
 
@@ -447,11 +489,13 @@ async fn steps_between_python_and_c(build: &str) {
         "{}: {output}",
         session.context()
     );
+
     assert!(
         output.contains("NATIVE 2"),
         "{}: {output}",
         session.context()
     );
+
     session.shutdown().await;
 }
 
@@ -468,6 +512,7 @@ fn extension_line(text: &str) -> u64 {
 /// The C function the selected frame runs, and its line.
 async fn native_line(session: &mut PythonSession) -> (Option<String>, Option<u64>) {
     let (frame, _) = selected(session).await;
+
     (
         frame.function.map(|function| function.name.to_string()),
         frame.source.map(|source| source.line.get()),
@@ -484,6 +529,7 @@ async fn steps_over_the_lines_of_an_extension(build: &str) {
     let (mut session, reason, _) =
         PythonSession::launch_to_stop(build, NATIVE, &[&directory], vec![at(NATIVE, "INSPECT")])
             .await;
+
     let StopReason::Breakpoint {
         address: None,
         hits,
@@ -509,6 +555,7 @@ async fn steps_over_the_lines_of_an_extension(build: &str) {
         "{}",
         session.context()
     );
+
     let call = extension_line("PyObject_CallNoArgs(args[4])");
     let mut at = native_line(&mut session).await;
     for _ in 0..8 {
@@ -526,6 +573,7 @@ async fn steps_over_the_lines_of_an_extension(build: &str) {
         at = native_line(&mut session).await;
         assert_eq!(at.0.as_deref(), Some("inspect"), "{}", session.context());
     }
+
     assert_eq!(at.1, Some(call), "{}", session.context());
 
     let reason = step(&mut session, StepKind::OverSource).await;
@@ -535,6 +583,7 @@ async fn steps_over_the_lines_of_an_extension(build: &str) {
         "{}",
         session.context()
     );
+
     let (function, line) = native_line(&mut session).await;
     assert_eq!(
         function.as_deref(),
@@ -542,6 +591,7 @@ async fn steps_over_the_lines_of_an_extension(build: &str) {
         "{}",
         session.context()
     );
+
     assert!(
         line.is_some_and(|line| line > call),
         "{}: {line:?}",

@@ -90,6 +90,7 @@ pub fn witness(
     let mut next = word(&header, 16).unwrap_or(0);
     witness.extend(header);
     let mut seen = std::collections::BTreeSet::new();
+
     while next != 0 && seen.len() < MAX_OBJECTS && seen.insert(next) {
         let Some(entry) = read(next, ENTRY_BYTES) else {
             return;
@@ -128,6 +129,7 @@ pub fn registered(
         .get(..4)
         .and_then(|version| <[u8; 4]>::try_from(version).ok())
         .map(u32::from_le_bytes);
+
     match version {
         Some(VERSION) => {}
 
@@ -144,6 +146,7 @@ pub fn registered(
     let mut objects = Vec::new();
     let mut next = word(&header, 16).unwrap_or(0);
     let mut seen = std::collections::BTreeSet::new();
+
     while next != 0 {
         if seen.len() == MAX_OBJECTS || !seen.insert(next) {
             problem(format!(
@@ -161,6 +164,7 @@ pub fn registered(
         let (Some(address), Some(size)) = (word(&entry, 16), word(&entry, 24)) else {
             break;
         };
+
         if size == 0 || size > MAX_OBJECT_BYTES || size > *budget {
             problem(format!(
                 "the JIT object at {address:#x} has {size} bytes, of {budget} left to read"
@@ -178,6 +182,7 @@ pub fn registered(
             ));
             continue;
         };
+
         *budget -= size;
         objects.push(JitObject { address, bytes });
     }
@@ -196,6 +201,7 @@ pub(super) fn allocated_range(
             if sh_flags & u64::from(object::elf::SHF_ALLOC) != 0)
             && section.size() != 0
     });
+
     for section in allocated {
         let start = section.address();
         let end = start
@@ -249,6 +255,7 @@ pub fn test_image(address: u64, size: usize) -> Vec<u8> {
         sh_entsize: 0,
     });
     writer.write_shstrtab_section_header();
+
     bytes
 }
 

@@ -248,6 +248,7 @@ pub fn sum(image: &dyn RuntimeImage, ty: TypeReference) -> Result<Sum, Missing> 
         .ok()
         .filter(|size| matches!(size, 1 | 2 | 4 | 8))
         .ok_or_else(|| format!("{}'s tag is {tag_size} bytes", info.name))?;
+
     let variants = variants
         .iter()
         .map(|variant| {
@@ -272,6 +273,7 @@ pub fn sum(image: &dyn RuntimeImage, ty: TypeReference) -> Result<Sum, Missing> 
             })
         })
         .collect::<Result<_, Missing>>()?;
+
     Ok(Sum {
         name: Arc::clone(&info.name),
         tag: (tag_offset, tag_size),

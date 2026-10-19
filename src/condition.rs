@@ -107,6 +107,7 @@ impl LogMessage {
         let mut segments = Vec::new();
         let mut literal = String::new();
         let mut rest = text;
+
         while let Some(index) = rest.find(['{', '}']) {
             literal.push_str(&rest[..index]);
             let brace = &rest[index..];
@@ -125,6 +126,7 @@ impl LogMessage {
             };
 
             let expression = read_only(brace[1..end].trim(), Error::InvalidLogMessage)?;
+
             if !literal.is_empty() {
                 segments.push(LogSegment::Text(std::mem::take(&mut literal).into()));
             }

@@ -144,6 +144,7 @@ impl Process {
         let object = self.object(ty, size);
         self.word(object, Field::LongTag, tag);
         let at = object + self.offset(Field::LongDigits);
+
         for (index, digit) in (0_u64..).zip(digits) {
             self.memory.write(at + 4 * index, u64::from(*digit), 4);
         }
@@ -156,6 +157,7 @@ impl Process {
         let shift = u32::from(self.layout.constant(Constant::LongShift));
         let mut magnitude = value.unsigned_abs();
         let mut digits = Vec::new();
+
         while magnitude != 0 {
             let digit = magnitude & ((1 << shift) - 1);
             digits.push(u32::try_from(digit).expect("a digit fits in 32 bits"));
@@ -259,6 +261,7 @@ impl Process {
         self.put(keys, Field::DictKeysKind, kind, 1);
         self.word(keys, Field::DictKeysNentries, entries.len() as u64);
         let first = keys + indices + slots;
+
         for (index, (key, value)) in (0_u64..).zip(entries) {
             let entry = first + size * index;
             self.put(entry, key_field, *key, 8);
@@ -309,6 +312,7 @@ impl Process {
         let width_bytes = usize::try_from(width).expect("an index is a few bytes wide");
         let at = |slot: u64| usize::try_from(slot).expect("a slot is within the table");
         let empty = (-1_i64).cast_unsigned();
+
         for slot in 0..index_slots {
             self.memory
                 .write(keys + indices + slot * width, empty, width_bytes);
@@ -316,6 +320,7 @@ impl Process {
 
         let mut taken = vec![false; at(index_slots)];
         let mut placed = Vec::with_capacity(entries.len());
+
         for (index, (_, _, hash)) in (0_u64..).zip(entries) {
             let mut slot = hash.cast_unsigned() & mask;
             let mut perturb = hash.cast_unsigned();
@@ -340,12 +345,14 @@ impl Process {
         }
 
         let first = keys + indices + slots;
+
         for (index, (key, value, hash)) in (0_u64..).zip(entries) {
             let entry = first + size * index;
             let live = !deleted.contains(&usize::try_from(index).expect("an entry index fits"));
             let (key, value) = if live { (*key, *value) } else { (0, 0) };
             self.put(entry, key_field, key, 8);
             self.put(entry, value_field, value, 8);
+
             match table.kind {
                 Kind::General => self.put(entry, Field::DictEntryHash, hash.cast_unsigned(), 8),
                 Kind::Unicode if live => {
@@ -440,6 +447,7 @@ pub(super) fn with_runtime<R>(
     let mut inspection = InspectionBudget::new(limits);
     let budget = Budget::new(&mut inspection);
     let blocks = StopMemory::default();
+
     let values = Values {
         reader: Reader {
             stop: &process.memory,
@@ -555,6 +563,7 @@ fn locals_of(process: &Process, types: Types, frame: u64) -> Vec<InterpretedLoca
 fn local_frame(process: &mut Process, types: &Types, slots: [u64; 5]) -> u64 {
     let code = process.code("f", 1, &[(1, 0)]);
     process.put(code, Field::CodeArgcount, 1, 4);
+
     process.locals(
         types,
         code,
@@ -607,6 +616,7 @@ fn ints_are_shown_in_decimal_with_their_value_where_it_fits_in_128_bits() {
         (i128::MAX, "170141183460469231731687303715884105727"),
         (i128::MIN, "-170141183460469231731687303715884105728"),
     ];
+
     for (value, summary) in cases {
         let address = process.int(types.int, value);
         let shown = read_value(&process, types, address);
@@ -788,6 +798,7 @@ fn a_list_nested_past_the_summary_depth_shows_an_ellipsis_at_the_limit() {
     let types = process.builtin_types();
     // The innermost list makes one more level than the summary's depth.
     let mut nested = process.list(types.list, &[]);
+
     for _ in 0..SUMMARY_DEPTH {
         nested = process.list(types.list, &[nested]);
     }

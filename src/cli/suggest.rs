@@ -20,13 +20,16 @@ fn distance(left: &str, right: &str, bound: usize) -> Option<usize> {
     let mut before = vec![0; right.len() + 1];
     let mut previous = (0..=right.len()).collect::<Vec<_>>();
     let mut current = vec![0; right.len() + 1];
+
     for row in 1..=left.len() {
         current[0] = row;
+
         for column in 1..=right.len() {
             let same = left[row - 1] == right[column - 1];
             let mut cost = (previous[column - 1] + usize::from(!same))
                 .min(previous[column] + 1)
                 .min(current[column - 1] + 1);
+
             if row > 1
                 && column > 1
                 && left[row - 1] == right[column - 2]

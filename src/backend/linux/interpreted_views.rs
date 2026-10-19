@@ -85,6 +85,7 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
                 })
             },
         );
+
         let name = crate::view::name_of(&bound.view);
         match result {
             Ok(presented) => {
@@ -158,6 +159,7 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
                 _ => Choice::default(),
             },
         );
+
         controller
             .views
             .keep_class_choice(frame.stop_id, runtime.id, class, Arc::clone(&choice));

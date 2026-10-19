@@ -95,6 +95,7 @@ impl<P: InspectionOps> Controller<P> {
         };
 
         let returned = self.read_returned(pid, returning);
+
         if let Some(ActiveKind::Step { start, .. }) = self
             .inferior
             .as_mut()
@@ -123,6 +124,7 @@ impl<P: InspectionOps> Controller<P> {
         let frame = FrameRegisters::Thread(registers);
         let mut runtime = self.thread_runtime(inferior, module, pid, &frame);
         let mut budget = InspectionBudget::new(crate::InspectionLimits::default());
+
         match module
             .variables
             .returned(returning.function, &mut runtime, &mut budget)
@@ -188,6 +190,7 @@ impl<P: InspectionOps> Controller<P> {
         let mut runtime = self.thread_runtime(inferior, module, returned.thread, &registers);
         let context = variable_context(stop_id, root.context, frame, module, None);
         let mut variables = Vec::with_capacity(returned.values.len());
+
         for value in returned.values.iter() {
             let (type_info, state) = match &value.value {
                 Ok(located) => {

@@ -51,6 +51,7 @@ pub fn find(path: &str) -> Option<Asset> {
     let name = if page { "index.html" } else { name };
     let bytes = read(name)
         .or_else(|| (page && name == "index.html").then_some(Cow::Borrowed(UNBUILT.as_bytes())))?;
+
     Some(Asset {
         bytes,
         media_type: media_type(name),
@@ -67,6 +68,7 @@ pub fn rooted(page: &[u8], base: &str) -> Vec<u8> {
     let page = String::from_utf8_lossy(page)
         .replace("src=\"./", &format!("src=\"{base}"))
         .replace("href=\"./", &format!("href=\"{base}"));
+
     page.replacen(
         "<head>",
         &format!("<head>\n    <meta name=\"microscope-base\" content=\"{base}\" />"),

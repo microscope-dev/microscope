@@ -214,6 +214,7 @@ impl CaptureBuilder {
                 .filter(|(_, thread)| self.threads[**thread as usize].process.get() == process)
                 .map(|(tid, _)| *tid)
                 .collect();
+
             for tid in ended {
                 self.thread_exit(tid, time);
             }
@@ -435,6 +436,7 @@ impl CaptureBuilder {
     /// from the latest.
     pub fn claim(&mut self, thread: u32, time: i64, task: u32) -> u64 {
         let mut claimed = 0;
+
         for sample in self.samples[thread as usize].iter_mut().rev() {
             let at = sample.time.get();
             if at < time {
@@ -485,6 +487,7 @@ impl CaptureBuilder {
             self.frames.len()
         );
         let start = index(self.lines.len());
+
         for line in lines {
             let name = self.string(line.function);
             let (declared, declared_line) = line
@@ -527,6 +530,7 @@ impl CaptureBuilder {
     pub fn site(&mut self, name: &str, file: &str, line: u32, module: u32, kind: u8) -> u32 {
         let name = self.string(name);
         let file = self.string(file);
+
         if let Some(position) = self.sites.iter().position(|site| {
             site.name.get() == name
                 && site.file.get() == file
@@ -739,6 +743,7 @@ impl CaptureBuilder {
         let mut kept_before = Vec::with_capacity(self.syscalls.len() + 1);
         kept_before.push(0);
         let mut kept = 0;
+
         for call in &self.syscalls {
             kept += u32::from(keep(call_time(call)));
             kept_before.push(kept);
@@ -754,11 +759,13 @@ impl CaptureBuilder {
         };
 
         let calls = std::mem::take(&mut self.syscalls);
+
         for call in calls.into_iter().filter(|call| keep(call_time(call))) {
             self.syscall(call, bytes(call.captures.get(), call.captures_len.get()));
         }
 
         let notes = std::mem::take(&mut self.syscall_notes);
+
         for mut note in notes.into_iter().filter(|note| keep(note.time.get())) {
             note.calls = kept_before[note.calls.get() as usize].into();
             self.push_note(note, bytes(note.blob.get(), note.blob_len.get()));
@@ -979,6 +986,7 @@ impl CaptureBuilder {
             let module = map.module(capture.frames[frame].module.get());
             let start = index(self.lines.len());
             let lines = capture.frame_lines(index(frame));
+
             for line in lines {
                 let function = &capture.functions[line.function.get() as usize];
                 let name = self.copy_string(capture, function.name.get());
@@ -1054,6 +1062,7 @@ impl CaptureBuilder {
         for range in capture.zone_ranges.iter().rev() {
             let thread = map.threads[range.thread.get() as usize];
             let start = range.start.get() as usize;
+
             for zone in &capture.zones[start..start + range.count.get() as usize] {
                 let value = self.copy_string(capture, zone.value.get());
                 let zone = Zone {
@@ -1161,6 +1170,7 @@ impl CaptureBuilder {
 
         let mut zones = Vec::new();
         let mut zone_ranges = Vec::new();
+
         for (thread, group) in self.zones {
             for (depth, group) in depths(group).into_iter().enumerate() {
                 zone_ranges.push(ZoneRange {
@@ -1272,6 +1282,7 @@ fn depths(zones: Vec<Zone>) -> Vec<Vec<Zone>> {
     let zones = zones.into_iter().map(|(_, zone)| zone);
     let mut depths: Vec<Vec<Zone>> = Vec::new();
     let mut open: Vec<i64> = Vec::new();
+
     for zone in zones {
         while open.last().is_some_and(|&end| end <= zone.start.get()) {
             open.pop();
@@ -1279,6 +1290,7 @@ fn depths(zones: Vec<Zone>) -> Vec<Vec<Zone>> {
 
         let depth = open.len();
         open.push(zone.end.get());
+
         if depth == depths.len() {
             depths.push(Vec::new());
         }
@@ -1298,6 +1310,7 @@ fn index(position: usize) -> u32 {
         index.is_ok(),
         "a capture holds fewer than 2^32 rows, not {position}"
     );
+
     index.unwrap_or(u32::MAX)
 }
 

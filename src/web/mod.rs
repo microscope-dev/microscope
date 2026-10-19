@@ -249,6 +249,7 @@ pub async fn run(args: &WebArgs) -> Result<()> {
     } else {
         None
     };
+
     {
         let mut stdout = std::io::stdout().lock();
         writeln!(
@@ -305,6 +306,7 @@ pub async fn run(args: &WebArgs) -> Result<()> {
     let profiles = Arc::clone(&app_profiles);
     let _ = tokio::task::spawn_blocking(move || profiles.shutdown()).await;
     drop(keys);
+
     served
 }
 
@@ -389,6 +391,7 @@ fn open_profile(profiles: &profiles::Profiles, path: &std::path::Path) -> Result
     let id = profiles
         .add(path, &bytes)
         .with_context(|| format!("reading {}", path.display()))?;
+
     Ok(Some(id))
 }
 
@@ -406,6 +409,7 @@ fn start_from(args: &WebArgs) -> Option<Start> {
     }
 
     let program = args.executable.clone()?;
+
     Some(Start::Launch {
         spec: LaunchSpec {
             program,
@@ -467,6 +471,7 @@ async fn login(State(app): State<Arc<App>>, headers: HeaderMap, body: String) ->
     }
 
     let cookie = auth::set_cookie(app.port, body.trim(), app.public.as_ref());
+
     HeaderValue::from_str(&cookie).map_or_else(
         |_| StatusCode::BAD_REQUEST.into_response(),
         |cookie| (StatusCode::NO_CONTENT, [(header::SET_COOKIE, cookie)]).into_response(),
@@ -503,6 +508,7 @@ async fn download(
             }
         })
         .collect();
+
     (
         [
             (header::CONTENT_TYPE, "application/octet-stream".to_owned()),

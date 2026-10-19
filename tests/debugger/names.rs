@@ -98,6 +98,7 @@ async fn go_function_locations_stop_in_every_function_they_name() {
     for fixture in ["names-go-o0", "names-go-o2"] {
         let mut scenario = Scenario::launch(fixture);
         let mut named = BTreeMap::new();
+
         for entry in NAMED {
             let breakpoint = scenario.add_breakpoint(entry.location).await;
             assert!(
@@ -115,6 +116,7 @@ async fn go_function_locations_stop_in_every_function_they_name() {
                 breakpoint.spec == BreakpointSpec::Function("runtime.newstack".into())
             })
             .expect("runtime.newstack breakpoint");
+
         assert_eq!(
             newstack.locations.len(),
             1,
@@ -123,6 +125,7 @@ async fn go_function_locations_stop_in_every_function_they_name() {
 
         let mut hit = BTreeMap::<BreakpointId, BTreeSet<String>>::new();
         let mut reason = scenario.run_to_stop().await;
+
         for _ in 0..1000 {
             match reason {
                 // Each thread that hit a breakpoint at once with the one the
@@ -138,6 +141,7 @@ async fn go_function_locations_stop_in_every_function_they_name() {
                                 "{fixture}: {} stopped thread {thread} in {function} at {file}:{line}",
                                 entry.location
                             );
+
                             if let Some((path, marker)) = entry.lines {
                                 let begins = source_line(path, &format!("names: {marker} begins"));
                                 let ends = source_line(path, &format!("names: {marker} ends"));
@@ -168,6 +172,7 @@ async fn go_function_locations_stop_in_every_function_they_name() {
             matches!(reason, StopReason::Exited(_)),
             "{fixture} never exited"
         );
+
         for (id, entry) in &named {
             let expected = entry
                 .functions
@@ -217,6 +222,7 @@ async fn go_locations_that_name_too_much_or_nothing_say_why() {
             .await,
         Err(Error::FunctionNotFound(_))
     ));
+
     for function in ["Sum", "main.Sum"] {
         let breakpoint = scenario
             .add_breakpoint_spec(file_function("sum.go", function))
@@ -227,6 +233,7 @@ async fn go_locations_that_name_too_much_or_nothing_say_why() {
     // A line without a statement is refused with its neighbours that have
     // one, never moved to either.
     let line = source_line(MAIN, "names: no statement");
+
     match scenario
         .handle()
         .add_breakpoint(BreakpointSpec::Source {
@@ -251,10 +258,12 @@ async fn go_locations_that_name_too_much_or_nothing_say_why() {
     // At a stop, a bare name is first looked up in the stopped frame's
     // package, and the breakpoint keeps the name it resolved to.
     scenario.add_breakpoint("main.apply").await;
+
     assert!(matches!(
         scenario.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     let breakpoint = scenario.add_breakpoint("main").await;
     assert_eq!(
         breakpoint.spec,
@@ -264,7 +273,6 @@ async fn go_locations_that_name_too_much_or_nothing_say_why() {
     scenario.shutdown().await;
 }
 
-/// The function, file, and line of the stopped frame.
 /// Each stopped thread whose own reason is a breakpoint hit, with its
 /// hits.
 async fn thread_hits(scenario: &Scenario) -> Vec<(ThreadId, Arc<[BreakpointHit]>)> {
@@ -300,6 +308,7 @@ async fn stopped_frame(scenario: &Scenario, thread: ThreadId) -> (String, String
     let backtrace = scenario
         .operation("backtrace", scenario.handle().at(at).backtrace())
         .await;
+
     let frame = &backtrace.frames[0];
     let function = frame
         .function
@@ -313,5 +322,6 @@ async fn stopped_frame(scenario: &Scenario, thread: ThreadId) -> (String, String
         .path
         .display()
         .to_string();
+
     (function, file, source.line.get())
 }

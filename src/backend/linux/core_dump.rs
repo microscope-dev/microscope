@@ -261,6 +261,7 @@ impl CoreDump {
         buffer: &mut [u8],
     ) -> Result<(), CoreMemoryError> {
         let mut done = 0;
+
         while done < buffer.len() {
             let current = address
                 .checked_add(done as u64)
@@ -310,6 +311,7 @@ fn parse<'data, R: ReadRef<'data>>(data: R, len: u64) -> Result<Metadata, CoreEr
     let mut segments = Vec::new();
     let mut notes = NoteState::default();
     let mut note_bytes = 0_u64;
+
     for program_header in program_headers {
         match program_header.p_type(endian) {
             elf::PT_LOAD => {
@@ -664,6 +666,7 @@ fn parse_files(bytes: &[u8]) -> Result<Vec<CoreFileMapping>, CoreError> {
         .split_inclusive(|&byte| byte == 0)
         .map(|name| name.strip_suffix(&[0]));
     let mut files = Vec::with_capacity(count);
+
     for index in 0..count {
         let entry = 16 + index * FILE_ENTRY_SIZE;
         let start = u64_at(bytes, entry)?;
@@ -722,6 +725,7 @@ pub(super) fn image_mappings(files: &[CoreFileMapping]) -> Vec<ImageMappings> {
     sorted.sort_by_key(|mapping| mapping.start);
     let mut images: Vec<ImageMappings> = Vec::new();
     let mut latest = BTreeMap::<PathBuf, usize>::new();
+
     for mapping in sorted {
         let path = strip_deleted(&mapping.path);
         if mapping.file_offset == 0 {
@@ -849,6 +853,7 @@ pub(super) fn recorded_build_id(
     let length = run.min(first.end - first.start).min(MAX_RECORDED_HEADER);
     let mut header =
         vec![0; usize::try_from(length).map_err(|_| invalid("the header bound is too large"))?];
+
     core.source.read_exact_at(&mut header, offset)?;
     Ok(elf_build_id(header.as_slice()).map(<[u8]>::to_vec))
 }
@@ -926,6 +931,7 @@ pub(super) fn verify_image(
     let mut segments = Vec::new();
     let mut notes = Vec::new();
     let mut outside = false;
+
     for header in object.elf_program_headers() {
         let file_offset = header.p_offset(endian);
         let file_size = header.p_filesz(endian);
@@ -1188,6 +1194,7 @@ fn compare_read_only_content(
     file: &[u8],
 ) -> Result<Result<u64, u64>, CoreError> {
     let mut compared = 0_u64;
+
     for mapping in &image.mappings {
         for (saved_start, saved_end) in core.saved_ranges() {
             let start = saved_start.max(mapping.start);
@@ -1292,6 +1299,7 @@ impl CoreMemory {
 
     pub(super) fn read(&self, address: u64, buffer: &mut [u8]) -> Result<(), CoreMemoryError> {
         let mut done = 0;
+
         while done < buffer.len() {
             let current = address
                 .checked_add(done as u64)
@@ -1364,6 +1372,7 @@ pub(super) fn fuzz(data: &[u8]) {
     let data: Arc<[u8]> = Arc::from(data);
     let mut backings = Vec::new();
     let _ = elf_build_id(data.as_ref());
+
     for image in &images {
         let _ = saved_header(&core, image);
         let _ = recorded_build_id(&core, image);
@@ -1663,6 +1672,7 @@ mod tests {
             ],
             &[],
         );
+
         for (producer, bytes) in [("kernel", kernel), ("gdb", gdb)] {
             let core = parse_bytes(bytes).unwrap_or_else(|error| panic!("{producer}: {error}"));
             assert_eq!(
@@ -1924,6 +1934,7 @@ mod tests {
                 "overflows",
             ),
         ];
+
         for (name, bytes, expected) in cases {
             let message = rejection(bytes);
             assert!(

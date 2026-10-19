@@ -240,6 +240,7 @@ impl Client {
                 ExceptionDisposition::Pass,
             )
             .await;
+
         match result {
             Ok(execution) => {
                 self.note(format!("began step {kind:?} as execution {execution}"));
@@ -312,6 +313,7 @@ impl Client {
         });
         let result = self.handle.step_into(target.call).await;
         self.observe(Observation::StepEnded(result.as_ref().ok().cloned()));
+
         match result {
             Ok(reason) => {
                 self.note(format!("stepped into the call: {reason:?}"));
@@ -371,6 +373,7 @@ impl Client {
 
         let result = self.handle.advance(spec.clone()).await;
         self.observe(Observation::StepEnded(result.as_ref().ok().cloned()));
+
         if ambiguous {
             if !matches!(result, Err(Error::AmbiguousInlineFrame)) {
                 return Err(protocol(format!(
@@ -466,6 +469,7 @@ impl Client {
         }
 
         let by_jump = self.control(2) == 0;
+
         if by_jump {
             match self
                 .handle
@@ -555,6 +559,7 @@ impl Client {
             .remove_breakpoint(probe.id)
             .await
             .map_err(|error| protocol(format!("removing probe {} failed: {error}", probe.id)))?;
+
         let mut targets = BTreeSet::new();
         for location in probe.locations.iter() {
             match location.location {
@@ -624,6 +629,7 @@ impl Client {
             .map(|frame| frame.id)
             .or(snapshot.selected_frame);
         let inspected = self.inspect_frame(stop, &backtrace, selected).await;
+
         if outer.is_some()
             && let Some(was) = backtrace
                 .frames
@@ -710,6 +716,7 @@ impl Client {
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
+
         self.observe(Observation::Backtrace {
             stop,
             backtrace: backtrace.clone(),
@@ -785,9 +792,11 @@ impl Client {
             .find(|frame| Some(frame.id) == before.selected_frame)
             .or_else(|| backtrace.frames.first())
             .cloned();
+
         self.select_frame(&frame).await?;
         *before = self.snapshot().await?;
         let outer = usize::try_from(frame.level).expect("small");
+
         Ok((Caller::of(&backtrace, frame.level), outer, was))
     }
 
@@ -921,6 +930,7 @@ impl Client {
     ) -> Result<Vec<crate::ValueChildPage>, String> {
         let mut pages = Vec::new();
         let mut offset = 0;
+
         while offset < elements {
             let limit = u32::try_from(size.min(elements - offset)).expect("small pages");
             let page = self
@@ -934,6 +944,7 @@ impl Client {
             let empty = page.children.is_empty();
             offset += page.children.len() as u64;
             pages.push(page);
+
             if empty {
                 break;
             }
@@ -959,6 +970,7 @@ impl Client {
             .find(|frame| frame.id == variables.stack_frame)
             .and_then(|frame| frame.source.as_ref())
             .map(|source| source.line.get());
+
         if let Some(marker) = line.and_then(|line| self.script.markers.get(&line)) {
             let condition = &marker.text;
             asked.push((Purpose::Marker { negated: false }, condition.clone()));
@@ -1000,6 +1012,7 @@ impl Client {
                 )
         });
         let mut by_name = Vec::new();
+
         for variable in named.take(4) {
             let name = variable.name.to_string();
             by_name.push((Purpose::Name(name.clone()), name.clone()));
@@ -1082,6 +1095,7 @@ impl Client {
         };
 
         computed.push((Purpose::Cast { name, bits, signed }, text));
+
         let name = &integers[pick(integers.len())];
         let text = match pick(3) {
             0 => format!("{name}.no_such_member"),

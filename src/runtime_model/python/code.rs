@@ -144,6 +144,7 @@ impl CodeTable {
                 .is_some_and(|row| row.address == address),
             "the index finds row {id} at {address:#x}, which is not its"
         );
+
         Ok(id)
     }
 

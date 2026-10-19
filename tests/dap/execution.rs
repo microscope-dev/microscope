@@ -20,6 +20,7 @@ fn stopped_at(dap: &mut Dap, program: &str, path: &str, marker: &str) -> Stopped
     );
     let stop = dap.stopped(started.mark);
     assert_eq!(stop.reason, "breakpoint");
+
     stop
 }
 
@@ -107,6 +108,7 @@ fn every_co_hit_thread_is_named_by_its_breakpoint() {
     );
     let mut mark = started.mark;
     let mut co_hits = 0;
+
     for round in 0..10 {
         let stop = dap.stopped(mark);
         assert_eq!(stop.body["allThreadsStopped"], true, "{stop:?}");
@@ -276,6 +278,7 @@ fn signal_stops(exceptions: Value) -> (Vec<String>, Value, String) {
     );
     let mut mark = started.mark;
     let mut stops = Vec::new();
+
     let exit = loop {
         let (kind, body) = dap.next_event(mark, &["stopped", "exited"]);
         if kind == "exited" {

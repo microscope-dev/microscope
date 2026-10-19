@@ -154,6 +154,7 @@ fn class(process: &mut Process, types: &Types, spec: &Spec<'_>, mro: &[u64]) -> 
         let module = process.str_object(types.str, module);
         entries.push(("__module__", module));
     }
+
     let member_kind = u64::from(process.layout.constant(Constant::MemberObjectEx));
     for &(name, offset) in spec.slots {
         let definition = process.alloc(24);
@@ -226,6 +227,7 @@ fn tagged_values(process: &mut Process, values: &[(u64, u64)]) -> u64 {
     let base = process.alloc(96);
     let array = base + 32;
     process.memory.write(array - 2, values.len() as u64, 1);
+
     for (position, &(index, value)) in values.iter().enumerate() {
         process.memory.write(array - 3 - position as u64, index, 1);
         process.memory.write(array + 8 * index, value, 8);
@@ -358,6 +360,7 @@ pub(super) fn set_object(process: &mut Process, ty: VirtualAddress, slots: &[Slo
     let table = process.alloc(stride * slots.len() as u64);
     let dummy = process.alloc(16);
     let mut used = 0;
+
     for (index, slot) in slots.iter().enumerate() {
         let entry = table + stride * index as u64;
         match *slot {
@@ -1055,6 +1058,7 @@ fn a_static_type_whose_state_is_another_types_is_malformed() {
     process.word(flagged, Field::TypeMro, mro);
 
     let interpreter = process.alloc(128);
+
     for field in [
         Field::InterpreterStaticTypes,
         Field::InterpreterStaticExtensionTypes,

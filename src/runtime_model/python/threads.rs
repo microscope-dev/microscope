@@ -45,6 +45,7 @@ pub(super) fn thread_states(
     let mut next = Some(reader.field_word(runtime, Field::RuntimeInterpretersHead)?)
         .filter(|address| *address != 0)
         .map(VirtualAddress::new);
+
     while let Some(interpreter) = next {
         if !interpreters.insert(interpreter) {
             gaps.push("CPython's list of interpreters loops".into());
@@ -65,6 +66,7 @@ pub(super) fn thread_states(
                 break;
             }
         };
+
         if let Err(problem) = interpreter_threads(reader, interpreter, id, &mut states) {
             gaps.push(problem);
         }
@@ -95,6 +97,7 @@ fn interpreter_threads(
     let mut next = Some(reader.field_word(interpreter, Field::InterpreterThreadsHead)?)
         .filter(|address| *address != 0)
         .map(VirtualAddress::new);
+
     while let Some(address) = next {
         if !seen.insert(address) {
             return Err(format!("interpreter {id}'s list of threads loops").into());

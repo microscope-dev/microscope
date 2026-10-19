@@ -41,6 +41,7 @@ fn walk(dap: &mut Dap, program: &str, function: &str, steps: &[&str]) -> Vec<Sto
     );
     let mut recorded = Vec::new();
     let mut mark = started.mark;
+
     for step in steps.iter().copied().chain(["continue"]) {
         let (kind, body) = dap.next_event(mark, &["stopped", "exited"]);
         if kind == "exited" {
@@ -53,6 +54,7 @@ fn walk(dap: &mut Dap, program: &str, function: &str, steps: &[&str]) -> Vec<Sto
             thread,
             body["reason"].as_str().unwrap_or_default(),
         ));
+
         let sent = dap.send(step, json!({"threadId": thread}));
         let response = dap.response(sent);
         if response["success"] != true {
@@ -96,6 +98,7 @@ fn inspect(dap: &mut Dap, thread: i64, reason: &str) -> Stop {
     let trace = dap.request("stackTrace", json!({"threadId": thread, "levels": 1}));
     let frame = &trace["stackFrames"][0];
     let scopes = dap.request("scopes", json!({"frameId": frame["id"]}));
+
     let mut values = BTreeMap::new();
     for scope in scopes["scopes"].as_array().into_iter().flatten() {
         // gdb shows what a step out returned in a scope of its own, and
@@ -138,12 +141,14 @@ fn compare(program: &str, function: &str, steps: &[&str]) -> (Vec<Stop>, Vec<Sto
     let mut ours = Dap::start(format!("microscope {program}"));
     let microscope = walk(&mut ours, program, function, steps);
     ours.finish();
+
     let mut reference = Dap::reference(
         format!("gdb {program}"),
         Command::new("gdb").args(["--quiet", "--nx", "-i=dap"]),
     );
     let gdb = walk(&mut reference, program, function, steps);
     reference.abandon();
+
     (microscope, gdb)
 }
 

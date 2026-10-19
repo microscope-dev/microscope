@@ -28,6 +28,7 @@ fn failing_scenarios_keep_a_flight_recording() {
                         panic!("deliberate failure");
                     });
             });
+
             assert!(failed.is_err(), "the scenario did not fail");
             path
         })
@@ -36,6 +37,7 @@ fn failing_scenarios_keep_a_flight_recording() {
 
     let contents = fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("no recording at {}: {error}", path.display()));
+
     let position = |needle: &str| {
         contents
             .find(needle)

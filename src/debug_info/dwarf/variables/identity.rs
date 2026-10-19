@@ -321,6 +321,7 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
         let mut path = Vec::new();
         let mut inline = Vec::new();
         let mut full = Vec::new();
+
         for segment in segments {
             match segment {
                 ScopeSegment::Named(name) => {
@@ -422,6 +423,7 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
         let d = self.language(unit_index) == SourceLanguage::D;
         let mut associative = [None, None];
         let mut read = 0;
+
         while let Ok(Some(child)) = children.next_child() {
             if read == MAX_RECORD_CHILDREN {
                 break;
@@ -448,6 +450,7 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
                 };
 
                 let mut read = 0;
+
                 while let Ok(Some(parameter)) = parameters.next_child() {
                     if read == MAX_RECORD_CHILDREN {
                         break;
@@ -491,6 +494,7 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
             };
 
             let mut read = 0;
+
             while let Ok(Some(child)) = children.next_child() {
                 if read == MAX_RECORD_CHILDREN {
                     break;
@@ -516,6 +520,7 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
             let reference = entry
                 .attr_value(gimli::DW_AT_specification)
                 .or_else(|| entry.attr_value(gimli::DW_AT_abstract_origin));
+
             match die_reference_with_signatures(
                 reference,
                 current.unit,
@@ -601,6 +606,7 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
                 let base = self.resolved_integer_base(target.id).ok()?;
                 enumeration_constant(value, &base, self.byte_order).ok()
             });
+
         value.map_or_else(
             || self.unknown_argument(entry, unit_index),
             TypeArgument::Value,
@@ -618,6 +624,7 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
                 .ok()
                 .flatten()
         });
+
         TypeArgument::Unknown(name.unwrap_or_else(|| Arc::from("?")))
     }
 
@@ -781,6 +788,7 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
                 Some((index, language, Arc::new(identity), pending))
             })
             .collect::<Vec<_>>();
+
         for (index, language, identity, positions) in built.into_iter().flatten() {
             if !positions.is_empty() {
                 self.pending_arguments.push(PendingArguments {
@@ -850,6 +858,7 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
         };
 
         let content = members(resolved(content)?, ["cap", "data"])?;
+
         match &resolved(content[1].type_ref)?.kind {
             TypeKind::RuntimeArray {
                 element,
@@ -1003,6 +1012,7 @@ pub(super) fn resolve_parsed_arguments(
         .collect::<Vec<_>>();
     index.free_in_parallel();
     let mut resolved = Vec::new();
+
     for pending in pending {
         let Some(TypeEntry::Resolved(info)) = entries.get(pending.entry) else {
             continue;
@@ -1046,6 +1056,7 @@ fn spellings(
 ) -> (HashMap<Spelling, usize>, Vec<Spelling>) {
     let mut spellings = HashMap::new();
     let mut ordered = Vec::new();
+
     for pending in pending {
         let Some(TypeEntry::Resolved(TypeInfo {
             identity: Some(identity),
@@ -1160,6 +1171,7 @@ fn merge_arguments(
     };
 
     let template = &parts.template;
+
     match named {
         _ if template.is_empty() => match named {
             Some(texts) if !texts.is_empty() => parsed(texts),
@@ -1181,6 +1193,7 @@ fn merge_arguments(
                     known => known.clone(),
                 })
                 .collect();
+
             (arguments, ArgumentOrigin::Dwarf, pending)
         }
 
@@ -1196,6 +1209,7 @@ fn merge_arguments(
                         .or_else(|| described.next().cloned())
                 })
                 .collect::<Option<Vec<_>>>();
+
             match merged {
                 Some(arguments) if described.next().is_none() => {
                     (arguments, ArgumentOrigin::Dwarf, Vec::new())
@@ -1256,6 +1270,7 @@ fn resolve_argument(
         })
         .collect::<Vec<_>>();
     let first = candidates.first()?;
+
     candidates
         .iter()
         .all(|other| index.same_type(first.reference, other.reference))

@@ -125,6 +125,7 @@ proptest! {
         let declared = declared(at(0, line));
         let visible = visible_ranges(&code, &scope, &declared);
         let mut expected = Vec::<AddressRange<ImageAddress>>::new();
+
         for at in 0..64 {
             let address = ImageAddress::new(at);
             if scope.iter().any(|range| range.contains(address))

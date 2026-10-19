@@ -46,6 +46,7 @@ async fn integer_in(scenario: &Scenario, thread: ThreadId, text: &str) -> i128 {
         execution: ExecutionContext::Thread(thread),
         frame: StackFrameId::INNERMOST,
     });
+
     match scenario.operation(text, at.evaluate(&expression)).await {
         Evaluation::Value {
             value:
@@ -73,6 +74,7 @@ async fn record_hits(
     let snapshot = scenario
         .operation("snapshot", scenario.handle().snapshot())
         .await;
+
     for thread in snapshot.threads.iter() {
         let ThreadState::Stopped {
             reason: Some(StopReason::Breakpoint { hits: hit, .. }),
@@ -117,6 +119,7 @@ async fn steps_under_load_stay_with_their_goroutines_and_lose_no_hit() {
             )
             .await
             .id;
+
         let mut reason = scenario
             .run_with_to_stop(LaunchOptions {
                 stdout: Some(Stdio::from(
@@ -130,6 +133,7 @@ async fn steps_under_load_stay_with_their_goroutines_and_lose_no_hit() {
         // The goroutine the last step began in, and the worker it runs.
         let mut stepping = None;
         let mut stops = 0;
+
         loop {
             stops += 1;
             assert!(stops < MOST_STOPS, "{fixture}: too many stops");
@@ -153,6 +157,7 @@ async fn steps_under_load_stay_with_their_goroutines_and_lose_no_hit() {
                     assert_eq!(integer(&scenario, "$task").await, Some(task), "{context}");
                     assert_eq!(integer(&scenario, "id").await, Some(id), "{context}");
                     let (function, _) = place(&scenario).await;
+
                     match kind {
                         StepKind::OverSource => {
                             assert_eq!(function, "main.step", "{context}");

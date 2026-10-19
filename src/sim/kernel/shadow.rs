@@ -90,6 +90,7 @@ impl Shadow {
     /// advanced.
     pub(super) fn follow(&mut self, flow: Flow, registers: &Registers, next_activation: &mut u64) {
         let rip = registers.rip;
+
         match flow {
             Flow::Call {
                 return_address,

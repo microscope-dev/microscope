@@ -112,6 +112,7 @@ fn function_breakpoints_stop_at_every_function_with_the_name() {
     );
     let mut files = Vec::new();
     let mut mark = started.mark;
+
     for _ in 0..2 {
         let stop = dap.stopped(mark);
         assert_eq!(stop.reason, "function breakpoint");
@@ -229,6 +230,7 @@ fn breakpoints_set_while_running_stop_it_and_cleared_ones_never_do() {
         &Configuration::default(),
     );
     dap.event(started.mark, "process", |_| true);
+
     for _ in 0..10 {
         // Four threads call the function as fast as they can.
         let set = dap.send(
@@ -328,7 +330,9 @@ fn conditions_stop_only_where_they_hold() {
         invalid["message"],
         "invalid condition: conditions and log messages cannot assign; compare with `==`"
     );
+
     let mut mark = dap.send("continue", json!({"threadId": entry.thread})).mark;
+
     for expected in ["10", "20", "30", "38", "39", "40"] {
         let stop = dap.stopped(mark);
         assert_eq!(stop.body["hitBreakpointIds"], json!([counted["id"]]));
@@ -437,6 +441,7 @@ fn breakpoints_in_libraries_wait_for_them_and_follow_them_in_and_out() {
         (&json!(false), &json!("pending"))
     );
     let mut mark = started.mark;
+
     for round in 0..2 {
         // The library loads: the breakpoint resolves, then stops in it.
         let changed = dap.event(mark, "breakpoint", |body| {
@@ -472,6 +477,7 @@ fn breakpoints_in_libraries_wait_for_them_and_follow_them_in_and_out() {
             pending.is_some_and(|pending| Some(pending) < ended),
             "{messages:?}"
         );
+
         if round == 0 {
             assert_eq!(
                 (next.as_str(), &body["reason"]),
@@ -666,5 +672,6 @@ fn function_breakpoints_find_code_without_debug_information_by_its_symbols() {
         names[0].starts_with("__strlen_") && names[1].starts_with("measure+"),
         "{names:?}"
     );
+
     dap.finish();
 }

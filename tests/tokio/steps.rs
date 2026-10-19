@@ -58,6 +58,7 @@ async fn stopped_once(fixture: &str, mode: Option<&str>, marker: &str) -> Scenar
             ..LaunchOptions::default()
         })
         .await;
+
     assert!(
         matches!(reason, StopReason::Breakpoint { .. }),
         "{fixture} {mode:?}: {reason:?}"
@@ -78,6 +79,7 @@ pub async fn stopped_task(scenario: &mut Scenario) -> u64 {
         .iter()
         .find(|thread| thread.id == thread_id)
         .expect("the stopped thread is listed");
+
     match &thread.activity {
         Some(ThreadActivity::Task { task, .. }) => task.number,
         other => panic!("thread {thread_id} runs no task: {other:?}"),
@@ -138,6 +140,7 @@ async fn next_goes_round_a_loop_of_awaits() {
             let mut scenario = stopped_once(fixture, mode, "// STEP: round").await;
             let task = stopped_task(&mut scenario).await;
             let mut rounds = Vec::new();
+
             loop {
                 let (function, at) = step(&mut scenario, StepKind::OverSource).await;
                 assert_eq!(function, "rounds", "{context}: {rounds:?}");
@@ -198,6 +201,7 @@ async fn finish_returns_to_the_awaiter_in_the_same_task() {
                     .filter(|variable| variable.kind == VariableKind::Returned)
                     .map(|variable| format!("{:?}", variable.state))
                     .collect::<Vec<_>>();
+
                 let ready = |poll: &String| poll.contains("Ready") && !poll.contains("Pending");
                 assert!(
                     matches!(&returned[..], [poll] if ready(poll))
@@ -294,6 +298,7 @@ async fn a_task_condition_stops_only_in_its_task() {
                 .await;
             let mut rounds = Vec::new();
             let mut reason = scenario.resume_to_stop().await;
+
             while matches!(reason, StopReason::Breakpoint { .. }) {
                 assert_eq!(stopped_task(&mut scenario).await, task, "{context}");
                 rounds.push(integer(&scenario, "round").await);
@@ -306,6 +311,7 @@ async fn a_task_condition_stops_only_in_its_task() {
                 "{context}: {reason:?}"
             );
             assert_eq!(rounds, [Some(0), Some(1), Some(2)], "{context}");
+
             let hits = scenario
                 .snapshot()
                 .await
@@ -447,6 +453,7 @@ async fn instruction_steps_and_advance_in_an_async_function() {
             let context = format!("{fixture} {mode:?}");
             let mut scenario = stopped_once(fixture, mode, "// STEP: round").await;
             let task = stopped_task(&mut scenario).await;
+
             for kind in [StepKind::Instruction, StepKind::OverInstruction] {
                 assert_eq!(
                     scenario.step_to_stop(kind).await,
@@ -550,6 +557,7 @@ async fn step_task_on_a_line_that_spawns_none_ends_as_next_does() {
     for mode in modes(fixture) {
         for marker in ["// SPAWNS: none", "// WAKES: gate"] {
             let mut ends = Vec::new();
+
             for kind in [StepKind::OverSource, StepKind::IntoNewTask] {
                 let mut scenario = stopped_once(fixture, mode, marker).await;
                 ends.push(step(&mut scenario, kind).await);

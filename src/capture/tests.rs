@@ -14,6 +14,7 @@ fn sample_capture(offset: i64) -> Capture {
     let main = builder.frame(FrameKind::Native, module, 0x1000, 0);
     let work = builder.frame(FrameKind::Native, module, 0x2000, 0);
     let cut = builder.truncation(Truncation::FramePointerNotKept, module);
+
     builder.symbolize(
         main,
         module,
@@ -26,29 +27,35 @@ fn sample_capture(offset: i64) -> Capture {
             role: 0,
         }],
     );
+
     let handle = builder.interpreted(&InterpretedPlace {
         function: "Server.handle",
         file: Some("server.py"),
         line: 12,
         declared: Some(10),
     });
+
     let deep = builder.stack(&[work, main]);
     let shallow = builder.stack(&[main]);
     let broken = builder.stack(&[work, cut]);
     let python = builder.stack(&[handle, work, main]);
+
     builder.sample(main_thread, offset + 5, 1000, deep, NONE);
     builder.sample(main_thread, offset + 2, 1000, shallow, NONE);
     builder.sample(worker, offset + 3, 1000, broken, NONE);
     builder.sample(worker, offset + 4, 1000, python, NONE);
     builder.off_cpu(worker, offset + 4, 2, false);
     builder.off_cpu(worker, offset + 1, 1, true);
+
     builder.count(AccountKind::LostSamples as u32, 2);
     builder.gap(offset + 6, offset + 7, GapReason::Budget);
+
     builder.marker(
         offset + 6,
         MarkerKind::Budget,
         "sampling half of each second",
     );
+
     let site = builder.site("handle", "app.rs", 9, module, 1);
     builder.zone(
         worker,
@@ -65,6 +72,7 @@ fn sample_capture(offset: i64) -> Capture {
     // A read that returned three bytes, behind a signal.
     let mut captured = vec![1, 1, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0];
     captured.extend_from_slice(b"abc");
+
     builder.syscall_note(
         SyscallNote {
             time: (offset + 7).into(),
@@ -83,6 +91,7 @@ fn sample_capture(offset: i64) -> Capture {
         },
         &[0; 128],
     );
+
     builder.syscall(
         Syscall {
             entered: (offset + 7).into(),
@@ -101,6 +110,7 @@ fn sample_capture(offset: i64) -> Capture {
         },
         &captured,
     );
+
     builder.finish()
 }
 
@@ -118,6 +128,7 @@ fn a_capture_seals_reads_back_and_files_merge_chunks_by_identity() {
             .collect::<Vec<_>>(),
         [2, 5]
     );
+
     let chunk = capture.seal().expect("seal");
     assert_eq!(
         Capture::from_chunk(chunk.as_bytes()).expect("read"),
@@ -129,6 +140,7 @@ fn a_capture_seals_reads_back_and_files_merge_chunks_by_identity() {
     let mut bytes = Vec::new();
     let mut writer = file::Writer::new(&mut bytes).expect("header");
     writer.chunk(&capture.seal().expect("seal")).expect("chunk");
+
     let later = {
         let mut capture = sample_capture(0);
         for sample in &mut capture.samples {
@@ -187,6 +199,7 @@ fn interpreted_frames_keep_their_functions_apart_through_a_merge() {
         ("handle", Some("a.py"), 31, Some(30)),
         ("handle", None, 0, None),
     ];
+
     let build = |padding: &str| {
         let mut builder = CaptureBuilder::new();
 
@@ -280,6 +293,7 @@ fn zones_of_one_span_keep_their_nesting_when_a_capture_is_rebuilt() {
     let thread = builder.thread(Pid::new(1), Tid::new(1), 0);
     let site = |builder: &mut CaptureBuilder, name: &str| builder.site(name, "f.rs", 1, NONE, 0);
     let (inner, outer) = (site(&mut builder, "leaf"), site(&mut builder, "b"));
+
     for site in [inner, outer] {
         builder.zone(
             thread,
@@ -346,6 +360,7 @@ fn a_builder_forgets_rows_before_a_moment() {
     let thread = builder.thread(Pid::new(1), Tid::new(1), 0);
     let frame = builder.frame(FrameKind::Native, NONE, 0x10, 0);
     let stack = builder.stack(&[frame]);
+
     for time in [1, 5, 9] {
         builder.sample(thread, time, 1, stack, NONE);
     }
@@ -384,42 +399,54 @@ fn a_builder_forgets_rows_before_a_moment() {
 #[test]
 fn validation_rejects_every_out_of_bounds_reference() {
     let valid = sample_capture(0);
+
     let mut broken = valid.clone();
     broken.stacks[0].parent = 5.into();
     assert!(broken.validate().is_err(), "a parent after its child");
+
     let mut broken = valid.clone();
     broken.samples[0].stack = 99.into();
     assert!(broken.validate().is_err(), "a sample of no stack");
+
     let mut broken = valid.clone();
     broken.samples.swap(0, 1);
     assert!(broken.validate().is_err(), "samples out of order");
+
     let mut broken = valid.clone();
     broken.off_cpu.swap(0, 1);
     assert!(broken.validate().is_err(), "off-CPU intervals out of order");
+
     let mut broken = valid.clone();
     broken.off_cpu[0].preempted = 2;
     assert!(
         broken.validate().is_err(),
         "an off-CPU interval of no cause"
     );
+
     let mut broken = valid.clone();
     broken.gaps[0].end = (-1).into();
     assert!(broken.validate().is_err(), "a gap ending before it begins");
+
     let mut broken = valid.clone();
     broken.frames[0].module = 9.into();
     assert!(broken.validate().is_err(), "a frame of no module");
+
     let mut broken = valid.clone();
     broken.zones[0].end = (-1).into();
     assert!(broken.validate().is_err(), "a zone ending before it starts");
+
     let mut broken = valid.clone();
     broken.syscall_notes[0].calls = 2.into();
     assert!(broken.validate().is_err(), "a note after calls not there");
+
     let mut broken = valid.clone();
     broken.syscalls[0].captures_len = 14.into();
     assert!(broken.validate().is_err(), "captured bytes cut short");
+
     let mut broken = valid.clone();
     broken.syscall_notes[0].kind = 0;
     assert!(broken.validate().is_err(), "a note of no kind");
+
     let mut broken = valid.clone();
     let named = broken
         .frames
@@ -428,9 +455,11 @@ fn validation_rejects_every_out_of_bounds_reference() {
         .expect("an interpreted frame");
     broken.frames[named].address = u64::MAX.into();
     assert!(broken.validate().is_err(), "an interpreted frame of no key");
+
     let mut broken = valid.clone();
     broken.frames[named].kind = 6;
     assert!(broken.validate().is_err(), "a frame of no kind");
+
     let mut broken = valid;
     broken.strings.pop();
     assert!(broken.validate().is_err(), "an unterminated string pool");
@@ -444,6 +473,7 @@ fn the_fuzzers_seed_is_a_capture_of_this_revision() {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus/capture/two-threads");
     let mut expected = Vec::new();
     file::write(&sample_capture(0), &mut expected).expect("write");
+
     if std::env::var_os("MICROSCOPE_UPDATE_SEED").is_some() {
         std::fs::write(&path, &expected).expect("write the seed");
     }

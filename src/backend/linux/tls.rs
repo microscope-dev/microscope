@@ -141,6 +141,7 @@ impl CLibrary {
 
                 let mut modules = BTreeMap::new();
                 let mut id = NonZeroU64::MIN;
+
                 for load_bias in order {
                     // Whether a module the debugger could not load has TLS is
                     // unknown, and so is every later module's number.
@@ -301,6 +302,7 @@ fn read_process(pid: Pid, address: usize, output: &mut [u8]) -> bool {
 fn lookup_symbol(pid: Pid, requested_object: Option<&str>, requested_symbol: &str) -> Option<u64> {
     let mappings = module_mappings(pid).ok()?;
     let mut fallback = None;
+
     for mapping in mappings {
         let Some(file_name) = mapping.path.file_name() else {
             continue;
@@ -339,6 +341,7 @@ fn lookup_symbol(pid: Pid, requested_object: Option<&str>, requested_symbol: &st
         };
 
         let address = address.get();
+
         if preferred {
             return Some(address);
         }

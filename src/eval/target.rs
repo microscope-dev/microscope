@@ -127,7 +127,6 @@ pub struct Register {
     pub width: u8,
 }
 
-/// Bind-time view of one frame: what names mean there, and what types are.
 /// What a system call's stop knows of the call, which `$arg0` to `$arg5`,
 /// `$ret`, and `$path` read.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -142,6 +141,7 @@ pub struct CallValues {
     pub path: Option<Vec<u8>>,
 }
 
+/// Bind-time view of one frame: what names mean there, and what types are.
 pub trait Scope: TypeSource {
     /// A data object the scope can name.
     type Object: Clone + fmt::Debug;

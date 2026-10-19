@@ -109,6 +109,7 @@ fn registered_objects_are_read_as_far_as_the_list_is_sound() {
         0x4000,
         usize::try_from(MAX_OBJECT_BYTES + 1).expect("a size"),
     );
+
     let read = memory.registered(0x1000, u64::MAX);
     assert!(read.objects.is_empty());
     assert_eq!(read.problems.len(), 2, "{:?}", read.problems);

@@ -305,6 +305,7 @@ impl World {
         let head_at = owned.head;
         let tasks = self.model.layout.tasks.as_ref().expect("Header binds");
         let (prev, next) = (tasks.prev, tasks.next);
+
         self.memory
             .word(shard + head_at, headers.first().copied().unwrap_or(0));
         for (index, header) in headers.iter().enumerate() {
@@ -323,6 +324,7 @@ impl World {
         let (id_at, shards_at, count_at, mask_at) =
             (owned.id, owned.shards, owned.count, owned.mask);
         let (shard_size, lock) = (owned.shard_size, owned.shard_lock);
+
         let arc = self.allocate(4096);
         let handle = arc + data;
         let at = handle + owned_at;
@@ -331,12 +333,15 @@ impl World {
         self.memory.word(at + id_at, list);
         self.memory.word(at + shards_at, array);
         self.memory.word(at + shards_at + 8, length);
+
         let count = shards.iter().map(Vec::len).sum::<usize>();
         self.memory
             .word(at + count_at, u64::try_from(count).expect("a count"));
         self.memory.word(at + mask_at, length - 1);
+
         let vtable = self.vtable(self.poll);
         let mut headers = Vec::new();
+
         for (index, tasks) in (0..).zip(shards) {
             let shard = array + index * shard_size;
             self.memory.write(shard + lock.offset, 0, lock.size);
@@ -349,6 +354,7 @@ impl World {
         }
 
         self.pool(flavor, handle, &[]);
+
         Written {
             flavor,
             arc,
@@ -375,12 +381,14 @@ impl World {
             pool.task_size,
             pool.task,
         );
+
         let arc = self.allocate(1024);
         self.memory.word(handle + spawner, arc);
         let inner = arc + data;
         let room = u64::try_from(queued.len() * 2).expect("a few").max(1);
         let ring = self.allocate(room * size);
         let first = room - 1;
+
         self.memory.write(inner + lock.offset, 0, lock.size);
         self.memory.word(inner + head, first);
         self.memory
@@ -451,6 +459,7 @@ impl World {
         let base = pointer.wrapping_add_signed(offset);
         self.memory.threads.insert(ThreadId::new(tid), pointer);
         self.memory.write(base + state, alive, 1);
+
         let (at, size, value) = handle_tag;
         self.memory.write(base + handle_at + at, value, size);
         if let Some(runtime) = runtime {
@@ -466,6 +475,7 @@ impl World {
 
         self.memory
             .word(base + scheduler_at, if worker { 0x1234_5000 } else { 0 });
+
         let (at, size, value) = entered_tag;
         self.memory.write(base + entered_at + at, value, size);
         let (at, size, value) = task_tag;
@@ -559,6 +569,7 @@ fn each_state_is_read_as_tokio_defines_it() {
         .filter(|(id, bits)| bits & RUNNING != 0 && id % 4 == 1)
         .map(|(id, _)| *id)
         .collect::<BTreeSet<_>>();
+
     for (tid, id) in (100..).zip(&polled) {
         world.thread(tid, Some(&runtime), true, Some(*id));
     }
@@ -650,6 +661,7 @@ fn a_thread_runs_the_task_its_context_names() {
         .find(|task| task.number == 12)
         .expect("listed");
     assert_eq!(blocking.thread, Some(ThreadId::new(3)));
+
     for (number, thread) in [(10, 1), (12, 3)] {
         let context = world
             .model
@@ -726,6 +738,7 @@ fn the_blocking_pool_lists_its_queue_in_order() {
         &[(20, true), (21, false), (22, false)],
     );
     world.thread(1, Some(&runtime), true, None);
+
     let (all, gaps) = world.tasks(2, false);
     assert!(gaps.is_empty(), "{gaps:?}");
     let numbers = all.iter().map(|task| task.number).collect::<Vec<_>>();
@@ -736,6 +749,7 @@ fn the_blocking_pool_lists_its_queue_in_order() {
         Some("queued in the blocking pool")
     );
     assert_eq!(all[2].state, TaskState::Runnable);
+
     let (program, _) = world.tasks(1, true);
     let numbers = program.iter().map(|task| task.number).collect::<Vec<_>>();
     assert_eq!(numbers, [1, 21, 22]);
@@ -752,6 +766,7 @@ fn a_queue_read_mid_push_is_the_change_its_lock_reports() {
         let runtime = world.runtime(Flavor::CurrentThread, 4, &[vec![(1, 0)]]);
         let inner = world.pool(runtime.flavor, runtime.handle, &[(20, false), (21, false)]);
         world.thread(1, Some(&runtime), true, None);
+
         let pool = world.model.layout.pool.as_ref().expect("the pool binds");
         let (lock, len, buffer, head, capacity, size, task) = (
             pool.lock,
@@ -767,6 +782,7 @@ fn a_queue_read_mid_push_is_the_change_its_lock_reports() {
             assert!(world.memory.read(VirtualAddress::new(at), &mut bytes));
             u64::from_le_bytes(bytes)
         };
+
         let (ring, first, room) = (
             read(inner + buffer),
             read(inner + head),
@@ -808,6 +824,7 @@ fn addresses_at_the_end_of_memory_are_reported_not_followed() {
     let runtime = world.runtime(Flavor::MultiThread, 4, &[vec![(1, 0)]]);
     world.thread(1, Some(&runtime), true, None);
     let inner = world.pool(runtime.flavor, runtime.handle, &[(20, false), (21, false)]);
+
     let ThreadLocal::Offset(offset) = world.context().tls else {
         panic!("an executable's thread-local storage is at an offset");
     };
@@ -1112,6 +1129,7 @@ fn a_shard_being_changed_is_one_gap_however_its_links_disagree() {
     let mut world = World::new(&[]);
     let runtime = world.runtime(Flavor::MultiThread, 9, &[vec![(1, 0), (2, 0), (3, 0)]]);
     world.thread(1, Some(&runtime), false, None);
+
     let tasks = world.model.layout.tasks.as_ref().expect("Header binds");
     let prev = tasks.prev;
     let owned = &world.runtime_layout(Flavor::MultiThread).owned;
@@ -1124,6 +1142,7 @@ fn a_shard_being_changed_is_one_gap_however_its_links_disagree() {
     // back to.
     let second = runtime.headers[0][1];
     world.memory.word(second + TRAILER + prev, second + 0x1000);
+
     let (listed, gaps) = world.tasks(4096, true);
     assert_eq!(
         listed.iter().map(|task| task.number).collect::<Vec<_>>(),
@@ -1170,6 +1189,7 @@ proptest! {
         // The damaged shard and task: the shard's index, and how many of
         // its tasks precede the damage.
         let nonempty = (0..shards).filter(|shard| !lists[*shard].is_empty()).collect::<Vec<_>>();
+
         let damaged = damage.filter(|_| !nonempty.is_empty()).map(|damage| {
             let shard = nonempty[target.index(nonempty.len())];
             let node = target.index(lists[shard].len());
@@ -1212,6 +1232,7 @@ proptest! {
 
         let (listed, gaps) = world.tasks(page, true);
         let listed = listed.iter().map(|task| task.number).collect::<Vec<_>>();
+
         let expected = lists
             .iter()
             .enumerate()

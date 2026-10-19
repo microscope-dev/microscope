@@ -181,6 +181,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .as_mut()
             .and_then(|inferior| inferior.barrier.as_mut())
             .ok_or_else(|| Error::internal("an internal stop has a barrier"))?;
+
         let kind = std::mem::discriminant(&edit);
         if !barrier
             .edits
@@ -210,6 +211,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             ended: None,
             edits: Vec::new(),
         });
+
         // An agent's acknowledgement budget counts only running time.
         for installation in inferior.agents.values_mut() {
             installation.pause_deadline(std::time::Instant::now());
@@ -326,6 +328,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     .is_some_and(|thread| matches!(thread.state, NativeThreadState::Stopped))
             })
             .collect::<Vec<_>>();
+
         for pid in threads {
             self.continue_thread(pid)?;
         }
@@ -382,6 +385,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     .is_some_and(|record| record.watchpoint.enabled)
                     && !unchanged.contains(id)
             });
+
             match &thread.reason {
                 Some(StopReason::Breakpoint { address, hits }) => {
                     let hits = hits

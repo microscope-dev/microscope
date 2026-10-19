@@ -76,6 +76,7 @@ fn the_escaped_characters_are_the_interpreters() {
         "scripts/python-printable.sh failed:\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
+
     let made = std::fs::read_to_string(&made).expect("read the made table");
     let checked_in = std::fs::read_to_string(root().join(PRINTABLE)).unwrap_or_default();
     assert!(
@@ -186,6 +187,7 @@ fn compile(directory: &Path, file: &Path) -> std::process::Output {
     if arch.is_dir() {
         compile.arg("-I").arg(arch);
     }
+
     compile
         .arg("-I")
         .arg(directory.join("include"))
@@ -224,6 +226,7 @@ fn each_schema_is_its_versions_debug_offsets() {
             24 + 8 * schema.len()
         );
     }
+
     source.push_str("#else\n#error \"no schema of this version\"\n#endif\n");
 
     let scratch = ScratchDir::new("python-schemas");

@@ -187,6 +187,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 "the thread has a signal to take first; continue it",
             ));
         }
+
         let sole = self
             .with_runtime_stop(inferior, &bound, pid, |stop| {
                 bound.model.sole_thread(stop, debug_thread_id(pid))
@@ -204,6 +205,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                  made only where the frame's thread is the interpreter's only one",
             ));
         }
+
         if !self.agent_takes_commands(runtime) {
             return Err(refused(
                 span,
@@ -314,6 +316,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                  assignment, which it may yet make as the thread runs on",
             )),
         };
+
         if let Some(reply) = pending.reply {
             let _ = reply.send(answer);
         }
@@ -354,6 +357,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             })
             .map(|candidate| candidate.id)
             .ok_or_else(|| refused(pending.span, "the variable's frame is gone"))?;
+
         self.read_assigned(stop_id, &root, frame, &pending.expression, pending.limits)
     }
 

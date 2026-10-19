@@ -49,6 +49,7 @@ impl ThreadIds {
         threads.dedup();
         let mut ids = BTreeMap::new();
         let mut targets = BTreeMap::new();
+
         for (thread, target) in read(&threads) {
             if threads.binary_search(&thread).is_ok() {
                 targets
@@ -68,16 +69,19 @@ impl ThreadIds {
                     .or_insert(Some(thread));
             }
         }
+
         if !threads.is_empty() && ids.is_empty() {
             return Err(
                 "the platform supplied no proven target-namespace thread identity evidence".into(),
             );
         }
+
         for (target, host) in &mut ids {
             if host.is_some_and(|host| targets.get(&host) != Some(&Some(*target))) {
                 *host = None;
             }
         }
+
         Ok(Self(ids))
     }
 
@@ -108,6 +112,7 @@ mod tests {
         let threads = (1..=MAX_MAPPED_THREADS as u64 + 1)
             .map(ThreadId::new)
             .collect();
+
         let ids = ThreadIds::read(threads, |_| {
             called.set(true);
             Vec::new()

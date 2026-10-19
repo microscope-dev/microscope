@@ -145,6 +145,7 @@ impl Watching {
         self.ran.insert(tid);
         for ((watch, before), after) in self.watches.iter().zip(before).zip(after) {
             let mut counted = false;
+
             for access in accesses.iter() {
                 let overlaps = watch.spans.iter().any(|&(start, end)| {
                     access.address < end && start < access.address + access.size

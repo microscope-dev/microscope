@@ -233,6 +233,7 @@ fn walk_cfi(
             },
             frame_pointer: registers.get(RBP),
         });
+
         if unwound.len() >= limit {
             return Walked::certain(unwound, StackEnd::Truncated(Truncation::DepthLimit, None));
         }
@@ -362,6 +363,7 @@ fn splice(
         .registers
         .iter()
         .find_map(|(register, value)| (*register == RBP).then_some(*value));
+
     while let Some(current) = link {
         links.push(current);
         if links.len() >= sample.chain.len() {
@@ -512,6 +514,7 @@ mod tests {
             )
             .iter()
             .collect::<Vec<_>>();
+
             let symbol = |name: &str| {
                 file.symbols()
                     .find(|symbol| symbol.name() == Ok(name))
@@ -540,6 +543,7 @@ mod tests {
                     && instruction.op0_register() == Register::RBP
                     && instruction.op1_register() == Register::RSP
             });
+
             let body = instructions
                 .iter()
                 .find(|instruction| instruction.ip() == body)
@@ -557,6 +561,7 @@ mod tests {
                 .find(|instruction| instruction.ip() == call)
                 .expect("the call")
                 .next_ip();
+
             Self {
                 info,
                 body,
@@ -577,6 +582,7 @@ mod tests {
                 .iter()
                 .flat_map(|word| word.to_le_bytes())
                 .collect::<Vec<_>>();
+
             let modules = [UnwindModule {
                 loaded: LoadedModule {
                     id: ModuleId::new(1),
@@ -586,6 +592,7 @@ mod tests {
                 image: &self.info.image,
                 unwind: self.info.unwind.as_ref(),
             }];
+
             let (frames, end) = unwind_sample(
                 &modules,
                 &mut FrameRules::default(),
@@ -596,6 +603,7 @@ mod tests {
                 },
                 16,
             );
+
             let addresses = frames.iter().map(|frame| frame.address.get()).collect();
             (addresses, end)
         }

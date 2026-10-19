@@ -41,10 +41,12 @@ impl Client {
             .ready_line()
             .strip_prefix("READY ")
             .expect("the server's address");
+
         let stream = TcpStream::connect(address).expect("connect to the server");
         stream
             .set_read_timeout(Some(ANSWER_TIMEOUT))
             .expect("a read timeout");
+
         Self {
             writer: stream.try_clone().expect("a writer"),
             reader: BufReader::new(stream),
@@ -80,12 +82,14 @@ async fn an_attached_servers_task_is_listed_and_it_serves_once_detached() {
 
         let mut scenario =
             Scenario::attached(fixture, server.attach().await).checking_stops(check_tokio_stop);
+
         if let Err(problem) = check_tokio_stop(scenario.handle().clone()).await {
             panic!("{fixture}: at the attach: {problem}");
         }
 
         let (listed, gaps) = tasks(&scenario, 4096).await;
         assert!(gaps.is_empty(), "{fixture}: {gaps:?}");
+
         let stop = scenario.snapshot().await.stop_id.expect("stopped");
         let mut by_function = BTreeMap::new();
         for task in &listed {
@@ -102,12 +106,14 @@ async fn an_attached_servers_task_is_listed_and_it_serves_once_detached() {
                         .backtrace(),
                 )
                 .await;
+
             let function = ["listen", "serve"].into_iter().find(|name| {
                 trace
                     .frames
                     .iter()
                     .any(|frame| frame.function.as_ref().is_some_and(|f| &*f.name == *name))
             });
+
             let function = function.unwrap_or_else(|| panic!("{fixture}: {trace:#?}"));
             assert!(
                 by_function.insert(function, task).is_none(),
@@ -124,6 +130,7 @@ async fn an_attached_servers_task_is_listed_and_it_serves_once_detached() {
             let task = by_function
                 .get(function)
                 .unwrap_or_else(|| panic!("{fixture}: no {function} in {listed:#?}"));
+
             match task.state {
                 TaskState::Blocked => assert_eq!(
                     task.detail.as_deref(),
@@ -140,17 +147,20 @@ async fn an_attached_servers_task_is_listed_and_it_serves_once_detached() {
         let breakpoint = scenario
             .add_source_breakpoint(SOURCE, line(SOURCE, "// SERVED: answer"))
             .await;
+
         client.send("second");
         let reason = scenario.resume_to_stop().await;
         assert!(
             matches!(reason, StopReason::Breakpoint { .. }),
             "{fixture}: {reason:?}"
         );
+
         assert_eq!(
             stopped_task(&mut scenario).await,
             task.id.number,
             "{fixture}"
         );
+
         let count = integer(&scenario, "served").await;
         assert!(
             count == Some(2) || count.is_none() && fixture.ends_with("o3"),
@@ -159,6 +169,7 @@ async fn an_attached_servers_task_is_listed_and_it_serves_once_detached() {
 
         scenario.remove_breakpoint(breakpoint.id).await;
         scenario.shutdown().await;
+
         assert_eq!(client.answer(), "second 2", "{fixture}");
         client.send("third");
         assert_eq!(client.answer(), "third 3", "{fixture}");

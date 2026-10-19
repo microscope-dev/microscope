@@ -56,19 +56,24 @@ async fn a_damaged_list_is_reported_and_the_rest_listed() {
     // The invariants hold no list with gaps of damage.
     let mut scenario = Scenario::launch(FIXTURE);
     scenario.add_breakpoint("truth_reached").await;
+
     let reason = scenario
         .run_with_to_stop(LaunchOptions {
             stdout: Some(Stdio::from(File::create(&output).expect("an output file"))),
             ..LaunchOptions::default()
         })
         .await;
+
     assert!(
         matches!(reason, StopReason::Breakpoint { .. }),
         "{reason:?}"
     );
+
     let (intact, gaps) = tasks(&scenario, 7).await;
     assert!(gaps.is_empty(), "{gaps:?}");
+
     let truth = Truth::parse(&std::fs::read_to_string(&output).expect("the output"));
+
     assert_eq!(
         intact
             .iter()
@@ -81,21 +86,26 @@ async fn a_damaged_list_is_reported_and_the_rest_listed() {
         scenario.resume_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     let truth = Truth::parse(&std::fs::read_to_string(&output).expect("the output"));
     assert_eq!(truth.damaged.len(), 4, "{truth:?}");
+
     let (listed, gaps) = tasks(&scenario, 7).await;
     let numbers = listed.iter().map(|task| task.id.number).collect::<Vec<_>>();
     let unique = numbers.iter().copied().collect::<BTreeSet<_>>();
     assert_eq!(unique.len(), numbers.len(), "listed twice: {numbers:?}");
+
     assert!(
         unique.is_subset(&truth.shards.keys().copied().collect()),
         "{numbers:?}"
     );
+
     let damaged_shards = truth
         .damaged
         .iter()
         .map(|(_, _, shard)| *shard)
         .collect::<BTreeSet<_>>();
+
     for (id, shard) in &truth.shards {
         if !damaged_shards.contains(shard) {
             assert!(unique.contains(id), "task {id} of shard {shard}: {gaps:?}");
@@ -126,6 +136,7 @@ async fn a_damaged_list_is_reported_and_the_rest_listed() {
         .iter()
         .find(|task| !damaged_shards.contains(&truth.shards[&task.id.number]))
         .expect("a task of an undamaged shard");
+
     let trace = scenario
         .operation(
             "backtrace",
@@ -139,6 +150,7 @@ async fn a_damaged_list_is_reported_and_the_rest_listed() {
                 .backtrace(),
         )
         .await;
+
     assert!(
         trace.frames.iter().any(|frame| frame
             .function
@@ -146,5 +158,6 @@ async fn a_damaged_list_is_reported_and_the_rest_listed() {
             .is_some_and(|f| &*f.name == "parked")),
         "{trace:#?}"
     );
+
     scenario.shutdown().await;
 }

@@ -302,6 +302,7 @@ fn containers(input: &mut Input<'_>) -> (World, Vec<(String, TypeReference)>) {
 
     let heap = (0..HEAP_SIZE).map(|_| input.byte()).collect::<Vec<_>>();
     world.map(HEAP, &heap);
+
     for (name, ty) in &variables {
         let words = usize::try_from(world_size(&world, *ty).div_ceil(8)).unwrap_or(0);
         let object = input.object(words.max(1));
@@ -851,6 +852,7 @@ pub fn hostile(data: &[u8]) {
 
     let fuzzed = ViewSet::new([("fuzz.views", text.as_str())]);
     let built_in = ViewSet::built_in();
+
     for (name, ty) in &variables {
         let Some(bound) = choose(&fuzzed, *ty, &world)
             .bound
@@ -867,6 +869,7 @@ pub fn hostile(data: &[u8]) {
         world.work = Some(work.min(MAX_WORK));
         let mut checkpoints = Checkpoints::default();
         let mut elements = 0;
+
         match present(&bound, &mut world, this.clone(), &mut checkpoints) {
             Ok(presented) => {
                 if let Some(text) = &presented.text {
@@ -887,6 +890,7 @@ pub fn hostile(data: &[u8]) {
         world.work = Some(work.min(MAX_WORK));
         let offset = u64::from(input.byte()) * 16;
         let limit = u64::from(input.byte());
+
         if let Ok(page) = children(
             &bound,
             &mut world,

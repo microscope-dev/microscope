@@ -140,6 +140,7 @@ async fn failing_programs_stop_where_the_runtime_reports_them() {
                         "{context}: {:?} is not in {printed}",
                         exception.message
                     );
+
                     if let Expected::Unhandled(function, marker) = expected {
                         assert_eq!(exception.kind, LanguageExceptionKind::Unhandled);
                         let line = support::source_line(SOURCE, &format!("// FAIL: {marker}"));
@@ -262,6 +263,7 @@ async fn launched(fixture: &str, case: &str, stops: ExceptionStops) -> (Scenario
             scenario.handle().set_exception_stops(stops),
         )
         .await;
+
     let reason = scenario
         .run_with_to_stop(LaunchOptions {
             arguments: vec![case.into()],
@@ -297,11 +299,13 @@ async fn exceptions_stop_as_chosen() {
             message, "panic: runtime error: invalid memory address or nil pointer dereference",
             "{fixture}"
         );
+
         let line = support::source_line(SOURCE, "// FAIL: dereference");
         assert_eq!(
             place(&scenario).await,
             ("main.dereference".to_owned(), line)
         );
+
         let reason = scenario.resume_to_stop().await;
         assert_eq!(reason, StopReason::Exited(ExitStatus::Code(0)), "{fixture}");
         scenario.shutdown().await;
@@ -313,12 +317,14 @@ async fn exceptions_stop_as_chosen() {
             first,
             (LanguageExceptionKind::Raised, "panic: 1.5".to_owned())
         );
+
         let reason = scenario.resume_to_stop().await;
         let last = exception(&reason, fixture);
         assert_eq!(
             last,
             (LanguageExceptionKind::Unhandled, "panic: 1.5".to_owned())
         );
+
         let reason = scenario.resume_to_stop().await;
         assert_eq!(reason, StopReason::Exited(ExitStatus::Code(2)), "{fixture}");
         scenario.shutdown().await;
@@ -352,12 +358,14 @@ async fn a_panic_preempted_as_it_begins_stops_once() {
         let trace = scenario
             .operation("backtrace", scenario.handle().backtrace())
             .await;
+
         scenario
             .operation(
                 "select the runtime's frame",
                 scenario.handle().select_frame(trace.frames[0].id),
             )
             .await;
+
         let g = integer(&scenario, "$r14").await.expect("the goroutine");
         let guard = u64::try_from(g).expect("an address") + 16;
 

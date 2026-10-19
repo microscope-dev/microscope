@@ -24,11 +24,13 @@ pub fn library() -> Vec<u8> {
     let mut put = |offset: usize, bytes: &[u8]| {
         elf[offset..offset + bytes.len()].copy_from_slice(bytes);
     };
+
     put(16, &3_u16.to_le_bytes());
     put(18, &62_u16.to_le_bytes());
     put(20, &1_u32.to_le_bytes());
     put(32, &64_u64.to_le_bytes());
     put(40, &1024_u64.to_le_bytes());
+
     for (offset, value) in [(52, 64_u16), (54, 56), (56, 4), (58, 64), (60, 9), (62, 6)] {
         put(offset, &value.to_le_bytes());
     }
@@ -48,7 +50,9 @@ pub fn library() -> Vec<u8> {
         put(at + 40, &size.to_le_bytes());
         put(at + 48, &alignment.to_le_bytes());
     }
+
     put(512, &[0xf3, 0x0f, 0x1e, 0xfa, 0xc3]);
+
     // ENDBR64; one aligned 64-bit load of the published sequence; RET.
     put(528, &[0xf3, 0x0f, 0x1e, 0xfa, 0x48, 0x8b, 0x05]);
     put(535, &(4104_i32 - 539).to_le_bytes());
@@ -71,9 +75,11 @@ pub fn library() -> Vec<u8> {
     put(632, &12_u64.to_le_bytes());
     let strings = format!("\0{SYMBOL}\0{CONTROL_SYMBOL}\0{SEQUENCE_SYMBOL}\0");
     put(640, strings.as_bytes());
+
     for (index, value) in [1_u32, 4, 1, 0, 2, 3, 0].into_iter().enumerate() {
         put(720 + index * 4, &value.to_le_bytes());
     }
+
     for (index, (tag, value)) in [
         (4_u64, 720_u64),
         (5, 640),
@@ -88,6 +94,7 @@ pub fn library() -> Vec<u8> {
         put(DYNAMIC_OFFSET + index * 16, &tag.to_le_bytes());
         put(DYNAMIC_OFFSET + 8 + index * 16, &value.to_le_bytes());
     }
+
     put(
         864,
         b"\0.text\0.dynsym\0.dynstr\0.hash\0.dynamic\0.shstrtab\0.eh_frame\0.data\0",
@@ -109,6 +116,7 @@ pub fn library() -> Vec<u8> {
     put(988, &12_u32.to_le_bytes());
     put(CONTROL_OFFSET, CONTROL_MAGIC);
     put(CONTROL_OFFSET + 20, &CONTROL_CAPACITY.to_le_bytes());
+
     for (index, (name, kind, flags, offset, size, link, alignment, entry)) in [
         (1_u32, 1_u32, 6_u64, 512_u64, 28_u64, 0_u32, 4_u64, 0_u64),
         (7, 11, 2, 544, 96, 3, 8, 24),
@@ -156,5 +164,6 @@ pub fn library() -> Vec<u8> {
         put(at + 48, &alignment.to_le_bytes());
         put(at + 56, &entry.to_le_bytes());
     }
+
     elf
 }

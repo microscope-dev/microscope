@@ -299,6 +299,7 @@ fn decode<'a>(
     let (body, id) = body.split_at(split);
     let time = u64::from_le_bytes(field(id, 8)?);
     let mut fields = Fields { bytes: body };
+
     Ok(match kind {
         RECORD_MMAP2 => {
             let (pid, _tid) = fields.pair()?;
@@ -318,6 +319,7 @@ fn decode<'a>(
                 .iter()
                 .position(|byte| *byte == 0)
                 .unwrap_or(path.len())];
+
             Record::Mmap(Mmap {
                 pid: Pid::new(pid),
                 start,
@@ -336,6 +338,7 @@ fn decode<'a>(
                 .iter()
                 .position(|byte| *byte == 0)
                 .unwrap_or(name.len())];
+
             Record::Comm {
                 pid: Pid::new(pid),
                 tid: Tid::new(tid),
@@ -348,6 +351,7 @@ fn decode<'a>(
             let (pid, parent) = fields.pair()?;
             let (tid, _parent_tid) = fields.pair()?;
             let (pid, tid) = (Pid::new(pid), Tid::new(tid));
+
             if kind == RECORD_FORK {
                 Record::Fork {
                     pid,
@@ -431,6 +435,7 @@ fn decode_output(body: &[u8]) -> Result<Record<'_>, Malformed> {
     let size = fields.take(4)?;
     let size = u32::from_le_bytes(size.try_into().map_err(|_| Malformed)?);
     let data = fields.take(usize::try_from(size).map_err(|_| Malformed)?)?;
+
     Ok(Record::Output {
         pid: Pid::new(pid),
         tid: Tid::new(tid),
@@ -444,6 +449,7 @@ fn decode_output(body: &[u8]) -> Result<Record<'_>, Malformed> {
 #[cfg(feature = "fuzzing")]
 pub fn fuzz(data: &[u8]) {
     let mut offset = 0;
+
     while let Some(Ok((record, length))) = next_of(&data[offset..], &[7]) {
         if let Record::Sample(sample) = record {
             let _ = sample.user_chain().count() + sample.registers.iter().count();

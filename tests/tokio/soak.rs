@@ -53,9 +53,11 @@ impl Load {
                     (address.to_owned(), Arc::clone(&stop), Arc::clone(&answered));
                 std::thread::spawn(move || {
                     let stream = TcpStream::connect(&address).map_err(|error| error.to_string())?;
+
                     stream
                         .set_read_timeout(Some(ANSWER_TIMEOUT))
                         .map_err(|error| error.to_string())?;
+
                     let mut writer = stream.try_clone().map_err(|error| error.to_string())?;
                     let mut reader = BufReader::new(stream);
                     let mut sent = 0_u64;
@@ -63,10 +65,12 @@ impl Load {
                         sent += 1;
                         let line = format!("client {client} line {sent}");
                         writeln!(writer, "{line}").map_err(|error| error.to_string())?;
+
                         let mut answer = String::new();
                         reader
                             .read_line(&mut answer)
                             .map_err(|error| format!("{line}: {error}"))?;
+
                         if !answer.starts_with(&format!("{line} ")) {
                             return Err(format!("{line} was answered {answer:?}"));
                         }
@@ -130,13 +134,16 @@ async fn soak() {
         .ok()
         .and_then(|seconds| seconds.parse().ok())
         .unwrap_or(60);
+
     let deadline = Instant::now() + Duration::from_secs(seconds);
     let server = ExternalProcess::spawn(&Scenario::fixture("tokio-server-o0"));
+
     let address = server
         .ready_line()
         .strip_prefix("READY ")
         .expect("the server's address")
         .to_owned();
+
     let load = Load::start(&address);
     let answer = line("server/src/main.rs", "// SERVED: answer");
     let mut scenario = attach(&server).await;
@@ -144,8 +151,10 @@ async fn soak() {
     let mut baseline = None;
     let mut round = 0_u64;
     let mut hits = 0_u64;
+
     while Instant::now() < deadline {
         round += 1;
+
         if round.is_multiple_of(10) {
             scenario.shutdown().await;
             scenario = attach(&server).await;
@@ -203,6 +212,7 @@ async fn soak() {
         };
 
         check(&scenario, round).await;
+
         match reason {
             StopReason::Pause => {}
             StopReason::Breakpoint { .. } => {
@@ -232,10 +242,14 @@ async fn soak() {
     }
 
     scenario.shutdown().await;
+
     let answered = load.finish();
     assert!(answered > 0, "the server answered nothing");
+
     let mut quit = TcpStream::connect(&address).expect("connect to quit");
     writeln!(quit, "quit").expect("ask the server to quit");
+
     assert_eq!(server.wait().code(), Some(0));
+
     eprintln!("soak: {round} rounds, {hits} at the breakpoint, {answered} lines answered");
 }

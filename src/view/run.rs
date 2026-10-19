@@ -386,6 +386,7 @@ pub(super) fn count<M: Machine>(
     };
 
     let value = integer.value();
+
     value
         .to_u128()
         .and_then(|value| u64::try_from(value).ok())
@@ -438,6 +439,7 @@ fn resolve<'b, M: Machine>(
 ) -> Result<&'b BoundShape<M::Step>, Failure> {
     checks(bound, machine)?;
     let mut shape = &bound.shape;
+
     while let BoundShape::If {
         condition,
         then,
@@ -709,12 +711,14 @@ fn function_type<M: Machine>(
 ) -> Result<TypeReference, Failure> {
     let address = code_address(code, machine)?;
     let mut captures = known.clone();
+
     for (parameter, ty) in machine.function_generics(address)? {
         captures.retain(|(captured, _)| **captured != *parameter);
         captures.push((parameter.to_string(), Captured::Type(ty)));
     }
 
     let mut found = Vec::<TypeReference>::new();
+
     for candidate in candidates {
         let Some(identity) = machine
             .type_info(*candidate)
@@ -1022,6 +1026,7 @@ fn preview<M: Machine>(
     let mut counted = 0;
     let mut ended = false;
     let mut walk = Walk::at(scan, declared, 0, machine, checkpoints)?;
+
     while let Some(current) = walk.as_mut() {
         let previewing = partial.is_none()
             && items.len() < summary::MAX_ELEMENTS
@@ -1152,6 +1157,7 @@ pub fn children<M: Machine>(
             .saturating_add(1),
     );
     let mut children = Vec::new();
+
     if offset < elements
         && let BoundShape::Sequence { scan, .. } | BoundShape::Map { scan, .. } = shape
     {
@@ -1162,6 +1168,7 @@ pub fn children<M: Machine>(
                 generated: offset,
             }),
         )?;
+
         for _ in offset..end.min(elements) {
             let index = match walk.next(&mut machine, checkpoints) {
                 Ok(Some(index)) => index,
@@ -1278,6 +1285,7 @@ pub fn inputs<M: Machine>(
     };
 
     let mut inputs = Vec::new();
+
     for input in &drawing.inputs {
         machine.set_variables(&[]);
         let value = match &input.value {
@@ -1383,6 +1391,7 @@ pub fn length<M: Machine>(
             }
 
             let mut scanner = Scanner::<_, M::Place>::at(scan, None, checkpoints, u64::MAX);
+
             while scanner.next(&mut machine, checkpoints)?.is_some() {}
             Ok(scanner.position())
         }
@@ -1478,6 +1487,7 @@ pub fn element_place<M: Machine>(
     };
 
     let declared = declared_length(scan, &mut machine)?;
+
     let out_of_bounds = |count: u64| {
         Failure::Problem(ViewProblem::Unavailable(
             VariableUnavailableReason::IndexOutOfBounds {
@@ -1616,6 +1626,7 @@ fn text_location<M: Machine>(
     let declared = length
         .map(|program| count(program, machine, "text's length"))
         .transpose()?;
+
     Ok(match source {
         TextSource::Pointer { program, .. } => match interp::value(program, machine)? {
             Value::Pointer(address) => (address, declared),
@@ -1736,6 +1747,7 @@ fn capacity_of<M: Machine>(
     };
 
     let value = integer.value();
+
     value
         .to_u128()
         .and_then(|value| u64::try_from(value).ok())
@@ -1774,6 +1786,7 @@ pub fn entry_place<M: Machine>(
     };
 
     let mut unreadable = None;
+
     while walk.next(&mut machine, checkpoints)?.is_some() {
         let candidate = element(key_program, &mut machine)?;
         match key.matches(&candidate) {

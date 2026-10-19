@@ -64,6 +64,7 @@ pub fn measure(options: &Options, mut progress: impl FnMut(&Run)) -> Result<Vec<
     placement.microscope()?;
     let taskset = which("taskset")?;
     let mut runs = Vec::new();
+
     for _ in 0..options.runs.max(1) {
         for setup in SETUPS {
             let ns_per_call = run(setup, options, &placement, &taskset)
@@ -98,6 +99,7 @@ fn run(setup: &str, options: &Options, placement: &Placement, taskset: &Path) ->
         .arg(placement.program_list())
         .arg(&burst)
         .arg(&calls);
+
     let traced = |engine: &[&str]| {
         let mut command = Command::new(&options.launcher);
         command
@@ -262,6 +264,7 @@ pub fn summarize(runs: &[Run]) -> Vec<Summary> {
 
     let noise = unhindered.iter().copied().fold(f64::NAN, f64::max)
         - unhindered.iter().copied().fold(f64::NAN, f64::min);
+
     SETUPS
         .iter()
         .filter_map(|&setup| {

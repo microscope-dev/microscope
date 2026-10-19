@@ -107,7 +107,6 @@ impl Memory for ProcessMemory {
     }
 }
 
-/// A process's thread group, from `/proc`.
 /// A thread's process, and the process that made it: the same process for
 /// a thread other than the leader.
 fn lineage(tid: u32) -> (Option<u32>, Option<u32>) {
@@ -134,6 +133,7 @@ fn lineage(tid: u32) -> (Option<u32>, Option<u32>) {
     (process, parent)
 }
 
+/// A process's thread group, from `/proc`.
 fn tgid_of(tid: u32) -> Option<u32> {
     let status = std::fs::read_to_string(format!("/proc/{tid}/status")).ok()?;
     status
@@ -440,6 +440,7 @@ impl Tracer<'_> {
             captured,
             chosen,
         });
+
         self.resume(tid, None)
     }
 
@@ -568,6 +569,7 @@ impl Tracer<'_> {
         let mut stacks = stacks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+
         Some(stacks.unwind_live(syscalls::Pid::new(process), tid, &registers))
     }
 
@@ -1070,6 +1072,7 @@ impl Ticker {
                 }
             })
             .map_err(|_| TraceError::System(Errno::EAGAIN))?;
+
         Ok(Self {
             done,
             thread: Some(thread),

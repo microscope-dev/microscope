@@ -126,6 +126,7 @@ fn buffer(lines: &mut Vec<String>, bytes: &[u8], length: usize) {
         }
 
         line.push(' ');
+
         for column in 0..16 {
             line.push(match chunk.get(column) {
                 Some(&byte) if (0x20..0x7f).contains(&byte) => char::from(byte),

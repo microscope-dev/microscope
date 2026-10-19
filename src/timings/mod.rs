@@ -123,6 +123,7 @@ impl Instructions {
 
     fn read(&mut self) -> Option<u64> {
         let counter = self.counter.as_mut()?;
+
         match counter.read_count_and_time() {
             Ok(read) => {
                 if read.time_running < read.time_enabled {
@@ -188,6 +189,7 @@ impl Recording {
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = None;
         let started = Instant::now();
+
         *collected = Some(Collected {
             generation,
             epoch: started,
@@ -339,6 +341,7 @@ fn open_span(name: &'static str, parent: Option<u64>, label: Option<&dyn Fn() ->
     THREAD.with(|thread| {
         let mut thread = thread.borrow_mut();
         let generation = GENERATION.load(Ordering::Relaxed);
+
         let state = match thread.as_mut() {
             Some(state) if state.generation == generation => state,
             _ => {
@@ -440,6 +443,7 @@ fn close_span() {
                 .as_nanos(),
         )
         .unwrap_or(u64::MAX);
+
         state.finished.push(Event {
             name: open.name,
             label: open.label,
@@ -454,6 +458,7 @@ fn close_span() {
             allocations,
             counters: open.counters,
         });
+
         state.open.is_empty()
     });
     if outermost {
@@ -587,6 +592,7 @@ fn process_cpu_ns() -> u64 {
 /// not something a span can subtract.
 fn peak_rss_bytes() -> Option<u64> {
     let usage = nix::sys::resource::getrusage(nix::sys::resource::UsageWho::RUSAGE_SELF).ok()?;
+
     u64::try_from(usage.max_rss())
         .ok()
         .map(|kib| kib.saturating_mul(1024))

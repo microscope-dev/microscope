@@ -66,6 +66,7 @@ pub fn complete<'code>(
         .map_err(|_| super::malformed("too many line rows"))?;
     catalog.functions.append(&mut builder.functions);
     catalog.code_instances.append(&mut builder.instances);
+
     Ok(())
 }
 
@@ -87,6 +88,7 @@ impl Described {
             .collect::<Vec<_>>();
         ranges.sort_unstable();
         let mut merged: Vec<(u64, u64)> = Vec::with_capacity(ranges.len());
+
         for (start, end) in ranges {
             match merged.last_mut() {
                 Some(last) if start <= last.1 => last.1 = last.1.max(end),
@@ -161,6 +163,7 @@ impl Builder<'_, '_> {
             generics: std::sync::Arc::from([]),
             main_subprogram: false,
         });
+
         Ok(id)
     }
 
@@ -184,6 +187,7 @@ impl Builder<'_, '_> {
             ranges: ranges.into(),
             breakpoint_entry,
         });
+
         Ok(id)
     }
 
@@ -255,6 +259,7 @@ impl Builder<'_, '_> {
             Some(entry),
         )?;
         self.add_lines(positions)?;
+
         self.add_inlined_calls(function, inlined, physical)
     }
 
@@ -269,6 +274,7 @@ impl Builder<'_, '_> {
 
         let too_many = |_| super::malformed("too many line rows");
         self.lines.begin_sequence().map_err(too_many)?;
+
         for (pcs, position) in positions {
             let location = self.location(&position.file, position.line);
             let row = self
@@ -295,6 +301,7 @@ impl Builder<'_, '_> {
                 ..Row::default()
             })
             .map_err(too_many)?;
+
         Ok(())
     }
 
@@ -347,9 +354,11 @@ impl Builder<'_, '_> {
 
         // Parents first, so each instance names its parent's.
         let mut pending = entries.keys().copied().collect::<Vec<_>>();
+
         while !pending.is_empty() {
             let before = pending.len();
             let mut deferred = Vec::new();
+
             for index in pending {
                 let (ranges, parent) = &entries[&index];
                 let parent_instance = if *parent < 0 {
@@ -421,6 +430,7 @@ impl Builder<'_, '_> {
         let role = crate::debug_info::roles::go_role(&name, Some(facts), false);
         let id = self.new_function(Arc::clone(&name), declaration, SourceLanguage::Go, role)?;
         self.by_name.insert(name, id);
+
         Ok(id)
     }
 }

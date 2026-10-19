@@ -316,6 +316,7 @@ fn function_disassembly_stops_at_its_instruction_limit() {
             },
         ])
         .expect("fake reads never fail");
+
     assert_eq!(blocks[0].completion, BlockCompletion::Complete);
     assert_eq!(
         blocks[0].instructions.len() + blocks[1].instructions.len(),
@@ -384,6 +385,7 @@ fn instructions_render_in_either_syntax_and_report_encoded_addresses() {
         ),
         (&[0x0f, 0x0b], "ud2", "ud2", ControlFlow::Exception, &[]),
     ];
+
     for (bytes, intel, att, flow, references) in cases {
         for (syntax, text) in [(AssemblySyntax::Intel, intel), (AssemblySyntax::Att, att)] {
             let RawDecode::Instruction {
@@ -436,10 +438,12 @@ fn indirect_target(code: &[u8], registers: Option<&RegisterFile>) -> Option<Indi
     bytes[..code.len()].copy_from_slice(code);
     bytes[0x1000..0x1008].copy_from_slice(&0x1234_5678_9abc_def0_u64.to_le_bytes());
     bytes[0x1008..0x1010].copy_from_slice(&0x1010_u64.to_le_bytes());
+
     let mut source = FakeSource::new(BASE, bytes);
     source.readable[0].end = 0x2014;
     source.stopped = registers.map(|registers| (VirtualAddress::new(BASE), registers.clone()));
     let (_, _, block) = window(&mut source, BASE, 0, 1);
+
     match &block.instructions[0].content {
         InstructionContent::Decoded(decoded) => decoded.indirect_target.as_deref().cloned(),
         other => panic!("{code:x?} did not decode: {other:?}"),
@@ -524,6 +528,7 @@ fn indirect_targets_are_read_from_the_stopped_state() {
         (&[0xe8, 0, 0, 0, 0], None, None), // call 0x1005
         (&[0x90], None, None),
     ];
+
     for (code, away, stopped) in cases {
         assert_eq!(indirect_target(code, None), away, "{code:x?}");
         assert_eq!(

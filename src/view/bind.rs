@@ -710,6 +710,7 @@ pub fn bind<S: Scope>(
     let mut hidden = Vec::new();
     let mut formats = Vec::new();
     let mut visualizers = Vec::new();
+
     for statement in &view.statements {
         match statement {
             Statement::Check(expr) => {
@@ -815,6 +816,7 @@ fn bind_visualizer<S: Scope>(
                 reason: "no renderer has that name".to_owned(),
             })?;
         let mut inputs = Vec::new();
+
         for input in &visualize.inputs {
             let mut path = None;
             let value = match &input.value {
@@ -932,6 +934,7 @@ fn first_alternative<A, T>(
     mut bind: impl FnMut(&A) -> Result<T, String>,
 ) -> Result<T, String> {
     let mut reasons = Vec::new();
+
     for alternative in alternatives {
         match bind(alternative) {
             Ok(bound) => return Ok(bound),
@@ -969,6 +972,7 @@ fn members<S: Scope>(
     };
 
     let mut fields = Vec::new();
+
     for (index, base) in bases.iter().enumerate() {
         let name = scope
             .type_info(base.type_ref)
@@ -1060,6 +1064,7 @@ pub fn check_extension<St>(
 ) -> Result<(), Rejection> {
     let mut named = base.named_programs();
     named.extend(extension.named_programs());
+
     check_against(extension, &named, &presented(&base.shape, self_type), types)
 }
 
@@ -1283,6 +1288,7 @@ fn conjuncts(expr: &Expr) -> Vec<Expr> {
     };
 
     let mut texts = Vec::new();
+
     split(tree, tree.root(), expr.expression.text(), &mut texts);
     let parsed = texts
         .iter()
@@ -1328,6 +1334,7 @@ fn bind_check<S: Scope>(
 
         Some([side(*left)?, side(*right)?])
     });
+
     Ok(BoundCheck {
         text: expr.text().to_owned(),
         program,
@@ -1502,6 +1509,7 @@ fn bind_scan<S: Scope>(
     };
 
     let mut bound = Vec::new();
+
     for clause in clauses {
         match bind_clause(clause, scope) {
             Ok(clause) => bound.push(clause),
@@ -1589,6 +1597,7 @@ fn bind_clause<S: Scope>(
     }
 
     let mut items = Vec::new();
+
     for item in &clause.items {
         items.push(match item {
             Item::Filter(filter) => BoundItem::Filter(bind_condition_part(filter, scope)?),
@@ -1746,6 +1755,7 @@ fn resolve_type<S: Scope>(
                 .type_info(of)
                 .map(|info| Arc::clone(&info.name))
                 .ok_or_else(|| "the type is malformed".to_owned())?;
+
             for separator in [".", "::"] {
                 let full = format!("{outer}{separator}{name}");
                 match scope.lookup_type(&TypeQuery {
@@ -1807,6 +1817,7 @@ fn construct<S: Scope>(name: &str, scope: &ViewScope<'_, S>) -> Result<TypeRefer
     }
 
     let mut found = Vec::<TypeReference>::new();
+
     for candidate in candidates(&pattern, scope) {
         let Some(identity) = scope
             .type_info(candidate)

@@ -292,6 +292,7 @@ impl Image {
         };
 
         registers.general[RSP] = stack_pointer;
+
         (space, registers)
     }
 
@@ -363,16 +364,19 @@ impl Image {
             AT_NULL,
             0,
         ]);
+
         let size = words.len() as u64 * 8;
         let stack_pointer = (top - size) & !15;
         let bytes = words
             .iter()
             .flat_map(|word| word.to_le_bytes())
             .collect::<Vec<_>>();
+
         assert!(
             space.write(stack_pointer, &bytes).is_ok(),
             "the stack is writable"
         );
+
         stack_pointer
     }
 }
@@ -400,6 +404,7 @@ fn prepare_segment(
     let offset = file_offset & !(PAGE_SIZE - 1);
     let file_end = address + file_size;
     let mut pages = Vec::new();
+
     for page_address in (start..end).step_by(PAGE_BYTES) {
         let mut page = [0; PAGE_BYTES];
         if file_size > 0 && page_address < file_end {
@@ -454,6 +459,7 @@ mod tests {
         let count = u16::try_from(loads.len()).expect("a few headers");
         header[56..58].copy_from_slice(&count.to_le_bytes());
         header[58..60].copy_from_slice(&64_u16.to_le_bytes());
+
         for &(offset, address, file_size, memory_size, flags) in loads {
             header.extend(object::elf::PT_LOAD.to_le_bytes());
             header.extend(flags.to_le_bytes());
@@ -481,6 +487,7 @@ mod tests {
                 (0x200, 0x40_0200, 0x10, 0x20, RW),
             ],
         );
+
         let result = Image::new("/shared", 1, &data);
         assert!(
             matches!(&result, Err(LoadError::Unsupported(why)) if why.contains("share a page")),
@@ -506,9 +513,11 @@ mod tests {
                 (0x3010, 0x40_4010, 0, 0x20, RW),
             ],
         );
+
         let image = Image::new("/tails", 1, &data).expect("an executable");
         let (space, _) = image.load(&[], [0; 16]);
         let byte = |address| space.peek_bytes(address, 1).expect("mapped")[0];
+
         assert_eq!(byte(0x40_100f), 0xaa);
         assert_eq!(
             byte(0x40_1010),

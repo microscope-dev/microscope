@@ -34,6 +34,7 @@ const _: () = {
         ascending(entries::X32),
         "the x32 entry table is out of order"
     );
+
     let mut index = 1;
     while index < entries::X86_32.len() {
         assert!(
@@ -47,6 +48,7 @@ const _: () = {
 /// Whether a table's numbers strictly ascend.
 const fn ascending(table: &[(u32, &str)]) -> bool {
     let mut index = 1;
+
     while index < table.len() {
         if table[index - 1].0 >= table[index].0 {
             return false;
@@ -169,6 +171,7 @@ mod tests {
         }
 
         let function = |abi, name| SyscallId::named(abi, name).and_then(SyscallId::kernel_function);
+
         assert_eq!(
             function(Abi::X86_64, "fstat").as_deref(),
             Some("__x64_sys_newfstat")

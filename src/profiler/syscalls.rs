@@ -44,6 +44,7 @@ impl RecordedSyscalls {
     #[must_use]
     pub fn stats(&self) -> Folded {
         let mut folded = self.counted.clone();
+
         for event in &self.events {
             if let TraceEvent::Call(call) = &event.event {
                 folded.add(call);
@@ -141,6 +142,7 @@ impl Profile {
         let stack = |row: u32| (row != NONE).then_some(row);
         let mut events = Vec::with_capacity(capture.syscalls.len() + capture.syscall_notes.len());
         let mut notes = capture.syscall_notes.iter().peekable();
+
         for (index, call) in capture.syscalls.iter().enumerate() {
             while let Some(note) = notes.next_if(|note| note.calls.get() as usize <= index) {
                 events.push(self.note(note, &ids, &pid, &blob));
@@ -194,6 +196,7 @@ impl Profile {
     fn kernel_counted(&self, pid: &impl Fn(u32) -> Pid) -> Folded {
         let capture = &self.capture;
         let mut counted = Folded::default();
+
         for row in &capture.syscall_stats {
             let start = row.errnos.get() as usize;
             let errnos = &capture.syscall_errnos[start..start + row.errno_count.get() as usize];
@@ -365,6 +368,7 @@ impl Profile {
                 line: line.number.get(),
             })
         };
+
         capture
             .stack_frames(row)
             .filter(interpreted)
@@ -495,11 +499,13 @@ mod tests {
     #[test]
     fn a_trace_reads_back_from_its_file_as_it_was_reported() {
         let mut recorder = SyscallCapture::new(None);
+
         for event in trace() {
             recorder.event(&event);
         }
 
         let mut counted = Folded::default();
+
         for event in trace() {
             if let TraceEvent::Call(call) = event {
                 counted.add(&call);
@@ -533,6 +539,7 @@ mod tests {
     #[test]
     fn samples_and_calls_of_one_thread_merge_into_its_one_row() {
         let mut samples = crate::capture::builder::CaptureBuilder::new();
+
         for (tid, start) in [(10, 50), (11, 205)] {
             let thread = samples.thread(Pid::new(10), Tid::new(tid), start);
             samples.sample(thread, start + 1, 1, NONE, NONE);
@@ -540,6 +547,7 @@ mod tests {
 
         samples.process_exit(Pid::new(10), 400);
         let mut recorder = SyscallCapture::new(None);
+
         for event in trace() {
             recorder.event(&event);
         }

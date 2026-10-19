@@ -45,6 +45,7 @@ pub fn is_script_filename(filename: &str) -> bool {
     };
     let digits =
         |text: &str, digit: fn(&u8) -> bool| !text.is_empty() && text.as_bytes().iter().all(digit);
+
     directory
         .strip_prefix(SCRIPT_DIRECTORY_PREFIX)
         .is_some_and(|random| {
@@ -137,6 +138,7 @@ pub fn script(
         || Ok("None".to_owned()),
         |step| serde_json::to_string(&step),
     )?;
+
     Ok(format!(
         "__microscope_library = {library}\n\
          __microscope_generation = {generation}\n\

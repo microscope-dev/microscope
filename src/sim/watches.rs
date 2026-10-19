@@ -245,6 +245,7 @@ fn judge_hit(
 /// Returns whether one counted a hit that did not stop.
 fn judge_counts(stop: &Stop<'_>, stopped: &BTreeMap<u64, BTreeSet<u64>>) -> Result<bool, String> {
     let mut declined = false;
+
     for intent in stop.intents {
         let id = intent.id;
         let (counted_before, counted) = (count_of(stop.last_counts, id), count_of(stop.counts, id));
@@ -339,6 +340,7 @@ mod tests {
                 current_value: None,
             })
             .collect::<Arc<[_]>>();
+
         StateSnapshot {
             revision: 1,
             inferior: InferiorState::NotRunning,

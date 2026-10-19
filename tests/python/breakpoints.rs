@@ -143,6 +143,7 @@ impl Run {
         let requests = PLANTED.iter().map(|planted| planted.request()).collect();
         let (mut session, reason, events) =
             PythonSession::launch_to_stop(build, "breakpoints.py", &[], requests).await;
+
         let snapshot = session.scenario.snapshot().await;
         let mut ids: Vec<_> = snapshot
             .breakpoints
@@ -151,6 +152,7 @@ impl Run {
             .collect();
         ids.sort_unstable();
         assert_eq!(ids.len(), PLANTED.len(), "{}", session.context());
+
         let mut run = Self {
             session,
             ids,
@@ -203,6 +205,7 @@ impl Run {
                 self.session.output()
             );
         };
+
         let mut actual: Vec<_> = hits
             .iter()
             .map(|hit| (hit.breakpoint, hit.hit_count))
@@ -227,14 +230,17 @@ impl Run {
         let scenario = &mut self.session.scenario;
         let snapshot = scenario.snapshot().await;
         let id = snapshot.selected_frame.expect("a selected frame");
+
         let trace = scenario
             .operation("backtrace", scenario.handle().backtrace())
             .await;
+
         let index = trace
             .frames
             .iter()
             .position(|frame| frame.id == id)
             .expect("the selected frame is in the backtrace");
+
         (trace.frames[index].clone(), trace.frames[..index].to_vec())
     }
 
@@ -249,6 +255,7 @@ impl Run {
             .as_ref()
             .unwrap_or_else(|| panic!("{context}: the selected frame is not Python's: {frame:?}"));
         assert_eq!(&*recorded.function, function, "{context}: {frame:?}");
+
         if let Some(line) = line {
             assert_eq!(
                 recorded.place.as_ref().map(|place| u64::from(place.line)),
@@ -256,6 +263,7 @@ impl Run {
                 "{context}: {frame:?}"
             );
         }
+
         assert_eq!(frame.role, CodeRole::Ordinary, "{context}");
         assert!(
             inner.iter().any(|hidden| hidden
@@ -265,6 +273,7 @@ impl Run {
                 .is_some_and(|place| crate::agent::agent_source::is_agent_filename(&place.path))),
             "{context}: the agent's frames that reported the hit are in the stack: {inner:?}"
         );
+
         for hidden in inner {
             assert_eq!(
                 hidden.role,
@@ -340,6 +349,7 @@ async fn every_kind_of_breakpoint(build: &str) {
     run.assert_hits(&reason, &[(Planted::EverySecond, 2)]);
     run.assert_frame("count", main("TICK_LINE")).await;
     assert_eq!(run.integer("tick").await, 1, "{context}");
+
     let reason = run.resume().await;
     run.assert_hits(&reason, &[(Planted::EverySecond, 4)]);
     assert_eq!(run.integer("tick").await, 3, "{context}");
@@ -423,6 +433,7 @@ async fn every_kind_of_breakpoint(build: &str) {
             "{context}: the unreadable value is reported: {parts:?}"
         );
     }
+
     assert_eq!(run.failed.len(), 1, "{context}: {:?}", run.failed);
     run.session.shutdown().await;
 }

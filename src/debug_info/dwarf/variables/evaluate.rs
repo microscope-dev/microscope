@@ -308,6 +308,7 @@ pub(super) fn evaluate_with_object<'expression>(
     // hang the controller thread.
     evaluation.set_max_iterations(MAX_EVALUATION_ITERATIONS);
     let mut result = evaluation_step(evaluation.evaluate())?;
+
     loop {
         result = match result {
             EvaluationResult::Complete => return Ok(evaluation.result()),
@@ -662,6 +663,7 @@ fn narrowed_constant(value: u128, size: usize) -> u128 {
     let pattern = value & ((1_u128 << bits) - 1);
     let negative = pattern >> (bits - 1) == 1;
     let extended = pattern | (u128::from(u64::MAX) & !((1_u128 << bits) - 1));
+
     if negative && value == extended {
         pattern
     } else {

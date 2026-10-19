@@ -351,6 +351,7 @@ impl<P: InspectionOps> Controller<P> {
             budget,
         )?;
         variable.global = Some(global);
+
         Ok(variable)
     }
 
@@ -473,9 +474,11 @@ impl<P: InspectionOps> Controller<P> {
         let mut value = module
             .variables
             .dereference(reference, &mut runtime, &mut budget)?;
+
         let scope = self.frame_for(inferior, reference.stop_id, &root, &frame);
         let mut machine = StopMachine::new(&scope, &mut budget, true);
         machine.present_state(Some(value.type_info.clone()), &mut value.state)?;
+
         value.completion = budget.completion();
         value.usage = budget.usage();
         Ok(value)
@@ -530,9 +533,11 @@ impl<P: InspectionOps> Controller<P> {
             &mut runtime,
             budget,
         )?;
+
         let scope = self.frame_for(inferior, reference.stop_id, &root, &frame);
         let mut machine = StopMachine::new(&scope, budget, true);
         let mut children = page.children.to_vec();
+
         for child in &mut children {
             // A base-class subobject is part of an object, not one of the
             // type it dynamically is.
@@ -543,6 +548,7 @@ impl<P: InspectionOps> Controller<P> {
         page.children = children.into();
         page.completion = budget.completion();
         page.usage = budget.usage();
+
         Ok(page)
     }
 
@@ -576,6 +582,7 @@ impl<P: InspectionOps> Controller<P> {
                     })
             })
             .collect::<Vec<_>>();
+
         matches.sort_by(|left, right| {
             left.variable
                 .qualified_name
@@ -583,6 +590,7 @@ impl<P: InspectionOps> Controller<P> {
                 .then_with(|| left.image.cmp(&right.image))
                 .then_with(|| left.variable.id.cmp(&right.variable.id))
         });
+
         let total = matches.len() as u64;
         let start = usize::try_from(query.offset)
             .unwrap_or(usize::MAX)
@@ -591,6 +599,7 @@ impl<P: InspectionOps> Controller<P> {
             .saturating_add(query.limit as usize)
             .min(matches.len());
         let variables = matches[start..end].to_vec().into();
+
         Ok(GlobalVariablePage {
             revision: self.revision,
             offset: query.offset,
@@ -738,6 +747,7 @@ impl<P: InspectionOps> VariableRuntime for LinuxVariableRuntime<'_, P> {
             .ok_or(VariableUnavailableReason::TlsUnavailable(
                 TlsUnavailableReason::NoThread,
             ))?;
+
         self.ptrace
             .tls_address(thread, module, offset)
             .map_err(|reason| {
@@ -789,6 +799,7 @@ impl<P: InspectionOps> VariableRuntime for LinuxVariableRuntime<'_, P> {
                 }
                 error => VariableRuntimeError::Fatal(error.to_string().into()),
             })?;
+
         match read.completion {
             MemoryReadCompletion::Complete => Ok(Arc::from(read.bytes)),
             MemoryReadCompletion::Incomplete { next_address, .. } => Err(
@@ -813,6 +824,7 @@ impl<P: InspectionOps> VariableRuntime for LinuxVariableRuntime<'_, P> {
             .ok_or(VariableRuntimeError::Unavailable(
                 VariableUnavailableReason::EntryValue(crate::EntryValueUnavailableReason::NoCaller),
             ))?;
+
         callers.entry_value(self.frame, self.loaded_module.id, parameter, budget)
     }
 }

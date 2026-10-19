@@ -113,6 +113,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 })
             })
             .collect::<BTreeMap<_, _>>();
+
         let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
         let stale = inferior
             .runtime_hooks
@@ -134,6 +135,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let pid = inferior.memory_thread();
+
         for (address, site) in wanted {
             if inferior.runtime_hooks.contains_key(&address) {
                 continue;
@@ -184,6 +186,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     ) -> Option<StopReason> {
         let inferior = self.inferior.as_ref()?;
         let site = *inferior.runtime_hooks.get(&address)?;
+
         match site.purpose {
             HookPurpose::Exception(hook) => {
                 let kind = hook.filter.kind;
@@ -213,6 +216,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 let event = self.read_hook(pid, site.runtime, |model, stop, registers| {
                     model.hook_event(stop, hook, registers)
                 });
+
                 match event {
                     Ok(HookEvent::Continue) => None,
                     Ok(HookEvent::AgentEntry) => self
@@ -279,6 +283,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let inferior = self.inferior.as_ref()?;
         self.agent_hook(pid)?;
         let trace = self.backtrace(stop_id, &StackRoot::of_thread(pid)).ok()?;
+
         self.blamed_frame(inferior, &trace)
     }
 
@@ -314,6 +319,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return None;
         }
         let hits = self.judge_hits(pid, &owners, None);
+
         (!hits.is_empty()).then_some(StopReason::Breakpoint {
             address: None,
             hits,
@@ -346,6 +352,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .registers(pid)
             .map_err(|error| Arc::<str>::from(error.to_string()))?;
         let registers = x86_64_registers(&registers);
+
         self.with_runtime_stop(inferior, &runtime, pid, |stop| {
             read(runtime.model.as_ref(), stop, &registers)
         })
@@ -365,6 +372,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let Ok(trace) = self.backtrace(stop_id, &StackRoot::of_thread(pid)) else {
             return;
         };
+
         let Some(id) = trace
             .frames
             .iter()
@@ -373,6 +381,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         else {
             return;
         };
+
         if let Some(stop) = self
             .inferior
             .as_mut()

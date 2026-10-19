@@ -193,6 +193,7 @@ fn resolve(process: &Process, dirfd: i64, path: &str) -> String {
     };
 
     let mut joined = base.trim_end_matches('/').to_owned();
+
     for part in path
         .split('/')
         .filter(|part| !part.is_empty() && *part != ".")
@@ -296,6 +297,7 @@ impl FdTable {
             .map(|process| std::mem::take(&mut process.fresh))
             .unwrap_or_default();
         self.call(call);
+
         if let Some(process) = self.processes.get_mut(&call.process) {
             for (fd, (read, _)) in fresh {
                 let Some(made) = process.fds.get_mut(&fd) else {
@@ -518,6 +520,7 @@ impl FdTable {
             "dup" | "dup2" | "dup3" => {
                 let copy = process.fds.get(&fd(a[0])).cloned();
                 let cloexec = name == "dup3" && a[2] & O_CLOEXEC != 0;
+
                 match copy {
                     Some(description) => {
                         process.fds.insert(

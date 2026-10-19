@@ -104,6 +104,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 returning: false,
             };
             inferior.runtime_step = Some((runtime, step));
+
             // An agent has begun the step once it has been sent it.
             if let Err(reason) = controller.arm_runtime(runtime)
                 && !controller.agent_step_sent(runtime)
@@ -130,6 +131,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 },
                 exception,
             );
+
             if begun.is_err() {
                 controller.disarm_runtime_step(runtime);
             }
@@ -206,9 +208,11 @@ impl<P: LinuxTraceOps> Controller<P> {
             record!("the step into {target} leaves it to the runtime");
             return;
         };
+
         let Some(inferior) = self.inferior.as_mut() else {
             return;
         };
+
         if let Err(error) = install_plan_breakpoint(&self.ptrace, inferior, destination, execution)
         {
             record!("the step into {target} cannot trap at {destination}: {error}");
@@ -230,10 +234,12 @@ impl<P: LinuxTraceOps> Controller<P> {
             .find(|bound| bound.id == runtime)?
             .module
             .id;
+
         let (module, image, address) = self.holding(inferior, target)?;
         if module.id == own {
             return None;
         }
+
         let instance = image.locate(address).physical_instance?;
         let entry = image.recommended_entries_for_instance(instance).next()?;
         module.virtual_address(entry.address).ok()
@@ -280,10 +286,12 @@ impl<P: LinuxTraceOps> Controller<P> {
         if !activation.has_returned(self.stack_position(pid, &registers)) {
             return Ok(false);
         }
+
         let Some((module, _, _)) = self.holding(inferior, VirtualAddress::new(registers.rip))
         else {
             return Ok(false);
         };
+
         Ok(self
             .runtimes(inferior)
             .iter()
@@ -366,6 +374,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     returning: true,
                 },
             ));
+
             if let Err(reason) = controller.arm_runtime(runtime)
                 && !controller.agent_step_sent(runtime)
             {
@@ -373,6 +382,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 controller.disarm_runtime_step(runtime);
                 return;
             }
+
             if let Some(active) = controller
                 .inferior
                 .as_mut()

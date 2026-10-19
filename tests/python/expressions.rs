@@ -438,6 +438,7 @@ async fn each_expression_gives_what_cpython_gave_in_the_frame() {
             scenario: &session.scenario,
             context: session.context(),
         };
+
         let at = stop.frame(printer, "values").await;
         let mut lies = Vec::new();
         for case in CASES {
@@ -575,6 +576,7 @@ fn the_comparison_fails_on_the_lies_it_looks_for() {
         ("x".to_owned(), "3".to_owned()),
         ("y".to_owned(), "4".to_owned()),
     ];
+
     check_attributes(&shown, &[("x", "3"), ("y", "4")]).expect("the truth holds");
     assert!(
         check_attributes(&shown, &[("x", "3"), ("y", "5")]).is_err(),

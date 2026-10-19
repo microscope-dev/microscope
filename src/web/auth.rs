@@ -90,6 +90,7 @@ pub fn set_cookie(port: u16, token: &str, public: Option<&PublicUrl>) -> String 
             if public.https { "; Secure" } else { "" },
         )
     });
+
     format!(
         "{}={token}; Path={path}; HttpOnly; SameSite=Strict{secure}",
         cookie_name(port)
@@ -239,6 +240,7 @@ impl Origins {
             .public
             .as_ref()
             .is_some_and(|public| public.host == host && public.origin() == origin);
+
         proxied
             || origin
                 .strip_prefix("http://")

@@ -30,6 +30,7 @@ fn fixtures_were_built_from_this_checkout() {
     // Each output's stamp, and each tokio variant's target directory's.
     let mut stamps = Vec::new();
     let mut directories = vec![root.join("build/test-programs")];
+
     while let Some(directory) = directories.pop() {
         for path in listed(&directory) {
             if path.is_dir() {
@@ -57,6 +58,7 @@ fn fixtures_were_built_from_this_checkout() {
                 .map_or(true, |text| !text.lines().any(|line| line == checkout))
         })
         .collect::<Vec<_>>();
+
     assert!(
         foreign.is_empty(),
         "{} of {}: {foreign:?}",
@@ -308,6 +310,7 @@ async fn check_frame_truth(scenario: &mut Scenario, variant: &str, argc: i128) {
         assert_eq!(Some(location.address), frame.instruction, "{context}");
         assert_eq!(location.image.function, frame.function, "{context}");
         assert_eq!(location.image.source, frame.source, "{context}");
+
         if let Some(line) = call_line(function, recursion) {
             let source = frame
                 .source
@@ -381,6 +384,7 @@ async fn check_unsaved_register(scenario: &mut Scenario) {
     let registers = scenario
         .operation("registers", scenario.handle().registers())
         .await;
+
     let rdi = registers
         .registers
         .iter()
@@ -402,6 +406,7 @@ async fn caller_frames_show_their_own_values_live_across_the_compiler_matrix() {
             scenario.run_to_stop().await,
             StopReason::Breakpoint { .. }
         ));
+
         check_frame_truth(&mut scenario, variant, 1).await;
         if variant == "clang-o2" {
             check_unsaved_register(&mut scenario).await;
@@ -426,6 +431,7 @@ async fn go_caller_frames_refuse_registers_go_callees_overwrite() {
         matches!(reason, StopReason::Breakpoint { .. }),
         "{reason:?}"
     );
+
     assert_eq!(integer_variable(&scenario, "y").await, 2000);
 
     let frames = backtrace(&scenario).await;
@@ -517,6 +523,7 @@ fn parse_oracle(path: &Path) -> BTreeMap<u64, Vec<OracleFrame>> {
     assert_eq!(lines.next(), Some("microscope-frame-variables-oracle-v2"));
     let mut threads: BTreeMap<u64, Vec<OracleFrame>> = BTreeMap::new();
     let mut thread = None;
+
     for line in lines {
         let fields = line.split('\t').collect::<Vec<_>>();
         match fields.as_slice() {
@@ -671,6 +678,7 @@ async fn compare_frame(
         }
 
         seen.push(name.clone());
+
         let variable = scenario
             .operation(name, scenario.handle().variable(name.clone()))
             .await;
@@ -789,6 +797,7 @@ async fn every_frame_of_every_dumped_thread_agrees_with_gdb() {
                     scenario.handle().select_context(ThreadId::new(*tid)),
                 )
                 .await;
+
             let ours = backtrace(&scenario).await;
             for frame in frames {
                 let context = format!("{core} thread {tid} frame {}", frame.level);
@@ -871,6 +880,7 @@ async fn frame_selection_lasts_until_the_next_stop() {
     let frames = backtrace(&scenario).await;
     let recursion = level_of(&frames, "frames_recurse", 0);
     select(&mut scenario, recursion).await;
+
     let selected = scenario.snapshot().await;
     assert!(
         selected.revision > snapshot.revision,
@@ -989,6 +999,7 @@ async fn explicit_contexts_inspect_any_frame_without_selecting_it() {
             .frames[..],
         frames[..]
     );
+
     let source = scenario.operation("source", view.source_context(0)).await;
     assert_eq!(
         source.line.get(),
@@ -1070,6 +1081,7 @@ async fn each_thread_keeps_its_own_selected_frame() {
         Some(StackFrameId::INNERMOST),
         "another thread starts at its innermost frame"
     );
+
     let worker_frames = backtrace(&scenario).await;
     select(&mut scenario, level_of(&worker_frames, "worker_main", 0)).await;
     assert!(matches!(
@@ -1083,6 +1095,7 @@ async fn each_thread_keeps_its_own_selected_frame() {
             scenario.handle().select_context(crashing),
         )
         .await;
+
     let snapshot = scenario.snapshot().await;
     assert_eq!(snapshot.selected_frame.map(StackFrameId::get), Some(1));
 
@@ -1153,6 +1166,7 @@ async fn value_capabilities_evaluate_in_the_frame_that_produced_them() {
                 .value_children(reference, ValueChildQuery::default()),
         )
         .await;
+
     let values = members
         .children
         .iter()
@@ -1183,6 +1197,7 @@ async fn finish_runs_until_the_selected_frame_returns() {
             },
             "{variant}"
         );
+
         let after = backtrace(&scenario).await;
         assert_eq!(
             function_name(&after[0]),
@@ -1217,6 +1232,7 @@ async fn finish_runs_until_the_selected_frame_returns() {
     let mut scenario = stop_in_leaf("gcc-o0").await;
     let frames = backtrace(&scenario).await;
     select(&mut scenario, level_of(&frames, "frames_keep", 0)).await;
+
     assert_eq!(
         scenario.step_to_stop(StepKind::Out).await,
         StopReason::Step {
@@ -1343,6 +1359,7 @@ async fn stepping_from_a_selected_outer_frame_is_explicit() {
             kind: StepKind::OverSource
         }
     );
+
     let after = backtrace(&scenario).await;
     assert_eq!(function_name(&after[0]), Some("frames_leaf"));
     assert_eq!(
@@ -1413,6 +1430,7 @@ async fn a_caller_frames_local_can_be_watched_until_its_activation_ends() {
     assert!(inner.address() < target.address());
     assert!(inner_activation < activation);
     assert!(target.address() > inner_activation);
+
     select(&mut scenario, depth_one).await;
     let watchpoint = scenario
         .operation(
@@ -1442,6 +1460,7 @@ async fn a_caller_frames_local_can_be_watched_until_its_activation_ends() {
     scenario
         .add_source_breakpoint("frames.c", frames_line("frames_sink = total;"))
         .await;
+
     let mut events = scenario.handle().subscribe();
     let reason = match scenario.resume_to_stop().await {
         StopReason::WatchpointInvalidated { invalidated } => {
@@ -1534,11 +1553,13 @@ async fn shared_library_and_c_library_caller_frames_are_selectable() {
         StopReason::Breakpoint { .. }
     ));
     assert_eq!(integer_variable(&scenario, "value").await, 42);
+
     let frames = backtrace(&scenario).await;
     let library = level_of(&frames, "dso_apply", 0);
     select(&mut scenario, library).await;
     assert_eq!(integer_variable(&scenario, "value").await, 41);
     assert_eq!(integer_variable(&scenario, "adjusted").await, 42);
+
     let callback = integer_variable(&scenario, "callback").await;
     let module_callback = scenario
         .operation(
@@ -1547,11 +1568,13 @@ async fn shared_library_and_c_library_caller_frames_are_selectable() {
         )
         .await;
     assert_eq!(callback, i128::from(module_callback.get()));
+
     let location = scenario
         .operation("location", scenario.handle().current_location())
         .await;
     assert_eq!(Some(location.module), frames[library].module);
     assert_ne!(location.module, frames[0].module.expect("main module"));
+
     let source = scenario
         .operation("source", scenario.handle().source_context(0))
         .await;
@@ -1589,9 +1612,11 @@ async fn revealing_an_inline_frame_without_running_selects_the_innermost_frame()
             kind: StepKind::IntoSource
         }
     );
+
     let snapshot = scenario.snapshot().await;
     assert_ne!(snapshot.stop_id, stop);
     assert_eq!(snapshot.selected_frame, Some(StackFrameId::INNERMOST));
+
     let location = scenario
         .operation("location", scenario.handle().current_location())
         .await;

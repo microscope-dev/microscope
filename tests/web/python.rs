@@ -42,6 +42,7 @@ async fn opens_on(tab: &mut Client, state: &Value, function: &str, line: usize) 
     let selected = &trace["frames"][index];
     assert_eq!(selected["name"], function, "{trace}");
     assert_eq!(selected["kind"], "interpreted", "{trace}");
+
     // The interpreter holds the frame, which no machine state describes:
     // that is how such a frame is, not a failure.
     let (kind, message) = tab
@@ -52,12 +53,14 @@ async fn opens_on(tab: &mut Client, state: &Value, function: &str, line: usize) 
         .await
         .expect_err("an interpreted frame's registers");
     assert_eq!(kind, "unsupported", "{message}");
+
     let fold = &trace["folds"][0];
     assert_eq!(
         (&fold["first"], &fold["count"]),
         (&json!(0), &json!(frame)),
         "the frames inside the program's fold: {trace}"
     );
+
     stop
 }
 
@@ -125,6 +128,7 @@ async fn a_python_breakpoint_waits_for_its_code_and_stops_open_on_the_program() 
         })
         .await;
     assert_eq!(stepped["inferior"]["reason"]["kind"], "step", "{stepped}");
+
     let stop = opens_on(&mut tab, &stepped, "area", area + 1).await;
 
     // Python's exceptions stop only once chosen, which the console's
@@ -149,6 +153,7 @@ async fn a_python_breakpoint_waits_for_its_code_and_stops_open_on_the_program() 
         .await
         .expect_err("a filter no runtime has");
     assert_eq!(kind, "invalid");
+
     let settings = stepped["settings"].clone();
     tab.ok("setException", json!({"id": "python-raised", "on": true}))
         .await;
@@ -194,6 +199,7 @@ async fn python_frames_give_their_functions_first_lines_and_sources() {
         .position(|line| line.starts_with("@contextmanager"))
         .expect("the function")
         + 1;
+
     let interpreter = python::interpreter("3.14");
     let web = Web::start(
         "python-frames",
@@ -234,6 +240,7 @@ async fn python_frames_give_their_functions_first_lines_and_sources() {
                 .is_some_and(|path| path.ends_with("/contextlib.py"))
         })
         .unwrap_or_else(|| panic!("contextlib's frame: {trace}"));
+
     let source = tab
         .ok("source", json!({"path": caller["source"]["path"]}))
         .await;
@@ -257,6 +264,7 @@ async fn a_tasks_frames_fold_the_machinery_that_steps_it() {
         .position(|line| line.ends_with("# TASK_END"))
         .expect("a marked line")
         + 1;
+
     let interpreter = python::interpreter("3.14");
     let web = Web::start(
         "python-task",
@@ -289,6 +297,7 @@ async fn a_tasks_frames_fold_the_machinery_that_steps_it() {
     let caller = (task + 1..frames.len())
         .find(|&index| frames[index]["kind"] == "interpreted")
         .unwrap_or_else(|| panic!("the event loop's frames: {trace}"));
+
     let folded = |index: usize| {
         trace["folds"].as_array().is_some_and(|folds| {
             folds.iter().any(|fold| {
@@ -298,6 +307,7 @@ async fn a_tasks_frames_fold_the_machinery_that_steps_it() {
             })
         })
     };
+
     let shown = (task + 1..caller)
         .filter(|&index| !folded(index))
         .map(|index| frames[index]["name"].clone())
@@ -333,6 +343,7 @@ async fn a_python_programs_own_files_are_listed_and_read_before_it_runs() {
         .filter_map(Value::as_str)
         .collect::<Vec<_>>();
     let named = |name: &str| directory.join(name).display().to_string();
+
     for listed in [
         named("uat.py"),
         named("page.py"),
@@ -354,6 +365,7 @@ async fn a_python_programs_own_files_are_listed_and_read_before_it_runs() {
             .is_some_and(|text| text.contains("def stocked(")),
         "{page}"
     );
+
     for refused in [
         "/etc/passwd".to_owned(),
         named("../../../src/runtime_model/python/agent.py"),

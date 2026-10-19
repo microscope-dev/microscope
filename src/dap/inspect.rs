@@ -44,6 +44,7 @@ fn thread_name(
     let detail = stopped
         .map(|detail| format!(" — {detail}"))
         .unwrap_or_default();
+
     Ok(snapshot
         .threads
         .iter()
@@ -74,6 +75,7 @@ impl Session {
         };
 
         let mut threads = Vec::new();
+
         if let Some(snapshot) = &snapshot {
             for thread in snapshot.threads.iter() {
                 // A thread the stop found stopped for a reason of its own,
@@ -108,6 +110,7 @@ impl Session {
                 )
             },
         );
+
         Ok(json!({"threads": [{"id": 1, "name": name}]}))
     }
 
@@ -255,6 +258,7 @@ impl Session {
             .thread
             .map(|thread| format!(" (thread {thread})"))
             .unwrap_or_default();
+
         format!("[{}] {place}{detail}{labels}{thread}", task.id.number)
     }
 
@@ -291,6 +295,7 @@ impl Session {
         let mut entries = Vec::with_capacity(trace.frames.len() + 2);
         let mut segment = None;
         let iterators = trace.loop_iterators();
+
         for (frame, iterates) in trace.frames.iter().zip(iterators) {
             if switches && segment != Some(frame.segment) {
                 segment = Some(frame.segment);
@@ -326,6 +331,7 @@ impl Session {
             .unwrap_or(usize::MAX);
         let format = arguments.format.unwrap_or_default();
         let mut frames = Vec::new();
+
         for entry in entries.into_iter().skip(start).take(levels) {
             let (frame, iterates) = match entry {
                 Ok(entry) => entry,
@@ -403,6 +409,7 @@ impl Session {
         };
 
         let mut name = crate::present::frames::name(frame, image.as_deref());
+
         match frame.kind {
             microscope::FrameKind::Inline => name.push_str(" [inlined]"),
             microscope::FrameKind::TailCall => name.push_str(" [tail call]"),
@@ -419,6 +426,7 @@ impl Session {
             "line": 0,
             "column": 0,
         });
+
         if let Some(address) = frame.instruction {
             body["instructionPointerReference"] = format!("{address:#x}").into();
         }
@@ -459,11 +467,13 @@ impl Session {
         context: StopContext,
     ) {
         let mut name = body["name"].as_str().unwrap_or_default().to_owned();
+
         if format.parameters == Some(true) {
             let names = format.parameter_names.unwrap_or(true);
             let types = format.parameter_types.unwrap_or(false);
             let values = format.parameter_values.unwrap_or(true);
             let hex = format.hex.unwrap_or(self.display.hex);
+
             let parameters = self.frame_variables(context).await.map_or_else(
                 |_| Vec::new(),
                 |snapshot| {
@@ -523,6 +533,7 @@ impl Session {
         let arguments = parse::<ScopesArguments>(arguments, "scopes arguments")?;
         let context = self.frame_context(arguments.frame_id)?;
         let mut scopes = Vec::new();
+
         match self.frame_variables(context).await {
             Ok(snapshot) => {
                 let count = |kind| {
@@ -731,6 +742,7 @@ impl Session {
             } => presenter.range(context, &expression, window).await,
         }
         .map_err(list_error)?;
+
         self.present_all(listed, context, options)
     }
 
@@ -753,6 +765,7 @@ impl Session {
         let listed = presenter(&handle, &code, options)
             .scope(context, &snapshot, kind, module, window)
             .await;
+
         self.present_all(listed, context, options)
     }
 
@@ -797,6 +810,7 @@ impl Session {
         let handle = self.target_handle()?;
         let code = self.code();
         let row = presenter(&handle, &code, options).row(item, context);
+
         Ok(values::variable(
             row,
             context,
@@ -916,6 +930,7 @@ impl Session {
         body.remove("evaluateName");
         let value = body.remove("value").unwrap_or_default();
         body.insert("result".to_owned(), value);
+
         Ok(Value::Object(body))
     }
 
@@ -998,6 +1013,7 @@ impl Session {
             "source": super::sources::source_json(&path),
             "line": self.line_to_client(location.line.get()),
         });
+
         if let Some(column) = location.column {
             body["column"] = self.column_to_client(column.get()).into();
         }
@@ -1127,6 +1143,7 @@ impl Session {
         let parsed = microscope::Expression::parse(expression)
             .map_err(|failure| error(microscope::Error::Expression(failure)))?;
         let options = self.value_options(arguments.format.as_ref());
+
         self.assign(context, expression, parsed, &arguments.value, options)
             .await
     }
@@ -1172,6 +1189,7 @@ impl Session {
             context,
             options,
         )?;
+
         for key in ["name", "evaluateName", "presentationHint"] {
             body.remove(key);
         }
@@ -1246,6 +1264,7 @@ impl Session {
                 })
             })
             .collect::<Vec<_>>();
+
         Ok(json!({"targets": targets}))
     }
 }
@@ -1296,6 +1315,7 @@ async fn all_tasks(
 ) -> Result<Vec<microscope::TaskSnapshot>, ErrorBody> {
     let mut tasks = Vec::new();
     let mut from = None;
+
     loop {
         let page = if program_only {
             handle.program_tasks(from, TASK_PAGE).await

@@ -233,6 +233,7 @@ impl Stacks {
             Some((image, link))
         });
         self.vdso = vdso.clone().map_or(Vdso::Unreadable, Vdso::Read);
+
         vdso
     }
 
@@ -318,6 +319,7 @@ impl Stacks {
             let python = mapped.image.info.as_ref()?.image.python_runtime()?;
             Some((python, mapped.loaded.load_bias))
         })?;
+
         Some(sampler::process_layout(
             python.layout.as_ref().map_err(AsRef::as_ref),
             bias.load(python.runtime.start),
@@ -432,6 +434,7 @@ impl Stacks {
             });
             (symbol, source)
         });
+
         Frame {
             address: VirtualAddress::new(code),
             module: Some((Arc::clone(&mapped.path), code_address)),
@@ -658,6 +661,7 @@ fn activations(
             Some(module.image.symbolize(address)?.name)
         })
         .collect();
+
     (0..frames.len())
         .filter(|&index| {
             let inner = index
@@ -713,6 +717,7 @@ fn place(
         } else {
             Some(Truncation::InterpretedUnplaced)
         };
+
         return (frames, truncation);
     };
 
@@ -728,6 +733,7 @@ fn place(
         .zip(segments)
         .flat_map(|(&activation, segment)| segment.iter().map(move |frame| call(frame, activation)))
         .collect();
+
     (
         placed,
         interpreted

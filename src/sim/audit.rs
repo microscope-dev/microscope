@@ -79,6 +79,7 @@ impl Auditor {
             }
 
             self.revision = revision;
+
             match &event {
                 DebuggerEvent::StateChanged { revision } => {
                     if *revision <= self.change {
@@ -231,6 +232,7 @@ impl Auditor {
     /// Counts a message a hit logged or a condition that failed to evaluate.
     fn count_hit_event(&self, event: &DebuggerEvent) -> Result<(), Failure> {
         let mut published = self.published.borrow_mut();
+
         match event {
             DebuggerEvent::LogMessage { breakpoint, .. } => {
                 *published.logged.entry(breakpoint.get()).or_default() += 1;
@@ -334,6 +336,7 @@ mod tests {
     fn audit_exits(group_exit: bool, events: Vec<DebuggerEvent>) -> Result<(), Failure> {
         let mut kernel = Kernel::new(1);
         let tgid = Tgid::led_by(LEADER);
+
         for tid in [LEADER, WORKER] {
             kernel.reaped.insert(
                 tid,
@@ -354,6 +357,7 @@ mod tests {
                 killed_externally: false,
             },
         );
+
         let (sender, receiver) = mpsc::unbounded_channel();
         let start = [
             DebuggerEvent::InferiorLaunched {
@@ -367,6 +371,7 @@ mod tests {
                 thread_id: ThreadId::new(1001),
             },
         ];
+
         for event in start.into_iter().chain(events) {
             sender.send(event).expect("the auditor reads");
         }

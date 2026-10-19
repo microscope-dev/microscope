@@ -92,6 +92,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             })
             .collect::<BTreeSet<_>>();
         let mut wanted = BTreeSet::new();
+
         for (&module, runtime) in &self.modules {
             for name in &names {
                 // A function the debug information describes is broken at
@@ -135,6 +136,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         let pid = inferior.memory_thread();
         let mut learned = Vec::new();
+
         for &(module, resolver) in &wanted {
             let Some(defining) = self.modules.get(&module) else {
                 continue;
@@ -150,6 +152,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             // A slot of the module's own that the resolver fills, or one
             // of any module's that imports the function by name.
             let mut slots = Vec::new();
+
             for (&holder, runtime) in &self.modules {
                 for slot in runtime.image.got_slots() {
                     let fills = match &slot.target {
@@ -189,6 +192,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     pub(super) fn sync_resolvers(&mut self) -> Result<()> {
         let wanted = self.wanted_resolvers(None);
         let mut entries = BTreeMap::new();
+
         for &(module, resolver) in &wanted {
             if let Some(entry) = self
                 .modules
@@ -267,6 +271,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let registers = self.ptrace.registers(pid)?;
+
         if let Some(&resolver) = indirect.entries.get(&address) {
             let returns_to = VirtualAddress::new(self.ptrace.read_word(pid, registers.rsp)?);
             record!("{pid} calls the resolver at {address}, returning to {returns_to}");
@@ -277,6 +282,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 returns_to,
                 stack: registers.rsp.wrapping_add(8),
             });
+
             return self.queue_module_refresh();
         }
 
@@ -292,6 +298,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let chosen = self.modules.get(&module).and_then(|defining| {
             implementation_in(defining, VirtualAddress::new(registers.rax), resolver)
         });
+
         record!(
             "the resolver {resolver} in module {module} returned {:#x}, choosing {chosen:?}",
             registers.rax

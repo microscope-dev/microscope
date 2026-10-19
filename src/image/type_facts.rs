@@ -222,6 +222,7 @@ pub fn add_to(
             },
         )
         .collect::<Vec<_>>();
+
     builder
         .owned_shared(TableKind::DictionaryIndices, dictionary)
         .owned_shared(TableKind::PassedByValue, passed)

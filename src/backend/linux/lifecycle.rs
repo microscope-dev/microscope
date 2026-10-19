@@ -78,11 +78,13 @@ impl<P: LinuxTraceOps> Controller<P> {
                         let _ = self.ptrace.reap(pid);
                     })
             });
+
         match started {
             Ok((pid, waiter)) => {
                 self.begin_launch(InferiorOrigin::Launched, pid, stop_at_entry, waiter, reply);
                 let python = python
                     .map(|launch| launch.and_then(|launch| launch.launched(pid).map(|()| launch)));
+
                 if let Some(inferior) = self.inferior.as_mut() {
                     inferior.python_launch = python;
                 }
@@ -197,6 +199,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .iter()
             .map(|&pid| (pid, TraceThread::starting(ExpectedStop::InitialAttach)))
             .collect();
+
         self.reset_breakpoint_hit_counts();
         let mut inferior = Inferior::new(
             InferiorOrigin::Attached,
@@ -389,6 +392,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             execution_id,
             resumed: ResumeScope::Process(process_id),
         });
+
         Ok(())
     }
 
@@ -422,6 +426,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .ok_or_else(|| Error::internal("main module is registered"))?;
         inferior.loaded_module = LoadedModule::main(self.module_image.id(), load_bias);
         main.loaded = inferior.loaded_module;
+
         for breakpoint in self
             .breakpoints
             .iter()
@@ -466,6 +471,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                         && !inferior.unowned_stops.contains_key(tid)
                 })
                 .collect::<Vec<_>>();
+
             if untraced.is_empty() {
                 return Ok(false);
             }
@@ -477,6 +483,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
 
             let mut waiting = false;
+
             for tid in untraced {
                 if !self.ptrace.seize(tid, false)? {
                     inferior.unseized_threads.insert(tid);
@@ -558,6 +565,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             process_id,
             thread_id: debug_thread_id(pid),
         });
+
         if let Some(error) = arm_failure {
             // The new thread stays stopped: running it unarmed would silently
             // miss accesses the user asked to watch.
@@ -642,6 +650,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .as_mut()
             .ok_or(Error::NotRunning)?
             .thread_mut(pid)?;
+
         match event {
             libc::PTRACE_EVENT_CLONE => {
                 thread.state = NativeThreadState::Stopped;
@@ -706,6 +715,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let others_live = inferior.threads.iter().any(|(&other, thread)| {
             other != pid && !matches!(thread.state, NativeThreadState::Exiting)
         });
+
         if pid != inferior.tgid || !others_live {
             return Ok(None);
         }
@@ -848,6 +858,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .as_ref()
             .ok_or(Error::NotRunning)?
             .inherited_sites();
+
         self.track_fork_child(child, sites);
         self.restart_after_internal(parent)
     }
@@ -907,6 +918,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 self.ptrace.detach(child, None)
             }
         });
+
         settled.unwrap_or_else(|_| {
             let _ = self.ptrace.kill(child, Signal::SIGKILL);
             false
@@ -953,6 +965,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// child.
     fn scrub(&self, child: Pid, sites: &[(VirtualAddress, u8)]) -> Result<()> {
         let mut cleaned = Ok(());
+
         for &(address, original_byte) in sites {
             let word = match self.ptrace.read_memory_word(child, address.get()) {
                 Ok(word) => word,
@@ -1001,6 +1014,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
 
         let sites = inferior.inherited_sites();
+
         for child in self.ptrace.traced_children(inferior.tgid, thread) {
             let Some(inferior) = self.inferior.as_ref() else {
                 return;
@@ -1087,6 +1101,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .remove(&old_tid)
             .or_else(|| inferior.threads.remove(&pid))
             .unwrap_or_else(|| TraceThread::starting(ExpectedStop::None));
+
         if matches!(survivor.expected, ExpectedStop::AdoptedExec) {
             survivor.expected = ExpectedStop::InitialExec;
             inferior.threads.insert(pid, survivor);
@@ -1134,6 +1149,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         // exec(2) flushes every debug register; the new image's addresses
         // have no relation to the old watchpoints.
         self.discard_watchpoints();
+
         let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
         let generation = inferior.watch.generation;
         if let Some(thread) = inferior.threads.get_mut(&pid) {
@@ -1148,6 +1164,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         // whose debug information is loaded.
         let load_bias = self.executable_load_bias(pid);
         let followed = load_bias.is_ok();
+
         if let Ok(load_bias) = load_bias {
             self.load_main_image(load_bias)?;
         } else {
@@ -1171,6 +1188,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             |description| StopReason::RuntimeEvent { description },
             |()| StopReason::Exec { followed },
         );
+
         self.begin_visible_stop(pid, reason)
     }
 }
@@ -1201,6 +1219,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             })
             .map(|(&pid, _)| pid)
             .collect::<Vec<_>>();
+
         // Validate every queue before resuming any thread. A later read
         // failure must leave the all-stop intact for shutdown cleanup.
         let mut queued = Vec::new();
@@ -1213,9 +1232,11 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
         }
         let resumed = !queued.is_empty();
+
         for pid in queued {
             self.resume_to_drain(pid)?;
         }
+
         Ok(resumed)
     }
 
@@ -1236,6 +1257,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             Err(error) if !is_vanished_tracee(&error) => return Err(error),
             _ => {}
         }
+
         let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
         inferior.thread_mut(pid)?.state = NativeThreadState::Running;
         if inferior.public_stop.take().is_some() {
@@ -1283,6 +1305,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 }
                 result => result?,
             };
+
             let continued = 1 << (Signal::SIGCONT.number() - 1);
             if mask & continued != 0 {
                 match self.ptrace.set_signal_mask(thread, mask & !continued) {
@@ -1358,6 +1381,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             let edits = inferior.take_pending_edits();
             let killed = std::mem::take(&mut inferior.killed_children);
             let waiter = inferior.waiter.take();
+
             if pending.is_empty() && killed.is_empty() {
                 // Nothing is left to wait for, though the debugger's
                 // process may have children from outside the session.
@@ -1504,6 +1528,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .find(|&(&pid, thread)| !inferior.exited_leader(pid, thread))
                 .map(|(&pid, _)| pid)
                 .ok_or(Error::NotRunning)?;
+
             return self.raise_barrier(running, reason);
         }
 
@@ -1569,6 +1594,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 (!matches!(thread.state, NativeThreadState::Stopped)).then_some(pid)
             })
             .collect::<Vec<_>>();
+
         for tid in running {
             if let Err(error) = self.ptrace.interrupt(tid) {
                 self.finish_shutdown(Err(error));
@@ -1609,6 +1635,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 let retired = inferior.retired_threads.remove(&pid);
                 let killed = inferior.killed_children.remove(&pid);
                 let forked = inferior.fork_children.remove(&pid).is_some();
+
                 if !(retired || killed || forked) {
                     inferior.vanished_threads.insert(pid);
                 }
@@ -1646,6 +1673,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let stopped = std::mem::take(&mut inferior.unowned_stops);
         let pending = std::mem::take(&mut inferior.fork_children);
         let sites = inferior.inherited_sites();
+
         for &pid in stopped.keys() {
             self.settle_fork_child(pid, &sites);
         }
@@ -1815,6 +1843,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     self.drain_held_continue()
                 }
             });
+
             match draining {
                 Ok(false) => self.detach_inferior(),
                 Ok(true) => {}
@@ -1896,6 +1925,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 resumed: false,
             },
         );
+
         self.begin_internal_stop()?;
         self.restart_after_internal(parent)
     }
@@ -1992,6 +2022,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     ..window
                 },
             );
+
             self.track_fork_child(window.child, Vec::new());
             self.continue_thread(parent)?;
         }
@@ -2198,6 +2229,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             execution_id: execution,
             resumed: scope,
         });
+
         Ok(())
     }
 

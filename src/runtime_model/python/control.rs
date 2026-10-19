@@ -62,6 +62,7 @@ impl PythonRuntime {
             (Some(candidate.thread) != preferred, candidate.thread)
         });
         candidates.dedup();
+
         let mut budget =
             crate::inspection::InspectionBudget::new(crate::InspectionLimits::default());
         let mut classification = None;
@@ -72,6 +73,7 @@ impl PythonRuntime {
                     classification = Some(failure);
                     reason
                 })?;
+
             let mut walk = frames::Walk {
                 reader: values.reader,
                 code,
@@ -81,6 +83,7 @@ impl PythonRuntime {
             if let Some(gap) = gap {
                 return Err(gap);
             }
+
             for frame in frames {
                 let globals = VirtualAddress::new(
                     values.reader.field_word(frame.frame, Field::FrameGlobals)?,
@@ -99,6 +102,7 @@ impl PythonRuntime {
                             reason.to_string().into()
                         }
                     })?;
+
                 if let Some(name) = name
                     && &*values.reader.string(name)? == "_microscope_agent"
                 {
@@ -106,6 +110,7 @@ impl PythonRuntime {
                     return Err("a previous agent call is still executing".into());
                 }
             }
+
             Ok(plan)
         });
         result.map_err(|reason| classification.unwrap_or(AgentFailure::Unavailable(reason)))
@@ -183,6 +188,7 @@ impl super::Reading {
                     format!("the stepping thread's frames cannot all be read: {end}").into(),
                 );
             }
+
             let index = frames
                 .iter()
                 .position(|candidate| candidate.frame == frame)
@@ -200,6 +206,7 @@ impl super::Reading {
                     Ok::<_, Arc<str>>(Arc::clone(table.name(local.name)))
                 })
                 .transpose()?;
+
             Ok(StepOrigin {
                 native: state.native,
                 depth,
@@ -235,6 +242,7 @@ impl super::Reading {
             AssignedValue::Nothing => serde_json::json!(["none"]),
             AssignedValue::Object(address) => serde_json::json!(["object", address.get()]),
         };
+
         Ok(Some((
             number,
             origin.native,
@@ -268,6 +276,7 @@ impl super::Reading {
             }
             let function =
                 reader.field_word(VirtualAddress::new(definition), Field::MethodDefMeth)?;
+
             Ok((function != 0).then_some(VirtualAddress::new(function)))
         })
     }
@@ -294,6 +303,7 @@ impl super::Reading {
             .checked_add(1)
             .ok_or_else(|| Arc::<str>::from("Python step identifiers are exhausted"))?;
         let origin = self.step_origin(stop, active.thread, active.frame, None)?;
+
         Ok(Some((
             number,
             kind,
@@ -331,12 +341,15 @@ impl RuntimeAgent for PythonRuntime {
     fn library(&self) -> Vec<u8> {
         hook::library()
     }
+
     fn control_symbol(&self) -> &'static str {
         hook::CONTROL_SYMBOL
     }
+
     fn entries(&self) -> &[ImageAddress] {
         &self.entries
     }
+
     fn eligible_thread(
         &self,
         stop: &dyn RuntimeStop,
@@ -364,6 +377,7 @@ impl RuntimeAgent for PythonRuntime {
         self.prepare_agent(stop, "/", (preferred, None), arming)
             .map(|plan| plan.thread)
     }
+
     fn script(
         &self,
         stop: &dyn RuntimeStop,
@@ -414,6 +428,7 @@ impl RuntimeAgent for PythonRuntime {
             bootstrapped: false,
         })
     }
+
     fn command(
         &self,
         stop: &dyn RuntimeStop,
@@ -436,9 +451,11 @@ impl RuntimeAgent for PythonRuntime {
             assignment,
         )
     }
+
     fn process_scope_required(&self) -> bool {
         self.free_threaded
     }
+
     fn assignments_refused(&self) -> Option<&'static str> {
         // 3.12's f_locals is a copy, and the bootstrap's thread runs
         // beside the program's, where no proof says what it holds.
@@ -447,6 +464,7 @@ impl RuntimeAgent for PythonRuntime {
              thread of its own, which may hold what an assignment changes",
         )
     }
+
     fn wanted(&self, arming: &Arming<'_>) -> bool {
         !arming.breakpoints.is_empty()
             || arming.step.is_some()
@@ -471,6 +489,7 @@ pub(super) fn command(
     if !stop.read(control, &mut header) {
         return Err("the Python command header cannot be read".into());
     }
+
     if &header[..8] != hook::CONTROL_MAGIC
         || header[8..16] != previous.to_le_bytes()
         || header[20..24] != hook::CONTROL_CAPACITY.to_le_bytes()
@@ -478,6 +497,7 @@ pub(super) fn command(
     {
         return Err("the Python command header or acknowledged sequence changed".into());
     }
+
     let payload = assignment
         .map_or_else(
             || serde_json::to_vec(&(generation, probes, stepping, exceptions)),
@@ -493,6 +513,7 @@ pub(super) fn command(
             Arc::<str>::from("the Python configuration exceeds its bounded command slot")
         })?;
     let mut writes = Vec::new();
+
     for (offset, bytes) in [
         (hook::CONTROL_HEADER as u64, payload),
         (16, length.to_le_bytes().to_vec()),
@@ -511,6 +532,7 @@ pub(super) fn command(
             bytes,
         });
     }
+
     Ok(writes)
 }
 
@@ -552,6 +574,7 @@ impl AgentRequestTicket for Ticket {
             charge: Some(&charge),
             blocks: None,
         };
+
         let (states, gaps) = threads::thread_states(&reader, self.runtime)?;
         if let Some(gap) = gaps.into_iter().next() {
             return Err(gap);
@@ -568,10 +591,12 @@ impl AgentRequestTicket for Ticket {
         {
             return Err("the Python request's thread-state identity changed".into());
         }
+
         let pending = reader.bytes(self.pending.address, 4)?;
         if pending != [0; 4] && pending != 1_i32.to_le_bytes() {
             return Err("the Python pending request flag is invalid".into());
         }
+
         let path = reader.bytes(self.path.address, self.path.bytes.len() as u64)?;
         let ours = path == self.path.bytes;
         let partial_ours = proof == AgentRetirementProof::Unresumed
@@ -579,15 +604,18 @@ impl AgentRequestTicket for Ticket {
                 .iter()
                 .zip(self.path.expected.iter().zip(&self.path.bytes))
                 .all(|(held, (before, after))| held == before || held == after);
+
         if proof == AgentRetirementProof::Unresumed && !partial_ours {
             return Err("the unresumed Python script slot has an unowned change".into());
         }
         if proof != AgentRetirementProof::Unresumed && !ours && path.first() != Some(&0) {
             return Err("another request replaced the Python script slot".into());
         }
+
         if pending == [0; 4] && proof == AgentRetirementProof::Cancel {
             return Ok(AgentRetirement::Unconfirmed);
         }
+
         let mut writes = Vec::new();
         if pending != [0; 4] {
             if !ours && !partial_ours {
@@ -599,6 +627,7 @@ impl AgentRequestTicket for Ticket {
                 bytes: vec![0; 4],
             });
         }
+
         if let Some(&first) = path.first()
             && first != 0
         {
@@ -608,6 +637,7 @@ impl AgentRequestTicket for Ticket {
                 bytes: vec![0],
             });
         }
+
         // Keep the shared eval-breaker bit. Other runtime stop requests can
         // use it too; the handler checks the now-cleared pending flag.
         Ok(AgentRetirement::Retired(writes))

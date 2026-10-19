@@ -71,6 +71,7 @@ impl Profiles {
         let (list, _) = watch::channel(Arc::new(ProfileList {
             profiles: Vec::new(),
         }));
+
         Arc::new(Self {
             cwd,
             entries: RwLock::new(BTreeMap::new()),
@@ -125,6 +126,7 @@ impl Profiles {
             || path.display().to_string(),
             |name| name.to_string_lossy().into_owned(),
         );
+
         self.publish(
             ProfileInfo {
                 id: id.clone(),
@@ -229,6 +231,7 @@ impl Profiles {
                 })?;
                 recorder.stop.store(true, Ordering::Relaxed);
                 drop(recordings);
+
                 Ok(json(&Value::Null))
             }
             request => {
@@ -256,6 +259,7 @@ impl Profiles {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+
         let traced = spec
             .syscalls
             .as_ref()
@@ -370,6 +374,7 @@ impl Profiles {
                 save: None,
             },
         );
+
         match recorded {
             Ok(recording) => {
                 self.publish(
@@ -492,6 +497,7 @@ impl Profiles {
             let diff = diff_trees((&keys, &tree), (base_keys, &base_tree));
             let mut named = Named::with_base(&keys, base_keys);
             let columns = [&diff.own, &diff.total, &diff.base_own, &diff.base_total];
+
             for weights in &columns[..2] {
                 put_weights(&mut bytes, weights);
             }
@@ -595,6 +601,7 @@ impl Profiles {
                 base_total: cost.base_total,
             })
             .collect();
+
         Ok(ProfileFunctions {
             weight: costs.weight,
             rows,
@@ -856,6 +863,7 @@ fn tasks(profile: &Profile) -> Vec<protocol::ProfileTask> {
             waited: task.waited,
         })
         .collect();
+
     tasks.sort_by(|a, b| (b.weight, b.waited, a.row).cmp(&(a.weight, a.waited, b.row)));
     tasks
 }
@@ -1067,6 +1075,7 @@ fn source(
             }
         })
         .collect();
+
     Ok(protocol::ProfileLines {
         weight: costs.weight,
         files,
@@ -1085,6 +1094,7 @@ pub(super) fn source_lines(path: &str, first: u64, last: u64) -> Result<Vec<Stri
     let bytes = std::fs::read(path).map_err(|error| format!("{path} cannot be read: {error}"))?;
     let skip = usize::try_from(first - 1).unwrap_or(usize::MAX);
     let take = usize::try_from(last - first + 1).unwrap_or(usize::MAX);
+
     Ok(String::from_utf8_lossy(&bytes)
         .lines()
         .skip(skip)
@@ -1240,6 +1250,7 @@ fn zones(profile: &Profile, query: &protocol::ProfileZonesQuery) -> (Value, Vec<
             continues: series.continues,
         })
         .collect();
+
     let answer = protocol::ProfileZones {
         range: [range.0 - start, range.1 - start],
         blocks: u32::try_from(blocks.len()).unwrap_or(u32::MAX),
@@ -1259,6 +1270,7 @@ fn zone_stats(
     let range = absolute(profile, query.range);
     let stats = profile.zone_stats(&query.name, range, query.threads.as_deref());
     let value = |value: u32| profile.label_value(value).map(str::to_owned);
+
     protocol::ProfileZoneStats {
         count: stats.count,
         total: stats.total,

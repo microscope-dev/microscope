@@ -414,6 +414,7 @@ impl Session {
         shutdown: impl std::future::Future<Output = ()>,
     ) {
         tokio::pin!(shutdown);
+
         loop {
             // Requests set aside while cancelling come first, in order.
             while let Ok(message) = inbox.try_recv() {
@@ -605,6 +606,7 @@ impl Session {
             start_debugging: arguments.supports_start_debugging_request.unwrap_or(false),
         });
         self.after = Some(After::Initialized);
+
         Ok(capabilities())
     }
 
@@ -646,6 +648,7 @@ impl Session {
                     launch.program.display()
                 ))
             })?;
+
         self.adopt(debugger, configuration, header).await
     }
 
@@ -683,6 +686,7 @@ impl Session {
                 let attached = self
                     .with_progress(format!("Attaching to process {process}"), attached)
                     .await;
+
                 attached.map_err(|error| {
                     // A held process this session cannot take runs on.
                     let released = held.is_some_and(|held| {
@@ -740,6 +744,7 @@ impl Session {
             .client
             .event("progressEnd", json!({"progressId": "load"}))
             .await;
+
         result
     }
 
@@ -798,6 +803,7 @@ impl Session {
             LaunchSettings::default(),
         );
         let mut default_policies = HashMap::new();
+
         for code in microscope::signal_codes() {
             default_policies.insert(code, handle.signal_policy(code).await.map_err(error)?);
         }
@@ -900,6 +906,7 @@ impl Session {
             arguments,
             child,
         )));
+
         Ok(())
     }
 
@@ -925,6 +932,7 @@ impl Session {
                 view_files,
             )
             .await;
+
         for warning in warnings {
             self.client.important(format!("views: {warning}")).await?;
         }
@@ -1085,6 +1093,7 @@ impl Session {
         }
 
         self.client.event("process", body).await?;
+
         for (read, category) in pipes {
             match output::spawn(read, category, self.client.clone()) {
                 Ok(pump) => target.pumps.push(pump),
@@ -1388,6 +1397,7 @@ impl Session {
         self.resumed = Some(execution);
         self.leave_stop();
         self.cancel_inspections();
+
         Ok(json!({"allThreadsContinued": !single}))
     }
 
@@ -1471,6 +1481,7 @@ impl Session {
                 json!({"threadId": arguments.thread_id, "allThreadsContinued": !single}),
             )
             .await?;
+
         Ok(json!({}))
     }
 
@@ -1490,6 +1501,7 @@ impl Session {
         let handle = self.target_handle()?;
         let listed = handle.at(context).step_targets().await.map_err(error)?;
         let mut targets = Vec::with_capacity(listed.len());
+
         for target in listed.iter() {
             let id = self.references.step_target(target.call)?;
             let label = match (&target.callee, target.target) {
@@ -1520,6 +1532,7 @@ impl Session {
             .start_jump(stop.id, context, target)
             .await
             .map_err(error)?;
+
         Ok(json!({}))
     }
 
@@ -1768,6 +1781,7 @@ impl Session {
             told,
             selected,
         });
+
         self.client.event("stopped", body).await
     }
 
@@ -1795,6 +1809,7 @@ impl Session {
         self.client
             .event("exited", json!({"exitCode": exit_code(status)}))
             .await?;
+
         self.ended_target().await
     }
 
@@ -1807,6 +1822,7 @@ impl Session {
         // The program's threads end with it, also for a client that keeps
         // the session for a restart.
         let tasks = std::mem::take(&mut self.tasks).into_values();
+
         for id in std::mem::take(&mut self.threads).into_values().chain(tasks) {
             self.client.thread("exited", id).await?;
         }
@@ -1830,6 +1846,7 @@ impl Session {
             .filter(|task| !live.contains(task))
             .copied()
             .collect::<Vec<_>>();
+
         for task in gone {
             if let Some(id) = self.tasks.remove(&task) {
                 self.client.thread("exited", id).await?;
@@ -1931,6 +1948,7 @@ impl Session {
             .filter(|thread| !live.contains(thread))
             .copied()
             .collect::<Vec<_>>();
+
         for thread in gone {
             if let Some(id) = self.threads.remove(&thread) {
                 self.client.thread("exited", id).await?;
@@ -1960,6 +1978,7 @@ impl Session {
                 json!({"reason": "removed", "module": super::sources::module_json(&record, None)}),
             )
             .await?;
+
         self.remove_loaded_sources(id).await
     }
 
@@ -2114,6 +2133,7 @@ impl Session {
         }
 
         let mut entries = Vec::with_capacity(plan.slots.len());
+
         for slot in plan.slots {
             entries.push(match slot {
                 Slot::Keep(entry) => entry,
@@ -2129,6 +2149,7 @@ impl Session {
             .map(|entry| self.breakpoint_json(&group, entry))
             .collect::<Vec<_>>();
         self.breakpoints.install(group, entries);
+
         Ok(json!({"breakpoints": body}))
     }
 
@@ -2392,6 +2413,7 @@ impl Session {
 
             Some((self.local_path(&file.path), line.get()))
         });
+
         Placement {
             source,
             address: virtual_address.map(microscope::VirtualAddress::get),
@@ -2496,6 +2518,7 @@ impl Session {
             let mut policy = target.default_policies[&code];
             policy.stop = self.exceptions.stops(code);
             policy.print |= policy.stop;
+
             for (_, actions) in target.signals.iter().filter(|(signal, _)| *signal == code) {
                 for action in actions {
                     crate::cli::commands::apply_signal_action(&mut policy, action)
@@ -2562,6 +2585,7 @@ impl Session {
         }
 
         let components = client.components().collect::<Vec<_>>();
+
         for kept in (1..=components.len()).rev() {
             let suffix = components[components.len() - kept..]
                 .iter()
@@ -2843,13 +2867,13 @@ fn exit_code(status: &ExitStatus) -> i64 {
 /// reaches `describe_stop` by a bug.
 const DESCRIBED_ELSEWHERE: &str = "internal: the session describes this stop itself";
 
-/// The `stopped` event's reason, description, and text for a stop that
-/// needs nothing from the session to describe.
 /// The DAP reason for a stop.
 pub(super) fn stop_kind(reason: &StopReason) -> &'static str {
     describe_stop(reason).0
 }
 
+/// The `stopped` event's reason, description, and text for a stop that
+/// needs nothing from the session to describe.
 fn describe_stop(reason: &StopReason) -> (&'static str, Option<String>, Option<String>) {
     match reason {
         StopReason::Step { .. }

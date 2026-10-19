@@ -579,6 +579,7 @@ mod tests {
             schema.len(),
             &generated.layout(),
         );
+
         (generated.version, bytes)
     }
 
@@ -633,6 +634,7 @@ mod tests {
                 .position(|name| *name == "interpreter_state.gil_runtime_state")
                 .expect("3.14's table places the GIL");
         bytes[at..at + 8].copy_from_slice(&1u64.to_le_bytes());
+
         let refused = describe(Some(&bytes), Some(version))
             .2
             .expect_err("no build agrees");
@@ -654,6 +656,7 @@ mod tests {
                 .position(|name| *name == "code_object.qualname")
                 .expect("3.14's table places co_qualname");
         bytes[at..at + 8].copy_from_slice(&u64::from(u32::MAX).to_le_bytes());
+
         let refused = describe(Some(&bytes), Some(version))
             .2
             .expect_err("no structure is that long");
@@ -677,6 +680,7 @@ mod tests {
         ] {
             let (version, bytes) = table_of(name, schema);
             let layout = describe(Some(&bytes), Some(version)).2.expect("layout");
+
             for entry in schema
                 .iter()
                 .filter(|entry| entry.starts_with("debugger_support."))
@@ -766,6 +770,7 @@ mod tests {
                 .layout
                 .unwrap_or_else(|problem| panic!("{}: {problem}", generated.name));
             let headers = generated.layout();
+
             for &field in Field::ALL {
                 assert_eq!(
                     layout.field(field),
@@ -804,6 +809,7 @@ mod tests {
         for size in READ_WHOLE {
             let mut layout = generated.layout();
             layout.set_field(size, MAX_STRUCTURE + 1);
+
             let refused = validated(
                 PyVersion(generated.version),
                 generated.free_threaded,

@@ -3,6 +3,7 @@ use super::*;
 #[test]
 fn a_recording_collects_every_threads_spans_and_counts() {
     let recording = Recording::start(Options::default()).expect("no other recording");
+
     assert_eq!(
         Recording::start(Options::default()).err(),
         Some(AlreadyRecording),
@@ -59,6 +60,7 @@ fn a_recording_collects_every_threads_spans_and_counts() {
         .iter()
         .filter(|event| event.name == "unit")
         .collect::<Vec<_>>();
+
     let load_id = report
         .trace_events
         .iter()
@@ -71,6 +73,7 @@ fn a_recording_collects_every_threads_spans_and_counts() {
             .all(|unit| unit.args.get("parent") == Some(&load_id)),
         "work on other threads names the span it ran for"
     );
+
     let mut labels = units
         .iter()
         .filter_map(|unit| unit.args.get("label")?.as_str())
@@ -152,6 +155,7 @@ fn a_report_says_whether_it_counted_instructions() {
 
     let report = recording.finish().unwrap();
     let work = &report.phases[0];
+
     match report.summary.instructions.as_str() {
         "counted" | "multiplexed" => assert!(work.instructions.is_some_and(|count| count > 0)),
         unavailable => {

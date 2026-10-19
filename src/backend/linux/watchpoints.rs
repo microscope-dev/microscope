@@ -104,6 +104,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         // Read before arming, so a failed read leaves nothing armed.
         let (observed, value) = self.observe(&scope, address, byte_size)?;
+
         if let Some(plan) = plan {
             self.arm_all_threads(plan)?;
         }
@@ -148,6 +149,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             );
         self.next_watchpoint_id = next_id;
         self.publish_watchpoints_changed();
+
         if let Err(error) = self.sync_stack_movers() {
             let _ = self.remove_watchpoint(id);
             return Err(error);
@@ -187,6 +189,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         edit(&mut record.watchpoint);
         let watchpoint = record.watchpoint.clone();
         self.publish_watchpoints_changed();
+
         Ok(watchpoint)
     }
 
@@ -210,6 +213,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
 
         let mut stopping = BTreeMap::new();
+
         for id in self.reportable_watch_hits(owners)? {
             let Some(watchpoint) = self
                 .inferior
@@ -268,6 +272,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let (observed, value) = self.observe_record(record)?;
+
         if let Some(record) = self
             .inferior
             .as_mut()
@@ -395,6 +400,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         );
         self.publish_watchpoints_changed();
         self.sync_stack_movers()?;
+
         Ok(removed
             .into_values()
             .map(|record| record.watchpoint)
@@ -431,6 +437,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             })
             .collect::<Vec<_>>();
         let mut programmed = Vec::with_capacity(threads.len());
+
         for pid in threads {
             match program_debug_registers(&self.ptrace, pid, &plan) {
                 Ok(()) => programmed.push(pid),
@@ -461,6 +468,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         inferior.watch.generation += 1;
         inferior.watch.plan = plan;
         let generation = inferior.watch.generation;
+
         for pid in programmed {
             inferior.thread_mut(pid)?.armed = Some(generation);
         }
@@ -483,6 +491,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             })
             .map(|(&pid, _)| pid)
             .collect::<Vec<_>>();
+
         for pid in stale {
             match program_debug_registers(&self.ptrace, pid, &inferior.watch.plan) {
                 Ok(()) => {
@@ -533,6 +542,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         // Each thread is marked as carrying the current plan.
         let generation = inferior.watch.generation;
         let empty = DebugRegisterPlan::default();
+
         for (&pid, thread) in &mut inferior.threads {
             match program_debug_registers(&self.ptrace, pid, &empty) {
                 Ok(()) => thread.armed = Some(generation),
@@ -552,6 +562,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
         let empty = DebugRegisterPlan::default();
         let mut first_error = None;
+
         for (&pid, thread) in &inferior.threads {
             if thread.armed.is_none() && inferior.watch.plan.is_empty() {
                 continue;
@@ -583,6 +594,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .map(|(&id, record)| self.observe_record(record).map(|observed| (id, observed)))
             .collect::<Result<Vec<_>>>()?;
         let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+
         for (id, (bytes, value)) in observed {
             let record = inferior
                 .watch
@@ -615,6 +627,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let mut invalid = BTreeMap::new();
+
         for (&id, record) in &inferior.watch.watchpoints {
             if let Some(reason) = self.watch_invalidation(inferior, record)? {
                 invalid.insert(id, reason);
@@ -647,6 +660,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .collect::<Vec<_>>();
 
         let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+
         for (&pid, thread) in &mut inferior.threads {
             let owners = std::mem::take(&mut thread.watch_hits);
             if owners.is_empty() {
@@ -718,6 +732,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             });
         self.arm_all_threads(plan)?;
         let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+
         for entry in &invalidated {
             inferior.watch.watchpoints.remove(&entry.watchpoint.id);
         }
@@ -742,6 +757,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         inferior.watch.watchpoints.clear();
         inferior.watch.plan = DebugRegisterPlan::default();
         inferior.watch.generation += 1;
+
         if had_watchpoints {
             self.publish_watchpoints_changed();
         }
@@ -798,6 +814,7 @@ impl<P: InspectionOps> Controller<P> {
                     self.with_runtime_stop(inferior, &bound, inferior.memory_thread(), |stop| {
                         bound.model.interpreted_value(stop, object, &mut budget)
                     });
+
                 match slot {
                     InterpretedSlot::Value(value) => value.summary,
                     InterpretedSlot::Unbound => "unbound".into(),
@@ -809,6 +826,7 @@ impl<P: InspectionOps> Controller<P> {
             },
         );
         let object = object.map_or(0, VirtualAddress::get);
+
         Ok((Some(Arc::from(object.to_le_bytes())), Some(value)))
     }
 
@@ -828,6 +846,7 @@ impl<P: InspectionOps> Controller<P> {
             .threads
             .iter()
             .filter(|(_, thread)| matches!(thread.state, NativeThreadState::Stopped));
+
         for (&pid, _) in stopped {
             match read_logical_memory(&self.ptrace, pid, &inferior.breakpoints, address, size) {
                 Ok(read) => {
@@ -854,6 +873,7 @@ impl<P: InspectionOps> Controller<P> {
         };
 
         let mut unchanged = BTreeSet::new();
+
         for id in owners {
             let Some(record) = inferior.watch.watchpoints.get(&id) else {
                 continue;
@@ -962,6 +982,7 @@ impl<P: InspectionOps> Controller<P> {
         } else {
             inferior.memory_thread()
         };
+
         match self.with_runtime_stop(inferior, &bound, reader, |stop| {
             bound
                 .model
@@ -1020,6 +1041,7 @@ impl<P: InspectionOps> Controller<P> {
         let view = self.stack_view(pid);
         let activation = view.activation(activation);
         let unproven = !activation.has_returned(view.position(native.rsp));
+
         for level in 0..DEFAULT_MAX_FRAMES {
             let caller = match provider.caller(&context) {
                 CallerResult::Caller(caller) => caller,
@@ -1141,6 +1163,7 @@ impl<P: InspectionOps> Controller<P> {
                                 .into(),
                         )
                     })?;
+
                 Ok((
                     WatchScope::Task {
                         task,
@@ -1203,6 +1226,7 @@ pub(super) fn watchable_storage(value: &InspectedValue) -> Result<(VirtualAddres
         .and_then(|info| info.byte_size)
         .filter(|size| *size > 0)
         .ok_or_else(|| Error::WatchTargetUnsupported("the value's size is unknown".into()))?;
+
     Ok((address, byte_size))
 }
 
@@ -1305,6 +1329,7 @@ fn program_debug_registers(
             .enumerate()
             .filter_map(|(index, slot)| slot.as_ref().map(|slot| (index, slot.chunk.address))),
     );
+
     for (register, value) in expected {
         let actual = ptrace
             .read_debug_register(pid, register)
@@ -1327,6 +1352,7 @@ pub(super) fn slot_access(access: WatchAccess) -> SlotAccess {
         WatchAccess::Read,
         "a read watch was added, which x86 cannot report"
     );
+
     match access {
         WatchAccess::ReadWrite => SlotAccess::ReadWrite,
         WatchAccess::Change | WatchAccess::Write | WatchAccess::Read => SlotAccess::Write,

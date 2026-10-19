@@ -236,6 +236,7 @@ impl Session {
             .ok()
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| "you".to_owned());
+
         Arc::new(Self {
             cwd,
             home: std::env::var_os("HOME").map(PathBuf::from),
@@ -298,6 +299,7 @@ impl Session {
         };
 
         let state = self.state.subscribe();
+
         self.people
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -311,6 +313,7 @@ impl Session {
                 },
             );
         self.announce_presence();
+
         Joined {
             connection,
             name,
@@ -401,6 +404,7 @@ impl Session {
             .await
             .load_view_sources(&self.cwd, &self.views)
             .await;
+
         self.count(
             |target| &target.settings,
             |state, count| state.settings = count,
@@ -492,6 +496,7 @@ impl Session {
                     connection,
                     format!("set {} = {}", set.path, set.value.trim()),
                 );
+
                 return Ok(to_value(&row));
             }
             request => self.control(connection, request).await?,
@@ -705,6 +710,7 @@ impl Session {
 
     async fn breakpoints(&self, connection: u32, request: Request) -> Answer {
         let handle = self.current_handle().await?;
+
         match request {
             Request::AddBreakpoint(add) => {
                 let spec = crate::cli::commands::parse_breakpoint_location(add.location.trim())
@@ -719,6 +725,7 @@ impl Session {
                     pending: crate::cli::commands::is_python(&spec),
                     ..options(add.condition, add.hit_condition, add.log_message)?
                 };
+
                 let breakpoint =
                     handle
                         .add_breakpoint_with(spec, options)
@@ -740,6 +747,7 @@ impl Session {
                                 None => Failure::from(error),
                             }
                         })?;
+
                 self.notice(connection, format!("set breakpoint {}", breakpoint.id));
                 return Ok(to_value(&Added {
                     id: breakpoint.id.get(),
@@ -766,6 +774,7 @@ impl Session {
     /// Changes memory, watchpoints, or signal policies, and says so.
     async fn low_level(&self, connection: u32, request: Request) -> Answer {
         let handle = self.current_handle().await?;
+
         let notice = match request {
             Request::WriteMemory(write) => {
                 let written = lowlevel::write_memory(&handle, &write).await?;
@@ -851,6 +860,7 @@ impl Session {
         )
         .await?;
         let scope = ResumeScope::Process(process_id);
+
         if let Some(call) = step.call.as_deref().filter(|_| step.kind == StepKind::Into) {
             let call = lowlevel::address(call)?;
             let action = format!("stepped into the call at {call}");
@@ -901,9 +911,11 @@ impl Session {
         .await?;
         let action = format!("moved thread {} to {location}", jump.thread);
         self.caused(connection, &action);
+
         handle
             .start_jump(context.stop, context.execution, spec)
             .await?;
+
         Ok(action)
     }
 
@@ -1137,6 +1149,7 @@ impl Session {
             .find(|(name, _)| name == "PYTHONPATH")
             .map(|(_, value)| value.clone())
             .or_else(|| std::env::var_os("PYTHONPATH"));
+
         Some(crate::present::python_files::Project::of(
             &spec.arguments,
             &cwd,
@@ -1162,6 +1175,7 @@ impl Session {
         let context = inspect::context(&handle, at.stop, at.execution(), 0).await?;
         let targets = handle.at(context).step_targets().await?;
         let hex = |address: microscope::VirtualAddress| format!("{:#x}", address.get());
+
         Ok(protocol::StepTargets {
             calls: targets
                 .iter()
@@ -1180,6 +1194,7 @@ impl Session {
         if at.task.is_some() {
             return 0;
         }
+
         self.state
             .borrow()
             .stops
@@ -1193,6 +1208,7 @@ impl Session {
     async fn exceptions(&self) -> Result<protocol::Exceptions, Failure> {
         let console = self.shared_console().await?;
         let stops = console.lock().await.exception_stops();
+
         Ok(protocol::Exceptions {
             filters: microscope::ExceptionStops::filters()
                 .iter()
@@ -1222,6 +1238,7 @@ impl Session {
             |state, count| state.settings = count,
         )
         .await;
+
         Ok(format!(
             "{} stopping at {} exceptions",
             if choice.on { "started" } else { "stopped" },
@@ -1255,6 +1272,7 @@ impl Session {
             })
             .ok_or_else(|| Failure::new(ErrorKind::Invalid, "nothing is being debugged"))?;
         let code = Code::new(images.loaded().await);
+
         Ok(values::Reader {
             handle,
             images,
@@ -1285,6 +1303,7 @@ impl Session {
         };
 
         counter.fetch_add(1, Ordering::Relaxed);
+
         self.state.send_modify(|state| {
             let mut next = State::clone(state);
 
@@ -1402,6 +1421,7 @@ impl Session {
             .map(|target| (target.handle.clone(), Arc::clone(&target.console)))
             .ok_or_else(|| Failure::new(ErrorKind::Invalid, "nothing is being debugged"))?;
         let console = console.lock().await;
+
         if let Some(at) = at {
             let context = inspect::context(&handle, at.stop, at.execution(), at.frame).await?;
             handle.select_context(context.execution).await?;
@@ -1448,6 +1468,7 @@ impl Session {
             .map(|target| (target.handle.clone(), target.launch.clone()));
         let (handle, launch) =
             current.ok_or_else(|| Failure::new(ErrorKind::Invalid, "nothing is being debugged"))?;
+
         let started = matches!(
             self.state.borrow().inferior,
             Inferior::Running { .. } | Inferior::Stopped { .. }
@@ -1455,8 +1476,6 @@ impl Session {
         Ok((handle, launch, started))
     }
 
-    /// Makes `start` the session's target, ending a current one when
-    /// `replace` allows.
     /// Says that `start` is under way, before anything is debugged.
     pub fn loading(&self, start: &Start) {
         let busy = match start {
@@ -1468,6 +1487,8 @@ impl Session {
         self.state.send_replace(Arc::new(State::idle(Some(busy))));
     }
 
+    /// Makes `start` the session's target, ending a current one when
+    /// `replace` allows.
     pub async fn start(&self, start: Start, replace: bool) -> Result<(), Failure> {
         self.replace(start, replace)
             .await
@@ -1537,6 +1558,7 @@ impl Session {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take();
+
         let mut describer = Describer::new(id, info, handle.clone(), Arc::clone(&self.cause));
         self.state
             .send_replace(Arc::new(describer.describe(&snapshot).await));
@@ -1569,6 +1591,7 @@ impl Session {
 
         let session = describer.id.clone();
         let pump = tokio::spawn(pump(Arc::clone(&self.state), describer, events, outlet));
+
         *target = Some(Target {
             id: session,
             console: Arc::new(tokio::sync::Mutex::new(console)),
@@ -1583,6 +1606,7 @@ impl Session {
             readers: Vec::new(),
             name,
         });
+
         if attached
             && self.resume_attached.load(Ordering::Relaxed)
             && let InferiorState::Stopped {
@@ -1614,6 +1638,7 @@ impl Session {
     /// Starts a launched program, recording its output readers and input.
     async fn run(&self, handle: &DebuggerHandle, spec: &LaunchSpec) -> Result<(), Failure> {
         let (readers, input) = self.launch(handle, spec).await?;
+
         if let Some(target) = self.target.lock().await.as_mut() {
             target.readers.extend(readers);
             *target.input.lock().await = Some(input);
@@ -1652,10 +1677,12 @@ impl Session {
                 format!("failed to launch {}: {error}", spec.program.display()),
             )
         })?;
+
         let readers = [(stdout_read, Stream::Stdout), (stderr_read, Stream::Stderr)]
             .into_iter()
             .filter_map(|(read, stream)| self.read_output(read, stream).ok())
             .collect();
+
         Ok((readers, input))
     }
 
@@ -1670,6 +1697,7 @@ impl Session {
         Ok(tokio::spawn(async move {
             let mut pending = Vec::with_capacity(OUTPUT_CHUNK);
             let mut buffer = vec![0; OUTPUT_CHUNK];
+
             loop {
                 let read = receiver.read(&mut buffer).await.unwrap_or(0);
                 pending.extend_from_slice(&buffer[..read]);
@@ -1745,6 +1773,7 @@ async fn edit_breakpoint(
                 format!("there is no breakpoint {}", edit.id),
             )
         })?;
+
     if current.log_message != wanted.log_message {
         handle
             .set_breakpoint_log_message(id, wanted.log_message)
@@ -1772,6 +1801,7 @@ fn describe_target(
     handle: &DebuggerHandle,
 ) -> (protocol::Target, Option<LaunchSpec>, bool) {
     let program = handle.executable().display().to_string();
+
     match start {
         Start::Launch { spec, run } => (
             protocol::Target {
@@ -1818,6 +1848,7 @@ fn options(
 ) -> Result<BreakpointOptions, Failure> {
     let given = |text: Option<String>| text.filter(|text| !text.trim().is_empty());
     let invalid = |error: microscope::Error| Failure::new(ErrorKind::Invalid, error.to_string());
+
     Ok(BreakpointOptions {
         condition: given(condition)
             .map(|text| microscope::Condition::parse(&text))
@@ -1922,6 +1953,7 @@ async fn pump(
 
         let next = describer.describe(&snapshot).await;
         publish(&state, next, &describer.writes, &describer.settings);
+
         match events.recv().await {
             Ok(event) => observe(&mut describer, &outlet, &event),
             Err(broadcast::error::RecvError::Lagged(_)) => {}
@@ -1962,6 +1994,7 @@ fn publish(
 
 fn observe(describer: &mut Describer, outlet: &Outlet, event: &DebuggerEvent) {
     describer.ended.observe(event);
+
     match event {
         DebuggerEvent::InferiorLaunched { .. }
         | DebuggerEvent::InferiorAttached { .. }
@@ -2061,6 +2094,7 @@ mod tests {
                 ..State::clone(state)
             });
         });
+
         publish(
             &state,
             State {
@@ -2070,6 +2104,7 @@ mod tests {
             &writes,
             &settings,
         );
+
         let published = State::clone(&receiver.borrow());
         assert_eq!(published.revision, 2, "the pump's state is published");
         assert_eq!((published.writes, published.settings), (2, 2));

@@ -592,6 +592,7 @@ pub fn parse(source: &str, text: &str) -> File {
         }
 
         let start = parser.position;
+
         match parser.view() {
             Ok(view) => {
                 debug_assert!(
@@ -661,6 +662,7 @@ impl<'a> Parser<'a> {
                     .map(|(index, _)| index + 1),
             )
             .collect();
+
         Self {
             source,
             text,
@@ -914,9 +916,11 @@ impl<'a> Parser<'a> {
             "{} {pattern_text}",
             &self.text[language_start..language_start + language_word.len()]
         );
+
         self.position = pattern_end + 1;
         let mut statements = Vec::new();
         let mut shown = false;
+
         loop {
             self.skip_blank();
             if self.eat("}") {
@@ -1089,6 +1093,7 @@ impl<'a> Parser<'a> {
         }
 
         let mut inputs: Vec<Input> = Vec::new();
+
         loop {
             self.skip_blank();
             if self.eat("}") {
@@ -1397,6 +1402,7 @@ impl<'a> Parser<'a> {
         self.expect("{", "to open the match's arms")?;
         let mut arms = Vec::new();
         let mut default = None;
+
         loop {
             self.skip_blank();
             if self.eat("}") {
@@ -1443,6 +1449,7 @@ impl<'a> Parser<'a> {
         }
 
         let mut shape = default.unwrap_or(Shape::Unmatched(scrutinee));
+
         for (condition, then) in arms.into_iter().rev() {
             shape = Shape::If {
                 condition,
@@ -1460,6 +1467,7 @@ impl<'a> Parser<'a> {
         self.skip_blank();
         self.expect("{", "to open the record")?;
         let mut members: Vec<(String, Expr)> = Vec::new();
+
         loop {
             self.skip_blank();
             if self.eat("}") {
@@ -1497,6 +1505,7 @@ impl<'a> Parser<'a> {
     /// nested.
     fn clauses(&mut self) -> Parsed<Vec<Clause>> {
         let mut clauses = Vec::new();
+
         loop {
             self.skip_blank();
             if self.peek_word() != Some("for") {
@@ -1509,6 +1518,7 @@ impl<'a> Parser<'a> {
 
             self.position += "for".len();
             let mut variables = vec![self.name("the generator's variable")?];
+
             loop {
                 self.skip_inline();
                 if !self.eat(",") {
@@ -1534,6 +1544,7 @@ impl<'a> Parser<'a> {
             }
 
             let mut items = Vec::new();
+
             loop {
                 self.skip_blank();
                 if self.eat_word("if") {
@@ -1606,6 +1617,7 @@ impl<'a> Parser<'a> {
         }
 
         let mut arguments = Vec::new();
+
         loop {
             self.skip_blank();
             if !self.eat(",") {
@@ -1698,6 +1710,7 @@ impl<'a> Parser<'a> {
         }
 
         let mut text = String::new();
+
         loop {
             let Some(character) = self.rest().chars().next() else {
                 return Err(self.error_at(start, "the string is not closed"));
@@ -1743,6 +1756,7 @@ impl<'a> Parser<'a> {
 
         let mut pieces = Vec::new();
         let mut literal = String::new();
+
         loop {
             let Some(character) = self.rest().chars().next() else {
                 return Err(self.error_at(start, "the summary is not closed"));
@@ -1878,6 +1892,7 @@ impl<'a> Parser<'a> {
         let bytes = self.text.as_bytes();
         let mut depth = 0_usize;
         let mut index = self.position;
+
         while let Some(&byte) = bytes.get(index) {
             match byte {
                 b'`' => {
@@ -1926,6 +1941,7 @@ impl<'a> Parser<'a> {
         let text = blank_comments(raw)
             .ok_or_else(|| self.error_at(start, "the text has no character here"))?;
         let line = self.location(start).0;
+
         Expression::parse_view(&text)
             .map(|expression| Expr { expression, line })
             .map_err(|error| {
@@ -1943,6 +1959,7 @@ impl<'a> Parser<'a> {
         let mut conditionals = 0_usize;
         let mut index = self.position;
         let mut end = index;
+
         while let Some(&byte) = bytes.get(index) {
             match byte {
                 b'?' if depth == 0 => conditionals += 1,
@@ -2008,6 +2025,7 @@ impl<'a> Parser<'a> {
     /// begins a statement or closes a view, which ends an expression.
     fn statement_ends_before(&self, offset: usize) -> bool {
         let mut rest = &self.text[offset.min(self.text.len())..];
+
         loop {
             let trimmed = rest.trim_start_matches([' ', '\t', '\r']);
             if let Some(after) = trimmed.strip_prefix('\n') {
@@ -2069,6 +2087,7 @@ fn blank_comments(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());
     let mut index = 0;
+
     while index < bytes.len() {
         match bytes[index] {
             quote @ (b'"' | b'\'') => {
@@ -2133,6 +2152,7 @@ fn parse_pattern(text: &str, depth: usize) -> Result<Pattern, String> {
                 .collect::<Result<Vec<_>, _>>()
         })
         .transpose()?;
+
     Ok(Pattern {
         path: segments,
         base,
@@ -2181,6 +2201,7 @@ fn split_arguments(text: &str) -> Result<(&str, Option<Vec<&str>>), String> {
     let mut arguments = Vec::new();
     let mut depth = 0_usize;
     let mut start = 0;
+
     for (index, character) in inner.char_indices() {
         match character {
             '<' | '(' | '[' => depth += 1,
@@ -2230,6 +2251,7 @@ fn split_path(text: &str) -> Result<Vec<Segment>, String> {
     let mut parts = Vec::new();
     let mut start = 0;
     let mut skip = 0;
+
     for (index, character) in outside_backticks(text) {
         if index < skip {
             continue;
@@ -2246,7 +2268,9 @@ fn split_path(text: &str) -> Result<Vec<Segment>, String> {
     }
 
     parts.push(&text[start..]);
+
     let mut segments = Vec::new();
+
     for part in parts {
         let part = part.trim();
         if part == "**" {

@@ -17,6 +17,7 @@ fn failures_after_a_session_ended_keep_the_adapters_recording() {
         .name("flight_recorder::deliberately_failing".to_owned())
         .spawn(|| {
             let path = recording_path(".adapter");
+
             let failed = std::panic::catch_unwind(|| {
                 let mut dap = Dap::start("finished session");
                 let started = dap.launch(
@@ -27,6 +28,7 @@ fn failures_after_a_session_ended_keep_the_adapters_recording() {
                 );
                 dap.event(started.mark, "terminated", |_| true);
                 dap.finish();
+
                 assert!(
                     !path.exists(),
                     "a passing session left its recording at {}",
@@ -35,9 +37,11 @@ fn failures_after_a_session_ended_keep_the_adapters_recording() {
                 panic!("deliberate failure after the session");
             });
             assert!(failed.is_err(), "the test did not fail");
+
             path
         })
         .expect("start the failing test");
+
     let path = failing.join().expect("the failing test's thread");
 
     let contents = fs::read_to_string(&path)
@@ -58,5 +62,6 @@ fn failures_after_a_session_ended_keep_the_adapters_recording() {
     ]
     .map(position);
     assert!(order.is_sorted(), "out of order {order:?}:\n{contents}");
+
     fs::remove_file(&path).expect("remove the deliberate recording");
 }

@@ -188,6 +188,7 @@ pub(super) fn restored_by(code: &[u8], instruction_pointer: u64) -> Option<u32> 
     };
 
     let index = CALLEE_SAVED.iter().position(|saved| *saved == register)?;
+
     Some(1 << index)
 }
 
@@ -586,6 +587,7 @@ mod tests {
             // an instruction cut short
             &[0x48, 0x89],
         ];
+
         for (index, code) in cases.into_iter().enumerate() {
             assert_eq!(
                 Epilogues::new().runs_to_return(code, 0x1000),
@@ -609,6 +611,7 @@ mod tests {
         );
         assert_eq!(restored_by(&[0xc9], 0x1000), Some(RBP));
         assert_eq!(restored_by(&[0x5b], 0x1000), Some(RBX));
+
         // pop rax; pop bp; add rsp, 8; a pop cut short
         for code in [
             &[0x58][..],

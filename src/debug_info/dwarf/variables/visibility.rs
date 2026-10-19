@@ -80,6 +80,7 @@ pub(super) fn visible_ranges(
         .iter()
         .flat_map(|range| code.boundaries(declared.instance, *range))
         .collect::<Vec<_>>();
+
     segments(ranges, &boundaries, |address| {
         visible_at(code, declared, address)
     })
@@ -91,6 +92,7 @@ impl Code for Image {
             .instances_containing(address)
             .filter(|instance| instance.parent() == Some(parent))
             .min_by_key(|instance| instance.id())?;
+
         match call.kind() {
             CodeInstanceKind::Inline { call_site } => Some(InlinedCall { site: call_site }),
             CodeInstanceKind::OutOfLine => None,
@@ -115,6 +117,7 @@ impl Code for Image {
             .chain(lines.line_entries_starting_in([range]))
             .flat_map(|entry| [entry.range.start, entry.range.end])
             .collect::<Vec<_>>();
+
         if let Some(parent) = parent {
             boundaries.extend(
                 FunctionView::new(self)
@@ -146,6 +149,7 @@ pub(super) fn segments(
             .collect::<Vec<_>>();
         cuts.sort_unstable();
         cuts.dedup();
+
         for segment in cuts.windows(2) {
             let (start, end) = (segment[0], segment[1]);
             if !visible(start) {

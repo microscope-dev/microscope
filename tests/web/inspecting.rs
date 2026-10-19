@@ -20,6 +20,7 @@ async fn stop_in_handle_request(tab: &mut Client) -> Value {
     tab.ok("continue", json!({})).await;
     let stopped = tab.inferior("stopped").await;
     let inferior = &stopped["inferior"];
+
     json!({"stop": inferior["stop"], "thread": inferior["thread"], "frame": 0})
 }
 
@@ -89,6 +90,7 @@ async fn scopes_expand_into_children_that_belong_to_their_stop() {
             json!({"handle": slots, "start": 60, "count": 10}),
         )
         .await;
+
     let names = page["rows"]
         .as_array()
         .expect("rows")
@@ -171,6 +173,7 @@ async fn the_console_completes_and_runs_commands_in_the_tabs_frame() {
         .iter()
         .map(|item| item["label"].as_str().unwrap_or_default())
         .collect::<Vec<_>>();
+
     for member in ["op", "key", "value", "len"] {
         assert!(labels.contains(&member), "{members}");
     }
@@ -212,6 +215,7 @@ async fn the_console_completes_and_runs_commands_in_the_tabs_frame() {
     viewer
         .ok("console", with(&frame, &json!({"line": "req->len"})))
         .await;
+
     for (method, params) in [
         ("console", with(&frame, &json!({"line": "frame"}))),
         ("console", with(&frame, &json!({"line": "req->len = 2"}))),
@@ -286,16 +290,19 @@ async fn a_step_out_lists_what_the_function_returned() {
         stopped["inferior"]["stop"].clone(),
         stopped["inferior"]["thread"].clone(),
     );
+
     tab.ok(
         "step",
         json!({"stop": stop, "thread": thread, "kind": "out"}),
     )
     .await;
+
     let out = tab
         .state("the step out", |state| {
             state["inferior"]["state"] == "stopped" && state["inferior"]["stop"] != stop
         })
         .await;
+
     let frame = json!({"stop": out["inferior"]["stop"], "thread": thread, "frame": 0});
     let scopes = tab.ok("scopes", frame).await;
     let locals = scopes["scopes"]
@@ -305,11 +312,13 @@ async fn a_step_out_lists_what_the_function_returned() {
         .find(|scope| scope["key"] == "locals")
         .expect("locals")
         .clone();
+
     let returned = row(&locals["rows"], "returned r_mixed");
     assert!(returned["path"].is_null(), "{returned}");
     let members = returned["children"]["handle"]
         .as_u64()
         .expect("the struct expands");
+
     let fields = tab
         .ok(
             "children",
@@ -352,6 +361,7 @@ async fn the_stack_shows_functions_that_left_by_tail_calls() {
         ],
         "{trace}"
     );
+
     let scopes = tab
         .ok(
             "scopes",
@@ -384,6 +394,7 @@ async fn a_python_stack_marks_its_languages_and_folds_the_interpreter() {
         .await;
     let stop = state["inferior"]["stop"].clone();
     let mut found = None;
+
     for thread in state["threads"].as_array().expect("threads") {
         let trace = tab
             .ok("backtrace", json!({"stop": stop, "thread": thread["id"]}))

@@ -84,6 +84,7 @@ impl CodeFrames {
         let mut proved = 0;
         let mut decoder = Decoder::with_ip(64, code, 0, DecoderOptions::NONE);
         let mut factory = InstructionInfoFactory::new();
+
         while decoder.can_decode() {
             let instruction = decoder.decode();
             if instruction.is_invalid() {
@@ -175,6 +176,7 @@ fn next_on_stack(
             (false, true) => Lost,
             (false, false) => caller_frame_pointer,
         };
+
         return stack(pushed.checked_sub(8), caller_frame_pointer);
     }
 
@@ -205,6 +207,7 @@ fn next_on_stack(
     } else {
         caller_frame_pointer
     };
+
     stack(Some(pushed), caller_frame_pointer)
 }
 

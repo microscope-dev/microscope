@@ -65,6 +65,7 @@ async fn check(handle: &DebuggerHandle) -> Result<(), String> {
     // A goroutine on a thread was checked as its thread's.
     let mut from = None;
     let mut read = 0;
+
     loop {
         let page = handle
             .tasks(from, 256)
@@ -94,6 +95,7 @@ async fn go_module(handle: &DebuggerHandle) -> Result<Option<ModuleId>, String> 
         .loaded_modules()
         .await
         .map_err(|error| format!("modules: {error}"))?;
+
     for module in modules.modules.iter() {
         let image = handle
             .loaded_module_image(module.module.id)
@@ -146,6 +148,7 @@ pub fn check_backtrace(trace: &Backtrace, main: ModuleId) -> Result<(), String> 
         let foreign = trace.frames[last]
             .module
             .is_some_and(|module| module != main);
+
         if role(last) != Some(CodeRole::Outermost) && !switched_from && !starting && !foreign {
             return Err(format!(
                 "it ends complete at a frame that begins no stack: {trace:#?}"
@@ -218,6 +221,7 @@ async fn the_checks_fail_on_the_faults_they_look_for() {
         .expect("the trace switches stacks");
     assert!(check_backtrace(&without(switch), main).is_err());
     assert!(check_backtrace(&without(trace.frames.len() - 1), main).is_err());
+
     let mut unnamed = trace.frames.to_vec();
     let program = unnamed
         .iter()

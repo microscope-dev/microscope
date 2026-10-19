@@ -40,6 +40,7 @@ impl ProcessTree {
             threads: vec![pid.leader()],
             ..Process::default()
         });
+
         if let Some(image) = image {
             process.images.push((time, image));
         }
@@ -63,6 +64,7 @@ impl ProcessTree {
                         started: time,
                         ..Process::default()
                     });
+
                     if !process.threads.contains(&child) {
                         process.threads.push(child);
                     }
@@ -74,6 +76,7 @@ impl ProcessTree {
                         .and_then(|process| process.images.last().cloned())
                         .into_iter()
                         .collect();
+
                     self.processes.insert(
                         pid,
                         Process {

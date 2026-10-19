@@ -243,6 +243,7 @@ pub fn commands(breakpoints: &[Breakpoint], root: &Path) -> String {
         });
         saved.line_text = None;
         let line = command(&saved);
+
         if breakpoint.temporary {
             text.push('t');
         }

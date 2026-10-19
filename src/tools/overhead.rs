@@ -223,6 +223,7 @@ pub fn measure(options: &Options, mut progress: impl FnMut(&Run)) -> Result<Vec<
     placement.microscope()?;
     let privileged = privileged();
     let mut runs = Vec::new();
+
     for _ in 0..options.runs.max(1) {
         for workload in &workloads {
             for setup in setups(workload, privileged) {
@@ -295,6 +296,7 @@ impl Placement {
             .collect();
         let mut program = CpuSet::new();
         let mut microscope = CpuSet::new();
+
         for &cpu in program_cores {
             program.set(cpu)?;
         }
@@ -374,6 +376,7 @@ fn run(workload: &Workload, setup: &str, options: &Options, placement: &Placemen
     let stop = AtomicBool::new(false);
     let (started, on) = mpsc::channel();
     let resident = recorded.as_ref().and_then(|_| reset_peak_rss());
+
     std::thread::scope(|scope| {
         let (bare, recording) = match recorded {
             None => {
@@ -463,6 +466,7 @@ fn lines(mut reader: BufReader<std::io::PipeReader>, options: &Options) -> Resul
     let end = begin + options.window;
     let mut counted = 0_u32;
     let mut line = String::new();
+
     loop {
         line.clear();
         anyhow::ensure!(
@@ -489,6 +493,7 @@ fn lines(mut reader: BufReader<std::io::PipeReader>, options: &Options) -> Resul
 fn server(mut reader: BufReader<std::io::PipeReader>, options: &Options) -> Result<Measured> {
     let mut ready = String::new();
     reader.read_line(&mut ready)?;
+
     let address = ready
         .trim()
         .strip_prefix("READY ")
@@ -512,13 +517,17 @@ fn server(mut reader: BufReader<std::io::PipeReader>, options: &Options) -> Resu
         Ok::<_, anyhow::Error>(latencies)
     })?;
     std::net::TcpStream::connect(&address)?.write_all(b"quit\n")?;
+
     let mut sorted = latencies;
     sorted.sort_unstable();
+
     let p99 = sorted
         .get(sorted.len().saturating_sub(1) * 99 / 100)
         .copied();
+
     #[expect(clippy::cast_precision_loss, reason = "a count of requests")]
     let rate = (sorted.len() * BATCH) as f64 / options.window.as_secs_f64();
+
     Ok(Measured {
         rate,
         p99_ns: p99.map(|latency| u64::try_from(latency.as_nanos()).unwrap_or(u64::MAX)),
@@ -533,6 +542,7 @@ fn client(address: &str, begin: Instant, end: Instant) -> Result<Vec<Duration>> 
     let mut reader = BufReader::new(stream);
     let mut latencies = Vec::new();
     let mut answer = String::new();
+
     loop {
         let asked = Instant::now();
         if asked >= end {
@@ -540,6 +550,7 @@ fn client(address: &str, begin: Instant, end: Instant) -> Result<Vec<Duration>> 
         }
 
         writer.write_all(&b"ask\n".repeat(BATCH))?;
+
         for _ in 0..BATCH {
             answer.clear();
             anyhow::ensure!(reader.read_line(&mut answer)? > 0, "the server hung up");
@@ -598,6 +609,7 @@ pub struct Summary {
 #[must_use]
 pub fn summarize(runs: &[Run]) -> Vec<Summary> {
     let mut summaries = Vec::new();
+
     for workload in WORKLOADS {
         let of = |setup: &str| -> Vec<&Run> {
             runs.iter()
@@ -612,6 +624,7 @@ pub fn summarize(runs: &[Run]) -> Vec<Summary> {
 
         let spread = bare_rates.iter().copied().fold(f64::NAN, f64::max)
             - bare_rates.iter().copied().fold(f64::NAN, f64::min);
+
         for setup in setups(&workload, true) {
             let these = of(setup);
             let Some(rate) = median(these.iter().map(|run| run.rate)) else {

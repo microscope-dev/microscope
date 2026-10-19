@@ -261,6 +261,7 @@ pub fn add_to<'a>(
             TableKind::RestoredFrames,
             index::intervals(unwind.restored.iter().copied()),
         );
+
     if let Some(go) = go {
         let saves = go
             .frame_saves
@@ -276,6 +277,7 @@ pub fn add_to<'a>(
                 }
             })
             .collect::<Vec<_>>();
+
         builder
             .bytes(TableKind::GoTable, go.bytes.to_vec())
             .owned_table(saves);
@@ -500,6 +502,7 @@ pub(super) fn validate(image: &Image) -> Result<(), String> {
     let eh_frame = image.bytes(TableKind::EhFrame).len();
     let debug_frame = image.bytes(TableKind::DebugFrame).len();
     let go = flag(unwind_flags::GO_TABLE);
+
     if records.len() != 1
         || record.flags & !unwind_flags::ALL != 0
         || !matches!(record.address_size, 4 | 8)

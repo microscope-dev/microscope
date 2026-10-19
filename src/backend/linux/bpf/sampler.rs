@@ -218,6 +218,7 @@ pub fn decode(bytes: &[u8]) -> Result<PyStack<'_>, Malformed> {
         .ok_or(Malformed)?;
     let frames = <[RawPyFrame]>::ref_from_bytes(rest.get(..frames_bytes).ok_or(Malformed)?)
         .map_err(|_| Malformed)?;
+
     let end = match record.end {
         0 => StackEnd::Complete,
         1 => StackEnd::Bounded,
@@ -473,6 +474,7 @@ impl Sampler {
             .load(OBJECT)
             .map_err(load_error)?;
         let outputs = events.outputs()?;
+
         {
             let Some(Map::PerfEventArray(array)) = ebpf.map("OUTPUT") else {
                 return Err(load_error("the program has no OUTPUT array"));
@@ -504,6 +506,7 @@ impl Sampler {
         let lost = PerCpuArray::try_from(take("LOST")?).map_err(load_error)?;
         let ids = outputs.iter().map(|output| output.id).collect();
         record!("python sampler: attached, {} outputs", outputs.len());
+
         Ok((
             Self {
                 _ebpf: ebpf,

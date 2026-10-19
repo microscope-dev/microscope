@@ -41,6 +41,7 @@ pub fn write<M: Machine>(
     };
 
     let byte_size = value.type_info.as_ref().and_then(|info| info.byte_size);
+
     Ok(match format {
         BoundFormat::Hex => integer(stored).map(|integer| hex(integer, byte_size)),
         BoundFormat::Char => integer(stored).and_then(character),
@@ -115,6 +116,7 @@ pub fn write<M: Machine>(
             let text = char::decode_utf16(units)
                 .map(|unit| unit.unwrap_or(char::REPLACEMENT_CHARACTER))
                 .collect::<String>();
+
             Some(super::summary::quoted(&TextSummary {
                 bytes: Arc::from(text.into_bytes()),
                 completion: if ended || read == size {
@@ -282,6 +284,7 @@ fn duration(value: i128, unit: TimeUnit) -> String {
     let negative = total < 0;
     let total = total.unsigned_abs();
     let mut output = String::new();
+
     if negative {
         output.push('-');
     }
@@ -300,6 +303,7 @@ fn duration(value: i128, unit: TimeUnit) -> String {
         let hours = total / (3600 * SECOND);
         let minutes = total / (60 * SECOND) % 60;
         let seconds = total % (60 * SECOND);
+
         if hours > 0 {
             let _ = write!(output, "{hours}h");
         }
@@ -341,6 +345,7 @@ fn time(value: i128, unit: TimeUnit) -> Option<String> {
 
     let year = year_of_era + era * 400 + i128::from(month <= 2);
     let mut output = String::new();
+
     if year < 0 {
         output.push('-');
     }
@@ -353,6 +358,7 @@ fn time(value: i128, unit: TimeUnit) -> Option<String> {
         of_day / 60 % 60,
         of_day % 60,
     );
+
     if nanoseconds != 0 {
         let fraction = format!("{nanoseconds:09}");
         output.push('.');
@@ -402,6 +408,7 @@ mod tests {
             (3_723_500, TimeUnit::Milliseconds, "1h2m3.5s"),
             (-2, TimeUnit::Seconds, "-2s"),
         ];
+
         for (value, unit, expected) in cases {
             assert_eq!(duration(value, unit), expected, "{value} {unit:?}");
         }
@@ -442,6 +449,7 @@ mod tests {
                 "10000-01-01 00:00:00 +0000 UTC",
             ),
         ];
+
         for (value, unit, expected) in cases {
             assert_eq!(
                 time(value, unit).as_deref(),

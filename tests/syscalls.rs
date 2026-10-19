@@ -55,6 +55,7 @@ fn normalized(trace: &str) -> String {
     let random = Regex::new(r#"getrandom\("[^"]*""#).expect("regex");
     let pid = Regex::new(r"^\d{4,} +").expect("regex");
     let padding = Regex::new(r"\) +=").expect("regex");
+
     trace
         .lines()
         .filter(|line| !line.starts_with("--- lost "))
@@ -101,6 +102,7 @@ fn traces_that_differ_only_in_an_ids_width_normalize_alike() {
 fn assert_same(ours: &str, theirs: &str, context: &str) {
     let (ours, theirs) = (normalized(ours), normalized(theirs));
     let (ours, theirs): (Vec<&str>, Vec<&str>) = (ours.lines().collect(), theirs.lines().collect());
+
     for (index, (our, their)) in ours.iter().zip(&theirs).enumerate() {
         assert_eq!(our, their, "line {} differs {context}", index + 1);
     }
@@ -120,6 +122,7 @@ fn both(arguments: &[&str], mode: &str) -> (String, String) {
     let directory = ScratchDir::new("syscalls-strace");
     let theirs = directory.path().join("strace.out");
     let ours = directory.path().join("microscope.out");
+
     let strace = Command::new("strace")
         .args(arguments)
         .arg("-o")
@@ -130,17 +133,20 @@ fn both(arguments: &[&str], mode: &str) -> (String, String) {
         .stdin(Stdio::null())
         .output()
         .expect("run strace");
+
     let traced = trace(
         directory.path(),
         &[arguments, &["-o", ours.to_str().expect("path")]].concat(),
         mode,
     );
+
     assert_eq!(
         strace.status.code(),
         traced.status.code(),
         "exit codes differ; microscope said {}",
         text(&traced.stderr)
     );
+
     let read = |path: &Path| std::fs::read_to_string(path).expect("read trace");
     (read(&theirs), read(&ours))
 }
@@ -222,12 +228,15 @@ fn ff_writes_each_threads_calls_to_its_own_file() {
                 Some((id, std::fs::read_to_string(entry.path()).ok()?))
             })
             .collect();
+
         files.sort_unstable();
+
         files.into_iter().map(|(_, text)| text).collect::<Vec<_>>()
     };
 
     let theirs = run("strace", &mut Command::new("strace"));
     let ours = run("microscope", &mut microscope(&["--engine", "ptrace"]));
+
     assert_eq!(ours.len(), theirs.len(), "{ours:#?}\n---\n{theirs:#?}");
     for (ours, theirs) in ours.iter().zip(&theirs) {
         assert_same(ours, theirs, "in one thread's file");
@@ -260,8 +269,10 @@ fn sampling_and_a_duration_floor_choose_which_calls_print() {
         ],
         "files",
     );
+
     assert_eq!(calls(&every), 7, "{}", text(&every.stderr));
     assert_eq!(calls(&sampled), 4, "{}", text(&sampled.stderr));
+
     let summary = text(&sampled.stderr);
     assert!(
         summary
@@ -275,9 +286,11 @@ fn sampling_and_a_duration_floor_choose_which_calls_print() {
         &["-e", "trace=close", "--slower-than", "1h"],
         "files",
     );
+
     let lines = text(&slow.stderr);
     assert_eq!(calls(&slow), 0, "{lines}");
     assert!(lines.contains("+++ exited with 3 +++"), "{lines}");
+
     assert!(
         text(&trace(directory.path(), &["--sample", "2"], "files").stderr)
             .contains("--sample takes 1/N, not 2")
@@ -299,6 +312,7 @@ fn stacks_unwind_to_the_frames_strace_finds() {
     let address = Regex::new(r"(?m)^ > .*\[(0x[0-9a-f]+)\]").expect("regex");
     let program = fixture();
     let program = program.to_str().expect("path");
+
     for (arguments, mode) in [
         (&["-kk", "-e", "trace=write,read,readv"][..], "dumps"),
         (&["-f", "-kk", "-e", "trace=write,getppid"], "family"),
@@ -312,6 +326,7 @@ fn stacks_unwind_to_the_frames_strace_finds() {
             "{}",
             context()
         );
+
         let mut frames = 0;
         for (our, their) in ours.lines().zip(theirs.lines()) {
             if our.starts_with(" > [stack ends: ") {
@@ -360,6 +375,7 @@ fn stacks_unwind_to_the_frames_strace_finds() {
 
         // The addresses themselves, frame by frame.
         let (theirs, ours) = both(arguments, mode);
+
         let addresses = |trace: &str| {
             address
                 .captures_iter(trace)
@@ -398,6 +414,7 @@ fn classes_name_the_calls_strace_names() {
         "vfork",
         "vhangup",
     ];
+
     let calls: Vec<(u32, &str)> = table::calls(Abi::X86_64)
         .iter()
         .copied()
@@ -407,6 +424,7 @@ fn classes_name_the_calls_strace_names() {
     let directory = ScratchDir::new("syscalls-classes");
     let named = Regex::new(r"^(?:\d+ +)?([a-z_0-9]+)\(").expect("regex");
     let mut wrong = Vec::new();
+
     for class in [
         "file", "desc", "net", "process", "signal", "ipc", "memory", "creds", "clock", "stat",
         "lstat", "fstat", "%stat", "statfs", "fstatfs", "%statfs", "pure",
@@ -422,7 +440,9 @@ fn classes_name_the_calls_strace_names() {
             .stdout(Stdio::null())
             .status()
             .expect("run strace");
+
         assert!(status.success());
+
         let traced = std::fs::read_to_string(&out).expect("read strace");
 
         // strace calls numbers it has no name for `syscall_0x...`, and
@@ -432,6 +452,7 @@ fn classes_name_the_calls_strace_names() {
             .filter_map(|line| Some(named.captures(line)?.get(1)?.as_str()))
             .filter(|name| !name.starts_with("syscall_"))
             .collect();
+
         let filter = Filter::parse(&[format!("trace=%{class}")], &|_| None).expect("class");
         let ours: BTreeSet<&str> = calls
             .iter()
@@ -450,6 +471,7 @@ fn classes_name_the_calls_strace_names() {
                 ours.contains(name) || !matches!(*name, "clone" | "wait4" | "execve" | "exit_group")
             })
             .collect();
+
         let missing: Vec<_> = theirs.difference(&ours).collect();
         let extra: Vec<_> = ours.difference(&theirs).collect();
         if !missing.is_empty() || !extra.is_empty() {
@@ -470,15 +492,19 @@ fn children_and_threads_are_followed_unless_asked_not_to() {
         &["-e", "trace=write,wait4,getppid,exit_group"],
         "family",
     );
+
     assert_eq!(followed.status.code(), Some(0));
     let lines = text(&followed.stderr);
     let parent = Regex::new(r"(?m)^\[pid +(\d+)\] wait4\((\d+), \[\{WIFEXITED\(s\) && WEXITSTATUS\(s\) == 4\}\], 0, NULL\) = (\d+)$")
         .expect("regex");
+
     let captures = parent
         .captures(&lines)
         .unwrap_or_else(|| panic!("no wait4 in\n{lines}"));
+
     let child = &captures[2];
     assert_eq!(&captures[3], child);
+
     for expected in [
         format!(r#"[pid {child:>5}] write(1, "child\n", 6)"#),
         format!("[pid {child:>5}] +++ exited with 4 +++"),
@@ -493,6 +519,7 @@ fn children_and_threads_are_followed_unless_asked_not_to() {
             .is_match(&lines),
         "{lines}"
     );
+
     assert!(
         lines.trim_end().ends_with("] +++ exited with 0 +++"),
         "{lines}"
@@ -503,6 +530,7 @@ fn children_and_threads_are_followed_unless_asked_not_to() {
         &["--no-follow", "-e", "trace=write,wait4,getppid"],
         "family",
     );
+
     let lines = text(&alone.stderr);
     assert!(!lines.contains("child"), "{lines}");
     assert!(lines.contains("wait4("), "{lines}");
@@ -528,25 +556,32 @@ fn the_summary_counts_calls_errors_and_errnos() {
         ],
         "files",
     );
+
     assert_eq!(summary.status.code(), Some(3));
     let lines = text(&summary.stderr);
+
     let rows: Vec<Vec<&str>> = lines
         .lines()
         .map(|line| line.split_whitespace().collect())
         .collect();
+
     assert_eq!(rows[0], ["syscall", "calls", "errors", "errnos"], "{lines}");
+
     let openat = rows
         .iter()
         .find(|row| row[0] == "openat")
         .expect("openat row");
+
     assert!(
         openat.contains(&"ENOENT×1") || openat.iter().any(|cell| cell.starts_with("ENOENT×")),
         "{lines}"
     );
+
     assert!(
         rows.iter().any(|row| row[..2] == ["unlink", "1"]),
         "{lines}"
     );
+
     assert!(rows.iter().any(|row| row[..2] == ["write", "1"]), "{lines}");
     assert_eq!(rows.last().expect("total")[0], "total");
     assert!(!lines.contains("openat("), "-c prints no calls\n{lines}");
@@ -562,6 +597,7 @@ fn a_capture_holds_what_the_trace_shows_and_report_summarizes_it() {
         &[&selection[..], &["-k", "-o", "trace.usprof"]].concat(),
         "files",
     );
+
     assert_eq!(captured.status.code(), Some(3));
     assert_eq!(text(&captured.stderr), "", "a capture says nothing more");
 
@@ -569,6 +605,7 @@ fn a_capture_holds_what_the_trace_shows_and_report_summarizes_it() {
     let profile = microscope::profiler::Profile::read(&path)
         .expect("the capture reads")
         .profile;
+
     let syscalls = profile.syscalls();
     let calls: Vec<_> = syscalls
         .events
@@ -584,9 +621,11 @@ fn a_capture_holds_what_the_trace_shows_and_report_summarizes_it() {
         .lines()
         .filter(|line| line.contains(" = -1 "))
         .count();
+
     assert!(failed > 0);
     assert_eq!(calls.len(), failed, "{}", text(&shown.stderr));
     let mut in_main = 0;
+
     for (call, stack) in &calls {
         assert!(call.outcome.raw().is_some_and(|ret| ret < 0), "{call:?}");
         let (functions, _) = profile.syscall_stack(stack.expect("a stack"));
@@ -595,6 +634,7 @@ fn a_capture_holds_what_the_trace_shows_and_report_summarizes_it() {
 
     // The dynamic loader's failed opens come before main.
     assert!(in_main > 0, "no stack reaches main");
+
     assert!(
         syscalls
             .events
@@ -608,12 +648,15 @@ fn a_capture_holds_what_the_trace_shows_and_report_summarizes_it() {
         .current_dir(directory.path())
         .output()
         .expect("run microscope report");
+
     let lines = text(&report.stdout);
     assert!(report.status.success(), "{}", text(&report.stderr));
+
     assert!(
         lines.contains(&format!("{failed} system calls, {failed} failed")),
         "{lines}"
     );
+
     assert!(
         lines
             .lines()
@@ -639,37 +682,45 @@ fn ndjson_carries_names_paths_errnos_and_stacks() {
         ],
         "files",
     );
+
     assert_eq!(traced.status.code(), Some(3));
+
     let records: Vec<serde_json::Value> = text(&traced.stdout)
         .lines()
         .map(|line| serde_json::from_str(line).unwrap_or_else(|error| panic!("{line}: {error}")))
         .collect();
+
     let missing = records
         .iter()
         .find(|record| record["path"] == "missing")
         .unwrap_or_else(|| panic!("no call on missing in {records:?}"));
+
     assert_eq!(missing["type"], "call");
     assert_eq!(missing["name"], "openat");
     assert_eq!(missing["errno"], "ENOENT");
     assert_eq!(missing["return"], -2);
     assert_eq!(missing["args"]["filename"], "\"missing\"");
     assert!(missing["duration_ns"].is_u64());
+
     let frames = missing["stack"].as_array().expect("a stack");
     let files = frames
         .iter()
         .find(|frame| frame["symbol"] == "files")
         .unwrap_or_else(|| panic!("no frame in files: {frames:?}"));
+
     assert_eq!(files["module"], fixture().to_str().expect("path"));
     assert!(
         files["address"]
             .as_str()
             .is_some_and(|address| address.starts_with("0x"))
     );
+
     assert!(
         files["file"]
             .as_str()
             .is_some_and(|file| file.ends_with("syscalls.c"))
     );
+
     assert!(files["line"].is_u64());
     assert!(
         records
@@ -677,6 +728,7 @@ fn ndjson_carries_names_paths_errnos_and_stacks() {
             .all(|record| record["type"] != "call" || record["errno"].is_string()),
         "-Z shows only failures: {records:?}"
     );
+
     assert!(
         records
             .iter()
@@ -704,15 +756,19 @@ fn a_leaders_blocked_call_ends_when_another_thread_executes() {
     .arg(Scenario::fixture("thread-exec"))
     .output()
     .expect("run microscope");
+
     assert_eq!(traced.status.code(), Some(0), "{}", text(&traced.stderr));
+
     let records: Vec<serde_json::Value> = text(&traced.stdout)
         .lines()
         .map(|line| serde_json::from_str(line).unwrap_or_else(|error| panic!("{line}: {error}")))
         .collect();
+
     let pauses: Vec<_> = records
         .iter()
         .filter(|record| record["type"] == "call" && record["name"] == "pause")
         .collect();
+
     assert_eq!(pauses.len(), 1, "{records:?}");
     assert!(pauses[0]["tid"].is_u64(), "{records:?}");
     assert_eq!(pauses[0]["tid"], pauses[0]["pid"], "{records:?}");
@@ -729,9 +785,11 @@ impl TestCgroup {
             .lines()
             .find_map(|line| line.strip_prefix("0::/"))
             .expect("the unified hierarchy");
+
         let path = Path::new("/sys/fs/cgroup")
             .join(own)
             .join(format!("{name}-{}", std::process::id()));
+
         std::fs::create_dir(&path).expect("make a cgroup below the test's own");
         Self(path)
     }
@@ -768,8 +826,10 @@ impl Running {
             .stderr(Stdio::piped())
             .spawn()
             .expect("spawn microscope");
+
         let stderr = child.stderr.take().expect("stderr");
         let (sender, lines) = mpsc::channel();
+
         std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines() {
                 let Ok(line) = line else { return };
@@ -778,6 +838,7 @@ impl Running {
                 }
             }
         });
+
         Self {
             child,
             lines,
@@ -844,17 +905,20 @@ fn a_blocked_call_is_reported_in_flight_until_it_returns() {
         "50ms",
         "--",
     ]);
+
     command
         .arg(fixture())
         .arg("block")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped());
+
     let mut running = Running::spawn(&mut command);
     let line = running.line(|line| line.contains("in flight"));
     assert!(line.starts_with("read(0, "), "{line}");
 
     // Closing standard input returns the read, and the program exits.
     drop(running.child.stdin.take());
+
     let (code, lines) = running.finish();
     assert_eq!(code, Some(0), "{lines:?}");
     assert!(
@@ -873,6 +937,7 @@ fn attaching_needs_consent_and_detaching_leaves_the_process_running() {
     let refused = microscope(&["--engine", "ptrace", "-p", &pid])
         .output()
         .expect("run microscope");
+
     assert!(!refused.status.success());
     let message = text(&refused.stderr);
     assert!(message.contains("--stop-every-call"), "{message}");
@@ -884,14 +949,17 @@ fn attaching_needs_consent_and_detaching_leaves_the_process_running() {
         "-p",
         &pid,
     ]));
+
     running.line(|line| line == format!("microscope: Process {pid} attached"));
     nix::sys::signal::kill(
         nix::unistd::Pid::from_raw(i32::try_from(running.child.id()).expect("pid")),
         nix::sys::signal::Signal::SIGINT,
     )
     .expect("interrupt microscope");
+
     let (code, lines) = running.finish();
     assert_eq!(code, Some(0), "{lines:?}");
+
     assert!(
         lines.contains(&format!("microscope: Process {pid} detached")),
         "{lines:?}"
@@ -914,10 +982,12 @@ fn the_bpf_engine_is_the_default_and_never_falls_back() {
         .expect("run microscope");
     let message = text(&output.stderr);
     assert!(!output.status.success(), "{message}");
+
     assert!(
         message.contains("needs CAP_BPF and CAP_PERFMON") && message.contains("--engine ptrace"),
         "{message}"
     );
+
     assert!(
         !directory.path().join("present").exists(),
         "the program never ran"
@@ -926,6 +996,7 @@ fn the_bpf_engine_is_the_default_and_never_falls_back() {
     let nothing = microscope(&["--engine", "ptrace"])
         .output()
         .expect("run microscope");
+
     assert!(text(&nothing.stderr).contains("never traces the whole host"));
     let _ = std::io::stdout().flush();
 }
@@ -987,6 +1058,7 @@ mod bpf {
             .arg("syscalls")
             .args(arguments)
             .stdin(Stdio::null());
+
         command
     }
 
@@ -996,6 +1068,7 @@ mod bpf {
         let vars = Regex::new(r"/\* \d+ vars \*/").expect("regex");
         let ids = Regex::new(r"\b(st_uid|st_gid|si_uid)=\d+").expect("regex");
         let trace = vars.replace_all(trace, "/* vars */");
+
         normalized(&ids.replace_all(&trace, "$1=ID"))
     }
 
@@ -1022,6 +1095,7 @@ mod bpf {
             .current_dir(directory)
             .output()
             .expect("run microscope");
+
         let read = std::fs::read_to_string(&out).unwrap_or_default();
         (output.status.code(), text(&output.stderr), read)
     }
@@ -1037,6 +1111,7 @@ mod bpf {
             arguments,
             mode,
         );
+
         let (bpf_code, bpf_errors, bpf) = traced(directory, microscope(&[]), arguments, mode);
         assert_eq!(
             ptrace_code, bpf_code,
@@ -1051,6 +1126,7 @@ mod bpf {
         let prefix = Regex::new(r"^(\d+) +").expect("regex");
         let mut threads: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut thread = String::new();
+
         for line in trace.lines() {
             // Losses are left out, as `normalized` says why.
             if prefix.replace(line, "").starts_with("--- lost ") {
@@ -1111,6 +1187,7 @@ mod bpf {
         let directory = ScratchDir::new("syscalls-attach");
         let directory = directory.path();
         let chosen = ["-e", "trace=openat,read,write,close,unlink"];
+
         let by = |attach: &str| {
             let (code, errors, trace) = traced(
                 directory,
@@ -1124,8 +1201,10 @@ mod bpf {
 
         let (fentry_errors, fentry) = by("fentry");
         let (tracepoint_errors, tracepoint) = by("tracepoint");
+
         assert_same(&comparable(&fentry), &comparable(&tracepoint), "by attach");
         assert!(!fentry_errors.contains("33 ns"), "{fentry_errors}");
+
         assert!(
             tracepoint_errors.contains("tracing through tp_btf (asked for)"),
             "{tracepoint_errors}"
@@ -1138,6 +1217,7 @@ mod bpf {
             &["-e", "trace=getpid@32"],
             "compat",
         );
+
         assert_eq!(code, Some(1), "{errors}");
         assert!(
             errors.contains("--attach fentry cannot be used"),
@@ -1223,11 +1303,13 @@ mod bpf {
             .current_dir(directory)
             .output()
             .expect("run microscope syscalls");
+
         assert!(
             directory.join("traced.usprof").exists(),
             "{}",
             text(&traced.stderr)
         );
+
         let recorded = Command::new(launcher())
             .env_clear()
             .arg(env!("CARGO_BIN_EXE_microscope"))
@@ -1245,12 +1327,14 @@ mod bpf {
             .stdin(Stdio::null())
             .output()
             .expect("run microscope record");
+
         assert_eq!(
             recorded.status.code(),
             traced.status.code(),
             "{}",
             text(&recorded.stderr)
         );
+
         assert_eq!(calls("recorded.usprof"), calls("traced.usprof"));
 
         let report = Command::new(env!("CARGO_BIN_EXE_microscope"))
@@ -1258,6 +1342,7 @@ mod bpf {
             .current_dir(directory)
             .output()
             .expect("run microscope report");
+
         let lines = text(&report.stdout);
         assert!(lines.contains(" samples, "), "{lines}");
         assert!(lines.contains(" system calls, "), "{lines}");
@@ -1276,6 +1361,7 @@ mod bpf {
             "-e",
             "signal=!SIGCHLD",
         ];
+
         for mode in ["dumps", "family", "signal"] {
             let directory = ScratchDir::new("syscalls-stacks");
             let directory = directory.path();
@@ -1285,9 +1371,12 @@ mod bpf {
                 &arguments,
                 mode,
             );
+
             assert!(ptrace.contains(" > "), "{errors}{ptrace}");
+
             let (_, errors, copied) =
                 traced(directory, microscope(&["-k=dwarf", "-k"]), &arguments, mode);
+
             let (ours, theirs) = (threads(&copied), threads(&ptrace));
             assert_eq!(
                 ours,
@@ -1306,6 +1395,7 @@ mod bpf {
                     .iter()
                     .filter(|frame| !frame.starts_with(" > [stack ends: "))
                     .count();
+
                 assert!(
                     whole_frames.starts_with(&frames[..named])
                         && (named == whole_frames.len() || frames.len() == named + 1),
@@ -1324,6 +1414,7 @@ mod bpf {
     fn the_kernel_counts_calls_as_the_ptrace_engine_does() {
         let row =
             Regex::new(r"^\s*[\d.]+\s+[\d.]+\s+\d+\s+(\d+)\s+(\d+\s+)?(\S+)$").expect("regex");
+
         let rows = |summary: &str| -> Vec<String> {
             summary
                 .lines()
@@ -1359,10 +1450,13 @@ mod bpf {
             .arg("block")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped());
+
         let mut running = Running::spawn(&mut command);
         let line = running.line(|line| line.contains("in flight"));
         assert!(line.starts_with("read(0, "), "{line}");
+
         drop(running.child.stdin.take());
+
         let (code, lines) = running.finish();
         assert_eq!(code, Some(0), "{lines:?}");
 
@@ -1392,14 +1486,17 @@ mod bpf {
             .stdout(Stdio::piped())
             .spawn()
             .expect("start the fixture");
+
         let mut stdout = BufReader::new(fixture.stdout.take().expect("stdout"));
         let mut line = String::new();
         stdout.read_line(&mut line).expect("the child's pid");
+
         let child = line
             .trim()
             .strip_prefix("child ")
             .expect("a pid")
             .to_owned();
+
         let cgroup = TestCgroup::new("microscope-traced");
         std::fs::write(cgroup.0.join("cgroup.procs"), &child).expect("move the child");
 
@@ -1410,28 +1507,35 @@ mod bpf {
             "-e",
             "trace=read,getpid",
         ]));
+
         running.line(|line| line == format!("microscope: Tracing cgroup {path}"));
+
         let mut input = fixture.stdin.take().expect("stdin");
         input.write_all(b"x").expect("write a byte");
         drop(input);
+
         assert!(fixture.wait().expect("wait").success());
         cgroup.remove();
+
         let (code, lines) = running.finish();
         assert_eq!(code, Some(0), "{lines:?}");
 
         // Once there are two, each line names its process.
         let named = Regex::new(r"^\[pid +(\d+)\] ").expect("regex");
+
         let pids: BTreeSet<&str> = lines
             .iter()
             .filter_map(|line| Some(named.captures(line)?.get(1)?.as_str()))
             .collect();
         assert_eq!(pids, BTreeSet::from(["1", "2"]), "{lines:?}");
+
         assert!(
             lines
                 .iter()
                 .any(|line| line.starts_with("[pid     2] getpid() ") && line.ends_with("= 2")),
             "{lines:?}"
         );
+
         assert!(
             lines
                 .iter()
@@ -1456,14 +1560,17 @@ mod bpf {
             "name,calls",
             "--",
         ]);
+
         command
             .arg(fixture())
             .arg("spin")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped());
+
         let mut running = Running::spawn(&mut command);
         running.line(|line| line.contains("budget: over budget") && line.contains("cut at 16"));
         running.line(|line| line.contains("budget: over budget") && line.contains("one call in 2"));
+
         running
             .child
             .stdin
@@ -1471,22 +1578,28 @@ mod bpf {
             .expect("stdin")
             .write_all(b"x")
             .expect("end the spin");
+
         let mut asked = String::new();
         BufReader::new(running.child.stdout.take().expect("stdout"))
             .read_line(&mut asked)
             .expect("the count");
+
         let asked = asked
             .trim()
             .strip_prefix("asked ")
             .expect("a count")
             .to_owned();
+
         let (code, lines) = running.finish();
         assert_eq!(code, Some(0), "{lines:?}");
+
         let asked: u64 = asked.parse().expect("a number");
+
         let shown = lines
             .iter()
             .filter(|line| line.starts_with("getppid()"))
             .count() as u64;
+
         assert!(shown < asked, "{shown} of {asked}");
 
         // Before it sampled, the ring overflowed, and what it lost is said.
@@ -1500,6 +1613,7 @@ mod bpf {
                     .ok()
             })
             .sum();
+
         let table = lines
             .iter()
             .find_map(
@@ -1509,6 +1623,7 @@ mod bpf {
                 },
             )
             .expect("a row");
+
         assert!(
             table <= asked && asked <= table + lost,
             "{table} counted and {lost} lost of {asked}"
@@ -1546,6 +1661,7 @@ mod bpf {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped());
         let mut running = Running::spawn(&mut command);
+
         let written = || {
             std::fs::read_dir(&segments).map_or(0, |entries| {
                 entries
@@ -1579,6 +1695,7 @@ mod bpf {
             .strip_prefix("asked ")
             .expect("a count")
             .to_owned();
+
         let (code, lines) = running.finish();
         assert_eq!(code, Some(0), "{lines:?}");
 
@@ -1620,6 +1737,7 @@ mod bpf {
         .expect("run microscope");
         let message = text(&output.stderr);
         assert_eq!(output.status.code(), Some(0), "{message}");
+
         let saved = message
             .lines()
             .find_map(|line| {
@@ -1627,6 +1745,7 @@ mod bpf {
                     .split_once(" calls to ")
             })
             .unwrap_or_else(|| panic!("{message}"));
+
         let window = Command::new(env!("CARGO_BIN_EXE_microscope"))
             .arg("report")
             .arg(directory.path().join(saved.1))
@@ -1653,6 +1772,7 @@ mod bpf {
         let directory = ScratchDir::new("syscalls-record-continuous");
         let segments = directory.path().join("segments");
         std::fs::create_dir(&segments).expect("make the directory");
+
         let mut recording = Command::new(launcher())
             .env_clear()
             .arg(env!("CARGO_BIN_EXE_microscope"))
@@ -1674,10 +1794,12 @@ mod bpf {
             .stderr(Stdio::piped())
             .spawn()
             .expect("run microscope record");
+
         let mut stderr = recording.stderr.take().expect("stderr");
         let mut stdout = BufReader::new(recording.stdout.take().expect("stdout"));
         let mut ready = String::new();
         stdout.read_line(&mut ready).expect("ready");
+
         let written = || {
             std::fs::read_dir(&segments).map_or(0, |entries| {
                 entries
@@ -1688,6 +1810,7 @@ mod bpf {
         };
 
         let mut input = recording.stdin.take().expect("stdin");
+
         for _ in 0..3 {
             if let Err(error) = input.write_all(b"x") {
                 let mut said = String::new();
@@ -1710,6 +1833,7 @@ mod bpf {
 
         // Each segment's reads of a byte, and what it lost.
         let mut found = Vec::new();
+
         for entry in std::fs::read_dir(&segments)
             .expect("the segments")
             .flatten()
@@ -1785,6 +1909,7 @@ fn threads_and_children_are_announced_before_what_they_do() {
     let events = read.profile.syscalls().events;
     let mut announced = BTreeMap::new();
     let mut problems = Vec::new();
+
     for recorded in &events {
         match &recorded.event {
             TraceEvent::Spawn { child, thread, .. } => {
@@ -1819,6 +1944,7 @@ fn threads_and_children_are_announced_before_what_they_do() {
         (count, count),
         "{problems:?}"
     );
+
     assert!(problems.is_empty(), "{problems:?}");
 }
 

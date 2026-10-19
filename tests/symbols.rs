@@ -191,19 +191,23 @@ fn assert_frame_symbols_are_consistent(trace: &Backtrace, modules: &Modules, con
             .symbol(symbol.symbol)
             .unwrap_or_else(|| panic!("{context}: unknown symbol {symbol:?}"));
         assert_eq!(info.name(), &*symbol.name, "{context}");
+
         let image_instruction = frame
             .instruction
             .expect("a thread's frame has an instruction")
             .get()
             - modules.bias(module);
+
         assert_eq!(
             image_instruction - info.address().get(),
             symbol.offset,
             "{context}: frame #{}",
             frame.level
         );
+
         let extent = info.extent().expect("a frame symbol names code");
         assert_eq!(extent.provenance, symbol.provenance, "{context}");
+
         let lookup = if frame.level == 0 {
             image_instruction
         } else {
@@ -229,6 +233,7 @@ fn assert_fault_chain(trace: &Backtrace, modules: &Modules, executable: &str, li
         "{context}: {trace:#?}"
     );
     assert_eq!(trace.frames.len(), expected.len(), "{context}: {trace:#?}");
+
     assert_frame_symbols_are_consistent(trace, modules, &context);
 
     for (frame, expected) in trace.frames.iter().zip(&expected) {
@@ -335,6 +340,7 @@ fn assert_library_layout(
         .extent()
         .expect("sized inner")
         .range;
+
     let outer_offset = frame_symbol(outer, &context).offset;
     assert!(
         outer_offset > inner.end.get() - symbol_named(image, "asm_nested_outer").address().get(),
@@ -352,12 +358,15 @@ fn assert_library_layout(
             (symbol.name(), symbol.binding())
         })
         .collect::<Vec<_>>();
+
     aliases.sort_unstable();
+
     let mut expected_aliases = vec![
         ("__asm_alias_global", SymbolBinding::Global),
         ("asm_alias_a_weak", SymbolBinding::Weak),
         ("asm_alias_global", SymbolBinding::Global),
     ];
+
     if library != "libelf-symbols-stripped.so" {
         expected_aliases.push(("asm_alias_0_local", SymbolBinding::Local));
     }
@@ -382,6 +391,7 @@ fn assert_library_layout(
         oracle.unwind_end_at(unsized_symbol.address().get()),
         "{context}"
     );
+
     assert_eq!(unsized_extent.provenance, SymbolExtentProvenance::Inferred);
 
     // Without one, it ends where the next function begins. Once stripping
@@ -389,6 +399,7 @@ fn assert_library_layout(
     let leaf_extent = symbol_named(image, "asm_unsized_leaf")
         .extent()
         .expect("code");
+
     let next_function = if library == "libelf-symbols-stripped.so" {
         assert!(
             !image
@@ -408,6 +419,7 @@ fn assert_library_layout(
 
     let sources = image.symbol_sources();
     assert!(sources.dynamic_table, "{context}");
+
     match library {
         "libelf-symbols-stripped.so" => {
             assert!(!sources.static_table, "{context}");
@@ -437,6 +449,7 @@ fn open_core(executable: &str) -> Scenario {
 async fn live_processes_name_code_and_data_by_elf_symbols() {
     for (index, (executable, library)) in VARIANTS.into_iter().enumerate() {
         let mut scenario = Scenario::launch(executable);
+
         assert!(matches!(
             scenario
                 .handle()
@@ -444,6 +457,7 @@ async fn live_processes_name_code_and_data_by_elf_symbols() {
                 .await,
             Err(Error::NotRunning)
         ));
+
         let site = scenario.add_breakpoint("chain_nested_site").await;
 
         // asm_nested_outer calls back before, within, and after its nested
@@ -457,14 +471,18 @@ async fn live_processes_name_code_and_data_by_elf_symbols() {
             };
 
             assert!(matches!(stop, StopReason::Breakpoint { .. }), "{stop:?}");
+
             let trace = scenario
                 .operation("backtrace", scenario.handle().backtrace())
                 .await;
+
             let modules = Modules::load(&scenario).await;
             assert_frame_symbols_are_consistent(&trace, &modules, executable);
+
             let caller = frame_symbol(&trace.frames[1], executable);
             assert_eq!(caller.name.as_ref(), expected, "{executable}: {trace:#?}");
             assert_eq!(caller.provenance, SymbolExtentProvenance::Declared);
+
             if expected == "asm_nested_outer" {
                 let context = format!("{executable} (live)");
                 assert_descriptions(&scenario, &modules, executable, library, index, &context)
@@ -478,10 +496,12 @@ async fn live_processes_name_code_and_data_by_elf_symbols() {
             matches!(&stop, StopReason::Exception(exception) if exception.code == 4),
             "{executable}: {stop:?}"
         );
+
         let modules = Modules::load(&scenario).await;
         let trace = scenario
             .operation("backtrace", scenario.handle().backtrace())
             .await;
+
         assert_fault_chain(&trace, &modules, executable, library);
 
         // The stop location belongs to the library that faulted, which has no
@@ -489,11 +509,13 @@ async fn live_processes_name_code_and_data_by_elf_symbols() {
         let location = scenario
             .operation("location", scenario.handle().current_location())
             .await;
+
         let (library_module, _) = modules.named(library);
         assert_eq!(location.module, library_module, "{executable}");
         assert_eq!(Some(location.address), trace.frames[0].instruction);
         assert!(location.image.function.is_none());
         assert!(location.image.source.is_none());
+
         assert_eq!(
             location
                 .image
@@ -503,10 +525,12 @@ async fn live_processes_name_code_and_data_by_elf_symbols() {
             Some("lib_fault"),
             "{executable}"
         );
+
         assert!(matches!(
             scenario.handle().source_context(3).await,
             Err(Error::SourceLocationUnavailable)
         ));
+
         scenario.shutdown().await;
     }
 }
@@ -523,10 +547,12 @@ fn gdb_backtrace(core: &str) -> Vec<GdbFrame> {
     let path = Scenario::fixture(&format!("{core}.gdb-backtrace"));
     let text = fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+
     text.lines()
         .map(|line| {
             // "#N  0xADDRESS in NAME (...) ..." or "#N  NAME (...) at FILE:LINE"
             let rest = line.split_once(' ').expect("frame number").1.trim_start();
+
             let (address, rest) = match rest.split_once(" in ") {
                 Some((address, rest)) if address.starts_with("0x") => (
                     Some(u64::from_str_radix(&address[2..], 16).expect("frame address")),
@@ -538,6 +564,7 @@ fn gdb_backtrace(core: &str) -> Vec<GdbFrame> {
             // A versioned name, such as clock_gettime@GLIBC_2.2.5, names
             // its symbol without the version.
             let name = rest.split(" (").next().expect("frame name");
+
             GdbFrame {
                 address,
                 name: name.split('@').next().expect("symbol name").to_owned(),
@@ -557,20 +584,27 @@ async fn cores_agree_with_gdb_and_readelf() {
     for (index, (executable, library)) in VARIANTS.into_iter().enumerate() {
         let scenario = open_core(executable);
         let modules = Modules::load(&scenario).await;
+
         let trace = scenario
             .operation("backtrace", scenario.handle().backtrace())
             .await;
+
         assert_fault_chain(&trace, &modules, executable, library);
+
         let location = scenario
             .operation("location", scenario.handle().current_location())
             .await;
+
         assert_eq!(location.module, modules.named(library).0);
         assert_eq!(location.image.symbol, trace.frames[0].symbol);
+
         let gdb = gdb_backtrace(&format!("{executable}.core"));
         assert_agrees_with_gdb(&trace, &modules, &gdb, executable);
         assert_catalogs_match_oracles(&modules, executable, library);
+
         let context = format!("{executable} (core)");
         assert_descriptions(&scenario, &modules, executable, library, index, &context).await;
+
         scenario.shutdown().await;
     }
 }
@@ -586,11 +620,14 @@ async fn vdso_cores_agree_with_gdb() {
             let core = format!("vdso-{variant}-{mode}.core");
             let scenario =
                 Scenario::open_core(&core, &CoreDumpOptions::new(Scenario::fixture(&core)));
+
             let modules = Modules::load(&scenario).await;
             let trace = scenario
                 .operation("backtrace", scenario.handle().backtrace())
                 .await;
+
             assert_frame_symbols_are_consistent(&trace, &modules, &core);
+
             let vdso = trace.frames[0].module.expect("the fault's module");
             assert_eq!(modules.file_name(vdso), support::VDSO, "{core}");
             assert_agrees_with_gdb(&trace, &modules, &gdb_backtrace(&core), &core);
@@ -602,6 +639,7 @@ async fn vdso_cores_agree_with_gdb() {
                 .iter()
                 .find(|module| module.recorded_path.as_os_str() == support::VDSO)
                 .unwrap_or_else(|| panic!("{core}: no vDSO in {info:#?}"));
+
             assert!(
                 matches!(
                     &recorded.state,
@@ -611,11 +649,13 @@ async fn vdso_cores_agree_with_gdb() {
                 ),
                 "{core}: {recorded:#?}"
             );
+
             assert_eq!(
                 recorded.build_id.as_ref().map(|build_id| build_id.len()),
                 Some(20),
                 "{core}: {recorded:#?}"
             );
+
             scenario.shutdown().await;
         }
     }
@@ -626,8 +666,10 @@ async fn vdso_cores_agree_with_gdb() {
 /// named alike or by another symbol at the same address.
 fn assert_agrees_with_gdb(trace: &Backtrace, modules: &Modules, gdb: &[GdbFrame], context: &str) {
     assert_eq!(trace.frames.len(), gdb.len(), "{context}: {gdb:#?}");
+
     for (frame, gdb) in trace.frames.iter().zip(gdb) {
         let context = format!("{context}: frame #{} {gdb:?}", frame.level);
+
         if let Some(address) = gdb.address {
             assert_eq!(
                 frame
@@ -646,6 +688,7 @@ fn assert_agrees_with_gdb(trace: &Backtrace, modules: &Modules, gdb: &[GdbFrame]
         }
 
         assert!(frame.function.is_none(), "{context}");
+
         if gdb.name == "??" {
             assert!(frame.symbol.is_none(), "{context}: {frame:#?}");
             continue;
@@ -654,6 +697,7 @@ fn assert_agrees_with_gdb(trace: &Backtrace, modules: &Modules, gdb: &[GdbFrame]
         let symbol = frame_symbol(frame, &context);
         let image = &modules.images[&frame.module.expect("symbolized module")];
         let chosen = image.symbol(symbol.symbol).expect("catalog symbol");
+
         assert!(
             image
                 .symbols()
@@ -722,6 +766,7 @@ impl Oracle {
 
         oracle.distinguish_versions();
         oracle.add_plt_symbols();
+
         oracle.data = oracle
             .symbols()
             .filter(|(_, symbol)| symbol.kind == Some(SymbolKind::Data) && symbol.binding.is_some())
@@ -732,6 +777,7 @@ impl Oracle {
                     .then(|| (symbol.clone(), *end))
             })
             .collect();
+
         oracle
     }
 
@@ -781,12 +827,14 @@ impl Oracle {
                     .strip_prefix("*ABS*+0x")
                     .and_then(|resolver| self.indirect_function_at(resolver))
                     .unwrap_or_else(|| name.to_owned());
+
                 let (section, size) = file
                     .executable_sections
                     .iter()
                     .find(|(_, (start, end))| (*start..*end).contains(address))
                     .map(|(section, _)| (*section, file.entry_sizes[section]))
                     .expect("a PLT stub's section");
+
                 stubs.push((
                     index,
                     OracleSymbol {
@@ -852,6 +900,7 @@ impl Oracle {
             .filter(|(_, symbol)| symbol.name == name)
             .map(|(_, symbol)| symbol.address)
             .collect::<BTreeSet<_>>();
+
         let [address] = addresses.into_iter().collect::<Vec<_>>()[..] else {
             panic!("{name} does not have exactly one address");
         };
@@ -1042,18 +1091,22 @@ fn assert_catalog_matches_oracle(image: &ModuleImage, oracle: &Oracle, context: 
         .symbols()
         .map(|symbol| ((symbol.name().to_string(), symbol.address().get()), symbol))
         .collect::<BTreeMap<_, _>>();
+
     let invented = catalog
         .keys()
         .filter(|key| !admitted.contains_key(*key))
         .collect::<Vec<_>>();
+
     let missing = admitted
         .keys()
         .filter(|key| !catalog.contains_key(*key))
         .collect::<Vec<_>>();
+
     assert!(
         invented.is_empty() && missing.is_empty(),
         "{context}: invented {invented:?}, missing {missing:?}"
     );
+
     for (key, entries) in &admitted {
         let symbol = catalog[key];
         assert!(
@@ -1081,7 +1134,9 @@ fn assert_sections_match_oracle(image: &ModuleImage, oracle: &OracleFile, contex
         .values()
         .map(|(name, start, end, _)| (*start, *end, name.clone()))
         .collect::<Vec<_>>();
+
     expected.sort();
+
     let actual = image
         .sections()
         .iter()
@@ -1093,7 +1148,9 @@ fn assert_sections_match_oracle(image: &ModuleImage, oracle: &OracleFile, contex
             )
         })
         .collect::<Vec<_>>();
+
     assert_eq!(actual, expected, "{context}");
+
     for section in image.sections() {
         let flags = &oracle.section_flags[section.name.as_ref()];
         assert_eq!(
@@ -1207,6 +1264,7 @@ fn assert_code_extents_match_oracle(
         .collect::<BTreeSet<_>>();
     let mut checked = 0_usize;
     let mut inferred = 0_usize;
+
     for (key, symbol) in catalog {
         let Some(&(oracle_symbol, _, section_end)) = code_by_key.get(key) else {
             assert!(symbol.extent().is_none(), "{context}: {symbol:?}");
@@ -1216,7 +1274,9 @@ fn assert_code_extents_match_oracle(
         let extent = symbol
             .extent()
             .unwrap_or_else(|| panic!("{context}: code symbol without extent {symbol:?}"));
+
         assert_eq!(extent.range.start, symbol.address(), "{context}");
+
         if oracle_symbol.size == 0 {
             // The first evidence of other code: the next code symbol, the next
             // call-frame entry, the end of an entry beginning at the symbol,
@@ -1313,6 +1373,7 @@ fn assert_catalogs_match_oracles(modules: &Modules, executable: &str, library: &
             &Oracle::read(&oracles),
             &format!("{executable}: {file_name}"),
         );
+
         compared.insert(file_name);
     }
 
@@ -1331,8 +1392,10 @@ async fn rust_frames_without_debug_info_are_named_by_demangled_symbols() {
     let trace = scenario
         .operation("backtrace", scenario.handle().backtrace())
         .await;
+
     assert_frame_symbols_are_consistent(&trace, &modules, "rust");
     assert_eq!(trace.termination, UnwindTermination::Complete);
+
     let names = trace
         .frames
         .iter()
@@ -1363,6 +1426,7 @@ async fn rust_frames_without_debug_info_are_named_by_demangled_symbols() {
         ],
         "{names:#?}"
     );
+
     assert!(
         trace.frames[1]
             .symbol
@@ -1370,10 +1434,12 @@ async fn rust_frames_without_debug_info_are_named_by_demangled_symbols() {
             .is_some_and(|symbol| symbol.name.starts_with("_R")),
         "the raw name stays the v0-mangled linkage name"
     );
+
     assert_eq!(
         names.last().cloned().flatten(),
         Some((executable, "_start".to_owned()))
     );
+
     scenario.shutdown().await;
 }
 
@@ -1384,6 +1450,7 @@ async fn go_frames_without_dwarf_are_named_from_the_function_table() {
     let trace = scenario
         .operation("backtrace", scenario.handle().backtrace())
         .await;
+
     assert_frame_symbols_are_consistent(&trace, &modules, "go");
 
     // Go's function table names the function and its line. The core holds
@@ -1396,6 +1463,7 @@ async fn go_frames_without_dwarf_are_named_from_the_function_table() {
         ),
         "{trace:#?}"
     );
+
     let [frame] = &trace.frames[..] else {
         panic!("{trace:#?}");
     };
@@ -1407,6 +1475,7 @@ async fn go_frames_without_dwarf_are_named_from_the_function_table() {
             .map(|function| function.name.as_ref()),
         Some("main.crashNow")
     );
+
     assert_eq!(
         frame.source.as_ref().map(|source| source.line.get()),
         Some(support::source_line(
@@ -1414,10 +1483,12 @@ async fn go_frames_without_dwarf_are_named_from_the_function_table() {
             "*crashTarget ="
         ))
     );
+
     assert_eq!(
         frame.symbol.as_ref().map(|symbol| symbol.name.as_ref()),
         Some("main.crashNow")
     );
+
     let location = scenario
         .operation("location", scenario.handle().current_location())
         .await;
@@ -1437,14 +1508,18 @@ async fn thread_local_symbols_have_no_runtime_address() {
         scenario.handle().runtime_address("tls_pointer").await,
         Err(Error::SymbolNotFound(name)) if name == "tls_pointer"
     ));
+
     let main = scenario
         .operation("main address", scenario.handle().runtime_address("main"))
         .await;
+
     let location = scenario
         .operation("location", scenario.handle().current_location())
         .await;
+
     let symbol = location.image.symbol.expect("main is a code symbol");
     assert_eq!(symbol.name.as_ref(), "main");
+
     assert_eq!(main.get() + symbol.offset, location.address.get());
     scenario.shutdown().await;
 }
@@ -1453,10 +1528,12 @@ async fn thread_local_symbols_have_no_runtime_address() {
 async fn instructions_outside_every_module_have_no_location() {
     let mut live = Scenario::new("null call", Scenario::fixture("null-call"));
     let stop = live.run_to_stop().await;
+
     assert!(
         matches!(&stop, StopReason::Exception(exception) if exception.code == 11),
         "{stop:?}"
     );
+
     for scenario in [live, open_core("null-call")] {
         // No module describes address zero, so there is no location to report
         // and nothing to unwind with, rather than a guess from the main image.
@@ -1464,9 +1541,11 @@ async fn instructions_outside_every_module_have_no_location() {
             scenario.handle().current_location().await,
             Err(Error::AddressOutsideModule)
         ));
+
         let trace = scenario
             .operation("backtrace", scenario.handle().backtrace())
             .await;
+
         let [frame] = &trace.frames[..] else {
             panic!("{trace:#?}");
         };
@@ -1478,11 +1557,13 @@ async fn instructions_outside_every_module_have_no_location() {
                 .get(),
             0
         );
+
         assert!(frame.module.is_none() && frame.symbol.is_none() && frame.function.is_none());
         assert!(
             matches!(trace.termination, UnwindTermination::ModuleNotFound { address } if address.get() == 0),
             "{trace:#?}"
         );
+
         scenario.shutdown().await;
     }
 }
@@ -1521,10 +1602,12 @@ impl Oracle {
             })
             .map(|(symbol, _)| symbol)
             .collect::<Vec<_>>();
+
         let innermost = sized
             .iter()
             .map(|symbol| (std::cmp::Reverse(symbol.address), symbol.size))
             .min();
+
         let (data, unsized_data) = if innermost.is_some() {
             (
                 sized
@@ -1566,10 +1649,12 @@ impl Oracle {
                 end,
             ]
         });
+
         let sections = self.files[0]
             .allocated_sections
             .values()
             .flat_map(|(_, start, end, _)| [start.saturating_sub(1), *start, end - 1, *end]);
+
         symbols.chain(sections).collect()
     }
 }
@@ -1589,6 +1674,7 @@ async fn assert_module_descriptions(
     let (module, image) = modules.named(file_name);
     let bias = modules.bias(module);
     let mut described = 0;
+
     for probe in oracle.boundary_probes() {
         let Some(address) = bias.checked_add(probe) else {
             continue;
@@ -1602,8 +1688,10 @@ async fn assert_module_descriptions(
                     .describe_address(VirtualAddress::new(address)),
             )
             .await;
+
         let context = format!("{context}: {file_name}+{probe:#x}");
         assert_eq!(description.address.get(), address, "{context}");
+
         let expected = oracle.describe(probe);
         let Some(found) = description
             .module
@@ -1628,6 +1716,7 @@ async fn assert_module_descriptions(
             expected.section,
             "{context}"
         );
+
         if let Some(section) = &found.image.section {
             let info = image.section(section.section).expect("cataloged section");
             assert_eq!(info.range.start.get() + section.offset, probe, "{context}");
@@ -1635,6 +1724,7 @@ async fn assert_module_descriptions(
         }
 
         let code = image.symbolize(ImageAddress::new(probe));
+
         match (&found.image.symbol, code) {
             (Some(symbol), Some(code)) => assert_eq!(*symbol, code, "{context}"),
             (None, Some(code)) => panic!("{context}: code symbol {code:?} was not described"),
@@ -1756,6 +1846,7 @@ async fn assert_data_object_descriptions(
             scenario.handle().describe_address(VirtualAddress::new(8)),
         )
         .await;
+
     assert_eq!(description.module, None, "{executable}");
 }
 
@@ -1771,13 +1862,16 @@ async fn assert_descriptions(
     context: &str,
 ) {
     assert_data_object_descriptions(scenario, modules, executable, library).await;
+
     let mut checked = vec![(executable, vec![executable])];
     let embedded = format!("{library}.embedded");
+
     checked.push(if library == "libelf-symbols-minidebug.so" {
         (library, vec![library, embedded.as_str()])
     } else {
         (library, vec![library])
     });
+
     if variant == 0 {
         checked.push(("libc.so.6", vec!["libc.so.6"]));
         checked.push(("ld-linux-x86-64.so.2", vec!["ld-linux-x86-64.so.2"]));

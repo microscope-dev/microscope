@@ -112,6 +112,7 @@ fn a_program_in_an_external_terminal_stops_on_entry_restarts_and_ends_with_the_s
             .iter()
             .all(|request| request["arguments"]["kind"] == "external")
     );
+
     let stop = dap.stopped(restarted.mark);
     assert_eq!(stop.reason, "entry");
     assert_ne!(dap.process_id(), Some(first));

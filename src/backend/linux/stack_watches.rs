@@ -200,6 +200,7 @@ impl<P: InspectionOps> Controller<P> {
             Activation::on_task(task, activation),
             evidence,
         )?;
+
         Ok((!live).then_some(WatchpointInvalidation::ScopeExited))
     }
 
@@ -279,6 +280,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .stack_moves
             .moving
             .retain(|moving| watched.contains(&moving.task) && !moving.returned);
+
         let returns = inferior
             .stack_moves
             .moving
@@ -377,6 +379,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
             let returns_to = VirtualAddress::new(self.ptrace.read_word(pid, registers.rsp)?);
             record!("task {task}'s stack moves on {pid}, returning to {returns_to}");
+
             let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
             inferior.stack_moves.moving.push(Move {
                 thread: pid,
@@ -385,6 +388,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 stack: registers.rsp.wrapping_add(8),
                 returned: false,
             });
+
             return self.queue_stack_follow();
         }
 
@@ -514,6 +518,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         self.arm_all_threads(plan)?;
+
         let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
         for (id, (address, chunks)) in &moved {
             let record = inferior

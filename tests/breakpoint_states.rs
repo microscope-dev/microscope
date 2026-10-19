@@ -101,6 +101,7 @@ async fn wait_for(
     hit_count: impl Fn(&microscope::StateSnapshot) -> u64,
 ) {
     let deadline = Instant::now() + Duration::from_secs(5);
+
     loop {
         let snapshot = scenario
             .operation("snapshot", scenario.handle().snapshot())
@@ -414,6 +415,7 @@ async fn threads_reaching_a_temporary_breakpoint_together_share_its_stop() {
     assert_eq!(hits(&reason)[0].breakpoint, temporary.id);
     let snapshot = scenario.snapshot().await;
     assert!(snapshot.breakpoints.is_empty());
+
     for thread in snapshot.threads.iter() {
         if let ThreadState::Stopped {
             reason: Some(reason @ StopReason::Breakpoint { .. }),
@@ -491,6 +493,7 @@ async fn advance_from_a_new_breakpoint_counts_the_arrival_it_stands_at() {
     scenario.remove_breakpoint(loop_call.id).await;
     let at = pc(&scenario).await;
     scenario.step_to_stop(StepKind::OverInstruction).await;
+
     while pc(&scenario).await != at {
         scenario.step_to_stop(StepKind::OverInstruction).await;
     }

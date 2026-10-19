@@ -21,10 +21,12 @@ fn get(address: &str, path: &str) -> String {
         .set_read_timeout(Some(Duration::from_secs(20)))
         .expect("bound the read");
     write!(stream, "GET {path} HTTP/1.0\r\nHost: {address}\r\n\r\n").expect("send the request");
+
     let mut response = String::new();
     stream
         .read_to_string(&mut response)
         .expect("read the response");
+
     let (head, body) = response
         .split_once("\r\n\r\n")
         .unwrap_or_else(|| panic!("a response: {response:?}"));
@@ -59,6 +61,7 @@ async fn an_attached_server_stops_for_a_request_and_serves_on_once_detached() {
 
     let line = support::source_line(SOURCE, "// SERVED: count");
     let breakpoint = scenario.add_source_breakpoint("main.go", line).await;
+
     let first = {
         let address = address.clone();
         std::thread::spawn(move || get(&address, "/count"))

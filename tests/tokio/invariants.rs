@@ -60,10 +60,12 @@ async fn check(handle: &DebuggerHandle) -> Result<(), String> {
 /// The stop the debugger is at, or `None` when it is at none.
 async fn read(handle: &DebuggerHandle) -> Result<Option<Stop>, String> {
     let failed = |what: &str, error: microscope::Error| format!("{what}: {error}");
+
     let snapshot = handle
         .snapshot()
         .await
         .map_err(|error| failed("snapshot", error))?;
+
     let InferiorState::Stopped { stop_id, .. } = snapshot.inferior else {
         return Ok(None);
     };
@@ -74,6 +76,7 @@ async fn read(handle: &DebuggerHandle) -> Result<Option<Stop>, String> {
             .activity
             .clone()
             .ok_or_else(|| format!("thread {} has no activity", thread.id))?;
+
         let trace = handle
             .at(StopContext {
                 stop: stop_id,
@@ -210,6 +213,7 @@ fn check_stop(stop: &Stop) -> Result<(), String> {
             *id == thread
                 && matches!(activity, ThreadActivity::Task { task: on, .. } if *on == task.id)
         });
+
         if !runs {
             return Err(format!(
                 "task {} is listed on thread {thread}, which does not run it",
@@ -348,6 +352,7 @@ async fn the_checks_fail_on_the_faults_they_look_for() {
     }
 
     check_stop(&stop).expect("the stop holds");
+
     let (index, task) = stop
         .threads
         .iter()
@@ -357,6 +362,7 @@ async fn the_checks_fail_on_the_faults_they_look_for() {
             _ => None,
         })
         .expect("a thread runs a task");
+
     let position = stop
         .tasks
         .iter()
@@ -367,6 +373,7 @@ async fn the_checks_fail_on_the_faults_they_look_for() {
     twice.tasks.push(stop.tasks[position].clone());
     let mut moved = stop.clone();
     moved.tasks[position].thread = None;
+
     let mut undispatched = stop.clone();
     let frames = undispatched.threads[index]
         .2
@@ -376,12 +383,14 @@ async fn the_checks_fail_on_the_faults_they_look_for() {
         .cloned()
         .collect::<Vec<_>>();
     undispatched.threads[index].2.frames = frames.into();
+
     let mut idle = stop.clone();
     idle.threads[index].1 = ThreadActivity::Idle;
     let mut unknown = stop.clone();
     unknown.threads[index].1 = ThreadActivity::Unknown("unreadable".into());
     let mut gap = stop.clone();
     gap.gaps.push("shard 0 is broken".into());
+
     let (_, trace) = stop
         .suspended
         .iter()
@@ -392,11 +401,13 @@ async fn the_checks_fail_on_the_faults_they_look_for() {
                 .any(|frame| matches!(frame.kind, FrameKind::Async { .. }))
         })
         .expect("a task is suspended in an async function");
+
     let at = trace
         .frames
         .iter()
         .position(|frame| matches!(frame.kind, FrameKind::Async { .. }))
         .expect("an async frame");
+
     let sabotage = |change: &dyn Fn(&mut Vec<microscope::StackFrame>)| {
         let mut frames = trace.frames.to_vec();
         change(&mut frames);
@@ -412,6 +423,7 @@ async fn the_checks_fail_on_the_faults_they_look_for() {
 
     let repeated = sabotage(&|frames| frames.push(frames[at].clone()));
     let unnamed = sabotage(&|frames| frames[at].function = None);
+
     for (fault, sabotaged) in [
         ("twice", twice),
         ("moved", moved),
@@ -435,10 +447,12 @@ async fn the_checks_fail_on_a_future_nothing_drives() {
     let mut scenario = checked("tokio-drivers-o0");
     scenario.add_breakpoint("truth_reached").await;
     scenario.run_to_stop().await;
+
     let stop = read(scenario.handle())
         .await
         .expect("the stop")
         .expect("stopped");
+
     check_stop(&stop).expect("the stop holds");
 
     // The thread that blocks on the runtime drives the future it was given.
@@ -454,6 +468,7 @@ async fn the_checks_fail_on_a_future_nothing_drives() {
             Some((index, last))
         })
         .expect("a thread drives a future");
+
     let thread_sabotage = |change: &dyn Fn(&mut Backtrace)| {
         let mut sabotaged = stop.clone();
         change(&mut sabotaged.threads[driving].2);
@@ -465,6 +480,7 @@ async fn the_checks_fail_on_a_future_nothing_drives() {
         frames[last + 1].role = CodeRole::Ordinary;
         trace.frames = frames.into();
     });
+
     let misplaced = thread_sabotage(&|trace| {
         trace.unfollowed = Arc::from([microscope::Unfollowed {
             driver: StackFrameId::INNERMOST,
@@ -472,6 +488,7 @@ async fn the_checks_fail_on_a_future_nothing_drives() {
             reason: "unread".into(),
         }]);
     });
+
     for (fault, sabotaged) in [("undriven", undriven), ("misplaced", misplaced)] {
         assert!(check_stop(&sabotaged).is_err(), "{fault}");
     }

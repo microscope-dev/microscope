@@ -132,6 +132,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                         .map(|pending| pending.signal)
                 })
                 .filter(|&signal| self.signals.get(signal).pass);
+
             let _ = self.ptrace.detach(pid, signal);
         }
 

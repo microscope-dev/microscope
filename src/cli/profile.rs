@@ -442,6 +442,7 @@ fn options(args: &RecordArgs) -> Result<RecordOptions> {
         PresetArg::Dev => Preset::Development,
         PresetArg::Max => Preset::Maximum,
     });
+
     if let Some(rate) = args.rate {
         options.source = SampleSource::Clock { rate };
     }
@@ -524,6 +525,7 @@ fn record(args: &RecordArgs) -> Result<i32> {
         args.pid.is_some().then(|| Arc::clone(&stop)),
         Arc::clone(&trigger),
     )?;
+
     if let Some(seconds) = args.duration {
         let duration = Duration::try_from_secs_f64(seconds).context("--duration")?;
         let stop = Arc::clone(&stop);
@@ -550,6 +552,7 @@ fn record(args: &RecordArgs) -> Result<i32> {
     };
 
     let mut saves = 0;
+
     let mut save = |profile: Profile| {
         if let Some((directory, keep)) = continuous {
             if let Err(error) = profile.write_segment(directory, keep) {
@@ -646,6 +649,7 @@ pub(super) fn duration(text: &str) -> Result<Duration> {
     let number: f64 = number
         .parse()
         .with_context(|| format!("{text} is not a duration, such as 90, 30m, 24h, or 7d"))?;
+
     Ok(Duration::try_from_secs_f64(number * scale)?)
 }
 
@@ -680,6 +684,7 @@ pub(super) fn handle_signals(
                 })?;
                 Ok((runtime, signals))
             });
+
         let (runtime, (mut interrupts, mut triggers)) = match handled {
             Ok(handled) => handled,
             Err(error) => {
@@ -689,6 +694,7 @@ pub(super) fn handle_signals(
         };
 
         let _ = installed.send(Ok(()));
+
         runtime.block_on(async {
             loop {
                 tokio::select! {
@@ -736,6 +742,7 @@ fn report(args: &ReportArgs, out: &mut impl std::io::Write) -> Result<()> {
     }
 
     summary(&profile, out)?;
+
     if profile.has_syscalls() {
         writeln!(out)?;
         syscall_summary(&profile, out)?;
@@ -786,7 +793,9 @@ fn report(args: &ReportArgs, out: &mut impl std::io::Write) -> Result<()> {
         }
 
         by_total(&mut roots);
+
         let mut pending: Vec<usize> = roots.into_iter().rev().collect();
+
         while let Some(index) = pending.pop() {
             let node = &tree[index];
             if percent(node.total) < args.min_percent {
@@ -808,6 +817,7 @@ fn report(args: &ReportArgs, out: &mut impl std::io::Write) -> Result<()> {
         }
     } else {
         writeln!(out, "{:>7} {:>7}  function", "own", "total")?;
+
         for cost in profile
             .top_of(view, source, granularity)
             .iter()
@@ -845,6 +855,7 @@ fn cost(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
     let (start, end) = profile.span();
     let span = u64::try_from(end - start).unwrap_or(0).max(1);
     let (used, loading) = profile.recorder_cpu();
+
     if used > 0 {
         writeln!(
             out,
@@ -883,6 +894,7 @@ fn cost(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
 
     let (snapshots, held, _) = profile.task_snapshots();
     let (live, changed) = profile.live_snapshots();
+
     if live > 0 {
         writeln!(
             out,
@@ -942,11 +954,13 @@ fn syscall_summary(profile: &Profile, out: &mut impl std::io::Write) -> Result<(
     let program = profile.setting("program").unwrap_or("the program");
     let made: u64 = calls.values().map(|stats| stats.calls).sum();
     let failed: u64 = calls.values().map(|stats| stats.errors).sum();
+
     writeln!(
         out,
         "{program}: {made} system calls, {failed} failed, over {:.3} s",
         end.saturating_sub(start) as f64 / 1e9
     )?;
+
     if syscalls.lost > 0 {
         writeln!(
             out,
@@ -958,6 +972,7 @@ fn syscall_summary(profile: &Profile, out: &mut impl std::io::Write) -> Result<(
     writeln!(out)?;
     let errno = |number: u16| errno(microscope::syscalls::Errno(number)).0;
     let sort = summary::sort_key("time").map_err(anyhow::Error::msg)?;
+
     for line in summary::table(&calls, &summary::Column::DEFAULT, sort, &errno) {
         writeln!(out, "{line}")?;
     }
@@ -985,6 +1000,7 @@ fn summary(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
         profile.samples(),
         weight(total)
     )?;
+
     if !profile.timed() {
         let source = profile.setting("source").unwrap_or("its file");
         writeln!(out, "Read from {source}, which keeps no times or threads.")?;
@@ -1012,11 +1028,13 @@ fn summary(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
     }
 
     cost(profile, out)?;
+
     if profile.setting("off-CPU") == Some("on") {
         let threads = profile.threads();
         let blocked = threads.iter().map(|thread| thread.blocked).sum::<u64>();
         let preempted = threads.iter().map(|thread| thread.preempted).sum::<u64>();
         let seconds = |value: u64| format!("{:.3} s", value as f64 / 1e9);
+
         writeln!(
             out,
             "Threads were off their CPUs for {}: {} blocked, {} preempted.",
@@ -1051,6 +1069,7 @@ fn instrumentation(profile: &Profile, out: &mut impl std::io::Write) -> Result<(
     // many are flagged.
     let mut sites: std::collections::BTreeMap<&str, (u64, u64, u64, u64)> =
         std::collections::BTreeMap::new();
+
     for zone in &zones {
         let site = sites.entry(zone.name.as_str()).or_default();
         let length = u64::try_from(zone.end - zone.start).unwrap_or(0);
@@ -1067,6 +1086,7 @@ fn instrumentation(profile: &Profile, out: &mut impl std::io::Write) -> Result<(
         plural(zones.len() as u64, "zone"),
         plural(sites.len() as u64, "site")
     )?;
+
     let lost = [
         (
             counts.overwritten,
@@ -1079,6 +1099,7 @@ fn instrumentation(profile: &Profile, out: &mut impl std::io::Write) -> Result<(
         ),
         (counts.malformed, "records broke the probes ABI"),
     ];
+
     for (count, what) in lost.into_iter().filter(|(count, _)| *count > 0) {
         let what = if what.starts_with("overwritten") {
             format!("{} {what}", plural(count, "record"))
@@ -1096,6 +1117,7 @@ fn instrumentation(profile: &Profile, out: &mut impl std::io::Write) -> Result<(
         "  {:>8} {:>12} {:>12} {:>12} {:>7}  zone",
         "count", "total ms", "mean us", "max us", "flagged"
     )?;
+
     for (name, (count, total, longest, flagged)) in by_total.iter().take(20) {
         writeln!(
             out,
@@ -1130,6 +1152,7 @@ impl SessionRecording {
     fn so_far(&self) -> Option<Profile> {
         self.trigger.store(true, Ordering::Relaxed);
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
+
         while std::time::Instant::now() < deadline && !self.thread.is_finished() {
             if let Ok(profile) = self.saved.recv_timeout(Duration::from_millis(10)) {
                 return Some(profile);
@@ -1195,17 +1218,20 @@ impl Profiling {
         live: Option<microscope::ProcessId>,
     ) -> Result<String> {
         self.settle()?;
+
         match arguments {
             ["start", window @ ..] if window.len() <= 1 => {
                 anyhow::ensure!(
                     self.recording.is_none(),
                     "already profiling; `profile stop` ends it"
                 );
+
                 let Some(pid) = live else {
                     anyhow::bail!("no program is running to profile");
                 };
 
                 let pid = u32::try_from(pid.get()).context("the program's process id")?;
+
                 let mut options = RecordOptions::default();
                 if let [seconds] = window {
                     let seconds: f64 = seconds.parse().context("a window in seconds")?;
@@ -1215,6 +1241,7 @@ impl Profiling {
 
                 self.recording = Some(start_recording(pid, options));
                 self.recorded = None;
+
                 Ok(format!(
                     "Profiling process {pid}{}.\n",
                     window
@@ -1228,6 +1255,7 @@ impl Profiling {
                     self.recording.is_some() || self.recorded.is_some(),
                     "not profiling; `profile start` begins"
                 );
+
                 self.end()?;
                 let samples = self.recorded.as_ref().map_or(0, Profile::samples);
                 Ok(format!("Profiled {samples} samples.\n"))
@@ -1242,6 +1270,7 @@ impl Profiling {
                 profile
                     .write(std::path::Path::new(file))
                     .with_context(|| format!("writing {file}"))?;
+
                 Ok(format!("Saved {} samples to {file}.\n", profile.samples()))
             }
             _ => anyhow::bail!("usage: profile start|stop|save [window-seconds|file]"),
@@ -1254,6 +1283,7 @@ fn start_recording(pid: u32, options: RecordOptions) -> SessionRecording {
     let stop = Arc::new(AtomicBool::new(false));
     let trigger = Arc::new(AtomicBool::new(false));
     let (send, saved) = std::sync::mpsc::channel();
+
     let thread = std::thread::spawn({
         let (stop, trigger) = (Arc::clone(&stop), Arc::clone(&trigger));
         move || {
@@ -1278,6 +1308,7 @@ fn start_recording(pid: u32, options: RecordOptions) -> SessionRecording {
             .map_err(|error| error.to_string())
         }
     });
+
     SessionRecording {
         stop,
         trigger,

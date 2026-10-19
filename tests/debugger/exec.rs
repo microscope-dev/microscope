@@ -86,6 +86,7 @@ async fn a_program_that_executes_itself_again_is_followed_with_its_breakpoints()
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(2))
     );
+
     scenario.shutdown().await;
 }
 
@@ -211,6 +212,7 @@ async fn failed_launch(program: &Path) -> Error {
         .await;
     scenario.shutdown().await;
     launcher.reaped();
+
     failed.expect_err("the launch fails")
 }
 

@@ -128,6 +128,7 @@ impl Facts {
                     });
                 }
             };
+
         for (address, file, line, statement) in &variant.lines {
             let line = match u64::try_from(*line) {
                 // An end of sequence closes the last row.
@@ -170,6 +171,7 @@ impl Facts {
                         && open.is_some_and(|(_, earlier_line, earlier)| {
                             earlier && earlier_line.is_some()
                         }));
+
             close(&mut open, *address, &mut ranges);
             open = Some((*address, line, statement));
         }
@@ -185,6 +187,7 @@ impl Facts {
             })
             .collect::<Vec<_>>();
         functions.sort_by_key(|function| function.start);
+
         if !variant.optimized && variant.inlined > 0 {
             return Err(format!(
                 "unoptimized {} describes {} inlined calls",
@@ -322,6 +325,7 @@ mod tests {
         assert_eq!(line(0x41).map(|line| line.line), Some(7));
         assert_eq!(facts.range(0x44), None);
         assert_eq!(facts.line_starts("a.c", 4).collect::<Vec<_>>(), [0x10]);
+
         let statements = facts
             .statements
             .iter()

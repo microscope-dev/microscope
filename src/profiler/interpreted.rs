@@ -237,8 +237,10 @@ impl Interpreted {
                 });
             }
         };
+
         let mut walked = runtime.model.walked_threads(&stop)?;
         let threads = mapped_threads(&mut walked, &hosts);
+
         Some(Walked {
             pid: pid.get(),
             layout,
@@ -265,6 +267,7 @@ impl Interpreted {
 
         let start = time.saturating_sub(period.cast_signed());
         let current = self.spans.get(&thread).copied();
+
         match (current, value) {
             // A sample takes up where the last of its value left off.
             (Some(span), Some(value)) if span.value == value && span.end >= start => {
@@ -400,6 +403,7 @@ fn mapped_threads(
         failed: 0,
     };
     let mut mapped = BTreeMap::<u32, Option<(u64, u64)>>::new();
+
     for thread in &walked.value {
         let host = match hosts.lookup(thread.native) {
             Ok(host) => host,
@@ -447,6 +451,7 @@ pub(super) fn splice(native: &[(u32, bool)], segments: &[Vec<u32>]) -> Option<Ve
     let mut spliced =
         Vec::with_capacity(native.len() + segments.iter().map(Vec::len).sum::<usize>());
     let mut segments = segments.iter();
+
     for &(frame, activation) in native {
         if activation {
             spliced.extend(segments.next().into_iter().flatten());
@@ -500,6 +505,7 @@ mod tests {
         let mut interpreted = Interpreted::new(Vec::new());
         let mut builder = CaptureBuilder::new();
         let thread = builder.thread(Pid::new(1), crate::model::Tid::new(1), 0);
+
         for (time, gil) in [
             (10, Gil::Held),
             (20, Gil::Held),

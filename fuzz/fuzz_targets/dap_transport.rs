@@ -10,8 +10,10 @@ fuzz_target!(|data: &[u8]| {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .expect("runtime");
+
     runtime.block_on(async {
         let mut reader = tokio::io::BufReader::new(data);
+
         while let Ok(Some(frame)) = transport::read_frame(&mut reader).await {
             assert!(frame.body.len() <= transport::MAX_FRAME);
         }

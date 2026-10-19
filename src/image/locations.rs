@@ -220,6 +220,7 @@ impl LocationsBuilder {
         base_types.sort_unstable_by_key(|(offset, _)| *offset);
         base_types.dedup_by_key(|(offset, _)| *offset);
         let first = index(self.base_types.len())?;
+
         for (offset, value_type) in &base_types {
             let code = VALUE_TYPES
                 .iter()

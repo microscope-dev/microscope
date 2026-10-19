@@ -52,6 +52,7 @@ pub(super) fn serve(kernel: &mut Kernel, tid: Tid) -> bool {
         general[R8],
         general[R9],
     ];
+
     let yielded = dispatch(kernel, tid);
     let returned = kernel
         .threads
@@ -63,6 +64,7 @@ pub(super) fn serve(kernel: &mut Kernel, tid: Tid) -> bool {
                 .unwrap_or(thread.registers.general[RAX])
                 .cast_signed()
         });
+
     kernel.served.push(Served {
         tid,
         tgid: group,
@@ -70,6 +72,7 @@ pub(super) fn serve(kernel: &mut Kernel, tid: Tid) -> bool {
         args,
         returned,
     });
+
     yielded
 }
 
@@ -203,6 +206,7 @@ fn write(kernel: &mut Kernel, tid: Tid, fd: u64, buffer: u64, count: u64) -> u64
         .get_mut(&root)
         .expect("a launched process has an output")
         .extend_from_slice(&bytes);
+
     count
 }
 
@@ -238,6 +242,7 @@ fn clone(kernel: &mut Kernel, parent: Tid, flags: u64, stack: u64) {
 
     kernel.threads.insert(child, thread);
     kernel.happenings.push(Happening::Cloned { parent, child });
+
     let result = u64::try_from(child).expect("thread ids are positive");
     if traced {
         kernel.event_stop(parent, libc::PTRACE_EVENT_CLONE, result, result);

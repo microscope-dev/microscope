@@ -70,6 +70,7 @@ impl Profile {
         let mut builder = CaptureBuilder::new();
         builder.absorb(capture);
         let mut found = Vec::with_capacity(modules.len());
+
         for (number, module) in modules.into_iter().enumerate() {
             let row = &capture.modules[module as usize];
             let path = capture.string(row.path.get()).to_owned();
@@ -105,6 +106,7 @@ fn symbolize_module(builder: &mut CaptureBuilder, module: u32, info: &DebugInfo)
         .filter(|&(frame, _)| !builder.symbolized(frame))
         .collect();
     let mut symbolized = 0;
+
     for (frame, address) in frames {
         let lines = symbolize(&info.image, ImageAddress::new(address));
         if lines.is_empty() {

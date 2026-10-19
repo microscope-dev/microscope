@@ -118,6 +118,7 @@ fn matches_into(
         .iter()
         .map(AsRef::as_ref)
         .collect::<Vec<&str>>();
+
     path_matches(&path, &actual) && arguments_match(pattern, identity, types, captures, depth)
 }
 

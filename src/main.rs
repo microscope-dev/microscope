@@ -371,6 +371,7 @@ fn start_flight_recording() {
     // SAFETY: `main` calls this before microscope starts any other thread, so
     // none can read the environment meanwhile.
     unsafe { std::env::remove_var(VARIABLE) };
+
     let started = match path {
         Some(path) if path.is_empty() => return,
         Some(path) => flight_recorder::stream_to(std::path::Path::new(&path)),
@@ -468,6 +469,7 @@ async fn async_main() -> ExitCode {
     let renderers = Renderers::configured(&session.settings, args.batch);
 
     let result = run(session, renderers).await;
+
     if let (Some(recording), Some(path)) = (recording, &args.timings)
         && let Err(error) = write_timings(recording, path)
     {
@@ -613,6 +615,7 @@ fn replay_views(recording: &std::path::Path, kernel: Option<&std::path::Path>) -
     std::fs::File::open(recording)
         .and_then(|file| file.take(MAX_RECORDING_BYTES + 1).read_to_string(&mut text))
         .with_context(|| format!("failed to read {}", recording.display()))?;
+
     if text.len() as u64 > MAX_RECORDING_BYTES {
         anyhow::bail!(
             "{} is larger than a recording may be, {MAX_RECORDING_BYTES} bytes",
@@ -628,6 +631,7 @@ fn replay_views(recording: &std::path::Path, kernel: Option<&std::path::Path>) -
     let runs = microscope::replay_kernel_runs(&text, wasm.as_deref())
         .map_err(|error| anyhow::anyhow!("{}: {error}", recording.display()))?;
     let mut reproduced = true;
+
     for (index, run) in runs.iter().enumerate() {
         match &run.outcome {
             Ok(events) => println!(
@@ -702,6 +706,7 @@ async fn run_views(args: &ViewsArgs) -> Result<bool> {
         .context("failed to shut down the debugger");
     let succeeded = reported?;
     shutdown?;
+
     Ok(succeeded && usable)
 }
 
@@ -787,6 +792,7 @@ fn print_config_paths(start: &std::path::Path, user: Option<&std::path::Path>) {
     let exists = |path: &std::path::Path| if path.exists() { "" } else { " (missing)" };
     let root = cli::config::project_root(start);
     println!("project root: {}", root.display());
+
     match user {
         Some(path) => println!("user:         {}{}", path.display(), exists(path)),
         None => println!("user:         none (MICROSCOPE_CONFIG is empty)"),
@@ -801,6 +807,7 @@ fn print_config_paths(start: &std::path::Path, user: Option<&std::path::Path>) {
             root.join(".microscope/state/breakpoints.toml"),
         ),
     ];
+
     if let Some(state) = cli::config::state_directory() {
         files.push(("trust:", state.join("trust.toml")));
         files.push(("history:", state.join("history")));
@@ -832,6 +839,7 @@ fn run_config(args: &ConfigArgs) -> Result<bool> {
         ConfigCommand::Show | ConfigCommand::Check => {
             let files = Files::read(&start, &user)?;
             let settings = files.settings(true)?;
+
             if matches!(args.command, ConfigCommand::Show) {
                 println!("{}", settings.show());
             } else {
@@ -890,6 +898,7 @@ fn run_config(args: &ConfigArgs) -> Result<bool> {
         ConfigCommand::Untrust => {
             let root = config::project_root(&start);
             let mut store = TrustStore::load()?;
+
             if store.untrust(&root).map_err(anyhow::Error::msg)? {
                 println!("forgot the project at {}", root.display());
             } else {
@@ -901,6 +910,7 @@ fn run_config(args: &ConfigArgs) -> Result<bool> {
         ConfigCommand::Trusted => {
             let store = TrustStore::load()?;
             let mut any = false;
+
             for root in store.roots() {
                 println!("{}", root.display());
                 any = true;

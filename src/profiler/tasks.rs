@@ -240,6 +240,7 @@ impl Snapshotter {
         let _held = crate::backend::reaped::REAPED.hold(self.pid);
         let debugger = Debugger::for_program(self.program.clone())?;
         let handle = debugger.handle();
+
         let read = match handle
             .attach_process(ProcessId::new(u64::from(self.pid)))
             .await
@@ -345,6 +346,7 @@ async fn read_tasks(
                     labels: labels(task),
                 })
             }));
+
         for task in page.tasks.iter().filter(|task| waits(task)) {
             let context = StopContext {
                 stop,
@@ -474,6 +476,7 @@ fn frames(backtrace: &crate::Backtrace, futures: Vec<String>) -> Vec<WaitFrame> 
     // The innermost frame, and one a signal interrupted, are where their
     // code is; a caller's address returns past its call.
     let mut exact = true;
+
     for frame in backtrace.frames.iter() {
         let role = role_number(frame.role);
         match frame.kind {
@@ -612,6 +615,7 @@ impl Snapshotter {
             })
             .collect::<Vec<_>>();
         let mut unlearned = BTreeSet::new();
+
         for (loaded, info) in modules {
             let stop = LiveStop {
                 pid: self.pid,
@@ -626,6 +630,7 @@ impl Snapshotter {
                     Arc::clone(&info.image) as _;
                 runtime_model::detect(&image)
             });
+
             for model in detected.iter() {
                 match model {
                     Ok(model) => {
@@ -682,6 +687,7 @@ impl Snapshotter {
     ) {
         let threads = threads(self.pid);
         let pointers = BTreeMap::new();
+
         for (loaded, info) in modules {
             let stop = LiveStop {
                 pid: self.pid,
@@ -696,6 +702,7 @@ impl Snapshotter {
                     Arc::clone(&info.image) as _;
                 runtime_model::detect(&image)
             });
+
             for model in detected.iter().flatten() {
                 label(model.as_ref(), &stop, snapshot);
             }
@@ -726,6 +733,7 @@ impl Snapshotter {
         // A thread that ended takes its pointer with it; a later thread
         // may have its id.
         self.thread_pointers.clear();
+
         for (tid, start) in started {
             if let Some(pointer) = listed.get(&tid) {
                 self.thread_pointers.insert((tid, start), *pointer);
@@ -941,6 +949,7 @@ impl LiveRuntime<'_> {
             snapshot
                 .problems
                 .extend(page.gaps.iter().map(ToString::to_string));
+
             for task in &page.value.tasks {
                 let labels = label_text(&task.labels);
                 if task.locator != 0 {
@@ -997,6 +1006,7 @@ impl LiveRuntime<'_> {
         snapshot
             .problems
             .extend(stacks.gaps.iter().map(ToString::to_string));
+
         for thread in &stacks.value.threads {
             let frames = stacks.value.frames_of(thread);
             if thread.end.is_some() || frames.iter().any(|frame| frame.problem.is_some()) {
@@ -1026,6 +1036,7 @@ impl LiveRuntime<'_> {
 
         let context = || self.model.task_context(self.stop, task_ref);
         let first = context().map_err(|error| error.to_string())?;
+
         let frames = match &first {
             None | Some(runtime_model::TaskContext::OnThread(_)) => return Ok(None),
             Some(runtime_model::TaskContext::Saved {
@@ -1097,6 +1108,7 @@ impl LiveRuntime<'_> {
                 role: role_number(frame.role),
             })
             .collect();
+
         if let crate::unwind::sample::StackEnd::Truncated(reason, _) = end {
             frames.push(WaitFrame::Truncated(reason));
         }
@@ -1110,6 +1122,7 @@ impl LiveRuntime<'_> {
         use runtime_model::futures::{AsyncFrameKind, ChainEnd};
         let bias = self.stop.bias;
         let mut frames = Vec::with_capacity(chain.frames.len() + 1);
+
         for frame in &chain.frames {
             match &frame.kind {
                 AsyncFrameKind::Coroutine { state, .. } => {

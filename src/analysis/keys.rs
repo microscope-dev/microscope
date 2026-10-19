@@ -189,6 +189,7 @@ impl<'a> Keys<'a> {
         }
 
         starts.push(index(flat.len()));
+
         let interpreted = interpreted(capture, &starts, &flat, kinds.len());
         let mut roles: Vec<CodeRole> = kinds.iter().map(|kind| code_role(capture, *kind)).collect();
 
@@ -229,11 +230,13 @@ impl<'a> Keys<'a> {
             .chain([NONE])
             .map(|task| add(KeyKind::Group { task }))
             .collect();
+
         let found = labels(capture);
         let label_roots = (0..index(found.labels.len()))
             .chain([NONE])
             .map(|label| add(KeyKind::Label { label }))
             .collect();
+
         tasks.resize(kinds.len(), NONE);
         Self {
             capture,

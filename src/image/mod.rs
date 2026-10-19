@@ -252,6 +252,7 @@ impl Image {
             rows.is_some(),
             "validation checked every table's length and stride"
         );
+
         rows.unwrap_or_default()
     }
 

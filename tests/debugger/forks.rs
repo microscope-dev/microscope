@@ -39,8 +39,10 @@ async fn attach_held(child: HeldChild) -> Scenario {
         .await
         .expect("attach in time")
         .expect("attach the held child");
+
     let _ = child.hand_over();
     assert!(!microscope::still_held(&held).expect("read the child's state"));
+
     Scenario::attached("held child", debugger)
 }
 
@@ -120,15 +122,18 @@ async fn a_vfork_child_runs_breakpointed_code_untraced_and_the_parent_still_stop
         scenario.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     assert_eq!(
         support::evaluate_value(&scenario, "code").await.signed(),
         7,
         "the parent's call sees the vfork child's exit status"
     );
+
     assert_eq!(
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     );
+
     scenario.shutdown().await;
 }
 
@@ -145,11 +150,13 @@ async fn a_system_child_that_execs_under_a_breakpoint_is_not_killed() {
         scenario.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     scenario.add_breakpoint("execve").await;
     assert_eq!(
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     );
+
     scenario.shutdown().await;
 }
 
@@ -165,14 +172,17 @@ async fn a_sibling_blocked_during_a_vfork_is_resumed_under_its_traps() {
         scenario.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     assert_eq!(
         support::evaluate_value(&scenario, "value").await.signed(),
         40,
         "the sibling reaches thread_work after the vfork"
     );
+
     assert_eq!(
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     );
+
     scenario.shutdown().await;
 }

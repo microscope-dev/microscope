@@ -64,6 +64,7 @@ impl<P: InspectionOps> Controller<P> {
                 VisualizerInput { name, value, path }
             })
             .collect();
+
         Ok(VisualizerInputs {
             stop_id: children.stop_id,
             inputs,
@@ -86,6 +87,7 @@ impl<P: InspectionOps> Controller<P> {
             .into());
         }
         *read += length;
+
         if address == 0 && length > 0 {
             return Err("`bytes` reads at a null pointer".into());
         }
@@ -111,6 +113,7 @@ impl<P: InspectionOps> Controller<P> {
             VirtualAddress::new(address),
             size,
         )?;
+
         match read.completion {
             crate::MemoryReadCompletion::Complete => Ok(read.bytes.into()),
             crate::MemoryReadCompletion::Incomplete { next_address, .. } => Err(Error::ViewFailed(
@@ -169,6 +172,7 @@ impl<P: InspectionOps> Controller<P> {
     /// whose elements a capability pages, or a view lends it.
     fn interpreted_array(reference: &ValueChildrenReference) -> Option<Arc<InterpretedArray>> {
         let view = reference.view.as_ref()?;
+
         if let Some(children) = Self::interpreted_children_of(reference) {
             return children.array.clone();
         }
@@ -212,6 +216,7 @@ impl<P: InspectionOps> Controller<P> {
         } else {
             self.read_block(address.get(), size)?
         };
+
         Ok(Some(Numbers {
             stop_id: reference.stop_id,
             kind,
@@ -253,6 +258,7 @@ impl<P: InspectionOps> Controller<P> {
             let scope = self.frame_for(inferior, reference.stop_id, &root, &frame);
             let mut budget = InspectionBudget::new(InspectionLimits::default());
             let mut machine = StopMachine::new(&scope, &mut budget, true);
+
             return match crate::view::run::contiguous(&bound, &mut machine, place) {
                 Ok(found) => Ok(found.filter(|(_, count, ..)| *count == view.elements)),
                 Err(Failure::Debugger(error)) => Err(error),

@@ -733,6 +733,7 @@ impl<'a> Engine<'a> {
     ) -> Result<Vec<DisassemblyBlock>> {
         let mut remaining = MAX_FUNCTION_INSTRUCTIONS;
         let mut blocks = Vec::with_capacity(ranges.len());
+
         for range in ranges {
             let (start, end) = (range.start.get(), range.end.get());
             let starts = self.source.instruction_starts(*range);
@@ -746,6 +747,7 @@ impl<'a> Engine<'a> {
             )?;
             remaining -= sweep.instructions.len();
             let mut conflicts = sweep.conflicts;
+
             let completion = match sweep.end {
                 SweepEnd::Reached => BlockCompletion::Complete,
                 SweepEnd::Crossed { instruction } => {
@@ -788,6 +790,7 @@ impl<'a> Engine<'a> {
         let mut instructions = leading.instructions;
         let mut conflicts = Vec::new();
         let mut completion = BlockCompletion::Complete;
+
         if after != 0 {
             let count = after as usize;
             let span = u64::try_from(count.saturating_mul(self.decoder.max_instruction_length()))
@@ -799,6 +802,7 @@ impl<'a> Engine<'a> {
             let sweep = self.sweep(address.get(), Until::Count(count), &starts)?;
             instructions.extend(sweep.instructions);
             conflicts = sweep.conflicts;
+
             if let SweepEnd::Unreadable { address, reason } = sweep.end {
                 completion = BlockCompletion::Unreadable {
                     address: VirtualAddress::new(address),
@@ -842,6 +846,7 @@ impl<'a> Engine<'a> {
         let mut end = target;
         let mut boundary = None;
         let mut shortfall = Some(ContextShortfall::NoKnownBoundary);
+
         for (&start, &evidence) in known.range(..address).rev() {
             let sweep = self.sweep(
                 start.get(),
@@ -851,6 +856,7 @@ impl<'a> Engine<'a> {
                 },
                 &BTreeMap::new(),
             )?;
+
             let at_target = end == target;
             match sweep.end {
                 SweepEnd::Reached => {
@@ -864,6 +870,7 @@ impl<'a> Engine<'a> {
                     collected += sweep.instructions.len();
                     segments.push(sweep.instructions);
                     end = start.get();
+
                     if collected >= before {
                         shortfall = None;
                         break;
@@ -903,6 +910,7 @@ impl<'a> Engine<'a> {
 
         let mut instructions = segments.into_iter().rev().flatten().collect::<Vec<_>>();
         instructions.drain(..instructions.len().saturating_sub(before));
+
         Ok(Leading {
             boundary,
             shortfall: if instructions.len() >= before {
@@ -940,6 +948,7 @@ impl<'a> Engine<'a> {
             let mut truncated = None;
             let address = VirtualAddress::new(position);
             let registers = self.source.registers(address);
+
             let (content, length) = match self.decoder.decode(position, &view.bytes, registers) {
                 RawDecode::Instruction {
                     length,
@@ -1001,6 +1010,7 @@ impl<'a> Engine<'a> {
             let overlapped = starts
                 .range(VirtualAddress::new(position + 1)..VirtualAddress::new(limit))
                 .next();
+
             match (overlapped, until) {
                 (Some((&boundary, &evidence)), _) => {
                     conflicts.push(BoundaryConflict {
@@ -1039,6 +1049,7 @@ impl<'a> Engine<'a> {
             RawIndirect::Load { address, size } => {
                 let slot = self.source.describe(VirtualAddress::new(address));
                 let view = self.view(address, size)?;
+
                 if view.bytes.len() < size {
                     // A view never extends past the final address.
                     IndirectTarget::Unreadable {
@@ -1084,6 +1095,7 @@ impl<'a> Engine<'a> {
     fn view(&mut self, address: u64, length: usize) -> Result<View> {
         let mut bytes = Vec::with_capacity(length);
         let mut current = address;
+
         while bytes.len() < length {
             let chunk_start = current - current % READ_CHUNK;
             if !self.chunks.contains_key(&chunk_start) {
@@ -1094,6 +1106,7 @@ impl<'a> Engine<'a> {
             let chunk = &self.chunks[&chunk_start];
             let offset = usize::try_from(current - chunk_start)
                 .map_err(|_| Error::internal("a chunk offset is larger than READ_CHUNK"))?;
+
             if offset >= chunk.bytes.len() {
                 let Some(reason) = chunk.unreadable else {
                     return Err(Error::internal(

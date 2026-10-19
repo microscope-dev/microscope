@@ -78,6 +78,7 @@ pub fn pieces(text: &str, limit: usize) -> impl Iterator<Item = &str> {
 pub fn decode(bytes: &mut Vec<u8>, end: bool) -> String {
     let mut text = String::new();
     let mut rest = &bytes[..];
+
     loop {
         match std::str::from_utf8(rest) {
             Ok(valid) => {

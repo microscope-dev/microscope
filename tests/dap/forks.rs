@@ -24,6 +24,7 @@ fn a_forked_child_is_debugged_in_a_child_session() {
     );
     let parent = dap.stopped(started.mark);
     assert_eq!(parent.reason, "function breakpoint");
+
     let (mut child, mark) = dap.child();
     let note = dap.output_containing(started.mark, "console", "session of its own");
     let process = child.event(mark, "process", |_| true);

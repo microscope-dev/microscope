@@ -75,6 +75,7 @@ impl Waiters {
                 .push((thread, Arc::clone(&notify)));
             notify
         });
+
         let mut waiting = self.waiting.lock().unwrap_or_else(PoisonError::into_inner);
         if !waiting.iter().any(|listed| Arc::ptr_eq(listed, &notify)) {
             waiting.push(Arc::clone(&notify));

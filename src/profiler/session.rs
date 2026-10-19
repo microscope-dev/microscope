@@ -136,6 +136,7 @@ pub fn record_watched(
 
         Ok(())
     });
+
     if let Some(error) = refused {
         return Err(error.into());
     }
@@ -147,6 +148,7 @@ pub fn record_watched(
         killer,
         executed,
     } = launched?;
+
     settings(
         &mut processor,
         options,
@@ -175,6 +177,7 @@ pub fn record_watched(
             false
         },
     );
+
     let status = exit
         .join()
         .unwrap_or_else(|_| Err(std::io::Error::other("the program's waiter panicked")))
@@ -182,6 +185,7 @@ pub fn record_watched(
     record!("record: the program ended: {status}");
     processor.exited(Pid::new(pid));
     let mut capture = processor.finish();
+
     if let Some(syscalls) = syscalls {
         capture = syscalls.merge(&capture).map_err(RecordError::Syscalls)?;
     }
@@ -240,6 +244,7 @@ pub fn record_attached(
         stack_bytes,
         stack_copy,
     );
+
     let mut stopped = false;
     drive(
         &mut processor,
@@ -256,6 +261,7 @@ pub fn record_attached(
             true
         },
     );
+
     record!("record: detached from {pid}, stopped {stopped}");
     if !stopped {
         processor.exited(Pid::new(pid));
@@ -709,6 +715,7 @@ impl Snapshots {
             .name("microscope-snapshot-load".into())
             .spawn(move || Snapshotter::new(pid, &program, &debug_files))
             .ok();
+
         Self {
             pid,
             every,
@@ -793,6 +800,7 @@ impl Snapshots {
         }
 
         self.next = std::time::Instant::now() + self.every;
+
         match taken {
             Ok(snapshot) => {
                 let weight = start.saturating_sub(self.previous);

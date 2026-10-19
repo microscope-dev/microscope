@@ -104,6 +104,7 @@ struct Mapped {
 /// pieces of the same image and bias.
 fn uncover(mapped: &mut Vec<Mapped>, start: u64, end: u64) {
     let mut kept = Vec::with_capacity(mapped.len() + 1);
+
     for piece in mapped.drain(..) {
         if piece.end <= start || piece.start >= end {
             kept.push(piece);
@@ -335,6 +336,7 @@ impl Processor {
                         .unwrap_or_else(|| symbol.name().to_owned())
                 })
         });
+
         Some(Sites::Static(sites, function))
     }
 
@@ -368,6 +370,7 @@ impl Processor {
                 .map(Tid::new)
                 .collect();
             tids.sort_unstable();
+
             for tid in tids {
                 let thread = self.thread(pid, tid, at);
                 if let Some(name) = name(format!("/proc/{pid}/task/{tid}/comm")) {
@@ -432,6 +435,7 @@ impl Processor {
         let mut unpaired: Vec<((Tid, u32), u64, usize, usize)> = Vec::new();
         let mut pairs: HashMap<usize, (interpreted::RecordKey, usize, usize)> = HashMap::default();
         let mut offset = 0;
+
         while let Some(next) = decode::next_of(&bytes[offset..], &outputs) {
             let Ok((record, length)) = next else {
                 self.builder.count(AccountKind::Malformed as u32, 1);
@@ -478,6 +482,7 @@ impl Processor {
 
         self.order.sort_by_key(|(time, offset, _)| (*time, *offset));
         let order = std::mem::take(&mut self.order);
+
         for &(time, offset, length) in &order {
             let record = &bytes[offset..offset + length];
             let pair = pairs
@@ -495,6 +500,7 @@ impl Processor {
                 Some(Ok((decode::Record::Output { data, .. }, _))) => Some((key, data.to_vec())),
                 _ => None,
             });
+
             if let Some(Ok((record, _))) = decode::next_of(record, &outputs) {
                 self.process(record);
             }
@@ -565,6 +571,7 @@ impl Processor {
         self.latest = self.latest.max(time);
         self.first.get_or_insert(time);
         let at = time.cast_signed();
+
         match record {
             decode::Record::Sample(sample) => self.sample(&sample),
             decode::Record::Mmap(mmap) => self.mmap(&mmap),
@@ -619,6 +626,7 @@ impl Processor {
                 ..
             } => {
                 let thread = self.thread(pid, tid, at);
+
                 if out {
                     self.switched_out.insert(tid, (thread, time, preempted));
                 } else if let Some((thread, left, preempted)) = self.switched_out.remove(&tid) {
@@ -637,6 +645,7 @@ impl Processor {
             decode::Record::Exit { pid, tid, .. } => {
                 self.switched_out.remove(&tid);
                 self.builder.thread_exit(tid, at);
+
                 let ended = self.processes.get_mut(&pid).is_some_and(|process| {
                     process.threads.remove(&tid);
                     process.threads.is_empty()
@@ -691,6 +700,7 @@ impl Processor {
             perf::jit::is_anonymous_code(mmap),
             mmap.time,
         );
+
         let Some((image, bias)) = image else {
             return;
         };
@@ -715,6 +725,7 @@ impl Processor {
         };
 
         self.next_module += 1;
+
         state.mapped.push(Mapped {
             start: mmap.start,
             end,
@@ -793,6 +804,7 @@ impl Processor {
         let info = data.and_then(|data| {
             crate::debug_info::load_module_bytes(path, &data, id, &self.search).ok()
         });
+
         let probes = match probes {
             Some(Ok(table)) => table.map(Arc::new),
             Some(Err(why)) => {
@@ -829,6 +841,7 @@ impl Processor {
         };
         let mut digest = twox_hash::XxHash3_128::new();
         digest.write(&stale.start.to_le_bytes());
+
         for function in &stale.functions {
             digest.write(&function.entry.start.to_le_bytes());
             digest.write(&function.entry.end.to_le_bytes());
@@ -898,6 +911,7 @@ impl Processor {
             load_bias: LoadBias::new(0),
         };
         self.next_module += 1;
+
         let process = self.builder.process(pid, time.cast_signed());
         let held = &mut self.processes.entry(pid).or_default().mapped;
         uncover(held, code.start, code.end);
@@ -945,6 +959,7 @@ impl Processor {
                 })
             })
             .collect();
+
         let (frames, end) = unwind_sample(
             &modules,
             &mut self.rules,
@@ -996,6 +1011,7 @@ impl Processor {
                 .collect();
             descriptors.into_iter().collect()
         };
+
         let unmapped = addresses.filter(|&address| {
             !mapped
                 .iter()
@@ -1032,6 +1048,7 @@ impl Processor {
                 .copied()
                 .zip(sample.registers.iter()),
         );
+
         if let Some((address, branch)) = self.repeats {
             let register = |number| {
                 self.registers
@@ -1061,6 +1078,7 @@ impl Processor {
         }
 
         let mut native = Vec::with_capacity(frames.len());
+
         for frame in &frames {
             let owner = frame
                 .module
@@ -1114,6 +1132,7 @@ impl Processor {
         }
 
         let marker = self.splice_interpreted(&native, interpreted);
+
         let truncation = match end {
             StackEnd::Truncated(reason, module) => Some((
                 reason,
@@ -1192,6 +1211,7 @@ impl Processor {
         };
 
         let mut segments = vec![Vec::new()];
+
         for frame in &frames {
             let wait = InterpretedWait::of_frame(frame);
             let id = self.builder.interpreted(&InterpretedPlace {
@@ -1315,6 +1335,7 @@ impl Processor {
             .into_iter()
             .partition(|(process, _)| *process == pid);
         self.probes_found = others;
+
         (
             executed,
             found.into_iter().map(|(_, found)| found).collect(),
@@ -1392,6 +1413,7 @@ impl Processor {
         let last = self.gaps.partition_point(|&(later, _)| later < end);
         let mut from = start;
         let mut pieces = Vec::new();
+
         for &(covered, until) in &self.gaps[first..last] {
             if from < covered {
                 pieces.push((from, covered));
@@ -1527,8 +1549,10 @@ impl Processor {
                 );
             }
         }
+
         for task in &snapshot.waiting {
             self.frames.clear();
+
             for frame in &task.frames {
                 let id = match frame {
                     WaitFrame::Code { address, role } => self.code_frame(pid, *address, *role),
@@ -1564,6 +1588,7 @@ impl Processor {
     /// for another once it exits.
     fn claim(&mut self, pid: Pid, (start, end): (i64, i64), snapshot: &Snapshot) {
         let mut tasks = HashMap::default();
+
         for task in &snapshot.located {
             let row = self.builder.task(task.noun, task.number, start);
             if task.labels.is_some() {
@@ -1582,6 +1607,7 @@ impl Processor {
         self.tasks_of = Some(pid);
         let mut claimed = 0;
         let mut waiting = Vec::new();
+
         for (thread, at, object) in std::mem::take(&mut self.unclaimed) {
             if at >= start {
                 waiting.push((thread, at, object));
@@ -1718,6 +1744,7 @@ impl Processor {
                 )
             })
             .collect();
+
         for (frame, module, address) in frames {
             let Some(info) = images
                 .get(&module)
@@ -2002,6 +2029,7 @@ mod tests {
         let mut processor = Processor::new(DebugFileSearch::default(), 64);
         let inode = std::fs::metadata(&path).expect("the library's inode").ino();
         let path = path.as_os_str().as_encoded_bytes().to_vec();
+
         processor.process(decode::Record::Mmap(decode::Mmap {
             pid,
             start,
@@ -2044,6 +2072,7 @@ mod tests {
     /// thread 8 of process 7 on CPU 3 at `time`, followed by `rest`.
     fn perf_record(identifier: u64, time: u64, rest: &[u8]) -> Vec<u8> {
         let mut body = Vec::new();
+
         for word in [identifier, 7 | (8 << 32), time, 3] {
             body.extend_from_slice(&word.to_le_bytes());
         }
@@ -2059,6 +2088,7 @@ mod tests {
     /// A sample with no chain, registers, or stack.
     fn bare_sample(time: u64) -> Vec<u8> {
         let mut rest = Vec::new();
+
         for word in [1_000_u64, 0, 0, 0] {
             rest.extend_from_slice(&word.to_le_bytes());
         }
@@ -2070,6 +2100,7 @@ mod tests {
     /// its GIL or not, and runs the asyncio task at `task`, if not 0.
     fn frames_record(time: u64, holds: bool, task: u64) -> Vec<u8> {
         let mut stack = Vec::new();
+
         for word in [9_u32, 40, 8, 7] {
             stack.extend_from_slice(&word.to_le_bytes());
         }
@@ -2078,6 +2109,7 @@ mod tests {
         stack.extend_from_slice(&task.to_le_bytes());
         stack.extend_from_slice(&0_u32.to_le_bytes());
         stack.extend_from_slice(&[4, if holds { 1 } else { 3 }, 0, 0]);
+
         let mut rest = u32::try_from(stack.len() + 4)
             .expect("small")
             .to_le_bytes()

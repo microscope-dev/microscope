@@ -98,6 +98,7 @@ pub fn load_symbols(
         .map_or(EmbeddedSymbolTable::Absent, |section| {
             collect_embedded(object, &section, &sections, &mut raw)
         });
+
     collect(object, object.dynamic_symbols(), &sections, true, &mut raw);
     collect_versions(object, &mut raw);
     let mut raw = distinguish_versions(raw);
@@ -138,6 +139,7 @@ pub fn load_thread_locals(
 
     let endian = elf.endian();
     let mut offsets = BTreeMap::<Arc<str>, Option<u64>>::new();
+
     for symbol in object.symbols().chain(object.dynamic_symbols()) {
         if symbol.kind() != object::SymbolKind::Tls
             || !matches!(symbol.section(), SymbolSection::Section(_))
@@ -169,6 +171,7 @@ pub fn load_thread_locals(
     // The GOT slots the loader fills, by the offset in the block each is
     // for.
     let mut slots = BTreeMap::new();
+
     for (address, relocation) in object.dynamic_relocations().into_iter().flatten() {
         if relocation.flags()
             != (object::RelocationFlags::Elf {
@@ -220,6 +223,7 @@ pub fn load_thread_locals(
             .and_then(|block| i64::try_from(block).ok())
             .ok_or("the image's thread-local storage is too large")?;
         let offset = i64::try_from(offset).map_err(|_| "its offset is too large")?;
+
         Ok(ThreadLocal::Offset(offset - block))
     };
 
@@ -234,6 +238,7 @@ pub fn load_thread_locals(
                         .map_or_else(|| fixed(offset), |slot| Ok(ThreadLocal::Slot(*slot)))
                 },
             );
+
             (name, place)
         })
         .collect()
@@ -588,6 +593,7 @@ fn collect_versions(object: &object::File<'_>, raw: &mut BTreeMap<(Box<[u8]>, u6
             let version = versions.version(index).ok().flatten()?;
             Some((Box::from(version.name()), !index.is_hidden()))
         });
+
         match version {
             Some(version) => entry.versions.push(version),
             None => entry.unversioned = true,
@@ -642,6 +648,7 @@ fn distinguish_versions(
             let (respelled, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut symbol.versions)
                 .into_iter()
                 .partition(|(_, is_default)| *is_default == default);
+
             for (version, _) in respelled {
                 let spelling = [&name[..], separator, &version].concat().into_boxed_slice();
                 add(
@@ -728,6 +735,7 @@ fn collect_plt(
     // An indirect function is named by its exported symbol first, then by
     // the first of its names.
     let mut resolvers = BTreeMap::<u64, (bool, &[u8])>::new();
+
     for ((name, address), symbol) in raw.iter() {
         if symbol.kind != SymbolKind::IndirectFunction {
             continue;
@@ -751,6 +759,7 @@ fn collect_plt(
             Some((slot.address.get(), name))
         })
         .collect::<BTreeMap<_, _>>();
+
     if targets.is_empty() {
         return;
     }
@@ -851,6 +860,7 @@ pub fn plt_frames(
         .map(|(_, code, size, _)| code.len() / size)
         .sum::<usize>();
     let mut frames = Vec::new();
+
     for (start, code, entry_size, header) in sections() {
         for (index, entry) in code.chunks_exact(entry_size).enumerate().skip(header) {
             let address = start + (index * entry_size) as u64;
@@ -876,6 +886,7 @@ fn stub_frames(code: &[u8], address: u64, frames: &mut Vec<(AddressRange<ImageAd
     let mut pushed = 0;
     let first = frames.len();
     let mut jumps = false;
+
     while decoder.can_decode() {
         let instruction = decoder.decode();
         let range = AddressRange {
@@ -1000,6 +1011,7 @@ fn normalize(
         "{} symbols",
         symbols.len()
     );
+
     symbols
         .into_iter()
         .zip(0..=u32::MAX)
@@ -1106,12 +1118,14 @@ pub(super) fn fuzz(data: &[u8]) {
     let table = load_symbols(&object, None, &unwind);
     let sections = image_sections(&object, is_code);
     let storage_sections = image_sections(&object, holds_storage);
+
     for (index, symbol) in table.symbols.iter().enumerate() {
         assert_eq!(
             symbol.id,
             SymbolId::new(u32::try_from(index).expect("count"))
         );
         let _ = crate::demangle::demangle(&symbol.name);
+
         if let Some(storage) = symbol.storage {
             assert_eq!(symbol.kind, SymbolKind::Data);
             assert_eq!(storage.start, symbol.address);
@@ -1167,6 +1181,7 @@ pub(super) fn fuzz(data: &[u8]) {
             ..crate::model::ModuleMetadata::default()
         },
     );
+
     fuzz_lookups(&image, &symbols, data);
 }
 
@@ -1193,6 +1208,7 @@ fn fuzz_lookups(image: &crate::ModuleImage, symbols: &[SymbolInfo], data: &[u8])
                 .take(64)
                 .map(|chunk| u64::from_le_bytes(*chunk) % 0x200),
         );
+
     for address in probes {
         let address = ImageAddress::new(address);
         let containing = symbols
@@ -1203,6 +1219,7 @@ fn fuzz_lookups(image: &crate::ModuleImage, symbols: &[SymbolInfo], data: &[u8])
                     .is_some_and(|extent| extent.range.contains(address))
             })
             .collect::<Vec<_>>();
+
         assert_description(image, symbols, address);
         let Some(found) = image.symbolize(address) else {
             assert!(containing.is_empty(), "an extent contains {address:#x}");
@@ -1214,6 +1231,7 @@ fn fuzz_lookups(image: &crate::ModuleImage, symbols: &[SymbolInfo], data: &[u8])
             .expect("found symbols are cataloged");
         let extent = found.extent().expect("found symbols name code");
         assert!(extent.range.contains(address));
+
         for other in containing {
             let other = other.extent.expect("containing");
             assert!(
@@ -1294,9 +1312,11 @@ fn fuzz_object(data: &[u8]) -> (Vec<u8>, Vec<AddressRange<ImageAddress>>) {
     object.append_section_data(data_section, &[0; 16], 1);
 
     let mut unwind = Vec::new();
+
     for record in data.get(1..).unwrap_or_default().as_chunks::<6>().0 {
         let value = u64::from(u16::from_le_bytes([record[2], record[3]]) % 0x200);
         let size = u64::from(record[4]) % 0x40;
+
         if record[0] & 0x80 != 0 {
             if let Some(end) = value.checked_add(size) {
                 unwind.push(AddressRange {
@@ -1419,6 +1439,7 @@ mod tests {
         object.append_section_data(sections.text, &[0xcc; 0x40], 16);
         object.append_section_data(sections.data, &[0; 0x10], 8);
         object.append_section_data(sections.tls, &[0; 0x10], 8);
+
         for (name, data) in extra {
             let section = object.add_section(
                 Vec::new(),
@@ -1460,6 +1481,7 @@ mod tests {
                 end: ImageAddress::new(end),
             })
             .collect::<Vec<_>>();
+
         load_symbols(&object, None, &unwind)
     }
 
@@ -1610,6 +1632,7 @@ mod tests {
         object.append_section_data(tdata, &[0; 0x10], 8);
         object.append_section_bss(tbss, 0x10, 8);
         object.append_section_data(note, &[0; 0x10], 1);
+
         for (name, section, value, size) in [
             ("object", data, 0x8, 0x8),
             ("unsized", data, 0x4, 0),
@@ -1876,6 +1899,7 @@ mod tests {
         let headers = usize::try_from(word(0x28)).expect("a header offset");
         let address = headers + index * 64 + 0x10;
         data[address..address + 8].copy_from_slice(&(u64::MAX - 8).to_le_bytes());
+
         let object = object::File::parse(&*data).expect("parse test object");
         assert_eq!(plt_frames(&object, |_| true), []);
     }

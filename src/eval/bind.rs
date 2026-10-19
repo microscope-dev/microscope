@@ -550,7 +550,7 @@ impl<'a, S: Scope> Binder<'a, S> {
         ))
     }
 
-    // ---- Names ----
+    // Names.
 
     /// A chain of `.name` selections from a name, as one dotted path.
     fn dotted(&self, id: NodeId) -> Option<Path> {
@@ -710,7 +710,7 @@ impl<'a, S: Scope> Binder<'a, S> {
         self.node(Op::Constant(Constant::Integer(integer)), ty, span)
     }
 
-    // ---- Literals ----
+    // Literals.
 
     fn integer(
         &mut self,
@@ -762,7 +762,7 @@ impl<'a, S: Scope> Binder<'a, S> {
         )
     }
 
-    // ---- Types ----
+    // Types.
 
     /// The type a type name means: a built-in, then the program's.
     fn resolve_type(scope: &S, name: &TypeName) -> Result<Ty, ExpressionError> {
@@ -966,7 +966,7 @@ impl<'a, S: Scope> Binder<'a, S> {
         self.convert(moved, Ty::Pointer(Arc::new(target)), span)
     }
 
-    // ---- Places and values ----
+    // Places and values.
 
     /// A language reference stands for what it refers to.
     fn settle(&mut self, node: Bound<S>) -> BindResult<S> {
@@ -1237,7 +1237,7 @@ impl<'a, S: Scope> Binder<'a, S> {
         }
     }
 
-    // ---- Operators ----
+    // Operators.
 
     fn unary(&mut self, op: UnaryOp, operand: NodeId, span: Span) -> BindResult<S> {
         if op == UnaryOp::Neg
@@ -2014,7 +2014,7 @@ impl<'a, S: Scope> Binder<'a, S> {
         )
     }
 
-    // ---- Assignment ----
+    // Assignment.
 
     /// `target = value` for a variable of a dynamic type, which takes
     /// whatever value its runtime makes of the value's, as the runtime
@@ -2188,7 +2188,7 @@ impl<'a, S: Scope> Binder<'a, S> {
         )
     }
 
-    // ---- Conversions ----
+    // Conversions.
 
     /// A record in memory cast to one of its base classes: that base's part
     /// of it, as C++'s `static_cast` selects it. `None` when the target is
@@ -2333,7 +2333,7 @@ impl<'a, S: Scope> Binder<'a, S> {
         )
     }
 
-    // ---- Members, indices, lengths ----
+    // Members, indices, lengths.
 
     /// Whether a pointer only stands for a container a view presents,
     /// which nothing indexes as a pointer.
@@ -2798,7 +2798,7 @@ impl<'a, S: Scope> Binder<'a, S> {
         }
     }
 
-    // ---- Values of a dynamic type ----
+    // Values of a dynamic type.
 
     fn is_dynamic(&self, node: &Bound<S>) -> bool {
         matches!(self.category(&node.ty), Category::Dynamic)

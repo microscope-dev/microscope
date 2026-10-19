@@ -88,6 +88,7 @@ fn goroutines_are_threads_named_where_the_program_has_them() {
             .is_some_and(|result| !result.is_empty()),
         "{jobs}"
     );
+
     let task = dap.request(
         "evaluate",
         json!({"expression": "$task", "frameId": frame["id"], "context": "watch"}),

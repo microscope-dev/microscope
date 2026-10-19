@@ -150,6 +150,7 @@ fn catchpoint_line(catchpoint: &microscope::Catchpoint, renderer: Renderer) -> S
         .map(|call| call.display_name().into_owned())
         .collect();
     names.dedup();
+
     let calls = if names.is_empty() {
         "every system call".to_owned()
     } else {
@@ -167,6 +168,7 @@ fn catchpoint_line(catchpoint: &microscope::Catchpoint, renderer: Renderer) -> S
         .as_ref()
         .map(|condition| format!(", if {}", condition.expression().text()))
         .unwrap_or_default();
+
     format!(
         "{}: {} {phase}{condition}",
         renderer.paint(Role::Metadata, format!("c{}", catchpoint.id)),
@@ -288,8 +290,10 @@ pub fn breakpoint(breakpoint: &Breakpoint, placed: &[Placed], renderer: Renderer
         ),
         renderer.paint(Role::Metadata, breakpoint.id),
     );
+
     let mut options = String::new();
     let stops = hit_condition(breakpoint.hit_condition, breakpoint.hit_count, renderer);
+
     match (stops, &breakpoint.condition) {
         (Some(stops), Some(condition)) => {
             let _ = write!(
@@ -537,6 +541,7 @@ fn counted_options(
     renderer: Renderer,
 ) -> Vec<String> {
     let mut options = Vec::new();
+
     if let Some(hit) = hit {
         let mut text = format!("hits {}", renderer.paint(Role::Name, hit));
         if !hit.may_stop_after(hit_count) {
@@ -600,10 +605,12 @@ impl Table {
                     .unwrap_or_default()
             })
             .collect::<Vec<_>>();
+
         let indent = widths[..beneath]
             .iter()
             .map(|width| width + 2)
             .sum::<usize>();
+
         let line = |cells: &[String]| {
             let mut line = String::new();
             for (column, cell) in cells.iter().take(shown).enumerate() {
@@ -632,6 +639,7 @@ impl Table {
             .map(|heading| renderer.paint(Role::Muted, heading).to_string())
             .collect::<Vec<_>>();
         let mut lines = vec![line(&headings)];
+
         for (cells, under) in &self.rows {
             lines.push(line(cells));
             lines.extend(
@@ -650,6 +658,7 @@ impl Table {
 fn visible_width(text: &str) -> usize {
     let mut width = 0;
     let mut characters = text.chars().peekable();
+
     while let Some(character) = characters.next() {
         if character != '\u{1b}' {
             width += 1;
@@ -723,6 +732,7 @@ pub fn watchpoint_set(watchpoint: &Watchpoint, renderer: Renderer) -> String {
         plural(watchpoint.coverage.len() as u64, "hardware slot"),
         watch_scope_suffix(&watchpoint.scope),
     );
+
     if let Some(condition) = &watchpoint.condition {
         let _ = write!(
             output,
@@ -764,6 +774,7 @@ pub fn watchpoints(watchpoints: &[Watchpoint], renderer: Renderer) -> String {
             watchpoint.condition.as_ref(),
             renderer,
         ));
+
         table.row(
             vec![
                 renderer.paint(Role::Metadata, watchpoint.id).to_string(),
@@ -836,6 +847,7 @@ pub fn watchpoint_hits(
                 .find(|watchpoint| watchpoint.id == hit.watchpoint);
             let type_info = watchpoint.and_then(|watchpoint| watchpoint.type_info.as_ref());
             let (old, new) = value::hit_values(hit, type_info, image);
+
             let thread = if index == 0 {
                 first.to_owned()
             } else {
@@ -882,6 +894,7 @@ fn numbered_hits(
         .map(|(id, hit)| format!("{} (hit {hit})", renderer.paint(Role::Metadata, id)))
         .collect::<Vec<_>>()
         .join(", ");
+
     format!("{noun}{plural} {hits}")
 }
 
@@ -922,6 +935,7 @@ const fn exception_kind(kind: LanguageExceptionKind) -> &'static str {
 #[expect(clippy::too_many_lines, reason = "one arm per stop reason")]
 pub fn stop(reason: &StopReason, renderer: Renderer) -> String {
     let stopped = |role| renderer.paint(role, "stopped");
+
     match reason {
         StopReason::Attach => format!("{} after attaching", stopped(Role::Current)),
         StopReason::Entry => format!("{} at the program entry", stopped(Role::Current)),
@@ -1147,6 +1161,7 @@ pub fn task(task: &TaskSnapshot, place: &str, selected: bool, renderer: Renderer
     let labels = task_labels(task)
         .map(|labels| format!(" {}", renderer.paint(Role::Name, labels)))
         .unwrap_or_default();
+
     format!(
         "{marker} {} {place}{detail}{labels}{thread}",
         renderer.paint(Role::Metadata, format_args!("[{}]", task.id.number))
@@ -1175,11 +1190,13 @@ pub fn task_creation(
                 .as_ref()
                 .map(|place| renderer.location(std::path::Path::new(&*place.path), place.line))
         });
+
     let by = creation
         .function
         .as_ref()
         .map(|function| format!(" by {}", renderer.paint(Role::Name, function)));
     let at = source.map(|source| format!(" at {}", renderer.paint(Role::Metadata, source)));
+
     (by.is_some() || at.is_some()).then(|| {
         format!(
             "created{}{}",
@@ -1267,6 +1284,7 @@ pub fn task_group(noun: &str, place: &str, numbers: &[u64], renderer: Renderer) 
         .map(|number| renderer.paint(Role::Metadata, number).to_string())
         .collect::<Vec<_>>()
         .join(", ");
+
     format!(
         "{} in {place}: {listed}",
         plural(numbers.len() as u64, noun)
@@ -1280,6 +1298,7 @@ pub fn registers(registers: &RegisterSnapshot, renderer: Renderer) -> String {
         .map(|value| value.register.name.len())
         .max()
         .unwrap_or(0);
+
     registers
         .registers
         .iter()
@@ -1325,9 +1344,11 @@ pub fn register_bytes(bytes: &[u8], byte_order: ByteOrder) -> String {
 pub fn memory_read(read: &MemoryRead, renderer: Renderer) -> String {
     let address_width = usize::from(read.target.pointer_width.bytes()) * 2;
     let mut lines = Vec::new();
+
     for (line_index, bytes) in read.bytes.chunks(HEX_DUMP_BYTES_PER_LINE).enumerate() {
         let address = read.address.get() + (line_index * HEX_DUMP_BYTES_PER_LINE) as u64;
         let mut hexadecimal = String::new();
+
         for index in 0..HEX_DUMP_BYTES_PER_LINE {
             if index == HEX_DUMP_BYTES_PER_LINE / 2 {
                 hexadecimal.push(' ');
@@ -1346,6 +1367,7 @@ pub fn memory_read(read: &MemoryRead, renderer: Renderer) -> String {
                 None => ' ',
             })
             .collect::<String>();
+
         lines.push(format!(
             "{}: {} |{}|",
             renderer.paint(Role::Metadata, format!("0x{address:0address_width$x}")),
@@ -1396,7 +1418,9 @@ pub fn source_context(
         .lines
         .iter()
         .any(|line| breakpoints.contains_key(&line.number));
+
     let mut lines = Vec::with_capacity(context.lines.len() + 1);
+
     if located {
         lines.push(format!(
             "{}:{}",
@@ -1447,6 +1471,7 @@ pub struct ModuleRow {
 /// below one whose debug information could not all be read, why.
 pub fn modules(modules: &[ModuleRow], renderer: Renderer) -> String {
     let mut lines = Vec::with_capacity(modules.len());
+
     for module in modules {
         let range = match (&module.image, module.load_bias) {
             (Some(image), Some(bias)) => {
@@ -1472,6 +1497,7 @@ pub fn modules(modules: &[ModuleRow], renderer: Renderer) -> String {
             renderer.paint(Role::Metadata, format!("{range:<29}")),
             renderer.path(&module.path)
         ));
+
         match module
             .image
             .as_ref()
@@ -1524,6 +1550,7 @@ pub fn core_dump(core: &CoreDumpInfo, renderer: Renderer) -> String {
                 .map_or("none recorded", |exception| exception.description.as_ref())
         ),
     ];
+
     for core_module in core.modules.iter() {
         let state = match &core_module.state {
             CoreModuleState::Loaded { module, identity } => {
@@ -1645,6 +1672,7 @@ pub fn step_targets(targets: &[microscope::StepTarget], renderer: Renderer) -> S
     }
 
     let mut text = "calls on this line:".to_owned();
+
     for target in targets {
         let callee = target.callee.as_deref().map_or_else(
             || {
@@ -1691,6 +1719,7 @@ pub fn address_description(description: &AddressDescription, renderer: Renderer)
             )
         },
     );
+
     module.image.symbol.as_ref().map_or_else(
         || {
             format!(
@@ -1736,6 +1765,7 @@ pub fn disassembly(
     renderer: Renderer,
 ) -> String {
     let mut lines = Vec::new();
+
     match &disassembly.view {
         DisassemblyView::Function { function, blocks } => {
             let origin = match function.origin {
@@ -1759,6 +1789,7 @@ pub fn disassembly(
                         .unwrap_or_else(|| function.name.to_string())
                 )
             ));
+
             for (index, block) in blocks.iter().enumerate() {
                 if blocks.len() > 1 {
                     lines.push(format!(
@@ -1846,15 +1877,18 @@ fn disassembly_block(
         .map(|instruction| place(instruction).len())
         .max()
         .unwrap_or_default();
+
     let bytes_width = bytes_column_width(block);
 
     let mut source = None;
+
     for instruction in block.instructions.iter() {
         let module = instruction.location.module.as_ref();
         let current_source = instruction.source.as_ref().and_then(|location| {
             let file = images.get(&module?.module)?.source_file(location.file)?;
             Some(renderer.location(&file.path, location.line))
         });
+
         if current_source.is_some() && current_source != source {
             lines.push(
                 renderer
@@ -1875,6 +1909,7 @@ fn disassembly_block(
         };
 
         let bytes = instruction_bytes(&instruction.bytes, show_bytes.then_some(bytes_width));
+
         let text = match &instruction.content {
             InstructionContent::Decoded(decoded) => instruction_text(
                 decoded,
@@ -1897,6 +1932,7 @@ fn disassembly_block(
             ),
             renderer.paint(Role::Name, format!("{:<place_width$}", place(instruction))),
         ));
+
         for conflict in block
             .conflicts
             .iter()
@@ -1977,6 +2013,7 @@ pub fn instruction_text(
     renderer: Renderer,
 ) -> String {
     let mut text = String::new();
+
     for token in decoded.tokens.iter() {
         let role = match token.kind {
             InstructionTokenKind::Mnemonic | InstructionTokenKind::Prefix => Some(Role::Command),
@@ -2011,6 +2048,7 @@ pub fn instruction_text(
         };
 
         let name = renderer.paint(Role::Name, format!("<{name}>"));
+
         match reference.kind {
             InstructionReferenceKind::BranchTarget => _ = write!(text, " {name}"),
             InstructionReferenceKind::MemoryOperand => {
@@ -2285,6 +2323,7 @@ pub fn backtrace(
             )
             .to_string()
     });
+
     lines.join("\n")
 }
 
@@ -2329,6 +2368,7 @@ pub fn stack_frame(
         },
         |source| format!(" at {}", renderer.paint(Role::Metadata, source)),
     );
+
     let iterator = iterates.map_or_else(String::new, |level| {
         format!(
             " {}",
@@ -2351,6 +2391,7 @@ pub fn stack_frame(
     let address = frame
         .instruction
         .map_or_else(|| " ".repeat(18), |address| format!("{address:#018x}"));
+
     let what = match frame.kind {
         microscope::FrameKind::Awaited { .. } => "",
         microscope::FrameKind::Async { .. } => " in async",
@@ -2363,6 +2404,7 @@ pub fn stack_frame(
         .as_ref()
         .map(|awaiting| format!(" — {awaiting}"))
         .unwrap_or_default();
+
     format!(
         "{} {}{what} {}{tail}{iterator}{place}{awaiting}",
         renderer.paint(
@@ -2477,6 +2519,7 @@ pub fn awaited(image: Option<&ModuleImage>, ty: microscope::TypeReference) -> St
             || "a future".to_owned(),
             microscope::TypeInfo::qualified_name,
         );
+
     format!("awaiting {name}")
 }
 
@@ -2489,6 +2532,7 @@ pub fn awaited_frame(image: Option<&ModuleImage>, frame: &StackFrame) -> Option<
     };
 
     let name = awaited(image, ty);
+
     Some(match &frame.awaiting {
         Some(awaiting) => format!("{name} — {awaiting}"),
         None => name,
@@ -2499,6 +2543,7 @@ pub fn awaited_frame(image: Option<&ModuleImage>, frame: &StackFrame) -> Option<
 /// interpreter recorded, and its file and line, where it recorded them.
 pub fn interpreted_location(frame: &StackFrame, renderer: Renderer) -> String {
     let name = renderer.paint(Role::Name, frames::code(frame));
+
     match frames::place(frame, None) {
         Some(place) => format!(
             "{name} at {}",
@@ -2539,6 +2584,7 @@ pub fn globals(page: &GlobalVariablePage, renderer: Renderer) -> String {
             )
         })
         .collect::<Vec<_>>();
+
     let end = page.offset.saturating_add(page.variables.len() as u64);
     if lines.is_empty() {
         lines.push(
@@ -2566,6 +2612,7 @@ pub fn globals(page: &GlobalVariablePage, renderer: Renderer) -> String {
 /// Renders signal policies as a table, one signal per line.
 pub fn signal_policies(policies: &[(u64, microscope::SignalPolicy)], renderer: Renderer) -> String {
     let yes_no = |value: bool| if value { "yes" } else { "no" };
+
     std::iter::once(
         renderer
             .paint(Role::Muted, "signal    stop  print  pass")
@@ -2601,10 +2648,12 @@ pub fn view_explanation(
         .type_info
         .as_ref()
         .map_or("<unknown type>", |info| &info.name);
+
     let mut lines = vec![format!(
         "`{expression}` has type {}",
         renderer.paint(Role::Type, type_name)
     )];
+
     match &explanation.presentation {
         Some(presentation) if presentation.shape == microscope::PresentedShape::Raw => {
             lines.push(format!(
@@ -2640,6 +2689,7 @@ pub fn view_explanation(
     }
 
     lines.extend(drawing_lines(&explanation.visualizers, ""));
+
     lines.join("\n")
 }
 
@@ -2700,12 +2750,14 @@ pub fn type_views(name: &str, types: &[microscope::TypeViews], renderer: Rendere
     }
 
     let mut lines = Vec::new();
+
     for views in types {
         lines.push(format!(
             "{} in {}",
             renderer.paint(Role::Type, &views.type_info.name),
             renderer.paint(Role::Metadata, views.module.display())
         ));
+
         match views.presented_by() {
             Some(view) => lines.push(format!("  presented by {view}")),
             None if views.extended_by().is_some() => {
@@ -2738,6 +2790,7 @@ pub fn view_check(check: &microscope::ViewCheck, renderer: Renderer) -> (String,
         .iter()
         .filter_map(|views| Some((views, views.presented_by()?)))
         .collect::<Vec<_>>();
+
     if !presented.is_empty() {
         lines.push("presented:".to_owned());
         for (views, view) in presented {
@@ -2753,6 +2806,7 @@ pub fn view_check(check: &microscope::ViewCheck, renderer: Renderer) -> (String,
         .iter()
         .filter_map(|views| Some((views, views.extended_by()?)))
         .collect::<Vec<_>>();
+
     if !extended.is_empty() {
         lines.push("extended, with no view presenting them:".to_owned());
         for (views, view) in extended {
@@ -2768,6 +2822,7 @@ pub fn view_check(check: &microscope::ViewCheck, renderer: Renderer) -> (String,
         .iter()
         .filter(|views| views.presented_by().is_none() && views.extended_by().is_none())
         .collect::<Vec<_>>();
+
     if !refused.is_empty() {
         lines.push("not presented, though views name them:".to_owned());
         for views in refused {
@@ -2845,6 +2900,7 @@ fn unbound_drawings(check: &microscope::ViewCheck, lines: &mut Vec<String>) -> b
             )
         })
         .collect::<Vec<_>>();
+
     unbound.sort_by(|left, right| (&left.0.source, left.1).cmp(&(&right.0.source, right.1)));
     unbound.dedup();
     if unbound.is_empty() {

@@ -42,6 +42,7 @@ async fn catch(
 ) -> Catchpoint {
     let calls: Arc<[SyscallId]> = calls.iter().map(|name| call(name)).collect();
     let condition = condition.map(|text| Condition::parse(text).expect("test condition"));
+
     scenario
         .operation(
             "catch syscall",

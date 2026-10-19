@@ -26,6 +26,7 @@ async fn launch_bootstrap_is_invisible_and_takes_breakpoints(interpreter: &str) 
     session.wait_for_output("READY").await;
     let context = session.context();
     let output = session.output();
+
     for expected in [
         "SITE 1".to_owned(),
         format!("SEES {site} [] False"),
@@ -43,6 +44,7 @@ async fn launch_bootstrap_is_invisible_and_takes_breakpoints(interpreter: &str) 
         .lines()
         .position(|line| line.ends_with("# LOOP_LINE"))
         .expect("a marked line");
+
     session
         .scenario
         .operation(
@@ -79,8 +81,10 @@ async fn launch_bootstrap_is_invisible_and_takes_breakpoints(interpreter: &str) 
         .filter(|frame| frame.recorded.is_some())
         .collect::<Vec<_>>();
     assert!(!python.is_empty(), "{context}: {trace:?}");
+
     for frame in python {
         assert_eq!(frame.role, CodeRole::Interpreter, "{context}: {frame:?}");
     }
+
     session.shutdown().await;
 }

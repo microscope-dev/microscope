@@ -178,6 +178,7 @@ impl PythonSession {
             python::interpreter(interpreter),
             &debug_files,
         );
+
         let running = scenario
             .start_running_with(LaunchOptions {
                 arguments: command(interpreter, fixture, arguments, !environment.is_empty()),
@@ -191,6 +192,7 @@ impl PythonSession {
                 ..LaunchOptions::default()
             })
             .await;
+
         Self {
             scenario,
             interpreter: interpreter.to_owned(),
@@ -242,6 +244,7 @@ impl PythonSession {
                 ..LaunchOptions::default()
             })
             .await;
+
         let session = Self {
             scenario,
             interpreter: interpreter.to_owned(),
@@ -252,6 +255,7 @@ impl PythonSession {
             attached: None,
             _scratch: streams.scratch,
         };
+
         (session, reason, events)
     }
 
@@ -299,6 +303,7 @@ impl PythonSession {
         } else {
             std::process::Command::new(python::interpreter(interpreter))
         };
+
         let child = Ended(
             command
                 .args(self::command(interpreter, fixture, arguments, false))
@@ -308,16 +313,19 @@ impl PythonSession {
                 .spawn()
                 .expect("start the fixture"),
         );
+
         let context = format!("{interpreter} {fixture} attached");
         let mut child = child;
         let truth = reported(&streams.output, name, &context, || {
             child.0.try_wait().ok().flatten().is_some()
         })
         .await;
+
         let debug_files = DebugFileOptions {
             directories: python::debug_directory(interpreter).into_iter().collect(),
             ..DebugFileOptions::default()
         };
+
         let process = if namespace {
             let host = Report::read(&streams.output)
                 .lines()
@@ -334,6 +342,7 @@ impl PythonSession {
         } else {
             ProcessId::new(u64::from(child.0.id()))
         };
+
         let debugger = tokio::time::timeout(
             CHECKPOINT_DEADLINE,
             Debugger::attach_with(process, None, &debug_files),
@@ -341,6 +350,7 @@ impl PythonSession {
         .await
         .expect("attach deadline")
         .expect("attach to the fixture");
+
         let session = Self {
             scenario: Scenario::attached(context, debugger),
             interpreter: interpreter.to_owned(),
@@ -351,6 +361,7 @@ impl PythonSession {
             attached: Some(child),
             _scratch: streams.scratch,
         };
+
         (session, truth)
     }
 
@@ -362,6 +373,7 @@ impl PythonSession {
             running.is_some_and(JoinHandle::is_finished)
         })
         .await;
+
         self.pause().await;
         lines
     }
@@ -369,14 +381,17 @@ impl PythonSession {
     /// Stops the running fixture wherever it is.
     pub async fn pause(&mut self) {
         let running = self.running.take().expect("the fixture runs");
+
         self.scenario
             .operation("pause", self.scenario.handle().pause())
             .await;
+
         let ended = tokio::time::timeout(CHECKPOINT_DEADLINE, running)
             .await
             .unwrap_or_else(|_| panic!("{}: the pause never stopped it", self.context()))
             .expect("the run task")
             .expect("the run");
+
         assert_eq!(ended, StopReason::Pause, "{}", self.context());
     }
 
@@ -394,6 +409,7 @@ impl PythonSession {
                 self.context(),
                 self.output()
             );
+
             assert!(
                 began.elapsed() < CHECKPOINT_DEADLINE,
                 "{}: no {text:?} in:\n{}",
@@ -451,6 +467,7 @@ impl PythonSession {
             .scenario
             .operation("backtrace", self.scenario.handle().backtrace())
             .await;
+
         let frame = trace
             .frames
             .iter()
@@ -462,6 +479,7 @@ impl PythonSession {
             })
             .unwrap_or_else(|| panic!("{}: no {function} frame: {trace:?}", self.context()))
             .id;
+
         self.scenario
             .operation("select", self.scenario.handle().select_frame(frame))
             .await;
@@ -470,11 +488,13 @@ impl PythonSession {
     /// A thread's backtrace at the stop it is held at.
     pub async fn backtrace(&mut self, thread: ThreadId) -> Backtrace {
         let stop = self.stop().await;
+
         let context = StopContext {
             stop,
             execution: ExecutionContext::Thread(thread),
             frame: StackFrameId::INNERMOST,
         };
+
         self.scenario
             .operation(
                 "thread backtrace",
@@ -506,6 +526,7 @@ impl PythonSession {
             .scenario
             .operation(text, self.scenario.handle().evaluate(&expression))
             .await;
+
         match evaluation {
             Evaluation::Value { value, .. } => match value.state {
                 VariableState::Available {
@@ -526,9 +547,11 @@ impl PythonSession {
             .scenario
             .operation(text, self.scenario.handle().evaluate(&expression))
             .await;
+
         let Evaluation::Value { value, .. } = evaluation else {
             panic!("{context}: `{text}` has no value");
         };
+
         match value.state {
             VariableState::Available {
                 value: VariableValue::Scalar(scalar),
@@ -544,7 +567,9 @@ impl PythonSession {
         self.input
             .write_all(b"\n")
             .expect("release fixture after detach");
+
         self.scenario.shutdown().await;
+
         let child = self.attached.as_mut().expect("an attached fixture owner");
         let deadline = Instant::now() + CHECKPOINT_DEADLINE;
         let status = loop {
@@ -554,6 +579,7 @@ impl PythonSession {
             assert!(Instant::now() < deadline, "detached fixture did not finish");
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
+
         assert!(status.success(), "detached fixture failed: {status}");
     }
 
@@ -567,6 +593,7 @@ impl PythonSession {
         else {
             panic!("reattach starts at a public stop")
         };
+
         let context = self.context();
         let Self {
             scenario,
@@ -578,14 +605,18 @@ impl PythonSession {
             _scratch: scratch,
             running,
         } = self;
+
         assert!(running.is_none());
         scenario.shutdown().await;
+
         // The detached fixture is no child of this test's to ask.
         reported(&output, name, &context, || false).await;
+
         let debug_files = DebugFileOptions {
             directories: python::debug_directory(&interpreter).into_iter().collect(),
             ..DebugFileOptions::default()
         };
+
         let debugger = tokio::time::timeout(
             CHECKPOINT_DEADLINE,
             Debugger::attach_with(process, None, &debug_files),
@@ -593,6 +624,7 @@ impl PythonSession {
         .await
         .expect("reattach deadline")
         .expect("reattach fixture");
+
         Self {
             scenario: Scenario::attached(context, debugger),
             interpreter,
@@ -628,6 +660,7 @@ pub fn as_integer(scalar: &ScalarValue) -> Option<i128> {
 fn the_matrix_is_every_interpreter_the_dev_shell_provides() {
     let root = std::env::var_os("MICROSCOPE_CPYTHON")
         .expect("MICROSCOPE_CPYTHON names the interpreters; run tests in the dev shell");
+
     let mut provided: Vec<String> = std::fs::read_dir(root)
         .expect("the interpreters' directory")
         .map(|entry| {
@@ -639,7 +672,9 @@ fn the_matrix_is_every_interpreter_the_dev_shell_provides() {
         })
         .collect();
     provided.sort();
+
     let mut matrix = MATRIX.map(str::to_owned).to_vec();
     matrix.sort();
+
     assert_eq!(matrix, provided);
 }

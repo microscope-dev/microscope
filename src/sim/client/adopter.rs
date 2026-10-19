@@ -47,13 +47,16 @@ impl Adopter {
     pub async fn run(self) -> Result<(), Failure> {
         let mut events = self.handle.subscribe();
         self.attach().await?;
+
         let mut continued = false;
+
         for _ in 0..self.requests {
             let snapshot = self
                 .handle
                 .snapshot()
                 .await
                 .map_err(|error| protocol(format!("snapshot failed: {error}")))?;
+
             match snapshot.inferior {
                 InferiorState::NotRunning => break,
                 InferiorState::Running { execution_id, .. } => match execution_id {
@@ -111,10 +114,12 @@ impl Adopter {
             }))
             .await
             .map_err(|_| protocol("the request queue closed before the attach"))?;
+
         let stop = answer
             .await
             .map_err(|_| protocol("the attach was never answered"))?
             .map_err(|error| protocol(format!("attaching to a held child failed: {error}")))?;
+
         self.marks.borrow_mut().hit(Mark::Adopted);
         self.note(format!(
             "attached to held child {} at stop {stop}",
@@ -177,12 +182,14 @@ impl Adopter {
     /// Shuts the session down, which detaches a child still attached.
     async fn shutdown(&self) -> Result<(), Failure> {
         self.note("shutdown");
+
         let (reply, answer) = oneshot::channel();
         self.handle
             .requests
             .send(ControllerMessage::Request(Request::Shutdown { reply }))
             .await
             .map_err(|_| protocol("the request queue closed before shutdown"))?;
+
         answer
             .await
             .map_err(|_| protocol("shutdown was never answered"))?

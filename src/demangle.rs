@@ -29,6 +29,7 @@ pub fn demangle(name: &str) -> Option<String> {
         &cpp_demangle::ParseOptions::default().recursion_limit(CPP_RECURSION_LIMIT),
     )
     .ok()?;
+
     symbol
         .demangle_with_options(
             &cpp_demangle::DemangleOptions::new().recursion_limit(CPP_RECURSION_LIMIT),
@@ -65,6 +66,7 @@ pub fn spells(mangled: &str, name: &str) -> bool {
         || qualified
             .strip_suffix(written)
             .is_some_and(|scopes| scopes.ends_with("::"));
+
     named
         && (written_parameters.is_empty()
             || parameters == written_parameters
@@ -142,6 +144,7 @@ pub fn rust_path(demangled: &str) -> Option<String> {
 
     let mut path = String::with_capacity(name.len());
     let mut depth = 0_usize;
+
     for (at, character) in name.char_indices() {
         match character {
             // A function type's arrow closes nothing.
@@ -232,6 +235,7 @@ mod tests {
     fn rust_paths_leave_out_generic_arguments_and_inherent_impls_brackets() {
         let path = |mangled: &str| rust_path(&demangle(mangled).expect("a Rust name"));
         let block_on = "tokio::runtime::park::CachedParkThread::block_on";
+
         for (mangled, expected) in [
             (
                 "_RINvMs2_NtNtCshWOCllL2uKN_5tokio7runtime4parkNtB6_16CachedParkThread\

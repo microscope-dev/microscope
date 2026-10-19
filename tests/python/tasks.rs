@@ -93,6 +93,7 @@ async fn each_task_is_listed_with_its_coroutines_as_its_stack() {
             .find(|fields| fields[0] == "thread" && fields[3] == "printer")
             .and_then(|fields| fields[1].parse().ok())
             .expect("the printer's thread");
+
         let snapshot = session.scenario.snapshot().await;
         let stop = Stop {
             id: session.stop().await,
@@ -173,10 +174,12 @@ async fn each_task_is_listed_with_its_coroutines_as_its_stack() {
                 execution: ExecutionContext::Task(chained.id),
                 frame: StackFrameId::INNERMOST,
             };
+
             let trace = stop
                 .scenario
                 .operation("task backtrace", stop.scenario.handle().at(at).backtrace())
                 .await;
+
             match trace.frames.get(1) {
                 Some(leaf) => at.frame = leaf.id,
                 None => lies.push(format!("chained has no frame of leaf: {trace:#?}")),
@@ -216,6 +219,7 @@ async fn task_stack(
         execution: ExecutionContext::Task(task.id),
         frame,
     };
+
     let trace = stop
         .scenario
         .operation(
@@ -226,6 +230,7 @@ async fn task_stack(
                 .backtrace(),
         )
         .await;
+
     let frames: Vec<(String, String, String)> = trace
         .frames
         .iter()
@@ -246,6 +251,7 @@ async fn task_stack(
             )
         })
         .collect();
+
     let expected: Vec<(String, String, String)> = truth
         .frames
         .iter()
@@ -257,6 +263,7 @@ async fn task_stack(
             )
         })
         .collect();
+
     if frames != expected {
         lies.push(format!(
             "{name}'s frames are {frames:#?} where CPython gave {expected:#?}"
@@ -279,6 +286,7 @@ async fn task_stack(
                 stop.scenario.handle().at(at(frame.id)).variables(),
             )
             .await;
+
         let shown: Vec<(String, String)> = variables
             .variables
             .iter()
@@ -290,10 +298,12 @@ async fn task_stack(
                 )
             })
             .collect();
+
         let expected: Vec<(String, String)> = locals
             .iter()
             .map(|(local, value)| ((*local).to_owned(), (*value).to_owned()))
             .collect();
+
         if shown != expected {
             lies.push(format!(
                 "{name}'s frame {depth} has {shown:?} where CPython gave {expected:?}"

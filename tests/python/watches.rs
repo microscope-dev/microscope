@@ -36,10 +36,12 @@ async fn selected(session: &mut PythonSession) -> StackFrame {
         .await
         .selected_frame
         .expect("a selected frame");
+
     let trace = session
         .scenario
         .operation("backtrace", session.scenario.handle().backtrace())
         .await;
+
     trace
         .frames
         .iter()
@@ -63,11 +65,13 @@ async fn changed(session: &mut PythonSession, reason: &StopReason, previous: &st
         (Some(previous), Some(current)),
         "{context}"
     );
+
     let frame = selected(session).await;
     let recorded = frame
         .recorded
         .as_ref()
         .unwrap_or_else(|| panic!("{context}: the selected frame is not Python's: {frame:?}"));
+
     assert_eq!(
         (
             &*recorded.function,
@@ -82,6 +86,7 @@ async fn changed(session: &mut PythonSession, reason: &StopReason, previous: &st
         .scenario
         .operation("source", session.scenario.handle().source_context(0))
         .await;
+
     assert_eq!(
         (source.path.file_name(), source.line.get()),
         (
@@ -102,11 +107,13 @@ async fn watch(session: &PythonSession, name: &str) -> Watchpoint {
             handle.resolve_watch_target(&expression(name)),
         )
         .await;
+
     assert!(
         matches!(target.scope(), WatchScope::Interpreted { .. }) && target.byte_size() == 8,
         "{}: {target:?}",
         session.context()
     );
+
     session
         .scenario
         .operation(
@@ -128,6 +135,7 @@ async fn a_variable_is_watched_for_its_frames_life(interpreter: &str) {
         .scenario
         .operation("backtrace", handle.backtrace())
         .await;
+
     let count = trace
         .frames
         .iter()
@@ -139,6 +147,7 @@ async fn a_variable_is_watched_for_its_frames_life(interpreter: &str) {
         })
         .unwrap_or_else(|| panic!("{context}: no frame of count: {trace:?}"))
         .id;
+
     session
         .scenario
         .operation("select count", handle.select_frame(count))
@@ -151,6 +160,7 @@ async fn a_variable_is_watched_for_its_frames_life(interpreter: &str) {
         matches!(&refused, Err(Error::WatchTargetUnsupported(reason)) if reason.contains("variable of the frame")),
         "{context}: {refused:?}"
     );
+
     let total = watch(&session, "total").await;
 
     // Adding 0 stores the object it held, which is no change.
@@ -172,22 +182,27 @@ async fn a_variable_is_watched_for_its_frames_life(interpreter: &str) {
             session.scenario.handle().remove_watchpoint(total.id),
         )
         .await;
+
     watch(&session, "spare").await;
+
     let reason = session.scenario.resume_to_stop().await;
     let StopReason::WatchpointInvalidated { invalidated } = &reason else {
         panic!("{context}: {reason:?}: {}", session.output());
     };
+
     assert_eq!(
         invalidated[0].reason,
         WatchpointInvalidation::ScopeExited,
         "{context}"
     );
+
     let reason = session.scenario.resume_to_stop().await;
     assert_eq!(
         reason,
         StopReason::Exited(microscope::ExitStatus::Code(0)),
         "{context}"
     );
+
     assert!(
         session.output().contains("COUNTED 6 1"),
         "{context}: {}",

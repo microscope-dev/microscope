@@ -45,6 +45,7 @@ impl ListeningAdapter {
             .unwrap_or_else(|| panic!("unexpected announcement {line:?}"))
             .parse()
             .expect("an address");
+
         adapter
     }
 
@@ -121,6 +122,7 @@ fn tcp_serves_one_client_at_a_time_and_refuses_browsers() {
         .lines()
         .filter_map(|line| line.strip_prefix("-- client "))
         .collect::<Vec<_>>();
+
     let browser = browser.local_addr().expect("browser address");
     let peers = sessions
         .chunks(2)
@@ -234,6 +236,7 @@ fn killing_the_adapter_kills_its_program_and_releases_attached_ones() {
         .find(|line| line.starts_with("State:"))
         .expect("state");
     assert!(!state.contains("stopped"), "{state}");
+
     process.release();
     let status = process.wait();
     assert_eq!(status.code(), Some(23), "{status:?}");
@@ -257,6 +260,7 @@ fn missed_events_are_recovered_from_the_debuggers_state() {
         },
     );
     let mut mark = started.mark;
+
     for _ in 0..16 {
         let stop = dap.stopped(mark);
         let threads = dap.request("threads", Value::Null)["threads"]
@@ -309,6 +313,7 @@ fn missed_events_are_recovered_from_the_debuggers_state() {
         },
     );
     let mut mark = started.mark;
+
     for _ in 0..3 {
         let stop = dap.stopped(mark);
         let modules = dap.request("modules", json!({}))["modules"]

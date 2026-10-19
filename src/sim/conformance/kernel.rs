@@ -88,6 +88,7 @@ fn k_exec_2_a_program_loads_where_linux_puts_it() {
             .expect("registers at the first stop");
         record.note(format!("rip: {:#x}", registers.rip));
         let maps = record.tracee.maps(leader).unwrap_or_default();
+
         for line in maps.lines() {
             let fields = line.split_whitespace().collect::<Vec<_>>();
             if fields.last().is_some_and(|path| path.contains("/frames-")) {
@@ -109,6 +110,7 @@ fn k_exec_2_a_programs_pages_hold_what_linux_loads() {
             let leader = record.leader();
             let image = record.landmarks.image.clone();
             let maps = record.tracee.maps(leader).unwrap_or_default();
+
             for line in maps.lines() {
                 let fields = line.split_whitespace().collect::<Vec<_>>();
                 let (start, end) = fields[0].split_once('-').expect("a range");
@@ -120,6 +122,7 @@ fn k_exec_2_a_programs_pages_hold_what_linux_loads() {
 
                 // FNV-1a, over the bytes as ptrace reads them.
                 let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+
                 for address in (start..end).step_by(8) {
                     let word = record.tracee.peek(leader, address).unwrap_or(0);
                     for byte in word.to_le_bytes() {
@@ -128,6 +131,7 @@ fn k_exec_2_a_programs_pages_hold_what_linux_loads() {
                 }
 
                 let place = format!("{}-{}", record.place(start), record.place(end));
+
                 record.note(format!("{place} {}: {hash:016x}", fields[1]));
             }
         });
@@ -139,17 +143,11 @@ fn k_exec_2_a_programs_pages_hold_what_linux_loads() {
 /// kernel's version, none of which the model has, and no golden program
 /// reads them.
 const UNMODELED_AUXILIARY_ENTRIES: [u64; 10] = [
-    // AT_SYSINFO_EHDR: the vDSO, which the model does not map.
-    33, // AT_MINSIGSTKSZ: the signal frame's size, by the CPU's extended
-    // state.
-    51, // AT_HWCAP and AT_HWCAP2: CPUID features.
-    16, 26,
-    // AT_UID, AT_EUID, AT_GID, and AT_EGID: the credentials of whoever
-    // ran the program.
-    11, 12, 13, 14,
-    // AT_RSEQ_FEATURE_SIZE and AT_RSEQ_ALIGN: restartable sequences, since
-    // Linux 6.3, sized by its version.
-    27, 28,
+    33, // AT_SYSINFO_EHDR: the vDSO, which the model does not map.
+    51, // AT_MINSIGSTKSZ: the signal frame's size, by the CPU's extended state.
+    16, 26, // AT_HWCAP, AT_HWCAP2: CPUID features.
+    11, 12, 13, 14, // AT_UID, AT_EUID, AT_GID, AT_EGID: the credentials of whoever ran it.
+    27, 28, // AT_RSEQ_FEATURE_SIZE, AT_RSEQ_ALIGN: rseq since Linux 6.3, sized by version.
 ];
 
 /// The stack a program starts with, as a K-EXEC-3 script reads it.
@@ -198,6 +196,7 @@ impl FirstStack {
 
         at += 16;
         let mut auxiliary = Vec::new();
+
         let null = loop {
             let (key, value) = (word(at), word(at + 8));
             at += 16;
@@ -239,6 +238,7 @@ fn stack_word(tracee: &dyn Tracee, thread: Tid, address: u64) -> u64 {
 /// The string at `address`, which ends before `top`.
 fn stack_string(tracee: &dyn Tracee, thread: Tid, address: u64, top: u64) -> String {
     let mut bytes = Vec::new();
+
     for at in (address..top).step_by(8) {
         let chunk = stack_word(tracee, thread, at).to_le_bytes();
         if let Some(end) = chunk.iter().position(|&byte| byte == 0) {
@@ -284,6 +284,7 @@ fn k_exec_3_the_first_stack_is_laid_out_as_linux_lays_it() {
             format!("environment variables: {}", stack.environment),
             format!("AT_NULL holds {}", stack.null),
         ];
+
         let shown = stack
             .auxiliary
             .iter()
@@ -309,6 +310,7 @@ fn k_exec_3_the_first_stack_is_laid_out_as_linux_lays_it() {
                 .entry(AT_EXECFN)
                 .map(|address| (address, executable.clone())),
         );
+
         let shown = strings
             .iter()
             .enumerate()
@@ -330,6 +332,7 @@ fn k_exec_3_the_first_stack_is_laid_out_as_linux_lays_it() {
             })
             .collect::<Vec<_>>();
         lines.push(format!("strings: {shown:?}"));
+
         if let Some((address, text)) = strings.last() {
             let end = address + text.len() as u64 + 1;
             lines.push(format!(
@@ -567,6 +570,7 @@ fn k_sig_1_a_tracer_stop_request_stops_a_running_thread() {
         let result = record.tracee.request_stop(second);
         record.result("tgkill SIGSTOP", result);
         record.wait(second);
+
         let signal = record
             .tracee
             .signal(second)
@@ -588,11 +592,13 @@ fn k_mem_1_ptrace_ignores_protections_but_not_holes() {
             .expect("read the entry point");
         let result = record.tracee.poke(leader, entry, word ^ 0xff);
         record.result("poke code", result);
+
         let changed = record
             .tracee
             .peek(leader, entry)
             .map(|changed| changed ^ word);
         record.note(format!("changed: {changed:?}"));
+
         let unmapped = record.landmarks.unmapped;
         let result = record.tracee.peek(leader, unmapped).map(drop);
         record.result("peek unmapped", result);
@@ -624,9 +630,11 @@ fn k_clone_1_a_new_thread_starts_stopped() {
         record.note(format!("stack of thread 1, from stacks: {stack:x?}"));
         let name = record.tracee.name(child);
         record.note(format!("name of thread 1: {name}"));
+
         record.step(leader);
         record.wait(leader);
         record.stop(leader);
+
         let returned = record
             .tracee
             .registers(leader)
@@ -644,6 +652,7 @@ fn k_clone_1_a_new_thread_starts_stopped() {
         record.wait(child);
         let group = record.tracee.thread_group(child);
         record.note(format!("thread 1 is gone: {}", group.is_none()));
+
         record.resume(leader, None);
         record.wait(leader);
         record.system_call(leader);
@@ -767,6 +776,7 @@ fn k_exit_3_sigkill_after_a_fork_event_finds_the_call_returned() {
         record.result("kill", result);
         record.wait(leader);
         record.event_message(leader);
+
         let inside = record
             .tracee
             .registers(leader)
@@ -813,6 +823,7 @@ fn k_exit_5_a_leader_exiting_alone_waits_for_its_threads() {
         }
 
         record.note("the leader's maps read empty");
+
         let result = record.tracee.registers(leader).map(drop);
         record.result("registers of the zombie leader", result);
         let result = record.tracee.request_stop(leader);
@@ -882,10 +893,12 @@ fn k_exit_6_the_last_thread_to_begin_exiting_decides_the_status() {
 
             let rt_exit = record.landmarks.symbol("rt_exit");
             let original = record.plant(rt_exit);
+
             record.resume(worker, None);
             record.wait(worker);
             record.restore(worker, rt_exit, original);
             record.rewind(worker);
+
             let (mut registers, _) = record.tracee.registers(worker).expect("registers");
             registers.general[RDI] = 5;
             let result = record.tracee.set_registers(worker, &registers);
@@ -895,6 +908,7 @@ fn k_exit_6_the_last_thread_to_begin_exiting_decides_the_status() {
             record.event_message(worker);
             record.resume(worker, None);
             record.wait(worker);
+
             if leader_last {
                 record.resume(leader, None);
                 record.wait(leader);
@@ -1013,6 +1027,7 @@ fn k_dr_2_a_step_over_a_watched_store_reports_both() {
 
         // Step to the next round's store of the counter.
         let mut steps = 0;
+
         loop {
             record.tracee.resume(leader, None, true).expect("step");
             let status = record.tracee.wait(leader);
@@ -1142,6 +1157,7 @@ fn k_fork_1_a_fork_child_starts_stopped_in_a_copy_of_its_parent() {
         record.stop(child);
         record.restore(child, child_code, original);
         record.rewind(child);
+
         let byte = record
             .tracee
             .peek(leader, child_code)
@@ -1607,6 +1623,7 @@ fn k_sys_1_a_thread_stops_at_a_system_calls_entry_and_exit() {
         let leader = record.leader();
         record.set_options(leader);
         record.call(leader);
+
         for _ in 0..3 {
             record.resume_to_call(leader, None);
             record.wait(leader);
@@ -1647,6 +1664,7 @@ fn k_sys_3_event_stops_fall_between_a_calls_entry_and_exit() {
         record.resume_to_call(leader, None);
         record.wait(leader);
         record.stop(leader);
+
         let returned = record
             .tracee
             .registers(leader)
@@ -1756,9 +1774,11 @@ fn k_sys_7_a_fork_entered_with_a_signal_pending_restarts() {
         run_to_entry(record, leader, SYS_FORK);
         record.note("at the fork's entry");
         record.system_call(leader);
+
         let result = record.tracee.request_stop(leader);
         record.result("tgkill SIGSTOP", result);
         restart(record, leader);
+
         record.resume(leader, None);
         let child = record.forked(leader);
         record.wait(child);
@@ -1783,9 +1803,11 @@ fn k_sys_7_a_clone_entered_with_a_signal_pending_restarts() {
         record.set_options(leader);
         run_to_entry(record, leader, SYS_CLONE);
         record.note("at the clone's entry");
+
         let result = record.tracee.request_stop(leader);
         record.result("tgkill SIGSTOP", result);
         restart(record, leader);
+
         record.resume(leader, None);
         let child = record.cloned(leader);
         record.wait(child);
@@ -1891,6 +1913,7 @@ fn k_trap_2_an_interrupt_stops_a_thread_ahead_of_its_trap() {
             record.step(leader);
             record.wait(leader);
             record.stop(leader);
+
             let returned = record
                 .tracee
                 .registers(leader)

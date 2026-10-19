@@ -125,6 +125,7 @@ impl TokioRuntime {
         // A list read with no shard changing or damaged holds its count.
         let mut whole = true;
         let mut total = 0;
+
         while shard < list.length {
             let (head, changing) = match self.shard(stop, runtime, &list, shard) {
                 Ok((head, locked)) => {
@@ -151,6 +152,7 @@ impl TokioRuntime {
 
             let (mut at, mut previous) = node.take().unwrap_or((head, records::NULL));
             let mut walked = 0;
+
             while at != records::NULL {
                 if walked >= list.count {
                     whole = false;
@@ -283,6 +285,7 @@ impl TokioRuntime {
         }
 
         let id_offset = word(vtable.wrapping_add(tasks.id_offset))?;
+
         Ok(Node {
             id: word(header.wrapping_add(id_offset))?,
             state: word(header.wrapping_add(tasks.state))?,
@@ -319,6 +322,7 @@ impl TokioRuntime {
     ) -> Result<Resume, Arc<str>> {
         let stale = || Arc::<str>::from("the page's cursor names no task at this stop");
         let owner = records::word(stop, header.wrapping_add(tasks.owner)).ok_or_else(stale)?;
+
         for (index, &runtime) in census.runtimes.iter().enumerate() {
             let list = self.list(stop, runtime)?;
             if list.id != owner {
@@ -388,6 +392,7 @@ impl TokioRuntime {
 
         let (mut at, _) = self.shard(stop, runtime, &list, shard)?;
         let mut previous = records::NULL;
+
         for _ in 0..=list.count {
             if at == records::NULL {
                 return Ok(None);
@@ -531,6 +536,7 @@ impl TokioRuntime {
             .runtimes
             .iter()
             .filter(|runtime| runtime.flavor != Flavor::Local);
+
         for &runtime in pooled {
             match self.queued(stop, tasks, runtime) {
                 Ok((queued, locked)) => {
@@ -597,6 +603,7 @@ impl TokioRuntime {
         let pointer =
             |address: VirtualAddress| records::pointer(stop, address).ok_or_else(unreadable);
         let inner = pointer(runtime.handle.wrapping_add(spawner))?.wrapping_add(pool.data);
+
         let lock = records::read(stop, inner.wrapping_add(pool.lock.offset), pool.lock.size)
             .ok_or_else(unreadable)?;
         let head = word(inner.wrapping_add(pool.head))?;
@@ -609,6 +616,7 @@ impl TokioRuntime {
 
         let locked = pool.lock.is_held(lock);
         let mut queued = Vec::new();
+
         for index in 0..length {
             let slot = (head + index) % capacity;
             let at = buffer.wrapping_add(slot.wrapping_mul(pool.task_size));

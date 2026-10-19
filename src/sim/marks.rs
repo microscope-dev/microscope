@@ -461,6 +461,7 @@ impl Reach {
             .filter(|&(_, runs)| runs < floor)
             .collect::<Vec<_>>();
         rare.sort_by_key(|&(_, runs)| runs);
+
         rare
     }
 }
@@ -487,6 +488,7 @@ mod tests {
         let mut marks = Marks::default();
         marks.hit(Mark::CoHit);
         marks.hit(Mark::CoHit);
+
         let mut reach = Reach::default();
         reach.add(&marks);
         marks.hit(Mark::StepStop);

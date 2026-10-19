@@ -187,6 +187,7 @@ impl Views {
         };
 
         let result = run(&mut checkpoints);
+
         let mut scans = self.scans.borrow_mut();
         if scans.stop == Some(stop) {
             scans.entries.retain(|(existing, _)| *existing != key);
@@ -330,6 +331,7 @@ impl<P: InspectionOps> Scope for ModuleScope<'_, P> {
                 format!("`{name}` has a malformed type: {reason}"),
             )
         })?;
+
         Ok(Some((
             StopStep::Global(StopObject::global(self.module.loaded.id, key)),
             TypeReference {
@@ -482,6 +484,7 @@ impl<P: InspectionOps> Controller<P> {
             .choices
             .borrow_mut()
             .insert(ty, Arc::new(Choice::default()));
+
         let choice = Arc::new(self.module_of(ty).map_or_else(Choice::default, |module| {
             crate::view::choose_among(
                 &[&self.views.set, module.image.views(), &ViewSet::built_in()],
@@ -492,10 +495,12 @@ impl<P: InspectionOps> Controller<P> {
                 },
             )
         }));
+
         self.views
             .choices
             .borrow_mut()
             .insert(ty, Arc::clone(&choice));
+
         choice
     }
 
@@ -584,6 +589,7 @@ impl<P: InspectionOps> Controller<P> {
             .filter(|view| !used.contains(&(Arc::clone(&view.source), view.line)))
             .map(|view| crate::view::name_of(view))
             .collect();
+
         let kernels = self
             .views
             .set
@@ -594,6 +600,7 @@ impl<P: InspectionOps> Controller<P> {
                     .flat_map(|module| module.image.views().kernels()),
             )
             .collect();
+
         let renderers = self
             .views
             .set
@@ -605,6 +612,7 @@ impl<P: InspectionOps> Controller<P> {
             )
             .cloned()
             .collect();
+
         crate::ViewCheck {
             types: types.into(),
             unused,
@@ -669,6 +677,7 @@ impl<P: InspectionOps> Controller<P> {
     ) -> Result<Vec<String>> {
         let recordings = Recordings::default();
         *self.views.recording.borrow_mut() = Some(recordings.clone());
+
         let presented = (|| -> Result<()> {
             let value = self.view_subject(stop_id, root, frame, expression, "record")?;
             if let VariableState::Available {
@@ -689,8 +698,10 @@ impl<P: InspectionOps> Controller<P> {
 
             Ok(())
         })();
+
         *self.views.recording.borrow_mut() = None;
         presented?;
+
         Ok(recordings.take().iter().map(ToString::to_string).collect())
     }
 
@@ -727,6 +738,7 @@ impl<P: InspectionOps> Controller<P> {
 
         let bound = self.view_choice(from).bound.clone()?;
         let element = element_type(self, &bound.shape, 0)?;
+
         Some(Planned {
             step: StopStep::Element(bound),
             result: Some(element),
@@ -743,6 +755,7 @@ impl<P: InspectionOps> Controller<P> {
 
         let bound = self.view_choice(from).bound.clone()?;
         let presented = presented_type(&bound.shape)?;
+
         Some(Planned {
             step: StopStep::Presented(bound),
             result: Some(presented),
@@ -759,6 +772,7 @@ impl<P: InspectionOps> Controller<P> {
 
         let bound = self.view_choice(from).bound.clone()?;
         let value = entry_type(&bound.shape)?;
+
         Some(Planned {
             step: StopStep::Entry(bound),
             result: Some(value),
@@ -965,6 +979,7 @@ fn viewed(
     let bound = Arc::clone(bound).downcast::<ViewBound>().map_err(|_| {
         Error::InvalidValueExpression("the view belongs to another debugger".into())
     })?;
+
     Ok((Some(bound), native()))
 }
 
@@ -1106,6 +1121,7 @@ fn one_type(image: &crate::ModuleImage, name: &str) -> Option<TypeReference> {
         })
         .collect::<Vec<_>>();
     let first = *found.first()?;
+
     found
         .iter()
         .all(|other| image.same_type(first, *other))
@@ -1526,7 +1542,6 @@ fn number(value: &InspectedValue) -> Option<Arc<InspectedValue>> {
     }
 }
 
-/// `value` with `presentation`.
 /// `value` with a presentation already shared.
 fn present_as_shared(mut value: InspectedValue, presentation: Arc<Presentation>) -> InspectedValue {
     if let VariableState::Available {
@@ -1797,6 +1812,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
             .payload
             .as_ref()
             .and_then(|payload| lent(&payload.state));
+
         Ok(present_as(
             value,
             built_in_presentation("sum types", shape, sum.summary, &raw, lent),
@@ -1841,6 +1857,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
             .iter()
             .map(|info| Arc::clone(&info.name))
             .collect();
+
         self.interpreted_object(&names, address.address)
     }
 
@@ -1861,6 +1878,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         let language = typedef_chain(self, type_info.reference)
             .iter()
             .find_map(|info| info.identity.as_ref().map(|identity| identity.language));
+
         match language {
             Some(crate::SourceLanguage::Cpp) => self.cpp_dynamic(type_info, &place),
             Some(crate::SourceLanguage::Rust) => self.rust_dynamic(type_info, &place),
@@ -2045,6 +2063,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
 
         let (module, _) = self.module_at(descriptor.get())?;
         let ty = module.image.go_runtime_type(offset)?;
+
         match (held, &place.located.storage) {
             (HeldPlace::Memory(address), _) => Some(Dynamic::at(module, ty, address.get())),
             // A value stored directly in an interface held in bytes is
@@ -2160,6 +2179,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         let reference = Arc::clone(reference);
         let mut parts = Vec::new();
         self.record_members(&reference, depth, &mut parts)?;
+
         let mut line = String::from("{");
         for (index, part) in parts.iter().enumerate() {
             if line.chars().count() > crate::view::summary::MAX_CHARACTERS {
@@ -2175,6 +2195,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         }
 
         line.push('}');
+
         Ok(Some(line))
     }
 
@@ -2334,6 +2355,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
             &raw,
             lent(&record.state).map(|(inner, _)| (inner, picked.len() as u64)),
         );
+
         if let ValueChildren::Available(reference) = &mut presentation.children {
             let reference = Arc::make_mut(reference);
             if let Some(view) = &mut reference.view {
@@ -2379,6 +2401,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
                     if !member.artificial
                         && member.name.as_deref() == Some(format!("__{index}").as_str()))
             });
+
         if !positional {
             return Ok(None);
         }
@@ -2397,6 +2420,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         };
 
         let summary = format!("{name}({fields})");
+
         Ok(Some(present_as(
             value.clone(),
             built_in_presentation(
@@ -2482,8 +2506,10 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
             .variables
             .value_children(reference, 0, limit, &mut runtime, self.budget)
             .map_err(Stop::Failed)?;
+
         let mut machine = self.nested(self.depth + 1);
         let mut children = page.children.to_vec();
+
         for child in &mut children {
             let state = std::mem::replace(
                 &mut child.state,
@@ -2575,6 +2601,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
 
         let module = self.frame.controller.module_of(type_info.reference)?;
         let context = self.context(module);
+
         Some(Arc::new(ValueChildrenReference {
             stop_id: context.stop_id,
             context: context.context,
@@ -2611,6 +2638,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         let result = self.in_share(|machine| {
             crate::view::run::present(&bound, machine, place.into(), &mut Checkpoints::default())
         });
+
         match result {
             Ok(presented) => Ok((presented.text, None)),
             Err(Failure::Problem(problem)) => Ok((
@@ -2633,6 +2661,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         let stop = self.frame.stop_id;
         let key = scan_key(bound, self.module(from.module)?.loaded.image, from);
         let mut machine = self.nested(self.depth);
+
         controller
             .views
             .scan(stop, key, |checkpoints| {
@@ -2655,6 +2684,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         from: &StopPlace,
     ) -> std::result::Result<Place, Stop> {
         let mut machine = self.nested(self.depth);
+
         crate::view::run::presented_place(bound, &mut machine, from.clone().into())
             .map_err(|failure| view_stop(failure, bound, ErrorKind::Type))
     }
@@ -2671,6 +2701,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         let stop = self.frame.stop_id;
         let scan = scan_key(bound, self.module(from.module)?.loaded.image, from);
         let mut machine = self.nested(self.depth);
+
         controller
             .views
             .scan(stop, scan, |checkpoints| {
@@ -2714,6 +2745,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         };
 
         let mut machine = self.nested(self.depth);
+
         crate::view::run::capacity(&bound, &mut machine, at.clone().into())
             .map_err(|failure| view_stop(failure, &bound, ErrorKind::Type))
     }
@@ -2733,6 +2765,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         }
 
         let mut machine = self.nested(self.depth);
+
         crate::view::run::text_span(&bound, &mut machine, at.clone().into())
             .map_err(|failure| view_stop(failure, &bound, ErrorKind::Type))
     }
@@ -2757,6 +2790,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         let stop = self.frame.stop_id;
         let key = scan_key(&bound, ty.image, at);
         let mut machine = self.nested(self.depth);
+
         controller
             .views
             .scan(stop, key, |checkpoints| {
@@ -2779,6 +2813,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
             state,
             VariableState::Unavailable(crate::VariableUnavailableReason::EvaluationLimit),
         );
+
         *state = match self.presented(self.finish(type_info, read)) {
             Ok(value) => value.state,
             Err(Stop::Missing(missing)) => *missing,

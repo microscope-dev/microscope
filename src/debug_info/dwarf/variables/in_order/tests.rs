@@ -39,11 +39,13 @@ fn run(workers: usize, ahead: usize, fails_at: Option<usize>) -> (usize, Log) {
     };
 
     let in_order = InOrder::new(&order, &members, log, ahead);
+
     std::thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| in_order.work(walk));
         }
     });
+
     in_order.into_parts()
 }
 
@@ -76,6 +78,7 @@ fn units_after_the_walk_stops_holding_are_added_unwalked() {
 #[test]
 fn a_panicking_walk_ends_the_walk() {
     let (ended, end) = std::sync::mpsc::channel();
+
     std::thread::spawn(move || {
         let (order, members) = groups();
         let log = Log {
@@ -84,6 +87,7 @@ fn a_panicking_walk_ends_the_walk() {
         };
 
         let in_order = InOrder::new(&order, &members, log, 1);
+
         let walked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             std::thread::scope(|scope| {
                 for _ in 0..2 {
@@ -96,8 +100,10 @@ fn a_panicking_walk_ends_the_walk() {
                 }
             });
         }));
+
         let _ = ended.send(walked.is_err());
     });
+
     let panicked = end
         .recv_timeout(Duration::from_secs(10))
         .expect("the walk ends when a worker panics");

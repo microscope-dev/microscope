@@ -30,11 +30,13 @@ fn the_default_filters_stop_on_a_task_panic_at_its_caller() {
         .iter()
         .position(|frame| frame["source"]["presentationHint"] != "deemphasize")
         .unwrap_or_else(|| panic!("{frames:#?}"));
+
     let main = source("rust/tokio/panics/src/main.rs");
     assert_eq!(
         frames[panicked]["line"],
         line_of(&main, "// PANIC: unwrap"),
         "{frames:#?}"
     );
+
     dap.finish();
 }

@@ -8,6 +8,7 @@ async fn stopped_at_line(fixture: &str, source: &str, marker: &str) -> Scenario 
     let mut scenario = Scenario::launch(fixture);
     let line = source_line(&format!("tests/fixtures/c/{source}"), marker);
     scenario.add_source_breakpoint(source, line).await;
+
     assert!(matches!(
         scenario.run_to_stop().await,
         StopReason::Breakpoint { .. }
@@ -76,6 +77,7 @@ async fn frame_view(scenario: &mut Scenario, level: u32) -> microscope::StopCont
     let trace = scenario
         .operation("backtrace", scenario.handle().backtrace())
         .await;
+
     microscope::StopContext {
         stop: stop_id,
         execution: thread_id.into(),
@@ -94,6 +96,7 @@ async fn assignments_change_memory_the_program_then_uses() {
     let innermost = frame_view(&mut scenario, 0).await;
     let handle = scenario.handle().clone();
     let view = handle.at(innermost);
+
     let assigned = scenario
         .operation("assign", assign(&view, "pointee", "100"))
         .await;
@@ -109,6 +112,7 @@ async fn assignments_change_memory_the_program_then_uses() {
         )
         .await;
     assert_eq!(signed(&doubled), 81);
+
     for (target, value, reason) in [
         ("pair", "1", "cannot be assigned"),
         ("pointee", "1.5", "1.5 does not fit `int` exactly"),
@@ -152,6 +156,7 @@ async fn assignments_change_memory_the_program_then_uses() {
         .operation("assign in caller", assign(&caller, "signed_int", "5"))
         .await;
     assert_eq!(signed(&changed), 5);
+
     scenario.remove_all_breakpoints().await;
     assert_eq!(
         scenario.resume_to_stop().await,
@@ -212,6 +217,7 @@ async fn registers_hold_whole_variables_of_the_innermost_frame_only() {
         ),
         "the optimized parameter lives in a register: {current:?}"
     );
+
     let assigned = scenario
         .operation("assign register", assign(&innermost, "parameter", "41"))
         .await;
@@ -253,6 +259,7 @@ async fn memory_writes_keep_breakpoints_installed_and_span_words() {
         .operation("write code", handle.write_memory(address, &code.bytes))
         .await;
     assert_eq!(written, 16);
+
     let again = scenario
         .operation("read code again", handle.read_memory(address, 16))
         .await;
@@ -269,9 +276,11 @@ async fn memory_writes_keep_breakpoints_installed_and_span_words() {
         .operation("address", handle.runtime_address("microscope_value"))
         .await;
     let start = VirtualAddress::new(global.get() + 3);
+
     scenario
         .operation("write across words", handle.write_memory(start, &[0xaa; 5]))
         .await;
+
     let value = scenario
         .operation("read value", handle.read_memory(global, 8))
         .await;
@@ -279,6 +288,7 @@ async fn memory_writes_keep_breakpoints_installed_and_span_words() {
         &*value.bytes,
         &[0x88, 0x77, 0x66, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa]
     );
+
     let unwritable = scenario
         .attempt(
             "write nowhere",
@@ -443,7 +453,9 @@ async fn assigning_the_program_counter_moves_the_thread_under_a_new_stop() {
         .operation("modules", scenario.handle().loaded_modules())
         .await;
     let address = modules.modules[0].module.load_bias.get() + image_address.get();
+
     scenario.remove_breakpoint(target.id).await;
+
     let context = frame_view(&mut scenario, 0).await;
     let handle = scenario.handle().clone();
     let assigned = scenario
@@ -507,6 +519,7 @@ async fn assigned_registers_are_what_the_thread_computes_with() {
         scenario.step_to_stop(StepKind::Out).await,
         StopReason::Step { .. }
     ));
+
     let innermost = frame_view(&mut scenario, 0).await;
     let view = handle.at(innermost);
     let rax = scenario.operation("read $rax", read(&view, "$rax")).await;
@@ -517,9 +530,11 @@ async fn assigned_registers_are_what_the_thread_computes_with() {
         ),
         "{rax:?}"
     );
+
     scenario
         .operation("assign $rax", assign(&view, "$rax", "42"))
         .await;
+
     assert_eq!(
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(42))
@@ -543,6 +558,7 @@ async fn a_thread_moved_out_of_a_system_call_resumes_where_it_was_moved() {
             .await,
         StopReason::Entry
     );
+
     let _resumed = scenario.start_resuming().await;
     let InferiorState::Running { process_id, .. } = scenario.snapshot().await.inferior else {
         panic!("not running");
@@ -551,6 +567,7 @@ async fn a_thread_moved_out_of_a_system_call_resumes_where_it_was_moved() {
     support::wait_for_system_call(process_id, 34);
     let reason = scenario.operation("pause", scenario.handle().pause()).await;
     assert_eq!(reason, StopReason::Pause);
+
     let registers = scenario
         .operation("registers", scenario.handle().registers())
         .await;

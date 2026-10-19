@@ -67,6 +67,7 @@ pub fn decode(
 
     let mut dispatch = BTreeSet::new();
     let mut points = Vec::with_capacity(states.len());
+
     for &value in states {
         let run = Run::new(image, state, value);
         let (landing, lead_end, executed) = run.execute(entry.get(), &contains)?;
@@ -115,6 +116,7 @@ pub fn flood_all(
     let mut extents = BTreeSet::new();
     let mut pending = vec![start.get()];
     let mut complete = true;
+
     while let Some(ip) = pending.pop() {
         if !within(ip) || visited.contains(&ip) {
             continue;
@@ -170,6 +172,7 @@ pub fn first_beyond(
 ) -> Option<ImageAddress> {
     let mut ip = start.get();
     let mut visited = BTreeSet::new();
+
     for _ in 0..MAX_STEPS {
         if !within(ip) {
             return Some(ImageAddress::new(ip));
@@ -321,6 +324,7 @@ impl<'a> Run<'a> {
         let mut ip = entry;
         let mut landing = None;
         let mut executed = Vec::new();
+
         for _ in 0..MAX_STEPS {
             if !contains(ip) {
                 return Err(format!("the dispatch leaves the function at {ip:#x}").into());
@@ -329,6 +333,7 @@ impl<'a> Run<'a> {
             let instruction = self.decode(ip)?;
             let next = self.step(&instruction);
             let after = instruction.next_ip();
+
             match (next, landing) {
                 // Before the state decides anything, the dispatch goes on.
                 (Next::Fall, None) => {
@@ -451,6 +456,7 @@ impl<'a> Run<'a> {
                     && instruction.op0_register() == instruction.op1_register();
                 let state = (left.state || right.state) && !zeroing;
                 let bits = operand_bits(instruction);
+
                 let value = match (instruction.mnemonic(), left.value, right.value) {
                     _ if zeroing => Value::Number(0),
                     (Mnemonic::Add, Value::Number(a), Value::Number(b)) => {
@@ -498,6 +504,7 @@ impl<'a> Run<'a> {
                 let left = self.operand(instruction, 0);
                 let right = self.operand(instruction, 1);
                 let bits = operand_bits(instruction);
+
                 self.flags = match (left.value, right.value) {
                     (Value::Number(a), Value::Number(b)) => {
                         let state = left.state || right.state;
@@ -689,6 +696,7 @@ impl<'a> Run<'a> {
     /// `sign`.
     fn load(&self, instruction: &Instruction, size: usize, sign: bool) -> Cell {
         let address = self.address(instruction);
+
         match address.value {
             Value::Stack(at) => self.load_stack(at),
             Value::Object(at) => {
@@ -800,6 +808,7 @@ fn subtraction_flags(a: u64, b: u64, bits: usize, state: bool) -> Flags {
     let (a, b) = (a & mask(bits), b & mask(bits));
     let result = a.wrapping_sub(b) & mask(bits);
     let sign_bit = |value: u64| value >> (bits - 1) & 1 == 1;
+
     Flags {
         zero: result == 0,
         carry: a < b,
@@ -898,6 +907,7 @@ pub fn fuzz(data: &[u8]) {
     };
 
     let states = (0..u64::from(header >> 6) + 3).collect::<Vec<_>>();
+
     if let Ok(points) = decode(&image, &ranges, ImageAddress::new(0x1000), state, &states) {
         assert_eq!(points.points.len(), states.len());
         for point in points.points.iter() {

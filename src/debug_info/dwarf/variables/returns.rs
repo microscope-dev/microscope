@@ -150,6 +150,7 @@ impl DwarfVariableInfo {
         // The stack-assigned results follow the stack-assigned arguments,
         // so where they are depends on every argument.
         let mut arguments = Assignment::default();
+
         for parameter in own(VariableKind::Parameter) {
             let assigned = type_of(parameter)
                 .ok_or_else(|| unknown_type("argument", parameter))
@@ -165,6 +166,7 @@ impl DwarfVariableInfo {
         };
 
         let mut returned = Vec::with_capacity(results.len());
+
         for (index, &result) in results.iter().enumerate() {
             // So does where each result is on every one before it.
             let Some(ty) = type_of(result) else {
@@ -230,6 +232,7 @@ impl DwarfVariableInfo {
         let mut raw = vec![0; size];
         let mut stack_pointer = None;
         let mut in_memory = None;
+
         for part in parts {
             let length = to_usize(part.size);
             let bytes = match part.source {
@@ -294,6 +297,7 @@ impl DwarfVariableInfo {
         ty: TypeId,
     ) -> std::result::Result<(TypeId, &crate::TypeInfo), Unassigned> {
         let mut id = ty;
+
         for _ in 0..64 {
             let Some(TypeNode::Resolved(info)) = self.types.node(id) else {
                 return Err(Unassigned::Malformed("a type is malformed".into()));
@@ -471,6 +475,7 @@ impl DwarfVariableInfo {
 
         let mut leaves = Vec::new();
         self.leaves(ty, 0, &mut leaves)?;
+
         if let [
             Leaf {
                 class: Class::X87,
@@ -496,6 +501,7 @@ impl DwarfVariableInfo {
         let (mut integers, mut floats) = (SYSTEM_V_INTEGER.iter(), SYSTEM_V_FLOATING.iter());
         let mut parts = Vec::new();
         let mut start = 0;
+
         while start < size {
             let end = (start + EIGHTBYTE).min(size);
             let class = leaves
@@ -677,6 +683,7 @@ impl DwarfVariableInfo {
                     .filter(|&count| count <= 2 * EIGHTBYTE)
                     .ok_or(Unassigned::Unsupported)?;
                 let stride = self.size(element.id)?;
+
                 for index in 0..count {
                     self.leaves(element.id, offset + index * stride, leaves)?;
                 }
@@ -758,6 +765,7 @@ impl Assignment {
         parts: &mut Vec<Part>,
     ) -> std::result::Result<(), EvaluateError> {
         let (integers, floats, assigned) = (self.integers, self.floats, parts.len());
+
         match self.registers(info, ty, 0, parts) {
             Ok(()) => Ok(()),
             Err(Unassigned::Stack) => {

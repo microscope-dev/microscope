@@ -66,23 +66,28 @@ async fn the_running_and_queued_closures_are_the_pools_tasks() {
         let output = scratch.path().join("stdout");
         let mut scenario = checked(fixture);
         scenario.add_breakpoint("truth_reached").await;
+
         let reason = scenario
             .run_with_to_stop(LaunchOptions {
                 stdout: Some(Stdio::from(File::create(&output).expect("an output file"))),
                 ..LaunchOptions::default()
             })
             .await;
+
         assert!(
             matches!(reason, StopReason::Breakpoint { .. }),
             "{fixture}: {reason:?}"
         );
+
         let truth = Truth::parse(&std::fs::read_to_string(&output).expect("the output"));
         assert_eq!(truth.queued.len(), 2, "{fixture}: {truth:?}");
+
         let pool = ThreadId::new(truth.pool.try_into().expect("a positive thread id"));
 
         let (listed, gaps) = tasks(&scenario, 64).await;
         assert!(gaps.is_empty(), "{fixture}: {gaps:?}");
         assert_eq!(listed.len(), 3, "{fixture}: {listed:#?}");
+
         let listed_as = |id: u64| {
             listed
                 .iter()
@@ -91,16 +96,19 @@ async fn the_running_and_queued_closures_are_the_pools_tasks() {
         };
 
         let running = listed_as(truth.blocker);
+
         assert_eq!(
             (running.id.number, running.state.clone(), running.thread),
             (truth.blocker, TaskState::Running, Some(pool)),
             "{fixture}: {running:#?}"
         );
+
         assert_eq!(
             running.detail.as_deref(),
             Some("running a blocking closure"),
             "{fixture}"
         );
+
         for id in &truth.queued {
             let task = listed_as(*id);
             assert_eq!(
@@ -126,21 +134,25 @@ async fn the_running_and_queued_closures_are_the_pools_tasks() {
         let released = scenario
             .add_source_breakpoint(SOURCE, line(SOURCE, "// BLOCKER: released"))
             .await;
+
         assert!(matches!(
             scenario.resume_to_stop().await,
             StopReason::Breakpoint { .. }
         ));
+
         assert_eq!(stopped_thread(&mut scenario).await, pool, "{fixture}");
         assert_eq!(
             stopped_task(&mut scenario).await,
             truth.blocker,
             "{fixture}"
         );
+
         scenario.remove_breakpoint(released.id).await;
 
         let runs = scenario
             .add_source_breakpoint(SOURCE, line(SOURCE, "// QUEUED: runs"))
             .await;
+
         for id in &truth.queued {
             assert!(matches!(
                 scenario.resume_to_stop().await,

@@ -38,12 +38,14 @@ fn the_filter_for_every_panic_stops_on_one_the_server_recovers_from() {
         .position(|frame| frame.get("presentationHint").is_none())
         .unwrap_or_else(|| panic!("{frames:#?}"));
     assert_eq!(frames[handler]["name"], "main.broken", "{frames:#?}");
+
     let main = source("go/server/main.go");
     assert_eq!(
         frames[handler]["line"],
         line_of(&main, "// SERVER: broken"),
         "{frames:#?}"
     );
+
     dap.finish();
 }
 
@@ -74,7 +76,9 @@ fn a_build_without_its_source_paths_shows_them_through_a_source_map() {
             .as_str()
             .unwrap_or_else(|| panic!("{frames:#?}"))
             .to_owned();
+
         dap.finish();
+
         PathBuf::from(path)
     };
 
@@ -98,6 +102,7 @@ fn prefixes(recorded: &Path, local: &Path) -> (PathBuf, PathBuf) {
         .take_while(|(left, right)| left == right)
         .count()
         .min(recorded.len() - 1);
+
     (
         recorded[..recorded.len() - shared].iter().collect(),
         local[..local.len() - shared].iter().collect(),

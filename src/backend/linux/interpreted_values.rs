@@ -52,6 +52,7 @@ impl<P: InspectionOps> Frame<'_, P> {
         let found = self.with_stop(&bound, |stop| {
             bound.model.interpreted_name(stop, frame, name, &mut budget)
         });
+
         match found {
             Ok(Some(found)) => Ok(Some(Lookup::Dynamic(StopObject::interpreted(
                 bound.module.id,
@@ -112,6 +113,7 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
     ) -> Result<T, Stop> {
         let bound = self.frame.bound(runtime).map_err(Stop::Failed)?;
         let budget = &mut *self.budget;
+
         Ok(self
             .frame
             .with_stop(&bound, |stop| read(&bound, stop, budget)))
@@ -244,6 +246,7 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
         let slot = frame.with_stop(&bound, |stop| {
             bound.model.interpreted_value(stop, object, budget)
         });
+
         Ok(match self.present_interpreted(&bound, slot)? {
             (_, VariableState::Available { presentation, .. }) => presentation,
             _ => None,
@@ -261,6 +264,7 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
         let slot = self.interpreted(runtime, |bound, stop, budget| {
             bound.model.interpreted_value(stop, object, budget)
         })?;
+
         let (type_info, state) = self.present_interpreted(&bound, slot)?;
         Ok(crate::eval::target::Machine::finish(self, type_info, state))
     }

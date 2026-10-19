@@ -310,6 +310,7 @@ impl Presenter<'_> {
                 };
 
                 let whole = item.path.as_ref().is_some_and(Expression::is_name);
+
                 Some(Details {
                     expand,
                     code,
@@ -357,6 +358,7 @@ impl Presenter<'_> {
     ) -> Vec<Listed> {
         let unnamed = self.unnamed_variables(context, snapshot).await;
         let mut rows = Vec::new();
+
         for (index, variable) in window.slice(
             snapshot
                 .variables
@@ -422,6 +424,7 @@ impl Presenter<'_> {
         };
 
         let mut by_name = BTreeMap::<&str, Vec<usize>>::new();
+
         for (index, variable) in snapshot.variables.iter().enumerate() {
             if variable.kind != VariableKind::Returned {
                 by_name.entry(&variable.name).or_default().push(index);
@@ -429,6 +432,7 @@ impl Presenter<'_> {
         }
 
         let mut unnamed = BTreeSet::new();
+
         for (name, indices) in by_name.into_iter().filter(|(_, indices)| indices.len() > 1) {
             let bound = if let Some(expression) = Expression::name(name)
                 && let Ok(microscope::Evaluation::Value { value, .. }) =
@@ -446,6 +450,7 @@ impl Presenter<'_> {
                     bound.is_some() && storage(&snapshot.variables[*index].state) == bound
                 })
                 .collect::<Vec<_>>();
+
             for index in indices {
                 if matching != [index] {
                     unnamed.insert(index);
@@ -473,6 +478,7 @@ impl Presenter<'_> {
                 .as_ref()
                 .is_some_and(|declaration| declaration.file == file)
         });
+
         for global in window.slice(declared) {
             let variable = self
                 .handle
@@ -569,6 +575,7 @@ impl Presenter<'_> {
 
         let base = expression.range_base();
         let mut rows = Vec::new();
+
         for child in window.slice(page.children.iter()) {
             rows.push(self.listed(
                 Item {
@@ -611,12 +618,14 @@ impl Presenter<'_> {
         let end = end.min(start.saturating_add(window.count));
         let mut rows = Vec::new();
         let mut offset = start;
+
         while offset < end {
             let limit = u32::try_from(end - offset).unwrap_or(PAGE).min(PAGE);
             let page = self
                 .handle
                 .value_children(reference.clone(), ValueChildQuery { offset, limit })
                 .await?;
+
             for child in page.children.iter().filter(|child| shown(child)) {
                 rows.push(self.listed(
                     Item {
@@ -667,6 +676,7 @@ impl Presenter<'_> {
         };
 
         let mut state = value.state;
+
         if let VariableState::Available {
             children: ValueChildren::NotApplicable,
             dereference: DereferenceState::Available(reference),
@@ -752,9 +762,6 @@ const fn counts(
     }
 }
 
-/// Whether assigning can change a value: numbers, enumerations, and
-/// pointers in memory, or whole variables in the innermost frame's
-/// registers, when a path names them.
 /// Whether a scope of variables of one kind lists a variable: the
 /// arguments scope lists results too, as part of the signature, and the
 /// locals scope what a finished function returned.
@@ -775,6 +782,9 @@ const fn called(value: &VariableValue) -> Option<VirtualAddress> {
     }
 }
 
+/// Whether assigning can change a value: numbers, enumerations, and
+/// pointers in memory, or whole variables in the innermost frame's
+/// registers, when a path names them.
 fn editable(
     source: &VariableValueSource,
     value: &VariableValue,

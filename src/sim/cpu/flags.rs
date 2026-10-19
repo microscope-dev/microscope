@@ -56,6 +56,7 @@ pub const fn add(a: u64, b: u64, carry: bool, bits: usize) -> (u64, u64) {
         reason = "masked to the operand width"
     )]
     let result = (wide as u64) & mask(bits);
+
     let mut flags = sign_zero_parity(result, bits);
     if wide >> bits != 0 {
         flags |= CARRY;
@@ -76,6 +77,7 @@ pub const fn add(a: u64, b: u64, carry: bool, bits: usize) -> (u64, u64) {
 pub const fn sub(a: u64, b: u64, borrow: bool, bits: usize) -> (u64, u64) {
     let (a, b) = (a & mask(bits), b & mask(bits));
     let result = a.wrapping_sub(b).wrapping_sub(borrow as u64) & mask(bits);
+
     let mut flags = sign_zero_parity(result, bits);
     if (a as u128) < b as u128 + borrow as u128 {
         flags |= CARRY;
@@ -125,6 +127,7 @@ pub const fn shift_right(value: u64, count: u32, bits: usize) -> (u64, u64) {
     let value = value & mask(bits);
     let result = if count >= 64 { 0 } else { value >> count };
     let mut flags = sign_zero_parity(result, bits);
+
     if count as usize <= bits && (value >> (count - 1)) & 1 != 0 {
         flags |= CARRY;
     }
@@ -148,6 +151,7 @@ pub const fn shift_left_double(
     let (destination, source) = (destination & mask(bits), source & mask(bits));
     let result = ((destination << count) | (source >> (bits - count as usize))) & mask(bits);
     let mut flags = sign_zero_parity(result, bits);
+
     if (destination >> (bits - count as usize)) & 1 != 0 {
         flags |= CARRY;
     }
@@ -173,6 +177,7 @@ pub const fn condition(code: iced_x86::ConditionCode, rflags: u64) -> Option<boo
     let sign = rflags & SIGN != 0;
     let overflow = rflags & OVERFLOW != 0;
     let parity = rflags & PARITY != 0;
+
     Some(match code {
         Code::o => overflow,
         Code::no => !overflow,

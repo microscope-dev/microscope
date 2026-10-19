@@ -44,6 +44,7 @@ fn the_hook_loads_under_older_glibc() {
     let scratch = ScratchDir::new("python-hook-glibc");
     let library = scratch.path().join("hook.so");
     std::fs::write(&library, hook::library()).expect("write the hook");
+
     for version in ["2.31", "2.35"] {
         let program =
             crate::support::Scenario::fixture(&format!("tls-modules-single-thread-glibc{version}"));
@@ -77,6 +78,7 @@ fn the_command_slot_and_atomic_reader_have_the_declared_abi() {
     assert_eq!(&data[20..24], hook::CONTROL_CAPACITY.to_le_bytes());
     assert_eq!(&data[8..20], &[0; 12]);
     assert_eq!(&data[24..hook::CONTROL_HEADER], &[0; 8]);
+
     let segment = file
         .segments()
         .find(|segment| segment.address() == control.address())
@@ -87,15 +89,18 @@ fn the_command_slot_and_atomic_reader_have_the_declared_abi() {
             p_flags: object::elf::PF_R | object::elf::PF_W
         }
     );
+
     let sequence = file
         .dynamic_symbols()
         .find(|symbol| symbol.name() == Ok(hook::SEQUENCE_SYMBOL))
         .expect("sequence reader");
     assert_eq!(sequence.kind(), object::SymbolKind::Text);
+
     let text = file.section_by_name(".text").expect("text");
     let offset = usize::try_from(sequence.address() - text.address()).expect("code offset");
     let code = &text.data().expect("code bytes")
         [offset..offset + usize::try_from(sequence.size()).expect("code length")];
+
     let mut decoder =
         iced_x86::Decoder::with_ip(64, code, sequence.address(), iced_x86::DecoderOptions::NONE);
     assert_eq!(decoder.decode().mnemonic(), iced_x86::Mnemonic::Endbr64);
@@ -124,6 +129,7 @@ fn monitoring_reconfiguration_and_cleanup() {
             .expect("whole-state script"),
     )
     .expect("write script");
+
     for interpreter in ["3.12", "3.13", "3.13t", "3.14", "3.14t", "3.15", "3.15t"] {
         let output = scratch.path().join(format!("{interpreter}.out"));
         let output = fixture_output(
@@ -136,6 +142,7 @@ fn monitoring_reconfiguration_and_cleanup() {
             ],
             &output,
         );
+
         assert!(output.contains("AGENT OK"), "{interpreter}: {output}");
     }
 }
@@ -158,6 +165,7 @@ fn fixture_output(
             .spawn()
             .expect("run the agent fixture"),
     );
+
     // A free-threaded build stops the world for each reconfiguration, so
     // the chain of a thousand takes seconds alone, and under the stress
     // gate most of a minute.
@@ -173,11 +181,13 @@ fn fixture_output(
         );
         std::thread::sleep(Duration::from_millis(10));
     };
+
     let output = std::fs::read_to_string(output).expect("read fixture output");
     assert!(
         status.success(),
         "{interpreter} {fixture} {arguments:?} {status:?}: {output}"
     );
+
     output
 }
 
@@ -252,6 +262,7 @@ fn monitoring_callbacks_survive_reconfiguration_and_code_reuse() {
             ][..],
         ),
     ];
+
     // Every mode is a process of its own, and each build's modes run at
     // once, as many as the machine runs.
     let jobs: Vec<_> = ["3.12", "3.13", "3.14", "3.14t", "3.15", "3.15t"]
@@ -262,6 +273,7 @@ fn monitoring_callbacks_survive_reconfiguration_and_code_reuse() {
             })
         })
         .collect();
+
     run_modes(&jobs, &scratch, &library, &source);
 }
 
@@ -276,6 +288,7 @@ fn run_modes(
 ) {
     let next = std::sync::atomic::AtomicUsize::new(0);
     let workers = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
+
     std::thread::scope(|scope| {
         for _ in 0..workers {
             let next = &next;
@@ -296,6 +309,7 @@ fn run_modes(
                         ],
                         &output,
                     );
+
                     let prefix = match fixture {
                         "agent_races.py" => "RACE",
                         "agent_control.py" => "CONTROL AGENT",
@@ -328,6 +342,7 @@ async fn native_reports_cross_the_public_debugger_boundary() {
     let script = scratch.path().join("agent.py");
     std::fs::write(&library, hook::library()).expect("write hook");
     std::fs::write(&script, agent_source::bootstrap().expect("bootstrap")).expect("write agent");
+
     for interpreter in ["3.14", "3.14t", "3.15", "3.15t"] {
         let (mut session, reason, _) = PythonSession::launch_to_stop(
             interpreter,
@@ -351,6 +366,7 @@ async fn native_reports_cross_the_public_debugger_boundary() {
             matches!(reason, StopReason::Breakpoint { .. }),
             "{interpreter}: {reason:?}"
         );
+
         let trace = session
             .scenario
             .operation("hook backtrace", session.scenario.handle().backtrace())
@@ -368,10 +384,12 @@ async fn native_reports_cross_the_public_debugger_boundary() {
             "{interpreter}"
         );
         assert!(trace.unfollowed.is_empty(), "{interpreter}: {trace:#?}");
+
         let registers = session
             .scenario
             .operation("hook arguments", session.scenario.handle().registers())
             .await;
+
         for (name, expected) in [("rdi", 1_u64), ("rsi", 42), ("rdx", 0)] {
             let value = registers
                 .registers
@@ -385,6 +403,7 @@ async fn native_reports_cross_the_public_debugger_boundary() {
                 "{interpreter}: {name}"
             );
         }
+
         let reason = session.scenario.resume_to_stop().await;
         assert!(
             matches!(reason, StopReason::RuntimeEvent { ref description } if description.contains("invalid Python agent")),
@@ -408,6 +427,7 @@ async fn bootstrap_failure_reports_its_generation_through_the_owned_library() {
     std::fs::write(&library, hook::library()).expect("write hook");
     std::fs::write(&bootstrap, agent_source::bootstrap().expect("bootstrap"))
         .expect("write script");
+
     for interpreter in ["3.14", "3.14t", "3.15", "3.15t"] {
         let (mut session, reason, _) = PythonSession::launch_to_stop(
             interpreter,
@@ -522,6 +542,7 @@ async fn a_python_line_breakpoint_installs_without_cooperation_and_retires_its_f
             + 1,
     )
     .expect("nonzero line");
+
     for interpreter in ["3.14", "3.14t", "3.15", "3.15t"] {
         let (mut session, reason, _) = PythonSession::launch_to_stop(
             interpreter,
@@ -544,6 +565,7 @@ async fn a_python_line_breakpoint_installs_without_cooperation_and_retires_its_f
             "{interpreter}: {reason:?}: {}",
             session.output()
         );
+
         let trace = session
             .scenario
             .operation(
@@ -567,6 +589,7 @@ async fn a_python_line_breakpoint_installs_without_cooperation_and_retires_its_f
                 ),
             "{interpreter}: {trace:#?}"
         );
+
         let output = session.output();
         let library = output
             .lines()
@@ -576,10 +599,12 @@ async fn a_python_line_breakpoint_installs_without_cooperation_and_retires_its_f
             .parent()
             .expect("private parent")
             .to_owned();
+
         let entries = std::fs::read_dir(&directory)
             .expect("agent directory")
             .map(|entry| entry.expect("owned file").file_name())
             .collect::<Vec<_>>();
+
         assert_eq!(
             entries,
             [std::ffi::OsString::from("hook.so")],
@@ -596,6 +621,7 @@ async fn a_python_line_breakpoint_installs_without_cooperation_and_retires_its_f
             session.output()
         );
         session.shutdown().await;
+
         assert!(
             !directory.exists(),
             "{interpreter}: leaked {}",
@@ -640,6 +666,7 @@ async fn automatic_configuration_is_pending_until_acknowledged_and_edits_superse
             matches!(reason, StopReason::Breakpoint { .. }),
             "{interpreter}: {reason:?}"
         );
+
         let snapshot = session.scenario.snapshot().await;
         let first = snapshot.breakpoints.first().expect("first site");
         assert!(
@@ -656,6 +683,7 @@ async fn automatic_configuration_is_pending_until_acknowledged_and_edits_superse
             "publication alone cannot establish readiness: {second:?}"
         );
         session.scenario.remove_breakpoint(first).await;
+
         for _ in 0..3 {
             let reason = session.scenario.resume_to_stop().await;
             assert!(
@@ -670,6 +698,7 @@ async fn automatic_configuration_is_pending_until_acknowledged_and_edits_superse
                 snapshot.breakpoints
             );
         }
+
         session.scenario.remove_breakpoint(second.id).await;
         assert_eq!(
             session.scenario.resume_to_stop().await,
@@ -703,11 +732,13 @@ async fn a_free_threaded_monitoring_agent_refuses_thread_only_resume_without_con
             matches!(reason, StopReason::Breakpoint { .. }),
             "{interpreter}: {reason:?}"
         );
+
         let snapshot = session.scenario.snapshot().await;
         let stop = snapshot.stop_id.expect("public stop");
         let microscope::InferiorState::Stopped { process_id, .. } = snapshot.inferior else {
             panic!("not stopped")
         };
+
         let result = session
             .scenario
             .attempt(
@@ -750,6 +781,7 @@ async fn an_agent_installs_from_a_thread_paused_among_the_loops_instructions() {
         // A pause can find the thread in a function the loop calls, as
         // one that pops a frame: then let it run on a moment.
         let mut attempts = 0;
+
         loop {
             session.pause().await;
             let trace = session.backtrace(main).await;
@@ -763,6 +795,7 @@ async fn an_agent_installs_from_a_thread_paused_among_the_loops_instructions() {
                     symbol.name.starts_with("_TAIL_CALL_")
                         || symbol.name.starts_with("_PyEval_EvalFrameDefault")
                 });
+
             if looping {
                 break;
             }
@@ -774,6 +807,7 @@ async fn an_agent_installs_from_a_thread_paused_among_the_loops_instructions() {
             session.resume().await;
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
+
         session
             .scenario
             .add_breakpoint_spec(control_line("control_spin.py", "# TARGET_LINE"))
@@ -807,6 +841,7 @@ async fn an_automatic_agent_detaches_disarms_and_can_be_installed_by_a_new_sessi
             "{interpreter}: {reason:?}: {}",
             session.output()
         );
+
         let trace = session.scenario.snapshot().await;
         assert!(trace.breakpoints[0].pending_locations.is_empty());
         let mut session = session.reattach_at("detached").await;
@@ -854,6 +889,7 @@ async fn exec_retires_old_agent_files_and_reinstalls_before_the_next_requested_l
             matches!(reason, StopReason::Breakpoint { .. }),
             "{interpreter}: {reason:?}"
         );
+
         let reason = session.scenario.resume_to_stop().await;
         assert_eq!(
             reason,
@@ -861,6 +897,7 @@ async fn exec_retires_old_agent_files_and_reinstalls_before_the_next_requested_l
             "{interpreter}: {}",
             session.output()
         );
+
         let output = session.output();
         let old = output
             .lines()
@@ -884,6 +921,7 @@ async fn exec_retires_old_agent_files_and_reinstalls_before_the_next_requested_l
             "{interpreter}: {}",
             session.output()
         );
+
         let output = session.output();
         let paths = output
             .lines()
@@ -932,6 +970,7 @@ async fn exec_retires_a_launch_bootstrap() {
             "{interpreter}: {}",
             session.output()
         );
+
         let output = session.output();
         let bootstrap = output
             .lines()
@@ -941,9 +980,11 @@ async fn exec_retires_a_launch_bootstrap() {
             !std::path::Path::new(bootstrap).exists(),
             "{interpreter}: exec retained {bootstrap}"
         );
+
         session.resume().await;
         session.wait_for_output("PARKED").await;
         session.pause().await;
+
         let breakpoints = session.scenario.snapshot().await.breakpoints;
         assert!(
             breakpoints[0].pending_locations.iter().any(|place| place
@@ -951,6 +992,7 @@ async fn exec_retires_a_launch_bootstrap() {
                 .contains("need microscope to launch the interpreter")),
             "{interpreter}: {breakpoints:?}"
         );
+
         session.go_on().await;
         assert_eq!(
             session.finish_run().await,
@@ -980,6 +1022,7 @@ async fn exhausted_monitoring_tools_report_failure_and_preserve_application_tool
             "{interpreter}: {reason:?}: {}",
             session.output()
         );
+
         let snapshot = session.scenario.snapshot().await;
         assert!(!snapshot.breakpoints[0].pending_locations.is_empty());
         assert!(
@@ -989,6 +1032,7 @@ async fn exhausted_monitoring_tools_report_failure_and_preserve_application_tool
             "{interpreter}: {:?}",
             snapshot.breakpoints
         );
+
         assert_eq!(
             session.scenario.resume_to_stop().await,
             StopReason::Exited(microscope::ExitStatus::Code(0)),
@@ -1029,6 +1073,7 @@ async fn a_missing_agent_acknowledgement_has_a_bounded_visible_failure() {
         matches!(reason, StopReason::RuntimeEvent { ref description } if description.contains("acknowledgement") && description.contains("timed out")),
         "{reason:?}"
     );
+
     let snapshot = session.scenario.snapshot().await;
     assert!(
         snapshot
@@ -1085,6 +1130,7 @@ async fn steps_are_as_prompt_while_an_acknowledgement_is_outstanding() {
         }
         began.elapsed()
     };
+
     let acknowledged = steps(&mut session).await;
 
     session.scenario.remove_breakpoint(first.id).await;
@@ -1101,6 +1147,7 @@ async fn steps_are_as_prompt_while_an_acknowledgement_is_outstanding() {
         "{second:?} {:?}",
         snapshot.breakpoints
     );
+
     let outstanding = steps(&mut session).await;
 
     // A poll would add 2.5 ms a step on average.
@@ -1133,6 +1180,7 @@ async fn removing_all_sites_then_reactivating_uses_a_fresh_source_request() {
             matches!(reason, StopReason::Breakpoint { .. }),
             "{interpreter}: {reason:?}"
         );
+
         for marker in ["# FIRST_LINE", "# SECOND_LINE"] {
             session.scenario.remove_all_breakpoints().await;
             let site = session
@@ -1140,6 +1188,7 @@ async fn removing_all_sites_then_reactivating_uses_a_fresh_source_request() {
                 .add_breakpoint_spec(control_line("control_reconfigure.py", marker))
                 .await;
             assert!(!site.pending_locations.is_empty());
+
             let reason = session.scenario.resume_to_stop().await;
             assert!(
                 matches!(reason, StopReason::Breakpoint { ref hits, .. } if hits.len() == 1 && hits[0].breakpoint == site.id),
@@ -1147,6 +1196,7 @@ async fn removing_all_sites_then_reactivating_uses_a_fresh_source_request() {
                 session.output()
             );
         }
+
         session.scenario.remove_all_breakpoints().await;
         assert_eq!(
             session.scenario.resume_to_stop().await,
@@ -1182,6 +1232,7 @@ async fn unsupported_python_injection_is_visible_even_for_pending_breakpoints() 
             !site.pending_locations.is_empty(),
             "{interpreter}: unsupported injection lost its reason: {site:?}"
         );
+
         // 3.12 and 3.13 take the agent only through a launch's bootstrap,
         // and 3.13t not at all.
         let reason = if interpreter == "3.13t" {

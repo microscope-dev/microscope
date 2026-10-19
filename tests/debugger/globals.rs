@@ -17,6 +17,7 @@ async fn structural_inspection_preserves_dots_in_global_roots_before_selecting_m
                 .inspect(&value_expression(&["main", "globalRecord"])),
         )
         .await;
+
     record_page(&scenario, &root.state, 2, fixture).await;
 
     let member = scenario
@@ -30,6 +31,7 @@ async fn structural_inspection_preserves_dots_in_global_roots_before_selecting_m
             ])),
         )
         .await;
+
     assert_signed(&member.state, -7, fixture);
 
     resume_go_to_exit(&mut scenario, fixture).await;
@@ -103,12 +105,14 @@ async fn global_catalogs_normalize_qualification_and_optimized_storage_and_list_
                 (first.offset, first.total, first.variables.len()),
                 (0, 7, 1)
             );
+
             assert_eq!((second.total, second.variables.len()), (7, 1));
             assert!(first.variables[0].module.is_none());
             assert!(
                 first.variables[0].variable.qualified_name
                     < second.variables[0].variable.qualified_name
             );
+
             assert!(matches!(
                 page(0, 0).await,
                 Err(Error::InvalidGlobalPageLimit(0))
@@ -129,10 +133,12 @@ async fn global_catalogs_normalize_qualification_and_optimized_storage_and_list_
             .globals()
             .find(|global| matches!(global.name.as_ref(), "OPTIMIZED_AWAY" | "root_constant"))
             .unwrap_or_else(|| panic!("{fixture} missing optimized global"));
+
         assert!(matches!(
             global.type_info,
             microscope::GlobalVariableType::Resolved(_)
         ));
+
         debugger
             .shutdown()
             .await
@@ -162,6 +168,7 @@ async fn c_globals_cover_local_shadowing_collisions_relocation_and_optimization(
                 scenario.handle().variable("external_value"),
             )
             .await;
+
         assert_eq!(shadow.kind, VariableKind::Local);
         assert_variable_value(&shadow, ScalarValue::Signed(999));
 
@@ -172,6 +179,7 @@ async fn c_globals_cover_local_shadowing_collisions_relocation_and_optimization(
                 scenario.handle().main_global(external.id),
             )
             .await;
+
         assert_eq!(external.kind, VariableKind::Global);
         assert!(external.global.is_some());
         assert_variable_value(&external, ScalarValue::Signed(101));
@@ -182,6 +190,7 @@ async fn c_globals_cover_local_shadowing_collisions_relocation_and_optimization(
                 scenario.handle().variable("external_pointer"),
             )
             .await;
+
         let reference = match pointer.state {
             VariableState::Available {
                 dereference: microscope::DereferenceState::Available(reference),
@@ -196,6 +205,7 @@ async fn c_globals_cover_local_shadowing_collisions_relocation_and_optimization(
                 scenario.handle().dereference(reference),
             )
             .await;
+
         assert_signed(&dereferenced.state, 101, fixture);
 
         let one = scenario
@@ -204,12 +214,14 @@ async fn c_globals_cover_local_shadowing_collisions_relocation_and_optimization(
                 scenario.handle().variable("one.c::duplicate"),
             )
             .await;
+
         let two = scenario
             .operation(
                 "inspect second file static",
                 scenario.handle().variable("two.c::duplicate"),
             )
             .await;
+
         assert_variable_value(&one, ScalarValue::Signed(201));
         assert_variable_value(&two, ScalarValue::Signed(202));
         assert!(matches!(
@@ -221,6 +233,7 @@ async fn c_globals_cover_local_shadowing_collisions_relocation_and_optimization(
             scenario.resume_to_stop().await,
             StopReason::Exited(ExitStatus::Code(0))
         );
+
         scenario.shutdown().await;
     }
 }
@@ -255,6 +268,7 @@ async fn cpp_globals_resolve_namespaces_static_members_specifications_and_consta
                     scenario.handle().variable(name),
                 )
                 .await;
+
             assert_variable_value(&variable, ScalarValue::Signed(expected));
         }
 
@@ -267,6 +281,7 @@ async fn cpp_globals_resolve_namespaces_static_members_specifications_and_consta
             scenario.resume_to_stop().await,
             StopReason::Exited(ExitStatus::Code(0))
         );
+
         scenario.shutdown().await;
     }
 }
@@ -279,6 +294,7 @@ async fn rust_globals_preserve_module_qualification_and_honest_optimized_unavail
         scenario.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     for (name, expected) in [
         ("globals::ROOT_IMMUTABLE", 141),
         ("globals::ROOT_MUTABLE", 142),
@@ -288,6 +304,7 @@ async fn rust_globals_preserve_module_qualification_and_honest_optimized_unavail
         let variable = scenario
             .operation("inspect Rust global", scenario.handle().variable(name))
             .await;
+
         assert_variable_value(&variable, ScalarValue::Signed(expected));
     }
 
@@ -295,6 +312,7 @@ async fn rust_globals_preserve_module_qualification_and_honest_optimized_unavail
         scenario.handle().variable("DUPLICATE").await,
         Err(Error::AmbiguousGlobalVariable { .. })
     ));
+
     assert_signed(
         &dereference_named(&scenario, "globals::ROOT_POINTER", 1)
             .await
@@ -302,10 +320,12 @@ async fn rust_globals_preserve_module_qualification_and_honest_optimized_unavail
         157,
         "globals-rust-o0",
     );
+
     assert_eq!(
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     );
+
     scenario.shutdown().await;
 
     let mut optimized = Scenario::new("Rust globals O2", Scenario::fixture("globals-rust-o2"));
@@ -314,12 +334,14 @@ async fn rust_globals_preserve_module_qualification_and_honest_optimized_unavail
         optimized.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     let root = optimized
         .operation(
             "inspect optimized Rust global",
             optimized.handle().variable("globals::ROOT_IMMUTABLE"),
         )
         .await;
+
     assert!(matches!(
         root.state,
         VariableState::Unavailable(
@@ -327,6 +349,7 @@ async fn rust_globals_preserve_module_qualification_and_honest_optimized_unavail
                 | microscope::VariableUnavailableReason::UnavailableAtInstruction,
         )
     ));
+
     assert_signed(
         &dereference_named(&optimized, "globals::ROOT_POINTER", 1)
             .await
@@ -334,10 +357,12 @@ async fn rust_globals_preserve_module_qualification_and_honest_optimized_unavail
         157,
         "globals-rust-o2",
     );
+
     assert_eq!(
         optimized.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     );
+
     optimized.shutdown().await;
 }
 
@@ -357,6 +382,7 @@ async fn go_package_globals_are_printable_without_source_stepping() {
                 scenario.handle().variable(name),
             )
             .await;
+
         assert_variable_value(&variable, expected);
     }
 
@@ -367,6 +393,7 @@ async fn go_package_globals_are_printable_without_source_stepping() {
         162,
         fixture,
     );
+
     assert_signed(
         &dereference_named(&scenario, "main.packagePointerPointer", 2)
             .await
@@ -374,12 +401,14 @@ async fn go_package_globals_are_printable_without_source_stepping() {
         162,
         fixture,
     );
+
     let nil = scenario
         .operation(
             "inspect Go package nil pointer",
             scenario.handle().variable("main.packageNil"),
         )
         .await;
+
     assert!(matches!(
         nil.state,
         VariableState::Available {
@@ -390,6 +419,7 @@ async fn go_package_globals_are_printable_without_source_stepping() {
             ..
         }
     ));
+
     let pair = dereference_named(&scenario, "main.packagePairPointer", 1).await;
     record_page(&scenario, &pair.state, 2, fixture).await;
     resume_go_to_exit(&mut scenario, fixture).await;
@@ -397,6 +427,7 @@ async fn go_package_globals_are_printable_without_source_stepping() {
 
     let debugger =
         Debugger::new(Scenario::fixture("globals-go-o2")).expect("load optimized Go globals");
+
     let handle = debugger.handle();
     catalog_global(handle.module_image(), "main.packageValue");
     let pointer = catalog_global(handle.module_image(), "main.packagePointer");
@@ -407,6 +438,7 @@ async fn go_package_globals_are_printable_without_source_stepping() {
             ..
         })
     ));
+
     debugger
         .shutdown()
         .await
@@ -422,6 +454,7 @@ async fn zig_globals_cover_containers_constants_pie_and_optimized_storage() {
             scenario.run_to_stop().await,
             StopReason::Breakpoint { .. }
         ));
+
         for (name, expected) in [
             ("globals.root_value", 171),
             ("globals.root_constant", 172),
@@ -439,6 +472,7 @@ async fn zig_globals_cover_containers_constants_pie_and_optimized_storage() {
             scenario.handle().variable("duplicate").await,
             Err(Error::AmbiguousGlobalVariable { .. })
         ));
+
         assert_signed(
             &dereference_named(&scenario, "globals.root_pointer", 1)
                 .await
@@ -446,10 +480,12 @@ async fn zig_globals_cover_containers_constants_pie_and_optimized_storage() {
             184,
             fixture,
         );
+
         assert_eq!(
             scenario.resume_to_stop().await,
             StopReason::Exited(ExitStatus::Code(0))
         );
+
         scenario.shutdown().await;
     }
 
@@ -459,12 +495,14 @@ async fn zig_globals_cover_containers_constants_pie_and_optimized_storage() {
         optimized.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     let constant = optimized
         .operation(
             "inspect optimized Zig global",
             optimized.handle().variable("globals.root_constant"),
         )
         .await;
+
     assert!(
         matches!(
             constant.state,
@@ -472,12 +510,14 @@ async fn zig_globals_cover_containers_constants_pie_and_optimized_storage() {
         ),
         "{constant:?}"
     );
+
     let pointer = optimized
         .operation(
             "inspect optimized Zig pointer global",
             optimized.handle().variable("globals.root_pointer"),
         )
         .await;
+
     assert!(
         matches!(
             pointer.state,
@@ -485,10 +525,12 @@ async fn zig_globals_cover_containers_constants_pie_and_optimized_storage() {
         ),
         "{pointer:?}"
     );
+
     assert_eq!(
         optimized.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     );
+
     optimized.shutdown().await;
 }
 
@@ -512,6 +554,7 @@ async fn shared_library_globals_track_load_unload_reload_and_stale_identity() {
         scenario.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     let Err(Error::AmbiguousLoadedGlobalVariable {
         selector,
         candidates,
@@ -531,11 +574,13 @@ async fn shared_library_globals_track_load_unload_reload_and_stale_identity() {
             }),
         )
         .await;
+
     let external = loaded
         .variables
         .iter()
         .find(|entry| entry.variable.name.as_ref() == "dso_external")
         .expect("DSO external global");
+
     let first_module = external.module.expect("DSO is loaded");
     let first_reference = microscope::GlobalVariableReference {
         module: first_module.id,
@@ -549,15 +594,18 @@ async fn shared_library_globals_track_load_unload_reload_and_stale_identity() {
             scenario.handle().loaded_global(first_reference),
         )
         .await;
+
     assert_variable_value(&value, ScalarValue::Signed(211));
     let cross_module_pointer =
         catalog_global(scenario.handle().module_image(), "cross_module_pointer");
+
     let cross_module_pointer = scenario
         .operation(
             "inspect main-image pointer into DSO",
             scenario.handle().main_global(cross_module_pointer.id),
         )
         .await;
+
     let cross_module_reference = match cross_module_pointer.state {
         VariableState::Available {
             dereference: microscope::DereferenceState::Available(reference),
@@ -572,12 +620,14 @@ async fn shared_library_globals_track_load_unload_reload_and_stale_identity() {
             scenario.handle().dereference(cross_module_reference),
         )
         .await;
+
     assert_signed(&cross_module_referent.state, 211, "globals-shared");
     let dso_pointer = loaded
         .variables
         .iter()
         .find(|entry| entry.variable.name.as_ref() == "dso_pointer")
         .expect("DSO pointer global");
+
     let dso_pointer_module = dso_pointer.module.expect("pointer DSO is loaded");
     let dso_pointer = scenario
         .operation(
@@ -591,6 +641,7 @@ async fn shared_library_globals_track_load_unload_reload_and_stale_identity() {
                 }),
         )
         .await;
+
     let reference = match dso_pointer.state {
         VariableState::Available {
             dereference: microscope::DereferenceState::Available(reference),
@@ -605,12 +656,14 @@ async fn shared_library_globals_track_load_unload_reload_and_stale_identity() {
             scenario.handle().dereference(reference),
         )
         .await;
+
     assert_signed(&dso_referent.state, 211, "globals-shared");
     let dso_tls = loaded
         .variables
         .iter()
         .find(|entry| entry.variable.name.as_ref() == "dso_tls")
         .expect("DSO TLS global");
+
     let dso_tls_module = dso_tls.module.expect("TLS DSO is loaded");
     let tls_value = scenario
         .operation(
@@ -624,12 +677,14 @@ async fn shared_library_globals_track_load_unload_reload_and_stale_identity() {
                 }),
         )
         .await;
+
     assert_variable_value(&tls_value, ScalarValue::Signed(213));
 
     // glibc's descriptors find a loaded library's TLS block in the DTV or
     // in static TLS space the loader set aside.
     assert_eq!(tls_location_by_name(&scenario, "dso_tls").await.1, 213);
     let mut saw_load = false;
+
     while let Ok(event) = events.try_recv() {
         saw_load |= matches!(
             event,
@@ -644,10 +699,12 @@ async fn shared_library_globals_track_load_unload_reload_and_stale_identity() {
         scenario.resume_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     assert!(matches!(
         scenario.handle().loaded_global(first_reference).await,
         Err(Error::ModuleNotLoaded(id)) if id == first_module.id
     ));
+
     let mut saw_unload = false;
     while let Ok(event) = events.try_recv() {
         saw_unload |= matches!(
@@ -663,6 +720,7 @@ async fn shared_library_globals_track_load_unload_reload_and_stale_identity() {
         scenario.resume_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     let reloaded = scenario
         .operation(
             "list reloaded DSO globals",
@@ -672,6 +730,7 @@ async fn shared_library_globals_track_load_unload_reload_and_stale_identity() {
             }),
         )
         .await;
+
     let reloaded = reloaded.variables.first().expect("reloaded DSO global");
     let reloaded_module = reloaded.module.expect("DSO was reloaded");
     assert_ne!(reloaded_module.id, first_module.id);
@@ -688,6 +747,7 @@ async fn shared_library_globals_track_load_unload_reload_and_stale_identity() {
                 }),
         )
         .await;
+
     assert_variable_value(&reloaded_value, ScalarValue::Signed(211));
 
     // Reloading reuses the module's TLS slot under a newer generation.
@@ -697,6 +757,7 @@ async fn shared_library_globals_track_load_unload_reload_and_stale_identity() {
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     );
+
     assert!(matches!(
         scenario.handle().loaded_modules().await,
         Err(Error::NotRunning)
@@ -708,12 +769,14 @@ async fn shared_library_globals_track_load_unload_reload_and_stale_identity() {
         scenario.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     let second_run = scenario
         .operation(
             "list second-run modules",
             scenario.handle().loaded_modules(),
         )
         .await;
+
     let second_run_dso = second_run
         .modules
         .iter()
@@ -724,6 +787,7 @@ async fn shared_library_globals_track_load_unload_reload_and_stale_identity() {
                 .is_some_and(|name| name == "libglobals.so")
         })
         .collect::<Vec<_>>();
+
     assert_eq!(second_run_dso.len(), 1, "{second_run:?}");
     assert_ne!(second_run_dso[0].module.id, reloaded_module.id);
     scenario.remove_all_breakpoints().await;
@@ -731,6 +795,7 @@ async fn shared_library_globals_track_load_unload_reload_and_stale_identity() {
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     );
+
     assert_eq!(scenario.shutdown().await, Some(ExitStatus::Code(0)));
 }
 
@@ -744,6 +809,7 @@ async fn tls_globals_resolve_per_selected_thread_for_gcc_and_clang() {
             scenario.run_to_stop().await,
             StopReason::Breakpoint { .. }
         ));
+
         let global = catalog_global(scenario.handle().module_image(), "tls_value").id;
         let pointer = catalog_global(scenario.handle().module_image(), "tls_pointer").id;
         let snapshot = scenario.snapshot().await;
@@ -757,12 +823,14 @@ async fn tls_globals_resolve_per_selected_thread_for_gcc_and_clang() {
                     scenario.handle().select_context(thread.id),
                 )
                 .await;
+
             let variable = scenario
                 .operation(
                     "inspect selected thread TLS",
                     scenario.handle().main_global(global),
                 )
                 .await;
+
             let microscope::VariableValue::Scalar(ScalarValue::Signed(value)) =
                 available_value(&variable.state)
             else {
@@ -781,6 +849,7 @@ async fn tls_globals_resolve_per_selected_thread_for_gcc_and_clang() {
                     scenario.handle().main_global(pointer),
                 )
                 .await;
+
             let microscope::VariableValue::Address(stored) = available_value(&pointer.state) else {
                 panic!("{fixture}: TLS pointer is not an address: {pointer:?}");
             };
@@ -801,6 +870,7 @@ async fn tls_globals_resolve_per_selected_thread_for_gcc_and_clang() {
                     scenario.handle().dereference(reference),
                 )
                 .await;
+
             assert_signed(&tls_referent.state, *value, fixture);
         }
 
@@ -811,6 +881,7 @@ async fn tls_globals_resolve_per_selected_thread_for_gcc_and_clang() {
                 scenario.handle().select_context(selected),
             )
             .await;
+
         for (origin, value, reference) in thread_references {
             assert_eq!(reference.context(), origin.into());
             let tls_referent = scenario
@@ -819,6 +890,7 @@ async fn tls_globals_resolve_per_selected_thread_for_gcc_and_clang() {
                     scenario.handle().dereference(reference),
                 )
                 .await;
+
             assert_signed(&tls_referent.state, value, fixture);
         }
 
@@ -828,6 +900,7 @@ async fn tls_globals_resolve_per_selected_thread_for_gcc_and_clang() {
             scenario.resume_to_stop().await,
             StopReason::Breakpoint { .. }
         ));
+
         let after_exit = scenario.snapshot().await;
         assert_eq!(after_exit.threads.len(), 1, "{fixture}: {after_exit:?}");
         let surviving = scenario
@@ -836,11 +909,13 @@ async fn tls_globals_resolve_per_selected_thread_for_gcc_and_clang() {
                 scenario.handle().main_global(global),
             )
             .await;
+
         assert_variable_value(&surviving, ScalarValue::Signed(300));
         assert_eq!(
             scenario.resume_to_stop().await,
             StopReason::Exited(ExitStatus::Code(0))
         );
+
         assert_eq!(scenario.shutdown().await, Some(ExitStatus::Code(0)));
     }
 }
@@ -875,6 +950,7 @@ async fn tls_of_every_module_resolves_per_thread_on_glibc_and_musl() {
                 ..LaunchOptions::default()
             })
             .await;
+
         assert_eq!(entry, StopReason::Entry, "{fixture}");
 
         // Before the C library sets the thread pointer up, no thread has TLS.
@@ -885,6 +961,7 @@ async fn tls_of_every_module_resolves_per_thread_on_glibc_and_musl() {
             let early = scenario
                 .operation("TLS at entry", scenario.handle().variable("main_tls"))
                 .await;
+
             assert_eq!(
                 early.state,
                 VariableState::Unavailable(VariableUnavailableReason::TlsUnavailable(
@@ -904,12 +981,14 @@ async fn tls_of_every_module_resolves_per_thread_on_glibc_and_musl() {
             ),
             "{fixture}"
         );
+
         support::assert_tls_modules(&mut scenario, fixture, plugin, threads).await;
         assert_eq!(
             scenario.resume_to_stop().await,
             StopReason::Exited(ExitStatus::Code(0)),
             "{fixture}"
         );
+
         assert_eq!(scenario.shutdown().await, Some(ExitStatus::Code(0)));
     }
 }
@@ -925,9 +1004,11 @@ async fn a_library_with_no_code_is_a_module_with_its_globals_and_tls() {
         matches!(scenario.run_to_stop().await, StopReason::Breakpoint { .. }),
         "{fixture}"
     );
+
     let modules = scenario
         .operation("modules", scenario.handle().loaded_modules())
         .await;
+
     assert!(
         modules
             .modules
@@ -935,10 +1016,12 @@ async fn a_library_with_no_code_is_a_module_with_its_globals_and_tls() {
             .any(|module| module.path.ends_with("libdata.so")),
         "{modules:#?}"
     );
+
     for (name, expected) in [("data_global", 7), ("data_tls", 42)] {
         let variable = scenario
             .operation(name, scenario.handle().variable(name))
             .await;
+
         assert_variable_value(&variable, ScalarValue::Signed(expected));
     }
 
@@ -946,6 +1029,7 @@ async fn a_library_with_no_code_is_a_module_with_its_globals_and_tls() {
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     );
+
     assert_eq!(scenario.shutdown().await, Some(ExitStatus::Code(0)));
 }
 
@@ -961,10 +1045,12 @@ async fn tls_on_glibc_before_2_34_without_libpthread_is_unavailable_with_its_rea
         scenario.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     for name in ["main_tls", "library_tls"] {
         let variable = scenario
             .operation("unlocatable TLS", scenario.handle().variable(name))
             .await;
+
         assert_eq!(
             variable.state,
             VariableState::Unavailable(VariableUnavailableReason::TlsUnavailable(
@@ -982,6 +1068,7 @@ async fn tls_on_glibc_before_2_34_without_libpthread_is_unavailable_with_its_rea
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     );
+
     assert_eq!(scenario.shutdown().await, Some(ExitStatus::Code(0)));
 }
 

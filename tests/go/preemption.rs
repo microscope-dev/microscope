@@ -42,6 +42,7 @@ async fn spinning(fixture: &str) -> (Scenario, Receiver<DebuggerEvent>, VirtualA
             ),
         )
         .await;
+
     let line = support::source_line("tests/fixtures/go/spin/main.go", "// the loop");
     scenario
         .add_breakpoint_spec(BreakpointSpec::Source {
@@ -49,6 +50,7 @@ async fn spinning(fixture: &str) -> (Scenario, Receiver<DebuggerEvent>, VirtualA
             line: LineNumber::new(line).expect("one-based"),
         })
         .await;
+
     let events = scenario.handle().subscribe();
     let StopReason::Breakpoint {
         address: Some(address),
@@ -109,12 +111,14 @@ async fn preemption_waits_while_a_thread_steps_alone() {
                 matches!(reason, StopReason::Breakpoint { .. }),
                 "{fixture}: {reason:?}"
             );
+
             for kind in [StepKind::Instruction, StepKind::OverSource] {
                 assert_eq!(
                     scenario.step_alone_to_stop(kind).await,
                     StopReason::Step { kind },
                     "{fixture}"
                 );
+
                 let location = scenario
                     .operation("location", scenario.handle().current_location())
                     .await;

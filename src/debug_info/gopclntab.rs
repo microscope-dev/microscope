@@ -392,6 +392,7 @@ impl PcRuns<'_> {
             .value
             .checked_add(delta)
             .ok_or_else(|| malformed("a pc-value table's value overflows"))?;
+
         Ok(Some(PcRun {
             start,
             end: self.pc,
@@ -469,6 +470,7 @@ impl GoTable {
         };
 
         table.functions = table.decode_functions(nfunc, text)?;
+
         Ok(table)
     }
 
@@ -497,6 +499,7 @@ impl GoTable {
         }
 
         let mut start = entry(0)?;
+
         for index in 0..nfunc {
             let end = entry(index + 1)?;
             if end < start {
@@ -556,6 +559,7 @@ impl GoTable {
         }
 
         let flags = fixed[41];
+
         Ok(GoFunction {
             entry,
             end,
@@ -621,6 +625,7 @@ impl GoTable {
             .iter()
             .position(|byte| *byte == 0)
             .ok_or(PclntabError::Truncated("a string"))?;
+
         Ok(String::from_utf8_lossy(&bytes[..length]).into())
     }
 
@@ -787,6 +792,7 @@ impl GoTable {
         let mut file_names = Vec::<(i32, Option<Arc<str>>)>::new();
         let (mut file, mut line) = (files.iter().peekable(), lines.iter().peekable());
         let mut pc = function.entry;
+
         while let (Some(file_run), Some(line_run)) = (file.peek(), line.peek()) {
             let end = file_run.end.min(line_run.end);
             let name = if let Some((_, name)) = file_names
@@ -896,6 +902,7 @@ impl GoTable {
             .checked_add_signed(i64::from(field(2)?.cast_signed()))
             .filter(|parent| function.contains(*parent))
             .ok_or_else(|| malformed("an inlined call's site is outside its function"))?;
+
         Ok(InlinedCall {
             special: self
                 .numbering
@@ -974,6 +981,7 @@ impl GoTable {
                     .and_then(|length| code(framed, usize::try_from(length).ok()?))
                     .is_some_and(allocates_stack)
         });
+
         Ok(Prologue {
             frame_pointer_saved: Some(pushed.start..saved_until),
             end: (!assembly).then_some(if allocates_locals {
@@ -1118,6 +1126,7 @@ fn find_table<'data>(object: &object::File<'data>) -> Result<Option<FoundTable<'
         };
 
         let start = section.address();
+
         for offset in (aligned_offset(start)..data.len()).step_by(8) {
             let candidate = &data[offset..];
             if let Some(address) = start.checked_add(offset as u64)
@@ -1224,6 +1233,7 @@ impl<'data> ModuleWords<'data> {
                 Some((address, u64::try_from(relocation.addend()).ok()?))
             })
             .collect();
+
         Self { sections, relative }
     }
 
@@ -1236,6 +1246,7 @@ impl<'data> ModuleWords<'data> {
             .sections
             .iter()
             .find(|(start, data)| *start <= address && address - start < data.len() as u64)?;
+
         read_u64(data, usize::try_from(address - start).ok()?)
     }
 
@@ -1257,6 +1268,7 @@ impl<'data> ModuleWords<'data> {
             .filter(|(_, value)| **value == table)
             .map(|(address, _)| *address)
             .collect::<Vec<_>>();
+
         for (start, data) in &self.sections {
             candidates.extend(
                 (aligned_offset(*start)..data.len().saturating_sub(7))
@@ -1276,6 +1288,7 @@ impl<'data> ModuleWords<'data> {
                 && field(MODULE_FTAB) == Some(ftab)
                 && field(MODULE_FTAB_LENGTH) == nfunc.checked_add(1)
                 && field(MODULE_MINPC) == text.checked_add(first_entry);
+
             valid.then(|| ModuleData {
                 text,
                 gofunc: found.section_end.and_then(|end| {
@@ -1305,6 +1318,7 @@ fn go_release(object: &object::File<'_>) -> Option<GoRelease> {
     let mut offset = 32;
     let length = read_varint(data, &mut offset).ok()? as usize;
     let version = data.get(offset..offset.checked_add(length)?)?;
+
     GoRelease::parse(std::str::from_utf8(version).ok()?)
 }
 
@@ -1340,6 +1354,7 @@ pub fn fuzz(data: &[u8]) {
         major: 1,
         minor: 27,
     });
+
     if let Ok(table) = GoTable::parse(bytes.into(), 0x1000, 0x40_0000, gofunc, release) {
         fuzz_table(&table, data);
     }
@@ -1446,6 +1461,7 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("build/test-programs")
             .join(name);
+
         std::fs::read(&path).unwrap_or_else(|error| {
             panic!(
                 "missing {}: {error}; run `just build-test-programs`",
@@ -1474,6 +1490,7 @@ mod tests {
 
             let mut functions = Vec::new();
             let mut positions = 0;
+
             for line in lines {
                 match line.split('\t').collect::<Vec<_>>().as_slice() {
                     ["func", entry, end, function] => {
@@ -1536,6 +1553,7 @@ mod tests {
             .expect("load the fixture's DWARF")
             .image;
             let mut compared = 0;
+
             for instance in image
                 .code_instances()
                 .filter(|instance| matches!(instance.kind(), crate::CodeInstanceKind::OutOfLine))

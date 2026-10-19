@@ -53,6 +53,7 @@ pub async fn read_frame<R: AsyncBufRead + Unpin>(
     let mut origin = false;
     let mut header_bytes = 0;
     let mut line = Vec::new();
+
     loop {
         line.clear();
         let read = reader
@@ -112,6 +113,7 @@ pub async fn read_frame<R: AsyncBufRead + Unpin>(
     }
 
     let mut body = vec![0; length];
+
     match reader.read_exact(&mut body).await {
         Ok(_) => Ok(Some(Frame { body, origin })),
         Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
@@ -144,6 +146,7 @@ mod tests {
     async fn read_all(bytes: &[u8]) -> Vec<Result<Option<Frame>, String>> {
         let mut reader = tokio::io::BufReader::new(bytes);
         let mut results = Vec::new();
+
         loop {
             let result = read_frame(&mut reader).await;
             let done = !matches!(result, Ok(Some(_)));
@@ -171,6 +174,7 @@ mod tests {
                 writer.write_all(&second).await.expect("second part");
             });
             let mut reader = tokio::io::BufReader::new(reader);
+
             for expected in &expected {
                 let actual = read_frame(&mut reader)
                     .await

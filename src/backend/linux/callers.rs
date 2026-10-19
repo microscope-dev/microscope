@@ -146,6 +146,7 @@ impl<'a, P: InspectionOps> Callers<'a, P> {
 
         let frame_module = self.module(module)?;
         let entry = self.entry(frame, module, budget)?;
+
         self.with_caller(
             entry.caller,
             &entry.caller_frame,
@@ -268,6 +269,7 @@ impl<'a, P: InspectionOps> Callers<'a, P> {
                     .call_site(caller_return, caller_runtime, budget)
             })?
             .ok_or_else(|| unavailable(EntryValueUnavailableReason::NoCallSite))?;
+
         let target = self.call_target(caller, site.target)?;
         let from = frame_module
             .loaded
@@ -277,6 +279,7 @@ impl<'a, P: InspectionOps> Callers<'a, P> {
             .ok_or_else(|| unavailable(EntryValueUnavailableReason::TargetMismatch))?;
         let tail_calls = frame_module.variables.tail_calls(from, code)?;
         self.entered_as_described(module, &tail_calls.functions)?;
+
         Ok(Entry {
             caller,
             caller_frame,
@@ -391,9 +394,6 @@ impl<'a, P: InspectionOps> Callers<'a, P> {
             })
     }
 
-    /// The one address a linker symbol defines a function at, across every
-    /// loaded module. An indirect function's callers reach whichever
-    /// implementation its resolver chose, which is not its address.
     /// The function whose first instruction `address` is, by its symbol's
     /// name, in whichever module holds it.
     pub(super) fn function_at(&self, address: VirtualAddress) -> Option<Arc<str>> {
@@ -412,6 +412,9 @@ impl<'a, P: InspectionOps> Callers<'a, P> {
         })
     }
 
+    /// The one address a linker symbol defines a function at, across every
+    /// loaded module. An indirect function's callers reach whichever
+    /// implementation its resolver chose, which is not its address.
     fn symbol(&self, name: &str) -> Option<VirtualAddress> {
         let mut found = None;
         for module in self.controller.modules.values() {

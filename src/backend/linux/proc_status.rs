@@ -16,6 +16,7 @@ fn read(file: impl std::io::Read) -> std::io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     file.take((MAX_STATUS_BYTES + 1) as u64)
         .read_to_end(&mut bytes)?;
+
     if bytes.len() > MAX_STATUS_BYTES {
         bytes.truncate(MAX_STATUS_BYTES);
         // A truncated final number is not identity evidence. Earlier
@@ -26,6 +27,7 @@ fn read(file: impl std::io::Read) -> std::io::Result<Vec<u8>> {
             .map_or(0, |at| at + 1);
         bytes.truncate(end);
     }
+
     Ok(bytes)
 }
 
@@ -41,6 +43,7 @@ pub(super) fn effective_uids(process: &OwnedFd) -> std::io::Result<(u32, u32)> {
         Mode::empty(),
     )
     .map_err(std::io::Error::from)?;
+
     uid_pair(&read(std::fs::File::from(fd))?).ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -92,6 +95,7 @@ fn namespace() -> Option<OwnedFd> {
     )
     .ok()?;
     let own = read_at(&root, "self/status")?;
+
     // NSpid starts in the namespace of the proc mount. A different proc
     // view could make the debugger's numeric TID name another process.
     own_namespace(&own, std::process::id()).then_some(root)
@@ -108,10 +112,12 @@ fn stat_field(stat: &[u8], index: usize) -> Option<&[u8]> {
     {
         return None;
     }
+
     let pid = u32::try_from(decimal(stat.get(..open)?.trim_ascii())?).ok()?;
     if !valid_pid(pid) {
         return None;
     }
+
     let fields = stat.get(close.checked_add(1)?..)?;
     let state = fields
         .split(u8::is_ascii_whitespace)
@@ -119,10 +125,12 @@ fn stat_field(stat: &[u8], index: usize) -> Option<&[u8]> {
     if state.len() != 1 || !state.first()?.is_ascii_alphabetic() {
         return None;
     }
+
     let field = fields
         .split_inclusive(u8::is_ascii_whitespace)
         .filter(|field| !field.trim_ascii().is_empty())
         .nth(index)?;
+
     // Do not accept a truncated final number as identity evidence.
     field
         .last()?
@@ -261,10 +269,12 @@ fn thread_in_status(status: &[u8], process: u32, thread: u32) -> Option<TargetTh
     if numbers(status, b"Tgid:")? != [process] {
         return None;
     }
+
     let ids = namespace_ids(status)?;
     if ids.first().copied()? != thread {
         return None;
     }
+
     TargetThreadId::new(u64::from(*ids.last()?))
 }
 
@@ -305,6 +315,7 @@ mod tests {
     fn stat_fields_reject_malformed_headers_and_incomplete_numbers() {
         let good = stat_record(b"name", 0, "123");
         assert_eq!(stat_start_time(&good), Some(123));
+
         for header in [
             "",
             "0 (name)",
@@ -318,6 +329,7 @@ mod tests {
             record.extend_from_slice(b"R 1 42 42 0 -1 0 ");
             assert_eq!(stat_state(&record), None, "{header}");
         }
+
         for start in ["", "+1", "-1", "12x", "18446744073709551616"] {
             assert_eq!(
                 stat_start_time(&stat_record(b"name", 0, start)),
@@ -325,6 +337,7 @@ mod tests {
                 "{start}"
             );
         }
+
         assert_eq!(stat_start_time(&good[..good.len() - 1]), None);
         assert_eq!(stat_state(&good[..good.len() - 1]), Some(b'R'));
         assert_eq!(stat_state(b"42 (name) RR "), None);
@@ -337,6 +350,7 @@ mod tests {
         assert_eq!(tgid(status), Some(42));
         assert_eq!(tracer_pid(status), Some(0));
         assert_eq!(hex_field(status, b"CapEff:"), Some(u64::MAX));
+
         for number in [
             "",
             "0",
@@ -353,8 +367,10 @@ mod tests {
                 "{number}"
             );
         }
+
         assert_eq!(tgid(b"Tgid: 42\nTgid: 42\n"), None);
         assert_eq!(tracer_pid(b"TracerPid: 2147483648\n"), None);
+
         for value in [
             "",
             "1",
@@ -368,6 +384,7 @@ mod tests {
                 "{value}"
             );
         }
+
         assert_eq!(
             hex_field(
                 b"SigBlk: 0000000000000001\nSigBlk: 0000000000000001\n",
@@ -422,6 +439,7 @@ mod tests {
             assert_eq!(thread_in_status(status.as_bytes(), 4999, 5001), None);
             assert_eq!(thread_in_status(status.as_bytes(), 5000, 7), None);
         }
+
         assert!(own_namespace(b"Tgid: 7\nNSpid: 7\n", 7));
         assert!(
             !own_namespace(b"Tgid: 7\nNSpid: 7 7\n", 7),
@@ -449,6 +467,7 @@ mod tests {
                 "{status:?}"
             );
         }
+
         let excessive = format!(
             "Tgid: 5000\nNSpid: {}",
             ["5001"; MAX_ID_VALUES + 1].join(" ")
@@ -492,6 +511,7 @@ mod tests {
         assert_eq!(thread_in_status(&bytes, 5000, 5001).unwrap().get(), 7);
         assert_eq!(uid_pair(&bytes), None);
         assert!(bytes.len() <= MAX_STATUS_BYTES);
+
         let huge = vec![b'9'; MAX_STATUS_BYTES + 1];
         assert!(read(std::io::Cursor::new(huge)).unwrap().is_empty());
     }
@@ -520,7 +540,9 @@ mod tests {
         } else {
             assert_eq!(target_thread_id(process, thread), None);
         }
+
         assert_eq!(target_thread_id(process.saturating_add(1), thread), None);
+
         let batch = target_thread_ids(process, &[0, thread, i32::MAX as u32]);
         if own_namespace(&status, process) {
             assert_eq!(
@@ -530,6 +552,7 @@ mod tests {
         } else {
             assert!(batch.is_empty());
         }
+
         assert_eq!(target_thread_id(process, 0), None);
         assert_eq!(target_thread_id(0, thread), None);
     }

@@ -33,6 +33,7 @@ fn profile(samples: &[(Vec<usize>, u64)]) -> Profile {
             frame
         })
         .collect();
+
     for (time, (stack, weight)) in samples.iter().enumerate() {
         let stack: Vec<u32> = stack.iter().map(|&at| frames[at]).collect();
         let stack = builder.stack(&stack);
@@ -57,9 +58,11 @@ fn paths(profile: &Profile) -> BTreeMap<Vec<String>, u64> {
     let keys = profile.keys(Granularity::Function);
     let tree = keys.aggregate(&query(StackView::Native));
     let mut paths = BTreeMap::new();
+
     for node in (0..tree.len()).filter(|&node| tree.own[node] > 0) {
         let mut path = Vec::new();
         let mut at = u32::try_from(node).unwrap_or(NONE);
+
         while at != NONE {
             path.push(keys.name(tree.key[at as usize]));
             at = tree.parent[at as usize];
@@ -91,6 +94,7 @@ proptest! {
     fn exports_read_back_as_the_stacks_they_were(samples in samples()) {
         let original = profile(&samples);
         let mut expected: BTreeMap<Vec<String>, u64> = BTreeMap::new();
+
         for (stack, weight) in &samples {
             let path = stack.iter().rev().map(|&at| NAMES[at].to_owned()).collect();
             *expected.entry(path).or_default() += weight;
@@ -124,8 +128,6 @@ proptest! {
     }
 }
 
-/// Weights that add up past what a count holds are refused, as a total of
-/// them could not be taken.
 /// An export in the Python look writes each stack as its Python code sees
 /// it, its interpreted frames by their functions, files, and lines.
 #[test]
@@ -145,6 +147,7 @@ fn a_python_look_exports_its_interpreted_frames_by_line() {
             role: crate::capture::records::role_number(crate::CodeRole::Interpreter),
         }],
     );
+
     let mut python = |function: &str, line: u32| {
         builder.interpreted(&InterpretedPlace {
             function,
@@ -181,6 +184,8 @@ fn a_python_look_exports_its_interpreted_frames_by_line() {
     assert_eq!(lines, ["handle app.py:7", "<module> app.py:20"]);
 }
 
+/// Weights that add up past what a count holds are refused, as a total of
+/// them could not be taken.
 #[test]
 fn weights_that_add_up_past_a_count_are_refused() {
     let text = format!("main;a {}\nmain;b 1\n", u64::MAX);
@@ -232,5 +237,6 @@ fn a_mark_is_on_its_own_thread_when_a_tid_is_reused() {
         .filter(|event| event["ph"] == "i")
         .map(|event| (event["pid"].as_u64(), event["tid"].as_u64()))
         .collect::<Vec<_>>();
+
     assert_eq!(marks, [(Some(10), Some(7))]);
 }

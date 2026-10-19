@@ -111,12 +111,14 @@ impl<P: InspectionOps> Controller<P> {
         let chain = self.with_process_stop(inferior, module, *reader, usage, |stop| {
             futures::walk(image, stop, *future, *ty)
         });
+
         let frames = chain
             .frames
             .iter()
             .enumerate()
             .map(|(level, frame)| Ok(async_frame(image, module, frame_u32(level)?, frame)))
             .collect::<Result<_>>()?;
+
         let termination = termination(chain.end.clone());
         Ok(Some(AsyncStack {
             frames,
@@ -194,15 +196,18 @@ impl<P: InspectionOps> Controller<P> {
         let stack = self
             .async_stack_counted(inferior, &root, Some(usage))
             .ok()??;
+
         let mut budget = InspectionBudget::new(DESCRIPTION_LIMITS);
         let described =
             self.awaited_summary(inferior, stop_id, &root, stack.frames.first()?, &mut budget);
+
         let (mut total, spent) = (usage.get(), budget.usage());
         total.value_nodes += spent.value_nodes;
         total.memory_reads += spent.memory_reads;
         total.memory_bytes += spent.memory_bytes;
         total.expression_work += spent.expression_work;
         usage.set(total);
+
         described
     }
 
@@ -470,6 +475,7 @@ impl<P: InspectionOps> Controller<P> {
                 image: module.loaded.image,
                 id,
             });
+
         let mut runtime = self.frame_runtime(inferior, root, &resolved, module);
         let mut budget = InspectionBudget::new(crate::InspectionLimits::default());
         let located = match module
@@ -542,6 +548,7 @@ impl<P: InspectionOps> Controller<P> {
         let mut runtime = self.frame_runtime(inferior, root, resolved, module);
         let context = variable_context(stop_id, root.context, resolved.id, module, None);
         let mut variables = Vec::new();
+
         for variable in saved.iter().filter(|variable| wanted(variable)) {
             if budget.consume_variable_value().is_err() {
                 break;

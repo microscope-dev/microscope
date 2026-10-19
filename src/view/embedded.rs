@@ -68,6 +68,7 @@ pub fn view_set(module: &str, bytes: &[u8]) -> ViewSet {
             .iter()
             .map(|(name, text)| (name.as_str(), text.as_str())),
     );
+
     for kernel in &kernels {
         set.add_kernels(
             &kernel.origin,
@@ -174,6 +175,7 @@ fn records<'a>(module: &str, bytes: &'a [u8]) -> Records<'a> {
         };
 
         position = start + payload.len();
+
         match (kind, format) {
             // A record is no larger than a view file may be, so a module
             // cannot make the debugger copy more.

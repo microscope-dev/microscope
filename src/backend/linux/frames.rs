@@ -512,6 +512,7 @@ impl<P: InspectionOps> Controller<P> {
 
         let expanded =
             self.expand_backtrace(inferior, root, &stack, max_frames, &modules, presentation)?;
+
         self.resolved_in(inferior, root, &stack, &modules, &expanded, frame)
     }
 
@@ -792,6 +793,7 @@ impl<P: InspectionOps> Controller<P> {
             .frame
             .ok_or(Error::AmbiguousInlineFrame)?;
         let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+
         inferior
             .public_stop
             .as_mut()
@@ -963,6 +965,7 @@ pub(super) fn apply_presentation(
         .checked_sub(1)
         .and_then(|index| chain.instances.get(index).copied())
         .or(location.physical_instance);
+
     location.function = selected_instance
         .and_then(|instance| module_image.code_instance(instance))
         .and_then(|instance| module_image.function(instance.function()))
@@ -1200,6 +1203,7 @@ fn expand_inline_backtrace(
                 };
 
                 let lookup = module.loaded.virtual_address(jump.lookup)?;
+
                 push_code_frames(
                     &mut frames,
                     FrameKind::TailCall,
@@ -1282,18 +1286,19 @@ fn expand_activation<'a>(
         lookup,
         presentation,
     )?;
+
     Ok(Some((frame_module, image_address)))
+}
+
+/// The level of the next frame pushed onto a stack of `len` frames.
+fn frame_level(len: usize) -> Result<u32> {
+    u32::try_from(len).map_err(|_| Error::internal("frame count fits in u32"))
 }
 
 /// The logical frames of code at `image_address` in `frame_module`, the
 /// frame's instruction or the byte before its return address: the inline
 /// frames `presentation` shows, or else all of them, innermost first, then
 /// a frame of `kind` for the function.
-/// The level of the next frame pushed onto a stack of `len` frames.
-fn frame_level(len: usize) -> Result<u32> {
-    u32::try_from(len).map_err(|_| Error::internal("frame count fits in u32"))
-}
-
 fn push_code_frames(
     frames: &mut Vec<StackFrame>,
     kind: FrameKind,
@@ -1658,6 +1663,7 @@ impl RoleCallerProvider<'_, '_> {
         self.dwarf.registers = registers;
         self.carried = None;
         self.dispatched = false;
+
         CallerResult::Caller(FrameContext {
             instruction: VirtualAddress::new(instruction),
             cfa: Some(VirtualAddress::new(context)),
@@ -1713,6 +1719,7 @@ impl RoleCallerProvider<'_, '_> {
             Some((_, CodeRole::Outermost)) => CallerResult::Finished(UnwindTermination::Complete),
             Some((module, CodeRole::StackSwitch)) => {
                 let after_call = !self.dwarf.first && !current.signal_frame;
+
                 match (self.cross)(module, &self.dwarf.registers, after_call) {
                     None => unresolved("no runtime model reads the module's runtime".into()),
                     Some(Err(reason)) => unresolved(reason),
@@ -1741,6 +1748,7 @@ impl RoleCallerProvider<'_, '_> {
                         self.dwarf.registers = registers;
                         self.carried = None;
                         self.dispatched = false;
+
                         CallerResult::Caller(FrameContext {
                             instruction: VirtualAddress::new(instruction),
                             cfa: None,
@@ -1798,6 +1806,7 @@ impl DwarfCallerProvider<'_> {
             .ok_or(UnwindTermination::Complete)?;
         let (module, image_address) = unwind_module_for(&self.modules, lookup)
             .ok_or(UnwindTermination::ModuleNotFound { address: lookup })?;
+
         module
             .unwind
             .cfa(image_address, &self.registers, &mut self.memory)

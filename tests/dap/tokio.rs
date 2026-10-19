@@ -35,6 +35,7 @@ fn stopped_at_checkpoint(name: &str, program: &str) -> (Dap, i64, Vec<(i64, Stri
             )
         })
         .collect::<Vec<_>>();
+
     (dap, stop.thread, listed)
 }
 
@@ -146,6 +147,7 @@ fn a_blocked_threads_stack_holds_the_future_it_drives() {
         main != stopped && listed.iter().any(|(id, _)| *id == main),
         "{listed:?}"
     );
+
     let trace = dap.request("stackTrace", json!({"threadId": main}));
     let frames = trace["stackFrames"].as_array().expect("frames");
     let names = frames
@@ -170,6 +172,7 @@ fn a_blocked_threads_stack_holds_the_future_it_drives() {
         "{trace}"
     );
     assert_eq!(names[label + 5], "on the thread's stack", "{trace}");
+
     let local = dap.request(
         "evaluate",
         json!({"expression": "waiting_local", "frameId": frames[label + 2]["id"], "context": "watch"}),
@@ -199,6 +202,7 @@ fn step_into_runtime_stops_in_tokios_code() {
     );
     let stop = dap.stopped(started.mark);
     assert_eq!(stop.reason, "breakpoint", "{stop:?}");
+
     let sent = dap.send("stepIn", json!({"threadId": stop.thread}));
     dap.success(sent);
     let stepped = dap.stopped(sent.mark);

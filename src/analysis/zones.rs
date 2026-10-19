@@ -40,6 +40,7 @@ pub fn zone_blocks(
     fold: i64,
 ) -> Vec<ZoneBlock> {
     let mut blocks = Vec::new();
+
     for zones in &capture.zone_ranges {
         let thread = zones.thread.get();
         if threads.is_some_and(|threads| !threads.contains(&thread)) {
@@ -138,6 +139,7 @@ pub fn zone_stats(
 ) -> ZoneStats {
     let mut found = Vec::new();
     let mut flagged = 0;
+
     for zones in &capture.zone_ranges {
         let thread = zones.thread.get();
         if threads.is_some_and(|threads| !threads.contains(&thread)) {
@@ -292,6 +294,7 @@ pub fn plot_series(
     // By name: the last drawable value before the range, and whether any
     // value follows it.
     let mut edges: BTreeMap<u32, (Option<(i64, f64)>, bool)> = BTreeMap::new();
+
     for plot in chosen() {
         let (time, value) = (plot.time.get(), f64::from_bits(plot.value.get()));
         if time < range.0 && value.is_finite() {
@@ -313,6 +316,7 @@ pub fn plot_series(
         })
         .collect();
     values.sort_by(|a, b| (a.0, a.2).cmp(&(b.0, b.2)));
+
     let width = i128::from((range.1 - range.0).max(1));
     let bin_of = |time: i64| i128::from(time - range.0) * bins.max(1) as i128 / width;
     let mut series: Vec<PlotSeries> = Vec::new();

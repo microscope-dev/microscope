@@ -46,6 +46,7 @@ pub async fn integer(scenario: &Scenario, text: &str) -> Option<i128> {
 pub async fn place(scenario: &Scenario) -> (String, u64) {
     let trace = backtrace(scenario).await;
     let frame = trace.frames.first().expect("a frame");
+
     (
         frame
             .function
@@ -67,6 +68,7 @@ pub async fn backtrace(scenario: &Scenario) -> Backtrace {
 /// named `last`.
 pub fn frames_to(trace: &Backtrace, last: &str) -> Vec<(String, u64)> {
     let mut frames = Vec::new();
+
     for frame in trace.frames.iter() {
         let name = frame
             .function

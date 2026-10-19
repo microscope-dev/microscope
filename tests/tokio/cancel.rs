@@ -40,6 +40,7 @@ async fn waiting_with(
             line: LineNumber::new(line(SOURCE, "// AWAIT: waiting")).expect("one-based"),
         })
         .await;
+
     let reason = scenario
         .run_with_to_stop(LaunchOptions {
             arguments: vec![mode.into()],
@@ -48,10 +49,12 @@ async fn waiting_with(
             ..LaunchOptions::default()
         })
         .await;
+
     assert!(
         matches!(reason, StopReason::Breakpoint { .. }),
         "{fixture} {mode}: {reason:?}"
     );
+
     scenario.remove_breakpoint(breakpoint.id).await;
     let task = crate::steps::stopped_task(&mut scenario).await;
     (scenario, task)
@@ -69,6 +72,7 @@ async fn a_step_whose_task_is_cancelled_says_so() {
                 let context = format!("{fixture} {mode} {kind:?}");
                 let (mut scenario, task) = waiting(fixture, mode).await;
                 let reason = scenario.step_to_stop(kind).await;
+
                 assert!(
                     matches!(
                         reason,
@@ -80,6 +84,7 @@ async fn a_step_whose_task_is_cancelled_says_so() {
                     ),
                     "{context}: {reason:?}"
                 );
+
                 scenario.shutdown().await;
             }
         }
@@ -108,17 +113,20 @@ async fn a_step_whose_future_is_dropped_ends_on_the_droppers_next_line() {
                 let context = format!("{fixture} {mode} {kind:?}");
                 let (mut scenario, task) = waiting(fixture, mode).await;
                 let reason = scenario.step_to_stop(kind).await;
+
                 assert_eq!(reason, StopReason::FutureDropped { kind }, "{context}");
                 assert_eq!(
                     place(&scenario).await,
                     (function.to_owned(), line(SOURCE, after)),
                     "{context}"
                 );
+
                 assert_eq!(
                     crate::steps::stopped_task(&mut scenario).await,
                     task,
                     "{context}"
                 );
+
                 scenario.shutdown().await;
             }
         }
@@ -133,6 +141,7 @@ async fn a_pause_ends_a_waiting_step_and_a_new_one_waits_again() {
     for fixture in BUILDS {
         let (input, mut opener) = std::io::pipe().expect("a pipe");
         let (output, printed) = std::io::pipe().expect("a pipe");
+
         let (mut scenario, task) = waiting_with(
             fixture,
             "hold",
@@ -140,6 +149,7 @@ async fn a_pause_ends_a_waiting_step_and_a_new_one_waits_again() {
             Stdio::from(printed),
         )
         .await;
+
         let stepping = scenario.start_stepping(StepKind::OverSource).await;
 
         // Paused once no thread runs the task, the next step begins in it
@@ -149,6 +159,7 @@ async fn a_pause_ends_a_waiting_step_and_a_new_one_waits_again() {
                 .map_while(Result::ok)
                 .any(|line| line == "TRUTH\theld")
         });
+
         assert!(
             tokio::time::timeout(std::time::Duration::from_secs(30), held)
                 .await
@@ -156,8 +167,10 @@ async fn a_pause_ends_a_waiting_step_and_a_new_one_waits_again() {
                 .expect("the reader"),
             "{fixture}: the program ended without holding the task"
         );
+
         let paused = scenario.operation("pause", scenario.handle().pause()).await;
         let ended = stepping.await.expect("the step's task").expect("the step");
+
         assert_eq!(
             (&paused, &ended),
             (&StopReason::Pause, &StopReason::Pause),
@@ -172,12 +185,16 @@ async fn a_pause_ends_a_waiting_step_and_a_new_one_waits_again() {
             .find(|listed| listed.id.number == task)
             .expect("the task is listed")
             .id;
+
         scenario
             .operation("select task", scenario.handle().select_context(task))
             .await;
+
         let stepping = scenario.start_stepping(StepKind::OverSource).await;
         std::io::Write::write_all(&mut opener, b"open\n").expect("the program reads");
+
         let reason = stepping.await.expect("the step's task").expect("the step");
+
         assert_eq!(
             reason,
             StopReason::Step {
@@ -185,11 +202,13 @@ async fn a_pause_ends_a_waiting_step_and_a_new_one_waits_again() {
             },
             "{fixture}"
         );
+
         assert_eq!(
             place(&scenario).await,
             ("waiting".to_owned(), line(SOURCE, "// STEP: waiting-after")),
             "{fixture}"
         );
+
         assert_eq!(crate::steps::stopped_task(&mut scenario).await, task.number);
         scenario.shutdown().await;
     }
@@ -201,6 +220,7 @@ struct Printed(tokio::sync::mpsc::UnboundedReceiver<String>);
 impl Printed {
     fn read(output: impl std::io::Read + Send + 'static) -> Self {
         let (send, receive) = tokio::sync::mpsc::unbounded_channel();
+
         tokio::task::spawn_blocking(move || {
             for line in std::io::BufRead::lines(std::io::BufReader::new(output)) {
                 let Ok(line) = line else { break };
@@ -209,6 +229,7 @@ impl Printed {
                 }
             }
         });
+
         Self(receive)
     }
 
@@ -220,8 +241,10 @@ impl Printed {
                 .await
                 .unwrap_or_else(|_| panic!("no {wanted:?} after {lines:?}"))
                 .unwrap_or_else(|| panic!("the program ended without {wanted:?}: {lines:?}"));
+
             let done = line == wanted;
             lines.push(line);
+
             if done {
                 return lines;
             }
@@ -253,6 +276,7 @@ async fn a_waiting_step_ends_with_its_session() {
         for exits in [false, true] {
             let (input, mut answer) = std::io::pipe().expect("a pipe");
             let (output, printed) = std::io::pipe().expect("a pipe");
+
             let (mut scenario, _) = waiting_with(
                 fixture,
                 "hold",
@@ -260,8 +284,11 @@ async fn a_waiting_step_ends_with_its_session() {
                 Stdio::from(printed),
             )
             .await;
+
             let stepping = scenario.start_stepping(StepKind::OverSource).await;
+
             Printed::read(output).until("TRUTH\theld").await;
+
             if exits {
                 std::io::Write::write_all(&mut answer, b"exit\n").expect("the program reads");
                 let ended = stepping.await.expect("the step's task").expect("the step");
@@ -272,11 +299,14 @@ async fn a_waiting_step_ends_with_its_session() {
                 );
             } else {
                 scenario.operation("kill", scenario.handle().kill()).await;
+
                 let ended = stepping.await.expect("the step's task");
+
                 assert!(
                     !matches!(ended, Ok(StopReason::Step { .. })),
                     "{fixture}: {ended:?}"
                 );
+
                 assert!(
                     matches!(
                         scenario.snapshot().await.inferior,
@@ -296,11 +326,15 @@ async fn a_waiting_step_ends_with_its_session() {
             let mut process = crate::support::ExternalProcess::exec_gate(&program, &["hold"]);
             let mut printed = Printed::read(process.take_stdout());
             let mut answer = process.take_stdin();
+
             std::io::Write::write_all(&mut answer, b"\n").expect("the launcher reads");
+
             let mut lines = printed.until("TRUTH\theld").await;
+
             if attaches {
                 let mut scenario =
                     Scenario::attached(format!("{fixture} attached"), process.attach().await);
+
                 let task = scenario
                     .operation("tasks", scenario.handle().tasks(None, 16))
                     .await
@@ -309,20 +343,24 @@ async fn a_waiting_step_ends_with_its_session() {
                     .find(|task| task.thread.is_none())
                     .unwrap_or_else(|| panic!("{fixture}: a task no thread runs"))
                     .id;
+
                 scenario
                     .operation("select task", scenario.handle().select_context(task))
                     .await;
+
                 let _stepping = scenario.start_stepping(StepKind::OverSource).await;
                 scenario.shutdown().await;
             }
 
             std::io::Write::write_all(&mut answer, b"open\n").expect("the program reads");
             lines.extend(printed.rest().await);
+
             let status = process.wait();
             assert!(
                 status.success(),
                 "{fixture} attached {attaches}: {status:?}"
             );
+
             runs.push(lines);
         }
 

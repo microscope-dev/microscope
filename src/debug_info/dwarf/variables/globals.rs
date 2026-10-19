@@ -172,12 +172,14 @@ pub(super) fn load_globals<'data>(
         .par_iter()
         .map(|unit| unit_scopes(dwarf, unit))
         .collect::<Vec<_>>();
+
     for unit_table in unit_tables {
         let (scopes, mut unit_scopes) = unit_table?;
 
         // A unit's scope `n` past its root is the table's `first + n - 1`.
         let first = super::row(table.scopes.len());
         let global = |local: u32| if local == 0 { 0 } else { first + local - 1 };
+
         for scope in scopes.into_iter().skip(1) {
             table.add(GlobalScope {
                 parent: global(scope.parent),
@@ -202,6 +204,7 @@ pub(super) fn load_globals<'data>(
         .into_par_iter()
         .map(|unit_index| unit_globals(units, &table, unit_index))
         .collect::<Vec<_>>();
+
     for (unit_index, (found, error)) in found.into_iter().enumerate() {
         let unit = &units[unit_index];
         for (key, current_scope, entry) in found {
@@ -326,6 +329,7 @@ pub(super) fn load_globals<'data>(
                 definitions.resolve(&identities, globals.len())
             {
                 let existing_object = globals[existing_global].object;
+
                 if value_rank(&object.value) > value_rank(&objects[existing_object as usize].value)
                 {
                     objects[existing_object as usize] = object;
@@ -374,6 +378,7 @@ fn unit_scopes<'data>(
             scopes.truncate(depth);
             let parent = scopes.last().copied().unwrap_or(0);
             let parent_scope = &table[parent as usize];
+
             let scope = match die.tag {
                 gimli::DW_TAG_subprogram | gimli::DW_TAG_inlined_subroutine
                     if !parent_scope.routine =>
@@ -453,6 +458,7 @@ fn unit_globals<'data>(
 
     let mut search = || {
         let mut walk = DieWalk::new(unit)?;
+
         while let Some(die) = walk.next()? {
             if die.tag != gimli::DW_TAG_variable {
                 continue;

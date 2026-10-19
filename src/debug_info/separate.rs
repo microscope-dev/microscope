@@ -112,6 +112,7 @@ impl DebugFileSearch {
             .ok()
             .and_then(|seconds| seconds.trim().parse().ok())
             .map_or(DEFAULT_DEBUGINFOD_TIMEOUT, Duration::from_secs);
+
         Self {
             directories,
             servers,
@@ -155,6 +156,7 @@ impl DebugFileSearch {
 
         let found = self.find_named(path, object, build_id, consider);
         let found = found.or_else(|| build_id.and_then(|id| self.download(id, describes)));
+
         Search {
             rejected: found.is_none().then(|| rejected.take()).flatten(),
             found,
@@ -216,6 +218,7 @@ impl DebugFileSearch {
                 let mut candidates =
                     vec![directory.join(name), directory.join(".debug").join(name)];
                 let relative = directory.strip_prefix("/").unwrap_or(directory);
+
                 candidates.extend(
                     self.directories
                         .iter()
@@ -290,6 +293,7 @@ impl DebugFileSearch {
                     .find_map(|directory| read_if(&directory.join(".dwz").join(within), describes))
             })
             .or_else(|| self.download(build_id, describes));
+
         found.map_or_else(
             || Supplementary::Missing(format!("{named} was not found")),
             Supplementary::Found,
@@ -341,6 +345,7 @@ impl DebugFileSearch {
             .timeout_global(self.timeout)
             .build()
             .new_agent();
+
         for server in &self.servers {
             let url = format!("{}/buildid/{hex}/debuginfo", server.trim_end_matches('/'));
             let Ok(mut response) = agent.get(&url).call() else {
@@ -364,6 +369,7 @@ impl DebugFileSearch {
                 .as_deref()
                 .filter(|cached| keep(cached, &data))
                 .map_or_else(|| PathBuf::from(&url), Path::to_path_buf);
+
             return Some(DebugFile { path, data });
         }
 
@@ -382,6 +388,7 @@ fn default_cache() -> Option<PathBuf> {
         .map(PathBuf::from)
         .filter(|base| base.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))?;
+
     Some(base.join("debuginfod_client"))
 }
 
@@ -440,6 +447,7 @@ fn mismatch(
     }
 
     let actual = debug.build_id().ok().flatten();
+
     match build_id {
         Some(id) if checksum.is_none() && actual != Some(id) => Some(format!(
             "its build-id is {}, not the module's {}, so it is from another build",

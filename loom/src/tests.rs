@@ -149,6 +149,7 @@ fn model(case: Case, bound: usize) {
                 thread::spawn(move || run.work())
             })
             .collect::<Vec<_>>();
+
         run.work();
         for other in others {
             other.join().expect("a worker finishes");

@@ -175,11 +175,13 @@ async fn expanded(tab: &mut Client, id: &str, event: &Value) {
         stack.contains(&"files") && stack.contains(&"main"),
         "{call}"
     );
+
     let site = &call["site"];
     assert_eq!(
         (&site["function"], &site["line"]),
         (&json!("files"), &json!(24))
     );
+
     let first = site["first"].as_u64().expect("a first line");
     let made = &site["text"][usize::try_from(24 - first).expect("an index")];
     assert!(
@@ -372,6 +374,7 @@ async fn a_live_trace_shows_what_its_program_is_blocked_in() {
 
     // Each revision is read until the pause shows in flight.
     let mut seen = -1;
+
     let blocked = loop {
         let info = listed(&mut tab, &id, "a newer revision", |info| {
             info["revision"].as_i64() > Some(seen)
@@ -409,6 +412,7 @@ async fn a_live_trace_shows_what_its_program_is_blocked_in() {
     })
     .await;
     assert_eq!(ended["ended"], "killed by SIGKILL", "{ended}");
+
     let flight = tab.ok("syscallInFlight", json!({"profile": id})).await;
     assert_eq!(flight, json!({"live": false, "calls": []}));
     crate::web::wait_gone(blocked["pid"].as_u64().expect("a pid"));

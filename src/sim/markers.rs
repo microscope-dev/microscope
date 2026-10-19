@@ -250,6 +250,7 @@ impl<'a> Parser<'a> {
         .into_iter()
         .find_map(|(token, operator)| self.eat(token).then_some(operator))
         .ok_or("a comparison needs an operator")?;
+
         Ok(Comparison {
             left,
             operator,
@@ -306,6 +307,7 @@ impl<'a> Parser<'a> {
             .unwrap_or(self.rest.len());
         let (token, rest) = self.rest.split_at(length);
         self.rest = rest;
+
         if token.is_empty() {
             return Err("an operand is missing".into());
         }
@@ -331,6 +333,7 @@ mod tests {
             .iter()
             .map(|&(name, value)| (name.to_owned(), value))
             .collect();
+
         markers[0].condition.evaluate(&values)
     }
 

@@ -129,6 +129,7 @@ impl Kernel {
 
         #[cfg(test)]
         let phantom = self.sabotage == Some(Sabotage::PhantomArming);
+
         let thread = self.stopped_mut(tid)?;
         let contended = if thread.tid == thread.tgid.leader() {
             0
@@ -169,6 +170,7 @@ impl Kernel {
             .ok_or(Errno::EIO)?;
         #[cfg(test)]
         let word = self.sabotage_read(thread.tgid, address, word);
+
         Ok(word)
     }
 
@@ -197,6 +199,7 @@ impl Kernel {
             .get_mut(&group)
             .expect("a thread's process exists")
             .space;
+
         if space.poke(address, value) {
             Ok(())
         } else {
@@ -236,6 +239,7 @@ impl Kernel {
         let registers = thread.registers;
         #[cfg(test)]
         let registers = self.reported(registers);
+
         Ok((registers, thread.orig_rax))
     }
 
@@ -295,6 +299,7 @@ impl Kernel {
         thread.single_step = single_step;
         thread.syscall_stops = false;
         thread.resumed = true;
+
         match thread.state {
             State::Stopped {
                 kind: StopKind::Syscall { .. },
@@ -426,6 +431,7 @@ impl Kernel {
             general[R8],
             general[R9],
         ];
+
         #[cfg(test)]
         let args = if self.sabotage == Some(Sabotage::MisreportCallArguments) {
             let mut args = args;
@@ -483,6 +489,7 @@ impl Kernel {
         };
 
         thread.options = options;
+
         if thread.state == State::JobStopped {
             let signal = self.processes[&thread.tgid]
                 .stopped
@@ -563,6 +570,7 @@ impl Kernel {
             tracer,
             planted,
         });
+
         match state {
             State::Stopped {
                 kind: StopKind::Signal(_),
@@ -618,6 +626,7 @@ impl Kernel {
             .processes
             .get(&group)
             .is_some_and(|process| process.stopped.is_some());
+
         if let Some(thread) = self.threads.get_mut(&tid)
             && thread.state == State::Running
             && stopped

@@ -30,6 +30,7 @@ async fn only_a_join_links_token_from_the_servers_own_page_logs_in() {
         ),
         web.post_login(&token, None, Some(&host)),
     ];
+
     for (status, cookie) in refused {
         assert_eq!(status, 403);
         assert!(cookie.is_none());
@@ -57,6 +58,7 @@ async fn the_socket_refuses_other_pages_names_and_cookies() {
             Some("evil.example:1"),
         ),
     ];
+
     for (cookie, origin, host) in attempts {
         let refused = web
             .connect("refused", cookie.as_deref(), origin, host)
@@ -83,6 +85,7 @@ async fn a_page_from_an_unknown_host_is_refused() {
     ));
     assert!(page.starts_with("HTTP/1.1 200"), "{page}");
     assert!(page.contains("content-security-policy"), "{page}");
+
     let rebound = web.http("GET / HTTP/1.1\r\nHost: evil.example\r\nConnection: close\r\n\r\n");
     assert!(rebound.starts_with("HTTP/1.1 421"), "{rebound}");
 }
@@ -104,6 +107,7 @@ async fn a_viewer_watches_but_cannot_control_or_share_control() {
             .expect("a name")
             .starts_with("guest-")
     );
+
     for (method, params) in [
         ("pause", json!(null)),
         ("processes", json!(null)),
@@ -120,6 +124,7 @@ async fn a_viewer_watches_but_cannot_control_or_share_control() {
         .ok("share", json!({"role": "view", "to": "/s/x"}))
         .await;
     viewer.ok("setName", json!({"name": "robin"})).await;
+
     owner
         .expect("robin in the presence list", |message| {
             message["type"] == "presence"
@@ -144,6 +149,7 @@ async fn malformed_requests_are_answered_not_fatal() {
         .await;
     assert_eq!(answer["type"], "error");
     assert_eq!(answer["error"]["kind"], "invalid");
+
     client.send_raw("not json").await;
     let answer = client
         .expect("an answer to garbage", |message| {
@@ -221,6 +227,7 @@ async fn a_public_url_serves_everything_under_its_path_to_its_proxy_and_nothing_
         login.contains("Path=/debug/7/") && login.contains("Secure"),
         "{login}"
     );
+
     let (refused, _) = web.post_login(&token, Some("http://proxy.example"), Some("proxy.example"));
     assert_eq!(refused, 403);
 
@@ -260,6 +267,7 @@ async fn the_renderers_frame_is_sandboxed_and_allows_no_request() {
         .lines()
         .find_map(|line| line.strip_prefix("content-security-policy: "))
         .expect("a policy");
+
     for directive in [
         "sandbox allow-scripts",
         "default-src 'none'",

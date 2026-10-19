@@ -96,6 +96,7 @@ pub(super) fn transparent_type_from(
 ) -> std::result::Result<(TypeId, &TypeInfo), ValueShapeError> {
     let mut current = id;
     let mut visited = HashSet::new();
+
     loop {
         if !visited.insert(current) {
             return Err(ValueShapeError::Malformed("type wrapper cycle".into()));
@@ -127,6 +128,7 @@ fn transparent_representation(
     target: TypeReference,
 ) -> std::result::Result<(), ValueShapeError> {
     let target = type_info_from(types, target.id).map_err(ValueShapeError::Malformed)?;
+
     if matches!(
         wrapper.kind,
         TypeKind::Modified {
@@ -239,6 +241,7 @@ pub(super) fn tagless_variant(
                 .iter()
                 .any(|member| uninhabited(types, member.type_ref.id, 0))
     });
+
     match (possible.next(), possible.next()) {
         (Some((index, _)), None) => Some(index),
         _ => None,
@@ -329,6 +332,7 @@ fn nested_value_shape(
                     .map_err(ValueShapeError::Malformed)?
                     .name,
             );
+
             Ok(ValueShape::Scalar(base))
         }
 
@@ -357,6 +361,7 @@ fn nested_value_shape(
                     .map_err(ValueShapeError::Malformed)?
                     .name,
             );
+
             Ok(ValueShape::Enumeration {
                 byte_size: representation.byte_size,
                 representation,
@@ -372,6 +377,7 @@ fn nested_value_shape(
         } => {
             let element_shape = nested_value_shape(types, element.id, depth + 1)?;
             let mut count = 1_u64;
+
             for dimension in dimensions.iter() {
                 count = count.checked_mul(dimension.count).ok_or_else(|| {
                     ValueShapeError::Unsupported("array element count overflows".into())
@@ -382,6 +388,7 @@ fn nested_value_shape(
             let byte_size = count
                 .checked_mul(element_size)
                 .ok_or_else(|| ValueShapeError::Unsupported("array byte size overflows".into()))?;
+
             Ok(ValueShape::Array {
                 element: element.id,
                 dimensions: Arc::clone(dimensions),

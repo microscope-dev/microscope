@@ -77,6 +77,7 @@ impl Trace {
         let (start, end) = profile.span();
         let mut processes = ProcessTree::default();
         let mut calls = 0;
+
         for event in &recorded.events {
             match &event.event {
                 TraceEvent::Call(call) => {
@@ -201,6 +202,7 @@ pub fn in_flight(blocked: &[InFlight], at: u64, live: bool) -> SyscallInFlight {
             }
         })
         .collect();
+
     SyscallInFlight { live, calls }
 }
 
@@ -232,6 +234,7 @@ impl Selection {
                 trace.start.saturating_add(to),
             )
         });
+
         Ok(Self {
             filter,
             from,
@@ -273,6 +276,7 @@ impl Selection {
 
         let paths = filter::paths(call);
         let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
+
         self.filter.shows(call, &paths, &|fd| {
             fds.describe(call.process, fd)
                 .map(|description| description.text.to_string())
@@ -365,6 +369,7 @@ fn named_path(call: &SyscallEvent, fds: &FdTable) -> Option<String> {
                 .position(|arg| matches!(arg, specs::Arg::DirFd))
         })
         .map_or(AT_FDCWD, |index| filter::fd_value(call.args[index]));
+
     Some(fds.resolve(call.process, dirfd, &path))
 }
 
@@ -523,6 +528,7 @@ fn summary(
             .cmp(&(a.total_ns, a.calls))
             .then_with(|| a.name.cmp(&b.name))
     });
+
     Ok(SyscallSummary {
         total: trace.calls
             + trace
@@ -552,6 +558,7 @@ impl Slices {
     fn new(span: (i64, i64), buckets: u32) -> Self {
         let count = buckets.clamp(1, MOST_BUCKETS);
         let length = span.1.saturating_sub(span.0).max(1);
+
         Self {
             start: span.0,
             width: (length + i64::from(count) - 1) / i64::from(count),
@@ -588,6 +595,7 @@ fn rate(trace: &Trace, query: &SyscallRateQuery) -> Result<SyscallRate, Failure>
             errors[slice] += 1;
         }
     });
+
     let mut series: Vec<SyscallSeries> = series
         .into_iter()
         .map(|(name, counts)| SyscallSeries { name, counts })
@@ -626,6 +634,7 @@ fn heatmap(trace: &Trace, query: &SyscallHeatmapQuery) -> Result<SyscallHeatmap,
             counts[slice * rows + stats::bucket(duration)] += 1;
         }
     });
+
     Ok(SyscallHeatmap {
         start: slices.start - trace.start,
         width: slices.width,
@@ -666,6 +675,7 @@ fn detail(
     let mut sites: HashMap<u32, String> = HashMap::new();
     let mut callers: BTreeMap<String, (u64, u64)> = BTreeMap::new();
     let mut unplaced = 0;
+
     for index in chosen {
         let event = &trace.events[index];
         let TraceEvent::Call(call) = &event.event else {
@@ -693,13 +703,16 @@ fn detail(
         .into_iter()
         .map(|(site, (slow, failed))| SyscallCaller { site, slow, failed })
         .collect();
+
     callers.sort_by(|a, b| {
         (b.slow + b.failed)
             .cmp(&(a.slow + a.failed))
             .then_with(|| a.site.cmp(&b.site))
     });
+
     let mut histogram = selected.log2_ns.clone();
     histogram.resize(stats::BUCKETS, 0);
+
     Ok(SyscallDetail {
         whole,
         selected: histogram,
@@ -810,6 +823,7 @@ fn log(trace: &Trace, query: &SyscallLogQuery) -> Result<SyscallLog, Failure> {
             total += 1;
         }
     });
+
     Ok(SyscallLog { total, lines })
 }
 
@@ -847,6 +861,7 @@ fn call(
             tokens: tokens(value),
         })
         .collect();
+
     let mut after = fds.clone();
     after.apply_call(target);
     let result = present::returned(
@@ -866,6 +881,7 @@ fn call(
 
         (functions, ends)
     });
+
     Ok(SyscallCall {
         arguments,
         dumps: present::dumps::dump(target),
@@ -885,6 +901,7 @@ fn call(
                         Ok(text) => (Some(text), None),
                         Err(why) => (None, Some(why)),
                     };
+
                 SyscallSite {
                     function: place.function.to_owned(),
                     path: place.file.to_owned(),
@@ -927,6 +944,7 @@ fn lanes(trace: &Trace, query: &SyscallLanesQuery) -> Result<SyscallLanes, Failu
             failed[slice] += 1;
         }
     });
+
     Ok(SyscallLanes {
         start: slices.start - trace.start,
         width: slices.width,
@@ -1024,12 +1042,14 @@ fn files(trace: &Trace, query: &SyscallQuery) -> Result<SyscallFiles, Failure> {
             None => {}
         }
     });
+
     let mut files: Vec<SyscallFile> = files.into_values().collect();
     files.sort_by(|a, b| {
         b.total_ns
             .cmp(&a.total_ns)
             .then_with(|| a.path.cmp(&b.path))
     });
+
     Ok(SyscallFiles { files })
 }
 
@@ -1081,12 +1101,14 @@ fn network(trace: &Trace, query: &SyscallQuery) -> Result<SyscallNetwork, Failur
             None => {}
         }
     });
+
     let mut endpoints: Vec<SyscallEndpoint> = endpoints.into_values().collect();
     endpoints.sort_by(|a, b| {
         (b.sent + b.received)
             .cmp(&(a.sent + a.received))
             .then_with(|| a.endpoint.cmp(&b.endpoint))
     });
+
     Ok(SyscallNetwork { endpoints })
 }
 
@@ -1097,6 +1119,7 @@ fn is_connect(call: &SyscallEvent) -> bool {
 fn processes(trace: &Trace, query: &SyscallQuery) -> Result<SyscallProcesses, Failure> {
     let selection = Selection::new(trace, query)?;
     let mut counts: BTreeMap<Pid, (u64, u64)> = BTreeMap::new();
+
     calls(trace, &selection, |_, call, _| {
         let entry = counts.entry(call.process).or_default();
         entry.0 += 1;
@@ -1116,6 +1139,7 @@ fn processes(trace: &Trace, query: &SyscallQuery) -> Result<SyscallProcesses, Fa
         .map(|process| process.pid)
         .collect();
     pending.reverse();
+
     while let Some(pid) = pending.pop() {
         let Some(process) = trace.processes.get(pid) else {
             continue;
@@ -1137,6 +1161,7 @@ fn processes(trace: &Trace, query: &SyscallQuery) -> Result<SyscallProcesses, Fa
             ended: process.ended.map(|(time, _)| trace.relative(time)),
             end: process.ended.map(|(_, end)| end_text(end)),
         });
+
         let mut children: Vec<Pid> = trace
             .processes
             .iter()

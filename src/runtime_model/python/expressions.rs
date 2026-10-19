@@ -103,6 +103,7 @@ impl Values<'_, '_> {
         }
 
         let key = InterpretedKey::Text(name.as_bytes().to_vec());
+
         for field in [Field::FrameGlobals, Field::FrameBuiltins] {
             let namespace = frame
                 .pointer(field)
@@ -332,6 +333,7 @@ impl Values<'_, '_> {
         let mask = (1_u64 << dict.log2_size) - 1;
         let mut slot = hash.cast_unsigned() & mask;
         let mut perturb = hash.cast_unsigned();
+
         for _ in 0..=mask.saturating_mul(2).saturating_add(64) {
             let bytes = self.reader.bytes(
                 dict.indices.wrapping_add(slot * dict.index_width),
@@ -501,6 +503,7 @@ impl Values<'_, '_> {
 
             Ok(())
         });
+
         if let Some(failure) = failure {
             return Err(failure);
         }
@@ -998,6 +1001,7 @@ pub(super) fn hash_float(value: f64) -> Option<i64> {
         bits - 1 - ((-1 - exponent) % bits)
     }
     .cast_unsigned();
+
     hash = ((hash << shift) & HASH_MODULUS) | hash >> (HASH_BITS - shift);
     let signed = i64::try_from(hash).unwrap_or(i64::MAX);
     Some(never_error(if value < 0.0 { -signed } else { signed }))

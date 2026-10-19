@@ -36,6 +36,7 @@ pub fn completing(typed: &str) -> (Completing<'_>, &str, usize) {
         .map_or(typed.len(), |(index, _)| index);
     let partial = &typed[start..];
     let before = &typed[..start];
+
     let kind = if before.ends_with('$') {
         Completing::Register
     } else if let Some(operator) = before

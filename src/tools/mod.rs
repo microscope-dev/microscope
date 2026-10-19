@@ -64,6 +64,7 @@ pub fn measure_load(path: &Path, instructions: bool) -> anyhow::Result<Measured>
         freed("unwind", Box::new(move || drop(unwind)));
         freed("image", Box::new(move || drop(image)));
     });
+
     Ok(Measured {
         outcome: outcome.map_err(|error| error.to_string()),
         report,
@@ -102,6 +103,7 @@ pub fn warm(paths: &[PathBuf]) -> anyhow::Result<Warmed> {
             })
             .collect::<Vec<_>>()
     })?;
+
     let mut warmed = Warmed::default();
     for load in loads {
         match load {

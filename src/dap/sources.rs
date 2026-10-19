@@ -17,6 +17,7 @@ impl Session {
     pub(super) async fn modules(&mut self, arguments: Value) -> Result<Value, ErrorBody> {
         let arguments = parse::<ModulesArguments>(arguments, "modules arguments")?;
         let handle = self.target_handle()?;
+
         let records = match handle.loaded_modules().await {
             Ok(snapshot) => snapshot.modules.to_vec(),
             Err(microscope::Error::NotRunning) => Vec::new(),
@@ -30,6 +31,7 @@ impl Session {
             .filter(|count| *count != 0)
             .unwrap_or(usize::MAX);
         let mut modules = Vec::new();
+
         for record in records.iter().skip(start).take(count) {
             let image = self.image(record.module.id).await;
             modules.push(module_json(record, image.as_deref()));
@@ -194,6 +196,7 @@ impl Session {
 
             true
         });
+
         for path in gone {
             self.client
                 .event(
@@ -232,6 +235,7 @@ impl Session {
                 .map(|(_, image)| Arc::clone(image)),
         );
         let mut lines = BTreeSet::new();
+
         for image in &images {
             if let Ok(file) = image.source_file_matching(&recorded) {
                 lines.extend(image.breakpoint_lines(file.id, first..=last));
@@ -278,6 +282,7 @@ impl Session {
             })
             .collect::<BTreeSet<_>>();
         let mut targets = Vec::new();
+
         for line in lines {
             let id = self.references.goto_target(BreakpointSpec::Source {
                 path: recorded.clone(),
@@ -303,6 +308,7 @@ pub(super) fn module_json(record: &LoadedModuleRecord, image: Option<&ModuleImag
             .map_or_else(|| record.path.display().to_string(), |name| name.to_string_lossy().into_owned()),
         "path": record.path.display().to_string(),
     });
+
     if let Some(image) = image {
         let debug_information = image.functions().len() != 0;
         let status = if debug_information {

@@ -299,6 +299,7 @@ pub(super) fn execute(
         Mnemonic::Add | Mnemonic::Sub | Mnemonic::Cmp => {
             let bits = cpu.bits(0)?;
             let (a, b) = (cpu.read(0)?, cpu.read(1)?);
+
             let (result, status) = if instruction.mnemonic() == Mnemonic::Add {
                 flags::add(a, b, false, bits)
             } else {
@@ -315,6 +316,7 @@ pub(super) fn execute(
             let bits = cpu.bits(0)?;
             let (a, b) = (cpu.read(0)?, cpu.read(1)?);
             let carry = cpu.registers.rflags & CARRY != 0;
+
             let (result, status) = if instruction.mnemonic() == Mnemonic::Adc {
                 flags::add(a, b, carry, bits)
             } else {
@@ -338,6 +340,7 @@ pub(super) fn execute(
         Mnemonic::And | Mnemonic::Or | Mnemonic::Xor | Mnemonic::Test => {
             let bits = cpu.bits(0)?;
             let (a, b) = (cpu.read(0)?, cpu.read(1)?);
+
             let result = match instruction.mnemonic() {
                 Mnemonic::Or => a | b,
                 Mnemonic::Xor => a ^ b,
@@ -353,6 +356,7 @@ pub(super) fn execute(
         Mnemonic::Inc | Mnemonic::Dec => {
             let bits = cpu.bits(0)?;
             let value = cpu.read(0)?;
+
             let (result, status) = if instruction.mnemonic() == Mnemonic::Inc {
                 flags::add(value, 1, false, bits)
             } else {
@@ -475,6 +479,7 @@ impl Cpu<'_> {
         };
 
         let destination = self.registers.general[RDI];
+
         let value = if copies {
             let source = self.registers.general[RSI];
             let value = self.load(source, 1)?;
@@ -603,6 +608,7 @@ impl Cpu<'_> {
     fn signed_multiply(&mut self) -> Result<(), Stop> {
         let bits = self.bits(0)?;
         let signed = |value: u64| i128::from(sign_extend(value, bits).cast_signed());
+
         let (product, low) = match self.instruction.op_count() {
             1 => {
                 if bits != 64 {
@@ -653,8 +659,10 @@ impl Cpu<'_> {
             product as u64 & mask(bits),
             (product >> bits) as u64 & mask(bits),
         );
+
         self.write_pair(bits, low, high)?;
         self.set_status(flags::sign_zero_parity(low, bits) | flags::multiply_overflow(high != 0));
+
         Ok(())
     }
 
@@ -682,6 +690,7 @@ impl Cpu<'_> {
             reason = "both fit the operand width"
         )]
         let (low, high) = (quotient as u64, (dividend % divisor) as u64);
+
         self.write_pair(bits, low, high)?;
         Ok(())
     }

@@ -166,6 +166,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         // function's own activation.
         if matches!(instance.kind(), CodeInstanceKind::Inline { .. }) {
             let mut parent = instance.parent();
+
             while let Some(outer) = parent.and_then(|id| image.code_instance(id)) {
                 if outer.function() == enclosing {
                     return Ok(Some(in_body(activation, None)));
@@ -207,6 +208,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let view = self.stack_view(pid);
         let mut provider = self.stack_unwinder(inferior, pid, native);
         let mut context = super::stepping::innermost_frame(native);
+
         for level in 0..DEFAULT_MAX_FRAMES {
             let level = u32::try_from(level)
                 .map_err(|_| crate::Error::internal("the frame limit fits u32"))?;
@@ -226,6 +228,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     .frame_cfa(&context)
                     .map_err(|reason| backend_error(LinuxError::CallerUnavailable(reason)))?;
                 let resume = self.executable_return_address(pid, context.instruction)?;
+
                 return Ok(Some((view.activation(cfa), resume)));
             }
 
@@ -273,6 +276,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         record!("step over follows its loop from the body's return");
+
         let inferior = self.inferior.as_ref().ok_or(crate::Error::NotRunning)?;
         let mut plan = loops
             .bodies
@@ -280,6 +284,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .flat_map(|body| self.function_entries(*body))
             .collect::<BTreeSet<_>>();
         plan.extend(loops.resume);
+
         let guards = self.panic_entries(inferior);
         let execution = self.active_execution()?;
         self.cleanup_plan_breakpoints(execution)?;
@@ -287,6 +292,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             execution,
             &plan.union(&guards).copied().collect(),
         )?;
+
         let start = self.active_step_mut().ok_or_else(|| {
             crate::Error::internal("the step remained active while it followed its loop")
         })?;
@@ -354,6 +360,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let here = self
             .image_location(VirtualAddress::new(registers.rip))
             .and_then(|location| location.source);
+
         if !loops.in_body && !source_line_changed(begun_on.as_ref(), here.as_ref()) {
             self.restart_step_over(pid)?;
             return Ok(LoopReach::Restarted);
@@ -369,6 +376,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.presentation_for_thread(pid, None)
         })?;
         record!("step over begins again: {:?}", restarted.loops);
+
         let execution = self.active_execution()?;
         self.cleanup_plan_breakpoints(execution)?;
         self.install_additional_plan_breakpoints(
@@ -379,6 +387,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .copied()
                 .collect(),
         )?;
+
         let start = self
             .active_step_mut()
             .ok_or_else(|| crate::Error::internal("the step remained active as it began again"))?;
@@ -486,6 +495,7 @@ pub(super) fn inline_loop_step_is_complete(
     let loops = start.loops.as_ref()?;
     let innermost = innermost_function(image, location);
     let in_a_body = innermost.is_some_and(|function| loops.bodies.contains(&function));
+
     if !loops.in_body {
         return (in_a_body
             && kind == StepKind::OverSource

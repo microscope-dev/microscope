@@ -91,6 +91,7 @@ impl Pending {
             .into_iter()
             .find(|&signal| self.contains(signal))
             .or_else(|| (1..32).find(|&signal| self.contains(signal)))?;
+
         self.0[(signal - 1).cast_unsigned() as usize].take()
     }
 }
@@ -165,6 +166,7 @@ impl Kernel {
 
         let ended = process.stopped.take().is_some();
         process.continued |= ended;
+
         for thread in self
             .threads
             .values_mut()
@@ -303,6 +305,7 @@ impl Kernel {
         process.group_exit = Some(exit);
         let mut pulled = Vec::new();
         let mut finished = Vec::new();
+
         for thread in self
             .threads
             .values_mut()
@@ -423,6 +426,7 @@ impl Kernel {
     /// thread (K-STOP-1).
     pub(super) fn act_by_default(&mut self, tid: Tid, signal: i32) {
         self.happenings.push(Happening::Delivered { tid, signal });
+
         match default_action(signal) {
             DefaultAction::Ignore => {}
             DefaultAction::Terminate => {
@@ -488,6 +492,7 @@ impl Kernel {
         thread.report = traced.then(|| exit.wait_status(tid));
         thread.pending = Pending::default();
         self.forget_children(tid);
+
         let Some(process) = self.processes.get(&group) else {
             return;
         };

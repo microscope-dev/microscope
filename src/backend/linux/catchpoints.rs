@@ -81,6 +81,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             VirtualAddress::new(pc),
             SYSCALL.len(),
         )?;
+
         Ok(read.bytes == SYSCALL)
     }
 

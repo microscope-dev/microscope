@@ -101,6 +101,7 @@ fn parse_angle(name: &str) -> Option<TypeName<'_>> {
     let (base, arguments) = split_arguments(last, '<', '>', NameSyntax::Angle)?;
     let base = base.trim_end();
     let named = is_identifier(base) || is_braced_scope(base);
+
     (named && segments.iter().all(|segment| is_angle_segment(segment))).then_some(TypeName {
         path: segments,
         base,
@@ -163,6 +164,7 @@ fn parse_zig(name: &str) -> Option<TypeName<'_>> {
     let (qualified, arguments) = split_arguments(name, '(', ')', NameSyntax::Zig)?;
     let mut segments = qualified.split('.').collect::<Vec<_>>();
     let base = segments.pop()?;
+
     (is_identifier(base) && segments.iter().all(|segment| is_identifier(segment))).then_some(
         TypeName {
             path: segments,
@@ -177,6 +179,7 @@ fn parse_odin(name: &str) -> Option<TypeName<'_>> {
     if let Some(rest) = name.strip_prefix("map[") {
         let close = top_level_position(rest, ']', NameSyntax::Odin)?;
         let (key, value) = (&rest[..close], &rest[close + 1..]);
+
         return (!key.is_empty() && !value.is_empty()).then(|| TypeName {
             path: Vec::new(),
             base: "map",
@@ -206,6 +209,7 @@ fn parse_odin(name: &str) -> Option<TypeName<'_>> {
                 .collect::<Option<Vec<_>>>()
         })
         .map_or(Some(None), |arguments| arguments.map(Some))?;
+
     (is_identifier(base) && segments.iter().all(|segment| is_identifier(segment))).then_some(
         TypeName {
             path: segments,
@@ -301,6 +305,7 @@ fn split_top_level<'a>(text: &'a str, separator: &str, syntax: NameSyntax) -> Op
     let mut previous = None;
     let first = separator.chars().next();
     let mut characters = text.char_indices().peekable();
+
     while let Some((index, character)) = characters.next() {
         if stack.is_empty() && Some(character) == first && text[index..].starts_with(separator) {
             parts.push(&text[start..index]);
@@ -412,11 +417,13 @@ pub fn parse_integer(text: &str) -> Option<IntegerValue> {
                 | "u128"
                 | "usize"
         );
+
     if number.is_empty() || !suffix_valid {
         return None;
     }
 
     let magnitude = u128::from_str_radix(&number.replace('_', ""), radix).ok()?;
+
     if negative {
         let magnitude = i128::try_from(magnitude).ok()?;
         Some(IntegerValue::Signed(-magnitude))
@@ -619,6 +626,7 @@ impl TypeIndex {
             || names_by_base(count, &searchable, &info),
             || canonical_keys(count, &info),
         );
+
         Self {
             image,
             by_base,
@@ -740,6 +748,7 @@ pub trait NameIndex {
     /// identity the name spells in any language's syntax.
     fn named(&self, text: &str, exact: bool, types: &dyn TypeLookup) -> Vec<TypeReference> {
         let mut found = self.by_name(text);
+
         for syntax in NameSyntax::ALL {
             let parses = Parses::new(syntax);
             let pattern = TypeName::parse(text, syntax);
@@ -786,12 +795,14 @@ fn names_by_base<'a>(
 ) {
     let mut by_base = HashMap::<Arc<str>, Vec<TypeId>>::new();
     let mut by_name = HashMap::<Arc<str>, Vec<TypeId>>::new();
+
     for index in 0..count {
         let Some(type_info) = info(index).filter(|_| searchable(index)) else {
             continue;
         };
 
         let id = type_info.reference.id;
+
         by_name
             .entry(Arc::clone(&type_info.name))
             .or_default()
@@ -1117,6 +1128,7 @@ mod tests {
             named(4, "std", "vector", Some(0)),
             named(5, "std", "vector", Some(1)),
         ];
+
         let index = TypeIndex::build(Some(image), types.len(), |index| types.get(index));
         assert!(!index.same_type(reference(0), reference(1)));
         assert!(index.same_type(reference(2), reference(3)));
@@ -1189,8 +1201,10 @@ mod tests {
                 ),
             },
         ];
+
         let index = TypeIndex::build(Some(image), types.len(), |index| types.get(index));
         let lookup = Lookup(&types);
+
         for name in [
             "std::pair<int const, int>",
             "std::pair<const int, int>",

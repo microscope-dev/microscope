@@ -90,9 +90,11 @@ fn handle(request: &Request) {
     let started = Instant::now();
     let _zone = zone!("request");
     let _route = label!("route", request.route);
+
     parse(request);
     query(request);
     render(request);
+
     let took = started.elapsed();
     if took > Duration::from_millis(2) {
         message!(
@@ -140,10 +142,12 @@ fn produce(queue: &Queue, until: Instant) {
     let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
     let started = Instant::now();
     let mut id = 0;
+
     while Instant::now() < until {
         // The load rises and falls every two seconds.
         let phase = started.elapsed().as_millis() % 2000;
         let burst = if phase < 1000 { 1 + phase / 250 } else { 1 };
+
         for _ in 0..burst {
             id += 1;
             let route = ROUTES[usize::try_from(rng.below(4)).expect("an index")];
@@ -204,6 +208,7 @@ fn main() {
         done: AtomicBool::new(false),
     });
     let until = Instant::now() + Duration::from_secs(seconds);
+
     std::thread::scope(|scope| {
         for index in 0..WORKERS {
             let queue = &queue;
@@ -218,6 +223,7 @@ fn main() {
             .name("render".into())
             .spawn_scoped(scope, move || render_loop(queue))
             .expect("the render thread");
+
         produce(queue, until);
         queue.done.store(true, Ordering::Relaxed);
         queue.ready.notify_all();

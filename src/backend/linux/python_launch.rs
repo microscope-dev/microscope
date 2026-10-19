@@ -72,27 +72,32 @@ impl PythonLaunch {
             original = OsString::from("1");
             original.push(&set);
         }
+
         environment.push(("PYTHONPATH".into(), Some(path)));
         environment.push((ORIGINAL_PATH.into(), Some(original)));
         environment.push((
             WAKE.into(),
             Some(launch.directory.join("wake").into_os_string()),
         ));
+
         Ok(Some(launch))
     }
 
     fn create() -> Result<Self, Arc<str>> {
         let parent = Path::new("/tmp");
         let mut random = [0; 16];
+
         std::fs::File::open("/dev/urandom")
             .and_then(|mut file| file.read_exact(&mut random))
             .map_err(problem)?;
+
         let directory = parent.join(format!(
             "{}{:032x}",
             crate::runtime_model::PYTHON_BOOTSTRAP_PREFIX,
             u128::from_le_bytes(random)
         ));
         nix::unistd::mkdir(&directory, Mode::S_IRWXU).map_err(problem)?;
+
         let made = || -> Result<std::fs::File, Arc<str>> {
             let held = open(
                 &directory,
@@ -104,9 +109,11 @@ impl PythonLaunch {
             if stat.st_uid != rustix::process::geteuid().as_raw() || stat.st_mode & 0o777 != 0o700 {
                 return Err("the Python launch directory is not private to the debugger".into());
             }
+
             std::fs::write(directory.join("sitecustomize.py"), SITECUSTOMIZE).map_err(problem)?;
             let wake = directory.join("wake");
             nix::unistd::mkfifo(&wake, Mode::S_IRUSR | Mode::S_IWUSR).map_err(problem)?;
+
             // Read and write, so that opening it waits for no reader, and
             // a request no thread took can be read back out.
             let channel: OwnedFd = open(
@@ -115,8 +122,10 @@ impl PythonLaunch {
                 Mode::empty(),
             )
             .map_err(problem)?;
+
             Ok(channel.into())
         };
+
         match made() {
             Ok(channel) => Ok(Self { directory, channel }),
             Err(reason) => {
@@ -141,6 +150,7 @@ impl PythonLaunch {
         if line.len() > MAX_REQUEST || path.contains('\n') || !path.starts_with('/') {
             return Err("the Python agent's script path does not fit a bootstrap request".into());
         }
+
         match (&self.channel).write(&line) {
             Ok(written) if written == line.len() => Ok(()),
             Ok(_) => Err("the Python launch bootstrap took only part of a request".into()),
@@ -158,6 +168,7 @@ impl PythonLaunch {
     pub(super) fn withdraw(&self, path: &str) -> Result<bool, Arc<str>> {
         let mut unread = Vec::new();
         let mut buffer = [0; 4096];
+
         loop {
             match (&self.channel).read(&mut buffer) {
                 Ok(0) => break,
@@ -166,6 +177,7 @@ impl PythonLaunch {
                 Err(error) => return Err(problem(error)),
             }
         }
+
         Ok(unread
             .split(|&byte| byte == b'\n')
             .any(|line| line == path.as_bytes()))

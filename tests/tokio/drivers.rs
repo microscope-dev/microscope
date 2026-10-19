@@ -54,6 +54,7 @@ impl Driven {
         scenario
             .add_breakpoint_spec(microscope::BreakpointSpec::Function("truth_reached".into()))
             .await;
+
         let arguments = match mode {
             Mode::Main => Vec::new(),
             Mode::Current => vec!["current".into()],
@@ -67,10 +68,12 @@ impl Driven {
                 ..LaunchOptions::default()
             })
             .await;
+
         assert!(
             matches!(reason, StopReason::Breakpoint { .. }),
             "{fixture} {mode:?}: {reason:?}"
         );
+
         let text = std::fs::read_to_string(&output).expect("the fixture's output");
         let mut driver = None;
         let mut values = BTreeMap::new();
@@ -103,6 +106,7 @@ fn awaits(mode: Mode) -> Vec<(String, u64)> {
         ("waiting".to_owned(), line(SOURCE, "// AWAIT: waiting")),
         ("driven".to_owned(), line(SOURCE, "// AWAIT: driven")),
     ];
+
     if matches!(mode, Mode::Main) {
         awaits.push((
             "tokio_main::{async block#0}".to_owned(),
@@ -132,6 +136,7 @@ fn listing(trace: &Backtrace) -> String {
             )
         })
         .collect::<Vec<_>>();
+
     format!(
         "\n{}\nunfollowed: {:?}",
         frames.join("\n"),
@@ -145,10 +150,12 @@ fn spliced(trace: &Backtrace) -> Option<(&[microscope::StackFrame], &microscope:
         .frames
         .iter()
         .position(|frame| frame.segment == StackSegment::Future)?;
+
     let length = trace.frames[start..]
         .iter()
         .take_while(|frame| frame.segment == StackSegment::Future)
         .count();
+
     Some((
         &trace.frames[start..start + length],
         trace.frames.get(start + length)?,
@@ -184,6 +191,7 @@ async fn driven_futures_show_their_awaits(mode: Mode) {
                 handle.at(view(StackFrameId::INNERMOST)).backtrace(),
             )
             .await;
+
         let Some((future, driver)) = spliced(&trace) else {
             // Only an optimized build may lose the future, and then the
             // backtrace says where and why.
@@ -208,11 +216,13 @@ async fn driven_futures_show_their_awaits(mode: Mode) {
             "{context}: {}",
             listing(&trace)
         );
+
         assert!(
             matches!(future[0].kind, FrameKind::Awaited { .. }),
             "{context}: {}",
             listing(&trace)
         );
+
         let shown = future[1..]
             .iter()
             .map(|frame| {
@@ -230,12 +240,14 @@ async fn driven_futures_show_their_awaits(mode: Mode) {
                 )
             })
             .collect::<Vec<_>>();
+
         assert_eq!(shown, awaits(mode), "{context}: {}", listing(&trace));
         assert_eq!(
             driver.role,
             CodeRole::RuntimeInternal,
             "{context}: {driver:#?}"
         );
+
         assert!(
             driver
                 .function
@@ -256,6 +268,7 @@ async fn driven_futures_show_their_awaits(mode: Mode) {
             "{context}: {}",
             listing(&trace)
         );
+
         for frame in &future[1..] {
             check_saved_local(
                 &stopped.scenario,

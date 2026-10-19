@@ -107,6 +107,7 @@ impl Client {
         // Where the object is, from the symbol table and the loader, not
         // from the debugger.
         let wanted = (image_address + self.script.image.bias(), size);
+
         match result {
             Ok(watchpoint) => self.armed(&watchpoint, &name, wanted, policy)?,
             Err(Error::UnsupportedWatchAccess(WatchAccess::Read))
@@ -268,6 +269,7 @@ impl Client {
             }
         }
         .map_err(|error| protocol(format!("amending watchpoint {id} failed: {error}")))?;
+
         self.note(format!(
             "watchpoint {id} now {:?} {:?}",
             amended.hit_condition, amended.condition
@@ -337,6 +339,7 @@ impl Client {
         self.disabled_watches
             .borrow_mut()
             .insert(id, (intent, watchpoint.hit_count));
+
         if running {
             self.released_while_running.set(true);
         }
@@ -398,10 +401,12 @@ impl Client {
                 .iter()
                 .any(|watchpoint| watchpoint.id.get() == *id)
         });
+
         let counted = disabled
             .iter()
             .map(|(&id, (_, counted))| (id, *counted))
             .collect();
+
         watches::judge_disabled(&counted, snapshot)
             .map_err(|message| Failure::debugger("watch accounting", message))
     }
@@ -428,6 +433,7 @@ impl Client {
             .remove_watchpoint(id)
             .await
             .map_err(|error| protocol(format!("removing watchpoint {id} failed: {error}")))?;
+
         self.note(format!("removed watchpoint {id}"));
         Ok(())
     }
@@ -517,6 +523,7 @@ impl Client {
                 ""
             }
         ));
+
         self.judge_locations(&breakpoint)?;
         let traps = image_traps(&breakpoint);
 
@@ -625,6 +632,7 @@ impl Client {
         let mut policy = *added.policies.last().expect("a breakpoint has a policy");
         policy.enabled = enabled;
         added.policies.push(policy);
+
         let breakpoint = match self.handle.set_breakpoint_enabled(id, enabled).await {
             Ok(breakpoint) => breakpoint,
             Err(error) if self.deleted_by_stop(added.temporary, &error) => return Ok(false),
@@ -904,6 +912,7 @@ impl Client {
 
         breakpoints.retain(|added| !added.temporary || remaining(added));
         self.forget_deleted(snapshot);
+
         *self.baseline.borrow_mut() = Some(Baseline {
             process,
             counts: snapshot
@@ -913,6 +922,7 @@ impl Client {
                 .collect(),
             published,
         });
+
         for added in breakpoints.iter_mut() {
             let current = *added.policies.last().expect("a breakpoint has a policy");
             added.policies = vec![current];
@@ -938,6 +948,7 @@ impl Client {
         self.shared.breakpoints.borrow_mut().remove(&id.get());
         self.shared.temporaries.borrow_mut().remove(&id.get());
         self.shared.disabled.borrow_mut().remove(&id.get());
+
         match self.handle.remove_breakpoint(id).await {
             Ok(_) => {}
             Err(error) if self.deleted_by_stop(removed.temporary, &error) => return Ok(true),
@@ -1069,6 +1080,7 @@ fn misplaced(
                 .copied()
                 .filter(|&known| known >= line)
                 .min();
+
             addresses
                 .iter()
                 .find(|address| {

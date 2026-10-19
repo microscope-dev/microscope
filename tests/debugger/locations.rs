@@ -22,10 +22,12 @@ async fn stopped(variant: &str, arguments: &[&str]) -> Scenario {
             ..LaunchOptions::default()
         })
         .await;
+
     assert!(
         matches!(reason, StopReason::Breakpoint { .. }),
         "{variant}: {reason:?}"
     );
+
     scenario
 }
 
@@ -34,11 +36,13 @@ async fn select(scenario: &Scenario, function: &str) {
     let trace = scenario
         .operation("backtrace", scenario.handle().backtrace())
         .await;
+
     let frame = trace
         .frames
         .iter()
         .find(|frame| frame.function.as_ref().map(|function| &*function.name) == Some(function))
         .unwrap_or_else(|| panic!("no frame runs {function}: {trace:#?}"));
+
     scenario
         .operation(function, scenario.handle().select_frame(frame.id))
         .await;
@@ -132,14 +136,17 @@ async fn a_record_split_across_registers_reads_and_places_each_member() {
             VariableValueSource::Composite,
             "{variant}"
         );
+
         assert!(
             is_register(&source(&scenario, "pair.first").await),
             "{variant}"
         );
+
         assert!(
             is_register(&source(&scenario, "pair.second").await),
             "{variant}"
         );
+
         let whole = address(&scenario, "&pair").await.unwrap_err();
         assert!(whole.contains("several places"), "{variant}: {whole}");
         let member = address(&scenario, "&pair.first").await.unwrap_err();
@@ -159,11 +166,13 @@ async fn a_wide_integer_in_two_registers_reads_whole() {
             (21_i128 << 64) | 63,
             "{variant}"
         );
+
         assert_eq!(
             source(&scenario, "value").await,
             VariableValueSource::Composite,
             "{variant}"
         );
+
         scenario.shutdown().await;
     }
 }
@@ -190,14 +199,17 @@ async fn members_of_a_partly_kept_record_are_judged_by_their_own_bits() {
             ..
         }
     ));
+
     assert_eq!(
         unavailable(&scenario, "point.x").await,
         VariableUnavailableReason::OptimizedOut(OptimizedOutReason::EmptyLocation)
     );
+
     assert!(matches!(
         unavailable(&scenario, "point.y").await,
         VariableUnavailableReason::RegisterNotSaved(register) if &*register == "xmm1"
     ));
+
     scenario.shutdown().await;
 }
 
@@ -218,11 +230,13 @@ async fn a_member_pointing_at_a_value_with_no_address_is_an_implicit_pointer() {
                     ..
                 }
             ));
+
             assert_eq!(
                 unavailable(&scenario, "*ref.pointer").await,
                 VariableUnavailableReason::OptimizedOut(OptimizedOutReason::NoLocation),
                 "{variant}"
             );
+
             let refused = address(&scenario, "&ref.pointer").await.unwrap_err();
             assert!(refused.contains("referent"), "{variant}: {refused}");
         } else {
@@ -267,6 +281,7 @@ async fn parameters_held_only_on_entry_are_recovered_from_their_callers() {
                 value,
                 "{variant}: {function} {name}"
             );
+
             assert_eq!(
                 source(&scenario, name).await,
                 VariableValueSource::Computed,
@@ -304,12 +319,14 @@ async fn entry_values_follow_the_one_possible_chain_of_tail_calls() {
             scenario.resume_to_stop().await,
             StopReason::Breakpoint { .. }
         ));
+
         select(&scenario, "ping").await;
         assert_eq!(
             unavailable(&scenario, "count").await,
             VariableUnavailableReason::EntryValue(EntryValueUnavailableReason::TailCalls),
             "{variant}"
         );
+
         scenario.shutdown().await;
     }
 }
@@ -344,6 +361,7 @@ async fn an_entry_value_lost_further_out_says_whose_caller_lost_it() {
             EntryValue(Caller(Box::new(EntryValue(lost)))),
             "{variant}"
         );
+
         scenario.shutdown().await;
     }
 }
@@ -362,6 +380,7 @@ async fn a_library_function_recovers_what_the_program_passed_it() {
             VariableValueSource::Computed,
             "{variant}"
         );
+
         if variant.starts_with("gcc") {
             let callback = scenario
                 .operation(
@@ -369,6 +388,7 @@ async fn a_library_function_recovers_what_the_program_passed_it() {
                     scenario.handle().runtime_address("locations_stop"),
                 )
                 .await;
+
             let VariableState::Available {
                 value: VariableValue::Address(stop),
                 ..
@@ -406,11 +426,13 @@ async fn tail_calls_another_module_may_have_taken_are_not_followed() {
             114,
             "{variant}"
         );
+
         assert_eq!(
             unavailable(&scenario, "value").await,
             VariableUnavailableReason::EntryValue(EntryValueUnavailableReason::TailCalls),
             "{variant}"
         );
+
         scenario.shutdown().await;
     }
 }
@@ -465,6 +487,7 @@ async fn a_value_in_several_places_is_neither_changed_nor_watched() {
             refused.to_string().contains("split across several places"),
             "{variant}: {refused}"
         );
+
         assert!(
             matches!(
                 watch(&scenario, "value").await,
@@ -472,6 +495,7 @@ async fn a_value_in_several_places_is_neither_changed_nor_watched() {
             ),
             "{variant}"
         );
+
         scenario.shutdown().await;
     }
 
@@ -482,6 +506,7 @@ async fn a_value_in_several_places_is_neither_changed_nor_watched() {
     assign(&scenario, "point.y", "30.5")
         .await
         .expect("assign to memory");
+
     assert!((binary64(&scenario, "point.y").await - 30.5).abs() < f64::EPSILON);
     scenario.shutdown().await;
 }

@@ -29,6 +29,7 @@ async fn stopped_at(fixture: &str, spec: BreakpointSpec) -> Scenario {
             ..LaunchOptions::default()
         })
         .await;
+
     assert!(
         matches!(reason, StopReason::Breakpoint { .. }),
         "{fixture}: {reason:?}"
@@ -47,6 +48,7 @@ async fn stopped_once(fixture: &str, spec: BreakpointSpec) -> Scenario {
             ..LaunchOptions::default()
         })
         .await;
+
     assert!(
         matches!(reason, StopReason::Breakpoint { .. }),
         "{fixture}: {reason:?}"
@@ -103,6 +105,7 @@ async fn a_function_breakpoint_binds_an_async_body() {
                 ..LaunchOptions::default()
             })
             .await;
+
         while matches!(reason, StopReason::Breakpoint { .. }) {
             assert_eq!(
                 place(&scenario).await,
@@ -159,6 +162,7 @@ async fn await_lines_stop_on_arrival_only() {
                     ..LaunchOptions::default()
                 })
                 .await;
+
             while matches!(reason, StopReason::Breakpoint { .. }) {
                 stops += 1;
                 assert!(stops <= arrivals, "{fixture} {marker}");
@@ -215,8 +219,10 @@ async fn an_async_frame_lists_its_variables_once_with_current_values() {
             })
             .await;
         let (mut walks, mut leaves, mut middles) = (0, 0, 0);
+
         while matches!(reason, StopReason::Breakpoint { .. }) {
             let (function, _) = place(&scenario).await;
+
             let expected = match function.as_str() {
                 "walk" => {
                     let step = walks;
@@ -276,6 +282,7 @@ async fn an_async_frame_lists_its_variables_once_with_current_values() {
             matches!(reason, StopReason::Exited { .. }),
             "{fixture}: {reason:?}"
         );
+
         assert_eq!((walks, leaves, middles), (3, 2, 2), "{fixture}");
         scenario.shutdown().await;
     }
@@ -386,6 +393,7 @@ async fn a_future_prints_as_its_state() {
                 expected,
                 "{fixture} {marker}"
             );
+
             let VariableState::Available {
                 presentation: Some(presentation),
                 ..
@@ -410,6 +418,7 @@ async fn a_future_prints_as_its_state() {
                     ),
                 )
                 .await;
+
             let names = page
                 .children
                 .iter()
@@ -435,6 +444,7 @@ async fn next_over_a_pending_await_ends_after_it_in_its_own_future() {
     for fixture in ["tokio-std-async-o0"] {
         let mut scenario = stopped_once(fixture, at("// AWAIT: leaf")).await;
         assert_eq!(integer(&scenario, "id").await, Some(3), "{fixture}");
+
         let reason = scenario.step_to_stop(StepKind::OverSource).await;
         assert_eq!(
             reason,
@@ -462,6 +472,7 @@ async fn next_over_an_await_in_a_loop_goes_round_the_loop() {
     for fixture in ["tokio-std-async-o0"] {
         let mut scenario = stopped_once(fixture, at("// AWAIT: walk")).await;
         let mut lines = Vec::new();
+
         while lines.len() < 8 {
             let reason = scenario.step_to_stop(StepKind::OverSource).await;
             assert_eq!(

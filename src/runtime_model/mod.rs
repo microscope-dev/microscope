@@ -320,10 +320,12 @@ impl StopMemory {
         {
             return Arc::clone(known);
         }
+
         let mut ids = read();
         ids.sort_unstable();
         ids.dedup();
         let ids: Arc<[_]> = ids.into();
+
         // Missing evidence can be a transient proc read failure. Keep a
         // complete catalog only; partial results can be retried at this stop.
         if matches(&ids) {
@@ -1380,6 +1382,7 @@ impl InterpretedStacks {
     /// outermost frame ends an activation's.
     pub fn check_invariants(&self) {
         let mut next = 0;
+
         for (index, thread) in self.threads.iter().enumerate() {
             debug_assert!(
                 index == 0
@@ -1471,6 +1474,7 @@ pub fn interpreted_identity(
         .map(Arc::from)
         .collect();
     let base = path.pop().unwrap_or_else(|| Arc::from(qualified));
+
     crate::TypeIdentity {
         language,
         path: path.into(),
@@ -1844,6 +1848,7 @@ impl RuntimeImage for ModuleImage {
     fn member(&self, type_name: &str, path: &[&str]) -> Option<Member> {
         let mut ty = self.types_named_exactly(type_name).next()?;
         let mut offset = 0_u64;
+
         for name in path {
             let TypeKind::Record { members, .. } = &representation(self, ty)?.kind else {
                 return None;
@@ -1935,6 +1940,7 @@ impl RuntimeImage for ModuleImage {
             .filter(|instance| matches!(instance.kind(), crate::CodeInstanceKind::OutOfLine))
             .filter_map(|instance| instance.ranges().map(|range| range.start).min());
         let first = starts.next()?;
+
         starts.all(|start| start == first).then_some(first)
     }
 

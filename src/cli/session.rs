@@ -69,6 +69,7 @@ pub fn prepare(args: &Args, warnings: Renderer) -> Result<Session> {
     let interactive = !args.batch && io::stdin().is_terminal() && io::stdout().is_terminal();
     let trusted = decide_trust(&files, args.trust_project, interactive, warnings)?;
     let mut settings = files.settings(trusted)?;
+
     if let Some(choice) = args.color {
         settings.override_color(choice, Origin::Flag("--color"));
     } else if let Some((choice, variable)) = ColorEnvironment::current().choice() {
@@ -162,6 +163,7 @@ pub fn prepare(args: &Args, warnings: Renderer) -> Result<Session> {
     };
 
     microscope::pool::configure(None, debug_info.jobs).context("cannot load debug information")?;
+
     Ok(Session {
         debug_files,
         settings,
@@ -232,6 +234,7 @@ fn launch_target(
                 .collect::<Vec<_>>();
             environment.append(&mut launch.environment);
             launch.environment = environment;
+
             if launch.working_directory.is_none() {
                 launch.working_directory = Some(
                     chosen
@@ -380,6 +383,7 @@ fn decide_trust(files: &Files, flag: bool, interactive: bool, renderer: Renderer
 
     let answer = config::ask_trust(root, &acting, &mut io::stdin().lock(), &mut io::stderr())
         .context("cannot ask whether to trust the project")?;
+
     match answer {
         Answer::Yes => {
             if let Err(error) = store.trust(root, &acting) {

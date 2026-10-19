@@ -160,6 +160,7 @@ fn variables_show_values_and_types_and_expand_aggregates() {
         filtered(&scopes["Locals"]["variablesReference"], "indexed"),
         0
     );
+
     dap.finish();
 }
 
@@ -302,6 +303,7 @@ fn caller_frames_registers_and_hexadecimal_values() {
         json!({"variablesReference": reference, "format": {"hex": true}}),
     );
     assert_eq!(arguments["variables"][0]["value"], "0x28");
+
     dap.finish();
 }
 
@@ -461,6 +463,7 @@ fn expressions_evaluate_for_watches_hovers_ranges_and_without_a_frame() {
         )["result"],
         "42"
     );
+
     let range = dap.request(
         "evaluate",
         json!({"expression": "array[0..2]", "frameId": frame, "context": "watch"}),
@@ -483,6 +486,7 @@ fn expressions_evaluate_for_watches_hovers_ranges_and_without_a_frame() {
         ),
         "expected a member name, found the end of the expression"
     );
+
     let unknown = dap.request_error(
         "evaluate",
         json!({"expression": "nonexistent", "frameId": frame, "context": "hover"}),
@@ -655,6 +659,7 @@ fn statics_that_files_share_a_name_with_evaluate_to_their_own_files_value() {
         },
     );
     let mut mark = started.mark;
+
     for (variable, value) in [
         ("external_value", "101"),
         ("duplicate", "201"),
@@ -769,6 +774,7 @@ fn hexadecimal_is_a_session_default_each_request_may_override() {
         parameters(&mut dap, true),
         "pointer_target(parameter = 0x28, pointer_parameter = 0x",
     );
+
     let scopes = scopes(&mut dap, &frame);
     let arguments = scopes["Arguments"]["variablesReference"].clone();
     let parameter = |dap: &mut Dap, format: Value| {
@@ -839,6 +845,7 @@ fn variables_lead_to_where_they_are_declared() {
         &mut dap,
         &scopes["Statics"]["variablesReference"],
     ));
+
     for (name, marker) in [
         ("n", "static int names(int n)"),
         ("x", "int x = n * 2"),
@@ -1103,6 +1110,7 @@ fn launch_view_files_present_values_and_report_their_errors() {
         "microscope-views 1\nview c point {\n    show empty(\"from the launch\")\n}\nview c intvec {\n    show nothing\n}\n",
     )
     .expect("write the launch's views");
+
     let mut dap = Dap::start("view files");
     let path = source("c/embedded-views/main.c");
     let started = dap.launch(
@@ -1132,5 +1140,6 @@ fn launch_view_files_present_values_and_report_their_errors() {
             .any(|output| output.contains("launch.views:6:10: expected a shape")),
         "{said:?}"
     );
+
     dap.finish();
 }

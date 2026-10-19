@@ -47,6 +47,7 @@ impl<P: InspectionOps> Controller<P> {
         let lists = |breakpoint: &crate::Breakpoint, location: &crate::ManagedLocation| {
             super::breakpoints::managed_locations(breakpoint).any(|listed| listed == location)
         };
+
         for (location, owners) in inferior.managed.owned() {
             debug_assert!(!owners.is_empty(), "a managed location has no owners");
             for &owner in owners {
@@ -67,6 +68,7 @@ impl<P: InspectionOps> Controller<P> {
                 .threads
                 .iter()
                 .all(|(&pid, thread)| inferior.settled(pid, thread));
+
         if sites_live {
             for breakpoint in self
                 .breakpoints
@@ -86,6 +88,7 @@ impl<P: InspectionOps> Controller<P> {
 
     fn check_modules(&self) {
         let mut images = BTreeSet::new();
+
         for (&id, module) in &self.modules {
             debug_assert_eq!(
                 module.loaded.id, id,
@@ -123,6 +126,7 @@ impl<P: InspectionOps> Controller<P> {
     fn check_user_breakpoints(&self) {
         self.breakpoints.check_invariants();
         let mut ids = BTreeSet::new();
+
         for breakpoint in &self.breakpoints {
             debug_assert!(
                 breakpoint.id.get() < self.next_breakpoint_id,
@@ -198,6 +202,7 @@ impl Inferior {
     fn check_sites(&self) {
         let stack_moves = self.stack_moves.planted();
         let resolvers = self.indirect.planted();
+
         for (owner, planted) in [
             (BreakpointOwner::StackMove, &stack_moves),
             (BreakpointOwner::Resolver, &resolvers),
@@ -276,6 +281,7 @@ impl Inferior {
             !self.traps_lifted || !self.vfork_windows.is_empty(),
             "the traps are lifted with no vfork window open to reinstall them"
         );
+
         for group in &self.repairs {
             let site = self.breakpoints.get(&group.address);
             debug_assert!(
@@ -421,6 +427,7 @@ impl Inferior {
     /// about to follow a move.
     fn check_watches(&self) {
         let plan = &self.watch.plan;
+
         for slot in plan.slots().iter().flatten() {
             for id in &slot.owners {
                 debug_assert!(

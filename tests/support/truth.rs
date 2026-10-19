@@ -55,11 +55,13 @@ impl Report {
         let start = self.lines.iter().rposition(|fields| {
             is_checkpoint(fields) && fields.get(1).is_some_and(|n| n == name)
         })?;
+
         let lines = &self.lines[start + 1..];
         let end = lines
             .iter()
             .position(|fields| is_checkpoint(fields))
             .unwrap_or(lines.len());
+
         Some(&lines[..end])
     }
 
@@ -69,7 +71,9 @@ impl Report {
             .lines
             .iter()
             .rposition(|fields| is_checkpoint(fields))?;
+
         let name = self.lines[start].get(1)?;
+
         Some((name, &self.lines[start + 1..]))
     }
 }

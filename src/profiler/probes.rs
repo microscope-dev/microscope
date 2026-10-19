@@ -106,6 +106,7 @@ pub fn table(file: &object::File<'_>) -> Result<Option<Table>, String> {
     };
 
     let (records, _) = data.as_chunks::<{ abi::SITE_SIZE }>();
+
     for (index, record) in records.iter().enumerate() {
         let at = sites.address() + (index * abi::SITE_SIZE) as u64;
         let field = |offset: usize| {
@@ -437,6 +438,7 @@ impl Decoder {
             .position(|record| kind(record) != abi::CONTINUED)
             .unwrap_or(records.len());
         self.orphaned += index as u64;
+
         while let Some(record) = records.get(index) {
             index += 1;
             let argument = u32::from_le_bytes(record[12..16].try_into().unwrap_or_default()) >> 8;
@@ -840,6 +842,7 @@ mod tests {
 
             let (mut tail, mut accounted, mut decoder) = (0, 0, Decoder::default());
             let rounds = schedule.iter().copied().chain(std::iter::once((usize::MAX, 0)));
+
             for (before, during) in rounds {
                 for _ in 0..before.min(1 << 20) {
                     writer.step();
@@ -848,6 +851,7 @@ mod tests {
                 let header = RingHeader { size, clock: 0, thread: Tid::new(0), state: abi::RING_ACTIVE, interrupted: 0, head: writer.head };
                 let (span, mut lost) = copy_span(tail, header);
                 let mut copied = Vec::new();
+
                 for position in span.clone() {
                     copied.extend_from_slice(&writer.slots[(position % (1 << size)) as usize]);
                     for _ in 0..during {
@@ -865,6 +869,7 @@ mod tests {
                     .collect();
                 let found: Vec<usize> = decoder.events.iter().map(|event| event.time as usize).collect();
                 prop_assert_eq!(&found, &expected);
+
                 for (event, &index) in decoder.events.iter().zip(&expected) {
                     match &events[index] {
                         Written::Plot(value) => prop_assert_eq!(event.value, *value),
@@ -923,6 +928,7 @@ mod tests {
             // between them, by site, start, and end.
             let mut whole = std::collections::BTreeSet::new();
             let mut open: Vec<(u32, i64, bool)> = Vec::new();
+
             for (index, &(begin, site)) in events.iter().enumerate() {
                 let time = index as i64 * 10;
                 if lost.get(index).copied().unwrap_or(false) {

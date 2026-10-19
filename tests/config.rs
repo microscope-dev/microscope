@@ -320,6 +320,7 @@ fn startup_commands_accumulate_from_every_file_in_order() {
         fixture(BASIC).display()
     ));
     project.local("[startup]\ncommands = [\"handle SIGHUP\"]\n");
+
     let (stdout, _) =
         succeeded(&project.run(&["--batch", "--trust-project", "-e", "signal SIGQUIT"]));
     assert_in_order(

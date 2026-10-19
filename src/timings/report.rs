@@ -156,6 +156,7 @@ impl Report {
         let mut counters = BTreeMap::<String, u64>::new();
         let mut threads = BTreeMap::<u32, ThreadBusy>::new();
         let mut trace_events = Vec::with_capacity(raw.events.len() + raw.marks.len());
+
         for event in &raw.events {
             let phase = phases.entry(event.name).or_insert_with(|| Phase {
                 name: event.name.to_owned(),
@@ -200,6 +201,7 @@ impl Report {
             }
 
             let mut args = BTreeMap::new();
+
             if let Some(label) = &event.label {
                 args.insert("label".to_owned(), label.as_ref().into());
             }
@@ -251,6 +253,7 @@ impl Report {
         }
 
         let mut marks = BTreeMap::new();
+
         for (name, at) in &raw.marks {
             marks.entry((*name).to_owned()).or_insert_with(|| ms(*at));
             trace_events.push(TraceEvent {
@@ -272,6 +275,7 @@ impl Report {
                 .total_cmp(&left.wall_ms)
                 .then_with(|| left.name.cmp(&right.name))
         });
+
         Self {
             schema: SCHEMA,
             summary: Summary {
@@ -357,7 +361,9 @@ impl Report {
             "\n{:<36} {:>6} {:>10} {:>10} {:>12} {:>9} {:>10}",
             "phase", "spans", "wall ms", "cpu ms", "instructions", "allocs", "bytes"
         );
+
         let shown = if all { usize::MAX } else { SUMMARY_ROWS };
+
         for phase in self.phases.iter().take(shown) {
             let _ = writeln!(
                 text,
@@ -398,6 +404,7 @@ impl Report {
             .iter()
             .map(|thread| thread.busy_ms)
             .sum::<f64>();
+
         let _ = writeln!(
             text,
             "{} threads, {busy:.1} ms busy over {:.1} ms wall: {:.2}x parallel",
@@ -414,6 +421,7 @@ impl Report {
             "{:>6} {:>10} {:>10} {:>6}  longest",
             "thread", "busy ms", "cpu ms", "spans"
         );
+
         for thread in &self.threads {
             let _ = writeln!(
                 text,
@@ -431,6 +439,7 @@ impl Report {
         // the parent waits for the last of them, which bounds its time.
         let mut children = BTreeMap::<u64, Vec<&TraceEvent>>::new();
         let mut by_id = BTreeMap::<u64, &TraceEvent>::new();
+
         for event in self.trace_events.iter().filter(|event| event.ph == "X") {
             if let Some(id) = event.args.get("id").and_then(serde_json::Value::as_u64) {
                 by_id.insert(id, event);
@@ -455,6 +464,7 @@ impl Report {
             let longest = events
                 .iter()
                 .max_by(|left, right| left.dur.unwrap_or(0.0).total_cmp(&right.dur.unwrap_or(0.0)));
+
             let _ = writeln!(
                 text,
                 "{}: {} parts, {work:.2} ms of work in {wall:.2} ms ({:.2}x); longest {} {:.2} ms, last to finish {}",
@@ -525,20 +535,25 @@ impl Report {
                 (name, wall(before), wall(after), before, after)
             })
             .collect::<Vec<_>>();
+
         rows.sort_by(|left, right| {
             (right.2 - right.1)
                 .abs()
                 .total_cmp(&(left.2 - left.1).abs())
                 .then_with(|| left.0.cmp(right.0))
         });
+
         let _ = writeln!(
             text,
             "{:<36} {:>10} {:>10} {:>9}",
             "phase wall ms", "base", "new", "change"
         );
+
         let shown = if all { usize::MAX } else { SUMMARY_ROWS };
+
         for (name, before, after, base_phase, new_phase) in rows.iter().take(shown) {
             let _ = writeln!(text, "{}", change_row(name, *before, *after, ""));
+
             #[expect(clippy::cast_precision_loss, reason = "reported approximately")]
             if let (Some(base_phase), Some(new_phase)) = (base_phase, new_phase) {
                 if base_phase.allocations != new_phase.allocations {

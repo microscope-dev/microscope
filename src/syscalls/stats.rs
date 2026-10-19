@@ -133,6 +133,7 @@ impl SyscallStats {
         )]
         let rank = ((q.clamp(0.0, 1.0) * self.timed as f64).ceil() as u64).max(1);
         let mut seen = 0;
+
         for (index, &count) in self.log2_ns.iter().enumerate() {
             if count == 0 {
                 continue;
@@ -141,6 +142,7 @@ impl SyscallStats {
             if seen + count >= rank {
                 let (low, high) = bucket_range(index);
                 let high = high.min(self.max_ns.saturating_add(1)).max(low + 1);
+
                 #[expect(
                     clippy::cast_precision_loss,
                     clippy::cast_possible_truncation,
@@ -214,6 +216,7 @@ impl Folded {
     #[must_use]
     pub fn per_call(&self) -> BTreeMap<SyscallId, SyscallStats> {
         let mut calls: BTreeMap<SyscallId, SyscallStats> = BTreeMap::new();
+
         for (&(_, call), stats) in &self.by_call {
             calls.entry(call).or_default().merge(stats);
         }
@@ -247,6 +250,7 @@ mod tests {
     #[test]
     fn quantiles_stay_in_their_bucket_and_below_the_largest() {
         let mut stats = SyscallStats::default();
+
         for duration in [100, 110, 120, 130, 5_000] {
             stats.add(Outcome::Returned(0), Some(duration), 0);
         }

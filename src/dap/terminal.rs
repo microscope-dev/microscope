@@ -100,6 +100,7 @@ pub(super) async fn launch(
             ))
         })?
         .map_err(|error| failed(&error))?;
+
     handle
         .launch_by_exec(process, stop_on_entry, move || {
             // A launcher that is gone exits without running the program.
@@ -120,6 +121,7 @@ impl LauncherSocket {
     fn bind() -> io::Result<Self> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let base = std::env::temp_dir();
+
         let directory = loop {
             let directory = base.join(format!(
                 "microscope-{}-{}",

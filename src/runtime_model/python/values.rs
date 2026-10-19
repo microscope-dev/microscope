@@ -314,6 +314,7 @@ impl Values<'_, '_> {
         let shared = layout.constant(Constant::FastCell) | layout.constant(Constant::FastFree);
         let parameters = usize::try_from(table.row(code).parameters).unwrap_or(usize::MAX);
         let mut variables = Vec::with_capacity(locals.len());
+
         for (index, (local, slot)) in locals.iter().zip(slots.as_chunks::<8>().0).enumerate() {
             if local.kind & hidden != 0 {
                 continue;
@@ -397,6 +398,7 @@ impl Values<'_, '_> {
         let object = self.object(address)?;
         let class = VirtualAddress::new(self.reader.field_word(address, Field::ObjectType)?);
         let (module, type_name) = Self::type_name(&object);
+
         let (kind, attributes) = match &object {
             Object::Instance { class, base } => (
                 base.as_deref()
@@ -411,7 +413,9 @@ impl Values<'_, '_> {
             within: vec![address],
             problem: None,
         };
+
         let text = self.text(address, &object, 0, &mut summary);
+
         let array = match &object {
             Object::Library {
                 value: Library::Array(array),
@@ -428,6 +432,7 @@ impl Values<'_, '_> {
             },
             _ => None,
         };
+
         Ok(InterpretedValue {
             object: address,
             class,
@@ -769,6 +774,7 @@ impl Values<'_, '_> {
         let name = reader.c_string(VirtualAddress::new(
             reader.field_word(method, Field::MethodDefName)?,
         ))?;
+
         let bound = VirtualAddress::new(head.field_word(Field::BuiltinSelf)?);
         if bound == VirtualAddress::new(0) {
             return Ok(Object::Builtin { name, bound: None });
@@ -831,6 +837,7 @@ impl Values<'_, '_> {
         let shift = self.shift();
         let width = if shift > 16 { 4 } else { 2 };
         let bytes = head.field_bytes(Field::LongDigits, count * width)?;
+
         let digits: Vec<u32> = if width == 4 {
             bytes
                 .as_chunks::<4>()
@@ -863,6 +870,7 @@ impl Values<'_, '_> {
         let address = head.address();
         let length = length(head.field_word(Field::DictUsed)?, address)?;
         let values = head.field_word(Field::DictValues)?;
+
         let split = if values == 0 {
             None
         } else {
@@ -1001,6 +1009,7 @@ impl Values<'_, '_> {
         let word = |offset| {
             super::objects::read_le(&bytes, offset, 8).ok_or_else(|| malformed(dict.object, "dict"))
         };
+
         let value = match dict.split {
             Some(split) if index < split.capacity => {
                 self.reader.word(split.values.wrapping_add(index * 8))?
@@ -1008,6 +1017,7 @@ impl Values<'_, '_> {
             Some(_) => 0,
             None => word(dict.value)?,
         };
+
         Ok(Entry {
             key: VirtualAddress::new(word(dict.key)?),
             value: VirtualAddress::new(value),
@@ -1044,12 +1054,14 @@ impl Values<'_, '_> {
         };
         let mut item = 0;
         let mut first = 0;
+
         while first < dict.count && item < range.end {
             let take = DICT_ENTRIES_READ.min(dict.count - first);
             let bytes = self.reader.bytes(
                 dict.entries.wrapping_add(first * dict.size),
                 take * dict.size,
             )?;
+
             for entry in bytes.chunks_exact(usize::try_from(dict.size).unwrap_or(usize::MAX)) {
                 let (Some(key), Some(value)) =
                     (pointer(entry, dict.key), pointer(entry, dict.value))
@@ -1116,6 +1128,7 @@ impl Values<'_, '_> {
         }
 
         let end = range.end.min(dict.length);
+
         for position in range.start.min(end)..end {
             let index = u64::from(order[usize::try_from(position).unwrap_or(usize::MAX)]);
             let entry = self.entry(dict, index)?;
@@ -1159,9 +1172,11 @@ impl Values<'_, '_> {
         );
         let mut item = 0;
         let mut first = 0;
+
         while first < slots && item < range.end {
             let take = DICT_ENTRIES_READ.min(slots - first);
             let bytes = reader.bytes(table.wrapping_add(first * size), take * size)?;
+
             for entry in bytes.chunks_exact(usize::try_from(size).unwrap_or(usize::MAX)) {
                 let (Some(entry_key), Some(entry_hash)) = (
                     super::objects::read_le(entry, key, 8),
@@ -1242,6 +1257,7 @@ impl Values<'_, '_> {
             within: vec![address],
             problem: None,
         };
+
         self.object(address).map_or_else(
             |_| format!("<unreadable object at {address:#x}>").into(),
             |object| self.text(address, &object, 0, &mut summary).into(),
@@ -1461,6 +1477,7 @@ impl Values<'_, '_> {
             pairs.push((entry.key, entry.value));
             Ok(())
         });
+
         self.pairs_text((&pairs, read), dict.length, depth, summary)
     }
 
@@ -1520,6 +1537,7 @@ impl Values<'_, '_> {
             items.push(item);
             Ok(())
         });
+
         let (mut texts, whole) = self.until_spent(items.len(), summary, |index, summary| {
             self.item_text(items[index], depth + 1, summary)
         });
@@ -1629,6 +1647,7 @@ fn length(size: u64, address: VirtualAddress) -> Result<u64, Problem> {
 /// An int's value, where it fits in 128 bits.
 pub(super) fn exact(negative: bool, digits: &[u32], shift: u32) -> Option<i128> {
     let mut magnitude: u128 = 0;
+
     for &digit in digits.iter().rev() {
         magnitude = magnitude
             .checked_mul(1 << shift)?

@@ -259,6 +259,7 @@ impl TokioRuntime {
                     .collect::<Vec<_>>()
             })
             .collect();
+
         Self {
             layout: Layout::bind(image.as_ref()),
             starters,
@@ -306,6 +307,7 @@ impl TokioRuntime {
         }
 
         let locals = locals.ok().flatten();
+
         for thread in stop.threads() {
             match Self::thread_context(stop, context, locals, thread) {
                 Ok(Some(found)) => {
@@ -326,6 +328,7 @@ impl TokioRuntime {
 
         let running = census.threads.iter().filter_map(|thread| thread.local);
         let sets = stop.task_sets().into_iter().map(VirtualAddress::new);
+
         for set in running.chain(sets) {
             let set = Instance {
                 flavor: Flavor::Local,
@@ -417,11 +420,13 @@ impl TokioRuntime {
 
         let worker =
             records::word(stop, base.wrapping_add(context.scheduler)).ok_or_else(unreadable)? != 0;
+
         let entered = &*context
             .entered_state
             .active(stop, base.wrapping_add(context.entered.offset))?
             .name
             == "Entered";
+
         let option = base.wrapping_add(context.task.offset);
         let task = if &*context.task_option.active(stop, option)?.name == "Some" {
             Some(
@@ -771,6 +776,7 @@ impl RuntimeModel for TokioRuntime {
     ) -> Option<u64> {
         let locals = self.locals().ok().flatten()?;
         let info = self.image.type_info(ty)?;
+
         let set = match local_type(info)? {
             "LocalSet" => future,
             "RunUntil" => {
@@ -839,6 +845,7 @@ impl RuntimeModel for TokioRuntime {
                 )))
             })
             .unwrap_or_default();
+
         Ok(Some(TaskEntries {
             task: TaskRef {
                 number: task.number,

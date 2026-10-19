@@ -233,6 +233,7 @@ fn types_that_keep_their_provenance_never_merge() {
             |_| {},
         ),
     ];
+
     for (name, entries, change) in cases {
         let mut types = built(entries.clone());
         change(&mut types);
@@ -252,6 +253,7 @@ fn refinement_that_does_not_settle_keeps_every_type() {
         let mut entries = Vec::new();
         for (chain, end) in ["int", "long", "int"].into_iter().enumerate() {
             let base = u32::try_from(chain).unwrap() * (depth + 1);
+
             for link in 0..depth {
                 entries.push(pointer(base + link, base + link + 1));
             }
@@ -270,6 +272,7 @@ fn refinement_that_does_not_settle_keeps_every_type() {
     let remap = shallow.deduplicate().expect("the copy merges");
     assert_eq!(shallow.entries.len(), 18);
     assert_eq!(remap.id(TypeId::new(18)), TypeId::new(0));
+
     let depth = u32::try_from(MAX_ROUNDS).unwrap() + 2;
     let mut deep = chains(depth);
     let entries = deep.entries.clone();
@@ -290,6 +293,7 @@ fn bisimilar(labels: &[Option<u8>], edges: &[Vec<u32>]) -> Vec<Vec<bool>> {
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
+
     loop {
         let mut changed = false;
         for left in 0..count {
@@ -356,6 +360,7 @@ fn check_refinement(labels: &[Option<u8>], edges: &[Vec<u32>]) -> Result<(), Tes
 
     let classes = refine(&signatures, &foldhash::fast::FixedState::default()).unwrap();
     let related = bisimilar(labels, edges);
+
     for left in 0..labels.len() {
         for right in 0..labels.len() {
             prop_assert_eq!(classes[left] == classes[right], related[left][right]);
@@ -380,6 +385,7 @@ fn a_class_splits_into_more_groups_than_it_compares_one_by_one() {
     // and the records whose leaves share a label stay together.
     let mut labels = Vec::new();
     let mut edges = Vec::new();
+
     for label in 0..u8::try_from(LINEAR_GROUPS * 2).unwrap() {
         for _ in 0..2 {
             labels.push(Some(label + 1));
@@ -466,9 +472,11 @@ fn named_types(
                 origin: crate::ArgumentOrigin::ParsedName,
                 go: None,
             }));
+
             TypeEntry::Resolved(info)
         })
         .collect();
+
     (entries, pending)
 }
 
@@ -486,6 +494,7 @@ proptest! {
             &pending,
             None,
         );
+
         let mut before = built(first);
         let expected = before.deduplicate().as_ref().map(ids);
         let mut merging = BuiltTypes {

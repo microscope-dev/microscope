@@ -150,6 +150,7 @@ fn pausing_before_the_program_runs_is_refused_and_right_after_it_starts_stops_it
     dap.success(done);
     dap.success(launch);
     dap.success(paused);
+
     let stop = dap.stopped(launch.mark);
     assert_eq!(stop.reason, "pause");
     dap.finish();

@@ -64,6 +64,7 @@ impl TraceModel {
                 log2_ns: [0; BUCKETS],
             });
         stat.calls += 1;
+
         let expected = self.expected.entry(id).or_default();
         expected.0 += 1;
         if let Some(errno) = call.returned.and_then(errno_of) {
@@ -89,6 +90,7 @@ impl TraceModel {
                 .iter()
                 .map(|(&(slot, err), &count)| (RawErrnoKey { slot, err }, count)),
         );
+
         for (call, (calls, errors, errnos)) in &self.expected {
             let stats = folded.by_call.get(&(Pid::new(0), *call));
             let counted = stats.map(|stats| (stats.calls, stats.errors, &stats.errors_by_errno));

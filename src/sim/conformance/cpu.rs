@@ -107,6 +107,7 @@ fn the_interpreter_executes_every_golden_program_as_the_cpu_does() {
         .iter()
         .filter(|&code| !executed.contains(code) && !cpu::PROBED_THROUGH_THE_KERNEL.contains(code))
         .collect::<Vec<_>>();
+
     assert!(
         unexecuted.is_empty(),
         "the model implements forms no golden program executes: {unexecuted:?}"
@@ -163,6 +164,7 @@ fn lockstep(
             .map_err(|outcome| format!("decoding at {:#x}: {outcome:?}", registers.rip))?;
         let before = registers;
         let outcome = cpu::execute(&mut registers, memory, true).outcome;
+
         native.resume(tid, None, true).map_err(failed)?;
         let mut status = native.wait(tid);
 
@@ -219,6 +221,7 @@ fn lockstep(
                         expect_exit_event(&native, tid, status, code)
                             .and_then(|()| compare_memory(&native, process, &memories[&process]))
                             .map_err(|difference| format!("{at}: {difference}"))?;
+
                         native.resume(tid, None, false).map_err(failed)?;
                         threads.remove(current);
                         if tid != process {
@@ -311,6 +314,7 @@ fn lockstep(
         compare(&instruction, &mut registers, &expected)
             .map_err(|difference| format!("{at}: {difference}"))?;
         threads[current].registers = registers;
+
         if outcome == Outcome::Syscall {
             compare_memory(&native, process, &memories[&process])
                 .map_err(|difference| format!("{at}: {difference}"))?;

@@ -91,10 +91,12 @@ impl Workers {
                 ..LaunchOptions::default()
             })
             .await;
+
         assert!(
             matches!(reason, StopReason::Breakpoint { .. }),
             "{fixture}: {reason:?}"
         );
+
         Self {
             scenario,
             output,
@@ -132,6 +134,7 @@ pub async fn tasks(scenario: &Scenario, page: usize) -> (Vec<TaskSnapshot>, Vec<
     let mut tasks = Vec::new();
     let mut gaps = Vec::new();
     let mut from = None;
+
     loop {
         let TaskPage {
             tasks: found,
@@ -199,6 +202,7 @@ impl Truth {
         let thread = |field: &str| ThreadId::new(number(field));
         for fields in Report::parse(text).lines() {
             let fields = fields.iter().map(String::as_str).collect::<Vec<_>>();
+
             match fields[..] {
                 ["task", id, awaits, _] => {
                     let awaits = awaits.split(',').map(str::to_owned).collect();
@@ -244,6 +248,7 @@ impl Truth {
                 (*id, frames)
             })
             .collect::<BTreeMap<_, _>>();
+
         if let Some(spawned) = self.spawned {
             awaits.insert(spawned, vec![("top".into(), line(SOURCE, "async fn top("))]);
         }
@@ -547,6 +552,7 @@ async fn tokios_machinery_is_marked(current: bool) {
         };
 
         let mut dispatch = None;
+
         for (index, frame) in trace.frames.iter().enumerate() {
             let (path, role) = (path(frame), frame.role);
             let context = format!("{fixture}: {path} {:?}", frame.function);
@@ -566,6 +572,7 @@ async fn tokios_machinery_is_marked(current: bool) {
         // The innermost poll of a task is this task's: its own functions
         // lie within it. A worker is itself a blocking task, polled below.
         let dispatch = dispatch.unwrap_or_else(|| panic!("{fixture}: no dispatch: {trace:#?}"));
+
         for name in ["leaf", "middle", "top"] {
             let at = trace.frames.iter().position(|frame| {
                 frame
@@ -619,6 +626,7 @@ async fn each_task_began_in_the_function_it_spawned() {
             let workers = Workers::parked(fixture, current).await;
             let truth = workers.truth();
             let (tasks, _) = workers.tasks(4096).await;
+
             for id in truth.tasks.keys() {
                 let task = tasks
                     .iter()
@@ -746,7 +754,9 @@ async fn check_awaits(
             matches!(refused, Err(microscope::Error::FrameSuspended)),
             "{context}: {refused:?}"
         );
+
         let recorded = truth.values.get(id).cloned().unwrap_or_default();
+
         for frame in trace.frames.iter() {
             check_saved_local(scenario, view(frame.id), frame, &recorded, &context).await;
         }
@@ -793,6 +803,7 @@ pub async fn check_saved_local(
         Some(value),
         "{context} {name}: {found:#?}"
     );
+
     let expression = Expression::parse(&local).expect("an expression");
     let evaluated = scenario
         .operation(&local, handle.at(view).evaluate(&expression))
@@ -874,6 +885,7 @@ async fn an_unknown_version_is_read_as_the_supported_one_and_says_so() {
     truth
         .check_tasks(&tasks)
         .unwrap_or_else(|problem| panic!("{fixture}: {problem}"));
+
     let pages = tasks.len().div_ceil(3);
     assert_eq!(
         gaps,
@@ -975,6 +987,7 @@ async fn next_over_a_spawn_does_not_enter_the_new_task() {
                 StopReason::Step { kind },
                 "{context}"
             );
+
             let (function, at) = crate::stops::place(scenario).await;
             assert_eq!(function, "run", "{context}");
             assert!(

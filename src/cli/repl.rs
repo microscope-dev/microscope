@@ -288,6 +288,7 @@ fn line_editor(
     }
 
     let styled_prompt = renderers.stdout.paint(Role::Prompt, prompt).to_string();
+
     loop {
         match editor.readline(&(prompt, &styled_prompt)) {
             Ok(line) => {

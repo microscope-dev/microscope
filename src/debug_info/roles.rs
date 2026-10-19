@@ -56,6 +56,7 @@ fn declared_in(
         .iter()
         .map(|path| file(path))
         .collect::<Vec<_>>();
+
     functions
         .iter()
         .map(|function| {

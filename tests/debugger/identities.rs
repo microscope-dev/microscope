@@ -29,6 +29,7 @@ fn only<'a>(
     let first = *found
         .first()
         .unwrap_or_else(|| panic!("no {path:?}::{base} in {}", image.path().display()));
+
     for other in &found {
         assert!(
             image.same_type(first, *other),
@@ -49,6 +50,7 @@ fn spelled<'a>(image: &'a ModuleImage, name: &str) -> &'a TypeInfo {
     let first = *found
         .first()
         .unwrap_or_else(|| panic!("no type is named {name} in {}", image.path().display()));
+
     for other in &found {
         assert!(
             image.same_type(first, *other),
@@ -116,6 +118,7 @@ async fn cpp_template_identities_do_not_depend_on_the_compiler_or_library() {
             matches!(vector.kind, TypeKind::Record { .. }),
             "{fixture}: {vector:?}"
         );
+
         let vector = identity(vector);
         assert_eq!(vector.language, Cpp, "{fixture}");
         assert_eq!(vector.origin, ArgumentOrigin::Dwarf, "{fixture}");
@@ -133,6 +136,7 @@ async fn cpp_template_identities_do_not_depend_on_the_compiler_or_library() {
             (&[Arc::from("std")][..], "allocator"),
             "{fixture}"
         );
+
         assert_eq!(argument_names(&image, allocator), ["int"], "{fixture}");
 
         // Type units copy namespaces without their inline marks, which
@@ -153,6 +157,7 @@ async fn cpp_template_identities_do_not_depend_on_the_compiler_or_library() {
             ["int", "char", "double"],
             "{fixture}"
         );
+
         let fixed = identity(only(&image, Cpp, &[], "Fixed"));
         assert!(
             matches!(
@@ -164,6 +169,7 @@ async fn cpp_template_identities_do_not_depend_on_the_compiler_or_library() {
             ),
             "{fixture}: {fixed:?}"
         );
+
         let array = identity(only(&image, Cpp, &["std"], "array"));
         assert!(
             matches!(
@@ -188,6 +194,7 @@ async fn cpp_template_identities_do_not_depend_on_the_compiler_or_library() {
             matches!(argument_names(&image, identity(node)).as_slice(), [long] if long == "long" || long == "long int"),
             "{fixture}"
         );
+
         let TypeKind::Record { members, .. } = &node.kind else {
             panic!("{fixture}: {node:?}");
         };
@@ -196,6 +203,7 @@ async fn cpp_template_identities_do_not_depend_on_the_compiler_or_library() {
             .iter()
             .find(|member| member.name.as_deref() == Some("next"))
             .expect("Node::next");
+
         let TypeKind::Pointer {
             target: Some(target),
             ..
@@ -262,10 +270,12 @@ async fn rust_identities_and_fat_pointers_follow_structure_not_spelling() {
             matches!(tail.kind, TypeKind::Record { .. }),
             "{fixture}: a pointer to an unsized type is not a slice: {tail:?}"
         );
+
         let boxed = identity(named(
             &image,
             "alloc::boxed::Box<[u16], alloc::alloc::Global>",
         ));
+
         assert_eq!(
             (boxed.path.len(), boxed.base.as_ref()),
             (2, "Box"),
@@ -342,6 +352,7 @@ async fn zig_identities_text_and_text_budgets_follow_zig_syntax() {
     let variables = scenario
         .operation("variables", scenario.handle().variables())
         .await;
+
     for (name, text) in [
         ("text", Some(complete("hello"))),
         ("terminated", Some(complete("zero"))),
@@ -370,6 +381,7 @@ async fn zig_identities_text_and_text_budgets_follow_zig_syntax() {
         microscope::InspectionCompletion::Complete,
         "{tight:?}"
     );
+
     let VariableState::Available {
         text: Some(text), ..
     } = &tight.state
@@ -391,6 +403,7 @@ async fn zig_identities_text_and_text_budgets_follow_zig_syntax() {
         ),
         "{text:?}"
     );
+
     scenario.shutdown().await;
 }
 
@@ -405,6 +418,7 @@ async fn stop_at_marker(fixture: &str, source: &str, marker: &str) -> Scenario {
         scenario.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     scenario
 }
 
@@ -414,6 +428,7 @@ async fn size_of(scenario: &Scenario, text: &str) -> i128 {
         .evaluate(&parsed_value_expression(text))
         .await
         .unwrap_or_else(|error| panic!("{text}: {error}"));
+
     let microscope::Evaluation::Value { value, .. } = evaluation else {
         panic!("{text} is not a value: {evaluation:?}");
     };
@@ -498,9 +513,11 @@ fn complete(text: &str) -> microscope::TextSummary {
 async fn rust_text_slices_read_as_text() {
     let scenario =
         stop_at_marker("generics-rust-o0", "rust/generics.rs", "generics stop here").await;
+
     let variables = scenario
         .operation("variables", scenario.handle().variables())
         .await;
+
     for (name, text) in [
         ("text", Some(complete("héllo"))),
         ("boxed_text", Some(complete("boxed"))),
@@ -527,6 +544,7 @@ async fn inspect_text(
         )
         .await
         .expect("evaluate text");
+
     let microscope::Evaluation::Value { value, .. } = evaluation else {
         panic!("text is not a value: {evaluation:?}");
     };

@@ -44,6 +44,7 @@ async fn signals_are_named_and_follow_gdbs_default_policy() {
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(63))
     );
+
     while let Ok(event) = events.try_recv() {
         assert!(
             !matches!(event, DebuggerEvent::SignalReceived { .. }),
@@ -68,6 +69,7 @@ async fn signals_are_named_and_follow_gdbs_default_policy() {
 async fn policies_decide_what_stops_is_reported_and_is_delivered() {
     let mut scenario = Scenario::launch("signal-policy");
     let handle = scenario.handle().clone();
+
     for signal in [0, 65] {
         assert!(matches!(
             handle.signal_policy(signal).await,
@@ -139,8 +141,10 @@ async fn policies_decide_what_stops_is_reported_and_is_delivered() {
         scenario.run_to_stop().await,
         StopReason::Exited(ExitStatus::Code(1 | 4 | 8 | 16))
     );
+
     let mut received = Vec::new();
     let mut process = None;
+
     while let Ok(event) = events.try_recv() {
         match event {
             DebuggerEvent::InferiorLaunched { process_id, .. } => process = Some(process_id),
@@ -171,6 +175,7 @@ async fn policies_decide_what_stops_is_reported_and_is_delivered() {
         received[0].1,
         format!("SIGUSR1 (SI_TKILL) sent by process {process}")
     );
+
     scenario.shutdown().await;
 }
 
@@ -183,19 +188,23 @@ async fn policies_decide_what_stops_is_reported_and_is_delivered() {
 async fn a_step_ends_at_a_declined_breakpoint_a_signal_reached_first() {
     let path = "tests/fixtures/c/signal-steps.c";
     let mut scenario = Scenario::launch("signal-steps-clang");
+
     scenario
         .operation(
             "quiet SIGUSR2",
             scenario.handle().set_signal_policy(code("SIGUSR2"), QUIET),
         )
         .await;
+
     scenario
         .add_source_breakpoint("signal-steps.c", source_line(path, "the returning line"))
         .await;
+
     assert!(matches!(
         scenario.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     scenario.remove_all_breakpoints().await;
     let before = handled(&scenario).await;
     let line = source_line(path, "the line after the signal");
@@ -212,16 +221,19 @@ async fn a_step_ends_at_a_declined_breakpoint_a_signal_reached_first() {
             ),
         )
         .await;
+
     assert_eq!(
         scenario.step_to_stop(StepKind::OverSource).await,
         StopReason::Step {
             kind: StepKind::OverSource
         }
     );
+
     assert_eq!(handled(&scenario).await, before + 1, "the handler ran");
     let location = scenario
         .operation("location", scenario.handle().current_location())
         .await;
+
     assert_eq!(
         location
             .image
@@ -231,6 +243,7 @@ async fn a_step_ends_at_a_declined_breakpoint_a_signal_reached_first() {
         Some(line),
         "{location:?}"
     );
+
     assert!(
         declined.locations.iter().any(|resolved| {
             [
@@ -243,6 +256,7 @@ async fn a_step_ends_at_a_declined_breakpoint_a_signal_reached_first() {
         location.address,
         declined.locations
     );
+
     scenario.shutdown().await;
 }
 
@@ -268,22 +282,26 @@ async fn function(scenario: &Scenario) -> Option<String> {
 #[tokio::test]
 async fn steps_run_signal_handlers_without_stopping_in_them() {
     let mut scenario = Scenario::launch("signal-steps");
+
     scenario
         .operation(
             "quiet SIGUSR2",
             scenario.handle().set_signal_policy(code("SIGUSR2"), QUIET),
         )
         .await;
+
     scenario
         .add_source_breakpoint(
             "signal-steps.c",
             source_line("tests/fixtures/c/signal-steps.c", "the stepped call"),
         )
         .await;
+
     assert!(matches!(
         scenario.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     scenario.remove_all_breakpoints().await;
     assert_eq!(
         scenario.step_to_stop(StepKind::IntoSource).await,
@@ -296,6 +314,7 @@ async fn steps_run_signal_handlers_without_stopping_in_them() {
     // Single steps cross the system call that signals the thread: its
     // handler runs to completion and the step ends after the instruction.
     let mut steps = 0;
+
     while handled(&scenario).await == 0 {
         steps += 1;
         assert!(steps < 256, "the signal never arrived");
@@ -319,6 +338,7 @@ async fn steps_run_signal_handlers_without_stopping_in_them() {
     // Source steps cross it too, in the next two calls.
     for (kind, crossed) in [(StepKind::OverSource, 2), (StepKind::IntoSource, 3)] {
         let mut steps = 0;
+
         while function(&scenario).await.as_deref() != Some("sum_to") {
             steps += 1;
             assert!(steps < 16, "never entered sum_to");
@@ -343,6 +363,7 @@ async fn steps_run_signal_handlers_without_stopping_in_them() {
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     );
+
     scenario.shutdown().await;
 }
 
@@ -365,12 +386,16 @@ async fn go_preemption_signals_never_stop_the_program() {
             ),
         )
         .await;
+
     let mut events = scenario.handle().subscribe();
+
     assert_eq!(
         scenario.run_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     );
+
     let mut preemptions = 0_u64;
+
     loop {
         match events.try_recv() {
             Ok(DebuggerEvent::SignalReceived { exception, .. }) => {
@@ -401,9 +426,11 @@ async fn a_program_trap_stops_as_the_programs_and_resumes_after_it() {
         scenario.run_to_stop().await,
         StopReason::ProgramBreakpoint { .. }
     ));
+
     assert_eq!(
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     );
+
     scenario.shutdown().await;
 }

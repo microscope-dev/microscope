@@ -53,6 +53,7 @@ async fn malformed_dwarf_leaves_a_program_described_by_its_symbols() {
                     .add_breakpoint(BreakpointSpec::Function("breakpoint_target".to_owned())),
             )
             .await;
+
         let reason = scenario.run_to_stop().await;
         let StopReason::Breakpoint { hits, .. } = &reason else {
             panic!("{section}: stopped for {reason:?}");
@@ -62,6 +63,7 @@ async fn malformed_dwarf_leaves_a_program_described_by_its_symbols() {
         let trace = scenario
             .operation("backtrace", scenario.handle().backtrace())
             .await;
+
         let names = trace
             .frames
             .iter()
@@ -74,11 +76,13 @@ async fn malformed_dwarf_leaves_a_program_described_by_its_symbols() {
                 frame.symbol.as_ref().map(|symbol| &*symbol.name)
             })
             .collect::<Vec<_>>();
+
         assert_eq!(
             names,
             [Some("breakpoint_target"), Some("main")],
             "{section}"
         );
+
         scenario.shutdown().await;
     }
 }
@@ -114,6 +118,7 @@ async fn a_library_with_malformed_dwarf_is_described_by_its_symbols() {
         frame.symbol.as_ref().map(|symbol| &*symbol.name),
         Some("dso_apply")
     );
+
     let image = scenario
         .operation(
             "library image",
@@ -122,6 +127,7 @@ async fn a_library_with_malformed_dwarf_is_described_by_its_symbols() {
                 .loaded_module_image(frame.module.expect("a module")),
         )
         .await;
+
     assert!(
         unusable_reason(&image).starts_with("malformed DWARF in the abbreviations at "),
         "{:?}",
@@ -133,6 +139,7 @@ async fn a_library_with_malformed_dwarf_is_described_by_its_symbols() {
         scenario.handle().module_image().debug_information(),
         microscope::DebugInformation::Loaded
     );
+
     scenario.shutdown().await;
 }
 
@@ -152,6 +159,7 @@ async fn split_dwarf_is_reported_as_incomplete() {
          build/test-programs/basic-split-dwarf-basic.dwo, which this debugger does not read; its functions are known only by their symbols, \
          without variables or types"
     );
+
     scenario
         .operation(
             "add breakpoint",
@@ -160,10 +168,12 @@ async fn split_dwarf_is_reported_as_incomplete() {
                 .add_breakpoint(BreakpointSpec::Function("breakpoint_target".to_owned())),
         )
         .await;
+
     scenario.run_to_stop().await;
     let location = scenario
         .operation("location", scenario.handle().current_location())
         .await;
+
     assert_eq!(
         location_line(&location),
         Some(source_line(
@@ -172,5 +182,6 @@ async fn split_dwarf_is_reported_as_incomplete() {
         )),
         "{location:?}"
     );
+
     scenario.shutdown().await;
 }

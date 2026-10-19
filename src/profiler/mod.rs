@@ -706,6 +706,7 @@ impl Profile {
             source,
             ..query(view)
         });
+
         (0..tree.len())
             .map(|node| CallNode {
                 parent: (tree.parent[node] != NONE).then_some(tree.parent[node] as usize),
@@ -821,6 +822,7 @@ impl Profile {
     pub fn off_cpu(&self) -> Vec<OffCpuInterval> {
         let capture = &self.capture;
         let mut intervals = Vec::with_capacity(capture.off_cpu.len());
+
         for range in &capture.off_cpu_ranges {
             let thread = &capture.threads[range.thread.get() as usize];
             let pid = capture.processes[thread.process.get() as usize].pid.get();
@@ -846,6 +848,7 @@ impl Profile {
     pub fn stacks(&self) -> Vec<SampledStack> {
         let capture = &self.capture;
         let mut stacks = Vec::with_capacity(capture.samples.len());
+
         for range in &capture.sample_ranges {
             let thread = &capture.threads[range.thread.get() as usize];
             let tid = thread.tid.get();
@@ -899,6 +902,7 @@ impl Profile {
     pub fn tasks(&self) -> Vec<ProfileTask> {
         let capture = &self.capture;
         let mut weights = vec![(0_u64, 0_u64); capture.tasks.len()];
+
         for sample in &capture.samples {
             if let Some(weight) = weights.get_mut(sample.task.get() as usize) {
                 weight.0 += sample.weight.get();
@@ -1029,6 +1033,7 @@ impl Profile {
         let program =
             session::which(program).and_then(|program| std::fs::canonicalize(program).ok());
         let capture = &self.capture;
+
         for mapping in &capture.mappings {
             let path = capture.string(capture.modules[mapping.module.get() as usize].path.get());
             if program.as_deref() == Some(Path::new(path)) && mapping.bias.get() != expected.get() {

@@ -102,6 +102,7 @@ impl Interfaces {
         // Go 1.22 moved `runtime.itab` to `internal/abi.ITab`.
         let table_type = offset(image, "internal/abi.ITab", &["Type"], 8)
             .or_else(|_| offset(image, "runtime.itab", &["_type"], 8))?;
+
         Ok(Self {
             tables: TypeTables::bind(image)?,
             empty_type: offset(image, EMPTY, &["_type"], 8)?,

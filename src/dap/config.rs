@@ -269,6 +269,7 @@ pub fn launch(arguments: Value) -> Result<Configuration, String> {
 pub fn attach(arguments: Value) -> Result<Configuration, String> {
     let inherited = inherited(&arguments, true);
     let parsed = parse::<Arguments>(arguments, "attach configuration")?;
+
     let start = match (&parsed.pid, &parsed.core_file) {
         (Some(_), Some(_)) => {
             return Err(
@@ -338,6 +339,7 @@ fn common(
 ) -> Result<Configuration, String> {
     let debug_files = debug_files(&parsed);
     let mut source_paths = SourcePathMap::new();
+
     for [from, to] in parsed.source_map {
         source_paths
             .push(&from, &to)
@@ -345,6 +347,7 @@ fn common(
     }
 
     let mut signals = Vec::new();
+
     for (name, actions) in parsed.signals {
         let code = microscope::signal_named(&name)
             .ok_or_else(|| format!("invalid {what} at signals.{name}: unknown signal"))?;
@@ -695,6 +698,7 @@ mod tests {
     fn with_defaults(text: &str) -> String {
         let mut filled = String::new();
         let mut rest = text;
+
         while let Some(start) = rest.find("${") {
             filled.push_str(&rest[..start]);
             let inner = &rest[start + 2..];

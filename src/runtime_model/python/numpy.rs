@@ -301,6 +301,7 @@ impl Values<'_, '_> {
             let shift = 64 - width * 8;
             Number::Signed((bits << shift).cast_signed() >> shift)
         };
+
         Ok(match element {
             ArrayElement::Bool => Number::Bool(bits != 0),
             ArrayElement::Number(
@@ -425,6 +426,7 @@ impl Values<'_, '_> {
         let end = range.end.min(length);
         let start = range.start.min(end);
         let mut children = Vec::new();
+
         for index in start..end {
             let row = array.row(index);
             let slot = if row.shape.is_empty() {
@@ -459,6 +461,7 @@ impl Values<'_, '_> {
                     array: row.interpreted(),
                 })
             };
+
             children.push(InterpretedChild::Element(slot));
         }
 

@@ -839,6 +839,7 @@ fn locate(text: &str, path: &[Step<'_>]) -> Option<Range<usize>> {
     let mut table = document.get_ref();
     let mut value: Option<&toml::Spanned<toml::de::DeValue<'_>>> = None;
     let mut span = None;
+
     for step in path {
         if let Some(found) = value {
             if let toml::de::DeValue::Table(inner) = found.get_ref() {
@@ -993,6 +994,7 @@ pub fn read_text(path: &Path) -> Result<Option<String>, String> {
     file.take(MAX_FILE_BYTES + 1)
         .read_to_string(&mut text)
         .map_err(|error| format!("{}: {error}", path.display()))?;
+
     if text.len() as u64 > MAX_FILE_BYTES {
         return Err(format!(
             "{} is larger than {MAX_FILE_BYTES} bytes",
@@ -1032,6 +1034,7 @@ impl Files {
             (FileKind::Project, Some(files.project.clone()), false),
             (FileKind::Local, Some(files.local.clone()), false),
         ];
+
         for (kind, path, required) in candidates {
             let Some(path) = path else { continue };
             match read_text(&path).map_err(|error| ConfigError::new(None, error))? {
@@ -1050,6 +1053,7 @@ impl Files {
     /// they set none.
     pub fn acting(&self) -> Option<String> {
         let mut acting = toml::Table::new();
+
         for file in &self.read {
             if file.kind == FileKind::User {
                 continue;
@@ -1090,6 +1094,7 @@ impl Files {
         let mut merged = toml::Table::new();
         let mut origins = BTreeMap::new();
         let mut startup = Vec::new();
+
         for file in &self.read {
             let origin = Origin::File(file.kind, file.path.clone());
             let mut table = file.table.clone();
@@ -1125,6 +1130,7 @@ impl Files {
         let config: Config = toml::Value::Table(merged)
             .try_into()
             .map_err(|error: toml::de::Error| ConfigError::new(None, error.message()))?;
+
         for launch in &config.launch {
             launch.check().map_err(|message| {
                 let file = origins
@@ -1232,6 +1238,7 @@ fn merge_launches(
             .entry(prefix.clone())
             .or_insert_with(|| origin.clone());
         let mut scratch = BTreeMap::new();
+
         if let Some(toml::Value::Table(same)) = existing
             .iter_mut()
             .find(|entry| entry.get("name").and_then(toml::Value::as_str) == Some(&name))
@@ -1260,6 +1267,7 @@ impl File {
         let document = toml::Deserializer::parse(&text).map_err(|error| {
             ConfigError::at(&path, &text, error.span(), error.message().trim_end())
         })?;
+
         if let Err(error) = serde_path_to_error::deserialize::<_, Config>(document) {
             let path_text = error.path().to_string();
             let path_text = if path_text == "." {
@@ -1304,6 +1312,7 @@ impl File {
             .map_err(|error: toml::de::Error| {
                 ConfigError::new(Some(&self.path), error.message())
             })?;
+
         if self.kind != FileKind::User && self.table.contains_key("projects") {
             return Err(self.error_at(
                 &[Step::Key("projects")],
@@ -1423,6 +1432,7 @@ impl Settings {
     /// Where a dotted key's value came from.
     pub fn origin(&self, key: &str) -> Origin {
         let mut key = key;
+
         loop {
             if let Some(origin) = self.origins.get(key) {
                 return origin.clone();
@@ -1488,6 +1498,7 @@ impl Settings {
         table.remove("startup");
         let mut lines = Vec::new();
         flatten(&toml::Value::Table(table), "", &mut lines);
+
         for (index, command) in self.startup.iter().enumerate() {
             lines.push((
                 format!("startup.commands[{index}]"),
@@ -1502,6 +1513,7 @@ impl Settings {
             .max()
             .unwrap_or(0)
             .min(60);
+
         lines
             .into_iter()
             .map(|(key, value, origin)| {
@@ -1605,6 +1617,7 @@ impl TrustStore {
             root: root.to_path_buf(),
             settings: acting.to_owned(),
         });
+
         self.save()
     }
 
@@ -1638,6 +1651,7 @@ impl TrustStore {
              # microscope runs, with the settings trusted. `microscope config untrust` forgets one.\n\n{}",
             toml::to_string(&self.record).map_err(|error| error.to_string())?
         );
+
         write_atomically(path, &text)
     }
 }
@@ -1646,12 +1660,14 @@ impl TrustStore {
 /// sees half of it.
 pub fn write_atomically(path: &Path, text: &str) -> Result<(), String> {
     let describe = |error: std::io::Error| format!("cannot write {}: {error}", path.display());
+
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(describe)?;
     }
 
     let temporary = path.with_extension(format!("tmp.{}", std::process::id()));
     std::fs::write(&temporary, text).map_err(describe)?;
+
     std::fs::rename(&temporary, path).map_err(|error| {
         let _ = std::fs::remove_file(&temporary);
         describe(error)
@@ -1682,11 +1698,13 @@ pub fn ask_trust(
         "The project at {} has settings that run commands:\n",
         root.display()
     )?;
+
     for line in acting.lines() {
         writeln!(output, "    {line}")?;
     }
 
     writeln!(output)?;
+
     loop {
         write!(
             output,

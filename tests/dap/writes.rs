@@ -23,6 +23,7 @@ fn stopped(dap: &mut Dap, marker: &str) -> (i64, Vec<Value>) {
         json!({"source": {"path": path}, "breakpoints": []}),
     );
     let trace = dap.request("stackTrace", json!({"threadId": stop.thread}));
+
     (
         stop.thread,
         trace["stackFrames"].as_array().expect("frames").clone(),
@@ -173,6 +174,7 @@ fn stopped_in_checked(dap: &mut Dap) -> i64 {
         "setBreakpoints",
         json!({"source": {"path": path}, "breakpoints": []}),
     );
+
     stop.thread
 }
 

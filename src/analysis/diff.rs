@@ -80,6 +80,7 @@ pub fn diff_trees(current: (&Keys<'_>, &CallTree), base: (&Keys<'_>, &CallTree))
     let mut out = DiffTree::default();
     let mut pending = pairs(&mut names, current, base, (Some(NONE), Some(NONE)), NONE, 0);
     pending.reverse();
+
     while let Some(pair) = pending.pop() {
         let node = index(out.len());
         let weights = |tree: &CallTree, at: Option<u32>| {
@@ -99,6 +100,7 @@ pub fn diff_trees(current: (&Keys<'_>, &CallTree), base: (&Keys<'_>, &CallTree))
         out.total.push(total);
         out.base_own.push(base_own);
         out.base_total.push(base_total);
+
         let mut next = pairs(
             &mut names,
             current,
@@ -138,6 +140,7 @@ fn pairs(
         .1
         .map(|node| children(base.1, node))
         .unwrap_or_default();
+
     let mut unmatched: BTreeMap<String, VecDeque<u32>> = BTreeMap::new();
     for &node in &theirs {
         let name = names.of(Side::Base, base, node);

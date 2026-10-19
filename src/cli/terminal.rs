@@ -382,9 +382,11 @@ impl Renderer {
 pub fn plain(text: &str) -> String {
     let mut plain = String::with_capacity(text.len());
     let mut rest = text;
+
     while let Some(start) = rest.find('\x1b') {
         plain.push_str(&rest[..start]);
         let sequence = &rest[start + 1..];
+
         let length = match sequence.chars().next() {
             // A control sequence ends at its first final byte.
             Some('[') => sequence[1..]
@@ -407,6 +409,7 @@ pub fn plain(text: &str) -> String {
 /// A `file://` URL, percent-encoding what a URL cannot hold.
 fn file_url(path: &Path) -> String {
     let mut url = String::from("file://");
+
     for byte in path.as_os_str().as_encoded_bytes() {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => {
@@ -451,6 +454,7 @@ impl std::str::FromStr for StyleSpec {
     fn from_str(text: &str) -> Result<Self, String> {
         let mut style = Style::new();
         let mut words = text.split_whitespace();
+
         while let Some(word) = words.next() {
             style = match word {
                 "bold" => style.bold(),
@@ -492,6 +496,7 @@ fn parse_color(word: &str) -> Result<Color, String> {
         ("cyan", AnsiColor::Cyan, AnsiColor::BrightCyan),
         ("white", AnsiColor::White, AnsiColor::BrightWhite),
     ];
+
     let (bright, name) = word
         .strip_prefix("bright-")
         .map_or((false, word), |name| (true, name));

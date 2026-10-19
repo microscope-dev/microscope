@@ -218,6 +218,7 @@ pub fn table(
 ) -> Vec<String> {
     let mut rows: Vec<(SyscallId, &SyscallStats)> =
         calls.iter().map(|(&id, stats)| (id, stats)).collect();
+
     if let Some(sort) = sort {
         rows.sort_by_key(|&(id, stats)| {
             if sort == Column::Name {
@@ -229,6 +230,7 @@ pub fn table(
     }
 
     let mut total = SyscallStats::default();
+
     for (_, stats) in &rows {
         total.merge(stats);
     }
@@ -236,8 +238,10 @@ pub fn table(
     let all_time = total.total_ns;
     let cell =
         |column, stats: &SyscallStats, label: &str| cell(column, stats, label, all_time, errno);
+
     let line = |cells: &mut dyn Iterator<Item = (Column, String)>| -> String {
         let mut text = String::new();
+
         for (index, (column, value)) in cells.enumerate() {
             if index > 0 {
                 text.push(' ');
@@ -259,6 +263,7 @@ pub fn table(
             .iter()
             .map(|&column| (column, "-".repeat(column.width().max(6)))),
     );
+
     let mut lines = vec![
         line(
             &mut columns
@@ -267,6 +272,7 @@ pub fn table(
         ),
         rule.clone(),
     ];
+
     for (id, stats) in rows {
         let label = name(id);
         lines.push(line(
@@ -296,6 +302,7 @@ mod tests {
         let mut calls = BTreeMap::new();
         let id = |name| SyscallId::named(Abi::X86_64, name).expect(name);
         let mut write = SyscallStats::default();
+
         for _ in 0..3 {
             write.add(Outcome::Returned(1), Some(57_000), 1);
         }
@@ -305,6 +312,7 @@ mod tests {
         open.add(Outcome::of_return(-2), Some(20_000), 0);
         calls.insert(id("write"), write);
         calls.insert(id("openat"), open);
+
         let errno = |number: u16| {
             if number == 2 {
                 "ENOENT".to_owned()
@@ -325,6 +333,7 @@ mod tests {
                 "100.00    0.000201          40         5         1 total",
             ]
         );
+
         let extra = columns("name,calls,p99,errnos").expect("columns");
         let lines = table(&calls, &extra, Some(Column::Name), &errno);
         assert_eq!(

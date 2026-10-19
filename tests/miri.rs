@@ -273,6 +273,7 @@ mod ring {
         /// Writes `bytes` past the head, wrapping, unpublished.
         fn write(&mut self, bytes: &[u8]) {
             assert!(self.head + bytes.len() as u64 - self.tail() <= self.size);
+
             for &byte in bytes {
                 let at = HEAP_DATA + usize::try_from(self.head % self.size).expect("small");
 
@@ -412,6 +413,7 @@ mod ring {
                 kernel.publish();
             }
         });
+
         let mut out = Vec::new();
         while out.len() < usize::from(RECORDS) * 8 {
             if memory.drain(&mut out) == 0 {

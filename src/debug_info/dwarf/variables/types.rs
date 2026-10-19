@@ -558,12 +558,14 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         let mut ambiguous_type_declarations = DieMap::default();
         let mut scoped_types = Vec::new();
         let mut inline_namespaces = HashSet::new();
+
         for prepass in prepasses {
             die_offsets.push(prepass.offsets);
             unit_languages.push(prepass.language);
             produced_languages.push(prepass.produced);
             scoped_types.extend(prepass.scoped_types);
             inline_namespaces.extend(prepass.inline_namespaces);
+
             for (definition, declaration) in prepass.definitions {
                 definition_declarations.insert(definition, declaration);
                 if type_definitions
@@ -633,6 +635,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             .map(|segments| builder.scope_path(segments, &inline_namespaces))
             .collect::<Vec<_>>();
         let context = Arc::make_mut(&mut builder.context);
+
         for (key, index) in scoped_types {
             let path = &paths[index];
             if !path.is_empty() {
@@ -672,6 +675,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         };
 
         let id = self.resolve(key);
+
         match self.entries.get(id.index()) {
             Some(TypeEntry::Malformed(reason)) => TypeResolution::Malformed(Arc::clone(reason)),
             Some(TypeEntry::Building) => {
@@ -712,6 +716,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         let key =
             die_reference_with_signatures(value, unit_index, self.units, self.type_signatures)
                 .map_err(malformed)?;
+
         Ok(key.map(|key| TypeReference {
             image: self.image,
             id: self.resolve(key),
@@ -726,6 +731,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
     ) -> std::result::Result<Children<'a, 'data>, Arc<str>> {
         let units: &'a Units<'data> = self.units;
         let unit = units.get(unit_index).ok_or("DIE unit is unavailable")?;
+
         Ok(Children::new(
             unit.entries_raw(Some(offset)).map_err(malformed)?,
             self.die_buffers,
@@ -842,6 +848,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         };
 
         self.entries[id.index()] = entry;
+
         id
     }
 
@@ -913,6 +920,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
     fn canonical_type_key(&self, key: DieKey) -> std::result::Result<DieKey, Arc<str>> {
         let mut current = key;
         let mut visited = Seen::default();
+
         while visited.insert(current) {
             let unit = self
                 .units
@@ -1048,6 +1056,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
                 explicit_size,
                 Some(dereference_object),
             )?;
+
             if named && matches!(built, TypeEntry::Resolved(_)) {
                 self.record_identity_parts(&entry, key, id);
             }
@@ -1402,6 +1411,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
     ) -> std::result::Result<BaseType, Arc<str>> {
         let mut current = id;
         let mut visited = HashSet::new();
+
         loop {
             if !visited.insert(current) {
                 return Err("enumeration underlying type contains a wrapper cycle".into());
@@ -1537,6 +1547,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         let unit = &self.units[unit_index];
         let mut enumerators = Vec::new();
         let mut children = self.children(unit_index, entry.offset())?;
+
         while let Some(child) = children.next_child()? {
             // rustc declares an enumeration's methods inside it, and its
             // generic arguments, none of which change its values.
@@ -1584,6 +1595,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         }
 
         let scoped = strict_flag(entry, gimli::DW_AT_enum_class)?;
+
         Ok(resolved(
             reference,
             name,
@@ -1610,6 +1622,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         let mut parameters = Vec::new();
         let mut variadic = false;
         let mut children = self.children(unit_index, entry.offset())?;
+
         while let Some(child) = children.next_child()? {
             match child.tag() {
                 gimli::DW_TAG_formal_parameter => {
@@ -1644,6 +1657,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
 
         // Named from its parts once every type is built.
         let name = explicit_name.unwrap_or_else(|| Arc::from("<function>"));
+
         Ok(resolved(reference, name, None, kind))
     }
 
@@ -1687,6 +1701,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             })
             .collect::<Vec<_>>();
         let mut constants = BTreeMap::new();
+
         for (unit_index, found) in found.iter().enumerate() {
             let unit = &units[unit_index];
             for entry in found {
@@ -1772,6 +1787,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
                             })
                             .map(|value| Enumerator { name, value })
                     });
+
                 let symbolic_limit = enumerator.is_ok()
                     && self
                         .budget
@@ -1780,6 +1796,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
                 let collection = constants
                     .entry(target)
                     .or_insert_with(|| NamedConstantCollection::Enumerators(Vec::new()));
+
                 if symbolic_limit {
                     *collection = NamedConstantCollection::Limit;
                     continue;
@@ -1856,11 +1873,13 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         // interned in the order noted, which numbers them as a serial pass.
         // A chunk at a time, so that only a chunk's paths are held at once.
         let mut declarations = Vec::with_capacity(pending.len());
+
         for chunk in pending.chunks(MEMBER_DECLARATION_CHUNK) {
             let read = chunk
                 .par_iter()
                 .map(|metadata| self.member_declaration(metadata.die))
                 .collect::<Vec<_>>();
+
             declarations.extend(read.into_iter().map(
                 |declaration| -> std::result::Result<_, Arc<str>> {
                     Ok(declaration?.map(|declared| declared.intern(files)))
@@ -1870,6 +1889,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
 
         let mut order = (0..pending.len()).collect::<Vec<_>>();
         order.par_sort_by_key(|index| pending[*index].aggregate);
+
         for members in
             order.chunk_by(|left, right| pending[*left].aggregate == pending[*right].aggregate)
         {
@@ -1909,6 +1929,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             .map_err(|error| Arc::from(error.to_string()))?;
         let chain = origin_chain(self.units, key.unit, &entry)
             .map_err(|error| Arc::from(error.to_string()))?;
+
         declared_source(self.dwarf, self.units, unit, &entry, &chain)
             .map_err(|error| Arc::from(error.to_string()))
     }
@@ -1955,6 +1976,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
                 Some(self.render_type_name(id, &mut visiting))
             })
             .collect::<Vec<_>>();
+
         for (index, name) in names.into_iter().enumerate() {
             if let Some(name) = name
                 && let Some(TypeEntry::Resolved(info)) = self.entries.get_mut(index)
@@ -2231,6 +2253,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
                 }
 
                 let inner = format!("{inner}({})", list.join(", "));
+
                 match returns {
                     Some(returns) => self.declare(returns.id, inner, visiting),
                     None => join("void", inner),
@@ -2298,6 +2321,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
                 |target| Arc::from(format!("{} *", self.target_name(target))),
             )
         });
+
         Ok(resolved(
             reference,
             name,
@@ -2329,6 +2353,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
 
         let name = explicit_name
             .unwrap_or_else(|| Arc::from(format!("{} {suffix}", self.target_name(target))));
+
         Ok(resolved(
             reference,
             name,
@@ -2398,6 +2423,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
 
         let name = explicit_name
             .unwrap_or_else(|| Arc::from(format!("{modifier:?} {}", self.target_name(target))));
+
         Ok(resolved(
             reference,
             name,
@@ -2413,6 +2439,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
     ) -> std::result::Result<bool, Arc<str>> {
         let mut found = false;
         let mut children = self.children(unit_index, entry.offset())?;
+
         while let Some(child) = children.next_child()? {
             if child.tag() == gimli::DW_TAG_variant_part {
                 if found {
@@ -2495,6 +2522,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         };
 
         let mut variants = Vec::with_capacity(enumerators.len());
+
         for enumerator in enumerators.iter() {
             let matching = payload_members
                 .iter()
@@ -2605,6 +2633,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
                     AggregateMemberPath::Direct(index) if index == payload_index
                 )
         });
+
         Some(Ok(TypeKind::Variant {
             storage: VariantStorageKind::Struct,
             common_members: Arc::from([]),
@@ -2730,6 +2759,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
 
         let payload_variant = usize::from(optional_payload.is_some());
         let declaration_snapshot = self.record_member_declarations.clone();
+
         for metadata in &mut self.record_member_declarations {
             if metadata.aggregate != aggregate {
                 continue;
@@ -2880,6 +2910,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
                     offset: child.offset().0,
                 },
             });
+
         Ok(member)
     }
 
@@ -2960,6 +2991,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             },
             expression,
         );
+
         Ok(())
     }
 
@@ -2999,6 +3031,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         let mut bases = Vec::new();
         let mut part = None;
         let mut children = self.children(unit_index, entry.offset())?;
+
         while let Some(child) = children.next_child()? {
             match child.tag() {
                 gimli::DW_TAG_member => {
@@ -3062,6 +3095,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         }
 
         let (discriminant, variants) = part.ok_or("variant aggregate has no variant part")?;
+
         Ok(resolved(
             reference,
             name,
@@ -3151,6 +3185,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         let unit = &self.units[unit_index];
         let mut variants = Vec::new();
         let mut variant_entries = self.children(unit_index, part.offset())?;
+
         while let Some(variant) = variant_entries.next_child()? {
             if variant.tag() == gimli::DW_TAG_member {
                 continue;
@@ -3186,6 +3221,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             let variant_index = variants.len();
             let mut members = Vec::new();
             let mut member_entries = self.children(unit_index, variant.offset())?;
+
             while let Some(member) = member_entries.next_child()? {
                 if member.tag() != gimli::DW_TAG_member {
                     return Err(VariantMetadataError::Malformed(
@@ -3317,6 +3353,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         let mut members = Vec::new();
         let mut bases = Vec::new();
         let mut children = self.children(unit_index, entry.offset())?;
+
         while let Some(child) = children.next_child()? {
             match child.tag() {
                 // A DWARF 4 static data member is a declaration with no bytes
@@ -3482,6 +3519,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             .unwrap_or_else(|| Arc::from(format!("<anonymous union@0x{:x}>", entry.offset().0)));
         let mut members = Vec::new();
         let mut children = self.children(unit_index, entry.offset())?;
+
         while let Some(child) = children.next_child()? {
             match child.tag() {
                 gimli::DW_TAG_member
@@ -3525,6 +3563,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
                 members: members.into(),
                 incomplete,
             });
+
         Ok(resolved(reference, name, explicit_size, kind))
     }
 
@@ -3568,6 +3607,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
 
         let mut variants = Vec::with_capacity(members.len());
         let mut tags = Vec::with_capacity(members.len());
+
         for (index, member) in members.iter().enumerate() {
             if index == tag_index {
                 continue;
@@ -3788,6 +3828,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         let unit = &self.units[unit_index];
         let mut children = self.children(unit_index, entry.offset()).ok()?;
         let mut members = Vec::new();
+
         while let Ok(Some(child)) = children.next_child() {
             if child.tag() != gimli::DW_TAG_member {
                 continue;
@@ -3867,6 +3908,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             default_lower_bound(self.dwarf_language(unit_index), self.language(unit_index));
         let mut subranges = Vec::new();
         let mut children = self.children(unit_index, entry.offset())?;
+
         while let Some(child) = children.next_child()? {
             if child.tag() != gimli::DW_TAG_subrange_type {
                 continue;
@@ -3938,6 +3980,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
                 size.checked_mul(dimension.count)
             })
         });
+
         Ok(resolved(
             reference,
             name,
@@ -3971,6 +4014,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             .map(|expression| (DynamicAggregateChild::DataLocation, expression))
             .into_iter()
             .collect::<Vec<_>>();
+
         for (attribute, child) in [
             (
                 gimli::DW_AT_data_location,
@@ -4046,6 +4090,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             })
             .collect::<Arc<[_]>>();
         self.record_array_layouts(unit_index, reference.id, expressions)?;
+
         Ok(resolved(
             reference,
             name,
@@ -4156,6 +4201,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             .attr(gimli::DW_AT_byte_stride)
             .map(bound)
             .transpose()?;
+
         Ok((lower, extent, stride))
     }
 
@@ -4309,6 +4355,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             .ok_or("string length is not a whole number of its characters")?;
         let name = explicit_name.unwrap_or_else(|| Arc::from(format!("character(len={count})")));
         self.explicit_names.insert(reference.id.index());
+
         Ok(resolved(
             reference,
             name,
@@ -4345,6 +4392,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
 
         let byte_size = explicit_size.or_else(|| self.byte_size_of(target.id));
         let name = explicit_name.unwrap_or_else(|| self.target_name(target));
+
         Ok(resolved(
             reference,
             name,
@@ -4382,6 +4430,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
 
         let mut fields = Vec::new();
         let mut children = self.children(unit_index, entry.offset())?;
+
         while let Some(child) = children.next_child()? {
             if child.tag() != gimli::DW_TAG_member {
                 continue;
@@ -4418,6 +4467,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         let words = layout.words();
         let element = self.slice_element(layout, fields[usize::from(words.data)].2)?;
         let counts = [Some(words.length), words.capacity];
+
         for (_, _, field_type) in counts
             .into_iter()
             .flatten()
@@ -4441,6 +4491,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         }
 
         let text = layout.is_text(&name);
+
         Ok(resolved(
             reference,
             name,
@@ -4652,6 +4703,7 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
         let unit = self.units.get(unit_index)?;
         let mut members = Vec::new();
         let mut children = self.children(unit_index, entry.offset()).ok()?;
+
         while let Some(child) = children.next_child().ok()? {
             if child.tag() != gimli::DW_TAG_member {
                 continue;
@@ -4761,6 +4813,7 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
         };
 
         let mut last = None;
+
         while let Ok(Some(child)) = children.next_child() {
             if child.tag() != gimli::DW_TAG_member {
                 continue;
@@ -4793,6 +4846,7 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
     /// qualifiers, when the DIE states it.
     fn die_byte_size(&self, mut key: DieKey) -> Option<u64> {
         const MAX_DEPTH: usize = 16;
+
         for _ in 0..MAX_DEPTH {
             let entry = self
                 .units
@@ -4851,8 +4905,10 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
         let pointer_entry = entry(pointer)?;
         let mut current = target(&pointer_entry, pointer.unit)?;
         let mut wrapped = false;
+
         for _ in 0..MAX_DEPTH {
             let current_entry = entry(current)?;
+
             match current_entry.tag() {
                 gimli::DW_TAG_structure_type => {
                     // The one member: whether it is at offset zero, and
@@ -4860,6 +4916,7 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
                     // ends the search.
                     let mut children = self.children(current.unit, current_entry.offset()).ok()?;
                     let mut only = None;
+
                     while let Ok(Some(child)) = children.next_child() {
                         if child.tag() != gimli::DW_TAG_member {
                             continue;
@@ -4891,6 +4948,7 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
                             .attr(gimli::DW_AT_byte_size)
                             .and_then(gimli::Attribute::udata_value)
                             == Some(1);
+
                     return byte.then_some(current);
                 }
                 _ => return None,
@@ -4937,6 +4995,7 @@ fn default_lower_bound(language: Option<gimli::DwLang>, source: SourceLanguage) 
     }
 
     let language = language?;
+
     match language {
         gimli::DW_LANG_Kotlin | gimli::DW_LANG_Crystal => Some(0),
         gimli::DW_LANG_Fortran18 | gimli::DW_LANG_Ada2005 | gimli::DW_LANG_Ada2012 => Some(1),
@@ -5406,6 +5465,7 @@ pub(super) fn type_info_from(
 pub(super) fn propagate_wrapper_sizes(types: &mut [TypeEntry]) {
     let mut dependents = vec![Vec::new(); types.len()];
     let mut ready = VecDeque::new();
+
     for (index, entry) in types.iter().enumerate() {
         let TypeEntry::Resolved(info) = entry else {
             continue;
@@ -5458,6 +5518,7 @@ pub(super) fn inline_storage_cycle_nodes(types: &[TypeEntry]) -> Vec<usize> {
     // twice for every type a load builds.
     let mut targets = Vec::new();
     let mut edges = Edges::default();
+
     for entry in types {
         if let TypeEntry::Resolved(info) = entry {
             targets.clear();
@@ -5482,6 +5543,7 @@ pub(super) fn inline_storage_cycle_nodes(types: &[TypeEntry]) -> Vec<usize> {
 
         visited[start] = true;
         stack.push((start, 0_usize));
+
         while let Some((node, edge_index)) = stack.last_mut() {
             if let Some(next) = edges.of(*node).get(*edge_index).copied() {
                 *edge_index += 1;
@@ -5500,6 +5562,7 @@ pub(super) fn inline_storage_cycle_nodes(types: &[TypeEntry]) -> Vec<usize> {
     let mut cyclic_nodes = Vec::new();
     let mut component = Vec::new();
     let mut stack = Vec::new();
+
     for start in finish.into_iter().rev() {
         if assigned[start] {
             continue;
@@ -5508,6 +5571,7 @@ pub(super) fn inline_storage_cycle_nodes(types: &[TypeEntry]) -> Vec<usize> {
         assigned[start] = true;
         component.clear();
         stack.push(start);
+
         while let Some(node) = stack.pop() {
             component.push(node);
             for predecessor in reverse.of(node) {
@@ -5554,6 +5618,7 @@ impl Edges {
         }
 
         let mut total = 0;
+
         for end in &mut ends {
             total += *end;
             *end = total;
@@ -5562,6 +5627,7 @@ impl Edges {
         // Each node's predecessors fill its slot from its start.
         let mut next = ends.clone();
         let mut targets = vec![0; self.targets.len()];
+
         for source in (0..self.ends.len()).rev() {
             for target in self.of(source).iter().rev() {
                 next[*target] -= 1;

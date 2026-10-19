@@ -40,6 +40,7 @@ async fn a_stack_unwinds_through_the_jits_code() {
         "{context}: the JIT is off: {}",
         session.output()
     );
+
     session
         .scenario
         .operation(
@@ -50,6 +51,7 @@ async fn a_stack_unwinds_through_the_jits_code() {
                 .add_breakpoint(BreakpointSpec::Function("reached".to_owned())),
         )
         .await;
+
     let reason = session.finish_run().await;
     assert!(
         matches!(
@@ -81,6 +83,7 @@ async fn a_stack_unwinds_through_the_jits_code() {
         CodeRole::Interpreter,
         "{context}: the JIT's code is the interpreter's machinery"
     );
+
     let spin = trace
         .frames
         .iter()
@@ -91,10 +94,12 @@ async fn a_stack_unwinds_through_the_jits_code() {
             })
         })
         .unwrap_or_else(|| panic!("{context}: no frame of spin: {trace:#?}"));
+
     assert!(
         trace.unfollowed.is_empty() && jit < spin,
         "{context}: the Python frames are placed outer to the JIT's code: {trace:#?}"
     );
+
     assert!(
         trace.termination == UnwindTermination::Complete && named("_start").is_some(),
         "{context}: the stack unwinds to its outermost frame: {trace:#?}"

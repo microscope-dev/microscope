@@ -19,6 +19,7 @@ pub fn import(text: &str) -> Result<Capture, String> {
     let mut frames: BTreeMap<&str, u32> = BTreeMap::new();
     let mut stack = Vec::new();
     let mut total = 0_u64;
+
     for (number, line) in text.lines().enumerate() {
         let line = line.trim_end();
         if line.is_empty() {
@@ -39,6 +40,7 @@ pub fn import(text: &str) -> Result<Capture, String> {
         total = total
             .checked_add(weight)
             .ok_or_else(|| format!("{} brings the weights past {}", at(), u64::MAX))?;
+
         stack.clear();
         for name in names.trim_end().split(';').rev() {
             let next = frames.len() as u64;
@@ -75,6 +77,7 @@ pub fn export(keys: &Keys<'_>, tree: &CallTree) -> String {
     let mut names: BTreeMap<u32, String> = BTreeMap::new();
     let mut path = Vec::new();
     let mut out = String::new();
+
     for node in (0..tree.len()).filter(|&node| tree.own[node] > 0) {
         path.clear();
         let mut at = u32::try_from(node).unwrap_or(NONE);

@@ -240,6 +240,7 @@ fn requests_out_of_order_are_refused_without_ending_the_session() {
         dap.request("threads", Value::Null),
         json!({"threads": [{"id": 1, "name": "program"}]})
     );
+
     let launch = dap.send("launch", json!({"program": fixture("basic")}));
     dap.request("configurationDone", Value::Null);
     dap.success(launch);
@@ -452,6 +453,7 @@ fn restarting_relaunches_the_program_with_new_arguments_in_the_same_session() {
         dap.output_text(restart.mark, "stdout")
             .starts_with("argument 1: a\nargument 2: b\nargument 3: c\n")
     );
+
     let terminations = dap
         .messages_since(restart.mark)
         .iter()
@@ -503,6 +505,7 @@ fn restarts_keep_the_program_and_attached_processes_are_attached_again() {
         "only a launched program can be restarted; start a new session instead"
     );
     dap.finish_with(json!({"restart": true, "terminateDebuggee": true}));
+
     let mut dap = Dap::start("attach again");
     let started = dap.begin(
         Profile::VsCode,

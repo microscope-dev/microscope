@@ -26,6 +26,7 @@ fn fixed_seeds_pass_every_oracle() {
     let settings = Settings::default();
     let mut failures = Vec::new();
     let mut reach = Reach::default();
+
     for seed in 0..GATE_SEEDS {
         let outcome = run(seed, &corpus, &settings);
         if outcome.failure.is_some() {
@@ -41,6 +42,7 @@ fn fixed_seeds_pass_every_oracle() {
         failures.len(),
         failures[0]
     );
+
     let rare = reach.below(MARK_FLOOR);
     assert!(
         rare.is_empty(),

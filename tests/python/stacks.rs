@@ -38,8 +38,10 @@ async fn the_interpreters_loop_and_calls_are_its_own() {
                         .is_some_and(|function| &*function.name == name)
                 })
             };
+
             let evaluating = named("_PyEval_EvalFrameDefault").expect(&context);
             assert_eq!(evaluating.role, CodeRole::Interpreter, "{context}");
+
             if let Some(vectorcall) = named("_PyFunction_Vectorcall") {
                 assert_eq!(vectorcall.role, CodeRole::Interpreter, "{context}");
             }
@@ -208,6 +210,7 @@ async fn each_threads_python_frames_are_the_ones_cpython_reports() {
         assert_eq!(threads.len(), 3, "{}: {truth:?}", session.context());
         for (thread, printer, reported) in threads {
             let trace = session.backtrace(ThreadId::new(thread)).await;
+
             // The printer reported its frames from its checkpoint's caller,
             // and parks in two frames beneath it.
             let beneath = if printer { 2 } else { 0 };
@@ -253,6 +256,7 @@ async fn a_cores_python_frames_are_the_ones_cpython_reported() {
                 execution: ExecutionContext::Thread(ThreadId::new(thread)),
                 frame: StackFrameId::INNERMOST,
             };
+
             let trace = scenario
                 .operation(
                     "thread backtrace",
@@ -299,17 +303,20 @@ async fn each_python_frames_source_is_the_line_it_runs() {
                     .as_ref()
                     .and_then(|recorded| recorded.place.as_ref())
                     .expect(&context);
+
                 let at = StopContext {
                     stop,
                     execution: ExecutionContext::Thread(thread),
                     frame: frame.id,
                 };
+
                 // An interpreted frame has no machine code to locate.
                 let location = session.scenario.handle().at(at).location().await;
                 assert!(
                     matches!(location, Err(microscope::Error::FrameInterpreted)),
                     "{location:?}: {context}"
                 );
+
                 let source = session
                     .scenario
                     .operation(
@@ -317,11 +324,13 @@ async fn each_python_frames_source_is_the_line_it_runs() {
                         session.scenario.handle().at(at).source_context(1),
                     )
                     .await;
+
                 let text = std::fs::read_to_string(&*place.path).expect(&context);
                 let line = usize::try_from(place.line).expect("a line number");
                 let expected = text.lines().nth(line - 1).expect(&context);
                 assert_eq!(**source.recorded, *place.path, "{context}");
                 assert_eq!(source.line.get(), u64::from(place.line), "{context}");
+
                 let current = source
                     .lines
                     .iter()
@@ -366,13 +375,16 @@ async fn check_namespaced_frames(interpreter: &str, arguments: &[&str]) -> Pytho
         arguments,
     )
     .await;
+
     let snapshot = session.scenario.snapshot().await;
     let threads = snapshot.threads;
     assert_eq!(threads.len(), 2, "{}: {threads:?}", session.context());
+
     let host_process = match snapshot.inferior {
         InferiorState::Stopped { process_id, .. } => process_id.get(),
         other => panic!("not stopped: {other:?}"),
     };
+
     for (native, printer, reported) in reported_threads(&truth) {
         let host = if printer {
             host_process
@@ -385,6 +397,7 @@ async fn check_namespaced_frames(interpreter: &str, arguments: &[&str]) -> Pytho
                 .get()
         };
         assert_ne!(host, native);
+
         let trace = session.backtrace(ThreadId::new(host)).await;
         check_frames(&trace, &reported, if printer { 2 } else { 0 }).unwrap_or_else(|lie| {
             panic!(
@@ -393,5 +406,6 @@ async fn check_namespaced_frames(interpreter: &str, arguments: &[&str]) -> Pytho
             )
         });
     }
+
     session
 }

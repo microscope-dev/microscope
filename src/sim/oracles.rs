@@ -152,6 +152,7 @@ pub fn all_stop(kernel: &Kernel, truth: &Truth) -> Result<(), String> {
 
     let mut stopped = BTreeSet::new();
     let mut ended = BTreeSet::new();
+
     for thread in kernel.threads_of(tgid) {
         match thread.state {
             State::Stopped { .. } => {
@@ -236,6 +237,7 @@ pub fn hit_counts(
         .unwrap_or_default();
     let again = trap.and_then(|trap| trap.again.as_ref());
     let in_shutdown = trap.is_some_and(|trap| trap.in_shutdown);
+
     for (&id, breakpoint) in &after.breakpoints {
         let previous = before
             .breakpoints
@@ -621,6 +623,7 @@ mod tests {
                 },
             );
             kernel.outputs.insert(1000, output.as_bytes().to_vec());
+
             transparency(&kernel, &run)
         };
 
@@ -698,6 +701,7 @@ mod tests {
 
         assert_eq!(hit_counts(&before, &before, None, false), Ok(()));
         assert!(hit_counts(&before, &with_hits([5, 0, 7]), None, false).is_err());
+
         let relaunched = |hits| Truth {
             inferior: Some(Tgid::new(1002)),
             ..with_hits(hits)
@@ -746,6 +750,7 @@ mod tests {
         kernel
             .resume(tgid, None, false)
             .expect("resume the stopped thread");
+
         assert!(all_stop(&kernel, &truth(vec![tgid])).is_err(), "running");
         assert_eq!(
             all_stop(

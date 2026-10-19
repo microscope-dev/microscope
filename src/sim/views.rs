@@ -61,6 +61,7 @@ pub fn truth(
 ) -> Option<Truth> {
     let word = |at: u64| Some(u64::from_le_bytes(read(at, 8)?.try_into().ok()?));
     let item = |at: u64, size: u64| Some((at, read(at, size)?));
+
     match name {
         // {i32 *data; u64 n; u64 cap}
         "vec" => {
@@ -86,6 +87,7 @@ pub fn truth(
             let mut items = Vec::new();
             let mut visited = Vec::new();
             let mut node = head;
+
             while (items.len() as u64) < count {
                 if node == 0 || items.len() as u64 > MAX_WALK {
                     return Some(Truth::Refused(Refusal::Short {
@@ -122,6 +124,7 @@ pub fn truth(
             }
 
             let mut items = Vec::new();
+
             for index in 0..cap.min(MAX_WALK) {
                 if items.len() as u64 == n {
                     break;
@@ -181,6 +184,7 @@ fn place(state: &VariableState) -> Option<(u64, Vec<u8>)> {
 /// The elements or entries of pages of a presentation's children.
 pub fn items(pages: &[ValueChildPage]) -> Result<Vec<Item>, String> {
     let mut items = Vec::new();
+
     for page in pages {
         for child in page.children.iter() {
             let (index, key) = match &child.relationship {
@@ -220,6 +224,7 @@ pub fn items(pages: &[ValueChildPage]) -> Result<Vec<Item>, String> {
 /// stored. Returns the marks the judgment reached.
 pub fn judge(truth: &Truth, shown: &Shown) -> Result<Vec<Mark>, String> {
     let mut marks = Vec::new();
+
     match truth {
         Truth::Refused(refusal) => {
             let matches = match (refusal, &shown.problem) {

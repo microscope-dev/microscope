@@ -249,6 +249,7 @@ fn main() -> ExitCode {
     unsafe {
         microscope::timings::alloc::return_freed_memory_promptly();
     }
+
     match run(Args::parse()) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
@@ -265,6 +266,7 @@ fn run(args: Args) -> Result<bool> {
         microscope::cache::Setting::Off,
         microscope::cache::Setting::Directory,
     )))?;
+
     match args.command {
         Tool::Dump {
             program,
@@ -308,6 +310,7 @@ fn run(args: Args) -> Result<bool> {
             }
 
             let warmed = microscope::tools::warm(&paths)?;
+
             for (path, error) in &warmed.failed {
                 println!("{}: {error}", path.display());
             }
@@ -327,9 +330,11 @@ fn run(args: Args) -> Result<bool> {
             all,
         } => {
             let first = read_report(&file)?;
+
             match new {
                 None => {
                     print!("{}", first.text(all));
+
                     if threads {
                         print!("\n{}", first.threads_text());
                     }
@@ -337,6 +342,7 @@ fn run(args: Args) -> Result<bool> {
                 Some(new) => {
                     let new = read_report(&new)?;
                     print!("{}", new.diff_text(&first, all));
+
                     if threads {
                         print!(
                             "\nbase:\n{}\nnew:\n{}",
@@ -382,6 +388,7 @@ fn run_overhead(args: &OverheadArgs) -> Result<bool> {
     let runs = overhead::measure(&options, |run| {
         eprintln!("{} {}: {:.1}/s", run.workload, run.setup, run.rate);
     })?;
+
     if let Some(out) = &args.out {
         std::fs::write(out, serde_json::to_string_pretty(&runs)?)?;
     }
@@ -403,6 +410,7 @@ fn run_overhead(args: &OverheadArgs) -> Result<bool> {
         .iter()
         .filter(|summary| summary.setup == "prod" && summary.cost_percent >= limit)
         .collect();
+
     for summary in &over {
         eprintln!(
             "error: prod costs {} {:.2}%, not less than {limit}%",
@@ -427,6 +435,7 @@ fn run_syscall_overhead(args: &SyscallOverheadArgs) -> Result<bool> {
     let runs = syscall_overhead::measure(&options, |run| {
         eprintln!("{}: {:.1} ns a call", run.setup, run.ns_per_call);
     })?;
+
     if let Some(out) = &args.out {
         std::fs::write(out, serde_json::to_string_pretty(&runs)?)?;
     }
@@ -441,6 +450,7 @@ fn run_syscall_overhead(args: &SyscallOverheadArgs) -> Result<bool> {
     };
 
     let mut table = String::from("setup         ns/call     added   noise\n");
+
     for summary in syscall_overhead::summarize(&runs) {
         let was = base
             .as_deref()
@@ -466,6 +476,7 @@ fn overhead_table(
     let mut table = String::from(
         "workload  setup                rate/s     cost   noise      p99 microscope cpu     memory\n",
     );
+
     for summary in summaries {
         let was = base.and_then(|base| {
             base.iter()
@@ -549,6 +560,7 @@ fn allocation_site(frames: &[usize], table: &[String]) -> String {
         "extend",
         "push",
     ];
+
     for &frame in frames {
         let Some(name) = table.get(frame) else {
             continue;
@@ -565,6 +577,7 @@ fn allocation_site(frames: &[usize], table: &[String]) -> String {
             .and_then(|(_, place)| place.strip_suffix(')'))
             .and_then(|place| place.split_once("src/").map(|(_, place)| place));
         let short = function.get(..110).unwrap_or(function);
+
         return place.map_or_else(|| short.to_owned(), |place| format!("{short}  @{place}"));
     }
 
@@ -584,6 +597,7 @@ fn heap_text(path: &Path, rows: usize) -> Result<String> {
             .with_context(|| format!("cannot read {}", path.display()))?,
     )?;
     let mut sites = BTreeMap::<String, [u64; 4]>::new();
+
     for site in &profile.pps {
         let totals = sites
             .entry(allocation_site(&site.fs, &profile.ftbl))
@@ -605,6 +619,7 @@ fn heap_text(path: &Path, rows: usize) -> Result<String> {
     let mut ranked = sites.iter().collect::<Vec<_>>();
     ranked.sort_by_key(|(site, totals)| (std::cmp::Reverse(totals[2]), (*site).clone()));
     text.push_str("\nby bytes live at peak\n");
+
     for (site, totals) in ranked.iter().take(rows) {
         let _ = writeln!(
             text,
@@ -616,6 +631,7 @@ fn heap_text(path: &Path, rows: usize) -> Result<String> {
 
     ranked.sort_by_key(|(site, totals)| (std::cmp::Reverse(totals[1]), (*site).clone()));
     text.push_str("\nby blocks allocated\n");
+
     for (site, totals) in ranked.iter().take(rows) {
         let _ = writeln!(
             text,
@@ -736,6 +752,7 @@ fn corpus(kind: Corpus) -> Result<Vec<Program>> {
     }
 
     golden_programs.sort();
+
     for path in golden_programs {
         let Some(file) = path.file_name() else {
             bail!("{} has no file name", path.display());
@@ -775,6 +792,7 @@ fn corpus(kind: Corpus) -> Result<Vec<Program>> {
             .map(|output| {
                 PathBuf::from(String::from_utf8_lossy(&output.stdout).trim()).join("bin/go")
             });
+
         if let Some(go) = go {
             programs.push(Program {
                 name: "go-command".to_owned(),
@@ -826,6 +844,7 @@ fn provenance() -> Provenance {
                 .map(|line| line.trim_start_matches([' ', '\t', ':']).to_owned())
         })
         .unwrap_or_default();
+
     Provenance {
         commit: git(&["rev-parse", "HEAD"]),
         dirty: !git(&["status", "--porcelain", "--untracked-files=no"]).is_empty(),
@@ -858,6 +877,7 @@ fn load_once(program: &Path, jobs: usize) -> Result<Measured> {
         .arg("--instructions")
         .arg(program)
         .output()?;
+
     if !output.status.success() {
         bail!(
             "loading {} failed: {}",
@@ -887,6 +907,7 @@ fn callgrind(program: &Path) -> Result<u64> {
         .context("run valgrind, which the dev shell provides")?;
     let text = std::fs::read_to_string(&out);
     let _ = std::fs::remove_file(&out);
+
     if !status.success() {
         bail!("callgrind failed on {}", program.display());
     }
@@ -904,11 +925,13 @@ fn callgrind(program: &Path) -> Result<u64> {
 #[expect(clippy::too_many_lines, reason = "one benchmark run, start to end")]
 fn run_bench(args: &BenchArgs, sweep: &[usize]) -> Result<bool> {
     let mut programs = corpus(args.corpus)?;
+
     if !args.only.is_empty() {
         programs.retain(|program| args.only.iter().any(|only| program.name.contains(only)));
     }
 
     let mut results = Vec::new();
+
     for (program, &jobs) in programs
         .iter()
         .flat_map(|program| sweep.iter().map(move |jobs| (program, jobs)))
@@ -924,6 +947,7 @@ fn run_bench(args: &BenchArgs, sweep: &[usize]) -> Result<bool> {
 
         eprint!("{} x{jobs} ", program.name);
         let mut measured = Vec::new();
+
         for _ in 0..args.repeat.max(1) {
             measured.push(load_once(&program.path, jobs)?);
             eprint!(".");
@@ -996,11 +1020,13 @@ fn run_bench(args: &BenchArgs, sweep: &[usize]) -> Result<bool> {
     };
 
     print!("{}", bench_text(&report));
+
     if let Some(out) = &args.out {
         std::fs::write(out, serde_json::to_string_pretty(&report)?)?;
     }
 
     let mut passed = true;
+
     if let Some(base) = &args.compare {
         let base: BenchReport = serde_json::from_str(&std::fs::read_to_string(base)?)?;
         print!("\n{}", compare_text(&base, &report));
@@ -1031,6 +1057,7 @@ fn run_bench(args: &BenchArgs, sweep: &[usize]) -> Result<bool> {
 
         let measured = report.programs.iter().filter(|program| program.jobs == 1);
         let mut recorded = 0;
+
         for program in measured {
             counts.insert(
                 program.name.clone(),
@@ -1078,6 +1105,7 @@ fn bench_text(report: &BenchReport) -> String {
         "kept MB",
         "instructions"
     );
+
     for program in &report.programs {
         let spread = match (program.wall_ms.first(), program.wall_ms.last()) {
             (Some(low), Some(high)) => format!("{low:.0}-{high:.0}"),
@@ -1150,6 +1178,7 @@ fn compare_text(base: &BenchReport, new: &BenchReport) -> String {
         "{:<28} {:<14} {:>14} {:>14} {:>9}",
         "program", "measure", "base", "new", "change"
     );
+
     for program in &new.programs {
         let label = program.label();
         let Some(before) = base_programs.get(&label) else {
@@ -1244,6 +1273,7 @@ fn check_counts(
     let mut text = String::new();
     let mut ok = true;
     let mut seen = BTreeSet::new();
+
     for program in report.programs.iter().filter(|program| program.jobs == 1) {
         let Some(counts) = baseline.get(&program.name) else {
             let _ = writeln!(text, "{}: not in the baseline", program.name);
@@ -1251,6 +1281,7 @@ fn check_counts(
         };
 
         seen.insert(program.name.as_str());
+
         if counts.digest != program.digest {
             let _ = writeln!(
                 text,

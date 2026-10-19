@@ -92,6 +92,7 @@ async fn a_process_in_another_process_group_is_attached_and_stops() {
             .expect("resume attached process"),
         StopReason::Breakpoint { .. }
     ));
+
     debugger.shutdown().await.expect("detach debugger");
     assert_eq!(exit_code(child), Some(23));
 }
@@ -199,6 +200,7 @@ async fn attaching_while_threads_are_created_traces_every_thread() {
     support::wait_until("the fixture runs every worker", || {
         fs::read_dir(&tasks).is_ok_and(|entries| entries.count() > 128)
     });
+
     for _ in 0..20 {
         let scenario = Scenario::attached("attach while cloning", child.attach().await);
 

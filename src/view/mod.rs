@@ -154,6 +154,7 @@ impl ViewSet {
     pub fn new<'a>(files: impl IntoIterator<Item = (&'a str, &'a str)>) -> Self {
         let mut views = Vec::new();
         let mut errors = Vec::new();
+
         for (source, text) in files {
             let file = syntax::parse(source, text);
             views.extend(file.views);
@@ -161,6 +162,7 @@ impl ViewSet {
         }
 
         let mut by_base = BTreeMap::<String, Vec<usize>>::new();
+
         for (index, view) in views.iter().enumerate() {
             by_base
                 .entry(view.pattern.base.clone())
@@ -408,6 +410,7 @@ pub fn choose<S: Scope>(views: &ViewSet, ty: TypeReference, scope: &S) -> Choice
 /// next's.
 pub fn choose_among<S: Scope>(sets: &[&ViewSet], ty: TypeReference, scope: &S) -> Choice<S::Step> {
     let mut choice = Choice::default();
+
     for (ty, info) in wrappers(scope, ty) {
         let Some(identity) = info.identity.as_deref() else {
             continue;
@@ -437,6 +440,7 @@ pub fn choose_dynamic<S: Scope>(
     scope: &S,
 ) -> Choice<S::Step> {
     let mut choice = Choice::default();
+
     for identity in lineage {
         if let Some(bound) = choose_identity(sets, identity, SelfType::Dynamic, scope, &mut choice)
         {
@@ -459,6 +463,7 @@ fn choose_identity<S: Scope>(
     choice: &mut Choice<S::Step>,
 ) -> Option<BoundView<S::Step>> {
     let mut candidates = Vec::new();
+
     for views in sets {
         // A Go type is also named by its kind, as every map is by `map`.
         let mut found = views
@@ -481,6 +486,7 @@ fn choose_identity<S: Scope>(
 
     let mut base = None;
     let mut extensions = Vec::new();
+
     for (view, set) in candidates {
         // Views after the one that binds are not tried; `extend`s are.
         if base.is_some() && !view.extend {
@@ -530,6 +536,7 @@ fn choose_identity<S: Scope>(
     }
 
     let mut base = base?;
+
     for (view, _, _, extension) in extensions {
         let rejection = bind::check_extension(&base, &extension, self_type, scope).err();
         if rejection.is_none() {
@@ -550,6 +557,7 @@ fn choose_identity<S: Scope>(
 fn wrappers(types: &dyn TypeSource, ty: TypeReference) -> Vec<(TypeReference, &TypeInfo)> {
     let mut chain = Vec::new();
     let mut current = ty;
+
     while chain.len() < 64 {
         let Some(info) = types.type_info(current) else {
             break;

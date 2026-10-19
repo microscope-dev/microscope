@@ -79,6 +79,7 @@ pub fn backtrace(kernel: &Kernel, backtrace: &Backtrace) -> Result<Option<Unwoun
         .iter()
         .filter(|frame| !matches!(frame.kind, FrameKind::Inline | FrameKind::TailCall))
         .collect::<Vec<_>>();
+
     for (level, frame) in physical.iter().enumerate() {
         let Some(address) = frame.instruction.map(VirtualAddress::get) else {
             return Err(format!(
@@ -191,6 +192,7 @@ pub fn tail_frames(
         .iter()
         .filter(|frame| frame.kind != FrameKind::Inline)
         .peekable();
+
     while let Some(frame) = frames.next() {
         let Some(instruction) = frame.instruction else {
             return Err(format!(
@@ -200,6 +202,7 @@ pub fn tail_frames(
         };
 
         let mut tails = Vec::new();
+
         while let Some(tail) = frames.next_if(|frame| frame.kind == FrameKind::TailCall) {
             tails.push(tail);
         }
@@ -223,6 +226,7 @@ pub fn tail_frames(
         let code = instruction.get() - u64::from(level != 0);
         let mut inner = function(code);
         shown += tails.len();
+
         for tail in tails {
             let Some(at) = tail.instruction.map(VirtualAddress::get) else {
                 return Err(format!(
@@ -386,6 +390,7 @@ pub fn step(
     let before = &begun.shadow.calls;
     // A call the kernel made again executed its `syscall` again.
     let again = thread.restarts - begun.restarts;
+
     let one_instruction = || {
         if retired == 1 + again || begun.inside_call && retired == again && end == start {
             Ok(Some(Judged::Instructions))
@@ -444,6 +449,7 @@ pub fn step(
                             })
                             .all(|position| !described(position.rip))
             });
+
             let inline = begun.outer == 0 && matches!(begun.frame, Some(PresentedFrame::Inline(_)));
             if returned || inline && after == before {
                 return Ok(Some(Judged::Instructions));
@@ -748,6 +754,7 @@ fn missed_stop(
     let from = lines.line(begun.rip);
     let before = &begun.shadow.calls;
     let mut crossed = BTreeSet::new();
+
     positions.iter().find_map(|&position| {
         if lines.epilogue(position.rip) {
             crossed.insert(position.activation);
@@ -808,6 +815,7 @@ pub fn variables(
     };
 
     let mut values = BTreeMap::new();
+
     for name in marker.condition.variables() {
         let state = named(&snapshot.variables, name).map(|variable| &variable.state);
         match state.and_then(integer) {
@@ -862,6 +870,7 @@ pub fn evaluations(
         .is_some_and(|frame| frame.level == 0);
     let shown = |name: &str| named(&snapshot.variables, name).map(|variable| &variable.state);
     let mut marks = Vec::new();
+
     for evaluated in evaluations {
         let state = match &evaluated.result {
             Ok(crate::Evaluation::Value { value, .. }) => Ok(&value.state),
@@ -1165,6 +1174,7 @@ fn judge_entry_values(
     shown: &[(&str, Option<&[u8]>)],
 ) -> Result<Vec<Mark>, String> {
     let mut marks = Vec::new();
+
     for &(name, raw) in shown {
         // Bytes beyond a register's say nothing of what it held.
         let Some(raw) = raw.filter(|raw| raw.len() <= 8) else {
@@ -1360,6 +1370,7 @@ fn marker_at<'m>(
         .and_then(|range| range.line)
         .filter(|line| facts.file(*line) == source)?;
     let marker = markers.iter().find(|marker| marker.line == line.line)?;
+
     backtrace
         .frames
         .iter()
@@ -1462,6 +1473,7 @@ mod tests {
         let thread = kernel.threads.get_mut(&tid).expect("the thread");
         thread.retired = begun.retired + 1;
         thread.restarts = begun.restarts + 1;
+
         assert_eq!(
             step(&kernel, &begun, &[], variant),
             Ok(Some(Judged::Instructions))
@@ -1474,6 +1486,7 @@ mod tests {
         let mut kernel = Kernel::new(100);
         let tid = kernel.spawn(Arc::clone(&variant.image), &variant.path, &[], [0; 16]);
         let rsp = kernel.threads[&tid].registers.general[crate::sim::cpu::RSP];
+
         for (index, &return_address) in calls.iter().enumerate() {
             let slot = rsp - 64 * (index as u64 + 1);
             kernel
@@ -1528,9 +1541,11 @@ mod tests {
             ranges: vec![row(0x10, 0x18, 3), row(0x18, 0x30, 4)],
             ..Facts::default()
         };
+
         let backtrace = |lines: [Option<u64>; 2]| {
             let mut backtrace = backtrace_of(1, &[0x1018, 0x1019], UnwindTermination::Complete);
             let frames = Arc::get_mut(&mut backtrace.frames).expect("one owner");
+
             for (frame, line) in frames.iter_mut().zip(lines) {
                 frame.source = line.map(|line| crate::SourceLocation {
                     file: crate::SourceFileId::new(0),
@@ -1538,6 +1553,7 @@ mod tests {
                     column: None,
                 });
             }
+
             backtrace
         };
 
@@ -1599,6 +1615,7 @@ mod tests {
                 to: 0x1200,
             },
         ]];
+
         let judge = |tails: &[u64]| {
             let frames = std::iter::once((FrameKind::Physical, 0x1210))
                 .chain(tails.iter().map(|&address| (FrameKind::TailCall, address)))
@@ -1613,6 +1630,7 @@ mod tests {
                     )
                 })
                 .collect();
+
             tail_frames(
                 &kernel,
                 &facts,
@@ -1734,6 +1752,7 @@ mod tests {
         let facts = &*facts;
         let mut entered = [0; 16];
         entered[7] = 0x1122_3344_5566_7788;
+
         let judge =
             |shown: &[(&str, Option<&[u8]>)]| judge_entry_values(facts, 0x18, &entered, shown);
 
@@ -1777,6 +1796,7 @@ mod tests {
 
         // Three statement rows of distinct lines in main, in address order.
         let mut lines = Vec::new();
+
         for range in facts
             .ranges
             .iter()

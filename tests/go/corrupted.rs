@@ -19,6 +19,7 @@ async fn a_corrupted_goroutine_is_refused_and_the_rest_read_as_before() {
     let output = scratch.path().join("stdout");
     let mut scenario = Scenario::launch("corrupt-go");
     scenario.add_breakpoint("main.checkpoint").await;
+
     let reason = scenario
         .run_with_to_stop(LaunchOptions {
             stdout: Some(Stdio::from(
@@ -31,6 +32,7 @@ async fn a_corrupted_goroutine_is_refused_and_the_rest_read_as_before() {
         matches!(reason, StopReason::Breakpoint { .. }),
         "{reason:?}"
     );
+
     let printed = std::fs::read_to_string(&output).expect("read standard output");
     let victim: u64 = printed
         .trim()
@@ -51,6 +53,7 @@ async fn a_corrupted_goroutine_is_refused_and_the_rest_read_as_before() {
         page.tasks.iter().any(|task| task.id.number == victim),
         "{page:?}"
     );
+
     for task in page.tasks.iter() {
         let at = StopContext {
             stop: stop_id,

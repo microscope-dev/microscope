@@ -83,6 +83,7 @@ impl ModuleLocator {
                     .map_err(|error| unusable(path, error))
             })
             .transpose()?;
+
         let directories = directories
             .iter()
             .map(|path| match fs::metadata(path) {
@@ -97,6 +98,7 @@ impl ModuleLocator {
                 Err(error) => Err(unusable(path, error)),
             })
             .collect::<Result<_>>()?;
+
         Ok(Self {
             sysroot,
             directories,
@@ -287,6 +289,7 @@ fn read_opened(
     let link = fd_path(&file);
     let path = fs::read_link(&link).map_err(unreadable)?;
     let (data, _) = crate::image::backing::read_input(&link).map_err(unreadable)?;
+
     Ok(Some(ModuleFile {
         path,
         data,

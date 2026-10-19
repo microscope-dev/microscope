@@ -62,6 +62,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let pid = inferior.memory_thread();
+
         for write in writes {
             if write.expected.len() != write.bytes.len() {
                 return Err(format!(
@@ -129,6 +130,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         // Scans resumed after a write could follow links it changed, and
         // a task may no longer be where its runtime kept it.
         self.views.forget_scans();
+
         if let Some(stop) = self
             .inferior
             .as_ref()
@@ -154,6 +156,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
         let mut word = address.get() & !(WORD - 1);
         let mut written = 0;
+
         while word < end {
             let Ok(current) = self.ptrace.read_word(pid, word) else {
                 break;
@@ -162,6 +165,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             let mut physical = current.to_ne_bytes();
             let mut hidden = Vec::new();
             let mut count = 0;
+
             for (offset, byte) in physical.iter_mut().enumerate() {
                 let target = word + offset as u64;
                 if !(address.get()..end).contains(&target) {
@@ -174,6 +178,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     .copied()
                     .ok_or_else(|| Error::internal("a write covers the bytes it stores"))?;
                 count += 1;
+
                 match inferior.breakpoints.get(&VirtualAddress::new(target)) {
                     Some(site) if site.installed => hidden.push((target, user)),
                     _ => *byte = user,
@@ -222,6 +227,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let mut value = slot.to_le_bytes();
         value[..bytes.len().min(8)].copy_from_slice(&bytes[..bytes.len().min(8)]);
         *slot = u64::from_le_bytes(value);
+
         if super::registers::is_program_counter(register) {
             registers.orig_rax = u64::MAX;
         }
@@ -248,6 +254,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 self.write_register(pid, program_counter, &target.get().to_le_bytes())?;
                 self.publish_moved_thread(pid)
             });
+
         match moved {
             // Acknowledge the jump before publishing the stop it made.
             Ok((execution, stopped)) => {
@@ -286,6 +293,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .into_iter()
             .filter(|target| self.physical_function_at(*target) == Some(function))
             .collect::<Vec<_>>();
+
         match targets.as_slice() {
             [target] => Ok(*target),
             [] => Err(Error::JumpOutsideFunction(described)),
@@ -350,6 +358,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         stop.memory.forget();
         let process_id = process_id(inferior.tgid);
         self.bump_revision();
+
         Ok((
             execution,
             DebuggerEvent::InferiorStopped {

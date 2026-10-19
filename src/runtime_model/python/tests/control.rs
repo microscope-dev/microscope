@@ -35,6 +35,7 @@ fn command_publication_is_bounded_expected_and_last() {
         serde_json::from_slice::<serde_json::Value>(&writes[0].bytes).unwrap(),
         serde_json::json!([8, probes, null, 0])
     );
+
     // A step travels with the probes it is armed beside.
     let step = (5, control_step::OVER, 7, 2, 0x1000);
     let writes =
@@ -43,6 +44,7 @@ fn command_publication_is_bounded_expected_and_last() {
         serde_json::from_slice::<serde_json::Value>(&writes[0].bytes).unwrap(),
         serde_json::json!([8, probes, [5, 1, 7, 2, 4096], 3])
     );
+
     for write in writes {
         let mut held = vec![0; write.bytes.len()];
         assert!(memory.read(write.address, &mut held));
@@ -146,6 +148,7 @@ fn prepared() -> (
     )
     .unwrap();
     let ticket = control::ticket(&process.layout, VirtualAddress::new(runtime), &plan);
+
     for write in plan.writes {
         process.memory.fill(write.address.get(), &write.bytes);
     }
@@ -259,6 +262,7 @@ fn a_python_function_breakpoint_needs_a_name() {
     let resolve = |name: &str| {
         model.resolve_breakpoint(&memory, &crate::BreakpointSpec::Function(name.into()))
     };
+
     assert!(matches!(resolve("py:"), Some(Err(_))));
     assert!(matches!(
         resolve("py:main").expect("a Python function").as_deref(),
@@ -296,6 +300,7 @@ fn a_python_line_breakpoint_path_ignores_its_dot_components() {
             },
         )
     };
+
     for (requested, armed) in [
         ("./pkg/./later.py", "pkg/later.py"),
         ("later.py", "later.py"),

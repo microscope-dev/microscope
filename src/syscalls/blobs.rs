@@ -28,6 +28,7 @@ pub fn push_iovec(blob: &mut Vec<u8>, base: u64, len: u64, bytes: &[u8]) {
 #[must_use]
 pub fn iovecs(mut blob: &[u8]) -> Vec<Iovec<'_>> {
     let mut elements = Vec::new();
+
     while blob.len() >= 20 {
         let base = u64::from_le_bytes(blob[..8].try_into().unwrap_or_default());
         let len = u64::from_le_bytes(blob[8..16].try_into().unwrap_or_default());

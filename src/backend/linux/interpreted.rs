@@ -223,6 +223,7 @@ impl<P: InspectionOps> Controller<P> {
         let frames = stacks.value.frames_of(interpreted);
         let segments: Vec<&[InterpretedFrame]> =
             frames.split_inclusive(|frame| frame.outermost).collect();
+
         if segments.len() != activations.len() {
             placement.unplaced = placed(frames);
             placement.unplaced_reason = Some(
@@ -278,6 +279,7 @@ pub(super) fn interpreted_frame(frame: &InterpretedFrame, segment: StackSegment)
         place: frame.place.clone(),
         first_line: frame.first_line,
     });
+
     built
 }
 
@@ -295,6 +297,7 @@ pub(super) fn task_backtrace(root: &StackRoot) -> Result<Option<Backtrace>> {
     let termination = end.clone().map_or(UnwindTermination::Complete, |reason| {
         UnwindTermination::BrokenAwaitChain { reason }
     });
+
     Ok(Some(Backtrace {
         context: root.context,
         frames: frames.into(),
@@ -328,6 +331,7 @@ pub(super) fn resolve_task_frame(
         runtime: *runtime,
         frame: frame.clone(),
     };
+
     Ok(Some(resolved(
         id,
         task_frame(level, frame)?,
@@ -445,6 +449,7 @@ impl<P: InspectionOps> Controller<P> {
         let scope = self.frame_for(inferior, stop, root, &frame);
         let mut machine = StopMachine::new(&scope, budget, true);
         let mut variables = Vec::new();
+
         for local in locals {
             if let VariableQuery::Name(name) = query
                 && *local.name != **name
@@ -516,10 +521,12 @@ impl<P: InspectionOps> Controller<P> {
                 )
             })
             .map_err(Error::VariableRuntime)?;
+
         let frame = self.resolve_frame(inferior, root, reference.frame)?;
         let scope = self.frame_for(inferior, reference.stop_id, root, &frame);
         let mut machine = StopMachine::new(&scope, budget, true);
         let mut page = Vec::new();
+
         for (index, child) in (start..).zip(read) {
             if machine.budget.exhaustion().is_none()
                 && machine.budget.consume_value_nodes(1).is_err()
@@ -745,6 +752,7 @@ impl Origin {
                 &number.type_name,
             ))),
         };
+
         let presentation = Presentation {
             view: Arc::new(ViewName {
                 source: "microscope".into(),
@@ -761,6 +769,7 @@ impl Origin {
             presented: None,
             visualizers: Arc::from([]),
         };
+
         let state = VariableState::Available {
             source: VariableValueSource::Memory(number.address),
             raw: None,
@@ -770,6 +779,7 @@ impl Origin {
             text: None,
             presentation: Some(Arc::new(presentation)),
         };
+
         (Some(type_info), state)
     }
 

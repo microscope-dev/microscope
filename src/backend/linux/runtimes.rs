@@ -68,6 +68,7 @@ fn runtime_id(module: crate::ModuleId, index: usize) -> Option<RuntimeId> {
     let index = u32::try_from(index)
         .ok()
         .filter(|index| *index < RUNTIMES_PER_MODULE)?;
+
     module
         .get()
         .checked_mul(RUNTIMES_PER_MODULE)?
@@ -109,6 +110,7 @@ fn unique_target(
     let first = ids.partition_point(|(host, _)| *host < thread);
     let rest = ids.get(first..)?;
     let &(host, target) = rest.first()?;
+
     (host == thread && rest.get(1).is_none_or(|(host, _)| *host != thread)).then_some(target)
 }
 
@@ -374,6 +376,7 @@ impl<P: InspectionOps> Controller<P> {
             sets: sets.into(),
             gaps: Arc::clone(&gaps),
         });
+
         gaps
     }
 
@@ -389,6 +392,7 @@ impl<P: InspectionOps> Controller<P> {
         }
 
         let modules = self.unwind_modules(inferior);
+
         for &pid in inferior.threads.keys() {
             // Only a thread no runtime schedules tasks on drives a future.
             if self.thread_activity(inferior, pid) != Some(ThreadActivity::Outside) {
@@ -506,6 +510,7 @@ impl<P: InspectionOps> Controller<P> {
         };
 
         let usage = Cell::new(InspectionUsage::default());
+
         while let Some(runtime) = runtimes.get(cursor.runtime) {
             let page =
                 self.with_counted_runtime_stop(inferior, runtime, reader, Some(&usage), |stop| {
@@ -673,6 +678,7 @@ impl<P: InspectionOps> Controller<P> {
                     column: ColumnNumber::new(u64::from(place.column)),
                 })
             });
+
         TaskLocation {
             address: None,
             module: Some(module.id),
@@ -720,6 +726,7 @@ impl<P: InspectionOps> Controller<P> {
                 || (!runtimes.is_empty()).then_some(Ok(None)),
                 |reason| Some(Err(reason)),
             );
+
         for runtime in &runtimes {
             let current = self.with_runtime_stop(inferior, runtime, pid, |stop| {
                 runtime.model.current_task(stop, debug_thread_id(pid))
@@ -752,6 +759,7 @@ impl<P: InspectionOps> Controller<P> {
                 || (!runtimes.is_empty()).then_some(ThreadActivity::Outside),
                 |reason| Some(ThreadActivity::Unknown(reason)),
             );
+
         for runtime in &runtimes {
             let activity = self.with_runtime_stop(inferior, runtime, pid, |stop| {
                 runtime.model.thread_activity(stop, debug_thread_id(pid))
@@ -797,6 +805,7 @@ impl<P: InspectionOps> Controller<P> {
         let stacks = self.with_runtime_stop(inferior, &runtime, pid, |stop| {
             runtime.model.thread_stacks(stop, debug_thread_id(pid))
         });
+
         stacks
             .ok()?
             .into_iter()
@@ -870,6 +879,7 @@ impl<P: InspectionOps> Controller<P> {
             .as_ref()
             .ok_or(Error::NotStopped)?
             .triggering_thread;
+
         self.task_root(inferior, task, reader)?
             .ok_or(Error::UnknownTask(task))
     }

@@ -673,6 +673,7 @@ impl Encoder {
     ) -> Result<(), TooMany> {
         let (layout, offset, bit_size) = layout(member.layout);
         let mut flags = 0;
+
         if member.artificial {
             flags |= member_flags::ARTIFICIAL;
         }
@@ -764,6 +765,7 @@ impl Encoder {
         let path = segments(&identity.path, self)?;
         let inline = segments(&identity.inline_namespaces, self)?;
         let arguments = number(self.arguments.len())?;
+
         for argument in identity.arguments.iter() {
             self.arguments.push(match argument {
                 TypeArgument::Type(ty) => ArgumentRecord {
@@ -1167,6 +1169,7 @@ pub fn add_to(
     let mut enumerators = Vec::new();
     let mut runtime_types = Vec::<RuntimeTypeRecord>::new();
     let mut base_keys = Vec::new();
+
     for (index, node) in types.nodes.iter().enumerate() {
         let TypeNode::Resolved(info) = node else {
             continue;
@@ -1216,6 +1219,7 @@ pub fn add_to(
     // The first type for each offset, in identifier order.
     runtime_types.sort_by_key(|record| record.offset.get());
     runtime_types.dedup_by_key(|record| record.offset.get());
+
     let classes = types
         .classes
         .iter()
@@ -1223,6 +1227,7 @@ pub fn add_to(
             value: (*class).into(),
         })
         .collect::<Vec<_>>();
+
     builder
         .owned_table(encoder.types)
         .owned_table(encoder.members)
@@ -1796,6 +1801,7 @@ fn validate_types(image: &Image) -> Result<(), String> {
     let count = types.len();
     let text = |id: U32| strings.contains(StrId(id.get()));
     let mut cursors = Cursors::default();
+
     for record in types {
         let flags = record.flags.get();
         let only = |allowed: u16| flags & !allowed == 0;
@@ -1816,6 +1822,7 @@ fn validate_types(image: &Image) -> Result<(), String> {
             && record.parts == Span::EMPTY;
         let no_bases = record.bases == Span::EMPTY;
         let no_variants = record.variants == Span::EMPTY && unused(record.discriminant);
+
         if !text(record.name) {
             return Err("a type is malformed".into());
         }
@@ -2021,6 +2028,7 @@ fn validate_types(image: &Image) -> Result<(), String> {
                 &mut cursors.identities,
                 Span::<IdentityRecord>::new(record.identity.get(), 1),
             );
+
         if !valid || !sized || !identity {
             return Err("a type is malformed".into());
         }
@@ -2041,6 +2049,7 @@ fn validate_types(image: &Image) -> Result<(), String> {
         ),
         (cursors.identities, image.table::<IdentityRecord>().len()),
     ];
+
     if !lengths
         .iter()
         .all(|(cursor, length)| *cursor as usize == *length)
@@ -2069,6 +2078,7 @@ fn validate_lists(image: &Image) -> Result<(), String> {
     let text = |id: U32| strings.contains(StrId(id.get()));
     let types = image.table::<TypeRecord>().len();
     let files = image.table::<super::lines::FileRecord>().len();
+
     if !image.table::<MemberRecord>().iter().all(|member| {
         (member.name.get() == NONE || text(member.name))
             && valid_type(member.ty, types)
@@ -2105,6 +2115,7 @@ fn validate_lists(image: &Image) -> Result<(), String> {
     let arguments = image.table::<ArgumentRecord>();
     let mut strings_cursor = 0;
     let mut arguments_cursor = 0;
+
     for identity in image.table::<IdentityRecord>() {
         let go = identity.flags & identity_flags::GO != 0;
         let runtime = identity.flags & identity_flags::RUNTIME_TYPE != 0;
@@ -2187,6 +2198,7 @@ fn validate_indexes(image: &Image) -> Result<(), String> {
     let enumerators = image.table::<EnumeratorRecord>();
     let resolved = |entry: &NameEntry| types[entry.value.get() as usize].kind != kinds::MALFORMED;
     let names = image.shared::<NameEntry>(TableKind::TypeNames);
+
     if !index::valid_names(&strings, names, types.len())
         || names.len()
             != types
@@ -2206,6 +2218,7 @@ fn validate_indexes(image: &Image) -> Result<(), String> {
     let base_names = image.shared::<NameEntry>(TableKind::TypeBaseNames);
     let mut expected = 0;
     let mut keys = Vec::with_capacity(types.len());
+
     for record in types {
         let key = if record.kind == kinds::MALFORMED || record.identity.get() == NONE {
             None
@@ -2237,6 +2250,7 @@ fn validate_indexes(image: &Image) -> Result<(), String> {
     // Classes are numbered in the order their first types come.
     let classes = image.shared::<Item>(TableKind::TypeClasses);
     let mut next_class = 0;
+
     if classes.len() != types.len()
         || !classes.iter().all(|class| {
             let class = class.value.get();
@@ -2255,6 +2269,7 @@ fn validate_indexes(image: &Image) -> Result<(), String> {
     let enumerator_names = image.shared::<NameEntry>(TableKind::EnumeratorNames);
     let mut expected = 0;
     let mut listed = vec![Vec::new(); types.len()];
+
     for (index, record) in types.iter().enumerate() {
         if record.kind != kinds::ENUMERATION {
             continue;
@@ -2285,6 +2300,7 @@ fn validate_indexes(image: &Image) -> Result<(), String> {
     // The first type with each runtime descriptor, by offset.
     let runtime_types = image.table::<RuntimeTypeRecord>();
     let mut first = std::collections::BTreeMap::new();
+
     for (index, record) in types.iter().enumerate() {
         if record.kind == kinds::MALFORMED || record.identity.get() == NONE {
             continue;

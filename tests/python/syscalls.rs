@@ -122,6 +122,7 @@ fn check_frames(interpreter: &str, records: &[Value]) {
         ],
         "{interpreter}: {main:#}"
     );
+
     let ends = main["stack"]
         .as_array()
         .expect("a stack")
@@ -144,10 +145,12 @@ fn check_frames(interpreter: &str, records: &[Value]) {
         ],
         "{interpreter}: {worker:#}"
     );
+
     assert!(
         names[3..].contains(&"Thread.run"),
         "{interpreter}: {worker:#}"
     );
+
     assert!(
         frames[1].0 > frames[0].0 + 1,
         "{interpreter}: no native frame between the activations: {worker:#}"
@@ -165,11 +168,13 @@ fn a_python_programs_calls_name_the_python_lines_that_made_them() {
     let traced = trace("3.14", &["-k"]);
     let stderr = String::from_utf8_lossy(&traced.stderr);
     assert!(traced.status.success(), "{stderr}");
+
     let wanted = format!(
         " > opens at {}:{}",
         python::fixture("syscalls.py").display(),
         line("OPENS")
     );
+
     assert!(stderr.lines().any(|text| text == wanted), "{stderr}");
 
     // A saved trace keeps them, and a call's site is its Python line,
@@ -180,12 +185,14 @@ fn a_python_programs_calls_name_the_python_lines_that_made_them() {
     if let Some(debug) = python::debug_directory("3.14") {
         traced.env("NIX_DEBUG_INFO_DIRS", debug);
     }
+
     let traced = traced.output().expect("run microscope");
     assert!(
         traced.status.success(),
         "{}",
         String::from_utf8_lossy(&traced.stderr)
     );
+
     let profile = Profile::read(&saved).expect("the trace reads").profile;
     let syscalls = profile.syscalls();
     let stacks: Vec<Vec<String>> = syscalls
@@ -200,6 +207,7 @@ fn a_python_programs_calls_name_the_python_lines_that_made_them() {
         })
         .map(|stack| profile.syscall_stack(stack).0)
         .collect();
+
     assert_eq!(stacks.len(), 2, "{stacks:#?}");
     assert!(
         stacks.iter().any(|functions| {
@@ -244,6 +252,7 @@ async fn a_catchpoint_stops_with_the_python_frames_that_made_the_call() {
             ..LaunchOptions::default()
         })
         .await;
+
     assert!(
         matches!(&stop, StopReason::Syscall(caught) if caught.path.as_deref() == Some("/dev/null")),
         "{stop:?}"
@@ -253,6 +262,7 @@ async fn a_catchpoint_stops_with_the_python_frames_that_made_the_call() {
     let trace = scenario
         .operation("backtrace", scenario.handle().backtrace())
         .await;
+
     let python: Vec<(usize, String)> = trace
         .frames
         .iter()
@@ -264,6 +274,7 @@ async fn a_catchpoint_stops_with_the_python_frames_that_made_the_call() {
             Some((index, format!("{}:{line}", recorded.function)))
         })
         .collect();
+
     let names: Vec<&str> = python.iter().map(|(_, name)| name.as_str()).collect();
     assert_eq!(
         names[..3],
@@ -274,6 +285,7 @@ async fn a_catchpoint_stops_with_the_python_frames_that_made_the_call() {
         ],
         "{trace:#?}"
     );
+
     assert!(python[1].0 > python[0].0 + 1, "{trace:#?}");
     assert_eq!(trace.frames[0].kind, FrameKind::Physical, "{trace:#?}");
     scenario.shutdown().await;
@@ -293,6 +305,7 @@ mod bpf {
         for interpreter in TRACED {
             let mut command = Command::new(&launcher);
             command.arg(env!("CARGO_BIN_EXE_microscope"));
+
             // The engine unwinds native frames by a copy of the stack, as
             // glibc's system call wrappers keep no frame pointer.
             let traced = engine_command(
@@ -304,6 +317,7 @@ mod bpf {
             .arg("--settle")
             .output()
             .expect("run microscope");
+
             check_frames(interpreter, &records(interpreter, &traced));
         }
     }

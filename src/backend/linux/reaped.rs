@@ -125,6 +125,7 @@ impl Reaped {
     /// when a wait outside this process's took it.
     pub fn take(&self, pid: u32, patience: Duration) -> Option<i32> {
         let deadline = Instant::now() + patience;
+
         loop {
             let late = Instant::now() >= deadline;
             let mut watched = self.lock();
@@ -158,6 +159,7 @@ mod tests {
         let reaped = Reaped::new();
         reaped.watch(7);
         reaped.leave(8, 0);
+
         let left = std::thread::scope(|scope| {
             let owner = scope.spawn(|| reaped.take(7, Duration::from_secs(20)));
             std::thread::sleep(Duration::from_millis(5));
@@ -184,6 +186,7 @@ mod tests {
         let first = reaped.hold(7);
         let second = reaped.hold(7);
         drop(reaped.hold(8));
+
         let (released, last) = std::thread::scope(|scope| {
             let owner = scope.spawn(|| {
                 reaped.wait_unheld(7);

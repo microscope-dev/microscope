@@ -370,6 +370,7 @@ pub fn argument_values(
 
     let names = specs::arg_names(event.call);
     let shown = shown_arguments(event, spec);
+
     spec.args
         .iter()
         .enumerate()
@@ -393,6 +394,7 @@ pub fn entry(event: &SyscallEvent, style: &Style, context: Context<'_>) -> Token
     out.push(Kind::Name, name.as_ref());
     out.punct("(");
     let spec = (!style.raw).then(|| specs::spec(event.call)).flatten();
+
     match spec {
         Some(spec) => arguments(&mut out, event, spec, style, context),
         None => {
@@ -418,6 +420,7 @@ fn shown_arguments(event: &SyscallEvent, spec: &Spec) -> usize {
     const O_TMPFILE: u64 = 0o20_000_000;
     let a = event.args;
     let all = spec.args.len();
+
     match event.call.name().unwrap_or_default() {
         "open" if a[1] & (O_CREAT | O_TMPFILE) == 0 => 2,
         "openat" if a[2] & (O_CREAT | O_TMPFILE) == 0 => 3,
@@ -487,6 +490,7 @@ fn arguments(
         .then(|| specs::arg_names(event.call))
         .flatten();
     let shown = shown_arguments(event, spec);
+
     for (index, arg) in spec.args.iter().enumerate().take(shown) {
         if index > 0 {
             out.punct(", ");
@@ -701,6 +705,7 @@ fn flags(out: &mut Tokens, event: &SyscallEvent, set: &str, word: u64, style: &S
 
     let mut parts = Vec::new();
     let mut rest = value;
+
     match set {
         "open" => {
             let mode = rest & 3;
@@ -838,6 +843,7 @@ fn quote(out: &mut Tokens, bytes: &[u8], limit: Option<usize>, truncated: bool, 
             && shown
                 .iter()
                 .any(|&byte| !(0x20..0x7f).contains(&byte) && !b"\t\n\r".contains(&byte)));
+
     for (position, &byte) in shown.iter().enumerate() {
         if all_hex {
             let _ = write!(text, "\\x{byte:02x}");
@@ -890,6 +896,7 @@ fn string_argument(
 ) {
     #[expect(clippy::cast_possible_truncation, reason = "six arguments")]
     let capture = event.capture(index as u8);
+
     match capture {
         Some(capture)
             if matches!(
@@ -1077,6 +1084,7 @@ fn result(
     match event.outcome {
         Outcome::Returned(value) => {
             let ret = spec.map_or(Ret::Int, |spec| spec.ret);
+
             match ret {
                 Ret::Hex => hex(out, value.cast_unsigned()),
                 Ret::Octal => octal(out, value.cast_unsigned()),
@@ -1130,6 +1138,7 @@ pub fn seconds(nanoseconds: u64) -> String {
 pub fn duration(nanoseconds: u64) -> String {
     #[expect(clippy::cast_precision_loss, reason = "shown rounded")]
     let value = nanoseconds as f64;
+
     if nanoseconds < 1_000 {
         format!("{nanoseconds} ns")
     } else if nanoseconds < 1_000_000 {
@@ -1145,6 +1154,7 @@ pub fn duration(nanoseconds: u64) -> String {
 #[must_use]
 pub fn other(event: &TraceEvent) -> Option<Tokens> {
     let mut out = Tokens::default();
+
     match *event {
         TraceEvent::Signal {
             signal: number,

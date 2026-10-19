@@ -81,6 +81,7 @@ fn console_commands_see_the_focused_frame_and_cannot_run_the_program() {
         )
         .contains("nope")
     );
+
     dap.finish();
 }
 
@@ -137,6 +138,7 @@ fn breakpoints_made_in_the_console_are_announced_and_reported() {
             &json!("disabled; enable 1 in the debug console")
         )
     );
+
     let mark = dap.mark();
     dap.request(
         "evaluate",
@@ -144,6 +146,7 @@ fn breakpoints_made_in_the_console_are_announced_and_reported() {
     );
     let enabled = dap.event(mark, "breakpoint", |body| body["reason"] == "changed");
     assert_eq!(enabled["breakpoint"]["verified"], true);
+
     let mark = dap.mark();
     dap.request(
         "evaluate",
@@ -151,6 +154,7 @@ fn breakpoints_made_in_the_console_are_announced_and_reported() {
     );
     let removed = dap.event(mark, "breakpoint", |body| body["reason"] == "removed");
     assert_eq!(removed["breakpoint"]["id"], id);
+
     let resumed = dap.send("continue", json!({"threadId": stop.thread}));
     dap.success(resumed);
     assert_eq!(
@@ -261,6 +265,7 @@ fn stopped_in_names(dap: &mut Dap, profile: Profile) -> (crate::dap::Stopped, Va
     let frame =
         dap.request("stackTrace", json!({"threadId": stop.thread, "levels": 1}))["stackFrames"][0]
             .clone();
+
     (stop, frame)
 }
 
@@ -350,6 +355,7 @@ fn assignments_in_the_console_change_what_the_variables_view_shows() {
     assert_eq!(repl(&mut dap, &id, "set var list = 9"), "(int) list = 9");
     dap.event(mark, "invalidated", |_| true);
     assert_eq!(locals(&mut dap)["list"], "9");
+
     let hover = dap.request(
         "evaluate",
         json!({"expression": "list + x", "frameId": id, "context": "hover"}),

@@ -978,6 +978,7 @@ impl Kernel {
         let comm = name.rsplit('/').next().unwrap_or(name);
         let comm = &comm[..comm.len().min(15)];
         let start_time = self.allocate_start_time();
+
         self.processes.insert(
             Tgid::led_by(tid),
             Process {
@@ -1000,6 +1001,7 @@ impl Kernel {
                 start_time,
             },
         );
+
         self.outputs.insert(tid, Vec::new());
         let info = SigInfo {
             signal: SIGTRAP,
@@ -1092,6 +1094,7 @@ impl Kernel {
 
         let thread = self.threads.get_mut(&tid).expect("the thread exists");
         let mut status = thread.report.take().expect("a report");
+
         if let State::Zombie(own) = thread.state {
             let group = thread.tgid;
             let leader = tid == group.leader();
@@ -1101,6 +1104,7 @@ impl Kernel {
             // K-EXIT-6: a group exit decides every status reaped after it.
             let exit = process.group_exit.unwrap_or(own);
             status = exit.wait_status(tid);
+
             self.reaped.insert(
                 tid,
                 Reaped {
@@ -1109,6 +1113,7 @@ impl Kernel {
                     group_exit: process.group_exit.is_some(),
                 },
             );
+
             if leader {
                 self.end_process(group, exit);
             } else {
@@ -1214,6 +1219,7 @@ impl Kernel {
             .processes
             .get_mut(&thread.tgid)
             .expect("a thread's process exists");
+
         let address = thread.registers.rip;
         let trap = process.space.peek_bytes(address, 1).as_deref() == Some(&[0xcc]);
         let user_breakpoint = debugged && self.user_breakpoints.contains(&address);
@@ -1228,6 +1234,7 @@ impl Kernel {
             );
         #[cfg(not(test))]
         let skipped = false;
+
         if user_breakpoint && thread.trapped_at != Some(address) && (!trap || skipped) {
             self.unseen_hits.push(UnseenHit { tid, address });
         }
@@ -1288,6 +1295,7 @@ impl Kernel {
 
         self.watching
             .follow(tid, &thread.debug, &accesses, &before, &after);
+
         if matches!(outcome, Outcome::Completed | Outcome::Syscall) {
             if let Some(tracking) = &mut self.tracking {
                 tracking.note(tid, &thread.shadow, address);
@@ -1355,6 +1363,7 @@ impl Kernel {
     /// exit if the tracer resumed it with `PTRACE_SYSCALL` (K-SYS-2).
     fn serve_entered(&mut self, tid: Tid, single_step: bool) -> Executed {
         let executed = self.serve_syscall(tid, single_step);
+
         if self
             .threads
             .get(&tid)
@@ -1396,6 +1405,7 @@ impl Kernel {
         );
         let returned = thread.returning.is_none() && !inside && !thread.state.exiting();
         let debugged = thread.traced() && thread.resumed && self.debugged == Some(thread.tgid);
+
         if returned
             && debugged
             && self
@@ -1484,6 +1494,7 @@ impl Kernel {
                     .expect("the trapping thread exists");
                 thread.trapped_at = Some(address);
                 thread.last_trap = Some((address, thread.retired));
+
                 let info = SigInfo {
                     signal: SIGTRAP,
                     code: cpu::SI_KERNEL,
@@ -1529,6 +1540,7 @@ impl Kernel {
                 .expect("the stepping thread exists")
                 .debug
                 .debug_exception(true, watch_hits);
+
             self.trap(tid, signals::TRAP_TRACE);
             return Executed::Stopped;
         }
@@ -1540,6 +1552,7 @@ impl Kernel {
                 .expect("the accessing thread exists")
                 .debug
                 .debug_exception(false, watch_hits);
+
             self.trap(tid, signals::TRAP_HWBKPT);
             return Executed::Stopped;
         }
@@ -1591,11 +1604,13 @@ impl Kernel {
             crate::sim::cpu::decode(rip, &process.space)
                 .is_ok_and(|instruction| instruction.mnemonic() == iced_x86::Mnemonic::Call)
         });
+
         if !calls {
             return word;
         }
 
         let shift = offset * 8;
+
         (word & !(0xff << shift)) | (0x90 << shift)
     }
 
@@ -1719,6 +1734,7 @@ impl Kernel {
                 ..
             }
         );
+
         interrupted
             || !thread.pending.is_empty()
             || self
@@ -1775,6 +1791,7 @@ impl Kernel {
             SigInfo::event(tid, libc::PTRACE_EVENT_STOP),
             WaitStatus::Event(tid, libc::PTRACE_EVENT_STOP),
         );
+
         if ahead {
             self.happenings
                 .push(Happening::InterruptAheadOfTrap { tid });
@@ -1799,6 +1816,7 @@ impl Kernel {
             }
 
             let current = process.space.peek_bytes(page_address, original.len())?;
+
             current
                 .iter()
                 .zip(original.iter())

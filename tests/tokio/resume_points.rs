@@ -58,6 +58,7 @@ fn bodies(image: &ModuleImage) -> BTreeMap<ImageAddress, Body> {
             .map(|range| range.start)
             .min()
             .expect("a body has code");
+
         bodies.insert(
             entry,
             Body {
@@ -91,6 +92,7 @@ fn bodies(image: &ModuleImage) -> BTreeMap<ImageAddress, Body> {
 async fn the_processor_leaves_each_dispatch_where_the_debugger_says() {
     for fixture in ["tokio-std-async-o0", "tokio-std-async-o3"] {
         let mut scenario = Scenario::launch(fixture);
+
         let reason = scenario
             .run_with_to_stop(LaunchOptions {
                 stop_at_entry: true,
@@ -98,14 +100,19 @@ async fn the_processor_leaves_each_dispatch_where_the_debugger_says() {
                 ..LaunchOptions::default()
             })
             .await;
+
         assert!(matches!(reason, StopReason::Entry), "{fixture}: {reason:?}");
+
         let image = Arc::clone(scenario.handle().module_image());
         let bodies = bodies(&image);
         assert!(!bodies.is_empty(), "{fixture}: no decoded dispatch");
+
         let modules = scenario
             .operation("modules", scenario.handle().loaded_modules())
             .await;
+
         let bias = modules.modules[0].module.load_bias.get();
+
         for entry in bodies.keys() {
             scenario
                 .add_breakpoint_spec(BreakpointSpec::Address(VirtualAddress::new(
@@ -123,12 +130,14 @@ async fn the_processor_leaves_each_dispatch_where_the_debugger_says() {
 
             // The future is the body's first argument.
             let state_at = VirtualAddress::new(register(&scenario, "rdi").await + body.state.0);
+
             let read = scenario
                 .operation(
                     "state",
                     scenario.handle().read_memory(state_at, body.state.1),
                 )
                 .await;
+
             let original = read.bytes.to_vec();
             if probed.insert(entry) {
                 probe_every_state(&mut scenario, fixture, body, state_at, entry, bias).await;
@@ -144,6 +153,7 @@ async fn the_processor_leaves_each_dispatch_where_the_debugger_says() {
                 .iter()
                 .rev()
                 .fold(0_u64, |value, byte| value << 8 | u64::from(*byte));
+
             let (kind, _, expected) = body.points[&state];
             assert_eq!(
                 leave_dispatch(&mut scenario, body, bias).await,
@@ -151,6 +161,7 @@ async fn the_processor_leaves_each_dispatch_where_the_debugger_says() {
                 "{fixture}: {} in state {state} ({kind:?})",
                 body.name
             );
+
             seen.insert((body.name.clone(), state));
             reason = scenario.resume_to_stop().await;
         }
@@ -164,6 +175,7 @@ async fn the_processor_leaves_each_dispatch_where_the_debugger_says() {
         // program waits at.
         let waits = ["// AWAIT: leaf", "// AWAIT: middle", "// AWAIT: walk"]
             .map(|marker| line("std-async/src/main.rs", marker));
+
         for body in bodies.values() {
             for (state, (kind, at, _)) in &body.points {
                 let ran = matches!(kind, CoroutineStateKind::Unresumed)
@@ -182,6 +194,7 @@ async fn the_processor_leaves_each_dispatch_where_the_debugger_says() {
             seen.iter().any(|(_, state)| *state > 2),
             "{fixture}: no body resumed: {seen:?}"
         );
+
         scenario.shutdown().await;
     }
 }
@@ -251,20 +264,24 @@ async fn probe_every_state(
 ) {
     let size = usize::try_from(body.state.1).expect("a small state");
     let saved = saved_registers(scenario).await;
+
     for (&state, &(kind, _, expected)) in &body.points {
         let bytes = &state.to_le_bytes()[..size];
+
         scenario
             .operation(
                 "write state",
                 scenario.handle().write_memory(state_at, bytes),
             )
             .await;
+
         let left = leave_dispatch(scenario, body, bias).await;
         assert_eq!(
             left, expected,
             "{fixture}: {} written state {state} ({kind:?})",
             body.name
         );
+
         for (name, value) in &saved {
             assign(scenario, &format!("${name} = {value:#x}")).await;
         }

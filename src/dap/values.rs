@@ -39,6 +39,7 @@ pub fn variable(
     let mut variable = Map::new();
     variable.insert("name".to_owned(), row.name.as_str().into());
     variable.insert("value".to_owned(), row.text.as_str().into());
+
     if options.types {
         variable.insert(
             "type".to_owned(),
