@@ -99,6 +99,35 @@ struct Mapped {
     loaded: LoadedModule,
 }
 
+/// Takes `start..end` from the modules `mapped` holds, as a new mapping
+/// there replaces them: a module it covers part of keeps the rest, in
+/// pieces of the same image and bias.
+fn uncover(mapped: &mut Vec<Mapped>, start: u64, end: u64) {
+    let mut kept = Vec::with_capacity(mapped.len() + 1);
+    for piece in mapped.drain(..) {
+        if piece.end <= start || piece.start >= end {
+            kept.push(piece);
+            continue;
+        }
+
+        if piece.start < start {
+            kept.push(Mapped {
+                end: start,
+                ..piece
+            });
+        }
+
+        if piece.end > end {
+            kept.push(Mapped {
+                start: end,
+                ..piece
+            });
+        }
+    }
+
+    *mapped = kept;
+}
+
 #[derive(Debug, Default)]
 struct ProcessState {
     mapped: Vec<Mapped>,
@@ -654,9 +683,7 @@ impl Processor {
         let state = self.processes.entry(mmap.pid).or_default();
 
         // A mapping replaces whatever it overlaps.
-        state
-            .mapped
-            .retain(|mapped| mapped.end <= mmap.start || mapped.start >= end);
+        uncover(&mut state.mapped, mmap.start, end);
         state.mappings += 1;
         state.jit.mapped(
             mmap.start,
@@ -873,7 +900,7 @@ impl Processor {
         self.next_module += 1;
         let process = self.builder.process(pid, time.cast_signed());
         let held = &mut self.processes.entry(pid).or_default().mapped;
-        held.retain(|mapped| mapped.end <= code.start || mapped.start >= code.end);
+        uncover(held, code.start, code.end);
         held.push(Mapped {
             start: code.start,
             end: code.end,
@@ -1943,6 +1970,74 @@ mod tests {
             .map(|interval| (interval.tid, interval.time, interval.duration))
             .collect();
         assert_eq!(intervals, [(sleeper.get(), 4_000, 5_000)]);
+    }
+
+    /// A mapping over part of a library, as `mmap(MAP_FIXED)` over one of
+    /// its pages makes, takes only that part: the library's other pages
+    /// still name its code.
+    #[test]
+    fn a_mapping_over_part_of_a_module_leaves_the_rest_of_it() {
+        use object::{Object, ObjectSegment};
+        use std::os::unix::fs::MetadataExt;
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("build/test-programs/libcrash.so")
+            .canonicalize()
+            .expect("run `just build-test-programs`");
+        let data = std::fs::read(&path).expect("read the library");
+        let file = object::File::parse(data.as_slice()).expect("an ELF file");
+        let (offset, size) = file
+            .segments()
+            .find(|segment| {
+                matches!(
+                    segment.flags(),
+                    object::SegmentFlags::Elf { p_flags } if p_flags & object::elf::PF_X != 0
+                )
+            })
+            .map(|segment| segment.file_range())
+            .expect("an executable segment");
+        let (offset, length) = (offset & !0xfff, (size + 0x2fff) & !0xfff);
+        let start = 0x7f00_0000_0000 + offset;
+        let pid = Pid::new(7);
+        let mut processor = Processor::new(DebugFileSearch::default(), 64);
+        let inode = std::fs::metadata(&path).expect("the library's inode").ino();
+        let path = path.as_os_str().as_encoded_bytes().to_vec();
+        processor.process(decode::Record::Mmap(decode::Mmap {
+            pid,
+            start,
+            length,
+            file_offset: offset,
+            inode: Some(inode),
+            executable: true,
+            path: &path,
+            time: 1_000,
+        }));
+        let module = processor.processes[&pid].mapped.clone();
+        assert_eq!(module.len(), 1, "{module:?}");
+
+        processor.process(decode::Record::Mmap(decode::Mmap {
+            pid,
+            start: start + 0x1000,
+            length: 0x1000,
+            file_offset: 0,
+            inode: None,
+            executable: false,
+            path: b"//anon",
+            time: 2_000,
+        }));
+        let pieces = processor.processes[&pid]
+            .mapped
+            .iter()
+            .map(|mapped| (mapped.start, mapped.end, mapped.image, mapped.loaded))
+            .collect::<Vec<_>>();
+        let (image, loaded) = (module[0].image, module[0].loaded);
+        assert_eq!(
+            pieces,
+            [
+                (start, start + 0x1000, image, loaded),
+                (start + 0x2000, start + length, image, loaded),
+            ]
+        );
     }
 
     /// The bytes of a perf sample record that event `identifier` wrote of
