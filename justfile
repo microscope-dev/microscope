@@ -251,7 +251,11 @@ tokio *ARGS:
 stress COUNT="3" *ARGS: build-test-programs
     # Build before the busy loops start so they slow only the tests.
     cargo nextest run --features tools --no-run
-    cpus="$(nproc)"
+    # Physical cores, not logical CPUs: two hyperthreads of a core run little
+    # more than one does, and the tests' deadlines are in seconds. Counting
+    # each of them oversubscribed a 12-core, 24-thread machine past the
+    # deadlines of tests that only load debug information.
+    cpus="$(lscpu -p=CORE,SOCKET | grep -v '^#' | sort -u | wc -l)"
     burners=()
     trap 'kill "${burners[@]}" 2>/dev/null || true' EXIT
     for (( i = 0; i < cpus / 2; i++ )); do (while :; do :; done) & burners+=($!); done

@@ -400,8 +400,10 @@ that runs only after successful assertions.
 ## Stress and soak
 
 `just stress` builds once, then runs the suite repeatedly with twice as many
-test threads as CPUs and busy loops competing for processors. It stops at the
-first failure so the failing test's flight recording survives.
+test threads as physical cores and busy loops competing for processors. It
+counts cores rather than hyperthreads: a core's second thread adds little, so
+counting both overloads the machine past the tests' deadlines. It stops at
+the first failure so the failing test's flight recording survives.
 
 Use a count and nextest expression to chase a rare test:
 
