@@ -152,6 +152,9 @@ struct Located {
 /// a drain or two after the snapshot that follows them.
 const LOCATED_KEPT: usize = 4;
 
+/// A process's executable mappings, as `/proc/PID/maps` lists them.
+type ProcessMappings = (Pid, Vec<perf::Mapped>);
+
 /// Builds a capture from perf records as they are drained.
 pub struct Processor {
     builder: CaptureBuilder,
@@ -221,6 +224,11 @@ pub struct Processor {
     probes_mapped: BTreeSet<(Pid, usize)>,
     probes_found: Vec<(Pid, Found)>,
     probes_executed: BTreeSet<Pid>,
+
+    /// The mappings of each process read after a loss, by the time they
+    /// were read, which take the place of the records lost once every
+    /// record before that time is processed (see [`Processor::lost`]).
+    lost_mappings: std::collections::VecDeque<(u64, Vec<ProcessMappings>)>,
     stacks: Stacks,
     triggered: bool,
 
@@ -277,6 +285,7 @@ impl Processor {
             unclaimed: Vec::new(),
             probes_mapped: BTreeSet::new(),
             probes_found: Vec::new(),
+            lost_mappings: std::collections::VecDeque::new(),
             probes_executed: BTreeSet::new(),
             stacks: Stacks::default(),
             triggered: false,
@@ -521,6 +530,7 @@ impl Processor {
         self.paired = None;
         self.order = order;
         self.processed = watermark.unwrap_or(self.latest).max(self.processed);
+        self.map_lost_before(watermark.unwrap_or(u64::MAX));
     }
 
     /// Keeps only a rolling window of `length` of what happens, from
@@ -564,6 +574,7 @@ impl Processor {
 
     fn process(&mut self, record: decode::Record<'_>) {
         let time = record.time().unwrap_or(self.latest);
+        self.map_lost_before(time);
         if time < self.latest {
             self.builder.count(AccountKind::LateRecords as u32, 1);
         }
@@ -662,10 +673,9 @@ impl Processor {
             decode::Record::Throttle { .. } => {
                 self.builder.count(AccountKind::Throttles as u32, 1);
             }
+            decode::Record::Lost { time, .. } => self.lost(time),
             // An output's record is processed with its sample.
-            decode::Record::Output { .. }
-            | decode::Record::Lost { .. }
-            | decode::Record::Other { .. } => {}
+            decode::Record::Output { .. } | decode::Record::Other { .. } => {}
         }
     }
 
@@ -1039,6 +1049,91 @@ impl Processor {
         }
 
         recovered || !refreshed.stale.is_empty() || !refreshed.objects.is_empty()
+    }
+
+    /// Reads each process's mappings after a ring lost records at `time`,
+    /// as the mapping of a module may have been among them: a module
+    /// whose mapping was never seen has no frames, and its instrumentation
+    /// is never found. A read after the loss covers it already.
+    ///
+    /// What a process maps now may be newer than the loss, its record not
+    /// processed yet, so the mappings read wait until every record before
+    /// they were read has been (see [`Processor::map_lost_before`]).
+    fn lost(&mut self, time: u64) {
+        if self
+            .lost_mappings
+            .back()
+            .is_some_and(|(read, _)| time < *read)
+        {
+            return;
+        }
+
+        let read = super::session::monotonic();
+        let mappings = self
+            .processes
+            .keys()
+            .filter_map(|&pid| Some((pid, perf::mappings(pid.get()).ok()?)))
+            .collect();
+        record!("record: a ring lost records at {time}, mappings read at {read}");
+        self.lost_mappings.push_back((read, mappings));
+    }
+
+    /// Maps the modules read after a loss before `time` that no record
+    /// has mapped where they are, as their records would have. Every
+    /// record before the read has been processed by then, so what is
+    /// still missing was lost. Anonymous code is left to the samples that
+    /// run it (see [`Processor::map_unseen_code`]).
+    fn map_lost_before(&mut self, time: u64) {
+        while let Some((read, _)) = self.lost_mappings.front()
+            && *read <= time
+        {
+            let Some((read, processes)) = self.lost_mappings.pop_front() else {
+                break;
+            };
+
+            for (pid, mappings) in processes {
+                for mapping in &mappings {
+                    let mmap = decode::Mmap {
+                        pid,
+                        start: mapping.start,
+                        length: mapping.end - mapping.start,
+                        file_offset: mapping.file_offset,
+                        inode: Some(mapping.inode),
+                        executable: mapping.executable,
+                        path: &mapping.path,
+                        time: read,
+                    };
+
+                    if !self.holds(&mmap) && perf::identify(&mmap).is_some() {
+                        record!(
+                            "record: mapped {} at {:#x} after a loss",
+                            String::from_utf8_lossy(mmap.path),
+                            mmap.start
+                        );
+                        self.mmap(&mmap);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Whether the process maps `mmap`'s file over all of it already.
+    fn holds(&self, mmap: &decode::Mmap<'_>) -> bool {
+        let key = (
+            PathBuf::from(String::from_utf8_lossy(mmap.path).into_owned()),
+            mmap.inode.unwrap_or(0),
+        );
+        let end = mmap.start.saturating_add(mmap.length);
+        let (Some(&image), Some(process)) =
+            (self.image_index.get(&key), self.processes.get(&mmap.pid))
+        else {
+            return false;
+        };
+
+        process
+            .mapped
+            .iter()
+            .any(|mapped| mapped.image == image && mapped.start <= mmap.start && end <= mapped.end)
     }
 
     /// Maps each anonymous executable mapping the process holds now that
@@ -2127,6 +2222,67 @@ mod tests {
                 (start + 0x2000, start + length, image, loaded),
             ]
         );
+    }
+
+    /// A module whose mapping was lost with a full ring's records is read
+    /// from the process's mappings, with its instrumentation, once every
+    /// record before they were read is processed, and is read only once.
+    #[test]
+    fn a_module_whose_mapping_record_was_lost_is_found_in_the_process() {
+        let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("build/test-programs/probes")
+            .canonicalize()
+            .expect("run `just build-test-programs`");
+        let mut child = std::process::Command::new(&program)
+            .arg("defines")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("the program");
+        let pid = Pid::new(child.id());
+        let mut processor = Processor::new(DebugFileSearch::default(), 64);
+        let comm = |time| decode::Record::Comm {
+            pid,
+            tid: Tid::new(pid.get()),
+            name: b"probes",
+            exec: false,
+            time,
+        };
+
+        processor.process(comm(1_000));
+        processor.process(decode::Record::Lost {
+            count: 1,
+            time: 2_000,
+        });
+        processor.process(comm(3_000));
+        let early = processor.found_probes(pid).1.len();
+
+        processor.ingest(&[], None);
+        let found = processor.found_probes(pid).1;
+        let mapped = processor.processes[&pid].mapped.len();
+
+        processor.process(decode::Record::Lost {
+            count: 1,
+            time: super::super::session::monotonic(),
+        });
+        processor.ingest(&[], None);
+        let again = (
+            processor.found_probes(pid).1.len(),
+            processor.processes[&pid].mapped.len(),
+        );
+
+        drop(child.stdin.take());
+        child.wait().expect("its exit");
+        assert_eq!(early, 0, "mapped before the records before the read");
+        assert_eq!(
+            found
+                .iter()
+                .map(|found| std::path::Path::new(&*found.path))
+                .collect::<Vec<_>>(),
+            [program.as_path()]
+        );
+        assert!(mapped > 0);
+        assert_eq!(again, (0, mapped), "a known mapping was mapped again");
     }
 
     /// The bytes of a perf sample record that event `identifier` wrote of

@@ -82,6 +82,18 @@ Addresses are normalized through the mapping active at the sample's time.
 Module unload, remap, exec, and late mapping records matter. A source line is
 attached only after the address is bound to the matching module image.
 
+A full ring drops mapping records with everything else. A module whose record
+was lost has no frames, and its instrumentation is never found: a program that
+loads the Python package's library while its children flood the rings with
+mappings waits for microscope to listen and never hears. After a loss record
+the recorder reads each process's `/proc/PID/maps` (`Processor::lost`). A
+process may have mapped a file since the loss, and that record is not processed
+yet, so the mappings read wait until every record stamped before the read has
+been processed. Each file mapping still not held under its own image then maps
+as its record would have, stamped with the read's time
+(`Processor::map_lost_before`). Anonymous code is left to the samples that run
+it, as below.
+
 ### Code a compiler generated
 
 Anonymous executable memory, where a just-in-time compiler writes code, has
