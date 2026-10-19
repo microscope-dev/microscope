@@ -818,6 +818,7 @@ async fn zig_returned_values_agree_with_their_program() {
             fixture,
             breakpoints: &["reached"],
             checkpoints: &[
+                "returned-void",
                 "returned-int",
                 "returned-bool",
                 "returned-u64",
