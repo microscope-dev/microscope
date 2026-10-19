@@ -2229,6 +2229,8 @@ mod tests {
     /// record before they were read is processed, and is read only once.
     #[test]
     fn a_module_whose_mapping_record_was_lost_is_found_in_the_process() {
+        use std::io::{BufRead as _, Write as _};
+
         let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("build/test-programs/probes")
             .canonicalize()
@@ -2236,10 +2238,16 @@ mod tests {
         let mut child = std::process::Command::new(&program)
             .arg("defines")
             .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
             .spawn()
             .expect("the program");
         let pid = Pid::new(child.id());
+
+        // Once it answers, the loader has mapped every library it needs.
+        let mut names = child.stdin.take().expect("its input");
+        let mut lines = std::io::BufReader::new(child.stdout.take().expect("its output")).lines();
+        writeln!(names, "ready").expect("name a site");
+        lines.next().expect("a site").expect("its line");
         let mut processor = Processor::new(DebugFileSearch::default(), 64);
         let comm = |time| decode::Record::Comm {
             pid,
@@ -2271,7 +2279,7 @@ mod tests {
             processor.processes[&pid].mapped.len(),
         );
 
-        drop(child.stdin.take());
+        drop(names);
         child.wait().expect("its exit");
         assert_eq!(early, 0, "mapped before the records before the read");
         assert_eq!(
