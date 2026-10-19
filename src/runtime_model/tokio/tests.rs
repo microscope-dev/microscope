@@ -741,6 +741,64 @@ fn the_blocking_pool_lists_its_queue_in_order() {
     assert_eq!(numbers, [1, 21, 22]);
 }
 
+/// A thread stopped inside a push may have counted a slot it has not yet
+/// written: with the pool's lock held, an entry that cannot be read is the
+/// change the pool's gap reports, and the entries before it are listed;
+/// with the lock free, it is damage.
+#[test]
+fn a_queue_read_mid_push_is_the_change_its_lock_reports() {
+    for held in [true, false] {
+        let mut world = World::new(&[]);
+        let runtime = world.runtime(Flavor::CurrentThread, 4, &[vec![(1, 0)]]);
+        let inner = world.pool(runtime.flavor, runtime.handle, &[(20, false), (21, false)]);
+        world.thread(1, Some(&runtime), true, None);
+        let pool = world.model.layout.pool.as_ref().expect("the pool binds");
+        let (lock, len, buffer, head, capacity, size, task) = (
+            pool.lock,
+            pool.len,
+            pool.buffer,
+            pool.head,
+            pool.capacity,
+            pool.task_size,
+            pool.task,
+        );
+        let read = |at: u64| {
+            let mut bytes = [0; 8];
+            assert!(world.memory.read(VirtualAddress::new(at), &mut bytes));
+            u64::from_le_bytes(bytes)
+        };
+        let (ring, first, room) = (
+            read(inner + buffer),
+            read(inner + head),
+            read(inner + capacity),
+        );
+        let slot = (first + 2) % room;
+        world.memory.word(ring + slot * size + task, 0);
+        world.memory.word(inner + len, 3);
+        world
+            .memory
+            .write(inner + lock.offset, u64::from(held), lock.size);
+
+        let (listed, gaps) = world.tasks(64, true);
+        let numbers = listed.iter().map(|task| task.number).collect::<Vec<_>>();
+        if held {
+            assert_eq!(numbers, [1, 20, 21]);
+            assert_eq!(gaps.len(), 1, "{gaps:?}");
+            assert!(
+                gaps[0].contains("was being changed at the stop"),
+                "{gaps:?}"
+            );
+        } else {
+            assert_eq!(numbers, [1]);
+            assert!(
+                gaps.iter()
+                    .any(|gap| gap.starts_with("queued blocking tasks: ")),
+                "{gaps:?}"
+            );
+        }
+    }
+}
+
 /// Addresses read from the program's memory may be anything: a context
 /// at the top of the address space, or a queue's head past its end, is
 /// reported, never followed past the end of the address space.

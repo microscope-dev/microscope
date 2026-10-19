@@ -607,22 +607,33 @@ impl TokioRuntime {
             return Err(format!("its queue holds {length} of {capacity} from slot {head}").into());
         }
 
+        let locked = pool.lock.is_held(lock);
         let mut queued = Vec::new();
         for index in 0..length {
             let slot = (head + index) % capacity;
             let at = buffer.wrapping_add(slot.wrapping_mul(pool.task_size));
-            let header = pointer(at.wrapping_add(pool.task))?;
-            let (vtable, _) = self.trailer(stop, tasks, header)?;
-            let id_offset = word(vtable.wrapping_add(tasks.id_offset))?;
-            queued.push(RuntimeTask {
-                state: TaskState::Runnable,
-                detail: Some("queued in the blocking pool".into()),
-                internal: self.is_launch(stop, vtable),
-                ..task(word(header.wrapping_add(id_offset))?, header.get())
+            let entry = pointer(at.wrapping_add(pool.task)).and_then(|header| {
+                let (vtable, _) = self.trailer(stop, tasks, header)?;
+                let id_offset = word(vtable.wrapping_add(tasks.id_offset))?;
+                Ok(RuntimeTask {
+                    state: TaskState::Runnable,
+                    detail: Some("queued in the blocking pool".into()),
+                    internal: self.is_launch(stop, vtable),
+                    ..task(word(header.wrapping_add(id_offset))?, header.get())
+                })
             });
+            match entry {
+                Ok(entry) => queued.push(entry),
+
+                // A thread stopped inside a push may have counted a slot
+                // it has not yet written: the change the held lock's gap
+                // reports.
+                Err(_) if locked => break,
+                Err(reason) => return Err(reason),
+            }
         }
 
-        Ok((queued, pool.lock.is_held(lock)))
+        Ok((queued, locked))
     }
 }
 
