@@ -28,6 +28,10 @@ use super::{ActiveKind, Controller, Inferior, RuntimeModule};
 pub(super) struct Returning {
     pub(super) activation: Activation,
     pub(super) return_address: VirtualAddress,
+
+    /// The loaded module holding the function, and an address of its code
+    /// in that module's image.
+    pub(super) module: ModuleId,
     pub(super) function: ImageAddress,
 }
 
@@ -115,7 +119,7 @@ impl<P: InspectionOps> Controller<P> {
             return None;
         }
 
-        let module = self.modules.get(&inferior.loaded_module.id)?;
+        let module = self.modules.get(&returning.module)?;
         let frame = FrameRegisters::Thread(registers);
         let mut runtime = self.thread_runtime(inferior, module, pid, &frame);
         let mut budget = InspectionBudget::new(crate::InspectionLimits::default());

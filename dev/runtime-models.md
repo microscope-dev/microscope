@@ -563,7 +563,9 @@ reports `(5, number, id(callable))`. `Reading::native_callee` reads the C
 function from the callable's `PyMethodDef`, and `Controller::step_into_native`
 traps the function's first statement as part of the step's plan, unless the
 function is the runtime's own or no debug information describes it; then the
-step goes on in Python. A native step over or out whose frame returns into
+step goes on in Python. In the extension, a native step over or out plans
+its lines by breakpoints as it would the main executable's. A native step
+over or out whose frame returns into
 the interpreter of a runtime with an agent
 (`Controller::source_step_returned_to_runtime`) becomes, at an internal stop
 (`Edit::ReturnToRuntime`), that runtime's step back, kind 3, from the
@@ -575,9 +577,10 @@ over an unread command, whose older generation the agent then ignores, and
 the callback that ends it binds a step configured at its stop. Where it
 cannot be sent, the native step runs on, as into any code without source.
 `tests/python/stepping.rs` steps into an extension's function, out of it and
-over its end, through a builtin and a stripped twin of the extension, and out
-from a native breakpoint while the agent watches no line, on each build the
-extension is built for.
+over its end, through a builtin and a stripped twin of the extension, out
+from a native breakpoint while the agent watches no line, and over the
+function's lines and its call back into Python, on each build the extension
+is built for.
 
 **Assignments.** The binder makes `name = value`, and a compound
 assignment, to a variable of dynamic type an `Op::Assign` whose value the

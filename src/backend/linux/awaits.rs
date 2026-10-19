@@ -174,7 +174,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         kind: StepKind,
         start: &StepStart,
     ) -> Option<AwaitStep> {
-        if !matches!(kind, StepKind::OverSource | StepKind::Out) {
+        // The futures it reads are the main executable's.
+        if !matches!(kind, StepKind::OverSource | StepKind::Out)
+            || !self.steps_in_main_module(start)
+        {
             return None;
         }
 

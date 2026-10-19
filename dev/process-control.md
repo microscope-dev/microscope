@@ -180,6 +180,16 @@ advance, and selected-call stepping. Their breakpoint ownership is separate
 from user breakpoint ownership. Retiring a plan removes only that plan's
 ownership; a physical site remains installed while any owner still needs it.
 
+A native source step reads its code in whichever loaded module holds it, a
+shared library's as the main executable's (`Located` in `stepping.rs`). The
+step keeps that module in `StepStart::module`, since its source, code
+instance, and physical instance mean something only in their own image, and
+code of another module is never the step's line or instance. Some helpers
+still read the main executable alone, so in a shared library a step has no
+loop bodies treated as its own code, no awaits followed, no chosen call to
+step into, and no inline frames to select; a step out of an outer frame is
+refused there.
+
 Each accepted plan gets an `ExecutionId`. A trap may complete the plan, be an
 unrelated user breakpoint, hit a watchpoint, carry a signal, or expose a
 runtime transition the plan follows. Keep those cases explicit. “Trap means

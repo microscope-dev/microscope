@@ -563,6 +563,11 @@ enum ClassifiedStop {
 
 #[derive(Debug, Clone, Default)]
 struct StepStart {
+    /// The loaded module whose image `source`, `code_instance`, and
+    /// `physical_instance` belong to, which may be a shared library's: the
+    /// ids mean something only in their own image. `None` is the main
+    /// executable's.
+    module: Option<LoadedModule>,
     source: Option<SourceLocation>,
     code_instance: Option<CodeInstanceId>,
     physical_instance: Option<CodeInstanceId>,

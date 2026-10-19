@@ -455,6 +455,117 @@ async fn steps_between_python_and_c(build: &str) {
     session.shutdown().await;
 }
 
+/// The line of the extension's C source that carries `text`.
+fn extension_line(text: &str) -> u64 {
+    let source = std::fs::read_to_string(python::fixture("extension.c")).expect("read the source");
+    let index = source
+        .lines()
+        .position(|line| line.contains(text))
+        .unwrap_or_else(|| panic!("no line of extension.c holds {text}"));
+    index as u64 + 1
+}
+
+/// The C function the selected frame runs, and its line.
+async fn native_line(session: &mut PythonSession) -> (Option<String>, Option<u64>) {
+    let (frame, _) = selected(session).await;
+    (
+        frame.function.map(|function| function.name.to_string()),
+        frame.source.map(|source| source.line.get()),
+    )
+}
+
+/// Into an extension's function, then over its lines by breakpoints, as in
+/// the program's own executable: over a line that calls back into Python,
+/// to the next line of the C function. Without them a step over in a
+/// shared library single-stepped through the interpreter until the agent's
+/// acknowledgement timed out.
+async fn steps_over_the_lines_of_an_extension(build: &str) {
+    let directory = extension_directory(build);
+    let (mut session, reason, _) =
+        PythonSession::launch_to_stop(build, NATIVE, &[&directory], vec![at(NATIVE, "INSPECT")])
+            .await;
+    let StopReason::Breakpoint {
+        address: None,
+        hits,
+    } = &reason
+    else {
+        panic!("{}: {reason:?}: {}", session.context(), session.output());
+    };
+
+    // The callback runs on the breakpoint's line.
+    let breakpoint = hits[0].breakpoint;
+    session
+        .scenario
+        .operation(
+            "remove breakpoint",
+            session.scenario.handle().remove_breakpoint(breakpoint),
+        )
+        .await;
+
+    let reason = step(&mut session, StepKind::IntoSource).await;
+    assert_eq!(
+        reason,
+        stepped(StepKind::IntoSource),
+        "{}",
+        session.context()
+    );
+    let call = extension_line("PyObject_CallNoArgs(args[4])");
+    let mut at = native_line(&mut session).await;
+    for _ in 0..8 {
+        if at.1 == Some(call) {
+            break;
+        }
+
+        let reason = step(&mut session, StepKind::OverSource).await;
+        assert_eq!(
+            reason,
+            stepped(StepKind::OverSource),
+            "{}: {at:?}",
+            session.context()
+        );
+        at = native_line(&mut session).await;
+        assert_eq!(at.0.as_deref(), Some("inspect"), "{}", session.context());
+    }
+    assert_eq!(at.1, Some(call), "{}", session.context());
+
+    let reason = step(&mut session, StepKind::OverSource).await;
+    assert_eq!(
+        reason,
+        stepped(StepKind::OverSource),
+        "{}",
+        session.context()
+    );
+    let (function, line) = native_line(&mut session).await;
+    assert_eq!(
+        function.as_deref(),
+        Some("inspect"),
+        "{}",
+        session.context()
+    );
+    assert!(
+        line.is_some_and(|line| line > call),
+        "{}: {line:?}",
+        session.context()
+    );
+
+    let reason = session.scenario.resume_to_stop().await;
+    assert_eq!(
+        reason,
+        StopReason::Exited(ExitStatus::Code(0)),
+        "{}: {}",
+        session.context(),
+        session.output()
+    );
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn steps_over_the_lines_of_an_extension_on_each_build() {
+    for build in ["3.14", "3.14t", "3.15"] {
+        steps_over_the_lines_of_an_extension(build).await;
+    }
+}
+
 /// On each build the extension is built for that PEP 768 injects the agent
 /// into.
 #[tokio::test]
