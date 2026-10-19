@@ -312,8 +312,14 @@ rereads the table's count at each drain, selects new sites by name as each
 is defined, and switches the control block on once any site is on. Recording
 every site, it also sets `ENABLE_DEFINED` in the enable word, and the SDK
 switches each run-time site on as it is defined, so a site used at once is
-not missed until the next drain. A malformed table or record is counted as
-malformed. The decoder still reads ABI 1, which has no table.
+not missed until the next drain. Its records can then reach a ring between a
+drain's read of the table and its read of the rings, so a ring that names a
+site the collector has not seen reads the table again before it counts any of
+its records: the SDK counts a site before it records one, so the second read
+finds it. `trace_calls` defines a site as each new function first runs, so the
+Python package's records fall in that gap whenever a drain is slow. A
+malformed table or record is counted as malformed. The decoder still reads ABI
+1, which has no table.
 
 The SDK's `c` feature exports C entry points to run-time sites
 (`sdk/rust-probes/src/c.rs`), which the Python package in `sdk/python` loads

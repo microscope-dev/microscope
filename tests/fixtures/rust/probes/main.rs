@@ -21,6 +21,9 @@
 //!   listens.
 //! - `defines`: for each name a line of its standard input gives, a zone's
 //!   site of that name, and a line with the address of its state byte.
+//! - `records`: for each name a line gives, a zone's site of that name,
+//!   one zone of it, and a line saying it was recorded. Recording every
+//!   site switches each on as it is defined.
 
 use std::io::Write as _;
 use std::time::{Duration, Instant};
@@ -43,6 +46,10 @@ fn main() {
     }
     if arguments[1] == "defines" {
         defines();
+        return;
+    }
+    if arguments[1] == "records" {
+        records();
         return;
     }
     if arguments[1] == "defined" {
@@ -219,6 +226,19 @@ fn defines() {
         let site = define(abi::SITE_ZONE, &name, "app.py", 1).expect("a zone");
         // The ABI puts a run-time site's state byte at its offset 1.
         println!("SITE {:#x}", std::ptr::from_ref(site).addr() + 1);
+        std::io::stdout().flush().expect("flush");
+    }
+}
+
+/// Defines a zone of each name a line holds and records one of it, which
+/// recording every site switched on as it was defined.
+fn records() {
+    for name in std::io::stdin().lines() {
+        let name = name.expect("a name");
+        let site = define(abi::SITE_ZONE, &name, "app.py", 1).expect("a zone");
+        assert!(site.on(), "{name} was not on as it was defined");
+        drop(site.zone());
+        println!("RECORDED");
         std::io::stdout().flush().expect("flush");
     }
 }

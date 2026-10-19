@@ -681,7 +681,23 @@ impl Collector {
     }
 
     /// Hands the decoded events of one thread's ring to the processor.
+    ///
+    /// A site the program defined since its definitions were last read,
+    /// switched on as it was, may have records here already. The program
+    /// counts a site before it records one, so a read of the definitions
+    /// after the ring's finds every site the ring's records name.
     fn apply(&mut self, processor: &mut Processor, index: usize, thread: u32, clock: u16) {
+        let instance = &self.instances[index];
+        if instance.defines
+            && self
+                .decoder
+                .events
+                .iter()
+                .any(|decoded| !instance.sites.contains_key(&decoded.key))
+        {
+            self.define(processor, index);
+        }
+
         let decoder = &mut self.decoder;
         let builder = processor.builder();
         builder.count(AccountKind::ProbeMalformed as u32, decoder.malformed);
@@ -955,6 +971,50 @@ mod tests {
         assert!(collector.read_instance(&mut processor, 0));
         child.wait().expect("its exit");
 
+        let builder = processor.builder();
+        assert_eq!(builder.account(AccountKind::ProbeMalformed as u32), 0);
+        assert_eq!(builder.account(AccountKind::ProbeEvents as u32), 2);
+    }
+
+    /// A program that goes on running defines a site and records it
+    /// between a read's definitions and its rings: the records name a
+    /// site the read has not seen, which it reads before it counts them.
+    #[test]
+    fn a_site_defined_between_the_reads_of_definitions_and_rings_is_read_with_its_records() {
+        use std::io::{BufRead as _, Write as _};
+
+        let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("build/test-programs/probes")
+            .canonicalize()
+            .expect("run `just build-test-programs`");
+        let mut child = std::process::Command::new(&program)
+            .arg("records")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("the program");
+        let pid = child.id();
+        let mut processor = record::Processor::new(DebugFileSearch::default(), 64);
+        let found = found(pid, &program, &mut processor);
+        let mut collector = Collector::new(
+            pid,
+            ProbeSelection::All,
+            std::time::Duration::from_secs(600),
+        );
+        collector.adopt(&mut processor, &found);
+        collector.drain(&mut processor);
+
+        // The drain's definitions are read; then the program defines a
+        // site and records it, and the rings are read.
+        let mut names = child.stdin.take().expect("its input");
+        let mut lines = std::io::BufReader::new(child.stdout.take().expect("its output")).lines();
+        writeln!(names, "late").expect("name a site");
+        assert_eq!(lines.next().expect("a line").expect("its text"), "RECORDED");
+        let read = collector.read_instance(&mut processor, 0);
+        drop(names);
+        child.wait().expect("its exit");
+
+        assert!(read);
         let builder = processor.builder();
         assert_eq!(builder.account(AccountKind::ProbeMalformed as u32), 0);
         assert_eq!(builder.account(AccountKind::ProbeEvents as u32), 2);
