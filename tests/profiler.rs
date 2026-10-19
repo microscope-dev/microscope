@@ -1282,7 +1282,23 @@ fn an_attach_follows_threads_that_began_before_it_and_after() {
             .map(|stack| stack.iter().map(|name| (*name).to_owned()).collect())
             .collect();
         expected.sort();
-        assert_eq!(stacks, expected, "{variant}");
+
+        // What the kernel counted, dropped, and throttled, and each
+        // thread's samples, which tell a thread followed late from calls
+        // lost on the way.
+        let profile = &attachment.profile;
+        let mut threads = std::collections::BTreeMap::<u32, usize>::new();
+        for stack in profile.stacks() {
+            *threads.entry(stack.tid).or_default() += 1;
+        }
+        assert_eq!(
+            stacks,
+            expected,
+            "{variant}: counted {}, lost {}, throttled {}, samples by thread {threads:?}",
+            profile.counted(),
+            profile.lost_samples(),
+            profile.throttles(),
+        );
     }
 }
 
