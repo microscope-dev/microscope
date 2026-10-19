@@ -7,6 +7,7 @@
 //! a missing `build/web` embeds nothing, and the page says to run
 //! `just web`.
 
+use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::hash::Hasher as _;
 use std::path::{Path, PathBuf};
@@ -88,6 +89,12 @@ fn sources_digest(manifest: &Path) {
 /// unwrapped clang and only the headers the flake names, so that the objects
 /// depend on nothing of the host's. Outside the dev shell the build stops
 /// and says which variable is missing; it never looks for another compiler.
+///
+/// Every edit to the library reruns this script, since the sources digest
+/// covers it, so the objects are rebuilt only when what clang reads or how
+/// it is run changed: the compiler, its flags, and the C files beside the
+/// programs. The headers outside come from store paths the flags name,
+/// which change with their contents.
 fn bpf_programs(manifest: &Path, out: &Path) {
     let directory = manifest.join("src/backend/linux/bpf");
     println!("cargo::rerun-if-changed={}", directory.display());
@@ -103,41 +110,78 @@ fn bpf_programs(manifest: &Path, out: &Path) {
 
     let clang = variable("MICROSCOPE_BPF_CLANG");
     let include = variable("MICROSCOPE_BPF_INCLUDE");
-    let mut sources: Vec<PathBuf> = std::fs::read_dir(&directory)
+    let mut flags: Vec<OsString> = [
+        "-target",
+        "bpf",
+        "-O2",
+        "-g",
+        "-Wall",
+        "-Werror",
+        "-nostdinc",
+    ]
+    .map(OsString::from)
+    .into();
+    flags.push(format!("-fdebug-prefix-map={}=.", manifest.display()).into());
+    for path in std::env::split_paths(&include) {
+        flags.push("-I".into());
+        flags.push(path.into());
+    }
+
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&directory)
         .expect("read the BPF sources")
         .flatten()
         .map(|entry| entry.path())
-        .filter(|path| path.to_string_lossy().ends_with(".bpf.c"))
+        .filter(|path| path.extension().is_none_or(|extension| extension != "rs"))
         .collect();
-    sources.sort();
-    for source in sources {
-        let name = source.file_name().expect("a file").to_string_lossy();
-        let object = out.join(name.replace(".bpf.c", ".bpf.o"));
-        let mut command = std::process::Command::new(&clang);
-        command
-            .args([
-                "-target",
-                "bpf",
-                "-O2",
-                "-g",
-                "-Wall",
-                "-Werror",
-                "-nostdinc",
-            ])
-            .arg(format!("-fdebug-prefix-map={}=.", manifest.display()));
-        for path in std::env::split_paths(&include) {
-            command.arg("-I").arg(path);
-        }
+    files.sort();
+    let mut digest = std::hash::DefaultHasher::new();
+    for part in std::iter::once(&clang).chain(&flags) {
+        digest.write_usize(part.len());
+        digest.write(part.as_encoded_bytes());
+    }
 
-        let status = command
+    for path in &files {
+        let contents = std::fs::read(path).expect("read a BPF source");
+        let name = path.file_name().expect("a file");
+        digest.write_usize(name.len());
+        digest.write(name.as_encoded_bytes());
+        digest.write_usize(contents.len());
+        digest.write(&contents);
+    }
+
+    let inputs = format!("{:016x}", digest.finish());
+    let sources: Vec<(&PathBuf, PathBuf)> = files
+        .iter()
+        .filter(|path| path.to_string_lossy().ends_with(".bpf.c"))
+        .map(|source| {
+            let name = source.file_name().expect("a file").to_string_lossy();
+            (source, out.join(name.replace(".bpf.c", ".bpf.o")))
+        })
+        .collect();
+    let stamp = out.join("bpf-inputs");
+    let built = std::fs::read_to_string(&stamp).is_ok_and(|built| built == inputs);
+    if built && sources.iter().all(|(_, object)| object.exists()) {
+        return;
+    }
+
+    // An interrupted build leaves no stamp, so the next one starts over.
+    if stamp.exists() {
+        std::fs::remove_file(&stamp).expect("remove the BPF stamp");
+    }
+
+    for (source, object) in sources {
+        let status = std::process::Command::new(&clang)
+            .args(&flags)
             .arg("-c")
-            .arg(&source)
+            .arg(source)
             .arg("-o")
             .arg(&object)
             .status()
             .unwrap_or_else(|error| panic!("run {}: {error}", Path::new(&clang).display()));
         assert!(status.success(), "compiling {} failed", source.display());
     }
+
+    std::fs::write(&stamp, inputs).expect("write the BPF stamp");
 }
 
 fn collect(root: &Path, directory: &Path, files: &mut Vec<(String, String)>) {
