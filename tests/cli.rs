@@ -4421,6 +4421,36 @@ fn a_program_named_alone_is_found_on_path() {
     );
 }
 
+/// A program run through a link runs by the link's name: a multi-call
+/// binary, as coreutils on NixOS and busybox are, chooses what to be from
+/// its `argv[0]`, so `echo` reached through a link to it must stay `echo`.
+#[test]
+fn a_link_to_a_multi_call_binary_runs_as_the_link_names() {
+    let echo = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|directory| directory.join("echo"))
+        .find(|candidate| candidate.is_file())
+        .expect("echo on PATH");
+    let binary = echo.canonicalize().expect("echo's file");
+    let directory = support::ScratchDir::new("cli-multi-call");
+    let link = directory.path().join("echo");
+    std::os::unix::fs::symlink(&binary, &link).expect("link to echo's file");
+
+    let output = microscope_command()
+        .args(["--batch", "--eval", "run"])
+        .arg(&link)
+        .args(["--", "ran-as-echo"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .stdin(Stdio::null())
+        .output()
+        .expect("run microscope");
+    let stdout = assert_success(output);
+    assert!(
+        stdout.contains("ran-as-echo"),
+        "{} {stdout}",
+        binary.display()
+    );
+}
+
 /// A virtual environment's interpreter, a link to the one it was made from,
 /// runs as the environment's: Python finds its environment from the path it
 /// is run as, which an activated environment puts first on `PATH`.
