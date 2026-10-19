@@ -1712,14 +1712,13 @@ impl<P: InspectionOps> Controller<P> {
     /// only delay. Waits for one when `block` holds and none is queued.
     fn next_message(&self, block: bool) -> Option<ControllerMessage> {
         self.drain_messages();
-        if self.inferior.as_ref().is_some_and(|inferior| {
-            inferior.agents.values().any(|installation| {
-                installation
-                    .deadline()
-                    .is_some_and(|deadline| deadline <= std::time::Instant::now())
-            })
-        }) {
+        let deadline = self.agent_deadline();
+        if deadline.is_some_and(|deadline| deadline <= std::time::Instant::now()) {
             return Some(ControllerMessage::AgentTimeout);
+        }
+
+        if deadline.is_some() {
+            crate::count!("agent_outstanding_messages", 1);
         }
 
         let mut pending = self.pending.borrow_mut();
@@ -1748,22 +1747,24 @@ impl<P: InspectionOps> Controller<P> {
         // While an agent's acknowledgement is outstanding, the alarm wakes
         // the controller at its deadline, which the check above then
         // judges.
-        let deadline = self.inferior.as_ref().and_then(|inferior| {
+        if let Some(deadline) = deadline
+            && !self.set_alarm(deadline)
+        {
+            return self.poll_messages();
+        }
+
+        self.messages.borrow_mut().blocking_recv()
+    }
+
+    /// The earliest deadline of an agent's outstanding acknowledgement.
+    fn agent_deadline(&self) -> Option<std::time::Instant> {
+        self.inferior.as_ref().and_then(|inferior| {
             inferior
                 .agents
                 .values()
                 .filter_map(runtime_agents::Installation::deadline)
                 .min()
-        });
-        if let Some(deadline) = deadline {
-            if !self.set_alarm(deadline) {
-                return self.poll_messages();
-            }
-
-            crate::count!("agent_alarm_waits", 1);
-        }
-
-        self.messages.borrow_mut().blocking_recv()
+        })
     }
 
     /// Sets the alarm to wake the controller at `deadline`, starting it the
@@ -1799,14 +1800,7 @@ impl<P: InspectionOps> Controller<P> {
     /// outstanding, as a controller whose alarm could not start must.
     fn poll_messages(&self) -> Option<ControllerMessage> {
         loop {
-            let deadline = self.inferior.as_ref().and_then(|inferior| {
-                inferior
-                    .agents
-                    .values()
-                    .filter_map(runtime_agents::Installation::deadline)
-                    .min()
-            });
-            let Some(deadline) = deadline else {
+            let Some(deadline) = self.agent_deadline() else {
                 return self.messages.borrow_mut().blocking_recv();
             };
             let now = std::time::Instant::now();

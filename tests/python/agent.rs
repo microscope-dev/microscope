@@ -1093,8 +1093,8 @@ async fn a_missing_agent_acknowledgement_has_a_bounded_visible_failure() {
 /// While an agent's acknowledgement is outstanding, the controller waits
 /// for each step's stop blocked on its messages, with the alarm set for the
 /// deadline, so it takes the stop as it arrives. A controller that polled
-/// would sleep up to 5 ms after each. Its waits are counted, not timed, so
-/// a busy machine cannot fail the test or hide a poll.
+/// would sleep up to 5 ms after each. The controller's messages and sleeps
+/// are counted, not timed, so a busy machine cannot fail the test.
 #[tokio::test]
 async fn steps_are_as_prompt_while_an_acknowledgement_is_outstanding() {
     use crate::session::PythonSession;
@@ -1138,12 +1138,15 @@ async fn steps_are_as_prompt_while_an_acknowledgement_is_outstanding() {
 
         let counters = recording.finish().expect("the timings report").counters;
         let count = |name: &str| counters.get(name).copied().unwrap_or(0);
-        (count("agent_alarm_waits"), count("agent_poll_sleeps"))
+        (
+            count("agent_outstanding_messages"),
+            count("agent_poll_sleeps"),
+        )
     };
 
-    // With nothing outstanding the controller waits with no deadline.
+    // With nothing outstanding, no message waits on a deadline.
     let acknowledged = steps(&mut session).await;
-    assert_eq!(acknowledged, (0, 0), "(alarm waits, poll sleeps)");
+    assert_eq!(acknowledged, (0, 0), "(outstanding messages, poll sleeps)");
 
     session.scenario.remove_breakpoint(first.id).await;
     let snapshot = session.scenario.snapshot().await;
@@ -1160,14 +1163,18 @@ async fn steps_are_as_prompt_while_an_acknowledgement_is_outstanding() {
         snapshot.breakpoints
     );
 
-    // A stop can be queued before the controller waits for it, so not every
-    // step waits; some do, and none of them sleeps.
-    let (alarm_waits, poll_sleeps) = steps(&mut session).await;
+    // Each step's stop is a message the controller takes while the
+    // acknowledgement is outstanding. One already queued is taken without
+    // a wait; none is taken after a sleep.
+    let (outstanding, poll_sleeps) = steps(&mut session).await;
     assert_eq!(
         poll_sleeps, 0,
         "{STEPS} steps slept in a poll {poll_sleeps} times"
     );
-    assert!(alarm_waits > 0, "no wait of {STEPS} steps had a deadline");
+    assert!(
+        outstanding >= u64::from(STEPS),
+        "{STEPS} steps took {outstanding} messages with the acknowledgement outstanding"
+    );
     session.shutdown().await;
 }
 
