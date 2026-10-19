@@ -108,10 +108,12 @@ impl Profile {
     pub fn zones(&self) -> Vec<ProfileZone> {
         let capture = &self.capture;
         let mut zones = Vec::with_capacity(capture.zones.len());
+
         for range in &capture.zone_ranges {
             let thread = &capture.threads[range.thread.get() as usize];
             let pid = capture.processes[thread.process.get() as usize].pid.get();
             let start = range.start.get() as usize;
+
             for zone in &capture.zones[start..start + range.count.get() as usize] {
                 let value = zone.value.get();
                 zones.push(ProfileZone {
@@ -222,6 +224,7 @@ impl Profile {
     pub fn zone_sites(&self) -> Vec<ZoneSite> {
         let capture = &self.capture;
         let mut sites: Vec<ZoneSite> = Vec::new();
+
         for zone in &capture.zones {
             let site = &capture.sites[zone.site.get() as usize];
             let name = capture.string(site.name.get());
@@ -240,6 +243,7 @@ impl Profile {
                     });
                     sites.len() - 1
                 });
+
             let length = u64::try_from(zone.end.get() - zone.start.get()).unwrap_or(0);
             let entry = &mut sites[position];
             entry.count += 1;

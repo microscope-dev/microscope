@@ -181,6 +181,7 @@ impl Corpus {
 
         let mut programs = Vec::new();
         let mut next_inode = 1;
+
         for path in manifests {
             let text = std::fs::read_to_string(&path).map_err(io(&path))?;
             let manifest: Manifest =
@@ -198,6 +199,7 @@ impl Corpus {
                 })?;
             let mut facts = facts.variants.into_iter();
             let mut variants = Vec::new();
+
             for entry in &manifest.variants {
                 let name = format!("{}-{}", manifest.program, entry.name);
                 let file = built.join(&manifest.program).join(&name);
@@ -214,6 +216,7 @@ impl Corpus {
                     .map_err(|error| load(error.to_string()))?;
                 let functions = defined_functions(&data).map_err(load)?;
                 let globals = watchable_objects(&data).map_err(load)?;
+
                 let variant_facts = facts
                     .next()
                     .filter(|facts| facts.name == entry.name)
@@ -222,6 +225,7 @@ impl Corpus {
                     })?;
                 let variant_facts = Facts::new(variant_facts)
                     .map_err(|error| CorpusError::load(&facts_path, error))?;
+
                 variants.push(Variant {
                     name,
                     file,
@@ -241,6 +245,7 @@ impl Corpus {
                 .iter()
                 .flat_map(|variant| variant.functions.iter().cloned())
                 .collect::<std::collections::BTreeSet<_>>();
+
             let source_file = root
                 .join(&manifest.program)
                 .join(format!("{}.c", manifest.program));
@@ -248,6 +253,7 @@ impl Corpus {
             let source_lines = source.lines().count() as u64;
             let markers =
                 markers::parse(&source).map_err(|error| CorpusError::load(&source_file, error))?;
+
             programs.push(Program {
                 views: views_of(&root, &manifest.program)?,
                 source: PathBuf::from(format!("{SIMULATED_ROOT}/{0}/{0}.c", manifest.program)),

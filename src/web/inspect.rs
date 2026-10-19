@@ -64,6 +64,7 @@ pub async fn context(
                 ),
             )
         })?;
+
     Ok(context)
 }
 
@@ -92,6 +93,7 @@ pub async fn backtrace(
             })
         })
         .collect();
+
     Ok(Backtrace {
         frames,
         folds,
@@ -113,6 +115,7 @@ async fn frame_of(
 
     let place = crate::present::frames::place(frame, image.as_deref());
     images.note_recorded(frame, place.as_ref());
+
     let first = frame.recorded.as_ref().map_or_else(
         || {
             frame
@@ -135,6 +138,7 @@ async fn frame_of(
         column: place.column,
         first,
     });
+
     Frame {
         index: frame.id.get(),
         name: crate::present::frames::name(frame, image.as_deref()),
@@ -176,6 +180,7 @@ pub async fn sources(images: &Images, python: Option<Project>) -> SourceFiles {
             files.insert(file.path.display().to_string());
         }
     }
+
     files.extend(recorded.iter().map(|path| path.display().to_string()));
 
     let mut note = None;
@@ -236,6 +241,7 @@ pub async fn sources(images: &Images, python: Option<Project>) -> SourceFiles {
             })
         })
     });
+
     SourceFiles {
         files: files.into_iter().collect(),
         entry,
@@ -293,6 +299,7 @@ pub async fn functions(images: &Images, query: &FunctionQuery) -> Result<Functio
     candidates[..keep].sort_unstable();
     let mut found = Vec::new();
     let mut more = false;
+
     for position in 0..candidates.len() {
         if position == keep {
             candidates[keep..].sort_unstable();
@@ -364,6 +371,7 @@ pub async fn source(
     let mut found = None;
     let mut breakable = BTreeSet::new();
     let every = FIRST_LINE..=LAST_LINE;
+
     for image in images.with_sources().await {
         let Some(file) = image
             .source_files()
@@ -392,6 +400,7 @@ pub async fn source(
             ));
         }
     };
+
     Ok(SourceText {
         path: path.to_owned(),
         read: read.display().to_string(),
@@ -416,12 +425,14 @@ pub async fn tasks(
     let stop = microscope::StopId::new(at.stop);
     let page = handle.program_tasks_at(stop, None, TASK_LIMIT).await?;
     let mut tasks = Vec::with_capacity(page.tasks.len());
+
     for task in page.tasks.iter() {
         let trace = handle
             .at(innermost(at.stop, ExecutionContext::Task(task.id)))
             .backtrace()
             .await;
         let mut known = BTreeMap::new();
+
         if let Ok(trace) = &trace {
             for module in trace.frames.iter().filter_map(|frame| frame.module) {
                 if let Some(image) = images.get(module).await {

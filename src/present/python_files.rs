@@ -56,6 +56,7 @@ impl Project {
     pub fn of(arguments: &[OsString], cwd: &Path, pythonpath: Option<&OsStr>) -> Self {
         let cwd = lexical(cwd);
         let line = command_line(arguments);
+
         let (script, first) = match line.runs {
             Runs::Script(script) => {
                 let script = lexical(&cwd.join(script));
@@ -105,6 +106,7 @@ impl Project {
         let mut unreadable = Vec::new();
         let mut walked = BTreeSet::new();
         let mut queue = self.directories.iter().cloned().collect::<VecDeque<_>>();
+
         while let Some(directory) = queue.pop_front() {
             if !walked.insert(directory.clone()) {
                 continue;
@@ -131,6 +133,7 @@ impl Project {
                     Err(_) => whole = false,
                 }
             }
+
             children.sort_by_key(std::fs::DirEntry::file_name);
             for child in children {
                 entries += 1;
@@ -213,6 +216,7 @@ fn command_line(arguments: &[OsString]) -> CommandLine<'_> {
             break Runs::Directory;
         };
         let bytes = argument.as_bytes();
+
         match bytes {
             b"-" => break Runs::Directory,
             b"--" => {

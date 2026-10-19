@@ -27,6 +27,7 @@ fn launch(program: &str, arguments: &[&str]) -> (Kernel, Tid) {
         .iter()
         .map(|&argument| argument.to_owned())
         .collect::<Vec<_>>();
+
     let mut kernel = Kernel::new(TRACER);
     let pid = kernel.spawn(
         Arc::clone(&variant.image),
@@ -34,6 +35,7 @@ fn launch(program: &str, arguments: &[&str]) -> (Kernel, Tid) {
         &arguments,
         [0; 16],
     );
+
     assert!(run_until_report(&mut kernel, pid));
     (kernel, pid)
 }
@@ -82,6 +84,7 @@ fn to_entry(kernel: &mut Kernel, tid: Tid, call: u64, ready: impl Fn(&Kernel) ->
 fn a_write_to_another_descriptor_is_a_gap() {
     let (mut kernel, leader) = launch("straight", &["1"]);
     to_entry(&mut kernel, leader, SYS_WRITE, |_| true);
+
     let (mut registers, _) = kernel
         .get_registers_and_call(leader)
         .expect("registers at the entry");
@@ -89,8 +92,10 @@ fn a_write_to_another_descriptor_is_a_gap() {
     kernel
         .set_registers(leader, registers)
         .expect("set registers");
+
     kernel.resume_to_call(leader, None).expect("resume");
     assert!(!run_until_report(&mut kernel, leader));
+
     let gap = kernel.gap.expect("a gap").0;
     assert!(gap.contains("write to descriptor 3"), "{gap}");
 }
@@ -106,6 +111,7 @@ fn a_wait_that_cannot_store_the_status_is_a_gap() {
             .keys()
             .any(|&process| process != Tgid::led_by(leader))
     });
+
     let (mut registers, _) = kernel
         .get_registers_and_call(leader)
         .expect("registers at the entry");
@@ -113,8 +119,10 @@ fn a_wait_that_cannot_store_the_status_is_a_gap() {
     kernel
         .set_registers(leader, registers)
         .expect("set registers");
+
     kernel.resume_to_call(leader, None).expect("resume");
     assert!(!run_until_report(&mut kernel, leader));
+
     let gap = kernel.gap.expect("a gap").0;
     assert!(gap.contains("wait4 storing"), "{gap}");
 }
@@ -131,9 +139,11 @@ fn a_thread_that_raised_a_trap_is_not_in_user_code() {
         .expect("registers at the first stop");
     let entry = registers.rip;
     let word = kernel.peek(leader, entry).expect("read code");
+
     kernel
         .poke(leader, entry, (word & !0xff) | 0xcc)
         .expect("plant a trap");
+
     kernel.resume(leader, None, false).expect("resume");
     assert!(kernel.threads[&leader].in_user_code());
     kernel.run(leader, 16);

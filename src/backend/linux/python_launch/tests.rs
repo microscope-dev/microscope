@@ -23,6 +23,7 @@ fn requests_wait_until_taken_or_withdrawn_and_the_directory_is_private() {
         std::fs::read_to_string(directory.join("pid")).expect("the pid"),
         "42"
     );
+
     launch.request("/tmp/a.py").expect("request");
     launch.request("/tmp/b.py").expect("request");
     assert!(launch.withdraw("/tmp/b.py").expect("withdraw"));
@@ -53,6 +54,7 @@ fn only_cpython_3_12_and_3_13_are_bootstrapped() {
     let root = std::env::var_os("MICROSCOPE_CPYTHON")
         .expect("MICROSCOPE_CPYTHON names the interpreters; run tests in the dev shell");
     let root = Path::new(&root);
+
     for (build, bootstrapped) in [
         ("3.12", true),
         ("3.13", true),
@@ -71,6 +73,7 @@ fn only_cpython_3_12_and_3_13_are_bootstrapped() {
             executable.display()
         );
     }
+
     assert!(!launches_bootstrapped_python(Path::new("/bin/sh")));
     assert!(!launches_bootstrapped_python(Path::new("/nonexistent")));
 
@@ -78,11 +81,13 @@ fn only_cpython_3_12_and_3_13_are_bootstrapped() {
     let launch = PythonLaunch::prepare(&root.join("3.12").join("python"), &mut environment)
         .expect("prepare")
         .expect("a bootstrap for 3.12");
+
     // A FIFO is no program, and opening it to read would wait for a writer.
     let fifo = launch.directory.join("fifo");
     nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRUSR).expect("a FIFO");
     assert!(!launches_bootstrapped_python(&fifo));
     std::fs::remove_file(&fifo).expect("remove the FIFO");
+
     let value = |name: &str| {
         environment
             .iter()
@@ -90,6 +95,7 @@ fn only_cpython_3_12_and_3_13_are_bootstrapped() {
             .find(|(set, _)| set == name)
             .and_then(|(_, value)| value.clone())
     };
+
     let mut path = launch.directory.as_os_str().to_owned();
     path.push(":/mine");
     assert_eq!(value("PYTHONPATH"), Some(path));

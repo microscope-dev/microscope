@@ -75,6 +75,7 @@ fn an_entry_reads_back_under_the_key_of_exactly_its_inputs() {
         Key::of(&[b"ab", b"c", b""]),
         Key::of(&[]),
     ];
+
     for (index, key) in keys.iter().enumerate() {
         assert!(!keys[..index].contains(key), "{index}");
     }
@@ -118,6 +119,7 @@ fn a_damaged_entry_is_reported_and_removed() {
         ("empty", Vec::new()),
         ("not an image", b"#!/bin/sh\n".repeat(20)),
     ];
+
     for (name, bytes) in damaged {
         let key = Key::of(&[name.as_bytes()]);
         std::fs::write(cache.path(key), bytes).unwrap();
@@ -159,6 +161,7 @@ fn opening_evicts_the_entries_used_longest_ago() {
     let entry = image(b"views");
     let length = entry.as_bytes().len() as u64;
     let keys = (0..4_u8).map(|n| Key::of(&[&[n]])).collect::<Vec<_>>();
+
     for (age, key) in keys.iter().enumerate() {
         cache.put(*key, &entry).unwrap();
         set_modified(&cache.path(*key), 1_000 + i64::try_from(age).unwrap() * 10);

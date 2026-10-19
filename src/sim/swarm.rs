@@ -126,6 +126,7 @@ impl Swarm {
         // it exists to show.
         let faulty = pick(if forks { &[0, 1, 1, 1] } else { &[0, 1] }) == 1;
         let fault = faulty.then(|| Plan::choose(choices, creates_threads, forks));
+
         let mut pick = |options: &[u64]| *choices.pick(Stream::Swarm, options);
         Self {
             program,

@@ -973,6 +973,7 @@ pub fn parse(signature: &'static str, classes: &str) -> Result<Spec, ParseError>
     // `-desc` keeps a call that takes a descriptor out of %desc, as
     // strace's tables do for a few.
     let mut not_desc = false;
+
     for name in classes.split_whitespace() {
         if name == "-desc" {
             not_desc = true;
@@ -1099,6 +1100,7 @@ mod tests {
     #[test]
     fn every_signature_parses_and_names_a_64_bit_call() {
         let mut names = std::collections::BTreeSet::new();
+
         for &(name, signature, classes) in SIGNATURES {
             parse(signature, classes).unwrap_or_else(|error| panic!("{name}: {error:?}"));
             assert!(names.insert(name), "{name} is listed twice");

@@ -43,6 +43,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .collect::<BTreeSet<_>>();
         let mut registered = Registered::default();
         let mut budget = MAX_TOTAL_BYTES;
+
         for descriptor in descriptors {
             let read = |address: u64, size: usize| {
                 let read = read_logical_block(

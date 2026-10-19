@@ -52,6 +52,7 @@ fn launch(args: &LauncherArgs) -> io::Error {
     };
 
     let mut traced = [0];
+
     match adapter.read(&mut traced) {
         Ok(1) => {
             // Unrandomized, as a program the adapter launches itself is.

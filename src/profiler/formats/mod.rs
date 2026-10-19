@@ -105,6 +105,7 @@ impl Profile {
             _ => pprof::import(bytes).map_err(|error| format!("not a pprof profile: {error}")),
         }
         .map_err(ProfileFileError::Invalid)?;
+
         Ok(ReadProfile {
             profile: Self { capture },
             truncated: false,

@@ -50,6 +50,7 @@ impl SocketAddress {
         let rest = &bytes[2..];
         let port = |rest: &[u8]| Some(u16::from_be_bytes(rest.get(..2)?.try_into().ok()?));
         let word = |slice: Option<&[u8]>| Some(u32::from_le_bytes(slice?.try_into().ok()?));
+
         Some(match family {
             AF_INET => Self::Inet {
                 port: port(rest)?,

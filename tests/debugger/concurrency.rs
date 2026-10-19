@@ -69,6 +69,7 @@ async fn thread_steps_at(fixture: &str, arguments: &[&str], needle: &str) -> (Sc
     );
     let main = stopped_thread(&mut scenario).await;
     scenario.remove_all_breakpoints().await;
+
     (scenario, main)
 }
 
@@ -169,6 +170,7 @@ async fn steps_complete_on_their_thread_while_another_runs_the_same_code() {
         // Optimized code may fold the lines, so `next` can return early.
         let optimized = !fixture.ends_with("-o0");
         let lines = ["value += 3;", "thread_steps_sink = value;"].map(thread_steps_line);
+
         for line in lines {
             assert_eq!(
                 scenario.step_to_stop(StepKind::OverSource).await,
@@ -231,6 +233,7 @@ async fn a_single_thread_step_keeps_every_other_thread_stopped() {
         let before = scenario
             .operation("racer rounds", scenario.handle().read_word(rounds))
             .await;
+
         for kind in [StepKind::IntoSource, StepKind::OverSource, StepKind::Out] {
             assert_eq!(
                 scenario.step_alone_to_stop(kind).await,
@@ -405,6 +408,7 @@ async fn breakpoints_edited_while_threads_hit_them_report_only_current_breakpoin
     let handle = scenario.handle().clone();
     let mut events = handle.subscribe();
     let _run = scenario.start_running().await;
+
     for round in 0..64 {
         let context = format!("round {round}");
         let breakpoint = scenario
@@ -427,6 +431,7 @@ async fn breakpoints_edited_while_threads_hit_them_report_only_current_breakpoin
             )
             .await;
         assert_eq!(removed.id, breakpoint.id);
+
         let mut removal = None;
         let mut stop = None;
         loop {
@@ -670,6 +675,7 @@ async fn a_main_thread_continued_alone_ends_its_execution_when_it_exits() {
         .rposition(|line| line.contains("rt_exit(LEADER_STATUS);"))
         .map(|index| u64::try_from(index + 1).expect("line fits u64"))
         .expect("main's exit");
+
     for ending in ["exits", "is killed", "is shut down"] {
         let mut scenario = Scenario::new(
             format!("main thread exits alone, then the process {ending}"),

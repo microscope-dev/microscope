@@ -2842,6 +2842,7 @@ mod tests {
             "// Generated from src/web/protocol.rs by `cargo test`; do not edit.\n\n\
              export const PROTOCOL_VERSION = {VERSION};\n"
         );
+
         for declare in DECLARATIONS {
             text.push('\n');
             text.push_str("export ");

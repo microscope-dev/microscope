@@ -95,6 +95,7 @@ impl Choices {
         // Lemire's method: the high half of a 128-bit product, rejecting
         // the few low halves that would bias it.
         let threshold = bound.wrapping_neg() % bound;
+
         loop {
             let product = u128::from(self.streams[stream.index()].next()) * u128::from(bound);
             #[expect(
@@ -130,6 +131,7 @@ impl Choices {
     /// If every weight is zero.
     pub fn weighted(&mut self, stream: Stream, weights: &[u64]) -> usize {
         let mut draw = self.below(stream, weights.iter().sum());
+
         for (index, &weight) in weights.iter().enumerate() {
             if draw < weight {
                 return index;
@@ -171,12 +173,14 @@ impl Xoshiro256StarStar {
         let state = &mut self.0;
         let result = state[1].wrapping_mul(5).rotate_left(7).wrapping_mul(9);
         let shifted = state[1] << 17;
+
         state[2] ^= state[0];
         state[3] ^= state[1];
         state[1] ^= state[2];
         state[0] ^= state[3];
         state[2] ^= shifted;
         state[3] = state[3].rotate_left(45);
+
         result
     }
 }
@@ -217,6 +221,7 @@ mod tests {
                 9_817_491_932_198_370_423
             ]
         );
+
         let mut generator = Xoshiro256StarStar([1, 2, 3, 4]);
         assert_eq!(
             [
@@ -227,6 +232,7 @@ mod tests {
             ],
             [11_520, 0, 1_509_978_240, 1_215_971_899_390_074_240]
         );
+
         assert_eq!(fnv1a(b""), 0xcbf2_9ce4_8422_2325);
         assert_eq!(fnv1a(b"a"), 0xaf63_dc4c_8601_ec8c);
 
@@ -236,6 +242,7 @@ mod tests {
             [schedule.next(), schedule.next()],
             [1_886_335_871_282_662_602, 10_910_123_076_694_925_545]
         );
+
         let swarm = &mut choices.streams[Stream::Swarm.index()];
         assert_eq!(
             [swarm.next(), swarm.next()],

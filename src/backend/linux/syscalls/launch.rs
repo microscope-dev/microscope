@@ -112,6 +112,7 @@ pub fn launch(mut command: Command, options: GateOptions) -> std::io::Result<Gat
 
     let pid = u32::from_le_bytes(pid);
     record!("syscalls launch: {pid} waits at its gate");
+
     Ok(Gate {
         pid,
         go: Some(go_write),

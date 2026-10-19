@@ -328,6 +328,7 @@ impl Ring {
 
         let base = std::ptr::NonNull::new(base.cast::<u8>())
             .ok_or_else(|| std::io::Error::from_raw_os_error(libc::ENOMEM))?;
+
         Ok(Self {
             fd,
             memory: RingMemory {

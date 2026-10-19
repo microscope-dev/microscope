@@ -73,7 +73,6 @@ fn general_index(dwarf: DwarfRegister) -> Option<usize> {
         .position(|(number, ..)| *number == dwarf)
 }
 
-/// Every general register's value, indexed as [`GENERAL_REGISTERS`].
 /// The segment, thread-pointer, and system-call registers, after the
 /// general ones: each name, width, and whether every frame shares it.
 const SPECIAL_REGISTERS: [(&str, u16, bool); 9] = [
@@ -102,6 +101,7 @@ const fn special_values(native: &libc::user_regs_struct) -> [u64; 9] {
     ]
 }
 
+/// Every general register's value, indexed as [`GENERAL_REGISTERS`].
 const fn general_values(registers: &libc::user_regs_struct) -> [u64; 18] {
     [
         registers.rax,
@@ -333,6 +333,7 @@ pub(super) fn x86_64_register_snapshot(
         ))
         .collect::<Vec<_>>()
         .into();
+
     RegisterSnapshot {
         revision,
         context,

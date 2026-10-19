@@ -12,9 +12,11 @@ async fn pointer_variables_are_available_and_explicitly_dereferenceable() {
             partial.run_to_stop().await,
             StopReason::Breakpoint { .. }
         ));
+
         let variables = partial
             .operation("partial variables", partial.handle().variables())
             .await;
+
         assert_eq!(variables.variables.len(), 2);
         assert_variable_value(&variables.variables[0], ScalarValue::Signed(42));
         let pointer = &variables.variables[1];
@@ -22,6 +24,7 @@ async fn pointer_variables_are_available_and_explicitly_dereferenceable() {
             pointer.type_info.as_ref().map(|info| &info.kind),
             Some(microscope::TypeKind::Pointer { .. })
         ));
+
         let reference = match &pointer.state {
             VariableState::Available {
                 value,
@@ -44,6 +47,7 @@ async fn pointer_variables_are_available_and_explicitly_dereferenceable() {
                 partial.handle().dereference(reference.clone()),
             )
             .await;
+
         assert!(matches!(
             dereferenced.state,
             VariableState::Available {
@@ -51,10 +55,12 @@ async fn pointer_variables_are_available_and_explicitly_dereferenceable() {
                 ..
             }
         ));
+
         assert_eq!(
             available_value(&dereferenced.state),
             &microscope::VariableValue::Scalar(ScalarValue::Signed(42))
         );
+
         let constrained = partial
             .operation(
                 "bound scalar dereference bytes",
@@ -67,6 +73,7 @@ async fn pointer_variables_are_available_and_explicitly_dereferenceable() {
                 ),
             )
             .await;
+
         assert!(matches!(
             constrained.state,
             VariableState::Unavailable(VariableUnavailableReason::InspectionLimit(
@@ -78,6 +85,7 @@ async fn pointer_variables_are_available_and_explicitly_dereferenceable() {
                 }
             ))
         ));
+
         assert!(matches!(
             constrained.completion,
             microscope::InspectionCompletion::Truncated(microscope::InspectionExhaustion {
@@ -87,6 +95,7 @@ async fn pointer_variables_are_available_and_explicitly_dereferenceable() {
                 requested: 4,
             })
         ));
+
         partial.shutdown().await;
     }
 }
@@ -114,6 +123,7 @@ async fn structural_inspection_dereferences_each_intermediate_pointer_only_when_
                     .inspect(&value_expression(&["recursive_pointer", "next"])),
             )
             .await;
+
         assert!(
             matches!(
                 terminal_pointer.type_info.as_ref().map(|info| &info.kind),
@@ -141,6 +151,7 @@ async fn structural_inspection_dereferences_each_intermediate_pointer_only_when_
                     scenario.handle().inspect(&value_expression(components)),
                 )
                 .await;
+
             assert_signed(&value.state, expected, fixture);
         }
 
@@ -156,6 +167,7 @@ async fn structural_inspection_dereferences_each_intermediate_pointer_only_when_
                 ])),
             )
             .await;
+
         assert_eq!(
             unavailable
                 .type_info
@@ -164,6 +176,7 @@ async fn structural_inspection_dereferences_each_intermediate_pointer_only_when_
             Some("int"),
             "{fixture}: terminal type was lost after the null hop: {unavailable:?}"
         );
+
         assert!(
             matches!(
                 unavailable.state,
@@ -297,6 +310,7 @@ async fn thin_pointers_and_references_dereference_across_the_language_matrix() {
         let null = scenario
             .operation("inspect null pointer", scenario.handle().variable(null))
             .await;
+
         assert!(
             matches!(
                 null.state,
@@ -314,6 +328,7 @@ async fn thin_pointers_and_references_dereference_across_the_language_matrix() {
             ),
             "{fixture}: {null:?}"
         );
+
         if source == "variables.c" {
             assert_signed(
                 &dereference_named(&scenario, "pointer_parameter", 1)
@@ -322,27 +337,32 @@ async fn thin_pointers_and_references_dereference_across_the_language_matrix() {
                 42,
                 fixture,
             );
+
             assert_signed(
                 &dereference_named(&scenario, "alias_pointer", 1).await.state,
                 42,
                 fixture,
             );
+
             assert_signed(
                 &dereference_named(&scenario, "const_pointee", 1).await.state,
                 42,
                 fixture,
             );
+
             assert_signed(
                 &dereference_named(&scenario, "const_pointer", 1).await.state,
                 42,
                 fixture,
             );
+
             let void_pointer = scenario
                 .operation(
                     "inspect void pointer",
                     scenario.handle().variable("void_pointer"),
                 )
                 .await;
+
             assert!(
                 matches!(
                     void_pointer.state,
@@ -356,6 +376,7 @@ async fn thin_pointers_and_references_dereference_across_the_language_matrix() {
                 ),
                 "{fixture}: {void_pointer:?}"
             );
+
             let invalid = dereference_named(&scenario, "invalid_pointer", 1).await;
             assert!(
                 matches!(
@@ -377,6 +398,7 @@ async fn thin_pointers_and_references_dereference_across_the_language_matrix() {
                 42,
                 fixture,
             );
+
             assert_signed(
                 &dereference_named(&scenario, "reference_parameter", 1)
                     .await
@@ -384,6 +406,7 @@ async fn thin_pointers_and_references_dereference_across_the_language_matrix() {
                 42,
                 fixture,
             );
+
             assert_signed(
                 &dereference_named(&scenario, "const_reference", 1)
                     .await
@@ -391,11 +414,13 @@ async fn thin_pointers_and_references_dereference_across_the_language_matrix() {
                 42,
                 fixture,
             );
+
             assert_signed(
                 &dereference_named(&scenario, "alias_pointer", 1).await.state,
                 42,
                 fixture,
             );
+
             for (name, kind) in [
                 ("lvalue_reference", microscope::ReferenceKind::Lvalue),
                 ("rvalue_reference", microscope::ReferenceKind::Rvalue),
@@ -406,6 +431,7 @@ async fn thin_pointers_and_references_dereference_across_the_language_matrix() {
                         scenario.handle().variable(name),
                     )
                     .await;
+
                 assert!(
                     matches!(
                         variable.type_info.as_ref().map(|info| &info.kind),
@@ -422,6 +448,7 @@ async fn thin_pointers_and_references_dereference_across_the_language_matrix() {
                 42,
                 fixture,
             );
+
             let member = scenario
                 .operation(
                     "member through a reference",
@@ -430,6 +457,7 @@ async fn thin_pointers_and_references_dereference_across_the_language_matrix() {
                         .inspect(&value_expression(&["structure_reference", "second"])),
                 )
                 .await;
+
             assert_signed(&member.state, 22, fixture);
             assert_signed(
                 &dereference_named(&scenario, "reference_to_pointer", 2)
@@ -470,6 +498,7 @@ async fn thin_pointers_and_references_dereference_across_the_language_matrix() {
                             .inspect(&parsed_value_expression("slice[1]")),
                     )
                     .await;
+
                 assert_signed(&indexed.state, 22, fixture);
                 let range_page = scenario
                     .operation(
@@ -481,11 +510,13 @@ async fn thin_pointers_and_references_dereference_across_the_language_matrix() {
                         ),
                     )
                     .await;
+
                 assert_eq!(range_page.children.len(), 2, "{fixture}: {range_page:?}");
                 let out_of_bounds = scenario
                     .handle()
                     .inspect(&parsed_value_expression("slice[2]"))
                     .await;
+
                 assert!(
                     matches!(
                         out_of_bounds,
@@ -515,6 +546,7 @@ async fn thin_pointers_and_references_dereference_across_the_language_matrix() {
                     ),
                     "{fixture}: {slice:?}"
                 );
+
                 assert_slice_values(&scenario, &slice, None, &[20, 22], fixture).await;
             }
         }
@@ -535,6 +567,7 @@ async fn thin_pointers_and_references_dereference_across_the_language_matrix() {
                 42,
                 fixture,
             );
+
             if fixture != "variables-zig-o2" {
                 assert_signed(
                     &dereference_named(&scenario, "alias_pointer", 1).await.state,
@@ -558,11 +591,13 @@ async fn thin_pointers_and_references_dereference_across_the_language_matrix() {
         "optimized Zig pointer parameter",
         Scenario::fixture(fixture),
     );
+
     parameter.add_source_breakpoint("variables.zig", 58).await;
     assert!(matches!(
         parameter.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     assert_signed(
         &dereference_named(&parameter, "pointer_parameter", 1)
             .await
@@ -570,6 +605,7 @@ async fn thin_pointers_and_references_dereference_across_the_language_matrix() {
         42,
         fixture,
     );
+
     parameter.shutdown().await;
 }
 
@@ -611,10 +647,12 @@ async fn record_pointees_are_bounded_values_and_unsupported_pointees_remain_prin
             scenario.run_to_stop().await,
             StopReason::Breakpoint { .. }
         ));
+
         if fixture != "variables-zig-o0" {
             let pair = scenario
                 .operation("inspect direct record", scenario.handle().variable("pair"))
                 .await;
+
             record_page(&scenario, &pair.state, 2, &format!("{fixture} pair")).await;
         }
 
@@ -630,6 +668,7 @@ async fn record_pointees_are_bounded_values_and_unsupported_pointees_remain_prin
                     scenario.handle().variable(*name),
                 )
                 .await;
+
             assert!(
                 matches!(
                     variable.state,
@@ -654,6 +693,7 @@ async fn record_pointees_are_bounded_values_and_unsupported_pointees_remain_prin
                 scenario.handle().variable("array_pointer"),
             )
             .await;
+
         let microscope::VariableState::Available {
             dereference: microscope::DereferenceState::Available(reference),
             ..
@@ -668,6 +708,7 @@ async fn record_pointees_are_bounded_values_and_unsupported_pointees_remain_prin
                 scenario.handle().dereference(reference),
             )
             .await;
+
         assert_array_values(&scenario, &value, fixture).await;
         scenario.shutdown().await;
     }
@@ -694,6 +735,7 @@ async fn c_records_cover_nesting_arrays_bit_fields_globals_and_optimization() {
                 scenario.handle().variable("global_record"),
             )
             .await;
+
         let global_page = record_page(&scenario, &global.state, 2, fixture).await;
         assert!(
             global_page
@@ -706,6 +748,7 @@ async fn c_records_cover_nesting_arrays_bit_fields_globals_and_optimization() {
                 .all(|member| member.declaration.is_some()),
             "{fixture}: record member declarations were not preserved: {global:?}"
         );
+
         let inner = named_child(&global_page, "inner");
         let inner_page = record_page(&scenario, &inner.state, 2, fixture).await;
         assert_signed(&named_child(&inner_page, "signed_value").state, -7, fixture);
@@ -721,6 +764,7 @@ async fn c_records_cover_nesting_arrays_bit_fields_globals_and_optimization() {
                 available_value(&named_child(&bits_page, "first").state),
                 microscope::VariableValue::Scalar(ScalarValue::Unsigned(5))
             ));
+
             assert!(matches!(
                 available_value(&named_child(&bits_page, "second").state),
                 microscope::VariableValue::Scalar(ScalarValue::Unsigned(42))
@@ -735,6 +779,7 @@ async fn c_records_cover_nesting_arrays_bit_fields_globals_and_optimization() {
             assert_eq!(records_page.children.len(), 2, "{fixture}: {records:?}");
             let second_page =
                 record_page(&scenario, &records_page.children[1].state, 2, fixture).await;
+
             let values = named_child(&second_page, "values");
             let microscope::VariableValue::Array { .. } = available_value(&values.state) else {
                 panic!("{fixture}: nested array was not decoded: {records:?}");
@@ -762,6 +807,7 @@ async fn c_records_cover_nesting_arrays_bit_fields_globals_and_optimization() {
                     scenario.handle().variable("incomplete"),
                 )
                 .await;
+
             assert!(matches!(
                 incomplete.state,
                 VariableState::Available {
@@ -775,6 +821,7 @@ async fn c_records_cover_nesting_arrays_bit_fields_globals_and_optimization() {
         }
 
         let mut reason = scenario.resume_to_stop().await;
+
         for _ in 0..8 {
             if matches!(reason, StopReason::Breakpoint { .. }) {
                 reason = scenario.resume_to_stop().await;
@@ -814,6 +861,7 @@ async fn structural_inspection_reads_a_small_field_without_materializing_a_large
         ) && available_children(&whole_record.state).total() == 2,
         "{fixture}: the large record was eagerly read: {whole_record:?}"
     );
+
     let tail = child_page(&scenario, &whole_record.state, 1, 1).await;
     assert_eq!(tail.children.len(), 1, "{fixture}: {tail:?}");
     assert_signed(&tail.children[0].state, 73, fixture);
@@ -826,12 +874,14 @@ async fn structural_inspection_reads_a_small_field_without_materializing_a_large
         ) && available_children(&padding.state).total() == 2048,
         "{fixture}: large member did not remain lazy: {padding:?}"
     );
+
     let middle = child_page(&scenario, &padding.state, 1024, 256).await;
     assert_eq!(middle.children.len(), 256, "{fixture}: {middle:?}");
     assert!(middle.children.iter().all(|child| matches!(
         available_value(&child.state),
         microscope::VariableValue::Scalar(ScalarValue::Unsigned(0))
     )));
+
     assert!(matches!(
         &middle.children[255].relationship,
         ValueChildRelationship::ArrayElement {
@@ -839,12 +889,14 @@ async fn structural_inspection_reads_a_small_field_without_materializing_a_large
             indices,
         } if indices.as_ref() == [1279]
     ));
+
     let huge = scenario
         .operation(
             "inspect a large array",
             scenario.handle().variable("huge_array"),
         )
         .await;
+
     assert!(
         matches!(
             huge.state,
@@ -856,11 +908,13 @@ async fn structural_inspection_reads_a_small_field_without_materializing_a_large
         ) && available_children(&huge.state).total() == 1024 * 1024 + 1,
         "{fixture}: large array was rejected or read eagerly: {huge:?}"
     );
+
     let huge_tail = child_page(&scenario, &huge.state, 1024 * 1024, 1).await;
     assert!(matches!(
         available_value(&huge_tail.children[0].state),
         microscope::VariableValue::Scalar(ScalarValue::Unsigned(0))
     ));
+
     for expression in ["huge_array[0]", "huge_array[1048576]"] {
         let indexed = scenario
             .operation(
@@ -870,6 +924,7 @@ async fn structural_inspection_reads_a_small_field_without_materializing_a_large
                     .inspect(&parsed_value_expression(expression)),
             )
             .await;
+
         assert!(
             matches!(
                 available_value(&indexed.state),
@@ -887,6 +942,7 @@ async fn structural_inspection_reads_a_small_field_without_materializing_a_large
                 .inspect(&parsed_value_expression("(*records)[1].values[1]")),
         )
         .await;
+
     assert_signed(&nested_array_member.state, 44, fixture);
     let matrix_element = scenario
         .operation(
@@ -896,6 +952,7 @@ async fn structural_inspection_reads_a_small_field_without_materializing_a_large
                 .inspect(&parsed_value_expression("matrix[1][2]")),
         )
         .await;
+
     assert_signed(&matrix_element.state, 6, fixture);
     let range_page = scenario
         .operation(
@@ -907,6 +964,7 @@ async fn structural_inspection_reads_a_small_field_without_materializing_a_large
             ),
         )
         .await;
+
     assert_eq!(range_page.offset, 3, "{fixture}: {range_page:?}");
     assert_eq!(range_page.children.len(), 4, "{fixture}: {range_page:?}");
     assert!(range_page.children.iter().enumerate().all(|(relative, child)| {
@@ -930,10 +988,12 @@ async fn structural_inspection_reads_a_small_field_without_materializing_a_large
             other => panic!("{fixture}: element is not in memory: {other:?}"),
         })
         .collect::<Vec<_>>();
+
     assert!(
         sources.windows(2).all(|pair| pair[1] == pair[0] + 1),
         "{fixture}: element sources {sources:#x?}"
     );
+
     let empty_page = scenario
         .operation(
             "inspect one empty in-bounds range",
@@ -944,6 +1004,7 @@ async fn structural_inspection_reads_a_small_field_without_materializing_a_large
             ),
         )
         .await;
+
     assert_eq!(empty_page.offset, 7, "{fixture}: {empty_page:?}");
     assert!(empty_page.children.is_empty(), "{fixture}: {empty_page:?}");
     for expression in [
@@ -959,6 +1020,7 @@ async fn structural_inspection_reads_a_small_field_without_materializing_a_large
             microscope::InspectionLimits::default(),
         )
         .await;
+
         let expected = match expression {
             // A range is checked against the array's bounds as it runs.
             "huge_array[7..3]" | "huge_array[1048576..1048578]" => matches!(
@@ -979,6 +1041,7 @@ async fn structural_inspection_reads_a_small_field_without_materializing_a_large
         .handle()
         .inspect(&parsed_value_expression("huge_array[1048577]"))
         .await;
+
     assert!(
         matches!(
             &out_of_bounds,
@@ -993,6 +1056,7 @@ async fn structural_inspection_reads_a_small_field_without_materializing_a_large
         .handle()
         .inspect(&parsed_value_expression("records[0]"))
         .await;
+
     assert_eq!(
         pointer_index
             .as_ref()
@@ -1002,6 +1066,7 @@ async fn structural_inspection_reads_a_small_field_without_materializing_a_large
         Some("outer_record[2]"),
         "{fixture}: {pointer_index:?}"
     );
+
     for (components, expected) in [
         (&["record", "inner", "signed_value"][..], -7),
         (&["bits", "negative"][..], -3),
@@ -1012,6 +1077,7 @@ async fn structural_inspection_reads_a_small_field_without_materializing_a_large
                 scenario.handle().inspect(&value_expression(components)),
             )
             .await;
+
         assert_signed(&value.state, expected, fixture);
     }
 
@@ -1023,6 +1089,7 @@ async fn structural_inspection_reads_a_small_field_without_materializing_a_large
                 .inspect(&value_expression(&["bits", "second"])),
         )
         .await;
+
     assert!(
         matches!(
             available_value(&unsigned_bit_field.state),
@@ -1039,6 +1106,7 @@ async fn structural_inspection_reads_a_small_field_without_materializing_a_large
                 .inspect(&value_expression(&["large", "small"])),
         )
         .await;
+
     assert_signed(&selected.state, 73, fixture);
 
     scenario.shutdown().await;
@@ -1069,6 +1137,7 @@ async fn inspection_budgets_report_typed_partial_results_at_each_public_boundary
             scenario.handle().variables_with_limits(limits),
         )
         .await;
+
     assert_eq!(variables.variables.len(), 1, "{variables:?}");
     assert!(matches!(
         variables.completion,
@@ -1091,15 +1160,18 @@ async fn inspection_budgets_report_typed_partial_results_at_each_public_boundary
                 }),
         )
         .await;
+
     assert_eq!(
         node_limited_variables.variables.len(),
         1,
         "{node_limited_variables:?}"
     );
+
     assert_eq!(
         node_limited_variables.usage.variables, 1,
         "{node_limited_variables:?}"
     );
+
     assert!(matches!(
         node_limited_variables.completion,
         microscope::InspectionCompletion::Truncated(microscope::InspectionExhaustion {
@@ -1118,6 +1190,7 @@ async fn inspection_budgets_report_typed_partial_results_at_each_public_boundary
                 .inspect(&parsed_value_expression("huge_array")),
         )
         .await;
+
     let reference = available_children(&huge.state).clone();
 
     let range = scenario
@@ -1165,6 +1238,7 @@ async fn inspection_budgets_report_typed_partial_results_at_each_public_boundary
             ),
         )
         .await;
+
     assert_eq!(nodes.children.len(), 2, "{nodes:?}");
     assert!(matches!(
         nodes.completion,
@@ -1175,6 +1249,7 @@ async fn inspection_budgets_report_typed_partial_results_at_each_public_boundary
             requested: 1,
         })
     ));
+
     let resumed = scenario
         .operation(
             "resume after a truncated child prefix with a fresh budget",
@@ -1188,6 +1263,7 @@ async fn inspection_budgets_report_typed_partial_results_at_each_public_boundary
             ),
         )
         .await;
+
     assert!(matches!(
         resumed.children.as_ref(),
         [first, second]
@@ -1218,6 +1294,7 @@ async fn inspection_budgets_report_typed_partial_results_at_each_public_boundary
             ),
         )
         .await;
+
     assert_eq!(bytes.children.len(), 2, "{bytes:?}");
     assert_eq!(bytes.usage.memory_bytes, 2, "{bytes:?}");
     assert!(matches!(
@@ -1249,6 +1326,7 @@ async fn inspection_budgets_report_typed_partial_results_at_each_public_boundary
             ),
         )
         .await;
+
     assert_eq!(reads.children.len(), 1, "{reads:?}");
     assert_eq!(reads.usage.memory_reads, 1, "{reads:?}");
     assert!(matches!(
@@ -1274,6 +1352,7 @@ async fn inspection_budgets_report_typed_partial_results_at_each_public_boundary
                 .inspect_with_limits(&parsed_value_expression("huge_array[0]"), work_limits),
         )
         .await;
+
     assert!(
         matches!(
             work.completion,
@@ -1320,6 +1399,7 @@ async fn cpp_records_cover_multiple_and_virtual_base_metadata() {
             scenario.run_to_stop().await,
             StopReason::Breakpoint { .. }
         ));
+
         let derived = dereference_named(&scenario, "derived", 1).await;
         let derived_page = record_page(&scenario, &derived.state, 3, fixture).await;
         let bases = derived_page
@@ -1327,6 +1407,7 @@ async fn cpp_records_cover_multiple_and_virtual_base_metadata() {
             .iter()
             .filter(|child| matches!(child.relationship, ValueChildRelationship::Base(_)))
             .collect::<Vec<_>>();
+
         assert_eq!(bases.len(), 2, "{fixture}: {derived:?}");
         assert!(
             derived_page
@@ -1339,6 +1420,7 @@ async fn cpp_records_cover_multiple_and_virtual_base_metadata() {
                 .all(|member| member.name.as_deref() != Some("static_value")),
             "{fixture}: static member appeared in instance: {derived:?}"
         );
+
         assert_signed(&named_child(&derived_page, "own").state, 22, fixture);
         let left_page = record_page(&scenario, &bases[0].state, 1, fixture).await;
         assert_signed(&named_child(&left_page, "left").state, 9, fixture);
@@ -1352,6 +1434,7 @@ async fn cpp_records_cover_multiple_and_virtual_base_metadata() {
             .iter()
             .filter(|child| matches!(child.relationship, ValueChildRelationship::Base(_)))
             .collect::<Vec<_>>();
+
         assert_eq!(bases.len(), 1, "{fixture}: {virtual_derived:?}");
         assert!(matches!(
             bases[0].relationship,
@@ -1360,6 +1443,7 @@ async fn cpp_records_cover_multiple_and_virtual_base_metadata() {
                 ..
             })
         ));
+
         let virtual_base_page = record_page(&scenario, &bases[0].state, 1, fixture).await;
         assert_signed(
             &named_child(&virtual_base_page, "virtual_value").state,
@@ -1374,7 +1458,9 @@ async fn cpp_records_cover_multiple_and_virtual_base_metadata() {
             .iter()
             .filter(|child| matches!(child.relationship, ValueChildRelationship::Base(_)))
             .collect::<Vec<_>>();
+
         assert_eq!(bases.len(), 2, "{fixture}: {diamond:?}");
+
         for branch in &bases {
             let branch_page = record_page(&scenario, &branch.state, 1, fixture).await;
             let root = branch_page
@@ -1384,6 +1470,7 @@ async fn cpp_records_cover_multiple_and_virtual_base_metadata() {
                 .unwrap_or_else(|| {
                     panic!("{fixture}: diamond branch had no base: {branch_page:?}")
                 });
+
             assert!(
                 matches!(
                     available_value(&root.state),
@@ -1397,6 +1484,7 @@ async fn cpp_records_cover_multiple_and_virtual_base_metadata() {
             scenario.resume_to_stop().await,
             StopReason::Exited(ExitStatus::Code(0))
         );
+
         scenario.shutdown().await;
     }
 }
@@ -1424,6 +1512,7 @@ async fn rust_zig_and_go_records_cover_nested_arrays_slices_and_optimized_metada
             scenario.run_to_stop().await,
             StopReason::Breakpoint { .. }
         ));
+
         for name in ["record", "records"] {
             if !inspect_values {
                 let variable = scenario
@@ -1432,6 +1521,7 @@ async fn rust_zig_and_go_records_cover_nested_arrays_slices_and_optimized_metada
                         scenario.handle().variable(name),
                     )
                     .await;
+
                 assert!(
                     variable.type_info.is_some(),
                     "{fixture} {name}: {variable:?}"
@@ -1461,6 +1551,7 @@ async fn rust_zig_and_go_records_cover_nested_arrays_slices_and_optimized_metada
             let slice = scenario
                 .operation("inspect record slice", scenario.handle().variable("slice"))
                 .await;
+
             let microscope::VariableValue::Slice { length: 2, .. } = available_value(&slice.state)
             else {
                 panic!("{fixture}: slice did not decode: {slice:?}");
@@ -1472,6 +1563,7 @@ async fn rust_zig_and_go_records_cover_nested_arrays_slices_and_optimized_metada
                 available_value(&slice_page.children[0].state),
                 microscope::VariableValue::Record
             ));
+
             assert_record_members(&scenario, "inner.signed_value", fixture).await;
             if fixture.starts_with("records-zig-") {
                 let packed = dereference_named(&scenario, "packed_record", 1).await;
@@ -1489,6 +1581,7 @@ async fn rust_zig_and_go_records_cover_nested_arrays_slices_and_optimized_metada
         }
 
         let mut reason = scenario.resume_to_stop().await;
+
         for _ in 0..8 {
             if matches!(reason, StopReason::Breakpoint { .. }) {
                 reason = scenario.resume_to_stop().await;
@@ -1516,11 +1609,13 @@ async fn rust_zig_and_go_records_cover_nested_arrays_slices_and_optimized_metada
                 )),
                 "{fixture}: Go embedded-field metadata was lost: {record:?}"
             );
+
             let records = dereference_named(&scenario, "records", 1).await;
             assert!(matches!(
                 available_value(&records.state),
                 microscope::VariableValue::Array { .. }
             ));
+
             assert_eq!(available_children(&records.state).total(), 2);
             let slice = scenario
                 .operation(
@@ -1528,10 +1623,12 @@ async fn rust_zig_and_go_records_cover_nested_arrays_slices_and_optimized_metada
                     scenario.handle().variable("slice"),
                 )
                 .await;
+
             assert!(matches!(
                 available_value(&slice.state),
                 microscope::VariableValue::Slice { length: 2, .. }
             ));
+
             assert_record_members(&scenario, "inner.signedValue", fixture).await;
         } else {
             let variable = scenario
@@ -1540,6 +1637,7 @@ async fn rust_zig_and_go_records_cover_nested_arrays_slices_and_optimized_metada
                     scenario.handle().variable("main.globalRecord"),
                 )
                 .await;
+
             record_page(&scenario, &variable.state, 2, fixture).await;
         }
 
@@ -1564,6 +1662,7 @@ async fn assert_record_members(scenario: &Scenario, signed_member: &str, fixture
                     .inspect(&parsed_value_expression(&expression)),
             )
             .await;
+
         assert_signed(&value.state, expected, &format!("{fixture}: {expression}"));
     }
 }
@@ -1642,6 +1741,7 @@ async fn c_enums_and_raw_unions_preserve_values_names_aliases_and_interpretation
             ["integer", "floating"],
             "{fixture}: {raw:?}"
         );
+
         assert_signed(&named_child(&page, "integer").state, 42, fixture);
 
         let integer = scenario
@@ -1652,12 +1752,14 @@ async fn c_enums_and_raw_unions_preserve_values_names_aliases_and_interpretation
                     .inspect(&value_expression(&["raw", "integer"])),
             )
             .await;
+
         assert_signed(&integer.state, 42, fixture);
 
         assert_eq!(
             scenario.resume_to_stop().await,
             StopReason::Exited(ExitStatus::Code(0))
         );
+
         scenario.shutdown().await;
     }
 }
@@ -1678,6 +1780,7 @@ async fn rust_enums_decode_their_variants_and_unit_payloads() {
             scenario.run_to_stop().await,
             StopReason::Breakpoint { .. }
         ));
+
         let fieldless = dereference_named(&scenario, "fieldless", 1).await;
         assert!(
             matches!(
@@ -1689,6 +1792,7 @@ async fn rust_enums_decode_their_variants_and_unit_payloads() {
             ),
             "{fieldless:?}"
         );
+
         let value = dereference_named(&scenario, "value", 1).await;
         assert!(
             matches!(
@@ -1701,6 +1805,7 @@ async fn rust_enums_decode_their_variants_and_unit_payloads() {
             ),
             "{fixture}: {value:?}"
         );
+
         let wide = dereference_named(&scenario, "wide", 1).await;
         assert!(
             matches!(
@@ -1714,6 +1819,7 @@ async fn rust_enums_decode_their_variants_and_unit_payloads() {
             ),
             "{fixture}: {wide:?}"
         );
+
         let optional = dereference_named(&scenario, "optional", 1).await;
         assert!(
             matches!(
@@ -1726,6 +1832,7 @@ async fn rust_enums_decode_their_variants_and_unit_payloads() {
             ),
             "{fixture}: {optional:?}"
         );
+
         let empty = dereference_named(&scenario, "empty", 1).await;
         assert!(
             matches!(
@@ -1738,6 +1845,7 @@ async fn rust_enums_decode_their_variants_and_unit_payloads() {
             ),
             "{fixture}: {empty:?}"
         );
+
         for (name, variant) in [("done", "Ok"), ("failed", "Err")] {
             let value = dereference_named(&scenario, name, 1).await;
             let page = record_page(&scenario, &value.state, 1, fixture).await;
@@ -1772,12 +1880,14 @@ async fn rust_enums_decode_their_variants_and_unit_payloads() {
                 Some(microscope::IntegerValue::Unsigned(1)),
                 "{value:?}"
             );
+
             assert_eq!(active.members.len(), 1, "{value:?}");
             assert_eq!(
                 active.members[0].name.as_deref(),
                 Some("Integer"),
                 "{value:?}"
             );
+
             let variant_page = record_page(&scenario, &value.state, 1, fixture).await;
             let integer = named_child(&variant_page, "Integer");
             let payload_page = record_page(&scenario, &integer.state, 1, fixture).await;
@@ -1798,6 +1908,7 @@ async fn rust_enums_decode_their_variants_and_unit_payloads() {
                         .inspect(&value_expression(&["value", "Integer", "__0"])),
                 )
                 .await;
+
             assert!(
                 matches!(
                     available_value(&selected_payload.state),
@@ -1805,6 +1916,7 @@ async fn rust_enums_decode_their_variants_and_unit_payloads() {
                 ),
                 "{selected_payload:?}"
             );
+
             let inactive_payload = scenario
                 .operation(
                     "reject inactive Rust enum payload",
@@ -1813,6 +1925,7 @@ async fn rust_enums_decode_their_variants_and_unit_payloads() {
                         .inspect(&value_expression(&["value", "Unit"])),
                 )
                 .await;
+
             assert!(
                 matches!(
                     inactive_payload.state,
@@ -1828,6 +1941,7 @@ async fn rust_enums_decode_their_variants_and_unit_payloads() {
             scenario.resume_to_stop().await,
             StopReason::Exited(ExitStatus::Code(0))
         );
+
         scenario.shutdown().await;
     }
 }
@@ -1940,6 +2054,7 @@ async fn cpp_scoped_enums_and_unions_preserve_language_semantics() {
             scenario.resume_to_stop().await,
             StopReason::Exited(ExitStatus::Code(0))
         );
+
         scenario.shutdown().await;
     }
 }
@@ -1951,6 +2066,7 @@ async fn zig_enums_tagged_unions_and_bare_unions_decode_without_guessing() {
         scenario
             .add_source_breakpoint("tests/fixtures/zig/enums.zig", 27)
             .await;
+
         assert!(matches!(
             scenario.run_to_stop().await,
             StopReason::Breakpoint { .. }
@@ -1974,6 +2090,7 @@ async fn zig_enums_tagged_unions_and_bare_unions_decode_without_guessing() {
             ),
             "{fixture}: {state:?}"
         );
+
         let tagged = dereference_named(&scenario, "tagged", 1).await;
         let VariableState::Available { value: graph, .. } = &tagged.state else {
             panic!("{fixture}: tagged union was unavailable: {tagged:?}");
@@ -1992,6 +2109,7 @@ async fn zig_enums_tagged_unions_and_bare_unions_decode_without_guessing() {
             .iter()
             .find(|member| member.name.as_deref() == Some("integer"))
             .unwrap_or_else(|| panic!("{fixture}: integer arm missing: {tagged:?}"));
+
         assert_eq!(integer.name.as_deref(), Some("integer"));
         let tagged_page = record_page(&scenario, &tagged.state, 1, fixture).await;
         assert!(
@@ -2001,6 +2119,7 @@ async fn zig_enums_tagged_unions_and_bare_unions_decode_without_guessing() {
             ),
             "{fixture}: {tagged:?}"
         );
+
         let raw = dereference_named(&scenario, "raw", 1).await;
         assert!(
             matches!(
@@ -2009,6 +2128,7 @@ async fn zig_enums_tagged_unions_and_bare_unions_decode_without_guessing() {
             ) && available_children(&raw.state).total() == 2,
             "{fixture}: {raw:?}"
         );
+
         for (name, arm, expected) in [("optional", "some", 43), ("failure", "success", 44)] {
             let inspected = dereference_named(&scenario, name, 1).await;
             let microscope::VariableValue::Variant {
@@ -2036,6 +2156,7 @@ async fn zig_enums_tagged_unions_and_bare_unions_decode_without_guessing() {
             scenario.resume_to_stop().await,
             StopReason::Exited(ExitStatus::Code(0))
         );
+
         scenario.shutdown().await;
     }
 }
@@ -2071,6 +2192,7 @@ async fn dereference_reads_are_all_or_unavailable_across_an_unmapped_boundary() 
         ),
         "{boundary:?}"
     );
+
     let valid_after_failure = dereference_named(&scenario, "valid_pointer", 1).await;
     assert_signed(&valid_after_failure.state, 42, fixture);
 
@@ -2086,6 +2208,7 @@ async fn dereference_reads_are_all_or_unavailable_across_an_unmapped_boundary() 
         ) && available_children(&array.state).total() == 4,
         "{fixture}: array summary performed an eager boundary read: {array:?}"
     );
+
     let readable = child_page(&scenario, &array.state, 0, 2).await;
     assert_signed(&readable.children[0].state, 41, fixture);
     assert_signed(&readable.children[1].state, 42, fixture);
@@ -2101,11 +2224,13 @@ async fn dereference_reads_are_all_or_unavailable_across_an_unmapped_boundary() 
         )),
         "{fixture}: an unmapped child was reported as readable: {unreadable:?}"
     );
+
     assert_eq!(
         child_page(&scenario, &array.state, 2, 2).await,
         unreadable,
         "{fixture}: repeated page evaluation changed at one stop"
     );
+
     let indexed_readable = scenario
         .operation(
             "inspect a readable element at a mapping boundary",
@@ -2114,6 +2239,7 @@ async fn dereference_reads_are_all_or_unavailable_across_an_unmapped_boundary() 
                 .inspect(&parsed_value_expression("(*boundary_array)[1]")),
         )
         .await;
+
     assert_signed(&indexed_readable.state, 42, fixture);
     let indexed_unreadable = scenario
         .operation(
@@ -2123,6 +2249,7 @@ async fn dereference_reads_are_all_or_unavailable_across_an_unmapped_boundary() 
                 .inspect(&parsed_value_expression("(*boundary_array)[2]")),
         )
         .await;
+
     assert!(
         matches!(
             indexed_unreadable.state,
@@ -2134,6 +2261,7 @@ async fn dereference_reads_are_all_or_unavailable_across_an_unmapped_boundary() 
         ),
         "{fixture}: {indexed_unreadable:?}"
     );
+
     let range = scenario
         .operation(
             "inspect a range crossing an unmapped boundary",
@@ -2144,6 +2272,7 @@ async fn dereference_reads_are_all_or_unavailable_across_an_unmapped_boundary() 
             ),
         )
         .await;
+
     assert_eq!(range.children.len(), 4, "{fixture}: {range:?}");
     assert_signed(&range.children[0].state, 41, fixture);
     assert_signed(&range.children[1].state, 42, fixture);
@@ -2165,6 +2294,7 @@ async fn dereference_reads_are_all_or_unavailable_across_an_unmapped_boundary() 
             scenario.handle().variable("boundary_array"),
         )
         .await;
+
     let microscope::VariableValue::Address(boundary) = available_value(&pointer.state) else {
         panic!("{fixture}: boundary array was not an address: {pointer:?}");
     };
@@ -2176,10 +2306,12 @@ async fn dereference_reads_are_all_or_unavailable_across_an_unmapped_boundary() 
             scenario.handle().read_memory(boundary.address, 16),
         )
         .await;
+
     assert_eq!(
         prefix.bytes.as_ref(),
         [41_i32.to_le_bytes(), 42_i32.to_le_bytes()].concat()
     );
+
     let inaccessible = microscope::MemoryReadCompletion::Incomplete {
         next_address: end,
         reason: microscope::MemoryReadUnavailableReason::Inaccessible,
@@ -2192,6 +2324,7 @@ async fn dereference_reads_are_all_or_unavailable_across_an_unmapped_boundary() 
             scenario.handle().read_memory(end, 8),
         )
         .await;
+
     assert!(none.bytes.is_empty(), "{none:?}");
     assert_eq!(none.completion, inaccessible);
 
@@ -2199,6 +2332,7 @@ async fn dereference_reads_are_all_or_unavailable_across_an_unmapped_boundary() 
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     );
+
     scenario.shutdown().await;
 }
 
@@ -2211,12 +2345,14 @@ async fn value_child_pages_are_arbitrary_repeatable_bounded_and_stop_scoped() {
         scenario.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     let array = dereference_named(&scenario, "array_pointer", 1).await;
     let reference = available_children(&array.state).clone();
     assert_eq!(reference.total(), 2);
     let pointer = scenario
         .operation("pointer", scenario.handle().variable("pointer"))
         .await;
+
     let VariableState::Available {
         dereference: microscope::DereferenceState::Available(target),
         ..
@@ -2228,6 +2364,7 @@ async fn value_child_pages_are_arbitrary_repeatable_bounded_and_stop_scoped() {
     let first = scenario
         .operation("dereference", scenario.handle().dereference(target.clone()))
         .await;
+
     assert_eq!(
         scenario
             .operation(
@@ -2248,11 +2385,13 @@ async fn value_child_pages_are_arbitrary_repeatable_bounded_and_stop_scoped() {
         ValueChildRelationship::ArrayElement { index: 1, indices }
             if indices.as_ref() == [1]
     ));
+
     assert_eq!(
         child_page(&scenario, &array.state, 1, 1).await,
         tail,
         "{fixture}: a repeated page changed at the same stop"
     );
+
     let beyond = child_page(&scenario, &array.state, u64::MAX, 1).await;
     assert_eq!(beyond.offset, u64::MAX);
     assert!(beyond.children.is_empty());
@@ -2274,6 +2413,7 @@ async fn value_child_pages_are_arbitrary_repeatable_bounded_and_stop_scoped() {
         scenario.resume_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     assert!(matches!(
         scenario
             .handle()
@@ -2287,10 +2427,12 @@ async fn value_child_pages_are_arbitrary_repeatable_bounded_and_stop_scoped() {
             .await,
         Err(Error::StaleStop)
     ));
+
     assert!(matches!(
         scenario.handle().dereference(target).await,
         Err(Error::StaleStop)
     ));
+
     let fresh = dereference_named(&scenario, "array_pointer", 1).await;
     let head = child_page(&scenario, &fresh.state, 0, 1).await;
     assert_signed(&head.children[0].state, 20, fixture);
@@ -2305,13 +2447,16 @@ async fn stop_scoped_capabilities_reject_running_state_before_becoming_stale() {
         scenario.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     let array = scenario
         .operation("spin array", scenario.handle().variable("spin_values"))
         .await;
+
     let children = available_children(&array.state).clone();
     let pointer = scenario
         .operation("spin pointer", scenario.handle().variable("spin_pointer"))
         .await;
+
     let VariableState::Available {
         dereference: microscope::DereferenceState::Available(target),
         ..
@@ -2334,20 +2479,24 @@ async fn stop_scoped_capabilities_reject_running_state_before_becoming_stale() {
             .await,
         Err(Error::NotStopped)
     ));
+
     assert!(matches!(
         scenario.handle().dereference(target.clone()).await,
         Err(Error::NotStopped)
     ));
+
     assert_eq!(scenario.handle().pause().await.unwrap(), StopReason::Pause);
     assert_eq!(running.await.unwrap().unwrap(), StopReason::Pause);
     assert!(matches!(
         scenario.handle().value_children(children, page).await,
         Err(Error::StaleStop)
     ));
+
     assert!(matches!(
         scenario.handle().dereference(target).await,
         Err(Error::StaleStop)
     ));
+
     scenario.shutdown().await;
 }
 
@@ -2367,6 +2516,7 @@ async fn optimized_implicit_pointer_chains_reconstruct_the_referent_without_an_a
             scenario.handle().variable("pointer_pointer"),
         )
         .await;
+
     assert!(
         matches!(
             pointer_pointer.state,
@@ -2393,6 +2543,7 @@ async fn optimized_implicit_pointer_chains_reconstruct_the_referent_without_an_a
                 .inspect(&parsed_value_expression("**pointer_pointer")),
         )
         .await;
+
     assert_signed(&atomic_pointee.state, 42, fixture);
     scenario.shutdown().await;
 
@@ -2400,17 +2551,20 @@ async fn optimized_implicit_pointer_chains_reconstruct_the_referent_without_an_a
         "nonzero implicit pointer offset",
         Scenario::fixture(fixture),
     );
+
     offset.add_source_breakpoint("variables.c", 87).await;
     assert!(matches!(
         offset.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     let byte_pointer = offset
         .operation(
             "inspect offset implicit pointer",
             offset.handle().variable("byte_pointer"),
         )
         .await;
+
     assert!(
         matches!(
             byte_pointer.state,
@@ -2426,12 +2580,14 @@ async fn optimized_implicit_pointer_chains_reconstruct_the_referent_without_an_a
         ),
         "{byte_pointer:?}"
     );
+
     let byte = dereference_named(&offset, "byte_pointer", 1).await;
     assert_eq!(
         available_value(&byte.state),
         &microscope::VariableValue::Scalar(ScalarValue::Unsigned(42)),
         "{byte:?}"
     );
+
     let atomic_byte = offset
         .operation(
             "inspect through offset implicit pointer atomically",
@@ -2440,6 +2596,7 @@ async fn optimized_implicit_pointer_chains_reconstruct_the_referent_without_an_a
                 .inspect(&parsed_value_expression("*byte_pointer")),
         )
         .await;
+
     assert!(
         matches!(
             available_value(&atomic_byte.state),
@@ -2447,6 +2604,7 @@ async fn optimized_implicit_pointer_chains_reconstruct_the_referent_without_an_a
         ),
         "{atomic_byte:?}"
     );
+
     offset.shutdown().await;
 }
 
@@ -2468,10 +2626,12 @@ async fn go_slices_decode_subranges_empty_and_nil_descriptors() {
                 scenario.handle().variable(name),
             )
             .await;
+
         assert_slice_values(&scenario, &variable, capacity, expected, fixture).await;
     }
 
     let mut reason = scenario.resume_to_stop().await;
+
     for _ in 0..32 {
         match reason {
             StopReason::Exited(ExitStatus::Code(0)) => break,
@@ -2505,6 +2665,7 @@ async fn readable_invalid_boolean_bytes_are_not_reported_as_unavailable_or_malfo
                 .inspect(&parsed_value_expression("*invalid")),
         )
         .await;
+
     assert!(
         matches!(
             value.state,
@@ -2521,6 +2682,7 @@ async fn readable_invalid_boolean_bytes_are_not_reported_as_unavailable_or_malfo
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     );
+
     scenario.shutdown().await;
 }
 
@@ -2560,9 +2722,11 @@ async fn assert_strings(
         scenario.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     let variables = scenario
         .operation("variables", scenario.handle().variables())
         .await;
+
     for (name, expected) in expected {
         assert_eq!(
             &text_of(&variables.variables, name),
@@ -2630,6 +2794,7 @@ async fn cpp_rust_and_go_strings_read_their_recorded_length() {
         ],
     )
     .await;
+
     assert_strings(
         "strings-rust-o0",
         "rust/strings.rs",
@@ -2642,6 +2807,7 @@ async fn cpp_rust_and_go_strings_read_their_recorded_length() {
         ],
     )
     .await;
+
     assert_strings(
         "strings-go-o0",
         "go/strings/main.go",
@@ -2663,9 +2829,11 @@ async fn text_running_into_an_unmapped_page_stops_at_the_page() {
         scenario.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     let variables = scenario
         .operation("variables", scenario.handle().variables())
         .await;
+
     let edge = text_of(&variables.variables, "edge").expect("text");
     assert_eq!(&*edge.bytes, b"eeeee");
     let microscope::TextCompletion::Unreadable { address } = edge.completion else {
@@ -2685,6 +2853,7 @@ async fn text_running_into_an_unmapped_page_stops_at_the_page() {
 async fn a_variable_whose_location_wraps_the_address_space_is_unavailable() {
     let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("build/golden/straight/straight-clang-O0");
+
     let mut scenario = Scenario::new("variables before a prologue", program);
     let entry = scenario
         .run_with_to_stop(LaunchOptions {
@@ -2692,6 +2861,7 @@ async fn a_variable_whose_location_wraps_the_address_space_is_unavailable() {
             ..LaunchOptions::default()
         })
         .await;
+
     assert_eq!(entry, StopReason::Entry);
 
     // The entry point clears rbp, aligns the stack, and calls rt_start.
@@ -2702,6 +2872,7 @@ async fn a_variable_whose_location_wraps_the_address_space_is_unavailable() {
     let location = scenario
         .operation("location", scenario.handle().current_location())
         .await;
+
     assert_eq!(
         location
             .image
@@ -2711,18 +2882,22 @@ async fn a_variable_whose_location_wraps_the_address_space_is_unavailable() {
         Some(("rt_start", 0)),
         "the golden binary changed"
     );
+
     let variables = scenario
         .operation("variables", scenario.handle().variables())
         .await;
+
     let stack = variables
         .variables
         .iter()
         .find(|variable| variable.name.as_ref() == "stack")
         .expect("rt_start's parameter");
+
     assert!(
         matches!(stack.state, microscope::VariableState::Unavailable(_)),
         "{stack:?}"
     );
+
     scenario.shutdown().await;
 }
 
@@ -2744,6 +2919,7 @@ async fn assert_array_values(
             other => panic!("{fixture}: expected scalar array element, got {other:?}"),
         })
         .collect();
+
     assert_eq!(values, [20, 22], "{fixture}");
 }
 

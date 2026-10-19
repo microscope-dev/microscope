@@ -151,6 +151,7 @@ impl Scheduler {
         }
 
         change_points.sort_unstable();
+
         Self {
             policy,
             priorities: BTreeMap::new(),
@@ -175,6 +176,7 @@ impl Scheduler {
 
                 self.waiting
                     .retain(|actor, _| enabled.iter().any(|action| action.actor() == *actor));
+
                 for action in enabled {
                     self.waiting.entry(action.actor()).or_insert(step);
                 }
@@ -190,6 +192,7 @@ impl Scheduler {
                         .expect("an action is enabled")
                 });
                 self.waiting.remove(&action.actor());
+
                 // A point at a step that made no choice, as one a fault
                 // took, drops the actor that runs next.
                 if self
@@ -235,6 +238,7 @@ fn walk(weights: Weights, enabled: &[Action], choices: &mut Choices) -> Action {
         .filter(|action| action.kind() == kind)
         .copied()
         .collect::<Vec<_>>();
+
     match of_kind.as_slice() {
         [only] => *only,
         _ => *choices.pick(Stream::Schedule, &of_kind),
@@ -314,6 +318,7 @@ mod tests {
         scheduler.change_points = vec![3, 6];
         let enabled = [Action::Run(1), Action::Run(2), Action::Run(3)];
         let mut ran = Vec::new();
+
         for step in [1, 2, 4, 5, 7, 8] {
             ran.push(scheduler.choose(&enabled, step, &mut choices));
         }

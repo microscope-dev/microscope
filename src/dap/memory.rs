@@ -20,6 +20,7 @@ const READ_CHUNK: u64 = 64 * 1024;
 
 /// The most instructions one `disassemble` request returns.
 const MAX_INSTRUCTIONS: i64 = 16 * 1024;
+
 const PAGE_SIZE: u64 = 4096;
 
 impl Session {
@@ -33,6 +34,7 @@ impl Session {
         let handle = self.target_handle()?;
         let mut bytes = Vec::new();
         let mut unreadable = 0;
+
         while (bytes.len() as u64) < requested {
             let next = address.saturating_add(bytes.len() as u64);
             let count = (requested - bytes.len() as u64).min(READ_CHUNK);
@@ -77,6 +79,7 @@ impl Session {
         }
 
         self.forget_reads();
+
         if self.support().memory_events {
             self.client
                 .event(
@@ -113,6 +116,7 @@ impl Session {
         let program_counter = self.program_counter(context).await;
         let mut rows = Vec::with_capacity(plan.count);
         let mut previous_file = None;
+
         for row in plan.rows(&instructions) {
             let instruction = match row {
                 Row::Padding(address) => {
@@ -182,6 +186,7 @@ impl Session {
         }
 
         body.insert("instruction".to_owned(), text.into());
+
         if let Some(symbol) = instruction
             .location
             .module
@@ -454,6 +459,7 @@ fn unbase64(text: &str) -> Option<Vec<u8>> {
 
     let digits = text.trim().trim_end_matches('=').as_bytes();
     let mut bytes = Vec::with_capacity(digits.len() * 3 / 4);
+
     for chunk in digits.chunks(4) {
         if chunk.len() == 1 {
             return None;
@@ -476,10 +482,12 @@ fn unbase64(text: &str) -> Option<Vec<u8>> {
 fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut text = String::with_capacity(bytes.len().div_ceil(3) * 4);
+
     for chunk in bytes.chunks(3) {
         let word = chunk.iter().enumerate().fold(0_u32, |word, (index, byte)| {
             word | u32::from(*byte) << (16 - 8 * index)
         });
+
         for position in 0..4 {
             if position <= chunk.len() {
                 text.push(char::from(

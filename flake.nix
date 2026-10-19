@@ -30,6 +30,7 @@
           (patch: !(pkgs.lib.hasInfix "go_no_vendor_checks" (toString patch)))
           previous.patches;
       });
+
       # Builds C++ against LLVM's libc++ instead of libstdc++, so fixtures
       # cover both standard libraries' layouts.
       libcxx = pkgs.llvmPackages.libcxx;
@@ -38,6 +39,7 @@
           -isystem ${libcxx.dev}/include/c++/v1 \
           -L${libcxx}/lib -Wl,-rpath,${libcxx}/lib "$@"
       '';
+
       # GCC and Clang targeting musl instead of glibc, so fixtures cover both
       # C libraries' thread layouts. Wrapping them keeps the cross toolchain's
       # environment out of the shell's native one.
@@ -507,21 +509,25 @@
         { name = "debian-3.13"; path = cpythonDistribution { version = "3.13"; debs = debianDebs; }; }
         { name = "ubuntu-3.12"; path = cpythonDistribution { version = "3.12"; debs = ubuntuDebs; }; }
       ];
+
       # GNU Fortran, alone: its wrapper's own gcc and binutils would shadow
       # the shell's.
       gfortran = pkgs.writeShellScriptBin "gfortran" ''
         exec ${pkgs.gfortran15}/bin/gfortran "$@"
       '';
+
       # LDC, alone: its package would add its runtime's headers and
       # libraries to every C compile and link in the shell.
       ldc2 = pkgs.writeShellScriptBin "ldc2" ''
         exec ${pkgs.ldc}/bin/ldc2 "$@"
       '';
+
       # GNAT's gnatmake, which runs its own GCC, binder, and linker; the
       # shell's GCC compiles no Ada.
       gnatmake = pkgs.writeShellScriptBin "gnatmake" ''
         PATH=${pkgs.gnat15}/bin:$PATH exec gnatmake "$@"
       '';
+
       # The crates the tokio fixtures depend on, exactly as their lockfiles
       # name them, one for each tokio release they are built with, so that
       # building them fetches nothing.
@@ -532,6 +538,7 @@
           ./tests/fixtures/rust/tokio/tokio-1.52/Cargo.lock
         ];
       };
+
       default = pkgs.mkShell {
         NIX_HARDENING_ENABLE = "";
         # glibc's static libraries, which only statically linked fixtures link

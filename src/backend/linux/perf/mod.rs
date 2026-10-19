@@ -147,6 +147,7 @@ impl Events {
             "perf events for {pid}: {} CPUs, {pages} pages each",
             rings.len()
         );
+
         Ok(Self {
             rings,
             pages,
@@ -190,6 +191,7 @@ impl Events {
             for tid in new {
                 opened.insert(tid);
                 let thread = i32::try_from(tid).unwrap_or(i32::MAX);
+
                 let Some(events) = owner.as_mut() else {
                     // The first thread's events own the rings.
                     match rings(attr, thread, &cpus, options) {
@@ -223,6 +225,7 @@ impl Events {
             cpus.len(),
             events.pages
         );
+
         Ok(events)
     }
 
@@ -283,6 +286,7 @@ impl Events {
                     sys::open(&attr, -1, i32::try_from(cpu).unwrap_or(i32::MAX)).map_err(failed)?;
                 sys::set_output(&fd, ring.fd()).map_err(failed)?;
                 let id = sys::id(&fd).map_err(failed)?;
+
                 Ok(Output { cpu, fd, id })
             })
             .collect()
@@ -318,6 +322,7 @@ impl Events {
             .fold((0, 0), |(count, lost), (more, also)| {
                 (count + more, lost + also)
             });
+
         (counted, lost, self.untrusted())
     }
 
@@ -399,12 +404,14 @@ fn rings(
 ) -> Result<(Vec<sys::Ring>, usize, u32), OpenError> {
     let fewest = min_pages(options.stack_bytes);
     let mut pages = options.ring_pages.next_power_of_two().max(fewest);
+
     loop {
         attr.wakeup_watermark = u32::try_from(pages * sys::page_size() / 4).unwrap_or(u32::MAX);
         let rings: std::io::Result<Vec<sys::Ring>> = open_each(&attr, pid, cpus)?
             .into_iter()
             .map(|fd| sys::Ring::map(fd, pages))
             .collect();
+
         match rings {
             Ok(rings) => return Ok((rings, pages, attr.wakeup_watermark)),
             Err(error) if error.raw_os_error() == Some(libc::EPERM) => {
@@ -467,6 +474,7 @@ fn open_each(attr: &sys::Attr, pid: i32, cpus: &[u32]) -> Result<Vec<OwnedFd>, O
 fn online_cpus() -> std::io::Result<Vec<u32>> {
     let text = std::fs::read_to_string("/sys/devices/system/cpu/online")?;
     let mut cpus = Vec::new();
+
     for part in text.trim().split(',').filter(|part| !part.is_empty()) {
         let (first, last) = part.split_once('-').unwrap_or((part, part));
         let parse = |text: &str| {
@@ -507,6 +515,7 @@ pub fn attach(pid: u32, options: &EventOptions, budget: usize) -> Result<Attache
     ))
     .map_err(|error| OpenError::NoProcess(error.into()))?;
     let events = Events::attach(pid, options, budget)?;
+
     Ok(Attached {
         events,
         process: ProcessWatch(process),
@@ -522,6 +531,7 @@ pub fn program_bias(pid: u32) -> Option<crate::LoadBias> {
         .ok()?
         .into_iter()
         .find(|mapped| mapped.inode == inode)?;
+
     identify(&decode::Mmap {
         pid: crate::model::Pid::new(pid),
         start: mapped.start,
@@ -618,6 +628,7 @@ pub fn launch(
             reap(child)
         })
         .map_err(LaunchError::Spawn)?;
+
     let mut pid = [0_u8; 4];
     if read_exact(&pid_read, &mut pid).is_err() {
         // The fork failed, or the child failed before it reached the gate.
@@ -669,6 +680,7 @@ pub fn launch(
 
     write_all(&go_write, &[1])?;
     record!("perf launch: {pid} opened its gate");
+
     Ok(Launched {
         pid,
         events,
@@ -760,6 +772,7 @@ pub fn own_vdso() -> Option<(Vec<u8>, u64)> {
         std::os::unix::fs::FileExt::read_exact_at(&memory, buffer, address).is_ok()
     })
     .ok()?;
+
     let link = image
         .load_bias
         .wrapping_unload(crate::VirtualAddress::new(range.start));
@@ -801,6 +814,7 @@ pub fn identify(mmap: &decode::Mmap<'_>) -> Option<(PathBuf, crate::LoadBias)> {
     )));
     candidates.push(PathBuf::from(format!("/proc/{pid}/exe")));
     let inode = mmap.inode?;
+
     candidates.into_iter().find_map(|candidate| {
         identify_mapped_module(&ModuleMapping {
             path: candidate,
@@ -830,6 +844,7 @@ pub struct Mapped {
 pub fn mappings(pid: u32) -> std::io::Result<Vec<Mapped>> {
     let maps = std::fs::read(format!("/proc/{pid}/maps"))?;
     let mut mappings = Vec::new();
+
     for line in maps.split(|byte| *byte == b'\n') {
         let mut fields = line.splitn(6, |byte| *byte == b' ');
         let (Some(range), Some(permissions), Some(offset), Some(_device), Some(inode)) = (
@@ -857,6 +872,7 @@ pub fn mappings(pid: u32) -> std::io::Result<Vec<Mapped>> {
         let inode = std::str::from_utf8(inode)
             .ok()
             .and_then(|inode| inode.parse().ok());
+
         // Anonymous code, as perf's records name it.
         let path = if path.is_empty() { b"//anon" } else { path };
         if executable {
@@ -927,6 +943,7 @@ pub fn tsc_anchor() -> (u64, u64) {
     };
 
     let mut best = (u64::MAX, 0, 0);
+
     for _ in 0..4 {
         let before = monotonic();
         let tsc = sys::tsc();

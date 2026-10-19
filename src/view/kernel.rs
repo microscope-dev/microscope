@@ -154,6 +154,7 @@ impl Kernel {
                 .map_err(|_| "the WebAssembly runtime failed starting it".to_owned())??;
         let count = i32::try_from(arguments.len())
             .map_err(|_| "it is given too many arguments".to_owned())?;
+
         Ok(Run {
             store,
             memory,
@@ -218,6 +219,7 @@ impl Kernel {
             .iter()
             .flat_map(|argument| argument.to_le_bytes())
             .collect::<Vec<_>>();
+
         memory
             .write(
                 &mut store,
@@ -226,6 +228,7 @@ impl Kernel {
                 &bytes,
             )
             .map_err(|error| format!("its arguments could not be written: {error}"))?;
+
         Ok((store, memory, run, place))
     }
 }
@@ -289,6 +292,7 @@ fn check_interface(module: &Module) -> Result<(), String> {
 
     let mut run = false;
     let mut memory = false;
+
     for export in module.exports() {
         match (export.name(), export.ty()) {
             ("run", ExternType::Func(ty)) => {
@@ -439,6 +443,7 @@ impl Run {
                         .required_fuel()
                         .div_ceil(FUEL_PER_UNIT)
                         .max(UNITS_PER_REFILL);
+
                     host.pay(units).map_err(RunError::Host)?;
                     let left = self.store.get_fuel().unwrap_or(0);
                     self.store
@@ -535,6 +540,7 @@ impl Run {
             .ok_or_else(|| {
                 RunError::Kernel(format!("it yielded words at {words:#x}, past its memory"))
             })?;
+
         Ok(bytes
             .as_chunks::<8>()
             .0
@@ -666,6 +672,7 @@ pub fn parse_recordings(text: &str) -> Result<Vec<Recording>, String> {
         .lines()
         .enumerate()
         .map(|(index, line)| (index + 1, line));
+
     while let Some((number, line)) = lines.next() {
         if line.trim().is_empty() {
             continue;
@@ -708,6 +715,7 @@ pub fn parse_recordings(text: &str) -> Result<Vec<Recording>, String> {
 
             let bad = || format!("line {number}: `{line}` is no event");
             let (word, rest) = line.split_once(' ').unwrap_or((line, ""));
+
             match word {
                 "read" => {
                     let (address, bytes) = rest.split_once(' ').unwrap_or((rest, ""));
@@ -722,6 +730,7 @@ pub fn parse_recordings(text: &str) -> Result<Vec<Recording>, String> {
                         .map(|at| u8::from_str_radix(bytes.get(at..at + 2)?, 16).ok())
                         .collect::<Option<Vec<_>>>()
                         .ok_or_else(bad)?;
+
                     events.push(Event::Read { address, bytes });
                 }
                 "item" => {
@@ -731,6 +740,7 @@ pub fn parse_recordings(text: &str) -> Result<Vec<Recording>, String> {
                         .collect::<Option<Vec<_>>>()
                         .filter(|words| (1..=MAX_WORDS).contains(&words.len()))
                         .ok_or_else(bad)?;
+
                     events.push(Event::Item(words));
                 }
                 "end" => {
@@ -1141,6 +1151,7 @@ mod tests {
     ) -> (Vec<Vec<u64>>, Result<(), String>) {
         let mut run = kernel.start(arguments, None).expect("starts");
         let mut items = Vec::new();
+
         loop {
             match run.next(memory) {
                 Ok(Some(item)) => items.push(item.to_vec()),
@@ -1215,6 +1226,7 @@ mod tests {
                 "its `run` does not take two i32s and return one",
             ),
         ];
+
         for (wasm, expected) in cases {
             let error = load(&wasm).expect_err(expected);
             assert!(error.contains(expected), "{error}: not {expected}");
@@ -1239,6 +1251,7 @@ mod tests {
         // A read the host cannot make ends the run with the host's error.
         let (_, ended) = items(&kernel, &[0x2000], &mut memory);
         assert_eq!(ended, Err("0x2000 is unmapped".to_owned()));
+
         let kernel = load(&Wasm::kernel(&counter())).expect("loads");
         assert_eq!(
             items(&kernel, &[3], &mut Memory::default()),
@@ -1268,6 +1281,7 @@ mod tests {
 
         let _ = items(&kernel, &[], &mut again);
         assert_eq!(again.units, spent);
+
         let recurses = [0x20, 0, 0x20, 1, 0x10, 2];
         let cases: [(Vec<u8>, &str); 5] = [
             (recurses.to_vec(), "it trapped"),
@@ -1288,6 +1302,7 @@ mod tests {
                 "past its memory",
             ),
         ];
+
         for (body, expected) in cases {
             let kernel = load(&Wasm::kernel(&body)).expect("loads");
             let (_, ended) = items(&kernel, &[], &mut Memory::default());
@@ -1298,6 +1313,7 @@ mod tests {
         // A run that failed says so again, rather than seeming to end well.
         let kernel = load(&Wasm::kernel(&i32_const(3))).expect("loads");
         let mut run = kernel.start(&[], None).expect("starts");
+
         for _ in 0..2 {
             assert!(matches!(
                 run.next(&mut Memory::default()),
@@ -1346,6 +1362,7 @@ mod tests {
         // What no host could have given or taken is no recording.
         let run =
             |body: &str| format!("microscope-kernel-run 1\nkernel test\n{body}\nend stopped\n");
+
         for body in [
             "arguments x".to_owned(),
             format!("arguments{}", " 0x0".repeat(MAX_ARGUMENTS + 1)),
@@ -1378,6 +1395,7 @@ mod tests {
         *next += 0x200;
         memory.write(node, &fill.to_le_bytes());
         let mut keys = Vec::new();
+
         for index in 0..=u64::from(fill) {
             if height > 0 {
                 let (child, below) = btree(memory, height - 1, fill, next, position);
@@ -1401,6 +1419,7 @@ mod tests {
             .kernel("rust-btree")
             .expect("a built-in kernel");
         let layout = |root: u64, height: u64| vec![root, height, 0, 8, 96, 8, 4, 144, 11];
+
         for (height, fill) in [(0, 0), (0, 1), (0, 11), (1, 5), (2, 11), (3, 2)] {
             let mut memory = Memory::default();
             let (root, keys) = btree(&mut memory, height, fill, &mut 0x10000, &mut 0);

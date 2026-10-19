@@ -43,6 +43,7 @@ pub(super) fn packaged_names<'a>(
         .iter()
         .map(|package| &*package.path)
         .collect::<BTreeSet<_>>();
+
     functions
         .iter()
         .map(|function| {
@@ -266,6 +267,7 @@ impl ModuleImage {
             .checked_add(1)
             .and_then(LineNumber::new)
             .and_then(|next| self.next_statement_line(file, next));
+
         (before, after)
     }
 }

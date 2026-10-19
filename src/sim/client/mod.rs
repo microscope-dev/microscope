@@ -446,6 +446,7 @@ impl Client {
         let mut watched_launch = 0;
         let mut last_stop: Option<StopId> = None;
         let mut stale: Option<StopId> = None;
+
         for _ in 0..self.script.requests {
             let Some(snapshot) = self.state().await? else {
                 return Ok(());
@@ -509,6 +510,7 @@ impl Client {
                         // The semantic oracles judge every stop.
                         let result = self.inspect(stop_id).await;
                         self.excuse(process_id, result)?;
+
                         let released = self.released_while_running.replace(false);
                         if matches!(reason, StopReason::WatchpointArmFailed { .. }) && !released {
                             let result = self.resume_unarmed().await;
@@ -581,6 +583,7 @@ impl Client {
             .hold_forks()
             .await
             .map_err(|error| protocol(format!("holding forks failed: {error}")))?;
+
         *self.shared.held.borrow_mut() = Some(held);
         self.shared.following.set(true);
         self.note("holding forks");
@@ -669,6 +672,7 @@ impl Client {
         // breakpoint the new process must not have.
         self.shared.watches.borrow_mut().clear();
         self.snapshot().await?;
+
         let options = LaunchOptions {
             arguments: self.script.arguments.iter().map(Into::into).collect(),
             stop_at_entry: self.script.stop_at_entry,
@@ -676,6 +680,7 @@ impl Client {
         };
 
         let killed = self.shared.killed.borrow().len();
+
         match self.handle.launch_with(options).await {
             Ok(execution) => self.note(format!("launched as execution {execution}")),
             // Killed from outside before its first stop, the program never
@@ -896,6 +901,7 @@ impl Client {
             .borrow_mut()
             .pick(Stream::Client, &snapshot.threads)
             .id;
+
         self.handle
             .select_context(thread)
             .await
@@ -940,6 +946,7 @@ impl Client {
                 ExceptionDisposition::Pass,
             )
             .await;
+
         if result.is_err() {
             self.observe(Observation::Alone(None));
         }
@@ -975,6 +982,7 @@ impl Client {
             .find(|record| record.module.id == ModuleId::new(0))
             .map(|record| record.module.load_bias)
             .ok_or_else(|| protocol("no main module is loaded"))?;
+
         if bias.get() != self.script.image.bias() {
             return Err(Failure::debugger(
                 "modules",
@@ -1024,6 +1032,7 @@ impl Client {
                 |trap| (trap - page_address).saturating_sub(self.draw(length)),
             )
             .min(page.len() as u64 - length);
+
         let address = page_address + offset;
         let start = usize::try_from(offset).expect("small");
         let expected = &page[start..start + usize::try_from(length).expect("small")];
@@ -1042,6 +1051,7 @@ impl Client {
                 .write_memory(VirtualAddress::new(address), expected)
                 .await
                 .map_err(|error| protocol(format!("writing {address:#x} failed: {error}")))?;
+
             // A write ends early only where memory cannot be written, as
             // when SIGKILL took the thread out of its stop.
             if written != length {
@@ -1256,6 +1266,7 @@ impl Client {
         }
 
         sent.map_err(|_| protocol("the request queue closed before shutdown"))?;
+
         answer
             .await
             .map_err(|_| protocol("shutdown was never answered"))?

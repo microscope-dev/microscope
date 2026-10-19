@@ -128,10 +128,12 @@ pub fn import(bytes: &[u8]) -> Result<Capture, String> {
     let mut ids = Vec::new();
     let mut values = Vec::new();
     let mut total = 0_u64;
+
     for sample in &raw.samples {
         ids.clear();
         values.clear();
         let mut labels = Vec::new();
+
         for field in Fields::new(sample) {
             match field? {
                 (1, value) => value.numbers(&mut ids, "a sample's location")?,
@@ -148,6 +150,7 @@ pub fn import(bytes: &[u8]) -> Result<Capture, String> {
         total = total
             .checked_add(weight)
             .ok_or_else(|| format!("the samples weigh more than {} in all", u64::MAX))?;
+
         let mut stack = Vec::with_capacity(ids.len());
         for id in &ids {
             let frame = frames
@@ -179,6 +182,7 @@ pub fn import(bytes: &[u8]) -> Result<Capture, String> {
 
     builder.thread_exit(Tid::new(0), end);
     builder.setting("sample times", "none");
+
     let comments: Result<Vec<&str>, String> = raw
         .comments
         .iter()
@@ -232,6 +236,7 @@ fn weighing(raw: &Raw<'_>, builder: &mut CaptureBuilder) -> Result<Weighing, Str
         .position(|(name, _)| raw.default_type != 0 && *name == raw.default_type)
         .or_else(|| raw.types.len().checked_sub(1))
         .ok_or_else(|| "it has no sample types".to_owned())?;
+
     let (name, unit) = raw.types[chosen];
     let (name, unit) = (raw.string(name)?, raw.string(unit)?);
     let (weight, scale) = match unit {
@@ -251,8 +256,10 @@ fn weighing(raw: &Raw<'_>, builder: &mut CaptureBuilder) -> Result<Weighing, Str
 /// Each mapping's module, by its id; the first names the program.
 fn mappings(raw: &Raw<'_>, builder: &mut CaptureBuilder) -> Result<BTreeMap<u64, u32>, String> {
     let mut modules = BTreeMap::new();
+
     for mapping in &raw.mappings {
         let (mut id, mut start, mut limit, mut file, mut build_id) = (0, 0, 0, 0, 0);
+
         for field in Fields::new(mapping) {
             match field? {
                 (1, value) => id = value.number("a mapping's id")?,
@@ -279,8 +286,10 @@ fn mappings(raw: &Raw<'_>, builder: &mut CaptureBuilder) -> Result<BTreeMap<u64,
 
 fn functions(raw: &Raw<'_>) -> Result<BTreeMap<u64, Function>, String> {
     let mut functions = BTreeMap::new();
+
     for function in &raw.functions {
         let (mut id, mut read) = (0, Function::default());
+
         for field in Fields::new(function) {
             match field? {
                 (1, value) => id = value.number("a function's id")?,
@@ -309,9 +318,11 @@ fn locations(
 ) -> Result<BTreeMap<u64, u32>, String> {
     let mut frames = BTreeMap::new();
     let mut used = std::collections::BTreeSet::new();
+
     for location in &raw.locations {
         let (mut id, mut mapping, mut address) = (0, 0, 0);
         let mut lines: Vec<(u64, u64, u64)> = Vec::new();
+
         for field in Fields::new(location) {
             match field? {
                 (1, value) => id = value.number("a location's id")?,
@@ -349,6 +360,7 @@ fn locations(
         let frame = builder.frame(FrameKind::Native, NONE, address, 0);
         if !lines.is_empty() {
             let mut names = Vec::with_capacity(lines.len());
+
             for &(function, line, column) in &lines {
                 let function = functions.get(&function).ok_or_else(|| {
                     format!("location {id} names function {function}, which it lacks")
@@ -433,10 +445,12 @@ pub fn export(
         message.number(1, kind);
         message.number(2, kind_unit);
     });
+
     let mut locations: BTreeMap<u32, u64> = BTreeMap::new();
     let mut functions: BTreeMap<(String, String), u64> = BTreeMap::new();
     let mut written = Message::default();
     let mut path = Vec::new();
+
     for node in 0..tree.len() {
         if tree.own[node] == 0 {
             continue;
@@ -444,6 +458,7 @@ pub fn export(
 
         path.clear();
         let mut at = u32::try_from(node).unwrap_or(NONE);
+
         while at != NONE {
             let key = tree.key[at as usize];
             let next = locations.len() as u64 + 1;
@@ -462,6 +477,7 @@ pub fn export(
                         });
                         next_function
                     });
+
                 written.message(4, |message| {
                     message.number(1, next);
                     message.message(4, |message| {
@@ -471,6 +487,7 @@ pub fn export(
                 });
                 next
             });
+
             path.push(location);
             at = tree.parent[at as usize];
         }
@@ -487,6 +504,7 @@ pub fn export(
     }
 
     profile.signed(10, duration);
+
     let mut out = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     std::io::Write::write_all(&mut out, &profile.bytes)?;
     out.finish()

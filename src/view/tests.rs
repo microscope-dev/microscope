@@ -185,6 +185,7 @@ fn random_access_children_cost_the_same_at_any_index() {
     let mut world = world();
     let bound = bound(&world, &set(VIEWS), "big");
     let mut costs = Vec::new();
+
     for index in [0, 150, 299] {
         world.reads.clear();
         let this = place(&world, "big");
@@ -319,6 +320,7 @@ fn patterns_capture_arguments_and_anchor_at_the_root() {
         "len=3 [2, 3, 4]"
     );
     assert_eq!(shown(&mut world, "any **::Pair<T, 3>"), "len=3 [2, 3, 4]");
+
     for header in [
         "c app::detail::Pair<T, N>",
         "c++ app::detail::Pair<T, N, M>",
@@ -386,6 +388,7 @@ fn view_file_errors_point_at_their_line_and_column_and_skip_one_view() {
         errors("microscope-views 2\n"),
         ["bad.views:1:1: this microscope reads views of version 1"]
     );
+
     let file = syntax::parse(
         "bad.views",
         "microscope-views 1
@@ -419,6 +422,7 @@ view kotlin seventh {
         .iter()
         .map(ToString::to_string)
         .collect::<Vec<_>>();
+
     assert_eq!(file.views.len(), 1, "{messages:?}");
     assert_eq!(file.views[0].pattern.base, "second");
     assert_eq!(file.views[0].language, Language::C);
@@ -559,6 +563,7 @@ fn bound_views_reject_what_does_not_type_check() {
             "microscope-views 1\nview c intvec {{\n    {body}\n}}\n"
         ));
         let choice = choose(&views, world.type_of("v"), &world);
+
         match (&choice.bound, reason) {
             (Some(_), "") => {}
             (Some(_), _) => panic!("`{body}` bound"),
@@ -593,6 +598,7 @@ fn views_stay_pure() {
     ];
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/view");
     let mut checked = 0;
+
     for entry in std::fs::read_dir(&root).expect("read the views' sources") {
         let path = entry.expect("a directory entry").path();
         if path.file_name().is_some_and(|name| name == "tests.rs")
@@ -603,6 +609,7 @@ fn views_stay_pure() {
 
         let source = std::fs::read_to_string(&path).expect("read a source file");
         let source = source.split("#[cfg(test)]").next().unwrap_or_default();
+
         for forbidden in FORBIDDEN {
             assert!(
                 !source.contains(forbidden),
@@ -910,6 +917,7 @@ fn example_outcome(views: &ViewSet, name: &str, outcome: &str) -> String {
     }
 
     let elements = presented.count.map_or(0, crate::PresentedCount::known);
+
     match children(&bound, &mut world, this, elements, 0, 64, &mut checkpoints) {
         Ok(children) => format!(
             "children: {}",
@@ -952,6 +960,7 @@ fn every_example_in_the_views_reference_holds() {
 
         let parsed = syntax::parse("example.views", &file);
         let views = ViewSet::new([("example.views", file.as_str())]);
+
         for (line, row) in examples {
             rows += 1;
             let (name, expected) = row
@@ -963,6 +972,7 @@ fn every_example_in_the_views_reference_holds() {
                     .iter()
                     .map(ToString::to_string)
                     .collect::<Vec<_>>();
+
                 let wanted = expected.strip_prefix("error: ").unwrap_or(expected);
                 match errors.iter().find(|error| error.contains(wanted)) {
                     Some(_) => expected.to_owned(),
@@ -970,6 +980,7 @@ fn every_example_in_the_views_reference_holds() {
                 }
             } else {
                 let actual = example_outcome(&views, name, expected);
+
                 match expected.strip_prefix("unbound: ") {
                     Some(reason) if actual.contains(reason) => expected.to_owned(),
                     _ => actual,
@@ -1011,6 +1022,7 @@ fn chain(world: &mut World, values: &[i32]) -> Vec<u64> {
     let links = (1..=values.len())
         .map(|next| (next < values.len()).then_some(next))
         .collect::<Vec<_>>();
+
     nodes(world, values, &links)
 }
 
@@ -1177,6 +1189,7 @@ fn paged(world: &mut World, views: &ViewSet, name: &str, size: u64) -> Vec<Strin
     let count = presented.count.map_or(0, crate::PresentedCount::known);
     let mut elements = Vec::new();
     let mut offset = 0;
+
     while offset < count {
         let page = children(
             &bound,
@@ -1253,6 +1266,7 @@ fn scans_resume_from_checkpoints_and_page_alike_in_any_size() {
         resumed * 4 < from_start,
         "{resumed} reads resumed, {from_start} from the start"
     );
+
     for (name, size) in [("long", 7), ("balanced", 1), ("sparse", 1), ("buckets", 2)] {
         assert_eq!(
             paged(&mut world, &views, name, size),
@@ -1272,6 +1286,7 @@ fn too_little_work_never_makes_a_presentation_wrong() {
         unlimited.work = Some(100_000);
         let full = summary(&mut unlimited, &views, name);
         let used = 100_000 - unlimited.work.expect("limited");
+
         for budget in 0..used {
             let mut limited = world();
             limited.work = Some(budget);
@@ -1342,6 +1357,7 @@ fn types_are_constructed_from_arguments_and_layouts_named() {
     let header = world.record("holder<int>.Header", 4, &[("size", int, 0)]);
     world.variable("h", holder, &ints([3, 4]));
     let _ = (int_node, copy, header);
+
     let views = |body: &str| {
         ViewSet::new([(
             "test.views",
@@ -1373,6 +1389,7 @@ fn types_are_constructed_from_arguments_and_layouts_named() {
     // Same-named instances of one identity are one type, but different
     // identities are not.
     world.base("char", E::SignedCharacter, 1);
+
     for (body, reason) in [
         (
             "    type Node = lib::node_of<U>\n    show empty(\"\")",
@@ -1447,6 +1464,7 @@ fn types_are_constructed_from_the_arguments_of_a_function_at_run_time() {
             .as_str(),
         )]);
         assert!(views.errors().is_empty(), "{:?}", views.errors());
+
         presented(world, &views, "h").map(|presented| {
             presented
                 .inner
@@ -1507,6 +1525,7 @@ view c a {
     ));
     assert_eq!(key.text(), "x->flag ? x->key : -1");
     assert_eq!(value.text(), "std::max::value");
+
     for (body, error) in [
         (
             "show map(n) for i in range(n) => i",
@@ -1612,6 +1631,7 @@ fn a_cycle_behind_a_checkpoint_is_still_found() {
     );
     assert!(matches!(&first, Ok(page) if page.len() == 260), "{first:?}");
     let mut offset = 260;
+
     let found = loop {
         assert!(offset < 5_000, "no cycle found by element {offset}");
         match children(

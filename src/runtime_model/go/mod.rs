@@ -368,6 +368,7 @@ impl GoRuntime {
                 address,
                 after_call: true,
             });
+
         Ok(Some(RuntimeTask {
             number,
             locator: g,
@@ -767,6 +768,7 @@ impl RuntimeModel for GoRuntime {
         // stack says which, as the thread may since have gone on to its
         // signal stack.
         let on_system = self.stack(stop, gs.g0)?.contains(&register(RSP, "rsp")?);
+
         match switch {
             Switch::Resumes if on_system => return Ok(Crossing::Stay),
             Switch::Resumes => return Err("the thread is switching to a goroutine".into()),
@@ -963,6 +965,7 @@ impl GoRuntime {
         // An unreadable goroutine may be the one sought, so it is absent
         // only once every goroutine was read.
         let mut unreadable = None;
+
         for g in self.allgs(stop)? {
             match numbered(g) {
                 Some(found) if found == number => match self.goroutine(stop, names, g) {
@@ -1008,6 +1011,7 @@ impl GoRuntime {
         self.listed(stop, task)?;
         let number = word(stop, VirtualAddress::new(task.wrapping_add(layout.goid)))
             .ok_or_else(|| format!("the thread's goroutine at {task:#x} is unreadable"))?;
+
         Ok(ThreadActivity::Task { number, stack })
     }
 

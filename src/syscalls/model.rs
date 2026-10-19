@@ -275,6 +275,7 @@ impl CallStack {
         let mut interpreted = self.interpreted.iter().peekable();
         (0..=self.addresses.len()).flat_map(move |index| {
             let mut before = Vec::new();
+
             while let Some(call) = interpreted.next_if(|call| call.before as usize <= index) {
                 before.push(Err(call));
             }

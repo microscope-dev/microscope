@@ -113,6 +113,7 @@ fn record_failure(groups: &Mutex<BTreeMap<String, Group>>, outcome: &Outcome) {
         report: describe_failure(outcome),
     });
     group.count += 1;
+
     if run < group.shortest {
         group.shortest = run;
         group.fingerprint = outcome.fingerprint;
@@ -154,10 +155,12 @@ fn sweep(
     let reach = Mutex::new(Reach::default());
     let began = Instant::now();
     let settings = Settings::default();
+
     std::thread::scope(|scope| {
         for _ in 0..threads {
             scope.spawn(|| {
                 let mut reached = Reach::default();
+
                 while !done.load(Ordering::Relaxed) {
                     let seed = start.wrapping_add(next.fetch_add(1, Ordering::Relaxed));
 
@@ -176,6 +179,7 @@ fn sweep(
                     };
 
                     sessions.fetch_add(1, Ordering::Relaxed);
+
                     if let Some(plan) = outcome.swarm.fault {
                         let mut faults = faults.lock().unwrap_or_else(PoisonError::into_inner);
                         let counts = faults.entry(plan.kind()).or_default();
@@ -214,6 +218,7 @@ fn sweep(
         began.elapsed().as_secs_f64(),
         rate(count, began.elapsed(), threads)
     );
+
     for (kind, (planned, fired)) in faults.into_inner().unwrap_or_else(PoisonError::into_inner) {
         println!("{kind}: fired in {fired} of {planned} sessions that planned it");
     }
@@ -243,6 +248,7 @@ fn report_failures(
     mut escaped: Vec<u64>,
 ) -> ExitCode {
     escaped.sort_unstable();
+
     if groups.is_empty() && escaped.is_empty() {
         println!("no failures");
         return ExitCode::SUCCESS;
@@ -294,6 +300,7 @@ fn replay(
     std::fs::create_dir_all(&directory)?;
     std::fs::write(directory.join("trace.log"), &text)?;
     println!("written to {}", directory.join("trace.log").display());
+
     if let Some(expected) = fingerprint
         && at.is_none()
         && expected != outcome.fingerprint

@@ -156,6 +156,7 @@ fn random_requests_in_every_state_are_answered_once_and_harm_nothing() {
         },
         |seed| vec![seed],
     );
+
     for seed in seeds {
         let mut random = Random(seed);
         let mut dap = Dap::start(format!("chaos seed {seed:#x}"));
@@ -200,6 +201,7 @@ fn bursts(dap: &mut Dap, random: &mut Random, rounds: usize, started: bool) {
                 dap.send(command, arguments)
             })
             .collect::<Vec<_>>();
+
         for sent in burst {
             let response = dap.response(sent);
             assert!(response["success"].is_boolean(), "{response}");

@@ -288,6 +288,7 @@ impl Types {
             state(0, CoroutineStateKind::Unresumed, 20, None),
             state(3, suspended(0), 21, Some(SLEEP)),
         ]);
+
         Self {
             types,
             coroutines: [(reference(OUTER), outer), (reference(INNER), inner)].into(),
@@ -508,6 +509,7 @@ fn a_chain_reaches_its_leaf_through_every_kind_of_future() {
         ]
     );
     assert_eq!(instrumented.end, ChainEnd::Leaf);
+
     memory.byte(outer, 11);
     let lookalike = walk_from(&memory, outer, OUTER);
     assert_eq!(

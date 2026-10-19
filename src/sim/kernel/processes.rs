@@ -76,6 +76,7 @@ impl Kernel {
             traced,
             shadow,
         );
+
         let start_time = self.allocate_start_time();
         let parent = &self.processes[&group];
         let process = Process {
@@ -98,6 +99,7 @@ impl Kernel {
         self.threads.insert(child, thread);
         self.happenings
             .push(Happening::Forked { parent: tid, child });
+
         let result = u64::try_from(child).expect("process ids are positive");
         if traced {
             self.event_stop(tid, libc::PTRACE_EVENT_FORK, result, result);
@@ -160,8 +162,10 @@ impl Kernel {
                     killed_externally: zombie.killed_externally,
                 },
             );
+
             self.happenings
                 .push(Happening::ReapedChild { parent: tid, child });
+
             return u64::try_from(child).expect("process ids are positive");
         }
 
@@ -169,6 +173,7 @@ impl Kernel {
             .processes
             .get(&process)
             .is_some_and(|process| process.parent == Parent::Process(group));
+
         if lives { 0 } else { failure(Errno::ECHILD) }
     }
 
@@ -333,6 +338,7 @@ impl Kernel {
                 tracer,
                 planted,
             });
+
             let thread = self.threads.get_mut(&tid).expect("a traced thread");
             thread.tracing = Tracing::Untraced;
             thread.single_step = false;
@@ -341,6 +347,7 @@ impl Kernel {
             thread.syscall_stops = false;
             thread.options = super::Options::default();
             thread.report = None;
+
             match thread.state {
                 State::Zombie(_) => self.reap_untraced(tid),
                 State::Stopped {
@@ -381,6 +388,7 @@ impl Kernel {
 
             let process = &self.processes[&group];
             let exit = process.group_exit.unwrap_or(own);
+
             self.end_process(group, exit);
         }
     }

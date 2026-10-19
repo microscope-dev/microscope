@@ -22,6 +22,7 @@ async fn in_the_body(fixture: &str, marker: &str) -> Scenario {
             line: LineNumber::new(support::source_line(SOURCE, marker)).expect("one-based"),
         })
         .await;
+
     let reason = scenario
         .run_with_to_stop(LaunchOptions {
             stdout: Some(Stdio::null()),
@@ -32,6 +33,7 @@ async fn in_the_body(fixture: &str, marker: &str) -> Scenario {
         matches!(reason, StopReason::Breakpoint { .. }),
         "{fixture}: {reason:?}"
     );
+
     scenario.remove_breakpoint(breakpoint.id).await;
     scenario
 }
@@ -45,6 +47,7 @@ async fn walk(
     context: &str,
 ) -> Vec<(u64, Option<i128>)> {
     let mut walked = Vec::new();
+
     loop {
         assert!(walked.len() < 64, "{context}: {walked:?}");
         let reason = scenario.step_to_stop(StepKind::OverSource).await;
@@ -60,6 +63,7 @@ async fn walk(
             functions.contains(&function.as_str()),
             "{context}: stopped in {function} at line {line} after {walked:?}"
         );
+
         let body = function.contains("-range");
         walked.push((
             line,
@@ -69,6 +73,7 @@ async fn walk(
                 None
             },
         ));
+
         if !body {
             return walked;
         }
@@ -84,6 +89,7 @@ fn assert_walk(walked: &[(u64, Option<i128>)], expected: &[(&str, i128)], contex
         .map(|(marker, _)| support::source_line(SOURCE, &format!("// WALK: {marker}")))
         .collect::<Vec<_>>();
     assert_eq!(lines, expected_lines, "{context}: {walked:?}");
+
     for ((_, shown), (marker, value)) in walked.iter().zip(expected) {
         if let Some(shown) = shown {
             assert_eq!(shown, value, "{context}: v at {marker}");
@@ -125,6 +131,7 @@ async fn stepping_over_a_loop_body_stays_in_the_loop() {
         ("evens after", 0),
     ];
     let inlined_evens = [("evens add", 2), ("evens add", 4), ("evens after", 0)];
+
     for fixture in BUILDS {
         let mut scenario = in_the_body(fixture, "// WALK: counted add").await;
         let walked = walk(
@@ -138,6 +145,7 @@ async fn stepping_over_a_loop_body_stays_in_the_loop() {
 
         let mut scenario = in_the_body(fixture, "// WALK: evens add").await;
         let walked = walk(&mut scenario, &["main.evens", "main.evens-range1"], fixture).await;
+
         let expected = if fixture.ends_with("o0") {
             &evens[..]
         } else {
@@ -170,12 +178,14 @@ async fn stepping_over_a_loop_enters_its_body() {
             let context = format!("{fixture} {function}");
             let mut scenario = crate::invariants::checked(fixture);
             let breakpoint = scenario.add_breakpoint(function).await;
+
             scenario
                 .run_with_to_stop(LaunchOptions {
                     stdout: Some(Stdio::null()),
                     ..LaunchOptions::default()
                 })
                 .await;
+
             scenario.remove_breakpoint(breakpoint.id).await;
 
             // To the loop's line in the function, then into its body.
@@ -237,6 +247,7 @@ async fn finishing_a_loop_body_runs_the_rest_of_the_loop() {
             // is the one after the loop.
             let (here, at) = place(&scenario).await;
             assert_eq!(here, function, "{context}: at line {at}");
+
             if at != line(&after) {
                 assert!(loop_lines.contains(&at), "{context}: at line {at}");
                 let reason = scenario.step_to_stop(StepKind::OverSource).await;
@@ -268,6 +279,7 @@ async fn a_backtrace_marks_the_iterators_between_a_body_and_its_loop() {
         ] {
             let context = format!("{fixture} {function}");
             let scenario = in_the_body(fixture, marker).await;
+
             let trace = scenario
                 .operation("backtrace", scenario.handle().backtrace())
                 .await;

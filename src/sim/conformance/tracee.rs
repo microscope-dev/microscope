@@ -313,6 +313,7 @@ impl SimTracee {
     fn end(&mut self) -> String {
         self.kernel.forget_tracer(TRACER);
         let mut steps = 0;
+
         loop {
             if let Some(ended) = self.kernel.ended.get(&Tgid::led_by(self.pid)) {
                 return match ended.status {
@@ -348,6 +349,7 @@ impl Tracee for SimTracee {
     /// until `thread` reports.
     fn wait(&mut self, thread: Tid) -> WaitStatus {
         let mut steps = 0;
+
         loop {
             if let Some(status) = self.kernel.collect(thread) {
                 return status;
@@ -507,6 +509,7 @@ impl Tracee for SimTracee {
     }
 
     fn adopt(&mut self, _child: Tid) {}
+
     fn detach(&mut self, thread: Tid, signal: Option<i32>) -> Result<(), Errno> {
         self.kernel.detach(thread, signal)
     }
@@ -590,6 +593,7 @@ impl Landmarks {
                 Some((name, symbol.address() + bias))
             })
             .collect();
+
         let text = file.section_by_name(".text").expect("a text section");
         let mut decoder = iced_x86::Decoder::with_ip(
             64,
@@ -597,18 +601,22 @@ impl Landmarks {
             text.address(),
             iced_x86::DecoderOptions::NONE,
         );
+
         let syscall = decoder
             .iter()
             .find(|instruction| instruction.mnemonic() == iced_x86::Mnemonic::Syscall)
             .expect("a syscall instruction")
             .ip()
             + bias;
+
         let segments = file
             .segments()
             .map(|segment| (segment.address(), segment.address() + segment.size()))
             .collect::<Vec<_>>();
+
         let start = segments.iter().map(|&(start, _)| start).min().unwrap_or(0);
         let end = segments.iter().map(|&(_, end)| end).max().unwrap_or(0);
+
         Self {
             bias,
             entry: file.entry() + bias,
@@ -763,6 +771,7 @@ impl Record<'_> {
             .map(|message| Tid::try_from(message).expect("a thread id"))
             .expect("the clone event names the new thread");
         self.threads.push(child);
+
         let group = self.tracee.thread_group(child);
         let same = group == Some(self.leader());
         let name = self.name_of(child);
@@ -783,6 +792,7 @@ impl Record<'_> {
             .expect("the fork event names the child");
         self.children.push(child);
         self.tracee.adopt(child);
+
         let group = self.tracee.thread_group(child);
         let name = self.name_of(child);
         self.note(format!(
@@ -899,6 +909,7 @@ impl Record<'_> {
                 .filter(|tid| self.threads.contains(tid) || self.children.contains(tid))
                 .map_or_else(|| info.value.to_string(), |tid| self.name_of(tid))
         });
+
         let text = info.map(|info| {
             let args = info
                 .args
@@ -920,8 +931,10 @@ impl Record<'_> {
                 value.clone().unwrap_or_default()
             )
         });
+
         let name = self.name_of(thread);
         self.note(format!("call info of {name}: {text:?}"));
+
         info.ok()
     }
 
@@ -1004,6 +1017,7 @@ impl Record<'_> {
         let records = self.tracee.samples();
         let mut samples = Vec::new();
         let mut rest = &records[..];
+
         while let Some(next) = decode::next(rest) {
             let (record, length) = next.expect("the kernel writes whole records");
             if let decode::Record::Sample(sample) = record {
@@ -1053,6 +1067,7 @@ impl Record<'_> {
             .filter(|((held, sampled), _)| held != *sampled)
             .map(|(_, name)| name)
             .collect::<Vec<_>>();
+
         self.note(format!(
             "sample of {}: registers differ in {differ:?}",
             self.name_of(sample.tid)
@@ -1065,6 +1080,7 @@ impl Record<'_> {
             held.copy_from_slice(&value.to_le_bytes());
             held[..word.len()] == *word
         });
+
         self.note(format!("its stack is the thread's memory: {same}"));
     }
 
@@ -1072,6 +1088,7 @@ impl Record<'_> {
     /// chain, and how much of the stack it copied (K-PERF-2, K-PERF-3).
     pub(super) fn samples(&mut self) {
         let mut lines = Vec::new();
+
         for sample in self.decoded_samples() {
             let sp = sample.registers[7];
             let chain = sample
@@ -1085,6 +1102,7 @@ impl Record<'_> {
                     }
                 })
                 .collect::<Vec<_>>();
+
             let copied = sample.stack.len() as u64;
 
             // A sample asks for no more than reaches the end of user
@@ -1204,6 +1222,7 @@ fn run_both(
 
         let (mut simulated, first) = SimTracee::spawn(variant, &arguments);
         let mut simulated_lines = observe(&mut simulated, first);
+
         if tracer_exits {
             simulated_lines.push(format!("the parent reaps: {}", simulated.end()));
         }
@@ -1222,6 +1241,7 @@ fn reap_native(process: Tid) -> String {
     use nix::sys::wait::{WaitPidFlag, WaitStatus as Status, waitpid};
     let pid = nix::unistd::Pid::from_raw(process);
     let started = std::time::Instant::now();
+
     loop {
         match waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
             Ok(Status::Exited(_, code)) => return format!("exited {code}"),

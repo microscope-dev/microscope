@@ -859,6 +859,7 @@ fn delegating_bpffs() -> Option<std::path::PathBuf> {
             && kind
                 .nth(1)
                 .is_some_and(|options| options.contains("delegate_cmds"));
+
         delegates.then(|| mount.split(' ').nth(4).map(std::path::PathBuf::from))?
     })
 }
@@ -905,6 +906,7 @@ impl Probe {
                 let end = modes[start..].find(']')?;
                 Some(modes[start + 1..start + end].to_owned())
             });
+
         Self {
             version: version(&release),
             release,
@@ -1193,6 +1195,7 @@ impl Loaded {
             attachment.reason,
             attachment.functions
         );
+
         let (cgroup_id, cgroup_level) = scope.cgroup.unwrap_or_default();
         let (ns_inum, ns_level) = scope
             .namespace
@@ -1211,6 +1214,7 @@ impl Loaded {
             .allow_unsupported_maps()
             .load(OBJECT)
             .map_err(load_error)?;
+
         {
             let mut calls: Array<_, Bytes<SPEC_BYTES>> =
                 Array::try_from(ebpf.map_mut("CALLS").ok_or_else(|| missing("CALLS"))?)
@@ -1261,6 +1265,7 @@ impl Loaded {
         }
 
         attach(&mut ebpf, &btf, &attachment)?;
+
         let targets =
             HashMap::try_from(ebpf.take_map("TARGETS").ok_or_else(|| missing("TARGETS"))?)
                 .map_err(load_error)?;
@@ -1274,6 +1279,7 @@ impl Loaded {
             .map_err(load_error)?,
         );
         record!("syscalls bpf: loaded and attached");
+
         Ok(Self {
             ebpf,
             targets,
@@ -1397,6 +1403,7 @@ impl Loaded {
             })
             .collect();
         calls.sort_by_key(|call| (call.entered, call.thread));
+
         calls
     }
 
@@ -1414,6 +1421,7 @@ impl Loaded {
         let mut file = link.into_file().map_err(load_error)?;
         let mut listed = Vec::new();
         file.read_to_end(&mut listed).map_err(load_error)?;
+
         Ok(listed)
     }
 
@@ -1609,6 +1617,7 @@ fn attach(ebpf: &mut Ebpf, btf: &Btf, attachment: &Attachment) -> Result<(), Bpf
         .try_into()
         .map_err(load_error)?;
     iterator.load("task", btf).map_err(load_error)?;
+
     Ok(())
 }
 
@@ -1616,7 +1625,6 @@ fn missing(name: &str) -> BpfError {
     BpfError::Load(format!("the BPF object has no {name}"))
 }
 
-/// Whether a process has ended: gone, or a zombie.
 /// The CPU time this process has spent, in nanoseconds.
 fn cpu_time() -> u64 {
     use nix::sys::resource::{UsageWho, getrusage};
@@ -1630,6 +1638,7 @@ fn cpu_time() -> u64 {
     })
 }
 
+/// Whether a process has ended: gone, or a zombie.
 fn ended(process: u32) -> bool {
     std::fs::read_to_string(format!("/proc/{process}/stat")).map_or(true, |stat| {
         stat.rsplit_once(") ")
@@ -2292,6 +2301,7 @@ impl Reader<'_> {
         let mut stacks = stacks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+
         Some(stacks.unwind_sampled(
             sampled.process,
             SampledState {

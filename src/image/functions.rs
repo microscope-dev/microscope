@@ -368,6 +368,7 @@ fn add_functions(
     let mut names = Vec::with_capacity(functions.len());
     let mut generics = Vec::new();
     let mut first_instance = 0;
+
     for function in functions {
         let name = strings.push(&function.name).ok_or(TooMany)?;
         names.push((&*function.name, name, function.id.get()));
@@ -430,6 +431,7 @@ fn add_instances(
     let mut instance_records = Vec::with_capacity(instances.len());
     let mut ranges = Vec::new();
     let mut entry_records = Vec::new();
+
     for (instance, recommended) in instances.iter().zip(&entries) {
         let (call_site, inline) = match &instance.kind {
             CodeInstanceKind::OutOfLine => (None, 0),
@@ -919,6 +921,7 @@ fn validate_functions(image: &Image) -> Result<(), String> {
     // list every member once.
     let mut next_member = 0;
     let mut next_generic = 0;
+
     for (index, function) in functions.iter().enumerate() {
         if !strings.contains(StrId(function.name.get()))
             || (function.linkage_name.get() != NONE
@@ -1015,6 +1018,7 @@ fn validate_instances(image: &Image) -> Result<(), String> {
     let entries = image.table::<EntryRecord>();
     let mut next_range = 0;
     let mut next_entry = 0;
+
     for (index, instance) in instances.iter().enumerate() {
         let inline = match instance.inline {
             0 => false,

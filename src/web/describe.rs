@@ -146,6 +146,7 @@ impl Images {
 
         let place = crate::present::frames::place(frame, image.as_deref());
         self.note_recorded(frame, place.as_ref());
+
         Place {
             address: frame
                 .instruction
@@ -273,6 +274,7 @@ impl Describer {
                 let entry = self
                     .stop_entry(stop_id.get(), thread_id.get(), reason, selected)
                     .await;
+
                 Inferior::Stopped {
                     pid: process_id.get(),
                     stop: stop_id.get(),
@@ -381,6 +383,7 @@ impl Describer {
         }
 
         let (places, pending) = breakpoint_places(breakpoint, places);
+
         protocol::Breakpoint {
             id: breakpoint.id.get(),
             location: breakpoint.spec.to_string(),
@@ -622,12 +625,14 @@ fn breakpoint_places(
             ready.push(place);
         }
     }
+
     let pending = crate::present::breakpoints::pending_message(breakpoint).map(|message| {
         protocol::PendingBreakpoint {
             message,
             places: pending,
         }
     });
+
     (ready, pending)
 }
 
@@ -703,6 +708,7 @@ mod tests {
                 (&breakpoint.locations[1], native.clone()),
             ]
         };
+
         let (ready, pending) = breakpoint_places(&breakpoint, queried());
         assert_eq!(ready, vec![native.clone()]);
         assert!(
@@ -712,6 +718,7 @@ mod tests {
                 .contains("some locations pending")
         );
         breakpoint.pending_locations = Arc::from([]);
+
         let (ready, pending) = breakpoint_places(
             &breakpoint,
             vec![
@@ -721,6 +728,7 @@ mod tests {
         );
         assert_eq!(ready, vec![source, native]);
         assert!(pending.is_none());
+
         let wire = protocol::Breakpoint {
             id: 1,
             location: "managed".into(),
@@ -731,6 +739,7 @@ mod tests {
             places: ready,
             pending,
         };
+
         assert!(
             serde_json::to_value(&wire)
                 .expect("wire state")

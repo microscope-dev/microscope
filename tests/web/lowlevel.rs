@@ -19,6 +19,7 @@ async fn stop_in_handle_request(tab: &mut Client) -> Value {
     tab.ok("continue", json!({})).await;
     let stopped = tab.inferior("stopped").await;
     let inferior = &stopped["inferior"];
+
     json!({"stop": inferior["stop"], "thread": inferior["thread"], "frame": 0})
 }
 
@@ -116,6 +117,7 @@ async fn disassembly_shows_each_frames_function_and_where_it_is() {
         .find(|register| register["name"] == "rip")
         .expect("rip");
     assert_eq!(rip["role"], "pc");
+
     let pc = u64::from_str_radix(
         trace["frames"][0]["address"]
             .as_str()
@@ -175,6 +177,7 @@ async fn memory_reads_and_writes_at_the_stop_it_names() {
     .await;
     tab.state("the write", |state| state["writes"] != before)
         .await;
+
     let mut first = at.clone();
     first["expression"] = "req->key[0]".into();
     assert_eq!(tab.ok("evaluate", first).await["text"], "85 'U'");
@@ -276,6 +279,7 @@ async fn watchpoints_follow_expressions_and_addresses() {
     let mut viewer = web.joining("viewer", &link).await;
     viewer.ok("modules", json!(null)).await;
     viewer.ok("registers", at.clone()).await;
+
     for (method, params) in [
         (
             "writeMemory",
@@ -321,6 +325,7 @@ async fn signals_and_modules_are_part_of_the_session() {
     .await;
     tab.state("the new policy", |state| state["settings"] != before)
         .await;
+
     let changed = tab.ok("signals", json!(null)).await;
     assert!(
         changed["signals"]
@@ -359,6 +364,7 @@ async fn modules_name_their_separate_debug_files() {
         .await;
     tab.ok("continue", json!({})).await;
     tab.inferior("stopped").await;
+
     let modules = tab.ok("modules", json!(null)).await;
     let program = &modules["modules"][0];
     assert_eq!(program["name"], "basic-build-id", "{modules}");

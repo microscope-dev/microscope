@@ -48,6 +48,7 @@ pub fn discover(project_root: &Path) -> (Vec<ViewFile>, Vec<String>) {
         Some(project_root.join(".microscope/views")),
         user_directory(),
     ];
+
     for directory in directories.into_iter().flatten() {
         let (found, failed) = read_directory(&directory);
         files.extend(found);
@@ -86,8 +87,10 @@ pub fn read(path: &Path) -> Result<ViewFile, String> {
         .collect::<Vec<_>>();
     called.sort();
     called.dedup();
+
     let directory = path.parent().unwrap_or_else(|| Path::new("."));
     let mut kernels = Vec::new();
+
     for kernel in called {
         let path = directory.join(format!("{kernel}.wasm"));
         if !path.exists() {
@@ -110,6 +113,7 @@ pub fn read(path: &Path) -> Result<ViewFile, String> {
     drawn.sort();
     drawn.dedup();
     let mut renderers = Vec::new();
+
     for renderer in drawn {
         let path = directory.join(format!("{renderer}.js"));
         if !path.exists() {
@@ -172,6 +176,7 @@ fn read_directory(directory: &Path) -> (Vec<ViewFile>, Vec<String>) {
     paths.sort();
     let mut files = Vec::new();
     let mut errors = Vec::new();
+
     for path in paths {
         match read(&path) {
             Ok(file) => files.push(file),

@@ -270,6 +270,7 @@ pub fn run(seed: u64, corpus: &Corpus, settings: &Settings) -> Outcome {
     let mut world = World::new(choices, swarm.clone(), program, variant, run, settings);
     let mut failure = None;
     let mut state = None;
+
     loop {
         match catch_panic(|| world.step_once()) {
             Ok(Ok(Progress::Continue)) => {}
@@ -307,6 +308,7 @@ pub fn run(seed: u64, corpus: &Corpus, settings: &Settings) -> Outcome {
     let failure = failure.map(|found| blame_gap(found, world.machine.kernel.borrow().gap.as_ref()));
     let (lines, dropped) = world.trace.lines();
     let faults = world.machine.faults.borrow();
+
     Outcome {
         seed,
         swarm,
@@ -385,6 +387,7 @@ impl Session {
     ) -> Self {
         let woken = Arc::new(Woken(AtomicBool::new(true)));
         let waker = Waker::from(Arc::clone(&woken));
+
         Self {
             tracer,
             controller: Some(controller),
@@ -489,6 +492,7 @@ impl<'a> World<'a> {
         let attach = swarm
             .attach
             .map(|_| start_untraced(&mut kernel.borrow_mut(), variant, run, random));
+
         let machine = Rc::new(Machine {
             kernel: Rc::clone(&kernel),
             waiters: RefCell::new(Vec::new()),
@@ -511,6 +515,7 @@ impl<'a> World<'a> {
         let (controller, handle, events) =
             start_controller(&machine, variant, &swarm, random, TRACER, None);
         let auditor = Auditor::new(events, Rc::clone(&shared.published));
+
         let client = Client {
             handle,
             choices,
@@ -535,10 +540,12 @@ impl<'a> World<'a> {
             "program {} {:?}; {swarm}",
             variant.name, run.arguments
         ));
+
         #[cfg(test)]
         let muted = settings.muted;
         #[cfg(not(test))]
         let muted = &[];
+
         Self {
             muted,
             swarm,
@@ -598,6 +605,7 @@ impl<'a> World<'a> {
             .runnable()
             .map(Action::Run)
             .collect::<Vec<_>>();
+
         for (id, session) in self.sessions.iter().enumerate() {
             if let Some(controller) = &session.controller {
                 if self.machine.can_collect(id) {
@@ -644,6 +652,7 @@ impl<'a> World<'a> {
             step,
             &mut self.machine.choices.borrow_mut(),
         );
+
         self.machine.step.set(step);
         let performed = self.perform(action);
         let line = match &performed {
@@ -787,6 +796,7 @@ impl<'a> World<'a> {
 
         let kernel = self.machine.kernel.borrow();
         let mut marks = self.machine.marks.borrow_mut();
+
         while let Ok(child) = receiver.try_recv() {
             let tgid = tgid_of(child.process().process_id);
             marks.hit(Mark::ChildHeld);
@@ -859,6 +869,7 @@ impl<'a> World<'a> {
             Box::pin(adopter.run()),
             notes,
         ));
+
         Ok(format!(
             "follow {tgid} -> session {id}, tracing as {tracer}"
         ))
@@ -890,6 +901,7 @@ impl<'a> World<'a> {
             .expect("a held child can be continued");
         self.held.remove(&tgid);
         self.machine.marks.borrow_mut().hit(Mark::HeldChildReleased);
+
         Ok(())
     }
 
@@ -909,6 +921,7 @@ impl<'a> World<'a> {
         }
 
         self.controller_exited(id)?;
+
         Ok(format!("{description} -> controller exited"))
     }
 
@@ -920,6 +933,7 @@ impl<'a> World<'a> {
         session.controller = None;
         let tracer = session.tracer;
         let mut kernel = self.machine.kernel.borrow_mut();
+
         if let Some(thread) = kernel
             .threads
             .values()
@@ -935,6 +949,7 @@ impl<'a> World<'a> {
         }
 
         kernel.forget_tracer(tracer);
+
         Ok(())
     }
 
@@ -993,6 +1008,7 @@ impl<'a> World<'a> {
                     .map_or(0, |earlier| earlier.hit_count);
                 (breakpoint.hit_count > previous).then_some(id)
             });
+
             let arrival = self.arrivals.entry(tid).or_default();
             if (arrival.address, arrival.retired) != (address, retired) {
                 *arrival = Arrival {
@@ -1031,6 +1047,7 @@ impl<'a> World<'a> {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or_default();
+
         semantics::frame_lines(
             &self.variant.facts,
             self.variant.image.bias(),
@@ -1038,6 +1055,7 @@ impl<'a> World<'a> {
             backtrace,
         )
         .map_err(|message| Failure::debugger("frames", message))?;
+
         let mut marks = self.machine.marks.borrow_mut();
         if tails > 0 {
             marks.hit(Mark::TailCallFrames);
@@ -1058,6 +1076,7 @@ impl<'a> World<'a> {
     /// over, or while its process is ending, which moves its threads.
     fn judge(&mut self) -> Result<(), Failure> {
         let observations = std::mem::take(&mut *self.shared.observations.borrow_mut());
+
         for observation in observations {
             match observation {
                 Observation::Backtrace { stop, backtrace } if self.still_at(stop) => {
@@ -1187,6 +1206,7 @@ impl<'a> World<'a> {
         };
 
         let address = image_address + self.variant.image.bias();
+
         match &value.state {
             crate::VariableState::Available {
                 source: crate::VariableValueSource::Memory(source),
@@ -1238,6 +1258,7 @@ impl<'a> World<'a> {
             [truncated(whole), truncated(paged)],
         )
         .ok_or_else(|| format!("its view presented nothing: {:?}", value.state))?;
+
         views::judge(&truth, &shown)
     }
 
@@ -1260,6 +1281,7 @@ impl<'a> World<'a> {
         let tgid = self.controller().and_then(SimController::inferior);
         self.baselines
             .retain(|id, _| watches.iter().any(|watch| watch.id == *id));
+
         for watch in &watches {
             if !self.baselines.contains_key(&watch.id)
                 && let Some(bytes) = tgid.and_then(|tgid| watches::bytes(&kernel, tgid, watch))
@@ -1302,6 +1324,7 @@ impl<'a> World<'a> {
             .processes
             .get(&tgid)
             .is_none_or(|process| process.group_exit.is_some());
+
         if !ending {
             let reached = watches::judge(&watches::Stop {
                 kernel: &kernel,
@@ -1329,6 +1352,7 @@ impl<'a> World<'a> {
         }
 
         kernel.watching.restart();
+
         for watch in &self.watches {
             if let Some(bytes) = watches::bytes(&kernel, tgid, watch) {
                 self.baselines.insert(watch.id, bytes);
@@ -1397,6 +1421,7 @@ impl<'a> World<'a> {
             },
             positions: Vec::new(),
         });
+
         self.stepping = Some(begun);
     }
 
@@ -1409,6 +1434,7 @@ impl<'a> World<'a> {
         };
 
         let stop = self.controller().and_then(SimController::public_stop);
+
         if begun.kind == crate::StepKind::Advance {
             let stopped = stop.is_some_and(|stop| self.still_at(crate::StopId::new(stop)));
             let judged = semantics::advance(
@@ -1439,6 +1465,7 @@ impl<'a> World<'a> {
             self.variant,
         )
         .map_err(|message| Failure::debugger("stepping", message))?;
+
         let mut marks = self.machine.marks.borrow_mut();
         if judged.is_some() {
             marks.hit(Mark::StepJudged);
@@ -1482,6 +1509,7 @@ impl<'a> World<'a> {
             &self.machine.kernel.borrow(),
             &mut self.machine.marks.borrow_mut(),
         )?;
+
         if let Some(unseen) = self.machine.kernel.borrow().watching.unseen.first() {
             return Err(Failure::debugger(
                 "watch accounting",
@@ -1580,6 +1608,7 @@ impl<'a> World<'a> {
             evaluations,
         );
         reached.extend(self.judged("expressions", evaluated)?.unwrap_or_default());
+
         let mut marks = self.machine.marks.borrow_mut();
         for mark in reached {
             marks.hit(mark);
@@ -1631,6 +1660,7 @@ impl<'a> World<'a> {
             .map(|(&tid, other)| (tid, other.retired))
             .collect();
         drop(kernel);
+
         self.alone = Some(Alone {
             stop: stop.get(),
             process,
@@ -1657,6 +1687,7 @@ impl<'a> World<'a> {
         }
 
         let kernel = self.machine.kernel.borrow();
+
         for (&tid, thread) in &kernel.threads {
             let before = alone.retired.get(&tid).copied().unwrap_or(0);
             if tid != alone.thread && thread.tgid == alone.process && thread.retired != before {
@@ -1694,10 +1725,12 @@ impl<'a> World<'a> {
         let mut first = truth;
         let mut reported = Vec::new();
         let kernel = self.machine.kernel.borrow();
+
         oracles::unseen_hits(&kernel)
             .map_err(|message| Failure::debugger("breakpoint accounting", message))?;
         catches::unseen(&kernel)
             .map_err(|message| Failure::debugger("catch accounting", message))?;
+
         for (id, session) in self.sessions.iter().enumerate() {
             let Some(controller) = &session.controller else {
                 continue;
@@ -1757,6 +1790,7 @@ impl<'a> World<'a> {
     fn check_held(&mut self) -> Result<(), Failure> {
         let kernel = self.machine.kernel.borrow();
         let mut seized = Vec::new();
+
         for &tgid in &self.held {
             if !oracles::held(&kernel, tgid)
                 .map_err(|message| Failure::debugger("holding", message))?
@@ -1772,7 +1806,6 @@ impl<'a> World<'a> {
         Ok(())
     }
 
-    /// Ends a run in which nothing more can happen.
     /// Feeds the calls the kernel served since the last action to the
     /// model of the tracepoint stream.
     fn trace_served(&self) -> Result<(), Failure> {
@@ -1783,6 +1816,7 @@ impl<'a> World<'a> {
             .map_err(|message| Failure::debugger("tracing", message))
     }
 
+    /// Ends a run in which nothing more can happen.
     fn finish(&self) -> Result<Progress, Failure> {
         for (id, session) in self.sessions.iter().enumerate() {
             if session.client.is_some() {
@@ -1816,6 +1850,7 @@ impl<'a> World<'a> {
         oracles::clean_exit(&kernel).map_err(|message| Failure::debugger("clean exit", message))?;
         oracles::transparency(&kernel, self.run)
             .map_err(|message| Failure::debugger("transparency", message))?;
+
         let mut marks = self.machine.marks.borrow_mut();
         let ran_on = kernel
             .ended
@@ -1832,6 +1867,7 @@ impl<'a> World<'a> {
     fn dump(&self) -> String {
         let kernel = self.machine.kernel.borrow();
         let mut text = String::new();
+
         for thread in kernel.threads.values() {
             let _ = write!(
                 text,
@@ -1918,6 +1954,7 @@ fn start_controller(
         queue_capacity: swarm.queue_capacity,
         event_capacity: swarm.event_capacity,
     });
+
     let handle = DebuggerHandle {
         module_image,
         core_dump: None,
@@ -1947,6 +1984,7 @@ fn start_untraced(
         &run.arguments,
         random,
     );
+
     ProcessId::new(u64::try_from(tgid).expect("process ids are positive"))
 }
 
@@ -2003,6 +2041,7 @@ fn statements(program: &Program, variant: &Variant) -> BTreeMap<u64, BTreeSet<u6
         .and_then(|name| name.to_str())
         .unwrap_or_default();
     let mut statements = BTreeMap::<u64, BTreeSet<u64>>::new();
+
     for &(address, line) in &facts.statements {
         if facts.file(line) == source {
             statements.entry(address).or_default().insert(line.line);
@@ -2069,6 +2108,7 @@ thread_local! {
 /// its code panicked, the debugger's otherwise.
 fn catch_panic<T>(body: impl FnOnce() -> T) -> Result<T, Failure> {
     static HOOK: std::sync::Once = std::sync::Once::new();
+
     HOOK.call_once(|| {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {

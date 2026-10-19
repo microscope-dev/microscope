@@ -77,6 +77,7 @@ impl ObjdumpInstruction {
             || mnemonic.starts_with("loop")
             || mnemonic.starts_with("xbegin");
         let operand = tokens.next()?;
+
         branch
             .then(|| u64::from_str_radix(operand, 16).ok())
             .flatten()
@@ -172,6 +173,7 @@ impl Modules {
                     .is_some_and(|name| name == file_name)
             })
             .unwrap_or_else(|| panic!("no loaded module named {file_name}"));
+
         (record, &self.images[&record.module.id])
     }
 
@@ -200,11 +202,13 @@ async fn assert_module_matches_objdump(
     let bias = record.module.load_bias.get();
     let oracle = Objdump::read(file_name);
     let mut compared = 0;
+
     for section in image.sections().iter().filter(|section| section.executable) {
         let (start, end) = (section.range.start.get(), section.range.end.get());
         let context = format!("{context}: {file_name} {}", section.name);
         let mut blocks = Vec::new();
         let mut address = start;
+
         while address < end {
             let (boundary, _, block) = into_window(
                 disassemble(scenario, window(bias + address, 0, MAX_WINDOW_AFTER)).await,
@@ -229,6 +233,7 @@ async fn assert_module_matches_objdump(
                 })
                 .collect::<Vec<_>>();
             assert!(conflicts.is_empty(), "{context}: {conflicts:x?}");
+
             for instruction in block.instructions.iter() {
                 if instruction.address.get() - bias >= end {
                     break;
@@ -250,6 +255,7 @@ async fn assert_module_matches_objdump(
             .map(|instruction| (instruction.address.get() - bias, instruction))
             .take_while(|(address, _)| *address < end);
         let pairs = pair_with_objdump(decoded, oracle.instructions.range(start..end), &context);
+
         for (address, instruction, objdump) in pairs {
             assert_eq!(
                 *instruction.bytes, *objdump.bytes,
@@ -277,6 +283,7 @@ async fn assert_module_matches_objdump(
                 objdump.branch_target(),
                 "{context}+{address:#x} {objdump:?}"
             );
+
             if let Some(computed) = objdump.computed_address() {
                 assert!(
                     targets(InstructionReferenceKind::MemoryOperand)
@@ -304,6 +311,7 @@ fn pair_with_objdump<'a, 'b>(
     let mut expected = expected.peekable();
     let (mut missing, mut invented, mut pairs) = (Vec::new(), Vec::new(), Vec::new());
     let mut previous = None;
+
     for (address, instruction) in decoded {
         assert!(
             previous < Some(address),
@@ -343,6 +351,7 @@ async fn faulted_with_breakpoints(fixture: &str) -> (Scenario, Modules) {
         ),
         "{fixture}: {stop:?}"
     );
+
     let modules = Modules::load(&scenario).await;
     let (record, image) = modules.named(fixture);
     let starts = image
@@ -353,6 +362,7 @@ async fn faulted_with_breakpoints(fixture: &str) -> (Scenario, Modules) {
         .into_iter()
         .collect::<Vec<_>>();
     let bias = record.module.load_bias.get();
+
     for address in starts.iter().step_by(starts.len().div_ceil(24).max(1)) {
         scenario
             .add_breakpoint_spec(BreakpointSpec::Address(VirtualAddress::new(bias + address)))
@@ -473,6 +483,7 @@ async fn functions_cover_every_debug_information_range() {
         let oracle = Objdump::read(fixture);
         let mut split = 0;
         let mut names = Vec::new();
+
         for instance in image
             .code_instances()
             .filter(|instance| matches!(instance.kind(), microscope::CodeInstanceKind::OutOfLine))
@@ -483,6 +494,7 @@ async fn functions_cover_every_debug_information_range() {
                     .expect("instance function")
                     .name(),
             );
+
             let mut ranges = instance
                 .ranges()
                 .map(|range| (range.start.get(), range.end.get()))
@@ -500,6 +512,7 @@ async fn functions_cover_every_debug_information_range() {
                 .await;
                 let context = format!("{fixture}: instance {}", instance.id());
                 assert_function_blocks(&disassembly, &ranges, bias, &oracle, &context);
+
                 let DisassemblyView::Function { function, .. } = &disassembly.view else {
                     unreachable!();
                 };
@@ -521,6 +534,7 @@ async fn functions_cover_every_debug_information_range() {
             names.iter().any(|name| &**name == "main"),
             "{fixture}: {names:?}"
         );
+
         if fixture == "crash-gcc-o2-nopie" {
             assert!(
                 split > 0,
@@ -557,6 +571,7 @@ async fn assert_split_main_names_each_range(scenario: &Scenario, modules: &Modul
                 .map(|symbol| (symbol.name.to_string(), symbol.offset))
         })
         .collect::<Vec<_>>();
+
     assert_eq!(
         names,
         [
@@ -578,6 +593,7 @@ async fn functions_known_only_by_symbols_use_their_extents() {
     let bias = record.module.load_bias.get();
     let oracle = Objdump::read(library);
     let mut origins = BTreeSet::new();
+
     for symbol in image.symbols() {
         let Some(extent) = symbol.extent() else {
             continue;
@@ -598,6 +614,7 @@ async fn functions_known_only_by_symbols_use_their_extents() {
             .symbol(named.symbol)
             .and_then(microscope::Symbol::extent)
             .expect("extent");
+
         let context = format!("{library}: {}", symbol.name());
         assert_eq!(
             function.origin,
@@ -607,6 +624,7 @@ async fn functions_known_only_by_symbols_use_their_extents() {
             },
             "{context}"
         );
+
         assert_function_blocks(
             &disassembly,
             &[(named_extent.range.start.get(), named_extent.range.end.get())],
@@ -614,6 +632,7 @@ async fn functions_known_only_by_symbols_use_their_extents() {
             &oracle,
             &context,
         );
+
         origins.insert((named.name.to_string(), named.provenance));
     }
 
@@ -638,6 +657,7 @@ async fn functions_known_only_by_symbols_use_their_extents() {
     let unnamed = (text.start.get()..text.end.get())
         .find(|address| image.symbolize(ImageAddress::new(*address)).is_none())
         .expect("unnamed code");
+
     let missing = VirtualAddress::new(bias + unnamed);
     assert!(matches!(
         scenario
@@ -689,6 +709,7 @@ async fn context_before_an_address_is_proven_from_known_starts() {
         .find(|(_, instruction)| instruction.bytes.len() > 1)
         .map(|(address, _)| bias + address)
         .expect("a multi-byte instruction precedes the fault");
+
     let (boundary, leading, block) = into_window(disassemble(&scenario, window(inner, 1, 1)).await);
     assert!(
         matches!(boundary, TargetBoundary::Reached { from, .. } if from.get() == entry),
@@ -696,6 +717,7 @@ async fn context_before_an_address_is_proven_from_known_starts() {
     );
     assert_eq!(leading, None);
     assert_eq!(block.instructions.len(), 2);
+
     let (boundary, leading, block) =
         into_window(disassemble(&scenario, window(inner + 1, 1, 1)).await);
     assert_eq!(
@@ -826,6 +848,7 @@ async fn assert_hidden_data(scenario: &Scenario, hidden: u64, context: &str) {
             boundary: VirtualAddress::new(hidden + 4)
         })
     );
+
     let texts = block
         .instructions
         .iter()
@@ -840,16 +863,19 @@ async fn assert_hidden_data_at_its_stop(scenario: &mut Scenario, hidden: u64) {
     scenario
         .add_breakpoint_spec(BreakpointSpec::Address(VirtualAddress::new(hidden + 4)))
         .await;
+
     let stop = scenario.resume_to_stop().await;
     assert!(
         matches!(stop, StopReason::Breakpoint { address: Some(address), .. } if address.get() == hidden + 4)
     );
+
     let (boundary, leading, block) =
         into_window(disassemble(scenario, window(hidden + 4, 4, 2)).await);
     assert_eq!(
         boundary,
         TargetBoundary::Known(BoundaryEvidence::ProgramCounter)
     );
+
     assert!(matches!(
         leading,
         Some(ContextShortfall::Desynchronized { .. })
@@ -897,11 +923,13 @@ async fn assert_syntaxes_agree(
         att.iter()
             .any(|instruction| decoded(instruction).text().contains('%'))
     );
+
     assert!(
         !intel
             .iter()
             .any(|instruction| decoded(instruction).text().contains('%'))
     );
+
     intel
 }
 
@@ -989,6 +1017,7 @@ async fn assert_named_targets(scenario: &Scenario, modules: &Modules, fixture: &
         operand.address.get(),
         modules.symbol(fixture, "disasm_counter")
     );
+
     let symbol = operand
         .description
         .module
@@ -1033,6 +1062,7 @@ async fn code_that_no_verified_file_or_dump_holds_is_unreadable() {
         .find(|module| module.recorded_path.ends_with("libcrash.so"))
         .expect("libcrash.so is recorded");
     assert_eq!(missing.state, CoreModuleState::Missing);
+
     let data = fs::read(Scenario::fixture("libcrash.so")).expect("read libcrash.so");
     let text = object::File::parse(data.as_slice())
         .expect("parse libcrash.so")
@@ -1073,12 +1103,14 @@ async fn code_that_no_verified_file_or_dump_holds_is_unreadable() {
         .operation("location", unverified.handle().current_location())
         .await;
     let pc = location.address;
+
     let (boundary, leading, block) =
         into_window(disassemble(&unverified, window(pc.get(), 2, 2)).await);
     assert_eq!(
         boundary,
         TargetBoundary::Known(BoundaryEvidence::ProgramCounter)
     );
+
     let entry = pc.get() - location.image.symbol.expect("crash_segv").offset;
     assert_eq!(
         leading,
@@ -1114,6 +1146,7 @@ async fn requests_are_validated() {
         scenario.handle().disassemble(window(0x1000, 0, 1)).await,
         Err(Error::NotRunning)
     ));
+
     scenario.run_to_stop().await;
     for (before, after) in [
         (0, 0),
@@ -1241,6 +1274,7 @@ fn register(registers: &microscope::RegisterSnapshot, name: &str) -> u64 {
         .bytes
         .as_deref()
         .expect("innermost registers are saved");
+
     let mut bytes = [0; 8];
     bytes[..value.len()].copy_from_slice(value);
     u64::from_le_bytes(bytes)
@@ -1269,11 +1303,13 @@ async fn assert_targets_away_from_the_stop(scenario: &Scenario, modules: &Module
             Some((instruction.address.get(), target))
         })
         .collect::<BTreeMap<_, _>>();
+
     assert_eq!(
         targets.len(),
         INDIRECT_BRANCHES.len(),
         "{fixture}: {targets:#?}"
     );
+
     let (slot, target) = loaded(&targets[&symbol_address("disasm_call_slot")]);
     assert_eq!(
         (slot.address.get(), target.address.get()),
@@ -1293,6 +1329,7 @@ async fn assert_targets_away_from_the_stop(scenario: &Scenario, modules: &Module
         (Some(".got"), modules.symbol("libc.so.6", "labs")),
         "{fixture}"
     );
+
     for label in [
         "disasm_call_method",
         "disasm_call_register",
@@ -1345,6 +1382,7 @@ async fn assert_targets_at_each_stop(scenario: &mut Scenario, modules: &Modules,
         .expect("main calls disasm_indirect")
         .end()
         .get();
+
     for label in INDIRECT_BRANCHES {
         let address = VirtualAddress::new(symbol_address(label));
         scenario
@@ -1359,6 +1397,7 @@ async fn assert_targets_at_each_stop(scenario: &mut Scenario, modules: &Modules,
             VirtualAddress::new(pc),
             "{fixture}"
         );
+
         let registers = scenario.operation("registers", scenario.handle().registers());
         let registers = registers.await;
         let instruction = instruction_at(scenario, pc).await;
@@ -1405,6 +1444,7 @@ async fn assert_targets_at_each_stop(scenario: &mut Scenario, modules: &Modules,
             expected,
             "{context}"
         );
+
         let names = (slot.and_then(symbol), symbol(destination));
         match label {
             "disasm_call_method" => assert_eq!(names.0, Some(("disasm_methods", 8))),
@@ -1414,6 +1454,7 @@ async fn assert_targets_at_each_stop(scenario: &mut Scenario, modules: &Modules,
         }
 
         scenario.step_to_stop(StepKind::Instruction).await;
+
         let location = scenario.operation("location", scenario.handle().current_location());
         assert_eq!(location.await.address, destination.address, "{context}");
     }
@@ -1444,6 +1485,7 @@ async fn code_names_its_targets_and_reports_data_inside_it() {
         // stub until the first call resolves it.
         let call = printf_call(&scenario, &modules, fixture).await;
         let jump = stub_jump(&scenario, &call).await;
+
         let (unresolved_slot, target) = loaded(indirect_target(&jump));
         let unresolved_slot = unresolved_slot.clone();
         assert_eq!(section(&unresolved_slot), Some(".got.plt"), "{fixture}");
@@ -1461,6 +1503,7 @@ async fn code_names_its_targets_and_reports_data_inside_it() {
             support::breakpoint_address(&scenario.resume_to_stop().await),
             call.end()
         );
+
         let jump = stub_jump(&scenario, &call).await;
         let (slot, target) = loaded(indirect_target(&jump));
         assert_eq!(*slot, unresolved_slot, "{fixture}");
@@ -1493,9 +1536,11 @@ async fn indirect_branch_sites(
     let kept =
         |address: VirtualAddress| !skipped.iter().any(|range| range.contains(&address.get()));
     let mut sites = BTreeSet::new();
+
     for section in image.sections().iter().filter(|section| section.executable) {
         let end = bias + section.range.end.get();
         let mut address = bias + section.range.start.get();
+
         while address < end {
             let (_, _, block) =
                 into_window(disassemble(scenario, window(address, 0, MAX_WINDOW_AFTER)).await);
@@ -1508,6 +1553,7 @@ async fn indirect_branch_sites(
                 block.conflicts
             );
             assert!(!block.instructions.is_empty(), "{file_name}: {address:#x}");
+
             for instruction in block
                 .instructions
                 .iter()
@@ -1570,6 +1616,7 @@ async fn assert_executed_targets(
 
     let mut verified = BTreeMap::new();
     let mut stop = scenario.resume_to_stop().await;
+
     loop {
         let pc = match stop {
             StopReason::Exited(status) => {
@@ -1622,12 +1669,15 @@ async fn assert_executed_targets(
             },
             "{context}"
         );
+
         let location = scenario.operation("location", scenario.handle().current_location());
         assert_eq!(location.await.address, target, "{kind}: {context}");
+
         *verified.entry(kind).or_default() += 1;
     }
 
     scenario.shutdown().await;
+
     verified
 }
 
@@ -1658,6 +1708,7 @@ fn dynamic_slots(file_name: &str) -> BTreeMap<u64, String> {
     let data = fs::read(Scenario::fixture(file_name)).expect("read fixture");
     let file = object::File::parse(data.as_slice()).expect("parse fixture");
     let symbols = file.dynamic_symbol_table().expect("dynamic symbols");
+
     file.dynamic_relocations()
         .expect("dynamic relocations")
         .filter_map(|(offset, relocation)| {
@@ -1691,6 +1742,7 @@ async fn linkage_jumps(
         let count = u32::try_from((end - start) / 2).expect("small section");
         let (_, _, block) =
             into_window(disassemble(scenario, window(bias + start, 0, count)).await);
+
         for instruction in block
             .instructions
             .iter()
@@ -1789,6 +1841,7 @@ async fn a_register_that_a_restarted_system_call_replaces_is_never_used() {
         .symbols()
         .find(|symbol| symbol.name() == "attach_restart_jump")
         .expect("the jump is labeled");
+
     assert_eq!(
         location.address.get(),
         executable.module.load_bias.get() + jump.address().get()
@@ -1808,9 +1861,11 @@ async fn a_register_that_a_restarted_system_call_replaces_is_never_used() {
         boundary,
         TargetBoundary::Known(BoundaryEvidence::ProgramCounter)
     );
+
     assert_eq!(
         *indirect_target(&block.instructions[0]),
         IndirectTarget::NeedsRegisters
     );
+
     debugger.shutdown().await.expect("detach");
 }

@@ -45,6 +45,7 @@ async fn address(
                 .evaluate(&expression),
         )
         .await;
+
     match evaluation {
         Evaluation::Value { value, .. } => match value.state {
             VariableState::Available {
@@ -64,12 +65,15 @@ async fn each_deadlocked_task_waits_for_the_mutex_the_other_holds() {
     for fixture in BUILDS {
         let mut scenario = checked(fixture);
         scenario.add_breakpoint("truth_reached").await;
+
         assert!(matches!(
             scenario.run_to_stop().await,
             StopReason::Breakpoint { .. }
         ));
+
         let (listed, gaps) = tasks(&scenario, 64).await;
         assert!(gaps.is_empty(), "{fixture}: {gaps:?}");
+
         let [left, right] = &listed[..] else {
             panic!("{fixture}: {listed:#?}");
         };
@@ -103,6 +107,7 @@ async fn each_deadlocked_task_waits_for_the_mutex_the_other_holds() {
                         .backtrace(),
                 )
                 .await;
+
             let index_of = |name: &str| {
                 trace
                     .frames
@@ -122,15 +127,18 @@ async fn each_deadlocked_task_waits_for_the_mutex_the_other_holds() {
                 .iter()
                 .find(|frame| frame.id == index_of("grab"))
                 .expect("the frame found");
+
             assert_eq!(
                 grab.source.as_ref().map(|source| source.line.get()),
                 Some(line(SOURCE, "// AWAIT: lock")),
                 "{fixture}: {grab:#?}"
             );
+
             holds.insert(
                 task.id.number,
                 address(&scenario, stop, task.id, index_of("grab"), "held.lock").await,
             );
+
             waits.insert(
                 task.id.number,
                 address(&scenario, stop, task.id, index_of("lock"), "_ref__self").await,

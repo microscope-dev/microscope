@@ -124,6 +124,7 @@ impl<'a> Reader<'a> {
                 }
 
                 reader.symbol_name(&mut name)?;
+
                 let before = reader.at;
                 if reader.peek() == Some(b'M') || reader.peek().is_some_and(call_convention) {
                     if reader.eat(b'M') {

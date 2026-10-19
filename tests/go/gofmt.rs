@@ -167,6 +167,7 @@ async fn check_keywords(scenario: &Scenario, fixture: &str) {
             ),
         )
         .await;
+
     let mut entries = page
         .children
         .iter()
@@ -212,6 +213,7 @@ async fn body(scenario: &Scenario) -> std::ops::RangeInclusive<u64> {
 async fn walk_the_printer(scenario: &mut Scenario, fixture: &str) -> Vec<u64> {
     let task = integer(scenario, "$task").await;
     let mut lines = Vec::new();
+
     for _ in 0..32 {
         let reason = scenario.step_to_stop(StepKind::OverSource).await;
         assert_eq!(
@@ -251,6 +253,7 @@ async fn gofmt_formats_under_the_debugger_as_it_does_alone() {
         // One by its package's path, one by its package's name.
         let printer = scenario.add_breakpoint("go/printer.(*printer).file").await;
         let parser = scenario.add_breakpoint("parser.ParseFile").await;
+
         let reason = scenario
             .run_with_to_stop(LaunchOptions {
                 arguments: vec![INPUT.into()],
@@ -264,6 +267,7 @@ async fn gofmt_formats_under_the_debugger_as_it_does_alone() {
             matches!(reason, StopReason::Breakpoint { .. }),
             "{fixture}: {reason:?}"
         );
+
         let parsing = frames(&scenario).await;
         assert!(
             parsing.starts_with(&["go/parser.ParseFile".to_owned(), "main.parse".to_owned()]),
@@ -284,6 +288,7 @@ async fn gofmt_formats_under_the_debugger_as_it_does_alone() {
             matches!(reason, StopReason::Breakpoint { .. }),
             "{fixture}: {reason:?}"
         );
+
         let printing = frames(&scenario).await;
         for function in [
             "go/printer.(*printer).file",
@@ -322,12 +327,14 @@ async fn gofmt_formats_under_the_debugger_as_it_does_alone() {
 
         scenario.remove_breakpoint(printer.id).await;
         scenario.remove_breakpoint(parser.id).await;
+
         assert_eq!(
             scenario.resume_to_stop().await,
             StopReason::Exited(microscope::ExitStatus::Code(0)),
             "{fixture}"
         );
         scenario.shutdown().await;
+
         assert_eq!(
             std::fs::read(&output).expect("read standard output"),
             alone.stdout,

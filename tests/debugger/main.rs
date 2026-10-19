@@ -120,11 +120,13 @@ async fn record_page(
         ),
         "{context}: value was not an aggregate: {state:?}"
     );
+
     let reference = available_children(state);
     assert!(
         reference.total() >= u64::try_from(minimum_children).expect("child count fits u64"),
         "{context}: aggregate had too few children: {state:?}"
     );
+
     let limit = u32::try_from(reference.total().min(256)).expect("bounded page fits u32");
     if limit == 0 {
         return microscope::ValueChildPage {
@@ -157,10 +159,12 @@ async fn load_fixture_image(fixture: &str) -> Arc<ModuleImage> {
     let debugger = Debugger::new(Scenario::fixture(fixture))
         .unwrap_or_else(|error| panic!("load {fixture} metadata: {error}"));
     let image = Arc::clone(debugger.handle().module_image());
+
     debugger
         .shutdown()
         .await
         .unwrap_or_else(|error| panic!("shut down {fixture} metadata session: {error}"));
+
     image
 }
 
@@ -186,6 +190,7 @@ async fn dereference_named(
         .await;
     let mut state = variable.state;
     let mut result = None;
+
     for _ in 0..depth {
         let reference = match state {
             VariableState::Available {
@@ -201,6 +206,7 @@ async fn dereference_named(
                 scenario.handle().dereference(reference),
             )
             .await;
+
         state = value.state.clone();
         result = Some(value);
     }
@@ -225,6 +231,7 @@ async fn assert_slice_values(
 
     assert_eq!(*length, u64::try_from(expected.len()).unwrap(), "{fixture}");
     assert_eq!(*actual_capacity, capacity, "{fixture}");
+
     let page = if expected.is_empty() {
         None
     } else {
@@ -248,6 +255,7 @@ async fn assert_slice_values(
             other => panic!("{fixture}: expected scalar slice element, got {other:?}"),
         })
         .collect();
+
     assert_eq!(values, expected, "{fixture}");
 }
 
@@ -348,6 +356,7 @@ fn expected_physical_entry(
     let function = image
         .function_named(case.function)
         .unwrap_or_else(|error| panic!("{} missing {}: {error}", case.fixture, case.function));
+
     let instance = image
         .instances_for_function(function.id())
         .find(|instance| matches!(instance.kind(), CodeInstanceKind::OutOfLine))
@@ -363,6 +372,7 @@ fn expected_physical_entry(
     let line = case
         .gcc_fallback_line
         .expect("markerless entry case has an explicit conservative expectation");
+
     image
         .statement_rows()
         .find(|row| {
@@ -402,12 +412,14 @@ async fn assert_entry_stop(
         "{}",
         case.fixture
     );
+
     let parameter = scenario
         .operation(
             "entry parameter value",
             scenario.handle().variable(case.parameter),
         )
         .await;
+
     assert_variable_value(
         &parameter,
         ScalarValue::Signed(i128::from(case.expected_value)),
@@ -423,6 +435,7 @@ const fn relocate_image_address(
         .get()
         .checked_sub(location.image.address.get())
         .expect("runtime address includes the image load bias");
+
     VirtualAddress::new(
         load_bias
             .checked_add(address.get())
@@ -432,6 +445,7 @@ const fn relocate_image_address(
 
 async fn run_go_to_breakpoint(scenario: &mut Scenario, fixture: &str) {
     let mut reason = scenario.run_to_stop().await;
+
     for _ in 0..32 {
         match reason {
             StopReason::Breakpoint { .. } => return,
@@ -447,6 +461,7 @@ async fn run_go_to_breakpoint(scenario: &mut Scenario, fixture: &str) {
 
 async fn resume_go_to_exit(scenario: &mut Scenario, fixture: &str) {
     let mut reason = scenario.resume_to_stop().await;
+
     for _ in 0..32 {
         match reason {
             StopReason::Exited(ExitStatus::Code(0)) => return,
@@ -475,6 +490,7 @@ fn text_of(variables: &[microscope::Variable], name: &str) -> Option<microscope:
         .iter()
         .find(|variable| &*variable.name == name)
         .unwrap_or_else(|| panic!("no variable {name} in {variables:?}"));
+
     let VariableState::Available { text, .. } = &variable.state else {
         panic!("{name} is not available: {:?}", variable.state);
     };
@@ -486,6 +502,7 @@ fn text_of(variables: &[microscope::Variable], name: &str) -> Option<microscope:
 /// has reaped it.
 fn wait_for_zombie(process: ProcessId) {
     let stat = format!("/proc/{process}/stat");
+
     support::wait_until("the main thread exits", || {
         fs::read_to_string(&stat).is_ok_and(|stat| {
             // Fields resume after the command name's final parenthesis.

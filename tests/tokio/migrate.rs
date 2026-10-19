@@ -41,6 +41,7 @@ fn reported(text: &str, kind: &str) -> Vec<u64> {
         .lines()
         .filter(|fields| fields.first().is_some_and(|first| first == kind))
         .collect::<Vec<_>>();
+
     let [fields] = fields[..] else {
         panic!("{kind}: {text}");
     };
@@ -64,22 +65,26 @@ async fn next_over_an_await_follows_its_task_to_another_thread() {
         let awaits = scenario
             .add_source_breakpoint(SOURCE, line(SOURCE, "// AWAIT: migrate"))
             .await;
+
         let reason = scenario
             .run_with_to_stop(LaunchOptions {
                 stdout: Some(Stdio::from(File::create(&output).expect("an output file"))),
                 ..LaunchOptions::default()
             })
             .await;
+
         assert!(
             matches!(reason, StopReason::Breakpoint { .. }),
             "{fixture}: {reason:?}"
         );
+
         let task = stopped_task(&mut scenario).await;
         let before = stopped_thread(&mut scenario).await;
         let threads_before = activities(&mut scenario)
             .await
             .into_keys()
             .collect::<BTreeSet<_>>();
+
         scenario.remove_breakpoint(awaits.id).await;
 
         assert_eq!(
@@ -89,14 +94,17 @@ async fn next_over_an_await_follows_its_task_to_another_thread() {
             },
             "{fixture}"
         );
+
         assert_eq!(
             place(&scenario).await,
             ("migrating".to_owned(), line(SOURCE, "// STEP: migrated")),
             "{fixture}"
         );
+
         assert_eq!(stopped_task(&mut scenario).await, task, "{fixture}");
         let after = stopped_thread(&mut scenario).await;
         assert_ne!(after, before, "{fixture}");
+
         let me = integer(&scenario, "me").await;
         assert!(
             me == Some(i128::from(task)) || me.is_none() && fixture.ends_with("o3"),
@@ -109,6 +117,7 @@ async fn next_over_an_await_follows_its_task_to_another_thread() {
         };
 
         assert_eq!(held, before.get(), "{fixture}");
+
         let activities = activities(&mut scenario).await;
         assert!(
             matches!(
@@ -117,12 +126,15 @@ async fn next_over_an_await_follows_its_task_to_another_thread() {
             ),
             "{fixture}: {activities:?}"
         );
+
         let (listed, gaps) = tasks(&scenario, 64).await;
         assert!(gaps.is_empty(), "{fixture}: {gaps:?}");
+
         let holding = listed
             .iter()
             .find(|listed| listed.id.number == holder)
             .unwrap_or_else(|| panic!("{fixture}: {listed:#?}"));
+
         assert_eq!(
             (holding.state.clone(), holding.thread),
             (TaskState::Running, Some(before)),
@@ -144,6 +156,7 @@ async fn next_over_an_await_follows_its_task_to_another_thread() {
             })
             .map(|(thread, _)| *thread)
             .collect::<BTreeSet<_>>();
+
         assert_eq!(cores.len(), 2, "{fixture}: {activities:?}");
         assert!(cores.contains(&after), "{fixture}: {activities:?}");
         assert!(
@@ -155,12 +168,14 @@ async fn next_over_an_await_follows_its_task_to_another_thread() {
             scenario.resume_to_stop().await,
             StopReason::Exited(_)
         ));
+
         let text = std::fs::read_to_string(&output).expect("the output");
         assert_eq!(
             reported(&text, "migrated"),
             [task, before.get(), after.get()],
             "{fixture}"
         );
+
         scenario.shutdown().await;
     }
 }

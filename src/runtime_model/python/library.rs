@@ -483,6 +483,7 @@ impl Values<'_, '_> {
 
         let mut block = block;
         let mut at = index + start;
+
         for _ in 0..at / per_block {
             block = next(block)?;
         }
@@ -490,6 +491,7 @@ impl Values<'_, '_> {
         at %= per_block;
         let mut items = Vec::new();
         let mut taken = start;
+
         while taken < end {
             if at == per_block {
                 block = next(block)?;
@@ -526,6 +528,7 @@ impl Values<'_, '_> {
         let bad = || malformed(dict.object, "OrderedDict");
         let mut node = first;
         let mut item = 0;
+
         while item < range.end.min(dict.length) {
             if node == VirtualAddress::new(0) {
                 return Err(bad());

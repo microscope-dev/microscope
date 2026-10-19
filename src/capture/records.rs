@@ -925,6 +925,7 @@ pub struct SyscallNote {
 pub fn captures(mut bytes: &[u8]) -> Option<Vec<crate::syscalls::Capture>> {
     use crate::syscalls::{Capture, CaptureState, ReadAt};
     let mut captures = Vec::new();
+
     while !bytes.is_empty() {
         let (head, rest) = bytes.split_first_chunk::<12>()?;
         let word =

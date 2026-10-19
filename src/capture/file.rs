@@ -77,6 +77,7 @@ impl<W: std::io::Write> Writer<W> {
                 .unwrap_or(u32::MAX)
                 .to_le_bytes(),
         );
+
         for (offset, length) in &self.chunks {
             index.extend_from_slice(&offset.to_le_bytes());
             index.extend_from_slice(&length.to_le_bytes());
@@ -134,6 +135,7 @@ pub fn read(bytes: &[u8]) -> Result<Read, FileError> {
     let (spans, truncated) =
         index(bytes).map_or_else(|| (scan(bytes), true), |spans| (spans, false));
     let mut captures = Vec::with_capacity(spans.len());
+
     for (offset, length) in &spans {
         let (Ok(offset), Ok(length)) = (usize::try_from(*offset), usize::try_from(*length)) else {
             return Err(FileError::Chunk(ImageError::TooLarge));
@@ -204,6 +206,7 @@ fn index(bytes: &[u8]) -> Option<Vec<(u64, u64)>> {
             ))
         })
         .collect::<Option<_>>()?;
+
     spans
         .iter()
         .all(|(offset, length)| {
@@ -218,6 +221,7 @@ fn index(bytes: &[u8]) -> Option<Vec<(u64, u64)>> {
 fn scan(bytes: &[u8]) -> Vec<(u64, u64)> {
     let mut spans = Vec::new();
     let mut position = HEADER;
+
     while let Some(length) = bytes
         .get(position..)
         .and_then(<[u8]>::first_chunk::<8>)

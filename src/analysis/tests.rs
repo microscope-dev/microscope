@@ -38,6 +38,7 @@ fn capture(
 ) -> Capture {
     let mut builder = CaptureBuilder::new();
     let module = builder.module("/bin/app", None, [0; 16], 0);
+
     let mut frames = Vec::new();
     for (index, name) in FUNCTIONS.iter().enumerate() {
         let frame = builder.frame(FrameKind::Native, module, 0x10 * index as u64, 0);
@@ -64,15 +65,18 @@ fn capture(
             builder.stack(&stack)
         })
         .collect();
+
     let threads = [
         builder.thread(Pid::new(1), Tid::new(1), 0),
         builder.thread(Pid::new(1), Tid::new(2), 0),
         builder.thread(Pid::new(1), Tid::new(3), 0),
     ];
+
     let tasks: Vec<u32> = (1..=3)
         .map(|number| builder.task("goroutine", number, 0))
         .collect();
     builder.describe_task(tasks[1], NONE, Some("phase=spin"));
+
     for &(thread, time, weight, stack, task) in samples {
         builder.sample(
             threads[thread as usize],
@@ -118,6 +122,7 @@ fn naive_path(
     transforms: &[Named],
 ) -> Option<Vec<String>> {
     let mut path = Vec::new();
+
     for frame in capture.stack_frames(stack) {
         let record = &capture.frames[frame as usize];
         if record.kind == FrameKind::Truncated as u8 {
@@ -223,6 +228,7 @@ fn selected(
     let task_kept =
         |task: u32| tasks.is_none_or(|tasks| tasks.iter().any(|choice| task_row(*choice) == task));
     let mut chosen = Vec::new();
+
     if waits {
         for wait in &capture.task_waits {
             if in_range(wait.time.get()) && task_kept(wait.task.get()) {
@@ -286,6 +292,7 @@ proptest! {
         };
 
         let mut naive_transforms = Vec::new();
+
         for transform in &named {
             let (Named::Focus(name) | Named::Merge(name) | Named::Drop(name) | Named::Collapse(name)) = transform;
             let Some(key) = known(name) else { continue };
@@ -302,6 +309,7 @@ proptest! {
         let mut expected_totals: BTreeMap<Vec<String>, u64> = BTreeMap::new();
         let mut expected_functions: BTreeMap<String, (u64, u64)> = BTreeMap::new();
         let mut expected_weight = 0;
+
         for (task, stack, weight) in selected(&capture, range, threads.as_ref(), (of_waits, tasks.as_ref())) {
             {
                 let Some(mut path) = naive_path(&capture, stack, invert, &naive_transforms) else {
@@ -340,6 +348,7 @@ proptest! {
         let tree = aggregate(&capture, &keys, &query);
         prop_assert_eq!(tree.weight, expected_weight);
         let mut totals: BTreeMap<Vec<String>, u64> = BTreeMap::new();
+
         for node in 0..tree.len() {
             let mut path = Vec::new();
             let mut at = index(node);
@@ -433,6 +442,7 @@ fn off_cpu_time_falls_in_each_slice_it_overlaps() {
     builder.off_cpu(a, 30, 4, true);
     builder.off_cpu(a, 45, 10, false);
     builder.off_cpu(b, -5, 100, false);
+
     let capture = builder.finish();
     let query = Query {
         range: Some((0, 40)),
@@ -487,6 +497,7 @@ fn the_analysis_stays_pure() {
     ];
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/analysis");
     let mut checked = 0;
+
     for entry in std::fs::read_dir(&root).expect("read the analysis's sources") {
         let path = entry.expect("a directory entry").path();
         if path.file_name().is_some_and(|name| name == "tests.rs") {
@@ -495,6 +506,7 @@ fn the_analysis_stays_pure() {
 
         let source = std::fs::read_to_string(&path).expect("read a source file");
         let source = source.split("#[cfg(test)]").next().unwrap_or_default();
+
         for forbidden in FORBIDDEN {
             assert!(
                 !source.contains(forbidden),
@@ -561,6 +573,7 @@ fn a_logical_stack_is_a_tasks_own_under_its_dispatch() {
         builder.stack(&[park, run, start]),
         builder.stack(&[coop, harness, run, start]),
     ];
+
     let thread = builder.thread(Pid::new(1), Tid::new(1), 0);
     for (time, stack) in stacks.into_iter().enumerate() {
         builder.sample(
@@ -651,6 +664,7 @@ fn python_capture() -> (Capture, u32, u32) {
     let main = native("main", Ordinary);
     let start = native("start_thread", Ordinary);
     let work = native("work", Ordinary);
+
     let mut python = |function: &str, line: u32, declared: u32| {
         builder.interpreted(&InterpretedPlace {
             function,
@@ -679,6 +693,7 @@ fn python_capture() -> (Capture, u32, u32) {
     let thread = builder.thread(Pid::new(1), Tid::new(1), 0);
     builder.sample(thread, 0, 1, mixed, NONE);
     builder.sample(thread, 1, 2, plain, NONE);
+
     (builder.finish(), handle, decode)
 }
 
@@ -780,10 +795,12 @@ fn labeled(spans: &[(u32, i64, i64, u32)], samples: &[Sample]) -> Capture {
         builder.thread(Pid::new(1), Tid::new(1), 0),
         builder.thread(Pid::new(1), Tid::new(2), 0),
     ];
+
     let tasks: Vec<u32> = (1..=3)
         .map(|number| builder.task("goroutine", number, 0))
         .collect();
     builder.describe_task(tasks[1], NONE, Some("phase=spin"));
+
     let site = builder.site(
         "route",
         "app.rs",
@@ -791,6 +808,7 @@ fn labeled(spans: &[(u32, i64, i64, u32)], samples: &[Sample]) -> Capture {
         module,
         microscope_probes::abi::SITE_LABEL,
     );
+
     for &(thread, start, length, value) in spans {
         let value = builder.string(&format!("v{value}"));
         builder.zone(
@@ -868,11 +886,13 @@ proptest! {
         prop_assert_eq!(spun.weight, weight(&|sample| sample.3 == 1));
         let by = keys.aggregate(&query(Vec::new(), Some("route")));
         let mut roots = BTreeMap::new();
+
         for node in (0..by.len()).filter(|&node| by.depth[node] == 0) {
             roots.insert(keys.name(by.key[node]), by.total[node]);
         }
 
         let mut expected = BTreeMap::new();
+
         for sample in &samples {
             let name = route(sample).map_or_else(|| "[no route]".to_owned(), |value| format!("route=v{value}"));
             *expected.entry(name).or_insert(0) += sample.2;
@@ -898,6 +918,7 @@ proptest! {
         let range = (range.0, range.0 + range.1);
         let blocks = zone_blocks(&capture, range, None, fold);
         let mut drawn: BTreeMap<(u32, u32), u32> = BTreeMap::new();
+
         for pair in blocks.windows(2) {
             if (pair[0].thread, pair[0].depth) == (pair[1].thread, pair[1].depth) {
                 prop_assert!(pair[0].end <= pair[1].start, "{:?}", pair);
@@ -940,6 +961,7 @@ fn a_plot_keeps_each_bins_extremes_and_counts_what_it_cannot_draw() {
         builder.site("depth", "b.rs", 2, module, kind),
         builder.site("rate", "a.rs", 3, module, kind),
     ];
+
     for (thread, site, time, value) in [
         (one, 0, 5, 3.0),
         (two, 1, 1, 7.0),
@@ -985,6 +1007,7 @@ fn a_plot_keeps_each_bins_extremes_and_counts_what_it_cannot_draw() {
         held,
         [("depth", Some(4.0), true, 0), ("rate", None, false, 1)]
     );
+
     let after_nan = plot_series(&capture, (10, 14), None, 1);
     assert_eq!(
         (
@@ -1002,6 +1025,7 @@ fn stacks_of(samples: &[(Vec<usize>, u64)]) -> Capture {
     let mut builder = CaptureBuilder::new();
     let module = builder.module("/bin/app", None, [0; 16], 0);
     let thread = builder.thread(Pid::new(1), Tid::new(1), 0);
+
     let frames: Vec<u32> = (0..FUNCTIONS.len())
         .map(|at| {
             let frame = builder.frame(FrameKind::Native, module, 0x10 * at as u64, 0);
@@ -1009,6 +1033,7 @@ fn stacks_of(samples: &[(Vec<usize>, u64)]) -> Capture {
             frame
         })
         .collect();
+
     for (time, (stack, weight)) in samples.iter().enumerate() {
         let stack: Vec<u32> = stack.iter().map(|&at| frames[at]).collect();
         let stack = builder.stack(&stack);
@@ -1072,6 +1097,7 @@ proptest! {
         };
 
         let (mut now, mut before) = (BTreeMap::new(), BTreeMap::new());
+
         for node in 0..diff.len() {
             let mut path = Vec::new();
             let mut at = index(node);
@@ -1109,6 +1135,7 @@ proptest! {
             (&current_keys, &current_keys.functions(&everything)),
             (&base_keys, &base_keys.functions(&everything)),
         );
+
         for cost in costs {
             let name = match cost.side {
                 Side::Current => current_keys.name(cost.key),

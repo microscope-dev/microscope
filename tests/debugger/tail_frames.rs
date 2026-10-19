@@ -36,11 +36,13 @@ async fn frames(scenario: &Scenario) -> Vec<StackFrame> {
     let trace = scenario
         .operation("backtrace", scenario.handle().backtrace())
         .await;
+
     let main = trace
         .frames
         .iter()
         .position(|frame| shown(frame).1 == "main")
         .unwrap_or_else(|| panic!("no frame runs main: {trace:#?}"));
+
     trace.frames[..=main].to_vec()
 }
 
@@ -55,6 +57,7 @@ async fn a_backtrace_shows_the_one_chain_of_tail_calls() {
         scenario
             .add_source_breakpoint("tail-frames.c", source_line(SOURCE, "frames: leaf"))
             .await;
+
         assert!(
             matches!(scenario.run_to_stop().await, StopReason::Breakpoint { .. }),
             "{variant}"
@@ -94,6 +97,7 @@ async fn a_backtrace_shows_the_one_chain_of_tail_calls() {
             ),
             "{variant}"
         );
+
         assert_eq!(
             frames(&scenario)
                 .await
@@ -106,6 +110,7 @@ async fn a_backtrace_shows_the_one_chain_of_tail_calls() {
             ],
             "{variant}"
         );
+
         scenario.shutdown().await;
     }
 }
@@ -120,8 +125,10 @@ async fn a_tail_call_frame_knows_only_what_was_passed_to_it() {
         scenario
             .add_source_breakpoint("tail-frames.c", source_line(SOURCE, "frames: leaf"))
             .await;
+
         scenario.run_to_stop().await;
         let trace = frames(&scenario).await;
+
         for (level, function, value) in [(1, "middle", 6), (2, "top", 5)] {
             let frame = &trace[level];
             scenario
@@ -141,6 +148,7 @@ async fn a_tail_call_frame_knows_only_what_was_passed_to_it() {
                     .all(|register| register.bytes.is_none()),
                 "{variant}: {function}: {registers:#?}"
             );
+
             let variable = scenario
                 .operation("value", scenario.handle().variable("value"))
                 .await;
@@ -168,6 +176,7 @@ async fn a_tail_call_frame_knows_only_what_was_passed_to_it() {
         scenario
             .operation("select middle", scenario.handle().select_frame(trace[1].id))
             .await;
+
         assert_eq!(
             scenario.step_to_stop(StepKind::Out).await,
             StopReason::Step {
@@ -175,6 +184,7 @@ async fn a_tail_call_frame_knows_only_what_was_passed_to_it() {
             },
             "{variant}"
         );
+
         let location = scenario
             .operation("location", scenario.handle().current_location())
             .await;
@@ -183,6 +193,7 @@ async fn a_tail_call_frame_knows_only_what_was_passed_to_it() {
             Some("main"),
             "{variant}: {location:?}"
         );
+
         scenario.shutdown().await;
     }
 }

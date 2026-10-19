@@ -82,6 +82,7 @@ fn object_model(layout: &mut PythonLayout) {
         (Field::InterpreterStaticExtensionTypes, 64),
         (Field::InterpreterStaticExtensionTypesEnd, 96),
     ];
+
     for (field, offset) in fields {
         layout.set_field(field, offset);
     }
@@ -167,6 +168,7 @@ fn layout() -> PythonLayout {
         (Field::FrameLocalsplus, 48),
         (Field::CellRef, 16),
     ];
+
     for (field, offset) in fields {
         layout.set_field(field, offset);
     }
@@ -380,6 +382,7 @@ impl Process {
         let kind = 1 << self.layout.constant(Constant::UnicodeKindShift);
         let compact = 1 << self.layout.constant(Constant::UnicodeCompactShift);
         let ascii = 1 << self.layout.constant(Constant::UnicodeAsciiShift);
+
         self.put(object, Field::UnicodeState, kind | compact | ascii, 4);
         let data = object + self.offset(Field::UnicodeAsciiSize);
         self.memory.fill(data, text.as_bytes());
@@ -466,6 +469,7 @@ impl Process {
         let entries = self.offset(Field::CodeArrayEntries);
         let array = self.alloc(entries + 8 * copies.len() as u64);
         self.word(array, Field::CodeArraySize, copies.len() as u64);
+
         for (index, copy) in copies.iter().enumerate() {
             let at = array + entries + 8 * index as u64;
             self.memory.write(at, *copy, 8);
@@ -592,6 +596,7 @@ fn sampled(process: &Process, frame: u64) -> SampledFrame {
     let code = field(frame, Field::FrameExecutable, 8);
     let instruction = field(frame, Field::FrameInstruction, 8);
     let owner = u32::try_from(field(frame, Field::FrameOwner, 1)).expect("a byte");
+
     let (proof, offset) = if code == 0 {
         (SampledCode::default(), None)
     } else {
@@ -653,6 +658,7 @@ fn sampled_frames_read_as_the_stopped_walk_reads_them() {
         .into_iter()
         .map(|frame| sampled(&process, frame))
         .collect();
+
     let mut code = CodeTable::default();
     let mut walk = |process: &Process, chain: &[SampledFrame]| {
         Walk {
@@ -1039,6 +1045,7 @@ type ThreadSummary = (u64, i64, Option<u64>);
 fn states_of(process: &Process, runtime: u64) -> (Vec<ThreadSummary>, Vec<Arc<str>>) {
     let (states, gaps) = threads::thread_states(&process.reader(), VirtualAddress::new(runtime))
         .expect("the runtime's interpreters are readable");
+
     let states = states
         .iter()
         .map(|state| {
@@ -1142,6 +1149,7 @@ fn an_unreadable_runtime_finds_its_loop_and_says_why_its_frames_are_missing() {
         version: crate::image::python::PyVersion(0x0310_00f0),
         reading: Err(Arc::clone(&reason)),
     };
+
     let process = Process::new(layout());
     let stacks = model
         .interpreted(&process.memory)
@@ -1227,6 +1235,7 @@ fn reads_in_a_block_read_before_cost_nothing_and_bytes_in_a_block_not_mapped_who
     let mut inspection = InspectionBudget::new(InspectionLimits::default());
     let budget = super::values::Budget::new(&mut inspection);
     let blocks = crate::runtime_model::StopMemory::default();
+
     {
         let reader = Reader {
             stop: &memory,
@@ -1281,11 +1290,13 @@ fn agent_reports_are_read_from_the_calling_threads_registers() {
     let stop = Memory::default();
     let hook = HookPlace::Companion(super::hook::SYMBOL);
     assert_eq!(model.internal_hooks(), &[hook]);
+
     let mut registers = RegisterFile::new([(RDI, 1), (RSI, 42), (DwarfRegister::new(1), 0)]);
     assert_eq!(
         model.hook_event(&stop, hook, &registers),
         Ok(HookEvent::Breakpoint { numbers: vec![41] })
     );
+
     // The native ABI reserves zero; the controller's site IDs begin at zero.
     registers.set(RSI, 1);
     assert_eq!(
@@ -1308,6 +1319,7 @@ fn agent_reports_are_read_from_the_calling_threads_registers() {
             numbers: vec![2, 0]
         })
     );
+
     // An unreadable array, and the reserved number zero, are errors.
     assert!(model.hook_event(&stop, hook, &registers).is_err());
     registers.set(RSI, 3);

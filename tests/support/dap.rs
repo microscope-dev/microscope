@@ -262,12 +262,15 @@ impl Dap {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap_or_else(|error| panic!("start {command:?}: {error}"));
+
         let stdout = child.stdout.take().expect("adapter stdout");
         let stderr = child.stderr.take().expect("adapter stderr");
         let stdin = child.stdin.take().expect("adapter stdin");
+
         let dap = Self::over(name, Box::new(stdin), stdout, Some(child));
         let errors = Arc::clone(&dap.transcript);
         let started = dap.started;
+
         std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                 errors.lock().expect("transcript").push(format!(
@@ -276,6 +279,7 @@ impl Dap {
                 ));
             }
         });
+
         dap
     }
 
@@ -295,7 +299,9 @@ impl Dap {
         let transcript = Arc::new(Mutex::new(Vec::new()));
         let started = Instant::now();
         let (send, inbox) = mpsc::channel();
+
         std::thread::spawn(move || read_frames(output, &send));
+
         Self {
             name: name.into(),
             stdin: Some(input),
@@ -431,6 +437,7 @@ impl Dap {
             "command": "startDebugging",
             "success": result.is_ok(),
         });
+
         if let Err(message) = result {
             response["message"] = message.into();
         }
@@ -454,6 +461,7 @@ impl Dap {
     /// one and stops holding them.
     pub fn release_terminals(&mut self) {
         let deadline = Instant::now() + EVENT_TIMEOUT;
+
         while self.held_terminals.as_ref().is_some_and(Vec::is_empty) {
             self.receive(deadline, "a runInTerminal request");
         }
@@ -475,10 +483,12 @@ impl Dap {
     /// answers it.
     fn run_in_terminal(&mut self, request: &Value) {
         let arguments = &request["arguments"];
+
         let result = self
             .refused_terminal
             .clone()
             .map_or_else(|| Ok(self.spawn_terminal(arguments)), Err);
+
         self.seq += 1;
         let mut response = json!({
             "seq": self.seq,
@@ -487,6 +497,7 @@ impl Dap {
             "command": "runInTerminal",
             "success": result.is_ok(),
         });
+
         match result {
             Ok(body) => response["body"] = body,
             Err(message) => response["message"] = message.into(),
@@ -503,6 +514,7 @@ impl Dap {
             .iter()
             .map(|argument| argument.as_str().expect("string argument"))
             .collect::<Vec<_>>();
+
         let mut command = Command::new(args[0]);
         command
             .args(&args[1..])
@@ -511,9 +523,11 @@ impl Dap {
 
         // One pipe for both streams, as a terminal has, keeps their order.
         let (output, input) = std::io::pipe().expect("create the terminal's pipe");
+
         command
             .stdout(input.try_clone().expect("share the terminal's pipe"))
             .stderr(input);
+
         for (name, value) in arguments["env"].as_object().into_iter().flatten() {
             match value.as_str() {
                 Some(value) => command.env(name, value),
@@ -526,14 +540,18 @@ impl Dap {
         // The command holds copies of the pipe's input; without them the
         // pipe ends when the program's copies close.
         drop(command);
+
         let lines = self.terminal_output.0.clone();
+
         std::thread::spawn(move || {
             for line in BufReader::new(output).lines().map_while(Result::ok) {
                 let _ = lines.send(line);
             }
         });
+
         let process = child.id();
         self.terminals.push(child);
+
         json!({"processId": process})
     }
 
@@ -587,14 +605,18 @@ impl Dap {
     /// Sends a request without waiting for its response.
     pub fn send(&mut self, command: &str, arguments: Value) -> Sent {
         let mark = self.mark();
+
         self.seq += 1;
+
         let mut message = json!({"seq": self.seq, "type": "request", "command": command});
+
         if !arguments.is_null() {
             message["arguments"] = arguments;
         }
 
         self.outstanding.insert(self.seq, command.to_owned());
         self.write(&message.to_string());
+
         Sent {
             seq: self.seq,
             mark,
@@ -660,6 +682,7 @@ impl Dap {
     /// Waits for a response that must fail and returns its message.
     pub fn failure(&mut self, sent: Sent) -> String {
         let response = self.response(sent);
+
         if response["success"] != false {
             self.fail(&format!(
                 "request {} unexpectedly succeeded: {response}",
@@ -739,6 +762,7 @@ impl Dap {
     /// Waits for the next `stopped` event after `mark`.
     pub fn stopped(&mut self, mark: Mark) -> Stopped {
         let body = self.event(mark, "stopped", |_| true);
+
         Stopped {
             thread: body["threadId"].as_i64().expect("threadId"),
             reason: body["reason"].as_str().expect("reason").to_owned(),
@@ -749,6 +773,7 @@ impl Dap {
     /// Every message received after `mark`, in order.
     pub fn messages_since(&mut self, mark: Mark) -> Vec<Value> {
         self.drain();
+
         self.received[mark.0..]
             .iter()
             .map(|received| received.message.clone())
@@ -775,6 +800,7 @@ impl Dap {
     /// The text of every `output` event of one category after `mark`.
     pub fn output_text(&mut self, mark: Mark, category: &str) -> String {
         self.drain();
+
         self.received[mark.0..]
             .iter()
             .filter(|received| {
@@ -793,6 +819,7 @@ impl Dap {
 
     fn receive(&mut self, deadline: Instant, waiting_for: &str) {
         let remaining = deadline.saturating_duration_since(Instant::now());
+
         match self.inbox.recv_timeout(remaining) {
             Ok(message) => self.accept(message),
             Err(RecvTimeoutError::Timeout) => {
@@ -813,6 +840,7 @@ impl Dap {
         };
 
         self.record("<-", &message.to_string());
+
         if self.reference {
             self.received.push(Received {
                 message,
@@ -858,6 +886,7 @@ impl Dap {
     fn check(&mut self, message: &Value) -> Result<(), String> {
         validate_schema(message)?;
         check_ids(message)?;
+
         let checks = &mut self.checks;
         if message["seq"] != checks.next_seq {
             return Err(format!("expected seq {}", checks.next_seq));
@@ -878,10 +907,12 @@ impl Dap {
                 let request_seq = message["request_seq"]
                     .as_u64()
                     .ok_or("request_seq is not a number")?;
+
                 let command = self
                     .outstanding
                     .remove(&request_seq)
                     .ok_or_else(|| format!("no outstanding request {request_seq}"))?;
+
                 if message["command"] != command.as_str() {
                     return Err(format!("the response to {command} names another command"));
                 }
@@ -943,6 +974,7 @@ impl Dap {
                 let thread = body["threadId"]
                     .as_i64()
                     .ok_or("stopped without threadId")?;
+
                 if !checks.threads.contains(&thread) {
                     return Err(format!(
                         "stopped names thread {thread} before its thread event"
@@ -956,6 +988,7 @@ impl Dap {
             Some("continued") => checks.stopped = false,
             Some("thread") => {
                 let thread = body["threadId"].as_i64().ok_or("thread without threadId")?;
+
                 match body["reason"].as_str() {
                     Some("started") => {
                         if !checks.threads.insert(thread) {
@@ -986,6 +1019,7 @@ impl Dap {
                     .as_str()
                     .ok_or("module without a string id")?
                     .to_owned();
+
                 match body["reason"].as_str() {
                     Some("new") => {
                         if !checks.modules.insert(id.clone()) {
@@ -1026,6 +1060,7 @@ impl Dap {
         let mark = self.mark();
         let capabilities = self.request("initialize", profile.initialize_arguments());
         self.event(mark, "initialized", |_| true);
+
         capabilities
     }
 
@@ -1047,7 +1082,9 @@ impl Dap {
         // initialize answers.
         let mut launch =
             (profile != Profile::DeferredLaunch).then(|| self.send(command, arguments.clone()));
+
         self.event(mark, "initialized", |_| true);
+
         let exceptions = configuration.exceptions.clone().unwrap_or_else(|| {
             let filters = capabilities["exceptionBreakpointFilters"]
                 .as_array()
@@ -1058,7 +1095,9 @@ impl Dap {
                 .collect::<Vec<_>>();
             json!({"filters": filters})
         });
+
         let mut sent = Vec::new();
+
         for (path, lines) in &configuration.sources {
             sent.push(self.send(
                 "setBreakpoints",
@@ -1068,6 +1107,7 @@ impl Dap {
                     "sourceModified": false,
                 }),
             ));
+
             if profile != Profile::VsCode {
                 let last = *sent.last().expect("just sent");
                 self.success(last);
@@ -1080,9 +1120,11 @@ impl Dap {
                 json!({"breakpoints": configuration.functions.iter().map(|name| json!({"name": name})).collect::<Vec<_>>()}),
             )
         });
+
         let exceptions = self.send("setExceptionBreakpoints", exceptions);
         let done = self.send("configurationDone", Value::Null);
         let threads = (profile == Profile::VsCode).then(|| self.send("threads", Value::Null));
+
         if profile == Profile::DeferredLaunch {
             launch = Some(self.send(command, arguments));
         }
@@ -1091,11 +1133,14 @@ impl Dap {
             .into_iter()
             .map(|sent| breakpoints(&self.success(sent)))
             .collect();
+
         let function_breakpoints = functions
             .map(|sent| breakpoints(&self.success(sent)))
             .unwrap_or_default();
+
         self.success(exceptions);
         self.success(done);
+
         if let Some(threads) = threads {
             let body = self.success(threads);
             assert!(
@@ -1106,6 +1151,7 @@ impl Dap {
 
         let launch = launch.expect("the profile sent the start request");
         self.success(launch);
+
         Started {
             capabilities,
             source_breakpoints,
@@ -1130,6 +1176,7 @@ impl Dap {
             "program": program,
             "__sessionId": "d3e5c1a0-0000-4000-8000-000000000000",
         });
+
         if let (Some(arguments), Value::Object(extra)) = (arguments.as_object_mut(), extra) {
             arguments.extend(extra);
         }
@@ -1144,6 +1191,7 @@ impl Dap {
         match profile {
             Profile::VsCode => {
                 let threads = self.request("threads", Value::Null);
+
                 assert!(
                     threads["threads"]
                         .as_array()
@@ -1151,6 +1199,7 @@ impl Dap {
                         .iter()
                         .any(|thread| thread["id"] == stopped.thread)
                 );
+
                 let first = self.request(
                     "stackTrace",
                     json!({"threadId": stopped.thread, "startFrame": 0, "levels": 1}),
@@ -1159,6 +1208,7 @@ impl Dap {
                     "stackTrace",
                     json!({"threadId": stopped.thread, "startFrame": 1, "levels": 19}),
                 );
+
                 let mut frames = first["stackFrames"].as_array().expect("frames").clone();
                 frames.extend(
                     rest["stackFrames"]
@@ -1167,7 +1217,9 @@ impl Dap {
                         .iter()
                         .cloned(),
                 );
+
                 assert_eq!(first["totalFrames"], rest["totalFrames"]);
+
                 let scopes = self.request("scopes", json!({"frameId": frames[0]["id"]}));
                 if let Some(scope) = scopes["scopes"]
                     .as_array()
@@ -1186,6 +1238,7 @@ impl Dap {
             Profile::Neovim | Profile::DeferredLaunch => {
                 let trace = self.request("stackTrace", json!({"threadId": stopped.thread}));
                 let frames = trace["stackFrames"].as_array().expect("frames").clone();
+
                 let scopes = self.request("scopes", json!({"frameId": frames[0]["id"]}));
                 for scope in scopes["scopes"].as_array().expect("scopes") {
                     if scope["expensive"] == false && scope["variablesReference"] != 0 {
@@ -1252,12 +1305,14 @@ impl Dap {
 
         // Nothing may follow the disconnect response.
         self.drain();
+
         let unexpected_stops = self
             .received
             .iter()
             .filter(|received| !received.consumed && received.message["event"] == "stopped")
             .map(|received| received.message.to_string())
             .collect::<Vec<_>>();
+
         if !unexpected_stops.is_empty() && !self.checks.relaxed {
             self.fail(&format!("stops nobody waited for: {unexpected_stops:?}"));
         }
@@ -1290,9 +1345,11 @@ impl Dap {
         let mut child = self.child.take().expect("adapter process");
         let pid = child.id();
         let (send, exited) = mpsc::channel();
+
         std::thread::spawn(move || {
             let _ = send.send(child.wait());
         });
+
         match exited.recv_timeout(REQUEST_TIMEOUT) {
             Ok(Ok(status)) if status.success() => {}
             Ok(Ok(status)) => self.fail(&format!("the adapter exited with {status}")),
@@ -1328,6 +1385,7 @@ impl Dap {
     /// Sends a signal to the adapter process.
     pub fn signal(&self, signal: nix::sys::signal::Signal) {
         let pid = self.child.as_ref().expect("adapter process").id();
+
         nix::sys::signal::kill(
             nix::unistd::Pid::from_raw(i32::try_from(pid).expect("pid fits i32")),
             signal,
@@ -1339,6 +1397,7 @@ impl Dap {
     /// that end it some other way and check the outcome themselves.
     pub fn abandon(mut self) {
         self.finished = true;
+
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = child.wait();
@@ -1354,6 +1413,7 @@ impl Drop for Dap {
         }
 
         self.reap_terminals();
+
         if let Some(recording) = &self.recording {
             flight_recordings::adapter_finished(recording);
         }
@@ -1422,6 +1482,7 @@ fn read_frames(stdout: impl std::io::Read, send: &mpsc::Sender<Result<Value, Str
 
         let message = serde_json::from_slice::<Value>(&body)
             .map_err(|error| format!("invalid JSON: {error}"));
+
         if send.send(message).is_err() {
             return;
         }
@@ -1433,13 +1494,16 @@ fn validate_schema(message: &Value) -> Result<(), String> {
     static VALIDATORS: OnceLock<Mutex<HashMap<String, Arc<jsonschema::Validator>>>> =
         OnceLock::new();
     static SCHEMA: OnceLock<Value> = OnceLock::new();
+
     let schema = SCHEMA.get_or_init(|| {
         serde_json::from_str(include_str!("../dap/schema/debugAdapterProtocol.json"))
             .expect("schema")
     });
+
     let custom = message["command"]
         .as_str()
         .is_some_and(|command| command.starts_with("microscope/"));
+
     let definition = match message["type"].as_str() {
         Some("response") if message["success"] == false => "ErrorResponse".to_owned(),
         // The adapter's own requests, which the protocol allows any adapter
@@ -1483,6 +1547,7 @@ fn validate_schema(message: &Value) -> Result<(), String> {
         .iter_errors(message)
         .map(|error| format!("{} at {}", error, error.instance_path()))
         .collect::<Vec<_>>();
+
     if errors.is_empty() {
         Ok(())
     } else {
@@ -1506,6 +1571,7 @@ fn check_ids(value: &Value) -> Result<(), String> {
             for (key, value) in object {
                 let positive = matches!(key.as_str(), "id" | "threadId" | "frameId");
                 let reference = matches!(key.as_str(), "variablesReference" | "sourceReference");
+
                 if (positive || reference)
                     && let Some(number) = value.as_i64()
                     && !(i64::from(!reference)..=i64::from(i32::MAX)).contains(&number)
@@ -1556,6 +1622,7 @@ pub fn source(path: &str) -> PathBuf {
 pub fn line_of(path: &Path, marker: &str) -> u64 {
     let text = std::fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+
     text.lines()
         .position(|line| line.contains(marker))
         .map_or_else(

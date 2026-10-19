@@ -258,6 +258,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     .is_some_and(|function| function.coroutine().is_some())
             })
             .collect::<Vec<_>>();
+
         for outer in awaiters {
             let line =
                 super::frames::source_for_code_instance(&self.module_image, &location, outer)?;
@@ -555,6 +556,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let function = *selected_functions.first().ok_or_else(unknown)?;
         let instances = inlined_in(&selected_functions);
         let mut statements = BTreeSet::new();
+
         for instance in &instances {
             statements.extend(self.body_statements(*instance)?);
         }
@@ -812,6 +814,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .as_ref()
             .filter(|(_, entries)| !entries.frees.is_empty())
             .and_then(|_| self.dispatch_return(pid));
+
         let start = self.active_step_mut().ok_or_else(|| {
             Error::internal("the step remained active while its future was pending")
         })?;
@@ -837,6 +840,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         self.cleanup_plan_breakpoints(execution)?;
         self.install_additional_plan_breakpoints(execution, &waits.plan_sites())?;
+
         *self.active_step_mut().ok_or_else(|| {
             Error::internal("the step remained active while its future was pending")
         })? = waits;
@@ -860,6 +864,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .model
                 .task_entries(stop, Self::task_ref(inferior, task))
         });
+
         #[cfg(debug_assertions)]
         if let Err(reason) = &entries {
             record!("task {task}'s entries are unreadable: {reason}");
@@ -1103,6 +1108,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     .with_task_runtime(pid, task, |runtime, stop| runtime.task_end(stop, &entries));
                 Some((task, end.ok()??))
             });
+
             let reason = match ended {
                 Some((task, end)) => StopReason::TaskEnded {
                     kind,
@@ -1129,6 +1135,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .and_then(|location| location.function)
                 .map_or_else(|| "unnamed code".into(), |function| function.name)
         );
+
         let Some(start) = self.step_on_in_frame(pid, &stack, dropper, future)? else {
             return self.begin_visible_stop(
                 pid,
@@ -1151,6 +1158,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .copied()
                 .collect(),
         )?;
+
         if let Some(ActiveKind::Step {
             kind: running,
             start: active,
@@ -1533,7 +1541,6 @@ const UNKNOWN_RESUMPTION: &str = "where the future the step follows resumes is u
 const TWICE: &str = "the async function the step is in is awaited twice in its task, and \
                      inlined, so the step cannot tell which is its own";
 
-/// Whether a function is one rustc makes to drop a value of some type.
 /// How a step reports how its runtime ended its task.
 const fn ending(end: TaskEnd) -> TaskEnding {
     match end {
@@ -1542,6 +1549,7 @@ const fn ending(end: TaskEnd) -> TaskEnding {
     }
 }
 
+/// Whether a function is one rustc makes to drop a value of some type.
 fn is_drop_glue(name: &str) -> bool {
     name.starts_with("drop_glue<") || name.starts_with("drop_in_place<")
 }

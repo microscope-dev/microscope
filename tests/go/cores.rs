@@ -56,6 +56,7 @@ fn crash_dump(fixture: &str) -> BTreeMap<u64, Dumped> {
                 )
             })
             .collect();
+
         let mut frames = Vec::new();
         while let Some(call) = lines.next_if(|line| !line.is_empty()) {
             let position = lines.next().expect("a frame's position").trim();
@@ -86,6 +87,7 @@ fn crash_dump(fixture: &str) -> BTreeMap<u64, Dumped> {
 async fn tasks(scenario: &Scenario) -> Vec<TaskSnapshot> {
     let mut tasks = Vec::new();
     let mut from = None;
+
     loop {
         let page = scenario
             .operation("tasks", scenario.handle().tasks(from, 4))
@@ -139,6 +141,7 @@ async fn a_cores_goroutines_are_those_the_runtime_dumped_as_it_crashed() {
                 Some(dumped.status.as_str()),
                 "{context}"
             );
+
             let trace = scenario
                 .operation(
                     "task backtrace",
@@ -153,6 +156,7 @@ async fn a_cores_goroutines_are_those_the_runtime_dumped_as_it_crashed() {
                 )
                 .await;
             assert_eq!(trace.termination, UnwindTermination::Complete, "{context}");
+
             let frames = trace
                 .frames
                 .iter()
@@ -166,6 +170,7 @@ async fn a_cores_goroutines_are_those_the_runtime_dumped_as_it_crashed() {
                     )
                 })
                 .collect::<Vec<_>>();
+
             if task.state == TaskState::Running {
                 // Main panicked on the thread the core stopped at, which
                 // went on to raise the signal that ended it.
@@ -192,6 +197,7 @@ async fn a_goroutines_profiler_labels_are_its_own() {
         let scenario = open(fixture);
         let tasks = tasks(&scenario).await;
         let mut labelled = 0;
+
         for task in &tasks {
             let expected = &dump[&task.id.number].labels;
             let labels = task
@@ -237,6 +243,7 @@ async fn a_crashing_panic_stops_then_raises_sigabrt() {
             "panic: the workers are waiting",
             "{fixture}"
         );
+
         let reason = scenario.resume_to_stop().await;
         assert!(
             matches!(&reason, StopReason::Exception(exception) if exception.code == 6),

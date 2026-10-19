@@ -58,6 +58,7 @@ pub fn read_map(pid: u32, from: u64, limit: u64) -> Result<(String, Vec<u8>), Ma
         .and_then(|metadata| metadata.created())
         .map_err(MapError::Unreadable)?;
     let began = began(pid).ok_or(MapError::Absent)?;
+
     if made < began {
         return Err(MapError::Stale);
     }
@@ -66,6 +67,7 @@ pub fn read_map(pid: u32, from: u64, limit: u64) -> Result<(String, Vec<u8>), Ma
     file.seek(std::io::SeekFrom::Start(from))
         .and_then(|_| file.take(limit).read_to_end(&mut bytes))
         .map_err(MapError::Unreadable)?;
+
     Ok((named, bytes))
 }
 
@@ -113,6 +115,7 @@ fn began(pid: u32) -> Option<std::time::SystemTime> {
     };
     let now = duration(ClockId::CLOCK_REALTIME)?;
     let boot = now.checked_sub(duration(ClockId::CLOCK_BOOTTIME)?)?;
+
     std::time::UNIX_EPOCH.checked_add(boot + since_boot)
 }
 
@@ -169,6 +172,7 @@ mod tests {
         }
 
         std::fs::write(&path, b"1000 10 first\n2000 1").expect("write the map");
+
         let read = read_map(pid, 5, u64::MAX);
         std::fs::remove_file(&path).expect("remove the map");
         let (named, bytes) = read.expect("a map made after the process began");

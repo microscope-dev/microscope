@@ -149,6 +149,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return false;
         };
         let mut changed = false;
+
         for runtime in inferior.managed.take_stale() {
             let previous = self.arming_problem(runtime);
             let _ = self.arm_runtime(runtime);
@@ -172,6 +173,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 }
             }
         }
+
         result
     }
 
@@ -196,6 +198,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         if previous != self.arming_problem(runtime) {
             self.publish_breakpoints_changed();
         }
+
         result
     }
 
@@ -215,6 +218,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .as_ref()
             .filter(|(assigning, _)| *assigning == runtime)
             .map(|(_, assignment)| assignment.clone());
+
         let Some(bound) = self
             .runtimes(inferior)
             .into_iter()
@@ -234,9 +238,11 @@ impl<P: LinuxTraceOps> Controller<P> {
             assignment: assignment.as_ref(),
             exceptions: self.exception_stops,
         };
+
         if bound.model.agent().is_some() {
             return self.arm_agent(&bound, &arming);
         }
+
         let writes =
             self.with_runtime_stop(inferior, &bound, inferior.memory_thread(), |stop| {
                 bound.model.arm(stop, &arming)

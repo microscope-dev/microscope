@@ -120,15 +120,18 @@ fn a_cached_load_answers_as_an_uncached_one() {
         ),
         (fixture("dwz/clang-o2/dwz/shapes"), search(&[])),
     ];
+
     for (index, (path, search)) in cases.iter().enumerate() {
         let dir = ScratchDir::new(&format!("cached-load-{index}"));
         let cache = ImageCache::open(&dir.join("images"), DEFAULT_CAPACITY).unwrap();
+
         let (uncached, outcome) = load(path, 0, search, None);
         assert_eq!(outcome, CacheOutcome::Off);
         let (missed, outcome) = load(path, 0, search, Some(&cache));
         assert_eq!(outcome, CacheOutcome::Miss, "{}", path.display());
         let (hit, outcome) = load(path, 0, search, Some(&cache));
         assert_eq!(outcome, CacheOutcome::Hit, "{}", path.display());
+
         assert_eq!(uncached.image.image_bytes(), missed.image.image_bytes());
         assert_eq!(uncached.image.image_bytes(), hit.image.image_bytes());
         assert_eq!(

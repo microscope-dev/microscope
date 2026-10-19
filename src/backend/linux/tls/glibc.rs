@@ -193,6 +193,7 @@ impl Glibc<'_> {
         let mut list = self.slotinfo_lists()?;
         let mut first = 0_u64;
         let mut visited = BTreeSet::new();
+
         while list != 0 {
             if visited.len() == MAX_SLOTINFO_LISTS || !visited.insert(list) {
                 return Err(failed("the loader's TLS slotinfo lists form a cycle"));
@@ -302,6 +303,7 @@ pub(super) fn thread_pointers(services: &dyn ProcessServices) -> Result<Vec<(u64
     let link = glibc.field("_thread_db_pthread_list")?;
     let id = glibc.field("_thread_db_pthread_tid")?;
     let mut threads = Vec::new();
+
     for list in [
         "_thread_db_rtld_global__dl_stack_user",
         "_thread_db_rtld_global__dl_stack_used",
@@ -309,6 +311,7 @@ pub(super) fn thread_pointers(services: &dyn ProcessServices) -> Result<Vec<(u64
         let head = glibc.field(list)?.address(rtld_global, 0)?;
         let mut node = glibc.fetch(next, head, 0)?;
         let mut visited = BTreeSet::new();
+
         while node != head {
             if visited.len() == MAX_THREADS || !visited.insert(node) {
                 return Err(failed(format!("{list} does not lead back to its head")));
@@ -628,6 +631,7 @@ mod tests {
         let mut stale = Process::new(3, BLOCK, 0x80);
         stale.generation(1);
         assert_eq!(stale.address(), Ok(static_block));
+
         for no_static_block in [NO_TLS_OFFSET, FORCED_DYNAMIC_TLS_OFFSET] {
             let mut stale = Process::new(3, BLOCK, no_static_block);
             stale.generation(1);
@@ -676,11 +680,13 @@ mod tests {
         process.descriptor("_thread_db_pthread_tid", 32, 1, TID);
         process.descriptor("_thread_db_rtld_global__dl_stack_user", 128, 1, 0x700);
         process.descriptor("_thread_db_rtld_global__dl_stack_used", 128, 1, 0x710);
+
         for (head, threads) in [
             (RTLD_GLOBAL + 0x700, given),
             (RTLD_GLOBAL + 0x710, allocated),
         ] {
             let mut previous = head;
+
             for &(descriptor, tid) in threads {
                 let node = descriptor + u64::from(LIST.cast_unsigned());
                 process.word(previous, node);
@@ -708,11 +714,13 @@ mod tests {
             target_thread_id(&process, Pid::from_raw(5000), descriptor),
             Ok(7)
         );
+
         for id in [0, u32::MAX, 1 << 31] {
             process.write(THREAD_POINTER + 0x2d0, &id.to_le_bytes());
             assert!(target_thread_id(&process, Pid::from_raw(5000), descriptor).is_err());
         }
         process.write(THREAD_POINTER + 0x2d0, &7u32.to_le_bytes());
+
         for (bits, count) in [(64u32, 1u32), (32, 0), (32, 2), (0, 1)] {
             process.write(descriptor, &bits.to_le_bytes());
             process.write(descriptor + 4, &count.to_le_bytes());
@@ -1084,6 +1092,7 @@ mod tests {
             process.word(head, LISTS);
             let mut first = 0;
             let mut list = LISTS;
+
             for (index, &count) in self.lists.iter().enumerate() {
                 let following = if index + 1 == self.lists.len() {
                     0
@@ -1093,6 +1102,7 @@ mod tests {
 
                 process.value(at(list, length), length_bits, count);
                 process.word(at(list, next), following);
+
                 if (first..first + count).contains(&self.module) {
                     let entry =
                         at(list, entries) + (self.module - first) * u64::from(entry_words) * 8;
@@ -1174,6 +1184,7 @@ mod tests {
         ) {
             let mut process = model.process();
             let addresses: Vec<u64> = process.memory.keys().copied().collect();
+
             for (index, byte) in damage {
                 process.memory.insert(*index.get(&addresses), byte);
             }

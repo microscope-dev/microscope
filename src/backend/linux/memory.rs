@@ -45,6 +45,7 @@ impl<P: InspectionOps> Controller<P> {
             .as_ref()
             .ok_or(Error::NotStopped)?
             .reader();
+
         let read = read_logical_memory(&self.ptrace, pid, &inferior.breakpoints, address, size)?;
         Ok(MemoryRead {
             revision: self.revision,
@@ -182,6 +183,7 @@ pub(super) fn read_logical_memory_with(
     let mut bytes = Vec::with_capacity(size);
     let word_size = u64::from(u64::BITS / 8);
     let mut current = address.get() & !(word_size - 1);
+
     while current < end {
         let (mut word, readable) = match read_word(current) {
             Ok(word) => (word.to_le_bytes(), word_size),
@@ -194,6 +196,7 @@ pub(super) fn read_logical_memory_with(
         };
 
         let last_word_address = current.saturating_add(word_size - 1);
+
         for (&site_address, site) in
             breakpoints.range(VirtualAddress::new(current)..=VirtualAddress::new(last_word_address))
         {
@@ -206,6 +209,7 @@ pub(super) fn read_logical_memory_with(
         let readable_end = current.saturating_add(readable);
         let selected_start = address.get().max(current);
         let selected_end = end.min(readable_end);
+
         if selected_start < selected_end {
             let start = offset_within(selected_start - current)?;
             let stop = offset_within(selected_end - current)?;

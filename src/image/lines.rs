@@ -296,6 +296,7 @@ impl LineTables {
             || row.isa != 0
             || line.is_none()
             || column.is_none();
+
         let mut flags = 0;
         for (set, flag) in [
             (row.statement, row_flags::STATEMENT),
@@ -310,6 +311,7 @@ impl LineTables {
         }
 
         let file = row.file.map_or(NONE, SourceFileId::get);
+
         self.addresses.push(RowAddress {
             address: row.address.into(),
         });
@@ -320,6 +322,7 @@ impl LineTables {
             flags,
             reserved: 0,
         });
+
         if extra {
             self.extras.push(LineExtra {
                 row: at.into(),
@@ -646,6 +649,7 @@ pub(super) fn build_indexes(tables: &LineTables) -> LineIndexes {
     let mut ranges = tables.ranges.clone();
     ranges.sort_unstable_by_key(|range| (range.start.get(), range.end.get(), range.row.get()));
     let mut prefix_max_end = 0;
+
     for range in &mut ranges {
         prefix_max_end = prefix_max_end.max(range.end.get());
         range.prefix_max_end = prefix_max_end.into();
@@ -653,6 +657,7 @@ pub(super) fn build_indexes(tables: &LineTables) -> LineIndexes {
 
     let mut statements = Vec::new();
     let mut boundaries = Vec::new();
+
     for (at, _) in (0u32..).zip(&tables.rows) {
         let row = tables.row(at as usize);
         if !row.is_public() {
@@ -762,6 +767,7 @@ pub fn from_statement_rows(statements: &[StatementRow]) -> LineTables {
     let mut tables = LineTables::default();
     let mut current = None;
     let mut next = 0;
+
     for statement in statements {
         if current != Some(statement.sequence) {
             tables.begin_sequence().expect("few rows");
@@ -835,6 +841,7 @@ impl Files {
                 })
             })
             .collect::<Option<Vec<_>>>()?;
+
         builder.owned_table(records);
         Some(())
     }
@@ -883,6 +890,7 @@ impl<'a> LineView<'a> {
             sequence.is_ok(),
             "validation bounds the sequences below u32"
         );
+
         statement_row(&self.row(at as usize), sequence.unwrap_or(NONE), ordinal)
     }
 

@@ -139,6 +139,7 @@ pub(super) fn read_memory_image(
         .find_map(|&(offset, address, _)| (offset == 0).then_some(address))
         .ok_or(Malformed("no loadable segment maps the ELF header"))?;
     let mut size = program_headers_end.max(section_headers_end);
+
     for &(offset, address, file_size) in &segments {
         if address.checked_sub(offset) != Some(link_base) {
             return Err(Malformed("the image is not laid out as its file"));
@@ -177,6 +178,7 @@ fn table_end(offset: u64, count: u64, entry_size: u64, expected_size: u64) -> Op
 /// mapping into, are one range.
 pub(super) fn vdso_mapping(maps: &str) -> Option<Range<u64>> {
     let mut mapping: Option<Range<u64>> = None;
+
     for line in maps.lines() {
         let mut fields = line.splitn(6, char::is_whitespace);
         let range = fields.next();
@@ -230,11 +232,13 @@ impl<P: InspectionOps> Controller<P> {
     ) -> Option<(ObservedModule, Option<Vec<u8>>)> {
         let mapping = mapping?;
         let module = |load_bias| (PathBuf::from(VDSO_NAME), load_bias);
+
         if let Some(load_bias) = self.registered_vdso(mapping.start) {
             return Some((module(load_bias), None));
         }
 
         let read = self.read_vdso(pid, mapping);
+
         #[cfg(debug_assertions)]
         if let Err(error) = &read {
             record!("the vDSO at {:#x} is unusable: {error}", mapping.start);
@@ -441,6 +445,7 @@ mod tests {
                 Malformed("the image extends past its memory"),
             ),
         ];
+
         for (name, edit, expected) in cases {
             let mut edited = memory.clone();
             edit(&mut edited, load, other, mapping.start);

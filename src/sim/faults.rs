@@ -34,6 +34,7 @@ impl Plan {
     /// it aims at more often than at any other moment.
     pub fn choose(choices: &mut Choices, creates_threads: bool, forks: bool) -> Self {
         let weights = [1, 1, u64::from(creates_threads), 5 * u64::from(forks)];
+
         match choices.weighted(Stream::Fault, &weights) {
             0 => Self::KillAtStep(choices.below(Stream::Fault, 300) + 1),
             1 => Self::KillInsideCall(choices.below(Stream::Fault, 100) + 1),

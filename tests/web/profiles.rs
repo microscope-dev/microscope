@@ -42,6 +42,7 @@ fn diff_nodes(tree: &Value, bytes: &[u8]) -> Vec<(Vec<String>, u64, u64)> {
     assert_eq!(bytes.len(), count * 40, "six columns of {count} nodes");
     let mut nodes = nodes(tree, &bytes[..count * 24]);
     let base_own = bytes[count * 24..][..count * 8].as_chunks::<8>().0;
+
     for (node, word) in nodes.iter_mut().zip(base_own) {
         #[expect(
             clippy::cast_possible_truncation,
@@ -393,6 +394,7 @@ fn record_waits(scratch: &ScratchDir) -> std::path::PathBuf {
     };
 
     let (stop, mut released, mut labeled) = (AtomicBool::new(false), false, None);
+
     let recording = record_watched(
         command,
         &options,
@@ -782,6 +784,7 @@ async fn a_profile_serves_its_zones_folded_to_a_width_and_measured() {
         .await;
     assert_eq!(stats["count"], 3, "{stats}");
     assert!(stats["median"].as_u64() <= stats["max"].as_u64());
+
     let values: Vec<&str> = stats["values"]
         .as_array()
         .expect("values")
@@ -789,6 +792,7 @@ async fn a_profile_serves_its_zones_folded_to_a_width_and_measured() {
         .map(|value| value["value"].as_str().expect("a value"))
         .collect();
     assert_eq!(values.len(), 3);
+
     for value in ["0", "1", "2"] {
         assert!(values.contains(&value), "{values:?}");
     }

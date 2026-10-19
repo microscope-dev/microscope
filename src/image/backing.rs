@@ -256,6 +256,7 @@ fn read_stream<B: AsMut<[u8]>>(
 
     let mut bytes = allocate(data.len()).ok_or(StreamError::Allocation(length))?;
     bytes.as_mut().copy_from_slice(&data);
+
     Ok((
         bytes,
         FileStamp {

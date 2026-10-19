@@ -20,6 +20,7 @@ use super::evaluate::EvaluateError;
 pub(super) fn offset(storage: ValueStorage, offset: i64) -> Result<ValueStorage, EvaluateError> {
     let outside =
         || EvaluateError::Malformed("member offset is outside its containing value".into());
+
     match storage {
         ValueStorage::Memory(address) => address
             .get()
@@ -49,6 +50,7 @@ pub(super) fn offset(storage: ValueStorage, offset: i64) -> Result<ValueStorage,
                     .checked_add_signed(offset)
                     .map(VirtualAddress::new)
             });
+
             Ok(ValueStorage::Bytes {
                 source,
                 raw,
@@ -217,6 +219,7 @@ pub(super) fn read_bits(
     )?;
     let span = usize::try_from(span).map_err(|_| VariableUnavailableReason::EvaluationLimit)?;
     let (_, bytes) = read(&selected, span, runtime, budget)?;
+
     extract_bit_field(&bytes, bit_offset % 8, bit_size, byte_order)
         .map_err(EvaluateError::Malformed)
 }
@@ -286,6 +289,7 @@ fn read_composite(
     // Nothing is read unless every bit can be.
     let mut undefined: Vec<ValueBitRange> = Vec::new();
     let mut unavailable = None;
+
     for (piece, _, destination, size) in overlapping() {
         match &piece.location {
             // The bits of an implicit pointer are the pointer, which has no
@@ -330,6 +334,7 @@ fn read_composite(
     let length = usize::try_from(bits.div_ceil(8))
         .map_err(|_| VariableUnavailableReason::EvaluationLimit)?;
     let mut value = vec![0; length];
+
     for (piece, within, destination, size) in overlapping() {
         match &piece.location {
             PieceLocation::Memory {
@@ -377,6 +382,7 @@ fn copy_bits(
 ) -> Result<(), EvaluateError> {
     let index =
         |bit: u64| usize::try_from(bit / 8).map_err(|_| VariableUnavailableReason::EvaluationLimit);
+
     if from.is_multiple_of(8) && to.is_multiple_of(8) && size.is_multiple_of(8) {
         let (from, to, length) = (index(from)?, index(to)?, index(size)?);
         destination[to..to + length].copy_from_slice(&source[from..from + length]);

@@ -96,6 +96,7 @@ async fn check_map(scenario: &Scenario, step: usize) -> Result<bool, String> {
     };
 
     let mut keys = BTreeSet::new();
+
     while (keys.len() as u64) < count {
         let page = scenario
             .handle()
@@ -107,6 +108,7 @@ async fn check_map(scenario: &Scenario, step: usize) -> Result<bool, String> {
                 },
             )
             .await;
+
         let page = match page {
             Ok(page) => page,
             // A refusal says the map cannot be listed as it is now.
@@ -121,6 +123,7 @@ async fn check_map(scenario: &Scenario, step: usize) -> Result<bool, String> {
         };
 
         let listed = keys.len();
+
         for child in page.children.iter() {
             let ValueChildRelationship::Entry { key, .. } = &child.relationship else {
                 continue;
@@ -147,6 +150,7 @@ async fn check_map(scenario: &Scenario, step: usize) -> Result<bool, String> {
 async fn a_map_is_shown_only_as_it_is_while_a_table_splits() {
     let mut scenario = checked("growing-go");
     let install = scenario.add_breakpoint(INSTALL).await;
+
     let reason = scenario.run_to_stop().await;
     assert!(
         matches!(reason, StopReason::Breakpoint { .. }),
@@ -155,6 +159,7 @@ async fn a_map_is_shown_only_as_it_is_while_a_table_splits() {
     scenario.remove_breakpoint(install.id).await;
     let mut steps = 0;
     let mut refused = 0;
+
     loop {
         match check_map(&scenario, steps).await {
             Ok(listed) => refused += usize::from(!listed),
@@ -164,6 +169,7 @@ async fn a_map_is_shown_only_as_it_is_while_a_table_splits() {
         let reason = scenario.step_to_stop(StepKind::OverInstruction).await;
         assert!(matches!(reason, StopReason::Step { .. }), "{reason:?}");
         steps += 1;
+
         let trace = scenario
             .operation("backtrace", scenario.handle().backtrace())
             .await;

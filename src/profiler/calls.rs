@@ -184,6 +184,7 @@ fn stack_check(file: &object::File<'_>, table: &GoTable, entry: u64) -> Option<I
             instruction.mnemonic() == Mnemonic::Call
                 && table.grows_stacks(instruction.near_branch_target())
         });
+
         let returns_to_entry = block.iter().any(|instruction| {
             instruction.flow_control() == FlowControl::UnconditionalBranch
                 && instruction.near_branch_target() == entry

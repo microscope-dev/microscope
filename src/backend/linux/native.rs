@@ -283,6 +283,7 @@ pub(super) trait LinuxTraceOps: InspectionOps {
                 owners: BTreeSet::from([owner]),
             },
         );
+
         Ok(())
     }
 
@@ -479,6 +480,7 @@ impl LinuxTraceOps for LinuxPtrace {
             .thread
             .as_ref()
             .map(|thread| thread.handle.thread().clone());
+
         Ok(waiter)
     }
 
@@ -545,6 +547,7 @@ impl LinuxTraceOps for LinuxPtrace {
             .map_err(|error| backend_error(LinuxError::System(error)))?;
         let result = signal::kill(pid, signal);
         self.wake_waiter();
+
         match result {
             Ok(()) | Err(Errno::ESRCH) => Ok(()),
             Err(error) => Err(backend_error(LinuxError::System(error))),
@@ -619,6 +622,7 @@ impl LinuxTraceOps for LinuxPtrace {
         let mut mappings = process_mappings_in(&read_maps(pid)?)?;
         in_process_root(pid, &mut mappings.files);
         in_process_root(pid, &mut mappings.headers);
+
         Ok(mappings)
     }
 
@@ -659,6 +663,7 @@ impl LinuxTraceOps for LinuxPtrace {
 
         trace_child(&mut command);
         let child = command.spawn()?;
+
         Ok(Pid::from_raw(
             i32::try_from(child.id()).map_err(|_| Error::AddressOverflow)?,
         ))
@@ -683,6 +688,7 @@ impl LinuxTraceOps for LinuxPtrace {
         self.assert_owner_thread();
         let result = ptrace_with_signal(ptrace::Request::PTRACE_CONT, pid, Some(Signal::SIGKILL));
         self.wake_waiter();
+
         match result {
             Ok(()) | Err(Errno::ESRCH) => Ok(()),
             Err(error) => Err(backend_error(LinuxError::System(error))),
@@ -882,6 +888,7 @@ fn spawn_waiter(messages: mpsc::Sender<ControllerMessage>) -> Result<Waiter> {
         .name(WAITER_THREAD_NAME.into())
         .spawn(move || {
             let mut interval = WAITER_MIN_POLL;
+
             while !thread_stop.load(Ordering::Acquire) {
                 let status = match wait_for(Pid::from_raw(-1), libc::__WALL | libc::WNOHANG) {
                     Ok(Some(status)) => status,
@@ -913,6 +920,7 @@ fn spawn_waiter(messages: mpsc::Sender<ControllerMessage>) -> Result<Waiter> {
 
             record!("exited");
         })?;
+
     Ok(Waiter {
         thread: Some(WaiterThread { stop, handle }),
     })
@@ -968,6 +976,7 @@ pub(super) fn process_held(process: Pid, start_time: u64) -> Result<bool> {
     if !same {
         return Ok(false);
     }
+
     held_in_status(&status, &stat).ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -1010,6 +1019,7 @@ pub(super) fn held_in_status(status: &[u8], stat: &[u8]) -> Option<bool> {
     let stopped = super::proc_status::stat_state(stat)? == b'T';
     let thread = queued_in_status(status, Signal::SIGSTOP, SignalQueue::Thread)?;
     let process = queued_in_status(status, Signal::SIGSTOP, SignalQueue::Process)?;
+
     Some(tracer == 0 && (thread || process || stopped))
 }
 
@@ -1213,6 +1223,7 @@ pub(super) fn trace_options(exit_kill: bool) -> Options {
         | Options::PTRACE_O_TRACEEXEC
         | Options::PTRACE_O_TRACEEXIT
         | Options::PTRACE_O_TRACESYSGOOD;
+
     if exit_kill {
         common | Options::PTRACE_O_EXITKILL
     } else {
@@ -1228,6 +1239,7 @@ fn in_process_root(pid: Pid, files: &mut [ModuleMapping]) {
     use std::os::unix::fs::MetadataExt as _;
     for mapping in files {
         let same = |path: &Path| fs::metadata(path).is_ok_and(|meta| meta.ino() == mapping.inode);
+
         if mapping.deleted || same(&mapping.path) {
             continue;
         }
@@ -1240,6 +1252,7 @@ fn in_process_root(pid: Pid, files: &mut [ModuleMapping]) {
             .join(pid.as_raw().to_string())
             .join("root")
             .join(relative);
+
         if same(&rooted) {
             mapping.path = rooted;
         }

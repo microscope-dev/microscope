@@ -76,8 +76,10 @@ impl DwarfVariableInfo {
                 state_size,
             )
             .ok()?;
+
         let value = u64::try_from(unsigned_value(&raw, self.target.byte_order).ok()?).ok()?;
         let state = coroutine.states.iter().find(|state| state.value == value)?;
+
         matches!(state.kind, CoroutineStateKind::Suspended { .. }).then_some(Resumption {
             object,
             size,
@@ -164,6 +166,7 @@ pub(in crate::debug_info) fn held_ranges(
             held
         })
         .collect::<Vec<_>>();
+
     held.into_iter().flatten().collect()
 }
 

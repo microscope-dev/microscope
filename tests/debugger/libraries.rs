@@ -65,10 +65,12 @@ async fn breakpoints_in_a_library_the_program_links_resolve_before_it_runs() {
                 .add_breakpoint(BreakpointSpec::Function("dso_absent".to_owned())),
         )
         .await;
+
     assert!(matches!(
         refused,
         Err(microscope::Error::FunctionNotFound(_))
     ));
+
     let pending = scenario
         .operation(
             "add imported breakpoint",
@@ -77,10 +79,12 @@ async fn breakpoints_in_a_library_the_program_links_resolve_before_it_runs() {
                 .add_breakpoint(BreakpointSpec::Function("dso_apply".to_owned())),
         )
         .await;
+
     assert!(
         pending.locations.is_empty(),
         "nothing defines it before launch"
     );
+
     let reason = scenario.run_to_stop().await;
     let StopReason::Breakpoint { hits, .. } = &reason else {
         panic!("stopped for {reason:?}");
@@ -92,6 +96,7 @@ async fn breakpoints_in_a_library_the_program_links_resolve_before_it_runs() {
     let trace = scenario
         .operation("backtrace", scenario.handle().backtrace())
         .await;
+
     assert_eq!(
         trace.frames[0]
             .function
@@ -99,6 +104,7 @@ async fn breakpoints_in_a_library_the_program_links_resolve_before_it_runs() {
             .map(|function| &*function.name),
         Some("dso_apply")
     );
+
     scenario.shutdown().await;
 }
 
@@ -119,9 +125,11 @@ async fn stepping_out_of_a_library_frame_unwinds_through_the_library() {
             kind: StepKind::Out
         }
     );
+
     let location = scenario
         .operation("caller", scenario.handle().current_location())
         .await;
+
     assert_eq!(location_function(&location), Some("main"));
     assert_eq!(location_line(&location), Some(33));
     scenario.shutdown().await;
@@ -151,6 +159,7 @@ async fn breakpoints_follow_a_library_through_dlopen_and_dlclose() {
             .expect("hit breakpoint")
             .spec
             .to_string();
+
         assert_eq!(stopped, expected, "round {round}");
         let touch_now = breakpoint(&mut scenario, touch.id).await;
         let expected_locations = usize::from(expected == "dso_touch");
@@ -164,10 +173,12 @@ async fn breakpoints_follow_a_library_through_dlopen_and_dlclose() {
     let changes = std::iter::from_fn(|| events.try_recv().ok())
         .filter(|event| matches!(event, DebuggerEvent::BreakpointsChanged { .. }))
         .count();
+
     assert!(
         changes >= 3,
         "loads and unloads change the breakpoint: {changes}"
     );
+
     assert_eq!(
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
@@ -180,6 +191,7 @@ async fn breakpoints_follow_a_library_through_dlopen_and_dlclose() {
             .locations
             .is_empty()
     );
+
     scenario.shutdown().await;
 }
 
@@ -188,6 +200,7 @@ async fn source_breakpoints_resolve_in_library_source_once_it_loads() {
     let mut scenario = Scenario::launch("globals-shared");
     let path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/c/shared/library.c");
+
     let line = source_line("tests/fixtures/c/shared/library.c", "return *dso_pointer");
     let breakpoint = scenario
         .operation(
@@ -204,14 +217,17 @@ async fn source_breakpoints_resolve_in_library_source_once_it_loads() {
             ),
         )
         .await;
+
     assert!(breakpoint.locations.is_empty());
     assert!(matches!(
         scenario.run_to_stop().await,
         StopReason::Breakpoint { hits, .. } if hits[0].breakpoint == breakpoint.id
     ));
+
     let location = scenario
         .operation("location", scenario.handle().current_location())
         .await;
+
     assert_eq!(location_line(&location), Some(line));
     scenario.shutdown().await;
 }
@@ -226,6 +242,7 @@ async fn functions_without_debug_information_break_at_their_symbol() {
             ..LaunchOptions::default()
         })
         .await;
+
     let StopReason::Breakpoint { hits, .. } = &reason else {
         panic!("stopped for {reason:?}");
     };
@@ -235,9 +252,11 @@ async fn functions_without_debug_information_break_at_their_symbol() {
         library_locations(&breakpoint(&mut scenario, puts.id).await),
         1
     );
+
     let trace = scenario
         .operation("backtrace", scenario.handle().backtrace())
         .await;
+
     let symbol = trace.frames[0].symbol.as_ref().expect("a symbol frame");
 
     // libc's `_IO_puts` names the same entry.
@@ -245,6 +264,7 @@ async fn functions_without_debug_information_break_at_their_symbol() {
         symbol.name.ends_with("puts") && symbol.offset == 0,
         "{symbol:?}"
     );
+
     assert_eq!(
         trace.frames[1]
             .function
@@ -252,6 +272,7 @@ async fn functions_without_debug_information_break_at_their_symbol() {
             .map(|function| &*function.name),
         Some("reexecuted")
     );
+
     scenario.shutdown().await;
 }
 
@@ -361,6 +382,7 @@ async fn indirect_functions_added_later_break_where_their_resolver_chose() {
                 .add_breakpoint(BreakpointSpec::Function("strlen".to_owned())),
         )
         .await;
+
     assert_eq!(strlen.locations.len(), 1, "{strlen:?}");
     stop_in_strlen(&mut scenario, strlen.id).await;
     scenario.shutdown().await;
@@ -381,9 +403,11 @@ async fn function_breakpoints_resolve_in_the_vdso() {
             ..LaunchOptions::default()
         })
         .await;
+
     let modules = scenario
         .operation("modules", scenario.handle().loaded_modules())
         .await;
+
     let vdso = support::vdso_module(&modules).module.id;
     let libc = modules
         .modules
@@ -397,6 +421,7 @@ async fn function_breakpoints_resolve_in_the_vdso() {
         .expect("libc is loaded")
         .module
         .id;
+
     let libraries = |breakpoint: &Breakpoint| {
         breakpoint
             .locations
@@ -422,27 +447,32 @@ async fn function_breakpoints_resolve_in_the_vdso() {
         (clock.id, libc, "vdso_clock"),
         (clock.id, vdso, "vdso_clock"),
     ];
+
     let mut reason = reason;
     for (index, (id, module, caller)) in expected.into_iter().enumerate() {
         assert!(
             matches!(&reason, StopReason::Breakpoint { hits, .. } if hits[0].breakpoint == id),
             "stop {index}: {reason:?}"
         );
+
         let trace = scenario
             .operation("backtrace", scenario.handle().backtrace())
             .await;
+
         let frames = frame_modules(&trace, &modules);
         assert_eq!(
             trace.frames[0].module,
             Some(module),
             "stop {index}: {frames:#?}"
         );
+
         let symbol = trace.frames[0].symbol.as_ref().expect("a symbol");
         assert_eq!(symbol.offset, 0, "stop {index}: {symbol:?}");
         assert!(
             position_of(&frames, FIXTURE, caller) <= 2,
             "stop {index}: {frames:#?}"
         );
+
         reason = scenario.resume_to_stop().await;
     }
 
@@ -468,6 +498,7 @@ async fn breakpoints_and_the_vdso_module_follow_the_vdso_as_it_moves_and_goes() 
             ..LaunchOptions::default()
         })
         .await;
+
     let InferiorState::Stopped { process_id, .. } = scenario.snapshot().await.inferior else {
         panic!("the program is stopped");
     };
@@ -490,6 +521,7 @@ async fn breakpoints_and_the_vdso_module_follow_the_vdso_as_it_moves_and_goes() 
         library_addresses(&breakpoint(&mut scenario, getcpu.id).await),
         [first + offset]
     );
+
     let code = read_byte(&scenario, first + offset).await;
     assert_ne!(code, 0xcc);
 
@@ -502,14 +534,17 @@ async fn breakpoints_and_the_vdso_module_follow_the_vdso_as_it_moves_and_goes() 
         scenario.resume_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     let modules = scenario
         .operation("modules", scenario.handle().loaded_modules())
         .await;
+
     let moved = support::vdso_mapping(process_id).start;
     assert_eq!(support::vdso_module(&modules).module.load_bias.get(), moved);
     let target = scenario
         .operation("address", scenario.handle().variable("address"))
         .await;
+
     assert!(
         matches!(
             available_value(&target.state),
@@ -526,6 +561,7 @@ async fn breakpoints_and_the_vdso_module_follow_the_vdso_as_it_moves_and_goes() 
         library_addresses(&breakpoint(&mut scenario, getcpu.id).await),
         [moved + offset]
     );
+
     assert!(library_addresses(&breakpoint(&mut scenario, address.id).await).is_empty());
     assert_eq!(read_byte(&scenario, moved + offset).await, code);
 
@@ -540,9 +576,11 @@ async fn breakpoints_and_the_vdso_module_follow_the_vdso_as_it_moves_and_goes() 
         scenario.resume_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     let modules = scenario
         .operation("modules", scenario.handle().loaded_modules())
         .await;
+
     assert!(
         modules
             .modules
@@ -550,6 +588,7 @@ async fn breakpoints_and_the_vdso_module_follow_the_vdso_as_it_moves_and_goes() 
             .all(|record| record.path.as_os_str() != support::VDSO),
         "{modules:#?}"
     );
+
     assert_eq!(vdso_events(), [(false, moved)]);
     for id in [getcpu.id, address.id] {
         assert!(library_addresses(&breakpoint(&mut scenario, id).await).is_empty());
@@ -560,6 +599,7 @@ async fn breakpoints_and_the_vdso_module_follow_the_vdso_as_it_moves_and_goes() 
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     );
+
     scenario.shutdown().await;
 }
 
@@ -586,6 +626,7 @@ async fn function_breakpoints_follow_library_code_as_it_moves() {
     let modules = scenario
         .operation("modules", scenario.handle().loaded_modules())
         .await;
+
     let first = library(&modules);
     let offset = support::breakpoint_address(&reason).get() - first;
     let code = read_byte(&scenario, first + offset).await;
@@ -595,6 +636,7 @@ async fn function_breakpoints_follow_library_code_as_it_moves() {
     let modules = scenario
         .operation("modules", scenario.handle().loaded_modules())
         .await;
+
     let moved = library(&modules);
     assert_ne!(moved, first);
     assert_eq!(support::breakpoint_address(&reason).get(), moved + offset);
@@ -603,6 +645,7 @@ async fn function_breakpoints_follow_library_code_as_it_moves() {
         library_addresses(&breakpoint(&mut scenario, answer.id).await),
         [moved + offset]
     );
+
     assert_eq!(read_byte(&scenario, moved + offset).await, code);
 
     scenario.remove_all_breakpoints().await;
@@ -610,6 +653,7 @@ async fn function_breakpoints_follow_library_code_as_it_moves() {
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     );
+
     scenario.shutdown().await;
 }
 
@@ -627,28 +671,33 @@ async fn a_breakpoint_whose_memory_is_replaced_loses_its_location() {
             ..LaunchOptions::default()
         })
         .await;
+
     let site = support::breakpoint_address(&reason);
     let address = scenario
         .add_breakpoint_spec(BreakpointSpec::Address(site))
         .await;
+
     scenario.remove_breakpoint(getcpu.id).await;
 
     assert!(matches!(
         scenario.resume_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     assert!(
         breakpoint(&mut scenario, address.id)
             .await
             .locations
             .is_empty()
     );
+
     assert_eq!(read_byte(&scenario, site.get()).await, 0x90);
     scenario.remove_all_breakpoints().await;
     assert_eq!(
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     );
+
     scenario.shutdown().await;
 }
 

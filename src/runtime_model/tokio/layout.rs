@@ -119,6 +119,7 @@ impl Locals {
         };
 
         let tls = tls?;
+
         let storage = records::named(
             image,
             "std::sys::thread_local::native::eager::Storage<tokio::task::local::LocalData>",
@@ -188,6 +189,7 @@ impl Spawns {
         let name = records::field(image, location, &["filename", "pointer"])
             .or_else(|_| records::field(image, location, &["file"]))?;
         records::slice_element(image, name.ty)?;
+
         Ok(Self {
             offset,
             file: name.offset,
@@ -375,6 +377,7 @@ impl Context {
         let task_some = task_option.variant("Some")?.payload;
         let id = records::field(image, task_some.ty, &["__0", "__0"])?;
         pointer_sized(image, id.ty, "task::Id")?;
+
         Ok(Self {
             tls,
             state: state.offset,
@@ -465,6 +468,7 @@ impl Tasks {
         let vtable_field = |name: &str| records::sized(image, vtable, &[name], 8);
         let link =
             |name: &str| records::sized(image, trailer, &["owned", "inner", "value", name], 8);
+
         Ok(Self {
             state: header_field(&["state"])?,
             vtable: header_field(&["vtable"])?,
@@ -514,6 +518,7 @@ impl Pool {
         let spawner = records::named(image, "tokio::runtime::blocking::pool::Spawner")?;
         let arc = records::field(image, spawner, &["inner", "ptr", "pointer"])?;
         let arc = records::target(image, arc.ty)?;
+
         Ok(Self {
             lock,
             head: sized(&["head"])?,

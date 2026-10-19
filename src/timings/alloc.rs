@@ -161,6 +161,7 @@ pub fn stop_totals() {
 #[must_use]
 pub fn totals() -> Totals {
     let mut totals = Totals::default();
+
     for slot in &COUNTS {
         totals.allocated.blocks += slot.blocks.load(Ordering::Relaxed);
         totals.allocated.bytes += slot.bytes.load(Ordering::Relaxed);
@@ -178,6 +179,7 @@ pub fn totals() -> Totals {
 #[must_use]
 pub fn thread_counts() -> Option<(Allocated, i64)> {
     let slot = THREAD.try_with(|counts| counts.get().slot).ok()?;
+
     match slot {
         0 => Some((Allocated::default(), 0)),
         SLOTS.. => None,
@@ -200,6 +202,7 @@ pub fn reset_peak() {
         .iter()
         .map(|slot| slot.live.load(Ordering::Relaxed))
         .sum();
+
     REPORTED.store(live, Ordering::Relaxed);
     PEAK.store(live, Ordering::Relaxed);
 }
@@ -221,6 +224,7 @@ fn count(bytes: i64, new_block: bool) {
         }
 
         let slot = &COUNTS[counts.slot - 1];
+
         if counts.slot < SLOTS {
             // Only this thread writes its slot.
             slot.blocks

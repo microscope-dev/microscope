@@ -66,6 +66,7 @@ async fn watchpoint(scenario: &mut Scenario, id: WatchpointId) -> Watchpoint {
 /// Waits until a running program has hit watchpoint `id` `count` times.
 async fn wait_for_hits(scenario: &Scenario, id: WatchpointId, count: u64) {
     let deadline = Instant::now() + Duration::from_secs(5);
+
     loop {
         let snapshot = scenario
             .operation("snapshot", scenario.handle().snapshot())
@@ -196,6 +197,7 @@ async fn conditions_and_hit_conditions_choose_which_hits_stop() {
         let mut expected = Vec::new();
         let (mut last_call, mut total) = (0, 0);
         let (mut call_hits, mut total_hits) = (0, 0);
+
         for call in 1..=40 {
             call_hits += 1;
             if call % 10 == 0 {
@@ -224,6 +226,7 @@ async fn conditions_and_hit_conditions_choose_which_hits_stop() {
         }
 
         let mut stops = Vec::new();
+
         loop {
             let reason = scenario.resume_to_stop().await;
             if reason == StopReason::Exited(ExitStatus::Code(0)) {
@@ -379,6 +382,7 @@ async fn concurrent_hits_are_each_counted_once_and_judged_in_their_thread() {
     // Workers that hit while every thread stopped report in their own
     // thread's reason.
     let mut stopped = Vec::new();
+
     let reason = loop {
         let reason = scenario.resume_to_stop().await;
         if !matches!(reason, StopReason::Watchpoint { .. }) {

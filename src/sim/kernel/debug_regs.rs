@@ -27,6 +27,7 @@ const DR7_RESERVED: u64 = 0xfc00;
 
 /// The first address no user hardware breakpoint may cover.
 const USER_LIMIT: u64 = 0x7fff_ffff_f000;
+
 const SLOTS: usize = 4;
 
 /// What a slot's accesses are.
@@ -55,6 +56,7 @@ impl Breakpoint {
             .checked_add(self.length)
             .is_some_and(|end| end <= USER_LIMIT);
         let shape = self.kind != Kind::Execute || self.length == 1;
+
         if aligned && user && shape {
             Ok(self)
         } else {
@@ -170,6 +172,7 @@ impl DebugRegisters {
     /// Writes DR7, or leaves every slot as it was if one refuses.
     fn write_dr7(&mut self, dr7: u64, others: usize) -> Result<(), Errno> {
         let before = self.slots;
+
         for index in 0..SLOTS {
             let applied =
                 decode(dr7, index).and_then(|(enabled, length, kind)| match self.slots[index] {
@@ -192,6 +195,7 @@ impl DebugRegisters {
                     .validate()
                     .map(Some),
                 });
+
             match applied {
                 Ok(slot) => self.slots[index] = slot,
                 Err(errno) => {

@@ -62,6 +62,7 @@ async fn assign(
             }
         }
     };
+
     session.scenario.attempt(text, request).await
 }
 
@@ -73,6 +74,7 @@ async fn assigned(session: &mut PythonSession, text: &str, function: &str) -> St
     let evaluation = assign(session, None, text)
         .await
         .unwrap_or_else(|error| panic!("{context}: `{text}` failed: {error}"));
+
     let snapshot = session.scenario.snapshot().await;
     let InferiorState::Stopped {
         stop_id, reason, ..
@@ -84,6 +86,7 @@ async fn assigned(session: &mut PythonSession, text: &str, function: &str) -> St
         matches!(reason, StopReason::Assignment) && *stop_id != before,
         "{context}: `{text}` is published under a new stop: {reason:?}"
     );
+
     let trace = session
         .scenario
         .operation("backtrace", session.scenario.handle().backtrace())
@@ -130,10 +133,12 @@ async fn refused(
 ) {
     let name = session.context();
     let before = stop_id(session).await;
+
     match assign(session, context, text).await {
         Err(Error::Expression(error)) if error.kind == kind && error.message.contains(reason) => {}
         other => panic!("{name}: `{text}` is not refused for {reason:?}: {other:?}"),
     }
+
     assert_eq!(
         stop_id(session).await,
         before,
@@ -151,12 +156,14 @@ async fn other_threads_frame(session: &mut PythonSession, function: &str) -> Sto
     else {
         panic!("{context}: not stopped");
     };
+
     let waiter = snapshot
         .threads
         .iter()
         .map(|thread| thread.id)
         .find(|&thread| thread != thread_id)
         .unwrap_or_else(|| panic!("{context}: no second thread"));
+
     let trace = session
         .scenario
         .operation(
@@ -172,6 +179,7 @@ async fn other_threads_frame(session: &mut PythonSession, function: &str) -> Sto
                 .backtrace(),
         )
         .await;
+
     let wait = trace
         .frames
         .iter()
@@ -182,6 +190,7 @@ async fn other_threads_frame(session: &mut PythonSession, function: &str) -> Sto
                 .is_some_and(|recorded| &*recorded.function == function)
         })
         .unwrap_or_else(|| panic!("{context}: no frame of {function}: {trace:#?}"));
+
     StopContext {
         stop: stop_id,
         execution: waiter.into(),
@@ -203,6 +212,7 @@ async fn launch(interpreter: &str) -> PythonSession {
         session.context(),
         session.output()
     );
+
     session
 }
 
@@ -210,6 +220,7 @@ async fn each_value_reaches_the_program(interpreter: &str) {
     let mut session = launch(interpreter).await;
     let context = session.context();
     let alone = |text| (text, "alone");
+
     for ((text, function), shown) in [
         (alone("count = 41"), "41"),
         (alone("count += 1"), "42"),
@@ -222,6 +233,7 @@ async fn each_value_reaches_the_program(interpreter: &str) {
         let summary = assigned(&mut session, text, function).await;
         assert_eq!(summary, shown, "{context}: `{text}`");
     }
+
     let kind = ExpressionErrorKind::Assignment;
     refused(&mut session, None, "LIMIT = 5", kind, "only a variable").await;
     refused(&mut session, None, "name = \"\\xff\"", kind, "UTF-8").await;
@@ -239,6 +251,7 @@ async fn each_value_reaches_the_program(interpreter: &str) {
         matches!(reason, StopReason::Breakpoint { address: None, .. }),
         "{context}: {reason:?}"
     );
+
     let output = session.output();
     assert!(
         output.contains("COUNT 42 RATIO 2.25 NAME after FLAG True HELD True GONE None LIMIT 3"),
@@ -263,6 +276,7 @@ async fn each_value_reaches_the_program(interpreter: &str) {
         matches!(reason, StopReason::Exited(_)),
         "{context}: {reason:?}"
     );
+
     let output = session.output();
     assert!(
         output.contains("BESIDE COUNT 1") && output.contains("ASSIGNMENTS DONE"),
@@ -294,6 +308,7 @@ async fn a_free_threaded_interpreter_refuses_assignments() {
         "free-threaded",
     )
     .await;
+
     let reason = session.scenario.resume_to_stop().await;
     assert!(
         matches!(reason, StopReason::Breakpoint { address: None, .. }),
@@ -322,6 +337,7 @@ async fn an_interpreter_before_3_14_refuses_assignments() {
             "CPython 3.14 or later",
         )
         .await;
+
         let reason = session.scenario.resume_to_stop().await;
         assert!(
             matches!(reason, StopReason::Breakpoint { address: None, .. }),

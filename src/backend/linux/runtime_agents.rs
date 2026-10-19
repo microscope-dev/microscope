@@ -1,14 +1,18 @@
 //! Controller-owned agent files, outstanding requests and acknowledgements.
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const ACK_TIMEOUT: Duration = Duration::from_secs(5);
+
 const NOT_BOOTSTRAPPED: &str = "Python breakpoints on CPython 3.12 and 3.13 need microscope to \
      launch the interpreter, whose launch bootstrap takes the agent; an interpreter it attached \
      to or did not launch has none";
+
 const BOOTSTRAP_TIMED_OUT: &str = "the Python launch bootstrap did not take the agent's request; \
      it runs only where the interpreter imports sitecustomize from PYTHONPATH, which -I, -E, and \
      -S prevent";
+
 const TIMED_OUT: &str =
     "runtime agent acknowledgement timed out; configuration remains unconfirmed";
 
@@ -36,14 +40,17 @@ pub(super) struct Installation {
     expired: bool,
     request_thread: Option<crate::ThreadId>,
     remaining: Duration,
+
     /// The script path of the outstanding request the launch bootstrap
     /// takes, which no thread of the program's runs.
     bootstrap: Option<String>,
+
     /// Whether any thread has run since the outstanding request was
     /// published. A command no thread has run since is unread, and a newer
     /// one can replace it, as a step begun at the stop that ended the last
     /// replaces that stop's disarming.
     exposed: bool,
+
     /// The sites of the configuration the agent last acknowledged. While a
     /// newer one is outstanding, the agent holds one or the other, so a site
     /// both name stays armed.
@@ -97,6 +104,7 @@ impl Installation {
             confirmed: std::collections::BTreeSet::new(),
         }
     }
+
     pub(super) const fn deadline(&self) -> Option<Instant> {
         self.deadline
     }
@@ -130,6 +138,7 @@ impl Installation {
             && matches!(self.state, State::Awaiting { source: false, .. })
             && wanted.step.as_ref().is_some_and(|step| step.returning)
             && self.sent.as_ref().and_then(|sent| sent.step.as_ref()) != wanted.step.as_ref();
+
         match &self.state {
             State::Awaiting { .. } if (!self.replaceable() && !back) || sent => {
                 Some(Err(if self.expired && self.bootstrap.is_some() {
@@ -153,10 +162,12 @@ impl Installation {
             .sent
             .as_ref()
             .is_some_and(|sent| !sent.breakpoints.is_empty() || sent.step.is_some());
+
         // An unread command was published only to an active agent, which
         // still holds the configuration before it.
         (matches!(self.state, State::Ready) && active) || self.replaceable()
     }
+
     const fn ready(&self) -> bool {
         matches!(self.state, State::Ready) && self.library.is_some()
     }
@@ -205,6 +216,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(());
         };
         let mut expired = None;
+
         for (&runtime, installation) in &mut inferior.agents {
             if installation
                 .deadline
@@ -221,13 +233,16 @@ impl<P: LinuxTraceOps> Controller<P> {
                 expired = Some(reason);
             }
         }
+
         let Some(reason) = expired else {
             return Ok(());
         };
         let Some(thread) = inferior.threads.keys().next().copied() else {
             return Ok(());
         };
+
         self.publish_breakpoints_changed();
+
         // Use the ordinary stop barrier: no thread is declared stopped until
         // its actual wait status arrives.
         self.raise_barrier(
@@ -248,6 +263,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .map(|inferior| self.runtimes(inferior))
             .unwrap_or_default();
         let mut problems = Vec::new();
+
         for bound in runtimes {
             let Some(mut installation) = self
                 .inferior
@@ -256,10 +272,12 @@ impl<P: LinuxTraceOps> Controller<P> {
             else {
                 continue;
             };
+
             let outcome = (|| {
                 if installation.ticket.is_some() {
                     self.withdraw_bootstrap(&mut installation, AgentRetirementProof::Cancel)?;
                 }
+
                 if let Some(ticket) = installation.ticket.as_ref() {
                     let inferior = self.inferior.as_ref().ok_or("the process is gone")?;
                     let retirement = self.with_runtime_stop(
@@ -273,6 +291,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                             "preserving Python agent files: source consumption is unconfirmed at detach",
                         ));
                     };
+
                     self.write_for_runtime(&writes)?;
                     installation
                         .files
@@ -297,12 +316,14 @@ impl<P: LinuxTraceOps> Controller<P> {
                             agent.control_symbol(),
                         )
                         .ok_or("the owned agent control symbol is unavailable at detach")?;
+
                     let arming = Arming {
                         breakpoints: &[],
                         step: None,
                         assignment: None,
                         exceptions: crate::ExceptionStops::default(),
                     };
+
                     let writes = self.with_runtime_stop(
                         inferior,
                         &bound,
@@ -319,14 +340,17 @@ impl<P: LinuxTraceOps> Controller<P> {
                     )?;
                     self.write_for_runtime(&writes)?;
                 }
+
                 if let Some(files) = installation.files.as_mut() {
                     files.close()?;
                 }
                 Ok(())
             })();
+
             if let Err(reason) = outcome {
                 problems.push(reason.to_string());
             }
+
             if let Some(inferior) = self.inferior.as_mut() {
                 inferior.agents.insert(bound.id, installation);
             }
@@ -345,6 +369,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let Some(inferior) = self.inferior.as_ref() else {
             return Ok(());
         };
+
         if let crate::ResumeScope::Thread(thread) = scope
             && inferior.agents.values().any(|installation| {
                 matches!(installation.state, State::Awaiting { source: true, .. })
@@ -358,6 +383,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 "the outstanding source request belongs to a different interpreter thread".into(),
             ));
         }
+
         for bound in self.runtimes(inferior) {
             // A waiting or refused agent is idle: the target's agent clears
             // its monitoring on every failure.
@@ -375,6 +401,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 return Err(crate::Error::RuntimeResumeUnsupported("free-threaded monitoring requires a process-wide resume for cooperation from every interpreter thread".into()));
             }
         }
+
         Ok(())
     }
 
@@ -396,9 +423,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         if previous.is_none() && !asked {
             return Ok(());
         }
+
         let mut installation = previous.unwrap_or_else(Installation::new);
         let wanted = Desired::from(arming);
         let replaceable = installation.replaceable();
+
         let result = match installation.settled(&wanted) {
             Some(settled) => settled,
             None => match self.configure_agent(bound, arming, &mut installation) {
@@ -437,8 +466,10 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
             inferior.agents.insert(bound.id, installation);
         }
+
         self.sync_runtime_hooks()
             .map_err(|error| Arc::<str>::from(error.to_string()))?;
+
         result
     }
 
@@ -461,6 +492,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let next = generation
             .checked_add(1)
             .ok_or("runtime agent generations are exhausted")?;
+
         // A step back binds on a thread in native code, where no monitoring
         // callback may come to read a command: a source request runs there
         // as the thread returns to the interpreter.
@@ -470,12 +502,14 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .as_ref()
                 .and_then(|sent| sent.step.as_ref())
                 != arming.step;
+
         // An assignment is sent only where the agent stopped a thread,
         // which reads a command as its hook returns; a script would run
         // where the thread next enters the interpreter, after its code.
         if arming.assignment.is_some() && !installation.commands() && !installation.ready() {
             return Err("the runtime's agent takes an assignment only as a command".into());
         }
+
         if (installation.commands() || arming.assignment.is_some()) && !returning {
             let library = installation
                 .library
@@ -490,14 +524,17 @@ impl<P: LinuxTraceOps> Controller<P> {
                 })?;
             return self.publish_agent_command(bound, installation, generation, next, &writes);
         }
+
         let preferred = inferior
             .public_stop
             .as_ref()
             .and_then(|stop| stop.selected_thread)
             .map(debug_thread_id);
+
         let thread = self.with_runtime_stop(inferior, bound, inferior.memory_thread(), |stop| {
             agent.eligible_thread(stop, preferred, arming)
         })?;
+
         let mut identities = self
             .ptrace
             .target_thread_ids(inferior.tgid, &[inferior.tgid])
@@ -512,20 +549,24 @@ impl<P: LinuxTraceOps> Controller<P> {
         let process =
             TargetProcessId::new(target.get()).ok_or("the target process id is invalid")?;
         let reader = debug_pid(thread).map_err(|error| Arc::<str>::from(error.to_string()))?;
+
         if let Some(files) = installation.files.as_mut() {
             files.anchor(reader)?;
         } else {
             installation.files = Some(self.ptrace.agent_files(reader, &agent.library())?);
         }
+
         let files = installation
             .files
             .as_mut()
             .ok_or("the agent files are missing")?;
         let library = files.library()?.to_owned();
+
         let source = self.with_runtime_stop(inferior, bound, inferior.memory_thread(), |stop| {
             agent.script(stop, &library, generation, process, arming)
         })?;
         let path = files.script(generation, &source)?;
+
         let prepared = self.with_runtime_stop(inferior, bound, inferior.memory_thread(), |stop| {
             agent.inject(stop, &path, thread, arming)
         });
@@ -536,6 +577,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 return Err(reason);
             }
         };
+
         if prepared.bootstrapped {
             let requested = match inferior.python_launch.as_ref() {
                 Some(Ok(launch)) => launch.request(&path),
@@ -548,6 +590,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
             installation.bootstrap = Some(path);
         }
+
         installation.library = Some(library.into());
         installation.request_thread = Some(thread);
         installation.ticket = Some(prepared.ticket);
@@ -558,6 +601,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             source: true,
         };
         installation.exposed = false;
+
         if let Err(reason) = self.write_for_runtime(&prepared.writes) {
             // No thread has resumed since preparation. Revalidate even a
             // partially written slot before retiring the unpublished source.
@@ -582,6 +626,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             installation.sequence = 0;
             return Err(reason.into());
         }
+
         Ok(())
     }
 
@@ -599,6 +644,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let result = self.write_for_runtime(writes);
         installation.next = next;
         installation.request_thread = None;
+
         if let Err(reason) = &result {
             let inferior = self.inferior.as_ref().ok_or("the process is gone")?;
             let mut held = vec![0; publication.expected.len()];
@@ -606,12 +652,14 @@ impl<P: LinuxTraceOps> Controller<P> {
                 self.with_runtime_stop(inferior, bound, inferior.memory_thread(), |stop| {
                     stop.read(publication.address, &mut held)
                 });
+
             if readable && held == publication.expected {
                 // Payload or length may have changed, but this command was
                 // not published: the agent reads neither until the sequence
                 // changes, and keeps its acknowledged configuration.
                 return Err(Arc::clone(reason).into());
             }
+
             if readable && held == publication.bytes {
                 installation.sequence = generation;
             }
@@ -620,12 +668,14 @@ impl<P: LinuxTraceOps> Controller<P> {
         } else {
             installation.sequence = generation;
         }
+
         installation.generation = Some(generation);
         installation.state = State::Awaiting {
             generation,
             source: false,
         };
         installation.exposed = false;
+
         result.map_err(AgentFailure::from)
     }
 
@@ -642,13 +692,16 @@ impl<P: LinuxTraceOps> Controller<P> {
             .ticket
             .as_ref()
             .ok_or("the source ownership ticket is missing")?;
+
         let retirement =
             self.with_runtime_stop(inferior, bound, inferior.memory_thread(), |stop| {
                 ticket.retire(stop, proof)
             })?;
+
         let AgentRetirement::Retired(writes) = retirement else {
             return Err("the acknowledged source could not be retired".into());
         };
+
         self.write_for_runtime(&writes)?;
         installation
             .files
@@ -688,6 +741,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 );
             }
         }
+
         installation.bootstrap = None;
         Ok(())
     }
@@ -707,8 +761,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         if installation.generation != Some(generation) {
             return Ok(false);
         }
+
         self.begin_internal_stop()
             .map_err(|error| Arc::<str>::from(error.to_string()))?;
+
         let barrier = self
             .inferior
             .as_mut()
@@ -721,6 +777,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             generation,
             failure,
         });
+
         Ok(true)
     }
 
@@ -746,6 +803,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 barrier.reason = Some(reason);
             }
         }
+
         if self.sync_runtime_arming() {
             self.publish_breakpoints_changed();
         }
@@ -797,6 +855,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     None => error,
                 })?;
             }
+
             installation.deadline = None;
             installation.expired = false;
             installation.request_thread = None;
@@ -808,10 +867,13 @@ impl<P: LinuxTraceOps> Controller<P> {
                     .collect(),
                 Some(_) => std::collections::BTreeSet::new(),
             };
+
             installation.state =
                 failure.map_or(State::Ready, |reason| State::Refused(Arc::clone(reason)));
+
             Ok(true)
         })();
+
         if let Some(inferior) = self.inferior.as_mut() {
             inferior.agents.insert(runtime, installation);
             if matches!(result, Ok(true)) {
@@ -846,6 +908,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .as_ref()
             .filter(|(assigning, _)| *assigning == runtime)
             .map(|(_, assignment)| assignment);
+
         inferior.agents.get(&runtime).is_some_and(|installation| {
             matches!(installation.state, State::Awaiting { source: false, .. })
                 && !installation.expired
@@ -869,6 +932,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .as_ref()
             .filter(|(stepping, _)| *stepping == runtime)
             .map(|(_, step)| step);
+
         // A step back is sent by a source request, which its thread runs
         // as it returns to the interpreter; a command waits for a callback.
         inferior.agents.get(&runtime).is_some_and(|installation| {
@@ -902,6 +966,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         {
             return Vec::new();
         }
+
         let Some(agent) = bound.model.agent() else {
             return Vec::new();
         };
@@ -920,9 +985,11 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .map(|(_, assignment)| assignment),
             exceptions: self.exception_stops,
         };
+
         if !agent.wanted(&arming) {
             return Vec::new();
         }
+
         agent
             .entries()
             .iter()
@@ -946,6 +1013,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             })
             .map(|runtime| runtime.id)
             .collect::<Vec<_>>();
+
         if let Some(inferior) = self.inferior.as_mut() {
             for runtime in new {
                 inferior.managed.mark_stale(runtime);
@@ -1052,6 +1120,7 @@ mod tests {
             .push_back(super::super::ControllerMessage::Wait(
                 super::super::WaitEvent::Continued(pid),
             ));
+
         assert!(matches!(
             harness.controller.next_message(false),
             Some(super::super::ControllerMessage::AgentTimeout)
@@ -1071,6 +1140,7 @@ mod tests {
         inferior.agents.insert(RuntimeId::new(0), later);
         inferior.agents.insert(RuntimeId::new(1), awaiting());
         harness.controller.agent_timeout(now).expect("no timeout");
+
         let inferior = harness.controller.inferior.as_ref().expect("inferior");
         assert!(inferior.agents.values().all(|agent| !agent.expired));
         assert!(inferior.managed.unarmed.is_empty());
@@ -1171,6 +1241,7 @@ mod tests {
             }
         }
     }
+
     #[derive(Debug)]
     struct Ticket {
         consumed: bool,
@@ -1254,6 +1325,7 @@ mod tests {
                 .unwrap()
                 .agents
                 .insert(runtime, installation);
+
             let result = harness.controller.prepare_agents_for_detach();
             if consumed {
                 assert!(
@@ -1283,6 +1355,7 @@ mod tests {
             );
         }
     }
+
     #[derive(Debug)]
     struct UnresumedTicket {
         refuse: bool,
@@ -1444,6 +1517,7 @@ mod tests {
             assignment: None,
             exceptions: crate::ExceptionStops::default(),
         };
+
         assert!(
             harness
                 .controller
@@ -1458,6 +1532,7 @@ mod tests {
             .controller
             .arm_agent(&bound, &arming(&first))
             .expect("the agent still holds its acknowledged configuration");
+
         assert!(
             calls.lock().unwrap().is_empty(),
             "no source request replaced the loaded agent"
@@ -1569,6 +1644,7 @@ mod tests {
                 .controller
                 .configure_agent(&bound, &arming, &mut installation)
                 .expect_err("second publication write failed");
+
             assert!(
                 error
                     .to_string()
@@ -1612,6 +1688,7 @@ mod tests {
             }
         }
     }
+
     #[test]
     fn internal_stops_do_not_spend_the_acknowledgement_budget() {
         let mut harness = watch_harness(1);
@@ -1707,6 +1784,7 @@ mod tests {
             .unwrap()
             .agents
             .insert(runtime, installation);
+
         let result = harness.controller.begin_execution(
             process,
             stop,
@@ -1714,10 +1792,12 @@ mod tests {
             super::super::ActiveKind::Continue,
             crate::ExceptionDisposition::Pass,
         );
+
         assert!(
             matches!(result, Err(crate::Error::RuntimeResumeUnsupported(_))),
             "{result:?}"
         );
+
         assert_eq!(
             harness
                 .controller
@@ -1730,6 +1810,7 @@ mod tests {
                 .id,
             stop
         );
+
         harness
             .controller
             .validate_agent_resume(crate::ResumeScope::Thread(second))
@@ -1760,6 +1841,7 @@ mod tests {
                 expected: vec![0; 8],
                 bytes: vec![2; 8],
             });
+
             let result =
                 harness
                     .controller
@@ -1778,6 +1860,7 @@ mod tests {
                 ));
                 continue;
             }
+
             assert!(result.is_err());
             assert_eq!(
                 installation.sequence, 0,
@@ -1790,6 +1873,7 @@ mod tests {
             );
         }
     }
+
     fn stepping(number: u64) -> crate::runtime_model::RuntimeStep {
         crate::runtime_model::RuntimeStep {
             number,
@@ -1882,8 +1966,10 @@ mod tests {
                 calls: Arc::new(Mutex::new(Vec::new())),
             },
         );
+
         harness.trace().take_actions();
         let stop = harness.stop_id();
+
         let refused = harness.controller.begin_runtime_step(
             crate::ProcessId::new(pid.as_raw().cast_unsigned().into()),
             stop,
@@ -1893,6 +1979,7 @@ mod tests {
             crate::ResumeScope::Process(crate::ProcessId::new(pid.as_raw().cast_unsigned().into())),
             crate::protocol::ExceptionDisposition::Pass,
         );
+
         assert!(
             matches!(&refused, Err(crate::Error::FrameStepUnsupported(reason)) if reason.contains("where its agent stopped the thread")),
             "{refused:?}"
@@ -1928,6 +2015,7 @@ mod tests {
         });
         let inferior = harness.controller.inferior.as_mut().unwrap();
         inferior.agents.insert(runtime, installation);
+
         assert!(
             !harness.controller.agent_step_sent(runtime),
             "no step is active"

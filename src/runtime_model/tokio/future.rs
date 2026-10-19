@@ -43,6 +43,7 @@ impl FutureLayout {
         let stages = records::sum(image, stage.ty)?;
         let running = stages.variant("Running")?.payload;
         let future = records::field(image, running.ty, &["__0"])?;
+
         Ok(Self {
             stage: stage
                 .offset
@@ -94,11 +95,13 @@ impl TokioRuntime {
     ) -> Result<(VirtualAddress, TypeReference), Arc<str>> {
         let tasks = self.task_layout()?;
         let unreadable = || Arc::<str>::from(format!("the task at {header:#x} is unreadable"));
+
         let vtable =
             records::pointer(stop, header.wrapping_add(tasks.vtable)).ok_or_else(unreadable)?;
         let poll =
             records::pointer(stop, vtable.wrapping_add(tasks.poll)).ok_or_else(unreadable)?;
         let poll = stop.load_bias().wrapping_unload(poll);
+
         let layout = self
             .futures
             .lock()
@@ -106,6 +109,7 @@ impl TokioRuntime {
             .entry(poll)
             .or_insert_with(|| FutureLayout::bind(self.image.as_ref(), poll))
             .clone()?;
+
         let stage = header.wrapping_add(layout.stage);
         let variant = layout.stages.active(stop, stage)?;
         match &*variant.name {

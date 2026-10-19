@@ -105,6 +105,7 @@ impl Stop<'_> {
                         .is_some_and(|recorded| &*recorded.function == function)
             })
             .unwrap_or_else(|| panic!("{}: no frame of {function}: {trace:#?}", self.context));
+
         at(frame.id)
     }
 
@@ -193,12 +194,14 @@ pub fn check_locals(
     } else {
         0
     };
+
     if unbound != expected {
         return Err(format!("{unbound} locals are unbound, not {expected}"));
     }
 
     let names: Vec<&str> = bound.iter().map(|variable| &*variable.name).collect();
     let reported_names: Vec<&str> = reported.iter().map(|(name, _)| name.as_str()).collect();
+
     if names != reported_names {
         return Err(format!(
             "locals {names:?} where CPython reported {reported_names:?}"
@@ -289,6 +292,7 @@ async fn assert_numbers(stop: &Stop<'_>, truth: &[Vec<String>]) {
             state => panic!("{name}: {state:?}"),
         }
     };
+
     assert_eq!(
         value("small"),
         VariableValue::Scalar(ScalarValue::Signed(7))
@@ -373,6 +377,7 @@ async fn assert_children(stop: &Stop<'_>, truth: &[Vec<String>]) {
         "{}",
         stop.context
     );
+
     let inner = stop.children(children_of(&nested[0].state), 0, 16).await;
     assert_eq!(
         texts(&inner),

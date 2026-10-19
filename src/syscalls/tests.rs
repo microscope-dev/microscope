@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 /// tests removed.
 fn sources(directory: &Path) -> Vec<(PathBuf, String)> {
     let mut sources = Vec::new();
+
     for entry in std::fs::read_dir(directory).expect("read the sources") {
         let path = entry.expect("a directory entry").path();
         let test_file = path.file_name().is_some_and(|name| name == "tests.rs");
@@ -40,6 +41,7 @@ fn the_model_stays_pure() {
         "aya",
     ];
     let sources = sources(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src/syscalls"));
+
     for (path, source) in &sources {
         for forbidden in FORBIDDEN {
             assert!(

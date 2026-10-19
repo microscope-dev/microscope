@@ -190,6 +190,7 @@ impl Breakpoints {
             .collect::<Vec<_>>();
         let mut release = Vec::new();
         let mut slots = Vec::with_capacity(wants.len());
+
         for want in wants {
             let matched = current
                 .iter_mut()
@@ -319,6 +320,7 @@ impl Breakpoints {
             .collect::<BTreeSet<_>>();
         let mut ids = Vec::new();
         let mut groups = BTreeSet::new();
+
         for (group, entry) in self.entries() {
             if entry
                 .breakpoint()
@@ -351,6 +353,7 @@ impl Breakpoints {
             .map(|breakpoint| breakpoint.id)
             .collect::<BTreeSet<_>>();
         let mut changes = Vec::new();
+
         for entries in self.groups.values_mut() {
             entries.retain(|entry| match entry.breakpoint() {
                 Some(breakpoint) if !existing.contains(&breakpoint) => {
@@ -370,6 +373,7 @@ impl Breakpoints {
         }
 
         self.groups.retain(|_, entries| !entries.is_empty());
+
         for breakpoint in current {
             if self.owners.contains_key(&breakpoint.id) {
                 continue;

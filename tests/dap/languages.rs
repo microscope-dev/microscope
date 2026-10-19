@@ -114,6 +114,7 @@ fn assert_children_evaluate(
         "variables",
         json!({"variablesReference": reference, "start": 0, "count": 8}),
     );
+
     for child in children["variables"].as_array().expect("variables") {
         if let Some(expression) = child["evaluateName"].as_str() {
             let evaluated = dap.request(
@@ -161,6 +162,7 @@ fn records_and_enums_expand_and_their_members_evaluate_to_what_they_show() {
         let variables = frame_variables(&mut dap, &frame);
         assert!(!variables.is_empty(), "{program} shows no variables");
         let mut checked = 0;
+
         for variable in variables.values() {
             if variable["variablesReference"]
                 .as_i64()
@@ -193,6 +195,7 @@ fn step_out_shows_what_the_function_returned() {
                 ..Configuration::default()
             },
         );
+
         let sent = dap.send("stepOut", json!({"threadId": thread}));
         dap.success(sent);
         let stopped = dap.stopped(sent.mark);
@@ -225,6 +228,7 @@ fn step_out_shows_what_a_c_function_returned() {
             ..Configuration::default()
         },
     );
+
     let sent = dap.send("stepOut", json!({"threadId": thread}));
     dap.success(sent);
     assert_eq!(dap.stopped(sent.mark).reason, "step");
@@ -338,6 +342,7 @@ fn python_frames_show_their_recorded_source_and_their_locals() {
             .is_some_and(|path| path.ends_with("tests/fixtures/python/locals.py")),
         "{frame}"
     );
+
     // The checkpoint is the line before the function returns its locals.
     let returns = line_of(&source("python/locals.py"), "return numbers, empty_list");
     assert_eq!(frame["line"], returns - 1, "{frame}");
@@ -370,6 +375,7 @@ fn python_frames_show_their_recorded_source_and_their_locals() {
                 json!({"expression": expression, "frameId": frame["id"], "context": context}),
             )
         };
+
         let last = evaluate(&mut dap, "numbers[-1]");
         assert_eq!(last["result"], "3", "{context}: {last}");
         let found = evaluate(&mut dap, "by_name[\"b\"]");
@@ -381,5 +387,6 @@ fn python_frames_show_their_recorded_source_and_their_locals() {
             "{context}: {nested}"
         );
     }
+
     dap.finish();
 }

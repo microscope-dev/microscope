@@ -158,6 +158,7 @@ impl<T: Copy + Ord> RangeIndex<T> {
         entries.sort_unstable_by_key(|entry| (entry.start, entry.end, entry.value));
 
         let mut prefix_max_end = 0;
+
         for entry in &mut entries {
             prefix_max_end = prefix_max_end.max(entry.end);
             entry.prefix_max_end = prefix_max_end;
@@ -201,6 +202,7 @@ fn grouped_index<K: Ord, V: Ord>(
     entries.dedup_by(|later, earlier| (*later).cmp(earlier).is_eq());
     let mut grouped = Vec::new();
     let mut entries = entries.into_iter().peekable();
+
     while let Some((key, value)) = entries.next() {
         let mut values = vec![value];
         while let Some((_, value)) = entries.next_if(|(next, _)| next.cmp(&key).is_eq()) {
@@ -291,6 +293,7 @@ pub fn seal(
     let tables = seal_image(target, address_range, metadata)?;
     drop(phase);
     crate::count!("image_bytes", tables.as_bytes().len());
+
     Ok(tables)
 }
 
@@ -340,6 +343,7 @@ fn seal_image(
             )
         },
     );
+
     before?;
     builder.absorb(code?);
     let phase = crate::span!("image.encode_types");
@@ -369,6 +373,7 @@ fn seal_image(
         &code_instances,
     )?;
     free((functions, code_instances));
+
     if let Some(unwind) = &metadata.unwind {
         crate::image::unwind::add_to(&mut builder, &mut strings, unwind)?;
     }
@@ -381,6 +386,7 @@ fn seal_image(
             metadata.embedded_views.clone(),
         )
         .bytes(crate::image::TableKind::Strings, strings.into_bytes());
+
     builder
         .seal(crate::image::Limits::default())
         .map_err(SealError::from)
@@ -410,6 +416,7 @@ fn encode_without_strings<'a>(
             instruction_starts: &instruction_starts(metadata, code_instances),
         },
     )?;
+
     builder.bytes(crate::image::TableKind::Paths, paths.into_bytes());
     Ok(builder)
 }
@@ -468,6 +475,7 @@ fn type_classes(types: &[TypeNode]) -> std::result::Result<Vec<u32>, SealError> 
     u32::try_from(keys.len()).map_err(|_| crate::image::types::TooMany)?;
     let mut classes = foldhash::HashMap::default();
     let mut next = 0_u32;
+
     Ok(keys
         .iter()
         .map(|key| {
@@ -616,6 +624,7 @@ impl ModuleImage {
             }
         });
         let tables = Arc::new(seal(target, address_range, metadata).expect("the metadata seals"));
+
         Self::bind(
             &Binding {
                 path: Arc::new(path),
@@ -635,6 +644,7 @@ impl ModuleImage {
     ) -> std::result::Result<Self, crate::image::facts::Unbound> {
         let facts = crate::image::facts::FactsView::new(&tables);
         let debug_file = facts.debug_file(binding.debug_path.clone())?;
+
         Ok(Self {
             symbols_by_last_part: std::sync::OnceLock::new(),
             coroutine_functions: std::sync::OnceLock::new(),
@@ -971,6 +981,7 @@ impl ModuleImage {
                 })
         });
         let (_, place) = found.next()?;
+
         Some(if found.next().is_some() {
             Err(format!("several thread-local variables are named {name} within {scope}").into())
         } else {
@@ -1085,6 +1096,7 @@ impl ModuleImage {
         candidates.sort_unstable();
         candidates.dedup();
         let mut found = Vec::new();
+
         for id in candidates {
             let Some(info) = self.type_info(TypeReference { image: self.id, id }) else {
                 continue;
@@ -1181,6 +1193,7 @@ impl ModuleImage {
 
             index
         });
+
         class(ty)
             .and_then(|class| index.get(&class))
             .into_iter()
@@ -1225,6 +1238,7 @@ impl ModuleImage {
         let class = name
             .strip_prefix("vtable for ")
             .or_else(|| name.strip_prefix("{vtable(")?.strip_suffix(")}"))?;
+
         Some((class.to_owned(), symbol.address()))
     }
 
@@ -1314,6 +1328,7 @@ impl ModuleImage {
             .iter()
             .filter(|source| path_matches(source.path.as_path(), path))
             .collect::<Vec<_>>();
+
         match matches.as_slice() {
             [source] => Ok(source),
             [] => Err(Error::SourceFileNotFound(path.to_path_buf())),
@@ -1521,6 +1536,7 @@ impl ModuleImage {
             .copied()
             .filter(|function| function.instances().next().is_some())
             .collect::<Vec<_>>();
+
         match (defined.as_slice(), named.as_slice()) {
             ([function], _) | ([], [function]) => Ok(*function),
             (_, []) => Err(Error::FunctionNotFound(name.to_owned())),
@@ -1581,6 +1597,7 @@ impl ModuleImage {
 
             index
         });
+
         let mut candidates = [name, crate::demangle::last_part(name)]
             .into_iter()
             .filter_map(|part| index.get(part))
@@ -1806,6 +1823,7 @@ fn instruction_starts(
         .iter()
         .filter(|section| section.executable)
         .map(|section| (section.range.start, crate::BoundaryEvidence::SectionStart));
+
     for (address, evidence) in functions.chain(symbols).chain(sections) {
         starts
             .entry(address)
@@ -1832,6 +1850,7 @@ fn path_matches(candidate: &Path, requested: &Path) -> bool {
 
     let mut candidate = significant(candidate);
     let mut requested = significant(requested).peekable();
+
     requested.peek().is_some() && requested.all(|component| candidate.next() == Some(component))
 }
 
@@ -1962,6 +1981,7 @@ mod tests {
                 ..ModuleMetadata::default()
             },
         );
+
         (image, int)
     }
 
@@ -2562,6 +2582,7 @@ mod tests {
             ("_e_exported", 0x10, 0x20, Declared, Function, Global, true),
             ("f_exported", 0x10, 0x20, Declared, Function, Global, true),
         ];
+
         for count in 1..=ladder.len() {
             let image = symbol_test_image(&ladder[..count]);
             assert_eq!(

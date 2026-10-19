@@ -447,11 +447,13 @@ impl<'data> Units<'data> {
                     }
                 }
             };
+
         for references in &outward {
             reach(references, false, &mut wave);
         }
 
         let mut supplementary_units = Vec::new();
+
         while !wave.is_empty() {
             let loaded = first_error(
                 std::mem::take(&mut wave)
@@ -471,6 +473,7 @@ impl<'data> Units<'data> {
 
         supplementary_units.sort_unstable_by_key(|(index, ..)| *index);
         let first_supplementary = units.len();
+
         for (_, unit, references) in supplementary_units {
             units.push(unit);
 
@@ -564,6 +567,7 @@ impl<'data> Units<'data> {
             .iter()
             .map(|unit| unit.comp_dir.is_some())
             .collect::<Vec<_>>();
+
         loop {
             let mut round = Vec::new();
             for unit in 0..count {
@@ -707,6 +711,7 @@ fn outward_references(
 ) -> std::result::Result<Vec<Outward>, DwarfError> {
     let mut references = Vec::new();
     let mut entries = unit.entries();
+
     while let Some(entry) = entries.next_dfs()? {
         references.extend(
             entry
@@ -744,6 +749,7 @@ fn unit_dwarf<'a, 'data>(
         .header
         .range_from(unit.header.root_offset()..)
         .is_ok_and(|entries| section.contains(&entries.slice().as_ptr()));
+
     if held { supplementary } else { dwarf }
 }
 
@@ -860,6 +866,7 @@ pub fn load(
     let (data, _) = crate::image::backing::read_input(path)?;
     crate::count!("input_bytes", data.len());
     drop(phase);
+
     load_bytes_on_pool(path, &data, image_id, search, crate::cache::current())
 }
 
@@ -1141,6 +1148,7 @@ fn load_sections<'data>(
     let sections = DwarfSections::load(|id| {
         Ok::<_, DwarfError>(loaded.remove(&id).unwrap_or(Cow::Borrowed(&[])))
     })?;
+
     Ok((sections, input))
 }
 
@@ -1239,6 +1247,7 @@ fn load_image(
     // Where the next unit's header is, which a malformed one names.
     let mut next = 0;
     let mut unit_headers = dwarf.units();
+
     while let Some(header) = unit_headers.next().map_err(|error| {
         DwarfError::from(error).within(|| format!("the unit header at .debug_info+{next:#x}"))
     })? {
@@ -1248,6 +1257,7 @@ fn load_image(
 
     let mut next = 0;
     let mut type_unit_headers = dwarf.type_units();
+
     while let Some(header) = type_unit_headers.next().map_err(|error| {
         DwarfError::from(error).within(|| format!("the unit header at .debug_types+{next:#x}"))
     })? {
@@ -1308,6 +1318,7 @@ fn load_image(
         })
         .collect::<Vec<_>>();
     let unit_lines = first_error(unit_lines)?;
+
     for (unit_files, tables) in unit_lines {
         let ids = unit_files
             .paths()
@@ -1400,6 +1411,7 @@ fn load_image(
             };
 
             let known = files.paths().len();
+
             match read(&mut files, variables::Locals::Read) {
                 // Locals are most of what a large program's debug
                 // information describes, and the rest may fit without them.
@@ -1426,6 +1438,7 @@ fn load_image(
             let unwind = load_unwind_info(&object, debug_object.as_ref(), target, go_code, go)?;
             let symbols =
                 super::elf::load_symbols(&object, debug_object.as_ref(), &unwind.function_ranges());
+
             Ok::<_, DwarfError>((unwind, symbols))
         },
     );
@@ -1437,6 +1450,7 @@ fn load_image(
         format!("its locals and parameters were left out, as {error}").into()
     });
     let (unwind, mut symbols) = unwind_and_symbols?;
+
     for (instance, generics) in std::mem::take(&mut variables.function_generics) {
         if let Some(function) = function_metadata
             .code_instances
@@ -1449,6 +1463,7 @@ fn load_image(
 
     let phase = crate::span!("resume_points");
     let coroutines = std::mem::take(&mut variables.coroutines);
+
     for (instance, ty) in &variables.coroutine_bodies {
         if let Some(Ok(_)) = coroutines.get(ty)
             && let Some(function) = function_metadata
@@ -1936,6 +1951,7 @@ fn load_unwind_info(
                     .is_none()
             })
     });
+
     if target.architecture == Architecture::X86_64 {
         let code: Vec<(u64, &[u8])> = object
             .sections()
@@ -1987,6 +2003,7 @@ where
     let mut context = UnwindContext::new();
     let mut epilogues = super::x86_64::Epilogues::new();
     let mut walk = section.entries(bases);
+
     while let Ok(Some(entry)) = walk.next() {
         let gimli::CieOrFde::Fde(partial) = entry else {
             continue;
@@ -2000,6 +2017,7 @@ where
 
         // The row before: where it starts, and whether its frame is gone.
         let mut before: Option<(u64, bool)> = None;
+
         while let Ok(Some(row)) = rows.next_row() {
             let (start, end) = (row.start_address(), row.end_address());
             let gone = matches!(
@@ -2023,6 +2041,7 @@ where
                     }
                 }
             }
+
             let proved = (gone && slotted != 0)
                 .then(|| bytes(start, end))
                 .flatten()
@@ -2036,6 +2055,7 @@ where
                     let popped = super::x86_64::restored_by(bytes(from, start)?, from)?;
                     (below & popped != 0).then(|| (epilogues.keeps(code, start, popped), popped))
                 });
+
             if let Some((end, registers)) = proved.filter(|(end, _)| *end > start) {
                 let range = AddressRange {
                     start: ImageAddress::new(start),
@@ -2146,6 +2166,7 @@ where
     let mut first_error = None;
     let mut entries = Vec::new();
     let mut walk = section.entries(bases);
+
     loop {
         let partial = match walk.next() {
             Ok(Some(gimli::CieOrFde::Fde(partial))) => partial,
@@ -2617,6 +2638,7 @@ where
     }
 
     let mut result = evaluation.evaluate().map_err(corrupt)?;
+
     loop {
         result = match result {
             EvaluationResult::Complete => break,
@@ -2850,6 +2872,7 @@ impl<V> DieMap<V> {
         if index >= self.units.len() {
             self.units.resize_with(index + 1, HashMap::new);
         }
+
         &mut self.units[index]
     }
 
@@ -3068,6 +3091,7 @@ fn load_function_metadata<'data>(
         go_table,
     );
     drop(roles);
+
     Ok(FunctionMetadata {
         functions,
         code_instances,
@@ -3202,6 +3226,7 @@ fn function_name(function: &RawFunction) -> Option<Arc<str>> {
             .and_then(crate::demangle::demangle)
             .map(Arc::from)
     });
+
     match (&name, &function.namespace) {
         (Some(raw), Some(namespace)) if function.language == SourceLanguage::Rust => {
             super::coroutines::body_name(raw, namespace).or(name)
@@ -3267,6 +3292,7 @@ fn assign_go_function_roles(
         .map(|((abi_wrapper, trampoline), cgo)| abi_wrapper || *trampoline || *cgo)
         .collect::<Vec<_>>();
     let mut facts = vec![None; functions.len()];
+
     if let Some(table) = go_table {
         for instance in instances
             .iter()
@@ -3415,6 +3441,7 @@ fn collect_function_dies<'data>(
             functions
         })
         .collect();
+
     Ok((RawFunctions { units, starts }, futures))
 }
 
@@ -4157,6 +4184,7 @@ fn decode_resume_points(
                     .filter(|(_, complete)| *complete)
                     .map(|(code, _)| code);
                 let mut moved = points.points.to_vec();
+
                 for point in &mut moved {
                     let Some(state) = coroutine.state(point.state) else {
                         continue;
@@ -4201,6 +4229,7 @@ fn decode_resume_points(
                 points
             },
         );
+
         decoded.push((instance.id, points));
     }
 
@@ -4772,6 +4801,7 @@ mod tests {
                         )
                     })
                     .expect("load the fixture");
+
                 info.image.image_bytes().to_vec()
             };
 

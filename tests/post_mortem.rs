@@ -198,6 +198,7 @@ async fn segv_cores_present_the_faulting_frame_across_the_compiler_matrix() {
             !info.arguments.is_empty() && command_line.starts_with(info.arguments.as_ref()),
             "{info:?}"
         );
+
         let CoreModuleState::Loaded { module, .. } = &info.modules[0].state else {
             panic!("{variant}: the executable was not loaded: {info:?}");
         };
@@ -276,6 +277,7 @@ async fn segv_cores_present_the_faulting_frame_across_the_compiler_matrix() {
         );
         assert_eq!(signed(&variable(&scenario, "crash_tls").await), 100);
         assert_eq!(signed(&variable(&scenario, "crash_library_tls").await), 654);
+
         let record = scenario
             .operation(
                 "record id",
@@ -398,6 +400,7 @@ async fn every_dumped_thread_keeps_its_own_registers_stack_and_tls() {
         RegisterRole::StackPointer,
     )];
     let mut workers = Vec::new();
+
     for thread in snapshot
         .threads
         .iter()
@@ -406,6 +409,7 @@ async fn every_dumped_thread_keeps_its_own_registers_stack_and_tls() {
         scenario
             .operation("select", scenario.handle().select_context(thread.id))
             .await;
+
         let selected = scenario.snapshot().await;
         assert_eq!(
             selected
@@ -438,6 +442,7 @@ async fn every_dumped_thread_keeps_its_own_registers_stack_and_tls() {
                 .map(|source| source.line.get()),
             Some(spin_line)
         );
+
         let worker = signed(&variable(&scenario, "local_id").await);
         assert_eq!(
             signed(&variable(&scenario, "squared").await),
@@ -552,6 +557,7 @@ async fn post_mortem_targets_reject_execution_modification_and_breakpoints() {
                 .map(drop),
         ),
     ];
+
     for (operation, result) in rejected {
         assert!(
             matches!(result, Err(Error::PostMortemTarget)),
@@ -565,6 +571,7 @@ async fn post_mortem_targets_reject_execution_modification_and_breakpoints() {
     assert_eq!(after_stop.stop, stop.stop);
     assert!(after.breakpoints.is_empty());
     assert_eq!(handle.read_word(pc).await.unwrap(), original);
+
     scenario.drain_pending_events();
     assert_eq!(
         scenario.last_revision(),
@@ -635,6 +642,7 @@ async fn module_mismatches_are_fatal_unless_explicitly_allowed() {
         message,
         "the rebuilt file has the same layout"
     );
+
     let unbacked = allowed
         .operation("read message", allowed.handle().read_memory(message, 16))
         .await;
@@ -677,6 +685,7 @@ async fn unverifiable_modules_require_permission_and_expose_only_registers() {
         loaded_identity(&info, "[vdso]"),
         &ModuleIdentity::DumpedMemory
     );
+
     let (_, snapshot) = stopped(&mut scenario).await;
     assert_eq!(snapshot.threads.len(), 4);
 
@@ -692,6 +701,7 @@ async fn unverifiable_modules_require_permission_and_expose_only_registers() {
             .map(|function| function.name.as_ref()),
         Some("crash_segv")
     );
+
     let (trace, _) = named_frames(&scenario).await;
     assert_eq!(trace.frames.len(), 1);
     assert!(
@@ -701,6 +711,7 @@ async fn unverifiable_modules_require_permission_and_expose_only_registers() {
         ),
         "{trace:?}"
     );
+
     let depth = variable(&scenario, "depth").await;
     assert!(
         matches!(
@@ -709,6 +720,7 @@ async fn unverifiable_modules_require_permission_and_expose_only_registers() {
         ),
         "{depth:?}"
     );
+
     let text = scenario
         .operation(
             "read text",
@@ -726,6 +738,7 @@ async fn unverifiable_modules_require_permission_and_expose_only_registers() {
 async fn header_pages_omitted_from_a_dump_are_recovered_from_verified_files() {
     let scenario = open_core("crash-gcc-o0-headerless.core");
     let info = core_info(&scenario);
+
     for module in ["crash-gcc-o0", "libc.so", "libcrash.so"] {
         assert!(
             matches!(loaded_identity(&info, module), ModuleIdentity::SavedContent { compared_bytes } if *compared_bytes > 0),
@@ -877,6 +890,7 @@ fn first_prstatus(bytes: &[u8]) -> usize {
     };
 
     let mut note = start;
+
     while note < start + size {
         let (name, descriptor, kind) = (word(note), word(note + 4), word(note + 8));
         let descriptor_start = note + 12 + name.next_multiple_of(4);
@@ -931,6 +945,7 @@ async fn unsaved_and_truncated_memory_stays_unavailable_rather_than_guessed() {
             .operation("registers", scenario.handle().registers())
             .await;
         assert_eq!(register_u64(&registers, RegisterRole::StackPointer), stack);
+
         let (trace, _) = named_frames(&scenario).await;
         assert_eq!(trace.frames.len(), 1, "{name}: {trace:?}");
         assert!(
@@ -940,6 +955,7 @@ async fn unsaved_and_truncated_memory_stays_unavailable_rather_than_guessed() {
             ),
             "{name}"
         );
+
         let depth = variable(&scenario, "depth").await;
         assert!(
             matches!(
@@ -1010,6 +1026,7 @@ async fn modified_file_pages_missing_from_a_dump_are_never_read_from_the_file() 
         loaded_identity(&core_info(&headers_only), "crash-gcc-o0"),
         &ModuleIdentity::BuildId
     );
+
     let (headers_counter, headers_message) = addresses(&headers_only).await;
     assert_eq!(
         complete_read(&headers_only, headers_message, message_bytes.len() as u64).await,
@@ -1037,6 +1054,7 @@ async fn modified_file_pages_missing_from_a_dump_are_never_read_from_the_file() 
                 .copy_from_slice(&cut.to_le_bytes());
         },
     );
+
     let truncated = Scenario::open_core("truncated data", &CoreDumpOptions::new(path));
     assert_eq!(
         loaded_identity(&core_info(&truncated), "crash-gcc-o0"),
@@ -1078,10 +1096,12 @@ async fn allowed_mismatches_keep_the_recorded_placement_or_refuse_to_relocate() 
             bytes[header + PHDR_FILESZ..header + PHDR_FILESZ + 8]
                 .copy_from_slice(&past_end.to_le_bytes());
         });
+
     assert!(matches!(
         Debugger::open_core(&with_executable(&oversized, false)),
         Err(Error::CoreModuleMismatch { detail, .. }) if detail.contains("outside")
     ));
+
     let allowed = Scenario::open_core("oversized", &with_executable(&oversized, true));
     assert!(matches!(
         loaded_identity(&core_info(&allowed), "crash-gcc-o0"),
@@ -1114,6 +1134,7 @@ async fn allowed_mismatches_keep_the_recorded_placement_or_refuse_to_relocate() 
         Debugger::open_core(&with_executable(&unplaceable, false)),
         Err(Error::CoreModuleMismatch { .. })
     ));
+
     let refused = Debugger::open_core(&with_executable(&unplaceable, true));
     assert!(
         matches!(&refused, Err(Error::CoreModuleUnplaceable { path, detail })
@@ -1139,6 +1160,7 @@ async fn invalid_core_files_fail_with_typed_errors() {
         open(directory.join("absent.core")),
         Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
     ));
+
     let empty = directory.join("empty.core");
     fs::write(&empty, []).unwrap();
     invalid(open(empty), "not a 64-bit ELF file");
@@ -1242,6 +1264,7 @@ async fn go_rust_and_zig_cores_present_frames_and_locals() {
             &[("depth", 3), ("doubled", 6)],
         ),
     ];
+
     for (core_name, expected_frames, locals) in cases {
         let mut scenario = open_core(core_name);
         let (stop, _) = stopped(&mut scenario).await;
@@ -1250,11 +1273,13 @@ async fn go_rust_and_zig_cores_present_frames_and_locals() {
             "{core_name}: {:?}",
             stop.reason
         );
+
         let (trace, names) = named_frames(&scenario).await;
         let functions = names
             .iter()
             .map(|(_, function)| function.as_deref())
             .collect::<Vec<_>>();
+
         for (index, expected) in expected_frames.iter().enumerate() {
             assert_eq!(functions[index], Some(*expected), "{core_name}: {names:#?}");
         }
@@ -1264,6 +1289,7 @@ async fn go_rust_and_zig_cores_present_frames_and_locals() {
             UnwindTermination::Complete,
             "{core_name}"
         );
+
         for (name, value) in locals {
             assert_eq!(
                 signed(&variable(&scenario, name).await),
@@ -1285,6 +1311,7 @@ async fn an_image_mapped_from_offset_zero_more_than_once_is_one_module() {
     let scenario = open_core(core_name);
     let executable = Scenario::fixture("crash-rust-o0");
     let info = core_info(&scenario);
+
     let recorded = file_images(&info)
         .filter(|module| *module.recorded_path == executable)
         .collect::<Vec<_>>();
@@ -1320,6 +1347,7 @@ async fn core_sessions_coexist_with_each_other_and_a_live_session() {
             .iter()
             .any(|(_, function)| function.as_deref() == Some("crash_abort"))
     );
+
     let first_stop = first.handle().snapshot().await.unwrap().stop_id;
     let second_stop = second.handle().snapshot().await.unwrap().stop_id;
     assert_ne!(
@@ -1414,6 +1442,7 @@ async fn foreign_modules() -> Vec<(PathBuf, PathBuf)> {
     );
     let info = core_info(&scenario);
     scenario.shutdown().await;
+
     file_images(&info)
         .map(|module| {
             let recorded = PathBuf::clone(&module.recorded_path);
@@ -1510,6 +1539,7 @@ async fn cores_from_other_machines_load_every_module_from_a_sysroot() {
     let modules = foreign_modules().await;
     let (interpreter, interpreter_file) = named(&modules, "ld-linux");
     let root = ScratchDir::new("foreign-sysroot");
+
     for (recorded, original) in modules
         .iter()
         .filter(|(recorded, _)| *recorded != interpreter)
@@ -1602,6 +1632,7 @@ async fn a_sysroot_copy_of_this_machine_serves_tls_through_its_c_library() {
     let info = core_info(&recorded);
     recorded.shutdown().await;
     let root = ScratchDir::new("host-sysroot");
+
     for module in file_images(&info) {
         place(root.path(), &module.recorded_path, &module.recorded_path);
     }
@@ -1613,6 +1644,7 @@ async fn a_sysroot_copy_of_this_machine_serves_tls_through_its_c_library() {
             ..CoreDumpOptions::new(core(name))
         },
     );
+
     let canonical_root = root.path().canonicalize().expect("canonical sysroot");
     let (libc, identity) = loaded_from(&core_info(&scenario), "libc.so.6");
     assert!(libc.starts_with(&canonical_root), "{}", libc.display());
@@ -1641,6 +1673,7 @@ async fn sysroot_paths_resolve_inside_the_sysroot_and_open_only_regular_files() 
     let decoy = |name: &str| core(name).strip_prefix("/").expect("absolute").to_owned();
     let absolute = place(root.path(), &core("libcrash-rebuilt.so"), &library_file);
     let relative = place(root.path(), &core("crash-gcc-o0-rebuilt"), &executable_file);
+
     let library_link = root.path().join(library.strip_prefix("/").unwrap());
     fs::remove_file(&library_link).unwrap();
     std::os::unix::fs::symlink(
@@ -1648,6 +1681,7 @@ async fn sysroot_paths_resolve_inside_the_sysroot_and_open_only_regular_files() 
         &library_link,
     )
     .unwrap();
+
     let executable_link = root.path().join(executable.strip_prefix("/").unwrap());
     fs::remove_file(&executable_link).unwrap();
     let climb = "../".repeat(executable.components().count() + 4);
@@ -1675,6 +1709,7 @@ async fn sysroot_paths_resolve_inside_the_sysroot_and_open_only_regular_files() 
     let libc_path = root.path().join(libc.strip_prefix("/").unwrap());
     fs::remove_file(&libc_path).unwrap();
     nix::unistd::mkfifo(&libc_path, nix::sys::stat::Mode::S_IRWXU).expect("create FIFO");
+
     let fifo = Debugger::open_core(&options);
     assert!(
         matches!(&fifo, Err(Error::CoreModuleRead { path, error })
@@ -1715,6 +1750,7 @@ async fn module_paths_supply_files_by_name_then_by_build_id() {
 
     // Files named as recorded are found after this machine's mismatched ones.
     let by_name = ScratchDir::new("module-path-names");
+
     for (name, source) in [
         ("crash-gcc-o0", &executable_file),
         ("libcrash.so", &library_file),
@@ -1728,6 +1764,7 @@ async fn module_paths_supply_files_by_name_then_by_build_id() {
         &foreign(|options| options.module_paths = vec![by_name.path().to_owned()]),
     );
     let info = core_info(&scenario);
+
     for name in ["crash-gcc-o0", "libcrash.so", "libc.so.6"] {
         assert_eq!(
             loaded_from(&info, name),
@@ -1746,6 +1783,7 @@ async fn module_paths_supply_files_by_name_then_by_build_id() {
         signed(&variable(&scenario, "crash_library_value").await),
         321
     );
+
     let (_, names) = named_frames(&scenario).await;
     assert_eq!(names[2].0, "libc.so.6", "{names:#?}");
     scenario.shutdown().await;
@@ -1753,6 +1791,7 @@ async fn module_paths_supply_files_by_name_then_by_build_id() {
     // Renamed files are found by build-id, past a same-named different build
     // and a same-named directory.
     let renamed = ScratchDir::new("module-path-build-ids");
+
     for (name, source) in [
         ("app", &executable_file),
         ("libcrash.so.1", &library_file),
@@ -1763,6 +1802,7 @@ async fn module_paths_supply_files_by_name_then_by_build_id() {
     }
 
     fs::create_dir(renamed.path().join("crash-gcc-o0")).unwrap();
+
     let scenario = Scenario::open_core(
         "module path build-ids",
         &foreign(|options| {
@@ -1770,6 +1810,7 @@ async fn module_paths_supply_files_by_name_then_by_build_id() {
         }),
     );
     let info = core_info(&scenario);
+
     for (recorded, file) in [
         ("crash-gcc-o0", "app"),
         ("libcrash.so", "libcrash.so.1"),
@@ -1818,6 +1859,7 @@ async fn unproven_module_files_are_errors_only_at_their_recorded_paths() {
             ..strict
         },
     );
+
     let (path, identity) = loaded_from(&core_info(&allowed), "libcrash.so");
     assert!(
         path.ends_with("core-foreign/libcrash.so"),
@@ -1835,6 +1877,7 @@ async fn unproven_module_files_are_errors_only_at_their_recorded_paths() {
     // at the recorded path, a mismatched one leaves the module missing
     // unless mismatches are allowed.
     let root = ScratchDir::new("sysroot-without-library");
+
     for (recorded, original) in &modules {
         if !recorded.ends_with("libcrash.so") {
             place(root.path(), recorded, original);
@@ -1859,6 +1902,7 @@ async fn unproven_module_files_are_errors_only_at_their_recorded_paths() {
         Err(Error::VariableNotFound(_))
     ));
     scenario.shutdown().await;
+
     let allowed = Scenario::open_core(
         "allowed searched mismatch",
         &CoreDumpOptions {
@@ -1866,6 +1910,7 @@ async fn unproven_module_files_are_errors_only_at_their_recorded_paths() {
             ..searched
         },
     );
+
     let (path, identity) = loaded_from(&core_info(&allowed), "libcrash.so");
     assert_eq!(
         path,
@@ -1886,6 +1931,7 @@ async fn executables_found_nowhere_name_the_search_and_the_build_id_to_supply() 
         options.sysroot = Some(empty.path().to_owned());
         options.module_paths = vec![empty.path().to_owned()];
     }));
+
     let expected_build_id = hex(&build_id(&executable_file));
     assert!(
         matches!(&unavailable, Err(Error::CoreExecutableUnavailable(message))
@@ -1903,6 +1949,7 @@ async fn executables_found_nowhere_name_the_search_and_the_build_id_to_supply() 
             options.executable = Some(executable_file.clone());
         }),
     );
+
     assert_eq!(
         loaded_from(&core_info(&explicit), "crash-gcc-o0"),
         (
@@ -1919,11 +1966,13 @@ async fn thread_tls(scenario: &Scenario) -> Vec<[(i128, u64); 2]> {
         .operation("snapshot", scenario.handle().snapshot())
         .await;
     let mut threads = Vec::new();
+
     for thread in snapshot.threads.iter() {
         scenario
             .operation("select", scenario.handle().select_context(thread.id))
             .await;
         let mut located = [(0, 0); 2];
+
         for (slot, name) in located.iter_mut().zip(["crash_tls", "crash_library_tls"]) {
             let variable = variable(scenario, name).await;
             let VariableState::Available {
@@ -1983,6 +2032,7 @@ async fn core_tls_is_located_through_the_c_librarys_own_descriptors() {
     // which locate every thread's blocks.
     let modules = foreign_modules().await;
     let originals = ScratchDir::new("foreign-tls");
+
     for name in ["crash-gcc-o0", "libcrash.so", "libc.so.6"] {
         fs::copy(named(&modules, name).1, originals.path().join(name)).unwrap();
     }
@@ -2058,6 +2108,7 @@ async fn vdso_images_the_dump_lost_are_missing_rather_than_guessed() {
             bytes[usize::try_from(offset).unwrap()] = 0;
         }),
     ];
+
     for (name, edit) in edits {
         let (_scratch, path) = edited(name, FIXTURE, "edited.core", |bytes| {
             let (header, _, _) = load_headers(bytes)
@@ -2066,6 +2117,7 @@ async fn vdso_images_the_dump_lost_are_missing_rather_than_guessed() {
                 .expect("a load segment holds the vDSO");
             edit(bytes, header);
         });
+
         let scenario = Scenario::open_core(name, &CoreDumpOptions::new(path));
         let info = core_info(&scenario);
         let missing = vdso(&info);
@@ -2077,6 +2129,7 @@ async fn vdso_images_the_dump_lost_are_missing_rather_than_guessed() {
             loaded_identity(&info, "vdso-gcc-o0").is_verified(),
             "{name}: {info:#?}"
         );
+
         let (trace, frames) = named_frames(&scenario).await;
         assert!(
             trace.frames.len() == 1 && trace.frames[0].instruction == Some(fault),

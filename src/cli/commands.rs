@@ -127,6 +127,7 @@ impl CommandSpec {
     fn form_arity(form: &str) -> (usize, usize) {
         let mut grouped = false;
         let mut range = (0, 0);
+
         for word in form.split_whitespace().skip(1) {
             let optional = grouped || word.starts_with('[');
             grouped = optional && !word.ends_with(']');
@@ -624,6 +625,7 @@ pub fn resolve_command(entered: &str) -> Result<&'static CommandSpec> {
                     .any(|name| name.starts_with(entered))
         })
         .collect::<Vec<_>>();
+
     match matching.as_slice() {
         [spec] => Ok(spec),
         [] => {
@@ -802,6 +804,7 @@ impl Cli {
     async fn info(&self, arguments: &[&str], rest: &str, spec: &CommandSpec) -> Result<String> {
         let renderer = self.renderers.stdout;
         let debugger = &self.debugger;
+
         Ok(match (arguments[0], arguments.get(1)) {
             ("breakpoints" | "break", None) => self.list_breakpoints().await?,
             ("watchpoints" | "watch", None) => self.list_watchpoints().await?,
@@ -848,6 +851,7 @@ impl Cli {
         };
 
         let mut modules = Vec::with_capacity(loaded.modules.len());
+
         for record in loaded.modules.iter() {
             modules.push(format::ModuleRow {
                 path: std::sync::Arc::clone(&record.path),
@@ -999,6 +1003,7 @@ impl Cli {
         spec: &CommandSpec,
     ) -> Result<String> {
         let parsed = parse_break(line, spec)?;
+
         let location = match parsed.location {
             Some(written) => match frame_line(written)? {
                 Some(line) => self.frame_source(line).await?,
@@ -1024,6 +1029,7 @@ impl Cli {
         };
 
         let address = matches!(location, BreakpointSpec::Address(_));
+
         let breakpoint = match self.debugger.add_breakpoint_with(location, options).await {
             Ok(breakpoint) => breakpoint,
             Err(error) => return Err(self.suggest(error).await),
@@ -1032,6 +1038,7 @@ impl Cli {
         let placed = self.placed(&breakpoint).await;
         let renderer = self.renderers.stdout;
         let mut output = format::breakpoint(&breakpoint, &placed, renderer);
+
         if address && !temporary && self.keeps_breakpoints() {
             let _ = write!(
                 output,
@@ -1052,6 +1059,7 @@ impl Cli {
         let regex = regex::Regex::new(pattern)
             .map_err(|error| anyhow!("invalid pattern '{pattern}': {error}"))?;
         let mut names = std::collections::BTreeSet::new();
+
         for image in self.loaded_images().await {
             for function in image.functions() {
                 if image.instances_for_function(function.id()).next().is_some()
@@ -1085,6 +1093,7 @@ impl Cli {
         }
 
         let mut lines = Vec::new();
+
         for name in names {
             let breakpoint = self
                 .debugger
@@ -1107,6 +1116,7 @@ impl Cli {
         let text = super::saved::commands(&snapshot.breakpoints, &self.settings.root);
         std::fs::write(file, text).with_context(|| format!("cannot write {file}"))?;
         let renderer = self.renderers.stdout;
+
         Ok(format!(
             "{} {} to {}",
             renderer.paint(Role::Success, "saved"),
@@ -1122,6 +1132,7 @@ impl Cli {
         };
 
         let mut images = Vec::new();
+
         for record in loaded.modules.iter() {
             if let Ok(image) = self.debugger.loaded_module_image(record.module.id).await {
                 images.push(image);
@@ -1152,11 +1163,13 @@ impl Cli {
                 // A name meant for Python may be a native one misspelled.
                 let native = super::suggest::did_you_mean(name, names);
                 let python = python_name_hint(name, self.debugger.module_image());
+
                 match (native, python) {
                     // Two sentences: the first ends in its question mark.
                     (Some(native), Some(python)) => {
                         let mut python = python.chars();
                         let first = python.next().map(|first| first.to_ascii_uppercase());
+
                         Some(format!(
                             "{native} {}{}",
                             first.unwrap_or_default(),
@@ -1174,6 +1187,7 @@ impl Cli {
                     .flat_map(|image| image.source_files().iter())
                     .filter_map(|file| file.path.file_name()?.to_str())
                     .collect::<Vec<_>>();
+
                 super::suggest::did_you_mean(&written, names)
             }
             _ => None,
@@ -1200,6 +1214,7 @@ impl Cli {
         let file = image
             .source_file(source.file)
             .ok_or_else(|| anyhow!("the selected frame has no source file"))?;
+
         let number = match line {
             FrameLine::Number(number) => number,
             FrameLine::Offset(offset) => source
@@ -1234,6 +1249,7 @@ impl Cli {
                     .find(|record| record.path.as_path() == self.debugger.module_image().path())
                     .map(|record| record.module)
             });
+
         let mut placed = Vec::new();
         for resolved in breakpoint.ready_locations() {
             placed.push(self.place(resolved.location.clone(), main).await);
@@ -1323,11 +1339,13 @@ impl Cli {
                 let symbol = image.symbolize(address)?;
                 Some(format::code_name(None, Some(&symbol)).into())
             });
+
         placed.source = located.source.as_ref().and_then(|source| {
             image
                 .source_file(source.file)
                 .map(|file| (std::sync::Arc::clone(&file.path), source.line))
         });
+
         placed
     }
 
@@ -1372,6 +1390,7 @@ impl Cli {
         }
 
         let renderer = self.renderers.stdout;
+
         Ok(format!(
             "{} {}",
             renderer.paint(Role::Success, if enabled { "enabled" } else { "disabled" }),
@@ -1386,6 +1405,7 @@ impl Cli {
         };
 
         let renderer = self.renderers.stdout;
+
         Ok(match parse_counted_id(id, spec)? {
             CountedId::Breakpoint(id) => format::breakpoint_hit_condition(
                 &self
@@ -1415,6 +1435,7 @@ impl Cli {
         };
 
         let renderer = self.renderers.stdout;
+
         let id = match id {
             CountedId::Breakpoint(id) => id,
             CountedId::Watchpoint(id) => {
@@ -1432,6 +1453,7 @@ impl Cli {
             .debugger
             .set_breakpoint_condition(id, condition)
             .await?;
+
         Ok(breakpoint.condition.as_ref().map_or_else(
             || {
                 format!(
@@ -1476,6 +1498,7 @@ impl Cli {
                 .checked_add(count)
                 .and_then(|skipped| skipped.checked_add(1))
                 .ok_or_else(|| anyhow!("ignore count {count} is too large"))?;
+
             Some(HitCondition::new(
                 HitComparison::GreaterOrEqual,
                 first_stop,
@@ -1510,8 +1533,10 @@ impl Cli {
         let id = argument
             .parse()
             .map_err(|_| anyhow!("invalid thread ID: {argument}"))?;
+
         self.debugger.select_context(ThreadId::new(id)).await?;
         let renderer = self.renderers.stdout;
+
         Ok(format!(
             "{} thread {}",
             renderer.paint(Role::Success, "selected"),
@@ -1524,6 +1549,7 @@ impl Cli {
         let mut tasks = Vec::new();
         let mut gaps = Vec::new();
         let mut from = None;
+
         loop {
             let page = self.debugger.tasks(from, TASK_PAGE).await?;
             tasks.extend(page.tasks.iter().cloned());
@@ -1549,6 +1575,7 @@ impl Cli {
         let stop = snapshot
             .stop_id
             .ok_or_else(|| anyhow!("the program is not stopped"))?;
+
         let mut traced = Vec::with_capacity(tasks.len());
         for task in tasks {
             let trace = self
@@ -1571,6 +1598,7 @@ impl Cli {
                     .flat_map(|trace| trace.frames.iter()),
             )
             .await?;
+
         Ok(TaskTraces {
             selected: snapshot.selected,
             tasks: traced,
@@ -1583,6 +1611,7 @@ impl Cli {
     /// `-g` grouped by where they are; with `-t` each with its stack.
     async fn tasks(&self, line: &str, arguments: &[&str], spec: &CommandSpec) -> Result<String> {
         let (mut all, mut grouped, mut stacks) = (false, false, false);
+
         for argument in arguments {
             match *argument {
                 "-a" => all = true,
@@ -1605,6 +1634,7 @@ impl Cli {
             .filter(|(task, _)| all || !task.internal)
             .collect::<Vec<_>>();
         shown.sort_by_key(|(task, _)| task.id);
+
         if traces.tasks.is_empty() {
             match traces.gaps.as_slice() {
                 [] => bail!("the program has no {name}"),
@@ -1613,6 +1643,7 @@ impl Cli {
         }
 
         let mut lines = Vec::new();
+
         if grouped {
             let mut groups: Vec<(String, Vec<u64>)> = Vec::new();
             for (task, trace) in &shown {
@@ -1696,6 +1727,7 @@ impl Cli {
             let (task, trace) = &traces.tasks[0];
             let place = format::task_place(task, trace, &traces.images, renderer);
             let line = format::task(task, &place, true, renderer);
+
             return Ok(
                 match format::task_creation(task, &traces.images, renderer) {
                     Some(creation) => format!("{line}\n    {creation}"),
@@ -1707,6 +1739,7 @@ impl Cli {
         let number = argument
             .parse::<u64>()
             .map_err(|_| anyhow!("invalid {name} ID: {argument}"))?;
+
         let mut found = tasks
             .iter()
             .map(|task| task.id)
@@ -1741,6 +1774,7 @@ impl Cli {
 
         let snapshot = self.debugger.snapshot().await?;
         self.debugger.select_context(id).await?;
+
         let output = Box::pin(self.execute(command)).await;
         if let Some(previous) = snapshot.selected {
             self.debugger.select_context(previous).await?;
@@ -1773,6 +1807,7 @@ impl Cli {
             .filter_map(|frame| frame.module)
             .collect::<std::collections::BTreeSet<_>>();
         let mut images = BTreeMap::new();
+
         for module in modules {
             images.insert(module, self.debugger.loaded_module_image(module).await?);
         }
@@ -1805,6 +1840,7 @@ impl Cli {
     /// name, the first such call, or by its address after `*`.
     async fn step_into_call(&self, call: &str) -> Result<String> {
         let targets = self.debugger.step_targets().await?;
+
         let target = if let Some(address) = call.strip_prefix('*') {
             let address = parse_address(address)?;
             targets
@@ -1842,6 +1878,7 @@ impl Cli {
         let mut lines = Vec::new();
         let mut loaded = Vec::new();
         let renderer = self.renderers.stdout;
+
         let mut record = |event: Result<DebuggerEvent, _>| match event {
             Ok(DebuggerEvent::ModuleLoaded { module, .. }) => loaded.push(module.module.id),
             Ok(DebuggerEvent::SignalReceived {
@@ -1864,6 +1901,7 @@ impl Cli {
         };
 
         tokio::pin!(execution);
+
         let reason = loop {
             tokio::select! {
                 biased;
@@ -1873,6 +1911,7 @@ impl Cli {
         };
 
         let elapsed = started.elapsed();
+
         while let Ok(event) = events.try_recv() {
             record(Ok(event));
         }
@@ -1898,12 +1937,14 @@ impl Cli {
         }
 
         let stop = self.stop_report(&reason, elapsed).await;
+
         Ok(join_lines(&lines.join("\n"), &stop))
     }
 
     async fn list_breakpoints(&self) -> Result<String> {
         let snapshot = self.debugger.snapshot().await?;
         let mut rows = Vec::new();
+
         for breakpoint in snapshot.breakpoints.iter() {
             rows.push((breakpoint, self.placed(breakpoint).await));
         }
@@ -2024,6 +2065,7 @@ impl Cli {
 
         let mut lines = Vec::new();
         let mut length = 0;
+
         for variable in snapshot.variables.iter() {
             if length > value::OUTPUT_LIMIT {
                 break;
@@ -2050,6 +2092,7 @@ impl Cli {
         }
 
         lines.extend(snapshot.completion.exhaustion().map(value::exhaustion));
+
         Ok(lines.join("\n"))
     }
 
@@ -2067,6 +2110,7 @@ impl Cli {
             .evaluate(&expression)
             .await
             .map_err(|error| expression_error(text, error))?;
+
         let (inspected, cause) = match evaluation {
             microscope::Evaluation::Range(page) => return Ok(value::range(text, &page, renderer)),
             microscope::Evaluation::Value { value, cause } => (value, cause),
@@ -2159,6 +2203,7 @@ impl Cli {
         };
 
         let images = self.module_images().await?;
+
         Ok(value::type_definition(
             &type_info,
             &images,
@@ -2225,6 +2270,7 @@ impl Cli {
             )
             .await
             .map_err(|error| expression_error(text, error))?;
+
         let microscope::Evaluation::Value {
             value: assigned, ..
         } = evaluation
@@ -2233,6 +2279,7 @@ impl Cli {
         };
 
         let renderer = self.renderers.stdout;
+
         Ok(match &assigned.type_info {
             Some(type_info) => format!(
                 "({}) {} = {}",
@@ -2281,6 +2328,7 @@ impl Cli {
                     .map(|path| microscope::view_files::read(std::path::Path::new(path)))
                     .collect::<std::result::Result<Vec<_>, _>>()
                     .map_err(|error| anyhow!(error))?;
+
                 {
                     let mut views = self
                         .views
@@ -2304,6 +2352,7 @@ impl Cli {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .session
                     .clear();
+
                 for warning in self.reload_views().await {
                     self.warn(&format!("views: {warning}"));
                 }
@@ -2333,6 +2382,7 @@ impl Cli {
 
                 std::fs::write(path, recordings.concat())
                     .with_context(|| format!("failed to write {path}"))?;
+
                 Ok(format!(
                     "recorded {} to {path}",
                     plural(recordings.len() as u64, "kernel run")
@@ -2412,11 +2462,13 @@ impl Cli {
         marked: VirtualAddress,
     ) -> Result<String> {
         let mut images = BTreeMap::new();
+
         for module in format::disassembly_modules(disassembly) {
             images.insert(module, self.debugger.loaded_module_image(module).await?);
         }
 
         let modules = self.debugger.loaded_modules().await?;
+
         Ok(format::disassembly(
             disassembly,
             Some(marked),
@@ -2466,6 +2518,7 @@ impl Cli {
             .iter()
             .find(|record| record.module.id == location.module)
             .ok_or(microscope::Error::ModuleNotLoaded(location.module))?;
+
         Ok((
             module.module.virtual_address(location.image.address)?,
             location.address,
@@ -2488,6 +2541,7 @@ impl Cli {
         }
 
         let registers = self.debugger.registers().await?;
+
         registers
             .registers
             .iter()
@@ -2532,6 +2586,7 @@ impl Cli {
                 .is_some_and(|folded| *folded)
         };
         let steps = |count: u64| usize::try_from(count).unwrap_or(usize::MAX);
+
         let level = match target {
             FrameTarget::Selected => selected,
             FrameTarget::Level(level) if level > outermost => {
@@ -2585,6 +2640,7 @@ impl Cli {
             false,
             renderer,
         );
+
         let placed = frame
             .recorded
             .as_ref()
@@ -2657,6 +2713,7 @@ impl Cli {
             location.image.function.as_ref(),
             location.image.symbol.as_ref(),
         );
+
         let source = match &location.image.source {
             Some(source) => self
                 .debugger
@@ -2685,6 +2742,7 @@ impl Cli {
         }
 
         let modules = self.debugger.loaded_modules().await?;
+
         Ok(format!(
             "{} at {} from {}",
             renderer.paint(Role::Name, name),
@@ -2711,6 +2769,7 @@ impl Cli {
             .filter(|source| (first..=last).contains(&source.number.get()))
             .cloned()
             .collect();
+
         Ok(context)
     }
 
@@ -2725,6 +2784,7 @@ impl Cli {
     pub(super) async fn backtrace(&self, limit: Option<usize>, raw: bool) -> Result<String> {
         let selected = self.selected_level().await?;
         let trace = self.debugger.backtrace().await?;
+
         let modules = if trace
             .frames
             .iter()
@@ -2737,6 +2797,7 @@ impl Cli {
 
         // Source files are identified within their owning module's image.
         let images = self.source_images(trace.frames.iter()).await?;
+
         Ok(format::backtrace(
             &trace,
             selected,
@@ -2756,6 +2817,7 @@ impl Cli {
         let quoted = shell_quoted(&path.to_string_lossy());
         let line = context.line.to_string();
         let template = &self.settings.config.ui.editor;
+
         #[expect(
             clippy::literal_string_with_formatting_args,
             reason = "the editor template's placeholders"
@@ -2781,6 +2843,7 @@ impl Cli {
             super::wait_for_child(&mut editor)
         })
         .await??;
+
         if let Some(status) = status
             && !status.success()
         {
@@ -2808,6 +2871,7 @@ impl Cli {
             })
             .map(|hit| CountedId::Breakpoint(hit.breakpoint))
             .collect::<Vec<_>>();
+
         let renderer = self.renderers.stdout;
         (!deleted.is_empty()).then(|| {
             format!(
@@ -2826,6 +2890,7 @@ impl Cli {
         located: bool,
     ) -> String {
         let mut marks = BTreeMap::new();
+
         if let Ok(snapshot) = self.debugger.snapshot().await {
             for breakpoint in snapshot.breakpoints.iter() {
                 for placed in self.placed(breakpoint).await {
@@ -2885,10 +2950,12 @@ impl Cli {
                 .zip(spans)
                 .collect::<Vec<_>>(),
         );
+
         self.highlights
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(path.to_owned(), (modified, lexed.clone()));
+
         Some(lexed)
     }
 }
@@ -3048,6 +3115,7 @@ fn parse_break<'a>(line: &'a str, spec: &CommandSpec) -> Result<BreakLine<'a>> {
         .collect::<Vec<_>>();
     let first = starts.first().copied().unwrap_or(words.len());
     let mut parsed = BreakLine::default();
+
     match &words[..first] {
         [] => {}
         [(_, location)] => parsed.location = Some(location),
@@ -3087,6 +3155,7 @@ fn option_words(line: &str) -> Vec<(usize, &str)> {
     let mut words = Vec::new();
     let (mut depth, mut quoted, mut escaped) = (0_usize, false, false);
     let mut start = None;
+
     for (offset, character) in line.char_indices() {
         if quoted {
             match character {
@@ -3131,6 +3200,7 @@ fn unquoted(text: &str) -> Result<String> {
 
     let mut message = String::new();
     let mut characters = inner.chars();
+
     while let Some(character) = characters.next() {
         match character {
             '"' if characters.as_str().trim().is_empty() => return Ok(message),
@@ -3166,6 +3236,7 @@ fn parse_ids(
 
     let mut ids = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
+
     for word in words {
         let (watch, digits) = word
             .strip_prefix('w')
@@ -3252,6 +3323,7 @@ fn describe_ids(ids: &[CountedId], renderer: Renderer) -> String {
             CountedId::Breakpoint(_) => None,
         })
         .collect();
+
     [
         list("breakpoint", breakpoints),
         list("watchpoint", watchpoints),
@@ -3347,6 +3419,7 @@ pub fn python_name_hint(name: &str, program: &microscope::ModuleImage) -> Option
                 .chars()
                 .all(|character| character == '_' || character.is_alphanumeric())
     });
+
     (dotted && crate::present::debug_information::interprets_python(program))
         .then(|| format!("a Python function is named with `py:`, as in `py:{name}`"))
 }
@@ -3377,6 +3450,7 @@ impl Cli {
         let code =
             microscope::signal_named(name).ok_or_else(|| anyhow!("unknown signal '{name}'"))?;
         let mut policy = self.debugger.signal_policy(code).await?;
+
         for action in &arguments[1..] {
             apply_signal_action(&mut policy, action)?;
         }
@@ -3442,6 +3516,7 @@ impl Cli {
             .map(microscope::Condition::parse)
             .transpose()
             .map_err(|error| anyhow!("{error}"))?;
+
         if rest.trim() == "if" {
             return Err(spec.usage_error());
         }
@@ -3464,6 +3539,7 @@ impl Cli {
         let (catchpoints, others): (Vec<&str>, Vec<&str>) =
             words.iter().partition(|word| word.starts_with('c'));
         let mut deleted = Vec::new();
+
         for word in catchpoints {
             let id = word[1..]
                 .parse()
@@ -3500,10 +3576,12 @@ impl Cli {
             .with(id, stops)
             .ok_or_else(|| anyhow!("no runtime reports exceptions as '{id}'"))?;
         self.debugger.set_exception_stops(chosen).await?;
+
         *self
             .exceptions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = chosen;
+
         Ok(chosen)
     }
 
@@ -3516,6 +3594,7 @@ impl Cli {
 
         let current = self.exception_stops();
         let filters = microscope::ExceptionStops::filters();
+
         let (shown, stops) = match arguments {
             [] => (filters.iter().collect::<Vec<_>>(), current),
             [name, choice @ ..] => {
@@ -3529,6 +3608,7 @@ impl Cli {
                             names.join(", ")
                         )
                     })?;
+
                 let stops = match choice {
                     [] => current,
                     ["on" | "off"] => {
@@ -3547,6 +3627,7 @@ impl Cli {
             .map(|filter| filter.id.len())
             .max()
             .unwrap_or(0);
+
         Ok(shown
             .iter()
             .map(|filter| {
@@ -3600,6 +3681,7 @@ fn command_line(line: &str) -> Result<(&'static CommandSpec, &str, &str, Vec<&st
     let rest = line.trim_start()[written.len()..].trim();
     let spec = resolve_command(entered)?;
     let arguments = words.collect::<Vec<_>>();
+
     if !format.is_empty()
         && !matches!(
             spec.command,
@@ -3688,6 +3770,7 @@ mod tests {
     #[test]
     fn command_registry_has_unique_names_and_derives_arity_from_usage() {
         let mut names = std::collections::BTreeSet::new();
+
         for command in COMMANDS {
             for name in std::iter::once(command.name).chain(aliases(command)) {
                 assert!(names.insert(name), "duplicate command name {name}");
@@ -3758,6 +3841,7 @@ mod tests {
             parse("0x10").expect("address"),
             BreakpointSpec::Address(VirtualAddress::new(0x10))
         );
+
         for name in ["add", "face", "f", "42"] {
             assert_eq!(
                 parse(name).expect("function"),
@@ -3811,6 +3895,7 @@ mod tests {
                 BreakpointSpec::Function(name.to_owned())
             );
         }
+
         assert_eq!(
             parse("py::run").expect("native function"),
             BreakpointSpec::Function("py::run".to_owned())
@@ -3868,12 +3953,14 @@ mod tests {
     #[test]
     fn a_wide_range_of_ids_is_parsed_at_once() {
         let (sender, receiver) = std::sync::mpsc::channel();
+
         std::thread::spawn(move || {
             let _ = sender.send(
                 parse_ids(&["1-4000000000"], false, 1, spec(Command::Delete))
                     .map(|ids| ids.map_or(0, |ids| ids.len())),
             );
         });
+
         let parsed = receiver
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("parsing a wide range finishes");

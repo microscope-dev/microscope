@@ -110,6 +110,7 @@ impl Handles {
         let handle = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         table.nodes.insert(handle, node);
         drop(tables);
+
         Ok(handle)
     }
 
@@ -318,6 +319,7 @@ impl Reader<'_> {
         };
 
         let presenter = self.presenter();
+
         let (context, listed) = match node {
             Node::Children {
                 context,
@@ -387,6 +389,7 @@ impl Reader<'_> {
                 },
                 context,
             );
+
             self.add_pointee_drawings(&mut row).await;
             return self.row(context, row);
         }
@@ -454,6 +457,7 @@ impl Reader<'_> {
                         expression,
                     },
                 )?;
+
                 Ok(Row {
                     name: text.to_owned(),
                     text: format!("[<{length} elements>]"),
@@ -529,6 +533,7 @@ impl Reader<'_> {
             variables.as_ref(),
         )
         .await;
+
         Ok(protocol::Completions {
             start: text[..start].chars().count() as u64,
             items: complete::matching(candidates, partial, MOST_COMPLETIONS)

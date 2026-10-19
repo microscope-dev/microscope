@@ -211,6 +211,7 @@ pub fn replay_kernel_runs(
 ) -> std::result::Result<Vec<ReplayedRun>, String> {
     let recordings = view::kernel::parse_recordings(text)?;
     let mut replayed = Vec::new();
+
     for recording in &recordings {
         let kernel = match wasm {
             Some(wasm) => Arc::new(view::kernel::Kernel::new(
@@ -487,6 +488,7 @@ impl Program {
             &executable.data,
             &executable.debug_files,
         )?;
+
         Ok(Self {
             executable: executable.described(),
             debug_info,
@@ -513,6 +515,7 @@ impl Debugger {
             executable,
             debug_info,
         } = program;
+
         Self::start(|channels| {
             let image = Arc::clone(&debug_info.image);
             let controller = backend::spawn_controller(executable, debug_info, channels)?;
@@ -552,6 +555,7 @@ impl Debugger {
         };
 
         executable.debug_files = debug_info::DebugFileSearch::new(debug_files);
+
         Self::attach_from_source(process, executable, false).await
     }
 
@@ -651,6 +655,7 @@ impl Debugger {
     ) -> Result<Self> {
         #[cfg(debug_assertions)]
         flight_recorder::record_panics();
+
         let (requests, receiver) = mpsc::channel(REQUEST_CAPACITY);
         let shutdown_permit = requests
             .clone()
@@ -1053,6 +1058,7 @@ impl DebuggerHandle {
         let (children, held) = tokio::sync::mpsc::unbounded_channel();
         self.request(|reply| Request::HoldForks { children, reply })
             .await?;
+
         Ok(held)
     }
 
@@ -1237,6 +1243,7 @@ impl DebuggerHandle {
     ) -> Result<ExecutionId> {
         let process_id = self.stopped_selection().await?.process;
         let context = context.into();
+
         self.request(|reply| Request::Step {
             process_id,
             stop_id,
@@ -1342,6 +1349,7 @@ impl DebuggerHandle {
     ) -> Result<ExecutionId> {
         let process_id = self.stopped_selection().await?.process;
         let context = context.into();
+
         self.request(|reply| Request::Jump {
             process_id,
             stop_id,
@@ -1494,6 +1502,7 @@ impl DebuggerHandle {
     pub async fn runtime_address(&self, name: &str) -> Result<VirtualAddress> {
         let loaded = self.loaded_module().await?;
         let mut modules = vec![(loaded, Arc::clone(&self.module_image))];
+
         for record in self.loaded_modules().await?.modules.iter() {
             if record.module.id != loaded.id
                 && let Ok(image) = self.loaded_module_image(record.module.id).await
@@ -1503,6 +1512,7 @@ impl DebuggerHandle {
         }
 
         let mut found = BTreeSet::new();
+
         for (module, image) in &modules {
             let symbols = image.symbols_answering(name).collect::<Vec<_>>();
 
@@ -1521,6 +1531,7 @@ impl DebuggerHandle {
         }
 
         let mut found = found.into_iter();
+
         match (found.next(), found.next()) {
             (Some(address), None) => Ok(address),
             (None, _) => Err(Error::SymbolNotFound(name.to_owned())),
@@ -1664,6 +1675,7 @@ impl DebuggerHandle {
     /// file that exists but cannot be read is an error rather than skipped.
     async fn read_source(&self, recorded: &Path) -> Result<(PathBuf, String)> {
         let candidates = self.source_paths.candidates(recorded);
+
         for candidate in &candidates {
             match tokio::fs::read_to_string(candidate).await {
                 Ok(contents) => return Ok((candidate.clone(), contents)),
@@ -1773,6 +1785,7 @@ impl DebuggerHandle {
                 InspectionLimits::default(),
             )
             .await?;
+
         snapshot
             .variables
             .first()
@@ -1852,8 +1865,10 @@ impl DebuggerHandle {
 
         let views = Arc::new(views);
         let errors: Arc<[ViewFileError]> = views.errors().into();
+
         self.request(|reply| Request::SetViews { views, reply })
             .await?;
+
         Ok(errors)
     }
 
@@ -1912,6 +1927,7 @@ impl DebuggerHandle {
     /// image; use [`Self::loaded_global`] for a shared library's.
     pub async fn main_global(&self, id: GlobalVariableId) -> Result<Variable> {
         let module = self.loaded_module().await?;
+
         self.loaded_global(GlobalVariableReference {
             module: module.id,
             image: module.image,
@@ -2335,6 +2351,7 @@ impl StopView<'_> {
         let snapshot = self
             .variable_query(VariableQuery::Global(global), limits)
             .await?;
+
         snapshot
             .variables
             .first()
@@ -2380,6 +2397,7 @@ impl StopView<'_> {
     ) -> Result<Evaluation> {
         let context = self.context;
         let expression = expression.clone();
+
         self.handle
             .request(|reply| Request::Evaluate {
                 expression,
@@ -2397,6 +2415,7 @@ impl StopView<'_> {
     pub async fn explain_view(&self, expression: &Expression) -> Result<ViewExplanation> {
         let context = self.context;
         let expression = expression.clone();
+
         self.handle
             .request(|reply| Request::ExplainView {
                 expression,
@@ -2413,6 +2432,7 @@ impl StopView<'_> {
     pub async fn record_kernels(&self, expression: &Expression) -> Result<Vec<String>> {
         let context = self.context;
         let expression = expression.clone();
+
         self.handle
             .request(|reply| Request::RecordKernels {
                 expression,
@@ -2428,6 +2448,7 @@ impl StopView<'_> {
     pub async fn expression_type(&self, expression: &Expression) -> Result<TypeInfo> {
         let context = self.context;
         let expression = expression.clone();
+
         self.handle
             .request(|reply| Request::ExpressionType {
                 expression,
@@ -2461,6 +2482,7 @@ impl StopView<'_> {
     pub async fn resolve_watch_target(&self, expression: &Expression) -> Result<WatchTarget> {
         let context = self.context;
         let expression = expression.clone();
+
         self.handle
             .request(|reply| Request::ResolveWatchTarget {
                 expression,

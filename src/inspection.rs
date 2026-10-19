@@ -85,6 +85,7 @@ impl InspectionBudget {
     pub fn share(&self) -> Self {
         let remaining = self.limits.remaining_after(self.usage);
         let quarter = |value: u64| value / 4;
+
         Self::new(InspectionLimits {
             variables: quarter(remaining.variables),
             value_nodes: quarter(remaining.value_nodes),
@@ -132,6 +133,7 @@ impl InspectionBudget {
         if let Some(exhaustion) = self.exhaustion {
             return Some(exhaustion);
         }
+
         [
             (InspectionLimit::MemoryReads, 1),
             (InspectionLimit::MemoryBytes, bytes),
@@ -167,6 +169,7 @@ impl InspectionBudget {
 
         self.usage.memory_reads += 1;
         self.usage.memory_bytes += granted as u64;
+
         Ok(granted)
     }
 

@@ -85,6 +85,7 @@ fn take<'a>(bytes: &mut &'a [u8], length: usize) -> Result<&'a [u8], String> {
 
 fn varint(bytes: &mut &[u8]) -> Result<u64, String> {
     let mut value = 0_u64;
+
     for shift in (0..64).step_by(7) {
         let [byte, rest @ ..] = *bytes else {
             return Err("a varint is cut short".to_owned());
@@ -166,6 +167,7 @@ impl Message {
     /// A repeated number field, packed.
     pub fn packed(&mut self, field: u64, values: impl IntoIterator<Item = u64>) {
         let mut packed = Vec::new();
+
         for value in values {
             put_varint(&mut packed, value);
         }

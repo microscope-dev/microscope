@@ -52,6 +52,7 @@ pub fn run(data: &[u8]) {
             end: BASE + length,
         },
     ];
+
     for pair in starts.as_chunks::<2>().0 {
         let evidence = [
             BoundaryEvidence::ProgramCounter,
@@ -60,6 +61,7 @@ pub fn run(data: &[u8]) {
         ][usize::from(pair[1] % 3)];
         let address = BASE + offset(u16::from(pair[0]) << 2 | u16::from(pair[1]));
         source = source.start(address, evidence);
+
         if evidence == BoundaryEvidence::ProgramCounter {
             source.stopped = Some((VirtualAddress::new(address), registers(code, header[4])));
         }
@@ -121,6 +123,7 @@ fn registers(code: &[u8], flags: u8) -> RegisterFile {
             .chain([58, 59])
             .map(|dwarf| (DwarfRegister::new(dwarf), value(dwarf))),
     );
+
     if flags & 2 != 0 {
         registers.remove(RAX);
     }
@@ -155,6 +158,7 @@ fn check_indirect(
             .stopped
             .as_ref()
             .filter(|(address, _)| *address == instruction.address);
+
         match decoded.indirect_target.as_deref() {
             Some(IndirectTarget::Memory { slot, target }) => {
                 let bytes = (0..8)
@@ -222,6 +226,7 @@ fn check_block(source: &FakeSource, block: &DisassemblyBlock, bounded: bool) {
     for (index, instruction) in instructions.iter().enumerate() {
         let length = instruction.bytes.len();
         assert!((1..=15).contains(&length), "{instruction:?}");
+
         for (offset, byte) in instruction.bytes.iter().enumerate() {
             assert_eq!(
                 source.byte(instruction.address.get() + offset as u64),
@@ -287,6 +292,7 @@ fn check_block(source: &FakeSource, block: &DisassemblyBlock, bounded: bool) {
             resumed || last,
             "decoding resumes at {conflict:?}: {block:#?}"
         );
+
         if !resumed && let BlockCompletion::Unreadable { address, .. } = block.completion {
             assert_eq!(address, conflict.boundary);
         }
@@ -298,6 +304,7 @@ fn check_block(source: &FakeSource, block: &DisassemblyBlock, bounded: bool) {
         let decoded_end = instructions
             .last()
             .map_or(block.range.start, super::DisassembledInstruction::end);
+
         for start in source.starts.keys() {
             if block.range.start <= *start && *start < decoded_end.min(block.range.end) {
                 assert!(

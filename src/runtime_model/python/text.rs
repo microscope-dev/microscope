@@ -31,6 +31,7 @@ pub(super) fn string(code_points: &[u32]) -> String {
     let quote = if single && !double { '"' } else { '\'' };
     let mut text = String::with_capacity(code_points.len() + 2);
     text.push(quote);
+
     for &point in code_points {
         match char::from_u32(point) {
             Some('\\') => text.push_str("\\\\"),
@@ -65,6 +66,7 @@ pub(super) fn string(code_points: &[u32]) -> String {
 /// bytes sort as the code points do.
 pub(super) fn utf8(code_points: &[u32]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(code_points.len());
+
     for &point in code_points {
         if let Some(character) = char::from_u32(point) {
             let mut buffer = [0; 4];
@@ -96,6 +98,7 @@ pub(super) fn bytes(contents: &[u8]) -> String {
     let mut text = String::with_capacity(contents.len() + 3);
     text.push('b');
     text.push(char::from(quote));
+
     for &byte in contents {
         match byte {
             b'\\' => text.push_str("\\\\"),
@@ -160,6 +163,7 @@ fn shortest(sign: &str, shortest: &str) -> String {
     let point = exponent + 1;
     let count = i64::try_from(digits.len()).unwrap_or(i64::MAX);
     let zeros = |count: i64| "0".repeat(usize::try_from(count).unwrap_or(0));
+
     if point <= -4 || point > 16 {
         let (first, rest) = digits.split_at(1);
         let fraction = if rest.is_empty() {
@@ -189,6 +193,7 @@ pub(super) fn int(negative: bool, digits: &[u32], shift: u32) -> String {
     // shifted into from the most significant down.
     const LIMB: u64 = 1_000_000_000;
     let mut limbs: Vec<u64> = Vec::new();
+
     for &digit in digits.iter().rev() {
         let mut carry = u64::from(digit);
         for limb in &mut limbs {
@@ -204,6 +209,7 @@ pub(super) fn int(negative: bool, digits: &[u32], shift: u32) -> String {
     }
 
     let mut text = String::new();
+
     match limbs.split_last() {
         None => text.push('0'),
         Some((most, rest)) => {
@@ -292,14 +298,17 @@ mod tests {
                 (interpreter.display().to_string(), lines)
             })
             .collect();
+
         for point in 0..0x11_0000_u32 {
             let ours = string(&[point]);
             let index = usize::try_from(point).expect("a small index");
+
             for (interpreter, lines) in &reprs {
                 let theirs = &lines[index];
                 if ours == *theirs {
                     continue;
                 }
+
                 let kept = char::from_u32(point).map(|character| format!("'{character}'"));
                 assert!(
                     kept.as_ref() == Some(&ours)
@@ -387,7 +396,9 @@ mod tests {
                 .map(|at| u32::try_from((value >> (30 * at)) & u128::from(mask)).expect("a digit"))
                 .collect()
         };
+
         assert_eq!(int(false, &digits(big), 30), big.to_string());
+
         let huge: u128 = 10_u128.pow(38) + 1;
         assert_eq!(int(true, &digits(huge), 30), format!("-{huge}"));
 

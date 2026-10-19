@@ -914,6 +914,7 @@ fn scalar_datum(scalar: &ScalarValue, type_info: Option<&TypeInfo>) -> Datum {
             if exact { 4 } else { 8 }
         });
     let character = type_info.is_some_and(wide_character);
+
     match scalar {
         ScalarValue::Boolean(value) => Datum::Bool { b: *value },
         ScalarValue::Signed(value) if character => {
@@ -953,6 +954,7 @@ fn character_datum(code: u128) -> Datum {
         .ok()
         .and_then(char::from_u32)
         .unwrap_or(char::REPLACEMENT_CHARACTER);
+
     Datum::Text {
         s: character.to_string(),
     }
@@ -972,6 +974,7 @@ fn float(value: FloatValue) -> String {
         || microscope::float_text(value),
         |double| double.to_string(),
     );
+
     match text.as_str() {
         "inf" => "Infinity".to_owned(),
         "-inf" => "-Infinity".to_owned(),

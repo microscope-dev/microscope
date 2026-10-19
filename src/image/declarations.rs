@@ -88,6 +88,7 @@ pub fn add_to(
             })
         })
         .collect::<Result<Vec<_>, TooMany>>()?;
+
     let mut vtables = declarations.vtables.iter().rev().collect::<Vec<_>>();
     vtables.sort_by_key(|(address, _)| *address);
     vtables.dedup_by_key(|(address, _)| *address);
@@ -98,6 +99,7 @@ pub fn add_to(
             ty: ty.get().into(),
         })
         .collect::<Vec<_>>();
+
     let mut named = std::collections::HashSet::new();
     let mut producers = Vec::new();
     for producer in &declarations.producers {
@@ -111,6 +113,7 @@ pub fn add_to(
         .owned_table(constants)
         .owned_table(vtables)
         .owned_shared(TableKind::Producers, producers);
+
     Ok(())
 }
 

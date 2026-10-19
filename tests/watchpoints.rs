@@ -46,6 +46,7 @@ async fn symbol(scenario: &Scenario, name: &str) -> VirtualAddress {
 async fn run_to(scenario: &mut Scenario, function: &str) {
     scenario.add_breakpoint(function).await;
     let mut reason = scenario.run_to_stop().await;
+
     for _ in 0..4 {
         match reason {
             StopReason::Breakpoint { .. } => return,
@@ -192,6 +193,7 @@ async fn write_watchpoints_report_every_store_after_its_instruction() {
                 Some("scalar_stores"),
                 "{fixture}: the stop follows the store inside its function"
             );
+
             let snapshot = scenario.snapshot().await;
             assert!(matches!(
                 snapshot.inferior,
@@ -221,6 +223,7 @@ async fn write_watchpoints_report_every_store_after_its_instruction() {
                 scenario.handle().remove_watchpoint(watchpoint.id),
             )
             .await;
+
         let counted = Watchpoint {
             hit_count: 4,
             ..watchpoint
@@ -343,6 +346,7 @@ async fn watch_ranges_split_into_aligned_slots_until_capacity_runs_out() {
     scenario
         .operation("free a slot", scenario.handle().remove_watchpoint(word.id))
         .await;
+
     let element = watch(&scenario, "watch_array[3]", WatchAccess::Write).await;
     assert_eq!(
         element.address.get(),
@@ -387,6 +391,7 @@ async fn one_store_reports_every_watchpoint_it_touches() {
             available: 0
         })
     ));
+
     for id in [wide.id, spare.id] {
         scenario
             .operation("remove spare", scenario.handle().remove_watchpoint(id))
@@ -453,6 +458,7 @@ async fn repeated_string_stores_report_each_iteration_at_the_string_instruction(
 
     let mut previous = 0_u64;
     let mut program_counters = BTreeSet::new();
+
     for written in 1..=8_u32 {
         let reason = scenario.resume_to_stop().await;
         let current = u64::from_le_bytes(std::array::from_fn(|index| {
@@ -485,6 +491,7 @@ async fn access_watchpoints_report_loads_and_read_only_watches_are_refused() {
     run_to(&mut scenario, "read_access").await;
 
     let address = symbol(&scenario, "watch_i32").await;
+
     for result in [
         scenario
             .handle()
@@ -516,6 +523,7 @@ async fn access_watchpoints_report_loads_and_read_only_watches_are_refused() {
     assert_eq!(watchpoint.access, WatchAccess::ReadWrite);
     let reason = scenario.resume_to_stop().await;
     assert_single_hit(&reason, watchpoint.id, 42, 42);
+
     assert_eq!(
         stopped_function(&scenario).await.as_deref(),
         Some("read_access")
@@ -725,6 +733,7 @@ async fn a_handler_storing_the_same_value_before_a_breakpoint_repair_is_transpar
         stopped_function(&scenario).await.as_deref(),
         Some("fork_write")
     );
+
     scenario
         .operation(
             "remove watchpoint",
@@ -1037,6 +1046,7 @@ async fn every_write_from_every_thread_is_reported_exactly_once() {
     let mut racing_writers = BTreeSet::new();
     let mut started = BTreeSet::new();
     let mut events = scenario.handle().subscribe();
+
     loop {
         let reason = scenario.resume_to_stop().await;
         while let Ok(event) = events.try_recv() {
@@ -1134,6 +1144,7 @@ async fn thread_local_watchpoints_watch_one_threads_instance_until_it_exits() {
     // The owner stores 2 and 3; main stores 5 through a pointer. The other
     // worker's stores to its own instance are never reported.
     let mut writes = BTreeMap::new();
+
     loop {
         match scenario.resume_to_stop().await {
             StopReason::Watchpoint { .. } => {}
@@ -1232,6 +1243,7 @@ async fn hits_until_invalidated(
 ) -> (Vec<u64>, WatchpointInvalidation, bool) {
     let mut events = scenario.handle().subscribe();
     let mut values = Vec::new();
+
     loop {
         match scenario.resume_to_stop().await {
             StopReason::Watchpoint { hits } => {
@@ -1637,6 +1649,7 @@ async fn detaching_disarms_watchpoints_even_while_they_are_being_hit() {
             std::iter::from_fn(|| events.try_recv().ok())
                 .any(|event| matches!(event, DebuggerEvent::InferiorDetached { .. }))
         );
+
         let status = target.process.wait();
         assert_eq!(
             status.code(),
@@ -1667,6 +1680,7 @@ async fn watchpoints_work_across_the_rust_and_zig_matrix() {
         // A change watchpoint on the same bytes shares the hardware slot.
         let changes = watch(&scenario, global, WatchAccess::Change).await;
         let mut values = BTreeMap::<_, Vec<_>>::new();
+
         loop {
             match scenario.resume_to_stop().await {
                 StopReason::Watchpoint { hits } => {
@@ -1721,6 +1735,7 @@ async fn go_watchpoints_follow_goroutines_onto_new_threads() {
 
     let mut hit_count = 0;
     let mut writers = BTreeSet::new();
+
     loop {
         match scenario.resume_to_stop().await {
             StopReason::Watchpoint { .. } => {
@@ -1749,6 +1764,7 @@ async fn go_watchpoints_follow_goroutines_onto_new_threads() {
             scenario.handle().remove_all_breakpoints(),
         )
         .await;
+
     loop {
         match scenario.resume_to_stop().await {
             StopReason::Exited(ExitStatus::Code(0)) => break,
@@ -1888,6 +1904,7 @@ async fn values_without_watchable_memory_are_refused_with_typed_errors() {
             scenario.run_to_stop().await,
             StopReason::Breakpoint { .. }
         ));
+
         for &(name, expected) in refusals {
             let result = scenario
                 .handle()
@@ -2087,11 +2104,13 @@ async fn attached_processes_arm_threads_they_create_later() {
 
     let mut values = Vec::new();
     let mut writers = BTreeSet::new();
+
     loop {
         let reason = tokio::time::timeout(std::time::Duration::from_secs(5), handle.resume())
             .await
             .expect("resume timed out")
             .expect("resume attached target");
+
         match reason {
             StopReason::Watchpoint { hits } => {
                 let [hit] = hits.as_ref() else {
@@ -2169,6 +2188,7 @@ fn gdb_changes(fixture: &str, expressions: &[Watched<'_>]) -> Vec<Change> {
         .lines()
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>();
+
     lines
         .windows(3)
         .filter_map(|window| {
@@ -2212,6 +2232,7 @@ async fn microscope_changes(fixture: &str, expressions: &[Watched<'_>]) -> Vec<C
     }
 
     let mut changes = Vec::new();
+
     loop {
         match scenario.resume_to_stop().await {
             StopReason::Watchpoint { hits } => {
@@ -2487,6 +2508,7 @@ async fn racing_threads_report_changes_from_the_value_each_stop_observed() {
         (locked.id, global(&scenario, "locked_counter").await),
         (racing.id, global(&scenario, "racing_counter").await),
     ]);
+
     loop {
         match scenario.resume_to_stop().await {
             StopReason::Watchpoint { .. } => {}
@@ -2571,6 +2593,7 @@ async fn stores_that_change_nothing_never_stop_threads_receiving_signals() {
 /// stores, none of which stopped, and returns the total.
 async fn pause_after_stores(scenario: &mut Scenario, count: u64) -> u64 {
     let target = global(scenario, "stores").await + count;
+
     loop {
         let running = scenario.start_resuming().await;
         tokio::task::yield_now().await;

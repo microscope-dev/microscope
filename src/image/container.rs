@@ -312,6 +312,7 @@ impl<'a, F: Format> Tables<'a, F> {
             }
             .as_bytes(),
         );
+
         Ok(bytes)
     }
 }

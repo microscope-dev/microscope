@@ -398,6 +398,7 @@ fn described(image: &ModuleImage, (ty, path): Member) -> u64 {
     }
 
     let mut offset = 0;
+
     for name in path {
         if *name == END {
             return offset + info.byte_size.expect("a complete member has a size");
@@ -442,6 +443,7 @@ fn each_described_interpreter_agrees_with_its_dwarf() {
     let root = std::env::var_os("MICROSCOPE_CPYTHON")
         .expect("MICROSCOPE_CPYTHON names the interpreters; run tests in the dev shell");
     let mut checked = 0;
+
     for generated in layouts::GENERATED {
         let directory = Path::new(&root).join(generated.name);
         let debug = directory.join("debug/lib/debug");
@@ -460,6 +462,7 @@ fn each_described_interpreter_agrees_with_its_dwarf() {
         let name = generated.name;
         let minor = PyVersion(generated.version).minor();
         let layout = generated.layout();
+
         for &field in Field::ALL {
             let Some(at) = layout.field(field) else {
                 continue;
@@ -577,6 +580,7 @@ fn each_asyncio_build_agrees_with_its_debug_section() {
     let root = std::env::var_os("MICROSCOPE_CPYTHON")
         .expect("MICROSCOPE_CPYTHON names the interpreters; run tests in the dev shell");
     let mut checked = Vec::new();
+
     for generated in layouts::GENERATED {
         let layout = generated.layout();
         if layout.field(Field::TaskNode).is_none() {
@@ -597,6 +601,7 @@ fn each_asyncio_build_agrees_with_its_debug_section() {
             .map(|word| u64::from_le_bytes(*word))
             .collect();
         assert_eq!(words.len(), ASYNCIO_DEBUG.len(), "{}", generated.name);
+
         for (field, word) in ASYNCIO_DEBUG.iter().zip(&words) {
             if let Some(field) = field {
                 assert_eq!(

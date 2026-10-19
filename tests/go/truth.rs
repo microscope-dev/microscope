@@ -159,6 +159,7 @@ impl GoSession {
             matches!(reason, StopReason::Breakpoint { .. }),
             "{fixture}: {reason:?}"
         );
+
         Self {
             scenario,
             fixture: fixture.to_owned(),
@@ -183,6 +184,7 @@ impl GoSession {
         let mut tasks = Vec::new();
         let mut gaps = Vec::new();
         let mut from = None;
+
         loop {
             let TaskPage {
                 tasks: found,
@@ -196,6 +198,7 @@ impl GoSession {
             assert!(found.len() <= page, "{}", self.fixture);
             tasks.extend(found.iter().cloned());
             gaps.extend(missing.iter().map(ToString::to_string));
+
             match next {
                 Some(next) => from = Some(next),
                 None => return (tasks, gaps),

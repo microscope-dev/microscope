@@ -142,6 +142,7 @@ fn coroutine<'a>(
         .find(|state| state.kind == CoroutineStateKind::Unresumed)
         .ok_or("the coroutine has no `Unresumed` state")?;
     let captures = std::mem::replace(&mut unresumed.saved, Arc::from([]));
+
     for state in states
         .iter_mut()
         .filter(|state| state.kind != CoroutineStateKind::Unresumed)
@@ -277,6 +278,7 @@ fn read_state<'a>(
             Ok(moved)
         })
         .collect::<Result<Vec<_>, Arc<str>>>()?;
+
     Ok(CoroutineState {
         value,
         kind,
@@ -326,6 +328,7 @@ pub fn body_name(name: &str, namespace: &str) -> Option<Arc<str>> {
 
     let (outer, last) = namespace.rsplit_once("::").unwrap_or(("", namespace));
     let enclosing = body_name(last, outer).unwrap_or_else(|| last.into());
+
     if numbered("{async_fn#").is_some() {
         Some(enclosing)
     } else if let Some(number) = numbered("{async_block#") {
@@ -345,6 +348,7 @@ pub fn without_arguments(name: &str) -> Option<&str> {
     }
 
     let mut depth = 0_usize;
+
     for (at, character) in name.char_indices().rev() {
         match character {
             // A function type's arrow closes nothing.

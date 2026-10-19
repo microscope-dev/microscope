@@ -168,6 +168,7 @@ impl Collector {
 
         self.anchors.push(perf::tsc_anchor());
         let heartbeat = monotonic().to_le_bytes();
+
         for index in 0..self.instances.len() {
             if self.instances[index].defines {
                 self.define(processor, index);
@@ -358,7 +359,9 @@ impl Collector {
                 }
             }
         };
+
         let mut switched = Vec::new();
+
         while self.instances[index].defined < count {
             let site = self.instances[index].defined;
             self.instances[index].defined += 1;
@@ -373,6 +376,7 @@ impl Collector {
                 }
                 Err(error) => Err(error.to_string()),
             };
+
             let site = match read {
                 Ok(site) => site,
                 // Its texts went with the process, which broke nothing.
@@ -390,6 +394,7 @@ impl Collector {
                     continue;
                 }
             };
+
             let instance = &mut self.instances[index];
             let row = processor.probe_site(instance.module, &site);
             instance.sites.insert(site.key, row);
@@ -419,6 +424,7 @@ impl Collector {
         };
 
         let mut rings = BTreeMap::new();
+
         for address in registry.1 {
             if let Ok(Some(header)) = self.header(address) {
                 if header.state == abi::RING_RETIRED {
@@ -447,6 +453,7 @@ impl Collector {
             (control + 48, 0_u32.to_le_bytes().to_vec()),
             (control + 52, self.timeout.to_le_bytes().to_vec()),
         ];
+
         // Recording every site, a run-time site is on from its definition,
         // not only once the collector next reads it.
         let enable = if self.selection == ProbeSelection::All {
@@ -454,6 +461,7 @@ impl Collector {
         } else {
             abi::ENABLED
         };
+
         let instance = &mut self.instances[index];
         instance.dropped = registry.0.dropped;
         instance.rings = rings;
@@ -544,6 +552,7 @@ impl Collector {
         processor
             .builder()
             .count(AccountKind::ProbeNoRing as u32, dropped);
+
         for address in rings {
             self.read_ring(processor, index, address);
             if self.gone {
@@ -603,12 +612,14 @@ impl Collector {
             header.interrupted.saturating_sub(ring.interrupted),
         );
         ring.interrupted = ring.interrupted.max(header.interrupted);
+
         let (span, mut overwritten) = probes::copy_span(ring.tail, header);
         let mut records = std::mem::take(&mut self.buffer);
         records.clear();
         records.resize(probes::record_bytes(span.end - span.start), 0);
         let mut copied = 0;
         let base = address + abi::RING_HEADER as u64;
+
         for slots in probes::slots(&span, header.size) {
             let length = slots.len();
             if length == 0 {
@@ -641,6 +652,7 @@ impl Collector {
         let ring = self.instances[index].rings.entry(address).or_default();
         ring.tail = span.end;
         let before = std::mem::take(&mut ring.before);
+
         if copied < records.len() {
             processor
                 .builder()
@@ -676,6 +688,7 @@ impl Collector {
         builder.count(AccountKind::ProbeOverwritten as u32, decoder.orphaned);
         (decoder.malformed, decoder.orphaned) = (0, 0);
         let mut unknown = 0;
+
         for decoded in &decoder.events {
             let Some(&site) = self.instances[index].sites.get(&decoded.key) else {
                 unknown += 1;

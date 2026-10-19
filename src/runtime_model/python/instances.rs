@@ -136,6 +136,7 @@ impl Values<'_, '_> {
             name,
             library,
         });
+
         self.classes.borrow_mut().insert(ty, Arc::clone(&class));
         Ok(class)
     }
@@ -320,6 +321,7 @@ impl Values<'_, '_> {
             }
             _ => false,
         };
+
         match (found, base) {
             (Some(_), Some(base)) if inherited => Ok(*base),
             (Some(_), _) => Err(refused(
@@ -582,6 +584,7 @@ impl Values<'_, '_> {
         });
         let start = usize::try_from(range.start).unwrap_or(usize::MAX);
         let end = usize::try_from(range.end).unwrap_or(usize::MAX);
+
         Ok(attributes
             .into_iter()
             .skip(start)
@@ -641,6 +644,7 @@ impl Values<'_, '_> {
                 .filter(|(index, _)| (start..end).contains(index))
                 .map(|(_, slot)| slot),
         );
+
         Ok(attributes)
     }
 
@@ -659,6 +663,7 @@ impl Values<'_, '_> {
     ) -> Result<VirtualAddress, InterpretedFailure> {
         let unavailable = |problem| self.unavailable(problem);
         let read = self.object(object).map_err(unavailable)?;
+
         match read {
             Object::Module { dict } => {
                 let class = self.class(self.types.module).map_err(unavailable)?;
@@ -809,6 +814,7 @@ impl Values<'_, '_> {
             let value = self
                 .member(object, attribute.value)
                 .map_err(|problem| self.unavailable(problem))?;
+
             return match value {
                 Some(value) if value != VirtualAddress::new(0) => Ok(value),
                 Some(_) => Err(refused(

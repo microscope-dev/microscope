@@ -186,11 +186,13 @@ impl Key {
         let mut digest = twox_hash::XxHash3_128::new();
         digest.write(b"microscope image\0");
         digest.write(env!("MICROSCOPE_SOURCES_DIGEST").as_bytes());
+
         for revision in crate::image::revisions() {
             digest.write(&revision.to_le_bytes());
         }
 
         digest.write(&(inputs.len() as u64).to_le_bytes());
+
         for input in inputs {
             digest.write(&(input.len() as u64).to_le_bytes());
             digest.write(input);
@@ -255,6 +257,7 @@ impl ImageCache {
         };
 
         cache.evict(capacity).map_err(open)?;
+
         Ok(cache)
     }
 
@@ -349,6 +352,7 @@ impl ImageCache {
     /// the cache holds at most `capacity` bytes.
     fn evict(&self, capacity: u64) -> std::io::Result<()> {
         let mut entries = Vec::new();
+
         for entry in std::fs::read_dir(&self.directory)? {
             let entry = entry?;
             let name = entry.file_name();
@@ -373,6 +377,7 @@ impl ImageCache {
 
         let mut held = entries.iter().map(|(_, _, length)| length).sum::<u64>();
         entries.sort();
+
         for (_, path, length) in entries {
             if held <= capacity {
                 break;
@@ -399,6 +404,7 @@ fn read_entry(path: &Path) -> std::io::Result<(AlignedBytes, FileStamp)> {
     let mut file = std::fs::File::open(path)?;
     let metadata = file.metadata()?;
     let unusable = |why| std::io::Error::new(std::io::ErrorKind::InvalidData, why);
+
     if !metadata.is_file() {
         return Err(unusable("not a file"));
     }
@@ -409,6 +415,7 @@ fn read_entry(path: &Path) -> std::io::Result<(AlignedBytes, FileStamp)> {
         .ok_or_else(|| unusable("too large"))?;
     let mut bytes = AlignedBytes::zeroed(length).ok_or_else(|| unusable("too large"))?;
     file.read_exact(bytes.as_mut_bytes())?;
+
     Ok((bytes, FileStamp::of(&metadata)))
 }
 

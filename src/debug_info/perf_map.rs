@@ -41,6 +41,7 @@ pub fn parse(text: &[u8]) -> (Vec<Entry>, usize) {
         .split(|byte| *byte == b'\n')
         .filter_map(entry)
         .collect();
+
     (entries, complete)
 }
 
@@ -59,6 +60,7 @@ fn entry(line: &[u8]) -> Option<Entry> {
     let size = hex(fields.next()?)?;
     let name = String::from_utf8_lossy(fields.next()?);
     let end = start.checked_add(size).filter(|end| *end > start)?;
+
     Some(Entry {
         start,
         end,
@@ -141,12 +143,14 @@ pub fn load(
             ..crate::model::ModuleMetadata::default()
         },
     )?;
+
     let binding = crate::model::Binding {
         path: Arc::new(path.to_path_buf()),
         debug_path: None,
         id,
     };
     let image = Arc::new(crate::ModuleImage::bind(&binding, Arc::new(tables))?);
+
     let unwind = PerfMapUnwind {
         functions: functions
             .values()
@@ -231,6 +235,7 @@ fn cfa(frame: CodeFrame, registers: &RegisterFile) -> Result<VirtualAddress, Unw
             .and_then(|top| top.checked_add(8)),
         CodeFrame::Based { offset, .. } => register(registers, RBP, "rbp")?.checked_add(offset),
     };
+
     cfa.map(VirtualAddress::new)
         .ok_or_else(|| UnwindTermination::InvalidCaller {
             description: "a frame ends past the address space".into(),
@@ -270,6 +275,7 @@ impl UnwindInfo for PerfMapUnwind {
         let frame = self.frame(address)?;
         let cfa = cfa(frame, registers)?;
         let return_address = read(memory, cfa, 8)?;
+
         let frame_pointer = match frame {
             CodeFrame::Based { offset, .. }
             | CodeFrame::Stack {
@@ -358,6 +364,7 @@ mod tests {
                 code: code.map(Arc::from),
             })
             .collect();
+
         load(
             Path::new("/tmp/perf-1.map"),
             ModuleImageId::new(0),
@@ -422,6 +429,7 @@ mod tests {
             info.unwind.frame_pointer_rule(ImageAddress::new(0x1005)),
             FramePointerRule::NotKept
         );
+
         for unknown in [0x1025, 0x1030, 0x100b] {
             assert!(
                 matches!(
@@ -454,6 +462,7 @@ mod tests {
                 code: None,
             },
         ];
+
         let info = load(
             Path::new("/tmp/perf-1.map"),
             ModuleImageId::new(0),
@@ -464,6 +473,7 @@ mod tests {
             &jitted,
         )
         .expect("the map loads");
+
         let names: Vec<_> = info
             .image
             .symbols()

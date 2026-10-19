@@ -96,6 +96,7 @@ impl<'a> Reader<'a> {
             // the bytes themselves may yet be, as in memory not mapped by
             // the page, so they are read as they would be without blocks.
             let mut done = 0;
+
             while let Some(rest) = bytes.get_mut(done..)
                 && !rest.is_empty()
             {
@@ -143,6 +144,7 @@ impl<'a> Reader<'a> {
         const CHUNK: u64 = 16;
         let mut text = Vec::new();
         let mut at = address;
+
         while (text.len() as u64) < MAX_C_STRING {
             let length = CHUNK - at.get() % CHUNK;
             let chunk = self.bytes(at, length)?;
@@ -306,6 +308,7 @@ impl Head<'_, '_> {
             let offset = reader.offset(Field::UnicodeState)?;
             read_le(&header, offset, 4).ok_or_else(|| malformed(object, "str"))?
         };
+
         let bit = |shift: Constant| (state >> reader.layout.constant(shift)) & 1 != 0;
         let kind = (state >> reader.layout.constant(Constant::UnicodeKindShift)) & 7;
         let data = match (
@@ -324,6 +327,7 @@ impl Head<'_, '_> {
 
         let shown = length.min(limit);
         let bytes = self.bytes(data, shown * width)?;
+
         let points: Vec<u32> = match width {
             1 => bytes.iter().map(|&byte| u32::from(byte)).collect(),
             2 => bytes

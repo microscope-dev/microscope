@@ -173,6 +173,7 @@ pub(super) fn read_uleb128_u128(
 ) -> std::result::Result<u128, Arc<str>> {
     let mut value = 0_u128;
     let mut shift = 0_u32;
+
     loop {
         let byte = *bytes
             .get(*cursor)
@@ -213,6 +214,7 @@ pub(super) fn read_sleb128_i128(
 ) -> std::result::Result<i128, Arc<str>> {
     let mut value = 0_u128;
     let mut shift = 0_u32;
+
     loop {
         let byte = *bytes
             .get(*cursor)
@@ -298,6 +300,7 @@ pub(super) fn extract_bit_field(
     }
 
     let mut value = 0_u128;
+
     for field_bit in 0..bit_size {
         let source = bit_offset + field_bit;
         let byte = usize::try_from(source / 8)
@@ -487,6 +490,7 @@ pub(super) fn decode_scalar(
             let value = unsigned_value(bytes, target.byte_order)
                 .map_err(ScalarDecodeError::Malformed)?
                 & low_bits_mask(bits as usize);
+
             match value {
                 0 => Ok(ScalarValue::Boolean(false)),
                 1 => Ok(ScalarValue::Boolean(true)),
@@ -570,6 +574,7 @@ pub(super) fn unsigned_value(
     }
 
     let mut value = [0_u8; 16];
+
     match byte_order {
         ByteOrder::Little => value[..bytes.len()].copy_from_slice(bytes),
         ByteOrder::Big => value[16 - bytes.len()..].copy_from_slice(bytes),
@@ -609,6 +614,7 @@ fn decode_float(
     let layout = type_info.float_layout();
     let word = || unsigned_value(bytes, target.byte_order).map_err(ScalarDecodeError::Malformed);
     let narrow = |error: &str| ScalarDecodeError::Malformed(error.into());
+
     match bytes.len() {
         2 if layout == Some(FloatLayout::Binary16) => Ok(FloatValue::Binary16(
             u16::try_from(word()?).map_err(|_| narrow("binary16 value exceeds 16 bits"))?,

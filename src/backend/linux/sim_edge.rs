@@ -493,6 +493,7 @@ impl LinuxTraceOps for SimTrace {
             &arguments,
             self.launch.random,
         );
+
         Ok(Pid::from_raw(tid))
     }
 
@@ -512,6 +513,7 @@ impl LinuxTraceOps for SimTrace {
             .map(|thread| Pid::from_raw(thread.tid))
             .collect::<Vec<_>>();
         threads.sort_unstable();
+
         Ok(threads)
     }
 
@@ -913,6 +915,7 @@ impl SimController {
             },
             trace,
         );
+
         (
             Self { controller },
             ClientChannels {
@@ -952,6 +955,7 @@ impl SimController {
             message,
             ControllerMessage::Request(Request::Shutdown { .. })
         );
+
         Some(Delivery {
             message,
             description,

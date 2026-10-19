@@ -95,6 +95,7 @@ mod tests {
                 (THREAD_POINTER + 8, DTV),
                 (DTV, blocks.len() as u64),
             ]);
+
             for (slot, block) in (1..).zip(blocks) {
                 words.insert(DTV + 8 * slot, *block);
             }

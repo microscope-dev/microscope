@@ -1336,6 +1336,7 @@ impl TypeInfo {
         }
 
         let mut name = String::new();
+
         for segment in identity.path.iter() {
             name.push_str(segment);
             name.push_str("::");
@@ -2860,6 +2861,7 @@ impl TextSummary {
 
         let mut text = String::new();
         let mut cut = false;
+
         for character in characters {
             if text.len() + character.len_utf8() > Self::MAX_BYTES {
                 cut = true;
@@ -3554,6 +3556,7 @@ impl TargetDescription {
         };
 
         let name: Arc<str> = ty.name().into();
+
         Some(BaseType {
             name: Arc::clone(&name),
             base_name: name,
@@ -4892,6 +4895,7 @@ impl Backtrace {
             .frames
             .iter()
             .any(|frame| matches!(frame.kind, FrameKind::Interpreted { .. }));
+
         self.frames
             .iter()
             .take_while(|frame| frame.role != CodeRole::Dispatch)
@@ -4915,6 +4919,7 @@ impl Backtrace {
         // The loops whose enclosing frames are still to come, innermost
         // last: each one's function, and where its iterators begin.
         let mut open: Vec<(Option<ModuleId>, FunctionId, usize)> = Vec::new();
+
         for (index, frame) in self.frames.iter().enumerate() {
             let Some(function) = &frame.function else {
                 continue;

@@ -97,6 +97,7 @@ impl CallSiteBuilder {
                 Some(gimli::AttributeValue::Flag(true))
             )
         });
+
         if let Some(start) = start {
             let key = DieKey {
                 unit: unit_index,
@@ -204,6 +205,7 @@ impl CallSiteBuilder {
         }
 
         let (site, _) = &mut self.sites[site];
+
         match site_parameter(dwarf, pool, units, unit_index, entry) {
             Ok(parameter) => site.parameters.push(parameter),
             Err(error) => {
@@ -270,6 +272,7 @@ impl CallSiteBuilder {
                 .into_iter()
                 .map(|(origin, index, start)| (origin, function(index), start)),
         );
+
         #[expect(
             clippy::iter_over_hash_type,
             reason = "each name's functions are appended in order, whatever order the names come in"
@@ -390,6 +393,7 @@ fn site_attributes<'data>(
     let origin = entry
         .attr_value(gimli::DW_AT_call_origin)
         .or_else(|| entry.attr_value(gimli::DW_AT_abstract_origin));
+
     let callee = if let Some(key) = die_reference(origin, unit_index, units)? {
         let origin_unit = units
             .get(key.unit)
@@ -475,6 +479,7 @@ fn site_parameter(
         units,
     )?
     .and_then(|key| units.debug_info_offset(key));
+
     Ok(SiteParameter {
         register,
         parameter,
@@ -569,6 +574,7 @@ fn tail_path(view: CallView<'_>, from: u32, to: u32) -> Result<Vec<SiteId>, Vari
     let mut reached = vec![from];
     let mut seen = HashSet::from_iter([from]);
     let mut next = 0;
+
     while let Some(&function) = reached.get(next) {
         next += 1;
         let calling = view.function(function);
@@ -597,6 +603,7 @@ fn tail_path(view: CallView<'_>, from: u32, to: u32) -> Result<Vec<SiteId>, Vari
 
     // The functions that lead to `to`, by walking tail calls backwards.
     let mut callers = HashMap::<u32, Vec<u32>>::new();
+
     for &function in &reached {
         for site in view.function(function).tail_calls() {
             callers
@@ -608,6 +615,7 @@ fn tail_path(view: CallView<'_>, from: u32, to: u32) -> Result<Vec<SiteId>, Vari
 
     let mut leads = HashSet::from_iter([to]);
     let mut pending = vec![to];
+
     while let Some(function) = pending.pop() {
         for &caller in callers.get(&function).into_iter().flatten() {
             if leads.insert(caller) {
@@ -627,6 +635,7 @@ fn tail_path(view: CallView<'_>, from: u32, to: u32) -> Result<Vec<SiteId>, Vari
 
     let mut path = Vec::new();
     let mut function = from;
+
     while function != to {
         let mut next = None;
         for site in view.function(function).tail_calls() {
@@ -722,6 +731,7 @@ impl DwarfVariableInfo {
             SiteTarget::Computed(Ok(location)) => {
                 // A target the caller can no longer compute is unknown.
                 let list = self.locations().list(location);
+
                 match self.site_word(site, |address| select(list, address), runtime, budget) {
                     Ok(address) => CallTarget::Computed(VirtualAddress::new(address)),
                     Err(VariableRuntimeError::Unavailable(
@@ -759,6 +769,7 @@ impl DwarfVariableInfo {
             .iter()
             .map(|site| entered(calls, *site))
             .collect::<Result<Vec<_>, _>>()?;
+
         Ok(TailCallChain {
             functions: std::iter::once(from)
                 .chain(entered)
@@ -823,6 +834,7 @@ impl DwarfVariableInfo {
             .ok_or(VariableRuntimeError::Unavailable(
                 VariableUnavailableReason::UnavailableAtInstruction,
             ))?;
+
         let mut cache = FrameBaseCache::Empty;
         let location = self.calls().function(site.function()).frame_base();
         let mut frame_base = FrameBase::Lazy(FrameBaseContext {
@@ -906,6 +918,7 @@ mod tests {
         pool.add_to(&mut builder);
         calls::add_to(&mut builder, &mut strings, calls).expect("the calls fit");
         builder.bytes(crate::image::TableKind::Strings, strings.into_bytes());
+
         builder
             .seal(crate::image::Limits::default())
             .expect("the calls are valid")
@@ -939,6 +952,7 @@ mod tests {
                 }
             })
             .collect();
+
         sealed(&Calls { functions, sites }, &LocationsBuilder::default())
     }
 
@@ -967,12 +981,14 @@ mod tests {
 
         let twice = site(vec![in_register(5, first), in_register(5, second)]);
         let one = site(vec![in_register(5, first), in_register(4, second)]);
+
         let functions = vec![CallingFunction {
             name: None,
             frame_base: Metadata::Absent(MetadataAbsence::NotApplicable),
             tail_calls_described: false,
             tail_calls: Vec::new(),
         }];
+
         let image = sealed(
             &Calls {
                 functions,
@@ -982,6 +998,7 @@ mod tests {
         );
         let view = CallView::new(&image);
         let (one, twice) = (SiteId(0), SiteId(1));
+
         let passed = |site, parameter| match passed(view.site(site).unwrap(), parameter) {
             Ok(expression) => Ok(pool.get(expression).bytes().to_vec()),
             Err(VariableRuntimeError::Unavailable(VariableUnavailableReason::EntryValue(
@@ -1073,6 +1090,7 @@ mod tests {
                 Err(TargetMismatch),
             ),
         ];
+
         for (case, catalog, to, expected) in cases {
             let path = tail_path(CallView::new(&catalog), 0, to)
                 .map(|path| path.into_iter().map(|site| site.0).collect())

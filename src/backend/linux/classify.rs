@@ -109,6 +109,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             debug_registers::STATUS_REGISTER,
             debug_registers::STATUS_IDLE,
         );
+
         if !debug_registers::status_has_hits(status) {
             return WatchStatus::Absent;
         }

@@ -130,9 +130,11 @@ impl Jit {
             .take_while(|(_, held)| held.end > start)
             .map(|(&range, &held)| (range, held))
             .collect();
+
         for (range, held) in overlapped {
             self.ranges.remove(&range);
             let remnants = [(range, start.min(held.end)), (end.max(range), held.end)];
+
             for (remnant, until) in remnants {
                 if remnant < until {
                     self.ranges.insert(
@@ -299,6 +301,7 @@ impl Jit {
             (read == size).then_some(bytes)
         };
         let mut headers = Vec::new();
+
         for &descriptor in descriptors {
             gdb_jit::witness(descriptor, read, &mut headers);
         }
@@ -309,6 +312,7 @@ impl Jit {
 
         let mut registered = Registered::default();
         let mut budget = OBJECTS_READ;
+
         for &descriptor in descriptors {
             gdb_jit::registered(descriptor, &mut budget, read, &mut registered);
         }
@@ -318,6 +322,7 @@ impl Jit {
         }
 
         let mut objects = BTreeMap::new();
+
         for object in registered.objects {
             let path = object.name().to_string_lossy().into_owned();
             let Some(code) = object.code() else {
@@ -380,6 +385,7 @@ impl Jit {
         self.read += used as u64;
         let any = !entries.is_empty();
         let mut unread = 0_usize;
+
         for entry in entries {
             let length = (entry.end - entry.start).min(CODE_READ);
             let code = if length <= codes {
@@ -392,6 +398,7 @@ impl Jit {
                 unread += 1;
                 None
             };
+
             let overlapped: Vec<u64> = self
                 .functions
                 .range(..entry.end)
@@ -399,6 +406,7 @@ impl Jit {
                 .take_while(|(_, earlier)| earlier.function.entry.end > entry.start)
                 .map(|(&start, _)| start)
                 .collect();
+
             for start in overlapped {
                 self.functions.remove(&start);
             }

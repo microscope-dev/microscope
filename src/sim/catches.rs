@@ -18,6 +18,7 @@ use crate::syscalls::{Abi, CaptureState, SyscallId};
 /// system-call-stop the debugger could report it at.
 pub fn unseen(kernel: &Kernel) -> Result<(), String> {
     let end = |exit| if exit { "exit" } else { "entry" };
+
     if let Some(unseen) = kernel.catching.unseen.first() {
         return Err(format!(
             "thread {} made system call {} with a catchpoint stopping its {}, but no \
@@ -52,7 +53,9 @@ pub type Reasons = BTreeMap<Tid, (StopReason, Known)>;
 /// still has.
 pub fn known(reasons: &mut Reasons, truth: &Truth, current: &Known) -> BTreeMap<Tid, Known> {
     reasons.retain(|tid, (reason, _)| truth.reasons.get(tid) == Some(reason));
+
     let mut known = BTreeMap::new();
+
     for (&tid, reason) in &truth.reasons {
         if !matches!(reason, StopReason::Syscall(_)) {
             continue;
@@ -92,6 +95,7 @@ pub fn judge(
     }
 
     let mut marks = Vec::new();
+
     for (&tid, reason) in &truth.reasons {
         let StopReason::Syscall(stop) = reason else {
             continue;
@@ -177,6 +181,7 @@ fn judge_memory(
     stop: &crate::SyscallStop,
 ) -> Result<(), String> {
     let space = &kernel.processes[&process].space;
+
     for capture in stop.captured.iter() {
         if !matches!(capture.state, CaptureState::Complete) {
             continue;
@@ -210,6 +215,7 @@ fn judge_listed(
         .iter()
         .filter(|(_, rule)| rule.stops(thread.orig_rax, &thread.registers, exit))
         .map(|(&id, _)| id);
+
     for id in stopping {
         if !stop.catchpoints.iter().any(|listed| listed.get() == id) {
             return Err(format!(

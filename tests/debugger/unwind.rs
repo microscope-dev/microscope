@@ -43,6 +43,7 @@ async fn dwarf_cfi_unwinds_and_finishes_across_the_compiler_and_linker_matrix() 
             names.starts_with(&["deepest", "middle", "outer", "main"]),
             "unexpected {fixture} backtrace: {trace:?}"
         );
+
         assert!(
             trace.frames.len() >= 4,
             "backtrace was truncated: {trace:?}"
@@ -64,12 +65,14 @@ async fn dwarf_cfi_unwinds_and_finishes_across_the_compiler_and_linker_matrix() 
             },
             "{fixture}"
         );
+
         let location = scenario
             .operation(
                 "location after finish",
                 scenario.handle().current_location(),
             )
             .await;
+
         assert_eq!(location_function(&location), Some("middle"), "{fixture}");
 
         scenario.shutdown().await;
@@ -97,18 +100,22 @@ async fn backtraces_unwind_through_shared_libraries_and_libc() {
             scenario.run_to_stop().await,
             StopReason::Breakpoint { .. }
         ));
+
         let modules = scenario
             .operation("modules", scenario.handle().loaded_modules())
             .await;
+
         let trace = scenario
             .operation("backtrace", scenario.handle().backtrace())
             .await;
+
         let frames = frame_modules(&trace, &modules);
         assert_eq!(
             frames[0],
             (fixture.to_owned(), Some("compare_values".to_owned())),
             "{fixture}: {frames:#?}"
         );
+
         let sort = position_of(&frames, fixture, "sort_values");
         let main = position_of(&frames, fixture, "main");
         assert!(sort < main, "{fixture}: {frames:#?}");
@@ -118,6 +125,7 @@ async fn backtraces_unwind_through_shared_libraries_and_libc() {
                 .all(|(module, _)| module.starts_with("libc.so")),
             "{fixture}: qsort frames must belong to libc: {frames:#?}"
         );
+
         assert!(
             sort > 1,
             "{fixture}: no libc frame was reconstructed: {frames:#?}"
@@ -137,6 +145,7 @@ async fn backtraces_unwind_through_shared_libraries_and_libc() {
             frames.last().map(|(module, _)| module.as_str()),
             Some(fixture)
         );
+
         assert_eq!(
             start.symbol.as_ref().map(|symbol| symbol.name.as_ref()),
             Some("_start"),
@@ -150,6 +159,7 @@ async fn backtraces_unwind_through_shared_libraries_and_libc() {
             UnwindTermination::Complete,
             "{fixture}: {frames:#?}"
         );
+
         assert!(
             frames[main + 1..]
                 .iter()
@@ -163,6 +173,7 @@ async fn backtraces_unwind_through_shared_libraries_and_libc() {
             scenario.resume_to_stop().await,
             StopReason::Breakpoint { .. }
         ));
+
         let trace = scenario
             .operation("backtrace", scenario.handle().backtrace())
             .await;
@@ -179,19 +190,23 @@ async fn backtraces_unwind_through_shared_libraries_and_libc() {
             ],
             "{fixture}: {frames:#?}"
         );
+
         let library_source = trace.frames[1]
             .source
             .as_ref()
             .unwrap_or_else(|| panic!("{fixture}: dso_apply frame has no source"));
+
         assert!(
             trace.frames[1].code_instance.is_some(),
             "{fixture}: dso_apply frame lost its code instance"
         );
+
         assert_eq!(
             library_source.line.get(),
             6,
             "{fixture}: {library_source:?}"
         );
+
         assert_eq!(trace.termination, UnwindTermination::Complete);
 
         // abort() raises SIGABRT inside libc: the innermost frames have no
@@ -200,19 +215,23 @@ async fn backtraces_unwind_through_shared_libraries_and_libc() {
             scenario.resume_to_stop().await,
             StopReason::Exception(exception) if exception.code == 6
         ));
+
         let trace = scenario
             .operation("backtrace", scenario.handle().backtrace())
             .await;
+
         let frames = frame_modules(&trace, &modules);
         assert!(
             frames[0].0.starts_with("libc.so"),
             "{fixture}: SIGABRT must stop inside libc: {frames:#?}"
         );
+
         let caller = position_of(&frames, fixture, "abort_in_libc");
         assert!(
             caller < position_of(&frames, fixture, "main"),
             "{fixture}: {frames:#?}"
         );
+
         assert_eq!(
             trace.frames[caller - 1]
                 .symbol
@@ -226,6 +245,7 @@ async fn backtraces_unwind_through_shared_libraries_and_libc() {
         let location = scenario
             .operation("location", scenario.handle().current_location())
             .await;
+
         let libc = modules
             .modules
             .iter()
@@ -236,6 +256,7 @@ async fn backtraces_unwind_through_shared_libraries_and_libc() {
                     .is_some_and(|name| name.to_string_lossy().starts_with("libc.so"))
             })
             .expect("libc is loaded");
+
         assert_eq!(location.module, libc.module.id, "{fixture}");
         assert_eq!(location.image.symbol, trace.frames[0].symbol, "{fixture}");
         assert!(location.image.function.is_none(), "{fixture}");
@@ -245,6 +266,7 @@ async fn backtraces_unwind_through_shared_libraries_and_libc() {
                 .all(|(module, _)| module.starts_with("libc.so")),
             "{fixture}: {frames:#?}"
         );
+
         assert_eq!(trace.termination, UnwindTermination::Complete);
 
         scenario.shutdown().await;
@@ -448,10 +470,12 @@ async fn backtraces_unwind_through_the_vdso() {
                     ..LaunchOptions::default()
                 })
                 .await;
+
             assert!(
                 matches!(&reason, StopReason::Exception(exception) if exception.code == 11),
                 "{context}: {reason:?}"
             );
+
             let InferiorState::Stopped { process_id, .. } = scenario.snapshot().await.inferior
             else {
                 panic!("{context}: the inferior is stopped");
@@ -469,6 +493,7 @@ async fn backtraces_unwind_through_the_vdso() {
             let trace = scenario
                 .operation("backtrace", scenario.handle().backtrace())
                 .await;
+
             let frames = frame_modules(&trace, &modules);
             assert!(
                 mapping.contains(
@@ -479,6 +504,7 @@ async fn backtraces_unwind_through_the_vdso() {
                 ),
                 "{context}: {trace:#?}"
             );
+
             assert_eq!(frames[0].0, support::VDSO, "{context}: {frames:#?}");
             let level = position_of(&frames, &fixture, caller);
             let innermost = trace.frames[0].symbol.as_ref();
@@ -499,6 +525,7 @@ async fn backtraces_unwind_through_the_vdso() {
                     ["time", "__vdso_time"].contains(&symbol.name.as_ref()) && symbol.offset > 0,
                     "{context}: {symbol:?}"
                 );
+
                 assert_eq!(level, 1, "{context}: {frames:#?}");
             }
 
@@ -507,6 +534,7 @@ async fn backtraces_unwind_through_the_vdso() {
                 (fixture.clone(), Some("main".to_owned())),
                 "{context}: {frames:#?}"
             );
+
             assert_eq!(
                 trace
                     .frames
@@ -516,6 +544,7 @@ async fn backtraces_unwind_through_the_vdso() {
                 Some("_start"),
                 "{context}: {frames:#?}"
             );
+
             assert_eq!(
                 trace.termination,
                 UnwindTermination::Complete,
@@ -526,6 +555,7 @@ async fn backtraces_unwind_through_the_vdso() {
             let location = scenario
                 .operation("location", scenario.handle().current_location())
                 .await;
+
             assert_eq!(location.module, vdso.module.id, "{context}");
             assert_eq!(location.image.symbol, trace.frames[0].symbol, "{context}");
             assert!(location.image.source.is_none(), "{context}");
@@ -538,9 +568,11 @@ async fn backtraces_unwind_through_the_vdso() {
                     scenario.handle().select_frame(trace.frames[level].id),
                 )
                 .await;
+
             let depth = scenario
                 .operation("depth", scenario.handle().variable("depth"))
                 .await;
+
             assert_signed(&depth.state, 42, &context);
             scenario.shutdown().await;
         }
@@ -565,14 +597,17 @@ async fn backtraces_unwind_through_a_signal_handler() {
         matches!(reason, StopReason::Breakpoint { .. }),
         "{reason:?}"
     );
+
     let trace = scenario
         .operation("backtrace", scenario.handle().backtrace())
         .await;
+
     let names = trace
         .frames
         .iter()
         .map(|frame| frame.symbol.as_ref().map(|symbol| symbol.name.to_string()))
         .collect::<Vec<_>>();
+
     let position = |name: &str| {
         names
             .iter()
@@ -597,6 +632,7 @@ async fn backtraces_unwind_through_a_signal_handler() {
         [Some("signal_point".to_owned()), Some("main".to_owned())],
         "{trace:#?}"
     );
+
     assert_eq!(names.last().cloned().flatten().as_deref(), Some("_start"));
     assert_eq!(trace.termination, UnwindTermination::Complete, "{trace:#?}");
     scenario.shutdown().await;
@@ -619,14 +655,17 @@ async fn backtraces_unwind_through_a_handler_on_an_alternate_stack() {
         matches!(reason, StopReason::Breakpoint { .. }),
         "{reason:?}"
     );
+
     let trace = scenario
         .operation("backtrace", scenario.handle().backtrace())
         .await;
+
     let names = trace
         .frames
         .iter()
         .map(|frame| frame.symbol.as_ref().map(|symbol| symbol.name.to_string()))
         .collect::<Vec<_>>();
+
     assert_eq!(names[0].as_deref(), Some("handle_usr1"), "{trace:#?}");
     assert_eq!(names[1].as_deref(), Some("__restore_rt"), "{trace:#?}");
     assert_eq!(
@@ -634,15 +673,18 @@ async fn backtraces_unwind_through_a_handler_on_an_alternate_stack() {
         microscope::FrameKind::Signal,
         "{trace:#?}"
     );
+
     let raise = names
         .iter()
         .position(|name| name.as_deref() == Some("raise"))
         .unwrap_or_else(|| panic!("no raise in {trace:#?}"));
+
     assert_eq!(
         names[raise + 1..raise + 3],
         [Some("deliver".to_owned()), Some("main".to_owned())],
         "{trace:#?}"
     );
+
     assert_eq!(names.last().cloned().flatten().as_deref(), Some("_start"));
     assert_eq!(trace.termination, UnwindTermination::Complete, "{trace:#?}");
     scenario.shutdown().await;
@@ -662,9 +704,11 @@ async fn backtraces_unwind_through_frames_described_by_expressions() {
             matches!(scenario.run_to_stop().await, StopReason::Breakpoint { .. }),
             "{fixture}"
         );
+
         let trace = scenario
             .operation("backtrace", scenario.handle().backtrace())
             .await;
+
         let names = trace
             .frames
             .iter()
@@ -675,6 +719,7 @@ async fn backtraces_unwind_through_frames_described_by_expressions() {
                     .map(|function| function.name.to_string())
             })
             .collect::<Vec<_>>();
+
         assert_eq!(
             names[..3],
             [
@@ -684,25 +729,30 @@ async fn backtraces_unwind_through_frames_described_by_expressions() {
             ],
             "{fixture}: {trace:#?}"
         );
+
         assert_eq!(
             trace.termination,
             UnwindTermination::Complete,
             "{fixture}: {trace:#?}"
         );
+
         scenario
             .operation(
                 "select main",
                 scenario.handle().select_frame(trace.frames[2].id),
             )
             .await;
+
         let local = scenario
             .operation("local", scenario.handle().variable("local"))
             .await;
+
         assert_eq!(
             available_value(&local.state),
             &microscope::VariableValue::Scalar(microscope::ScalarValue::Signed(41)),
             "{fixture}: {local:?}"
         );
+
         scenario.shutdown().await;
     }
 }

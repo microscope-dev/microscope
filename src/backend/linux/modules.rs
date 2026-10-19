@@ -83,6 +83,7 @@ impl<P: InspectionOps> Controller<P> {
         let tls_modules = self
             .c_library
             .tls_modules(link_maps, main_load_bias, &has_tls);
+
         for module in self.modules.values_mut() {
             module.tls = tls_modules.get(&module.loaded.load_bias).copied();
         }
@@ -111,6 +112,7 @@ impl<P: InspectionOps> Controller<P> {
             .copied()
             .filter(|id| *id != crate::ModuleId::new(0))
             .collect::<Vec<_>>();
+
         for id in dynamic {
             self.unregister_module(id);
         }
@@ -123,6 +125,7 @@ impl<P: InspectionOps> Controller<P> {
 
         main.loaded = LoadedModule::main(main.image.id(), LoadBias::default());
         main.tls = None;
+
         if self.drop_library_locations() {
             self.bump_revision();
             let _ = self.events.send(DebuggerEvent::BreakpointsChanged {
@@ -170,6 +173,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             })
             .map(|(id, _)| *id)
             .collect::<Vec<_>>();
+
         for id in unloaded {
             self.unregister_module(id);
         }
@@ -178,6 +182,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let mut loads = self
             .load_observed(&new, vdso_image.take(), jit_objects)
             .into_iter();
+
         for (path, load_bias, module_id, image_id) in new {
             // A file that is no module the debugger can describe leaves its
             // frames unnamed.
@@ -267,6 +272,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     && !files.iter().any(|file| file.inode == mapping.inode)
             })
             .collect::<Vec<_>>();
+
         for mapping in files.into_iter().chain(code_less) {
             if mapping.inode == executable_inode {
                 continue;
@@ -294,6 +300,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         drop(known);
 
         let mut new = Vec::new();
+
         for (path, load_bias) in unknown {
             let module_id = crate::ModuleId::new(self.next_module_id);
             self.next_module_id = self
@@ -335,6 +342,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             })
             .filter(|(path, _)| *path != *self.executable)
             .collect::<Vec<_>>();
+
         Ok(self.moved_code(&files, mappings.vdso.as_ref()))
     }
 
@@ -351,6 +359,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             mapped.entry(file).or_default().push(*bias);
         }
         let known = self.known_modules();
+
         self.modules
             .values()
             .filter(|module| module.loaded.id != crate::ModuleId::new(0))
@@ -373,6 +382,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     .iter()
                     .copied()
                     .filter(|&observed| !known.contains(&(path, observed)));
+
                 match (new.next(), new.next()) {
                     (Some(moved), None) => Some(MovedCode {
                         from,
@@ -396,6 +406,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     ) -> Vec<Result<DebugInfo>> {
         let mut in_memory = BTreeMap::new();
         let mut files = Vec::new();
+
         for (index, (path, _, _, image)) in new.iter().enumerate() {
             if let Some(data) = vdso_image.take_if(|_| path.as_os_str() == VDSO_NAME) {
                 let load = crate::debug_info::load_module_bytes(
@@ -419,6 +430,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.ptrace.load_modules(&files, &self.debug_files)
         }
         .into_iter();
+
         (0..new.len())
             .map(|index| {
                 in_memory.remove(&index).unwrap_or_else(|| {
@@ -559,6 +571,7 @@ pub(super) fn loader_link_maps(
     let dynamic_start = main.virtual_address(dynamic.range.start)?;
     let entries = (dynamic.range.end.get() - dynamic.range.start.get()) / DYNAMIC_ENTRY_SIZE;
     let mut rendezvous = None;
+
     for index in 0..entries {
         let address = dynamic_start
             .get()
@@ -587,6 +600,7 @@ pub(super) fn loader_link_maps(
     let mut current = VirtualAddress::new(read_word_offset(ptrace, pid, rendezvous.get(), 8)?);
     let mut visited = BTreeSet::new();
     let mut result = Vec::new();
+
     while current.get() != 0 {
         if result.len() == MAX_LINK_MAPS || !visited.insert(current) {
             return Err(backend_error(LinuxError::LoaderRendezvous(
@@ -610,6 +624,7 @@ fn read_word_offset(ptrace: &impl InspectionOps, pid: Pid, base: u64, offset: u6
 /// deduplicated.
 pub(super) fn parse_maps(maps: &str) -> Result<Vec<ModuleMapping>> {
     let mut mappings = Vec::new();
+
     for line in maps.lines() {
         let invalid = || backend_error(LinuxError::InvalidMapping(line.to_owned()));
 
@@ -662,6 +677,7 @@ pub(super) fn mapped_module_load_bias(mapping: &ModuleMapping) -> Result<LoadBia
     let data = fs::read(&mapping.path)?;
     let object = object::File::parse(data.as_slice())
         .map_err(|error| Error::backend(LinuxError::Object(error)))?;
+
     for segment in object.segments() {
         let (file_offset, _) = segment.file_range();
         if file_offset & PAGE_MASK != mapping.file_offset {
@@ -679,6 +695,7 @@ pub(super) fn mapped_module_load_bias(mapping: &ModuleMapping) -> Result<LoadBia
         }
 
         let image_start = segment.address() & PAGE_MASK;
+
         return mapping
             .start
             .checked_sub(image_start)

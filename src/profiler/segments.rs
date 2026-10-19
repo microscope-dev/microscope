@@ -22,6 +22,7 @@ fn ended(path: &Path) -> Option<u64> {
 /// Every segment in `directory`, oldest first.
 fn segments(directory: &Path) -> std::io::Result<Vec<(u64, PathBuf)>> {
     let mut segments = Vec::new();
+
     for entry in std::fs::read_dir(directory)? {
         let path = entry?.path();
         if let Some(ended) = ended(&path) {
@@ -62,6 +63,7 @@ impl Profile {
         let partial = directory.join(format!(".{name:016}.{EXTENSION}.partial"));
         self.write(&partial)?;
         std::fs::rename(&partial, &path)?;
+
         let oldest = milliseconds(now.checked_sub(keep).unwrap_or(SystemTime::UNIX_EPOCH));
         for (ended, old) in segments(directory)? {
             if ended < oldest {
@@ -86,6 +88,7 @@ impl Profile {
         let mut builder = CaptureBuilder::new();
         let mut truncated = false;
         let mut chunks = 0;
+
         for (_, path) in &segments {
             let read = Self::from_bytes(&std::fs::read(path)?).map_err(|error| {
                 ProfileFileError::Invalid(format!("{}: {error}", path.display()))

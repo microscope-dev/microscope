@@ -35,6 +35,7 @@ pub async fn frame(State(app): State<Arc<App>>, headers: HeaderMap) -> Response 
         "sandbox allow-scripts; default-src 'none'; script-src 'nonce-{nonce}' 'unsafe-eval'; \
          worker-src blob:; frame-ancestors 'self'; base-uri 'none'; form-action 'none'"
     );
+
     (
         [
             (header::CONTENT_TYPE, "text/html; charset=utf-8".to_owned()),

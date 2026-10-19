@@ -99,6 +99,7 @@ impl Hooks {
             .chain(fatal_panic.map(hook(&UNHANDLED)))
             .chain(throws.iter().copied().chain(fatal_signal).map(hook(&FATAL)))
             .collect();
+
         Self {
             panic,
             fatal_panic,
@@ -313,8 +314,10 @@ impl Reader<'_> {
             self.word(arg, "a panic's value")?,
             self.word(arg.wrapping_add(8), "a panic's value")?,
         )?;
+
         printed.push_str("panic: ");
         printed.push_str(&value);
+
         match (
             flag(layout.recovered, "a panic's state")?,
             flag(layout.repanicked, "a panic's state")?,

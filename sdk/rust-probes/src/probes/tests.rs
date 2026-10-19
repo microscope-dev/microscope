@@ -69,6 +69,7 @@ fn read(ring: &Ring, tail: u64) -> (Vec<Event>, u64) {
 
     let mut events = Vec::new();
     let mut position = tail;
+
     while position < head {
         let bytes = record(position);
         let word = u32::from_le_bytes(bytes[12..].try_into().unwrap());
@@ -126,6 +127,7 @@ fn switching_off_zeroes_each_sites_state_byte() {
     // SAFETY: the table holds two whole sites, whose offsets name state
     // bytes of the same table, which outlives the call.
     unsafe { switch_off(start, start.wrapping_add(2 * abi::SITE_SIZE)) };
+
     let states = table
         .states
         .each_ref()
@@ -156,6 +158,7 @@ fn a_threads_events_are_whole_records_in_its_own_ring() {
     assert_eq!(u32::from(header.size), abi::LEAST_RING_SIZE);
     assert_eq!(header.thread.load(Ordering::Relaxed), thread);
     assert_eq!(header.state.load(Ordering::Acquire), abi::RING_RETIRED);
+
     let events = read(ring, 0).0;
     let kinds = events.iter().map(|event| event.kind).collect::<Vec<_>>();
     assert_eq!(
@@ -248,6 +251,7 @@ fn concurrent_threads_reuse_the_rings_a_reader_frees() {
                 })
             })
             .collect::<Vec<_>>();
+
         let done = &done;
         let reader = scope.spawn(move || {
             let mut seen = Vec::new();
@@ -277,6 +281,7 @@ fn concurrent_threads_reuse_the_rings_a_reader_frees() {
             sweep();
             seen
         });
+
         for lane in lanes {
             lane.join().unwrap();
         }

@@ -62,6 +62,7 @@ fn modules_and_sources_describe_the_loaded_program() {
             .iter()
             .any(|source| source["path"] == source_path("c/basic.c"))
     );
+
     dap.finish();
 }
 
@@ -101,6 +102,7 @@ fn modules_name_their_separate_debug_files() {
                 .is_some_and(|extension| extension == "debug"),
         "{described}"
     );
+
     dap.finish();
 
     let mut dap = Dap::start("unusable debug file");
@@ -119,6 +121,7 @@ fn modules_name_their_separate_debug_files() {
         "{described}"
     );
     assert_eq!(described.get("symbolFilePath"), None, "{described}");
+
     dap.finish();
 }
 
@@ -136,6 +139,7 @@ fn a_module_says_why_its_debug_information_cannot_be_read() {
         json!({"stopOnEntry": true}),
         &Configuration::default(),
     );
+
     let problem = "its debug information cannot be read, so only its symbols describe its code: \
                    malformed DWARF in the abbreviations at .debug_abbrev+0x0 of the unit at \
                    .debug_info+0x0: ";
@@ -158,6 +162,7 @@ fn a_module_says_why_its_debug_information_cannot_be_read() {
         status.starts_with(&format!("symbols only, no debug information; {problem}")),
         "{described}"
     );
+
     dap.finish();
 }
 
@@ -198,6 +203,7 @@ fn breakpoint_locations_list_the_lines_with_code() {
         !lines.contains(&comment),
         "comments have no code: {lines:?}"
     );
+
     let none = dap.request(
         "breakpointLocations",
         json!({"source": {"path": "/elsewhere/x.c"}, "line": 3}),
@@ -228,6 +234,7 @@ fn stack_frames_show_the_parameters_line_and_module_a_client_asks_for() {
         trace["stackFrames"][0]["name"],
         format!("parameter_target(int parameter = 4) Line {line} [variables-gcc-o0]")
     );
+
     let plain = dap.request("stackTrace", json!({"threadId": stop.thread, "levels": 1}));
     assert_eq!(plain["stackFrames"][0]["name"], "parameter_target");
     dap.finish();
@@ -274,8 +281,11 @@ fn positions(base: u64) -> Vec<u64> {
         json!({"source": {"path": path}, "line": line}),
     )["breakpoints"][0]["line"]
         .clone();
+
     dap.finish();
+
     let number = |value: &Value| value.as_u64().unwrap_or_else(|| panic!("{value}"));
+
     vec![
         number(&set["breakpoints"][0]["line"]),
         number(&frame["line"]),
@@ -395,6 +405,7 @@ fn completions_offer_commands_members_registers_and_names() {
     assert_eq!(names, [("counter".to_owned(), "variable".to_owned(), 5, 3)]);
     let names = labels(&complete(&mut dap, "print sh"));
     assert_eq!(names, ["shadowed"]);
+
     dap.finish();
 }
 
@@ -445,6 +456,7 @@ fn library_sources_come_and_go_with_their_library() {
     };
 
     let mut mark = resumed.mark;
+
     for round in 0..2 {
         let stop = dap.stopped(mark);
         assert_eq!(stop.reason, "breakpoint", "round {round}");
@@ -462,12 +474,14 @@ fn library_sources_come_and_go_with_their_library() {
             "{module}"
         );
         assert_eq!(module["module"]["symbolFilePath"], module["module"]["path"]);
+
         let frame =
             dap.request("stackTrace", json!({"threadId": stop.thread, "levels": 1}))["stackFrames"]
                 [0]
             .clone();
         assert!(is_library(&frame), "{frame}");
         assert_eq!(lines(&mut dap), json!([{"line": line}]));
+
         let sources = dap.request("loadedSources", Value::Null);
         assert!(
             sources["sources"]
@@ -566,6 +580,7 @@ fn vdso_frames_belong_to_a_module_named_as_the_kernel_names_it() {
                     .is_some_and(|path| path.ends_with("vdso.c"))),
             "{mode}: {trace:#}"
         );
+
         dap.finish();
     }
 }

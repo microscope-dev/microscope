@@ -68,6 +68,7 @@ async fn stopped(session: &mut PythonSession) -> (Stop<'_>, StopContext, StopCon
         scenario: &session.scenario,
         context: session.context(),
     };
+
     (stop, at(StackFrameId::INNERMOST), caller)
 }
 

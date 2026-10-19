@@ -987,7 +987,8 @@ impl World {
 }
 
 impl World {
-    /// The step to the value for a key of a map.
+    /// The step from a shared pointer of type `info` to the value it points to,
+    /// as a view presents it.
     fn plan_presented(&self, info: &TypeInfo) -> Result<Planned<Step>, Refusal> {
         let (_, value) = self
             .shared

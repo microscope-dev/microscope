@@ -342,6 +342,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             "beginning execution {execution_id} while execution {:?} is active",
             inferior.active.as_ref().map(|active| active.id)
         );
+
         inferior.active = Some(ActiveExecution {
             id: execution_id,
             kind,
@@ -349,6 +350,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             resume_threads,
         });
         inferior.repairs = collect_repairs(inferior);
+
         for installation in inferior.agents.values_mut() {
             installation.start_deadline(std::time::Instant::now());
         }
@@ -772,6 +774,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             )
             && !self.catchpoints.is_empty()
             && self.steps_into_call(pid)?;
+
         let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
         let holds = inferior.holds_signals(&expected);
         let thread = inferior.thread_mut(pid)?;
@@ -845,6 +848,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     pub(super) fn handle_classified_stop(&mut self, pid: Pid, stop: ClassifiedStop) -> Result<()> {
         record!("classified {pid} as {stop:?}");
+
         {
             let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
             inferior.thread_mut(pid)?.state = NativeThreadState::Stopped;
@@ -1026,6 +1030,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         // A step out may go on from its function's return address, so
         // what the function returned is read as it arrives there.
         self.note_returned_values(pid);
+
         if self.is_advance_target(address) {
             return self.reach_advance_target(pid, address);
         }
@@ -1057,11 +1062,13 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let mode = self.step_mode(kind);
+
         if !steps_instructions(kind) {
             self.begin_epilogue_traversal(pid)?;
         }
 
         self.note_returned_activation(pid, mode)?;
+
         if self.source_step_returned_to_runtime(pid, mode)? {
             self.let_step_run_on()?;
             self.queue_internal_edit(Edit::ReturnToRuntime { pid })?;
@@ -1618,6 +1625,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             "thread {pid} is queued to step over the trap at {address} while it \
              already waits to step over another"
         );
+
         if let Some(group) = inferior
             .repairs
             .iter_mut()
@@ -1671,6 +1679,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     pub(super) fn recover_partial_resume(&mut self) -> Result<()> {
         self.restore_active_breakpoints()?;
+
         {
             let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
             let triggering_thread = inferior
@@ -1704,6 +1713,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 matches!(thread.state, NativeThreadState::Running).then_some(pid)
             })
             .collect();
+
         for pid in running {
             let thread = inferior.thread_mut(pid)?;
             if attached {
@@ -1771,6 +1781,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         } else {
             self.stepping_thread_hit()
         };
+
         for edit in edits {
             self.apply_edit(edit);
         }
@@ -1835,6 +1846,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         self.restore_active_breakpoints()?;
+
         if let Some((pid, address)) = self.apply_pending_edits()? {
             // The step meets its thread at the trap now. However it goes
             // on, it completes this stop again, with no edit left to drop
@@ -1874,6 +1886,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         self.evaluate_watchpoints()?;
         self.refresh_thread_names();
+
         let (triggering_thread, reason) = self
             .inferior
             .as_ref()
@@ -1896,6 +1909,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let stop_id = self.ptrace.allocate_stop_id()?;
         let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
         check_publishable(inferior, stop_id);
+
         for thread in inferior.threads.values_mut() {
             thread.expected = ExpectedStop::None;
         }
@@ -1915,9 +1929,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         );
         stop.returned = returned;
         inferior.public_stop = Some(stop);
+
         for installation in inferior.agents.values_mut() {
             installation.pause_deadline(std::time::Instant::now());
         }
+
         let execution = inferior.active.take().map(|active| active.id);
         let process_id = process_id(inferior.tgid);
         // A stop an agent reported is about the program's frame, not the
@@ -1931,6 +1947,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
             _ => false,
         };
+
         let watched = match reason {
             StopReason::Watchpoint { ref hits } => hits.first().and_then(|hit| {
                 match self
@@ -1953,9 +1970,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         } else if let Some(frame) = watched {
             self.select_interpreted_frame(triggering_thread, frame);
         }
+
         self.select_assigned_frame(&reason);
 
         self.bump_revision();
+
         if self.attach_reply.is_some() {
             let _ = self.events.send(DebuggerEvent::InferiorAttached {
                 revision: self.revision,
@@ -1982,6 +2001,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         if let Some(reply) = self.attach_reply.take() {
             let _ = reply.send(Ok(stop_id));
         }
+
         self.answer_assignment(stop_id, &reason_published);
 
         Ok(())
@@ -2035,6 +2055,7 @@ pub(super) fn collect_repairs(inferior: &Inferior) -> VecDeque<RepairGroup> {
     };
 
     let mut grouped: BTreeMap<VirtualAddress, VecDeque<Pid>> = BTreeMap::new();
+
     for &pid in &active.resume_threads {
         if let Some(address) = inferior
             .threads
@@ -2078,6 +2099,7 @@ fn check_publishable(inferior: &Inferior, stop_id: StopId) {
         "publishing stop {stop_id} with {} breakpoint repairs outstanding",
         inferior.repairs.len()
     );
+
     let execution = inferior.active.as_ref().map(|active| active.id);
     for (&address, site) in &inferior.breakpoints {
         debug_assert!(

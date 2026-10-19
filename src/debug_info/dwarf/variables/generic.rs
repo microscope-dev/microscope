@@ -166,6 +166,7 @@ impl DwarfVariableInfo {
                 budget,
             )
             .map_err(|error| unavailable(error, ShapeUnresolvedReason::DictionaryUnavailable))?;
+
         self.pointer_at(&storage, runtime, budget)
             .map_err(|error| unavailable(error, ShapeUnresolvedReason::DictionaryUnavailable))
     }
@@ -224,6 +225,7 @@ impl DwarfVariableInfo {
                 budget,
             )
             .map_err(|error| unavailable(error, ShapeUnresolvedReason::ModuleDataUnavailable))?;
+
         let mut field = |offset| {
             storage::offset(storage.clone(), offset)
                 .and_then(|field| self.pointer_at(&field, runtime, budget))

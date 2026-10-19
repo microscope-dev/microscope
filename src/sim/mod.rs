@@ -101,5 +101,6 @@ pub fn describe_failure(outcome: &Outcome) -> String {
         "replay   just sim-seed {:#x} --fingerprint {:#x}",
         outcome.seed, outcome.fingerprint
     );
+
     text
 }

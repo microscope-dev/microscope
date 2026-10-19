@@ -88,6 +88,7 @@ pub async fn run(args: &DapArgs) -> Result<()> {
         args.port
             .map(|port| SocketAddr::from(([127, 0, 0, 1], port)))
     });
+
     match address {
         Some(address) => listen(address, log).await,
         None => serve_stdio(log).await,
@@ -147,6 +148,7 @@ async fn listen(address: SocketAddr, log: Log) -> Result<()> {
     eprintln!("microscope dap listening on {}", listener.local_addr()?);
     let stop = termination();
     tokio::pin!(stop);
+
     loop {
         let (stream, peer) = tokio::select! {
             () = &mut stop => return Ok(()),
@@ -162,6 +164,7 @@ async fn listen(address: SocketAddr, log: Log) -> Result<()> {
             let _ = stopping.await;
         });
         tokio::pin!(session);
+
         let interrupted = tokio::select! {
             () = &mut session => false,
             () = &mut stop => {
@@ -198,6 +201,7 @@ async fn serve<R, W>(
         log.clone(),
         client.responses(),
     ));
+
     let (inbound, inbox) = mpsc::channel(64);
     let cancelled = session::Cancelled::default();
     let reader = tokio::spawn(read_messages(
@@ -208,6 +212,7 @@ async fn serve<R, W>(
         cancelled.clone(),
     ));
     let console = console.and_then(|read| output::spawn(read, "console", client.clone()).ok());
+
     Session::new(client, cancelled).run(inbox, shutdown).await;
     reader.abort();
     if let Some(console) = console {
@@ -323,6 +328,7 @@ async fn write_messages<W: AsyncWrite + Unpin>(
     responses: Arc<Mutex<session::Responses>>,
 ) {
     let mut seq = 0_u64;
+
     while let Some(message) = messages.recv().await {
         seq += 1;
         if let Outgoing::Request { ticket, .. } = &message

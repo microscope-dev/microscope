@@ -174,6 +174,7 @@ pub fn processes_named(name: &str) -> Result<Vec<crate::ProcessId>> {
                         .into_owned(),
                 )
             });
+
         if command.trim_end_matches('\n') == name || first_argument.as_deref() == Some(name) {
             found.push(crate::ProcessId::new(u64::from(pid)));
         }
@@ -1292,6 +1293,7 @@ impl Inferior {
         let thread = self.thread_mut(pid)?;
         thread.stopped_at_breakpoint = None;
         thread.trapped_at = None;
+
         let group = self
             .repairs
             .front_mut()
@@ -1719,6 +1721,7 @@ impl<P: InspectionOps> Controller<P> {
         }) {
             return Some(ControllerMessage::AgentTimeout);
         }
+
         let mut pending = self.pending.borrow_mut();
         if let Some(preempting) = pending
             .iter()
@@ -1741,6 +1744,7 @@ impl<P: InspectionOps> Controller<P> {
         if !block {
             return None;
         }
+
         // While an agent's acknowledgement is outstanding, the alarm wakes
         // the controller at its deadline, which the check above then
         // judges.
@@ -1869,12 +1873,14 @@ impl<P: LinuxTraceOps> Controller<P> {
             ControllerMessage::Request(request) => {
                 record!("request {}", request.describe());
                 let _span = crate::span!("request", "{}", request.describe());
+
                 #[cfg(debug_assertions)]
                 let injected = self
                     .panic_after
                     .as_ref()
                     .is_some_and(|prefix| request.describe().starts_with(prefix.as_str()));
                 let keeps_running = self.handle_request(request);
+
                 #[cfg(debug_assertions)]
                 assert!(!injected, "a panic injected by {PANIC_AFTER}");
                 keeps_running

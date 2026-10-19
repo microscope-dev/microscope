@@ -90,6 +90,7 @@ pub fn record(
     let Live {
         capture, revision, ..
     } = live;
+
     match traced {
         Ok(Finished { end }) => {
             let ended = end.map_or_else(|| "ended".to_owned(), super::syscalls::end_text);
@@ -149,6 +150,7 @@ impl Live<'_, '_> {
             (self.in_flight.clone(), self.seen_at),
         );
         self.revision += 1;
+
         if let Some(started) = self.publisher.started.take() {
             let _ = started.send(Ok(()));
         }

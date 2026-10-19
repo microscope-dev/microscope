@@ -38,6 +38,7 @@ async fn goroutines_are_listed_as_the_runtime_lists_them() {
             .expect("a goroutine besides main");
         sabotaged.remove(dropped);
         assert!(truth.check_tasks(&sabotaged).is_err(), "{fixture}");
+
         let mut sabotaged = tasks.clone();
         sabotaged[dropped].detail = Some("running".into());
         assert!(truth.check_tasks(&sabotaged).is_err(), "{fixture}");
@@ -70,6 +71,7 @@ async fn goroutines_are_listed_as_the_runtime_lists_them() {
                 .creation
                 .as_ref()
                 .and_then(|creation| creation.function.as_deref());
+
             if task.id.number == truth.main.0 {
                 assert_eq!(entry, "runtime.main", "{context}");
                 assert_eq!(task.thread, Some(ThreadId::new(truth.main.1)), "{context}");
@@ -103,8 +105,10 @@ async fn check_threads(session: &mut GoSession, tasks: &[TaskSnapshot], main: u6
     {
         let snapshot = session.scenario.snapshot().await;
         let mut running = BTreeSet::new();
+
         for thread in snapshot.threads.iter() {
             let context = format!("{fixture}: {thread:#?}");
+
             match thread.activity.as_ref().expect(&context) {
                 ThreadActivity::Task { task, stack } => {
                     if task.number == main {
@@ -149,6 +153,7 @@ async fn parked_goroutines_show_the_frames_the_runtime_dumps() {
         let image = session.scenario.handle().module_image();
         let mut workers = 0;
         let mut compared = 0;
+
         for task in tasks.iter().filter(|task| task.thread.is_none()) {
             let Some(dumped) = truth.tasks.get(&task.id.number) else {
                 continue;
@@ -174,6 +179,7 @@ async fn parked_goroutines_show_the_frames_the_runtime_dumps() {
                 .await;
             assert_eq!(trace.context, context, "{fixture}");
             check_saved_registers(&session, view(StackFrameId::INNERMOST), &trace).await;
+
             let shown = trace
                 .frames
                 .iter()
@@ -184,6 +190,7 @@ async fn parked_goroutines_show_the_frames_the_runtime_dumps() {
                     (!runtime_hides(&name)).then(|| (name, format!("{file}:{}", source.line)))
                 })
                 .collect::<Vec<_>>();
+
             dumped
                 .check_frames(&shown)
                 .unwrap_or_else(|problem| panic!("{fixture}: {problem}: {task:#?}\n{trace:#?}"));
@@ -199,6 +206,7 @@ async fn parked_goroutines_show_the_frames_the_runtime_dumps() {
                     .as_ref()
                     .is_some_and(|function| function.name.as_ref() == "main.worker")
             });
+
             if fixture.ends_with("o0")
                 && let Some(frame) = worker
             {
@@ -245,6 +253,7 @@ async fn a_parked_goroutine_can_be_selected() {
         .scenario
         .operation("select task", handle.select_context(worker))
         .await;
+
     let snapshot = session.scenario.snapshot().await;
     assert_eq!(snapshot.selected, Some(ExecutionContext::Task(worker)));
     assert_eq!(snapshot.selected_frame, Some(StackFrameId::INNERMOST));
@@ -267,12 +276,14 @@ async fn a_parked_goroutine_can_be_selected() {
         })
         .expect("the worker's frame")
         .id;
+
     let selected = session
         .scenario
         .operation("select frame", handle.select_frame(id))
         .await;
     assert_eq!(selected.id, id);
     assert_eq!(session.scenario.snapshot().await.selected_frame, Some(id));
+
     let location = session
         .scenario
         .operation("location", handle.current_location())
@@ -284,6 +295,7 @@ async fn a_parked_goroutine_can_be_selected() {
             .map(|function| function.name.to_string()),
         Some("main.worker".to_owned())
     );
+
     let jobs = session
         .scenario
         .operation("variable", handle.variable("jobs"))
@@ -307,6 +319,7 @@ async fn a_parked_goroutine_can_be_selected() {
         .and_then(|register| register.bytes.as_deref())
         .map(|bytes| u64::from_le_bytes(bytes.try_into().expect("a word")))
         .expect("the frame's stack pointer");
+
     session
         .scenario
         .operation(
@@ -362,8 +375,10 @@ async fn a_condition_on_the_task_stops_only_in_that_goroutine() {
         .scenario
         .operation("select task", handle.select_context(worker))
         .await;
+
     let condition = format!("$task == {}", worker.number);
     assert_eq!(evaluate(&session, &condition).await, Some(true));
+
     let idle = session
         .scenario
         .snapshot()
@@ -373,6 +388,7 @@ async fn a_condition_on_the_task_stops_only_in_that_goroutine() {
         .find(|thread| thread.activity == Some(ThreadActivity::Idle))
         .expect("an idle thread")
         .id;
+
     session
         .scenario
         .operation("select idle", handle.select_context(idle))
@@ -393,12 +409,14 @@ async fn a_condition_on_the_task_stops_only_in_that_goroutine() {
             ),
         )
         .await;
+
     let reason = session.scenario.resume_to_stop().await;
     assert!(
         matches!(reason, StopReason::Breakpoint { .. }),
         "{fixture}: {reason:?}"
     );
     assert_eq!(evaluate(&session, &condition).await, Some(true));
+
     let InferiorState::Stopped { thread_id, .. } = session.scenario.snapshot().await.inferior
     else {
         panic!("{fixture}: not stopped");
@@ -473,6 +491,7 @@ async fn check_saved_registers(session: &GoSession, view: StopContext, trace: &B
         "{fixture}: {registers:#?}"
     );
     assert!(register("rsp").is_some(), "{fixture}: {registers:#?}");
+
     for name in ["rax", "fs_base", "orig_rax"] {
         assert_eq!(register(name), None, "{fixture}: {registers:#?}");
     }
@@ -494,6 +513,7 @@ async fn check_worker_arguments(session: &GoSession, view: StopContext) {
         .filter(|variable| matches!(variable.state, VariableState::Available { .. }))
         .map(|variable| variable.name.as_ref())
         .collect::<BTreeSet<_>>();
+
     for name in ["jobs", "results", "group"] {
         assert!(names.contains(name), "{fixture}: {variables:#?}");
     }

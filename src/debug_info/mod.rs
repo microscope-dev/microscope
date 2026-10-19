@@ -11,6 +11,7 @@ mod cpython;
 pub fn generated_python_layout(name: &str) -> Option<crate::image::python::PythonLayout> {
     cpython::generated(name)
 }
+
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod dispatch;
 #[cfg(target_os = "linux")]
@@ -315,12 +316,14 @@ pub trait VariableRuntime {
         &mut self,
         register: DwarfRegister,
     ) -> std::result::Result<VariableRegister, VariableRuntimeError>;
+
     fn call_frame_cfa(&self) -> std::result::Result<VirtualAddress, VariableRuntimeError>;
 
     fn tls_address(
         &mut self,
         offset: u64,
     ) -> std::result::Result<VirtualAddress, VariableUnavailableReason>;
+
     fn relocate(&self, address: ImageAddress) -> std::result::Result<VirtualAddress, Arc<str>>;
 
     /// Where `address` is in this module's image, or `None` when the
@@ -687,6 +690,7 @@ mod tests {
         ];
         let loads = super::load_modules(&modules, &super::DebugFileSearch::default());
         assert_eq!(loads.len(), modules.len());
+
         for ((path, id), load) in modules.iter().zip(&loads) {
             if path.ends_with("no-such-program") {
                 assert!(load.is_err());

@@ -51,6 +51,7 @@ async fn watching(fixture: &str, access: WatchAccess) -> (Scenario, Watchpoint, 
 
     assert_eq!(i128::from(owner.number), task, "{fixture}");
     assert_eq!(watchpoint.address.get(), before, "{fixture}");
+
     scenario.add_breakpoint("main.finished").await;
     (scenario, watchpoint, task, before)
 }
@@ -75,6 +76,7 @@ async fn a_watched_local_follows_its_stack_until_its_function_returns() {
             let mut events = scenario.handle().subscribe();
             let mut values = Vec::new();
             let mut addresses = BTreeSet::from([before]);
+
             let reason = loop {
                 match scenario.resume_to_stop().await {
                     StopReason::Watchpoint { hits } => {
@@ -108,6 +110,7 @@ async fn a_watched_local_follows_its_stack_until_its_function_returns() {
                                 .is_some_and(|name| functions.contains(&name)),
                             "{context}: {function:?}"
                         );
+
                         let bytes = hit.current.as_deref().expect("the local is readable");
                         let mut word = [0; 8];
                         word.copy_from_slice(bytes);
@@ -184,6 +187,7 @@ async fn a_disabled_watch_stays_disarmed_while_its_stack_moves() {
             )
             .await;
         assert!(!disabled.enabled, "{fixture}");
+
         loop {
             match scenario.resume_to_stop().await {
                 StopReason::Breakpoint { .. } => break,

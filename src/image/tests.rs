@@ -740,6 +740,7 @@ fn functions_read_back_with_their_indexes() {
     assert_eq!(entries(1), [entry(0x1004, EntryProvenance::RangeStart)]);
     assert_eq!(entries(2), []);
     assert_eq!(entries(3), [entry(0x4008, EntryProvenance::CoroutineBody)]);
+
     let starts = view
         .instruction_starts(AddressRange {
             start: at(0x1000),
@@ -775,6 +776,7 @@ fn damage_is_caught_by_the_checksum_or_by_validation() {
     let (tables, files) = sample();
     let image = seal(&tables, &files).unwrap();
     let bytes = image.as_bytes();
+
     for length in 0..bytes.len() {
         assert!(reopen(&bytes[..length]).is_err(), "truncated to {length}");
     }
@@ -896,6 +898,7 @@ fn sabotaged(change: impl FnOnce(&mut Parts)) -> ImageError {
             path: paths.intern(path).unwrap().0.into(),
         })
         .collect();
+
     let mut parts = Parts {
         tables,
         ranges: indexes.ranges,
@@ -1070,6 +1073,7 @@ where
     let image = seal(&tables, &files).unwrap();
     let placed = image.tables[kind.index()].unwrap();
     let mut bytes = image.as_bytes().to_vec();
+
     change(
         <[T]>::mut_from_bytes(&mut bytes[placed.offset..placed.offset + placed.length]).unwrap(),
     );
@@ -1201,6 +1205,7 @@ fn validation_rejects_symbols_that_disagree() {
             "GOT slot is malformed",
         ),
     ];
+
     for (name, error, expected) in cases {
         assert!(
             matches!(&error, Err(ImageError::Malformed(why)) if why.contains(expected)),
@@ -1359,6 +1364,7 @@ fn validation_rejects_functions_that_disagree() {
             "instruction starts are malformed",
         ),
     ];
+
     for (name, error, expected) in cases {
         assert!(
             matches!(&error, Err(ImageError::Malformed(why)) if why.contains(expected)),
@@ -1385,6 +1391,7 @@ fn unwinding_tables_read_back_as_their_lookups() {
     // malformed before it.
     let eh_frame = view.eh_frame_index();
     let debug_frame = view.debug_frame_index();
+
     for (address, before, kept) in [
         (0x1090, Ok(8), eh_frame),
         (0x1150, Ok(24), eh_frame),
@@ -1539,6 +1546,7 @@ fn validation_rejects_unwinding_tables_that_disagree() {
             "frame save is malformed",
         ),
     ];
+
     for (name, error, expected) in cases {
         assert!(
             matches!(&error, Err(ImageError::Malformed(why)) if why.contains(expected)),
@@ -1583,6 +1591,7 @@ fn a_name_index_keeps_every_name_whose_hash_collides() {
                 .map(|other| (other, name))
         })
         .unwrap();
+
     let mut strings = StringsBuilder::default();
     let ids = [
         strings.push(&first).unwrap(),
@@ -1623,6 +1632,7 @@ fn types_read_back_with_their_indexes() {
     assert!(view.with_enumerator("Blue").next().is_none());
     assert_eq!(view.go_runtime_type(0x100), Some(crate::TypeId::new(4)));
     assert_eq!(view.go_runtime_type(0x101), None);
+
     for (index, class) in classes.iter().enumerate() {
         assert_eq!(
             view.class(crate::TypeId::new(u32::try_from(index).unwrap())),
@@ -1901,6 +1911,7 @@ fn validation_rejects_types_that_disagree() {
             "runtime type index",
         ),
     ];
+
     for (name, error, expected) in cases {
         assert!(
             matches!(&error, Err(ImageError::Malformed(why)) if why.contains(expected)),
@@ -1917,6 +1928,7 @@ fn packages_read_back_with_functions_by_local_name() {
     assert_eq!(view.package_name("main"), Some("main"));
     assert_eq!(view.package_name("example.com/m/stack"), Some("stack"));
     assert_eq!(view.package_name("example.com/m"), None);
+
     for (index, expected) in sample_packaged().iter().enumerate() {
         let function = FunctionId::new(u32::try_from(index).unwrap());
         assert_eq!(
@@ -1978,6 +1990,7 @@ fn validation_rejects_packages_that_disagree() {
             "local name index",
         ),
     ];
+
     for (name, error, expected) in cases {
         assert!(
             matches!(&error, Err(ImageError::Malformed(why)) if why.contains(expected)),
@@ -1999,6 +2012,7 @@ fn facts_read_back_with_thread_locals_by_name() {
         .map(|(name, place)| (std::sync::Arc::from(name), place))
         .collect::<std::collections::BTreeMap<_, _>>();
     assert_eq!(read, expected);
+
     for (name, place) in &expected {
         assert_eq!(view.thread_local(name).as_ref(), Some(place), "{name}");
     }
@@ -2138,6 +2152,7 @@ fn validation_rejects_facts_that_disagree() {
             "thread-local variable",
         ),
     ];
+
     for (name, error, expected) in cases {
         assert!(
             matches!(&error, Err(ImageError::Malformed(why)) if why.contains(expected)),
@@ -2193,6 +2208,7 @@ mod snapshot {
     #[test]
     fn a_snapshot_is_the_whole_file() {
         let dir = ScratchDir::new("image-snapshot");
+
         for length in [0_u16, 1, 4095, 4096, 4097] {
             let path = dir.path().join(format!("{length}"));
             let contents = (0..length)
@@ -2220,6 +2236,7 @@ mod snapshot {
         let dir = ScratchDir::new("image-fifo");
         let path = dir.path().join("fifo");
         nix::unistd::mkfifo(&path, nix::sys::stat::Mode::S_IRWXU).unwrap();
+
         for (contents, limit) in [(vec![7_u8; 5000], 1 << 20), (vec![1_u8; 65], 64)] {
             let writer = {
                 let (path, contents) = (path.clone(), contents.clone());
@@ -2337,6 +2354,7 @@ fn locations_read_back_as_they_were_pooled() {
     // ordered; any difference is another.
     let unit = caller.unit();
     let encoding = caller.encoding();
+
     let again = pool
         .expression(
             &[0x98, 0x20, 0, 0x9f],
@@ -2525,6 +2543,7 @@ fn validation_rejects_locations_that_disagree() {
         ),
     ];
     assert_eq!(unit_flags::ALL, 3);
+
     for (name, error, expected) in cases {
         assert!(
             matches!(&error, Err(ImageError::Malformed(why)) if why.contains(expected)),
@@ -2552,6 +2571,7 @@ fn variables_read_back_as_they_were_encoded() {
     // every scope but the global's shares its code with a function.
     assert_eq!(image.table::<ScopeRecord>().len(), 4);
     assert_eq!(image.table::<CodeRange>().len(), 5);
+
     for (index, expected) in input.objects.iter().enumerate() {
         let object = view.object(ObjectId(u32::try_from(index).unwrap()));
         assert_eq!(object.name(), &*expected.name);
@@ -2582,6 +2602,7 @@ fn variables_read_back_as_they_were_encoded() {
             ConstantValue::Unsigned(u128::MAX - 1)
         )))
     );
+
     for (index, expected) in input.functions.iter().enumerate() {
         let function = view.function(VariableFunctionId(u32::try_from(index).unwrap()));
         assert!(
@@ -2676,6 +2697,7 @@ proptest::proptest! {
             })
             .collect::<Vec<_>>();
         let mut starts = std::collections::BTreeMap::<u64, Vec<usize>>::new();
+
         for (index, function) in functions.iter().enumerate() {
             for range in function.ranges.iter() {
                 starts.entry(range.start.get()).or_default().push(index);
@@ -2690,6 +2712,7 @@ proptest::proptest! {
         builder.bytes(TableKind::Strings, strings.into_bytes());
         let image = builder.seal(Limits::default()).unwrap();
         let view = VariableView::new(&image);
+
         for address in addresses {
             let expected = starts
                 .range(..=address)
@@ -3027,6 +3050,7 @@ fn validation_rejects_variables_that_disagree() {
     ];
     assert_eq!(object_flags::ALL, 0b1111);
     assert_eq!(returns::SYSTEM_V, 2);
+
     for (name, error, expected) in cases {
         assert!(
             matches!(&error, Err(ImageError::Malformed(why)) if why.contains(expected)),
@@ -3045,6 +3069,7 @@ fn calls_read_back_as_they_were_encoded() {
     let (tables, files) = sample();
     let image = reopen(seal(&tables, &files).unwrap().as_bytes()).unwrap();
     let view = CallView::new(&image);
+
     for (index, expected) in (0_u32..).zip(&input.functions) {
         let function = view.function(index);
         assert_eq!(function.name(), expected.name);
@@ -3237,6 +3262,7 @@ fn validation_rejects_calls_that_disagree() {
             "where calls return",
         ),
     ];
+
     for (name, error, expected) in cases {
         assert!(
             matches!(&error, Err(ImageError::Malformed(why)) if why.contains(expected)),
@@ -3363,6 +3389,7 @@ fn validation_rejects_type_facts_that_disagree() {
             "run-time layout",
         ),
     ];
+
     for (name, error, expected) in cases {
         assert!(
             matches!(&error, Err(ImageError::Malformed(why)) if why.contains(expected)),
@@ -3439,6 +3466,7 @@ fn validation_rejects_declarations_that_disagree() {
             "producer",
         ),
     ];
+
     for (name, error, expected) in cases {
         assert!(
             matches!(&error, Err(ImageError::Malformed(why)) if why.contains(expected)),
@@ -3549,6 +3577,7 @@ fn validation_rejects_resumes_that_disagree() {
             "held range",
         ),
     ];
+
     for (name, error, expected) in cases {
         assert!(
             matches!(&error, Err(ImageError::Malformed(why)) if why.contains(expected)),
@@ -3615,6 +3644,7 @@ fn a_type_table_finds_the_coroutines_the_graph_holds() {
     ];
     let mut builder = Builder::new(TARGET);
     let mut strings = StringsBuilder::default();
+
     super::types::add_to(
         &mut builder,
         &mut strings,
@@ -3631,6 +3661,7 @@ fn a_type_table_finds_the_coroutines_the_graph_holds() {
         expected.keys().copied().collect::<Vec<_>>(),
         [TypeId::new(0), TypeId::new(4)]
     );
+
     for id in 0..5 {
         let id = TypeId::new(id);
         assert_eq!(
@@ -3700,6 +3731,7 @@ fn validation_rejects_a_python_runtime_that_names_nothing() {
         offsets: [u32::MAX.into(); super::python::Field::COUNT],
         constants: [0; super::python::Constant::COUNT],
     };
+
     let refusal = |records: Vec<PythonRuntimeRecord>| {
         let mut builder = Builder::new(TARGET);
         builder.owned_table(records);

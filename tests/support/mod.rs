@@ -70,6 +70,7 @@ impl ScratchDir {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
+
         std::fs::create_dir_all(&path).expect("create scratch directory");
         Self(path)
     }
@@ -87,6 +88,7 @@ pub fn corrupt_section(from: &Path, to: &Path, section: &str) {
     std::fs::copy(from, to).expect("copy the file");
     let mut data = std::fs::read(to).expect("read the copy");
     let object = object::File::parse(data.as_slice()).expect("an ELF file");
+
     let (offset, size) = object
         .section_by_name(section)
         .and_then(|section| section.compressed_file_range().ok())
@@ -94,9 +96,12 @@ pub fn corrupt_section(from: &Path, to: &Path, section: &str) {
             || panic!("{} has no {section}", from.display()),
             |range| (range.offset, range.compressed_size),
         );
+
     let start = usize::try_from(offset).expect("an offset");
     let end = start + usize::try_from(size.min(64)).expect("a size");
+
     data[start..end].fill(0xff);
+
     std::fs::write(to, data).expect("write the corrupted copy");
 }
 
@@ -154,10 +159,12 @@ impl ExternalProcess {
             .child
             .as_mut()
             .and_then(|child| child.stdout.as_mut());
+
         let mut ready = String::new();
         BufReader::new(stdout.expect("fixture stdout"))
             .read_line(&mut ready)
             .expect("read fixture readiness");
+
         assert!(ready.starts_with("READY"), "unexpected readiness {ready:?}");
         process.ready = ready.trim_end().to_owned();
         process
@@ -169,6 +176,7 @@ impl ExternalProcess {
         let child = Command::new(path)
             .spawn()
             .unwrap_or_else(|error| panic!("spawn {}: {error}", path.display()));
+
         let process = Self {
             child: Some(child),
             ready: String::new(),
@@ -182,6 +190,7 @@ impl ExternalProcess {
         let image = std::fs::canonicalize(path).expect("canonical fixture path");
         let pid = process.process_id().get();
         let deadline = Instant::now() + EVENT_TIMEOUT;
+
         while std::fs::read_link(format!("/proc/{pid}/exe")).ok().as_ref() != Some(&image)
             || !std::fs::read_to_string(format!("/proc/{pid}/maps"))
                 .is_ok_and(|maps| maps.contains("/libc.so"))
@@ -282,6 +291,7 @@ fn loaded_fixture(path: &Path) -> Program {
         "missing test fixture {}; run `just build-test-programs`",
         path.display()
     );
+
     let mut loaded = LOADED.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(index) = loaded.iter().position(|(loaded, _)| loaded == path) {
         let entry = loaded.remove(index);
@@ -292,6 +302,7 @@ fn loaded_fixture(path: &Path) -> Program {
 
     let program = Program::load(path, &microscope::DebugFileOptions::default())
         .unwrap_or_else(|error| panic!("read fixture {}: {error}", path.display()));
+
     if loaded.len() == LOADED_FIXTURES {
         loaded.remove(0);
     }
@@ -333,8 +344,10 @@ impl Scenario {
             "missing test fixture {}; run `just build-test-programs`",
             fixture.display()
         );
+
         let debugger =
             Debugger::new_with(fixture, debug_files).expect("initialize debugger scenario");
+
         Self::from_debugger(name, debugger)
     }
 
@@ -353,12 +366,14 @@ impl Scenario {
             "missing core fixture {}; run `just build-test-programs`",
             options.core.display()
         );
+
         let debugger = Debugger::open_core(options).unwrap_or_else(|error| {
             panic!(
                 "scenario '{name}' could not open {}: {error}",
                 options.core.display()
             )
         });
+
         Self::from_debugger(name, debugger)
     }
 
@@ -432,21 +447,27 @@ impl Scenario {
         let description = format!("{spec:?}");
         self.transcript
             .push(format!("request: break {description}"));
+
         let result = self
             .operation("add breakpoint", self.handle.add_breakpoint(spec))
             .await;
+
         self.transcript.push(format!("reply: {result:?}"));
         self.drain_events();
+
         result
     }
 
     pub async fn remove_breakpoint(&mut self, id: BreakpointId) -> Breakpoint {
         self.transcript.push(format!("request: delete {id}"));
+
         let result = self
             .operation("remove breakpoint", self.handle.remove_breakpoint(id))
             .await;
+
         self.transcript.push(format!("reply: {result:?}"));
         self.drain_events();
+
         result
     }
 
@@ -458,8 +479,10 @@ impl Scenario {
                 self.handle.remove_all_breakpoints(),
             )
             .await;
+
         self.transcript.push(format!("reply: {result:?}"));
         self.drain_events();
+
         result.to_vec()
     }
 
@@ -472,6 +495,7 @@ impl Scenario {
         let task = self.spawn_request(&format!("run {options:?}"), |handle| async move {
             handle.run_with(options).await
         });
+
         self.wait_for_request(task, "run").await
     }
 
@@ -489,6 +513,7 @@ impl Scenario {
             &format!("continue {disposition:?}"),
             move |handle| async move { handle.resume_with_exception(disposition).await },
         );
+
         self.wait_for_request(task, "continue").await
     }
 
@@ -496,6 +521,7 @@ impl Scenario {
         let task = self.spawn_request(&format!("step {kind:?}"), move |handle| async move {
             handle.step(kind).await
         });
+
         self.wait_for_request(task, "step").await
     }
 
@@ -505,6 +531,7 @@ impl Scenario {
         let task = self.spawn_request(&format!("advance {spec:?}"), move |handle| async move {
             handle.advance(spec).await
         });
+
         self.wait_for_request(task, "advance").await
     }
 
@@ -514,6 +541,7 @@ impl Scenario {
         let task = self.spawn_request(&format!("step into {call}"), move |handle| async move {
             handle.step_into(call).await
         });
+
         self.wait_for_request(task, "step into").await
     }
 
@@ -523,6 +551,7 @@ impl Scenario {
         let task = self.spawn_request(&format!("jump {spec:?}"), move |handle| async move {
             handle.jump(spec).await
         });
+
         self.wait_for_request(task, "jump").await
     }
 
@@ -557,8 +586,10 @@ impl Scenario {
                     ExceptionDisposition::Pass,
                 )
                 .await?;
+
             Ok(execution_end(&mut events, execution).await)
         });
+
         self.wait_for_request(task, "step").await
     }
 
@@ -573,6 +604,7 @@ impl Scenario {
                     .await?
                     .stop_id
                     .ok_or(microscope::Error::NotStopped)?;
+
                 let mut events = handle.subscribe();
                 let execution = handle
                     .continue_execution(
@@ -581,9 +613,11 @@ impl Scenario {
                         ExceptionDisposition::Pass,
                     )
                     .await?;
+
                 Ok(execution_end(&mut events, execution).await)
             },
         );
+
         self.wait_for_request(task, "continue").await
     }
 
@@ -602,9 +636,11 @@ impl Scenario {
                 let execution = handle
                     .launch_by_exec(process, stop_at_entry, release)
                     .await?;
+
                 Ok(execution_end(&mut events, execution).await)
             },
         );
+
         self.wait_for_request(task, "launch by exec").await
     }
 
@@ -613,8 +649,10 @@ impl Scenario {
     /// launch itself.
     pub async fn start_running(&mut self) -> JoinHandle<Result<StopReason>> {
         let task = self.run_task(true);
+
         self.wait_for(|event| matches!(event, DebuggerEvent::InferiorContinued { .. }))
             .await;
+
         task
     }
 
@@ -627,8 +665,10 @@ impl Scenario {
         let task = self.spawn_request(&format!("run {options:?}"), |handle| async move {
             handle.run_with(options).await
         });
+
         self.wait_for(|event| matches!(event, DebuggerEvent::InferiorContinued { .. }))
             .await;
+
         task
     }
 
@@ -636,8 +676,10 @@ impl Scenario {
     /// before its initial exec stop has been processed.
     pub async fn start_launching(&mut self) -> JoinHandle<Result<StopReason>> {
         let task = self.run_task(true);
+
         self.wait_for(|event| matches!(event, DebuggerEvent::InferiorLaunched { .. }))
             .await;
+
         task
     }
 
@@ -663,8 +705,10 @@ impl Scenario {
 
     pub async fn start_resuming(&mut self) -> JoinHandle<Result<StopReason>> {
         let task = self.run_task(false);
+
         self.wait_for(|event| matches!(event, DebuggerEvent::InferiorContinued { .. }))
             .await;
+
         task
     }
 
@@ -730,6 +774,7 @@ impl Scenario {
             .unwrap_or_else(|error| self.fail(&format!("{operation} request failed: {error}")));
         self.transcript.push(format!("reply: {reply:?}"));
         self.assert_terminal_event(&event, &reply);
+
         if let Some(check) = self.stop_check
             && matches!(event, DebuggerEvent::InferiorStopped { .. })
         {
@@ -866,6 +911,7 @@ impl Scenario {
 /// holds, failing with `what` at the event deadline.
 pub fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
     let deadline = Instant::now() + EVENT_TIMEOUT;
+
     while !condition() {
         assert!(Instant::now() < deadline, "timed out waiting until {what}");
         std::thread::sleep(Duration::from_millis(1));
@@ -875,6 +921,7 @@ pub fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
 /// Waits until `process` is blocked in system call `number`.
 pub fn wait_for_system_call(process: ProcessId, number: u64) {
     let path = format!("/proc/{process}/syscall");
+
     wait_until(&format!("{process} is in system call {number}"), || {
         let text =
             std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path}: {error}"));
@@ -903,6 +950,7 @@ pub fn signal_thread(process: ProcessId, thread: microscope::ThreadId, signal: n
             nix::libc::c_long::from(signal),
         )
     };
+
     assert_eq!(
         sent,
         0,
@@ -929,10 +977,12 @@ pub fn register_u64(registers: &RegisterSnapshot, role: RegisterRole) -> u64 {
         .iter()
         .find(|value| value.register.role == Some(role))
         .unwrap_or_else(|| panic!("missing {role:?} register"));
+
     let bytes = value
         .bytes
         .as_deref()
         .unwrap_or_else(|| panic!("{} was not saved", value.register.name));
+
     u64::from_le_bytes(
         bytes
             .try_into()
@@ -963,6 +1013,7 @@ pub fn frame_modules(
                         )
                 },
             );
+
             let function = frame
                 .function
                 .as_ref()
@@ -987,10 +1038,12 @@ pub fn position_of(frames: &[(String, Option<String>)], module: &str, function: 
 pub fn source_line(path: &str, marker: &str) -> u64 {
     let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
         .unwrap_or_else(|error| panic!("read {path}: {error}"));
+
     let index = text
         .lines()
         .position(|line| line.contains(marker))
         .unwrap_or_else(|| panic!("{path} has no line containing {marker:?}"));
+
     u64::try_from(index + 1).expect("line fits u64")
 }
 
@@ -1043,6 +1096,7 @@ pub fn vdso_mapping(process: ProcessId) -> std::ops::Range<u64> {
         .and_then(|line| line.split_whitespace().next())
         .and_then(|range| range.split_once('-'))
         .unwrap_or_else(|| panic!("process {process} maps no vDSO:\n{maps}"));
+
     u64::from_str_radix(start, 16).expect("vDSO start")
         ..u64::from_str_radix(end, 16).expect("vDSO end")
 }
@@ -1053,11 +1107,14 @@ pub fn vdso_module(modules: &LoadedModuleSnapshot) -> microscope::LoadedModuleRe
         .modules
         .iter()
         .filter(|record| record.path.as_os_str() == VDSO);
+
     let vdso = found
         .next()
         .unwrap_or_else(|| panic!("no vDSO module in {modules:#?}"))
         .clone();
+
     assert!(found.next().is_none(), "two vDSO modules in {modules:#?}");
+
     vdso
 }
 
@@ -1076,11 +1133,13 @@ pub async fn assert_tls_modules(
         ("main_zero_tls", "zero", 200),
         ("library_tls", "library", 300),
     ];
+
     if plugin {
         variables.push(("plugin_tls", "plugin", 400));
     }
 
     let snapshot = scenario.snapshot().await;
+
     let mut indices = Vec::new();
     for thread in snapshot.threads.iter() {
         scenario
@@ -1089,6 +1148,7 @@ pub async fn assert_tls_modules(
 
         // Each thread adds its index to every variable's initial value.
         let index = evaluate_value(scenario, "main_tls").await.signed() - 100;
+
         for &(name, field, initial) in &variables {
             let context = format!("{fixture}: {name} of thread {index}");
             assert_eq!(
@@ -1096,6 +1156,7 @@ pub async fn assert_tls_modules(
                 initial + index,
                 "{context}"
             );
+
             assert_eq!(
                 evaluate_value(scenario, &format!("&{name}"))
                     .await
@@ -1118,6 +1179,7 @@ pub async fn assert_tls_modules(
 pub async fn evaluate_value(scenario: &Scenario, text: &str) -> EvaluatedValue {
     let expression =
         microscope::Expression::parse(text).unwrap_or_else(|error| panic!("{text}: {error}"));
+
     match scenario
         .operation(text, scenario.handle().evaluate(&expression))
         .await

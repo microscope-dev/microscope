@@ -214,6 +214,7 @@ fn add_symbols(
     });
     let mut records = Vec::with_capacity(symbols.len());
     let mut names = Vec::with_capacity(symbols.len());
+
     for (index, symbol) in symbols.iter().enumerate() {
         let name = strings.push(&symbol.name).ok_or(BadName)?;
         names.push((&*symbol.name, name, symbol.id.get()));
@@ -272,6 +273,7 @@ fn add_symbols(
             symbol.id.get(),
         ))
     }));
+
     builder
         .owned_table(records)
         .owned_shared(TableKind::SymbolNames, names)
@@ -310,6 +312,7 @@ fn add_sections(
             .iter()
             .map(|section| (section.range, section.id.get())),
     );
+
     builder
         .owned_table(section_records)
         .owned_shared(TableKind::SectionRanges, section_ranges);
@@ -658,6 +661,7 @@ fn validate_symbols(image: &Image) -> Result<(), String> {
     // count, so together they hold every rank.
     let mut extent_ranks = vec![false; count(symbol_flags::EXTENT)];
     let mut storage_ranks = vec![false; count(symbol_flags::STORAGE)];
+
     for symbol in symbols {
         let (start, end) = (symbol.address.get(), symbol.end.get());
         let flags = symbol.flags;

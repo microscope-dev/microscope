@@ -359,6 +359,7 @@ fn nanoseconds(text: &str) -> Result<u64> {
 
 fn pids(texts: &[String]) -> Result<Vec<u32>> {
     let mut pids = Vec::new();
+
     for text in texts {
         for part in text.split([',', ' ']).filter(|part| !part.is_empty()) {
             let pid: u32 = part
@@ -581,6 +582,7 @@ fn plan(args: &SyscallsArgs) -> Result<Plan> {
     check_targets(args, &attached)?;
     let launching = !args.command.is_empty();
     let cgroup = args.cgroup.is_some() || args.container.is_some();
+
     if let Some(percent) = args.budget
         && !(percent.is_finite() && percent > 0.0)
     {
@@ -775,6 +777,7 @@ fn trace_cgroup(
 
     printer.setting("cgroup", &cgroup.path.to_string_lossy());
     printer.cgroup = Some(cgroup.path.clone());
+
     Ok(bpf::trace_cgroup(
         cgroup, namespace, options, engine, stop, printer,
     )?)
@@ -790,6 +793,7 @@ fn stop_after(text: &str, stop: Arc<AtomicBool>) -> Result<()> {
             stop.store(true, Ordering::Relaxed);
         })
         .context("starting the --duration timer")?;
+
     Ok(())
 }
 
@@ -860,6 +864,7 @@ fn continuous(
         std::process::id(),
         args.window
     );
+
     Ok(Continuous::new(options, stacks, monotonic()))
 }
 
@@ -986,6 +991,7 @@ impl Background {
                 }
             })
             .ok();
+
         Self {
             buffer: Vec::with_capacity(BACKGROUND_BYTES),
             to_writer: Some(to_writer),
@@ -1178,6 +1184,7 @@ fn json_number(out: &mut Vec<u8>, key: &[u8], value: i64) {
     let mut digits = [0; 20];
     let mut rest = value.unsigned_abs();
     let mut at = digits.len();
+
     while rest >= 100 {
         let pair = usize::try_from(rest % 100).unwrap_or(0) * 2;
         rest /= 100;
@@ -1219,6 +1226,7 @@ fn json_string(out: &mut Vec<u8>, text: &str) {
     }
 
     let mut start = 0;
+
     for (index, &byte) in bytes.iter().enumerate() {
         let escape: &[u8] = match byte {
             b'"' => b"\\\"",
@@ -1357,11 +1365,13 @@ impl Printer {
                     None,
                 ),
             };
+
         let wall = nix::time::clock_gettime(nix::time::ClockId::CLOCK_REALTIME).map_or(0, |time| {
             i128::from(time.tv_sec()) * 1_000_000_000 + i128::from(time.tv_nsec())
         });
         let (realtime, now) = clocks(wall, monotonic());
         let zone = zone_offset(now);
+
         Ok(Self {
             filter: plan.filter.clone(),
             format: args.format,
@@ -1883,6 +1893,7 @@ impl Printer {
             .map(|(name, tokens)| (name, tokens.text()))
             .collect();
         args.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+
         CallRecord {
             abi: (event.call.abi != Abi::X86_64).then(|| event.call.abi.suffix()),
             args,
@@ -2008,6 +2019,7 @@ impl Printer {
                 line.0.extend(tokens.0);
                 let text = self.paint(&line);
                 self.write_thread(process, thread, &text);
+
                 if let TraceEvent::Signal {
                     stack: Some(stack), ..
                 } = event
@@ -2088,6 +2100,7 @@ impl Printer {
 
         if self.summarize {
             let errno = |number: u16| present::errno(microscope::syscalls::Errno(number)).0;
+
             match self.format {
                 OutputFormat::Text => {
                     let lines = summary::table(&self.stats, &self.columns, self.sort, &errno);
@@ -2227,6 +2240,7 @@ impl Sink for Printer {
                 if self.fds.of(*process).next().is_none() {
                     let mut seeds = Seeds::default();
                     ptrace::seed_descriptors(process.get(), &mut seeds);
+
                     for seed in seeds.0 {
                         if let Some((_, capture)) = &mut self.capture {
                             capture.event(&seed);
@@ -2406,6 +2420,7 @@ impl Sink for Printer {
             self.filter.calls.contains(call)
                 && (self.follow || self.processes.is_empty() || self.processes.contains(&process))
         });
+
         for (&(_, call), stats) in &stats.by_call {
             self.stats.entry(call).or_default().merge(stats);
         }

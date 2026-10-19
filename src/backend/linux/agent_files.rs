@@ -90,6 +90,7 @@ impl Files {
                 }
             });
         }
+
         Ok(files)
     }
 
@@ -109,16 +110,19 @@ impl Files {
             rustix::process::geteuid().as_raw(),
         )?;
         executable_mount(fstatvfs(&parent).map_err(problem)?.flags())?;
+
         let mut random = [0; 16];
         std::fs::File::open("/dev/urandom")
             .and_then(|mut file| file.read_exact(&mut random))
             .map_err(problem)?;
+
         let name = format!(
             "{}{:032x}",
             crate::runtime_model::PYTHON_SCRIPT_PREFIX,
             u128::from_le_bytes(random)
         );
         mkdirat(&parent, name.as_str(), Mode::S_IRWXU).map_err(problem)?;
+
         let directory = match openat(
             &parent,
             name.as_str(),
@@ -136,6 +140,7 @@ impl Files {
                 });
             }
         };
+
         let files = Self {
             process,
             parent,
@@ -147,6 +152,7 @@ impl Files {
             state: State::Open,
         };
         files.validate()?;
+
         Ok(files)
     }
 
@@ -165,6 +171,7 @@ impl Files {
             Mode::empty(),
         )
         .map_err(problem)?;
+
         for (held, current) in [(&self.parent, &parent), (&self.directory, &directory)] {
             let held = fstat(held).map_err(problem)?;
             let current = fstat(current).map_err(problem)?;
@@ -172,6 +179,7 @@ impl Files {
                 return Err("the target's root or agent directory changed; its agent paths are no longer valid".into());
             }
         }
+
         let own = rustix::process::geteuid().as_raw();
         trusted_parent(&fstat(&parent).map_err(problem)?, own)?;
         private_directory(&fstat(&directory).map_err(problem)?, own)?;
@@ -196,16 +204,19 @@ impl Files {
             Mode::S_IRUSR | Mode::S_IWUSR,
         )
         .map_err(problem)?;
+
         // Record creation before asking for metadata, so even a failed
         // fstat leaves a bounded, explicitly unidentifiable artifact.
         self.owned.insert(name.to_owned(), None);
         let identity = Identity::of(&fstat(&fd).map_err(problem)?);
         self.owned.insert(name.to_owned(), Some(identity));
+
         let mut file = std::fs::File::from(fd);
         let written = file
             .set_permissions(std::fs::Permissions::from_mode(0o600))
             .and_then(|()| write(&mut file))
             .and_then(|()| file.sync_all());
+
         // A successful write is not enough on filesystems that defer an
         // error until close. close consumes the descriptor even on error.
         let closed = nix::unistd::close(file).map_err(std::io::Error::from);
@@ -238,6 +249,7 @@ impl Files {
             Err(Errno::ENOENT) => return self.directory_already_absent(),
             Err(error) => return Err(problem(error)),
         }
+
         match unlinkat(&self.parent, self.name.as_str(), UnlinkatFlags::RemoveDir) {
             Ok(()) => {
                 self.state = State::Closed;
@@ -278,6 +290,7 @@ impl Files {
             }
             Ok(_) => {}
         }
+
         // All target threads are stopped. Identity guards detect changes
         // made before this operation; they do not form a security boundary
         // against another process with our own UID racing name operations.
@@ -302,6 +315,7 @@ impl AgentFiles for Files {
         if !self.scripts.is_empty() {
             return Err("the previous Python agent script has not been acknowledged".into());
         }
+
         // A failed write may have left one owned incomplete file. Retire
         // it before preparing another; repeated failures cannot grow an
         // unbounded collection of artifacts.
@@ -313,6 +327,7 @@ impl AgentFiles for Files {
         {
             self.remove_owned(&name)?;
         }
+
         let name = crate::runtime_model::python_script_name(generation);
         self.write(&name, source.as_bytes())?;
         let path = format!("/tmp/{}/{name}", self.name);
@@ -348,6 +363,7 @@ impl AgentFiles for Files {
         if !self.scripts.is_empty() {
             return Err("preserving Python agent files: a request is still unacknowledged".into());
         }
+
         self.state = State::Closing;
         let mut problems = Vec::new();
         for name in self.owned.clone().into_keys() {

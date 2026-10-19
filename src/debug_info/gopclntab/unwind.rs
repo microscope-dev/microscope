@@ -76,6 +76,7 @@ impl GoUnwind {
         let after = functions.partition_point(|function| function.entry <= address);
         let index = after.checked_sub(1)?;
         let function = &functions[index];
+
         (function.contains(address) && function.is_go()).then_some((index, function))
     }
 
@@ -108,6 +109,7 @@ impl GoUnwind {
             .ok_or_else(|| UnwindTermination::CorruptUnwindInfo {
                 description: "the Go stack table does not cover the instruction".into(),
             })?;
+
         u64::try_from(delta).map_err(|_| UnwindTermination::CorruptUnwindInfo {
             description: "the Go stack table's delta is negative".into(),
         })
@@ -163,6 +165,7 @@ impl GoUnwind {
 
             caller.set(RETURN_ADDRESS, return_address);
             caller.set(RSP, cfa.get());
+
             Ok(UnwindStep {
                 registers: caller,
                 cfa,
@@ -196,6 +199,7 @@ impl GoUnwind {
             .get(index)
             .and_then(Option::as_ref)
             .is_some_and(|saved| saved.contains(&address.get()));
+
         Some(if delta >= 8 && saved {
             CallerFramePointer::Saved(VirtualAddress::new(cfa.get() - 16))
         } else if delta == 0 && !function.facts.assembly {
@@ -217,6 +221,7 @@ impl GoUnwind {
             .and_then(Option::as_ref)
             .is_some_and(|saved| saved.contains(&address.get()));
         let delta = self.sp_delta(function, address).ok();
+
         Some(if saved && delta.is_some_and(|delta| delta >= 8) {
             FramePointerRule::Kept
         } else {

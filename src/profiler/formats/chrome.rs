@@ -17,6 +17,7 @@ pub fn export(profile: &Profile) -> String {
     )]
     let micros = |time: i64| (time - start) as f64 / 1000.0;
     let mut events: Vec<Value> = Vec::new();
+
     for thread in profile.threads() {
         if let Some(name) = thread.name {
             events.push(json!({
@@ -36,6 +37,7 @@ pub fn export(profile: &Profile) -> String {
             "ph": "X", "name": name, "cat": category, "pid": zone.pid, "tid": zone.tid,
             "ts": micros(zone.start), "dur": micros(zone.end) - micros(zone.start),
         });
+
         let unseen: Vec<&str> = [
             (ZONE_BEGAN_UNSEEN, "its begin was lost"),
             (ZONE_ENDED_UNSEEN, "its end was not seen"),

@@ -168,6 +168,7 @@ async fn breakpoints_change_their_conditions_and_go_before_the_program_runs() {
     for location in ["app.py:12", "py:main"] {
         tab.ok("addBreakpoint", json!({"location": location})).await;
     }
+
     let waiting = tab
         .state("the Python breakpoints", |state| {
             state["breakpoints"]
@@ -175,6 +176,7 @@ async fn breakpoints_change_their_conditions_and_go_before_the_program_runs() {
                 .is_some_and(|all| all.len() == 2)
         })
         .await;
+
     for breakpoint in waiting["breakpoints"].as_array().into_iter().flatten() {
         assert_eq!(breakpoint["places"], json!([]), "{breakpoint}");
     }
@@ -256,6 +258,7 @@ async fn a_viewer_reads_stacks_and_sources_but_cannot_step_or_break() {
     viewer
         .ok("source", json!({"path": source_named(&files, "basic.c")}))
         .await;
+
     for (method, params) in [
         (
             "step",
@@ -355,6 +358,7 @@ async fn breakpoints_without_debug_information_show_the_symbols_they_stop_in() {
         places.iter().any(|name| name.starts_with("__strlen_")),
         "{places:?}"
     );
+
     let stop = stopped["inferior"]["stop"].clone();
     tab.ok("continue", json!({"stop": stop})).await;
     let stopped = tab
@@ -436,6 +440,7 @@ async fn a_thread_jumps_to_a_line_and_registers_change_through_their_rows() {
     set["path"] = "$rbx".into();
     set["value"] = "0x2a".into();
     tab.ok("setValue", set).await;
+
     let registers = tab.ok("registers", at).await;
     let rbx = registers["registers"]
         .as_array()
@@ -485,6 +490,7 @@ async fn a_step_goes_into_the_call_the_tab_chose() {
         .map(|call| call["callee"].as_str().expect("a callee"))
         .collect::<Vec<_>>();
     assert_eq!(callees, ["inc", "twice", "add"], "{targets}");
+
     tab.ok(
         "step",
         json!({"stop": stop, "thread": thread, "kind": "into", "call": calls[2]["call"]}),

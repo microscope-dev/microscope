@@ -17,9 +17,11 @@ fn readelf_record(fixture: &str) -> BTreeSet<StateLine> {
     let path = Scenario::fixture(fixture).with_extension("coroutines");
     let text = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+
     text.lines()
         .map(|line| {
             let fields = line.split('\t').collect::<Vec<_>>();
+
             let [name, offset, state, record, declared, awaited] = fields[..] else {
                 panic!("{}: malformed line {line:?}", path.display());
             };
@@ -61,6 +63,7 @@ fn normalized(image: &ModuleImage) -> BTreeSet<StateLine> {
         }
 
         name.push_str(&info.name);
+
         let coroutine = coroutine.unwrap_or_else(|reason| panic!("{name}: {reason}"));
         for state in coroutine.states.iter() {
             let record = match state.kind {
@@ -76,6 +79,7 @@ fn normalized(image: &ModuleImage) -> BTreeSet<StateLine> {
                 .find(|member| member.name.as_deref() == Some("__awaitee"))
                 .and_then(|member| image.type_info(member.type_ref))
                 .map_or_else(|| "-".to_owned(), |awaited| awaited.name.to_string());
+
             lines.insert((
                 name.clone(),
                 coroutine.state.offset,
@@ -111,13 +115,16 @@ async fn coroutines_read_as_readelf_reads_them() {
             !expected.is_empty(),
             "{fixture}: readelf found no coroutine"
         );
+
         let actual = normalized(scenario.handle().module_image());
         let missing = expected.difference(&actual).collect::<Vec<_>>();
         let extra = actual.difference(&expected).collect::<Vec<_>>();
+
         assert!(
             missing.is_empty() && extra.is_empty(),
             "{fixture}: readelf only: {missing:#?}\nmicroscope only: {extra:#?}"
         );
+
         scenario.shutdown().await;
     }
 }

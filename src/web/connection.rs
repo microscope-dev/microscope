@@ -46,6 +46,7 @@ pub async fn serve(
     let list = ServerMessage::Profiles(ProfileList::clone(&listed.borrow_and_update()));
     let mut opening = vec![encode(&hello), encode(&state), encode(&list)];
     opening.extend(joined.history.iter().map(|text| Utf8Bytes::from(&**text)));
+
     for text in opening {
         if socket.send(Message::Text(text)).await.is_err() {
             session.leave(connection);
@@ -54,6 +55,7 @@ pub async fn serve(
     }
 
     let (answers, mut pending) = mpsc::channel::<Message>(PENDING_ANSWERS);
+
     loop {
         // Biased, in this order: requests are read even during a flood of
         // output, and a request's state change goes out before its answer.
@@ -126,6 +128,7 @@ fn dispatch(
 
     let session = Arc::clone(session);
     let profiles = Arc::clone(profiles);
+
     tokio::spawn(async move {
         let id = envelope.id;
         let answered = match envelope.request {

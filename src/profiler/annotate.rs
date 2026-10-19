@@ -101,7 +101,9 @@ impl Profile {
                 _ => None,
             })
             .collect();
+
         lines.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+
         LineCosts {
             weight: costs.weight,
             lines,
@@ -118,6 +120,7 @@ impl Profile {
         // Each module's sampled addresses in the function, with their weights.
         let mut sampled: BTreeMap<u32, BTreeMap<u64, (u64, u64)>> = BTreeMap::new();
         let costs = keys.functions(&selection(query));
+
         for cost in costs.rows {
             let KeyKind::Address { frame } = keys.kind(cost.key) else {
                 continue;
@@ -201,6 +204,7 @@ fn decode(
     let mut decoder = decoder_for(TargetDescription::X86_64, AssemblySyntax::Intel)
         .map_err(|error| error.to_string())?;
     let mut blocks = Vec::new();
+
     for symbol in &symbols {
         let (start, end) = (symbol.address(), symbol.address() + symbol.size());
         if addresses.range(start..end).next().is_none() {
@@ -225,6 +229,7 @@ fn decode(
         };
 
         let mut offset = 0;
+
         while offset < code.len() {
             if block.instructions.len() == MAX_FUNCTION_INSTRUCTIONS {
                 block.stopped = Some(format!(
@@ -249,10 +254,12 @@ fn decode(
                 .range(address..address + length as u64)
                 .map(|(at, _)| *at)
                 .collect();
+
             let (own, total) = held.iter().fold((0, 0), |(own, total), at| {
                 let (more_own, more_total) = addresses.remove(at).unwrap_or_default();
                 (own + more_own, total + more_total)
             });
+
             block.instructions.push(InstructionCost {
                 address,
                 text: tokens.iter().map(|token| &*token.text).collect(),

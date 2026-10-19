@@ -279,6 +279,7 @@ impl TypeArenaBuilder<'_, '_> {
             base + entries.len(),
             cuts.last().map_or(base, |cut| cut.end)
         );
+
         for unit in units.iter_mut().rev() {
             unit.entries = entries.split_off(unit.start);
         }
@@ -286,6 +287,7 @@ impl TypeArenaBuilder<'_, '_> {
         // A DIE taken for another's type goes to the unit that took it, and
         // a type's own to the unit that built it.
         let mut by_die = self.by_die.into_own();
+
         for (position, key) in self.aliases.into_iter().enumerate() {
             let Some(id) = by_die.remove(&key) else {
                 debug_assert!(false, "an alias names its type");
@@ -311,6 +313,7 @@ impl TypeArenaBuilder<'_, '_> {
         }
 
         let identity_start = self.identity_parts.base_len();
+
         for (own, parts) in self.identity_parts.into_own().into_iter().enumerate() {
             if let Some(parts) = parts {
                 let id = identity_start + own;
@@ -411,6 +414,7 @@ impl TypeArenaBuilder<'_, '_> {
             .collect::<Option<Vec<_>>>()?;
         ids.extend(numbered);
         let renumbered = Renumbered { base, ids };
+
         for (own, entry) in unit.entries.into_iter().enumerate() {
             if shared(own).is_some() {
                 continue;
@@ -482,6 +486,7 @@ impl TypeArenaBuilder<'_, '_> {
                         declaration
                     }),
             );
+
         for (mut key, expression) in unit.dynamic_record_layouts {
             key.aggregate = renumbered.id(key.aggregate);
             self.dynamic_record_layouts
@@ -493,6 +498,7 @@ impl TypeArenaBuilder<'_, '_> {
         self.by_die.extend_own(by_die);
         let absorbed = self.budget.absorb(&unit.budget);
         debug_assert!(absorbed, "units are absorbed within the budget");
+
         Some(renumbered)
     }
 }
@@ -510,6 +516,7 @@ fn absorb_walked(
     let functions = into.functions.len();
     let order = into.order;
     let file = |location: &mut SourceLocation| location.file = files[location.file.index()];
+
     for mut object in unit.objects.drain(..) {
         types.resolution(&mut object.type_info);
         for id in [&mut object.escaped, &mut object.coroutine]
@@ -785,6 +792,7 @@ pub(super) fn walk_units_apart<'data>(
 
     debug_assert!(walk_ahead > 0, "a walk window of no units waits forever");
     let mut members = vec![Vec::new(); units.len()];
+
     for (unit, group) in groups.iter().enumerate() {
         members[*group].push(unit);
     }
@@ -854,6 +862,7 @@ fn walk_group<'data>(
 
     // The group's units share the names they hold.
     let mut names = super::Names::default();
+
     for (&unit_index, pool) in units.iter().zip(&pools) {
         types.pool = pool;
         let mark = types.budget.spent();
@@ -893,6 +902,7 @@ fn walk_group<'data>(
 
     let mut built = built.into_iter();
     let mut walks = walks.into_iter();
+
     units
         .iter()
         .zip(pools)

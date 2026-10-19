@@ -83,6 +83,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let locations_changed = self.reresolve_breakpoints(lost_locations)?;
         self.arm_new_agents();
         let arming_changed = self.sync_runtime_arming();
+
         if locations_changed || arming_changed {
             self.publish_breakpoints_changed();
         }

@@ -54,6 +54,7 @@ impl CappedAllocator {
                 live.checked_add(bytes).filter(|&total| total <= CAP_BYTES)
             })
             .is_ok();
+
         if !reserved {
             // Stderr is unbuffered, so this writes without allocating.
             let _ = std::io::stderr().write_all(

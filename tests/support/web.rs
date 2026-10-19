@@ -63,12 +63,14 @@ impl Web {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+
         let recording = flight_recordings::watch_adapter(&mut command);
         let mut child = command.spawn().expect("start microscope web");
         let started = Instant::now();
         let transcript = Transcript::default();
         let stderr = child.stderr.take().expect("stderr");
         let errors = Arc::clone(&transcript);
+
         std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                 errors
@@ -77,6 +79,7 @@ impl Web {
                     .push(format!("!! server stderr: {line}"));
             }
         });
+
         let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
         let mut link = None;
         let mut serving = None;
@@ -105,11 +108,13 @@ impl Web {
             let mut rest = Vec::new();
             let _ = stdout.read_to_end(&mut rest);
         });
+
         let link = link.expect("a link");
         let serving = serving.expect("the address it serves at");
         let (joining, token) = link.rsplit_once('#').expect("a join link");
         let (front, to) = joining.rsplit_once("join").expect("a join link");
         let link_to = to.strip_prefix("?to=").map(str::to_owned);
+
         let (public, base) = if front == format!("http://{serving}/") {
             (None, "/".to_owned())
         } else {
@@ -173,12 +178,14 @@ impl Web {
 
         request.push_str("\r\n");
         request.push_str(token);
+
         let response = self.http(&request);
         let status = response
             .split(' ')
             .nth(1)
             .and_then(|code| code.parse().ok())
             .expect("a status line");
+
         let cookie = response.lines().find_map(|line| {
             let (name, value) = line.split_once(':')?;
             name.eq_ignore_ascii_case("set-cookie").then(|| {
@@ -190,6 +197,7 @@ impl Web {
                     .to_owned()
             })
         });
+
         (status, cookie)
     }
 
@@ -200,14 +208,19 @@ impl Web {
         stream
             .set_read_timeout(Some(DEADLINE))
             .expect("read timeout");
+
         stream.write_all(request.as_bytes()).expect("send");
+
         let mut response = Vec::new();
         let _ = stream.read_to_end(&mut response);
+
         let end = response
             .windows(4)
             .position(|window| window == b"\r\n\r\n")
             .expect("a response head");
+
         let body = response.split_off(end + 4);
+
         (String::from_utf8_lossy(&response).into_owned(), body)
     }
 
@@ -217,9 +230,11 @@ impl Web {
         stream
             .set_read_timeout(Some(DEADLINE))
             .expect("read timeout");
+
         stream.write_all(request.as_bytes()).expect("send");
         let mut response = String::new();
         let _ = stream.read_to_string(&mut response);
+
         response
     }
 
@@ -234,6 +249,7 @@ impl Web {
     /// A control client, logged in.
     pub async fn control(&self, name: &str) -> Client {
         let cookie = self.cookie(&self.control_token.clone());
+
         self.connect(
             name,
             Some(&cookie),
@@ -248,6 +264,7 @@ impl Web {
     pub async fn joining(&self, name: &str, link: &str) -> Client {
         let token = link.rsplit_once('#').expect("a token in the link").1;
         let cookie = self.cookie(token);
+
         self.connect(name, Some(&cookie), Some(&self.origin()), None)
             .await
             .expect("connect")
@@ -265,6 +282,7 @@ impl Web {
         let mut request = format!("ws://{}{}api/ws", self.address, self.base)
             .into_client_request()
             .expect("a request");
+
         let headers = request.headers_mut();
         if let Some(cookie) = cookie {
             headers.insert("Cookie", cookie.parse().expect("header"));
@@ -302,7 +320,9 @@ impl Web {
     pub fn interrupt(&mut self) -> std::process::ExitStatus {
         let mut child = self.child.take().expect("a running server");
         let pid = nix::unistd::Pid::from_raw(i32::try_from(child.id()).expect("a pid"));
+
         let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGINT);
+
         let deadline = Instant::now() + DEADLINE;
         loop {
             if let Some(status) = child.try_wait().expect("wait") {
@@ -325,6 +345,7 @@ impl Web {
 impl Drop for Web {
     fn drop(&mut self) {
         let failed = std::thread::panicking();
+
         if self.child.is_some() {
             self.interrupt();
         }
@@ -375,6 +396,7 @@ impl Client {
 
     pub async fn send_raw(&mut self, text: &str) {
         self.log(">>", text);
+
         if let Ok(value) = serde_json::from_str::<Value>(text) {
             self.traffic.push(json!({"to": "server", "message": value}));
         }
@@ -386,7 +408,9 @@ impl Client {
     pub async fn send(&mut self, method: &str, params: Value) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
+
         let mut message = json!({"id": id, "method": method});
+
         if !params.is_null() {
             message["params"] = params;
         }
@@ -411,6 +435,7 @@ impl Client {
                 .unwrap_or_else(|_| panic!("{} waited too long for a message", self.name))
                 .unwrap_or_else(|| panic!("{} was disconnected", self.name))
                 .expect("a message");
+
             let text = match message {
                 Message::Text(text) => text,
                 Message::Binary(bytes) => {
@@ -432,6 +457,7 @@ impl Client {
             self.log("<<", &text);
             let value: Value = serde_json::from_str(&text).expect("JSON");
             self.traffic.push(json!({"to": "page", "message": value}));
+
             if value["type"] == "state" {
                 self.state = Some(value.clone());
             }
@@ -470,6 +496,7 @@ impl Client {
                 message["id"] == id && matches!(message["type"].as_str(), Some("result" | "error"))
             })
             .await;
+
         if answer["type"] == "result" {
             Ok(answer["result"].clone())
         } else {
@@ -490,11 +517,13 @@ impl Client {
     /// sent before it.
     pub async fn draw(&mut self, params: Value) -> Result<(Value, Vec<u8>), (String, String)> {
         let (drawing, bytes) = self.with_bytes("draw", params).await?;
+
         assert_eq!(
             drawing["bytes"].as_u64(),
             Some(bytes.len() as u64),
             "the binary frame holds the bytes the drawing counts"
         );
+
         Ok((drawing, bytes))
     }
 
@@ -507,8 +536,10 @@ impl Client {
     ) -> Result<(Value, Vec<u8>), (String, String)> {
         let id = self.next_id;
         let answer = self.request(method, params).await?;
+
         let index = self.binary.iter().position(|(frame, _)| *frame == id);
         let bytes = index.map_or_else(Vec::new, |index| self.binary.remove(index).1);
+
         Ok((answer, bytes))
     }
 
@@ -601,6 +632,7 @@ impl Client {
                 "{} never printed {ends:?}",
                 self.name
             );
+
             let message = self.receive().await;
             self.pending.push(message);
         }
@@ -620,6 +652,7 @@ impl Client {
             .map(|line| {
                 // Keep a burst of output from bloating the checked-in file.
                 let mut line = line.clone();
+
                 if let Some(output) = line["message"]["text"].as_str()
                     && output.len() > 200
                 {
@@ -635,6 +668,7 @@ impl Client {
             })
             .collect::<Vec<_>>()
             .join("\n");
+
         let path = PathBuf::from(directory).join(format!("{name}.jsonl"));
         std::fs::write(&path, text + "\n").expect("write the transcript");
     }

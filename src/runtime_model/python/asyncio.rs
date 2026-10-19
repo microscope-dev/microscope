@@ -85,6 +85,7 @@ impl Values<'_, '_> {
 
         found.running = self.running_tasks(states, &mut found.gaps);
         let mut interpreters = Vec::new();
+
         for state in states {
             if !interpreters.contains(&(state.interpreter_state, state.interpreter)) {
                 interpreters.push((state.interpreter_state, state.interpreter));
@@ -119,6 +120,7 @@ impl Values<'_, '_> {
     ) -> BTreeMap<VirtualAddress, Result<ThreadId, Problem>> {
         let mut running = BTreeMap::new();
         let mut ids = None;
+
         for state in states {
             match self.running_task(state) {
                 Ok(Some(task)) => {
@@ -129,6 +131,7 @@ impl Values<'_, '_> {
                         }
                         ids
                     });
+
                     let thread = ids
                         .as_ref()
                         .map_err(Arc::clone)
@@ -138,6 +141,7 @@ impl Values<'_, '_> {
                     {
                         gaps.push(Arc::clone(problem));
                     }
+
                     if let std::collections::btree_map::Entry::Vacant(slot) = running.entry(task) {
                         slot.insert(thread);
                     } else {
@@ -231,6 +235,7 @@ impl Values<'_, '_> {
         let node_offset = reader.offset(Field::TaskNode)?;
         let mut seen = HashSet::new();
         let mut node = VirtualAddress::new(reader.word(head.wrapping_add(next))?);
+
         while node != head {
             if node == VirtualAddress::new(0) {
                 return Err(format!("the list of {whose} tasks is broken").into());
@@ -441,6 +446,7 @@ impl Values<'_, '_> {
         let reader = &self.reader;
         let mut seen = HashSet::new();
         let mut next = VirtualAddress::new(reader.field_word(task, Field::TaskCoro)?);
+
         loop {
             if !seen.insert(next) {
                 return Err("the task's coroutines await each other in a loop".into());
@@ -468,6 +474,7 @@ impl Values<'_, '_> {
 
             let frame = next.wrapping_add(reader.offset(Field::GenFrame)?);
             let state = self.coroutine(next)?;
+
             match state {
                 Coroutine::Finished => {
                     return Err(format!("the coroutine at {next:#x} has finished").into());

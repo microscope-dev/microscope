@@ -67,6 +67,7 @@ async fn stop_where(
             matches!(reason, StopReason::Breakpoint { .. }),
             "{fixture}: {reason:?}"
         );
+
         let snapshot = scenario.snapshot().await;
         let InferiorState::Stopped { stop_id, .. } = snapshot.inferior else {
             panic!("{fixture}: not stopped");
@@ -80,6 +81,7 @@ async fn stop_where(
                 }
             )
         });
+
         for thread in hit {
             let trace = scenario
                 .operation(
@@ -186,6 +188,7 @@ async fn check_every_thread(scenario: &mut Scenario, fixture: &str) {
             .first()
             .and_then(|frame| frame.function.as_ref())
             .map(|function| function.name.as_ref());
+
         let last = match thread.activity.as_ref().expect(&context) {
             ThreadActivity::Task { .. } => StackSegment::Task,
             // A thread `clone` just made has no g yet, and its stack
@@ -404,6 +407,7 @@ async fn a_vdso_call_unwinds_onto_its_caller() {
         assert_eq!(functions[1], Some("runtime.nanotime1"), "{context}");
         assert!(functions.len() > 3, "{context}");
         assert_eq!(trace.termination, UnwindTermination::Complete, "{context}");
+
         let outermost = trace
             .frames
             .last()
@@ -486,6 +490,7 @@ async fn a_signal_handler_unwinds_onto_the_frame_it_interrupted() {
         // The trampoline's instruction and the interrupted frame's are
         // their own, not return addresses.
         let trampoline = found[0].1.len() - 1;
+
         for frame in &trace.frames[trampoline..=trampoline + 1] {
             assert_eq!(frame.kind, FrameKind::Signal, "{context}");
         }
@@ -590,6 +595,7 @@ async fn a_fault_unwinds_onto_the_instruction_that_faulted() {
             )],
             "{context}"
         );
+
         let faulted = &trace.frames[1];
         assert_eq!(faulted.kind, FrameKind::Signal, "{context}");
         assert_eq!(
@@ -619,6 +625,7 @@ async fn a_pointer_below_its_frames_stack_pointer_is_stale() {
                 scenario.handle().select_frame(trace.frames[1].id),
             )
             .await;
+
         let evaluate = |text: &'static str| {
             let expression = Expression::parse(text).expect("an expression");
             let handle = scenario.handle().clone();

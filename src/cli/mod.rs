@@ -53,6 +53,7 @@ impl Renderers {
         let environment = ColorEnvironment::current();
         let stdout_is_terminal = io::stdout().is_terminal();
         let stderr_is_terminal = io::stderr().is_terminal();
+
         Self {
             stdout: Renderer::new(color_enabled(
                 choice,
@@ -85,6 +86,7 @@ impl Renderers {
             unicode: true,
             hyperlinks: false,
         }));
+
         Self {
             stdout: Renderer::with_look(color, look),
             stderr: Renderer::with_look(color, look),
@@ -113,6 +115,7 @@ impl Renderers {
                 Toggle::Auto => !batch && stdout_is_terminal && terminal_has_hyperlinks(),
             },
         }));
+
         Self {
             stdout: Renderer::with_look(detected.stdout.is_colored(), look),
             stderr: Renderer::with_look(detected.stderr.is_colored(), look),
@@ -286,6 +289,7 @@ impl Cli {
         launch: LaunchSettings,
     ) -> Self {
         let runtime_frames = settings.config.backtrace.runtime == config::RuntimeFrames::Show;
+
         Self {
             debugger,
             renderers,
@@ -331,6 +335,7 @@ impl Cli {
     async fn show(&self, output: &str) -> Result<()> {
         let rows = self.rows.load(std::sync::atomic::Ordering::Relaxed);
         let columns = self.columns().max(1);
+
         let pager = match self.settings.config.ui.pager.as_str() {
             "never" => None,
             "auto" => Some(
@@ -354,6 +359,7 @@ impl Cli {
                 })
                 .sum::<usize>()
                 >= rows;
+
         let Some(pager) = pager.filter(|_| tall) else {
             return Ok(emit(output)?);
         };
@@ -387,12 +393,14 @@ impl Cli {
     ) -> Vec<String> {
         let (discovered, mut warnings) = microscope::view_files::discover(project_root);
         let mut session = Vec::new();
+
         for path in paths {
             match microscope::view_files::read(path) {
                 Ok(file) => session.insert(0, file),
                 Err(error) => warnings.push(error),
             }
         }
+
         {
             let mut views = self
                 .views
@@ -403,6 +411,7 @@ impl Cli {
         }
 
         warnings.extend(self.reload_views().await);
+
         warnings.extend(
             self.debugger
                 .module_image()
@@ -410,6 +419,7 @@ impl Cli {
                 .iter()
                 .map(ToString::to_string),
         );
+
         warnings
     }
 
@@ -477,6 +487,7 @@ impl Cli {
             .map(|file| (file.name.as_str(), file.text.as_str()))
             .collect::<Vec<_>>();
         let mut renderers = Vec::<microscope::view_files::RendererFile>::new();
+
         for renderer in sources.iter().flat_map(|file| &file.renderers) {
             if !renderers.iter().any(|loaded| loaded.path == renderer.path) {
                 renderers.push(renderer.clone());
@@ -518,12 +529,14 @@ impl Cli {
         // The program is loaded and the session can take its first command.
         microscope::timings::mark("ready");
         self.announce(args)?;
+
         for warning in self.debug_information_warnings().await {
             self.warn(&warning);
         }
 
         self.load_views(&self.settings.root, &args.views).await;
         self.apply_signal_settings().await?;
+
         if self.settings.config.step.runtime == config::StepRuntime::Enter {
             self.debugger.set_step_into_runtime(true).await?;
         }
@@ -606,6 +619,7 @@ impl Cli {
 
     fn announce(&self, args: &Session) -> Result<()> {
         let stdout = self.renderers.stdout;
+
         if let Some(core) = self.debugger.core_dump() {
             if !args.batch {
                 emit(&format!(
@@ -650,6 +664,7 @@ impl Cli {
     async fn run_stdin(&self, on_error: OnError) -> Result<()> {
         let mut lines = BufReader::new(tokio::io::stdin()).lines();
         let mut number = 0_u64;
+
         while let Some(line) = lines.next_line().await? {
             number += 1;
             if !self
@@ -743,6 +758,7 @@ impl Cli {
             }
             Ok(contents) => {
                 let mut restored = 0;
+
                 for entry in &contents.breakpoints {
                     match self.restore_breakpoint(entry, source_paths).await {
                         Ok(changed) => {
@@ -769,6 +785,7 @@ impl Cli {
                 }
 
                 let mut displays = 0;
+
                 for display in &contents.displays {
                     match self.layout(commands::Command::Print, &display.format) {
                         Ok(_) => {
@@ -786,6 +803,7 @@ impl Cli {
                 }
 
                 kept.written = contents;
+
                 let restored = [(restored, "breakpoint"), (displays, "display")]
                     .into_iter()
                     .filter(|(count, _)| *count > 0)
@@ -813,6 +831,7 @@ impl Cli {
     ) -> Result<bool> {
         let spec = commands::parse_breakpoint_location(&entry.location)?
             .ok_or_else(|| anyhow!("'{}' is no location", entry.location))?;
+
         let options = microscope::BreakpointOptions {
             hit_condition: entry.hits.as_deref().map(str::parse).transpose()?,
             condition: entry
@@ -881,7 +900,9 @@ impl Cli {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .source_paths
             .clone();
+
         let mut entries = Vec::new();
+
         for breakpoint in snapshot.breakpoints.iter() {
             let Some(location) = saved::location(&breakpoint.spec, root) else {
                 continue;
@@ -893,6 +914,7 @@ impl Cli {
                 .line_texts
                 .get(&location)
                 .cloned();
+
             let line_text = if known.is_some() {
                 known
             } else {
@@ -977,8 +999,6 @@ impl Cli {
     }
 }
 
-/// Writes one line to stdout. Unlike `println!`, a closed pipe is an error
-/// rather than a panic.
 /// Shows `text` through `pager`, a shell command, returning false when the
 /// shell found no such command.
 fn page(pager: &str, text: &str) -> io::Result<bool> {
@@ -1008,6 +1028,8 @@ pub fn wait_for_child(
     }
 }
 
+/// Writes one line to stdout. Unlike `println!`, a closed pipe is an error
+/// rather than a panic.
 fn emit(text: &str) -> io::Result<()> {
     let mut stdout = io::stdout().lock();
     writeln!(stdout, "{text}")?;

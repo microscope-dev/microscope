@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 fn sources(directory: &Path) -> Vec<(PathBuf, String)> {
     let mut pending = vec![directory.to_owned()];
     let mut sources = Vec::new();
+
     while let Some(path) = pending.pop() {
         if path.is_dir() {
             let entries = std::fs::read_dir(&path).expect("read a source directory");
@@ -34,10 +35,12 @@ fn source_root() -> PathBuf {
 /// literals, which may name what the code may not use.
 fn code(source: &str) -> String {
     let mut code = String::with_capacity(source.len());
+
     for line in source.lines() {
         let line = line.split("//").next().unwrap_or_default();
         let mut quoted = false;
         let mut escaped = false;
+
         for character in line.chars() {
             match (quoted, escaped, character) {
                 (true, false, '\\') => escaped = true,
@@ -80,6 +83,7 @@ fn runtime_model_stays_pure() {
         "libc",
     ];
     let sources = sources(&source_root().join("runtime_model"));
+
     for (path, source) in &sources {
         let code = code(source);
         for forbidden in FORBIDDEN {
@@ -166,6 +170,7 @@ fn languages_stay_at_their_seams() {
                 .collect::<Vec<_>>()
                 .join("\n")
                 .to_lowercase();
+
             for (home, names) in RUNTIMES {
                 if path.starts_with(root.join(home)) {
                     continue;
@@ -194,6 +199,7 @@ fn thread_identity_evidence_is_read_once_and_forgotten_after_memory_changes() {
             super::TargetThreadId::new(7).unwrap(),
         )]
     };
+
     let first = memory.thread_identities(&[crate::ThreadId::new(5000)], read);
     let second = memory.thread_identities(&[crate::ThreadId::new(5000)], read);
     assert!(std::sync::Arc::ptr_eq(&first, &second));

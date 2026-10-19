@@ -97,6 +97,7 @@ fn convert_writes_what_go_and_flame_graph_tools_read() {
     let converted = microscope(&["convert", &profile, &pprof.to_string_lossy()]);
     assert!(converted.status.success());
     assert!(String::from_utf8_lossy(&converted.stderr).contains("without times, threads"));
+
     let raw = Command::new(fixture("build/test-programs/pprof"))
         .args(["-raw", "-symbolize=none"])
         .arg(&pprof)
@@ -250,6 +251,7 @@ fn piped(arguments: &[&str], commands: &[&str]) -> (String, String) {
     drop(stdin);
     let output = child.wait_with_output().expect("wait for microscope");
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+
     (assert_success(output), stderr)
 }
 
@@ -305,6 +307,7 @@ fn line_index(lines: &[&str], from: usize, predicate: impl Fn(&str) -> bool) -> 
 fn symbol_address(executable: &std::path::Path, name: &str) -> u64 {
     let data = fs::read(executable).expect("read fixture");
     let object = object::File::parse(data.as_slice()).expect("parse fixture");
+
     object
         .symbols()
         .find_map(|symbol| {
@@ -371,6 +374,7 @@ impl Microscope {
             let _ = stderr.read_to_string(&mut text);
             text
         });
+
         Self {
             child,
             stdout: receiver,
@@ -447,6 +451,7 @@ impl Microscope {
             .expect("stderr reader")
             .join()
             .expect("read microscope stderr");
+
         std::process::Output {
             status: status.expect("exit status"),
             stdout: std::mem::take(&mut self.transcript).into_bytes(),
@@ -645,6 +650,7 @@ fn attach_by_name_needs_exactly_one_process_of_that_name() {
     let first = support::ExternalProcess::spawn(&copy);
     let second = support::ExternalProcess::spawn(&copy);
     let output = batch_output(&["--attach", &name], &["quit"]);
+
     for process in [&first, &second] {
         assert_failure(&output, &process.process_id().to_string());
     }
@@ -693,6 +699,7 @@ fn color_follows_the_choice_and_the_environment_on_both_streams() {
         !stdout.contains("\x1b[94m\x1b[0m"),
         "empty aliases emitted styling: {stdout:?}"
     );
+
     for plain in ["commands", "Set a breakpoint", "Use `help <command>`"] {
         assert!(!stdout.contains(&format!("\x1b[2m{plain}")), "{stdout:?}");
     }
@@ -779,6 +786,7 @@ fn command_errors_show_the_usage_or_the_reason() {
             "cls",
         ],
     );
+
     let info =
         "usage: info breakpoints|watchpoints|signals|modules|calls|core|symbol|view [argument...]";
     let clear = "cannot clear screen: stdout is not an ANSI terminal";
@@ -1191,6 +1199,7 @@ fn a_thread_blocked_on_a_future_shows_its_awaits() {
         let (_, trace) = stdout
             .split_once(&format!("selected thread {driver}"))
             .unwrap_or_else(|| panic!("the driver's backtrace: {stdout}"));
+
         trace.to_owned()
     };
 
@@ -1871,6 +1880,7 @@ fn a_stop_prints_the_sections_its_settings_name_and_context_prints_them_again() 
         " more frames; `bt` shows every one\n",
         "* ",
     ];
+
     let mut expected = vec![
         "breakpoint 1 set at caller at tests/fixtures/c/hit-counts.c:20\n",
         "display 1: /x call\n",
@@ -1884,6 +1894,7 @@ fn a_stop_prints_the_sections_its_settings_name_and_context_prints_them_again() 
         "1: (uint64_t) call = 0x1\n",
         "\nrip ",
     ]);
+
     assert_in_order(&stdout, &expected);
     assert_eq!(stdout.matches("2: missing + 1:").count(), 1, "{stdout}");
 }
@@ -2029,6 +2040,7 @@ fn saved_breakpoint_commands_recreate_the_breakpoints() {
          break shared log \"total \\\"{shared_total}\\\"\" disabled\n\
          tbreak caller\n"
     );
+
     let table = |stdout: String| stdout[stdout.find("Id  On").expect("a table")..].to_owned();
     let program = "build/test-programs/hit-counts-gcc-o0";
     let restored = table(batch(&["-c", file_name, program], &["breakpoints"]));
@@ -2510,6 +2522,7 @@ fn views_present_values_raw_is_one_step_away_and_info_view_explains() {
             "print",
         ],
     );
+
     let raw_ints = "(Vec<i32, alloc::alloc::Global>) ints = {buf = {inner = {ptr = ";
     assert_in_order(
         &stdout,
@@ -2597,6 +2610,7 @@ fn a_repository_inside_a_project_is_its_own_project() {
             .output()
             .expect("run microscope");
         assert!(output.status.success(), "{output:?}");
+
         String::from_utf8_lossy(&output.stdout)
             .lines()
             .next()
@@ -3098,6 +3112,7 @@ fn print_and_p_render_scalars_and_print_lists_every_variable() {
         2,
         "{stdout}"
     );
+
     for expected in [
         "(char) character = 65 'A'",
         "(float) single = 1.25",
@@ -3129,6 +3144,7 @@ fn arrays_of_several_dimensions_print_as_nested_rows() {
     assert!(
         batch(&arguments, &commands).contains("(int32_t[2][3]) matrix = [[1, 2, 3], [4, 5, 6]]\n")
     );
+
     let stdout = batch_with_settings("[print]\nmax-elements = 4\n", &arguments, &commands);
     assert!(
         stdout.contains("(int32_t[2][3]) matrix = [[1, 2, 3], [4], <2 omitted>]\n"),
@@ -3490,6 +3506,7 @@ fn step_goroutine_enters_the_goroutine_the_line_starts() {
         .find(|line| line.starts_with("* [") && line.contains("main.spawned at "))
         .unwrap_or_else(|| panic!("{stdout}"));
     assert!(!selected.starts_with("* [1] "), "{selected}");
+
     let failure = batch_output(
         &["build/test-programs/steps-go-o0"],
         &[&format!("break main.go:{go}"), "run", "step sideways"],
@@ -3544,6 +3561,7 @@ fn a_trimpath_programs_sources_say_why_they_are_missing() {
         )),
         "{stdout}"
     );
+
     let root = env!("CARGO_MANIFEST_DIR");
     let mapped = batch(
         &[
@@ -3607,6 +3625,7 @@ fn a_goroutine_is_selected_or_inspected_by_its_id() {
         "{stdout}"
     );
     assert_in_order(&stdout, &["selected goroutine 1", "* [1] main.reached at "]);
+
     let failure = batch_output(
         &["build/test-programs/workers-go-o0"],
         &["break main.reached", "run", "goroutine 1 next"],
@@ -3713,6 +3732,7 @@ fn finish_shows_what_a_c_or_cpp_function_returned() {
             "returned (big) r_big = {<3 fields>}",
         ],
     );
+
     let stdout = batch(
         &["build/test-programs/returns-cpp-gcc-o2"],
         &["break r_plain", "run", "finish"],
@@ -4071,6 +4091,7 @@ fn core_module_searches_name_the_files_they_use_and_those_still_missing() {
     );
     let stderr = String::from_utf8_lossy(&partial.stderr).into_owned();
     let stdout = assert_success(partial);
+
     let libc = object::File::parse(
         fs::read(fixture("build/test-programs/libc-foreign.so.6"))
             .expect("read foreign C library")
@@ -4297,6 +4318,7 @@ fn python_breakpoints_wait_for_their_code_and_stop_in_the_programs_frame() {
             line.starts_with(&format!("breakpoint {number} set, pending until"))
         });
     }
+
     assert!(
         stderr.contains("no source file matching 'missing.c'"),
         "{stderr}"
@@ -4833,6 +4855,7 @@ fn watch_commands_explain_rejected_input() {
             "watch watch_array[0..2]",
         ],
     );
+
     assert_in_order(
         &stderr,
         &[
@@ -4908,6 +4931,7 @@ fn disassemble_reports_data_inside_code_and_unproven_addresses() {
             &inside,
         ],
     );
+
     for expected in [
         format!(
             "this instruction overlaps {:#x}, where ",
@@ -5350,6 +5374,7 @@ fn expressions_print_compute_and_point_at_their_errors() {
             "print 017",
         ],
     );
+
     for expected in [
         "(integer) f.u8 + 10 = 260",
         "(u8) (u8)(f.u8 + 10) = 4",
@@ -5478,6 +5503,7 @@ fn info_modules_names_separate_debug_files_and_why_one_is_unusable() {
             "libc.so.6",
         ],
     );
+
     let output = batch(
         &[
             "--debug-directory",
@@ -5515,6 +5541,7 @@ fn files_that_are_no_program_to_debug_say_what_they_are() {
     foreign[18..20].copy_from_slice(&183_u16.to_le_bytes());
     let aarch64 = scratch.path().join("aarch64");
     fs::write(&aarch64, foreign).expect("write a foreign program");
+
     for (program, reason) in [
         (text.display().to_string(), "not an ELF file".to_owned()),
         (
@@ -5651,6 +5678,7 @@ fn jump_moves_the_thread_to_resume_elsewhere_in_its_function() {
             "inferior exited with status 0",
         ],
     );
+
     assert_in_order(
         &errors,
         &["error: stdin:5: elsewhere has no code in the function the thread is stopped in"],
@@ -5698,6 +5726,7 @@ fn step_goes_into_one_call_of_the_line() {
             &next,
         ],
     );
+
     assert_in_order(
         &errors,
         &["error: stdin:10: no call on this line calls nothing; `info calls` lists them"],
@@ -5740,6 +5769,7 @@ fn backtraces_show_the_functions_that_left_by_tail_calls() {
             "(u64) $pc = <unavailable: a tail call discarded the frame>",
         ],
     );
+
     assert!(errors.is_empty(), "{errors}");
 }
 

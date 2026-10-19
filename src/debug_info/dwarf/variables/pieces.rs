@@ -37,6 +37,7 @@ pub(super) fn storage_from_pieces(
     let bits = byte_size
         .checked_mul(8)
         .ok_or(VariableUnavailableReason::EvaluationLimit)?;
+
     match pieces {
         [] => Err(EvaluateError::Malformed(
             "DWARF location expression produced no pieces".into(),
@@ -144,6 +145,7 @@ fn composite(
 ) -> Result<ValueStorage, EvaluateError> {
     let mut resolved: Vec<StoragePiece> = Vec::with_capacity(pieces.len() + 1);
     let mut offset = 0_u64;
+
     for piece in pieces {
         let size = match piece.size_in_bits {
             Some(size) => size,

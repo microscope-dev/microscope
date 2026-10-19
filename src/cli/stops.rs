@@ -160,6 +160,7 @@ impl Cli {
         let snapshot = self.debugger.snapshot().await.ok();
         let located = in_code(reason) || matches!(reason, StopReason::Attach | StopReason::Entry);
         let mut suffix = String::new();
+
         if located {
             if let Ok(place) = self.describe_location(false).await {
                 let _ = write!(suffix, " in {place}");
@@ -259,6 +260,7 @@ impl Cli {
         };
 
         let mut lines = Vec::new();
+
         for thread in snapshot
             .threads
             .iter()
@@ -273,6 +275,7 @@ impl Cli {
             };
 
             let mut line = format!("thread {}", renderer.paint(Role::Metadata, thread.id));
+
             if let Some(ThreadActivity::Task { task, .. }) = &thread.activity {
                 let _ = write!(
                     line,
@@ -430,6 +433,7 @@ impl Cli {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .list
             .clone();
+
         let mut lines = Vec::with_capacity(displays.len());
         for display in &displays {
             lines.push(self.display_line(display, activation).await);
@@ -447,6 +451,7 @@ impl Cli {
     ) -> String {
         let renderer = self.renderers.stdout;
         let id = renderer.paint(Role::Metadata, format!("{}:", display.id));
+
         let shown = match self.layout(Command::Print, &display.format) {
             Ok(layout) => self.print(&display.expression, layout, renderer).await,
             Err(error) => Err(error),
@@ -527,6 +532,7 @@ impl Cli {
                 after: count - before,
             })
             .await?;
+
         self.render_disassembly(&disassembly, marked).await
     }
 
@@ -543,6 +549,7 @@ impl Cli {
     pub(super) async fn add_display(&self, format: &str, expression: &str) -> Result<String> {
         // A display's format is checked once, when it is added.
         self.layout(Command::Print, format)?;
+
         if expression.is_empty() {
             anyhow::bail!("display takes an expression; `display` alone lists them");
         }
@@ -554,6 +561,7 @@ impl Cli {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .add(format, expression);
+
         let stopped = self
             .debugger
             .snapshot()
@@ -578,6 +586,7 @@ impl Cli {
             .displays
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+
         if displays.list.is_empty() {
             return "no displays".to_owned();
         }
@@ -605,6 +614,7 @@ impl Cli {
         let ids = super::commands::parse_display_ids(words, displays.list.len(), spec)?;
         let removed = displays.remove(ids.as_deref())?;
         drop(displays);
+
         Ok(format!(
             "{} {}",
             self.renderers.stdout.paint(Role::Success, "removed"),

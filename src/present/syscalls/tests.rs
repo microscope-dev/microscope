@@ -11,6 +11,7 @@ use super::*;
 fn event(name: &str, args: &[u64], result: i64, captured: &[(u8, &[u8])]) -> SyscallEvent {
     let mut words = [0; 6];
     words[..args.len()].copy_from_slice(args);
+
     SyscallEvent {
         thread: Tid::new(42),
         process: Pid::new(42),
@@ -308,6 +309,7 @@ proptest::proptest! {
             })
             .collect();
         let event = SyscallEvent { call, args, captured, outcome: Outcome::of_return(result), ..event("getpid", &[], 0, &[]) };
+
         for style in [
             Style::default(),
             Style { verbose: true, hex: Hex::NonAscii, fds: FdStyle::All, arg_names: true, ..Style::default() },

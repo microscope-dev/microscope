@@ -154,6 +154,7 @@ impl AddressSpace {
                 .is_none_or(|(_, region)| region.end <= start),
             "mapping {start:#x}-{end:#x} overlaps another"
         );
+
         self.regions.insert(
             start,
             Region {
@@ -201,6 +202,7 @@ impl AddressSpace {
                 address,
                 what: "an access past the user half of the address space",
             })?;
+
         let mut current = address;
         while current < end {
             let Some(region) = self.region(current) else {
@@ -272,10 +274,12 @@ impl AddressSpace {
     fn copy_out(&self, address: u64, bytes: &mut [u8]) {
         let mut current = address;
         let mut done = 0;
+
         while done < bytes.len() {
             let page = current / PAGE_SIZE;
             let offset = usize::try_from(current % PAGE_SIZE).expect("page offset fits usize");
             let count = (bytes.len() - done).min(PAGE_BYTES - offset);
+
             match self.pages.get(&page) {
                 Some(contents) => {
                     bytes[done..done + count].copy_from_slice(&contents[offset..offset + count]);
@@ -292,10 +296,12 @@ impl AddressSpace {
     fn copy_in(&mut self, address: u64, bytes: &[u8]) {
         let mut current = address;
         let mut done = 0;
+
         while done < bytes.len() {
             let page = current / PAGE_SIZE;
             let offset = usize::try_from(current % PAGE_SIZE).expect("page offset fits usize");
             let count = (bytes.len() - done).min(PAGE_BYTES - offset);
+
             let contents = self
                 .pages
                 .entry(page)
@@ -326,6 +332,7 @@ impl AddressSpace {
     /// none could.
     pub fn fetch(&self, address: u64, bytes: &mut [u8]) -> Result<usize, MemoryError> {
         let mut count = 0;
+
         while count < bytes.len() {
             let current = address + count as u64;
             if let Err(fault) = self.check(current, 1, Access::Execute) {
@@ -406,6 +413,7 @@ impl AddressSpace {
     pub fn present(&self, address: u64, length: u64) -> u64 {
         let mut current = address;
         let end = address.saturating_add(length);
+
         while current < end {
             let readable = self
                 .region(current)
@@ -476,6 +484,7 @@ impl AddressSpace {
                 "{start:08x}-{:08x} {permissions} {offset:08x} {device} {inode} ",
                 region.end
             );
+
             if !name.is_empty() {
                 // The kernel starts names at column 73.
                 let width = text.len() - line_start;
@@ -507,6 +516,7 @@ mod tests {
             Protection::READ_EXECUTE,
             Backing::Anonymous,
         );
+
         let shared = Arc::new([0x90; PAGE_BYTES]);
         space.share_page(code, Arc::clone(&shared));
 

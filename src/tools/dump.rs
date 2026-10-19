@@ -232,6 +232,7 @@ impl Names {
             })
             .collect();
         let mut sequences = BTreeMap::new();
+
         for row in image.statement_rows() {
             let next = sequences.len();
             sequences
@@ -476,6 +477,7 @@ impl<'a> Dumper<'a> {
         let names = self.names;
         self.heading("functions")?;
         let mut lines = Vec::new();
+
         for function in image.functions() {
             let mut text = names.debug(&function);
             let _ = write!(text, " package {:?}", image.function_package(function.id()));
@@ -512,6 +514,7 @@ impl<'a> Dumper<'a> {
             .recommended_entries_for_instance(instance.id())
             .collect::<Vec<_>>();
         let _ = write!(text, " entries {entries:?}");
+
         if let Some(points) = self.image.resume_points(instance.id()) {
             let _ = write!(text, " resume {}", names.debug(&points));
         }
@@ -535,6 +538,7 @@ impl<'a> Dumper<'a> {
         let names = self.names;
         self.heading("types")?;
         let mut lines = BTreeSet::new();
+
         for node in image.types() {
             let text = match node {
                 TypeNode::Resolved(info) => format!(
@@ -568,6 +572,7 @@ impl<'a> Dumper<'a> {
         let mut queries = BTreeSet::new();
         let mut bases = BTreeSet::new();
         let mut instances = BTreeSet::new();
+
         for node in image.types() {
             if let TypeNode::Resolved(info) = node {
                 queries.insert(info.name.to_string());
@@ -674,6 +679,7 @@ impl<'a> Dumper<'a> {
         self.heading("addresses")?;
         let mut previous = String::new();
         let mut runtime = Synthetic;
+
         for address in self.addresses_of_interest() {
             let at = ImageAddress::new(address);
 
@@ -756,6 +762,7 @@ impl<'a> Dumper<'a> {
                 names.debug(&image.control_boundaries_at(at).collect::<Vec<_>>()),
                 call_site,
             );
+
             if text != previous {
                 self.line(&format!("{address:#x} {text}"))?;
                 previous = text;
@@ -770,6 +777,7 @@ impl<'a> Dumper<'a> {
         let names = self.names;
         self.heading("breakpoints")?;
         let mut lines = BTreeMap::<usize, BTreeSet<u64>>::new();
+
         for row in image.statement_rows() {
             if let Some(location) = &row.location {
                 let lines = lines.entry(location.file.index()).or_default();
@@ -779,6 +787,7 @@ impl<'a> Dumper<'a> {
         }
 
         let mut output = Vec::new();
+
         for file in image.source_files() {
             let path = &names.files[file.id.index()];
             let all = image
@@ -789,6 +798,7 @@ impl<'a> Dumper<'a> {
                 "{path} lines {all:?} keeps {}",
                 image.keeps_line_breakpoints(file.id)
             );
+
             for line in lines.get(&file.id.index()).into_iter().flatten() {
                 let Some(line) = LineNumber::new(*line) else {
                     return Err(std::io::Error::other("a breakpoint line is zero"));
@@ -841,6 +851,7 @@ impl<'a> Dumper<'a> {
         }
 
         let mut lines = Vec::new();
+
         for name in &function_names {
             let single = image
                 .function_named(name)
@@ -886,6 +897,7 @@ impl<'a> Dumper<'a> {
         }
 
         let mut lines = Vec::new();
+
         for name in &symbol_names {
             let single = image
                 .symbol_named(name)
@@ -911,6 +923,7 @@ impl<'a> Dumper<'a> {
 
         self.heading("global names")?;
         let mut selectors = BTreeSet::new();
+
         for global in image.globals() {
             selectors.insert(global.name.to_string());
             selectors.insert(global.qualified_name.to_string());
@@ -929,6 +942,7 @@ impl<'a> Dumper<'a> {
 
         self.heading("source file names")?;
         let mut lines = Vec::new();
+
         for file in image.source_files() {
             for query in [
                 Some(file.path.as_path()),
@@ -965,6 +979,7 @@ impl<'a> Dumper<'a> {
 
         let mut lines = Vec::new();
         let statements = image.statement_rows().collect::<Vec<_>>();
+
         for instance in image.code_instances() {
             let selected = match instance.kind() {
                 CodeInstanceKind::OutOfLine => None,
@@ -999,6 +1014,7 @@ impl<'a> Dumper<'a> {
             addresses.extend(statement_addresses.into_iter().take(per_instance));
             let mut text = names.instances[instance.id().index()].clone();
             let mut previous = String::new();
+
             for address in addresses {
                 let at = ImageAddress::new(address);
                 let mut runtime = Synthetic;
@@ -1053,6 +1069,7 @@ impl<'a> Dumper<'a> {
         let image = self.image;
         self.heading("unwind")?;
         let mut addresses = BTreeSet::new();
+
         for instance in image.code_instances() {
             if matches!(instance.kind(), CodeInstanceKind::OutOfLine) {
                 for range in instance.ranges() {
@@ -1080,6 +1097,7 @@ impl<'a> Dumper<'a> {
             )
         }));
         let mut previous = String::new();
+
         for address in addresses {
             let at = ImageAddress::new(address);
             let mut memory = Synthetic;
@@ -1207,6 +1225,7 @@ mod tests {
         files.intern(PathBuf::from("/src/a.c"));
         let mut lines = LineTables::default();
         lines.begin_sequence().unwrap();
+
         for (index, row) in rows.iter().enumerate() {
             let at = lines.push_row(row).unwrap();
             if let Some(next) = rows.get(index + 1)
@@ -1287,6 +1306,7 @@ mod tests {
             ("prologue end", |row| row.prologue_end = true),
             ("epilogue begin", |row| row.epilogue_begin = true),
         ];
+
         for (name, change) in changes {
             let mut different = rows;
             change(&mut different[1]);

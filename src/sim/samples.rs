@@ -119,6 +119,7 @@ impl Sampler {
             image: &info.image,
             unwind: info.unwind.as_ref(),
         }];
+
         let (frames, end) = unwind_sample(
             &modules,
             &mut self.rules,
@@ -129,6 +130,7 @@ impl Sampler {
             },
             DEPTH_LIMIT,
         );
+
         let thread = &kernel.threads[&tid];
         if thread.shadow.lost {
             return Ok(None);
@@ -146,6 +148,7 @@ impl Sampler {
             copied_to,
         )
         .map_err(|message| Failure::debugger("samples", format!("thread {tid}'s {message}")))?;
+
         marks.hit(match unwound {
             Unwound::Whole
                 if thread
@@ -160,6 +163,7 @@ impl Sampler {
             Unwound::Truncated => Mark::TruncatedSample,
             Unwound::Corrupt => Mark::CorruptSampledCaller,
         });
+
         Ok(Some(format!(
             "sampled {} of {} frames, copying {stack_bytes}",
             frames.len(),
@@ -190,6 +194,7 @@ fn judge(
     let depth = calls.len() + 1;
     let complete = end == StackEnd::Complete;
     let address = |frame: &SampledFrame| frame.address.get();
+
     match frames.first() {
         Some(frame) if address(frame) == rip => {}
         Some(frame) => {

@@ -78,6 +78,7 @@ impl<T: Time> Alarm<T> {
     /// comes by `now`, until stopped.
     pub fn run(&self, mut now: impl FnMut() -> T, mut ring: impl FnMut()) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+
         while !state.stopped {
             let Some(at) = state.at else {
                 state = self
@@ -123,6 +124,7 @@ impl AlarmThread {
         let thread = std::thread::Builder::new()
             .name("microscope-alarm".into())
             .spawn(move || ringing.run(std::time::Instant::now, ring))?;
+
         Ok(Self {
             alarm,
             thread: Some(thread),

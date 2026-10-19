@@ -78,6 +78,7 @@ pub fn detect(
             })
         })
         .map_err(|reason| format!("the Python frames cannot be read: {reason}").into());
+
     Some(Ok(Arc::new(PythonRuntime {
         version: runtime.version,
         reading,
@@ -104,6 +105,7 @@ fn entries(image: &(dyn RuntimeImage + Send + Sync)) -> Vec<ImageAddress> {
     .collect::<Vec<_>>();
     entries.sort_unstable();
     entries.dedup();
+
     entries
 }
 
@@ -164,6 +166,7 @@ fn types(
 ) -> Result<[ImageAddress; TYPES.len()], Arc<str>> {
     let names = TYPES;
     let mut types = [ImageAddress::new(0); TYPES.len()];
+
     for (ty, name) in types.iter_mut().zip(names) {
         *ty = image
             .symbol(name)
@@ -297,6 +300,7 @@ impl Reading {
         let charged = budget.is_some();
         let mut unpaid = InspectionBudget::new(crate::InspectionLimits::default());
         let budget = values::Budget::new(budget.unwrap_or(&mut unpaid));
+
         // Blocks read at the stop are kept while it lasts, where the debugger
         // keeps them, and while this read lasts otherwise.
         let read_now = StopMemory::default();
@@ -314,6 +318,7 @@ impl Reading {
             runtime,
             classes: std::cell::RefCell::default(),
         };
+
         let mut table = self
             .code
             .lock()
@@ -358,6 +363,7 @@ impl Reading {
                 "CPython's code type lies outside the process".into(),
             ))
         })?;
+
         self.interpreted(stop, budget, |values, table| {
             let record = values
                 .reader
@@ -370,6 +376,7 @@ impl Reading {
             }
             .code_of(&record)
             .map_err(|problem| values.unavailable(problem))?;
+
             read(values, table, code, &record)
         })
     }
@@ -436,6 +443,7 @@ impl Reading {
         };
 
         states.sort_by_key(|state| (state.native, state.interpreter));
+
         let threads = match threads::ThreadIds::new(stop) {
             Ok(threads) => threads,
             Err(problem) => {
@@ -461,6 +469,7 @@ impl Reading {
             &mut gaps,
         );
         stacks.check_invariants();
+
         Partial {
             value: stacks,
             gaps,
@@ -578,6 +587,7 @@ impl Reading {
         let mut threads = None;
         let mut mapping_gap = false;
         let key: Arc<str> = "gil".into();
+
         for (state, gil) in states.iter().zip(gil::gil_states(&reader, &states)) {
             let value = match gil {
                 Ok(gil) => match gil.and_then(gil::Gil::label) {
@@ -732,6 +742,7 @@ impl RuntimeModel for PythonRuntime {
             argument(crate::unwind::RSI, "rsi")?,
             argument(crate::unwind::DwarfRegister::new(1), "rdx")?,
         )?;
+
         Ok(match report {
             agent::Report::Armed { generation } => super::HookEvent::Armed { generation },
             agent::Report::Failed {
@@ -765,6 +776,7 @@ impl RuntimeModel for PythonRuntime {
                     .ok_or_else(|| {
                         Arc::<str>::from("the Python agent reported breakpoint hit zero")
                     })?;
+
                 super::HookEvent::Breakpoint { numbers }
             }
             agent::Report::StepEnded { number } => {
@@ -834,6 +846,7 @@ impl RuntimeModel for PythonRuntime {
                 .map(|&task| values.task(task, tasks.running.get(&task)))
                 .collect();
             let end = first.saturating_add(page.len());
+
             Partial {
                 value: TaskPage {
                     tasks: page,
@@ -842,6 +855,7 @@ impl RuntimeModel for PythonRuntime {
                 gaps: tasks.gaps.clone(),
             }
         });
+
         page.unwrap_or_else(|problem| {
             empty(vec![
                 format!("asyncio's tasks cannot be read: {problem}").into(),
@@ -886,8 +900,10 @@ impl RuntimeModel for PythonRuntime {
                     running = Some(task);
                 }
             }
+
             Ok(running)
         });
+
         match running {
             Ok(Some(task)) => ThreadActivity::Task {
                 number: task.get(),
@@ -931,6 +947,7 @@ impl RuntimeModel for PythonRuntime {
             }
 
             let awaits = values.awaits(walk, object);
+
             Ok(Some(TaskContext::Interpreted {
                 frames: awaits.frames.into(),
                 end: awaits.end,
@@ -1040,6 +1057,7 @@ impl RuntimeModel for PythonRuntime {
             };
             Some(split_from(name))
         }
+
         self.activation(name(frame)?, inner.and_then(name))
             .then_some(Driven::Interpreted)
     }
@@ -1108,6 +1126,7 @@ impl RuntimeModel for PythonRuntime {
             .load_bias()
             .load(reading.code_type)
             .ok_or_else(|| Arc::from("CPython's code type lies outside the process"))?;
+
         reading.values(stop, budget, |values, table| {
             let record = values.reader.record(frame, Field::FrameSize)?;
             let (_, code) = frames::Walk {
@@ -1195,6 +1214,7 @@ impl RuntimeModel for PythonRuntime {
             .load_bias()
             .load(reading.code_type)
             .ok_or_else(|| Arc::<str>::from("CPython's code type lies outside the process"))?;
+
         reading.read_values(stop, None, |values, table| {
             let (states, gaps) = threads::thread_states(&values.reader, values.runtime)?;
             let identities = threads::ThreadIds::new(stop)?;
@@ -1203,6 +1223,7 @@ impl RuntimeModel for PythonRuntime {
                 code: table,
                 code_type,
             };
+
             for state in states
                 .iter()
                 .filter(|state| identities.resolve(state.native) == Ok(thread))

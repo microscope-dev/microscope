@@ -136,6 +136,7 @@ impl Default for Selection {
 /// Every call of every ABI the comma-separated `text` names.
 fn syscall_list(text: &str) -> Result<Arc<[microscope::syscalls::SyscallId]>, String> {
     let mut calls = Vec::new();
+
     for name in text
         .split(',')
         .map(str::trim)
@@ -188,6 +189,7 @@ impl Selection {
                     .filter(|text| !text.trim().is_empty()),
             )
         });
+
         for (id, condition) in arguments
             .filters
             .iter()
@@ -254,6 +256,7 @@ impl Selection {
             .filter_map(|name| microscope::signal_named(name))
             .collect::<BTreeSet<_>>();
         let mut stopping = BTreeSet::new();
+
         for filter in &FILTERS {
             match enabled.get(filter.id) {
                 None => {}

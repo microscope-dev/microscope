@@ -100,6 +100,7 @@ fn lock(reader: &Reader<'_>, interpreter: VirtualAddress) -> Result<Option<Lock>
         gil.wrapping_add(within(Field::InterpreterGilLocked)?),
     )?;
     let holder = reader.word(gil.wrapping_add(within(Field::InterpreterGilHolder)?))?;
+
     Ok(Some(Lock {
         // An uninitialized GIL is locked -1.
         locked: locked == 1,

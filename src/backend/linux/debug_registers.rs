@@ -517,6 +517,7 @@ mod tests {
         let length = usize::try_from(length).expect("small test length");
         let mut best = vec![u64::MAX; length + 1];
         best[0] = 0;
+
         for covered in 0..length {
             if best[covered] == u64::MAX {
                 continue;
@@ -636,6 +637,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(one_byte.control(), 0x3_0001);
+
         let four_bytes_slot_one = DebugRegisterPlan::default()
             .with_watchpoint(
                 WatchpointId::new(1),
@@ -666,6 +668,7 @@ mod tests {
             .with_watchpoint(second, &chunks, SlotAccess::Write)
             .unwrap();
         assert_eq!(plan.free_slots(), 2);
+
         let read_write = plan
             .with_watchpoint(WatchpointId::new(3), &chunks, SlotAccess::ReadWrite)
             .unwrap();
@@ -713,6 +716,7 @@ mod tests {
         };
 
         let mut plan = DebugRegisterPlan::default();
+
         for id in 1..=4 {
             plan = plan
                 .with_watchpoint(
@@ -783,6 +787,7 @@ mod tests {
         let mut plan = DebugRegisterPlan::default();
         let mut armed = std::collections::BTreeMap::new();
         let mut capacity_errors = 0;
+
         for _ in 0..20_000 {
             let id = WatchpointId::new(next() % 6);
             match next() % 4 {

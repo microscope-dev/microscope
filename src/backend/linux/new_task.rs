@@ -187,7 +187,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         let execution = self.active_execution()?;
         let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
         install_plan_breakpoint(&self.ptrace, inferior, returns_to, execution)?;
+
         let starter = starters[&address];
+
         if let Some(start) = self.active_step_mut() {
             start.new_task = Some(NewTask::Starting {
                 starters,
@@ -325,6 +327,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 _ => None,
             })
             .ok_or(Error::NotRunning)?;
+
         self.cleanup_plan_breakpoints(execution)?;
         if let Some(start) = self.active_step_mut() {
             start.new_task = Some(NewTask::Entered);
@@ -361,6 +364,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 _ => None,
             })
             .ok_or(Error::NotRunning)?;
+
         self.go_on_without_plan(pid, address, Some(kind))
     }
 

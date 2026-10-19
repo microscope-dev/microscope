@@ -152,6 +152,7 @@ impl Walk<'_, '_> {
                 built.first_line = u32::try_from(row.first_line).ok();
                 let path = std::sync::Arc::clone(self.code.name(row.file));
                 built.role = role(&path);
+
                 match line {
                     Ok(line) => {
                         built.place = Some(RecordedPlace {
@@ -248,6 +249,7 @@ impl Walk<'_, '_> {
     ) -> (Vec<InterpretedFrame>, Option<Problem>) {
         let mut frames: Vec<InterpretedFrame> = Vec::new();
         let mut end = None;
+
         for frame in sampled {
             match self.owner_of(u64::from(frame.owner)) {
                 Some(Owner::Code) => frames.push(self.sampled_frame(frame)),
@@ -306,6 +308,7 @@ impl Walk<'_, '_> {
                     )
                 }
             });
+
         let id = match located {
             Ok(id) => id,
             Err(problem) => {

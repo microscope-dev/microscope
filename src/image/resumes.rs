@@ -160,6 +160,7 @@ pub fn add_to(
             })
         })
         .collect::<Result<Vec<_>, TooMany>>()?;
+
     builder
         .owned_shared(TableKind::ResumeRanges, ranges)
         .owned_table(records)

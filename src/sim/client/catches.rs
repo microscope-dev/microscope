@@ -54,6 +54,7 @@ impl Client {
             .map(Condition::parse)
             .transpose()
             .map_err(|error| Failure::simulator("client", error.to_string()))?;
+
         let rule = UserCatch {
             calls: calls.iter().map(|call| u64::from(call.number)).collect(),
             entry: phase.stops(false),
@@ -68,11 +69,13 @@ impl Client {
             .add_catchpoint(Arc::from(calls), phase, condition)
             .await
             .map_err(|error| protocol(format!("catching failed: {error}")))?;
+
         self.note(format!("catchpoint {}", catchpoint.id));
         self.shared
             .catches
             .borrow_mut()
             .insert(catchpoint.id.get(), rule);
+
         self.mark(Mark::CatchAdded);
         Ok(())
     }
@@ -99,6 +102,7 @@ impl Client {
             .remove_catchpoint(CatchpointId::new(id))
             .await
             .map_err(|error| protocol(format!("removing catchpoint {id} failed: {error}")))?;
+
         self.mark(Mark::CatchRemoved);
         Ok(())
     }

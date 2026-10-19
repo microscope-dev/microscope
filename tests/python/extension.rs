@@ -56,6 +56,7 @@ async fn native_frame(stop: &Stop<'_>, thread: u64, function: &str) -> StopConte
                 stop.context
             )
         });
+
     at(frame.id)
 }
 
@@ -93,6 +94,7 @@ async fn a_native_frames_python_objects_are_the_values_cpython_reported() {
             scenario: &session.scenario,
             context: session.context(),
         };
+
         let at = native_frame(&stop, printer, "inspect").await;
         let variables = stop
             .scenario
@@ -100,6 +102,7 @@ async fn a_native_frames_python_objects_are_the_values_cpython_reported() {
             .await
             .variables
             .to_vec();
+
         let variable = |name: &str| {
             variables
                 .iter()

@@ -73,6 +73,7 @@ fn array_indices_honor_lower_bounds_ordering_and_reject_overflow() {
     let columns = ordered(ArrayOrdering::ColumnMajor, &[(-2, 3), (10, 2)], 4);
     assert_eq!(array_byte_offset(&columns, &[0, 11]).ok(), Some(Some(20)));
     assert_eq!(array_byte_offset(&columns, &[-1, 10]).ok(), Some(Some(4)));
+
     for (indices, bad_index, bad_lower_bound, bad_count) in
         [([-3, 10], -3, -2, 3), ([0, 12], 12, 10, 2)]
     {
@@ -151,6 +152,7 @@ fn array_type_in(language: gimli::DwLang, lower_bound: Option<WriteAttributeValu
     let type_value = {
         let mut entries = units[0].entries();
         let mut value = None;
+
         while let Some(entry) = entries.next_dfs().expect("read test DIE") {
             if entry.tag() == gimli::DW_TAG_variable {
                 value = entry.attr_value(gimli::DW_AT_type);
@@ -279,6 +281,7 @@ fn declaration_canonicalization_cannot_launder_a_non_type_reference() {
     let type_value = {
         let mut entries = units[0].entries();
         let mut value = None;
+
         while let Some(entry) = entries.next_dfs().expect("read test DIE") {
             if entry.tag() == gimli::DW_TAG_variable
                 && let Some(candidate) = entry.attr_value(gimli::DW_AT_type)
@@ -416,6 +419,7 @@ fn reference_chains_stop_at_their_cycles_however_long() {
         let mut seen = Seen::default();
         let mut current = Some(0);
         let mut links = 0;
+
         while let Some(offset) = current {
             if !seen.insert(DieKey { unit: 0, offset }) {
                 return Err(links);
@@ -436,6 +440,7 @@ fn reference_chains_stop_at_their_cycles_however_long() {
     // cycle closes wherever it closes, on either side of that boundary.
     for length in [1, 2, 8, 9, 40] {
         assert_eq!(walk(length, None), Ok(length));
+
         for back_to in [0, length / 2, length - 1] {
             assert_eq!(
                 walk(length, Some(back_to)),
@@ -490,6 +495,7 @@ impl VariableRuntime for Runtime {
                 register.to_string().into(),
             ))
         })?;
+
         Ok(crate::debug_info::VariableRegister {
             descriptor: crate::RegisterDescriptor {
                 id: crate::RegisterId::new(u32::from(register)),
@@ -981,6 +987,7 @@ fn malformed_pieces_are_refused() {
         },
         piece(Location::Empty, 8),
     ];
+
     for pieces in [
         &past_register[..],
         &short_implicit[..],
@@ -1299,6 +1306,7 @@ fn missing_base_types_have_a_stable_typed_reason() {
 fn expression_memory_reads_are_strictly_bounded() {
     let mut pool = Pool::new([]);
     let mut bytes = Vec::new();
+
     for address in 0_u32..=64 {
         bytes.push(gimli::DW_OP_addr.0);
         bytes.extend_from_slice(&u64::from(address).to_le_bytes());
@@ -1591,6 +1599,7 @@ fn pointer_decoding_obeys_target_width_and_byte_order_without_truncation() {
 #[test]
 fn implicit_pointer_offsets_are_bounded_and_never_return_partial_values() {
     assert_eq!(implicit_pointer_range(4, 4, 8), Ok((4, 8)));
+
     for (offset, size) in [(-1, 4), (6, 4)] {
         assert!(
             matches!(
@@ -1685,6 +1694,7 @@ fn value_shapes_separate_malformed_from_unsupported_types() {
         Some(0),
         TypeKind::Base(scalar_type(BaseTypeEncoding::Unsigned, 0)),
     );
+
     for (types, malformed, message) in [
         (wrapper_cycle().to_vec(), true, "type wrapper cycle"),
         (
@@ -2113,6 +2123,7 @@ fn load_test_object(written: &mut WriteDwarf) -> crate::debug_info::DebugInfo {
         })
         .expect("add the DWARF sections");
     let bytes = elf.write().expect("write the test object");
+
     crate::debug_info::load_program(
         std::path::Path::new("test.o"),
         &bytes,
@@ -2161,9 +2172,11 @@ fn a_nameless_artificial_variable_is_the_compilers_own() {
     );
     unit.get_mut(function)
         .set(gimli::DW_AT_high_pc, WriteAttributeValue::Udata(0x20));
+
     for (name, artificial) in [(Some("named"), false), (None, true), (None, false)] {
         let variable = unit.add(function, gimli::DW_TAG_variable);
         let variable = unit.get_mut(variable);
+
         if let Some(name) = name {
             variable.set(
                 gimli::DW_AT_name,
@@ -2319,6 +2332,7 @@ fn composite_and_bits(
     let mut pieces = Vec::new();
     let mut bits = Vec::new();
     let mut offset = 0;
+
     for (size, kind) in kinds {
         let (location, piece_bits): (PieceLocation, Vec<Bit>) = match kind {
             PieceKind::Memory { byte, bit_offset } => (
@@ -2367,6 +2381,7 @@ fn composite_and_bits(
 
     // Whole bytes, as an object has.
     let tail = offset.next_multiple_of(8) - offset;
+
     if tail != 0 {
         pieces.push(StoragePiece {
             offset,
@@ -2385,21 +2400,23 @@ fn composite_and_bits(
     )
 }
 
-/// What reading `bits` must produce: their bytes, least significant first,
-/// or the undefined ranges or unavailable place among them.
 /// A test's bit or byte count as an index.
 fn index(count: u64) -> usize {
     usize::try_from(count).expect("test sizes fit usize")
 }
 
+/// What reading `bits` must produce: their bytes, least significant first,
+/// or the undefined ranges or unavailable place among them.
 fn expected_read(bits: &[Bit]) -> std::result::Result<Vec<u8>, EvaluateError> {
     let mut ranges: Vec<crate::ValueBitRange> = Vec::new();
+
     for (index, bit) in bits.iter().enumerate() {
         if *bit != Bit::Undefined {
             continue;
         }
 
         let index = index as u64;
+
         match ranges.last_mut() {
             Some(last) if last.offset + last.size == index => last.size += 1,
             _ => ranges.push(crate::ValueBitRange {
@@ -2432,6 +2449,7 @@ fn expected_read(bits: &[Bit]) -> std::result::Result<Vec<u8>, EvaluateError> {
     }
 
     let mut bytes = vec![0_u8; bits.len().div_ceil(8)];
+
     for (index, bit) in bits.iter().enumerate() {
         if *bit == Bit::Known(true) {
             bytes[index / 8] |= 1 << (index % 8);
@@ -2465,6 +2483,7 @@ proptest::proptest! {
         let expected = expected_read(&bits[index(offset * 8)..index((offset + size) * 8)]);
         let read_bytes = storage::read(&selected, index(size), &mut memory, &mut budget)
             .map(|(_, raw)| raw.to_vec());
+
         if size != 0 {
             proptest::prop_assert_eq!(&read_bytes, &expected);
         }

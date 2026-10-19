@@ -467,6 +467,7 @@ impl<'a> Paths<'a> {
     fn of(&mut self, stack: u32, task: u32, label: u32) -> Option<&[u32]> {
         let path = &mut self.path;
         path.clear();
+
         for frame in self.capture.stack_frames(stack) {
             path.extend_from_slice(self.keys.frame(frame));
         }
@@ -583,6 +584,7 @@ pub fn aggregate(capture: &Capture, keys: &Keys<'_>, query: &Query) -> CallTree 
     let mut own = Vec::new();
     let mut children: HashMap<(u32, u32), u32> = HashMap::default();
     let mut tree = CallTree::default();
+
     for group in &selected {
         let Some(path) = paths.of(group.stack, group.task, group.label) else {
             continue;
@@ -608,6 +610,7 @@ pub fn aggregate(capture: &Capture, keys: &Keys<'_>, query: &Query) -> CallTree 
 
     // A node is reached after its parent, so a reverse pass totals it.
     let mut total = own.clone();
+
     for node in (0..key.len()).rev() {
         if parent[node] != NONE {
             total[parent[node] as usize] += total[node];
@@ -617,6 +620,7 @@ pub fn aggregate(capture: &Capture, keys: &Keys<'_>, query: &Query) -> CallTree 
     // Lay the tree out depth first, largest child first.
     let mut kids: Vec<Vec<u32>> = vec![Vec::new(); key.len()];
     let mut roots = Vec::new();
+
     for (node, caller) in parent.iter().enumerate() {
         match *caller {
             NONE => roots.push(index(node)),
@@ -639,6 +643,7 @@ pub fn aggregate(capture: &Capture, keys: &Keys<'_>, query: &Query) -> CallTree 
 
     let mut placed = vec![NONE; key.len()];
     let mut pending: Vec<(u32, u32)> = roots.iter().rev().map(|root| (*root, 0)).collect();
+
     while let Some((node, depth)) = pending.pop() {
         let position = index(tree.key.len());
         placed[node as usize] = position;
@@ -728,6 +733,7 @@ pub fn functions(capture: &Capture, keys: &Keys<'_>, query: &Query) -> Costs {
             total: total[key],
         })
         .collect();
+
     for cost in &costs {
         debug_assert!(
             cost.own <= cost.total && cost.total <= kept,
@@ -868,6 +874,7 @@ pub fn density(
     };
 
     let mut slices: Vec<Option<Vec<u64>>> = vec![None; count];
+
     each(capture, keys, query, |selected| {
         let task = if query.by_task { selected.task } else { NONE };
         let keep = *kept
@@ -888,6 +895,7 @@ pub fn density(
         slices[lane].get_or_insert_with(|| vec![0; buckets])[bucket.min(buckets - 1)] +=
             selected.weight;
     });
+
     slices
         .into_iter()
         .enumerate()

@@ -72,6 +72,7 @@ pub(super) fn prepare(
         charge: Some(&accounting),
         ..*reader
     };
+
     match compute(&reader, runtime, script, candidates) {
         Err(AgentFailure::Unavailable(reason)) if accounting.limited.get() => {
             Err(AgentFailure::ReadLimit(reason))
@@ -122,6 +123,7 @@ fn compute(
     if reader.word(finalizing)? != 0 {
         return Err("the Python runtime is finalizing".into());
     }
+
     let initialized = reader.bytes(initialized, 4)?;
     if initialized == [0; 4] {
         return Err(AgentFailure::Initializing);
@@ -193,6 +195,7 @@ fn control_ranges(reader: &Reader<'_>) -> Result<[std::ops::Range<u64>; 3], Agen
     ] {
         field(required)?;
     }
+
     let capacity = field(Field::DebugScriptSize)?;
     let support = field(Field::DebugSupport)?;
     let pending = support.checked_add(field(Field::DebugPending)?);
@@ -274,6 +277,7 @@ fn select_thread(
             "Python execution control with multiple interpreters is not implemented".into(),
         );
     }
+
     let (states, gaps) = threads::thread_states(reader, runtime)?;
     if let Some(gap) = gaps.first() {
         return Err(Arc::clone(gap).into());
@@ -284,9 +288,11 @@ fn select_thread(
     {
         return Err("the Python interpreter list changed during request preparation".into());
     }
+
     let live = reader.stop.threads();
     let mut ambiguous = false;
     let mut busy = None;
+
     for candidate in candidates
         .iter()
         .filter(|candidate| live.contains(&candidate.thread))
@@ -307,6 +313,7 @@ fn select_thread(
         }
         return Ok((*state, candidate.thread));
     }
+
     Err(busy.unwrap_or_else(|| {
         if ambiguous {
             "each matching injection candidate has more than one CPython thread state".into()

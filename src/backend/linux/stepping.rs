@@ -494,6 +494,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .as_ref()
                 .map_or("unnamed code", |function| function.name.as_ref())
         );
+
         let execution = self.active_execution()?;
         self.cleanup_plan_breakpoints(execution)?;
         let guards = self.frame_return_guards(pid);
@@ -868,6 +869,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         self.retire_step_plan(execution)?;
+
         if let Some(start) = self.active_step_mut() {
             start.plan_addresses.clear();
         }
@@ -881,6 +883,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     pub(super) fn let_step_run_on(&mut self) -> Result<()> {
         let execution = self.active_execution()?;
         self.retire_step_plan(execution)?;
+
         if let Some(start) = self.active_step_mut() {
             start.running_on = true;
             start.plan_addresses.clear();
@@ -919,6 +922,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
 
         let registers = self.ptrace.registers(pid)?;
+
         Ok(
             activation.has_returned(self.stack_position(pid, &registers))
                 && self
@@ -1031,6 +1035,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             completion_addresses,
             retire_return_after_repair: false,
         });
+
         Ok(true)
     }
 
@@ -1123,6 +1128,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         let plan_addresses = BTreeSet::from([cfi_return]);
         self.install_additional_plan_breakpoints(execution, &plan_addresses)?;
+
         let start = self.active_step_mut().ok_or_else(|| {
             Error::internal("source step remained active while installing its return plan")
         })?;
@@ -1132,6 +1138,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             guarded_activation,
             retire_return_after_repair: false,
         });
+
         Ok(true)
     }
 
@@ -1170,11 +1177,13 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         self.remove_breakpoint_owner(address, BreakpointOwner::Plan(execution))?;
+
         let start = self.active_step_mut().ok_or_else(|| {
             Error::internal("source step remained active while retiring its return guard")
         })?;
         start.plan_addresses.remove(&address);
         start.epilogue_traversal = None;
+
         Ok(())
     }
 
@@ -1199,11 +1208,13 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
 
         self.remove_breakpoint_owner(address, BreakpointOwner::Plan(execution))?;
+
         let start = self.active_step_mut().ok_or_else(|| {
             Error::internal("source step remained active while retiring its return guard")
         })?;
         start.plan_addresses.remove(&address);
         start.return_traversal = None;
+
         Ok(())
     }
 
@@ -1793,6 +1804,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             Some(source),
         )?);
         plan_addresses.extend(return_address);
+
         Ok(())
     }
 
@@ -1838,6 +1850,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             VirtualAddress::new(registers.rip),
             decoder.max_instruction_length(),
         )?;
+
         Ok(match decoder.decode(registers.rip, &read.bytes, None) {
             RawDecode::Instruction {
                 length,
@@ -1925,6 +1938,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .get(resolved.activation + 1)
                 .map(|caller| caller.context.instruction)
                 .ok_or_else(|| caller_unavailable(stack.termination.clone()))?;
+
             return_address = Some(self.executable_return_address(pid, caller)?);
             activation
         };
@@ -2030,6 +2044,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             Some(native),
             |provider, innermost| find_activation(view, provider, innermost, activation),
         )?;
+
         found
     }
 
@@ -2460,6 +2475,7 @@ fn step_incomplete(kind: StepKind, error: &Error) -> StopReason {
     };
 
     record!("step {kind:?} lost track of its frame: {description}");
+
     StopReason::StepIncomplete {
         kind,
         description: description.into(),

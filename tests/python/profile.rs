@@ -64,6 +64,7 @@ fn paths(profile: &Profile, source: Source, look: Look) -> BTreeMap<Vec<String>,
         look,
         ..Query::default()
     });
+
     (0..tree.len())
         .filter(|node| tree.own[*node] > 0)
         .map(|node| {
@@ -102,6 +103,7 @@ fn spinner_detection_keeps_native_callees_and_rejects_wrong_callers() {
     let native = "_PyLong_FromMedium longobject.c:210".to_owned();
     assert!(spins(&[spin.clone(), work.clone()], &lines));
     assert!(spins(&[spin.clone(), work.clone(), native.clone()], &lines));
+
     for path in [
         vec![
             spin.clone(),
@@ -176,6 +178,7 @@ fn record_until_with_args(
         .stdin(reader)
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+
     let options = RecordOptions {
         python: Some(engine),
         debug_directories: python::debug_directory(interpreter).into_iter().collect(),
@@ -205,11 +208,13 @@ fn record_until_with_args(
         },
     )
     .expect("record");
+
     assert!(
         recording.status.success(),
         "{interpreter}: {}",
         recording.status
     );
+
     recording.profile
 }
 
@@ -238,6 +243,7 @@ fn stopped_snapshots_find_each_python_thread_by_line_and_who_holds_the_gil(inter
     let profile = record_until(interpreter, PythonEngine::Snapshot { every: EVERY }, ready);
     let (taken, paused, _) = profile.task_snapshots();
     assert!(taken > 0 && paused > 0, "{interpreter}: {taken} {paused}");
+
     let problems = profile.task_snapshot_problems();
     assert!(problems.is_empty(), "{interpreter}: {problems:?}");
 
@@ -250,6 +256,7 @@ fn stopped_snapshots_find_each_python_thread_by_line_and_who_holds_the_gil(inter
         paths.keys().any(|path| naps(path, &lines)),
         "{interpreter}: no napper in {paths:#?}"
     );
+
     for path in paths.keys() {
         assert!(
             !path.iter().any(|step| evaluates(step)),
@@ -323,6 +330,7 @@ fn live_snapshots_read_each_python_thread_as_it_runs() {
             paths.keys().any(|path| spins(path, &lines)),
             "{interpreter}: no spinner in {paths:#?}"
         );
+
         assert!(
             paths.keys().any(|path| naps(path, &lines)),
             "{interpreter}: no napper in {paths:#?}"
@@ -352,12 +360,14 @@ fn arbitrary_kernel_names_preserve_live_and_stopped_python_profiles() {
                 paths.keys().any(|path| spins(path, &lines))
                     && paths.keys().any(|path| naps(path, &lines))
             };
+
             let profile = record_until_with_args(interpreter, engine, &["--bad-names"], ready);
             assert!(
                 ready(&profile),
                 "{interpreter}: {:?}",
                 python_paths(&profile)
             );
+
             if matches!(engine, PythonEngine::Snapshot { .. }) {
                 assert!(
                     profile.task_snapshot_problems().is_empty(),
@@ -395,6 +405,7 @@ fn the_python_package_records_what_the_program_marks() {
         .stdout(Stdio::null());
     let recording = record(command, &RecordOptions::default()).expect("record");
     assert!(recording.status.success(), "{}", recording.status);
+
     let profile = recording.profile;
     let counts = profile.probe_counts();
     assert!(!counts.lost() && counts.malformed == 0, "{counts:?}");
@@ -415,8 +426,10 @@ fn the_python_package_records_what_the_program_marks() {
         [Some("0"), Some("1"), Some("2")],
         "{zones:?}"
     );
+
     let (load, parse) = (named("load"), named("parse"));
     assert_eq!((load.len(), parse.len()), (3, 3), "{zones:?}");
+
     for ((round, load), parse) in rounds.iter().zip(&load).zip(&parse) {
         assert!(
             round.depth < load.depth && load.depth < parse.depth,
@@ -427,6 +440,7 @@ fn the_python_package_records_what_the_program_marks() {
             "{zones:?}"
         );
     }
+
     let fib = named("__main__.fib");
     let mut depths = fib.iter().map(|zone| zone.depth).collect::<Vec<_>>();
     depths.sort_unstable();
@@ -434,6 +448,7 @@ fn the_python_package_records_what_the_program_marks() {
     assert!(depths[0] < depths[1] && depths[1] == depths[2], "{zones:?}");
     assert_eq!(named("__main__.numbers").len(), 3, "{zones:?}");
     assert!(named("coroutine").is_empty(), "{zones:?}");
+
     // Equal code in two modules is two sites, and a prefix added later
     // reaches code that ran before it.
     assert_eq!(named("__main__.traced.work").len(), 1, "{zones:?}");
@@ -448,6 +463,7 @@ fn the_python_package_records_what_the_program_marks() {
         plotted,
         [1.0, 2.0, 3.0].map(|value| ("rows".to_owned(), value))
     );
+
     let said = profile
         .program_markers()
         .into_iter()
@@ -490,6 +506,7 @@ assert sys.monitoring.get_tool(sys.monitoring.PROFILER_ID) is None
 assert load() == 1
 print('NO LIBRARY OK')
 ";
+
     let output = Command::new(python::interpreter("3.14"))
         .args(["-I", "-B", "-c", script])
         .arg(sdk)
@@ -519,7 +536,9 @@ fn privileged() -> bool {
         .find_map(|line| line.strip_prefix("CapEff:"))
         .and_then(|bits| u64::from_str_radix(bits.trim(), 16).ok())
         .expect("CapEff");
+
     let has = |capability: u32| effective & (1 << capability) != 0;
+
     has(CAP_SYS_ADMIN) || (has(CAP_BPF) && has(CAP_PERFMON))
 }
 
@@ -543,6 +562,7 @@ fn the_bpf_engine_names_the_missing_requirement_and_starts_nothing() {
             "import pathlib, sys; pathlib.Path(sys.argv[1]).touch()",
         ])
         .arg(&marker);
+
     let options = RecordOptions {
         python: Some(PythonEngine::Bpf),
         ..RecordOptions::default()
@@ -577,10 +597,12 @@ fn a_namespaced_bpf_recorder_refuses_unproven_kernel_keys() {
             let _ = self.0.wait();
         }
     }
+
     let scratch = crate::support::ScratchDir::new("bpf-recorder-namespace");
     let marker = scratch.path().join("started");
     let output = scratch.path().join("stderr");
     let errors = std::fs::File::create(&output).expect("record stderr");
+
     let mut child = Reaped(
         Command::new("unshare")
             .args([
@@ -608,7 +630,9 @@ fn a_namespaced_bpf_recorder_refuses_unproven_kernel_keys() {
             .spawn()
             .expect("start namespaced recorder"),
     );
+
     let deadline = Instant::now() + READY_DEADLINE;
+
     let status = loop {
         if let Some(status) = child.0.try_wait().expect("poll recorder") {
             break status;
@@ -619,6 +643,7 @@ fn a_namespaced_bpf_recorder_refuses_unproven_kernel_keys() {
         );
         std::thread::sleep(Duration::from_millis(10));
     };
+
     let error = std::fs::read_to_string(output).expect("read recorder error");
     assert!(
         !error.trim_start().starts_with("unshare:"),
@@ -672,6 +697,7 @@ mod bpf {
         let output = scratch
             .path()
             .join(format!("{interpreter}-{fixture}.usprof"));
+
         let mut child = Command::new(launcher())
             .arg(env!("CARGO_BIN_EXE_microscope"))
             .arg("record")
@@ -693,6 +719,7 @@ mod bpf {
             .stderr(Stdio::piped())
             .spawn()
             .expect("run microscope");
+
         std::thread::sleep(running);
         child
             .stdin
@@ -700,12 +727,14 @@ mod bpf {
             .expect("its input")
             .write_all(b"\n")
             .expect("release the program");
+
         let finished = child.wait_with_output().expect("microscope finishes");
         assert!(
             finished.status.success(),
             "{interpreter}: {}",
             String::from_utf8_lossy(&finished.stderr)
         );
+
         Profile::read(&output).expect("read the profile").profile
     }
 
@@ -720,12 +749,14 @@ mod bpf {
             ("PYTHONPATH", site.as_os_str()),
             ("OMP_NUM_THREADS", std::ffi::OsStr::new("2")),
         ];
+
         recorded_with(
             "3.14",
             "workers.py",
             &environment,
             Duration::from_millis(200),
         );
+
         let profile = recorded_with("3.14", "workers.py", &environment, Duration::from_secs(1));
         let stacks = profile.stacks();
         let workers = stacks
@@ -738,12 +769,14 @@ mod bpf {
             })
             .collect::<Vec<_>>();
         assert!(!workers.is_empty(), "no samples on workers: {stacks:#?}");
+
         let unknown = workers
             .iter()
             .filter(|stack| {
                 stack.ending == StackEnding::Truncated("interpreted frames unknown".into())
             })
             .count();
+
         assert_eq!(
             unknown,
             0,
@@ -761,6 +794,7 @@ mod bpf {
         let lines = lines();
         let scratch = crate::support::ScratchDir::new("python-bpf-exec");
         let output = scratch.path().join("exec.usprof");
+
         let mut child = Command::new(launcher())
             .arg(env!("CARGO_BIN_EXE_microscope"))
             .args(["record", "--python", "bpf", "--output"])
@@ -775,19 +809,23 @@ mod bpf {
             .stderr(Stdio::piped())
             .spawn()
             .expect("run microscope");
+
         std::thread::sleep(Duration::from_secs(3));
+
         child
             .stdin
             .take()
             .expect("its input")
             .write_all(b"\n")
             .expect("release the program");
+
         let finished = child.wait_with_output().expect("microscope finishes");
         assert!(
             finished.status.success(),
             "{}",
             String::from_utf8_lossy(&finished.stderr)
         );
+
         let profile = Profile::read(&output).expect("read the profile").profile;
         let python = paths(&profile, Source::Samples, Look::Python);
         let spinning: u64 = python
@@ -795,6 +833,7 @@ mod bpf {
             .filter(|(path, _)| spins(path, &lines))
             .map(|(_, weight)| weight)
             .sum();
+
         assert!(spinning > 0, "no sample through work: {python:#?}");
     }
 
@@ -815,6 +854,7 @@ mod bpf {
             // the interpreter's image, which a cold image cache can make
             // a tenth of the recording. A first recording fills it.
             recorded(interpreter, Duration::from_millis(200));
+
             let profile = recorded(interpreter, Duration::from_secs(2));
             let python = paths(&profile, Source::Samples, Look::Python);
             let spinning: u64 = python
@@ -822,6 +862,7 @@ mod bpf {
                 .filter(|(path, _)| spins(path, &lines))
                 .map(|(_, weight)| weight)
                 .sum();
+
             let total: u64 = python.values().sum();
             assert!(
                 spinning * 2 > total,
@@ -852,6 +893,7 @@ mod bpf {
                     .filter(|stack| stack.ending == StackEnding::Truncated(reason.into()))
                     .count()
             };
+
             let unknown = ending("interpreted frames unknown");
             assert!(
                 unknown * 10 < samples,
@@ -884,6 +926,7 @@ mod bpf {
                         .any(|function| function == UNREADABLE)
                 })
                 .count();
+
             assert!(
                 unreadable * 200 < samples,
                 "{interpreter}: {unreadable} of {samples} samples have frames that could not be read"

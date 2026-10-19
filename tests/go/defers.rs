@@ -24,6 +24,7 @@ async fn stopped_at(fixture: &str, marker: &str) -> Scenario {
             line: LineNumber::new(line(marker)).expect("one-based"),
         })
         .await;
+
     let reason = scenario
         .run_with_to_stop(LaunchOptions {
             stdout: Some(Stdio::null()),
@@ -34,6 +35,7 @@ async fn stopped_at(fixture: &str, marker: &str) -> Scenario {
         matches!(reason, StopReason::Breakpoint { .. }),
         "{fixture}: {reason:?}"
     );
+
     scenario.remove_breakpoint(breakpoint.id).await;
     scenario
 }
@@ -42,6 +44,7 @@ async fn stopped_at(fixture: &str, marker: &str) -> Scenario {
 /// in the goroutine the walk began in.
 async fn walk(scenario: &mut Scenario, fixture: &str, steps: &[(StepKind, &str, &str)]) {
     let task = integer(scenario, "$task").await;
+
     for &(kind, function, marker) in steps {
         let reason = scenario.step_to_stop(kind).await;
         assert_eq!(reason, StopReason::Step { kind }, "{fixture}: to {marker}");

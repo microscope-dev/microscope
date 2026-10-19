@@ -58,6 +58,7 @@ pub fn call_sites(data: &[u8], image: &ModuleImage, unwind: &dyn UnwindInfo) -> 
         }
 
         let mut decoder = Decoder::with_ip(64, code, section.address(), DecoderOptions::NONE);
+
         for instruction in &mut decoder {
             // A system call returns to the instruction after it, with
             // no frame of its own.

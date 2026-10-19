@@ -314,6 +314,7 @@ impl<'b, St, P: Clone> Scanner<'b, St, P> {
 
         let index = self.cursor.position;
         self.cursor.position += 1;
+
         if self.declared.is_none() && self.cursor.position > MAX_UNCOUNTED {
             return Err(Failure::Problem(ViewProblem::TooMany {
                 limit: MAX_UNCOUNTED,
@@ -473,6 +474,7 @@ impl<'b, St, P: Clone> Scanner<'b, St, P> {
         self.runs.truncate(depth);
         self.runs.resize_with(depth, || None);
         self.runs.push(run);
+
         Ok(())
     }
 
@@ -491,6 +493,7 @@ impl<'b, St, P: Clone> Scanner<'b, St, P> {
         let position = self.cursor.position;
         let outer = &mut self.values;
         let visited = &mut self.visited[depth];
+
         match (
             &mut self.cursor.levels[depth],
             &self.scan.clauses[depth].generator,
@@ -566,6 +569,7 @@ impl<'b, St, P: Clone> Scanner<'b, St, P> {
                         RunError::Host(stop) => Failure::from(stop),
                         RunError::Kernel(reason) => kernel_problem(kernel, reason),
                     })?;
+
                 match item {
                     Some(item) if item.len() == *words => Ok(Some(Var::Words(item))),
                     Some(item) => Err(kernel_problem(
@@ -621,6 +625,7 @@ fn word<M: Machine>(
     match interp::value(program, machine)? {
         Value::Int(integer) => {
             let value = integer.value();
+
             value
                 .to_i128()
                 .and_then(|value| {

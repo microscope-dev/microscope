@@ -330,6 +330,7 @@ fn fused_block_ranges(
     let mut fused = HashMap::new();
     let mut stack = Vec::<Open>::new();
     let mut entries = unit.entries();
+
     while let Some(entry) = entries.next_dfs()? {
         let depth = entry.depth();
         while let Some(open) = stack.pop_if(|open| open.depth >= depth) {
@@ -483,6 +484,7 @@ pub(super) fn load_variable_info<'data>(
         order: _,
         names: _,
     } = walked;
+
     for function in &mut functions {
         function
             .objects
@@ -505,6 +507,7 @@ pub(super) fn load_variable_info<'data>(
     crate::count!("budget_spent", types.budget.spent());
     let mut types = types.finish();
     let phase = crate::span!("types.deduplicate");
+
     if let Some(remap) = types.deduplicate() {
         remap_catalog(&remap, &mut objects, &mut functions);
         for (_, ty) in &mut vtables {
@@ -557,6 +560,7 @@ pub(super) fn load_variable_info<'data>(
         .collect::<Arc<[_]>>();
     let coroutines = crate::debug_info::coroutines::normalize(&finalized_types);
     let mut coroutine_bodies = BTreeMap::new();
+
     for (instance, ty, object) in unnamed_parameters {
         if let Some(coroutine) =
             crate::debug_info::coroutines::pinned_coroutine(&finalized_types, ty)
@@ -861,6 +865,7 @@ fn walk_unit<'data>(
                 }
 
                 let function = functions.len();
+
                 if go && defined {
                     // A func value holds the address its code begins at.
                     let entry_address = entry
@@ -916,6 +921,7 @@ fn walk_unit<'data>(
                     MetadataAbsence::NoFrameBase,
                 );
                 calls.function(dwarf, units, unit_index, entry, &ranges, frame_base.clone());
+
                 Some(Scope {
                     ranges,
                     lexical_depth: 0,
@@ -1142,6 +1148,7 @@ fn walk_unit<'data>(
             // One capture it cannot describe leaves them all unknown,
             // rather than the closure seeming to capture less.
             let captures = &mut functions[scope.function].captures;
+
             match capture {
                 Ok(capture) => {
                     if let Ok(captures) = captures {
@@ -1157,6 +1164,7 @@ fn walk_unit<'data>(
                 !scope.ranges.is_empty() && (kind == VariableKind::Local || scope.routine)
             })
         });
+
         if kind.is_some() && locals == Locals::LeftOut {
             // rustc passes the body of an `async fn` its future as an
             // unnamed parameter, which says what coroutine the body runs.
@@ -1235,6 +1243,7 @@ fn walk_unit<'data>(
                             Some(error.to_string().into()),
                         ),
                     };
+
                 *order = order.checked_add(1).ok_or_else(|| {
                     DwarfError::MalformedVariable("data-object DIE order overflows".into())
                 })?;
@@ -1346,6 +1355,7 @@ fn walk_unit<'data>(
                             || (&*name == "result"
                                 && declared_line.is_some()
                                 && declared_line == scope.awaitee)));
+
                 if scope.rust.is_some()
                     && &*name == "__awaitee"
                     && let Some(Some(enclosing)) = scopes.last_mut()
@@ -1492,6 +1502,7 @@ fn add_abstract_only_variables<'data>(
     let mut tree = unit.entries_tree(Some(gimli::UnitOffset(routine.origin.offset)))?;
     let mut children = tree.root()?.children();
     let mut awaitee = routine.scope.awaitee;
+
     while let Some(child) = children.next()? {
         let entry = child.entry();
         let key = DieKey {
@@ -1533,6 +1544,7 @@ fn add_abstract_only_variables<'data>(
             .ok()
             .flatten();
         let declared_line = declaration.as_ref().map(|declared| declared.line);
+
         if &*name == "__awaitee" {
             awaitee = declared_line;
         }
@@ -1597,6 +1609,7 @@ fn origin_awaitee<'data>(
         .entries_tree(Some(gimli::UnitOffset(origin.offset)))
         .ok()?;
     let mut children = tree.root().ok()?.children();
+
     while let Ok(Some(child)) = children.next() {
         let entry = child.entry();
         if entry.tag() == gimli::DW_TAG_variable
@@ -1752,6 +1765,7 @@ fn rust_vtable<'data>(
         vtable_type.unit,
         vtable_entry.attr_value(gimli::DW_AT_containing_type),
     )?;
+
     Some((address, types.resolve(concrete)))
 }
 
@@ -1797,6 +1811,7 @@ impl VariableInfo for DwarfVariableInfo {
             )
         });
         let mut variables = Vec::new();
+
         for object in objects {
             if budget.consume_variable_value().is_err() {
                 break;
@@ -1810,6 +1825,7 @@ impl VariableInfo for DwarfVariableInfo {
                 &mut frame_base,
                 budget,
             )?;
+
             if let Some(resumption) = &resumption {
                 resumption.check(object, &mut variable);
             }
@@ -1918,6 +1934,7 @@ impl VariableInfo for DwarfVariableInfo {
     ) -> Result<Accessed> {
         let mut frame_base = FrameBaseCache::Empty;
         let storage = from.storage.clone();
+
         match self.apply_steps(
             storage,
             &step.steps,
@@ -2097,10 +2114,8 @@ impl VariableInfo for DwarfVariableInfo {
 }
 
 impl DwarfVariableInfo {
-    /// Reads types from `types`, the sealed image's.
-    /// Binds the provider to the image loading made of its module, whose
-    /// types and code its answers read.
-    /// The variables of `image`.
+    /// The variables of `image`, answered from the type table loading sealed
+    /// for it.
     pub(super) fn new(image: &crate::ModuleImage) -> Self {
         let target = image.target();
         Self {
@@ -2268,6 +2283,7 @@ pub(super) fn fuzz_expression(data: &[u8]) {
     };
 
     let mut budget = InspectionBudget::default();
+
     if let Ok(pieces) = evaluate(
         pool.tables().expression(id),
         RunTimeEndian::Little,

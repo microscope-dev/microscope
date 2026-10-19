@@ -22,6 +22,7 @@ pub async fn segments(scenario: &Scenario) -> Vec<(StackSegment, Vec<String>)> {
     let trace = scenario
         .operation("backtrace", scenario.handle().backtrace())
         .await;
+
     let mut segments: Vec<(StackSegment, Vec<String>)> = Vec::new();
     for frame in trace.frames.iter() {
         let name = frame
@@ -166,6 +167,7 @@ async fn a_backtrace_from_go_that_c_called_shows_the_c_between() {
 async fn steps_go_from_go_into_c_and_back() {
     let go = |marker: &str| support::source_line(SOURCE, &format!("// GO: {marker}"));
     let c = |marker: &str| support::source_line(SOURCE, &format!("// CGO: {marker}"));
+
     for fixture in BUILDS {
         let mut scenario = stopped_at(fixture, &format!("main.go:{}", go("leaf"))).await;
         scenario.step_to_stop(StepKind::IntoSource).await;
@@ -253,6 +255,7 @@ async fn a_fault_in_c_is_fatal_where_it_faulted() {
             .status()
             .expect("run the fixture alone");
         assert_eq!(alone.code(), Some(2), "{fixture}");
+
         let mut scenario = checked(fixture);
         let reason = scenario
             .run_with_to_stop(LaunchOptions {
@@ -267,6 +270,7 @@ async fn a_fault_in_c_is_fatal_where_it_faulted() {
         };
 
         assert_eq!(exception.kind, LanguageExceptionKind::Fatal, "{fixture}");
+
         let line = support::source_line(SOURCE, "// CGO: fault");
         assert_eq!(
             place(&scenario).await,

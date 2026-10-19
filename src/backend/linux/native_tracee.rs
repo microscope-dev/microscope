@@ -91,6 +91,7 @@ impl NativeTracee {
                 ..Default::default()
             },
         );
+
         #[expect(
             clippy::zombie_processes,
             reason = "the tracee waits for its process with waitpid, and its drop reaps it"
@@ -167,6 +168,7 @@ impl NativeTracee {
             | WaitIdOptions::NOHANG
             | WaitIdOptions::NOWAIT
             | WaitIdOptions::from_bits_retain(libc::__WALL.cast_unsigned());
+
         rustix::process::waitid(WaitId::Pid(thread), options)
             .unwrap_or_else(|error| panic!("waitid for {thread} failed: {error}"))
             .is_some()
@@ -180,6 +182,7 @@ impl NativeTracee {
         let mut registers = Registers::default();
         apply_user_registers(&mut registers, &user);
         registers.rflags = user.eflags;
+
         Ok(registers)
     }
 
@@ -207,6 +210,7 @@ impl NativeTracee {
         };
 
         user.eflags = (flags & !SETTABLE_FLAGS) | (registers.rflags & SETTABLE_FLAGS);
+
         self.ptrace
             .set_registers(Pid::from_raw(thread), user)
             .map_err(errno_of)
@@ -219,6 +223,7 @@ impl NativeTracee {
     ) -> std::result::Result<(i32, i32, Option<i32>, Option<u64>), Errno> {
         let bytes = super::sys::siginfo(Pid::from_raw(thread))?;
         let (number, metadata) = super::native::decode_siginfo(&bytes);
+
         Ok((
             number,
             metadata.code,
@@ -320,6 +325,7 @@ impl NativeTracee {
     pub fn call_info(&self, thread: Tid) -> std::result::Result<CallInfo, Errno> {
         let info = self.ptrace.syscall_info(Pid::from_raw(thread))?;
         let entry = info.op == super::syscalls::info::OP_ENTRY;
+
         Ok(CallInfo {
             op: info.op,
             number: if entry { info.number } else { 0 },
@@ -339,6 +345,7 @@ impl NativeTracee {
         single_step: bool,
     ) -> std::result::Result<(), Errno> {
         let signal = signal.map(|number| Signal::new(number).expect("a real signal"));
+
         if single_step {
             self.ptrace.step(Pid::from_raw(thread), signal)
         } else {
@@ -436,6 +443,7 @@ impl NativeTracee {
     /// The records the events wrote since the last call.
     pub fn samples(&mut self) -> Vec<u8> {
         let mut records = Vec::new();
+
         if let Some(events) = &mut self.sampling {
             events.drain(&mut records);
         }
@@ -543,6 +551,7 @@ impl Drop for NativeTracee {
         // there until it is continued, and the leader's exit is reported
         // only once every other thread is reaped.
         let started = std::time::Instant::now();
+
         loop {
             let mut threads = self.threads();
             if !threads.contains(&self.pid()) {

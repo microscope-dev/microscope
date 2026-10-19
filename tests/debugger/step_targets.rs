@@ -20,16 +20,19 @@ async fn stopped_at(fixture: &str, marker: &str) -> Scenario {
     let mut scenario = Scenario::launch(fixture);
     let line = source_line(SOURCE, marker);
     let breakpoint = scenario.add_source_breakpoint("step-targets.c", line).await;
+
     assert!(
         matches!(scenario.run_to_stop().await, StopReason::Breakpoint { .. }),
         "{fixture}"
     );
+
     scenario
         .operation(
             "remove breakpoint",
             scenario.handle().remove_breakpoint(breakpoint.id),
         )
         .await;
+
     scenario
 }
 
@@ -59,6 +62,7 @@ async fn place(scenario: &Scenario) -> (String, u64) {
     let location = scenario
         .operation("location", scenario.handle().current_location())
         .await;
+
     (
         location_function(&location).unwrap_or_default().to_owned(),
         location_line(&location).unwrap_or_default(),
@@ -84,20 +88,24 @@ async fn a_step_goes_into_the_call_it_names() {
         let listed = targets(&scenario).await;
         let mut names = callees(&listed);
         names.sort_unstable();
+
         assert_eq!(
             names,
             [Some("add"), Some("inc"), Some("twice")],
             "{fixture}"
         );
+
         assert!(
             listed.is_sorted_by_key(|target| target.call),
             "{fixture}: {listed:?}"
         );
+
         scenario.shutdown().await;
 
         for (callee, parameter, value) in [("add", "a", 2), ("inc", "x", 1), ("twice", "x", 1)] {
             let mut scenario = stopped_at(fixture, "targets: calls").await;
             let call = calling(&targets(&scenario).await, callee).call;
+
             assert_eq!(
                 scenario.step_into_to_stop(call).await,
                 StopReason::Step {
@@ -105,6 +113,7 @@ async fn a_step_goes_into_the_call_it_names() {
                 },
                 "{fixture}: {callee}"
             );
+
             assert_eq!(
                 place(&scenario).await,
                 (
@@ -141,6 +150,7 @@ async fn indirect_calls_are_entered_and_undescribed_ones_stepped_through() {
             .iter()
             .find(|target| target.target.is_none())
             .unwrap_or_else(|| panic!("{fixture}: no indirect call in {listed:?}"));
+
         assert_eq!(indirect.callee, None, "{fixture}");
         assert!(
             listed
@@ -149,11 +159,13 @@ async fn indirect_calls_are_entered_and_undescribed_ones_stepped_through() {
             "{fixture}: {listed:?}"
         );
         scenario.step_into_to_stop(indirect.call).await;
+
         assert_eq!(
             place(&scenario).await,
             ("inc".to_owned(), source_line(SOURCE, "targets: inc")),
             "{fixture}"
         );
+
         scenario.shutdown().await;
 
         // Where a step over the line goes, which optimized code orders.
@@ -165,6 +177,7 @@ async fn indirect_calls_are_entered_and_undescribed_ones_stepped_through() {
         let mut scenario = stopped_at(fixture, "targets: indirect").await;
         let strlen = calling(&targets(&scenario).await, "strlen").call;
         scenario.step_into_to_stop(strlen).await;
+
         assert_eq!(place(&scenario).await, next, "{fixture}");
         scenario.shutdown().await;
     }
@@ -191,6 +204,7 @@ async fn recursion_through_a_passed_call_does_not_end_it_early() {
             },
             "{fixture}"
         );
+
         assert_eq!(
             place(&scenario).await,
             ("twice".to_owned(), source_line(SOURCE, "targets: twice")),
@@ -232,6 +246,7 @@ async fn a_declined_breakpoint_in_a_passed_call_does_not_end_the_step() {
         let mut scenario = stopped_at(fixture, "targets: calls").await;
         let condition = microscope::HitCondition::new(microscope::HitComparison::Equal, 5)
             .expect("a hit condition");
+
         scenario
             .operation(
                 "declining breakpoint",
@@ -241,6 +256,7 @@ async fn a_declined_breakpoint_in_a_passed_call_does_not_end_the_step() {
                 ),
             )
             .await;
+
         let call = calling(&targets(&scenario).await, "add").call;
         assert_eq!(
             scenario.step_into_to_stop(call).await,
@@ -249,11 +265,13 @@ async fn a_declined_breakpoint_in_a_passed_call_does_not_end_the_step() {
             },
             "{fixture}"
         );
+
         assert_eq!(
             place(&scenario).await,
             ("add".to_owned(), source_line(SOURCE, "targets: add")),
             "{fixture}"
         );
+
         scenario.shutdown().await;
     }
 }
@@ -273,6 +291,7 @@ async fn a_breakpoint_on_a_passed_call_does_not_take_the_step_into_it() {
                 .operation("location", scenario.handle().current_location())
                 .await
                 .address;
+
             if declining {
                 if at == first {
                     scenario.shutdown().await;
@@ -281,6 +300,7 @@ async fn a_breakpoint_on_a_passed_call_does_not_take_the_step_into_it() {
 
                 let condition = microscope::HitCondition::new(microscope::HitComparison::Equal, 5)
                     .expect("a hit condition");
+
                 scenario
                     .operation(
                         "declining breakpoint",
@@ -294,6 +314,7 @@ async fn a_breakpoint_on_a_passed_call_does_not_take_the_step_into_it() {
                 scenario
                     .add_breakpoint_spec(BreakpointSpec::Address(first))
                     .await;
+
                 if at != first {
                     assert!(
                         matches!(
@@ -313,6 +334,7 @@ async fn a_breakpoint_on_a_passed_call_does_not_take_the_step_into_it() {
                 },
                 "{fixture}: declining {declining}"
             );
+
             assert_eq!(
                 place(&scenario).await,
                 (
@@ -321,6 +343,7 @@ async fn a_breakpoint_on_a_passed_call_does_not_take_the_step_into_it() {
                 ),
                 "{fixture}: declining {declining}"
             );
+
             scenario.shutdown().await;
         }
     }
@@ -336,6 +359,7 @@ async fn a_skipped_call_ends_the_step_at_the_next_line_on_a_declining_breakpoint
         let next = source_line(SOURCE, "targets: after skipped");
         let condition = microscope::HitCondition::new(microscope::HitComparison::Equal, 5)
             .expect("a hit condition");
+
         scenario
             .operation(
                 "declining breakpoint",
@@ -356,11 +380,13 @@ async fn a_skipped_call_ends_the_step_at_the_next_line_on_a_declining_breakpoint
             },
             "{fixture}"
         );
+
         assert_eq!(
             place(&scenario).await,
             ("main".to_owned(), next),
             "{fixture}"
         );
+
         scenario.shutdown().await;
     }
 }

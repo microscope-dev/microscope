@@ -83,6 +83,7 @@ pub(super) fn data_object_scope_ranges(
         })
         .collect::<Vec<_>>()
         .into();
+
     (ranges, None)
 }
 
@@ -252,6 +253,7 @@ pub(super) fn origin_chain<'data>(
     let mut chain = Vec::new();
     let mut seen = Seen::default();
     let mut current = origin_reference(entry, unit_index, units)?;
+
     while let Some(key) = current {
         if !seen.insert(key) {
             return Err(DwarfError::ReferenceCycle);
@@ -498,6 +500,7 @@ fn declared_with<'a, 'data, F>(
                 .and_then(gimli::Attribute::udata_value)
         })
         .and_then(ColumnNumber::new);
+
     Ok(Some((
         file(file_unit, program.header(), file_entry, file_index)?,
         line,

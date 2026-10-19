@@ -848,6 +848,7 @@ pub(super) fn layout_fingerprint() -> u64 {
 pub(super) fn schema_text() -> String {
     use std::fmt::Write as _;
     let mut text = format!("format {}\n", format::FORMAT_VERSION);
+
     for table in SCHEMA {
         let _ = write!(
             text,

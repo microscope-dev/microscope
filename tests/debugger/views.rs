@@ -49,6 +49,7 @@ struct Marker {
 fn expand(text: &str) -> String {
     let mut out = String::new();
     let mut rest = text;
+
     while let Some(start) = rest.find('{') {
         let Some((character, count)) = rest[start + 1..]
             .split_once('}')
@@ -133,10 +134,12 @@ async fn evaluate(scenario: &Scenario, text: &str) -> InspectedValue {
 fn go_duration(text: &str) -> Option<f64> {
     let mut total = 0.0;
     let mut rest = text;
+
     while !rest.is_empty() {
         let digits = rest.find(|c: char| !c.is_ascii_digit() && c != '.')?;
         let number = rest[..digits].parse::<f64>().ok()?;
         rest = &rest[digits..];
+
         let (scale, unit) = [
             (1e6, "ms"),
             (1e3, "µs"),
@@ -147,6 +150,7 @@ fn go_duration(text: &str) -> Option<f64> {
         ]
         .into_iter()
         .find(|(_, unit)| rest.starts_with(unit))?;
+
         total = number.mul_add(scale, total);
         rest = &rest[unit.len()..];
     }
@@ -167,9 +171,11 @@ fn summary_matches(expected: &str, actual: &str) -> bool {
 
     let (range, tail) = tail.split_once('}').expect("a closed duration");
     let (low, high) = range.split_once("..").expect("a duration range");
+
     let end = rest
         .find(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != 'µ')
         .unwrap_or(rest.len());
+
     let bounds = (go_duration(low), go_duration(high));
     go_duration(&rest[..end]).is_some_and(|duration| {
         bounds.0.is_some_and(|low| low <= duration) && bounds.1.is_some_and(|high| duration <= high)
@@ -190,6 +196,7 @@ fn sorted_items(summary: &str) -> String {
     let mut quoted = false;
     let mut start = 0;
     let bytes = inner.as_bytes();
+
     for (index, byte) in bytes.iter().enumerate() {
         match byte {
             b'"' if index == 0 || bytes[index - 1] != b'\\' => quoted = !quoted,
@@ -246,6 +253,7 @@ async fn first_children(
     failures: &mut Vec<String>,
 ) -> Option<Vec<microscope::ValueChild>> {
     let mut children = Vec::new();
+
     while (children.len() as u64) < wanted {
         let page = scenario
             .operation(
@@ -339,6 +347,7 @@ async fn check_children(
     // Small pages read the same elements as one large page.
     let mut paged = Vec::new();
     let mut offset = 0;
+
     while offset < count.min(32) {
         let small = scenario
             .operation(
@@ -458,6 +467,7 @@ async fn check_listed_children(
         } => Some(presentation.view.to_string()),
         _ => None,
     }));
+
     let rendered = children
         .iter()
         .map(|child| {
@@ -628,10 +638,12 @@ async fn check_containers_but(
     let mut scenario = Scenario::launch(fixture);
     scenario.add_breakpoint(barrier).await;
     let reason = scenario.run_to_stop().await;
+
     assert!(
         matches!(reason, StopReason::Breakpoint { .. }),
         "{fixture}: {reason:?}"
     );
+
     select_caller(&scenario).await;
 
     let markers = markers(source)
@@ -639,6 +651,7 @@ async fn check_containers_but(
         .filter(|marker| !skipped.contains(&marker.expression.as_str()))
         .collect::<Vec<_>>();
     assert!(markers.len() >= 5, "{source} has its markers");
+
     let mut seen = BTreeSet::new();
     let mut failures = Vec::new();
     check_markers(&scenario, &markers, optimized, &mut seen, &mut failures).await;
@@ -723,6 +736,7 @@ async fn check_printed_markers(
     let scratch = crate::support::ScratchDir::new("views");
     let output_path = scratch.path().join("stdout");
     let output = fs::File::create(&output_path).expect("create the fixture's output");
+
     let mut scenario = Scenario::launch(fixture);
     scenario
         .operation(
@@ -730,6 +744,7 @@ async fn check_printed_markers(
             scenario.handle().set_exception_stops(ExceptionStops::NONE),
         )
         .await;
+
     scenario.add_breakpoint(barrier).await;
     let mut reason = scenario
         .run_with_to_stop(LaunchOptions {
@@ -737,6 +752,7 @@ async fn check_printed_markers(
             ..LaunchOptions::default()
         })
         .await;
+
     let mut seen = BTreeSet::new();
     let mut failures = Vec::new();
     let mut read = 0;
@@ -752,6 +768,7 @@ async fn check_printed_markers(
             !markers.is_empty(),
             "{fixture} printed markers before stop {stops}"
         );
+
         if matches!(frame, MarkedFrame::Caller) {
             select_caller(&scenario).await;
         }
@@ -789,6 +806,7 @@ fn assert_every_view_binds(library: &str, seen: &BTreeSet<String>) {
 #[tokio::test]
 async fn cpp_containers_present_as_their_views_say_across_the_library_matrix() {
     let mut seen = BTreeSet::new();
+
     for (fixture, optimized, skipped) in [
         ("containers-cpp-gcc-o0", false, &[][..]),
         ("containers-cpp-gcc-o2", true, &[]),
@@ -828,6 +846,7 @@ async fn cpp_containers_present_as_their_views_say_across_the_library_matrix() {
 #[tokio::test]
 async fn c_library_values_present_as_their_views_say() {
     let mut seen = BTreeSet::new();
+
     for (fixture, optimized) in [
         ("glibc-c-gcc-o0", false),
         ("glibc-c-gcc-o2", true),
@@ -852,6 +871,7 @@ async fn rust_containers_present_as_their_views_say() {
 #[tokio::test]
 async fn zig_containers_present_as_their_views_say() {
     let mut seen = BTreeSet::new();
+
     for (fixture, optimized, skipped) in [
         ("containers-zig-o0", false, &[][..]),
         // ReleaseSafe emits no entry type for an array hash map, so nothing
@@ -881,6 +901,7 @@ async fn zig_containers_present_as_their_views_say() {
 #[tokio::test]
 async fn odin_containers_present_as_their_views_say() {
     let mut seen = BTreeSet::new();
+
     for (fixture, optimized) in [("containers-odin-o0", false), ("containers-odin-o2", true)] {
         seen.extend(
             check_containers(
@@ -909,6 +930,7 @@ async fn d_containers_present_as_their_views_say() {
 #[tokio::test]
 async fn go_containers_present_as_their_views_say() {
     let mut seen = BTreeSet::new();
+
     for (fixture, optimized) in [("containers-go-o0", false), ("containers-go-o2", true)] {
         seen.extend(
             check_containers(fixture, "go/containers/main.go", "main.barrier", optimized).await,
@@ -924,6 +946,7 @@ async fn go_containers_present_as_their_views_say() {
 #[tokio::test]
 async fn go_library_values_present_as_go_shows_them() {
     let mut seen = BTreeSet::new();
+
     for (fixture, optimized) in [("stdlib-go-o0", false), ("stdlib-go-o2", true)] {
         seen.extend(
             check_printed_markers(fixture, "main.barrier", MarkedFrame::Barrier, optimized).await,
@@ -967,6 +990,7 @@ async fn tokio_values_present_as_their_views_say() {
                 })
                 .map(|view| view.to_string()),
         );
+
         assert_every_view_binds("tokio.views", &seen);
     }
 }
@@ -1008,11 +1032,14 @@ async fn tokio_values_in_a_core_present_as_their_views_say() {
                     .is_some_and(|function| &*function.name == "main")
             })
             .unwrap_or_else(|| panic!("{core}: no frame of main"));
+
         scenario
             .operation("select main", scenario.handle().select_frame(main.id))
             .await;
+
         let markers = markers_in(&log);
         assert!(markers.len() >= 50, "{core} keeps its markers");
+
         let (mut seen, mut failures) = (BTreeSet::new(), Vec::new());
         check_markers(&scenario, &markers, optimized, &mut seen, &mut failures).await;
         assert!(failures.is_empty(), "{core}:\n{}", failures.join("\n"));
@@ -1030,6 +1057,7 @@ async fn inspection_sent_beside_run_control_is_whole_or_stale() {
         let mut scenario = Scenario::launch("containers-rust-o0");
         scenario.add_breakpoint("barrier").await;
         scenario.run_to_stop().await;
+
         let trace = scenario
             .operation("backtrace", scenario.handle().backtrace())
             .await;
@@ -1064,7 +1092,9 @@ async fn inspection_sent_beside_run_control_is_whole_or_stale() {
                 microscope::ExceptionDisposition::Pass,
             ),
         );
+
         resumed.unwrap_or_else(|error| panic!("round {round}: continue failed: {error}"));
+
         for (result, expected) in [(words, "len=2 [\"one\", \"two\"]"), (many, "599")] {
             match result {
                 Ok(Evaluation::Value { value, .. }) => {
@@ -1122,6 +1152,7 @@ view rust alloc::vec::Vec<T, _> {{
 }}
 "
     );
+
     let errors = scenario
         .operation(
             "load views",
@@ -1131,6 +1162,7 @@ view rust alloc::vec::Vec<T, _> {{
         )
         .await;
     assert!(errors.is_empty(), "{errors:?}");
+
     let snapshot = scenario.snapshot().await;
     let InferiorState::Stopped {
         process_id,
@@ -1164,6 +1196,7 @@ view rust alloc::vec::Vec<T, _> {{
         ),
     );
     resumed.expect("continue");
+
     match assigned {
         Ok(Evaluation::Value { value, .. }) => assert!(
             matches!(
@@ -1198,6 +1231,7 @@ async fn session_views_come_first_and_present_values_as_others() {
             scenario.handle().select_frame(trace.frames[1].id),
         )
         .await;
+
     let errors = scenario
         .operation(
             "load views",
@@ -1228,6 +1262,7 @@ view rust nowhere {
             "session.views:10:10: expected a shape: `text`, `value`, `empty`, `sequence`, `map`, `record`, `dynamic`, or `if`, found `nothing`"
         ]
     );
+
     let ints = evaluate(&scenario, "ints").await;
     assert_eq!(summary(&ints), "a vector");
 
@@ -1255,6 +1290,7 @@ view rust nowhere {
             ),
         )
         .await;
+
     let names = page
         .children
         .iter()
@@ -1268,6 +1304,7 @@ view rust nowhere {
     // The vector's own presentation, `empty`, has no elements, and its
     // `[raw]` is its own: the path's children are its field and `[raw]`.
     assert_eq!(names, ["length", "[raw]"]);
+
     let length = &page.children[0];
     assert!(
         matches!(
@@ -1284,6 +1321,7 @@ view rust nowhere {
     scenario
         .operation("unload views", scenario.handle().load_views(&[], &[], &[]))
         .await;
+
     assert_eq!(
         summary(&evaluate(&scenario, "ints").await),
         "len=3 [1, 2, 3]"
@@ -1308,12 +1346,14 @@ async fn embedded_views_present_only_their_own_modules_types() {
             scenario.handle().select_frame(trace.frames[1].id),
         )
         .await;
+
     let numbers = evaluate(&scenario, "numbers").await;
     let presented = presentation(&numbers).expect("the program's view presents it");
     assert_eq!(
         (presented.summary.as_ref(), presented.view.source.as_ref()),
         ("len=3 [1, 2, 3]", "embedded-views.views[0]")
     );
+
     let origin = evaluate(&scenario, "library_origin").await;
     let presented = presentation(&origin).expect("the library's view presents it");
     assert_eq!(
@@ -1343,6 +1383,7 @@ async fn the_rust_sdk_embeds_a_programs_views_and_kernels() {
             scenario.handle().select_frame(trace.frames[1].id),
         )
         .await;
+
     for (expression, expected) in [
         ("tags", r#"len=2 ["red", "green"]"#),
         ("temperature", "21.5°C"),
@@ -1378,6 +1419,7 @@ fn the_tutorial_quotes_its_fixtures_as_they_are() {
         .expect("read docs/writing-views.md");
     let mut quoted = 0;
     let mut lines = tutorial.lines();
+
     while let Some(line) = lines.next() {
         let Some(path) = line
             .strip_prefix("```")
@@ -1392,6 +1434,7 @@ fn the_tutorial_quotes_its_fixtures_as_they_are() {
             .take_while(|line| *line != "```")
             .collect::<Vec<_>>()
             .join("\n");
+
         let file = fs::read_to_string(format!("{root}/{path}"))
             .unwrap_or_else(|error| panic!("{path}: {error}"));
         assert!(

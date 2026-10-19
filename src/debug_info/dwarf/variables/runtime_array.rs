@@ -68,6 +68,7 @@ pub(super) fn element_offset(
     indices: &[i128],
 ) -> Result<i64, EvaluateError> {
     let mut offset = 0_i64;
+
     for ((&(lower_bound, count), &stride), &index) in dimensions.iter().zip(strides).zip(indices) {
         let relative = index
             .checked_sub(lower_bound)
@@ -227,6 +228,7 @@ impl DwarfVariableInfo {
             );
         let mut bounds = Vec::with_capacity(dimensions.len());
         let mut strides = Vec::with_capacity(dimensions.len());
+
         for (index, dimension) in dimensions.iter().enumerate() {
             let (bound, stride) = parts.dimension(index, *dimension, runtime, budget)?;
             bounds.push(bound);
@@ -279,6 +281,7 @@ impl Parts<'_, '_, '_> {
         };
 
         let lower = self.bound(lower_bound, bound(BoundPart::Lower), runtime, budget)?;
+
         let count =
             match extent {
                 ArrayExtent::Upper(upper) => {
@@ -301,6 +304,7 @@ impl Parts<'_, '_, '_> {
                 }
                 ArrayExtent::Unknown => None,
             };
+
         let stride = match byte_stride {
             Some(stride) => {
                 let stride = self.bound(stride, bound(BoundPart::Stride), runtime, budget)?;
@@ -367,6 +371,7 @@ impl Parts<'_, '_, '_> {
         budget: &mut InspectionBudget,
     ) -> Result<i128, EvaluateError> {
         let missing = || EvaluateError::Malformed("an array's bound has no expression".into());
+
         match bound {
             ArrayBound::Constant(value) => Ok(value),
             ArrayBound::Computed { byte_size, signed } => {
@@ -394,6 +399,7 @@ impl Parts<'_, '_, '_> {
                     budget,
                     self.object,
                 )?;
+
                 let storage = storage_from_pieces(
                     &pieces,
                     u64::from(byte_size),
@@ -403,6 +409,7 @@ impl Parts<'_, '_, '_> {
                     runtime,
                 )?;
                 let (_, raw) = storage::read(&storage, usize::from(byte_size), runtime, budget)?;
+
                 Ok(integer(
                     &raw,
                     byte_size,
@@ -443,6 +450,7 @@ impl Parts<'_, '_, '_> {
                 let size = usize::try_from(base.byte_size)
                     .map_err(|_| VariableUnavailableReason::EvaluationLimit)?;
                 let (_, raw) = storage::read(&storage, size, runtime, budget)?;
+
                 match decode_scalar(&base, &raw, self.info.target) {
                     Ok(ScalarValue::Signed(value)) => Ok(value),
                     Ok(ScalarValue::Unsigned(value)) => i128::try_from(value)
@@ -473,6 +481,7 @@ fn adjacent_strides(
     }
 
     let mut adjacent = vec![0; bounds.len()];
+
     for (position, &index) in order.iter().enumerate() {
         adjacent[index] = strides[index].unwrap_or(span);
         span = match bounds[index].1 {
@@ -498,6 +507,7 @@ fn integer(bytes: &[u8], byte_size: u8, signed: bool, byte_order: crate::ByteOrd
 
     let raw = unsigned_value(bytes, byte_order).unwrap_or(0);
     let bits = size * 8;
+
     if signed && bits < 128 && bits > 0 {
         let shift = 128 - bits;
         (raw << shift).cast_signed() >> shift

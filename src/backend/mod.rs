@@ -124,6 +124,7 @@ pub fn process_executable_source(process: ProcessId) -> Result<ExecutableSource>
     let (proc_exe, display) = process_exe_link(raw)?;
     let start_time =
         process_start_time(raw).ok_or(Error::ProcessIdentityUnavailable(process.get()))?;
+
     read_executable_source(&proc_exe, display, Some(start_time))
 }
 
@@ -156,6 +157,7 @@ fn read_executable_source(
 ) -> Result<ExecutableSource> {
     let (data, stamp) = crate::image::backing::read_input(read_path)?;
     let display_path = Arc::new(display_path);
+
     Ok(ExecutableSource {
         launch_path: Arc::clone(&display_path),
         display_path,

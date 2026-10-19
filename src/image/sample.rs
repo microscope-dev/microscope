@@ -124,11 +124,14 @@ pub(super) fn sample() -> (LineTables, lines::Files) {
         <std::ffi::OsString as std::os::unix::ffi::OsStringExt>::from_vec(b"/src/\xffb.c".to_vec()),
     ));
     let mut tables = LineTables::default();
+
     for sequence in sample_rows() {
         tables.begin_sequence().unwrap();
         let mut previous: Option<(u32, Row)> = None;
+
         for row in sequence {
             let at = tables.push_row(&row).unwrap();
+
             if let Some((index, open)) = previous.take()
                 && open.location().is_some()
                 && open.address < row.address
@@ -786,6 +789,7 @@ pub(super) fn sample_types() -> (Vec<crate::TypeNode>, Vec<u32>) {
             None,
         ),
     ];
+
     let mut nodes = kinds
         .into_iter()
         .enumerate()
@@ -799,6 +803,7 @@ pub(super) fn sample_types() -> (Vec<crate::TypeNode>, Vec<u32>) {
             })
         })
         .collect::<Vec<_>>();
+
     nodes[14] = TypeNode::Malformed {
         reference: reference(14),
         description: "the type's size is negative".into(),
@@ -806,6 +811,7 @@ pub(super) fn sample_types() -> (Vec<crate::TypeNode>, Vec<u32>) {
 
     let mut classes = (0..u32::try_from(nodes.len()).unwrap()).collect::<Vec<_>>();
     *classes.last_mut().unwrap() = 1;
+
     (nodes, classes)
 }
 
@@ -847,6 +853,7 @@ pub(super) fn sample_locations() -> LocationsBuilder {
             &[(0x140, Some(procedure)), (0x120, None)],
         )
         .unwrap();
+
     pool.list(&[(Some(range(0x1000, 0x1004)), caller), (None, register)])
         .unwrap();
     pool.list(&[]).unwrap();
@@ -955,6 +962,7 @@ pub(super) fn sample_variables() -> Variables {
             ..local("n", Metadata::Absent(MetadataAbsence::NoLocation))
         },
     ];
+
     let functions = vec![
         Function {
             ranges: [range(0x1000, 0x1010), range(0x2000, 0x2008)].into(),
@@ -1006,6 +1014,7 @@ pub(super) fn sample_variables() -> Variables {
             returns: None,
         },
     ];
+
     Variables {
         objects,
         functions,
@@ -1273,6 +1282,7 @@ pub(super) fn seal(tables: &LineTables, files: &lines::Files) -> Result<Image, I
     type_facts::add_to(&mut builder, &mut strings, &sample_type_facts()).unwrap();
     resumes::add_to(&mut builder, &mut strings, &sample_resumes()).unwrap();
     declarations::add_to(&mut builder, &mut strings, &sample_declarations()).unwrap();
+
     builder
         .bytes(TableKind::EmbeddedViews, b"views".to_vec())
         .bytes(TableKind::Paths, paths.into_bytes())
@@ -1378,6 +1388,7 @@ pub(super) fn read_everything(image: &Image) -> u64 {
     }
 
     read += u64::from(view.go_runtime_type(0x100).is_some());
+
     let view = PackageView::new(image);
     for index in 0..image.table::<packages::PackagedRecord>().len() {
         let function = FunctionId::new(u32::try_from(index).unwrap());

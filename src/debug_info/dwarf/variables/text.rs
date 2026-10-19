@@ -72,6 +72,7 @@ impl TextReader<'_> {
         nul_terminated: bool,
     ) -> (Vec<u8>, bool, Option<Stopped>) {
         let mut bytes = Vec::new();
+
         while bytes.len() < limit {
             let Some(next) = address.get().checked_add(bytes.len() as u64) else {
                 return (bytes, false, None);
@@ -96,6 +97,7 @@ impl TextReader<'_> {
             // unit the chunk's first byte belongs to.
             let first = bytes.len() - bytes.len() % width;
             bytes.extend_from_slice(&chunk);
+
             if nul_terminated
                 && let Some(position) = bytes[first..]
                     .chunks_exact(width)
@@ -239,6 +241,7 @@ impl DwarfVariableInfo {
         budget: &mut InspectionBudget,
     ) -> Option<TextSummary> {
         let mut reader = TextReader { runtime, budget };
+
         match (shape, value) {
             (
                 ValueShape::Indirection {
@@ -281,6 +284,7 @@ impl DwarfVariableInfo {
                     .chunks_exact(width)
                     .position(|unit| unit.iter().all(|byte| *byte == 0));
                 let end = terminated.map_or(bytes.len(), |units| units * width);
+
                 Some(text(
                     bytes[..end].to_vec(),
                     width,
@@ -353,6 +357,7 @@ impl DwarfVariableInfo {
         budget: &mut InspectionBudget,
     ) -> std::result::Result<Option<TextLocation>, VariableUnavailableReason> {
         let mut reader = TextReader { runtime, budget };
+
         let found = match (shape, value) {
             (
                 ValueShape::Indirection {
@@ -533,6 +538,7 @@ impl DwarfVariableInfo {
         }
 
         let mut current = id;
+
         for _ in 0..MAX_STRING_DEPTH {
             let info = self.type_info(current).ok()?;
             match &info.kind {
@@ -565,6 +571,7 @@ impl DwarfVariableInfo {
     /// `[*:0]const u8` and Odin's `cstring`.
     fn is_sentinel_text(&self, id: TypeId) -> bool {
         let mut current = id;
+
         for _ in 0..MAX_STRING_DEPTH {
             let Ok(info) = self.type_info(current) else {
                 return false;

@@ -32,11 +32,13 @@ async fn discarded_functions_are_not_cataloged_at_their_tombstone_addresses() {
         .map(|range| range.start)
         .min()
         .expect("the fixture has code");
+
     assert!(first_code.get() > 0x1000, "code starts at {first_code}");
     assert!(
         image.statement_rows().all(|row| row.address >= first_code),
         "a line row lies before the first function"
     );
+
     assert!(
         image
             .locate(microscope::ImageAddress::new(0))
@@ -75,11 +77,13 @@ async fn normalized_type_graphs_are_closed_and_preserve_language_semantics() {
                 index,
                 "{fixture}: {node:?}"
             );
+
             assert_eq!(
                 image.type_node(reference),
                 Some(node),
                 "{fixture}: {node:?}"
             );
+
             if let microscope::TypeNode::Resolved(info) = node {
                 assert!(
                     !info.name.contains("<recursive type>"),
@@ -106,6 +110,7 @@ async fn normalized_type_graphs_are_closed_and_preserve_language_semantics() {
                 _ => None,
             })
             .collect::<Vec<_>>();
+
         assert!(
             resolved.iter().any(|info| {
                 info.name.as_ref() == "aliased_int"
@@ -119,6 +124,7 @@ async fn normalized_type_graphs_are_closed_and_preserve_language_semantics() {
             }),
             "{fixture}: {resolved:#?}"
         );
+
         assert!(
             resolved.iter().any(|info| {
                 info.name.as_ref() == "const int *"
@@ -126,6 +132,7 @@ async fn normalized_type_graphs_are_closed_and_preserve_language_semantics() {
             }),
             "{fixture}: {resolved:#?}"
         );
+
         assert!(
             resolved.iter().any(|info| {
                 info.name.as_ref() == "int * const"
@@ -166,6 +173,7 @@ async fn normalized_type_graphs_are_closed_and_preserve_language_semantics() {
                 .globals()
                 .find(|global| global.name.as_ref() == name)
                 .unwrap_or_else(|| panic!("{fixture}: missing global {name}"));
+
             let microscope::GlobalVariableType::Resolved(info) = &global.type_info else {
                 panic!("{fixture}: {name} has type {:?}", global.type_info);
             };
@@ -224,6 +232,7 @@ async fn normalized_type_graphs_are_closed_and_preserve_language_semantics() {
                 _ => None,
             })
             .collect::<Vec<_>>();
+
         for expected in [
             microscope::TypeModifier::Const,
             microscope::TypeModifier::Volatile,
@@ -265,6 +274,7 @@ async fn normalized_type_graphs_are_closed_and_preserve_language_semantics() {
             .functions()
             .find(|info| info.name().rsplit(['.', ':']).next() == Some(function))
             .unwrap_or_else(|| panic!("{fixture}: no function {function}"));
+
         assert_eq!(found.language(), language, "{fixture}: {found:?}");
     }
 
@@ -276,20 +286,24 @@ async fn normalized_type_graphs_are_closed_and_preserve_language_semantics() {
         go.constant("runtime._Grunning"),
         Some(microscope::IntegerValue::Signed(2))
     );
+
     assert!(
         go.constant("runtime.waitReasonChanReceive").is_some(),
         "typed constants are named too"
     );
+
     assert!(
         go.producers()
             .any(|producer| producer.starts_with("Go cmd/compile go1.27.")),
         "{:?}",
         go.producers().collect::<Vec<_>>()
     );
+
     assert_eq!(
         images["variables-gcc-o0"].constant("runtime._Grunning"),
         None
     );
+
     assert!(
         go.types().any(|node| matches!(
             node,
@@ -303,6 +317,7 @@ async fn normalized_type_graphs_are_closed_and_preserve_language_semantics() {
         )),
         "Go definitions must retain distinct identity"
     );
+
     let go_names = go
         .types()
         .filter_map(|node| match node {
@@ -310,16 +325,19 @@ async fn normalized_type_graphs_are_closed_and_preserve_language_semantics() {
             _ => None,
         })
         .collect::<Vec<_>>();
+
     assert!(
         go_names.contains(&"main.definedInt"),
         "Go defined scalar type was lost: {go_names:?}"
     );
+
     assert!(
         go_names
             .iter()
             .any(|name| name.contains("recursiveList[int32]")),
         "Go instantiated recursive generic type was lost: {go_names:?}"
     );
+
     assert!(
         !go_names.iter().any(|name| name.contains("scalarAlias")),
         "Go source aliases erased by the producer must not be reconstructed: {go_names:?}"
@@ -370,6 +388,7 @@ async fn line_zero_rows_do_not_extend_the_previous_source_line() {
     let function = image
         .function_named("inspect_scalars")
         .expect("inspect_scalars definition");
+
     let instance = image
         .instances_for_function(function.id())
         .next()
@@ -408,6 +427,7 @@ async fn hand_written_assembly_after_a_function_has_no_source_line() {
         .symbols()
         .find(|symbol| symbol.name() == "bare")
         .expect("the fixture defines bare");
+
     let extent = bare.extent().expect("bare has a size").range;
 
     // The fixture's layout: no row begins in bare, and the row before it
@@ -417,6 +437,7 @@ async fn hand_written_assembly_after_a_function_has_no_source_line() {
         rows.iter().all(|row| !extent.contains(row.address)),
         "a row describes bare"
     );
+
     assert!(
         rows.iter()
             .any(|row| row.address < extent.start && row.location.is_some())
@@ -426,6 +447,7 @@ async fn hand_written_assembly_after_a_function_has_no_source_line() {
                 .all(|row| row.address >= extent.end),
         "bare does not follow a described function"
     );
+
     let located = image.locate(extent.start);
     assert_eq!(located.source, None, "{located:?}");
     assert!(located.function.is_none());
@@ -501,6 +523,7 @@ fn assert_inline_metadata(image: &ModuleImage, fixture: &str) {
         6,
         "unexpected {fixture} leaf instances"
     );
+
     assert_eq!(
         image
             .code_instances()
@@ -509,6 +532,7 @@ fn assert_inline_metadata(image: &ModuleImage, fixture: &str) {
         9,
         "unexpected {fixture} inline instance count"
     );
+
     assert!(
         image.code_instances().any(|instance| {
             matches!(instance.kind(), CodeInstanceKind::Inline { .. })
@@ -549,6 +573,7 @@ fn assert_inline_metadata(image: &ModuleImage, fixture: &str) {
                 .is_some_and(|function| function.name() == "middle")
         })
         .expect("nested leaf instance");
+
     let location = image.locate(nested_leaf.ranges().next().unwrap().start);
     let InlineFrameLookup::Unique(chain) = location.inline_frames else {
         panic!("{fixture} did not resolve one inline chain: {location:?}")
@@ -565,6 +590,7 @@ fn assert_inline_metadata(image: &ModuleImage, fixture: &str) {
                 .name()
         })
         .collect();
+
     assert_eq!(
         chain_names,
         ["middle", "leaf"],

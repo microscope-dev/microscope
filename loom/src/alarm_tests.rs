@@ -33,6 +33,7 @@ impl Running {
         let alarm = Arc::new(Alarm::new());
         let rang = Arc::new(AtomicBool::new(false));
         let heard = Arc::new(Notify::new());
+
         let thread = {
             let (alarm, rang, heard) = (Arc::clone(&alarm), Arc::clone(&rang), Arc::clone(&heard));
             thread::spawn(move || {

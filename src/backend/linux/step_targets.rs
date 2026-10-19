@@ -222,6 +222,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         record!("{pid} runs the call at {:#x} to {address}", registers.rip);
+
         Ok(true)
     }
 }

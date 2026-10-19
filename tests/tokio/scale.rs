@@ -48,6 +48,7 @@ async fn a_hundred_thousand_tasks_are_listed_at_a_bounded_cost_a_page() {
         matches!(reason, StopReason::Breakpoint { .. }),
         "{reason:?}"
     );
+
     let expected = Report::read(&output)
         .lines()
         .filter(|fields| fields.first().is_some_and(|kind| kind == "task"))
@@ -71,14 +72,17 @@ async fn a_hundred_thousand_tasks_are_listed_at_a_bounded_cost_a_page() {
         } = scenario
             .operation("tasks", scenario.handle().tasks(from, PAGE))
             .await;
+
         assert!(gaps.is_empty(), "after {}: {gaps:?}", listed.len());
         assert!(tasks.len() <= PAGE);
+
         let count = u64::try_from(tasks.len()).expect("a page's size fits");
         assert!(
             usage.memory_bytes <= BYTES_PER_PAGE + BYTES_PER_TASK * count,
             "after {}, {count} tasks read {usage:?}",
             listed.len()
         );
+
         for task in tasks.iter() {
             assert_eq!(task.state, TaskState::Blocked, "{task:#?}");
             assert!(listed.insert(task.id.number), "listed twice: {task:#?}");

@@ -265,6 +265,7 @@ pub fn execute(registers: &mut Registers, memory: &mut AddressSpace, trap: bool)
         Ok(outcome) => {
             next.rflags &= !TRAP;
             *registers = next;
+
             let flow = match instruction.mnemonic() {
                 Mnemonic::Call => Flow::Call {
                     return_address: instruction.next_ip(),
@@ -319,6 +320,7 @@ pub fn decode(address: u64, memory: &AddressSpace) -> Result<Instruction, Outcom
     let fetched = memory.fetch(address, &mut bytes).map_err(unfetchable)?;
     let mut decoder = Decoder::with_ip(64, &bytes[..fetched], address, DecoderOptions::NONE);
     let instruction = decoder.decode();
+
     match decoder.last_error() {
         iced_x86::DecoderError::None => Ok(instruction),
         iced_x86::DecoderError::NoMoreBytes if fetched < MAX_INSTRUCTION_BYTES => {
@@ -355,8 +357,10 @@ fn general_index(register: Register) -> Option<(usize, bool)> {
         register,
         Register::AH | Register::CH | Register::DH | Register::BH
     );
+
     let full = register.full_register();
     let index = (full as usize).checked_sub(Register::RAX as usize)?;
+
     (index < 16 && full.is_gpr64()).then_some((index, high))
 }
 
@@ -365,6 +369,7 @@ impl Registers {
     fn read(&self, register: Register) -> Option<u64> {
         let (index, high) = general_index(register)?;
         let value = self.general[index];
+
         Some(if high {
             (value >> 8) & 0xff
         } else {
@@ -406,6 +411,7 @@ mod tests {
             0x1000,
             u64::from_le_bytes(code.try_into().expect("8 bytes"))
         ));
+
         registers.rip = 0x1000;
         execute(registers, &mut memory, false).outcome
     }
@@ -419,6 +425,7 @@ mod tests {
         let mut registers = Registers::default();
         registers.general[RSP] = 0x4000;
         let before = registers;
+
         assert_eq!(
             run(&[0x50, 0, 0, 0, 0, 0, 0, 0], &mut registers),
             Outcome::Fault(Fault {
@@ -480,6 +487,7 @@ mod tests {
         let stack = 0x7fff_fffd_e000;
         let mut memory = AddressSpace::default();
         memory.map(0x1000, 0x2000, Protection::READ_EXECUTE, Backing::Anonymous);
+
         let write_only = Protection {
             read: false,
             write: true,
@@ -490,6 +498,7 @@ mod tests {
             write: false,
             execute: true,
         };
+
         memory.map(0x3000, 0x4000, write_only, Backing::Anonymous);
         memory.map(0x5000, 0x6000, execute_only, Backing::Anonymous);
         memory.map(
@@ -524,6 +533,7 @@ mod tests {
             let mut code = code.to_vec();
             code.resize(16, 0x90);
             assert!(memory.poke_bytes(0x1000, &code));
+
             let mut registers = Registers {
                 rip: 0x1000,
                 ..Registers::default()
@@ -534,6 +544,7 @@ mod tests {
 
             let before = registers;
             let outcome = execute(&mut registers, &mut memory, false).outcome;
+
             assert!(
                 matches!(&outcome, Outcome::Unsupported(text) if text.starts_with(why)),
                 "{why} {values:x?}: {outcome:?}"
@@ -547,6 +558,7 @@ mod tests {
             ..Registers::default()
         };
         registers.general[RSP] = stack + 8;
+
         assert!(memory.poke_bytes(0x1000, &[0x50]));
         let outcome = execute(&mut registers, &mut memory, false).outcome;
         assert_eq!(outcome, Outcome::Completed);

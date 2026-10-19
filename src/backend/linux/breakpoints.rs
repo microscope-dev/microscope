@@ -174,6 +174,7 @@ impl<P: InspectionOps> Controller<P> {
                     })
                     .collect::<Vec<_>>()
             });
+
         if shown.pending_locations.as_ref() != pending.as_slice() {
             shown.pending_locations = pending.into();
         }
@@ -1067,6 +1068,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .map(|group| group.address)
             .collect();
         let pid = inferior.memory_thread();
+
         for address in removed {
             self.ptrace
                 .reinstall_breakpoint(pid, &mut inferior.breakpoints, address)?;
@@ -1128,6 +1130,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         // A process may have thousands of sites, most sharing a page with
         // others, which one read covers.
         let page = |address: VirtualAddress| address.get() / PAGE_BYTES;
+
         for sites in installed.chunk_by(|(one, _), (other, _)| page(*one) == page(*other)) {
             let (first, end) = (sites[0].0.get(), sites[sites.len() - 1].0.get() + 1);
             let block = usize::try_from(end - first)
@@ -1156,6 +1159,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let mut lost_locations = Vec::new();
+
         for address in lost {
             // Each address is lost once, so a site that is gone has nothing left to forget.
             let Some(site) = inferior.breakpoints.remove(&address) else {
@@ -1163,6 +1167,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             };
 
             forget_removed_site(inferior, address, site.original_byte);
+
             for owner in site.owners {
                 match owner {
                     BreakpointOwner::User(id) => lost_locations.push((id, address)),
@@ -1365,6 +1370,7 @@ fn symbol_locations(
 ) -> Result<Vec<(crate::ImageAddress, Arc<[crate::CodeInstanceId]>)>> {
     let mut entries = BTreeSet::new();
     let mut indirect = false;
+
     for symbol in image.symbols_answering(name) {
         if symbol.extent().is_none() {
             continue;
@@ -1415,6 +1421,7 @@ fn function_locations<'a>(
     }
 
     let mut by_address = BTreeMap::<_, Vec<_>>::new();
+
     for instance in instances {
         for entry in image.recommended_entries_for_instance(instance.id()) {
             by_address

@@ -113,6 +113,7 @@ fn function_ranges(
             .map(to_virtual)
             .collect::<Result<Vec<_>>>()?;
         ranges.sort_by_key(|range| (range.start, range.end));
+
         return Ok((
             DisassembledFunction {
                 module: module.loaded.id,
@@ -130,6 +131,7 @@ fn function_ranges(
         .symbol(symbol.symbol)
         .and_then(crate::image::symbols::Symbol::extent)
         .ok_or_else(|| Error::internal("a code symbol has an extent"))?;
+
     Ok((
         DisassembledFunction {
             module: module.loaded.id,
@@ -183,6 +185,7 @@ impl<P: InspectionOps> CodeSource for TargetCode<'_, P> {
             address,
             size.min(room),
         )?;
+
         let unreadable = match read.completion {
             // No read can end past the final byte of the address space, so
             // a clamped read reports that byte as unreadable.

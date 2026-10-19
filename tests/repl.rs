@@ -314,6 +314,7 @@ fn an_interactive_session_keeps_its_breakpoints_for_the_next_one() {
     // Temporary breakpoints belong to one stop, and are not kept.
     run(&mut session, "tbreak caller", "temporary breakpoint 2 set");
     quit(session);
+
     let text = std::fs::read_to_string(&saved).expect("the breakpoints were saved");
     assert_eq!(
         text,
@@ -323,6 +324,7 @@ fn an_interactive_session_keeps_its_breakpoints_for_the_next_one() {
          [[display]]\nexpression = \"last_call\"\nformat = \"x\"\n",
         "{text}"
     );
+
     assert_eq!(
         std::fs::read_to_string(state.join(".gitignore")).expect("state is ignored"),
         "*\n"
@@ -335,6 +337,7 @@ fn an_interactive_session_keeps_its_breakpoints_for_the_next_one() {
         scratch.path(),
         &["restored 1 breakpoint and 1 display"],
     );
+
     run(&mut session, "display", "1: /x last_call");
     run(
         &mut session,
@@ -350,6 +353,7 @@ fn an_interactive_session_keeps_its_breakpoints_for_the_next_one() {
         .expect("read the source")
         .replace("    last_call = call;", "    last_call = call + 0;");
     std::fs::write(&source, edited).expect("edit the source");
+
     quit(kept_session(
         &project,
         scratch.path(),
@@ -358,6 +362,7 @@ fn an_interactive_session_keeps_its_breakpoints_for_the_next_one() {
 
     // A file that does not parse is reported and never overwritten.
     std::fs::write(&saved, "version = 1\n[[breakpoint]\n").expect("break the file");
+
     let mut session = kept_session(
         &project,
         scratch.path(),
@@ -365,6 +370,7 @@ fn an_interactive_session_keeps_its_breakpoints_for_the_next_one() {
     );
     run(&mut session, "break counted", "breakpoint 1 set");
     quit(session);
+
     assert_eq!(
         std::fs::read_to_string(&saved).expect("the file is kept"),
         "version = 1\n[[breakpoint]\n"
@@ -372,6 +378,7 @@ fn an_interactive_session_keeps_its_breakpoints_for_the_next_one() {
 
     // Batch sessions neither restore nor save.
     std::fs::remove_file(&saved).expect("remove the file");
+
     let output = kept_command(&project, scratch.path())
         .args(["--batch", "-e", "break counted"])
         .output()
@@ -386,10 +393,12 @@ fn interactive_pp_lays_values_out_to_the_terminal_width() {
     let mut session = repl(&fixture("records-c-gcc-o0"), state.path());
     run(&mut session, "break inspect_records", "breakpoint 1 set");
     run(&mut session, "run", "stopped at breakpoint 1");
+
     session
         .get_process_mut()
         .set_window_size(40, 24)
         .expect("narrow the terminal");
+
     run(
         &mut session,
         "pp record->inner",
@@ -401,6 +410,7 @@ fn interactive_pp_lays_values_out_to_the_terminal_width() {
         .get_process_mut()
         .set_window_size(100, 24)
         .expect("widen the terminal");
+
     run(
         &mut session,
         "pp record->inner",
@@ -415,6 +425,7 @@ fn interactive_quit_asks_before_killing_a_launched_program() {
     let mut session = repl(&fixture("basic"), state.path());
     run(&mut session, "break main", "breakpoint 1 set");
     run(&mut session, "run", "stopped at breakpoint 1");
+
     session.send_line("quit").expect("type quit");
     session
         .expect("kill it and quit? (y or n) ")
@@ -423,6 +434,7 @@ fn interactive_quit_asks_before_killing_a_launched_program() {
     session
         .expect("(microscope) ")
         .expect("the session goes on");
+
     run(&mut session, "where", "main at ");
     session.send_line("q").expect("type quit's alias");
     session
@@ -438,16 +450,20 @@ fn interactive_output_taller_than_the_terminal_goes_through_the_pager() {
     let settings = state.path().join("config.toml");
     std::fs::write(&settings, "[ui]\npager = \"sed 's/^/paged: /'\"\n")
         .expect("write the settings");
+
     let mut command = command(&fixture("basic"), state.path());
     command
         .env("MICROSCOPE_CONFIG", &settings)
         .args(["--color", "never"]);
+
     let mut session = spawn(command);
     session.expect("(microscope) ").expect("initial prompt");
+
     session
         .get_process_mut()
         .set_window_size(80, 10)
         .expect("shorten the terminal");
+
     run(&mut session, "help", "paged:   quit");
 
     // Output that fits is printed as it is.
@@ -466,16 +482,19 @@ fn interactive_tab_completes_commands_locations_and_members() {
     session.send("inspect_rec").expect("type a function prefix");
     session.send("\t").expect("complete the function");
     session.send_line("").expect("run the completed line");
+
     session
         .expect("temporary breakpoint 1 set at inspect_records")
         .expect("the completed breakpoint");
     session.expect("(microscope) ").expect("prompt");
+
     run(&mut session, "run", "stopped at breakpoint 1");
 
     // A member of what a pointer points to, which the debugger reads.
     session.send("p record->in").expect("type a member prefix");
     session.send("\t").expect("complete the member");
     session.send_line("").expect("run the completed line");
+
     session
         .expect("(inner_record) record->inner = {signed_value = -7, unsigned_value = 9}")
         .expect("the completed member");

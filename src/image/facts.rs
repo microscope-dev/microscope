@@ -230,6 +230,7 @@ pub fn add_to(
             })
         })
         .collect::<Result<Vec<_>, TooLarge>>()?;
+
     builder.owned_table(vec![record]).owned_table(thread_locals);
     Ok(())
 }

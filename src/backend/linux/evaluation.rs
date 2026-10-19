@@ -389,6 +389,7 @@ impl<P: InspectionOps> Frame<'_, P> {
             .saved_variables(self.resolved)
             .map_err(|error| refusal(&error))?;
         let mut named = variables.iter().filter(|variable| **variable.name == *name);
+
         match (named.next(), named.next()) {
             (Some(variable), None) => Ok(Some(saved(variable.ty, variable.address))),
             (Some(_), Some(_)) => Ok(Some(Lookup::Ambiguous(vec![name.to_owned()]))),
@@ -403,6 +404,7 @@ impl<P: InspectionOps> Frame<'_, P> {
     ) -> std::result::Result<Option<Lookup<StopObject>>, Refusal> {
         let mut globals = Vec::new();
         let mut candidates = BTreeSet::new();
+
         for module in self.modules() {
             match module.image.global_named(name) {
                 Ok(global) => globals.push((module, global.id)),
@@ -432,6 +434,7 @@ impl<P: InspectionOps> Frame<'_, P> {
                     .variables
                     .global_object(*id)
                     .map_err(|error| refusal(&error))?;
+
                 Ok(Some(object(module, key, false)))
             }
             ([], true) => Ok(None),
@@ -465,6 +468,7 @@ impl<P: InspectionOps> Frame<'_, P> {
                 .collect::<Vec<_>>();
             found.sort_by(|left, right| left.0.cmp(&right.0));
             found.dedup_by(|left, right| left.0 == right.0 && left.1 == right.1);
+
             match found.as_slice() {
                 [] => {}
                 [(_, value, ty)] => {
@@ -574,6 +578,7 @@ fn definition(image: &crate::ModuleImage, info: &TypeInfo) -> String {
                 .map(|variant| format!("{:?}={}", variant.selection, members(&variant.members)))
                 .collect::<Vec<_>>()
                 .join(";");
+
             format!("{}|{tag}|{variants}", members(common_members))
         }
 
@@ -651,6 +656,7 @@ pub(super) fn plan_in<P: InspectionOps>(
     let image = &module.image;
     let base_name;
     let is_target;
+
     let step = match step {
         StepKind::Deref => Step::Deref,
         StepKind::Member(name) => Step::Member(name),
@@ -693,6 +699,7 @@ pub(super) fn plan_in<P: InspectionOps>(
         .variables
         .plan_step(from.id, step)
         .map_err(|error| refusal(&error))?;
+
     Ok(Planned {
         result: planned.result().map(|id| TypeReference {
             image: module.loaded.image,
@@ -734,6 +741,7 @@ pub(super) fn lookup_type_in(module: &RuntimeModule, query: &TypeQuery) -> TypeL
         .collect();
     found.sort_by(|left, right| left.0.cmp(&right.0));
     found.dedup_by(|left, right| left.0 == right.0);
+
     match found.as_slice() {
         [] => TypeLookup::NotFound,
         [(_, ty)] => TypeLookup::Found(*ty),
@@ -862,6 +870,7 @@ impl<P: InspectionOps> Scope for Frame<'_, P> {
             .iter()
             .position(|value| value.register.name.as_ref() == name)?;
         let width = u8::try_from(registers.registers[number].register.bits.min(128)).ok()?;
+
         Some(Register {
             number: u16::try_from(number).ok()?,
             width,
@@ -942,6 +951,7 @@ impl<'a, 'b, P: InspectionOps> StopMachine<'a, 'b, P> {
     ) -> std::result::Result<InspectedValue, Stop> {
         let context = self.context(module);
         let mut runtime = self.frame.runtime(module);
+
         module
             .variables
             .materialize(located, context, &mut runtime, self.budget)
@@ -996,6 +1006,7 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
         self.budget
             .consume_expression_work(1)
             .map_err(|exhaustion| Stop::missing(VariableState::Unavailable(exhaustion.into())))?;
+
         let charges = self.frame.charges.get().wrapping_add(1);
         self.frame.charges.set(charges);
         if self.interruptible
@@ -1063,6 +1074,7 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
         }
 
         let from = from.native()?;
+
         let (module_id, step) = match step {
             StopStep::Provider { module, step } => (*module, step),
             StopStep::Element(bound) => {
@@ -1107,6 +1119,7 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
                 Error::ValueIndexOutOfBounds { .. } => Stop::Refused(refusal(&error)),
                 error => Stop::Failed(error),
             })?;
+
         Self::accessed(accessed, module_id).map(Place::Native)
     }
 
@@ -1166,6 +1179,7 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
         let module = self.module(at.module)?;
         let context = self.context(module);
         let mut runtime = self.frame.runtime(module);
+
         module
             .variables
             .load(&at.located, context, &mut runtime, self.budget)
@@ -1180,6 +1194,7 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
             .map_err(|exhaustion| Stop::missing(VariableState::Unavailable(exhaustion.into())))?;
         let module = self.memory_module()?;
         let mut runtime = self.frame.runtime(module);
+
         runtime
             .read_memory(VirtualAddress::new(address), size)
             .map(|bytes| bytes.to_vec())
@@ -1267,6 +1282,7 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
             let module = self.module(at.module)?;
             let context = self.context(module);
             let mut runtime = self.frame.runtime(module);
+
             module
                 .variables
                 .text_span(&at.located, context, &mut runtime, self.budget)
@@ -1375,8 +1391,10 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
                 .generics()
                 .map(|(name, argument)| (Arc::from(name), argument))
                 .collect::<crate::FunctionGenerics>();
+
             Some((module.image.id(), generics))
         });
+
         let Some((image, generics)) = described else {
             return Err(Stop::Refused(Refusal::new(
                 ErrorKind::Unsupported,
@@ -1450,6 +1468,7 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
         let mut wide = [0_u8; 16];
         let length = bytes.len().min(16);
         wide[..length].copy_from_slice(&bytes[..length]);
+
         Ok(match self.frame.byte_order() {
             ByteOrder::Little => u128::from_le_bytes(wide),
             ByteOrder::Big => u128::from_be_bytes(wide) >> (8 * (16 - length)),
@@ -1660,6 +1679,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                         .map(|()| Assigning::Running);
                 }
             };
+
         let refused = |reason: String| {
             Error::Expression(crate::ExpressionError::new(
                 ErrorKind::Assignment,
@@ -1669,6 +1689,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
 
         let thread_registers = self.shares_thread_registers(root, frame)?;
+
         match &target.located.storage {
             ValueStorage::Memory(address)
             | ValueStorage::Bytes {
@@ -1769,12 +1790,14 @@ impl<P: LinuxTraceOps> Controller<P> {
             .ok_or_else(|| refused("the register is unknown".into()))?;
         self.write_register(pid, descriptor.id, bytes)
             .map_err(|_| refused(format!("register {} cannot be changed", descriptor.name)))?;
+
         let evaluation = self.read_assigned(stop_id, root, frame, expression, limits)?;
         if descriptor.role != Some(crate::RegisterRole::ProgramCounter) {
             return Ok((evaluation, None));
         }
 
         let (_, moved) = self.publish_moved_thread(pid)?;
+
         Ok((evaluation, Some(moved)))
     }
 
@@ -1855,6 +1878,7 @@ impl<P: InspectionOps> Controller<P> {
         let mut machine = StopMachine::new(&scope, &mut budget, mode == Mode::Read);
         let outcome = run(&program, &mut machine);
         record!("evaluate `{}`: {outcome:?}", expression.text());
+
         Ok(match outcome.map_err(failure)? {
             Outcome::Value { value, cause } => {
                 Evaluated::Done(Box::new(Evaluation::Value { value, cause }))
@@ -1933,6 +1957,7 @@ impl<P: InspectionOps> Controller<P> {
         let mut machine = StopMachine::new(&scope, &mut budget, false);
         let outcome = run(&program, &mut machine);
         record!("evaluate `{}` at a hit: {outcome:?}", expression.text());
+
         match outcome.map_err(failure)? {
             Outcome::Value { value, cause } => Ok(Evaluation::Value { value, cause }),
             _ => Err(Error::Expression(crate::ExpressionError::new(
@@ -1969,6 +1994,7 @@ impl<P: InspectionOps> Controller<P> {
                 Some(presentation),
             )?
             .trace;
+
         self.blamed_frame(inferior, &trace)
             .ok_or_else(|| Error::RuntimeAgent("the hit's frame is not in its stack".into()))
     }
@@ -1990,6 +2016,7 @@ impl<P: InspectionOps> Controller<P> {
         let program = bind(expression, &scope, Mode::Read).map_err(Error::Expression)?;
         let mut budget = InspectionBudget::new(crate::InspectionLimits::default());
         let mut machine = StopMachine::new(&scope, &mut budget, false);
+
         if matches!(program.result(), crate::eval::types::Ty::Dynamic) {
             return self.resolve_interpreted_watch(inferior, stop_id, pid, &program, expression);
         }
@@ -2001,6 +2028,7 @@ impl<P: InspectionOps> Controller<P> {
         };
 
         let (address, byte_size) = super::watchpoints::watchable_storage(&value)?;
+
         let (watch_scope, evidence) = match program.root_object() {
             Some(object) => {
                 let module = self
@@ -2083,6 +2111,7 @@ impl<P: InspectionOps> Controller<P> {
                     }
                 })
             })?;
+
         Ok(crate::WatchTarget {
             stop_id,
             expression: expression.clone(),

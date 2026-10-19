@@ -117,6 +117,7 @@ pub fn filter(calls: &CallSet) -> Vec<Instruction> {
     program.push(op(RETURN, RET_ALLOW));
     program.extend(x86_64);
     program.extend(i386);
+
     program
 }
 

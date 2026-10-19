@@ -190,6 +190,7 @@ fn auto_mode_copies_a_small_stack_only_where_the_chain_carries_every_stack() {
         let stacks = shapes(profile.stacks());
         assert_eq!(stacks.len(), 6, "{variant}: every call is a sample");
         assert_eq!(stacks, shapes(deep.profile.stacks()), "{variant}");
+
         for (functions, _) in &stacks {
             assert_eq!(functions[..3], ["leaf", "middle", "outer"], "{variant}");
         }
@@ -287,6 +288,7 @@ fn function_breakpoints_name_every_language_and_layout_exactly() {
         let stacks = recording.profile.stacks();
         assert_eq!(stacks.len(), 6, "{variant}: every call is a sample");
         let mut main_thread = 0;
+
         for stack in &stacks {
             let context = format!("{variant}: {stack:?}");
 
@@ -362,6 +364,7 @@ fn an_async_tasks_samples_show_its_own_stack_of_awaits() {
                 .starts_with("<tokio::runtime::task::harness::Harness<profile::task::{closure#0}"),
             "{context}"
         );
+
         let work = path[1..].iter().position(|name| *name == "profile::work");
         let (own, inlined) = path[1..].split_at(work.expect(&context));
         assert_eq!(
@@ -482,6 +485,7 @@ fn a_goroutines_calls_name_its_exact_stack_in_every_build() {
 
         // Every execution of the instruction is a sample or a repeat.
         assert_eq!(profile.counted(), 20 + profile.repeats(), "{variant}");
+
         for stack in &stacks {
             assert_eq!(
                 stack.functions,
@@ -512,6 +516,7 @@ fn a_stack_on_the_system_stack_goes_on_into_the_goroutine_that_switched() {
             let names = &stack.functions;
             let switch = names.iter().position(|name| name == "runtime.systemstack");
             let switch = switch.expect(&context);
+
             if switch + 1 == names.len() {
                 // A switch the chain does not cross says so.
                 assert_eq!(
@@ -615,6 +620,7 @@ fn a_threads_time_off_its_cpu_is_each_sleep_and_each_preemption() {
     }
 
     let stacks = profile.stacks();
+
     for interval in &intervals {
         let end = interval.time + i64::try_from(interval.duration).expect("short");
         let inside = stacks.iter().find(|stack| {
@@ -757,6 +763,7 @@ fn a_rolling_window_saves_on_a_trigger_and_keeps_only_its_last_span() {
     )
     .expect("record");
     assert!(recording.status.success(), "{}", recording.status);
+
     let (during, after) = (on_stacks(&saved[0]), on_stacks(&recording.profile));
     assert!(
         during.contains("first") && !during.contains("second"),
@@ -766,6 +773,7 @@ fn a_rolling_window_saves_on_a_trigger_and_keeps_only_its_last_span() {
         after.contains("second") && !after.contains("first"),
         "{after:?}"
     );
+
     let profile = &recording.profile;
     let (start, end) = profile.span();
     let span = u64::try_from(end - start).expect("ordered");
@@ -831,6 +839,7 @@ fn segments_tile_a_recording_and_read_back_as_one() {
     assert!(recording.status.success(), "{}", recording.status);
     segments.push(recording.profile);
     assert!(segments.len() > 4, "{}", segments.len());
+
     let scratch = support::ScratchDir::new("profiler-segments");
     for (number, segment) in segments.iter().enumerate() {
         let (start, end) = segment.span();
@@ -861,6 +870,7 @@ fn segments_tile_a_recording_and_read_back_as_one() {
             number == 0 || recorder <= span + 20_000_000,
             "segment {number} took {recorder} ns of microscope's CPU time in {span}"
         );
+
         segment
             .write_segment(scratch.path(), Duration::from_hours(1))
             .expect("write the segment");
@@ -873,15 +883,18 @@ fn segments_tile_a_recording_and_read_back_as_one() {
             .iter()
             .all(|segment| !segment.off_cpu().is_empty())
     );
+
     let all = Profile::read(scratch.path())
         .expect("read the directory")
         .profile;
+
     let sum = |measure: fn(&Profile) -> u64| segments.iter().map(measure).sum::<u64>();
     assert_eq!(
         all.samples() as u64,
         sum(|profile| profile.samples() as u64)
     );
     assert_eq!(all.counted(), sum(Profile::counted));
+
     let off_cpu = |profile: &Profile| {
         profile
             .off_cpu()
@@ -895,6 +908,7 @@ fn segments_tile_a_recording_and_read_back_as_one() {
         all.span(),
         (segments[0].span().0, segments[segments.len() - 1].span().1)
     );
+
     let functions = on_stacks(&all);
     assert!(
         functions.contains("first") && functions.contains("second"),
@@ -914,10 +928,13 @@ fn a_segment_deletes_only_segments_older_than_kept() {
     let profile = Profile::import(b"main;work 3\n")
         .expect("a profile")
         .profile;
+
     let written = profile
         .write_segment(scratch.path(), Duration::from_hours(1))
         .expect("write the segment");
+
     assert!(!old.exists() && other.exists() && written.exists());
+
     let read = Profile::read(scratch.path())
         .expect("read the directory")
         .profile;
@@ -1019,6 +1036,7 @@ fn a_stack_through_the_vdso_goes_on_to_its_callers() {
     assert!(recording.status.success());
     let stacks = recording.profile.stacks();
     let mut through = 0;
+
     for stack in &stacks {
         let context = format!("{stack:?}");
         assert_ne!(
@@ -1082,6 +1100,7 @@ fn sample_perf_map(version: &str) -> (microscope::profiler::Recording, Option<i6
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+
     // Startup and descheduling take an unbounded fraction of a fixed
     // wall interval under stress. Collect actual leaf evidence instead.
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
@@ -1163,6 +1182,7 @@ fn a_stack_through_a_perf_maps_code_goes_on_to_its_callers() {
             "{version}: {through} of {} samples through leaf",
             stacks.len()
         );
+
         let first = stacks
             .iter()
             .filter(|stack| perf_map_leaf(stack).is_some())
@@ -1195,6 +1215,7 @@ fn attach_and_release(
     let pid = u32::try_from(process.process_id().get()).expect("a pid");
     let stop = std::sync::atomic::AtomicBool::new(false);
     let (attached, opened) = std::sync::mpsc::channel();
+
     std::thread::scope(|scope| {
         let recording = scope.spawn(|| {
             // Owned here, so that a failed attach closes the channel.
@@ -1257,6 +1278,7 @@ fn an_attach_follows_threads_that_began_before_it_and_after() {
             })
             .collect();
         stacks.sort();
+
         let main = [
             "leaf",
             "middle",
@@ -1291,6 +1313,7 @@ fn an_attach_follows_threads_that_began_before_it_and_after() {
         for stack in profile.stacks() {
             *threads.entry(stack.tid).or_default() += 1;
         }
+
         assert_eq!(
             stacks,
             expected,
@@ -1322,20 +1345,24 @@ fn an_attach_reads_a_contained_programs_library_through_its_root() {
     );
     let maps = std::fs::read_to_string(format!("/proc/{}/maps", process.process_id().get()))
         .expect("the program's maps");
+
     let mapped = maps
         .lines()
         .find(|line| line.ends_with("/libc.so.6"))
         .expect("the program maps a C library")
         .split_whitespace()
         .collect::<Vec<_>>();
+
     let host = std::fs::metadata(mapped[5]).expect("the host's file at that path");
     assert_ne!(
         std::os::unix::fs::MetadataExt::ino(&host).to_string(),
         mapped[4],
         "the program maps the host's library"
     );
+
     let attachment = attach_and_release(&mut process, &calls_of("leaf"), false).expect("attach");
     assert!(process.wait().success());
+
     let mut stacks: Vec<Vec<String>> = attachment
         .profile
         .stacks()
@@ -1347,8 +1374,10 @@ fn an_attach_reads_a_contained_programs_library_through_its_root() {
         .collect();
     stacks.sort();
     stacks.dedup();
+
     let named =
         |names: &[&str]| -> Vec<String> { names.iter().map(|name| (*name).to_owned()).collect() };
+
     assert_eq!(
         stacks,
         [
@@ -1416,6 +1445,7 @@ fn clock_samples_are_valid_stacks_and_survive_a_file() {
         let profile = recording.profile;
         let stacks = profile.stacks();
         let mut ours = 0;
+
         for stack in &stacks {
             let context = format!("{variant}: {stack:?}");
             if let Some(valid) = fixture_chain(&stack.functions) {
@@ -1479,6 +1509,7 @@ fn a_go_programs_own_profiles_read_as_it_wrote_them() {
 
     let goroutines = Profile::read(&goroutines).expect("the goroutines").profile;
     assert_eq!(goroutines.setting("weight"), Some("goroutine"));
+
     let keys = goroutines.keys(Granularity::Function);
     let parked = keys.aggregate(&Query {
         labels: vec![("worker".to_owned(), "parked".to_owned())],
@@ -1538,6 +1569,7 @@ fn a_functions_samples_land_on_its_lines_and_its_instructions() {
     let middle = profile
         .disassemble(&everything, "middle")
         .expect("middle's code");
+
     let calls: Vec<_> = middle.blocks[0]
         .instructions
         .iter()
@@ -1592,6 +1624,7 @@ fn a_forked_child_is_sampled_through_the_mappings_it_inherits() {
     let stacks = recording.profile.stacks();
     let pids: std::collections::BTreeSet<u32> = stacks.iter().map(|stack| stack.pid).collect();
     assert_eq!(pids.len(), 2, "the parent and its child: {stacks:?}");
+
     for stack in &stacks {
         assert_eq!(
             stack.functions,
@@ -1642,6 +1675,7 @@ fn task_snapshots_find_each_goroutine_where_it_waits_or_runs() {
             labeled.is_some_and(|seen| found >= 2.max(seen + 1))
         },
     );
+
     let profile = &recording;
     let (taken, paused, failed) = profile.task_snapshots();
     assert!(
@@ -1650,6 +1684,7 @@ fn task_snapshots_find_each_goroutine_where_it_waits_or_runs() {
     );
     assert!(receiving(profile).len() >= 2, "{:#?}", profile.task_waits());
     assert_receivers_wait(profile);
+
     let gaps = profile.gaps();
     let inside = |time: i64| gaps.iter().any(|(start, end)| *start < time && time < *end);
     if let Some(stack) = profile.stacks().iter().find(|stack| inside(stack.time)) {
@@ -1691,6 +1726,7 @@ fn task_snapshots_find_each_goroutine_where_it_waits_or_runs() {
         .map(|wait| wait.task)
         .collect();
     assert!(!receivers.contains(&spinner), "{spinner} {receivers:?}");
+
     let task = profile
         .tasks()
         .into_iter()
@@ -1763,6 +1799,7 @@ fn samples_of_the_runtime_on_a_goroutines_thread_name_no_task() {
     let mut other = spun.clone();
     other[3].task = Some(7);
     assert!(std::panic::catch_unwind(|| spinner_of(&other)).is_err());
+
     let mut unnamed = spun.clone();
     unnamed[4].task = None;
     assert!(std::panic::catch_unwind(|| spinner_of(&unnamed)).is_err());
@@ -1833,6 +1870,7 @@ fn live_task_snapshots_read_a_runtime_in_a_library() {
         "{taken} {paused} {failed}: {:?}",
         profile.task_snapshot_problems()
     );
+
     assert_eq!(profile.live_snapshots().0, taken);
     assert!(
         waiting(&profile),
@@ -1881,6 +1919,7 @@ fn a_program_that_exits_around_a_snapshot_keeps_its_status() {
         )
         .expect("record");
         assert_eq!(recording.status.code(), Some(0), "{}", recording.status);
+
         let (taken, _, failed) = recording.profile.task_snapshots();
         assert!(taken > 0, "no snapshot was taken");
         assert_eq!(
@@ -1935,6 +1974,7 @@ fn snapshots_in_a_budget_pause_leave_gaps_apart() {
         gaps.windows(2).all(|pair| pair[0].1 <= pair[1].0),
         "{gaps:?}"
     );
+
     let snapshots = recording.profile.paused(GapReason::TaskSnapshot);
     let budget = recording.profile.paused(GapReason::Budget);
     assert!(
@@ -1988,11 +2028,10 @@ fn snapshot_until(
     )
     .expect("record");
     assert!(recording.status.success(), "{}", recording.status);
+
     recording.profile
 }
 
-/// The times of the snapshots that found three distinct goroutines waiting
-/// to receive in `main.receive`.
 /// Whether a task snapshot has found the waits fixture's spinner once it
 /// labeled itself.
 fn spins_labeled(profile: &Profile) -> bool {
@@ -2002,6 +2041,8 @@ fn spins_labeled(profile: &Profile) -> bool {
         .any(|task| task.labels == [("phase".to_owned(), "spin".to_owned())])
 }
 
+/// The times of the snapshots that found three distinct goroutines waiting
+/// to receive in `main.receive`.
 fn receiving(profile: &Profile) -> Vec<i64> {
     let mut found: std::collections::BTreeMap<i64, std::collections::BTreeSet<u64>> =
         std::collections::BTreeMap::new();
@@ -2089,6 +2130,7 @@ fn record_probes(arguments: &[&str], options: &RecordOptions) -> (Profile, Strin
     assert!(recording.status.success(), "{}", recording.status);
     let mut printed = String::new();
     std::io::Read::read_to_string(&mut reader, &mut printed).expect("read what it printed");
+
     (recording.profile, printed)
 }
 
@@ -2165,12 +2207,15 @@ fn instrumented_zones_nest_exactly_as_the_program_ran_them() {
         .iter()
         .filter_map(|marker| marker.text.as_deref())
         .collect();
+
     assert_eq!(messages, ["round 0 of 3", "round 1 of 3", "round 2 of 3"]);
+
     let frames = markers
         .iter()
         .filter(|marker| marker.kind == MarkerKind::Frame && marker.name == "frame")
         .count();
     assert_eq!(frames, 3);
+
     assert!(markers.iter().all(|marker| marker.tid == tid("outer")));
 }
 
@@ -2191,6 +2236,7 @@ fn every_instrumentation_record_is_read_or_counted_lost() {
         (counts.no_ring, counts.interrupted, counts.malformed),
         (0, 0, 0)
     );
+
     let zones = profile.zones();
     let whole = zones.iter().filter(|zone| zone.flags == 0).count() as u64;
     let flagged = zones.len() as u64 - whole;
@@ -2214,6 +2260,7 @@ fn threads_that_come_and_go_each_keep_their_zones() {
         .into_iter()
         .filter(|zone| zone.name == "life")
         .collect();
+
     assert!(lives.iter().all(|zone| zone.flags == 0 && zone.depth == 0));
     let threads: std::collections::BTreeSet<u32> = lives.iter().map(|zone| zone.tid).collect();
     assert_eq!(threads.len(), lives.len());
@@ -2286,6 +2333,7 @@ fn a_programs_trigger_saves_the_window() {
         .map(|marker| marker.name.as_str())
         .collect();
     assert_eq!(triggers, ["done"]);
+
     let outer = saved[0]
         .zones()
         .into_iter()
@@ -2333,10 +2381,12 @@ fn sites_a_program_defines_as_it_runs_are_recorded_as_selected() {
         .into_iter()
         .map(|plot| (plot.name, plot.value))
         .collect::<Vec<_>>();
+
     assert_eq!(
         plotted,
         [0.0, 1.0, 2.0].map(|value| ("dynamic.rows".to_owned(), value))
     );
+
     let said = profile
         .program_markers()
         .into_iter()
@@ -2401,6 +2451,7 @@ fn symbols_left_for_later_come_from_a_debug_file_with_the_build_id() {
         directories: vec![root.clone()],
         ..microscope::DebugFileOptions::default()
     });
+
     let module = basic(&found);
     assert!(
         module
@@ -2416,5 +2467,6 @@ fn symbols_left_for_later_come_from_a_debug_file_with_the_build_id() {
         named(&profile),
         vec![vec!["breakpoint_target".to_owned(), "main".to_owned()]; 2]
     );
+
     assert!(!profile.symbols_later());
 }

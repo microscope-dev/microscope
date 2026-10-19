@@ -626,6 +626,7 @@ fn python_soft_keyword_holds(text: &[u8], word: &str, end: usize, line_start: bo
         .map_or(text.len(), |offset| end + offset);
     let rest = &text[end..line_end];
     let after = rest.trim_ascii_start();
+
     if word == "type" {
         // `type Name = ...` or `type Name[T] = ...`.
         let name = after
@@ -756,6 +757,7 @@ pub type Span = (Range<usize>, Kind);
 pub fn render(text: &str, spans: &[Span], tab_width: usize, renderer: Renderer) -> String {
     let mut output = String::with_capacity(text.len());
     let mut column = 0;
+
     let expand = |segment: &str, column: &mut usize| {
         let mut expanded = String::with_capacity(segment.len());
         for character in segment.chars() {
@@ -773,6 +775,7 @@ pub fn render(text: &str, spans: &[Span], tab_width: usize, renderer: Renderer) 
     };
 
     let mut position = 0;
+
     for (range, kind) in spans {
         let range = range.start.min(text.len())..range.end.min(text.len());
         if range.start < position
@@ -783,6 +786,7 @@ pub fn render(text: &str, spans: &[Span], tab_width: usize, renderer: Renderer) 
         }
 
         output.push_str(&expand(&text[position..range.start], &mut column));
+
         let role = match kind {
             Kind::Keyword => Role::Keyword,
             Kind::String => Role::String,
@@ -812,12 +816,14 @@ pub fn lex(text: &str, language: Language) -> Vec<Vec<Span>> {
     let mut spans = Vec::new();
     let mut line_start = 0;
     let mut tokens = tokens.into_iter().peekable();
+
     for (index, byte) in text.bytes().chain(std::iter::once(b'\n')).enumerate() {
         if byte != b'\n' {
             continue;
         }
 
         let line = line_start..index;
+
         while let Some((range, kind)) = tokens.peek().cloned() {
             if range.start >= line.end {
                 break;
@@ -852,6 +858,7 @@ fn tokens(text: &[u8], language: Language) -> Vec<Span> {
 
     // Whether only whitespace precedes `index` on its line.
     let mut line_start = true;
+
     while index < text.len() {
         let byte = text[index];
         let previous_is_identifier = index > 0 && is_identifier(text[index - 1]);
@@ -860,6 +867,7 @@ fn tokens(text: &[u8], language: Language) -> Vec<Span> {
             .block_comments()
             .iter()
             .find(|(open, _, _)| starts(index, open));
+
         let kind = if let Some((open, close, nests)) = block {
             index = block_comment_end(text, index, open, close, *nests);
             Some(Kind::Comment)
@@ -1053,8 +1061,10 @@ fn formatted_end(text: &[u8], start: usize, quote: u8, triple: bool, raw: bool) 
     let closing: &[u8] = if triple { &[quote; 3] } else { &[quote] };
     let mut index = start + closing.len();
     let mut open: Vec<Open> = Vec::new();
+
     while index < text.len() {
         let byte = text[index];
+
         match open.last() {
             None | Some(Open::Spec) => {
                 if byte == b'\\' && !raw {
@@ -1171,6 +1181,7 @@ fn character_end(text: &[u8], start: usize, language: Language) -> Option<usize>
     };
 
     let after = start + 1 + width;
+
     (text.get(after) == Some(&b'\'')).then_some(after + 1)
 }
 
@@ -1215,6 +1226,7 @@ fn raw_string_end(text: &[u8], start: usize, language: Language) -> Option<usize
             let mut closing = vec![b')'];
             closing.extend_from_slice(&text[open..delimiter_end]);
             closing.push(b'"');
+
             Some(
                 find(text, delimiter_end + 1, &closing)
                     .map_or(text.len(), |end| end + closing.len()),
@@ -1230,6 +1242,7 @@ fn raw_string_end(text: &[u8], start: usize, language: Language) -> Option<usize
                 .iter()
                 .take_while(|byte| **byte == b'"')
                 .count();
+
             Some(close + extra)
         }
         _ => None,

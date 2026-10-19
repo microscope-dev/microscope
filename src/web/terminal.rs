@@ -62,12 +62,14 @@ pub fn run_helper(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
     // Its own session, so Ctrl+C in the terminal reaches neither the helper
     // nor a browser it starts.
     let _ = nix::unistd::setsid();
+
     for link in io::stdin().lock().lines().map_while(Result::ok) {
         // `$BROWSER` names the browser, as many tools agree; otherwise the
         // desktop's choice.
         let browser = std::env::var_os("BROWSER")
             .filter(|browser| !browser.is_empty())
             .unwrap_or_else(|| "xdg-open".into());
+
         if let Ok(mut child) = Command::new(browser)
             .arg(link)
             .stdin(Stdio::null())
@@ -99,8 +101,10 @@ impl Keys {
         keys.control_chars[SpecialCharacterIndices::VMIN as usize] = 1;
         keys.control_chars[SpecialCharacterIndices::VTIME as usize] = 0;
         termios::tcsetattr(io::stdin(), SetArg::TCSANOW, &keys)?;
+
         std::thread::spawn(move || {
             let mut key = [0];
+
             while io::stdin().lock().read_exact(&mut key).is_ok() {
                 if matches!(key[0], b'o' | b'O')
                     && opener.write_all(format!("{link}\n").as_bytes()).is_err()
@@ -110,6 +114,7 @@ impl Keys {
                 }
             }
         });
+
         Ok(Self { original })
     }
 }

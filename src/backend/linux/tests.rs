@@ -480,6 +480,7 @@ fn virtual_inline_step_emits_a_new_stop_without_native_operations() {
             .iter()
             .any(|event| matches!(event, DebuggerEvent::InferiorContinued { .. }))
     );
+
     let stop = harness
         .controller
         .inferior
@@ -1086,8 +1087,6 @@ impl FakeTrace {
         );
     }
 
-    /// Fails a request of a thread SIGKILL took out of its stop, which this
-    /// request may be the one to do.
     /// Writes a site's first byte, as installing or removing its trap does.
     fn put_byte(&self, address: VirtualAddress, byte: u8) {
         let mut memory = self.memory.borrow_mut();
@@ -1095,6 +1094,8 @@ impl FakeTrace {
         *word = (*word & !0xff) | u64::from(byte);
     }
 
+    /// Fails a request of a thread SIGKILL took out of its stop, which this
+    /// request may be the one to do.
     fn reach(&self, pid: Pid, request: &'static str) -> Result<()> {
         let mut point = self.kill_point.borrow_mut();
         if let Some((target, name, remaining)) = point.as_mut()
@@ -1173,6 +1174,7 @@ impl InspectionOps for FakeTrace {
         }
 
         self.reach(pid, "read_word")?;
+
         if self.unreadable.borrow().contains(&address) {
             return Err(backend_error(LinuxError::System(Errno::EIO)));
         }
@@ -1233,6 +1235,7 @@ impl LinuxTraceOps for FakeTrace {
 
     fn process_threads(&self, _process: Pid) -> Result<Vec<Pid>> {
         let listed = self.listed_threads.borrow().clone();
+
         if let Some(next) = self.next_listing.take() {
             self.listed_threads.replace(next);
         }
@@ -1385,6 +1388,7 @@ impl LinuxTraceOps for FakeTrace {
 
     fn write_word(&self, pid: Pid, address: u64, value: u64) -> Result<()> {
         self.record(format!("write_word {pid} {address:#x} {value:#x}"));
+
         if let Some(remaining) = self.memory_write_failure.borrow_mut().as_mut() {
             if *remaining == 0 {
                 return Err(backend_error(LinuxError::System(Errno::EIO)));
@@ -1396,6 +1400,7 @@ impl LinuxTraceOps for FakeTrace {
 
     fn continue_execution(&self, pid: Pid, signal: Option<Signal>) -> Result<()> {
         self.record(format!("continue {pid} {signal:?}"));
+
         if self.vanished.borrow().contains(&pid) {
             return Err(backend_error(LinuxError::System(Errno::ESRCH)));
         }
@@ -1433,6 +1438,7 @@ impl LinuxTraceOps for FakeTrace {
     fn set_options(&self, pid: Pid, _exit_kill: bool) -> Result<()> {
         self.record(format!("set_options {pid}"));
         self.reach(pid, "set_options")?;
+
         if self.vanished.borrow().contains(&pid) {
             return Err(backend_error(LinuxError::System(Errno::ESRCH)));
         }
@@ -1472,6 +1478,7 @@ impl LinuxTraceOps for FakeTrace {
 
     fn set_signal_mask(&self, pid: Pid, mask: u64) -> Result<()> {
         self.record(format!("set_signal_mask {pid} {mask:#x}"));
+
         if self.vanished.borrow().contains(&pid) {
             return Err(backend_error(LinuxError::System(Errno::ESRCH)));
         }
@@ -1482,6 +1489,7 @@ impl LinuxTraceOps for FakeTrace {
 
     fn request_stop(&self, _process: Pid, thread: Pid) -> Result<()> {
         self.record(format!("request_stop {thread}"));
+
         if self.vanished.borrow().contains(&thread) {
             return Err(backend_error(LinuxError::System(Errno::ESRCH)));
         }
@@ -1513,6 +1521,7 @@ impl LinuxTraceOps for FakeTrace {
 
     fn read_debug_register(&self, pid: Pid, index: usize) -> std::result::Result<u64, Errno> {
         self.record(format!("read {pid} dr{index}"));
+
         if self.reach(pid, "read_debug_register").is_err() {
             return Err(Errno::ESRCH);
         }
@@ -1527,6 +1536,7 @@ impl LinuxTraceOps for FakeTrace {
         value: u64,
     ) -> std::result::Result<(), Errno> {
         self.record(format!("write {pid} dr{index}={value:#x}"));
+
         if let Some(&error) = self.refusals.borrow().get(&(pid, index)) {
             return Err(error);
         }
@@ -1559,6 +1569,7 @@ impl LinuxTraceOps for FakeTrace {
         owner: BreakpointOwner,
     ) -> Result<()> {
         self.reach(pid, "install_breakpoint")?;
+
         if let Some(site) = sites.get_mut(&address) {
             site.owners.insert(owner);
             return Ok(());
@@ -1737,6 +1748,7 @@ impl WatchHarness {
             scope: ResumeScope::Process(process_id(inferior.tgid)),
             resume_threads: inferior.threads.keys().copied().collect(),
         });
+
         for thread in inferior.threads.values_mut() {
             thread.state = NativeThreadState::Running;
             thread.reason = None;
@@ -1759,6 +1771,7 @@ impl WatchHarness {
             })
             .map(|(&pid, _)| pid)
             .collect::<Vec<_>>();
+
         for pid in requested {
             self.trace().siginfo.borrow_mut().insert(
                 pid,
@@ -1942,6 +1955,7 @@ fn arming_programs_each_thread_disabled_first_and_verifies_it() {
         .collect::<Vec<_>>();
     assert_eq!(harness.trace().take_actions(), expected);
     assert_eq!(harness.watch_events(), 1);
+
     for pid in harness.threads.clone() {
         assert_eq!(harness.thread(pid).armed, Some(1));
         assert_eq!(harness.trace().registers_of(pid)[7], control);
@@ -1970,6 +1984,7 @@ fn a_failure_on_any_thread_restores_every_thread_and_publishes_nothing() {
             ),
             "{result:?}"
         );
+
         for (index, &pid) in harness.threads.clone().iter().enumerate() {
             assert_eq!(
                 harness.trace().registers_of(pid)[7],
@@ -2431,6 +2446,7 @@ fn detaching_disarms_every_thread_first_and_never_redelivers_a_watch_trap() {
         .iter()
         .position(|action| action.starts_with("detach"))
         .expect("threads were detached");
+
     for pid in [first, second] {
         let disarm = actions
             .iter()
@@ -2473,6 +2489,7 @@ fn a_failed_disarm_still_detaches_and_publishes_the_detach() {
 
     // Keeping the process traced would not help: the tracer is exiting.
     let actions = harness.trace().take_actions();
+
     for pid in [first, second] {
         assert!(
             actions.contains(&format!("detach {pid} None")),
@@ -2543,6 +2560,7 @@ fn detaching_a_process_killed_from_outside_succeeds() {
     let mut harness = watch_harness(2);
     harness.add_breakpoint(0x40);
     harness.attached();
+
     for &pid in &harness.threads {
         harness.trace().sigkill(pid);
     }
@@ -2663,6 +2681,7 @@ fn an_attached_stop_collects_traps_queued_behind_its_interrupt() {
         Some(StopReason::Watchpoint { ref hits }) if hits[0].watchpoint == watchpoint.id
     ));
     let inferior = harness.controller.inferior.as_ref().expect("inferior");
+
     for pid in [first, second] {
         assert!(matches!(
             inferior.threads[&pid].reason,
@@ -2791,6 +2810,7 @@ impl WatchHarness {
         inferior.origin = InferiorOrigin::Attached;
         inferior.public_stop = None;
         inferior.barrier = Some(StopBarrier::visible(inferior.tgid, StopReason::Attach));
+
         for thread in inferior.threads.values_mut() {
             *thread = TraceThread::starting(ExpectedStop::InitialAttach);
         }
@@ -2983,6 +3003,7 @@ fn a_seized_thread_whose_interrupt_a_clone_event_took_is_interrupted_again() {
     harness.trace().take_actions();
     harness.controller.begin_pause(process).expect("pause");
     let actions = harness.trace().take_actions();
+
     for pid in [first, second, child] {
         assert!(actions.contains(&format!("interrupt {pid}")), "{actions:?}");
     }
@@ -3045,6 +3066,7 @@ fn a_fork_whose_parent_is_killed_before_its_event_still_cleans_the_child() {
 
     // The child forked while the trap was installed, so its copy holds it.
     harness.store(HIT_SITE, u64::from(BREAKPOINT_OPCODE));
+
     for status in [
         WaitEvent::Stopped(child, Signal::SIGSTOP),
         WaitEvent::PtraceEvent(parent, Signal::SIGTRAP, libc::PTRACE_EVENT_FORK),
@@ -3111,6 +3133,7 @@ fn a_fork_child_still_starting_when_its_parent_exits_is_released_not_killed() {
     let child = Pid::from_raw(6000);
     harness.start_continue();
     harness.trace().clone.replace(Some((child, child)));
+
     for status in [
         WaitEvent::PtraceEvent(parent, Signal::SIGTRAP, libc::PTRACE_EVENT_FORK),
         WaitEvent::PtraceEvent(parent, Signal::SIGTRAP, libc::PTRACE_EVENT_EXIT),
@@ -3151,6 +3174,7 @@ fn a_fork_child_whose_event_was_lost_is_found_as_its_parent_exits() {
     harness.trace().traced_children.borrow_mut().push(child);
     harness.trace().sigkill(parent);
     harness.store(HIT_SITE, u64::from(BREAKPOINT_OPCODE));
+
     for status in [
         WaitEvent::PtraceEvent(parent, Signal::SIGTRAP, libc::PTRACE_EVENT_EXIT),
         WaitEvent::Signaled(parent, Signal::SIGKILL, false),
@@ -3212,6 +3236,7 @@ fn a_panic_releases_an_attached_process_as_a_detach_would() {
     harness.controller.release_after_panic();
 
     let actions = harness.trace().take_actions();
+
     for expected in [
         format!("write_word {trapped} 0x40 0x55"),
         format!("set_registers {trapped} rip=0x40"),
@@ -3332,6 +3357,7 @@ fn a_shutdown_meeting_a_superseded_fork_event_still_releases_the_child() {
     // Continued from its exit stop, the parent was reaped, and `/proc`
     // lists its children no more.
     harness.trace().traced_children.borrow_mut().clear();
+
     for status in [
         WaitEvent::PtraceEvent(parent, Signal::SIGTRAP, libc::PTRACE_EVENT_EXIT),
         WaitEvent::Signaled(parent, Signal::SIGKILL, false),
@@ -3366,6 +3392,7 @@ fn a_launch_while_fork_children_are_released_waits_for_them() {
     let parent = harness.threads[0];
     let child = Pid::from_raw(6000);
     harness.trace().clone.replace(Some((child, child)));
+
     for status in [
         WaitEvent::PtraceEvent(parent, Signal::SIGTRAP, libc::PTRACE_EVENT_FORK),
         WaitEvent::PtraceEvent(parent, Signal::SIGTRAP, libc::PTRACE_EVENT_EXIT),
@@ -3411,6 +3438,7 @@ fn a_fork_child_that_dies_as_it_is_released_is_awaited_until_its_exit() {
     // SIGKILL then takes the child out of that stop as it is released.
     harness.store(HIT_SITE, u64::from(BREAKPOINT_OPCODE));
     *harness.trace().kill_point.borrow_mut() = Some((child, "detach", 0));
+
     for status in [
         WaitEvent::PtraceEvent(parent, Signal::SIGTRAP, libc::PTRACE_EVENT_FORK),
         WaitEvent::PtraceEvent(parent, Signal::SIGTRAP, libc::PTRACE_EVENT_EXIT),
@@ -3554,6 +3582,7 @@ fn a_fork_child_first_stopping_after_its_parent_exited_is_held_for_that_parent()
     let parent = harness.threads[0];
     let child = Pid::from_raw(6000);
     let mut held = harness.hold_forks(child, 77);
+
     for status in [
         WaitEvent::PtraceEvent(parent, Signal::SIGTRAP, libc::PTRACE_EVENT_FORK),
         WaitEvent::PtraceEvent(parent, Signal::SIGTRAP, libc::PTRACE_EVENT_EXIT),
@@ -3759,10 +3788,6 @@ fn a_failed_sigcont_queue_read_restores_the_mask_and_still_detaches() {
     assert!(harness.controller.inferior.is_none());
 }
 
-/// A held process detached before it ever ran still holds the `SIGCONT`
-/// that ended its stop, which it would take untraced. The detach takes it
-/// first, unblocking it for the while in a fork child still inside `fork`,
-/// which blocks nearly every signal.
 /// SIGKILL from outside took the one thread that could take a held
 /// process's `SIGCONT` out of its stop. It goes on to its exit, which the
 /// detach awaits.
@@ -3794,6 +3819,10 @@ fn detaching_a_held_process_awaits_a_thread_killed_before_it_takes_the_sigcont()
         .expect("the session ends with the process");
 }
 
+/// A held process detached before it ever ran still holds the `SIGCONT`
+/// that ended its stop, which it would take untraced. The detach takes it
+/// first, unblocking it for the while in a fork child still inside `fork`,
+/// which blocks nearly every signal.
 #[test]
 fn detaching_a_held_process_takes_the_sigcont_it_has_not_yet_received() {
     let mut harness = watch_harness(1);
@@ -3922,6 +3951,7 @@ fn continuing_tolerates_threads_killed_by_a_siblings_exit() {
         )
         .expect("the continue succeeds");
     assert_eq!(harness.thread(first).state, NativeThreadState::Running);
+
     for pid in [second, third] {
         assert_eq!(harness.thread(pid).state, NativeThreadState::Exiting);
     }
@@ -4313,6 +4343,7 @@ fn repairs_after_the_debuggers_own_kill_are_left_undone() {
     // trap through.
     let (reply, mut killed) = tokio::sync::oneshot::channel();
     harness.controller.kill(reply);
+
     for pid in [leader, repairing, running] {
         harness.trace().sigkill(pid);
     }
@@ -4347,6 +4378,7 @@ fn a_repair_whose_process_dies_leaves_its_trap_unrestored() {
     // repairing thread's death leaves no thread to restore the trap through.
     harness.trace().sigkill(leader);
     harness.trace().sigkill(repairing);
+
     for status in [
         WaitEvent::PtraceEvent(leader, Signal::SIGTRAP, libc::PTRACE_EVENT_EXIT),
         WaitEvent::PtraceEvent(repairing, Signal::SIGTRAP, libc::PTRACE_EVENT_EXIT),
@@ -5137,6 +5169,7 @@ fn a_step_resumed_to_a_trap_edited_away_while_running(
     // Line 24 at 0x20, and line 25 from the site to 0x60.
     let mut lines = crate::image::lines::LineTables::default();
     lines.begin_sequence().expect("few rows");
+
     for (index, (address, line)) in [(0x20, 24), (SITE, 25), (0x60, 0)].into_iter().enumerate() {
         let end = line == 0;
         lines
@@ -5149,6 +5182,7 @@ fn a_step_resumed_to_a_trap_edited_away_while_running(
                 ..crate::image::lines::Row::default()
             })
             .expect("few rows");
+
         if !end {
             lines
                 .push_range(
@@ -5445,6 +5479,7 @@ impl crate::runtime_model::RuntimeModel for ScriptedRuntime {
         };
 
         let name = path.to_str()?;
+
         if name == "refused.scripted" {
             return Some(Err("the script refuses the file".into()));
         }
@@ -5467,6 +5502,7 @@ impl crate::runtime_model::RuntimeModel for ScriptedRuntime {
         if let Some(reason) = self.arm_failure.lock().expect("the script").as_ref() {
             return Err(Arc::clone(reason));
         }
+
         if arming
             .step
             .is_some_and(|step| step.kind == StepKind::Instruction)
@@ -5579,6 +5615,7 @@ fn begin_task_step(harness: &mut WatchHarness, thread: Pid, task: crate::TaskId)
             ..StepStart::default()
         },
     );
+
     if let ActiveKind::Step { owner, .. } = &mut kind {
         owner.task = Some(task);
     }
@@ -5713,6 +5750,7 @@ fn steps_over_alone(harness: &mut WatchHarness, hitting: Pid) {
         .trap(hitting, libc::TRAP_TRACE, debug_registers::STATUS_IDLE)
         .expect("the repair step");
     let actions = harness.trace().take_actions();
+
     for thread in harness.threads.clone() {
         assert!(
             actions.contains(&format!("continue {thread} None")),
@@ -6389,6 +6427,7 @@ fn unconfirmed_runtime_arming_still_judges_hits_from_the_previous_configuration(
     assert!(
         matches!(harness.stopped(), Some((_, StopReason::Breakpoint { hits, .. })) if hits[0].breakpoint == first.id)
     );
+
     // Site numbers survive changes to the desired list. A deleted site's
     // stale hook names no owner, never the remaining site's breakpoint.
     harness
@@ -6574,6 +6613,7 @@ fn a_runtime_step_ends_where_its_runtime_reports_it_on_its_thread() {
         }))
     );
     let actions = harness.trace().take_actions();
+
     for thread in [stepping, other] {
         assert!(
             actions.contains(&format!("continue {thread} None")),
@@ -6747,6 +6787,7 @@ fn a_runtimes_writes_are_made_only_to_the_memory_it_read() {
         ])
         .expect("the writes are made");
     let actions = harness.trace().take_actions();
+
     for expected in [
         format!("write_word {pid} 0x6000 0x80706050403bbaa"),
         format!("write_word {pid} 0x6008 0x181716151413cc11"),
@@ -6786,6 +6827,7 @@ fn ending_a_plan_removes_only_the_sites_it_still_owns() {
         let controller = &mut harness.controller;
         let ptrace = &controller.ptrace;
         let inferior = controller.inferior.as_mut().expect("inferior");
+
         for site in [0x20, 0x30, 0x40] {
             breakpoints::install_plan_breakpoint(ptrace, inferior, address(site), ending)
                 .expect("plan site");
@@ -7268,6 +7310,7 @@ fn a_store_reports_only_the_watchpoints_whose_access_it_matches() {
     let write = harness
         .add_watching(0x1_5000, 8, WatchAccess::Write)
         .expect("write");
+
     for (stored, reported) in [(7, vec![write.id]), (8, vec![change.id, write.id])] {
         harness.start_continue();
         harness.store(0x1_5000, stored);
@@ -7337,6 +7380,7 @@ fn watched_bytes_becoming_unreadable_or_readable_are_changes() {
         (1..).zip([(false, Some(word(7)), None), (true, None, Some(word(7)))])
     {
         harness.start_continue();
+
         if readable {
             harness.trace().unreadable.borrow_mut().clear();
         } else {
@@ -8032,6 +8076,7 @@ fn an_interrupt_refused_with_eio_means_gone_only_for_a_thread_that_exited() {
     let pid = Pid::from_raw(i32::try_from(exited.id()).expect("pid fits i32"));
     let stat = format!("/proc/{pid}/stat");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+
     while !std::fs::read_to_string(&stat).is_ok_and(|stat| {
         stat.rsplit_once(')')
             .and_then(|(_, fields)| fields.split_whitespace().next())
@@ -8162,6 +8207,7 @@ fn a_pause_waits_only_for_threads_that_will_report() {
         harness.start_continue();
         harness.thread(leader).state = leader_state;
         harness.thread(worker).state = worker_state;
+
         if leader_state == Exiting {
             harness.trace().killed.borrow_mut().insert(leader);
         }
@@ -8303,6 +8349,7 @@ fn inspection_of_a_stop_waits_behind_run_control_queued_after_it() {
     let (breakpoint_reply, _breakpoint) = tokio::sync::oneshot::channel();
     let (continue_reply, _continued) = tokio::sync::oneshot::channel();
     let (memory_reply, _memory) = tokio::sync::oneshot::channel();
+
     for request in [
         read,
         Request::AddBreakpoint {
@@ -8510,6 +8557,7 @@ fn glibc_signal_trampoline_expressions_find_the_kernels_saved_registers() {
         step.signal_frame,
         "the trampoline's CIE marks a signal frame"
     );
+
     for (register, value) in expected {
         assert_eq!(
             step.registers.get(register),
@@ -8527,6 +8575,7 @@ fn glibc_signal_trampoline_expressions_find_the_kernels_saved_registers() {
 #[test]
 fn new_modules_load_together_and_register_in_observation_order() {
     let mut harness = watch_harness(1);
+
     for (path, bias, loads) in [
         ("/lib/libc.so", 0x7000_0000, true),
         ("/lib/liba.so", 0x7100_0000, true),

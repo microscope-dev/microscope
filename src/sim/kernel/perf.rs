@@ -73,6 +73,7 @@ impl Kernel {
         words.extend(&chain);
         words.push(ABI_64);
         words.extend(perf_registers(registers));
+
         let header = 8 + 8 * words.len();
         let sp = registers.general[RSP];
         let size = stack_size(stack_bytes, header, sp);
@@ -80,6 +81,7 @@ impl Kernel {
         let mut stack = space
             .peek_bytes(sp, usize::try_from(copied).expect("a copy fits"))
             .unwrap_or_default();
+
         #[cfg(test)]
         if self.sabotage == Some(super::Sabotage::SkewSampledReturnAddresses) {
             skew_return_addresses(&thread.shadow, sp, &mut stack);

@@ -137,6 +137,7 @@ mod recording {
         fn keep(&mut self) {
             self.kept = true;
             let mut kept = Vec::new();
+
             if self.scenarios {
                 let path = self.path("");
                 match microscope::flight_recorder::dump(&path) {
@@ -174,6 +175,7 @@ mod recording {
         let mut recordings = RECORDINGS.lock().unwrap_or_else(PoisonError::into_inner);
         HOLDING.set(true);
         let _holding = Holding;
+
         change(recordings.get_or_insert_with(start))
     }
 
@@ -185,6 +187,7 @@ mod recording {
         let directory = microscope::flight_recorder::directory()
             .join("tests")
             .join(env!("CARGO_CRATE_NAME"));
+
         for entry in fs::read_dir(&directory).into_iter().flatten().flatten() {
             let name = entry.file_name();
             let earlier = name
@@ -207,6 +210,7 @@ mod recording {
                 with(Recordings::keep);
             }
         }));
+
         Recordings {
             stem: directory.join(test),
             scenarios: false,

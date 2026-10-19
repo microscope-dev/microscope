@@ -37,6 +37,7 @@ async fn in_the_loop(fixture: &str, processors: &str) -> Scenario {
             line: LineNumber::new(support::source_line(SOURCE, ROUND[0])).expect("one-based"),
         })
         .await;
+
     let reason = scenario
         .run_with_to_stop(LaunchOptions {
             environment: vec![("GOMAXPROCS".into(), Some(processors.into()))],
@@ -48,6 +49,7 @@ async fn in_the_loop(fixture: &str, processors: &str) -> Scenario {
         matches!(reason, StopReason::Breakpoint { .. }),
         "{fixture}: {reason:?}"
     );
+
     scenario.remove_breakpoint(breakpoint.id).await;
     scenario
 }
@@ -71,6 +73,7 @@ async fn a_step_stays_with_its_goroutine() {
 
             let mut threads = BTreeSet::new();
             let mut walked = Vec::new();
+
             for _ in 0..STEPS {
                 let reason = scenario.step_to_stop(StepKind::OverSource).await;
                 assert_eq!(
@@ -117,6 +120,7 @@ async fn a_step_stays_with_its_goroutine() {
                 },
                 "{context}"
             );
+
             assert_eq!(integer(&scenario, "$task").await, Some(task), "{context}");
             let (function, _) = place(&scenario).await;
             assert_eq!(function, "main.main.func1", "{context}");
@@ -147,6 +151,7 @@ async fn finish_returns_to_its_caller_after_the_stack_moves() {
                 ),
             )
             .await;
+
         let reason = scenario
             .run_with_to_stop(LaunchOptions {
                 stdout: Some(Stdio::null()),
@@ -158,11 +163,13 @@ async fn finish_returns_to_its_caller_after_the_stack_moves() {
             "{fixture}: {reason:?}"
         );
         scenario.remove_breakpoint(breakpoint.id).await;
+
         let task = integer(&scenario, "$task").await.expect("a task");
         let trace = scenario
             .operation("backtrace", scenario.handle().backtrace())
             .await;
         let caller = trace.frames.get(1).expect("a caller").id;
+
         scenario
             .operation("select the caller", scenario.handle().select_frame(caller))
             .await;
@@ -215,6 +222,7 @@ async fn stepping_through_the_scheduler_returns_to_the_same_goroutine() {
             matches!(reason, StopReason::Breakpoint { .. }),
             "{fixture}: {reason:?}"
         );
+
         scenario.remove_breakpoint(breakpoint.id).await;
         let task = integer(&scenario, "$task").await.expect("a task");
 
@@ -222,6 +230,7 @@ async fn stepping_through_the_scheduler_returns_to_the_same_goroutine() {
         // the switch to the scheduler's stack, which parks the goroutine,
         // and goes on where the goroutine resumes, back to the program.
         let mut visited = Vec::new();
+
         loop {
             assert!(visited.len() < 200, "{fixture}: {visited:?}");
             let reason = scenario.step_to_stop(StepKind::IntoSource).await;

@@ -166,6 +166,7 @@ pub fn judge(
         snapshot.stop_id.is_some_and(|seen| seen.get() == stop)
             || baseline.is_some_and(|baseline| baseline.published.stops.contains(&stop))
     });
+
     let baseline = baseline.filter(|baseline| baseline.process == process);
     let stopping = stopping_hits(snapshot);
     let complete = baseline.is_some();
@@ -218,6 +219,7 @@ pub fn judge(
         let versions = &kept.versions;
         let before = count_before(id);
         let now = breakpoint.hit_count;
+
         if now < before {
             return Err(format!(
                 "breakpoint {id}'s hit count went down from {before} to {now}"
@@ -333,12 +335,14 @@ fn judge_published(
         &published.logged,
         before_published.map(|published| &published.logged),
     );
+
     let must = (before + 1..=now)
         .filter(|&hit| versions.iter().all(|policy| policy.must_log(hit)))
         .count() as u64;
     let may = (before + 1..=now)
         .filter(|&hit| versions.iter().any(|policy| policy.may_log(hit)))
         .count() as u64;
+
     if !(must..=may).contains(&logged) {
         return Err(format!(
             "breakpoint {id} logged {logged} messages for hits {}..={now}, which must log \
@@ -387,6 +391,7 @@ mod tests {
                 hit_count,
             })
             .collect::<Arc<[_]>>();
+
         StateSnapshot {
             revision: 1,
             inferior: InferiorState::NotRunning,

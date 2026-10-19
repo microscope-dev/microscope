@@ -38,6 +38,7 @@ async fn continue_to_stop(tab: &mut Client) -> Value {
         })
         .await;
     let inferior = &stopped["inferior"];
+
     json!({"stop": inferior["stop"], "thread": inferior["thread"], "frame": 0})
 }
 
@@ -307,6 +308,7 @@ async fn a_session_views_file_draws_memory_read_at_once_at_each_stop() {
     );
     assert_eq!(input(&drawing, "columns"), &json!({"t": "int", "i": 64}));
     assert_eq!(input(&drawing, "generation"), &json!({"t": "int", "i": 1}));
+
     let generation = life_step(&life_seed());
     assert_eq!(bytes, generation, "the first generation");
 
@@ -473,6 +475,7 @@ async fn reloading_views_reads_the_files_and_renderers_again() {
         .await
         .expect_err("the old renderer is gone");
     assert_eq!(kind, "staleStop");
+
     let (drawing, _) = tab
         .draw(with(&frame, &json!({"path": "life", "renderer": "life"})))
         .await
@@ -589,6 +592,7 @@ async fn a_mesh_view_reads_its_vectors_storage_and_vertex_layout() {
         (first[0] - 1.35).abs() < 0.06 && first[1].abs() < 1e-6,
         "{first:?}"
     );
+
     let indices = bytes[1920 * 28..].as_chunks::<4>().0;
     assert_eq!(u32::from_le_bytes(indices[1]), 41, "the first triangle");
 }

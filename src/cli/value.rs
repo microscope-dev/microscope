@@ -18,6 +18,7 @@ use super::terminal::{Renderer, Role};
 pub const OUTPUT_LIMIT: usize = 64 * 1024;
 
 pub const OUTPUT_TRUNCATION_MARKER: &str = "<truncated: OutputBytes>";
+
 const ANSI_RESET: &str = "\u{1b}[0m";
 
 /// A string that stops growing at a byte limit, ending with a marker when
@@ -266,6 +267,7 @@ fn stored_text(state: &VariableState) -> Option<&Arc<microscope::TextSummary>> {
     let from_view = presentation
         .as_ref()
         .is_some_and(|presentation| presentation.shape == PresentedShape::Text);
+
     text.as_ref().filter(|_| !from_view)
 }
 
@@ -324,6 +326,7 @@ pub fn range(expression: &str, page: &ValueChildPage, renderer: Renderer) -> Str
         .iter()
         .map(|child| state_summary(&child.type_info, &child.state))
         .chain(page.completion.exhaustion().map(exhaustion));
+
     for (index, item) in items.enumerate() {
         if values.is_truncated() {
             break;
@@ -355,6 +358,7 @@ fn value_summary(type_info: &TypeInfo, value: &VariableValue, children: &ValueCh
         }
         VariableValue::Enumeration { value, matches } => {
             let raw = microscope::integer_text(*value);
+
             match matches.as_ref() {
                 [] => raw,
                 [enumerator] => format!("{} ({raw})", enumerator.name),
@@ -381,6 +385,7 @@ fn value_summary(type_info: &TypeInfo, value: &VariableValue, children: &ValueCh
                 .and_then(|size| usize::try_from(size.checked_mul(2)?).ok())
                 .unwrap_or(16);
             let address = format!("0x{:0width$x}", value.address.get());
+
             match &value.function {
                 Some(function) => format!("{address} <{function}>"),
                 None => address,
@@ -414,6 +419,7 @@ fn value_summary(type_info: &TypeInfo, value: &VariableValue, children: &ValueCh
                     })
                     .unwrap_or("<unnamed variant>")
             });
+
             discriminant.map_or_else(
                 || format!("{{<{active}; {total} fields>}}"),
                 |value| {
@@ -597,6 +603,7 @@ fn pretty(
         }
 
         let after = flat_width(&docs[index + 1..]) + trailing;
+
         match doc {
             Doc::Text(text) => {
                 output.push_str(text);
@@ -620,6 +627,7 @@ fn pretty(
                     && items
                         .iter()
                         .all(|item| item.iter().all(|doc| matches!(doc, Doc::Text(_))));
+
                 for (index, item) in items.iter().enumerate() {
                     let item_width = flat_width(item) + 1;
                     if !fill || index == 0 || *column + 1 + item_width > layout.width {
@@ -676,6 +684,7 @@ fn hexadecimal_text(type_info: &TypeInfo, state: &VariableState) -> Option<Strin
     let width = type_info
         .byte_size
         .map(|size| size.saturating_mul(8).min(128));
+
     match (integer, width) {
         (IntegerValue::Signed(value), None) if value < 0 => {
             Some(format!("-{:#x}", value.unsigned_abs()))
@@ -714,6 +723,7 @@ pub async fn expanded(
     let raw = layout.raw;
     let mut output = Builder::default();
     let mut work = vec![Work::State(Box::new((type_info.clone(), state.clone())), 0)];
+
     while let Some(item) = work.pop() {
         if output.full() {
             break;
@@ -1001,6 +1011,7 @@ fn schedule_children(
         )
         .chain((omitted != 0).then(|| vec![Work::Text(format!("<{omitted} omitted>"))]))
         .collect::<Vec<_>>();
+
     while let Some(item) = items.pop() {
         work.extend(item.into_iter().rev());
         if !items.is_empty() {
@@ -1114,6 +1125,7 @@ pub fn watched_bytes(
 fn watched_scalar(type_info: &TypeInfo, image: Option<&ModuleImage>) -> Option<WatchedScalar> {
     const MAX_TYPE_CHAIN: usize = 16;
     let mut current = type_info;
+
     for _ in 0..MAX_TYPE_CHAIN {
         let next = match &current.kind {
             TypeKind::Base(base)
@@ -1170,6 +1182,7 @@ pub fn type_definition(
     let name = type_info.qualified_name();
     let members = |keyword: &str, members: &[microscope::RecordMember]| {
         let mut output = format!("type = {keyword} {name} {{\n");
+
         for member in members {
             let bits = match member.layout {
                 microscope::RecordMemberLayout::BitRange { bit_size, .. } => {
@@ -1243,6 +1256,7 @@ pub fn type_definition(
             })
             .map(|argument| renderer.paint(Role::Type, argument).to_string())
             .collect::<Vec<_>>();
+
         let _ = write!(output, "\narguments: {}", arguments.join(", "));
     }
 

@@ -70,6 +70,7 @@ fn bytes(
 ) -> (Vec<u8>, CaptureState) {
     let take = wanted.min(limit);
     let mut buffer = vec![0; take];
+
     match memory.read(address, &mut buffer) {
         Ok(read) if read == take || take == 0 => {
             let state = if wanted > take {
@@ -100,6 +101,7 @@ fn bytes(
 fn string(memory: &mut dyn Memory, address: u64, limit: usize) -> (Vec<u8>, CaptureState) {
     let mut out = Vec::new();
     let mut at = address;
+
     loop {
         let to_page = 4096 - usize::try_from(at % 4096).unwrap_or(0);
         let take = to_page.min(limit + 1 - out.len());
@@ -155,6 +157,7 @@ fn strings(
     let mut pointers = Vec::new();
     let mut ended = false;
     let most = if count_only { MOST_COUNTED } else { most };
+
     for index in 0..most {
         let Some(pointer) = word(memory, address + (index * size) as u64, size) else {
             if index == 0 {
@@ -177,6 +180,7 @@ fn strings(
         &mut blob,
         ended.then(|| u32::try_from(pointers.len()).unwrap_or(u32::MAX)),
     );
+
     if !count_only {
         for &pointer in &pointers {
             let (text, _) = string(memory, pointer, limit);
@@ -205,6 +209,7 @@ fn iovecs(
     let shown = count.min(MOST_IOVECS);
     let mut blob = Vec::new();
     let mut left = budget;
+
     for index in 0..shown {
         let at = address + (index * size * 2) as u64;
         let (Some(base), Some(len)) =
@@ -298,6 +303,7 @@ pub fn copies(call: SyscallId, limits: Limits, verbose: bool) -> Vec<ArgCopy> {
     let name = call.name().unwrap_or_default();
     let buffer = limits.string.max(limits.dump);
     let mut copies = Vec::new();
+
     for (index, arg) in spec.args.iter().enumerate() {
         #[expect(clippy::cast_possible_truncation, reason = "six arguments")]
         let arg_index = index as u8;
@@ -400,6 +406,7 @@ pub fn capture(
     });
     let result = || returned.map_or(0, |value| as_count(value.max(0).unsigned_abs()));
     let mut captured = Vec::new();
+
     for copy in copies(call, limits, verbose) {
         let address = args[usize::from(copy.arg)];
         if copy.when != phase || address == 0 {

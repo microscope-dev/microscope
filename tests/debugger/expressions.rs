@@ -99,11 +99,13 @@ async fn check_fixture(fixture: &str, barrier: &str, optimized: bool) {
         .operation("backtrace", scenario.handle().backtrace())
         .await;
     let caller: StackFrameId = trace.frames[1].id;
+
     scenario
         .operation("select caller", scenario.handle().select_frame(caller))
         .await;
 
     let mut failures = Vec::new();
+
     for expectation in &expectations {
         let expression = match Expression::parse(&expectation.expression) {
             Ok(expression) => expression,

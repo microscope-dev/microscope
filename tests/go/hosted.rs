@@ -104,12 +104,14 @@ async fn assert_listed(scenario: &Scenario, task: i128) {
                 == Some("main.waiting")
         })
         .unwrap_or_else(|| panic!("no goroutine began in main.waiting: {:#?}", tasks.tasks));
+
     scenario
         .operation(
             "select the waiting goroutine",
             scenario.handle().select_context(waiting.id),
         )
         .await;
+
     let trace = scenario
         .operation("backtrace", scenario.handle().backtrace())
         .await;

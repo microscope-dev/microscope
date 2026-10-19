@@ -144,6 +144,7 @@ pub async fn disassemble(
             })
             .map(|instruction| hex(instruction.address.get()))
     });
+
     Ok(Disassembled {
         function,
         marked,
@@ -170,6 +171,7 @@ fn executing(frames: &[microscope::StackFrame], index: usize) -> Option<VirtualA
             .iter()
             .all(|frame| frame.kind == FrameKind::Inline || !frame.kind.has_registers());
     let instruction = frame.instruction?;
+
     Some(if exact {
         instruction
     } else {
@@ -402,6 +404,7 @@ pub async fn add_watchpoint(
             request.frame.unwrap_or(0),
         )
         .await?;
+
         WatchpointSpec::Target(Box::new(
             handle.at(context).resolve_watch_target(&expression).await?,
         ))
@@ -446,6 +449,7 @@ pub async fn edit_watchpoint(
     handle
         .set_watchpoint_hit_condition(id, hit_condition)
         .await?;
+
     Ok(())
 }
 

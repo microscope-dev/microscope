@@ -56,6 +56,7 @@ pub fn complete(text: &str, cwd: &Path, home: Option<&Path>) -> Vec<PathEntry> {
             })
         })
         .collect::<Vec<_>>();
+
     found.sort_by(|a, b| {
         let rank = |kind| match kind {
             PathKind::Directory => 0,
@@ -65,6 +66,7 @@ pub fn complete(text: &str, cwd: &Path, home: Option<&Path>) -> Vec<PathEntry> {
 
         (rank(a.kind), &a.text).cmp(&(rank(b.kind), &b.text))
     });
+
     found.truncate(MAX_ENTRIES);
     found
 }

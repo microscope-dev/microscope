@@ -35,6 +35,7 @@ async fn a_hundred_thousand_goroutines_page_once_each_with_bounded_work() {
         matches!(reason, StopReason::Breakpoint { .. }),
         "{reason:?}"
     );
+
     let printed = std::fs::read_to_string(&output).expect("read standard output");
     let counted: usize = printed
         .trim()
@@ -45,6 +46,7 @@ async fn a_hundred_thousand_goroutines_page_once_each_with_bounded_work() {
     let mut numbers = BTreeSet::new();
     let mut from = None;
     let mut last = None;
+
     loop {
         let page = scenario
             .operation("program tasks", scenario.handle().program_tasks(from, PAGE))
@@ -63,6 +65,7 @@ async fn a_hundred_thousand_goroutines_page_once_each_with_bounded_work() {
             "{:?}",
             page.usage
         );
+
         for task in page.tasks.iter() {
             assert!(!task.internal, "{task:?}");
             assert!(numbers.insert(task.id.number), "{task:?} again");
@@ -96,6 +99,7 @@ async fn a_hundred_thousand_goroutines_page_once_each_with_bounded_work() {
                 .backtrace(),
         )
         .await;
+
     assert_eq!(trace.termination, UnwindTermination::Complete);
     assert!(
         trace.frames.iter().any(|frame| frame

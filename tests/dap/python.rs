@@ -35,6 +35,7 @@ fn focused(dap: &mut Dap, stop: &Stopped) -> Value {
         "stackTrace",
         json!({"threadId": stop.thread, "startFrame": 0, "levels": 64}),
     );
+
     let regardless = ["breakpoint", "step", "function breakpoint"].contains(&stop.reason.as_str());
     trace["stackFrames"]
         .as_array()
@@ -82,6 +83,7 @@ fn variable(dap: &mut Dap, frame: &Value, scope: &str, name: &str) -> Value {
         .find(|found| found["name"] == scope)
         .unwrap_or_else(|| panic!("no {scope} scope: {scopes}"))["variablesReference"]
         .clone();
+
     let variables = dap.request("variables", json!({"variablesReference": locals}));
     variables["variables"]
         .as_array()
@@ -117,6 +119,7 @@ fn a_launched_python_program_breaks_steps_and_stops_at_an_uncaught_exception() {
         json!({"args": [python::fixture("stepping.py"), "--editor"]}),
         &configuration(&["CALLER_CALL"]),
     );
+
     // Its code loads only as the interpreter runs the file.
     assert_eq!(started.source_breakpoints[0][0]["verified"], false);
 

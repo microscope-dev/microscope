@@ -41,6 +41,7 @@ fn build_id_debug_file() -> (PathBuf, String) {
         .expect("a debug file");
     let prefix = directory.file_name().expect("a name").to_string_lossy();
     let rest = file.file_stem().expect("a name").to_string_lossy();
+
     (file.clone(), format!("{prefix}{rest}"))
 }
 
@@ -251,9 +252,11 @@ impl Server {
                         response
                     },
                 );
+
                 let _ = stream.write_all(&response);
             }
         });
+
         Self { url, requests }
     }
 }
@@ -774,6 +777,7 @@ fn debug_sup_checksum(path: &Path) -> String {
         + 3;
     let length = usize::from(bytes[name + 1]);
     assert!(length < 0x80, "a one-byte length");
+
     bytes[name + 2..name + 2 + length]
         .iter()
         .fold(String::new(), |mut text, byte| {

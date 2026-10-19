@@ -149,6 +149,7 @@ mod tests {
         for cost in [0.001, 0.009, 0.011, 0.05, 0.2, 1.0, 4.0] {
             let mut controller = Controller::default();
             let mut changes = Vec::new();
+
             for index in 0..20 {
                 if let Some(decision) = controller.step(BUDGET, period(cost, controller.steps())) {
                     changes.push((index, decision.steps));
@@ -157,6 +158,7 @@ mod tests {
 
             let steps = controller.steps();
             let used = cost * f64::from(steps) / f64::from(STEPS);
+
             assert!(
                 used <= BUDGET.cpu || steps == 1,
                 "{cost}: {steps} use {used}"
@@ -177,6 +179,7 @@ mod tests {
         controller.step(BUDGET, period(1.0, STEPS));
         assert_eq!(controller.steps(), 1);
         let mut shares = Vec::new();
+
         for _ in 0..8 {
             controller.step(BUDGET, period(0.0125, controller.steps()));
             shares.push(controller.steps());

@@ -110,6 +110,7 @@ fn memory_reads_return_readable_bytes_and_say_where_reading_stopped() {
         "8 readable bytes: {edge}"
     );
     assert_eq!(edge["unreadableBytes"], 56);
+
     let zero = dap.request(
         "readMemory",
         json!({"memoryReference": format!("{:#x}", end - 8), "count": 0}),

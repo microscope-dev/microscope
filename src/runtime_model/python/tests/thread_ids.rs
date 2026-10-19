@@ -13,6 +13,7 @@ fn world() -> (Process, u64) {
     let state = process.thread_state(0, frame, 7);
     let interpreter = process.interpreter(0, 0, state);
     let runtime = process.runtime(interpreter);
+
     process.memory.threads = vec![COLLISION, HOST];
     process
         .memory
@@ -22,6 +23,7 @@ fn world() -> (Process, u64) {
         .memory
         .target_ids
         .insert(COLLISION, TargetThreadId::new(8));
+
     assert_eq!(
         process
             .memory
@@ -30,6 +32,7 @@ fn world() -> (Process, u64) {
             .get(),
         7
     );
+
     for (field, offset) in [
         (Field::InterpreterCevalGil, 24),
         (Field::InterpreterGil, 32),
@@ -38,6 +41,7 @@ fn world() -> (Process, u64) {
     ] {
         process.layout.set_field(field, offset);
     }
+
     let gil = process.alloc(SMALL);
     process.memory.write(gil, 1, 4);
     process.memory.write(gil + 8, state, 8);
@@ -161,6 +165,7 @@ fn a_watched_frame_is_gone_only_where_every_thread_state_is_read() {
         .memory
         .target_ids
         .insert(HOST, TargetThreadId::new(7));
+
     let runs = |process: &Process, frame: u64, code: u64| {
         model_with(process, runtime, Ok(types)).interpreted_frame_runs(
             &process.memory,

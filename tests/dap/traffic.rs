@@ -170,6 +170,7 @@ fn replay_with(name: &str, mut target: Option<Target>, children: Option<Configur
     let mut ids = Ids::default();
     let mut sent = HashMap::new();
     let mut seen = 0;
+
     for (index, (from_client, message)) in messages.iter().enumerate() {
         // The harness answers the adapter's reverse requests itself.
         if !from_client || message["type"] != "request" {

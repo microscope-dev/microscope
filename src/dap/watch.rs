@@ -237,12 +237,14 @@ impl Session {
         self.data.next_target += 1;
         let data_id = format!("data-{}", self.data.next_target);
         self.data.targets.insert(data_id.clone(), spec);
+
         let access = handle
             .watchpoint_capabilities()
             .access
             .iter()
             .filter_map(|access| access_name(*access))
             .collect::<Vec<_>>();
+
         Ok(json!({
             "dataId": data_id,
             "description": description,
@@ -278,6 +280,7 @@ impl Session {
         // are keyed by their place in the request.
         let mut kept = BTreeMap::new();
         let mut previous = std::mem::take(&mut self.data.entries).into_iter();
+
         while let Some(mut entry) = previous.next() {
             let index = (0..wanted.len()).find(|index| {
                 let (breakpoint, access) = &wanted[*index];
@@ -320,6 +323,7 @@ impl Session {
         }
 
         let mut entries = Vec::new();
+
         for (index, (breakpoint, access)) in wanted.into_iter().enumerate() {
             let entry = match access {
                 Ok(access) => {
@@ -510,6 +514,7 @@ impl Session {
             .map(|snapshot| snapshot.watchpoints)
             .unwrap_or_default();
         let image = handle.module_image();
+
         hits.iter()
             .map(|hit| {
                 let watchpoint = watchpoints

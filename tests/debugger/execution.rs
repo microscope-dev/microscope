@@ -30,6 +30,7 @@ async fn gcc_o2_entry_policy_does_not_execute_a_real_first_statement() {
         scenario.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     let location = scenario
         .operation(
             "zero-prologue location",
@@ -37,12 +38,14 @@ async fn gcc_o2_entry_policy_does_not_execute_a_real_first_statement() {
         )
         .await;
     assert_eq!(location.image.address, raw_entry);
+
     let sink = scenario
         .handle()
         .module_image()
         .symbol_named("boundary_sink")
         .expect("boundary_sink symbol")
         .address();
+
     let sink = relocate_image_address(sink, &location);
     let word = scenario
         .operation(
@@ -50,11 +53,13 @@ async fn gcc_o2_entry_policy_does_not_execute_a_real_first_statement() {
             scenario.handle().read_word(sink),
         )
         .await;
+
     assert_eq!(
         u32::try_from(word).expect("boundary sink value fits u32"),
         22,
         "no_prologue's first store executed before its entry stop"
     );
+
     scenario.shutdown().await;
 }
 
@@ -66,14 +71,17 @@ async fn source_line_and_file_qualified_function_breakpoints_stop_where_they_nam
     scenario
         .add_file_function_breakpoint("tests/fixtures/c/basic.c", "breakpoint_target")
         .await;
+
     for expected in [6, 11] {
         assert!(matches!(
             scenario.resume_or_run().await,
             StopReason::Breakpoint { .. }
         ));
+
         let context = scenario
             .operation("source context", scenario.handle().source_context(0))
             .await;
+
         assert_eq!(context.line.get(), expected);
         assert!(context.recorded.ends_with("tests/fixtures/c/basic.c"));
     }
@@ -100,6 +108,7 @@ async fn breakpoint_edits_publish_one_revision_or_change_nothing() {
             .await,
         Err(Error::BreakpointNotFound(999))
     ));
+
     let source = |path: &str, line| BreakpointSpec::Source {
         path: path.into(),
         line: microscope::LineNumber::new(line).unwrap(),
@@ -112,6 +121,7 @@ async fn breakpoint_edits_publish_one_revision_or_change_nothing() {
             .await,
         Err(Error::SourceFileNotFound(_))
     ));
+
     assert!(matches!(
         scenario
             .handle()
@@ -119,6 +129,7 @@ async fn breakpoint_edits_publish_one_revision_or_change_nothing() {
             .await,
         Err(Error::SourceLineUnavailable { .. })
     ));
+
     let after = scenario.snapshot().await;
     assert_eq!(after.revision, before.revision);
     assert_eq!(after.breakpoints, before.breakpoints);
@@ -137,11 +148,13 @@ async fn breakpoint_edits_publish_one_revision_or_change_nothing() {
         scenario.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     scenario.remove_breakpoint(source.id).await;
     assert_eq!(
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     );
+
     scenario.shutdown().await;
 }
 
@@ -182,6 +195,7 @@ async fn breakpoint_memory_and_event_state_follow_one_consistent_scenario() {
         .as_ref()
         .expect("source location")
         .clone();
+
     let source_file = scenario
         .handle()
         .module_image()
@@ -214,6 +228,7 @@ async fn breakpoint_memory_and_event_state_follow_one_consistent_scenario() {
         &snapshot.inferior,
         InferiorState::Stopped { reason, .. } if *reason == first
     ));
+
     breakpoint.hit_count = 1;
     assert_eq!(
         snapshot.breakpoints.as_ref(),
@@ -265,30 +280,36 @@ async fn breakpoint_memory_and_event_state_follow_one_consistent_scenario() {
             scenario.handle().read_memory(value_address, 8),
         )
         .await;
+
     assert_eq!(
         value_bytes.bytes.as_ref(),
         0x1122_3344_5566_7788_u64.to_le_bytes()
     );
+
     assert_eq!(
         value_bytes.completion,
         microscope::MemoryReadCompletion::Complete
     );
+
     assert_eq!(value_bytes.revision, scenario.last_revision());
     assert_eq!(Some(value_bytes.stop_id), snapshot.stop_id);
     assert_eq!(
         value_bytes.target,
         scenario.handle().module_image().target()
     );
+
     let breakpoint_bytes = scenario
         .operation(
             "read logical breakpoint bytes",
             scenario.handle().read_memory(first_address, 1),
         )
         .await;
+
     assert_eq!(
         breakpoint_bytes.completion,
         microscope::MemoryReadCompletion::Complete
     );
+
     assert_ne!(breakpoint_bytes.bytes.as_ref(), [0xcc]);
     let empty = scenario
         .operation(
@@ -296,6 +317,7 @@ async fn breakpoint_memory_and_event_state_follow_one_consistent_scenario() {
             scenario.handle().read_memory(value_address, 0),
         )
         .await;
+
     assert!(empty.bytes.is_empty());
     assert_eq!(empty.completion, microscope::MemoryReadCompletion::Complete);
     assert!(matches!(
@@ -305,6 +327,7 @@ async fn breakpoint_memory_and_event_state_follow_one_consistent_scenario() {
             maximum: 65_536,
         })
     ));
+
     assert!(matches!(
         scenario
             .handle()
@@ -317,6 +340,7 @@ async fn breakpoint_memory_and_event_state_follow_one_consistent_scenario() {
         support::breakpoint_address(&scenario.resume_to_stop().await),
         first_address
     );
+
     assert_eq!(
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
@@ -332,15 +356,18 @@ async fn shutdown_kills_and_reaps_a_running_inferior() {
         running.handle().variables().await,
         Err(Error::NotRunning)
     ));
+
     let run = running.start_running().await;
     assert!(matches!(
         running.snapshot().await.inferior,
         InferiorState::Running { .. }
     ));
+
     assert!(matches!(
         running.handle().registers().await,
         Err(Error::NotStopped)
     ));
+
     assert!(matches!(
         running.handle().variables().await,
         Err(Error::NotStopped)
@@ -352,6 +379,7 @@ async fn shutdown_kills_and_reaps_a_running_inferior() {
         status,
         ExitStatus::Terminated(exception) if exception.code == 9
     ));
+
     assert!(matches!(
         run.await.expect("run task"),
         Ok(StopReason::Exited(ExitStatus::Terminated(exception))) if exception.code == 9
@@ -366,29 +394,35 @@ async fn stops_in_a_shared_library_show_that_librarys_own_source() {
     let modules = scenario
         .operation("modules", scenario.handle().loaded_modules())
         .await;
+
     let library = modules
         .modules
         .iter()
         .find(|record| record.path.ends_with("libmodule-frames.so"))
         .expect("library is loaded");
+
     let image = scenario
         .operation(
             "library image",
             scenario.handle().loaded_module_image(library.module.id),
         )
         .await;
+
     let function = image.function_named("dso_apply").expect("dso_apply");
     let entry = image
         .instances_for_function(function.id())
         .find_map(microscope::CodeInstance::breakpoint_entry)
         .expect("dso_apply entry");
+
     let address = library
         .module
         .virtual_address(entry.address)
         .expect("relocated entry");
+
     scenario
         .add_breakpoint_spec(BreakpointSpec::Address(address))
         .await;
+
     assert!(matches!(
         scenario.resume_to_stop().await,
         StopReason::Breakpoint { .. }
@@ -399,20 +433,24 @@ async fn stops_in_a_shared_library_show_that_librarys_own_source() {
     let location = scenario
         .operation("location", scenario.handle().current_location())
         .await;
+
     assert_eq!(location.module, library.module.id);
     assert_eq!(
         location.image.function.map(|function| function.name),
         Some(Arc::from("dso_apply"))
     );
+
     let context = scenario
         .operation("source", scenario.handle().source_context(1))
         .await;
+
     assert!(
         context
             .recorded
             .ends_with("tests/fixtures/c/module-frames/library.c"),
         "{context:#?}"
     );
+
     assert!(
         context
             .lines
@@ -420,6 +458,7 @@ async fn stops_in_a_shared_library_show_that_librarys_own_source() {
             .any(|line| line.text.contains("callback(adjusted)")),
         "{context:#?}"
     );
+
     scenario.shutdown().await;
 }
 
@@ -432,6 +471,7 @@ async fn inline_function_breakpoints_resolve_every_concrete_instance() {
         "inline-clang-o2",
     ] {
         let mut scenario = Scenario::launch(fixture);
+
         let expected_instances = {
             let image = scenario.handle().module_image();
             let function = image.function_named("leaf").expect("leaf function");
@@ -448,6 +488,7 @@ async fn inline_function_breakpoints_resolve_every_concrete_instance() {
             .iter()
             .flat_map(|location| location.code_instances.iter().copied())
             .collect::<BTreeSet<_>>();
+
         let resolved_addresses = breakpoint
             .locations
             .iter()
@@ -460,6 +501,7 @@ async fn inline_function_breakpoints_resolve_every_concrete_instance() {
             breakpoint.locations.len(),
             "{fixture} retained duplicate physical sites"
         );
+
         assert!(
             breakpoint
                 .locations
@@ -497,6 +539,7 @@ async fn inline_breakpoint_hits_select_the_matching_concrete_instance() {
                     scenario.handle().current_location(),
                 )
                 .await;
+
             let snapshot = scenario.snapshot().await;
             let microscope::PresentedFrame::Inline(selected) = snapshot
                 .presentation
@@ -527,6 +570,7 @@ async fn inline_breakpoint_hits_select_the_matching_concrete_instance() {
             hits, 5,
             "{fixture} executed an unexpected set of leaf calls"
         );
+
         let same_line_instances = {
             let image = scenario.handle().module_image();
             hit_instances
@@ -579,6 +623,7 @@ async fn a_child_from_outside_the_session_never_delays_its_end() {
         scenario.run_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     ));
+
     scenario.shutdown().await;
 
     let mut stopped = Scenario::new("outsider at a stop", Scenario::fixture("basic"));
@@ -587,6 +632,7 @@ async fn a_child_from_outside_the_session_never_delays_its_end() {
         stopped.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     stopped.shutdown().await;
 }
 
@@ -631,6 +677,7 @@ async fn pthread_breakpoint_establishes_a_coherent_all_stop_snapshot() {
         process_id.get(),
         "worker thread was selected"
     );
+
     assert_eq!(snapshot.threads.len(), 3);
     assert!(
         snapshot
@@ -646,12 +693,15 @@ async fn pthread_breakpoint_establishes_a_coherent_all_stop_snapshot() {
                 scenario.handle().select_context(thread.id),
             )
             .await;
+
         let registers = scenario
             .operation("inspect stopped thread", scenario.handle().registers())
             .await;
+
         let backtrace = scenario
             .operation("unwind stopped thread", scenario.handle().backtrace())
             .await;
+
         assert_eq!(registers.context, thread.id.into());
         assert_eq!(backtrace.context, thread.id.into());
         assert!(!backtrace.frames.is_empty());
@@ -670,6 +720,7 @@ async fn pthread_breakpoint_establishes_a_coherent_all_stop_snapshot() {
             scenario.handle().select_context(unknown).await,
             Err(Error::UnknownThread(thread)) if thread == unknown
         ));
+
         assert!(matches!(
             scenario
                 .handle()
@@ -714,6 +765,7 @@ async fn finish_worker_hits(scenario: &mut Scenario, breakpoint: microscope::Bre
         .find(|candidate| candidate.id == breakpoint)
         .expect("worker breakpoint")
         .hit_count;
+
     assert_eq!(hits, 2, "each worker hit its breakpoint once");
 }
 
@@ -727,6 +779,7 @@ async fn repeated_thread_creation_and_exit_loses_no_breakpoint_events() {
         scenario.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     for iteration in 1..64 {
         assert!(
             matches!(
@@ -741,10 +794,12 @@ async fn repeated_thread_creation_and_exit_loses_no_breakpoint_events() {
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     );
+
     assert!(matches!(
         lagging.recv().await,
         Err(tokio::sync::broadcast::error::RecvError::Lagged(_))
     ));
+
     assert!(matches!(
         scenario.snapshot().await.inferior,
         InferiorState::NotRunning
@@ -781,6 +836,7 @@ async fn a_thread_scoped_continue_stops_cleanly_when_its_thread_exits() {
             ),
         )
         .await;
+
     let reason = timeout(Duration::from_secs(2), async {
         loop {
             if let microscope::DebuggerEvent::InferiorStopped {
@@ -796,6 +852,7 @@ async fn a_thread_scoped_continue_stops_cleanly_when_its_thread_exits() {
     })
     .await
     .expect("thread exit stop timed out");
+
     assert!(matches!(
         reason,
         StopReason::ThreadExited {
@@ -803,6 +860,7 @@ async fn a_thread_scoped_continue_stops_cleanly_when_its_thread_exits() {
             status: ExitStatus::Code(0),
         } if thread_id == thread
     ));
+
     let stopped = scenario.snapshot().await;
     assert!(matches!(
         stopped.inferior,
@@ -826,14 +884,17 @@ async fn signal_delivery_is_preserved_and_user_sigtrap_is_not_a_breakpoint() {
         scenario.resume_to_stop().await,
         StopReason::Exception(exception) if exception.code == 10
     ));
+
     assert!(matches!(
         scenario.resume_to_stop().await,
         StopReason::Exception(exception) if exception.code == 5
     ));
+
     assert_eq!(
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     );
+
     scenario.shutdown().await;
 
     let mut suppressed = Scenario::new("signal suppress", Scenario::fixture("signals"));
@@ -843,16 +904,19 @@ async fn signal_delivery_is_preserved_and_user_sigtrap_is_not_a_breakpoint() {
         suppressed.resume_to_stop().await,
         StopReason::Exception(exception) if exception.code == 10
     ));
+
     assert!(matches!(
         suppressed
             .resume_with_exception(microscope::ExceptionDisposition::Suppress)
             .await,
         StopReason::Exception(exception) if exception.code == 5
     ));
+
     assert_eq!(
         suppressed.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(42))
     );
+
     suppressed.shutdown().await;
 }
 
@@ -866,6 +930,7 @@ async fn synchronous_faults_are_retained_and_delivered() {
         scenario.resume_to_stop().await,
         StopReason::Exception(exception) if exception.code == 11
     ));
+
     assert!(matches!(
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Terminated(exception)) if exception.code == 11
@@ -890,6 +955,7 @@ async fn forked_children_are_released_without_inherited_breakpoints() {
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     );
+
     scenario.shutdown().await;
 }
 
@@ -901,10 +967,12 @@ async fn stops_survive_executable_mappings_that_name_no_file() {
         scenario.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     assert_eq!(
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     );
+
     scenario.shutdown().await;
 }
 
@@ -916,6 +984,7 @@ async fn job_control_stops_are_classified_without_inventing_a_pending_signal() {
         scenario.run_to_stop().await,
         StopReason::Exception(exception) if exception.code == 19
     ));
+
     assert!(matches!(
         scenario.resume_to_stop().await,
         StopReason::Exception(exception) if exception.code == 19
@@ -936,6 +1005,7 @@ async fn job_control_stops_are_classified_without_inventing_a_pending_signal() {
         scenario.resume_to_stop().await,
         StopReason::Exception(exception) if exception.code == 18
     ));
+
     assert_eq!(
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
@@ -952,6 +1022,7 @@ async fn nonleader_exec_rewrites_the_thread_registry_and_invalidates_the_image()
         scenario.run_to_stop().await,
         StopReason::Exec { followed: false }
     );
+
     let snapshot = scenario.snapshot().await;
     assert_eq!(snapshot.threads.len(), 1);
     assert!(matches!(
@@ -965,14 +1036,17 @@ async fn nonleader_exec_rewrites_the_thread_registry_and_invalidates_the_image()
         scenario.handle().variables().await,
         Err(Error::Backend(_))
     ));
+
     assert!(matches!(
         scenario.handle().backtrace().await,
         Err(Error::Backend(_))
     ));
+
     assert!(matches!(
         scenario.handle().current_location().await,
         Err(Error::Backend(_))
     ));
+
     assert!(matches!(
         scenario.snapshot().await.presentation,
         Some(microscope::FramePresentation {
@@ -1073,10 +1147,12 @@ async fn launch_options_start_the_program_with_its_arguments_environment_directo
     stderr_reader
         .read_to_string(&mut stderr)
         .expect("read inferior stderr");
+
     let directory = directory
         .path()
         .canonicalize()
         .expect("canonical scratch directory");
+
     assert_eq!(
         stdout,
         format!(
@@ -1084,6 +1160,7 @@ async fn launch_options_start_the_program_with_its_arguments_environment_directo
             directory.display()
         )
     );
+
     assert_eq!(stderr, "input: typed line\n");
 }
 
@@ -1100,6 +1177,7 @@ async fn launched_programs_run_at_the_same_addresses_every_time() {
             scenario.run_to_stop().await,
             StopReason::Breakpoint { .. }
         ));
+
         let InferiorState::Stopped { process_id, .. } = scenario.snapshot().await.inferior else {
             panic!("the program stopped in main");
         };
@@ -1108,6 +1186,7 @@ async fn launched_programs_run_at_the_same_addresses_every_time() {
             fs::read_to_string(format!("/proc/{}/maps", process_id.get()))
                 .expect("read the program's mappings"),
         );
+
         scenario.shutdown().await;
     }
 
@@ -1124,6 +1203,7 @@ async fn stop_at_entry_ends_the_launch_before_the_loader_runs() {
             ..LaunchOptions::default()
         })
         .await;
+
     assert_eq!(reason, StopReason::Entry);
 
     // The first instruction belongs to the dynamic loader, which has not
@@ -1131,6 +1211,7 @@ async fn stop_at_entry_ends_the_launch_before_the_loader_runs() {
     let registers = scenario
         .operation("entry registers", scenario.handle().registers())
         .await;
+
     let pc = register_u64(&registers, RegisterRole::ProgramCounter);
     let description = scenario
         .operation(
@@ -1138,17 +1219,21 @@ async fn stop_at_entry_ends_the_launch_before_the_loader_runs() {
             scenario.handle().describe_address(VirtualAddress::new(pc)),
         )
         .await;
+
     let module = description
         .module
         .as_ref()
         .expect("the entry is in a loaded module");
+
     assert!(
         module.path.to_string_lossy().contains("ld-linux"),
         "the entry stop is not in the dynamic loader: {description:?}"
     );
+
     let modules = scenario
         .operation("entry modules", scenario.handle().loaded_modules())
         .await;
+
     assert!(
         !modules
             .modules
@@ -1162,6 +1247,7 @@ async fn stop_at_entry_ends_the_launch_before_the_loader_runs() {
         scenario.resume_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     assert_eq!(
         scenario
             .operation("main location", scenario.handle().current_location())
@@ -1171,6 +1257,7 @@ async fn stop_at_entry_ends_the_launch_before_the_loader_runs() {
             .map(|function| function.name.to_string()),
         Some("main".to_owned())
     );
+
     scenario.shutdown().await;
 }
 
@@ -1185,12 +1272,14 @@ async fn pause_during_launch_ends_the_launch_execution_in_a_coherent_stop() {
         .await
         .expect("pause timed out")
         .expect("pause failed");
+
     assert_eq!(reason, StopReason::Pause);
     let launched = timeout(Duration::from_secs(2), run)
         .await
         .expect("run timed out")
         .expect("run task panicked")
         .expect("run failed");
+
     assert_eq!(launched, StopReason::Pause);
     assert!(matches!(
         scenario.snapshot().await.inferior,
@@ -1199,6 +1288,7 @@ async fn pause_during_launch_ends_the_launch_execution_in_a_coherent_stop() {
             ..
         }
     ));
+
     scenario
         .operation("read paused registers", scenario.handle().registers())
         .await;
@@ -1227,6 +1317,7 @@ async fn pause_stops_a_process_whose_main_thread_exited() {
         snapshot.threads[0].state,
         ThreadState::Stopped { .. }
     ));
+
     scenario
         .operation("read the worker's registers", scenario.handle().registers())
         .await;
@@ -1238,6 +1329,7 @@ async fn pause_stops_a_process_whose_main_thread_exited() {
         matches!(&reason, StopReason::Breakpoint { hits, .. } if hits.iter().map(|hit| hit.breakpoint).eq([breakpoint.id])),
         "{reason:?}"
     );
+
     scenario.shutdown().await;
 }
 
@@ -1280,6 +1372,7 @@ async fn pause_cancels_an_active_source_execution_plan() {
         .await
         .expect("pause timed out")
         .expect("pause failed");
+
     assert_eq!(reason, StopReason::Pause);
     assert!(
         scenario
@@ -1298,17 +1391,20 @@ async fn pause_cancels_an_active_source_execution_plan() {
             scenario.handle().runtime_address("step_release"),
         )
         .await;
+
     scenario
         .operation(
             "release step loop",
             scenario.handle().write_word(release, 1),
         )
         .await;
+
     assert_eq!(
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0)),
         "a canceled source-step plan left state that interrupted execution"
     );
+
     assert_eq!(scenario.shutdown().await, Some(ExitStatus::Code(0)));
 }
 
@@ -1324,6 +1420,7 @@ async fn source_path_maps_find_sources_of_programs_built_elsewhere() {
         scenario.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     let recorded = PathBuf::from("/nonexistent/microscope/tests/fixtures/c/basic.c");
     let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
     let map = |rules: &[(&Path, &Path)]| {
@@ -1355,6 +1452,7 @@ async fn source_path_maps_find_sources_of_programs_built_elsewhere() {
         ),
     )
     .unwrap();
+
     let absent = copy.path().join("absent");
     let handle = map(&[
         (
@@ -1368,9 +1466,11 @@ async fn source_path_maps_find_sources_of_programs_built_elsewhere() {
         ),
         (Path::new("/nonexistent"), repository.parent().unwrap()),
     ]);
+
     let context = scenario
         .operation("mapped source", handle.source_context(1))
         .await;
+
     assert_eq!(*context.path, copied);
     assert_eq!(*context.recorded, recorded);
     assert_eq!(context.line.get(), 11);
@@ -1385,6 +1485,7 @@ async fn source_path_maps_find_sources_of_programs_built_elsewhere() {
         (Path::new("/nonexist"), repository),
         (Path::new("/nonexistent/microscope"), &absent),
     ]);
+
     assert!(matches!(
         handle.source_context(0).await,
         Err(Error::SourceFileMissing { path, tried })
@@ -1398,6 +1499,7 @@ async fn source_path_maps_find_sources_of_programs_built_elsewhere() {
         (Path::new("/nonexistent/microscope"), &unreadable),
         (Path::new("/nonexistent/microscope"), repository),
     ]);
+
     assert!(matches!(
         handle.source_context(0).await,
         Err(Error::SourceFileRead { path, .. }) if path == unreadable.join("tests/fixtures/c/basic.c")
@@ -1412,11 +1514,13 @@ async fn source_path_maps_find_sources_of_programs_built_elsewhere() {
             .path,
         repository.join("tests/fixtures/c/basic.c")
     );
+
     assert!(scenario.handle().source_context(0).await.is_err());
     assert_eq!(
         scenario.resume_to_stop().await,
         StopReason::Exited(microscope::ExitStatus::Code(0))
     );
+
     scenario.shutdown().await;
 }
 
@@ -1432,6 +1536,7 @@ async fn function_breakpoints_stop_at_every_function_with_the_name() {
         image.function_named("helper"),
         Err(Error::DuplicateFunction(name)) if name == "helper"
     ));
+
     assert!(matches!(
         scenario
             .handle()
@@ -1455,15 +1560,18 @@ async fn function_breakpoints_stop_at_every_function_with_the_name() {
             matches!(&reason, StopReason::Breakpoint { hits, .. } if hits.iter().map(|hit| hit.breakpoint).eq([breakpoint.id])),
             "{reason:?}"
         );
+
         let location = scenario
             .operation("location", scenario.handle().current_location())
             .await;
+
         let source = location.image.source.expect("source");
         let path = image
             .source_file(source.file)
             .expect("source file")
             .path
             .clone();
+
         assert!(path.ends_with(file), "{path:?} is not {file}");
     }
 
@@ -1471,6 +1579,7 @@ async fn function_breakpoints_stop_at_every_function_with_the_name() {
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     );
+
     scenario.shutdown().await;
 }
 
@@ -1500,6 +1609,7 @@ async fn source_breakpoints_move_to_the_next_line_with_code_in_their_function() 
     let lines = image
         .breakpoint_lines(file, microscope::LineNumber::new(1).expect("line")..=last)
         .collect::<Vec<_>>();
+
     assert!(lines.contains(&code) && lines.contains(&line("int doubled")));
     assert!(!lines.contains(&comment) && !lines.contains(&blank) && !lines.contains(&between));
 
@@ -1513,26 +1623,32 @@ async fn source_breakpoints_move_to_the_next_line_with_code_in_their_function() 
             .await,
         Err(Error::SourceLineUnavailable { line, .. }) if line == between.get()
     ));
+
     let moved = scenario
         .add_source_breakpoint("line-sliding.c", comment.get())
         .await;
+
     let exact = scenario
         .add_source_breakpoint("line-sliding.c", code.get())
         .await;
+
     assert_eq!(moved.locations, exact.locations);
     assert!(matches!(
         scenario.run_to_stop().await,
         StopReason::Breakpoint { hits, .. }
             if hits.iter().map(|hit| hit.breakpoint).eq([moved.id, exact.id])
     ));
+
     let location = scenario
         .operation("location", scenario.handle().current_location())
         .await;
+
     assert_eq!(location.image.source.map(|source| source.line), Some(code));
     assert_eq!(
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     );
+
     scenario.shutdown().await;
 }
 
@@ -1548,6 +1664,7 @@ async fn killing_ends_the_inferior_but_keeps_the_session() {
         scenario.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     let mut events = scenario.handle().subscribe();
     let first = match scenario.snapshot().await.inferior {
         InferiorState::Stopped { process_id, .. } => process_id,
@@ -1557,10 +1674,12 @@ async fn killing_ends_the_inferior_but_keeps_the_session() {
     scenario
         .operation("kill a stopped inferior", scenario.handle().kill())
         .await;
+
     assert!(matches!(
         scenario.snapshot().await.inferior,
         InferiorState::NotRunning
     ));
+
     let exits = std::iter::from_fn(|| events.try_recv().ok())
         .filter_map(|event| match event {
             microscope::DebuggerEvent::InferiorExited {
@@ -1569,6 +1688,7 @@ async fn killing_ends_the_inferior_but_keeps_the_session() {
             _ => None,
         })
         .collect::<Vec<_>>();
+
     assert!(
         matches!(
             exits.as_slice(),
@@ -1576,6 +1696,7 @@ async fn killing_ends_the_inferior_but_keeps_the_session() {
         ),
         "{exits:?}"
     );
+
     assert!(!std::path::Path::new(&format!("/proc/{first}")).exists());
 
     // The same program launches again, keeping its breakpoints.
@@ -1584,6 +1705,7 @@ async fn killing_ends_the_inferior_but_keeps_the_session() {
         matches!(&relaunched, StopReason::Breakpoint { hits, .. } if hits.iter().map(|hit| hit.breakpoint).eq([breakpoint.id])),
         "{relaunched:?}"
     );
+
     scenario.shutdown().await;
 }
 
@@ -1594,10 +1716,12 @@ async fn killing_a_running_or_attached_process_ends_it() {
     scenario
         .operation("kill a running inferior", scenario.handle().kill())
         .await;
+
     assert!(matches!(
         scenario.snapshot().await.inferior,
         InferiorState::NotRunning
     ));
+
     scenario.shutdown().await;
 
     let child = support::ExternalProcess::spawn(&Scenario::fixture("attach"));
@@ -1608,6 +1732,7 @@ async fn killing_a_running_or_attached_process_ends_it() {
         .await
         .expect("kill timed out")
         .expect("kill the attached process");
+
     assert!(
         std::iter::from_fn(|| events.try_recv().ok()).any(|event| matches!(
             event,
@@ -1618,6 +1743,7 @@ async fn killing_a_running_or_attached_process_ends_it() {
             } if process_id == process && info.code == 9
         ))
     );
+
     debugger.shutdown().await.expect("shut down");
 
     // The test spawned the process, so the debugger's wait reaped it.
@@ -1642,11 +1768,13 @@ async fn terminating_asks_the_program_to_end_without_stopping_it() {
         scenario.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     scenario.remove_all_breakpoints().await;
     let running = scenario.start_resuming().await;
     scenario
         .operation("terminate", scenario.handle().terminate())
         .await;
+
     assert_eq!(
         timeout(Duration::from_secs(5), running)
             .await
@@ -1662,11 +1790,13 @@ async fn terminating_asks_the_program_to_end_without_stopping_it() {
         scenario.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
     scenario.remove_all_breakpoints().await;
     let mut events = scenario.handle().subscribe();
     scenario
         .operation("terminate", scenario.handle().terminate())
         .await;
+
     loop {
         match timeout(Duration::from_secs(5), events.recv())
             .await
@@ -1699,6 +1829,7 @@ async fn a_line_breakpoint_stops_where_the_line_begins_not_at_its_later_statemen
     let file = image
         .source_file_matching("reexec.c".as_ref())
         .expect("source");
+
     let line = microscope::LineNumber::new(header).expect("line");
     assert!(image.statement_addresses(file.id, line).count() > 1);
     let loop_start = scenario.add_source_breakpoint("reexec.c", header).await;
@@ -1709,6 +1840,7 @@ async fn a_line_breakpoint_stops_where_the_line_begins_not_at_its_later_statemen
         .add_source_breakpoint("reexec.c", line_of("puts(argv[index]);"))
         .await;
     let mut hits = Vec::new();
+
     loop {
         match scenario.resume_or_run().await {
             StopReason::Breakpoint { hits: stop, .. } => hits.push(stop[0].breakpoint),
@@ -1748,6 +1880,7 @@ fn assert_basic_source_context(
             .get(),
         3
     );
+
     assert_eq!(
         context.lines.last().expect("last source line").number.get(),
         9
@@ -1770,10 +1903,12 @@ fn assert_register_snapshot(
             _ => panic!("inferior was not stopped"),
         }
     );
+
     assert_eq!(
         register_u64(registers, RegisterRole::ProgramCounter),
         instruction.get()
     );
+
     assert_ne!(register_u64(registers, RegisterRole::StackPointer), 0);
     assert_ne!(register_u64(registers, RegisterRole::FramePointer), 0);
     assert!(registers.registers.iter().any(|value| {

@@ -155,8 +155,10 @@ impl BuiltTypes {
                 _ => None,
             })
             .collect::<Vec<_>>();
+
         drop(signatures_phase);
         let refine_phase = crate::span!("types.deduplicate.refine");
+
         let classes = refine(
             &Signatures {
                 fields,
@@ -166,6 +168,7 @@ impl BuiltTypes {
             hasher,
         );
         drop(refine_phase);
+
         let _phase = crate::span!("types.deduplicate.signatures");
         self.restore_references(&mergeable, &offsets, &edges);
         classes
@@ -260,6 +263,7 @@ impl BuiltTypes {
                 info.reference.id = TypeId::new(super::row(index));
                 let image = info.reference.image;
                 let mut original = edges[offsets[index]..offsets[index + 1]].iter();
+
                 map_references(info, &mut |zeroed| {
                     let id = original.next();
                     debug_assert!(id.is_some(), "a type has as many references again");
@@ -392,6 +396,7 @@ fn refine<H: std::hash::BuildHasher + Clone + Sync>(
         .filter(|class| members.ranges[*class].len() > 1)
         .collect::<Vec<_>>();
     let mut flagged = Vec::new();
+
     for round in 1..=MAX_ROUNDS {
         // An indexed collect splits alike however the work is stolen.
         let splits = dirty
@@ -487,6 +492,7 @@ fn split<H: std::hash::BuildHasher + Clone>(
     groups.clear();
     firsts.clear();
     let mut seen = None::<HashMap<&[u32], u32, H>>;
+
     for member in 0..group.len() {
         let own = key(member);
         let found = seen.as_ref().map_or_else(

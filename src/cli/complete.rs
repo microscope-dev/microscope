@@ -79,6 +79,7 @@ impl Cli {
                         .collect(),
                 )
             });
+
         Context {
             aliases: self.settings.config.aliases.keys().cloned().collect(),
             functions: code.functions,
@@ -152,6 +153,7 @@ impl Cli {
                     .collect()
             },
         );
+
         *self
             .completion_names
             .lock()
@@ -159,6 +161,7 @@ impl Cli {
             frame,
             names: names.clone(),
         });
+
         names
     }
 
@@ -168,6 +171,7 @@ impl Cli {
         let mut functions = std::collections::BTreeSet::new();
         let mut files = std::collections::BTreeSet::new();
         let mut globals = std::collections::BTreeSet::new();
+
         for image in self.loaded_images().await {
             for function in image.functions() {
                 functions.insert(function.name().to_string());
@@ -212,6 +216,7 @@ impl Cli {
         };
 
         let mut state = value.state;
+
         if let microscope::VariableState::Available {
             children: microscope::ValueChildren::NotApplicable,
             dereference: microscope::DereferenceState::Available(reference),
@@ -260,9 +265,6 @@ impl Cli {
 const BREAK_OPTIONS: &[&str] = &["if", "hits", "log", "disabled"];
 const SIGNAL_ACTIONS: &[&str] = &["stop", "nostop", "print", "noprint", "pass", "nopass"];
 
-/// Where the word at `position` in `line` starts, and the words that
-/// could replace it. `fields` gives the members of the value an expression
-/// names, or of what it points to.
 /// What `catch`'s argument at `argument` may be: an exception filter, then
 /// whether it stops.
 fn exception_words(argument: usize, first: Option<&str>) -> Vec<String> {
@@ -289,6 +291,9 @@ fn exception_words(argument: usize, first: Option<&str>) -> Vec<String> {
 /// The settings `set` turns on or off.
 const TOGGLES: [&str; 3] = ["views", "step-runtime", "runtime-frames"];
 
+/// Where the word at `position` in `line` starts, and the words that
+/// could replace it. `fields` gives the members of the value an expression
+/// names, or of what it points to.
 pub fn complete(
     line: &str,
     position: usize,
@@ -440,6 +445,7 @@ fn location(word: &str, start: usize, context: &Context) -> (usize, Vec<String>)
         .iter()
         .cloned()
         .chain(context.files.iter().map(|file| format!("{file}:")));
+
     (start, matching(word, candidates))
 }
 
@@ -452,6 +458,7 @@ fn expression(
     keywords: &[&str],
 ) -> (usize, Vec<String>) {
     let (completing, partial, start) = crate::present::complete::completing(line);
+
     let candidates = match completing {
         Completing::Member { base } => fields(base),
         Completing::Name { .. } => context

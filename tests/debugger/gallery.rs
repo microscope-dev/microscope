@@ -82,8 +82,10 @@ async fn check_gallery(gallery: &Gallery<'_>) {
             ..LaunchOptions::default()
         })
         .await;
+
     let mut visited = Vec::new();
     let mut failures = Vec::new();
+
     loop {
         match reason {
             StopReason::Breakpoint { .. } => {}
@@ -105,6 +107,7 @@ async fn check_gallery(gallery: &Gallery<'_>) {
             .unwrap_or_else(|| panic!("{fixture} stopped before printing any truth"))
             .checkpoint
             .clone();
+
         let variables = checkpoint_variables(&mut scenario, fixture, &checkpoint).await;
         let returned = checkpoint.starts_with("returned-");
         for variable in &variables {
@@ -137,6 +140,7 @@ async fn check_gallery(gallery: &Gallery<'_>) {
                 || gallery
                     .required
                     .contains(&format!("{checkpoint}:{}", truth.path).as_str());
+
             if let Err(failure) =
                 check_truth(&scenario, &variables, truth, gallery.optimized && !required).await
             {
@@ -169,6 +173,7 @@ async fn the_gallery_check_fails_on_values_its_program_did_not_report() {
             ..LaunchOptions::default()
         })
         .await;
+
     while matches!(&reason, StopReason::Exception(exception) if exception.code == 23) {
         reason = scenario.resume_to_stop().await;
     }
@@ -177,6 +182,7 @@ async fn the_gallery_check_fails_on_values_its_program_did_not_report() {
         matches!(reason, StopReason::Breakpoint { .. }),
         "{reason:?}"
     );
+
     let printed = std::fs::read_to_string(&output_path).expect("read the gallery's output");
     let truths = truths(&printed);
     let checkpoint = truths.last().expect("a truth").checkpoint.clone();
@@ -188,9 +194,11 @@ async fn the_gallery_check_fails_on_values_its_program_did_not_report() {
                 && !["absent", "hidden", "result", "type"].contains(&truth.kind.as_str())
         })
         .expect("a truth of a value");
+
     check_truth(&scenario, &variables, truth, false)
         .await
         .expect("the program's own value");
+
     let wrong = Truth {
         value: format!("{}1", truth.value),
         ..truth.clone()
@@ -201,6 +209,7 @@ async fn the_gallery_check_fails_on_values_its_program_did_not_report() {
             .await
             .is_err()
     );
+
     let absent = Truth {
         path: truth.path.split('.').next().expect("a name").to_owned(),
         kind: "absent".to_owned(),
@@ -212,6 +221,7 @@ async fn the_gallery_check_fails_on_values_its_program_did_not_report() {
             .await
             .is_err()
     );
+
     scenario.shutdown().await;
 }
 
@@ -226,11 +236,13 @@ async fn checkpoint_variables(
     let trace = scenario
         .operation("backtrace", scenario.handle().backtrace())
         .await;
+
     let innermost = trace.frames[0]
         .function
         .as_ref()
         .map(|function| function.name.to_string())
         .unwrap_or_default();
+
     if innermost.ends_with("reached") {
         let caller: StackFrameId = trace.frames[1].id;
         scenario
@@ -253,6 +265,7 @@ async fn checkpoint_variables(
     let snapshot = scenario
         .operation("variables", scenario.handle().variables())
         .await;
+
     snapshot
         .variables
         .iter()
@@ -269,10 +282,12 @@ fn check_unknown(variables: &[Variable], truth: &Truth) -> Result<(), String> {
         .split('.')
         .next()
         .expect("a path names a variable");
+
     let variable = variables
         .iter()
         .find(|variable| variable.name.as_ref() == name)
         .ok_or("is not listed")?;
+
     match &variable.state {
         VariableState::Unavailable(microscope::VariableUnavailableReason::Unsupported(
             microscope::UnsupportedVariableFeature::ReturnPlace,
@@ -362,6 +377,7 @@ async fn check_truth(
         .iter()
         .rev()
         .find(|variable| variable.name.as_ref() == name);
+
     if truth.kind == "absent" {
         return variable.map_or(Ok(()), |variable| Err(format!("is listed: {variable:?}")));
     }
@@ -393,6 +409,7 @@ async fn check_truth(
     let mut type_info = variable.type_info.clone();
     let mut type_name = variable.type_info.as_ref().map(|info| info.name.clone());
     let mut state = variable.state.clone();
+
     for segment in segments {
         let VariableState::Available { .. } = &state else {
             break;
@@ -458,6 +475,7 @@ async fn child_named(
         .as_deref()
         .filter(|presentation| presentation.shape != microscope::PresentedShape::Raw)
         .map(|presentation| &presentation.children);
+
     let mut child = Err(format!("has no child {segment}"));
     for children in std::iter::once(children).chain(presented) {
         let microscope::ValueChildren::Available(reference) = children else {
@@ -476,6 +494,7 @@ async fn child_named(
                 ),
             )
             .await;
+
         if let Some(found) = page.children.iter().find(|child| named(child, segment)) {
             return Ok(found.clone());
         }
@@ -733,6 +752,7 @@ async fn cpp_returned_values_agree_with_their_program() {
         "returned-derived:r_derived.own",
         "returned-owner:r_owner.value",
     ][..];
+
     for (fixture, optimized, unknown) in [
         ("returns-cpp-gcc-o0", false, gcc),
         ("returns-cpp-gcc-o2", true, gcc),

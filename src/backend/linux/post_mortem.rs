@@ -69,6 +69,7 @@ impl ProcessServices for CoreTarget {
 
     fn lookup_symbol(&self, object: Option<&str>, symbol: &str) -> Option<u64> {
         let mut fallback = None;
+
         for module in &self.symbol_modules {
             let Some(found) = module
                 .image
@@ -119,6 +120,7 @@ impl InspectionOps for CoreTarget {
         thread: Pid,
     ) -> Option<crate::runtime_model::TargetThreadId> {
         self.thread(thread).ok()?;
+
         // Core writers can record host IDs while CPython retains inner
         // namespace IDs. Read the saved TCB instead of assuming equality.
         let descriptor = self.thread_id_descriptor.get_or_init(|| {
@@ -134,10 +136,12 @@ impl InspectionOps for CoreTarget {
                     })
                 })
                 .collect::<BTreeSet<_>>();
+
             (descriptors.len() == 1)
                 .then(|| descriptors.pop_first())
                 .flatten()
         });
+
         tls::target_thread_id(self, thread, (*descriptor)?)
     }
 
@@ -159,6 +163,7 @@ impl InspectionOps for CoreTarget {
         address: u64,
     ) -> std::result::Result<u64, MemoryAccessError> {
         let mut bytes = [0; 8];
+
         match self.memory.read(address, &mut bytes) {
             Ok(()) => Ok(u64::from_le_bytes(bytes)),
             // Saved and file-backed memory need not end on a word boundary,
@@ -180,6 +185,7 @@ impl InspectionOps for CoreTarget {
                 }
 
                 bytes[readable..].fill(0);
+
                 if readable == 0 {
                     Err(MemoryAccessError::Inaccessible)
                 } else {
@@ -332,6 +338,7 @@ fn choose_unproven<T>(
     };
 
     let path = best.path;
+
     match (best.rejection, allow) {
         (Rejection::Unverifiable(file), true) => Ok(Some((file, ModuleIdentity::Unverified))),
         (Rejection::Mismatch(file, detail), true) => Ok(Some((
@@ -410,6 +417,7 @@ fn examine(
     };
 
     let rejected = |rejection| Ok(Examined::Rejected(Rejected { path, rejection }));
+
     match evidence {
         ImageEvidence::BuildId => Ok(Examined::Proven(
             placed.with_identity(ModuleIdentity::BuildId),
@@ -443,6 +451,7 @@ fn resolve_image(
 ) -> Result<Option<ImageFile>> {
     let mut examined = BTreeSet::new();
     let mut rejected = Vec::new();
+
     for candidate in candidates {
         let candidate = candidate?;
 
@@ -580,9 +589,11 @@ fn resolve_executable(
             )
         })?
         .clone();
+
     let build_id = recorded_build_id(core, &image)?;
     let entry = core.auxv_value(AT_ENTRY);
     let allow = options.allow_module_mismatch;
+
     let file = match &options.executable {
         Some(path) => resolve_image(
             core,
@@ -612,6 +623,7 @@ fn resolve_executable(
             locator.absence()
         ))
     })?;
+
     Ok(MainImage {
         image: file.image.clone(),
         build_id,
@@ -646,6 +658,7 @@ fn resolve_modules(core: &CoreDump, options: &CoreDumpOptions) -> Result<Resolve
         loaded_state(main_loaded, &main_file),
     )];
     let mut libraries = Vec::new();
+
     for image in &images {
         // A part of an image already placed, such as a packed lld segment.
         let placed = std::iter::once(&main_image)
@@ -710,6 +723,7 @@ fn resolve_modules(core: &CoreDump, options: &CoreDumpOptions) -> Result<Resolve
         modules.push(module);
         vdso
     });
+
     Ok(ResolvedModules {
         main_image,
         main_file,
@@ -742,6 +756,7 @@ fn resolve_vdso(
             }
         }
     });
+
     if let Some(error) = failure {
         return Err(error.into());
     }
@@ -861,12 +876,14 @@ pub fn open_core(
                 channels,
                 target,
             );
+
             let initialized = controller.initialize_post_mortem(
                 process.pid,
                 main_loaded,
                 loaded,
                 &StopReason::CoreDump { exception },
             );
+
             #[cfg(debug_assertions)]
             if let Err(error) = &initialized {
                 record!("cannot open the core dump: {error}");
@@ -880,6 +897,7 @@ pub fn open_core(
 
             record!("exited");
         })?;
+
     match ready.recv() {
         Ok(Ok(())) => Ok(PostMortemSession {
             image,
@@ -933,6 +951,7 @@ impl Controller<CoreTarget> {
             .get_mut(&main.id)
             .ok_or_else(|| Error::internal("the main module is registered"))?;
         main_module.loaded = main;
+
         for (loaded, debug) in modules {
             self.modules.insert(
                 loaded.id,
@@ -972,6 +991,7 @@ impl Controller<CoreTarget> {
             )),
             ..Inferior::new(InferiorOrigin::PostMortem, tgid, main, trace_threads, None)
         });
+
         let presentation = self.presentation_for_thread(selected, Some(reason))?;
         self.inferior
             .as_mut()
@@ -979,6 +999,7 @@ impl Controller<CoreTarget> {
             .ok_or_else(|| Error::internal("the post-mortem stop exists"))?
             .presentations
             .insert(selected, presentation);
+
         self.bump_revision();
         Ok(())
     }
@@ -1054,6 +1075,7 @@ fn core_exception(thread: &CoreThread) -> Option<ExceptionInfo> {
         |_| format!("signal {}", signal.number),
         |signal| signal.to_string(),
     );
+
     if thread.signal.is_none() {
         return Some(ExceptionInfo::new(number, name));
     }

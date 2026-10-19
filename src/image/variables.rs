@@ -537,6 +537,7 @@ impl Encoder {
         }));
         number(self.ranges.len())?;
         self.pooled_ranges.insert(ranges.into(), first.into());
+
         Ok(Span::new(first, count))
     }
 
@@ -691,12 +692,14 @@ pub fn add_to(
 ) -> Result<(), TooMany> {
     let mut encoder = Encoder::default();
     let mut objects = Vec::with_capacity(variables.objects.len());
+
     for object in &variables.objects {
         objects.push(encode_object(&mut encoder, strings, object)?);
     }
 
     let mut functions = Vec::with_capacity(variables.functions.len());
     let mut lists = FunctionLists::default();
+
     for function in &variables.functions {
         functions.push(encode_function(
             &mut encoder,
@@ -722,6 +725,7 @@ pub fn add_to(
     let mut sorted = variables.procedures.iter().rev().collect::<Vec<_>>();
     sorted.sort_by_key(|(offset, _)| *offset);
     sorted.dedup_by_key(|(offset, _)| *offset);
+
     for (offset, list) in sorted {
         let (location_kind, location) = location(strings, list)?;
         procedures.push(DwarfProcedureRecord {
@@ -746,6 +750,7 @@ pub fn add_to(
             })
         })
         .collect::<Result<Vec<_>, TooMany>>()?;
+
     builder
         .owned_table(encoder.ranges)
         .owned_table(encoder.scopes)
@@ -760,6 +765,7 @@ pub fn add_to(
         .owned_shared(TableKind::ObjectOffsets, offsets)
         .owned_table(procedures)
         .owned_table(globals);
+
     Ok(())
 }
 
@@ -851,6 +857,7 @@ fn encode_function(
 /// the furthest end of the code beginning there or before.
 fn function_starts(functions: &[Function]) -> Result<Vec<FunctionStartRecord>, TooMany> {
     let mut starts = Vec::new();
+
     for (index, function) in functions.iter().enumerate() {
         let index = number(index)?;
         starts.extend(
@@ -863,6 +870,7 @@ fn function_starts(functions: &[Function]) -> Result<Vec<FunctionStartRecord>, T
 
     starts.sort_unstable();
     let mut prefix_max_end = 0;
+
     Ok(starts
         .into_iter()
         .map(|(start, function, end)| {
@@ -888,9 +896,11 @@ fn function_at(
 ) -> Option<u32> {
     let address = address.get();
     let mut group_end = starts.partition_point(|start| start.start.get() <= address);
+
     while group_end > 0 {
         let start = starts[group_end - 1].start.get();
         let group_start = starts[..group_end].partition_point(|row| row.start.get() < start);
+
         if let Some(found) = starts[group_start..group_end]
             .iter()
             .map(|row| row.function.get())
@@ -948,6 +958,7 @@ fn keyed(pairs: impl Iterator<Item = (u64, u32)>) -> Vec<Keyed> {
     sorted.reverse();
     sorted.sort_by_key(|(key, _)| *key);
     sorted.dedup_by_key(|(key, _)| *key);
+
     sorted
         .into_iter()
         .map(|(key, value)| Keyed {
@@ -1000,6 +1011,7 @@ fn encode_object(
     }
 
     let (value_kind, value) = encoder.value(strings, &object.value)?;
+
     Ok(ObjectRecord {
         name: text(strings, &object.name)?,
         declaration: LocationRecord::of(object.declaration.as_ref()),
@@ -1364,6 +1376,7 @@ impl<'a> VariableFunction<'a> {
     /// How the function returns its values, when that is known.
     pub fn returns(self) -> Option<ReturnConvention> {
         let record = self.record;
+
         match record.returns {
             returns::GO_REGISTERS => Some(ReturnConvention::GoRegisters),
             returns::SYSTEM_V => Some(ReturnConvention::SystemV(Box::new(SystemV {
@@ -1533,6 +1546,7 @@ fn validate_functions(view: VariableView<'_>, bounds: &Bounds<'_>) -> Result<(),
     }
 
     let objects = view.objects.len();
+
     if !view
         .function_objects
         .iter()
@@ -1591,6 +1605,7 @@ fn validate_indexes(view: VariableView<'_>, bounds: &Bounds<'_>) -> Result<(), S
     let functions = view.functions.len();
     let mut prefix_max_end = 0;
     let mut previous = None;
+
     for start in view.starts {
         prefix_max_end = prefix_max_end.max(start.end.get());
         let key = (start.start.get(), start.function.get());

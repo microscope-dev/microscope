@@ -132,6 +132,7 @@ async fn each_library_value_is_shown_as_its_own_repr_writes_it() {
             "{}: CPython reported no children",
             stop.context
         );
+
         for (name, reported) in children {
             let variable = local(&variables, name, &stop);
             let shown = shown_items(&all_children(&stop, &variable.state).await);

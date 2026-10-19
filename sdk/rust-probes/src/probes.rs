@@ -156,6 +156,7 @@ pub fn define(kind: u8, name: &str, file: &str, line: u32) -> Option<&'static Si
         site.file_length.store(file.len() as u32, Ordering::Relaxed);
     }
     site.key.store(abi::RUNTIME_KEY | index, Ordering::Relaxed);
+
     let switched = CONTROL.enable.load(Ordering::SeqCst) & abi::ENABLE_DEFINED != 0;
     if switched {
         site.state.store(1, Ordering::Relaxed);
@@ -174,6 +175,7 @@ pub fn define(kind: u8, name: &str, file: &str, line: u32) -> Option<&'static Si
     CONTROL
         .sites
         .store(ptr::from_ref(&SITES).cast_mut(), Ordering::Release);
+
     defined.push((name, file, site));
     Some(site)
 }
@@ -500,6 +502,7 @@ fn write(site: u32, kind: u8, argument: u32, more: &[u8]) -> bool {
     record[8..12].copy_from_slice(&site.to_le_bytes());
     record[12..].copy_from_slice(&(u32::from(kind) | argument << 8).to_le_bytes());
     ring.put(head, &record);
+
     let mut position = head + 1;
     for chunk in more.chunks(15) {
         let mut record = [0; abi::RECORD];
@@ -729,6 +732,7 @@ extern "C" fn exiting() {
     }
 
     CONTROL.exiting.store(1, Ordering::Release);
+
     while CONTROL.flushed.load(Ordering::Acquire) == 0
         && monotonic().saturating_sub(start) < abi::EXIT_WAIT_NANOSECONDS
     {

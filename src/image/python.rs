@@ -653,6 +653,7 @@ pub fn add_to(
             })
         })
         .transpose()?;
+
     builder.owned_table(records.into_iter().collect());
     Ok(())
 }

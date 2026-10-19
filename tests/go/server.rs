@@ -40,6 +40,7 @@ async fn a_handler_stops_on_its_connection_and_a_recovered_panic_does_not() {
     let trace = scenario
         .operation("backtrace", scenario.handle().backtrace())
         .await;
+
     let names = trace
         .frames
         .iter()
@@ -48,6 +49,7 @@ async fn a_handler_stops_on_its_connection_and_a_recovered_panic_does_not() {
         .collect::<Vec<_>>();
     assert!(names.contains(&"net/http.(*conn).serve"), "{names:?}");
     assert_eq!(names.last(), Some(&"runtime.goexit"), "{names:?}");
+
     let task = integer(&scenario, "$task").await.expect("a goroutine");
     let tasks = scenario
         .operation("tasks", scenario.handle().tasks(None, 256))
@@ -73,6 +75,7 @@ async fn a_handler_stops_on_its_connection_and_a_recovered_panic_does_not() {
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     );
+
     let printed = std::fs::read_to_string(&output).expect("read standard output");
     assert!(
         printed.contains("/greet?name=gopher: 200 hello, gopher"),

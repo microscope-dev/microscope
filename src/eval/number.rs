@@ -765,6 +765,7 @@ impl Float {
                 Self::X87Extended(value.convert(&mut loses_info).value)
             }
         });
+
         (converted, loses_info)
     }
 

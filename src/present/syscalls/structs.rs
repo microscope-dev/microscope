@@ -104,6 +104,7 @@ pub fn si_code(signal: i32, code: i32) -> String {
 /// Bits by name, `|`-joined, with what is left in hex, or `0`.
 fn bits(names: &[(u64, &str)], mut value: u64) -> String {
     let mut parts = Vec::new();
+
     for &(bit, name) in names {
         if bit != 0 && value & bit == bit {
             parts.push(name.to_owned());
@@ -136,6 +137,7 @@ pub fn file_mode(mode: u32) -> String {
     };
 
     let mut special = String::new();
+
     for (bit, name) in [
         (0o4000, "S_ISUID|"),
         (0o2000, "S_ISGID|"),
@@ -158,6 +160,7 @@ fn sigset(bytes: &[u8]) -> String {
     let set: Vec<i32> = (1..=64)
         .filter(|&signal| words[0] & (1 << (signal - 1)) != 0)
         .collect();
+
     let name = |signal: i32| super::signal(signal).trim_start_matches("SIG").to_owned();
     if set.len() > 32 {
         let missing: Vec<String> = (1..=64)
@@ -258,6 +261,7 @@ impl Decode<'_, '_> {
     pub fn structure(mut self, structure: Struct, bytes: &[u8], elements: usize, truncated: bool) {
         let word = self.event.args[self.index];
         let reader = Bytes(bytes);
+
         let printed = match structure {
             Struct::Pollfd
             | Struct::EpollEvent
@@ -790,6 +794,7 @@ impl Decode<'_, '_> {
                 // Entries are variable-length; their count is what helps.
                 let mut count = 0;
                 let mut at = 0;
+
                 while let Some(length) = b.u16(at + 16) {
                     if length == 0 {
                         break;
@@ -827,6 +832,7 @@ impl Decode<'_, '_> {
         let size = structure.size() as usize;
         let available = b.0.len() / size;
         let shown = elements.min(available);
+
         self.punct("[");
         for element in 0..shown {
             if element > 0 {

@@ -48,6 +48,7 @@ impl CallSet {
 
     fn index(&mut self) {
         let mut bits: [Vec<u64>; 3] = Default::default();
+
         for id in &self.calls {
             let words = &mut bits[id.abi as usize];
             let word = (id.number / 64) as usize;
@@ -255,6 +256,7 @@ fn element(text: &str) -> Result<BTreeSet<SyscallId>, FilterError> {
 
                 // strace's `%%statfs` takes ustat too, which no class does.
                 let ustat = name == "%statfs";
+
                 calls(&|id, call| {
                     (ustat && call == "ustat")
                         || specs::spec(id)
@@ -316,6 +318,7 @@ fn signal_set(
         .strip_prefix('!')
         .map_or((false, text), |rest| (true, rest));
     let mut signals = BTreeSet::new();
+
     for part in text.split(',').filter(|part| !part.is_empty()) {
         match part {
             "all" => signals.extend(1..=64),
@@ -355,8 +358,10 @@ impl Filter {
     ) -> Result<Self, FilterError> {
         let mut filter = Self::default();
         let mut traced_by_name = false;
+
         for expression in expressions {
             let (qualifier, value) = expression.split_once('=').unwrap_or(("trace", expression));
+
             match qualifier {
                 "trace" | "t" => {
                     let (negated, calls) = set(value)?;
@@ -471,6 +476,7 @@ impl Filter {
         }
 
         let fds = || descriptors(event);
+
         if let Some(wanted) = &self.fds
             && !fds().any(|fd| wanted.contains(&fd))
         {
@@ -483,6 +489,7 @@ impl Filter {
                 .any(|path| self.paths.iter().any(|wanted| wanted == path));
             let by_fd =
                 || fds().any(|fd| path_of(fd).is_some_and(|path| self.paths.contains(&path)));
+
             if !named && !by_fd() {
                 return false;
             }
@@ -511,6 +518,7 @@ pub fn descriptors(event: &SyscallEvent) -> impl Iterator<Item = i64> + '_ {
         .filter(|(_, arg)| matches!(arg, specs::Arg::Fd | specs::Arg::DirFd))
         .map(|(index, _)| fd_value(event.args[index]))
         .filter(|&fd| fd >= 0);
+
     let result = spec
         .filter(|spec| spec.ret == specs::Ret::Fd)
         .and_then(|_| event.outcome.raw())

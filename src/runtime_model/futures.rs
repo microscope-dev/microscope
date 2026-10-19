@@ -154,6 +154,7 @@ fn follow(
     frames: &mut Vec<AsyncFrame>,
 ) -> ChainEnd {
     let mut seen = BTreeSet::new();
+
     for _ in 0..MAX_DEPTH {
         if !seen.insert((object, ty)) {
             return ChainEnd::Cycle;
@@ -193,6 +194,7 @@ fn follow(
                     location: state.location.clone(),
                 },
             });
+
             match state.kind {
                 CoroutineStateKind::Unresumed => return ChainEnd::Unresumed,
                 CoroutineStateKind::Returned | CoroutineStateKind::Panicked => {

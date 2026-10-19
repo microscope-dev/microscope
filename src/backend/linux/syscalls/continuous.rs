@@ -180,6 +180,7 @@ impl Continuous {
         let path = capture
             .finish()
             .write_segment(&directory, self.options.keep)?;
+
         Ok(Some(Saved {
             path,
             calls,

@@ -447,6 +447,7 @@ fn a_threads_goroutine_is_found_by_each_way_of_keeping_it() {
             m,
         }]);
         let g0 = HEAP + 0x41_0000;
+
         for (path, value) in [
             ("procid", 4242),
             ("curg", places[0]),
@@ -508,6 +509,7 @@ fn a_missing_name_makes_only_what_needs_it_unavailable() {
         let model = world.model();
         let (tasks, gaps) = listed(model.as_ref(), &world.memory);
         let activity = model.thread_activity(&world.memory, thread);
+
         (tasks.len(), gaps, activity)
     };
 

@@ -48,6 +48,7 @@ fn asyncio_layout() -> PythonLayout {
         (Field::GenFrame, GEN_FRAME),
         (Field::FrameStackpointer, 88),
     ];
+
     for (field, offset) in fields {
         layout.set_field(field, offset);
     }
@@ -87,6 +88,7 @@ impl Process {
         let next = self.offset(Field::LlistNext);
         let prev = self.offset(Field::LlistPrev);
         let mut previous = head;
+
         for task in tasks {
             self.memory.write(previous + next, task + node, 8);
             self.memory.write(task + node + prev, previous, 8);
@@ -123,6 +125,7 @@ impl Process {
         let owner = self.owner(Constant::OwnerGenerator);
         self.put(frame, Field::FrameOwner, owner, 1);
         let values = frame + self.offset(Field::FrameLocalsplus);
+
         match awaited {
             Some(awaited) => {
                 self.memory.write(values, awaited, 8);
@@ -199,6 +202,7 @@ fn each_thread_lists_its_tasks_then_its_interpreter_those_of_exited_threads() {
     let interpreter = process.alloc(STATE_SIZE);
     let first = process.alloc(STATE_SIZE);
     let second = process.alloc(STATE_SIZE);
+
     for (owner, field, list) in [
         (first, Field::ThreadAsyncioTasksHead, &[a, b][..]),
         (second, Field::ThreadAsyncioTasksHead, &[c][..]),
@@ -207,6 +211,7 @@ fn each_thread_lists_its_tasks_then_its_interpreter_those_of_exited_threads() {
         let head = process.empty_list(owner, field);
         process.link(head, list);
     }
+
     process.word(second, Field::ThreadAsyncioRunningTask, c);
 
     let found = tasks(
@@ -346,6 +351,7 @@ fn a_task_awaited_by_many_names_the_first_and_counts_the_entries_unread() {
     let future = process.type_object("_asyncio.Future");
     let mut slots = Vec::new();
     let mut names = Vec::new();
+
     for index in 0..70 {
         let awaiter = if index == 3 || index == 40 {
             process.object(future, 32)
@@ -359,6 +365,7 @@ fn a_task_awaited_by_many_names_the_first_and_counts_the_entries_unread() {
         };
         slots.push(Slot::Item(awaiter));
     }
+
     slots.extend((70..128).map(|_| Slot::Empty));
     let set = set_object(&mut process, types.set, &slots);
     let name = process.str_object(types.str, "awaited");
@@ -369,6 +376,7 @@ fn a_task_awaited_by_many_names_the_first_and_counts_the_entries_unread() {
     let task = with_values(&process, types, InspectionLimits::default(), |values| {
         values.task(VirtualAddress::new(awaited), None)
     });
+
     names.push("and 6 more entries not read".to_owned());
     let expected: Arc<str> = names.join(", ").into();
     assert_eq!(
@@ -387,6 +395,7 @@ fn a_suspended_task_is_the_frames_of_its_chain_of_awaits_innermost_first() {
     let waiting_for = process.object(future, 32);
     let [outer, middle, inner] = [("outer", 10), ("middle", 20), ("inner", 30)]
         .map(|(name, line)| process.code(name, line, &[(1, 0)]));
+
     let inner = process.coroutine(
         &types,
         Constant::GeneratorYieldFrom,
@@ -515,6 +524,7 @@ fn running_tasks_use_the_proven_target_thread_instead_of_a_colliding_host_id() {
         .memory
         .target_ids
         .insert(collision, crate::runtime_model::TargetThreadId::new(8));
+
     let found = tasks(&process, types, &[state(thread, interpreter, 7)]);
     assert!(found.gaps.is_empty(), "{:?}", found.gaps);
     let snapshot = with_values(&process, types, InspectionLimits::default(), |values| {
@@ -540,12 +550,14 @@ fn a_running_task_keeps_its_state_when_thread_identity_is_unproven_or_ambiguous(
         process.empty_list(interpreter, Field::InterpreterAsyncioTasksHead);
         process.word(thread, Field::ThreadAsyncioRunningTask, task);
         process.memory.threads = vec![ThreadId::new(7), ThreadId::new(5000)];
+
         for host in process.memory.threads.clone() {
             process.memory.target_ids.insert(
                 host,
                 duplicate.then(|| crate::runtime_model::TargetThreadId::new(7).unwrap()),
             );
         }
+
         let found = tasks(&process, types, &[state(thread, interpreter, 7)]);
         assert!(!found.gaps.is_empty());
         let snapshot = with_values(&process, types, InspectionLimits::default(), |values| {
@@ -584,6 +596,7 @@ fn a_task_reported_as_running_twice_has_no_guessed_owner() {
         }
         process.word(thread, Field::ThreadAsyncioRunningTask, task);
     }
+
     process.empty_list(interpreter, Field::InterpreterAsyncioTasksHead);
     process.memory.threads = vec![ThreadId::new(7), ThreadId::new(8)];
     let found = tasks(
@@ -639,6 +652,7 @@ fn current_task_and_context_use_proven_identity_and_refuse_missing_proof() {
         .memory
         .target_ids
         .insert(collision, crate::runtime_model::TargetThreadId::new(8));
+
     let model = model(&process, &types, runtime);
     assert_eq!(
         model.thread_activity(&process.memory, host),
@@ -651,6 +665,7 @@ fn current_task_and_context_use_proven_identity_and_refuse_missing_proof() {
         model.thread_activity(&process.memory, collision),
         ThreadActivity::Outside
     );
+
     let reference = TaskRef {
         number: task,
         locator: Some(task),
@@ -688,6 +703,7 @@ fn a_tasks_context_is_its_own_node_and_the_running_tasks() {
     process.link(head, &[listed, other]);
     process.empty_list(interpreter, Field::InterpreterAsyncioTasksHead);
     process.memory.threads = vec![ThreadId::new(7)];
+
     let model = model(&process, &types, runtime);
     let context = |process: &Process, task: u64| {
         model.task_context(
@@ -712,6 +728,7 @@ fn a_tasks_context_is_its_own_node_and_the_running_tasks() {
         let _ = context(process, listed);
         process.memory.reads.get()
     };
+
     let few = reads(&process);
     process.link(head, &[&[listed, other][..], &more].concat());
     assert_eq!(reads(&process), few);

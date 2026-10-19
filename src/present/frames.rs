@@ -70,6 +70,7 @@ pub fn name(frame: &StackFrame, image: Option<&ModuleImage>) -> String {
         .and_then(|image| image.path().file_name())
         .map(|name| format!(" in {}", name.to_string_lossy()))
         .unwrap_or_default();
+
     match (frame.kind, frame.instruction) {
         (_, Some(address)) => format!("{address:#x}{module}"),
         (FrameKind::Interpreted { .. }, None) => format!("an interpreted frame{module}"),
@@ -149,6 +150,7 @@ pub fn folds(trace: &Backtrace, shown: usize, selected: u32) -> Vec<std::ops::Ra
         .chain(trace.unfollowed.iter().map(|future| future.driver.get()))
         .collect::<BTreeSet<_>>();
     kept.insert(selected);
+
     let dispatch = frames
         .iter()
         .position(|frame| frame.role == CodeRole::Dispatch)
@@ -198,6 +200,7 @@ fn machinery_runs(frames: &[StackFrame], kept: &BTreeSet<u32>) -> Vec<std::ops::
 
     let mut runs = Vec::new();
     let mut start = 0;
+
     while start < frames.len() {
         let mut end = start;
         while end < frames.len()

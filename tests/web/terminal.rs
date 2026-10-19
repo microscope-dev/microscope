@@ -25,8 +25,10 @@ fn recording_browser(directory: &Path) -> PathBuf {
          echo \"$1 $PPID $opener\" >> \"$(dirname \"$0\")/opened\"\n",
     )
     .expect("write the browser");
+
     std::fs::set_permissions(&browser, std::fs::Permissions::from_mode(0o755))
         .expect("make the browser executable");
+
     browser
 }
 
@@ -62,6 +64,7 @@ fn pressing_o_opens_the_join_link_in_the_browser_and_exiting_restores_the_termin
     session.send("o").expect("press o");
     let opened = directory.path().join("opened");
     let deadline = Instant::now() + DEADLINE;
+
     let record = loop {
         // A whole line, once the browser has finished writing it.
         if let Ok(text) = std::fs::read_to_string(&opened)

@@ -41,6 +41,7 @@ async fn stopped_at(fixture: &str, marker: &str) -> (Scenario, i128) {
         matches!(reason, StopReason::Breakpoint { .. }),
         "{fixture}: {reason:?}"
     );
+
     scenario.remove_breakpoint(breakpoint.id).await;
     let task = integer(&scenario, "$task").await.expect("a task");
     (scenario, task)
@@ -94,6 +95,7 @@ async fn optimized_steps_stop_only_in_code_the_program_wrote() {
     let (mut scenario, task) = at_the_walk(fixture).await;
     let after = line("// STEP: after");
     let mut visited = Vec::new();
+
     loop {
         assert!(visited.len() < 40, "{fixture}: {visited:?}");
         let reason = scenario.step_to_stop(StepKind::IntoSource).await;
@@ -111,6 +113,7 @@ async fn optimized_steps_stop_only_in_code_the_program_wrote() {
         );
         assert_eq!(integer(&scenario, "$task").await, Some(task), "{fixture}");
         visited.push((function, line));
+
         if visited.last().is_some_and(|(_, line)| *line == after) {
             break;
         }
@@ -150,6 +153,7 @@ async fn a_function_breakpoint_stops_once_for_a_call_that_grows_the_stack() {
             })
             .await;
         assert_eq!(stopped_by(&reason), [fresh.id], "{fixture}");
+
         let task = integer(&scenario, "$task").await;
         let reason = scenario.resume_to_stop().await;
         assert_eq!(stopped_by(&reason), [after.id], "{fixture}");

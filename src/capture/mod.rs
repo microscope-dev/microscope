@@ -176,6 +176,7 @@ impl Capture {
             self.strings.len(),
             TableBytes::Borrowed(&self.strings),
         );
+
         macro_rules! put {
             ($field:ident, $table:ident) => {
                 tables.add(
@@ -211,15 +212,18 @@ impl Capture {
         put!(task_waits, TaskWaits);
         put!(gaps, Gaps);
         put!(syscalls, Syscalls);
+
         tables.add(
             CaptureTable::SyscallBlobs,
             1,
             self.syscall_blobs.len(),
             TableBytes::Borrowed(&self.syscall_blobs),
         );
+
         put!(syscall_notes, SyscallNotes);
         put!(syscall_stats, SyscallStats);
         put!(syscall_errnos, SyscallErrnos);
+
         tables.seal(TargetDescription::X86_64)
     }
 
@@ -396,6 +400,7 @@ impl Capture {
             &|row| self.samples[row].time.get(),
             "samples",
         )?;
+
         for sample in &self.samples {
             index(sample.stack.get(), self.stacks.len(), "samples")?;
             index(sample.task.get(), self.tasks.len(), "samples")?;
@@ -420,6 +425,7 @@ impl Capture {
             &|row| self.off_cpu[row].time.get(),
             "off-CPU intervals",
         )?;
+
         if self.off_cpu.iter().any(|interval| interval.preempted > 1) {
             return Err("an off-CPU interval has an unknown cause".into());
         }
@@ -464,6 +470,7 @@ impl Capture {
         }
 
         let mut next = 0;
+
         for range in &self.zone_ranges {
             index(
                 range.thread.get(),
@@ -599,12 +606,14 @@ impl Capture {
         }
 
         let mut calls = 0;
+
         for note in &self.syscall_notes {
             if note.calls.get() < calls || note.calls.get() as usize > self.syscalls.len() {
                 return Err("a note is out of order among the calls".into());
             }
 
             calls = note.calls.get();
+
             if NoteKind::from_number(note.kind).is_none() {
                 return Err(format!("a note has unknown kind {}", note.kind));
             }
@@ -612,6 +621,7 @@ impl Capture {
             index(note.thread.get(), self.threads.len(), "a note's thread")?;
             index(note.process.get(), self.processes.len(), "a note's process")?;
             index(note.stack.get(), self.stacks.len(), "a note's stack")?;
+
             if note.text.get() != NONE
                 && !crate::image::valid_reference(&self.strings, note.text.get(), true)
             {

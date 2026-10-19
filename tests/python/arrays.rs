@@ -53,6 +53,7 @@ fn numpy_directory(interpreter: &str) -> PathBuf {
 /// The children CPython reported of each local array, by its name.
 fn reported_children(truth: &[Vec<String>]) -> BTreeMap<&str, Vec<&str>> {
     let mut locals: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+
     for fields in truth.iter().filter(|fields| fields[0] == "child") {
         locals
             .entry(fields[1].as_str())
@@ -122,6 +123,7 @@ async fn each_array_shows_its_elements_and_reads_its_numbers_at_once() {
             .get(&(printer, "values".to_owned()))
             .filter(|reported| !reported.is_empty())
             .unwrap_or_else(|| panic!("{}: CPython reported no values frame", stop.context));
+
         for (name, text) in reported {
             let variable = local(&variables, name, &stop);
             if presented(&variable.state) != Some(text.as_str()) {
@@ -138,6 +140,7 @@ async fn each_array_shows_its_elements_and_reads_its_numbers_at_once() {
             "{}: CPython reported no children",
             stop.context
         );
+
         for (name, reported) in children {
             let variable = local(&variables, name, &stop);
             let shown: Vec<String> = all_children(&stop, &variable.state)
@@ -162,6 +165,7 @@ async fn each_array_shows_its_elements_and_reads_its_numbers_at_once() {
 
         let results = reported_results(&truth);
         let at = stop.frame(printer, "values").await;
+
         for case in CASES {
             let reported = results.get(case.python).unwrap_or_else(|| {
                 panic!("{}: CPython gave nothing for {}", stop.context, case.python)
@@ -187,6 +191,7 @@ async fn bulk(stop: &Stop<'_>, variables: &[microscope::Variable], lies: &mut Ve
         .iter()
         .flat_map(|value| value.to_le_bytes())
         .collect();
+
     match floats {
         Some(read) if read.kind == NumberKind::F64 && read.count == 4 => {
             if *read.bytes != *expected {
@@ -235,6 +240,7 @@ async fn bulk(stop: &Stop<'_>, variables: &[microscope::Variable], lies: &mut Ve
             numbers(stop, children_of(&row.state)).await
         }
     };
+
     match row("grid").await {
         Some(read) if read.kind == NumberKind::I32 && read.count == 4 => {
             let expected: Vec<u8> = (4_i32..8).flat_map(i32::to_le_bytes).collect();
@@ -244,6 +250,7 @@ async fn bulk(stop: &Stop<'_>, variables: &[microscope::Variable], lies: &mut Ve
         }
         other => lies.push(format!("grid[1] read at once as {other:?}")),
     }
+
     if let Some(read) = row("transposed").await {
         lies.push(format!("transposed[1] is read at once: {read:?}"));
     }

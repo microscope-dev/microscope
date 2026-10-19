@@ -46,6 +46,7 @@ pub(super) fn select(
         let mut specific = list
             .entries()
             .filter(|(range, _)| range.is_some_and(|range| range.contains(address)));
+
         if let Some((_, expression)) = specific.next() {
             if specific.next().is_some() {
                 return Err(LocationSelectionError::Unavailable(
@@ -254,6 +255,7 @@ pub(super) fn copy_expression(
     let bytes: Cow<'_, [u8]> = expression.0.to_slice()?;
     let mut pending = calls(unit, &bytes, encoding, expression.0.endian())?;
     let mut procedures = Vec::<(u64, Option<LocationListId>)>::new();
+
     while let Some(offset) = pending.pop() {
         if procedures.iter().any(|(known, _)| *known == offset) {
             continue;
@@ -278,6 +280,7 @@ pub(super) fn copy_expression(
             .attr_value(gimli::DW_AT_location)
             .map(|value| copy_location_with(dwarf, pool, unit_index, unit, value, copy_operations))
             .transpose()?;
+
         if let Some(location) = location {
             let tables = pool.tables();
             for (_, called) in tables.list(location).entries() {
@@ -332,6 +335,7 @@ fn indexed_addresses(
 ) -> std::result::Result<Vec<(u64, u64)>, DwarfError> {
     let mut addresses = Vec::new();
     let mut operations = expression.operations(unit.encoding());
+
     while let Some(operation) = operations.next()? {
         let (gimli::Operation::AddressIndex { index } | gimli::Operation::ConstantIndex { index }) =
             operation
@@ -356,6 +360,7 @@ fn calls(
     let reader = gimli::EndianSlice::new(bytes, endian);
     let mut operations = gimli::Expression(reader).operations(encoding);
     let mut called = Vec::new();
+
     while let Some(operation) = operations.next()? {
         let gimli::Operation::Call { offset } = operation else {
             continue;
@@ -413,6 +418,7 @@ fn evaluation_unit(
     };
 
     let mut walk = DieWalk::new(unit)?;
+
     while let Some(die) = walk.next()? {
         if !matches!(
             die.tag,
@@ -422,6 +428,7 @@ fn evaluation_unit(
         }
 
         let entry = walk.decode()?;
+
         if entry.tag() == gimli::DW_TAG_compile_unit {
             if let Some(gimli::AttributeValue::Language(value)) =
                 entry.attr_value(gimli::DW_AT_language)
@@ -441,6 +448,7 @@ fn evaluation_unit(
         };
 
         let encoding = gimli::DwAte(raw_encoding);
+
         if let Some(value_type) = dwarf_value_type(encoding, byte_size) {
             recorded
                 .base_types

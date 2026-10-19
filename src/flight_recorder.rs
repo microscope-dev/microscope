@@ -256,6 +256,7 @@ pub fn stream_run() -> io::Result<PathBuf> {
     let _ = fs::remove_file(&staged);
     std::os::unix::fs::symlink(&path, &staged)?;
     fs::rename(&staged, &latest)?;
+
     Ok(path)
 }
 

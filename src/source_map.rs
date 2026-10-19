@@ -56,6 +56,7 @@ impl SourcePathMap {
             })
             .filter(|candidate| candidate != recorded)
             .collect::<Vec<_>>();
+
         candidates.push(recorded.to_owned());
         candidates.dedup();
         candidates

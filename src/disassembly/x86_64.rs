@@ -45,6 +45,7 @@ impl Decoder {
         options.set_rip_relative_addresses(true);
         options.set_branch_leading_zeros(false);
         options.set_show_branch_size(false);
+
         Self {
             formatter,
             texts: HashSet::new(),

@@ -163,6 +163,7 @@ mod tests {
         meter.charge("types", 10).unwrap();
         meter.charge("types", 6).unwrap();
         assert_eq!(meter.spent(), 16);
+
         let refused = |meter: &Meter| match meter.check() {
             Err(DwarfError::Budget {
                 what,

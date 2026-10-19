@@ -27,6 +27,7 @@ fn main() {
     }
 
     let mut table = String::from("&[\n");
+
     for (name, path) in files {
         writeln!(
             table,
@@ -36,6 +37,7 @@ fn main() {
     }
 
     table.push(']');
+
     std::fs::write(out.join("web_assets.rs"), table).expect("write the asset table");
 }
 
@@ -47,6 +49,7 @@ fn sources_digest(manifest: &Path) {
     let mut files = Vec::new();
     let binary_only = ["bin", "cli", "dap", "main.rs", "present", "web"];
     let mut roots = vec!["Cargo.lock".to_owned()];
+
     for entry in std::fs::read_dir(manifest.join("src"))
         .expect("read src")
         .flatten()
@@ -122,6 +125,7 @@ fn bpf_programs(manifest: &Path, out: &Path) {
     .map(OsString::from)
     .into();
     flags.push(format!("-fdebug-prefix-map={}=.", manifest.display()).into());
+
     for path in std::env::split_paths(&include) {
         flags.push("-I".into());
         flags.push(path.into());
@@ -134,6 +138,7 @@ fn bpf_programs(manifest: &Path, out: &Path) {
         .filter(|path| path.extension().is_none_or(|extension| extension != "rs"))
         .collect();
     files.sort();
+
     let mut digest = std::hash::DefaultHasher::new();
     for part in std::iter::once(&clang).chain(&flags) {
         digest.write_usize(part.len());

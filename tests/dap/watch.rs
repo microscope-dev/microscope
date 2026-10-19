@@ -17,6 +17,7 @@ fn stopped_in(dap: &mut Dap, program: &str, function: &str) -> (Stopped, Value) 
     let stop = dap.stopped(started.mark);
     let frame =
         dap.request("stackTrace", json!({"threadId": stop.thread}))["stackFrames"][0].clone();
+
     (stop, frame)
 }
 
@@ -240,6 +241,7 @@ fn addresses_are_watched_as_memory_a_client_names_by_address() {
         "dataBreakpointInfo",
         json!({"name": reference, "asAddress": true, "bytes": 4}),
     );
+
     let address = u64::from_str_radix(reference.trim_start_matches("0x"), 16).expect("hex");
     assert_eq!(info["description"], format!("4 bytes at {address:#x}"));
     let set = dap.request(
@@ -279,6 +281,7 @@ fn the_store_mode_stops_at_every_store_even_of_the_value_held() {
     );
     let rows = breakpoints(&set);
     assert_eq!(rows[0]["verified"], true);
+
     for (row, message) in [
         (
             &rows[1],
@@ -347,6 +350,7 @@ fn data_breakpoints_the_console_disables_or_removes_stay_so_in_the_client() {
         json!({"breakpoints": [{"dataId": info["dataId"], "accessType": "write"}]}),
     );
     assert_eq!(row(&breakpoints(&again)[0]), unverified);
+
     let mark = dap.mark();
     let output = dap.request(
         "evaluate",

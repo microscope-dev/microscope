@@ -46,6 +46,7 @@ pub fn quoted(text: &TextSummary) -> String {
     }
 
     output.push('"');
+
     match text.completion {
         TextCompletion::Complete => {}
         TextCompletion::Truncated { length: None } => output.push_str("..."),
@@ -214,6 +215,7 @@ fn decimal(text: &str) -> Option<String> {
     let scientific = point - 1;
     let sign = if negative { "-" } else { "" };
     let length = i32::try_from(digits.len()).ok()?;
+
     Some(if (-6..21).contains(&scientific) {
         if point <= 0 {
             format!(
@@ -403,6 +405,7 @@ pub fn record(members: &[(Arc<str>, String)], complete: bool) -> String {
         .all(|(index, (name, _))| name.as_ref() == index.to_string());
     let (open, close) = if positional { ('(', ')') } else { ('{', '}') };
     let mut output = String::from(open);
+
     for (index, (name, value)) in members.iter().enumerate() {
         if index > 0 {
             output.push_str(", ");
@@ -437,6 +440,7 @@ fn bracketed(
     (open, close): (char, char),
 ) -> String {
     let mut output = format!("{} {open}", length(count));
+
     for (index, item) in items.iter().enumerate() {
         if index > 0 {
             output.push_str(", ");
