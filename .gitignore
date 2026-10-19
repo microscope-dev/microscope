@@ -4,3 +4,9 @@
 /target/
 /sdk/rust-probes/target/
 __pycache__/
+
+# Shared agent configuration is tracked. Local settings stay ignored, and the
+# user's global ignore of .claude must not hide the shared files.
+!/.claude/
+/.claude/*
+!/.claude/settings.json

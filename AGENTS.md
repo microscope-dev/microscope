@@ -6,14 +6,16 @@ visible; never guess when the result could look correct.
 
 ## Before changing code
 
-Run project commands inside the pinned Nix environment. For non-interactive
-work, use `just dev --command`, for example:
+Run project commands inside the pinned Nix environment. A `just` recipe runs
+there itself, so `just test breakpoint` from the host is safe. The few recipes
+that drive host programs say so in the justfile. For any other non-interactive
+command, use `just dev --command`, for example:
 
 ```sh
-just dev --command just test breakpoint
+just dev --command cargo check
 ```
 
-Do not run Cargo, Just, compilers, linters, or tests directly from the host.
+Do not run Cargo, compilers, linters, or tests directly from the host.
 
 Read the pages that match the work:
 
@@ -88,3 +90,15 @@ just all             # full pre-commit gate
 
 Run `just stress` before merging lifecycle, run-control, attach, or concurrency
 changes. Run `just sim 600` for those changes and for simulator model changes.
+
+## Agent harnesses
+
+This file is the instruction set for every agent harness. Claude Code reads it
+through `CLAUDE.md`, which imports it, and Codex reads it directly. Keep harness
+settings out of this file.
+
+- `.claude/settings.json` and `.codex/config.toml` both run the command guard
+  `scripts/agent/require-nix-shell.sh`, which blocks host builds and tests.
+- Codex caps the combined instructions at 32 KiB by default. Keep this file
+  under that size; check with `wc -c AGENTS.md`.
+- Choose the model per session. The repository does not pin one.

@@ -1,0 +1,13 @@
+# Project settings for Codex. Codex loads this layer only for a trusted project,
+# and asks you to review the hooks below with /hooks before they first run.
+# The model is not set here: pick it per session, so the repository does not
+# fix one model for every harness.
+
+# The same guard as .claude/settings.json: blocks host builds and tests
+# (AGENTS.md, "Before changing code").
+[[hooks.PreToolUse]]
+matcher = "^Bash$"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "$(git rev-parse --show-toplevel)/scripts/agent/require-nix-shell.sh"
