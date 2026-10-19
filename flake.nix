@@ -595,7 +595,7 @@
           # The memory cap tests run under asks the user's systemd for a scope.
           systemd
           git
-          # The syscall tracer's tests hold its output to strace's.
+          jq
           strace
           # Profilers for the `just profile-*` recipes.
           perf
