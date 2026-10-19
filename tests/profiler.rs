@@ -1205,6 +1205,75 @@ fn a_stack_through_a_perf_maps_code_goes_on_to_its_callers() {
     }
 }
 
+/// A full ring loses whatever does not fit, the mapping of a compiler's
+/// code among it, which a loaded machine's recording of CPython lost. Code
+/// moved with mremap is mapped where no record says, the same every run.
+/// The recording reads such code's mapping from the process: its perf map
+/// names the code, and a stack goes on through it to its callers.
+#[test]
+fn a_stack_through_code_whose_mapping_no_record_reports_goes_on_to_its_callers() {
+    let leaf = |stack: &SampledStack| stack.functions.first().is_some_and(|name| name == "spin");
+    let mut command = Command::new(Scenario::fixture("profile-moved-jit"));
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let stop = AtomicBool::new(false);
+    let recording = record_watched(
+        command,
+        &RecordOptions::preset(Preset::Maximum),
+        &mut Watch {
+            every: Duration::from_millis(50),
+            publish: &mut |profile| {
+                let spun = profile.stacks().iter().filter(|stack| leaf(stack)).count();
+                if spun >= PERF_MAP_LEAF_SAMPLES || std::time::Instant::now() >= deadline {
+                    stop.store(true, Ordering::Relaxed);
+                }
+            },
+            stop: &stop,
+            save: None,
+        },
+    )
+    .expect("record");
+    let stacks = recording.profile.stacks();
+    let _map = PerfMap(stacks.first().map(|stack| stack.pid));
+    assert_eq!(recording.status.signal(), Some(nix::libc::SIGKILL));
+    assert_eq!(
+        recording
+            .profile
+            .setting(&format!("perf map {}", stacks[0].pid)),
+        None
+    );
+
+    let mut spun = 0;
+    for stack in &stacks {
+        assert_ne!(
+            stack.ending,
+            StackEnding::Truncated("unmapped return address".into()),
+            "{stack:?}"
+        );
+        if !leaf(stack) {
+            continue;
+        }
+
+        spun += 1;
+        assert_eq!(
+            stack.functions[..3],
+            ["spin", "jitted_call", "main"],
+            "{stack:?}"
+        );
+        assert_eq!(stack.ending, StackEnding::Complete, "{stack:?}");
+    }
+
+    assert!(
+        spun >= PERF_MAP_LEAF_SAMPLES,
+        "{spun} of {} samples in spin",
+        stacks.len()
+    );
+}
+
 /// Attaches to `process`, then, once the events are open, releases it, or
 /// when `stopping`, stops the recording, which records until it ends.
 fn attach_and_release(

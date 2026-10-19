@@ -103,6 +103,16 @@ ends the function. One read after may name the new code, since the map is
 read as the program runs and mappings as the recorder drains them, so it is
 kept until a later line replaces it.
 
+A recording can miss where anonymous code is mapped: a full ring drops
+mapping records with everything else, which a loaded machine's recording of
+CPython's trampolines did, and `mremap` moves code without a record. A
+sample in code the recording has seen nothing of, in no mapping and no
+anonymous range, maps the anonymous executable mapping that holds it from
+`/proc/PID/maps` as its record would have (`Processor::map_unseen_code`),
+then reads the perf map for it. The same 20 ms bound applies. Only
+anonymous code is mapped so: a file mapped there now may have replaced what
+the sample ran.
+
 Nothing describes those functions' frames, so their frames are proved from
 their code, read from the process when the map is
 (`src/debug_info/x86_64/frames.rs`). The proof follows the instructions that

@@ -981,11 +981,7 @@ impl Processor {
         sample: &decode::Sample<'_>,
         frames: &[crate::unwind::sample::SampledFrame],
     ) -> bool {
-        let Some(process) = self.processes.get_mut(&sample.pid) else {
-            return false;
-        };
-
-        let addresses = frames
+        let addresses: Vec<u64> = frames
             .iter()
             .map(|frame| frame.address.get())
             .chain(self.chain.first().copied())
@@ -994,7 +990,14 @@ impl Processor {
                     .iter()
                     .skip(1)
                     .map(|address| address.wrapping_sub(1)),
-            );
+            )
+            .collect();
+        let recovered = self.map_unseen_code(sample, &addresses);
+
+        let Some(process) = self.processes.get_mut(&sample.pid) else {
+            return recovered;
+        };
+
         let images = &self.images;
         let mapped = &process.mapped;
         let descriptors = || {
@@ -1012,7 +1015,7 @@ impl Processor {
             descriptors.into_iter().collect()
         };
 
-        let unmapped = addresses.filter(|&address| {
+        let unmapped = addresses.iter().copied().filter(|&address| {
             !mapped
                 .iter()
                 .any(|mapped| (mapped.start..mapped.end).contains(&address))
@@ -1035,7 +1038,65 @@ impl Processor {
             self.jit_object_module(sample.pid, sample.time, object);
         }
 
-        !refreshed.stale.is_empty() || !refreshed.objects.is_empty()
+        recovered || !refreshed.stale.is_empty() || !refreshed.objects.is_empty()
+    }
+
+    /// Maps each anonymous executable mapping the process holds now that
+    /// holds one of a sample's `addresses` the recording has seen nothing
+    /// of, as its record would have: a full ring loses mapping records with
+    /// everything else, and mremap moves code where no record says. Its
+    /// perf map is then read for it. Whether any was mapped.
+    ///
+    /// Only anonymous code is mapped so: a perf map names it by address,
+    /// as it is read later anyway, but a file the process maps now where
+    /// none was seen may have replaced what the sample ran.
+    fn map_unseen_code(&mut self, sample: &decode::Sample<'_>, addresses: &[u64]) -> bool {
+        let Some(process) = self.processes.get(&sample.pid) else {
+            return false;
+        };
+
+        let unseen: Vec<u64> = addresses
+            .iter()
+            .copied()
+            .filter(|&address| {
+                !process
+                    .mapped
+                    .iter()
+                    .any(|mapped| (mapped.start..mapped.end).contains(&address))
+                    && process.jit.unseen(address, sample.time)
+            })
+            .collect();
+        if unseen.is_empty() {
+            return false;
+        }
+
+        let Ok(mappings) = perf::mappings(sample.pid.get()) else {
+            return false;
+        };
+
+        let mut mapped = false;
+        for mapping in &mappings {
+            let mmap = decode::Mmap {
+                pid: sample.pid,
+                start: mapping.start,
+                length: mapping.end - mapping.start,
+                file_offset: mapping.file_offset,
+                inode: Some(mapping.inode),
+                executable: mapping.executable,
+                path: &mapping.path,
+                time: sample.time,
+            };
+            let holds = unseen
+                .iter()
+                .any(|address| (mapping.start..mapping.end).contains(address));
+
+            if holds && perf::jit::is_anonymous_code(&mmap) {
+                self.mmap(&mmap);
+                mapped = true;
+            }
+        }
+
+        mapped
     }
 
     fn sample(&mut self, sample: &decode::Sample<'_>) {

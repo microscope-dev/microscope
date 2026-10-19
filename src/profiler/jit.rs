@@ -12,6 +12,9 @@
 //! from the code as it is then. The registered objects are read
 //! again then too, when their descriptors or entries changed since they
 //! were last read. A range that holds registered objects is theirs alone.
+//! Anonymous code the recording saw no mapping of, as when a full ring
+//! dropped its record, is mapped from the process first (see
+//! [`Jit::unseen`]).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -196,6 +199,15 @@ impl Jit {
     pub fn needs(&self, address: u64) -> bool {
         self.range(address)
             .is_some_and(|(_, range)| !range.current || !self.covers(address))
+    }
+
+    /// Whether `address`, sampled at `time` in no mapping the recording
+    /// holds, may be anonymous code whose mapping it never saw: it lies in
+    /// no anonymous range the recording saw mapped, nothing named covers
+    /// it, and no read for code nothing names found nothing new within
+    /// [`QUIET`] before.
+    pub fn unseen(&self, address: u64, time: u64) -> bool {
+        self.range(address).is_none() && !self.covers(address) && time >= self.quiet
     }
 
     fn range(&self, address: u64) -> Option<(u64, Range)> {
