@@ -1444,6 +1444,9 @@ build_tokio_fixtures() {
 }
 
 mkdir -p "$output_dir"
+# Every core's program runs under it (make_core), the tokio fixtures' too:
+# it is built before they start, which wait on no job of this shell's.
+readonly stack_guard_mappings="$output_dir/stack-guard-mappings"
 # `tokio` builds only the tokio fixtures, all that the tokio suite reads,
 # without checking every other fixture.
 if (( $# > 0 )); then
@@ -1451,6 +1454,8 @@ if (( $# > 0 )); then
         printf 'usage: %s [tokio]\n' "$0" >&2
         exit 2
     fi
+    build_fixture gcc scripts/stack-guard-mappings.c "$stack_guard_mappings" -O2
+    wait_builds
     build_tokio_fixtures
     exit 0
 fi
@@ -1462,9 +1467,6 @@ fi
 # Written before building so sources edited during this run are newer than the
 # stamp that the final rename publishes.
 printf '%s\n' "$signature" >"${suite_stamp}.tmp"
-# Every core's program runs under it (make_core), the tokio fixtures' too:
-# it is built before they start, which wait on no job of this shell's.
-readonly stack_guard_mappings="$output_dir/stack-guard-mappings"
 build_fixture gcc scripts/stack-guard-mappings.c "$stack_guard_mappings" -O2
 wait_builds
 
