@@ -22,6 +22,18 @@ readonly frame_oracle_script=scripts/frame-variables-oracle.py
 # build/ is shared with another's must not take the other's as its own.
 readonly checkout="checkout=${PWD}"
 
+# The Nix shell's compile flags carry a -frandom-seed named after the
+# shell's own store path, and gcc records it in every program's
+# DW_AT_producer. Any change to the shell, such as adding a tool to it,
+# then changed the bytes of every C and C++ output that was rebuilt, and
+# bench/baseline.json's digests with them, though no signature names the
+# shell. Builds drop it; the signature line rebuilds those built with it.
+shell_seed=$(grep -o -- '-frandom-seed=[^ ]*' <<<"${NIX_CFLAGS_COMPILE-}" || true)
+if [[ -n "$shell_seed" ]]; then
+    export NIX_CFLAGS_COMPILE="${NIX_CFLAGS_COMPILE//"$shell_seed"/}"
+fi
+readonly random_seed="random-seed=none"
+
 declare -A dash_version_by_tool=()
 declare -A rebuilt_outputs=()
 dash_version=""
@@ -224,7 +236,7 @@ run_cached_build() {
     local -a command=("$@")
     local command_text
     printf -v command_text '%q ' "${command[@]}"
-    local signature="${checkout}"$'\n'"${metadata}"$'\n'"command=${command_text}"
+    local signature="${checkout}"$'\n'"${random_seed}"$'\n'"${metadata}"$'\n'"command=${command_text}"
     local stamp="${output}.command"
     local previous=""
 
