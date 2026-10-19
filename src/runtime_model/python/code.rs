@@ -15,6 +15,7 @@ use super::linetable;
 use super::objects::{Problem, Reader, Record, malformed};
 use crate::VirtualAddress;
 use crate::image::python::{Constant, Field};
+use crate::runtime_model::SampledCode;
 
 crate::model::id_type!(CodeId, "A code object's row in one process's code table.");
 crate::model::id_type!(NameId, "A string in one process's code table.");
@@ -134,7 +135,15 @@ impl CodeTable {
 
         let id = self.decode(reader, &header, proof)?;
         self.index.insert(address, id);
-        self.check_invariants();
+        // Only the new row: the others were checked as they were decoded,
+        // and checking every row at each would cost each decode them all.
+        self.check_row(id.index());
+        debug_assert!(
+            self.rows
+                .get(id.index())
+                .is_some_and(|row| row.address == address),
+            "the index finds row {id} at {address:#x}, which is not its"
+        );
         Ok(id)
     }
 
@@ -210,11 +219,13 @@ impl CodeTable {
         &self.rows[id.index()]
     }
 
-    /// Whether the row `id` is of the code object whose qualified-name
-    /// pointer and first line were `proof` when they were read.
-    pub(super) fn proves(&self, id: CodeId, (qualname, first_line): (u64, i32)) -> bool {
+    /// Whether the row `id` is of the code object a walker in the kernel
+    /// read as `sampled`.
+    pub(super) fn proves(&self, id: CodeId, sampled: SampledCode) -> bool {
         let proof = self.row(id).proof;
-        proof.qualname == qualname && proof.first_line == first_line
+        proof.qualname == sampled.qualname
+            && proof.linetable == sampled.linetable
+            && proof.first_line == sampled.first_line
     }
 
     /// The locals of the code object in row `id`, in the order its frames
@@ -244,27 +255,10 @@ impl CodeTable {
 
     /// Panics unless every span lies within its pool, every name id names
     /// a name, and the index finds each row it names by its address.
+    #[cfg(test)]
     pub(super) fn check_invariants(&self) {
-        for (index, row) in self.rows.iter().enumerate() {
-            debug_assert!(
-                row.locals.range().end <= self.locals.len(),
-                "row {index}'s locals lie past the pool"
-            );
-            debug_assert!(
-                row.lines.range().end <= self.lines.len(),
-                "row {index}'s line table lies past the pool"
-            );
-            debug_assert!(
-                row.qualname.index() < self.names.len() && row.file.index() < self.names.len(),
-                "row {index} names no name"
-            );
-        }
-
-        for local in &self.locals {
-            debug_assert!(
-                local.name.index() < self.names.len(),
-                "a local names no name"
-            );
+        for index in 0..self.rows.len() {
+            self.check_row(index);
         }
 
         #[allow(
@@ -277,6 +271,33 @@ impl CodeTable {
                     .get(id.index())
                     .is_some_and(|row| row.address == *address),
                 "the index finds row {id} at {address:#x}, which is not its"
+            );
+        }
+    }
+
+    /// Panics unless row `index`'s spans lie within their pools, and each
+    /// name id it and its locals hold names a name.
+    fn check_row(&self, index: usize) {
+        let Some(row) = self.rows.get(index) else {
+            debug_assert!(false, "no row {index}");
+            return;
+        };
+        debug_assert!(
+            row.locals.range().end <= self.locals.len(),
+            "row {index}'s locals lie past the pool"
+        );
+        debug_assert!(
+            row.lines.range().end <= self.lines.len(),
+            "row {index}'s line table lies past the pool"
+        );
+        debug_assert!(
+            row.qualname.index() < self.names.len() && row.file.index() < self.names.len(),
+            "row {index} names no name"
+        );
+        for local in self.locals.get(row.locals.range()).unwrap_or_default() {
+            debug_assert!(
+                local.name.index() < self.names.len(),
+                "a local of row {index} names no name"
             );
         }
     }

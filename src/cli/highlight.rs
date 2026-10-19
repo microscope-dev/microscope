@@ -607,6 +607,60 @@ const PYTHON_KEYWORDS: &[&str] = &[
     "try", "type", "while", "with", "yield",
 ];
 
+/// Whether a Python keyword at the end of `text[..end]` is one there.
+/// `match`, `case`, and `type` are soft: keywords only where they begin
+/// the statement they name, a `match` or `case` ending in a colon or a
+/// `type` alias. Elsewhere they are names, as `type(x)` calls one.
+fn python_soft_keyword_holds(text: &[u8], word: &str, end: usize, line_start: bool) -> bool {
+    if !matches!(word, "match" | "case" | "type") {
+        return true;
+    }
+
+    if !line_start {
+        return false;
+    }
+
+    let line_end = text[end..]
+        .iter()
+        .position(|&byte| byte == b'\n')
+        .map_or(text.len(), |offset| end + offset);
+    let rest = &text[end..line_end];
+    let after = rest.trim_ascii_start();
+    if word == "type" {
+        // `type Name = ...` or `type Name[T] = ...`.
+        let name = after
+            .iter()
+            .take_while(|&&byte| is_identifier(byte))
+            .count();
+        let tail = after[name..].trim_ascii_start();
+        return after.len() < rest.len()
+            && name > 0
+            && (tail.starts_with(b"[") || tail.starts_with(b"=") && !tail.starts_with(b"=="));
+    }
+
+    // A name assigned, annotated, or used as an object is no statement.
+    if after.first().is_some_and(|byte| b"=:.,)".contains(byte)) {
+        return false;
+    }
+
+    // The statement's colon ends its line, before any comment.
+    let mut quote = None;
+    let mut code = rest.len();
+    for (offset, &byte) in rest.iter().enumerate() {
+        match (quote, byte) {
+            (None, b'#') => {
+                code = offset;
+                break;
+            }
+            (None, b'\'' | b'"') => quote = Some(byte),
+            (Some(open), _) if byte == open => quote = None,
+            _ => {}
+        }
+    }
+
+    rest[..code].trim_ascii_end().ends_with(b":")
+}
+
 /// The prefixes a Python string may begin with, in any case.
 const PYTHON_STRING_PREFIXES: &[&[u8]] = &[
     b"", b"r", b"u", b"b", b"f", b"t", b"rb", b"br", b"fr", b"rf", b"tr", b"rt",
@@ -870,7 +924,8 @@ fn tokens(text: &[u8], language: Language) -> Vec<Span> {
                     .any(|keyword| keyword.eq_ignore_ascii_case(word))
             } else {
                 language.keywords().contains(&word)
-            };
+            } && (language != Language::Python
+                || python_soft_keyword_holds(text, word, index, line_start));
 
             keyword.then_some(Kind::Keyword)
         } else if byte == b'#' && line_start && matches!(language, Language::C | Language::Cpp) {
@@ -964,11 +1019,90 @@ fn python_string_end(text: &[u8], start: usize) -> Option<usize> {
     })?;
 
     let quote = text[quote_index];
-    if text[quote_index..].starts_with(&[quote; 3]) {
+    let triple = text[quote_index..].starts_with(&[quote; 3]);
+    let prefix = &text[start..quote_index];
+    if prefix
+        .iter()
+        .any(|byte| matches!(byte, b'f' | b'F' | b't' | b'T'))
+    {
+        let raw = prefix.iter().any(|byte| matches!(byte, b'r' | b'R'));
+        return Some(formatted_end(text, quote_index, quote, triple, raw));
+    }
+
+    if triple {
         Some(triple_quoted_end(text, quote_index, quote))
     } else {
         Some(quoted_end(text, quote_index, quote, false))
     }
+}
+
+/// Where an f-string or t-string from `start`, which opens with `quote`,
+/// three of them where `triple`, ends after its closing quotes. From 3.12
+/// a field, between braces, holds an expression, which may hold strings in
+/// the string's own quotes and span lines, then after a `:` its format
+/// spec, which is text but for fields of its own; `{{` is a brace.
+fn formatted_end(text: &[u8], start: usize, quote: u8, triple: bool, raw: bool) -> usize {
+    /// What each open brace or bracket holds.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Open {
+        Field,
+        Spec,
+        Bracket,
+    }
+
+    let closing: &[u8] = if triple { &[quote; 3] } else { &[quote] };
+    let mut index = start + closing.len();
+    let mut open: Vec<Open> = Vec::new();
+    while index < text.len() {
+        let byte = text[index];
+        match open.last() {
+            None | Some(Open::Spec) => {
+                if byte == b'\\' && !raw {
+                    index += 2;
+                    continue;
+                }
+                if open.is_empty() && text[index..].starts_with(closing) {
+                    return index + closing.len();
+                }
+                if byte == b'\n' && !triple {
+                    return index;
+                }
+                match byte {
+                    b'{' if open.is_empty() && text.get(index + 1) == Some(&b'{') => index += 1,
+                    b'{' => open.push(Open::Field),
+                    b'}' if !open.is_empty() => {
+                        open.pop();
+                    }
+                    _ => {}
+                }
+                index += 1;
+            }
+            Some(&top) => {
+                // An expression, whose strings end none of this one.
+                if let Some(end) = (!is_identifier(text[index - 1]))
+                    .then(|| python_string_end(text, index))
+                    .flatten()
+                {
+                    index = end;
+                    continue;
+                }
+                match byte {
+                    b'(' | b'[' | b'{' => open.push(Open::Bracket),
+                    b')' | b']' | b'}' => {
+                        open.pop();
+                    }
+                    b':' if top == Open::Field => {
+                        open.pop();
+                        open.push(Open::Spec);
+                    }
+                    _ => {}
+                }
+                index += 1;
+            }
+        }
+    }
+
+    text.len()
 }
 
 /// Where a triple-quoted string from `start`, which opens with three
@@ -1235,6 +1369,86 @@ mod tests {
             [
                 of(&[("char", Keyword), ("\"open", String)]),
                 of(&[("int", Keyword)]),
+            ]
+        );
+    }
+
+    /// `match`, `case`, and `type` are keywords only where a statement
+    /// they begin is: elsewhere they are names, as `type(x)` calls one.
+    #[test]
+    fn python_soft_keywords_are_keywords_only_where_they_begin_statements() {
+        use Kind::{Comment, Keyword, Number};
+
+        let python = "match command:
+    case [x, *rest]:
+        type Point = tuple[int, int]
+match = re.match(pattern, text)
+kind = type(value)
+self.type = 1
+case(1)
+type
+match (x):
+match x:  # a comment: here
+match = 1  # here:
+type Pair[T] = tuple[T, T]
+type == 1";
+        assert_eq!(
+            shown(python, Language::Python),
+            [
+                of(&[("match", Keyword)]),
+                of(&[("case", Keyword)]),
+                of(&[("type", Keyword)]),
+                of(&[]),
+                of(&[]),
+                of(&[("1", Number)]),
+                of(&[("1", Number)]),
+                of(&[]),
+                of(&[("match", Keyword)]),
+                of(&[("match", Keyword), ("# a comment: here", Comment)]),
+                of(&[("1", Number), ("# here:", Comment)]),
+                of(&[("type", Keyword)]),
+                of(&[("1", Number)]),
+            ]
+        );
+    }
+
+    /// From 3.12 an f-string's fields may hold strings in its own quotes,
+    /// which end no string; `{{` is a brace, and opens no field.
+    #[test]
+    #[expect(
+        clippy::literal_string_with_formatting_args,
+        reason = "the texts are Python's f-strings"
+    )]
+    fn python_f_strings_hold_strings_in_their_fields() {
+        use Kind::{Number, String};
+
+        let python = r#"a = f"{d["key"]}" + 1
+b = f'{x!r:>{width}} {{y}}' + 2
+c = rf"{d['a'] + "}"}\d" + 3
+d = f"""{d["""
+x"""]}""" + 4
+e = "{d["k"]}" + 5
+g = f"{x:'>10}" + f'{x:{"w"}}' + 6
+h = f"{
+  x
+}" + 7"#;
+        assert_eq!(
+            shown(python, Language::Python),
+            [
+                of(&[(r#"f"{d["key"]}""#, String), ("1", Number)]),
+                of(&[("f'{x!r:>{width}} {{y}}'", String), ("2", Number)]),
+                of(&[(r#"rf"{d['a'] + "}"}\d""#, String), ("3", Number)]),
+                of(&[(r#"f"""{d[""""#, String)]),
+                of(&[(r#"x"""]}""""#, String), ("4", Number)]),
+                of(&[(r#""{d[""#, String), (r#""]}""#, String), ("5", Number)]),
+                of(&[
+                    (r#"f"{x:'>10}""#, String),
+                    (r#"f'{x:{"w"}}'"#, String),
+                    ("6", Number)
+                ]),
+                of(&[(r#"f"{"#, String)]),
+                of(&[("  x", String)]),
+                of(&[(r#"}""#, String), ("7", Number)]),
             ]
         );
     }

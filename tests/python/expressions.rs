@@ -456,6 +456,7 @@ async fn each_expression_gives_what_cpython_gave_in_the_frame() {
         let locals = reported_locals(&truth);
         let reported_values = locals
             .get(&(printer, "values".to_owned()))
+            .filter(|reported| !reported.is_empty())
             .unwrap_or_else(|| panic!("{}: CPython reported no values frame", stop.context));
         for (name, text) in reported_values {
             let variable = local(&variables, name, &stop);
@@ -467,7 +468,13 @@ async fn each_expression_gives_what_cpython_gave_in_the_frame() {
             }
         }
 
-        for (name, reported) in reported_attributes(&truth) {
+        let attributes = reported_attributes(&truth);
+        assert!(
+            !attributes.is_empty(),
+            "{}: CPython reported no attributes",
+            stop.context
+        );
+        for (name, reported) in attributes {
             let variable = local(&variables, name, &stop);
             let mut children = all_children(&stop, &variable.state).await;
 

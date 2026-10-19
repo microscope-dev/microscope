@@ -915,11 +915,12 @@ impl Number {
 #[expect(
     clippy::cast_possible_truncation,
     clippy::float_cmp,
-    reason = "an integral float below 2**127 converts exactly"
+    reason = "an integral float from -2**127 to below 2**127 converts exactly"
 )]
 fn integral(value: f64) -> Option<i128> {
     const LIMIT: f64 = 170_141_183_460_469_231_731_687_303_715_884_105_728.0;
-    (value.is_finite() && value.trunc() == value && value.abs() < LIMIT).then_some(value as i128)
+    (value.is_finite() && value.trunc() == value && (-LIMIT..LIMIT).contains(&value))
+        .then_some(value as i128)
 }
 
 /// CPython's hash of a key, where it does not depend on the process:

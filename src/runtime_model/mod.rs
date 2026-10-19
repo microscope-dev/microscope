@@ -19,6 +19,11 @@ pub use agents::{
 pub mod futures;
 mod go;
 mod python;
+pub use python::BOOTSTRAP_DIRECTORY_PREFIX as PYTHON_BOOTSTRAP_PREFIX;
+pub use python::{
+    SCRIPT_DIRECTORY_PREFIX as PYTHON_SCRIPT_PREFIX,
+    is_script_filename as is_python_script_filename, script_name as python_script_name,
+};
 mod records;
 mod rust;
 pub mod thread_ids;
@@ -1293,12 +1298,23 @@ pub struct WalkedThread {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SampledFrame {
     pub code: VirtualAddress,
-    pub proof: (u64, i32),
+    pub proof: SampledCode,
 
     /// The instruction's byte offset from the bytecode's start, which may
     /// be just before it; `None` where it could not be read.
     pub offset: Option<i64>,
     pub owner: u32,
+}
+
+/// What a walker in the kernel read of a frame's code object, which proves
+/// it is the same object when it is read again: an object put in a freed
+/// one's place has a line table of its own, though its name and first line
+/// are the same.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SampledCode {
+    pub qualname: u64,
+    pub linetable: u64,
+    pub first_line: i32,
 }
 
 /// The labels a runtime gives one thread.

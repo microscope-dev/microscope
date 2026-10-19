@@ -245,6 +245,7 @@ const fn member(field: Field, minor: u32) -> Option<Member> {
         Field::ThreadAsyncioTasksHead => ("_PyThreadStateImpl", &["asyncio_tasks_head"]),
         Field::InterpreterAsyncioTasksHead => ("PyInterpreterState", &["asyncio_tasks_head"]),
         Field::LlistNext => ("llist_node", &["next"]),
+        Field::LlistPrev => ("llist_node", &["prev"]),
         Field::FrameStackpointer => ("_PyInterpreterFrame", &["stackpointer"]),
         Field::GenFrameState => ("PyGenObject", &["gi_frame_state"]),
         Field::GenFrame => ("PyGenObject", &["gi_iframe"]),

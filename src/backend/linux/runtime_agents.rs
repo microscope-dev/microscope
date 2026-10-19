@@ -736,7 +736,15 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .as_mut()
                 .and_then(|inferior| inferior.barrier.as_mut())
         {
-            barrier.reason = Some(crate::StopReason::RuntimeEvent { description });
+            // As any other reason a barrier's threads give, it does not
+            // displace one that stopped a thread first, as a breakpoint's.
+            let reason = crate::StopReason::RuntimeEvent { description };
+            if barrier.reason.as_ref().is_none_or(|current| {
+                super::classify::visible_stop_priority(&reason)
+                    > super::classify::visible_stop_priority(current)
+            }) {
+                barrier.reason = Some(reason);
+            }
         }
         if self.sync_runtime_arming() {
             self.publish_breakpoints_changed();
@@ -782,7 +790,12 @@ impl<P: LinuxTraceOps> Controller<P> {
                     &mut installation,
                     generation,
                     AgentRetirementProof::Acknowledged,
-                )?;
+                )
+                .map_err(|error| match failure {
+                    // What the agent said is why the configuration failed.
+                    Some(reason) => Arc::from(format!("{reason}; {error}")),
+                    None => error,
+                })?;
             }
             installation.deadline = None;
             installation.expired = false;

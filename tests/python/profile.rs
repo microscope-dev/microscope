@@ -434,6 +434,10 @@ fn the_python_package_records_what_the_program_marks() {
     assert!(depths[0] < depths[1] && depths[1] == depths[2], "{zones:?}");
     assert_eq!(named("__main__.numbers").len(), 3, "{zones:?}");
     assert!(named("coroutine").is_empty(), "{zones:?}");
+    // Equal code in two modules is two sites, and a prefix added later
+    // reaches code that ran before it.
+    assert_eq!(named("__main__.traced.work").len(), 1, "{zones:?}");
+    assert_eq!(named("elsewhere.work").len(), 1, "{zones:?}");
 
     let plotted = profile
         .plots()
@@ -450,6 +454,16 @@ fn the_python_package_records_what_the_program_marks() {
         .filter_map(|marker| marker.text)
         .collect::<Vec<_>>();
     assert_eq!(said, ["round 0", "round 1", "round 2"]);
+
+    // The sites past the table's last record nothing, and the profile
+    // says so.
+    let problems = profile.probe_problems();
+    assert!(
+        problems
+            .iter()
+            .any(|(_, problem)| problem.contains("all 4096 of its run-time sites")),
+        "{problems:?}"
+    );
 }
 
 /// Without its native library the package still imports, and every mark
@@ -472,6 +486,7 @@ with microscope.zone('block'), microscope.label('key', 1):
     microscope.frame()
     microscope.trigger('why')
 microscope.trace_calls('__main__')
+assert sys.monitoring.get_tool(sys.monitoring.PROFILER_ID) is None
 assert load() == 1
 print('NO LIBRARY OK')
 ";
@@ -639,10 +654,24 @@ mod bpf {
     /// The fixture's profile under `interpreter` by the BPF engine, from
     /// a recording that lets the program go after `running`.
     fn recorded(interpreter: &str, running: Duration) -> Profile {
-        let output = std::env::temp_dir().join(format!(
-            "microscope-bpf-{}-{interpreter}.usprof",
-            std::process::id()
-        ));
+        recorded_with(interpreter, "profiled.py", &[], running)
+    }
+
+    /// `fixture`'s profile under `interpreter` by the BPF engine, run with
+    /// `environment`, from a recording that lets the program go after
+    /// `running`.
+    fn recorded_with(
+        interpreter: &str,
+        fixture: &str,
+        environment: &[(&str, &std::ffi::OsStr)],
+        running: Duration,
+    ) -> Profile {
+        // The recording runs in a process of its own, which the test cannot
+        // watch for samples as it records: it runs for `running`.
+        let scratch = crate::support::ScratchDir::new("python-bpf");
+        let output = scratch
+            .path()
+            .join(format!("{interpreter}-{fixture}.usprof"));
         let mut child = Command::new(launcher())
             .arg(env!("CARGO_BIN_EXE_microscope"))
             .arg("record")
@@ -652,8 +681,13 @@ mod bpf {
             .arg(&output)
             .arg("--")
             .arg(python::interpreter(interpreter))
-            .args(["-I", "-B"])
-            .arg(python::fixture("profiled.py"))
+            .args(if environment.is_empty() {
+                ["-I", "-B"].as_slice()
+            } else {
+                ["-s", "-B"].as_slice()
+            })
+            .arg(python::fixture(fixture))
+            .envs(environment.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -672,9 +706,96 @@ mod bpf {
             "{interpreter}: {}",
             String::from_utf8_lossy(&finished.stderr)
         );
+        Profile::read(&output).expect("read the profile").profile
+    }
+
+    /// A thread that never enters the interpreter's loop, as a library's
+    /// worker thread does, runs no Python frames: its samples are whole,
+    /// not cut short by frames that cannot be known.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
+    fn threads_that_run_no_python_have_no_unknown_frames() {
+        let site = python::interpreter("3.14").with_file_name("site");
+        let environment = [
+            ("PYTHONPATH", site.as_os_str()),
+            ("OMP_NUM_THREADS", std::ffi::OsStr::new("2")),
+        ];
+        recorded_with(
+            "3.14",
+            "workers.py",
+            &environment,
+            Duration::from_millis(200),
+        );
+        let profile = recorded_with("3.14", "workers.py", &environment, Duration::from_secs(1));
+        let stacks = profile.stacks();
+        let workers = stacks
+            .iter()
+            .filter(|stack| {
+                stack
+                    .functions
+                    .iter()
+                    .any(|function| function == "gomp_thread_start")
+            })
+            .collect::<Vec<_>>();
+        assert!(!workers.is_empty(), "no samples on workers: {stacks:#?}");
+        let unknown = workers
+            .iter()
+            .filter(|stack| {
+                stack.ending == StackEnding::Truncated("interpreted frames unknown".into())
+            })
+            .count();
+        assert_eq!(
+            unknown,
+            0,
+            "{unknown} of {} workers' samples",
+            workers.len()
+        );
+    }
+
+    /// A program that replaces itself with another interpreter is read by
+    /// the new one's modules: the spinners' samples of the program it
+    /// runs hold their Python frames by line.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
+    fn a_program_an_exec_replaces_is_read_by_its_own_interpreter() {
+        let lines = lines();
+        let scratch = crate::support::ScratchDir::new("python-bpf-exec");
+        let output = scratch.path().join("exec.usprof");
+        let mut child = Command::new(launcher())
+            .arg(env!("CARGO_BIN_EXE_microscope"))
+            .args(["record", "--python", "bpf", "--output"])
+            .arg(&output)
+            .arg("--")
+            .arg(python::interpreter("3.12"))
+            .args(["-I", "-B"])
+            .arg(python::fixture("exec_profiled.py"))
+            .arg(python::interpreter("3.14"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("run microscope");
+        std::thread::sleep(Duration::from_secs(3));
+        child
+            .stdin
+            .take()
+            .expect("its input")
+            .write_all(b"\n")
+            .expect("release the program");
+        let finished = child.wait_with_output().expect("microscope finishes");
+        assert!(
+            finished.status.success(),
+            "{}",
+            String::from_utf8_lossy(&finished.stderr)
+        );
         let profile = Profile::read(&output).expect("read the profile").profile;
-        let _ = std::fs::remove_file(&output);
-        profile
+        let python = paths(&profile, Source::Samples, Look::Python);
+        let spinning: u64 = python
+            .iter()
+            .filter(|(path, _)| spins(path, &lines))
+            .map(|(_, weight)| weight)
+            .sum();
+        assert!(spinning > 0, "no sample through work: {python:#?}");
     }
 
     /// Each CPU sample of a spinner holds its Python frames by line,

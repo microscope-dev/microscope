@@ -188,7 +188,17 @@ pub async fn sources(images: &Images, python: Option<Project>) -> SourceFiles {
         match listing {
             Ok(listing) => {
                 files.extend(listing.files.iter().map(|path| path.display().to_string()));
-                if !listing.complete {
+                if !listing.unreadable.is_empty() {
+                    note = Some(format!(
+                        "the Python files under {} are not listed: they cannot be read",
+                        listing
+                            .unreadable
+                            .iter()
+                            .map(|directory| directory.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                } else if !listing.complete {
                     note = Some(format!(
                         "only the first {} Python files under {} are listed",
                         listing.files.len(),

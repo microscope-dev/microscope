@@ -11,6 +11,7 @@ import {
 } from "@codemirror/language";
 import type { Extension } from "@codemirror/state";
 import { tags } from "@lezer/highlight";
+import { PYTHON_KEYWORDS, pythonKeywordHolds } from "../../python";
 
 const ZIG_KEYWORDS = new Set(
   (
@@ -309,14 +310,6 @@ const ada = simple({
   attributes: true,
 });
 
-const PYTHON_KEYWORDS = new Set(
-  (
-    "False None True and as assert async await break case class continue def del elif else " +
-    "except finally for from global if import in is lambda match nonlocal not or pass raise " +
-    "return try type while with yield"
-  ).split(" "),
-);
-
 /** Python's string prefixes, in any case, before the quote that opens a string. */
 const PYTHON_STRING_START = /^(?:rb|br|fr|rf|tr|rt|[rubft])?(?=['"])/i;
 
@@ -324,9 +317,19 @@ const PYTHON_STRING_START = /^(?:rb|br|fr|rf|tr|rt|[rubft])?(?=['"])/i;
 const PYTHON_NUMBER =
   /^0[xX][\da-fA-F_]+|^0[oO][0-7_]+|^0[bB][01_]+|^\d[\d_]*(\.\d[\d_]*)?(?:[eE][-+]?\d[\d_]*)?[jJ]?/;
 
-/** The state of a string: the delimiter that closes it, if it runs on. */
+/** What each brace or bracket open in an f-string's field holds: the field's
+ * expression, its format spec after a `:`, or a bracket in the expression. */
+type PythonOpen = "field" | "spec" | "bracket";
+
+/** The state of a string: the delimiter that closes it, if it runs on; for
+ * an f-string or t-string, whether it is raw, what its fields hold open, and
+ * the delimiter of a string within a field, if one runs on. */
 interface PythonState {
   closing: string | null;
+  formatted: boolean;
+  raw: boolean;
+  open: PythonOpen[];
+  inner: string | null;
 }
 
 /** Reads on through a string closed by `closing`, to that delimiter or the
@@ -348,15 +351,87 @@ function readPythonString(stream: StringStream, state: PythonState, closing: str
   state.closing = triple || continued ? closing : null;
 }
 
+/** Reads on through an f-string or t-string closed by `state.closing`. From
+ * 3.12 a field, between braces, holds an expression, which may hold strings
+ * in the string's own quotes and span lines, then after a `:` its format
+ * spec, which is text but for fields of its own; `{{` is a brace. */
+function readFormattedString(stream: StringStream, state: PythonState) {
+  const closing = state.closing ?? "";
+  const triple = closing.length === 3;
+  let continued = false;
+  while (!stream.eol()) {
+    if (state.inner !== null) {
+      const inner = state.inner;
+      if (stream.match(inner)) {
+        state.inner = null;
+      } else if (!stream.eat("\\") || !stream.eol()) {
+        stream.next();
+      }
+      continue;
+    }
+    const top = state.open[state.open.length - 1];
+    if (top === undefined || top === "spec") {
+      if (!state.raw && stream.eat("\\")) {
+        if (stream.eol()) {
+          continued = true;
+        } else {
+          stream.next();
+        }
+        continue;
+      }
+      if (top === undefined && stream.match(closing)) {
+        state.closing = null;
+        return;
+      }
+      const next = stream.next();
+      if (next === "{") {
+        if (top !== undefined || !stream.eat("{")) {
+          state.open.push("field");
+        }
+      } else if (next === "}" && top !== undefined) {
+        state.open.pop();
+      }
+      continue;
+    }
+    // An expression, whose strings end none of this one.
+    const before = stream.string.charAt(stream.pos - 1);
+    if (!/\w/.test(before) && stream.match(PYTHON_STRING_START)) {
+      const quote = stream.next() ?? "";
+      state.inner = stream.string.startsWith(quote.repeat(3), stream.pos - 1)
+        ? quote.repeat(3)
+        : quote;
+      stream.pos += state.inner.length - 1;
+      continue;
+    }
+    const next = stream.next();
+    if (next === "(" || next === "[" || next === "{") {
+      state.open.push("bracket");
+    } else if (next === ")" || next === "]" || next === "}") {
+      state.open.pop();
+    } else if (next === ":" && top === "field") {
+      state.open[state.open.length - 1] = "spec";
+    }
+  }
+  // A field's expression runs on to the next line; the text around it ends
+  // with its line unless it is triple-quoted or a backslash continues it.
+  if (state.open.length === 0 && state.inner === null && !triple && !continued) {
+    state.closing = null;
+  }
+}
+
 /** A small Python tokenizer: keywords, strings with their prefixes and
  * triple quotes, numbers, and `#` comments. */
 const python = StreamLanguage.define<PythonState>({
   name: "python",
-  startState: () => ({ closing: null }),
-  copyState: (state) => ({ ...state }),
+  startState: () => ({ closing: null, formatted: false, raw: false, open: [], inner: null }),
+  copyState: (state) => ({ ...state, open: [...state.open] }),
   token(stream, state) {
     if (state.closing !== null) {
-      readPythonString(stream, state, state.closing);
+      if (state.formatted) {
+        readFormattedString(stream, state);
+      } else {
+        readPythonString(stream, state, state.closing);
+      }
       return "string";
     }
     if (stream.eatSpace()) {
@@ -366,20 +441,39 @@ const python = StreamLanguage.define<PythonState>({
       stream.skipToEnd();
       return "comment";
     }
-    if (stream.match(PYTHON_STRING_START)) {
+    const prefix = stream.match(PYTHON_STRING_START);
+    if (prefix) {
+      const letters = (Array.isArray(prefix) ? prefix[0] : "").toLowerCase();
       const quote = stream.next() ?? "";
       const closing = stream.string.startsWith(quote.repeat(3), stream.pos - 1)
         ? quote.repeat(3)
         : quote;
       stream.pos += closing.length - 1;
-      readPythonString(stream, state, closing);
+      if (/[ft]/.test(letters)) {
+        state.closing = closing;
+        state.formatted = true;
+        state.raw = letters.includes("r");
+        state.open = [];
+        state.inner = null;
+        readFormattedString(stream, state);
+      } else {
+        state.formatted = false;
+        readPythonString(stream, state, closing);
+      }
       return "string";
     }
     if (stream.match(PYTHON_NUMBER)) {
       return "number";
     }
     if (stream.match(/^[A-Za-z_]\w*/)) {
-      if (PYTHON_KEYWORDS.has(stream.current())) {
+      if (
+        PYTHON_KEYWORDS.has(stream.current()) &&
+        pythonKeywordHolds(
+          stream.current(),
+          stream.string.slice(0, stream.start),
+          stream.string.slice(stream.pos),
+        )
+      ) {
         return "keyword";
       }
       return stream.peek() === "(" ? "variableName.function" : "variableName";

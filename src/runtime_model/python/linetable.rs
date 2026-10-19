@@ -67,11 +67,13 @@ impl Runs<'_> {
         while byte & 64 != 0 {
             byte = self.byte()?;
             shift += 6;
-            if shift > 60 {
+            // A group whose bits reach past the 64th names no value.
+            let bits = u64::from(byte & 63);
+            if shift > 60 || (bits << shift) >> shift != bits {
                 return Err(Malformed);
             }
 
-            value |= u64::from(byte & 63) << shift;
+            value |= bits << shift;
         }
 
         Ok(value)
@@ -309,5 +311,11 @@ for name in ["json.decoder", "threading", "dataclasses", "asyncio.base_events", 
             0x40,
         ];
         assert_eq!(line_at(&endless, 10, 0), Err(Malformed));
+
+        // Eleven groups, the last of whose bits past the 64th would be lost.
+        let mut wide = vec![0x80 | (13 << 3)];
+        wide.extend([0x40; 10]);
+        wide.push(0x10);
+        assert_eq!(line_at(&wide, 10, 0), Err(Malformed));
     }
 }

@@ -14,7 +14,7 @@ use super::objects::{self, Reader};
 use super::threads::{self, ThreadState};
 use crate::image::python::{Constant, Field, PythonLayout};
 use crate::inspection::InspectionBudget;
-use crate::runtime_model::{InterpretedFrame, RuntimeStop, SampledFrame};
+use crate::runtime_model::{InterpretedFrame, RuntimeStop, SampledCode, SampledFrame};
 use crate::{InspectionLimits, LoadBias, ThreadId, VirtualAddress};
 
 /// Where the builders allocate objects first.
@@ -223,6 +223,9 @@ struct Memory {
     bytes: BTreeMap<u64, u8>,
     threads: Vec<ThreadId>,
     target_ids: BTreeMap<ThreadId, Option<crate::runtime_model::TargetThreadId>>,
+
+    /// How many reads were made, for the tests of how much a read costs.
+    reads: std::cell::Cell<usize>,
 }
 
 impl Memory {
@@ -241,6 +244,7 @@ impl Memory {
 
 impl RuntimeStop for Memory {
     fn read(&self, address: VirtualAddress, bytes: &mut [u8]) -> bool {
+        self.reads.set(self.reads.get() + 1);
         for (index, byte) in (0..).zip(bytes.iter_mut()) {
             let Some(read) = address
                 .get()
@@ -570,8 +574,8 @@ fn a_thread_walks_its_segments_innermost_first_and_each_ends_at_an_entry_frame()
 }
 
 /// A frame as a walker in the kernel reads it: the code object it runs,
-/// that object's qualified-name pointer and first line, its instruction's
-/// offset from its bytecode, and its owner.
+/// that object's qualified-name and line-table pointers and first line, its
+/// instruction's offset from its bytecode, and its owner.
 fn sampled(process: &Process, frame: u64) -> SampledFrame {
     let read = |address: u64, width: usize| {
         let mut bytes = [0; 8];
@@ -589,13 +593,16 @@ fn sampled(process: &Process, frame: u64) -> SampledFrame {
     let instruction = field(frame, Field::FrameInstruction, 8);
     let owner = u32::try_from(field(frame, Field::FrameOwner, 1)).expect("a byte");
     let (proof, offset) = if code == 0 {
-        ((0, 0), None)
+        (SampledCode::default(), None)
     } else {
-        let qualname = field(code, Field::CodeQualname, 8);
-        let first_line = i32::try_from(field(code, Field::CodeFirstlineno, 4)).expect("a line");
+        let proof = SampledCode {
+            qualname: field(code, Field::CodeQualname, 8),
+            linetable: field(code, Field::CodeLinetable, 8),
+            first_line: i32::try_from(field(code, Field::CodeFirstlineno, 4)).expect("a line"),
+        };
         let bytecode = code + process.offset(Field::CodeCodeAdaptive);
         let offset = instruction.wrapping_sub(bytecode).cast_signed();
-        ((qualname, first_line), Some(offset))
+        (proof, Some(offset))
     };
 
     SampledFrame {
@@ -628,7 +635,8 @@ fn found(frames: &[InterpretedFrame]) -> Vec<Found<'_>> {
 /// The frames a walker in the kernel read name the functions and lines
 /// the stopped walk of the same chain does. A code object freed since, and
 /// another put at its address, is no longer the one the walker read, and
-/// its frame is unreadable; so is one whose instruction it could not read.
+/// its frame is unreadable, though only its line table differs; so is one
+/// whose instruction it could not read.
 #[test]
 fn sampled_frames_read_as_the_stopped_walk_reads_them() {
     let mut process = Process::new(layout());
@@ -686,6 +694,20 @@ fn sampled_frames_read_as_the_stopped_walk_reads_them() {
             .problem
             .as_deref()
             .is_some_and(|problem| problem.ends_with("its instruction could not be read")),
+        "{:?}",
+        frames[1].problem
+    );
+
+    // Its name and first line are b's, but its lines are a's.
+    process.word(b, Field::CodeLinetable, chain[0].proof.linetable);
+    chain[2].offset = sampled(&process, b_frame).offset;
+    let (frames, _) = walk(&process, &chain);
+    assert_eq!(frames[1].function, None);
+    assert!(
+        frames[1]
+            .problem
+            .as_deref()
+            .is_some_and(|problem| problem.ends_with("the frame ran is gone")),
         "{:?}",
         frames[1].problem
     );
@@ -1050,6 +1072,19 @@ fn thread_states_lists_every_thread_of_every_interpreter() {
         ]
     );
     assert!(gaps.is_empty(), "the gaps: {gaps:?}");
+}
+
+#[test]
+fn an_unreadable_interpreter_is_a_gap_and_keeps_the_interpreters_before_it() {
+    let mut process = Process::new(layout());
+    let thread = process.thread_state(0, 0x4000, 100);
+    let unmapped = 0xdead_0000;
+    let interpreter = process.interpreter(7, unmapped, thread);
+    let runtime = process.runtime(interpreter);
+
+    let (states, gaps) = states_of(&process, runtime);
+    assert_eq!(states, [(100, 7, Some(0x4000))]);
+    assert_eq!(gaps.len(), 1, "the gaps: {gaps:?}");
 }
 
 #[test]

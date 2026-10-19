@@ -36,7 +36,13 @@ test("a Python breakpoint stops on the program's line, in view", async ({ page, 
   await expect(line).toBeInViewport();
   // What the stop says shares the room with the command rather than taking it.
   expect(await program.evaluate((name) => name.clientWidth >= name.scrollWidth / 2)).toBe(true);
-  await expect(page.getByRole("region", { name: "Variables" })).toContainText("shelf");
+  const variables = page.getByRole("region", { name: "Variables" });
+  await expect(variables).toContainText("shelf");
+  // A value is shown as it is: its spaces are not run together.
+  await expect(variables.locator(".value-text", { hasText: "north" })).toHaveJSProperty(
+    "innerText",
+    "'north    end'",
+  );
   // An interpreted frame has no registers, which is no failure.
   const registers = page.getByRole("region", { name: "Registers" }).locator(".empty");
   await expect(registers).toContainText("interpreted");

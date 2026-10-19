@@ -132,7 +132,9 @@ order:
 
 Values use Python's `repr` for None, True and False, int of any size, float,
 str, bytes, list, tuple, dict, set, and frozenset. A float uses the shortest
-round-trip form, such as `0.1`, `1e+16`, `inf`, or `nan`. A dict keeps its
+round-trip form, such as `0.1`, `1e+16`, `inf`, or `nan`. A str escapes what
+does not print, such as `\xa0` or `\u202e`, as `repr` does; a character only
+a later Unicode version than the interpreter's assigns shows as itself. A dict keeps its
 insertion order, and a set the order of its table, which is the order Python
 iterates it in. Lists, tuples, dicts, and sets expand into their items in
 clients that expand values, such as the browser and editors.

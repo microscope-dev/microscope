@@ -114,6 +114,7 @@ async fn each_library_value_is_shown_as_its_own_repr_writes_it() {
         let locals = reported_locals(&truth);
         let reported = locals
             .get(&(printer, "values".to_owned()))
+            .filter(|reported| !reported.is_empty())
             .unwrap_or_else(|| panic!("{}: CPython reported no values frame", stop.context));
         for (name, text) in reported {
             let variable = local(&variables, name, &stop);
@@ -125,7 +126,13 @@ async fn each_library_value_is_shown_as_its_own_repr_writes_it() {
             }
         }
 
-        for (name, reported) in reported_children(&truth) {
+        let children = reported_children(&truth);
+        assert!(
+            !children.is_empty(),
+            "{}: CPython reported no children",
+            stop.context
+        );
+        for (name, reported) in children {
             let variable = local(&variables, name, &stop);
             let shown = shown_items(&all_children(&stop, &variable.state).await);
             let expected: Vec<(String, String)> = reported

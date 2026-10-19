@@ -4,7 +4,7 @@
 //! own `sitecustomize` still runs. A breakpoint set as the program runs
 //! reaches the agent through the bootstrap's hidden thread.
 
-use microscope::{BreakpointSpec, LineNumber, StopReason};
+use microscope::{BreakpointSpec, CodeRole, LineNumber, StopReason};
 
 use crate::session::PythonSession;
 use crate::support::python;
@@ -13,10 +13,16 @@ const FIXTURE: &str = "bootstrap.py";
 
 #[tokio::test]
 async fn a_launch_bootstrap_is_invisible_and_takes_breakpoints_as_the_program_runs() {
+    for interpreter in ["3.12", "3.13"] {
+        launch_bootstrap_is_invisible_and_takes_breakpoints(interpreter).await;
+    }
+}
+
+async fn launch_bootstrap_is_invisible_and_takes_breakpoints(interpreter: &str) {
     let site = python::fixture("site");
     let site = site.to_str().expect("a UTF-8 fixture path");
     let mut session =
-        PythonSession::launch_with("3.12", FIXTURE, &[], &[("PYTHONPATH", site)]).await;
+        PythonSession::launch_with(interpreter, FIXTURE, &[], &[("PYTHONPATH", site)]).await;
     session.wait_for_output("READY").await;
     let context = session.context();
     let output = session.output();
@@ -56,6 +62,25 @@ async fn a_launch_bootstrap_is_invisible_and_takes_breakpoints_as_the_program_ru
         "{context}: {reason:?}: {}",
         session.output()
     );
-    assert!(session.integer("count").await >= 0, "{context}");
+    assert!(session.integer("count").await >= 1, "{context}");
+
+    // The bootstrap's own thread is the debugger's, by name and by role.
+    let snapshot = session.scenario.snapshot().await;
+    let ours = snapshot
+        .threads
+        .iter()
+        .filter(|thread| thread.name.as_deref() == Some("microscope"))
+        .collect::<Vec<_>>();
+    assert_eq!(ours.len(), 1, "{context}: {:?}", snapshot.threads);
+    let trace = session.backtrace(ours[0].id).await;
+    let python = trace
+        .frames
+        .iter()
+        .filter(|frame| frame.recorded.is_some())
+        .collect::<Vec<_>>();
+    assert!(!python.is_empty(), "{context}: {trace:?}");
+    for frame in python {
+        assert_eq!(frame.role, CodeRole::Interpreter, "{context}: {frame:?}");
+    }
     session.shutdown().await;
 }

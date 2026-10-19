@@ -123,9 +123,17 @@ fn command(
 
 /// Waits for the fixture writing `output` to park at the checkpoint
 /// `name`, and returns what it reported there.
-async fn reported(output: &std::path::Path, name: &str, context: &str) -> Vec<Vec<String>> {
+async fn reported(
+    output: &std::path::Path,
+    name: &str,
+    context: &str,
+    mut ended: impl FnMut() -> bool,
+) -> Vec<Vec<String>> {
     let began = Instant::now();
     loop {
+        // Asked before the output is read, so that a fixture that ended
+        // after printing the checkpoint is not taken for one that never did.
+        let gone = ended();
         let text = std::fs::read_to_string(output).unwrap_or_default();
         let ready = text
             .rsplit_once("TRUTH\tcheckpoint\t")
@@ -134,6 +142,10 @@ async fn reported(output: &std::path::Path, name: &str, context: &str) -> Vec<Ve
             return lines.to_vec();
         }
 
+        assert!(
+            !gone,
+            "{context}: the fixture ended before checkpoint {name}:\n{text}"
+        );
         assert!(
             began.elapsed() < CHECKPOINT_DEADLINE,
             "{context}: no checkpoint {name} in:\n{text}"
@@ -297,7 +309,11 @@ impl PythonSession {
                 .expect("start the fixture"),
         );
         let context = format!("{interpreter} {fixture} attached");
-        let truth = reported(&streams.output, name, &context).await;
+        let mut child = child;
+        let truth = reported(&streams.output, name, &context, || {
+            child.0.try_wait().ok().flatten().is_some()
+        })
+        .await;
         let debug_files = DebugFileOptions {
             directories: python::debug_directory(interpreter).into_iter().collect(),
             ..DebugFileOptions::default()
@@ -341,7 +357,11 @@ impl PythonSession {
     /// Waits for the fixture to park at the checkpoint `name`, then stops
     /// it, and returns what it reported there.
     pub async fn stop_at(&mut self, name: &str) -> Vec<Vec<String>> {
-        let lines = reported(&self.output, name, &self.context()).await;
+        let running = self.running.as_ref();
+        let lines = reported(&self.output, name, &self.context(), || {
+            running.is_some_and(JoinHandle::is_finished)
+        })
+        .await;
         self.pause().await;
         lines
     }
@@ -352,14 +372,28 @@ impl PythonSession {
         self.scenario
             .operation("pause", self.scenario.handle().pause())
             .await;
-        let ended = running.await.expect("the run task").expect("the run");
+        let ended = tokio::time::timeout(CHECKPOINT_DEADLINE, running)
+            .await
+            .unwrap_or_else(|_| panic!("{}: the pause never stopped it", self.context()))
+            .expect("the run task")
+            .expect("the run");
         assert_eq!(ended, StopReason::Pause, "{}", self.context());
     }
 
     /// Waits for the fixture's output to contain `text`.
     pub async fn wait_for_output(&self, text: &str) {
         let began = Instant::now();
-        while !self.output().contains(text) {
+        loop {
+            let ended = self.running.as_ref().is_some_and(JoinHandle::is_finished);
+            if self.output().contains(text) {
+                return;
+            }
+            assert!(
+                !ended,
+                "{}: the fixture ended with no {text:?} in:\n{}",
+                self.context(),
+                self.output()
+            );
             assert!(
                 began.elapsed() < CHECKPOINT_DEADLINE,
                 "{}: no {text:?} in:\n{}",
@@ -402,6 +436,29 @@ impl PythonSession {
             panic!("{}: not stopped", self.context());
         };
         stop_id
+    }
+
+    /// Selects the frame of the stop's thread that runs the Python
+    /// function `function`.
+    pub async fn select_python_frame(&self, function: &str) {
+        let trace = self
+            .scenario
+            .operation("backtrace", self.scenario.handle().backtrace())
+            .await;
+        let frame = trace
+            .frames
+            .iter()
+            .find(|frame| {
+                frame
+                    .recorded
+                    .as_ref()
+                    .is_some_and(|recorded| &*recorded.function == function)
+            })
+            .unwrap_or_else(|| panic!("{}: no {function} frame: {trace:?}", self.context()))
+            .id;
+        self.scenario
+            .operation("select", self.scenario.handle().select_frame(frame))
+            .await;
     }
 
     /// A thread's backtrace at the stop it is held at.
@@ -517,7 +574,8 @@ impl PythonSession {
         } = self;
         assert!(running.is_none());
         scenario.shutdown().await;
-        reported(&output, name, &context).await;
+        // The detached fixture is no child of this test's to ask.
+        reported(&output, name, &context, || false).await;
         let debug_files = DebugFileOptions {
             directories: python::debug_directory(&interpreter).into_iter().collect(),
             ..DebugFileOptions::default()
@@ -556,4 +614,26 @@ pub fn as_integer(scalar: &ScalarValue) -> Option<i128> {
         ScalarValue::Unsigned(value) => i128::try_from(value).ok(),
         _ => None,
     }
+}
+
+/// The matrix is every interpreter the dev shell provides, so that one the
+/// flake adds is tested, or this says it is not.
+#[test]
+fn the_matrix_is_every_interpreter_the_dev_shell_provides() {
+    let root = std::env::var_os("MICROSCOPE_CPYTHON")
+        .expect("MICROSCOPE_CPYTHON names the interpreters; run tests in the dev shell");
+    let mut provided: Vec<String> = std::fs::read_dir(root)
+        .expect("the interpreters' directory")
+        .map(|entry| {
+            entry
+                .expect("an interpreter")
+                .file_name()
+                .into_string()
+                .expect("a UTF-8 name")
+        })
+        .collect();
+    provided.sort();
+    let mut matrix = MATRIX.map(str::to_owned).to_vec();
+    matrix.sort();
+    assert_eq!(matrix, provided);
 }

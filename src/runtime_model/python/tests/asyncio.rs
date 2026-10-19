@@ -34,6 +34,7 @@ fn asyncio_layout() -> PythonLayout {
         (Field::ThreadAsyncioTasksHead, 32),
         (Field::InterpreterAsyncioTasksHead, 24),
         (Field::LlistNext, 0),
+        (Field::LlistPrev, 8),
         (Field::TaskAwaitedBy, 16),
         (Field::TaskState, 24),
         (Field::TaskIsTask, 28),
@@ -83,12 +84,16 @@ impl Process {
     /// Links the tasks into the list whose head is at `head`, in order.
     fn link(&mut self, head: u64, tasks: &[u64]) {
         let node = self.offset(Field::TaskNode);
+        let next = self.offset(Field::LlistNext);
+        let prev = self.offset(Field::LlistPrev);
         let mut previous = head;
         for task in tasks {
-            self.memory.write(previous, task + node, 8);
+            self.memory.write(previous + next, task + node, 8);
+            self.memory.write(task + node + prev, previous, 8);
             previous = task + node;
         }
-        self.memory.write(previous, head, 8);
+        self.memory.write(previous + next, head, 8);
+        self.memory.write(head + prev, previous, 8);
     }
 
     /// A task of type `ty` running `coroutine`, named by `name`, an object.
@@ -158,6 +163,27 @@ fn awaits(process: &Process, types: Types, task: u64) -> Awaits {
         };
         values.awaits(&mut walk, VirtualAddress::new(task))
     })
+}
+
+/// A 3.14 model of `process`, whose runtime state is at `runtime`.
+fn model(process: &Process, types: &Types, runtime: u64) -> super::super::PythonRuntime {
+    super::super::PythonRuntime {
+        free_threaded: false,
+        entries: Vec::new(),
+        evaluation: Vec::new(),
+        version: crate::image::python::PyVersion(0x030e_00f0),
+        reading: Ok(super::super::Reading {
+            runtime: crate::AddressRange {
+                start: crate::ImageAddress::new(runtime),
+                end: crate::ImageAddress::new(runtime + 8),
+            },
+            layout: process.layout.clone(),
+            code_type: crate::ImageAddress::new(process.code_type),
+            types: Ok(types.images()),
+            secret: None,
+            code: std::sync::Mutex::new(CodeTable::default()),
+        }),
+    }
 }
 
 fn addresses(tasks: &[u64]) -> Vec<VirtualAddress> {
@@ -308,6 +334,50 @@ fn a_task_no_thread_runs_is_done_waiting_or_ready_and_names_its_awaiters() {
         ]
     );
     assert_eq!(read[0].number, done, "a task's number is its id()");
+}
+
+/// A task awaited by more than are named says how many entries of its
+/// set of awaiters were not read, which may hold futures as well as tasks.
+#[test]
+fn a_task_awaited_by_many_names_the_first_and_counts_the_entries_unread() {
+    use super::instances::{Slot, set_object};
+
+    let (mut process, types, ty) = world(TASK_SIZE);
+    let future = process.type_object("_asyncio.Future");
+    let mut slots = Vec::new();
+    let mut names = Vec::new();
+    for index in 0..70 {
+        let awaiter = if index == 3 || index == 40 {
+            process.object(future, 32)
+        } else {
+            let name = format!("t{index}");
+            let text = process.str_object(types.str, &name);
+            if index < 64 {
+                names.push(name);
+            }
+            process.task(ty, 0, text)
+        };
+        slots.push(Slot::Item(awaiter));
+    }
+    slots.extend((70..128).map(|_| Slot::Empty));
+    let set = set_object(&mut process, types.set, &slots);
+    let name = process.str_object(types.str, "awaited");
+    let awaited = process.task(ty, 0, name);
+    process.word(awaited, Field::TaskAwaitedBy, set);
+    process.put(awaited, Field::TaskAwaitedByIsSet, 1, 1);
+
+    let task = with_values(&process, types, InspectionLimits::default(), |values| {
+        values.task(VirtualAddress::new(awaited), None)
+    });
+    names.push("and 6 more entries not read".to_owned());
+    let expected: Arc<str> = names.join(", ").into();
+    assert_eq!(
+        task.labels
+            .iter()
+            .find(|(key, _)| &**key == "awaited_by")
+            .map(|(_, value)| value),
+        Some(&expected)
+    );
 }
 
 #[test]
@@ -569,48 +639,7 @@ fn current_task_and_context_use_proven_identity_and_refuse_missing_proof() {
         .memory
         .target_ids
         .insert(collision, crate::runtime_model::TargetThreadId::new(8));
-    let model = super::super::PythonRuntime {
-        free_threaded: false,
-        entries: Vec::new(),
-        evaluation: Vec::new(),
-        version: crate::image::python::PyVersion(0x030e_00f0),
-        reading: Ok(super::super::Reading {
-            runtime: crate::AddressRange {
-                start: crate::ImageAddress::new(runtime),
-                end: crate::ImageAddress::new(runtime + 8),
-            },
-            layout: process.layout.clone(),
-            code_type: crate::ImageAddress::new(process.code_type),
-            types: Ok([
-                types.none,
-                types.bool,
-                types.int,
-                types.float,
-                types.str,
-                types.bytes,
-                types.list,
-                types.tuple,
-                types.dict,
-                types.set,
-                types.frozenset,
-                types.cell,
-                types.module,
-                types.function,
-                types.builtin,
-                types.coroutine,
-                types.generator,
-                types.code,
-                types.class,
-                types.member,
-                types.wrapper,
-                types.method,
-                types.generic_getattr,
-            ]
-            .map(|address| crate::ImageAddress::new(address.get()))),
-            secret: None,
-            code: std::sync::Mutex::new(CodeTable::default()),
-        }),
-    };
+    let model = model(&process, &types, runtime);
     assert_eq!(
         model.thread_activity(&process.memory, host),
         ThreadActivity::Task {
@@ -635,4 +664,79 @@ fn current_task_and_context_use_proven_identity_and_refuse_missing_proof() {
         ThreadActivity::Unknown(_)
     ));
     assert!(model.task_context(&process.memory, reference).is_err());
+}
+
+/// A task's context is read from the task and the thread states alone, so
+/// a snapshot that asks for each task's reads each list once: a task is
+/// one while its node is linked between neighbors that link back to it,
+/// and with a thread state's running task unknown, which task it runs is.
+#[test]
+fn a_tasks_context_is_its_own_node_and_the_running_tasks() {
+    use crate::runtime_model::{RuntimeModel as _, TaskContext, TaskRef};
+    let (mut process, types, ty) = world(TASK_SIZE);
+    process.layout.set_field(Field::ThreadSize, STATE_SIZE);
+    let code = process.code("leaf", 1, &[(1, 0)]);
+    let resting = process.coroutine(&types, Constant::GeneratorCreated, code, None);
+    let listed = process.task(ty, resting, 0);
+    let other = process.task(ty, resting, 0);
+    let unlinked = process.task(ty, resting, 0);
+    let more: Vec<u64> = (0..64).map(|_| process.task(ty, resting, 0)).collect();
+    let thread = process.thread_state(0, 0, 7);
+    let interpreter = process.interpreter(0, 0, thread);
+    let runtime = process.runtime(interpreter);
+    let head = process.empty_list(thread, Field::ThreadAsyncioTasksHead);
+    process.link(head, &[listed, other]);
+    process.empty_list(interpreter, Field::InterpreterAsyncioTasksHead);
+    process.memory.threads = vec![ThreadId::new(7)];
+    let model = model(&process, &types, runtime);
+    let context = |process: &Process, task: u64| {
+        model.task_context(
+            &process.memory,
+            TaskRef {
+                number: task,
+                locator: Some(task),
+            },
+        )
+    };
+
+    assert!(matches!(
+        context(&process, listed),
+        Ok(Some(TaskContext::Interpreted { .. }))
+    ));
+    assert!(matches!(context(&process, unlinked), Ok(None)));
+    assert!(matches!(context(&process, types.str.get()), Ok(None)));
+
+    // However many tasks the list holds, the context reads as much.
+    let reads = |process: &Process| {
+        process.memory.reads.set(0);
+        let _ = context(process, listed);
+        process.memory.reads.get()
+    };
+    let few = reads(&process);
+    process.link(head, &[&[listed, other][..], &more].concat());
+    assert_eq!(reads(&process), few);
+    process.link(head, &[listed, other]);
+
+    // A node whose neighbors do not link back to it is no proof.
+    let node = process.offset(Field::TaskNode);
+    let next = process.offset(Field::LlistNext);
+    process.memory.write(other + node + next, listed + node, 8);
+    let broken = context(&process, other);
+    assert!(
+        broken
+            .as_ref()
+            .is_err_and(|problem| problem.contains("neighbors")),
+        "{broken:?}"
+    );
+    process.memory.write(other + node + next, head, 8);
+
+    // A thread whose running task cannot be read may run any task.
+    process.word(thread, Field::ThreadAsyncioRunningTask, types.str.get());
+    let unknown = context(&process, listed);
+    assert!(
+        unknown
+            .as_ref()
+            .is_err_and(|problem| problem.contains("no asyncio.Task")),
+        "{unknown:?}"
+    );
 }

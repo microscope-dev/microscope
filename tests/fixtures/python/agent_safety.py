@@ -375,6 +375,28 @@ elif mode == 'fork':
     records.clear()
     target()
     assert records == [(1, 42, 0)] and agent.tool is not None, records
+elif mode == 'fork_again':
+    # A load retried after its fork handlers were registered registers
+    # them again: a fork runs each twice, and leaves the lock as it was.
+    import os
+    os.register_at_fork(before=agent.forking, after_in_parent=agent.forked_parent,
+                        after_in_child=agent.forked)
+    child = os.fork()
+    if child == 0:
+        os._exit(0 if agent.lock.acquire(timeout=5) else 1)
+    _, status = os.waitpid(child, 0)
+    assert os.waitstatus_to_exitcode(status) == 0, status
+    taken = []
+
+    def taker():
+        taken.append(agent.lock.acquire(timeout=5))
+        if taken[0]:
+            agent.lock.release()
+
+    thread = threading.Thread(target=taker)
+    thread.start()
+    thread.join()
+    assert taken == [True], 'the fork left the lock held'
 else:
     raise AssertionError(mode)
 agent.apply(library, agent.generation + 1, ())

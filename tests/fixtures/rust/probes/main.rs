@@ -19,6 +19,8 @@
 //!   zones at run time does: three rounds of a zone, a plot, and a zone
 //!   in another name, then a message whose site it defines once microscope
 //!   listens.
+//! - `defines`: for each name a line of its standard input gives, a zone's
+//!   site of that name, and a line with the address of its state byte.
 
 use std::io::Write as _;
 use std::time::{Duration, Instant};
@@ -39,6 +41,10 @@ fn main() {
         rate();
         return;
     }
+    if arguments[1] == "defines" {
+        defines();
+        return;
+    }
     if arguments[1] == "defined" {
         defined();
         return;
@@ -54,6 +60,7 @@ fn main() {
             let _zone = zone!("after");
         }
         "quiet" => quiet(),
+        "exiting" => exiting(),
         "cost-on" => cost(count()),
         mode => panic!("unknown mode {mode}"),
     }
@@ -204,6 +211,29 @@ fn defined() {
         std::thread::sleep(Duration::from_millis(1));
     }
     late.message(format_args!("defined {}", "late"));
+}
+
+fn defines() {
+    for name in std::io::stdin().lines() {
+        let name = name.expect("a name");
+        let site = define(abi::SITE_ZONE, &name, "app.py", 1).expect("a zone");
+        // The ABI puts a run-time site's state byte at its offset 1.
+        println!("SITE {:#x}", std::ptr::from_ref(site).addr() + 1);
+        std::io::stdout().flush().expect("flush");
+    }
+}
+
+/// Once a line arrives, defines a site, records a zone of it, and exits,
+/// waiting at its exit for microscope to read what it wrote.
+fn exiting() {
+    println!("LISTENING");
+    std::io::stdout().flush().expect("flush");
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line).expect("a line");
+    let site = define(abi::SITE_ZONE, "last", "app.py", 1).expect("a zone");
+    drop(site.zone());
+    println!("DONE");
+    std::io::stdout().flush().expect("flush");
 }
 
 fn spin(rounds: u64) -> u64 {

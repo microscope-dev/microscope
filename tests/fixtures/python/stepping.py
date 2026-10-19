@@ -75,9 +75,19 @@ def worker():
     raise RuntimeError('worker failed')  # WORKER_RAISE
 
 
+def deep():
+    return 1  # DEEP
+
+
+def shallow():
+    value = deep()  # SHALLOW_CALL
+    return value + 1  # SHALLOW_AFTER
+
+
 print('OUTER', outer(), flush=True)
 print('TASK', asyncio.run(task()), flush=True)
 print('HANDLED', handles(), flush=True)
+print('SHALLOW', shallow(), flush=True)
 if '--editor' not in sys.argv:
     truth.checkpoint('parked')
 print('CAUGHT', caught(), flush=True)

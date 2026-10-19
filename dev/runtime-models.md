@@ -258,6 +258,14 @@ that copy against the `.AsyncioDebug` section `_asyncio` publishes for
 external debuggers, which lives in an extension module the Python runtime's
 own image does not carry. A task's number is its address, Python's `id()`.
 
+A task's context is read without walking the lists, because a snapshot asks
+for the context of each task, and walking them every time would cost
+O(tasks²). A task is listed while its node lies between neighbours that link
+back to it: CPython links a task when it makes it and clears the node when
+it frees it. It runs on the thread whose state names it. When some thread
+state's running task can't be read, the task's context is an error, because
+that thread may be running it.
+
 A task no thread runs is suspended in its coroutine: a coroutine or generator
 in the state `FRAME_SUSPENDED_YIELD_FROM` awaits the object below the top of
 its embedded frame's stack (`Constant::GeneratorAwaitedDepth`: 1, or 2 from
@@ -326,8 +334,10 @@ the original `PYTHONPATH` in `MICROSCOPE_PYTHON_WAKE` and
 - It runs, on the main thread, each script already written. The first
   arming happens at the loader stop, before `site` runs, so pending
   breakpoints are armed before the program's code.
-- It starts one `_thread` thread, which blocks reading the FIFO and runs
-  each later script with fresh globals, as PEP 768 does.
+- It starts one `_thread` thread, which names itself `microscope`, blocks
+  reading the FIFO, and runs each later script with fresh globals, as PEP
+  768 does. Its frames, like the agent's, have `CodeRole::Interpreter`
+  (`agent::is_bootstrap_filename`).
 
 It then imports the `sitecustomize` it hid. A request is one line, written
 whole; a full FIFO is refused. One that is retired without acknowledgement
@@ -504,7 +514,9 @@ named `py:NAME` as a `PY_START` probe; `py::run` remains a native name. The
 CLI adds such breakpoints pending, as their code loads only as the program
 imports it. The agent's code is compiled under the filename
 `<microscope agent LIBRARY>` (`agent::is_agent_filename`), so its interpreted
-frames have `CodeRole::Interpreter`; splicing gives every frame inside the
+frames have `CodeRole::Interpreter`, as do those of the scripts that set it up,
+`/tmp/.microscope-HEX/agent-GENERATION.py` (`agent::is_script_filename`);
+splicing gives every frame inside the
 innermost such frame, the hook and ctypes among them, that role too, and
 `CPYTHON_MACHINERY` names the monitoring dispatch between the program's frame
 and the agent. A hit's stop selects, and its condition and log message read,
@@ -580,6 +592,8 @@ before anything runs, any of these:
 - a frame no thread runs;
 - a runtime without an agent, or a free-threaded one
   (`process_scope_required`);
+- CPython 3.12 and 3.13 (`assignments_refused`), whose agent runs through
+  the launch bootstrap's own thread, and whose 3.12 `f_locals` is a copy;
 - a thread its agent did not stop (`at_agent_hook`), or one with a pending
   signal;
 - an interpreter with any thread state other than the frame's thread's
@@ -734,7 +748,10 @@ read at their distance from it.
 **Code and lines.** Each frame's code object is decoded once per runtime into
 `code::CodeTable`: its qualified name, file, first line, and line table. The
 table survives stops, so each row is proved again where it is used: the object
-must still be a code object with the same identity. `linetable.rs` decodes
+must still be a code object with the same identity. A frame the profiler's
+walker read in the kernel carries the object's qualified-name and line-table
+pointers and first line, which its row must match: an object put in a freed
+one's place, as `exec` makes, has a line table of its own. `linetable.rs` decodes
 `co_linetable` to the line of the frame's instruction. A free-threaded 3.14+
 frame may run a thread-local copy of the bytecode, which `tlbc_index` selects.
 

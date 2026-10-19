@@ -1,12 +1,27 @@
 //! The text the debugger presents a built-in Python value as: Python's
-//! `repr` for ints at any size, floats, and bytes, and for strings the
-//! same but for the characters it escapes. A string escapes a backslash,
-//! its quote, the C0 and C1 control characters, DEL, and lone surrogates,
-//! and keeps every other character as it is, where Python's `repr` also
-//! escapes the characters its version's Unicode database says do not
-//! print. `tests/fixtures/python/truth.py` defines the same text.
+//! `repr` for ints at any size, floats, bytes, and strings. A string
+//! escapes a backslash, its quote, and each character every supported
+//! interpreter's Unicode database says does not print (`printable.gen.rs`):
+//! the controls, separators but the space, format characters, private
+//! use, lone surrogates, and code points no version assigns. A character
+//! that a later version than the interpreter's assigns is kept as it is,
+//! where that interpreter's `repr` escapes it.
+//! `tests/fixtures/python/truth.py` defines the same text.
 
 use std::fmt::Write as _;
+
+#[path = "printable.gen.rs"]
+mod printable;
+
+/// Whether every supported interpreter's `repr` keeps the code point
+/// `point` as it is.
+fn printable(point: u32) -> bool {
+    let after = printable::ESCAPED.partition_point(|(first, _)| *first <= point);
+    after
+        .checked_sub(1)
+        .and_then(|index| printable::ESCAPED.get(index))
+        .is_none_or(|(_, past)| point >= *past)
+}
 
 /// A string's characters as CPython stores them: code points, which may be
 /// lone surrogates, as no Rust `char` may be.
@@ -26,15 +41,17 @@ pub(super) fn string(code_points: &[u32]) -> String {
             Some('\n') => text.push_str("\\n"),
             Some('\r') => text.push_str("\\r"),
             Some('\t') => text.push_str("\\t"),
-            Some(character) if !character.is_control() => text.push(character),
-            // C0 and C1 controls and DEL, which are all below 0x100.
-            Some(_) => {
+            // A lone surrogate, which is all from_u32 refuses below
+            // 0x110000, does not print; CPython stores none higher.
+            Some(character) if printable(point) => text.push(character),
+            _ if point < 0x100 => {
                 let _ = write!(text, "\\x{point:02x}");
             }
-            // A lone surrogate, which is all from_u32 refuses below
-            // 0x110000; CPython stores none higher.
-            None => {
+            _ if point < 0x1_0000 => {
                 let _ = write!(text, "\\u{point:04x}");
+            }
+            _ => {
+                let _ = write!(text, "\\U{point:08x}");
             }
         }
     }
@@ -226,14 +243,71 @@ mod tests {
                 "'\\x00\\x1f\\x7f\\x85\\x9f'",
             ),
             (
-                "caf\u{e9} \u{65e5} \u{1f40d} \u{a0}",
-                "'caf\u{e9} \u{65e5} \u{1f40d} \u{a0}'",
+                "caf\u{e9} \u{65e5} \u{1f40d}",
+                "'caf\u{e9} \u{65e5} \u{1f40d}'",
+            ),
+            (
+                "\u{a0}\u{ad}\u{200b}\u{2028}\u{202e}\u{feff}",
+                "'\\xa0\\xad\\u200b\\u2028\\u202e\\ufeff'",
+            ),
+            (
+                "\u{e000}\u{e0001}\u{10ffff}",
+                "'\\ue000\\U000e0001\\U0010ffff'",
             ),
         ] {
             assert_eq!(string(&points(value)), expected, "{value:?}");
         }
 
         assert_eq!(string(&[0x61, 0xd800, 0xdfff]), "'a\\ud800\\udfff'");
+    }
+
+    /// Each interpreter's `repr` of every code point alone, one to a line,
+    /// with a newline's and a carriage return's as Python writes them.
+    const REPRS: &str = "import sys\n\
+        sys.stdout.write('\\n'.join(repr(chr(point)) for point in range(0x110000)))";
+
+    /// Every code point is presented as each interpreter in the matrix
+    /// writes it, but one that interpreter's Unicode version does not
+    /// assign and another's does, which is kept as it is.
+    #[test]
+    fn each_character_is_as_every_interpreter_in_the_matrix_writes_it() {
+        let root = std::env::var_os("MICROSCOPE_CPYTHON")
+            .expect("MICROSCOPE_CPYTHON names the interpreters; run tests in the dev shell");
+        let mut interpreters: Vec<_> = std::fs::read_dir(&root)
+            .expect("list the interpreters")
+            .map(|entry| entry.expect("an interpreter").path())
+            .collect();
+        interpreters.sort();
+        let reprs: Vec<(String, Vec<String>)> = interpreters
+            .iter()
+            .map(|interpreter| {
+                let output = std::process::Command::new(interpreter.join("python"))
+                    .args(["-I", "-c", REPRS])
+                    .output()
+                    .expect("run the interpreter");
+                assert!(output.status.success(), "{}", interpreter.display());
+                let text = String::from_utf8(output.stdout).expect("UTF-8 reprs");
+                let lines: Vec<String> = text.split('\n').map(str::to_owned).collect();
+                assert_eq!(lines.len(), 0x11_0000, "{}", interpreter.display());
+                (interpreter.display().to_string(), lines)
+            })
+            .collect();
+        for point in 0..0x11_0000_u32 {
+            let ours = string(&[point]);
+            let index = usize::try_from(point).expect("a small index");
+            for (interpreter, lines) in &reprs {
+                let theirs = &lines[index];
+                if ours == *theirs {
+                    continue;
+                }
+                let kept = char::from_u32(point).map(|character| format!("'{character}'"));
+                assert!(
+                    kept.as_ref() == Some(&ours)
+                        && reprs.iter().any(|(_, other)| other[index] == ours),
+                    "U+{point:04X}: {interpreter} writes {theirs}, microscope {ours}"
+                );
+            }
+        }
     }
 
     #[test]

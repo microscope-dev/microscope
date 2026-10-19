@@ -55,9 +55,8 @@ fn find_interpreter(
     process: &ProcessState,
     images: &[Image],
 ) {
-    let mapped = process.mapped.len();
-    if interpreted.stale(pid, mapped) {
-        interpreted.find(pid, mapped, &modules_in(process, images));
+    if interpreted.stale(pid, process.mappings) {
+        interpreted.find(pid, process.mappings, &modules_in(process, images));
     }
 }
 
@@ -103,6 +102,10 @@ struct Mapped {
 #[derive(Debug, Default)]
 struct ProcessState {
     mapped: Vec<Mapped>,
+
+    /// How many mappings the process has made, which tells its modules
+    /// apart from what they were, as their number may not.
+    mappings: u64,
     threads: BTreeSet<Tid>,
     jit: Jit,
 }
@@ -547,8 +550,14 @@ impl Processor {
                 let thread = self.thread(pid, tid, at);
                 self.builder.thread_name(thread, &name);
                 if exec {
-                    // A new program replaces the address space.
-                    self.processes.entry(pid).or_default().mapped.clear();
+                    // A new program replaces the address space, and the
+                    // interpreter and compiled code it held.
+                    let state = self.processes.entry(pid).or_default();
+                    state.mapped.clear();
+                    state.jit.exec();
+                    if let Some(interpreted) = &mut self.interpreted {
+                        interpreted.forget(pid);
+                    }
 
                     // Its instrumentation went with it; the new program's
                     // is found as it maps.
@@ -648,9 +657,13 @@ impl Processor {
         state
             .mapped
             .retain(|mapped| mapped.end <= mmap.start || mapped.start >= end);
-        state
-            .jit
-            .mapped(mmap.start, end, perf::jit::is_anonymous_code(mmap));
+        state.mappings += 1;
+        state.jit.mapped(
+            mmap.start,
+            end,
+            perf::jit::is_anonymous_code(mmap),
+            mmap.time,
+        );
         let Some((image, bias)) = image else {
             return;
         };
@@ -660,6 +673,7 @@ impl Processor {
         {
             let found = Found {
                 module: self.images[image].module,
+                path: String::from_utf8_lossy(mmap.path).into(),
                 bias,
                 table: Arc::clone(table),
             };
@@ -960,7 +974,9 @@ impl Processor {
                 .iter()
                 .any(|mapped| (mapped.start..mapped.end).contains(&address))
         });
-        let refreshed = process.jit.refresh(sample.pid.get(), unmapped, descriptors);
+        let refreshed = process
+            .jit
+            .refresh(sample.pid.get(), sample.time, unmapped, descriptors);
         if let Some(problem) = process.jit.take_problem() {
             self.builder.setting(
                 &format!("perf map {}", sample.pid),
@@ -1143,7 +1159,7 @@ impl Processor {
             }
             Sampled::Unknown => {
                 self.frames.extend(natives);
-                return Some(Truncation::InterpretedUnknown);
+                return interpreted::unknown_cuts(native).then_some(Truncation::InterpretedUnknown);
             }
             Sampled::Frames { frames, ended } => (frames, ended),
         };
@@ -1282,6 +1298,12 @@ impl Processor {
     pub fn probe_site(&mut self, module: u32, site: &SiteRecord) -> u32 {
         self.builder
             .site(&site.name, &site.file, site.line, module, site.kind)
+    }
+
+    /// Says why some of the program's instrumentation is not recorded.
+    pub fn probe_problem(&mut self, text: &str) {
+        self.builder
+            .marker(self.latest.cast_signed(), MarkerKind::Probes, text);
     }
 
     /// The row of a thread whose ring holds instrumentation.

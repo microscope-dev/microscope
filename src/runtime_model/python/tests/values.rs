@@ -688,11 +688,11 @@ fn an_int_of_more_digits_than_it_reads_is_shown_by_its_size() {
     let big = process.long(types.int, tag, &[]);
 
     let shown = read_value(&process, types, big);
-    assert_eq!(shown.summary.as_ref(), "<int of 1025 digits>");
+    assert_eq!(shown.summary.as_ref(), "<int of 1025 30-bit digits>");
     assert_eq!(shown.kind, InterpretedKind::Int(None));
     assert_eq!(
         shown.problem.as_deref(),
-        Some("an int of more than 1024 digits is shown by its size")
+        Some("an int of more than 1024 30-bit digits is shown by its size")
     );
     assert_builtin(&shown, "int");
 }
@@ -718,6 +718,24 @@ fn a_str_longer_than_the_summary_shows_its_first_characters_and_a_lone_surrogate
     assert_eq!(shown.summary.as_ref(), "'\\udc80'");
     assert_builtin(&shown, "str");
     assert_eq!(shown.problem, None);
+}
+
+/// A name longer than a summary shows, as a class's qualified name may be,
+/// is read whole, up to the longest `str` read.
+#[test]
+fn a_name_longer_than_a_summary_is_read_whole() {
+    let mut process = Process::new(layout());
+    let types = process.builtin_types();
+    let name = "n".repeat(2000);
+    let long = process.str_object(types.str, &name);
+    let longest = process.str_object(types.str, &"n".repeat(5000));
+    let read = with_values(&process, types, InspectionLimits::default(), |values| {
+        (
+            values.str_text(VirtualAddress::new(long)),
+            values.str_text(VirtualAddress::new(longest)),
+        )
+    });
+    assert_eq!(read, (Some(name.as_str().into()), None));
 }
 
 #[test]
@@ -1124,4 +1142,37 @@ fn a_stack_reference_reads_its_object_and_a_tagged_integer_is_unreadable() {
             ),
         ]
     );
+}
+
+impl Types {
+    /// The types' addresses as a model's `Reading` keeps them, at the image
+    /// addresses of a process loaded with no bias.
+    pub(super) fn images(&self) -> [crate::ImageAddress; 23] {
+        [
+            self.none,
+            self.bool,
+            self.int,
+            self.float,
+            self.str,
+            self.bytes,
+            self.list,
+            self.tuple,
+            self.dict,
+            self.set,
+            self.frozenset,
+            self.cell,
+            self.module,
+            self.function,
+            self.builtin,
+            self.coroutine,
+            self.generator,
+            self.code,
+            self.class,
+            self.member,
+            self.wrapper,
+            self.method,
+            self.generic_getattr,
+        ]
+        .map(|address| crate::ImageAddress::new(address.get()))
+    }
 }

@@ -44,6 +44,8 @@ def values():
     transposed = grid.T
     scalar = numpy.array(5)
     empty = numpy.zeros((0, 3))
+    # No elements, and more rows than a summary shows objects.
+    hollow = numpy.zeros((64, 64, 64, 64, 64, 0))
     long = numpy.arange(100.0)
     tagged = numpy.arange(3.0).view(Tagged)
     complex_numbers = numpy.array([1 + 2j])

@@ -156,13 +156,21 @@ pub fn define(kind: u8, name: &str, file: &str, line: u32) -> Option<&'static Si
         site.file_length.store(file.len() as u32, Ordering::Relaxed);
     }
     site.key.store(abi::RUNTIME_KEY | index, Ordering::Relaxed);
-    if CONTROL.enable.load(Ordering::Acquire) & abi::ENABLE_DEFINED != 0 {
+    let switched = CONTROL.enable.load(Ordering::SeqCst) & abi::ENABLE_DEFINED != 0;
+    if switched {
         site.state.store(1, Ordering::Relaxed);
     }
 
     // Whole before it is counted, and counted before microscope is told
     // where to look.
-    SITES.count.store(index + 1, Ordering::Release);
+    SITES.count.store(index + 1, Ordering::SeqCst);
+
+    // Whoever switches every site off clears `enable` and then reads the
+    // count. If that read came before this site was counted, `enable`
+    // was cleared first, and this load sees it.
+    if switched && CONTROL.enable.load(Ordering::SeqCst) & abi::ENABLE_DEFINED == 0 {
+        site.state.store(0, Ordering::Relaxed);
+    }
     CONTROL
         .sites
         .store(ptr::from_ref(&SITES).cast_mut(), Ordering::Release);
@@ -637,9 +645,10 @@ static SITE: &AtomicU8 = crate::__site!(crate::abi::SITE_NONE, "microscope_probe
 
 /// Switches every site off.
 fn disable() {
-    CONTROL.enable.store(0, Ordering::Relaxed);
+    // Cleared before the count is read: see `define`.
+    CONTROL.enable.store(0, Ordering::SeqCst);
     switch_sites_off();
-    let defined = SITES.count.load(Ordering::Acquire) as usize;
+    let defined = SITES.count.load(Ordering::SeqCst) as usize;
     for site in SITES.records.iter().take(defined) {
         site.state.store(0, Ordering::Relaxed);
     }

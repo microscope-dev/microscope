@@ -31,6 +31,9 @@ mod text;
 mod threads;
 mod values;
 
+pub use agent::{
+    BOOTSTRAP_DIRECTORY_PREFIX, SCRIPT_DIRECTORY_PREFIX, is_script_filename, script_name,
+};
 pub use exceptions::EXCEPTION_FILTERS;
 
 use std::sync::{Arc, Mutex};
@@ -372,12 +375,18 @@ impl Reading {
     }
 
     /// What `read` gives of asyncio's tasks, given the values, the walk
-    /// that reads frames, and every task, read unpaid for, as a
-    /// backtrace's frames are, which bounds its own work.
+    /// that reads frames, the thread states, and why some may be missing,
+    /// read unpaid for, as a backtrace's frames are, which bounds its own
+    /// work.
     fn asyncio<R>(
         &self,
         stop: &dyn RuntimeStop,
-        read: impl FnOnce(&values::Values<'_, '_>, &mut frames::Walk<'_, '_>, &asyncio::Tasks) -> R,
+        read: impl FnOnce(
+            &values::Values<'_, '_>,
+            &mut frames::Walk<'_, '_>,
+            &[threads::ThreadState],
+            Vec<Arc<str>>,
+        ) -> R,
     ) -> Result<R, Arc<str>> {
         let code_type = stop
             .load_bias()
@@ -385,14 +394,12 @@ impl Reading {
             .ok_or_else(|| Arc::from("CPython's code type lies outside the process"))?;
         self.read_values(stop, None, |values, table| {
             let (states, gaps) = threads::thread_states(&values.reader, values.runtime)?;
-            let mut tasks = values.asyncio_tasks(&states);
-            tasks.gaps.splice(0..0, gaps);
             let mut walk = frames::Walk {
                 reader: values.reader,
                 code: table,
                 code_type,
             };
-            Ok(read(values, &mut walk, &tasks))
+            Ok(read(values, &mut walk, &states, gaps))
         })
     }
 
@@ -816,7 +823,9 @@ impl RuntimeModel for PythonRuntime {
         };
 
         let first = usize::try_from(start).unwrap_or(usize::MAX);
-        let page = reading.asyncio(stop, |values, _, tasks| {
+        let page = reading.asyncio(stop, |values, _, states, gaps| {
+            let mut tasks = values.asyncio_tasks(states);
+            tasks.gaps.splice(0..0, gaps);
             let page: Vec<_> = tasks
                 .all
                 .iter()
@@ -902,23 +911,23 @@ impl RuntimeModel for PythonRuntime {
         }
 
         let object = VirtualAddress::new(task.number);
-        reading.asyncio(stop, |values, walk, tasks| {
-            if !tasks.all.contains(&object) {
-                // A task missing from lists that cannot all be read may
-                // be in the rest.
-                if tasks.gaps.is_empty() {
-                    return Ok(None);
-                }
-
-                let gaps: Vec<&str> = tasks.gaps.iter().map(AsRef::as_ref).collect();
-                return Err(gaps.join("; ").into());
+        reading.asyncio(stop, |values, walk, states, mut gaps| {
+            if !values.is_listed_task(object)? {
+                return Ok(None);
             }
 
-            if let Some(thread) = tasks.running.get(&object) {
+            let running = values.running_tasks(states, &mut gaps);
+            if let Some(thread) = running.get(&object) {
                 return thread
                     .as_ref()
                     .map(|&thread| Some(TaskContext::OnThread(thread)))
                     .map_err(Arc::clone);
+            }
+
+            // A thread state that cannot be read may run the task.
+            if !gaps.is_empty() {
+                let gaps: Vec<&str> = gaps.iter().map(AsRef::as_ref).collect();
+                return Err(gaps.join("; ").into());
             }
 
             let awaits = values.awaits(walk, object);
@@ -1187,7 +1196,7 @@ impl RuntimeModel for PythonRuntime {
             .load(reading.code_type)
             .ok_or_else(|| Arc::<str>::from("CPython's code type lies outside the process"))?;
         reading.read_values(stop, None, |values, table| {
-            let (states, _) = threads::thread_states(&values.reader, values.runtime)?;
+            let (states, gaps) = threads::thread_states(&values.reader, values.runtime)?;
             let identities = threads::ThreadIds::new(stop)?;
             let mut walk = frames::Walk {
                 reader: values.reader,
@@ -1198,14 +1207,19 @@ impl RuntimeModel for PythonRuntime {
                 .iter()
                 .filter(|state| identities.resolve(state.native) == Ok(thread))
             {
-                let (frames, _) = walk.thread(state);
+                let (frames, end) = walk.thread(state);
                 if frames.iter().any(|running| running.frame == frame) {
                     let record = values.reader.record(frame, Field::FrameSize)?;
                     let (running, _) = walk.code_of(&record)?;
                     return Ok(running == code);
                 }
+                // The frame may be past where the walk ended.
+                if let Some(end) = end {
+                    return Err(end);
+                }
             }
-            Ok(false)
+            // The frame may be in a thread state that could not be read.
+            gaps.first().map_or(Ok(false), |gap| Err(Arc::clone(gap)))
         })
     }
 

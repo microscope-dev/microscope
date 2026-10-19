@@ -245,6 +245,10 @@ pub struct Control {
     pub sites: u64,
     pub dropped: u64,
     pub exiting: bool,
+
+    /// What microscope last set its sites to, unless the program switched
+    /// them off: zero is off.
+    pub enable: u32,
 }
 
 /// Reads a control block's first [`abi::CONTROL_SIZE`] bytes.
@@ -265,6 +269,7 @@ pub fn control(bytes: &[u8]) -> Result<Control, &'static str> {
         sites: u64::from_le_bytes(bytes[56..64].try_into().unwrap_or_default()),
         dropped: u64::from_le_bytes(bytes[32..40].try_into().unwrap_or_default()),
         exiting: word(44) != 0,
+        enable: word(12),
     })
 }
 

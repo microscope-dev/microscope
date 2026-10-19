@@ -202,7 +202,20 @@ fn describe(
         );
     };
 
-    let free_threaded = free_threaded != 0;
+    let free_threaded = match free_threaded {
+        0 => false,
+        1 => true,
+        _ => {
+            return (
+                version,
+                TARGET_TABLE,
+                Err(
+                    format!("its offsets table's free_threaded is {free_threaded}, not 0 or 1")
+                        .into(),
+                ),
+            );
+        }
+    };
     let flags = TARGET_TABLE | GENERATED_TABLE | if free_threaded { FREE_THREADED } else { 0 };
     if let Some(symbol) = symbol.filter(|symbol| *symbol != version.0) {
         let named = PyVersion(symbol);
@@ -258,8 +271,9 @@ fn from_table(
             continue;
         }
 
+        // `u32::MAX` is how a layout says it lacks a field.
         let offset = u64::from_le_bytes(*bytes);
-        if u32::try_from(offset).is_err() {
+        if offset >= u64::from(u32::MAX) {
             return Err(format!("its table puts {name} at {offset}, past any structure").into());
         }
 
@@ -626,6 +640,31 @@ mod tests {
             refused.contains("disagrees with the layout of each build"),
             "{refused}"
         );
+    }
+
+    /// A table's offset past every structure is refused, though it fits a
+    /// `u32`, rather than read as a field the version lacks; so is a flag
+    /// that is neither 0 nor 1.
+    #[test]
+    fn a_table_that_names_no_offset_or_flag_is_refused() {
+        let (version, mut bytes) = table_of("3.14", schemas::V3_14);
+        let at = TABLE_START
+            + 8 * schemas::V3_14
+                .iter()
+                .position(|name| *name == "code_object.qualname")
+                .expect("3.14's table places co_qualname");
+        bytes[at..at + 8].copy_from_slice(&u64::from(u32::MAX).to_le_bytes());
+        let refused = describe(Some(&bytes), Some(version))
+            .2
+            .expect_err("no structure is that long");
+        assert!(refused.contains("past any structure"), "{refused}");
+
+        let (version, mut bytes) = table_of("3.14", schemas::V3_14);
+        bytes[16..24].copy_from_slice(&2u64.to_le_bytes());
+        let refused = describe(Some(&bytes), Some(version))
+            .2
+            .expect_err("2 is no flag");
+        assert!(refused.contains("free_threaded"), "{refused}");
     }
 
     #[test]

@@ -159,13 +159,18 @@ impl super::Reading {
             .load(self.code_type)
             .ok_or_else(|| Arc::<str>::from("CPython's code type lies outside the process"))?;
         self.read_values(stop, None, |values, table| {
-            let (states, _) = threads::thread_states(&values.reader, values.runtime)?;
+            let (states, gaps) = threads::thread_states(&values.reader, values.runtime)?;
             let identities = threads::ThreadIds::new(stop)?;
             let state = states
                 .iter()
                 .filter(|state| state.frame.is_some())
                 .find(|state| identities.resolve(state.native) == Ok(thread))
-                .ok_or("the stepping thread runs no Python")?;
+                .ok_or_else(|| -> Arc<str> {
+                    gaps.first().map_or_else(
+                        || "the stepping thread runs no Python".into(),
+                        |gap| format!("the stepping thread's state cannot be read: {gap}").into(),
+                    )
+                })?;
             let mut walk = frames::Walk {
                 reader: values.reader,
                 code: table,
@@ -433,6 +438,14 @@ impl RuntimeAgent for PythonRuntime {
     }
     fn process_scope_required(&self) -> bool {
         self.free_threaded
+    }
+    fn assignments_refused(&self) -> Option<&'static str> {
+        // 3.12's f_locals is a copy, and the bootstrap's thread runs
+        // beside the program's, where no proof says what it holds.
+        self.bootstrapped().then_some(
+            "assignments need CPython 3.14 or later: 3.12 and 3.13 take the agent through a \
+             thread of its own, which may hold what an assignment changes",
+        )
     }
     fn wanted(&self, arming: &Arming<'_>) -> bool {
         !arming.breakpoints.is_empty()

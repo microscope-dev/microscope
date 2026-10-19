@@ -989,7 +989,7 @@ def valid_assignment(wanted):
         (kind == "none" and len(value) == 1)
         or (len(value) == 2 and (
             (kind == "int" and type(value[1]) is str and 0 < len(value[1]) <= 40
-             and value[1].lstrip('-').isdigit() and value[1].isascii())
+             and value[1].removeprefix('-').isdigit() and value[1].isascii())
             or (kind in ("float", "object") and type(value[1]) is int
                 and 0 <= value[1] < 2**64)
             or (kind == "bool" and value[1] in (0, 1) and type(value[1]) is int)
@@ -1041,8 +1041,11 @@ def forking():
     """Takes the lock as the process forks, so that no other thread holds
     it in the child, where that thread would not exist to release it. The
     child's earlier fork handlers run with the agent still armed, and their
-    callbacks take the lock again on this thread."""
-    _local.forking = False
+    callbacks take the lock again on this thread. A load retried after the
+    handlers were registered registers them again, so this runs again
+    holding the lock, and takes it only once."""
+    if getattr(_local, 'forking', False):
+        return
     lock.acquire()
     _local.forking = True
 

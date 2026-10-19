@@ -68,6 +68,16 @@ struct {
 	__type(value, struct entry);
 } ENTRIES SEC(".maps");
 
+// The Python thread state the walker last found each thread's frames from,
+// which it tries first: searching every interpreter's threads costs a read
+// for each, at every call.
+struct {
+	__uint(type, BPF_MAP_TYPE_TASK_STORAGE);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, int);
+	__type(value, u64);
+} PY_STATES SEC(".maps");
+
 // Each chosen call's statistics, by its call_spec.stat; microscope sizes it
 // to the calls it chooses.
 struct {
@@ -709,7 +719,11 @@ static __always_inline void send_python(u32 tid, u32 tgid)
 	header->header.tid = tid;
 	header->header.tgid = tgid;
 	header->pad = 0;
-	py_walk(layout, stack, 0);
+	u64 *known = bpf_task_storage_get(&PY_STATES, bpf_get_current_task_btf(), 0,
+					  BPF_LOCAL_STORAGE_GET_F_CREATE);
+	py_walk(layout, stack, known ? *known : 0);
+	if (known)
+		*known = header->state;
 	u32 frames = header->frames;
 	if (frames > PY_FRAMES)
 		frames = PY_FRAMES;

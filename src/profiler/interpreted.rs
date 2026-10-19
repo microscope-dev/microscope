@@ -32,7 +32,9 @@ use crate::debug_info::DebugInfo;
 use crate::image::python::PythonLayout;
 use crate::model::{Pid, Tid};
 use crate::runtime_model::thread_ids::ThreadIds;
-use crate::runtime_model::{self, InterpretedFrame, RuntimeImage, RuntimeModel, SampledFrame};
+use crate::runtime_model::{
+    self, InterpretedFrame, RuntimeImage, RuntimeModel, SampledCode, SampledFrame,
+};
 use crate::{LoadBias, LoadedModule, VirtualAddress};
 
 /// How long past a record of frames the drain may still bring its sample:
@@ -52,10 +54,10 @@ struct Runtime {
     state: Option<VirtualAddress>,
 }
 
-/// What a process's modules said of its interpreter, when it mapped
-/// `mapped` of them.
+/// What a process's modules said of its interpreter, when it had made
+/// `mappings`.
 struct Found {
-    mapped: usize,
+    mappings: u64,
     runtime: Option<Runtime>,
 }
 
@@ -124,16 +126,16 @@ impl Interpreted {
     }
 
     /// Whether what process `pid`'s modules say of its interpreter must
-    /// be read again, now that it maps `mapped`.
-    pub(super) fn stale(&self, pid: Pid, mapped: usize) -> bool {
+    /// be read again, now that it has made `mappings` in all.
+    pub(super) fn stale(&self, pid: Pid, mappings: u64) -> bool {
         self.found
             .get(&pid)
-            .is_none_or(|found| found.mapped != mapped)
+            .is_none_or(|found| found.mappings != mappings)
     }
 
-    /// Reads what process `pid`'s `modules`, `mapped` in all, say of its
-    /// interpreter.
-    pub(super) fn find(&mut self, pid: Pid, mapped: usize, modules: &[(LoadedModule, DebugInfo)]) {
+    /// Reads what process `pid`'s `modules` say of its interpreter, once it
+    /// has made `mappings`.
+    pub(super) fn find(&mut self, pid: Pid, mappings: u64, modules: &[(LoadedModule, DebugInfo)]) {
         let runtime = modules.iter().find_map(|(loaded, info)| {
             let image: Arc<dyn RuntimeImage + Send + Sync> = Arc::clone(&info.image) as _;
             let python = image.python()?;
@@ -150,7 +152,7 @@ impl Interpreted {
             })
         });
 
-        self.found.insert(pid, Found { mapped, runtime });
+        self.found.insert(pid, Found { mappings, runtime });
     }
 
     /// Whether a native frame of process `pid` that runs the function or
@@ -345,7 +347,11 @@ fn sampled_frames(stack: &PyStack<'_>) -> Vec<SampledFrame> {
         .iter()
         .map(|frame| SampledFrame {
             code: VirtualAddress::new(frame.code),
-            proof: (frame.qualname, frame.first_line),
+            proof: SampledCode {
+                qualname: frame.qualname,
+                linetable: frame.linetable,
+                first_line: frame.first_line,
+            },
             offset: (frame.offset != NO_OFFSET).then_some(i64::from(frame.offset)),
             owner: frame.owner,
         })
@@ -452,9 +458,24 @@ pub(super) fn splice(native: &[(u32, bool)], segments: &[Vec<u32>]) -> Option<Ve
     Some(spliced)
 }
 
+/// Whether interpreted frames that cannot be known leave a stack of
+/// `native` frames short: only where an activation of the interpreter's
+/// loop could run them. A thread that is in no activation, as a library's
+/// worker thread is, runs no interpreted frames.
+pub(super) fn unknown_cuts(native: &[(u32, bool)]) -> bool {
+    native.iter().any(|&(_, activation)| activation)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_stack_in_the_loop_can_lack_interpreted_frames() {
+        assert!(unknown_cuts(&[(1, false), (2, true), (3, false)]));
+        assert!(!unknown_cuts(&[(1, false), (3, false)]));
+        assert!(!unknown_cuts(&[]));
+    }
 
     /// Each segment goes before its activation, innermost with innermost;
     /// where the two differ in number, nothing is placed.

@@ -4278,6 +4278,7 @@ fn python_breakpoints_wait_for_their_code_and_stop_in_the_programs_frame() {
             "break py:rea",
             "break missing.c:3",
             "break accumulate",
+            "break mian",
             "run",
             "bt",
             "print total",
@@ -4305,6 +4306,13 @@ fn python_breakpoints_wait_for_their_code_and_stop_in_the_programs_frame() {
     assert!(
         stderr.contains("no function named 'accumulate' was found")
             && stderr.contains("`py:accumulate`"),
+        "{stderr}"
+    );
+    // A native name misspelled is still found near its own.
+    assert!(
+        stderr.contains(
+            "did you mean 'main'? A Python function is named with `py:`, as in `py:mian`"
+        ),
         "{stderr}"
     );
 
@@ -4373,6 +4381,27 @@ fn a_program_named_alone_is_found_on_path() {
         .output()
         .expect("run microscope");
     let stdout = assert_success(found);
+    assert!(stdout.contains("found on PATH"), "{stdout}");
+
+    // A directory of that name is no program, and leaves PATH to find it.
+    let directory = support::ScratchDir::new("cli-path-directory");
+    std::fs::create_dir(directory.path().join("python")).expect("make a directory");
+    let shadowed = microscope_command()
+        .env("PATH", &path)
+        .args([
+            "--batch",
+            "--eval",
+            "run",
+            "python",
+            "--",
+            "-c",
+            "print('found on PATH')",
+        ])
+        .current_dir(directory.path())
+        .stdin(Stdio::null())
+        .output()
+        .expect("run microscope");
+    let stdout = assert_success(shadowed);
     assert!(stdout.contains("found on PATH"), "{stdout}");
 
     let missing = microscope_command()
@@ -6038,4 +6067,20 @@ fn catch_syscall_stops_where_strace_would_print_and_reads_the_call() {
             "inferior exited with status 0",
         ],
     );
+}
+
+/// A client that falls behind the debugger's events, as one does when a
+/// stop loads more modules at once than the events it holds, as CPython's
+/// JIT can register, still learns how its execution ended.
+#[test]
+fn a_run_that_misses_events_still_stops() {
+    let output = microscope_command()
+        .args(["--batch", "--eval", "break main", "--eval", "run", BASIC])
+        .env("MICROSCOPE_EVENT_CAPACITY", "2")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .stdin(Stdio::null())
+        .output()
+        .expect("run microscope");
+    let stdout = assert_success(output);
+    assert!(stdout.contains("stopped at breakpoint 1"), "{stdout}");
 }

@@ -21,10 +21,10 @@ use crate::{
 
 use super::breakpoints::install_plan_breakpoint;
 use super::frames::FrameScope;
-use super::native::LinuxTraceOps;
+use super::native::{InspectionOps, LinuxTraceOps};
 use super::{ActiveKind, Controller, Inferior, StepOwner, debug_thread_id};
 
-impl<P: LinuxTraceOps> Controller<P> {
+impl<P: InspectionOps> Controller<P> {
     /// The runtime that interprets frame `frame` of thread `pid`'s stack at
     /// the stop `stop_id`, and the frame's address, when the frame is one a
     /// runtime interprets. A thread no runtime interprets on is not
@@ -49,6 +49,19 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
+    /// Whether `selection` selects an outer frame a runtime interprets.
+    pub(super) fn selects_interpreted(&self, selection: &crate::StoppedSelection) -> bool {
+        selection.frame != StackFrameId::INNERMOST
+            && self
+                .context_thread(selection.stop, selection.execution)
+                .is_ok_and(|pid| {
+                    self.interpreted_frame(selection.stop, pid, selection.frame)
+                        .is_some()
+                })
+    }
+}
+
+impl<P: LinuxTraceOps> Controller<P> {
     /// Steps thread `pid` from the interpreted frame at `frame` of the
     /// runtime `runtime`, as that runtime steps. A runtime that cannot step
     /// so refuses the step, and nothing runs.

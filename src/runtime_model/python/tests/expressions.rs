@@ -508,13 +508,22 @@ fn a_float_or_a_bool_finds_the_int_key_it_equals() {
     let mut process = Process::new(layout());
     let types = process.builtin_types();
     let item = process.str_object(types.str, "one");
-    let entries = [int_entry(&mut process, &types, 1, item)];
+    let least = process.str_object(types.str, "least");
+    let entries = [
+        int_entry(&mut process, &types, 1, item),
+        int_entry(&mut process, &types, i128::MIN, least),
+    ];
     let dict = process.hashed_dict(types.dict, Table::eight(Kind::General), &entries, &[]);
 
-    for key in [InterpretedKey::Float(1.0), InterpretedKey::Bool(true)] {
+    for (key, found) in [
+        (InterpretedKey::Float(1.0), item),
+        (InterpretedKey::Bool(true), item),
+        // -2.0**127 is exactly the least i128.
+        (InterpretedKey::Float(-(2.0_f64.powi(127))), least),
+    ] {
         assert_eq!(
             item_in(&process, types, None, dict, &key),
-            Ok(VirtualAddress::new(item)),
+            Ok(VirtualAddress::new(found)),
             "the key {key:?}"
         );
     }

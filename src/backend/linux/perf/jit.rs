@@ -39,9 +39,9 @@ impl std::fmt::Display for MapError {
     }
 }
 
-/// The path process `pid` names its perf map by, and the bytes of the
-/// map past its first `from`.
-pub fn read_map(pid: u32, from: u64) -> Result<(String, Vec<u8>), MapError> {
+/// The path process `pid` names its perf map by, and at most `limit`
+/// bytes of the map past its first `from`.
+pub fn read_map(pid: u32, from: u64, limit: u64) -> Result<(String, Vec<u8>), MapError> {
     let own = own_pid(pid).ok_or(MapError::Absent)?;
     let named = format!("/tmp/perf-{own}.map");
     let path = PathBuf::from(format!("/proc/{pid}/root{named}"));
@@ -64,7 +64,7 @@ pub fn read_map(pid: u32, from: u64) -> Result<(String, Vec<u8>), MapError> {
 
     let mut bytes = Vec::new();
     file.seek(std::io::SeekFrom::Start(from))
-        .and_then(|_| file.read_to_end(&mut bytes))
+        .and_then(|_| file.take(limit).read_to_end(&mut bytes))
         .map_err(MapError::Unreadable)?;
     Ok((named, bytes))
 }
@@ -158,16 +158,22 @@ mod tests {
         let pid = std::process::id();
         let own = own_pid(pid).expect("its own pid");
         let path = format!("/tmp/perf-{own}.map");
+        // A map there now was made by an earlier process with this pid,
+        // before this one began: it is not read, and, where it can be
+        // removed, the test goes on without it.
         if std::path::Path::new(&path).exists() {
-            return;
+            assert!(matches!(read_map(pid, 0, u64::MAX), Err(MapError::Stale)));
+            if std::fs::remove_file(&path).is_err() {
+                return;
+            }
         }
 
         std::fs::write(&path, b"1000 10 first\n2000 1").expect("write the map");
-        let read = read_map(pid, 5);
+        let read = read_map(pid, 5, u64::MAX);
         std::fs::remove_file(&path).expect("remove the map");
         let (named, bytes) = read.expect("a map made after the process began");
         assert_eq!(named, path);
         assert_eq!(bytes, b"10 first\n2000 1");
-        assert!(matches!(read_map(pid, 0), Err(MapError::Absent)));
+        assert!(matches!(read_map(pid, 0, u64::MAX), Err(MapError::Absent)));
     }
 }

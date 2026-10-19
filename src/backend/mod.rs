@@ -92,13 +92,11 @@ pub fn executable_source(path: &Path) -> Result<ExecutableSource> {
 /// no file of that name in the current directory, the first executable file
 /// of that name on `PATH`, as gdb finds it.
 fn program_file(path: &Path) -> Result<std::borrow::Cow<'_, Path>> {
-    use std::os::unix::fs::PermissionsExt;
-
     let alone = matches!(
         path.components().collect::<Vec<_>>().as_slice(),
         [std::path::Component::Normal(_)]
     );
-    if !alone || path.exists() {
+    if !alone || fs::metadata(path).is_ok_and(|metadata| metadata.is_file()) {
         return Ok(path.into());
     }
 
@@ -106,10 +104,10 @@ fn program_file(path: &Path) -> Result<std::borrow::Cow<'_, Path>> {
         .and_then(|directories| {
             std::env::split_paths(&directories)
                 .map(|directory| directory.join(path))
+                // As a shell finds it: a file this user may run.
                 .find(|candidate| {
-                    fs::metadata(candidate).is_ok_and(|metadata| {
-                        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
-                    })
+                    fs::metadata(candidate).is_ok_and(|metadata| metadata.is_file())
+                        && nix::unistd::access(candidate, nix::unistd::AccessFlags::X_OK).is_ok()
                 })
         })
         .map(Into::into)

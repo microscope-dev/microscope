@@ -79,6 +79,24 @@ describe("expressions in source", () => {
     expect(expressionsIn("    if (e == NULL) { status = -1; }")).toEqual(["e", "status"]);
     expect(expressionsIn('    printf("%d words", count); // n here')).toEqual(["count"]);
   });
+
+  it("read Python as Python: its keywords, constants, comments, and string prefixes", () => {
+    const python = (line: string) => expressionsIn(line, "app.py");
+    expect(python("    while True:")).toEqual([]);
+    expect(python("    if x is None and not done:")).toEqual(["x", "done"]);
+    expect(python("    def take(self, name, count):")).toEqual(["self", "name", "count"]);
+    expect(python("    total = f'{x}' + rb\"\\d\" + name  # count it")).toEqual(["total", "name"]);
+    expect(python("    return lambda y: y + offset")).toEqual(["y", "offset"]);
+    // A soft keyword is a name where it does not begin its statement.
+    expect(python("    match point:")).toEqual(["point"]);
+    expect(python('match = {"case": 1}')).toEqual(["match"]);
+    expect(python("type Point = tuple[int, int]")).toEqual(["Point", "tuple", "int"]);
+    expect(python("    kind = type")).toEqual(["kind", "type"]);
+    expect(expressionAt("    while True:", 11, "app.py")).toBeNull();
+    expect(expressionAt("    if done is None:", 16, "app.py")).toBeNull();
+    // Other languages keep their names, though Python's keywords.
+    expect(expressionsIn("    int from = pass + is;")).toEqual(["from", "pass", "is"]);
+  });
 });
 
 describe("inline values", () => {

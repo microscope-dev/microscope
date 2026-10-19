@@ -91,6 +91,17 @@ covers becomes a module of its own (`src/debug_info/perf_map.rs`,
 `src/profiler/jit.rs`). The map is append-only and written while it is read,
 so the recorder reads on from where it stopped, and only when a sample lands in
 anonymous code no function it named covers; the sample is then unwound again.
+The process writes the map, so one read takes at most 16 MiB of it, and the
+next goes on from there, and at most 64 MiB of its functions' code; a function
+past that has no code, so no frames, and the `perf map PID` setting says so.
+A read that finds nothing new, of the map or of the registered objects below,
+is not made again for 20 ms of the samples' time unless the process maps
+something: a foreign-function library's callbacks run in anonymous code no
+map names, and would otherwise open the process's files at each sample.
+A mapping over a function whose line was read before the mapping was made
+ends the function. One read after may name the new code, since the map is
+read as the program runs and mappings as the recorder drains them, so it is
+kept until a later line replaces it.
 
 Nothing describes those functions' frames, so their frames are proved from
 their code, read from the process when the map is
@@ -224,7 +235,9 @@ the refresh or a reused thread id, the walker looks through every
 interpreter's states for the one that names the thread (`py_find`). None, more
 than one, or a search past its bound gives unknown frames, never another
 thread's. A sample before the layout is known ends in
-`Truncation::InterpretedUnknown`. Code objects are named and proved as each
+`Truncation::InterpretedUnknown`, but only where its native stack has an
+activation of the interpreter's loop (`interpreted::unknown_cuts`): a thread
+in none, as a library's worker thread is, runs no Python frames. Code objects are named and proved as each
 record is drained (`RuntimeModel::sampled_frames`), while the program most
 likely still runs; one freed since is unreadable. The syscall engine shares
 the walker (`dev/syscalls.md`). Segments go before the activations of the

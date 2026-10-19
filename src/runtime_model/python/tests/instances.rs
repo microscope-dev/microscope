@@ -340,7 +340,7 @@ fn code_object(process: &mut Process, types: &Types, name: &str, first_line: u32
 }
 
 /// A slot of a set's table.
-enum Slot {
+pub(super) enum Slot {
     /// Holds no key.
     Empty,
 
@@ -352,7 +352,7 @@ enum Slot {
 }
 
 /// A set or frozenset of type `ty`, whose table holds `slots` in order.
-fn set_object(process: &mut Process, ty: VirtualAddress, slots: &[Slot]) -> u64 {
+pub(super) fn set_object(process: &mut Process, ty: VirtualAddress, slots: &[Slot]) -> u64 {
     let object = process.object(ty, 48);
     let stride = process.offset(Field::SetEntrySize);
     let table = process.alloc(stride * slots.len() as u64);
@@ -1040,6 +1040,53 @@ fn a_managed_static_types_class_attribute_is_found(extension: bool) {
     );
 }
 
+/// A static type whose state, in either place its interpreter keeps one,
+/// is another type's has no class attributes to be read from it.
+#[test]
+fn a_static_type_whose_state_is_another_types_is_malformed() {
+    let mut process = Process::new(layout());
+    let (types, _) = world(&mut process);
+    let answer = process.int(types.int, 42);
+    let dict = text_dict(&mut process, &types, &[("answer", answer)]);
+    let flagged = new_type(&mut process, &types, "Flagged");
+    process.word(flagged, Field::TypeFlags, STATIC_BUILTIN);
+    process.word(flagged, Field::TypeSubclasses, 1);
+    let mro = process.tuple(types.tuple, &[flagged]);
+    process.word(flagged, Field::TypeMro, mro);
+
+    let interpreter = process.alloc(128);
+    for field in [
+        Field::InterpreterStaticTypes,
+        Field::InterpreterStaticExtensionTypes,
+    ] {
+        let state = interpreter + process.offset(field);
+        process.memory.write(state, types.int.get(), 8);
+        process
+            .memory
+            .write(state + process.offset(Field::StaticTypeStateDict), dict, 8);
+    }
+    let runtime = process.alloc(SMALL);
+    process.word(runtime, Field::RuntimeInterpretersHead, interpreter);
+
+    let found = with_runtime(
+        &process,
+        types,
+        InspectionLimits::default(),
+        None,
+        VirtualAddress::new(runtime),
+        |values| {
+            values.step(
+                VirtualAddress::new(flagged),
+                InterpretedStep::Attribute("answer"),
+            )
+        },
+    );
+    assert!(
+        matches!(&found, Err(InterpretedFailure::Unavailable(reason)) if format!("{reason:?}").contains("malformed")),
+        "{found:?}"
+    );
+}
+
 #[test]
 fn a_set_is_shown_with_its_items_in_table_order_past_its_deleted_entries() {
     let mut process = Process::new(layout());
@@ -1235,6 +1282,17 @@ fn a_module_and_a_class_are_shown_by_their_names() {
     assert_eq!(shown.kind, InterpretedKind::Other);
     assert_eq!(shown.type_name.as_ref(), "type");
     assert_eq!(shown.module.as_deref(), Some("builtins"));
+
+    // A module whose dict cannot be read is shown by its address, saying
+    // why it has no name.
+    let unread = process.object(types.module, 32);
+    process.word(unread, Field::ModuleDict, 0x10);
+    let shown = presented_at(&process, types, unread);
+    assert_eq!(
+        shown.summary.as_ref(),
+        format!("<module object at {unread:#x}>")
+    );
+    assert!(shown.problem.is_some(), "{shown:?}");
 }
 
 #[test]

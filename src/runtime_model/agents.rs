@@ -157,6 +157,12 @@ pub trait RuntimeAgent: std::fmt::Debug + Send + Sync {
     /// Configuration/discovery may require runtime cooperation by siblings.
     fn process_scope_required(&self) -> bool;
 
+    /// Why the agent cannot give a variable a value exactly in this
+    /// runtime, whatever the stop; `None` where it can.
+    fn assignments_refused(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Whether `arming` asks anything of the agent, which is installed only
     /// when something does: a breakpoint, a step, or, for a runtime whose
     /// agent reports them, an exception that stops.

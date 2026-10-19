@@ -107,6 +107,23 @@ const fn stepped(kind: StepKind) -> StopReason {
     StopReason::Step { kind }
 }
 
+/// From the breakpoint at `DEEP`, steps over a line of the caller selected,
+/// as pdb's `next` after `up` does: the call's rest runs, and the caller
+/// stops at its next line.
+async fn over_in_the_selected_caller(session: &mut PythonSession) {
+    let reason = session.scenario.resume_to_stop().await;
+    assert!(
+        matches!(reason, StopReason::Breakpoint { address: None, .. }),
+        "{}: {reason:?}",
+        session.context()
+    );
+    assert_at(session, &reason, &reason.clone(), "deep", "DEEP").await;
+    session.select_python_frame("shallow").await;
+    let reason = step(session, StepKind::OverSource).await;
+    let over = stepped(StepKind::OverSource);
+    assert_at(session, &reason, &over, "shallow", "SHALLOW_AFTER").await;
+}
+
 /// Steps out of the module's frame, at a stop the agent did not report,
 /// and checks the step is refused, with why.
 async fn refused_step_out_of_module(session: &PythonSession) {
@@ -215,6 +232,7 @@ async fn every_kind_of_step(build: &str) {
             at(FIXTURE, "CALLER_START"),
             at(FIXTURE, "TASK_AWAIT"),
             at(FIXTURE, "HANDLES_CALL"),
+            at(FIXTURE, "DEEP"),
         ],
     )
     .await;
@@ -284,6 +302,7 @@ async fn every_kind_of_step(build: &str) {
     .await;
     let reason = step(&mut session, StepKind::OverSource).await;
     assert_at(&mut session, &reason, &over, "handles", "HANDLES_EXCEPT").await;
+    over_in_the_selected_caller(&mut session).await;
 
     // From a stop the agent did not report, the thread would run on
     // unfollowed before the step could begin: the step is refused, with
@@ -306,6 +325,7 @@ async fn every_kind_of_step(build: &str) {
         "OUTER 5",
         "TASK 2",
         "HANDLED True",
+        "SHALLOW 2",
         "CAUGHT caught",
         "STEPPING DONE",
     ] {

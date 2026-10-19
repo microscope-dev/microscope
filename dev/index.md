@@ -249,6 +249,7 @@ path:
 | `web/src/protocol.gen.ts` | `MICROSCOPE_UPDATE_PROTOCOL=1 just test protocol` |
 | Web replay transcripts | `just web-transcripts` |
 | `src/debug_info/cpython/layouts.gen.rs` | `scripts/cpython-layouts.sh`, in the dev shell |
+| `src/runtime_model/python/printable.gen.rs` | `scripts/python-printable.sh`, in the dev shell |
 | Golden manifests | `just golden-record NAME` |
 | Benchmark baselines | The owning benchmark's explicit record option, only after review |
 | pnpm locks | Run pnpm in the pinned shell after changing its package file |

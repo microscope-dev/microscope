@@ -67,6 +67,7 @@ pub struct RawPyLayout {
     frame_tlbc_index: u32,
     code_qualname: u32,
     code_firstlineno: u32,
+    code_linetable: u32,
     code_code_adaptive: u32,
     code_tlbc: u32,
     code_array_size: u32,
@@ -77,7 +78,6 @@ pub struct RawPyLayout {
     interp_next: u32,
     interp_threads_head: u32,
     thread_next: u32,
-    pad: u32,
     runtime: u64,
     ns_dev: u64,
     ns_ino: u64,
@@ -115,9 +115,11 @@ struct RawPyThread {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct RawPyFrame {
-    /// The code object it runs, which `qualname` and `first_line` prove.
+    /// The code object it runs, which `qualname`, `linetable`, and
+    /// `first_line` prove.
     pub code: u64,
     pub qualname: u64,
+    pub linetable: u64,
 
     /// Its instruction's byte offset from its bytecode's start, or
     /// [`NO_OFFSET`].
@@ -313,6 +315,7 @@ pub fn layout(layout: &PythonLayout) -> Result<RawPyLayout, &'static str> {
         frame_tlbc_index: optional(Field::FrameTlbcIndex),
         code_qualname: needed(Field::CodeQualname)?,
         code_firstlineno: needed(Field::CodeFirstlineno)?,
+        code_linetable: needed(Field::CodeLinetable)?,
         code_code_adaptive: needed(Field::CodeCodeAdaptive)?,
         code_tlbc: optional(Field::CodeTlbc),
         code_array_size: optional(Field::CodeArraySize),
@@ -323,7 +326,6 @@ pub fn layout(layout: &PythonLayout) -> Result<RawPyLayout, &'static str> {
         interp_next: optional(Field::InterpreterNext),
         interp_threads_head: optional(Field::InterpreterThreadsHead),
         thread_next: optional(Field::ThreadNext),
-        pad: 0,
         runtime: 0,
         ns_dev: 0,
         ns_ino: 0,
@@ -563,11 +565,11 @@ impl Sampler {
     }
 
     /// How many records found no room in their rings.
-    #[must_use]
-    pub fn lost(&self) -> u64 {
+    pub fn lost(&self) -> Result<u64, SamplerError> {
         self.lost
             .get(&0, 0)
-            .map_or(0, |counts| counts.iter().copied().sum())
+            .map(|counts| counts.iter().copied().sum())
+            .map_err(load_error)
     }
 }
 
@@ -616,6 +618,7 @@ mod tests {
                     frame_tlbc_index,
                     code_qualname,
                     code_firstlineno,
+                    code_linetable,
                     code_code_adaptive,
                     code_tlbc,
                     code_array_size,
@@ -626,7 +629,6 @@ mod tests {
                     interp_next,
                     interp_threads_head,
                     thread_next,
-                    pad,
                     runtime,
                     ns_dev,
                     ns_ino,
@@ -636,7 +638,7 @@ mod tests {
             (
                 RawPyFrame,
                 "py_frame",
-                [code, qualname, offset, first_line, owner, pad]
+                [code, qualname, linetable, offset, first_line, owner, pad]
             ),
             (
                 RawPyStackRecord,
@@ -678,6 +680,7 @@ mod tests {
         let frame = |code| RawPyFrame {
             code,
             qualname: code + 8,
+            linetable: code + 16,
             offset: 6,
             first_line: 3,
             owner: 0,

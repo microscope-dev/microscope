@@ -1123,6 +1123,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         inferior.loader_site = None;
         inferior.runtime_hooks.clear();
         let agent_cleanup = inferior.retire_agents_after_exit();
+        // The bootstrap ran in the image the exec replaced, and put the
+        // variables that would lead a new interpreter to it back.
+        inferior.python_launch = None;
         let had_arming_reasons = !inferior.managed.unarmed.is_empty();
         inferior.managed = super::managed::ManagedSites::default();
         inferior.stack_moves.clear();

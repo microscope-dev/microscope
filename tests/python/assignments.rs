@@ -306,3 +306,32 @@ async fn a_free_threaded_interpreter_refuses_assignments() {
     );
     session.shutdown().await;
 }
+
+/// CPython before 3.14 takes the agent through a launch's bootstrap, whose
+/// thread runs beside the program's, and 3.12's frame variables are a copy:
+/// nothing is given there, and the refusal says so.
+#[tokio::test]
+async fn an_interpreter_before_3_14_refuses_assignments() {
+    for interpreter in ["3.12", "3.13"] {
+        let mut session = launch(interpreter).await;
+        refused(
+            &mut session,
+            None,
+            "count = 41",
+            ExpressionErrorKind::Assignment,
+            "CPython 3.14 or later",
+        )
+        .await;
+        let reason = session.scenario.resume_to_stop().await;
+        assert!(
+            matches!(reason, StopReason::Breakpoint { address: None, .. }),
+            "{interpreter}: {reason:?}"
+        );
+        assert!(
+            session.output().contains("COUNT 1 "),
+            "{interpreter}: {}",
+            session.output()
+        );
+        session.shutdown().await;
+    }
+}

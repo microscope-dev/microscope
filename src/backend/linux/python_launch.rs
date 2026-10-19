@@ -6,10 +6,10 @@
 //! ID, which only that process's bootstrap answers to. The bootstrap puts
 //! the variables and the path back before the program runs.
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::io::{Read as _, Write as _};
 use std::os::fd::OwnedFd;
-use std::os::unix::ffi::OsStrExt as _;
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -88,7 +88,8 @@ impl PythonLaunch {
             .and_then(|mut file| file.read_exact(&mut random))
             .map_err(problem)?;
         let directory = parent.join(format!(
-            ".microscope-python-{:032x}",
+            "{}{:032x}",
+            crate::runtime_model::PYTHON_BOOTSTRAP_PREFIX,
             u128::from_le_bytes(random)
         ));
         nix::unistd::mkdir(&directory, Mode::S_IRWXU).map_err(problem)?;
@@ -178,73 +179,66 @@ impl Drop for PythonLaunch {
     }
 }
 
-/// Whether `executable` is CPython 3.12 or 3.13, as its own symbols or the
-/// libpython it needs say. Any other program is launched as it is.
+/// Whether `executable` is CPython 3.12 or 3.13, as the libpython it needs
+/// or its own exported version says. Any other program is launched as it
+/// is. Only the headers, the dynamic section, and the dynamic symbols are
+/// read, since every launch of any program asks.
 fn launches_bootstrapped_python(executable: &Path) -> bool {
-    use object::{Object as _, ObjectSymbol as _};
+    use object::read::elf::{Dyn as _, SectionHeader as _};
+    use object::{Object as _, ObjectSection as _, ObjectSymbol as _, ReadRef as _};
 
-    let Ok(bytes) = std::fs::read(executable) else {
+    // Without O_NONBLOCK, opening a FIFO would wait for a writer.
+    let Ok(file) = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NONBLOCK)
+        .open(executable)
+    else {
         return false;
     };
-    let Ok(file) = object::File::parse(bytes.as_slice()) else {
+    if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
+        return false;
+    }
+    let data = object::ReadCache::new(file);
+    let Ok(elf) = object::read::elf::ElfFile64::<object::Endianness, _>::parse(&data) else {
         return false;
     };
-    let needed = needed_libraries(&bytes);
-    let library = needed.iter().any(|name| {
-        let name = name.as_bytes();
-        [b"libpython3.12".as_slice(), b"libpython3.13"]
-            .iter()
-            .any(|prefix| name.starts_with(prefix))
+    let endian = elf.endian();
+    let sections = elf.elf_section_table();
+    let library = sections.iter().any(|section| {
+        let Ok(Some((entries, link))) = section.dynamic(endian, &data) else {
+            return false;
+        };
+        let Ok(strings) = sections.strings(endian, &data, link) else {
+            return false;
+        };
+        entries.iter().any(|entry| {
+            entry.d_tag(endian) == object::elf::DT_NEEDED
+                && entry.string(endian, strings).is_ok_and(|name| {
+                    [b"libpython3.12".as_slice(), b"libpython3.13"]
+                        .iter()
+                        .any(|prefix| name.starts_with(prefix))
+                })
+        })
     });
     if library {
         return true;
     }
 
-    // A static build carries its version as `Py_Version`.
-    file.symbols()
-        .chain(file.dynamic_symbols())
+    // A static build exports its version as `Py_Version`: CPython links
+    // its executable to export every symbol, for its extensions.
+    elf.dynamic_symbols()
         .find(|symbol| symbol.name() == Ok("Py_Version"))
         .and_then(|symbol| {
-            let section = file.section_by_index(symbol.section_index()?).ok()?;
-            let data = object::ObjectSection::data_range(&section, symbol.address(), 4).ok()??;
-            Some(u32::from_le_bytes(data.try_into().ok()?))
+            let section = elf.section_by_index(symbol.section_index()?).ok()?;
+            let (offset, _) = section.file_range()?;
+            let within = symbol.address().checked_sub(section.address())?;
+            let bytes = data.read_bytes_at(offset.checked_add(within)?, 4).ok()?;
+            Some(u32::from_le_bytes(bytes.try_into().ok()?))
         })
         .is_some_and(|version| {
             let version = crate::image::python::PyVersion(version);
             version.major() == 3 && (12..=13).contains(&version.minor())
         })
-}
-
-/// The libraries an ELF file's dynamic section names as needed.
-fn needed_libraries(bytes: &[u8]) -> Vec<&OsStr> {
-    use object::read::elf::{Dyn as _, FileHeader as _, SectionHeader as _};
-
-    let Ok(header) = object::elf::FileHeader64::<object::Endianness>::parse(bytes) else {
-        return Vec::new();
-    };
-    let Ok(endian) = header.endian() else {
-        return Vec::new();
-    };
-    let Ok(sections) = header.sections(endian, bytes) else {
-        return Vec::new();
-    };
-    let mut needed = Vec::new();
-    for section in sections.iter() {
-        let Ok(Some((entries, link))) = section.dynamic(endian, bytes) else {
-            continue;
-        };
-        let Ok(strings) = sections.strings(endian, bytes, link) else {
-            continue;
-        };
-        for entry in entries {
-            if entry.d_tag(endian) == object::elf::DT_NEEDED
-                && let Ok(name) = entry.string(endian, strings)
-            {
-                needed.push(OsStr::from_bytes(name));
-            }
-        }
-    }
-    needed
 }
 
 #[cfg(test)]

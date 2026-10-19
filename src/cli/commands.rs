@@ -1139,11 +1139,6 @@ impl Cli {
     /// function or source file that no loaded module has.
     async fn suggest(&self, error: microscope::Error) -> anyhow::Error {
         let hint = match &error {
-            microscope::Error::FunctionNotFound(name)
-                if let Some(hint) = python_name_hint(name, self.debugger.module_image()) =>
-            {
-                Some(hint)
-            }
             microscope::Error::FunctionNotFound(name) => {
                 let images = self.loaded_images().await;
                 let names = images.iter().flat_map(|image| {
@@ -1154,7 +1149,22 @@ impl Cli {
                             .map(microscope::Symbol::name),
                     )
                 });
-                super::suggest::did_you_mean(name, names)
+                // A name meant for Python may be a native one misspelled.
+                let native = super::suggest::did_you_mean(name, names);
+                let python = python_name_hint(name, self.debugger.module_image());
+                match (native, python) {
+                    // Two sentences: the first ends in its question mark.
+                    (Some(native), Some(python)) => {
+                        let mut python = python.chars();
+                        let first = python.next().map(|first| first.to_ascii_uppercase());
+                        Some(format!(
+                            "{native} {}{}",
+                            first.unwrap_or_default(),
+                            python.as_str()
+                        ))
+                    }
+                    (native, python) => native.or(python),
+                }
             }
             microscope::Error::SourceFileNotFound(path) => {
                 let images = self.loaded_images().await;
@@ -1844,6 +1854,11 @@ impl Cli {
                 "{}: the condition of {} could not be evaluated: {error}",
                 renderer.paint(Role::Warning, "warning"),
                 renderer.paint(Role::Metadata, format::condition_owner(owner))
+            )),
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => lines.push(format!(
+                "{}: missed {missed} events, so lines about signals, logged messages, \
+                 conditions, and library views may be missing",
+                renderer.paint(Role::Warning, "warning"),
             )),
             _ => {}
         };

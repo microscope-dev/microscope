@@ -78,6 +78,11 @@ fn only_cpython_3_12_and_3_13_are_bootstrapped() {
     let launch = PythonLaunch::prepare(&root.join("3.12").join("python"), &mut environment)
         .expect("prepare")
         .expect("a bootstrap for 3.12");
+    // A FIFO is no program, and opening it to read would wait for a writer.
+    let fifo = launch.directory.join("fifo");
+    nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRUSR).expect("a FIFO");
+    assert!(!launches_bootstrapped_python(&fifo));
+    std::fs::remove_file(&fifo).expect("remove the FIFO");
     let value = |name: &str| {
         environment
             .iter()
