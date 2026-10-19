@@ -1090,9 +1090,11 @@ async fn a_missing_agent_acknowledgement_has_a_bounded_visible_failure() {
     session.shutdown().await;
 }
 
-/// Instruction steps take as long while an agent's acknowledgement is
-/// outstanding as while none is: the controller wakes for each step's stop
-/// as it arrives, not at the next of a poll's 5 ms sleeps.
+/// While an agent's acknowledgement is outstanding, the controller waits
+/// for each step's stop blocked on its messages, with the alarm set for the
+/// deadline, so it takes the stop as it arrives. A controller that polled
+/// would sleep up to 5 ms after each. Its waits are counted, not timed, so
+/// a busy machine cannot fail the test or hide a poll.
 #[tokio::test]
 async fn steps_are_as_prompt_while_an_acknowledgement_is_outstanding() {
     use crate::session::PythonSession;
@@ -1117,8 +1119,13 @@ async fn steps_are_as_prompt_while_an_acknowledgement_is_outstanding() {
     session.resume().await;
     session.stop_at("faulted").await;
     session.release();
+
+    // How the controller waited during the steps: each count of the
+    // process's timings recording, which nextest gives this test alone.
     let steps = async |session: &mut PythonSession| {
-        let began = std::time::Instant::now();
+        let recording =
+            microscope::timings::Recording::start(microscope::timings::Options::default())
+                .expect("no other timings recording in this test's process");
         for _ in 0..STEPS {
             let reason = session.scenario.step_to_stop(StepKind::Instruction).await;
             assert_eq!(
@@ -1128,10 +1135,15 @@ async fn steps_are_as_prompt_while_an_acknowledgement_is_outstanding() {
                 }
             );
         }
-        began.elapsed()
+
+        let counters = recording.finish().expect("the timings report").counters;
+        let count = |name: &str| counters.get(name).copied().unwrap_or(0);
+        (count("agent_alarm_waits"), count("agent_poll_sleeps"))
     };
 
+    // With nothing outstanding the controller waits with no deadline.
     let acknowledged = steps(&mut session).await;
+    assert_eq!(acknowledged, (0, 0), "(alarm waits, poll sleeps)");
 
     session.scenario.remove_breakpoint(first.id).await;
     let snapshot = session.scenario.snapshot().await;
@@ -1148,13 +1160,14 @@ async fn steps_are_as_prompt_while_an_acknowledgement_is_outstanding() {
         snapshot.breakpoints
     );
 
-    let outstanding = steps(&mut session).await;
-
-    // A poll would add 2.5 ms a step on average.
-    assert!(
-        outstanding < acknowledged * 3 / 2 + std::time::Duration::from_millis(75),
-        "{STEPS} steps took {outstanding:?} outstanding, {acknowledged:?} acknowledged"
+    // A stop can be queued before the controller waits for it, so not every
+    // step waits; some do, and none of them sleeps.
+    let (alarm_waits, poll_sleeps) = steps(&mut session).await;
+    assert_eq!(
+        poll_sleeps, 0,
+        "{STEPS} steps slept in a poll {poll_sleeps} times"
     );
+    assert!(alarm_waits > 0, "no wait of {STEPS} steps had a deadline");
     session.shutdown().await;
 }
 

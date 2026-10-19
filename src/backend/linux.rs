@@ -1755,10 +1755,12 @@ impl<P: InspectionOps> Controller<P> {
                 .filter_map(runtime_agents::Installation::deadline)
                 .min()
         });
-        if let Some(deadline) = deadline
-            && !self.set_alarm(deadline)
-        {
-            return self.poll_messages();
+        if let Some(deadline) = deadline {
+            if !self.set_alarm(deadline) {
+                return self.poll_messages();
+            }
+
+            crate::count!("agent_alarm_waits", 1);
         }
 
         self.messages.borrow_mut().blocking_recv()
@@ -1816,6 +1818,7 @@ impl<P: InspectionOps> Controller<P> {
                 Err(mpsc::error::TryRecvError::Disconnected) => return None,
                 Err(mpsc::error::TryRecvError::Empty) => {}
             }
+            crate::count!("agent_poll_sleeps", 1);
             thread::sleep((deadline - now).min(std::time::Duration::from_millis(5)));
         }
     }
