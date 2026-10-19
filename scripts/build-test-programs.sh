@@ -17,6 +17,10 @@ readonly ada_fixtures_dir="${fixtures_dir}/ada"
 readonly suite_stamp="${output_dir}/.suite.stamp"
 readonly suite_outputs="${output_dir}/.suite.outputs"
 readonly frame_oracle_script=scripts/frame-variables-oracle.py
+# Every output's signature names the checkout it was built from: outputs keep
+# its absolute paths, as DWARF's DW_AT_comp_dir does, and a checkout whose
+# build/ is shared with another's must not take the other's as its own.
+readonly checkout="checkout=${PWD}"
 
 declare -A dash_version_by_tool=()
 declare -A rebuilt_outputs=()
@@ -220,7 +224,7 @@ run_cached_build() {
     local -a command=("$@")
     local command_text
     printf -v command_text '%q ' "${command[@]}"
-    local signature="${metadata}"$'\n'"command=${command_text}"
+    local signature="${checkout}"$'\n'"${metadata}"$'\n'"command=${command_text}"
     local stamp="${output}.command"
     local previous=""
 
@@ -1098,8 +1102,8 @@ core_signature() {
     read -r -a input_paths <<<"$inputs"
     local command_text
     printf -v command_text '%q ' "$@"
-    printf 'generator=gcore-v2\ngdb=%s\nsignal=%s\nfilter=%s\ncommand=%s\n' \
-        "$gdb_version" "$signal" "$filter" "$command_text"
+    printf '%s\ngenerator=gcore-v2\ngdb=%s\nsignal=%s\nfilter=%s\ncommand=%s\n' \
+        "$checkout" "$gdb_version" "$signal" "$filter" "$command_text"
     stat -L --format='%n %Y %s' "${input_paths[@]}" "$stack_guard_mappings"
 }
 
@@ -1201,8 +1205,8 @@ suite_signature() {
         fi
     done
     # Statically linked glibc fixtures link from a store path of their own.
-    printf 'suite-v1\nGOOS=%s GOARCH=%s\nGLIBC_STATIC_LIBRARIES=%s\nMICROSCOPE_FIXTURE_CRATES=%s\n' \
-        "${GOOS-}" "${GOARCH-}" "$GLIBC_STATIC_LIBRARIES" "${MICROSCOPE_FIXTURE_CRATES-}"
+    printf '%s\nsuite-v1\nGOOS=%s GOARCH=%s\nGLIBC_STATIC_LIBRARIES=%s\nMICROSCOPE_FIXTURE_CRATES=%s\n' \
+        "$checkout" "${GOOS-}" "${GOARCH-}" "$GLIBC_STATIC_LIBRARIES" "${MICROSCOPE_FIXTURE_CRATES-}"
     stat -L --format='%n %Y' "${paths[@]}"
 }
 
@@ -1265,12 +1269,32 @@ compile_tokio_variant() {
     if [[ "$variant" == "${tokio_older_release}-"* ]]; then
         packages+=(--config "resolver.lockfile-path='${PWD}/${tokio_older_lock}'")
     fi
+    local -a cargo=(
+        env CARGO_TARGET_DIR="$tokio_target_dir/$variant"
+        RUSTFLAGS="${RUSTFLAGS-} -D warnings ${flags}" NIX_HARDENING_ENABLE=
+        cargo
+    )
+    local -a workspace=(
+        --quiet --offline --locked --manifest-path "$tokio_fixtures_dir/Cargo.toml"
+        --profile "$profile"
+        --config "source.crates-io.replace-with='vendored'"
+        --config "source.vendored.directory='${MICROSCOPE_FIXTURE_CRATES}'"
+    )
+    # Cargo takes a fixture another checkout built as current, as it finds
+    # the fixture's sources at the same relative paths: what this checkout
+    # did not build is built again.
+    local stamp="$tokio_target_dir/$variant/.checkout"
+    if [[ -f "$stamp" && "$(<"$stamp")" != "$checkout" ]]; then
+        local -a fixtures=()
+        for package in "$@"; do
+            fixtures+=(--package "$package")
+        done
+        "${cargo[@]}" clean "${workspace[@]}" "${fixtures[@]}"
+    fi
     printf '[cargo]  tokio fixtures (%s)\n' "$variant"
-    CARGO_TARGET_DIR="$tokio_target_dir/$variant" RUSTFLAGS="${RUSTFLAGS-} -D warnings ${flags}" \
-        NIX_HARDENING_ENABLE= cargo build --quiet --offline --locked \
-        --manifest-path "$tokio_fixtures_dir/Cargo.toml" --profile "$profile" \
-        --config "source.crates-io.replace-with='vendored'" \
-        --config "source.vendored.directory='${MICROSCOPE_FIXTURE_CRATES}'" "${packages[@]}"
+    "${cargo[@]}" build "${workspace[@]}" "${packages[@]}"
+    printf '%s\n' "$checkout" >"${stamp}.tmp"
+    mv "${stamp}.tmp" "$stamp"
 }
 
 # Copies each of PACKAGES that VARIANT's PROFILE build rewrote to

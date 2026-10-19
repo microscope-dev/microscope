@@ -13,6 +13,58 @@ use microscope::{
 };
 use support::Scenario;
 
+/// Every fixture was built from this checkout: a build whose `build/` is
+/// shared with another checkout must not take that checkout's outputs as
+/// its own, whose debug information names the other's sources.
+#[test]
+fn fixtures_were_built_from_this_checkout() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let checkout = format!("checkout={}", root.display());
+    let listed = |directory: &Path| {
+        fs::read_dir(directory)
+            .expect("run `just build-test-programs`")
+            .map(|entry| entry.expect("a directory entry").path())
+            .collect::<Vec<_>>()
+    };
+
+    // Each output's stamp, and each tokio variant's target directory's.
+    let mut stamps = Vec::new();
+    let mut directories = vec![root.join("build/test-programs")];
+    while let Some(directory) = directories.pop() {
+        for path in listed(&directory) {
+            if path.is_dir() {
+                directories.push(path);
+            } else if path
+                .extension()
+                .is_some_and(|extension| extension == "command")
+            {
+                stamps.push(path);
+            }
+        }
+    }
+
+    stamps.extend(
+        listed(&root.join("build/tokio-target"))
+            .into_iter()
+            .map(|variant| variant.join(".checkout")),
+    );
+
+    assert!(stamps.len() > 100, "{stamps:?}");
+    let foreign = stamps
+        .iter()
+        .filter(|stamp| {
+            fs::read_to_string(stamp)
+                .map_or(true, |text| !text.lines().any(|line| line == checkout))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        foreign.is_empty(),
+        "{} of {}: {foreign:?}",
+        foreign.len(),
+        stamps.len()
+    );
+}
+
 /// The frames fixture across compilers, optimization, and PIE.
 const VARIANTS: [&str; 5] = ["gcc-o0", "gcc-o2", "gcc-o2-nopie", "clang-o0", "clang-o2"];
 

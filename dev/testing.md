@@ -213,6 +213,11 @@ and target directory have separate handling. All fixture dependencies are
 pinned and available to the pure Nix shell; a test run must not fetch from the
 network.
 
+Each output's stamp names the checkout it was built from, since outputs keep
+its absolute paths in their debug information. A checkout whose `build/` is
+a link to another checkout's rebuilds what the other built rather than taking
+it as current.
+
 `MICROSCOPE_FIXTURE_JOBS=1` is useful when debugging the build script. It is not
 a fix for a dependency race in the script.
 
