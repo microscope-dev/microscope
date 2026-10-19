@@ -461,6 +461,10 @@ a type error, and a key the map does not hold is a missing-key error, never
 a zero value. The entries are searched in the view's order, as far as the
 inspection's budget allows. A map is never indexed by position.
 
+A key made of several values, such as a Rust tuple, a C++ `std::pair`, or a
+Go struct, is not supported yet: no expression writes one, and a variable
+that holds one is refused as a key.
+
 ```microscope-example
 world: memory
 squares[3]             => 9 : int
@@ -689,8 +693,10 @@ type does not allow is refused when it runs.
 so `d[1]`, `d[1.0]`, and `d[true]` find one key, text equals only text, and
 `d[None]` finds a `None` key. A key of a type whose own `__eq__` decides
 what it equals, such as an instance of a class, is refused where the lookup
-would have to compare with it. An index past the end is a bounds error, and a key the dict does not hold
-is a missing-key error. `len(x)` is the length of a `str` in characters, of
+would have to compare with it. A `tuple`, `bytes`, or `frozenset` key is
+not supported yet: no expression writes one, and a variable that holds one
+is refused as a key. An index past the end is a bounds error, and a key the
+dict does not hold is a missing-key error. `len(x)` is the length of a `str` in characters, of
 `bytes` in bytes, and of a list, tuple, dict, set, or frozenset in items. A
 value is true as Python says: `None`, zero, and empty text and collections
 are false.
