@@ -158,13 +158,22 @@ pub fn folds(trace: &Backtrace, shown: usize, selected: u32) -> Vec<std::ops::Ra
     };
 
     let mut runs = machinery_runs(&frames[..=dispatch], &kept);
-    let below = dispatch + 1..frames.len();
-    if below.len() >= 2 {
-        // The dispatch frame joins the run that ends at it.
-        match runs.last_mut() {
-            Some(run) if run.end == below.start => run.end = below.end,
-            _ => runs.push(below),
+
+    // Past it, a kept frame is shown between the runs on either side.
+    let mut start = dispatch + 1;
+    while start < frames.len() {
+        let end = (start..frames.len())
+            .find(|at| kept.contains(&frames[*at].level))
+            .unwrap_or(frames.len());
+        if end - start >= 2 {
+            // The dispatch frame joins the run that ends at it.
+            match runs.last_mut() {
+                Some(run) if run.end == start => run.end = end,
+                _ => runs.push(start..end),
+            }
         }
+
+        start = end + 1;
     }
 
     runs
@@ -280,6 +289,40 @@ mod tests {
             CodeRole::Ordinary,
         ]);
         assert_eq!(folds(&runtime, 4, 3), vec![1..3]);
+    }
+
+    /// The frames past the innermost dispatch fold, but a frame that
+    /// drives a future there, as a `block_on` inside a task makes, is
+    /// shown between the runs on either side of it.
+    #[test]
+    fn a_future_driver_below_the_dispatch_is_shown() {
+        let frame = |level, role, segment| StackFrame {
+            level,
+            role,
+            segment,
+            ..interpreted(None)
+        };
+        let (thread, future) = (StackSegment::Thread, StackSegment::Future);
+        let trace = Backtrace {
+            frames: [
+                (CodeRole::Ordinary, thread),
+                (CodeRole::Dispatch, thread),
+                (CodeRole::RuntimeInternal, thread),
+                (CodeRole::Ordinary, future),
+                (CodeRole::RuntimeInternal, thread),
+                (CodeRole::RuntimeInternal, thread),
+                (CodeRole::RuntimeInternal, thread),
+            ]
+            .into_iter()
+            .zip(0..)
+            .map(|((role, segment), level)| frame(level, role, segment))
+            .collect::<Vec<_>>()
+            .into(),
+            context: microscope::ExecutionContext::Thread(microscope::ThreadId::new(1)),
+            termination: microscope::UnwindTermination::Complete,
+            unfollowed: Arc::from([]),
+        };
+        assert_eq!(folds(&trace, 7, 0), vec![2..4, 5..7]);
     }
 
     #[test]
