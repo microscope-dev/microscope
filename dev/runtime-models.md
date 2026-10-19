@@ -500,7 +500,10 @@ revalidates the private files through the thread that will read it. A
 location stays pending until the matching acknowledgement. A change refused
 before any write reaches the target keeps the acknowledged configuration,
 which the agent still holds. Acknowledgements must arrive within five seconds
-of running time; public and internal stops do not count. A free-threaded
+of running time; public and internal stops do not count. The controller
+blocks on its messages meanwhile, and an alarm (`backend/linux/alarm.rs`)
+wakes it at the earliest deadline, which `agent_timeout` then judges, so a
+stale ring times nothing out. A free-threaded
 interpreter needs every thread resumed while an agent is configuring or armed,
 because monitoring changes stop its world. Detach cancels an unconsumed
 request and disarms an armed agent before removing traps; exit and exec

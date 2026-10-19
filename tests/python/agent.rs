@@ -1045,6 +1045,72 @@ async fn a_missing_agent_acknowledgement_has_a_bounded_visible_failure() {
     session.shutdown().await;
 }
 
+/// Instruction steps take as long while an agent's acknowledgement is
+/// outstanding as while none is: the controller wakes for each step's stop
+/// as it arrives, not at the next of a poll's 5 ms sleeps.
+#[tokio::test]
+async fn steps_are_as_prompt_while_an_acknowledgement_is_outstanding() {
+    use crate::session::PythonSession;
+    use microscope::{StepKind, StopReason};
+    const STEPS: u32 = 60;
+
+    let (mut session, _) = PythonSession::attach_at("3.14", "control_noack.py", "initial").await;
+    let first = session
+        .scenario
+        .add_breakpoint_spec(control_line("control_noack.py", "# FIRST_LINE"))
+        .await;
+    session.go_on().await;
+    let reason = session.finish_run().await;
+    assert!(
+        matches!(reason, StopReason::Breakpoint { .. }),
+        "{reason:?}"
+    );
+
+    // Its agent acknowledged the breakpoint, and acknowledges nothing once
+    // the fixture faults it. The thread steps in C, from reading the line
+    // that releases it, which it has.
+    session.resume().await;
+    session.stop_at("faulted").await;
+    session.release();
+    let steps = async |session: &mut PythonSession| {
+        let began = std::time::Instant::now();
+        for _ in 0..STEPS {
+            let reason = session.scenario.step_to_stop(StepKind::Instruction).await;
+            assert_eq!(
+                reason,
+                StopReason::Step {
+                    kind: StepKind::Instruction
+                }
+            );
+        }
+        began.elapsed()
+    };
+    let acknowledged = steps(&mut session).await;
+
+    session.scenario.remove_breakpoint(first.id).await;
+    let snapshot = session.scenario.snapshot().await;
+    let second = session
+        .scenario
+        .add_breakpoint_spec(control_line("control_noack.py", "# SECOND_LINE"))
+        .await;
+    assert!(
+        second
+            .pending_locations
+            .iter()
+            .any(|pending| pending.reason.contains("acknowledge")),
+        "{second:?} {:?}",
+        snapshot.breakpoints
+    );
+    let outstanding = steps(&mut session).await;
+
+    // A poll would add 2.5 ms a step on average.
+    assert!(
+        outstanding < acknowledged * 3 / 2 + std::time::Duration::from_millis(75),
+        "{STEPS} steps took {outstanding:?} outstanding, {acknowledged:?} acknowledged"
+    );
+    session.shutdown().await;
+}
+
 #[tokio::test]
 async fn removing_all_sites_then_reactivating_uses_a_fresh_source_request() {
     use crate::session::PythonSession;

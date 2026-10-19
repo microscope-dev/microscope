@@ -11,6 +11,9 @@
 //! Loom's `Condvar` never wakes a waiter that was not notified, as a real
 //! one may, so a wait not rechecked in a loop passes too.
 //!
+//! A model has no clock, so a timed wait here returns at once, having let
+//! the other threads run: the most a real one's time can run out.
+//!
 //! And loom runs every thread of a model on one OS thread, so while one
 //! model thread unwinds a panic, `std::thread::panicking` holds in all of
 //! them. A guard another thread drops meanwhile poisons the std mutex that
@@ -208,6 +211,20 @@ impl Condvar {
         drop(guard);
         notify.wait();
         mutex.lock()
+    }
+
+    /// Unlocks `guard`'s mutex for a while and locks it again. A model has
+    /// no clock, so its time may run out at once: the thread lets the
+    /// others run, notified or not, and goes on.
+    pub fn wait_timeout<'a, T>(
+        &self,
+        guard: MutexGuard<'a, T>,
+        _timeout: std::time::Duration,
+    ) -> LockResult<(MutexGuard<'a, T>, bool)> {
+        let mutex = guard.mutex;
+        drop(guard);
+        loom::thread::yield_now();
+        Ok((mutex.lock().unwrap_or_else(PoisonError::into_inner), true))
     }
 
     pub fn notify_all(&self) {

@@ -8,6 +8,9 @@
 #[path = "../../src/debug_info/dwarf/variables/in_order.rs"]
 mod in_order;
 
+#[path = "../../src/backend/linux/alarm.rs"]
+mod alarm;
+
 mod mutex;
 
 mod sync {
@@ -17,3 +20,6 @@ mod sync {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod alarm_tests;

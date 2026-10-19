@@ -1,0 +1,12 @@
+Sets the alarm without waking its thread, which may wait for no time and never ring.
+
+--- a/src/alarm.rs
++++ b/src/alarm.rs
+@@ -63,7 +63,6 @@
+         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+         state.at = Some(at);
+         drop(state);
+-        self.changed.notify_all();
+     }
+ 
+     /// Stops the alarm's thread, which rings no more.

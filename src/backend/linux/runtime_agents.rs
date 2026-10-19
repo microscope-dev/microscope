@@ -1058,6 +1058,24 @@ mod tests {
         ));
     }
 
+    /// The alarm may ring for a deadline that was paused or moved since:
+    /// a timeout is judged by the deadlines as they are, and one not yet
+    /// passed, or none, times nothing out.
+    #[test]
+    fn a_stale_alarm_times_nothing_out() {
+        let mut harness = watch_harness(1);
+        let now = Instant::now();
+        let mut later = awaiting();
+        later.deadline = Some(now + Duration::from_secs(1));
+        let inferior = harness.controller.inferior.as_mut().expect("inferior");
+        inferior.agents.insert(RuntimeId::new(0), later);
+        inferior.agents.insert(RuntimeId::new(1), awaiting());
+        harness.controller.agent_timeout(now).expect("no timeout");
+        let inferior = harness.controller.inferior.as_ref().expect("inferior");
+        assert!(inferior.agents.values().all(|agent| !agent.expired));
+        assert!(inferior.managed.unarmed.is_empty());
+    }
+
     #[test]
     fn only_the_outstanding_generation_can_acknowledge_or_fail_an_installation() {
         let mut harness = watch_harness(1);

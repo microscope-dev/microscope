@@ -473,7 +473,8 @@ things: loom never runs another thread right after an unlock, so a
 `try_lock` handoff can't be checked; its `Condvar` never wakes spuriously,
 so a wait outside a loop passes; and a model thread's panic poisons the
 locks of the others. `loom/src/mutex.rs` says how. Tests that only std can
-run sit under `#[cfg(all(test, not(loom)))]`.
+run sit under `#[cfg(all(test, not(loom)))]`. A model has no clock, so a
+timed wait there returns at once, having let the other threads run.
 
 Keep models small: two threads and three or four items find the
 interleaving bugs these protocols have. Check what a model adds, not only

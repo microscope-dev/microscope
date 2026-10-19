@@ -62,6 +62,7 @@ use tls::TlsModule;
 
 mod activation;
 mod agent_files;
+mod alarm;
 mod assignments;
 mod async_frames;
 pub use async_frames::resume_address;
@@ -1500,6 +1501,10 @@ struct Controller<P: InspectionOps> {
     /// Messages taken from the queue and not yet served, in arrival order.
     pending: RefCell<VecDeque<ControllerMessage>>,
 
+    /// What wakes the controller blocked on its messages at a runtime
+    /// agent's deadline, started the first time one is outstanding.
+    alarm: RefCell<Option<alarm::AlarmThread>>,
+
     /// The views values are presented with.
     views: presentation::Views,
     message_sender: mpsc::Sender<ControllerMessage>,
@@ -1656,6 +1661,7 @@ impl<P: InspectionOps> Controller<P> {
             next_image_id: 1,
             messages: RefCell::new(channels.receiver),
             pending: RefCell::new(VecDeque::new()),
+            alarm: RefCell::new(None),
             views: presentation::Views::default(),
             message_sender: channels.sender,
             events: channels.events,
@@ -1735,6 +1741,57 @@ impl<P: InspectionOps> Controller<P> {
         if !block {
             return None;
         }
+        // While an agent's acknowledgement is outstanding, the alarm wakes
+        // the controller at its deadline, which the check above then
+        // judges.
+        let deadline = self.inferior.as_ref().and_then(|inferior| {
+            inferior
+                .agents
+                .values()
+                .filter_map(runtime_agents::Installation::deadline)
+                .min()
+        });
+        if let Some(deadline) = deadline
+            && !self.set_alarm(deadline)
+        {
+            return self.poll_messages();
+        }
+
+        self.messages.borrow_mut().blocking_recv()
+    }
+
+    /// Sets the alarm to wake the controller at `deadline`, starting it the
+    /// first time, and returns whether it is set. Its ring is an
+    /// `AgentTimeout`, sent only where the queue has room: a full one wakes
+    /// the controller anyway.
+    fn set_alarm(&self, deadline: std::time::Instant) -> bool {
+        let mut alarm = self.alarm.borrow_mut();
+        if alarm.is_none() {
+            let sender = self.message_sender.clone();
+            match alarm::AlarmThread::spawn(move || {
+                let _ = sender.try_send(ControllerMessage::AgentTimeout);
+            }) {
+                Ok(started) => *alarm = Some(started),
+                #[cfg_attr(
+                    not(debug_assertions),
+                    expect(unused_variables, reason = "only recorded")
+                )]
+                Err(error) => {
+                    record!("the alarm did not start: {error}");
+                    return false;
+                }
+            }
+        }
+
+        alarm.as_ref().is_some_and(|alarm| {
+            alarm.set(deadline);
+            true
+        })
+    }
+
+    /// Waits for a message by polling while an agent acknowledgement is
+    /// outstanding, as a controller whose alarm could not start must.
+    fn poll_messages(&self) -> Option<ControllerMessage> {
         loop {
             let deadline = self.inferior.as_ref().and_then(|inferior| {
                 inferior
@@ -1755,8 +1812,6 @@ impl<P: InspectionOps> Controller<P> {
                 Err(mpsc::error::TryRecvError::Disconnected) => return None,
                 Err(mpsc::error::TryRecvError::Empty) => {}
             }
-            // Poll only while an agent acknowledgement is outstanding. The
-            // controller still serves requests promptly, on its owner thread.
             thread::sleep((deadline - now).min(std::time::Duration::from_millis(5)));
         }
     }

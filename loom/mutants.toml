@@ -1,3 +1,9 @@
 # Breaks of the protocols that change nothing the models can see, which
 # `just loom-mutants` leaves out. Each says why it changes nothing.
-exclude_re = []
+exclude_re = [
+    # The alarm's thread and its clock build only outside loom: the alarm's
+    # own std test and tests/python/agent.rs check them.
+    "<impl Time for std::time::Instant>::until",
+    "AlarmThread::",
+    "<impl Drop for AlarmThread>::drop",
+]

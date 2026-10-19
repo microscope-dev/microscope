@@ -419,6 +419,12 @@ impl PythonSession {
         self.running = Some(self.scenario.start_resuming().await);
     }
 
+    /// Gives the fixture, which stays stopped, what lets it go on past the
+    /// checkpoint it is parked at once it runs.
+    pub fn release(&mut self) {
+        self.input.write_all(b"\n").expect("release the fixture");
+    }
+
     /// Waits for the current execution to reach an observable public stop.
     pub async fn finish_run(&mut self) -> StopReason {
         let running = self.running.take().expect("running fixture");
