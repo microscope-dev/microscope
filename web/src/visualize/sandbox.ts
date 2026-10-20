@@ -4,7 +4,8 @@
 // window, runs at most four draws at once, and ends a draw that takes
 // longer than two seconds by ending its worker. A live renderer keeps a
 // worker of its own while its card is on screen, at most four at once, and
-// draws the frames the page asks for; one that stops answering is ended.
+// draws the frames the page asks for; one that stops answering, or floods
+// the page with messages, is ended.
 
 /** A renderer: its name, its JavaScript, and the digest that names both. */
 export interface RendererCode {
@@ -46,15 +47,10 @@ export interface DrawContext {
   palette: Palette;
 }
 
-/** What a live renderer's functions get beside its inputs. */
-export interface LiveContext {
-  previous: unknown;
-  paths: Record<string, string | null>;
-  /** The canvas's size in CSS pixels. */
-  width: number;
+/** What a live renderer's functions get beside its inputs; `width` and
+ * `height` are the canvas's size in CSS pixels. */
+export interface LiveContext extends DrawContext {
   height: number;
-  theme: "light" | "dark";
-  palette: Palette;
 }
 
 export type Outcome =
@@ -79,7 +75,7 @@ export interface LivePointer {
 }
 
 /** A key pressed while a live renderer's canvas has focus. */
-export interface LiveKey {
+interface LiveKey {
   key: string;
   shift: boolean;
   ctrl: boolean;
@@ -133,17 +129,20 @@ export interface LiveSession {
 /** How long a draw may take before its worker is ended. */
 export const DRAW_TIMEOUT = 2_000;
 /** How many draws run at once. */
-export const PARALLEL = 4;
+const PARALLEL = 4;
 /** How many live renderers run at once. */
-export const LIVE_PARALLEL = 4;
+const LIVE_PARALLEL = 4;
 /** How often a live worker is asked whether it still answers. */
-export const PING_EVERY = 1_000;
+const PING_EVERY = 1_000;
 /** How long a live worker may take to answer before it is ended. */
 export const UNRESPONSIVE = 2_000;
 /** How many pointer and key events a session keeps until it starts. */
 const MOST_EARLY = 256;
 /** How often the watchdog looks. */
 const WATCH_EVERY = 100;
+/** How many messages besides frames a live worker may send between two of
+ * the watchdog's looks. Its worker sends a few per message from the page. */
+const MOST_TOLD = 1_000;
 
 interface Pending {
   card: string;
@@ -172,6 +171,8 @@ type FrameMessage =
 interface Live {
   listener: LiveListener;
   pong(): void;
+  /** Counts a message besides a frame. */
+  told(): void;
   end(failure: LiveFailure): void;
 }
 
@@ -278,6 +279,7 @@ export class Sandbox {
     let ended = false;
     let asked: number | null = null;
     let pinged = 0;
+    let told = 0;
     let watchdog: ReturnType<typeof setInterval> | null = null;
     // The pointer and keys sent while the session waits for its worker.
     const early: Record<string, unknown>[] = [];
@@ -312,6 +314,9 @@ export class Sandbox {
       pong: () => {
         asked = null;
       },
+      told: () => {
+        told += 1;
+      },
       end: (failure) => {
         if (finish()) {
           listener.failed(failure);
@@ -340,6 +345,19 @@ export class Sandbox {
       pinged = performance.now();
       watchdog = setInterval(() => {
         const now = performance.now();
+        if (told > MOST_TOLD) {
+          live.end({
+            kind: "failed",
+            failure: {
+              message: `the renderer sent more than ${MOST_TOLD} messages in ${WATCH_EVERY} ms`,
+              file: null,
+              line: null,
+              column: null,
+            },
+          });
+          return;
+        }
+        told = 0;
         if (asked !== null && now - asked >= UNRESPONSIVE) {
           live.end({ kind: "unresponsive" });
         } else if (asked === null && now - pinged >= PING_EVERY) {
@@ -445,6 +463,9 @@ export class Sandbox {
 
   private receiveLive(live: Live, message: FrameMessage): void {
     const { listener } = live;
+    if (message.type !== "frame") {
+      live.told();
+    }
     switch (message.type) {
       case "frame":
         listener.frame(message.bitmap);
@@ -558,6 +579,16 @@ const SERIES = {
   light: ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"],
   dark: ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"],
 };
+
+/** What a renderer's function gets, in the theme the page shows now. */
+export function contextFor(
+  previous: unknown,
+  paths: Record<string, string | null>,
+  width: number,
+): DrawContext {
+  const theme = currentTheme();
+  return { previous, paths, width, theme, palette: palette(theme) };
+}
 
 /** The theme the page shows now. */
 export function currentTheme(): "light" | "dark" {

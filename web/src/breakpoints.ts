@@ -1,5 +1,26 @@
-// Resolved intent includes ready placements and runtime locations awaiting arming.
+// Where a breakpoint is: the places it is set at, and those it will be set
+// at once a module or runtime is ready.
+import type { Connection } from "./connection";
 import type { Breakpoint, Place } from "./protocol";
+import { flash } from "./tab";
+
+/** Removes `existing`, or adds a breakpoint at `location` when there is none,
+ * saying why when the server refuses. */
+export async function toggleBreakpoint(
+  connection: Connection,
+  existing: Breakpoint | undefined,
+  location: string,
+): Promise<void> {
+  try {
+    if (existing) {
+      await connection.request("removeBreakpoint", { id: existing.id });
+    } else {
+      await connection.request("addBreakpoint", { location });
+    }
+  } catch (failure) {
+    flash(failure instanceof Error ? failure.message : String(failure));
+  }
+}
 
 /** What a breakpoint no loaded code has waits for, as the CLI says it. */
 export const PENDING = "pending until a module with its code loads";

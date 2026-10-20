@@ -3,13 +3,20 @@
 // before the program runs, its main function (D2). A frame with no source
 // shows its instructions instead.
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { askedAt, breakpointAt, knownBreakpointPlaces, namesFile } from "../breakpoints";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import {
+  askedAt,
+  breakpointAt,
+  knownBreakpointPlaces,
+  namesFile,
+  toggleBreakpoint,
+} from "../breakpoints";
 import { cache, useRequest } from "../data";
 import { followedLook, formatPlace, inView, parsePlace, showingSource, type View } from "../focus";
 import { stopNote } from "../follow";
 import { controls } from "../model";
 import type { Breakpoint, Row } from "../protocol";
+import { frameAt } from "../stack";
 import { useConnection, useModel } from "../store";
 import { closeFile, openFile, shownAt, tab, useTab } from "../tab";
 import { Disassembly } from "./Disassembly";
@@ -49,7 +56,7 @@ export function useShown(): Shown | null {
 function useOwnSource(): Shown | null {
   const { at, trace, state } = useFocus();
   const sources = useRequest("sources", state.session ? undefined : null).data;
-  const frame = at ? trace?.frames.find((candidate) => candidate.index === at.frame) : undefined;
+  const frame = frameAt(trace, at);
   if (frame?.source) {
     return { path: frame.source.path, line: frame.source.line, selection: null };
   }
@@ -104,7 +111,7 @@ export function CodeArea() {
     }
   }, [path, line, open, place]);
 
-  const frame = at ? trace?.frames.find((candidate) => candidate.index === at.frame) : undefined;
+  const frame = frameAt(trace, at);
   // A frame with no source, and no file named, shows its instructions.
   const sourceless = !shown && frame !== undefined && !frame.source;
   const view = current.view ?? (sourceless ? "disassembly" : "source");
@@ -261,14 +268,11 @@ function SourceFile({ shown }: { shown: Shown }) {
   const paths = useLinkPaths();
   const look = useLook();
   const source = useRequest("source", { path: shown.path });
-  const [error, setError] = useState<string | null>(null);
 
   // Values show for the frame shown, while its stop is the program's.
   const live = at && !stale ? at : null;
-  const shownFrame = at
-    ? trace?.frames.find((candidate) => candidate.index === at.frame)
-    : undefined;
-  const frameSource = shownFrame?.source?.path === shown.path ? shownFrame.source : null;
+  const frame = frameAt(trace, at);
+  const frameSource = frame?.source?.path === shown.path ? frame.source : null;
   const inline = useInlineValues(
     live,
     shown.path,
@@ -279,7 +283,6 @@ function SourceFile({ shown }: { shown: Shown }) {
 
   const marks = useMemo((): Marks => {
     const innermost = trace?.frames[0];
-    const frame = at ? trace?.frames.find((candidate) => candidate.index === at.frame) : undefined;
     return {
       breakpoints: breakpointLines(state.breakpoints, shown.path),
       breakable: new Set(source.data?.breakable ?? []),
@@ -295,7 +298,7 @@ function SourceFile({ shown }: { shown: Shown }) {
           : null;
       })(),
     };
-  }, [trace, at, state, shown, source.data, inline]);
+  }, [trace, frame, at, state, shown, source.data, inline]);
 
   if (source.error) {
     return (
@@ -312,59 +315,40 @@ function SourceFile({ shown }: { shown: Shown }) {
     if (!control) {
       return;
     }
-    setError(null);
     const existing = breakpointAt(state.breakpoints, shown.path, line);
-    const request = existing
-      ? connection.request("removeBreakpoint", { id: existing.id })
-      : connection.request("addBreakpoint", { location: `${shown.path}:${line}` });
-    request.catch((failure: Error) => setError(failure.message));
+    void toggleBreakpoint(connection, existing, `${shown.path}:${line}`);
   };
 
   return (
-    <>
-      {error && (
-        <div className="inline-error" role="alert">
-          {error}
-          <button
-            type="button"
-            className="icon"
-            aria-label="Dismiss"
-            onClick={() => setError(null)}
-          >
-            ×
-          </button>
-        </div>
-      )}
-      <SourceView
-        path={shown.path}
-        text={source.data.text}
-        marks={marks}
-        reveal={shown.line}
-        onGutter={toggle}
-        onLineNumber={(line, extend) => {
-          const from = extend && shown.selection ? Math.min(shown.selection.line, line) : line;
-          const to = extend && shown.selection ? Math.max(shown.selection.end, line) : line;
-          look((current) =>
-            showingSource(
-              current,
-              formatPlace({ path: paths.link(shown.path), line: from, end: to }),
-            ),
-          );
-        }}
-        onCursor={(line) => tab.setState({ cursor: { path: shown.path, line } })}
-        onHover={
-          live
-            ? (expression) =>
-                cache
-                  .get(connection, "evaluate", { ...live, expression })
-                  .promise.then((settled) =>
-                    settled.ok
-                      ? { text: (settled.value as Row).text, type: (settled.value as Row).type }
-                      : null,
-                  )
-            : undefined
-        }
-      />
-    </>
+    <SourceView
+      path={shown.path}
+      text={source.data.text}
+      marks={marks}
+      reveal={shown.line}
+      onGutter={toggle}
+      onLineNumber={(line, extend) => {
+        const from = extend && shown.selection ? Math.min(shown.selection.line, line) : line;
+        const to = extend && shown.selection ? Math.max(shown.selection.end, line) : line;
+        look((current) =>
+          showingSource(
+            current,
+            formatPlace({ path: paths.link(shown.path), line: from, end: to }),
+          ),
+        );
+      }}
+      onCursor={(line) => tab.setState({ cursor: { path: shown.path, line } })}
+      onHover={
+        live
+          ? (expression) =>
+              cache
+                .get(connection, "evaluate", { ...live, expression })
+                .promise.then((settled) =>
+                  settled.ok
+                    ? { text: (settled.value as Row).text, type: (settled.value as Row).type }
+                    : null,
+                )
+          : undefined
+      }
+    />
   );
 }

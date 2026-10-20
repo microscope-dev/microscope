@@ -3,9 +3,27 @@
 // either way a shape's title is its hover text and its select opens it,
 // and an image says which of its pixels is under the pointer.
 
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, render } from "@testing-library/react";
+import { useState } from "react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { page, userEvent } from "vitest/browser";
+import { cache } from "../src/data";
+import type { Look } from "../src/focus";
+import { SessionContext } from "../src/store";
+import { DrawAs, Drawings, Selected } from "../src/ui/Drawings";
+import type { Focus } from "../src/ui/Workspace";
 import { buildPicture } from "../src/visualize/draw";
-import { type Picture, validate } from "../src/visualize/picture";
+import { closeImages, type Picture, validate } from "../src/visualize/picture";
+import { type FakeServer, fakeServer } from "./fake-server";
+
+// Cards read the tab's focus, and change its look, through these.
+const focus = vi.hoisted(() => ({ current: null as unknown }));
+const looked = vi.hoisted(() => [] as unknown[]);
+vi.mock("../src/ui/Workspace", () => ({ useFocus: () => focus.current }));
+vi.mock("../src/ui/navigation", async (original) => ({
+  ...(await original<typeof import("../src/ui/navigation")>()),
+  useLook: () => (change: unknown) => looked.push(change),
+}));
 
 const shown: HTMLElement[] = [];
 
@@ -114,6 +132,39 @@ describe("buildPicture", () => {
     expect(pixel(canvas, 250, 100)).toEqual([0, 0, 0, 255]);
   });
 
+  it("frees the images of a picture it refused, however it is built", async () => {
+    const rendered = await createImageBitmap(new ImageData(1, 1));
+    const image = { type: "image", x: 0, y: 0, width: 1, height: 1, rendered };
+    const looping: unknown[] = [{ type: "group", shapes: [] }, image];
+    (looping[0] as { shapes: unknown[] }).shapes = looping;
+    const refused = { type: "picture", width: 1, height: 1, shapes: looping };
+    expect(() => validate(refused)).toThrow();
+    closeImages(refused);
+    // A closed bitmap has no pixels left.
+    expect(rendered.width).toBe(0);
+  });
+
+  it("strokes a canvas's text with its own dash, not the shape's before it", () => {
+    const dashes: number[][] = [];
+    const strokeText = vi
+      .spyOn(CanvasRenderingContext2D.prototype, "strokeText")
+      .mockImplementation(function (this: CanvasRenderingContext2D) {
+        dashes.push(this.getLineDash());
+      });
+    try {
+      show(
+        grid([
+          { type: "line", x1: 0, y1: 0, x2: 10, y2: 0, dash: [4, 2] },
+          { type: "text", x: 0, y: 20, text: "plain", stroke: "#000000" },
+          { type: "text", x: 0, y: 40, text: "dotted", stroke: "#000000", dash: [1, 1] },
+        ]),
+      );
+    } finally {
+      strokeText.mockRestore();
+    }
+    expect(dashes).toEqual([[], [1, 1]]);
+  });
+
   it("gives a canvas's shapes their titles on hover and opens them on click", () => {
     const selected: string[] = [];
     const holder = show(grid(), selected);
@@ -174,5 +225,139 @@ describe("buildPicture", () => {
     expect(tip(large)?.textContent).toBe("board: column 0, row 0");
     hover(canvas, 300, 259, 19);
     expect(tip(large)?.textContent).toBe("board: column 3, row 1");
+  });
+});
+
+const at = { stop: 3, thread: 1, frame: 0 };
+
+/** The Drawings view at stop 3, with `look`, its server the test. */
+async function drawings(look: Look): Promise<FakeServer> {
+  const server = await fakeServer();
+  focus.current = { session: "s1", state: {}, at, look, trace: undefined, stale: null } as Focus;
+  render(
+    <SessionContext value={server.session}>
+      <Drawings />
+    </SessionContext>,
+  );
+  return server;
+}
+
+const failed = (server: FakeServer, id: number, message: string) =>
+  server.send({ type: "error", id, error: { kind: "failed", message } });
+
+describe("a card", () => {
+  afterEach(() => {
+    cleanup();
+    cache.clear();
+    looked.splice(0);
+  });
+
+  it("says why it cannot load its renderer", async () => {
+    const server = await drawings({ d: ["board~chess"] });
+    server.answer(await server.next("draw"), {
+      renderer: { name: "chess", origin: "built-in", digest: "d1" },
+      offered: true,
+      inputs: [],
+      problem: null,
+      bytes: 0,
+    });
+    failed(server, (await server.next("renderer")).id, "no renderer d1");
+    await expect
+      .element(page.getByRole("alert"))
+      .toHaveTextContent("Cannot load renderer chess: no renderer d1");
+  });
+
+  it("says which input lies past the bytes the server sent", async () => {
+    const server = await drawings({ d: ["samples~plot"] });
+    server.answer(await server.next("draw"), {
+      renderer: { name: "plot", origin: "built-in", digest: "d2" },
+      offered: true,
+      inputs: [{ name: "ys", value: { t: "numbers", kind: "f64", offset: 0, count: 4 }, path: "" }],
+      problem: null,
+      bytes: 0,
+    });
+    server.answer(await server.next("renderer"), {
+      name: "plot",
+      origin: "built-in",
+      digest: "d2",
+      source: "microscope.draw(() => null);",
+    });
+    await expect
+      .element(page.getByRole("alert"))
+      .toHaveTextContent("Cannot draw: ys: 4 f64 numbers at byte 0 lie past the 0 bytes sent");
+  });
+
+  it("says why a pinned value no longer evaluates", async () => {
+    const server = await drawings({ d: ["board"] });
+    failed(server, (await server.next("evaluate")).id, "no variable board here");
+    await expect
+      .element(page.getByRole("alert"))
+      .toHaveTextContent("Cannot evaluate board: no variable board here");
+  });
+
+  it("offers renderers in a menu the arrow keys move through and Escape closes", async () => {
+    const server = await fakeServer();
+    focus.current = { session: "s1", state: {}, at, look: {}, trace: undefined, stale: null };
+    render(
+      <SessionContext value={server.session}>
+        <DrawAs path="board" />
+      </SessionContext>,
+    );
+    const button = page.getByRole("button", { name: "Draw board as…" });
+    await userEvent.click(button);
+    server.answer(await server.next("renderers"), {
+      renderers: [
+        { name: "chess", origin: "built-in", digest: "a" },
+        { name: "grid", origin: "views/board.js", digest: "b" },
+      ],
+    });
+    const item = (name: RegExp) => page.getByRole("menuitem", { name });
+    await expect.element(item(/chess/)).toHaveFocus();
+    await userEvent.keyboard("{ArrowDown}");
+    await expect.element(item(/grid/)).toHaveFocus();
+    await userEvent.keyboard("{ArrowDown}");
+    await expect.element(item(/chess/)).toHaveFocus();
+    await userEvent.keyboard("{Escape}");
+    await expect.element(page.getByRole("menu")).not.toBeInTheDocument();
+    await expect.element(button).toHaveFocus();
+
+    // A click elsewhere closes it too.
+    await userEvent.click(button);
+    await expect.element(item(/chess/)).toHaveFocus();
+    document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    await expect.element(page.getByRole("menu")).not.toBeInTheDocument();
+
+    await userEvent.click(button);
+    await userEvent.keyboard("{ArrowUp}{Enter}");
+    await expect.element(page.getByRole("menu")).not.toBeInTheDocument();
+    expect(looked).toHaveLength(1);
+  });
+
+  it("closes a selected part with Escape, and gives focus back", async () => {
+    const server = await fakeServer();
+    focus.current = { session: "s1", state: {}, at, look: {}, trace: undefined, stale: null };
+    function Part() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>
+            square
+          </button>
+          {open && <Selected at={at} path="board[3]" onClose={() => setOpen(false)} />}
+        </>
+      );
+    }
+    render(
+      <SessionContext value={server.session}>
+        <Part />
+      </SessionContext>,
+    );
+    const square = page.getByRole("button", { name: "square" });
+    await userEvent.click(square);
+    const dialog = page.getByRole("dialog", { name: "Part board[3]" });
+    await expect.element(dialog).toHaveFocus();
+    await userEvent.keyboard("{Escape}");
+    await expect.element(dialog).not.toBeInTheDocument();
+    await expect.element(square).toHaveFocus();
   });
 });

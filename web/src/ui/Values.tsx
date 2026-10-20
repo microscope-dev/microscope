@@ -6,40 +6,13 @@
 import { useState } from "react";
 import { useRequest } from "../data";
 import type { At } from "../focus";
-import type { RequestError } from "../protocol";
+import { hidden } from "./hidden";
 import { useLook } from "./navigation";
 import { Earlier, LinkedExpansion, messageRow, RowList, ValueRow } from "./ValueTree";
-import { type Focus, useFocus } from "./Workspace";
+import { useFocus } from "./Workspace";
 
-/**
- * Why what a stop holds is not shown, or null when it is: `what` names it,
- * such as "Values".
- */
-export function hidden(focus: Focus, what = "Values"): string | null {
-  const { at, stale } = focus;
-  if (!at) {
-    return `${what} appear when the program stops.`;
-  }
-  switch (stale) {
-    case "running":
-      return `The program is running; ${what.toLowerCase()} appear when it stops.`;
-    case "passed":
-      return `${what} hidden: they belong to stop #${at.stop}, which has passed.`;
-    case "disconnected":
-      return "Reconnecting to microscope…";
-    default:
-      return null;
-  }
-}
-
-/**
- * The class of a pane's message for a request's error: what the frame does
- * not have, such as an interpreted frame's registers, is said plainly, and
- * only a failure in red.
- */
-export function errorClass(error: RequestError): string {
-  return error.kind === "unsupported" ? "empty" : "empty error";
-}
+// Disassembly and Drawings still import these from here.
+export { errorClass, hidden } from "./hidden";
 
 export function Variables() {
   const focus = useFocus();
@@ -135,6 +108,7 @@ export function Watch() {
         <span className="end">Alt+4</span>
       </div>
       <div className="pane-body">
+        {why && watches.length > 0 && <div className="empty">{why}</div>}
         <LinkedExpansion>
           <ul className="value-list" aria-label="Watches" data-testid="watches">
             {watches.map((expression, index) => {
@@ -203,12 +177,12 @@ function WatchRow({
   if (hidden !== null) {
     return (
       <ValueRow
-        row={messageRow(expression, "—")}
+        row={messageRow(expression, "not read")}
         parent="w"
         depth={0}
         occurrence={occurrence}
         actions={remove}
-        failed
+        missing="absent"
       />
     );
   }
@@ -218,8 +192,9 @@ function WatchRow({
         row={messageRow(expression, value.error.message)}
         parent="w"
         depth={0}
+        occurrence={occurrence}
         actions={remove}
-        failed
+        missing="failed"
       />
     );
   }

@@ -3,21 +3,29 @@
 // sandbox. A card keeps its drawing while the program runs, dimmed and
 // labelled with its stop, and draws again at the next stop it shows.
 
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  type KeyboardEvent as ReactKeyboardEvent,
+  type RefObject,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { base } from "../base";
 import { useRequest } from "../data";
 import { type At, drawing, formatPinned, type Look, type Pinned, parsePinned } from "../focus";
 import type { Drawing, Row } from "../protocol";
 import { flash } from "../tab";
 import { useShownScheme } from "../theme";
-import { decodeInputs, inputPaths, type Value } from "../visualize/decode";
+import { DecodeError, decodeInputs, inputPaths, type Value } from "../visualize/decode";
 import { buildPicture } from "../visualize/draw";
-import { type Picture, PictureError, validate } from "../visualize/picture";
+import { closeImages, type Picture, PictureError, validate } from "../visualize/picture";
 import {
-  currentTheme,
+  contextFor,
+  DRAW_TIMEOUT,
   failureText,
   type Outcome,
-  palette,
   type RendererCode,
   Sandbox,
 } from "../visualize/sandbox";
@@ -124,8 +132,12 @@ export function Drawings() {
     return (
       <div className="drawings">
         <div className="empty center-message">
-          {why ??
-            "No value here has a drawing. Draw one from its row, or give its type a `visualize` in a view."}
+          {why ?? (
+            <>
+              No value here has a drawing. Draw one from its row, or give its type a{" "}
+              <code>visualize</code> in a view.
+            </>
+          )}
         </div>
       </div>
     );
@@ -184,7 +196,7 @@ function remember(key: string, stop: number, inputs: Record<string, Value>): voi
 function outcomeProblem(outcome: Outcome): string | null {
   switch (outcome.kind) {
     case "timeout":
-      return "The renderer took longer than 2 s, so it was stopped.";
+      return `The renderer took longer than ${DRAW_TIMEOUT / 1_000} s, so it was stopped.`;
     case "failed":
       return failureText(outcome.failure);
     case "picture":
@@ -224,6 +236,7 @@ function shownFor(job: Job, outcome: Outcome): Shown {
     remember(job.key, stop, inputs);
     return { stop, picture, renderer: job.renderer, inputs };
   } catch (error) {
+    closeImages((outcome as { picture: unknown }).picture);
     return {
       stop,
       problem:
@@ -236,7 +249,7 @@ function shownFor(job: Job, outcome: Outcome): Shown {
 }
 
 /** A value's path with a part of it, as `select` names one. */
-export function partPath(path: string, select: string): string {
+function partPath(path: string, select: string): string {
   const whole = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[\d+\])*$/.test(path) ? path : `(${path})`;
   return select.startsWith("[") ? `${whole}${select}` : `${whole}.${select}`;
 }
@@ -251,8 +264,8 @@ function DrawingCard({ card }: { card: Card }) {
   const holder = useRef<HTMLDivElement>(null);
   const body = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
-  const [shown, setShown] = useState<Shown | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  const { shown, draw, fail } = useDrawQueue(id, holder, body);
 
   // A pinned value with no renderer named draws with what its view offers.
   const evaluated = useRequest(
@@ -300,124 +313,54 @@ function DrawingCard({ card }: { card: Card }) {
   // Each card has its own worker, which ends with it.
   useEffect(() => () => shared?.release(id), [id]);
 
-  // Latest stop wins: a card runs one draw at a time, starts each on an
-  // animation frame, and skips the stops that arrived meanwhile. A drawing
-  // never replaces one of a later stop.
-  const wanted = useRef<Job | null>(null);
-  const drawing = useRef(false);
-  const frame = useRef<number | null>(null);
-  const latest = useRef(-1);
-  const mounted = useRef(true);
-  // The draw last started and the width it was offered, to draw it again
-  // when the card's width changes.
-  const started = useRef<Job | null>(null);
-  const startedWidth = useRef(0);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-      if (frame.current !== null) {
-        cancelAnimationFrame(frame.current);
-      }
-    };
-  }, []);
-
-  const show = (next: Shown) => {
-    if (mounted.current && next.stop >= latest.current) {
-      latest.current = next.stop;
-      setShown(next);
-    }
-  };
-
-  const pump = () => {
-    if (drawing.current || frame.current !== null || wanted.current === null) {
-      return;
-    }
-    frame.current = requestAnimationFrame(() => {
-      frame.current = null;
-      const job = wanted.current;
-      wanted.current = null;
-      if (job === null || !mounted.current) {
-        return;
-      }
-      drawing.current = true;
-      started.current = job;
-      startedWidth.current = offeredWidth(holder.current, body.current);
-      const chosenTheme = currentTheme();
-      void sandbox()
-        .draw(id, job.source, job.inputs, {
-          previous: previousInputs(job.key, job.stop),
-          paths: job.paths,
-          width: startedWidth.current,
-          theme: chosenTheme,
-          palette: palette(chosenTheme),
-        })
-        .then((outcome) => {
-          drawing.current = false;
-          show(shownFor(job, outcome));
-          pump();
-        });
-    });
-  };
-
-  // A card whose width changes draws its picture again at the new width.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: pump reads only refs and the card's stable id
-  useEffect(() => {
-    const element = holder.current;
-    if (!element) {
-      return;
-    }
-    const observer = new ResizeObserver(() => {
-      const job = started.current;
-      const width = offeredWidth(holder.current, body.current);
-      if (
-        job !== null &&
-        wanted.current === null &&
-        Math.abs(width - startedWidth.current) >= RESIZED
-      ) {
-        wanted.current = job;
-        pump();
-      }
-    });
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
-
   const stop = live?.stop ?? null;
   const drawingData = asked.current ? asked.data : undefined;
   const source = code.current ? code.data : undefined;
-  const problem = asked.current ? asked.error?.message : undefined;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a new theme draws again, in its colors; pump and show read only refs
+  // A request that failed says which and why, rather than leave the card
+  // waiting for a drawing that will not come.
+  let problem: string | undefined;
+  if (evaluated.error) {
+    problem = `Cannot evaluate ${card.path}: ${evaluated.error.message}`;
+  } else if (asked.error) {
+    problem = asked.error.message;
+  } else if (drawingData && code.error) {
+    problem = `Cannot load renderer ${drawingData.renderer.name}: ${code.error.message}`;
+  }
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new theme draws again, in its colors
   useEffect(() => {
     if (stop === null) {
       return;
     }
     if (problem !== undefined) {
-      wanted.current = null;
-      show({ stop, problem, inputs: null });
+      fail(stop, problem);
       return;
     }
     if (!drawingData) {
       return;
     }
     if (drawingData.problem !== null || drawingData.inputs === null) {
-      wanted.current = null;
-      show({ stop, problem: `Cannot draw: ${drawingData.problem ?? "no inputs"}`, inputs: null });
+      fail(stop, `Cannot draw: ${drawingData.problem ?? "no inputs"}`);
       return;
     }
     if (!source) {
       return;
     }
-    wanted.current = {
+    let inputs: Inputs;
+    try {
+      inputs = decodeInputs(drawingData.inputs, drawingData.payload ?? new Uint8Array());
+    } catch (error) {
+      fail(stop, `Cannot draw: ${error instanceof DecodeError ? error.message : String(error)}`);
+      return;
+    }
+    draw({
       stop,
       key: `${focus.session}~${card.path}~${drawingData.renderer.name}`,
       source,
       renderer: drawingData.renderer,
-      inputs: decodeInputs(drawingData.inputs, drawingData.payload ?? new Uint8Array()),
+      inputs,
       paths: inputPaths(drawingData.inputs),
-    };
-    pump();
-  }, [stop, drawingData, source, problem, theme, card.path, focus.session]);
+    });
+  }, [stop, drawingData, source, problem, theme, card.path, focus.session, draw, fail]);
 
   // The page builds the picture's elements itself.
   const picture = shown && "picture" in shown ? shown.picture : null;
@@ -505,7 +448,7 @@ function DrawingCard({ card }: { card: Card }) {
       </header>
       {offered !== null && offered.length === 0 && card.chosen === null ? (
         <div className="drawing-problem">
-          No view draws {card.path}. Choose a renderer with Draw as….
+          No view draws {card.path}. Choose a renderer with Draw as…
         </div>
       ) : shown && "problem" in shown ? (
         <div className="drawing-problem" role="alert">
@@ -535,6 +478,124 @@ function DrawingCard({ card }: { card: Card }) {
       )}
     </section>
   );
+}
+
+/** A card's draws, one at a time, each started on an animation frame. The
+ * latest job replaces any not yet started, so the stops that arrived
+ * meanwhile are skipped, and a drawing never replaces one of a later stop.
+ * A card whose width changes draws its last job again at the new width. */
+function useDrawQueue(
+  id: string,
+  holder: RefObject<HTMLElement | null>,
+  body: RefObject<HTMLElement | null>,
+): { shown: Shown | null; draw(job: Job): void; fail(stop: number, problem: string): void } {
+  const [shown, setShown] = useState<Shown | null>(null);
+  // What `shown` holds, whose images are freed once it is replaced.
+  const current = useRef<Shown | null>(null);
+  const wanted = useRef<Job | null>(null);
+  const drawing = useRef(false);
+  const frame = useRef<number | null>(null);
+  const latest = useRef(-1);
+  const mounted = useRef(true);
+  // The draw last started and the width it was offered.
+  const started = useRef<Job | null>(null);
+  const startedWidth = useRef(0);
+
+  const queue = useMemo(() => {
+    const show = (next: Shown) => {
+      if (mounted.current && next.stop >= latest.current) {
+        latest.current = next.stop;
+        // The page drew the last picture's images already, if it ever will.
+        free(current.current);
+        current.current = next;
+        setShown(next);
+      } else {
+        free(next);
+      }
+    };
+    const pump = () => {
+      if (drawing.current || frame.current !== null || wanted.current === null) {
+        return;
+      }
+      frame.current = requestAnimationFrame(() => {
+        frame.current = null;
+        const job = wanted.current;
+        wanted.current = null;
+        if (job === null || !mounted.current) {
+          return;
+        }
+        drawing.current = true;
+        started.current = job;
+        startedWidth.current = offeredWidth(holder.current, body.current);
+        const context = contextFor(
+          previousInputs(job.key, job.stop),
+          job.paths,
+          startedWidth.current,
+        );
+        void sandbox()
+          .draw(id, job.source, job.inputs, context)
+          .then((outcome) => {
+            drawing.current = false;
+            show(shownFor(job, outcome));
+            pump();
+          });
+      });
+    };
+    return {
+      pump,
+      draw: (job: Job) => {
+        wanted.current = job;
+        pump();
+      },
+      fail: (stop: number, problem: string) => {
+        wanted.current = null;
+        show({ stop, problem, inputs: null });
+      },
+    };
+  }, [id, holder, body]);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (frame.current !== null) {
+        cancelAnimationFrame(frame.current);
+        frame.current = null;
+      }
+      free(current.current);
+      current.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const element = holder.current;
+    if (!element) {
+      return;
+    }
+    const observer = new ResizeObserver(() => {
+      const job = started.current;
+      const width = offeredWidth(holder.current, body.current);
+      if (
+        job !== null &&
+        wanted.current === null &&
+        Math.abs(width - startedWidth.current) >= RESIZED
+      ) {
+        wanted.current = job;
+        queue.pump();
+      }
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [holder, body, queue]);
+
+  return { shown, draw: queue.draw, fail: queue.fail };
+}
+
+/** Frees the images of a picture shown no more. */
+function free(shown: Shown | null): void {
+  if (shown !== null && "picture" in shown) {
+    closeImages(shown.picture);
+  }
 }
 
 /** Copies every input value as CSV, and says so. */
@@ -622,13 +683,41 @@ function originLabel(origin: string): string {
   return origin === "built-in" ? "built-in" : (origin.split("/").at(-1) ?? origin);
 }
 
-/** A part of the drawn value, as a row, after a click on its shape. */
-function Selected({ at, path, onClose }: { at: At; path: string; onClose(): void }) {
+/** A part of the drawn value, as a row, after a click on its shape. Focus
+ * moves into it, and back to where it was when it closes. */
+export function Selected({ at, path, onClose }: { at: At; path: string; onClose(): void }) {
   const value = useRequest("evaluate", { ...at, expression: path });
   const look = useLook();
   const row: Row | undefined = value.data;
+  const dialog = useRef<HTMLDivElement>(null);
+  const opener = useRef<Element | null>(null);
+  useEffect(() => {
+    opener.current = document.activeElement;
+    dialog.current?.focus();
+  }, []);
+  const close = () => {
+    const back = opener.current;
+    onClose();
+    if ((back instanceof HTMLElement || back instanceof SVGElement) && back.isConnected) {
+      back.focus();
+    }
+  };
   return (
-    <div className="drawing-selected" role="dialog" aria-label={`Part ${path}`}>
+    <div
+      ref={dialog}
+      className="drawing-selected"
+      role="dialog"
+      aria-label={`Part ${path}`}
+      tabIndex={-1}
+      // Escape closes it rather than leave the view.
+      data-keys="escape"
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          close();
+        }
+      }}
+    >
       <div className="drawing-selected-head">
         <span className="drawing-path">{path}</span>
         <button
@@ -641,7 +730,7 @@ function Selected({ at, path, onClose }: { at: At; path: string; onClose(): void
         >
           Watch
         </button>
-        <button type="button" className="icon" aria-label="Close" onClick={onClose}>
+        <button type="button" className="icon" aria-label="Close" onClick={close}>
           ×
         </button>
       </div>
@@ -665,23 +754,94 @@ export function DrawAs({ path }: { path: string }) {
   const [open, setOpen] = useState(false);
   const renderers = useRequest("renderers", open ? undefined : null);
   const look = useLook();
-  const choose = (pinned: Pinned) => {
+  const anchor = useRef<HTMLSpanElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  const loaded = renderers.data !== undefined;
+  const items = () => [...(menu.current?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? [])];
+  const close = () => {
     setOpen(false);
+    button.current?.focus();
+  };
+  const choose = (pinned: Pinned) => {
+    close();
     look(pin(pinned), { replace: false });
   };
+
+  // Focus moves to the first renderer once the list arrives.
+  useEffect(() => {
+    if (open && loaded) {
+      menu.current?.querySelector<HTMLElement>("[role=menuitem]")?.focus();
+    }
+  }, [open, loaded]);
+
+  // A click elsewhere puts it away.
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const pointer = (event: PointerEvent) => {
+      if (!anchor.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    window.addEventListener("pointerdown", pointer);
+    return () => window.removeEventListener("pointerdown", pointer);
+  }, [open]);
+
+  const move = (event: ReactKeyboardEvent) => {
+    const all = items();
+    const at = all.indexOf(document.activeElement as HTMLElement);
+    const to =
+      event.key === "ArrowDown"
+        ? (at + 1) % all.length
+        : event.key === "ArrowUp"
+          ? (at - 1 + all.length) % all.length
+          : event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? all.length - 1
+              : null;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      close();
+    } else if (event.key === "Tab") {
+      setOpen(false);
+    } else if (to !== null && all.length > 0) {
+      event.preventDefault();
+      all[to]?.focus();
+    }
+  };
+
   return (
-    <span className="anchor">
+    <span className="anchor" ref={anchor}>
       <button
+        ref={button}
         type="button"
         className="link-button"
+        aria-haspopup="menu"
         aria-expanded={open}
         aria-label={`Draw ${path} as…`}
         onClick={() => setOpen(!open)}
+        onKeyDown={(event) => {
+          if (open && event.key === "Escape") {
+            event.preventDefault();
+            setOpen(false);
+          }
+        }}
       >
         Draw as…
       </button>
       {open && (
-        <div className="popover menu" role="menu" aria-label={`Draw ${path} as`}>
+        <div
+          ref={menu}
+          className="popover menu"
+          role="menu"
+          aria-label={`Draw ${path} as`}
+          // Escape closes it rather than leave the view.
+          data-keys="escape"
+          onKeyDown={move}
+        >
           {renderers.error && <div className="empty error">{renderers.error.message}</div>}
           {!renderers.data && !renderers.error && <div className="empty">Reading…</div>}
           {renderers.data?.renderers.map((renderer) => (
@@ -689,6 +849,7 @@ export function DrawAs({ path }: { path: string }) {
               key={renderer.name}
               type="button"
               role="menuitem"
+              tabIndex={-1}
               className="menu-item"
               onClick={() => choose({ path, renderer: renderer.name })}
             >

@@ -7,7 +7,7 @@ import { useRequest } from "../data";
 import type { At } from "../focus";
 import type { Register, Row } from "../protocol";
 import { isBoolean, read, write } from "../storage";
-import { errorClass, hidden } from "./Values";
+import { errorClass, hidden } from "./hidden";
 import { LinkedExpansion, ValueRow } from "./ValueTree";
 import { useFocus } from "./Workspace";
 
@@ -50,7 +50,7 @@ export function Registers() {
             // Each frame's registers are compared with that frame's.
             parent={`registers@${focus.at?.frame ?? 0}`}
             depth={0}
-            failed={register.value === null}
+            missing={register.value === null ? "absent" : undefined}
           />
         ))}
       </ul>

@@ -1,6 +1,6 @@
 import { Outlet, useLocation } from "@tanstack/react-router";
 import { useEffect } from "react";
-import { commandFor, isTextBox } from "../keys";
+import { commandFor, isTextBox, keepsEscape } from "../keys";
 import { commandName } from "../model";
 import { useModel } from "../store";
 import { useCommands } from "./commands";
@@ -52,7 +52,7 @@ function useKeys() {
   const run = useCommands();
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
-      if (event.isComposing) {
+      if (event.isComposing || (event.key === "Escape" && keepsEscape(document.activeElement))) {
         return;
       }
       const typing = isTextBox(document.activeElement);

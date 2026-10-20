@@ -1,6 +1,8 @@
+import { useShallow } from "zustand/react/shallow";
 import type { Model } from "../model";
 import { commandName } from "../model";
 import { useModel } from "../store";
+import { threadLabel } from "./names";
 
 interface Shown {
   pill: "stopped" | "running" | "idle" | "warn";
@@ -35,7 +37,7 @@ export function shown(model: Model): Shown {
       return {
         pill: "stopped",
         label: state.target.kind === "core" ? "Core dump" : "Stopped",
-        detail: `stop #${inferior.stop} · ${inferior.reason.description} · ${thread?.name ?? `thread ${inferior.thread}`}`,
+        detail: `stop #${inferior.stop} · ${inferior.reason.description} · ${threadLabel(inferior.thread, thread?.name)}`,
       };
     }
     case "exited":
@@ -46,17 +48,18 @@ export function shown(model: Model): Shown {
 }
 
 export function Status() {
-  const model = useModel((model) => model);
-  const { pill, label, detail } = shown(model);
-  const program = commandName(model.state);
-  const target = model.state?.target;
+  // Only what it shows, so output arriving does not render it again.
+  const { pill, label, detail } = useModel(useShallow(shown));
+  const program = useModel((model) => commandName(model.state));
+  const command = useModel((model) => {
+    const target = model.state?.target;
+    return target ? [target.program, ...target.arguments].join(" ") : undefined;
+  });
   return (
-    <div className="status" data-testid="status">
+    // A status, so a change of run state is read out.
+    <div className="status" role="status" data-testid="status">
       {program && (
-        <span
-          className="program"
-          title={target ? [target.program, ...target.arguments].join(" ") : undefined}
-        >
+        <span className="program" title={command}>
           {program}
         </span>
       )}

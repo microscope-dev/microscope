@@ -199,7 +199,7 @@ export function validateProfileLook(search: Record<string, unknown>): ProfileLoo
 /** The Syscalls view's query of `profile`: the look's selection over its
  * time range. */
 export function syscallQueryOf(profile: string, look: ProfileLook, revision: number): SyscallQuery {
-  const range = look.range ? parseRange(look.range) : null;
+  const range = rangeOf(look);
   return {
     profile,
     revision,
@@ -220,6 +220,11 @@ export function parseRange(text: string): [number, number] | null {
   return end > start ? [start, end] : null;
 }
 
+/** The look's time range, if it selects one. */
+export function rangeOf(look: { range?: string | undefined }): [number, number] | null {
+  return look.range ? parseRange(look.range) : null;
+}
+
 export function formatRange([start, end]: [number, number]): string {
   return `${Math.round(start)}-${Math.round(end)}`;
 }
@@ -234,13 +239,13 @@ export function parseTransform(entry: string): ProfileTransform | null {
     : null;
 }
 
-export function formatTransform(transform: ProfileTransform): string {
+function formatTransform(transform: ProfileTransform): string {
   return `${transform.op}:${transform.name}`;
 }
 
 /** The query a look asks of `profile`. */
 export function queryOf(profile: string, look: ProfileLook): ProfileQuery {
-  const range = look.range ? parseRange(look.range) : null;
+  const range = rangeOf(look);
   const baseRange = look.br ? parseRange(look.br) : null;
   const base =
     look.bp || baseRange

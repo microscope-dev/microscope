@@ -340,6 +340,10 @@ microscope.hint(text)        the tooltip beside the pointer, or none with null
 microscope.select(path)      open a part of the value, as a shape's select does
 ```
 
+The five `microscope` calls are a live renderer's and do nothing in `draw`.
+Each sends only its latest value, once the function the page called
+returns, so calling `caption` in a loop costs one message.
+
 Each function is optional, and each may be `async`. The canvas takes
 `getContext("webgl2")` or `getContext("2d")`; WebGPU is not offered.
 

@@ -5,7 +5,7 @@ import { controls } from "../model";
 import type { Breakpoint, WatchAccess, Watchpoint } from "../protocol";
 import { useConnection, useModel } from "../store";
 import { tab, useTab } from "../tab";
-import { useShowSource } from "./navigation";
+import { useLook, useShowSource } from "./navigation";
 import { fileName } from "./paths";
 import { useFocus } from "./Workspace";
 
@@ -33,7 +33,11 @@ export function Breakpoints() {
         <ul className="rows" data-testid="breakpoints">
           {breakpoints.map((breakpoint) =>
             editing === breakpoint.id ? (
-              <Editor key={breakpoint.id} breakpoint={breakpoint} done={() => setEditing(null)} />
+              <BreakpointEditor
+                key={breakpoint.id}
+                breakpoint={breakpoint}
+                done={() => setEditing(null)}
+              />
             ) : (
               <Row
                 key={breakpoint.id}
@@ -85,6 +89,52 @@ export function breakpointTitle(breakpoint: Breakpoint): string {
   return places || `${breakpoint.location}: ${PENDING}`;
 }
 
+/**
+ * Shows a breakpoint's code: its line, or its instructions where it has no
+ * line. Returns why it cannot, when it cannot.
+ */
+export function useShowBreakpoint(): (breakpoint: Breakpoint) => string | null {
+  const showSource = useShowSource();
+  const look = useLook();
+  return (breakpoint) => {
+    const place = firstBreakpointPlace(breakpoint);
+    if (place?.path && place.line) {
+      showSource(place.path, place.line);
+      return null;
+    }
+    // A pending place's address is not where the code will load.
+    const placed = breakpoint.places[0];
+    if (placed) {
+      look((current) => ({ ...current, asm: placed.address, view: "disassembly" }), {
+        replace: false,
+      });
+      return null;
+    }
+    return breakpoint.pending?.message ?? `${breakpoint.location} is ${PENDING}`;
+  };
+}
+
+/** What stops a breakpoint or watchpoint, besides being reached. */
+interface Conditions {
+  condition: string | null;
+  hitCondition: string | null;
+  /** Breakpoints alone log instead of stopping. */
+  logMessage?: string | null;
+}
+
+/** Conditions as a row says them, or "" when there are none. */
+function conditionText(conditions: Conditions): string {
+  if (conditions.logMessage) {
+    return `log "${conditions.logMessage}"`;
+  }
+  return [
+    conditions.condition && `if ${conditions.condition}`,
+    conditions.hitCondition && `hits ${conditions.hitCondition}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 function Row({
   breakpoint,
   control,
@@ -95,19 +145,12 @@ function Row({
   edit(): void;
 }) {
   const connection = useConnection();
-  const showSource = useShowSource();
+  const showBreakpoint = useShowBreakpoint();
   const [error, setError] = useState<string | null>(null);
   const place = firstBreakpointPlace(breakpoint);
   const pending = breakpoint.places.length === 0;
   const kind = breakpoint.logMessage ? "log" : breakpoint.condition ? "conditional" : "plain";
-  const detail = breakpoint.logMessage
-    ? `log "${breakpoint.logMessage}"`
-    : [
-        breakpoint.condition && `if ${breakpoint.condition}`,
-        breakpoint.hitCondition && `hits ${breakpoint.hitCondition}`,
-      ]
-        .filter(Boolean)
-        .join(" · ");
+  const detail = conditionText(breakpoint);
 
   return (
     <li className="breakpoint" data-breakpoint={breakpoint.id}>
@@ -117,8 +160,8 @@ function Row({
           type="button"
           className="link-row"
           title={breakpointTitle(breakpoint)}
-          disabled={!place?.path}
-          onClick={() => place?.path && place.line && showSource(place.path, place.line)}
+          disabled={pending && !place?.path}
+          onClick={() => showBreakpoint(breakpoint)}
         >
           {placeLabel(breakpoint)}
         </button>
@@ -164,28 +207,45 @@ function Row({
   );
 }
 
-/** Edits a breakpoint's condition, hit condition, and log message in place. */
-function Editor({ breakpoint, done }: { breakpoint: Breakpoint; done(): void }) {
+function BreakpointEditor({ breakpoint, done }: { breakpoint: Breakpoint; done(): void }) {
   const connection = useConnection();
-  const [condition, setCondition] = useState(breakpoint.condition ?? "");
-  const [hits, setHits] = useState(breakpoint.hitCondition ?? "");
-  const [message, setMessage] = useState(breakpoint.logMessage ?? "");
-  const [error, setError] = useState<string | null>(null);
+  return (
+    <ConditionEditor
+      title={placeLabel(breakpoint)}
+      initial={breakpoint}
+      done={done}
+      save={(conditions) =>
+        connection.request("editBreakpoint", {
+          id: breakpoint.id,
+          condition: conditions.condition,
+          hitCondition: conditions.hitCondition,
+          logMessage: conditions.logMessage ?? null,
+        })
+      }
+    />
+  );
+}
 
-  const save = async () => {
-    setError(null);
-    const options = {
-      condition: condition.trim() || null,
-      hitCondition: hits.trim() || null,
-      logMessage: message.trim() || null,
-    };
-    try {
-      await connection.request("editBreakpoint", { id: breakpoint.id, ...options });
-      done();
-    } catch (failure) {
-      setError((failure as Error).message);
-    }
-  };
+/**
+ * Edits conditions in place: a condition, a hit condition, and, when
+ * `initial` has the field, a log message.
+ */
+function ConditionEditor({
+  title,
+  initial,
+  save,
+  done,
+}: {
+  title: string;
+  initial: Conditions;
+  save(conditions: Conditions): Promise<unknown>;
+  done(): void;
+}) {
+  const logs = initial.logMessage !== undefined;
+  const [condition, setCondition] = useState(initial.condition ?? "");
+  const [hits, setHits] = useState(initial.hitCondition ?? "");
+  const [message, setMessage] = useState(initial.logMessage ?? "");
+  const [error, setError] = useState<string | null>(null);
 
   return (
     <li className="editor">
@@ -193,7 +253,17 @@ function Editor({ breakpoint, done }: { breakpoint: Breakpoint; done(): void }) 
         className="editor-form"
         onSubmit={(event) => {
           event.preventDefault();
-          void save();
+          setError(null);
+          const conditions: Conditions = {
+            condition: condition.trim() || null,
+            hitCondition: hits.trim() || null,
+          };
+          if (logs) {
+            conditions.logMessage = message.trim() || null;
+          }
+          save(conditions)
+            .then(done)
+            .catch((failure: Error) => setError(failure.message));
         }}
         onKeyDown={(event) => {
           if (event.key === "Escape") {
@@ -201,7 +271,7 @@ function Editor({ breakpoint, done }: { breakpoint: Breakpoint; done(): void }) 
           }
         }}
       >
-        <div className="editor-title">{placeLabel(breakpoint)}</div>
+        <div className="editor-title">{title}</div>
         <label>
           <span>Stop if</span>
           <input
@@ -222,15 +292,17 @@ function Editor({ breakpoint, done }: { breakpoint: Breakpoint; done(): void }) 
             onChange={(event) => setHits(event.target.value)}
           />
         </label>
-        <label>
-          <span>Log</span>
-          <input
-            className="input"
-            value={message}
-            placeholder="a message with {expressions}, instead of stopping"
-            onChange={(event) => setMessage(event.target.value)}
-          />
-        </label>
+        {logs && (
+          <label>
+            <span>Log</span>
+            <input
+              className="input"
+              value={message}
+              placeholder="a message with {expressions}, instead of stopping"
+              onChange={(event) => setMessage(event.target.value)}
+            />
+          </label>
+        )}
         {error && <div className="error">{error}</div>}
         <div className="actions">
           <button type="submit" className="button primary small">
@@ -288,17 +360,26 @@ const ACCESS: Record<WatchAccess, string> = {
 /** A watchpoint: what it watches, when it stops, and how often it was hit. */
 function WatchRow({ watchpoint, control }: { watchpoint: Watchpoint; control: boolean }) {
   const connection = useConnection();
+  // The tab store holds one breakpoint's editor; a watchpoint's is its own.
   const [editing, setEditing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const label = watchpoint.expression ?? `${watchpoint.address}:${watchpoint.bytes}`;
-  const detail = [
-    watchpoint.condition && `if ${watchpoint.condition}`,
-    watchpoint.hitCondition && `hits ${watchpoint.hitCondition}`,
-  ]
-    .filter(Boolean)
-    .join(" · ");
+  const detail = conditionText(watchpoint);
   if (editing) {
-    return <WatchEditor watchpoint={watchpoint} done={() => setEditing(false)} />;
+    return (
+      <ConditionEditor
+        title={watchpoint.expression ?? watchpoint.address}
+        initial={{ condition: watchpoint.condition, hitCondition: watchpoint.hitCondition }}
+        done={() => setEditing(false)}
+        save={(conditions) =>
+          connection.request("editWatchpoint", {
+            id: watchpoint.id,
+            condition: conditions.condition,
+            hitCondition: conditions.hitCondition,
+          })
+        }
+      />
+    );
   }
   return (
     <li className="breakpoint" data-watchpoint={watchpoint.id}>
@@ -343,69 +424,6 @@ function WatchRow({ watchpoint, control }: { watchpoint: Watchpoint; control: bo
       </div>
       {detail && <div className="row sub">{detail}</div>}
       {error && <div className="row sub error">{error}</div>}
-    </li>
-  );
-}
-
-/** Edits a watchpoint's condition and hit condition in place. */
-function WatchEditor({ watchpoint, done }: { watchpoint: Watchpoint; done(): void }) {
-  const connection = useConnection();
-  const [condition, setCondition] = useState(watchpoint.condition ?? "");
-  const [hits, setHits] = useState(watchpoint.hitCondition ?? "");
-  const [error, setError] = useState<string | null>(null);
-  return (
-    <li className="editor">
-      <form
-        className="editor-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          setError(null);
-          connection
-            .request("editWatchpoint", {
-              id: watchpoint.id,
-              condition: condition.trim() || null,
-              hitCondition: hits.trim() || null,
-            })
-            .then(done)
-            .catch((failure: Error) => setError(failure.message));
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            done();
-          }
-        }}
-      >
-        <div className="editor-title">{watchpoint.expression ?? watchpoint.address}</div>
-        <label>
-          <span>Stop if</span>
-          <input
-            className="input"
-            value={condition}
-            placeholder="an expression, such as n > 3"
-            // biome-ignore lint/a11y/noAutofocus: the editor opens because the person asked to type
-            autoFocus
-            onChange={(event) => setCondition(event.target.value)}
-          />
-        </label>
-        <label>
-          <span>Hits</span>
-          <input
-            className="input"
-            value={hits}
-            placeholder=">=5, ==3, or %10"
-            onChange={(event) => setHits(event.target.value)}
-          />
-        </label>
-        {error && <div className="error">{error}</div>}
-        <div className="actions">
-          <button type="submit" className="button primary small">
-            Save
-          </button>
-          <button type="button" className="button small" onClick={done}>
-            Cancel
-          </button>
-        </div>
-      </form>
     </li>
   );
 }
@@ -472,6 +490,9 @@ function Exceptions({ control }: { control: boolean }) {
   const connection = useConnection();
   const [error, setError] = useState<string | null>(null);
   const filters = exceptions.data?.filters;
+  if (exceptions.error) {
+    return <div className="error">Exceptions: {exceptions.error.message}</div>;
+  }
   if (!filters) {
     return null;
   }

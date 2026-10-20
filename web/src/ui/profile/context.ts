@@ -2,7 +2,7 @@
 // the tab looks at it, and how to change that, which is a navigation, so
 // the address bar always opens the same view.
 
-import { createContext, useContext } from "react";
+import { createContext, useContext, useRef } from "react";
 import { type Requested, useRequest } from "../../data";
 import type { ProfileLook } from "../../profile/look";
 import type { Method, ParamsOf, ProfileQuery, ProfileSummary, Results } from "../../protocol";
@@ -31,13 +31,27 @@ export function useProfile(): ProfileFocus {
 }
 
 /** Asks for a profile's answer once connected, and again after a
- * reconnection, which fails whatever was on its way. */
+ * reconnection, which fails whatever was on its way. The last answer
+ * stays while disconnected and until the next comes, so a dropped
+ * connection keeps every view, and its state, on screen. */
 export function useAnswer<M extends Method>(
   method: M,
   params: (ParamsOf<M> extends undefined ? undefined : ParamsOf<M>) | null,
 ): Requested<Results[M]> {
   const open = useModel((model) => model.link === "open");
-  return useRequest(method, open ? params : null);
+  const answer = useRequest(method, open ? params : null);
+  const kept = useRef<Results[M] | undefined>(undefined);
+  if (answer.data !== undefined) {
+    kept.current = answer.data;
+  }
+  return answer.data === undefined && answer.error === undefined
+    ? { ...answer, data: kept.current }
+    : answer;
+}
+
+/** Whether the connection is down, so what shows may be out of date. */
+export function useDisconnected(): boolean {
+  return useModel((model) => model.link === "reconnecting");
 }
 
 /** Reads a CSS color token where the page is drawn. */

@@ -53,34 +53,49 @@ export function formatChange(points: number | null): string {
   return Number(shown) === 0 ? "±0" : `${points > 0 ? "+" : "−"}${shown.replace("-", "")} pp`;
 }
 
-/** Bytes, in the largest binary unit that keeps them above one. */
-export function formatBytes(bytes: number): string {
-  const units: [number, string][] = [
-    [2 ** 30, "GiB"],
-    [2 ** 20, "MiB"],
-    [2 ** 10, "KiB"],
-  ];
+/** `value` to three significant digits in the largest of `units`, largest
+ * first, that reads one or more once rounded, or whole in `base`. */
+function scaled(
+  value: number,
+  units: readonly (readonly [number, string])[],
+  base: string,
+): string {
   for (const [size, name] of units) {
-    if (Math.abs(bytes) >= size) {
-      return `${(bytes / size).toPrecision(3)} ${name}`;
+    const shown = Number((value / size).toPrecision(3));
+    if (Math.abs(shown) >= 1) {
+      // `toPrecision` writes 1200 as 1.20e+3.
+      return Math.abs(shown) >= 1000
+        ? `${Math.round(value / size).toLocaleString("en-US")} ${name}`
+        : `${(value / size).toPrecision(3)} ${name}`;
     }
   }
-  return `${Math.round(bytes)} B`;
+  return `${Math.round(value)} ${base}`;
+}
+
+/** Bytes, in the largest binary unit that keeps them above one. */
+export function formatBytes(bytes: number): string {
+  return scaled(
+    bytes,
+    [
+      [2 ** 30, "GiB"],
+      [2 ** 20, "MiB"],
+      [2 ** 10, "KiB"],
+    ],
+    "B",
+  );
 }
 
 /** Nanoseconds, in the largest unit that keeps them above one. */
 export function formatDuration(nanoseconds: number): string {
-  const units: [number, string][] = [
-    [1e9, "s"],
-    [1e6, "ms"],
-    [1e3, "µs"],
-  ];
-  for (const [size, name] of units) {
-    if (Math.abs(nanoseconds) >= size) {
-      return `${(nanoseconds / size).toPrecision(3)} ${name}`;
-    }
-  }
-  return `${Math.round(nanoseconds)} ns`;
+  return scaled(
+    nanoseconds,
+    [
+      [1e9, "s"],
+      [1e6, "ms"],
+      [1e3, "µs"],
+    ],
+    "ns",
+  );
 }
 
 /** A time since the profile began, in the largest unit that keeps it, or
@@ -121,6 +136,25 @@ export function formatPercent(part: number, whole: number): string {
   }
   const percent = (part * 100) / whole;
   return `${percent >= 10 ? percent.toFixed(1) : percent.toFixed(2)}%`;
+}
+
+/** An exact count, its digits grouped, and with a noun, the noun for one
+ * or for many. */
+export function formatCount(count: number, singular?: string, plural = `${singular}s`): string {
+  const digits = count.toLocaleString("en-US");
+  return singular === undefined ? digits : `${digits} ${count === 1 ? singular : plural}`;
+}
+
+/** The largest of `values`, or `floor` if none is larger. Spreading them
+ * into `Math.max` overflows the stack for a lane per thread of buckets. */
+export function largest(values: Iterable<number>, floor: number): number {
+  let most = floor;
+  for (const value of values) {
+    if (value > most) {
+      most = value;
+    }
+  }
+  return most;
 }
 
 /** What a frame's color follows: its module, or failing that the first

@@ -9,6 +9,7 @@ import { useRequest } from "../data";
 import { type At, followedLook, type Look, parseAt } from "../focus";
 import { follow, latestStop } from "../follow";
 import type { Backtrace, State } from "../protocol";
+import { frameAt } from "../stack";
 import { useConnection, useModel } from "../store";
 import { tab, useTab } from "../tab";
 import { Banner } from "./Banner";
@@ -36,7 +37,8 @@ export interface Focus {
   stale: "running" | "passed" | "disconnected" | null;
 }
 
-const FocusContext = createContext<Focus | null>(null);
+/** Exported so tests can render a pane at a focus they choose. */
+export const FocusContext = createContext<Focus | null>(null);
 
 export function useFocus(): Focus {
   const focus = useContext(FocusContext);
@@ -84,8 +86,17 @@ export function Workspace() {
   useEffect(() => {
     tab.setState({ frames });
   }, [frames]);
-  const left = useSplit("microscope-split-left", 270, { min: 180, max: 520 });
-  const right = useSplit("microscope-split-right", 340, { min: 220, max: 720, reversed: true });
+  const left = useSplit("microscope-split-left", 270, {
+    label: "Resize the left column",
+    min: 180,
+    max: 520,
+  });
+  const right = useSplit("microscope-split-right", 340, {
+    label: "Resize the right column",
+    min: 220,
+    max: 720,
+    reversed: true,
+  });
 
   const focus = useMemo((): Focus | null => {
     if (!state) {
@@ -190,7 +201,7 @@ function usePresence(at: At | null, trace: Backtrace | undefined) {
   const open = useModel((model) => model.link === "open");
   const location = useLocation();
   const url = location.href;
-  const frame = at ? trace?.frames.find((candidate) => candidate.index === at.frame) : undefined;
+  const frame = frameAt(trace, at);
   const label = at
     ? `stop #${at.stop}, frame ${at.frame}${frame ? `, ${frame.name}` : ""}`
     : "the session";

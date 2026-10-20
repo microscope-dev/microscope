@@ -2,7 +2,7 @@
 // breakpoints, and stops; Ctrl+P starts at files, and Ctrl+G at a line of
 // the file shown. Groups come in the order of their best match.
 
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { firstBreakpointPlace } from "../breakpoints";
 import { useRequest } from "../data";
 import { openingFrame } from "../follow";
@@ -13,8 +13,10 @@ import { useConnection } from "../store";
 import { flash, tab, useTab } from "../tab";
 import { chooseTheme, THEMES } from "../theme";
 import { placeText } from "./Banner";
-import { placeLabel } from "./Breakpoints";
+import { placeLabel, useShowBreakpoint } from "./Breakpoints";
 import { useCommands } from "./commands";
+import { useDialogFocus } from "./dialog";
+import { threadLabel } from "./names";
 import { useGo, useLinkPaths, useShowSource } from "./navigation";
 import { fileName } from "./paths";
 import { useFocus } from "./Workspace";
@@ -58,7 +60,10 @@ function Open({ mode }: { mode: Mode }) {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(0);
   const list = useId();
-  const groups = useGroups(mode, query.trim());
+  const dialog = useRef<HTMLDivElement>(null);
+  const field = useRef<HTMLInputElement>(null);
+  useDialogFocus(dialog, field);
+  const { groups, why } = useGroups(mode, query.trim());
   // Why the files listed are not all of them, when they are not.
   const note = useRequest("sources", mode === "files" ? undefined : null).data?.note;
   const items = groups.flatMap((group) => group.items);
@@ -72,8 +77,15 @@ function Open({ mode }: { mode: Mode }) {
 
   return (
     <div className="overlay">
-      <div className="palette" role="dialog" aria-modal="true" aria-label="Command palette">
+      <div
+        className="palette"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Command palette"
+        ref={dialog}
+      >
         <input
+          ref={field}
           className="palette-query"
           role="combobox"
           aria-expanded="true"
@@ -89,8 +101,6 @@ function Open({ mode }: { mode: Mode }) {
                   : "a command, function, file, thread, breakpoint, or stop"
           }
           value={query}
-          // biome-ignore lint/a11y/noAutofocus: the palette opens to be typed in
-          autoFocus
           onChange={(event) => {
             setQuery(event.target.value);
             setSelected(0);
@@ -111,7 +121,9 @@ function Open({ mode }: { mode: Mode }) {
           onBlur={close}
         />
         <div className="palette-results" id={list} role="listbox" aria-label="Results">
-          {items.length === 0 && <div className="empty">{query ? "Nothing matches." : ""}</div>}
+          {items.length === 0 && (
+            <div className="empty">{why ?? (query ? "Nothing matches." : null)}</div>
+          )}
           {groups.map((group) => (
             // biome-ignore lint/a11y/useSemanticElements: a listbox groups its options with role group
             <div key={group.name} role="group" aria-label={group.name}>
@@ -131,7 +143,6 @@ function Open({ mode }: { mode: Mode }) {
                       event.preventDefault();
                       run(item);
                     }}
-                    onKeyDown={() => undefined}
                   >
                     <Marked text={item.label} query={query.trim()} />
                     {item.detail && <span className="dim">{item.detail}</span>}
@@ -178,53 +189,83 @@ function ranked(name: string, items: Item[], query: string, limit = EACH): Group
   return { name, items: kept, rank };
 }
 
-function useGroups(mode: Mode, query: string): Group[] {
-  const { at, state } = useFocus();
+/** The groups to show, and why there are none when that is not because
+ * nothing matches the query. */
+interface Found {
+  groups: Group[];
+  why?: string;
+}
+
+function useGroups(mode: Mode, query: string): Found {
+  const { at, state, stale } = useFocus();
   const go = useGo();
   const paths = useLinkPaths();
   const connection = useConnection();
   const runCommand = useCommands();
   const shown = useTab((current) => current.shown);
-  const sources = useRequest("sources", undefined).data;
+  const sources = useRequest("sources", undefined);
   const functions = useRequest(
     "functions",
     mode === "all" && query ? { query, limit: EACH } : null,
   ).data;
   const calls = useRequest(
     "stepTargets",
-    mode === "calls" && at ? { stop: at.stop, thread: at.thread, task: at.task ?? null } : null,
-  ).data;
+    mode === "calls" && at && !stale
+      ? { stop: at.stop, thread: at.thread, task: at.task ?? null }
+      : null,
+  );
 
   const showSource = useShowSource();
+  const showBreakpoint = useShowBreakpoint();
 
   if (mode === "line") {
     const match = /^(?:(.+):)?(\d+)$/.exec(query);
     const path = match?.[1] ? paths.recorded(match[1]) : shown?.path;
     const line = match ? Number(match[2]) : 0;
-    if (!path || line < 1) {
-      return [];
+    if (query === "") {
+      return {
+        groups: [],
+        why: shown ? `Type a line of ${fileName(shown.path)}, or file:line.` : "Type file:line.",
+      };
     }
-    return [
-      {
-        name: "Line",
-        rank: 0,
-        items: [
-          {
-            id: "line",
-            label: `Go to line ${line}`,
-            detail: fileName(path),
-            run: () => showSource(path, line),
-          },
-        ],
-      },
-    ];
+    if (!match || line < 1) {
+      return { groups: [], why: "A line is a number, or file:number." };
+    }
+    if (!path) {
+      return { groups: [], why: "No file is shown; type file:line." };
+    }
+    return {
+      groups: [
+        {
+          name: "Line",
+          rank: 0,
+          items: [
+            {
+              id: "line",
+              label: `Go to line ${line}`,
+              detail: fileName(path),
+              run: () => showSource(path, line),
+            },
+          ],
+        },
+      ],
+    };
   }
 
   if (mode === "calls") {
-    if (!at) {
-      return [];
+    if (!at || stale) {
+      return { groups: [], why: "Calls can be stepped into at the program's current stop." };
     }
-    const items: Item[] = (calls?.calls ?? []).map((call) => ({
+    if (calls.error) {
+      return { groups: [], why: calls.error.message };
+    }
+    if (!calls.data) {
+      return { groups: [], why: "Reading the calls on this line…" };
+    }
+    if (calls.data.calls.length === 0) {
+      return { groups: [], why: "This line makes no calls." };
+    }
+    const items: Item[] = calls.data.calls.map((call) => ({
       id: `call:${call.call}`,
       label: call.callee ?? (call.target ? `call to ${call.target}` : "indirect call"),
       detail: call.call,
@@ -240,17 +281,26 @@ function useGroups(mode: Mode, query: string): Group[] {
           .catch((failure: Error) => flash(failure.message)),
     }));
     const group = ranked("Calls", items, query, 50);
-    return group ? [group] : [];
+    return { groups: group ? [group] : [] };
   }
 
-  const files: Item[] = (sources?.files ?? []).map((path) => ({
+  const files: Item[] = (sources.data?.files ?? []).map((path) => ({
     id: `file:${path}`,
     label: paths.link(path),
     run: () => showSource(path, 1),
   }));
   if (mode === "files") {
     const group = ranked("Files", files, query, 50);
-    return group ? [group] : [];
+    if (sources.error) {
+      return { groups: [], why: sources.error.message };
+    }
+    if (!sources.data) {
+      return { groups: [], why: "Reading the program's files…" };
+    }
+    if (files.length === 0) {
+      return { groups: [], why: "The debug information names no source files." };
+    }
+    return { groups: group ? [group] : [] };
   }
 
   const commands: Item[] = (Object.keys(LABELS) as Command[])
@@ -273,7 +323,7 @@ function useGroups(mode: Mode, query: string): Group[] {
     });
   }
   if (query === "") {
-    return [{ name: "Commands", items: commands, rank: 0 }];
+    return { groups: [{ name: "Commands", items: commands, rank: 0 }] };
   }
 
   // Only the functions that match this query, not a slower earlier one's.
@@ -308,7 +358,7 @@ function useGroups(mode: Mode, query: string): Group[] {
 
   const threads: Item[] = state.threads.map((thread) => ({
     id: `thread:${thread.id}`,
-    label: `thread ${thread.id}${thread.name ? ` ${thread.name}` : ""}`,
+    label: threadLabel(thread.id, thread.name),
     run: () => {
       const inferior = state.inferior;
       if (inferior.state === "stopped") {
@@ -327,9 +377,9 @@ function useGroups(mode: Mode, query: string): Group[] {
     label: `${placeLabel(breakpoint)} ${firstBreakpointPlace(breakpoint)?.function ?? ""}`.trim(),
     detail: `breakpoint ${breakpoint.id}`,
     run: () => {
-      const place = firstBreakpointPlace(breakpoint);
-      if (place?.path && place.line) {
-        showSource(place.path, place.line);
+      const why = showBreakpoint(breakpoint);
+      if (why) {
+        flash(why);
       }
     },
   }));
@@ -355,5 +405,5 @@ function useGroups(mode: Mode, query: string): Group[] {
     ranked("Breakpoints", breakpoints, query),
     ranked("Stops", stops, query),
   ].filter((group): group is Group => group !== null);
-  return groups.sort((a, b) => a.rank - b.rank);
+  return { groups: groups.sort((a, b) => a.rank - b.rank) };
 }

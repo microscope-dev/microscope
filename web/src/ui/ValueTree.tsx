@@ -18,7 +18,7 @@ import { useFocus } from "./Workspace";
 const PAGE = 100;
 
 /** Which rows are open, and whether changes are marked. */
-export interface Expansion {
+interface Expansion {
   isOpen(key: string): boolean;
   toggle(key: string): void;
   /** Whether to compare values with the stop before. */
@@ -106,33 +106,30 @@ export function RowList({
   );
 }
 
-export interface ValueRowProps {
+/** Why a row's text is no value: it failed to be read, in red, or it was
+ * not read or not saved, dimmed. */
+export type Missing = "failed" | "absent";
+
+interface ValueRowProps {
   row: Row;
   parent: string;
   depth: number;
   /** Controls at the row's end, such as removing a watch. */
   actions?: ReactNode;
   /** The row says why there is no value. */
-  failed?: boolean;
+  missing?: Missing | undefined;
   /** How many rows with this name come before it, plus one. */
   occurrence?: number;
 }
 
 /** One value, which opens to its children. */
-export function ValueRow({
-  row,
-  parent,
-  depth,
-  actions,
-  failed = false,
-  occurrence = 1,
-}: ValueRowProps) {
+export function ValueRow({ row, parent, depth, actions, missing, occurrence = 1 }: ValueRowProps) {
   const { at, stale } = useFocus();
   const expansion = useExpansion();
   const key = childKey(parent, row.name, occurrence);
   const open = row.children !== null && expansion.isOpen(key);
   let was: string | undefined;
-  if (expansion.remember && at && !stale && !row.truncated && !failed) {
+  if (expansion.remember && at && !stale && !row.truncated && !missing) {
     // Rendering notes what this stop shows, for the stop after it.
     was = recall.before(at.stop, key);
     recall.note(at.stop, key, row.text);
@@ -161,7 +158,7 @@ export function ValueRow({
         <span className="value-name" title={row.path ?? row.name}>
           {row.name}
         </span>
-        <ValueText row={row} failed={failed} changed={changed} was={was} />
+        <ValueText row={row} missing={missing} changed={changed} was={was} />
         {row.type && <span className="value-type">{row.type}</span>}
         <RowActions row={row} />
         {actions}
@@ -243,12 +240,12 @@ function RowActions({ row }: { row: Row }) {
 /** A value's text, which a double click edits when the value can change. */
 function ValueText({
   row,
-  failed,
+  missing,
   changed,
   was,
 }: {
   row: Row;
-  failed: boolean;
+  missing: Missing | undefined;
   changed: boolean;
   was: string | undefined;
 }) {
@@ -296,7 +293,7 @@ function ValueText({
       </form>
     );
   }
-  const className = `value-text ${failed ? "error" : ""} ${changed ? "changed" : ""}`;
+  const className = `value-text ${missing === "failed" ? "error" : (missing ?? "")} ${changed ? "changed" : ""}`;
   if (!editable) {
     return (
       <span className={className} title={changed ? `was ${was}` : row.text}>

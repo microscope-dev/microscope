@@ -96,8 +96,8 @@ export function Modules() {
           {modules.data.modules.map((module) => (
             <tr key={module.id}>
               <td>{module.name}</td>
-              <td className="mono">{module.start ?? "—"}</td>
-              <td className="mono">{module.end ?? "—"}</td>
+              <Bound value={module.start} />
+              <Bound value={module.end} />
               <td
                 className={
                   module.debugInformationProblem ? "error" : module.symbols === "none" ? "dim" : ""
@@ -117,12 +117,24 @@ export function Modules() {
                     : (module.debugFile ?? undefined)
                 }
               >
-                {module.debugFile ?? "—"}
+                {module.debugFile ?? "none"}
               </td>
             </tr>
           ))}
         </tbody>
       </table>
     </div>
+  );
+}
+
+/** Where a module starts or ends, which is unknown when microscope could
+ * not read the module's file. */
+function Bound({ value }: { value: string | null }) {
+  return value === null ? (
+    <td className="dim" title="microscope could not read this module's file">
+      unknown
+    </td>
+  ) : (
+    <td className="mono">{value}</td>
   );
 }

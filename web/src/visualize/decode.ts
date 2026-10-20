@@ -28,6 +28,14 @@ export type TypedArray =
   | Float32Array
   | Float64Array;
 
+/** Why an input could not be read from the drawing's binary frame. */
+export class DecodeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DecodeError";
+  }
+}
+
 const ARRAYS = {
   i8: Int8Array,
   u8: Uint8Array,
@@ -43,7 +51,31 @@ const ARRAYS = {
 
 /** The inputs by name, with `bytes` the drawing's binary frame's payload. */
 export function decodeInputs(inputs: DrawInput[], bytes: Uint8Array): Record<string, Value> {
-  return Object.fromEntries(inputs.map((input) => [input.name, decode(input.value, bytes)]));
+  return Object.fromEntries(
+    inputs.map((input) => {
+      try {
+        return [input.name, decode(input.value, bytes)];
+      } catch (error) {
+        throw error instanceof DecodeError
+          ? new DecodeError(`${input.name}: ${error.message}`)
+          : error;
+      }
+    }),
+  );
+}
+
+/** Fails unless `length` bytes from `offset` lie in `bytes`: a short frame
+ * would otherwise give a short array, or a RangeError. */
+function within(bytes: Uint8Array, offset: number, length: number, what: string): void {
+  if (
+    !Number.isSafeInteger(offset) ||
+    !Number.isSafeInteger(length) ||
+    offset < 0 ||
+    length < 0 ||
+    offset + length > bytes.length
+  ) {
+    throw new DecodeError(`${what} at byte ${offset} lie past the ${bytes.length} bytes sent`);
+  }
 }
 
 /** The part of the drawn value each input is, by name, or null. */
@@ -80,11 +112,13 @@ export function decode(datum: Datum, bytes: Uint8Array): Value {
       return datum.entries.map(([key, value]) => [decode(key, bytes), decode(value, bytes)]);
     case "numbers": {
       const Kind = ARRAYS[datum.kind];
-      const start = bytes.byteOffset + datum.offset;
       const length = datum.count * Kind.BYTES_PER_ELEMENT;
+      within(bytes, datum.offset, length, `${datum.count} ${datum.kind} numbers`);
+      const start = bytes.byteOffset + datum.offset;
       return new Kind(bytes.buffer.slice(start, start + length) as ArrayBuffer);
     }
     case "bytes":
+      within(bytes, datum.offset, datum.length, `${datum.length} bytes`);
       return bytes.slice(datum.offset, datum.offset + datum.length);
     case "null":
       return null;

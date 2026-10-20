@@ -13,6 +13,7 @@
   // Taken before the lockdown, which deletes them from the global scope.
   const post = self.postMessage.bind(self);
   const listen = self.addEventListener.bind(self);
+  const later = self.setTimeout.bind(self);
   const { addEventListener } = EventTarget.prototype;
   const evaluate = self.eval;
   const { defineProperty, freeze, getOwnPropertyDescriptor, getPrototypeOf, keys } = Object;
@@ -288,6 +289,47 @@
   const MOST_TEXT = 4096;
   const text = (value) => String(value).slice(0, MOST_TEXT);
 
+  // What a live renderer asked of its page, the latest of each kind, sent
+  // once the page's message it is handling finishes, or from a timer on the
+  // next turn: a renderer calling these in a loop sends a few messages, not
+  // millions. A drawn picture has no caption, pointer, or frames to ask for.
+  const asked = {
+    __proto__: null,
+    caption: null,
+    hint: null,
+    select: null,
+    redraw: null,
+    animate: null,
+  };
+  let handling = false;
+  let flushLater = false;
+
+  function ask(kind, message) {
+    if (starter === null) {
+      return;
+    }
+    asked[kind] = message;
+    if (!handling && !flushLater) {
+      flushLater = true;
+      later(flush, 0);
+    }
+  }
+
+  const KINDS = freeze(["caption", "hint", "select", "redraw", "animate"]);
+
+  function flush() {
+    flushLater = false;
+    // By index: the renderer may have replaced the arrays' iterator.
+    for (let index = 0; index < KINDS.length; index++) {
+      const kind = KINDS[index];
+      const message = asked[kind];
+      if (message !== null) {
+        asked[kind] = null;
+        post(message);
+      }
+    }
+  }
+
   const microscope = freeze({
     draw(render) {
       if (typeof render !== "function") {
@@ -308,19 +350,22 @@
       starter = start;
     },
     redraw() {
-      post({ type: "redraw" });
+      ask("redraw", { type: "redraw" });
     },
     animate(on) {
-      post({ type: "animate", on: on === true });
+      ask("animate", { type: "animate", on: on === true });
     },
     caption(value) {
-      post({ type: "caption", text: text(value) });
+      ask("caption", { type: "caption", text: text(value) });
     },
     hint(value) {
-      post({ type: "hint", text: value === null || value === undefined ? null : text(value) });
+      ask("hint", {
+        type: "hint",
+        text: value === null || value === undefined ? null : text(value),
+      });
     },
     select(path) {
-      post({ type: "select", path: text(path) });
+      ask("select", { type: "select", path: text(path) });
     },
     picture: shape("picture"),
     rect: shape("rect"),
@@ -403,6 +448,8 @@
         return;
       case "frame": {
         await handlers?.frame?.(message.time);
+        // What the frame set, as its caption, comes before it.
+        flush();
         let bitmap;
         try {
           bitmap = canvas.transferToImageBitmap();
@@ -449,18 +496,28 @@
   }
 
   // An error the renderer leaves uncaught, as in a timer, fails its draw.
+  // The first since the page's last message says enough; the page ends a
+  // live renderer at it, and fails every draw waiting.
+  let reported = false;
+  function uncaught(error) {
+    if (!reported) {
+      reported = true;
+      post({ type: "error", id: null, error: failure(error, file) });
+    }
+  }
   listen("error", (event) => {
     event.preventDefault();
-    post({ type: "error", id: null, error: failure(event.error ?? event.message, file) });
+    uncaught(event.error ?? event.message);
   });
   listen("unhandledrejection", (event) => {
     event.preventDefault();
-    post({ type: "error", id: null, error: failure(event.reason, file) });
+    uncaught(event.reason);
   });
 
   let loaded = false;
   listen("message", (event) => {
     const message = event.data;
+    reported = false;
     if (message?.type === "load" && !loaded) {
       loaded = true;
       post({ type: "loaded", error: load(message.source, message.name) });
@@ -471,11 +528,17 @@
       // renderer stuck in a loop, or awaiting what never settles, does not.
       queue = queue.then(() => post({ type: "pong" }));
     } else if (LIVE.has(message?.type) && loaded && starter !== null) {
-      queue = queue.then(() =>
-        live(message).catch((error) => {
+      queue = queue.then(async () => {
+        handling = true;
+        try {
+          await live(message);
+        } catch (error) {
           post({ type: "error", id: null, error: failure(error, file) });
-        }),
-      );
+        } finally {
+          handling = false;
+          flush();
+        }
+      });
     }
   });
 

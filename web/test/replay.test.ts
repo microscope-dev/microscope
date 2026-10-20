@@ -150,6 +150,46 @@ describe("the picker replacing a session", () => {
   });
 });
 
+describe("what a tab keeps", () => {
+  const message = (message: unknown, at = 0): ModelEvent => ({
+    type: "message",
+    message: message as ServerMessage,
+    at,
+  });
+
+  it("keeps the latest 50 notices", () => {
+    let model = initialModel;
+    for (let at = 0; at < 60; at += 1) {
+      model = reduce(
+        model,
+        message({ type: "notice", connection: 1, name: "ada", text: `${at}` }, at),
+      );
+    }
+    expect(model.notices).toHaveLength(50);
+    expect(model.notices[0]?.text).toBe("10");
+    expect(model.notices.at(-1)?.text).toBe("59");
+  });
+
+  it("keeps the latest mebibyte of output, and always the newest piece", () => {
+    let model = initialModel;
+    const chunk = "x".repeat(256 * 1024);
+    for (let index = 0; index < 6; index += 1) {
+      model = reduce(model, message({ type: "output", stream: "stdout", text: chunk }));
+    }
+    expect(model.outputBytes).toBe(1024 * 1024);
+    expect(model.output.map((piece) => piece.seq)).toEqual([2, 3, 4, 5]);
+    const huge = "y".repeat(2 * 1024 * 1024);
+    model = reduce(model, message({ type: "output", stream: "stderr", text: huge }));
+    expect(model.output.map((piece) => piece.seq)).toEqual([6]);
+    expect(model.outputBytes).toBe(huge.length);
+  });
+
+  it("ignores a message type it does not know", () => {
+    const model = replay(received("steps")).at(-1) as Model;
+    expect(reduce(model, message({ type: "fromTheFuture", detail: 1 }))).toBe(model);
+  });
+});
+
 describe("the connection, driven by recorded traffic", () => {
   it.each(transcriptNames())("%s: each request gets its own answer", async (name) => {
     const lines = transcript(name);

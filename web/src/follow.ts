@@ -26,12 +26,8 @@ export function openingFrame(state: State, stop: number, thread: number): number
 /** Stops whose reason the place they show does not say. */
 const EXCEPTIONS = new Set(["exception", "languageException"]);
 
-/**
- * Why the program stopped, to say beside the line of the frame `at` shows,
- * when that is the frame an exception's stop opened on: there the program
- * did not choose to stop, and an uncaught exception's frames that raised it
- * are gone.
- */
+/** Why an exception stopped the program, to say beside the line of the
+ * frame the stop opened on when `at` shows that frame. */
 export function stopNote(state: State, at: At): string | null {
   const entry = state.stops.find((candidate) => candidate.stop === at.stop);
   if (!entry || entry.thread !== at.thread || entry.frame !== at.frame || at.task) {

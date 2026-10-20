@@ -10,16 +10,16 @@
   --line-strong: #c4cbd6;
   --ink: #1a2230;
   --ink-2: #4a5566;
-  --ink-3: #7b8696;
+  --ink-3: #5f6978;
   --accent: #2f56c9;
   --accent-ink: #ffffff;
   --accent-soft: #e2e8fa;
   --pc-bg: #fff0c2;
   --pc-mark: #8a5d00;
   --bp: #d23c3c;
-  --run: #1d8248;
+  --run: #1b7a44;
   --run-soft: #dcf1e4;
-  --changed: #b0500a;
+  --changed: #a84c09;
   --changed-bg: #fce8d4;
   --warn-bg: #fff5dc;
   --warn-line: #e3bd5f;
@@ -30,10 +30,11 @@
   --k: #7b3fb5;
   --t: #0f7287;
   --f: #2f56c9;
-  --s: #3b7d23;
+  --s: #397a22;
   --n: #a24a1a;
-  --c: #7b8696;
+  --c: #5f6978;
   --shadow: 0 1px 2px rgb(20 30 50 / 6%), 0 8px 24px rgb(20 30 50 / 10%);
+  --scrim: rgb(10 15 25 / 25%);
 
   --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -50,7 +51,7 @@
     --line-strong: #39424f;
     --ink: #e3e7ee;
     --ink-2: #aab3c0;
-    --ink-3: #748090;
+    --ink-3: #8f99a6;
     --accent: #7da2ff;
     --accent-ink: #0c1530;
     --accent-soft: #212f4f;
@@ -72,8 +73,9 @@
     --f: #8fb0ff;
     --s: #9bd47a;
     --n: #f0a070;
-    --c: #6f7a89;
+    --c: #9099a5;
     --shadow: 0 1px 2px rgb(0 0 0 / 30%), 0 8px 24px rgb(0 0 0 / 40%);
+    --scrim: rgb(0 0 0 / 55%);
   }
 }
 
@@ -86,7 +88,7 @@
   --line-strong: #39424f;
   --ink: #e3e7ee;
   --ink-2: #aab3c0;
-  --ink-3: #748090;
+  --ink-3: #8f99a6;
   --accent: #7da2ff;
   --accent-ink: #0c1530;
   --accent-soft: #212f4f;
@@ -108,8 +110,9 @@
   --f: #8fb0ff;
   --s: #9bd47a;
   --n: #f0a070;
-  --c: #6f7a89;
+  --c: #9099a5;
   --shadow: 0 1px 2px rgb(0 0 0 / 30%), 0 8px 24px rgb(0 0 0 / 40%);
+  --scrim: rgb(0 0 0 / 55%);
 }
 
 * {
@@ -162,18 +165,16 @@ kbd,
 kbd {
   display: inline-block;
   min-width: 1.6em;
-  padding: 0 4px;
+  padding: 1px 5px;
   border: 1px solid var(--line-strong);
-  border-bottom-width: 2px;
   border-radius: 4px;
-  background: var(--surface);
+  background: var(--surface-2);
   color: var(--ink-2);
-  font-size: 11px;
-  line-height: 1.5;
+  font: 11.5px var(--mono);
   text-align: center;
 }
 
-/* ---------- application frame ---------- */
+/* Application frame */
 
 .app {
   display: grid;
@@ -416,8 +417,11 @@ kbd {
   margin-left: -8px;
 }
 
+/* A dashed ring, not fading, marks who can only view: faded initials fail
+   contrast on some hues. */
 .avatar.view {
-  opacity: 0.85;
+  border-style: dashed;
+  border-color: var(--ink-3);
 }
 
 .avatar button {
@@ -433,7 +437,7 @@ kbd {
   cursor: pointer;
 }
 
-/* ---------- panes ---------- */
+/* Panes */
 
 .workspace {
   display: grid;
@@ -559,7 +563,25 @@ kbd {
   filter: saturate(0.4);
 }
 
-/* ---------- the stop summary ---------- */
+.muted {
+  color: var(--ink-3);
+}
+
+[data-pane]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Rows and these boxes clip what overflows them, so rings inside them are
+   drawn inward. */
+.row :focus-visible,
+.segmented :focus-visible,
+.strip .stops :focus-visible,
+.link-field :focus-visible {
+  outline-offset: -2px;
+}
+
+/* Stop summary */
 
 .summary {
   display: grid;
@@ -580,7 +602,7 @@ kbd {
   font: 12px / 1.5 var(--mono);
 }
 
-/* ---------- output ---------- */
+/* Program output */
 
 .output {
   margin: 0;
@@ -594,7 +616,7 @@ kbd {
   color: var(--error);
 }
 
-/* ---------- strip ---------- */
+/* Status strip */
 
 .strip {
   display: flex;
@@ -619,7 +641,7 @@ kbd {
   margin-left: auto;
 }
 
-/* ---------- pages: picker, join, ended ---------- */
+/* Picker, join, and ended pages */
 
 .page {
   overflow: auto;
@@ -682,6 +704,12 @@ kbd {
 .segmented button[aria-pressed="true"] {
   background: var(--accent-soft);
   color: var(--ink);
+}
+
+fieldset.segmented {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
 }
 
 .field {
@@ -866,7 +894,34 @@ textarea.input {
   color: var(--ink);
 }
 
-/* ---------- tasks ---------- */
+.process-list {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  max-height: 360px;
+  overflow: auto;
+  font: 12px / var(--row) var(--mono);
+}
+
+.process-list .row {
+  cursor: pointer;
+}
+
+.process-list .row:hover {
+  background: var(--surface-2);
+}
+
+.process-list .row.selected {
+  background: var(--accent-soft);
+}
+
+.pid {
+  flex: none;
+  width: 64px;
+  color: var(--ink-3);
+  text-align: right;
+}
+
+/* Link buttons */
 
 .link-button {
   padding: 0 4px;
@@ -883,16 +938,15 @@ textarea.input {
 
 .pane-head .link-button {
   margin-left: auto;
-  border: 0;
-  background: none;
   color: var(--ink-3);
   font: 10px var(--mono);
-  cursor: pointer;
 }
 
 .pane-head .link-button:hover {
   color: var(--ink);
 }
+
+/* Tasks */
 
 /* The function keeps room beside what the task waits for, which gives way
    first. */
@@ -927,39 +981,14 @@ textarea.input {
   padding: 2px 10px 6px;
 }
 
-.table {
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  max-height: 360px;
-  overflow: auto;
-  font: 12px / var(--row) var(--mono);
-}
-
-.table .row {
-  cursor: pointer;
-}
-
-.table .row:hover {
-  background: var(--surface-2);
-}
-
-.table .row.selected {
-  background: var(--accent-soft);
-}
-
-.pid {
-  flex: none;
-  width: 64px;
-  color: var(--ink-3);
-  text-align: right;
-}
+/* Popovers */
 
 .popover {
   position: absolute;
   z-index: 10;
   top: calc(100% + 6px);
   right: 0;
-  width: 420px;
+  width: min(420px, calc(100vw - 16px));
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   background: var(--surface);
@@ -996,11 +1025,12 @@ textarea.input {
   cursor: pointer;
 }
 
-.muted {
-  color: var(--ink-3);
+/* The accent ring would vanish on the accent button. */
+.link-field button:focus-visible {
+  outline-color: var(--accent-ink);
 }
 
-/* ---------- splits ---------- */
+/* Splits */
 
 .gutter {
   position: relative;
@@ -1047,7 +1077,7 @@ textarea.input {
   border-right: 0;
 }
 
-/* ---------- rows that act ---------- */
+/* Rows that act */
 
 .button-row {
   width: 100%;
@@ -1129,7 +1159,7 @@ textarea.input {
   color: var(--ink);
 }
 
-/* ---------- breakpoints ---------- */
+/* Breakpoints */
 
 .dot {
   display: inline-block;
@@ -1239,7 +1269,7 @@ textarea.input {
   font-size: 12px;
 }
 
-/* ---------- code ---------- */
+/* Code */
 
 .pane.code {
   overflow: hidden;
@@ -1300,6 +1330,7 @@ textarea.input {
 .file-tabs-end {
   display: flex;
   align-items: center;
+  gap: 10px;
   margin-left: auto;
   padding: 0 10px;
 }
@@ -1442,7 +1473,7 @@ textarea.input {
 }
 
 .source-view .cm-inline-values {
-  margin-left: 18px;
+  margin-left: 2ch;
   color: var(--ink-3);
   font-style: italic;
 }
@@ -1454,6 +1485,32 @@ textarea.input {
 .source-view .cm-inline-values .changed {
   color: var(--changed);
   font-style: normal;
+}
+
+.cm-value-tooltip {
+  display: flex;
+  gap: 6px;
+  max-width: 560px;
+  padding: 3px 8px;
+  font: 12px / 1.5 var(--mono);
+}
+
+.cm-value-tooltip .text {
+  overflow: hidden;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cm-value-tooltip .type {
+  color: var(--ink-3);
+}
+
+.source-view .cm-tooltip {
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
 }
 
 .tk-k {
@@ -1485,7 +1542,7 @@ textarea.input {
   color: var(--k);
 }
 
-/* ---------- banners ---------- */
+/* Stop banner */
 
 .stop-banner {
   display: flex;
@@ -1504,11 +1561,18 @@ textarea.input {
   background: var(--surface-2);
 }
 
-/* ---------- output and input ---------- */
+/* Output and program input */
 
 .pane.bottom {
   flex: none;
   border-top: 0;
+}
+
+.tab-panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .tab-label {
@@ -1517,6 +1581,16 @@ textarea.input {
 
 .tab-label.on {
   color: var(--ink);
+}
+
+.tabs-head .tab-label {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
 }
 
 .output .log {
@@ -1545,7 +1619,7 @@ textarea.input {
   white-space: nowrap;
 }
 
-/* ---------- stop history ---------- */
+/* Stop history */
 
 .strip .stops {
   display: flex;
@@ -1580,7 +1654,7 @@ textarea.input {
   color: var(--ink);
 }
 
-/* ---------- values ---------- */
+/* Values */
 
 .column.right {
   border-right: 0;
@@ -1676,6 +1750,10 @@ textarea.input {
   color: var(--error);
 }
 
+.value-text.absent {
+  color: var(--ink-3);
+}
+
 .value-type {
   flex: none;
   max-width: 35%;
@@ -1706,10 +1784,6 @@ textarea.input {
   height: calc(var(--row) - 2px);
   padding: 0 4px;
   font: inherit;
-}
-
-.value-edit .error {
-  color: var(--error);
 }
 
 .more {
@@ -1744,11 +1818,6 @@ textarea.input {
   line-height: var(--row);
 }
 
-.empty.error,
-.value-list .empty.error {
-  color: var(--error);
-}
-
 .watch-add {
   padding: 2px 6px 4px 26px;
 }
@@ -1759,7 +1828,7 @@ textarea.input {
   font: 12px var(--mono);
 }
 
-/* ---------- console ---------- */
+/* Console */
 
 .console {
   padding: 4px 0;
@@ -1782,10 +1851,6 @@ textarea.input {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font: inherit;
-}
-
-.console-entry pre.error {
-  color: var(--error);
 }
 
 .console-entry .value-list {
@@ -1824,86 +1889,22 @@ textarea.input {
   font: 12px / 1.6 var(--mono);
 }
 
-.completions button {
-  width: 100%;
+.completions [role="option"] {
   padding: 0 10px;
-  border: 0;
-  background: none;
   color: var(--ink);
-  font: inherit;
-  text-align: left;
   cursor: pointer;
 }
 
-.completions button:hover {
+.completions [role="option"]:hover,
+.completions [role="option"].on {
   background: var(--accent-soft);
 }
 
-.tabs-head .tab-label {
-  padding: 0;
-  border: 0;
-  background: none;
-  font: inherit;
-  letter-spacing: inherit;
-  text-transform: inherit;
-  cursor: pointer;
-}
-
-[data-pane]:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-
-.source-view .cm-inline-values {
-  margin-left: 2ch;
-  color: var(--ink-3);
-  font-style: italic;
-}
-
-.source-view .cm-inline-values > span + span::before {
-  content: " · ";
-}
-
-.source-view .cm-inline-values .changed {
-  color: var(--changed);
-  font-style: normal;
-}
-
-.cm-value-tooltip {
-  display: flex;
-  gap: 6px;
-  max-width: 560px;
-  padding: 3px 8px;
-  font: 12px / 1.5 var(--mono);
-}
-
-.cm-value-tooltip .text {
-  overflow: hidden;
-  color: var(--ink);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.cm-value-tooltip .type {
-  color: var(--ink-3);
-}
-
-.source-view .cm-tooltip {
-  border: 1px solid var(--line-strong);
-  border-radius: 6px;
-  background: var(--surface);
-  box-shadow: var(--shadow);
-}
-
-/* ---------- disassembly and memory ---------- */
+/* Disassembly and memory */
 
 .segmented.small button {
   padding: 2px 9px;
   font-size: 11.5px;
-}
-
-.file-tabs-end {
-  gap: 10px;
 }
 
 .view-head {
@@ -2085,6 +2086,24 @@ textarea.input {
   font-style: italic;
 }
 
+.asm-lines {
+  position: relative;
+  width: 100%;
+}
+
+.asm-slot {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 20px;
+}
+
+.asm-slot .asm-source {
+  height: 20px;
+  margin-top: 0;
+}
+
 .goto {
   display: flex;
   align-items: center;
@@ -2150,6 +2169,11 @@ textarea.input {
   color: var(--ink-3);
 }
 
+.byte:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+}
+
 .byte-edit .input {
   width: 6ch;
   height: calc(var(--row) - 2px);
@@ -2172,7 +2196,7 @@ textarea.input {
   font: 12px var(--mono);
 }
 
-/* ---------- value actions, registers, watchpoints ---------- */
+/* Value actions, registers, and watchpoints */
 
 .row-actions {
   display: inline-flex;
@@ -2188,6 +2212,10 @@ textarea.input {
 .pane.registers {
   flex: 0 1 auto;
   max-height: 38%;
+}
+
+.pane.registers .value-name {
+  width: 8ch;
 }
 
 .pane-head .twist {
@@ -2246,7 +2274,7 @@ textarea.input {
   width: auto;
 }
 
-/* ---------- tables ---------- */
+/* Tables */
 
 .table-body {
   padding: 0;
@@ -2281,17 +2309,7 @@ textarea.input {
   background: var(--surface-2);
 }
 
-fieldset.segmented {
-  min-inline-size: 0;
-  margin: 0;
-  padding: 0;
-}
-
-.pane.registers .value-name {
-  width: 8ch;
-}
-
-/* ---------- palette and key help ---------- */
+/* Palette and key help */
 
 .overlay {
   position: fixed;
@@ -2301,7 +2319,7 @@ fieldset.segmented {
   align-items: flex-start;
   justify-content: center;
   padding-top: 12vh;
-  background: rgb(10 15 25 / 25%);
+  background: var(--scrim);
 }
 
 .palette {
@@ -2325,6 +2343,12 @@ fieldset.segmented {
   color: var(--ink);
   font: 14px var(--mono);
   outline: none;
+}
+
+/* The query is the palette's only field, so its underline is the ring. */
+.palette-query:focus-visible {
+  border-bottom-color: var(--accent);
+  box-shadow: inset 0 -1px 0 var(--accent);
 }
 
 .palette-results {
@@ -2393,14 +2417,6 @@ fieldset.segmented {
   justify-content: space-between;
 }
 
-kbd {
-  padding: 1px 5px;
-  border: 1px solid var(--line-strong);
-  border-radius: 4px;
-  background: var(--surface-2);
-  font: 11.5px var(--mono);
-}
-
 .overlay-close {
   position: absolute;
   inset: 0;
@@ -2414,25 +2430,7 @@ kbd {
   position: relative;
 }
 
-.asm-lines {
-  position: relative;
-  width: 100%;
-}
-
-.asm-slot {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 20px;
-}
-
-.asm-slot .asm-source {
-  height: 20px;
-  margin-top: 0;
-}
-
-/* ---------- drawings ---------- */
+/* Drawings */
 
 .drawings {
   display: flex;
@@ -2452,9 +2450,7 @@ kbd {
   background: var(--surface);
 }
 
-/* A narrow card wraps its header's end onto a line of its own rather than
- * squeezing the tabs, which then never move as the header fills in, and
- * wraps tabs that do not fit, each whole. */
+/* Narrow cards wrap the header's end and each whole tab, so tabs stay put. */
 .drawing-head {
   display: flex;
   flex-wrap: wrap;
@@ -2678,7 +2674,11 @@ kbd {
   background: var(--select-bg);
 }
 
-/* ---------- profiles ---------- */
+/* Profiles */
+
+.profile-disconnected {
+  color: var(--changed);
+}
 
 .profile {
   display: flex;
@@ -2857,11 +2857,19 @@ kbd {
   cursor: pointer;
 }
 
+/* The tree and function lists keep focus and mark the row the keys are on. */
+[role="tree"]:focus-visible .tree-row.active,
+[role="listbox"]:focus-visible .tree-row.active {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .tree-row:hover {
   background: var(--surface-2);
 }
 
-.tree-row .percent {
+.tree-row .percent,
+.column-head .percent {
   flex: none;
   width: 56px;
   text-align: right;
@@ -2873,12 +2881,6 @@ kbd {
   border-bottom: 1px solid var(--line);
   color: var(--ink-3);
   font: 10px var(--mono);
-}
-
-.column-head .percent {
-  flex: none;
-  width: 56px;
-  text-align: right;
 }
 
 .column-head .end {
@@ -2937,7 +2939,7 @@ kbd {
   font-size: 12px;
 }
 
-/* ---------- zones ---------- */
+/* Zones */
 
 .profile-zones {
   display: grid;
@@ -3179,7 +3181,7 @@ kbd {
   text-align: right;
 }
 
-/* The Syscalls view. */
+/* Syscalls */
 
 .syscalls {
   display: flex;
@@ -3230,6 +3232,8 @@ kbd {
 .syscalls-body {
   display: grid;
   flex: 1;
+  grid-template-rows: auto;
+  grid-template-columns: minmax(0, 1fr);
   min-height: 0;
   overflow: auto;
 }
@@ -3283,6 +3287,7 @@ kbd {
 
 .syscalls-split {
   display: grid;
+  grid-template-rows: auto;
   grid-template-columns: minmax(0, 3fr) minmax(280px, 2fr);
   min-height: 0;
 }
@@ -3292,7 +3297,8 @@ kbd {
 }
 
 @media (max-width: 760px) {
-  .syscalls-split {
+  .syscalls-split,
+  .profile-zones {
     grid-template-columns: minmax(0, 1fr);
   }
 }
@@ -3303,6 +3309,7 @@ kbd {
 }
 
 .syscalls-detail {
+  min-width: 0;
   border-left: 1px solid var(--line);
 }
 
@@ -3513,11 +3520,6 @@ kbd {
   color: var(--ink-2);
 }
 
-.tk-number,
-.tk-address {
-  color: var(--n);
-}
-
 .tk-string {
   color: var(--s);
 }
@@ -3542,10 +3544,6 @@ kbd {
   color: var(--c);
 }
 
-.syscalls-detail {
-  min-width: 0;
-}
-
 .latency-map .plot {
   min-width: 0;
   overflow: hidden;
@@ -3555,15 +3553,6 @@ kbd {
 .syscalls-rate canvas,
 .syscall-lanes canvas {
   max-width: 100%;
-}
-
-.syscalls-body,
-.syscalls-split {
-  grid-template-rows: auto;
-}
-
-.syscalls-body {
-  grid-template-columns: minmax(0, 1fr);
 }
 
 .latency-map canvas.clickable {
@@ -3594,4 +3583,29 @@ kbd {
 
 .call-site .made {
   background: var(--select-bg);
+}
+
+/* Touch */
+
+/* The twist grows only its hit area, so the tree keeps its indents and rows. */
+@media (pointer: coarse) {
+  .icon,
+  .file-tab .close {
+    min-width: 32px;
+    min-height: 32px;
+  }
+
+  .file-tabs {
+    height: 36px;
+  }
+
+  .twist {
+    position: relative;
+  }
+
+  .twist::after {
+    position: absolute;
+    inset: -6px -9px;
+    content: "";
+  }
 }

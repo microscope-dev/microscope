@@ -1,8 +1,8 @@
 import { Link, Navigate, Outlet, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { Fragment, useEffect, useRef, useState } from "react";
-import { login } from "../connection";
+import { tradeOnce } from "../connection";
 import { isPagePath } from "../focus";
-import { targetName } from "../model";
+import { type Note, targetName } from "../model";
 import { useConnection, useModel } from "../store";
 
 /** `/`: wherever the session is. */
@@ -26,18 +26,17 @@ export function Home() {
   return <Navigate to="/pick" replace />;
 }
 
-// One trade per page load: a second render of the join page finds the
-// token already gone from the address bar.
-let joining: Promise<boolean> | null = null;
+// The token leaves the address bar before anything else can copy it, so it
+// is kept here for a second render, or another try if the server was away.
+let token: string | null = null;
+const trade = tradeOnce();
 
-function joinOnce(): Promise<boolean> {
-  if (!joining) {
-    const token = window.location.hash.slice(1);
-    // The token leaves the address bar before anything else can copy it.
+function join(): Promise<boolean> {
+  if (token === null) {
+    token = window.location.hash.slice(1);
     window.history.replaceState(null, "", window.location.pathname + window.location.search);
-    joining = login(token);
   }
-  return joining;
+  return trade(token);
 }
 
 /** `/join#TOKEN`: trades the token for a cookie, then opens the link. */
@@ -45,24 +44,54 @@ export function Join() {
   const connection = useConnection();
   const navigate = useNavigate();
   const { to } = useSearch({ from: "/join" });
-  const [failed, setFailed] = useState(false);
+  const [failed, setFailed] = useState<"refused" | "unreachable" | null>(null);
+  const [tries, setTries] = useState(0);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: each try trades again
   useEffect(() => {
-    joinOnce()
+    join()
       .then((accepted) => {
         if (!accepted) {
-          setFailed(true);
+          setFailed("refused");
           return;
         }
         connection.start();
         // `href`, since the link holds a query of its own.
         void navigate({ href: isPagePath(to) ? to : "/", replace: true });
       })
-      .catch(() => setFailed(true));
-  }, [connection, navigate, to]);
+      .catch(() => setFailed("unreachable"));
+  }, [connection, navigate, to, tries]);
 
-  if (failed) {
+  if (failed === "refused") {
     return <NeedsLink reason="This link is not for this microscope, or it has expired." />;
+  }
+  if (failed === "unreachable") {
+    return (
+      <div className="page">
+        <div className="card" style={{ width: "min(560px, 100%)" }}>
+          <div className="card-head">
+            <h1>Could not join</h1>
+          </div>
+          <div className="card-body">
+            <p style={{ margin: 0 }}>
+              Could not reach microscope to use this link. Check that it is running, then try again.
+            </p>
+            <div className="actions">
+              <button
+                type="button"
+                className="button primary"
+                onClick={() => {
+                  setFailed(null);
+                  setTries((tries) => tries + 1);
+                }}
+              >
+                Try again
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
   }
   return <div className="page muted">Joining…</div>;
 }
@@ -86,6 +115,16 @@ export function NeedsLink({ reason }: { reason: string }) {
   );
 }
 
+/** The latest notice that ended the session of `program`, as the server
+ * words it: `ended the kvstore session`, maybe with why it failed after. */
+export function endedNotice(notices: readonly Note[], program: string | null): Note | undefined {
+  if (!program) {
+    return undefined;
+  }
+  const text = `ended the ${program} session`;
+  return notices.findLast((notice) => notice.text === text || notice.text.startsWith(`${text}, `));
+}
+
 /** `/s/$session`: the session, or why it is not here. */
 export function SessionPage() {
   const { session } = useParams({ from: "/s/$session" });
@@ -95,9 +134,12 @@ export function SessionPage() {
   // A tab that saw this session live follows it to the next one; a tab
   // opened on a link to an ended session says so instead.
   const followed = useRef(false);
+  // The program this tab saw the session debug, which names it in notices.
+  const program = useRef<string | null>(null);
   const current = state?.session ?? null;
   if (current === session) {
     followed.current = true;
+    program.current = targetName(state);
   }
 
   useEffect(() => {
@@ -120,7 +162,7 @@ export function SessionPage() {
   if (state.busy) {
     return <div className="page muted">{state.busy}…</div>;
   }
-  const ended = [...notices].reverse().find((notice) => notice.text.startsWith("ended"));
+  const ended = endedNotice(notices, program.current);
   return (
     <div className="page">
       <div className="card" style={{ width: "min(560px, 100%)" }} data-testid="session-ended">

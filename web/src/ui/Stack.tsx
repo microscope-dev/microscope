@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Backtrace, Frame } from "../protocol";
 import { stackRows } from "../stack";
+import { threadLabel } from "./names";
 import { useGo } from "./navigation";
 import { fileName } from "./paths";
 import { useFocus } from "./Workspace";
@@ -109,7 +110,7 @@ export function Stack() {
         {at?.task ? (
           <span className="count">task {at.task.number}</span>
         ) : (
-          thread && <span className="count">{thread.name ?? thread.id}</span>
+          thread && <span className="count">{threadLabel(thread.id, thread.name)}</span>
         )}
         <span className="end">Alt+2</span>
       </div>

@@ -1,9 +1,18 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { withLook } from "../../profile/look";
-import { formatPercent, formatWeight, shareChange } from "../../profile/paint";
+import {
+  formatChange,
+  formatCount,
+  formatPercent,
+  formatWeight,
+  shareChange,
+} from "../../profile/paint";
 import type { ProfileQuery } from "../../protocol";
+import { Code, SourceLines } from "./Annotated";
 import { useAnswer, useProfile } from "./context";
+import { Unanswered } from "./parts";
+import { useActiveRow } from "./rows";
 import { Change, ColumnHead, TreeRows, useTree } from "./TreeView";
 
 const ROW = 20;
@@ -27,15 +36,22 @@ export function FunctionsView() {
     estimateSize: () => ROW,
     overscan: 30,
   });
+  const keys = useActiveRow(rows.length, virtual);
   const weight = answer.data?.weight ?? 0;
-  const keys = answer.data?.keys ?? [];
+  const names = answer.data?.keys ?? [];
   const base = answer.data?.base ?? null;
+  const select = (index: number) => {
+    const name = names[rows[index]?.key ?? -1]?.name;
+    if (name !== undefined) {
+      setLook((look) => ({ ...look, fn: name }));
+    }
+  };
   return (
     <div className="profile-functions">
       <div className="pane grow">
         <div className="pane-head">
           Functions
-          <span className="count">{rows.length}</span>
+          <span className="count">{formatCount(rows.length)}</span>
           <div className="segmented">
             {(["own", "total"] as const).map((each) => (
               <button
@@ -50,44 +66,60 @@ export function FunctionsView() {
           </div>
         </div>
         <ColumnHead columns={base ? ["own", "total", "change"] : ["own", "total"]} end="module" />
-        {answer.error ? (
-          <div className="empty">{answer.error.message}</div>
+        {answer.error || !answer.data ? (
+          <Unanswered error={answer.error} reading="Reading functions…" />
+        ) : rows.length === 0 ? (
+          <div className="empty">No samples are selected.</div>
         ) : (
           <div
             ref={body}
             className={`pane-body ${answer.current ? "" : "stale"}`}
             role="listbox"
             aria-label="Functions"
+            tabIndex={0}
+            aria-activedescendant={keys.rowId(keys.active)}
+            onKeyDown={(event) =>
+              keys.onKeyDown(event, (key) => {
+                if (key !== "Enter") {
+                  return false;
+                }
+                select(keys.active);
+                return true;
+              })
+            }
           >
             <div className="tree-rows" style={{ height: virtual.getTotalSize() }}>
               {virtual.getVirtualItems().map((item) => {
                 const row = rows[item.index];
-                const key = row ? keys[row.key] : undefined;
+                const key = row ? names[row.key] : undefined;
                 if (!row || !key) {
                   return null;
                 }
                 const selected = look.fn === key.name;
+                const own = formatPercent(row.own, weight);
+                const total = formatPercent(row.total, weight);
+                const change = base ? shareChange(row.own, weight, row.baseOwn, base.weight) : null;
                 return (
+                  // biome-ignore lint/a11y/useFocusableInteractive: the list keeps focus and names its active row
+                  // biome-ignore lint/a11y/useKeyWithClickEvents: the list takes the keys for its rows
                   <div
-                    key={key.name}
+                    // Functions of one name in two modules are two rows.
+                    key={row.key}
+                    id={keys.rowId(item.index)}
                     role="option"
-                    tabIndex={-1}
                     aria-selected={selected}
-                    className={`row tree-row ${selected ? "selected" : ""}`}
+                    aria-label={`${key.name}${key.module ? ` in ${key.module}` : ""}, ${own} own, ${total} total${base ? `, ${formatChange(change)} change` : ""}`}
+                    className={`row tree-row ${selected ? "selected" : ""} ${item.index === keys.active ? "active" : ""}`}
                     style={{ transform: `translateY(${item.start}px)` }}
                     title={formatWeight(row.total, unit)}
-                    onClick={() => setLook((look) => ({ ...look, fn: key.name }))}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        setLook((look) => ({ ...look, fn: key.name }));
-                      }
+                    onClick={() => {
+                      keys.choose(item.index);
+                      select(item.index);
                     }}
                   >
-                    <span className="percent">{formatPercent(row.own, weight)}</span>
-                    <span className="percent dim">{formatPercent(row.total, weight)}</span>
-                    {base ? (
-                      <Change points={shareChange(row.own, weight, row.baseOwn, base.weight)} />
-                    ) : null}
+                    <span className="percent">{own}</span>
+                    <span className="percent dim">{total}</span>
+                    {base ? <Change points={change} /> : null}
                     <span className="name">{key.name}</span>
                     {key.module ? <span className="end">{key.module}</span> : null}
                   </div>
@@ -142,144 +174,6 @@ function Selected({ name }: { name: string }) {
   );
 }
 
-/** A function's samples on its source lines, by file, as each reads now. */
-function SourceLines({ name }: { name: string }) {
-  const { query } = useProfile();
-  const answer = useAnswer(
-    "profileLines",
-    useMemo(() => ({ ...query, function: name }), [query, name]),
-  );
-  const body = useRef<HTMLDivElement>(null);
-  useHottestInView(body, name, answer.data !== undefined);
-  if (answer.error) {
-    return <div className="empty">{answer.error.message}</div>;
-  }
-  const weight = answer.data?.weight ?? 0;
-  const most = Math.max(
-    0,
-    ...(answer.data?.files ?? []).flatMap((file) => file.lines.map(([, , total]) => total)),
-  );
-  return (
-    <div
-      ref={body}
-      className={`pane-body annotated ${answer.current ? "" : "stale"}`}
-      data-testid="source-lines"
-    >
-      {(answer.data?.files ?? []).map((file) => {
-        const costs = new Map(file.lines.map(([line, own, total]) => [line, [own, total]]));
-        return (
-          <div key={file.path ?? ""} className="annotated-file">
-            <div className="annotated-head mono">{file.path ?? "no file"}</div>
-            {file.text ? (
-              file.text.map((text, at) => {
-                const line = file.first + at;
-                const cost = costs.get(line);
-                return (
-                  <div
-                    key={line}
-                    className={`row annotated-row ${cost ? "hot" : ""} ${hottest(cost?.[1], most)}`}
-                  >
-                    <span className="percent">
-                      {cost ? formatPercent(cost[0] ?? 0, weight) : ""}
-                    </span>
-                    <span className="percent dim">
-                      {cost ? formatPercent(cost[1] ?? 0, weight) : ""}
-                    </span>
-                    <span className="line-number">{line}</span>
-                    <code>{text}</code>
-                  </div>
-                );
-              })
-            ) : (
-              <div className="empty">{file.unread}</div>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-/** A function's samples on its instructions, or why its code is unknown. */
-function Code({ name }: { name: string }) {
-  const { query } = useProfile();
-  const answer = useAnswer(
-    "profileCode",
-    useMemo(() => ({ ...query, function: name }), [query, name]),
-  );
-  const body = useRef<HTMLDivElement>(null);
-  useHottestInView(body, name, answer.data !== undefined);
-  if (answer.error) {
-    return <div className="empty">{answer.error.message}</div>;
-  }
-  const code = answer.data;
-  if (code?.unavailable) {
-    return <div className="empty">{code.unavailable}</div>;
-  }
-  const weight = code?.weight ?? 0;
-  const most = Math.max(
-    0,
-    ...(code?.blocks ?? []).flatMap((block) => block.instructions.map((each) => each.total)),
-  );
-  return (
-    <div
-      ref={body}
-      className={`pane-body annotated ${answer.current ? "" : "stale"}`}
-      data-testid="code"
-    >
-      {(code?.blocks ?? []).map((block) => (
-        <div key={block.symbol} className="annotated-file">
-          <div className="annotated-head mono">
-            {block.symbol} <span className="muted">{code?.module}</span>
-          </div>
-          {block.instructions.map((instruction) => (
-            <div
-              key={instruction.address}
-              className={`row annotated-row ${instruction.total > 0 ? "hot" : ""} ${hottest(instruction.total, most)}`}
-            >
-              <span className="percent">
-                {instruction.own > 0 ? formatPercent(instruction.own, weight) : ""}
-              </span>
-              <span className="percent dim">
-                {instruction.total > 0 ? formatPercent(instruction.total, weight) : ""}
-              </span>
-              <span className="line-number">{instruction.address.toString(16)}</span>
-              <code>
-                {instruction.text}
-                {instruction.target ? (
-                  <span className="asm-target">&lt;{instruction.target}&gt;</span>
-                ) : null}
-              </code>
-            </div>
-          ))}
-          {block.stopped ? <div className="empty">{block.stopped}</div> : null}
-        </div>
-      ))}
-      {(code?.unplaced.length ?? 0) > 0 ? (
-        <div className="empty">
-          {code?.unplaced.length} sampled addresses lie outside every decoded instruction.
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-/** The class of the row that weighs `total` when it weighs the most. */
-function hottest(total: number | undefined, most: number): string {
-  return most > 0 && total === most ? "hottest" : "";
-}
-
-/** Brings the hottest row into view once each function's rows arrive. */
-function useHottestInView(body: RefObject<HTMLDivElement | null>, name: string, ready: boolean) {
-  const shown = useRef<string | null>(null);
-  useEffect(() => {
-    if (ready && shown.current !== name) {
-      shown.current = name;
-      body.current?.querySelector(".hottest")?.scrollIntoView({ block: "center" });
-    }
-  });
-}
-
 /** A function's callers, inverted from it, and its callees, from it. */
 function Sandwich({ query, name }: { query: ProfileQuery; name: string }) {
   const focused = useMemo(
@@ -294,13 +188,13 @@ function Sandwich({ query, name }: { query: ProfileQuery; name: string }) {
         <div className="pane-head">
           Callers of <span className="subject">{name}</span>
         </div>
-        <TreeRows tree={callers} label="Callers" />
+        <TreeRows tree={callers} label="Callers" reading={`Reading the callers of ${name}…`} />
       </div>
       <div className="pane grow">
         <div className="pane-head">
           Callees of <span className="subject">{name}</span>
         </div>
-        <TreeRows tree={callees} label="Callees" />
+        <TreeRows tree={callees} label="Callees" reading={`Reading the callees of ${name}…`} />
       </div>
     </div>
   );

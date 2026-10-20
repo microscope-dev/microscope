@@ -7,16 +7,30 @@ import {
   parseRange,
   parseTransform,
   queryOf,
+  rangeOf,
   untransformed,
   withLook,
 } from "../../profile/look";
-import { formatDuration, formatPercent, formatSpan, formatWeight } from "../../profile/paint";
+import {
+  formatCount,
+  formatDuration,
+  formatPercent,
+  formatSpan,
+  formatWeight,
+} from "../../profile/paint";
 import { tracedBy, traceNotes } from "../../profile/syscalls";
 import type { ProfileGranularity, ProfileInfo, ProfileSummary } from "../../protocol";
 import { useConnection, useModel } from "../../store";
-import { ProfileContext, type ProfileFocus, useAnswer, useProfile } from "./context";
+import {
+  ProfileContext,
+  type ProfileFocus,
+  useAnswer,
+  useDisconnected,
+  useProfile,
+} from "./context";
 import { FlameView } from "./FlameView";
 import { FunctionsView } from "./FunctionsView";
+import { Chip } from "./parts";
 import { SyscallsView } from "./SyscallsView";
 import { Timeline } from "./Timeline";
 import { TreeView } from "./TreeView";
@@ -27,11 +41,6 @@ export function ProfilePage() {
   const { profile } = useParams({ from: "/profile/$profile" });
   const look = useSearch({ from: "/profile/$profile" });
   const navigate = useNavigate();
-  const info = useModel((model) => model.profiles.find((each) => each.id === profile));
-  // Each revision of a growing profile is asked for anew; the last one's
-  // answers stay on screen until the new ones come.
-  const revision = info?.revision ?? 0;
-  const summary = useAnswer("profile", { profile, revision });
   const setLook = useCallback(
     (change: (look: ProfileLook) => ProfileLook, push = false) =>
       void navigate({
@@ -42,6 +51,25 @@ export function ProfilePage() {
       }),
     [navigate, profile, look],
   );
+  return <Profile profile={profile} look={look} setLook={setLook} />;
+}
+
+/** A profile as `look` looks at it. */
+export function Profile({
+  profile,
+  look,
+  setLook,
+}: {
+  profile: string;
+  look: ProfileLook;
+  setLook: ProfileFocus["setLook"];
+}) {
+  const info = useModel((model) => model.profiles.find((each) => each.id === profile));
+  // Each revision of a growing profile is asked for anew; the last one's
+  // answers stay on screen until the new ones come.
+  const revision = info?.revision ?? 0;
+  const summary = useAnswer("profile", { profile, revision });
+  const disconnected = useDisconnected();
   const focus = useMemo<ProfileFocus | null>(
     () =>
       summary.data
@@ -58,17 +86,22 @@ export function ProfilePage() {
   );
 
   if (summary.error) {
+    // The server lists every profile it serves, and refuses one it does
+    // not as invalid; anything else failed reading one it has.
+    const missing = !info && summary.error.kind === "invalid";
     return (
       <div className="page">
         <div className="card" style={{ width: "min(560px, 100%)" }} data-testid="profile-missing">
           <div className="card-head">
-            <h1>No such profile</h1>
+            <h1>{missing ? "No such profile" : "Could not read the profile"}</h1>
           </div>
           <div className="card-body">
             <p style={{ margin: 0 }}>{summary.error.message}.</p>
-            <p className="muted" style={{ margin: 0 }}>
-              Serve it with <code>microscope web PROFILE.usprof</code>.
-            </p>
+            {missing ? (
+              <p className="muted" style={{ margin: 0 }}>
+                Serve it with <code>microscope web PROFILE.usprof</code>.
+              </p>
+            ) : null}
           </div>
         </div>
       </div>
@@ -81,6 +114,11 @@ export function ProfilePage() {
   return (
     <ProfileContext.Provider value={focus}>
       <div className="profile" data-testid="profile">
+        {disconnected ? (
+          <div className="profile-untimed profile-disconnected" role="status">
+            Disconnected. The views keep what they last read until microscope answers again.
+          </div>
+        ) : null}
         {info ? <Recording info={info} /> : null}
         <ProfileHead />
         {focus.summary.timed ? (
@@ -148,7 +186,7 @@ const GRANULARITIES: { by: ProfileGranularity; label: string }[] = [
  * removable where it shows. */
 function ProfileHead() {
   const { summary, look, setLook } = useProfile();
-  const range = look.range ? parseRange(look.range) : null;
+  const range = rangeOf(look);
   const snapshots = summary.snapshots > 0;
   // A trace of system calls alone has no frames to invert, fold, or compare.
   const sampled = summary.samples > 0 || summary.syscalls === 0;
@@ -166,10 +204,10 @@ function ProfileHead() {
         <span className="muted">
           {summary.name} · {summary.timed ? `${formatDuration(summary.duration)} · ` : ""}
           {summary.samples > 0 || summary.syscalls === 0
-            ? `${summary.samples.toLocaleString("en-US")} samples`
+            ? formatCount(summary.samples, "sample")
             : ""}
           {summary.samples > 0 && summary.syscalls > 0 ? " · " : ""}
-          {summary.syscalls > 0 ? `${summary.syscalls.toLocaleString("en-US")} calls` : ""}
+          {summary.syscalls > 0 ? formatCount(summary.syscalls, "call") : ""}
         </span>
       </div>
       <div className="segmented">
@@ -219,14 +257,18 @@ function ProfileHead() {
         ) : null}
         {look.th ? (
           <Chip
-            label={`${look.th.length} ${look.th.length === 1 ? "thread" : "threads"}`}
+            label={formatCount(look.th.length, "thread")}
             title="Samples of these threads"
             remove={() => setLook((look) => withLook(look, "th", undefined))}
           />
         ) : null}
         {look.tk ? (
           <Chip
-            label={look.tk.length === 1 ? taskName(look.tk[0] ?? "") : `${look.tk.length} tasks`}
+            label={
+              look.tk.length === 1
+                ? taskName(look.tk[0] ?? "")
+                : formatCount(look.tk.length, "task")
+            }
             title={look.tk.map(taskName).join("\n")}
             remove={() => setLook((look) => withLook(look, "tk", undefined))}
           />
@@ -421,17 +463,6 @@ function Compare() {
   );
 }
 
-function Chip({ label, title, remove }: { label: string; title: string; remove: () => void }) {
-  return (
-    <span className="chip profile-chip" title={title}>
-      {label}
-      <button type="button" aria-label={`Remove ${label}`} onClick={remove}>
-        ×
-      </button>
-    </span>
-  );
-}
-
 /** A recording's progress, and saving the profile as a file. */
 function Recording({ info }: { info: ProfileInfo }) {
   const connection = useConnection();
@@ -502,10 +533,10 @@ function ProfileFoot({ summary }: { summary: ProfileSummary }) {
     summary.syscalls > 0 ? (
       <>
         <span title={by.title ? `${by.title}\n${vdso}` : vdso}>
-          {summary.syscalls.toLocaleString("en-US")} calls traced{by.text}
+          {formatCount(summary.syscalls, "call")} traced{by.text}
         </span>
         <span className={summary.syscallsLost > 0 ? "warn" : undefined}>
-          calls lost {summary.syscallsLost.toLocaleString("en-US")}
+          calls lost {formatCount(summary.syscallsLost)}
         </span>
         {traceNotes(summary.settings).map((note) => (
           <span key={note.text} className={note.warn ? "warn" : undefined} title={note.title}>
@@ -532,9 +563,11 @@ function ProfileFoot({ summary }: { summary: ProfileSummary }) {
       {traced}
       {source ? <span>{source}</span> : null}
       {stack ? <span>{stack} B of stack copied</span> : null}
-      <span className={summary.lost > 0 ? "warn" : undefined}>lost {summary.lost}</span>
+      <span className={summary.lost > 0 ? "warn" : undefined}>
+        lost {formatCount(summary.lost)}
+      </span>
       <span className={summary.throttles > 0 ? "warn" : undefined}>
-        throttled {summary.throttles}
+        throttled {formatCount(summary.throttles)}
       </span>
       <span
         className={truncated > 0 ? "warn" : undefined}
@@ -563,14 +596,14 @@ function ProfileFoot({ summary }: { summary: ProfileSummary }) {
         <span
           className={probesLost > 0 || summary.probeProblems.length > 0 ? "warn" : undefined}
           title={[
-            `${summary.probes.overwritten} records overwritten before microscope read them`,
-            `${summary.probes.noRing} events found no ring`,
-            `${summary.probes.interrupted} events dropped by a signal handler`,
-            `${summary.probes.malformed} records broke the probes ABI`,
+            `${formatCount(summary.probes.overwritten, "record")} overwritten before microscope read them`,
+            `${formatCount(summary.probes.noRing, "event")} found no ring`,
+            `${formatCount(summary.probes.interrupted, "event")} dropped by a signal handler`,
+            `${formatCount(summary.probes.malformed, "record")} broke the probes ABI`,
             ...summary.probeProblems.map((problem) => problem.text),
           ].join("\n")}
         >
-          {summary.probes.events.toLocaleString("en-US")} probe events, lost {probesLost}
+          {formatCount(summary.probes.events, "probe event")}, lost {formatCount(probesLost)}
         </span>
       ) : null}
       {summary.snapshots > 0 ? (
@@ -583,7 +616,8 @@ function ProfileFoot({ summary }: { summary: ProfileSummary }) {
             ),
           ].join("\n")}
         >
-          {summary.snapshots} task snapshots, stopped {formatPercent(summary.snapshotPause, span)}
+          {formatCount(summary.snapshots, "task snapshot")}, stopped{" "}
+          {formatPercent(summary.snapshotPause, span)}
         </span>
       ) : null}
     </div>

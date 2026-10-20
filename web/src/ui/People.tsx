@@ -19,6 +19,7 @@ export function People() {
   const me = useModel((model) => model.hello?.connection);
   const connection = useConnection();
   const [editing, setEditing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const mine = people.find((person) => person.connection === me);
   if (people.length === 0) {
     return null;
@@ -48,8 +49,11 @@ export function People() {
               const name = event.currentTarget.value.trim();
               setEditing(false);
               if (name) {
-                write("microscope-name", name);
-                void connection.request("setName", { name }).catch(() => undefined);
+                setError(null);
+                connection
+                  .request("setName", { name })
+                  .then(() => write("microscope-name", name))
+                  .catch((failure: Error) => setError(failure.message));
               }
             }
           }}
@@ -66,6 +70,11 @@ export function People() {
           {others > 0 && <span className="muted">+{others}</span>}
         </button>
       )}
+      {error && (
+        <span className="pill warn" role="alert" title={error}>
+          {error.length > 60 ? `${error.slice(0, 60)}…` : error}
+        </span>
+      )}
     </div>
   );
 }
@@ -73,7 +82,7 @@ export function People() {
 /** One person: hovering says where they look, and clicking goes there. */
 function Avatar({ person, me }: { person: Person; me: boolean }) {
   const navigate = useNavigate();
-  const style = { background: `hsl(${hue(person.name)} 55% 45%)` };
+  const style = { background: `hsl(${hue(person.name)} 55% 30%)` };
   const who = `${person.name}${me ? " (you)" : ""} · can ${person.role}`;
   const url = person.focus?.url;
   if (me || !isPagePath(url)) {

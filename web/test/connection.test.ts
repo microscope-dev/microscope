@@ -2,7 +2,13 @@
 // browser, or speaks another version.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Connection, leaveWhileCached, type TransportHandlers } from "../src/connection";
+import {
+  Connection,
+  leaveWhileCached,
+  login,
+  type TransportHandlers,
+  tradeOnce,
+} from "../src/connection";
 import type { Link, ModelEvent } from "../src/model";
 import { PROTOCOL_VERSION } from "../src/protocol";
 
@@ -181,5 +187,142 @@ describe("a page the browser keeps to come back to", () => {
     page.dispatchEvent(transition("pageshow", true));
     await vi.advanceTimersByTimeAsync(0);
     expect(attempts).toHaveLength(0);
+  });
+});
+
+describe("a join link", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const answering = (status: number) =>
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(null, { status })),
+    );
+
+  it("is accepted or refused by the server", async () => {
+    answering(204);
+    await expect(login("good")).resolves.toBe(true);
+    answering(403);
+    await expect(login("other server's")).resolves.toBe(false);
+  });
+
+  it("is not called refused when the server could not answer", async () => {
+    answering(502);
+    await expect(login("good")).rejects.toThrow();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("Failed to fetch");
+      }),
+    );
+    await expect(login("good")).rejects.toThrow();
+  });
+
+  it("is traded again after a failure, but once after an answer", async () => {
+    let up = false;
+    const trade = vi.fn(async (token: string) => {
+      if (!up) {
+        throw new TypeError("Failed to fetch");
+      }
+      return token === "good";
+    });
+    const join = tradeOnce(trade);
+    await expect(join("good")).rejects.toThrow();
+    up = true;
+    await expect(join("good")).resolves.toBe(true);
+    await expect(join("good")).resolves.toBe(true);
+    expect(trade).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("a socket that closes late", () => {
+  const transition = (type: string, persisted: boolean) =>
+    Object.assign(new Event(type), { persisted });
+
+  /** Like a browser socket: closing only asks, the close event comes
+   * later, and sending while not open throws. */
+  function lateHarness() {
+    const sockets: { handlers: TransportHandlers; open: boolean; sent: number }[] = [];
+    const events: ModelEvent[] = [];
+    const connection = new Connection({
+      connect: (handlers) => {
+        const socket = { handlers, open: false, sent: 0 };
+        sockets.push(socket);
+        return {
+          send: () => {
+            if (!socket.open) {
+              throw new DOMException("not open", "InvalidStateError");
+            }
+            socket.sent += 1;
+          },
+          close: () => {},
+        };
+      },
+      authorized: async () => true,
+      emit: (event) => events.push(event),
+      backoff: [100, 1000],
+    });
+    const opened = (index: number) => {
+      const socket = sockets[index];
+      if (socket) {
+        socket.open = true;
+        socket.handlers.open();
+        socket.handlers.message(hello());
+      }
+    };
+    const closed = (index: number) => {
+      const socket = sockets[index];
+      if (socket) {
+        socket.open = false;
+        socket.handlers.close();
+      }
+    };
+    const links = () =>
+      events.flatMap((event): Link[] => (event.type === "link" ? [event.link] : []));
+    const page = new EventTarget();
+    leaveWhileCached(connection, page);
+    const bounce = () => {
+      page.dispatchEvent(transition("pagehide", true));
+      page.dispatchEvent(transition("pageshow", true));
+    };
+    return { connection, sockets, opened, closed, links, bounce };
+  }
+
+  it("does not reconnect when the old socket closes during authorization", async () => {
+    const { connection, sockets, opened, closed, links, bounce } = lateHarness();
+    connection.start();
+    await vi.advanceTimersByTimeAsync(0);
+    opened(0);
+    bounce();
+    closed(0);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(sockets).toHaveLength(2);
+    expect(links()).not.toContain("reconnecting");
+    connection.stop();
+  });
+
+  it("keeps the new socket when the old one closes after it", async () => {
+    const { connection, sockets, opened, closed, links, bounce } = lateHarness();
+    connection.start();
+    await vi.advanceTimersByTimeAsync(0);
+    opened(0);
+    bounce();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sockets).toHaveLength(2);
+
+    // Asking before the new socket opens is refused, not thrown.
+    await expect(connection.request("pause")).rejects.toMatchObject({ kind: "disconnected" });
+
+    opened(1);
+    closed(0);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(sockets).toHaveLength(2);
+    expect(links()).not.toContain("reconnecting");
+    const asked = connection.request("pause");
+    expect(sockets[1]?.sent).toBe(1);
+    connection.stop();
+    await expect(asked).rejects.toMatchObject({ kind: "disconnected" });
   });
 });

@@ -1,20 +1,21 @@
-// Draws a checked picture into the page: as SVG, which every shape's title
-// and select make accessible, or past 2,000 shapes on a canvas the page
+// Draws a checked picture into the page: as SVG, where every shape's title
+// and select are accessible, or past 2,000 shapes on a canvas the page
 // hit-tests itself, which draws ten thousand dots in a few milliseconds.
-// Either way an image says which of its pixels is under the pointer.
+// The canvas's titles and selects answer only the pointer. Either way an
+// image says which of its pixels is under the pointer.
 
 import { buildCanvas } from "./canvas";
 import type { Picture, Shape } from "./picture";
 import { buildSvg } from "./svg";
 
-/** What clicking or pressing Enter on a shape with `select` does. */
+/** What clicking, or pressing Enter or Space on, a shape with `select` does. */
 export type OnSelect = (path: string) => void;
 
 /** The most shapes the page draws as SVG. */
-export const MOST_SVG_SHAPES = 2_000;
+const MOST_SVG_SHAPES = 2_000;
 
 /** How many shapes a picture holds, groups and what they hold included. */
-export function countShapes(shapes: Shape[]): number {
+function countShapes(shapes: Shape[]): number {
   let count = 0;
   for (const shape of shapes) {
     count += 1;
@@ -62,6 +63,11 @@ export class Tip {
   hide(): void {
     this.element.hidden = true;
   }
+}
+
+/** Which of `count` pixels across `size` the point `offset` into them is on. */
+export function pixelIndex(offset: number, size: number, count: number): number {
+  return Math.min(count - 1, Math.max(0, Math.floor((offset / size) * count)));
 }
 
 /** What hovering an image's pixel says. */

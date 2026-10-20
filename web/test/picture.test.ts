@@ -190,6 +190,12 @@ describe("validate", () => {
       ]),
       /shape 1 \(group\) › shape 0 \(text\): `text` must be a string, not 5/,
     ],
+    ["a width of 0", picture([], { width: 0 }), /the picture's width must be more than 0/],
+    [
+      "a height too great to draw",
+      picture([], { height: 40_000 }),
+      /the picture's height must be at most 32768/,
+    ],
     [
       "an opacity over one",
       picture([{ type: "circle", x: 0, y: 0, r: 1, opacity: 2 }]),

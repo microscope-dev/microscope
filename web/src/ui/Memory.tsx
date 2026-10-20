@@ -2,7 +2,7 @@
 // of the value it was opened from are marked, a selection reads as the
 // types its length could be, and controllers write bytes in place.
 
-import { useRef, useState } from "react";
+import { type KeyboardEvent, useRef, useState } from "react";
 import { cache, useRequest } from "../data";
 import {
   dumpRows,
@@ -18,12 +18,20 @@ import {
 import { controls } from "../model";
 import type { Row } from "../protocol";
 import { useConnection, useModel } from "../store";
+import { hidden } from "./hidden";
 import { useLook } from "./navigation";
-import { hidden } from "./Values";
 import { useFocus } from "./Workspace";
 
 /** Rows shown at once. */
 const ROWS = 16;
+
+/** How far each arrow key moves through the bytes. */
+const STEPS: Record<string, bigint> = {
+  ArrowLeft: -1n,
+  ArrowRight: 1n,
+  ArrowUp: -BigInt(ROW),
+  ArrowDown: BigInt(ROW),
+};
 
 export function Memory() {
   const { look } = useFocus();
@@ -123,6 +131,9 @@ function Dump({ shown }: { shown: Target }) {
     : null;
   const [selection, setSelection] = useState<Selection | null>(value);
   const [editing, setEditing] = useState<bigint | null>(null);
+  // The byte the keyboard is on, the bytes' one stop in the tab order.
+  const [cursor, setCursor] = useState<bigint>(shown.address);
+  const body = useRef<HTMLDivElement>(null);
 
   const first = rowStart(shown.address) + BigInt(moved * ROW);
   const start = first < 0n ? 0n : first;
@@ -140,9 +151,15 @@ function Dump({ shown }: { shown: Target }) {
     return <div className="empty center-message">Reading memory…</div>;
   }
   const rows = dumpRows(start, read.data.bytes, ROWS);
+  const readable: bigint[] = rows.flatMap((row) =>
+    row.bytes.flatMap((byte, column) => (byte === null ? [] : [row.address + BigInt(column)])),
+  );
+  // Paging can leave the cursor off screen; the first byte shown takes over.
+  const stop = readable.includes(cursor) ? cursor : readable[0];
   const within = (range: Selection | null, address: bigint) =>
     range !== null && address >= range.from && address <= range.to;
-  const choose = (address: bigint, extend: boolean) =>
+  const choose = (address: bigint, extend: boolean) => {
+    setCursor(address);
     setSelection((current) =>
       extend && current
         ? {
@@ -151,6 +168,23 @@ function Dump({ shown }: { shown: Target }) {
           }
         : { from: address, to: address },
     );
+  };
+  // At once, not on the next frame: a held arrow key's repeats must each
+  // start from the byte the last one reached.
+  const focusByte = (address: bigint) =>
+    body.current?.querySelector<HTMLElement>(`[data-address="${address}"]`)?.focus();
+  const walk = (address: bigint, event: KeyboardEvent) => {
+    const step = STEPS[event.key];
+    if (step === undefined) {
+      return;
+    }
+    event.preventDefault();
+    const next = address + step;
+    if (readable.includes(next)) {
+      choose(next, event.shiftKey);
+      focusByte(next);
+    }
+  };
 
   return (
     <>
@@ -165,7 +199,7 @@ function Dump({ shown }: { shown: Target }) {
           <span className="dim">Nothing can be read from {read.data.unreadable} on.</span>
         )}
       </div>
-      <div className={`mem-body ${read.current ? "" : "stale"}`} data-testid="memory">
+      <div ref={body} className={`mem-body ${read.current ? "" : "stale"}`} data-testid="memory">
         {rows.map((row) => (
           <div key={String(row.address)} className="mem-row">
             <span className="mem-address">{row.address.toString(16).padStart(12, "0")}</span>
@@ -177,17 +211,24 @@ function Dump({ shown }: { shown: Target }) {
                     <ByteEditor
                       key={String(address)}
                       address={address}
-                      done={() => setEditing(null)}
+                      done={() => {
+                        setEditing(null);
+                        // The byte replaces the editor only once drawn.
+                        requestAnimationFrame(() => focusByte(address));
+                      }}
                     />
                   );
                 }
                 return (
                   <ByteCell
                     key={String(address)}
+                    address={address}
                     byte={byte}
                     className={`${within(value, address) ? "in-value" : ""} ${within(selection, address) ? "selected" : ""}`}
+                    tabbable={address === stop}
                     onSelect={(extend) => choose(address, extend)}
                     onEdit={() => setEditing(address)}
+                    onWalk={(event) => walk(address, event)}
                   />
                 );
               })}
@@ -201,31 +242,50 @@ function Dump({ shown }: { shown: Target }) {
   );
 }
 
+/** One byte; Enter or F2 edits it, as a double click does. */
 function ByteCell({
+  address,
   byte,
   className,
+  tabbable,
   onSelect,
   onEdit,
+  onWalk,
 }: {
+  address: bigint;
   byte: number | null;
   className: string;
+  tabbable: boolean;
   onSelect(extend: boolean): void;
   onEdit(): void;
+  onWalk(event: KeyboardEvent): void;
 }) {
   const { stale } = useFocus();
   const control = useModel(controls);
   if (byte === null) {
     return <span className="byte unread">??</span>;
   }
+  const text = byte.toString(16).padStart(2, "0");
+  const edit = () => control && !stale && onEdit();
   return (
     <button
       type="button"
       className={`byte ${className}`}
-      tabIndex={-1}
+      data-address={String(address)}
+      aria-label={`${text} at ${hex(address)}`}
+      tabIndex={tabbable ? 0 : -1}
       onClick={(event) => onSelect(event.shiftKey)}
-      onDoubleClick={() => control && !stale && onEdit()}
+      onDoubleClick={edit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === "F2") {
+          event.preventDefault();
+          edit();
+        } else {
+          onWalk(event);
+        }
+      }}
     >
-      {byte.toString(16).padStart(2, "0")}
+      {text}
     </button>
   );
 }
@@ -258,7 +318,7 @@ function ByteEditor({ address, done }: { address: bigint; done(): void }) {
         className="input"
         name="bytes"
         aria-label={`New byte at ${hex(address)}`}
-        title={error ?? "hexadecimal pairs; several write the bytes after it too"}
+        title="hexadecimal pairs; several write the bytes after it too"
         aria-invalid={error !== null}
         // biome-ignore lint/a11y/noAutofocus: the person asked to edit this byte
         autoFocus
@@ -270,6 +330,7 @@ function ByteEditor({ address, done }: { address: bigint; done(): void }) {
         }}
         onBlur={() => error === null && done()}
       />
+      {error && <span className="error">{error}</span>}
     </form>
   );
 }
@@ -285,7 +346,7 @@ function Readings({
   if (!selection) {
     return (
       <div className="mem-selection dim" data-testid="selection">
-        Click a byte, or shift-click to select several.
+        Click a byte, or shift-click to select several. The arrow keys move, and Enter edits.
       </div>
     );
   }

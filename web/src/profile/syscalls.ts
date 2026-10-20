@@ -82,7 +82,7 @@ interface Setting {
 }
 
 /** A part of a trace's footer, with more on hover. */
-export interface TraceNote {
+interface TraceNote {
   text: string;
   title?: string;
   warn?: boolean;

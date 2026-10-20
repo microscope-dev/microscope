@@ -7,15 +7,17 @@
 /** The most shapes a picture holds, groups included. */
 export const MOST_SHAPES = 100_000;
 /** How deeply groups nest. */
-export const MOST_DEPTH = 32;
+const MOST_DEPTH = 32;
+/** The widest or tallest a picture is, in its own units. */
+const MOST_SIDE = 32_768;
 /** The longest text, title, or caption, in characters. */
 export const MOST_TEXT = 4_096;
 /** The most pixels a picture's images hold, together. */
 export const MOST_PIXELS = 16 * 1024 * 1024;
 /** The most coordinates polylines and polygons hold, together. */
-export const MOST_POINTS = 4_000_000;
+const MOST_POINTS = 4_000_000;
 /** The longest path data, in characters. */
-export const MOST_PATH = 4 * 1024 * 1024;
+const MOST_PATH = 4 * 1024 * 1024;
 
 export interface Style {
   fill?: string;
@@ -62,7 +64,7 @@ export type Shape =
         | { rendered: ImageBitmap; smooth?: boolean }
       ));
 
-export type Baseline = "auto" | "alphabetic" | "middle" | "central" | "hanging" | "ideographic";
+type Baseline = "auto" | "alphabetic" | "middle" | "central" | "hanging" | "ideographic";
 
 export interface Picture {
   type: "picture";
@@ -133,7 +135,7 @@ const FUNCTION = new RegExp(
 );
 
 /** Whether `value` is a color the page shows: hex, rgb(), hsl(), or a name. */
-export function isColor(value: unknown): value is string {
+function isColor(value: unknown): value is string {
   if (typeof value !== "string" || value.length > 64) {
     return false;
   }
@@ -217,8 +219,8 @@ export function validate(value: unknown): Picture {
     throw new PictureError("the renderer did not return microscope.picture(…)");
   }
   only(picture, ["type", "width", "height", "shapes", "caption"], where);
-  size(picture.width, `${where}'s width`);
-  size(picture.height, `${where}'s height`);
+  side(picture.width, `${where}'s width`);
+  side(picture.height, `${where}'s height`);
   if (picture.caption !== undefined) {
     text(picture.caption, `${where}'s caption`);
   }
@@ -326,6 +328,18 @@ function finite(value: unknown, what: string): number {
 function size(value: unknown, what: string): void {
   if (finite(value, what) < 0) {
     throw new PictureError(`${what} must not be negative`);
+  }
+}
+
+/** A picture's width or height: none would scale it without end, and past
+ * MOST_SIDE its canvas would be too large to draw. */
+function side(value: unknown, what: string): void {
+  const length = finite(value, what);
+  if (length <= 0) {
+    throw new PictureError(`${what} must be more than 0`);
+  }
+  if (length > MOST_SIDE) {
+    throw new PictureError(`${what} must be at most ${MOST_SIDE}`);
   }
 }
 
@@ -472,6 +486,42 @@ function image(item: Record<string, unknown>, where: string, totals: Totals): vo
   }
   if (totals.pixels > MOST_PIXELS) {
     throw new PictureError(`the picture's images hold more than ${MOST_PIXELS} pixels`);
+  }
+}
+
+/** Whether a shape is a line, which is drawn by its stroke, never filled,
+ * and in ink unless it says otherwise. */
+export function isLine(shape: Shape): boolean {
+  return shape.type === "line" || shape.type === "polyline";
+}
+
+/** Frees the images a renderer drew on canvases of its own, in a picture
+ * that will not be drawn again. It may be one the page refused, so it is
+ * walked warily: cycles and all, it visits at most MOST_SHAPES shapes. */
+export function closeImages(picture: unknown): void {
+  if (typeof ImageBitmap === "undefined") {
+    return;
+  }
+  let budget = MOST_SHAPES;
+  const walk = (shapes: unknown, depth: number) => {
+    if (!Array.isArray(shapes) || depth > MOST_DEPTH) {
+      return;
+    }
+    for (const shape of shapes) {
+      if (budget-- <= 0) {
+        return;
+      }
+      if (typeof shape === "object" && shape !== null) {
+        const { rendered, shapes: inner } = shape as Record<string, unknown>;
+        if (rendered instanceof ImageBitmap) {
+          rendered.close();
+        }
+        walk(inner, depth + 1);
+      }
+    }
+  };
+  if (typeof picture === "object" && picture !== null) {
+    walk((picture as Record<string, unknown>).shapes, 1);
   }
 }
 

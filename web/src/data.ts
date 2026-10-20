@@ -1,7 +1,7 @@
-// Data pulled from the server, cached by what asked for it. Everything a
-// stop's requests read is fixed for that stop, and a request names its
-// stop, so a cached answer is never out of date; a new stop asks anew.
-// Answers lost to a dropped connection are not kept, so they are asked again.
+// Data pulled from the server, cached by what asked for it. A request names
+// its stop, but writes, settings, and library loads change answers within a
+// stop, so forget.ts forgets those. Answers lost to a dropped connection are
+// not kept, and readers ask again once it is back.
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Connection } from "./connection";
@@ -79,6 +79,11 @@ export class Cache {
     return entry;
   }
 
+  /** Tells readers to ask again for what is no longer kept. */
+  refresh(): void {
+    this.#forgot();
+  }
+
   /** Forgets everything, as when the session changes. */
   clear(): void {
     this.#entries.clear();
@@ -100,7 +105,7 @@ export class Cache {
   }
 }
 
-export function cacheKey(method: Method, params: unknown): string {
+function cacheKey(method: Method, params: unknown): string {
   return `${method} ${JSON.stringify(params ?? null)}`;
 }
 

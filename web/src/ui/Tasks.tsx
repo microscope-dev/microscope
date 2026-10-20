@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useRequest } from "../data";
 import type { At } from "../focus";
 import type { Task, TaskKey } from "../protocol";
+import { errorClass } from "./hidden";
 import { useGo } from "./navigation";
 import { where } from "./Stack";
 import { useFocus } from "./Workspace";
@@ -9,14 +10,25 @@ import { useFocus } from "./Workspace";
 /**
  * The tasks of the program's runtimes at the stop shown, alone or grouped
  * by where they are; choosing one shows its stack. Absent for a program
- * whose runtimes have none.
+ * whose runtimes have none, but a failure to list them is shown.
  */
 export function Tasks() {
   const { at, stale } = useFocus();
   const go = useGo();
   const [grouped, setGrouped] = useState(false);
   // A stop's tasks are read while it lasts.
-  const list = useRequest("tasks", at && stale === null ? { stop: at.stop } : null).data;
+  const asked = useRequest("tasks", at && stale === null ? { stop: at.stop } : null);
+  const list = asked.data;
+  if (at && asked.error) {
+    return (
+      <section className="pane" style={{ flex: "0 1 auto" }} aria-label="Tasks" tabIndex={-1}>
+        <div className="pane-head">Tasks</div>
+        <div className="pane-body">
+          <div className={errorClass(asked.error)}>{asked.error.message}</div>
+        </div>
+      </section>
+    );
+  }
   if (!at || !list || (list.tasks.length === 0 && list.gaps.length === 0)) {
     return null;
   }
@@ -133,7 +145,7 @@ function key(task: TaskKey): string {
 }
 
 /** Tasks by where they are, the place with the most first. */
-export function groups(tasks: readonly Task[]): [string, Task[]][] {
+function groups(tasks: readonly Task[]): [string, Task[]][] {
   const byPlace = new Map<string, Task[]>();
   for (const task of tasks) {
     const same = byPlace.get(task.place);

@@ -1,5 +1,6 @@
 import { openingFrame } from "../follow";
 import type { Inferior } from "../protocol";
+import { threadLabel } from "./names";
 import { useGo } from "./navigation";
 import { useFocus } from "./Workspace";
 
@@ -47,8 +48,7 @@ export function Threads() {
                     })
                   }
                 >
-                  <span className="dim">{thread.id}</span>
-                  <span>{thread.name ?? "unnamed"}</span>
+                  <span>{threadLabel(thread.id, thread.name)}</span>
                   <span className="end">
                     {thread.id === stopping
                       ? "◂ stopped here"

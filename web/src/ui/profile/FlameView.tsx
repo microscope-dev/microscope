@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { transformed, withLook } from "../../profile/look";
+import { withLook } from "../../profile/look";
 import {
   diffFill,
   fill,
@@ -18,9 +18,11 @@ import {
   pathOf,
   type Rect,
 } from "../../profile/tree";
-import type { TransformOp } from "../../protocol";
 import { useShownScheme } from "../../theme";
+import { prepare, useWidth } from "./canvas";
 import { token, useAnswer, useProfile } from "./context";
+import { Details } from "./Details";
+import { Unanswered } from "./parts";
 
 /** One row of the flame graph, in CSS pixels. */
 const ROW = 18;
@@ -65,30 +67,28 @@ export function FlameView() {
         ) : null}
       </div>
       <div className={`pane-body ${answer.current ? "" : "stale"}`}>
-        {answer.error ? (
-          <div className="empty">{answer.error.message}</div>
-        ) : tree ? (
-          tree.count === 0 ? (
-            <div className="empty">No samples are selected.</div>
-          ) : (
-            <FlameGraph
-              tree={tree}
-              zoom={zoom}
-              matched={matched?.nodes ?? null}
-              onZoom={(node) =>
-                setLook(
-                  (look) => ({
-                    ...withLook(look, "z", pathOf(tree, node)),
-                    fn: nameOf(tree, node),
-                  }),
-                  true,
-                )
-              }
-            />
-          )
-        ) : null}
+        {answer.error || !tree ? (
+          <Unanswered error={answer.error} reading="Reading the flame graph…" />
+        ) : tree.count === 0 ? (
+          <div className="empty">No samples are selected.</div>
+        ) : (
+          <FlameGraph
+            tree={tree}
+            zoom={zoom}
+            matched={matched?.nodes ?? null}
+            onZoom={(node) =>
+              setLook(
+                (look) => ({
+                  ...withLook(look, "z", pathOf(tree, node)),
+                  fn: nameOf(tree, node),
+                }),
+                true,
+              )
+            }
+          />
+        )}
       </div>
-      {tree && look.fn ? <Details tree={tree} name={look.fn} /> : null}
+      {look.fn ? <Details name={look.fn} /> : null}
     </div>
   );
 }
@@ -127,22 +127,10 @@ function FlameGraph({
   onZoom: (node: number) => void;
 }) {
   const { unit } = useProfile();
-  const box = useRef<HTMLDivElement>(null);
+  const [box, width] = useWidth();
   const canvas = useRef<HTMLCanvasElement>(null);
-  const [width, setWidth] = useState(0);
   const scheme = useShownScheme();
   const [hovered, setHovered] = useState<{ rect: Rect; left: number; top: number } | null>(null);
-
-  useEffect(() => {
-    const element = box.current;
-    if (!element) {
-      return;
-    }
-    const observer = new ResizeObserver(() => setWidth(element.clientWidth));
-    observer.observe(element);
-    setWidth(element.clientWidth);
-    return () => observer.disconnect();
-  }, []);
 
   const rects = useMemo(
     () => (width > 0 ? layout(tree, zoom, 0.5 / width) : []),
@@ -152,16 +140,10 @@ function FlameGraph({
   const height = depth * ROW;
 
   useEffect(() => {
-    const element = canvas.current;
-    const context = element?.getContext("2d");
-    if (!element || !context || width === 0) {
+    const context = prepare(canvas.current, width, height);
+    if (!context) {
       return;
     }
-    const ratio = window.devicePixelRatio || 1;
-    element.width = Math.round(width * ratio);
-    element.height = Math.round(height * ratio);
-    context.setTransform(ratio, 0, 0, ratio, 0, 0);
-    context.clearRect(0, 0, width, height);
     // Painted in the scheme shown, and again when it changes.
     const dark = scheme === "dark";
     const ink = token("--ink");
@@ -266,70 +248,4 @@ function clip(context: CanvasRenderingContext2D, text: string, width: number): s
     }
   }
   return low > 0 ? `${text.slice(0, low)}…` : "";
-}
-
-const ACTIONS: { op: TransformOp; label: string; title: string }[] = [
-  { op: "focus", label: "Focus", title: "Only samples through it, rooted at it" },
-  { op: "merge", label: "Merge", title: "Hide it, giving its cost to its callers" },
-  { op: "drop", label: "Drop", title: "Remove every sample through it" },
-  { op: "collapse", label: "Collapse recursion", title: "Merge its calls of itself" },
-];
-
-/** The selected function: what it costs under the query, and what can be
- * done with it. */
-export function Details({ tree, name }: { tree: CallTree; name: string }) {
-  const { unit, setLook } = useProfile();
-  // A function's cost in a tree counts it once per sample.
-  let total = 0;
-  let own = 0;
-  for (let node = 0; node < tree.count; ) {
-    if (nameOf(tree, node) === name) {
-      total += tree.total[node] ?? 0;
-      for (let inner = node; inner < (tree.end[node] ?? node + 1); inner += 1) {
-        own += nameOf(tree, inner) === name ? (tree.own[inner] ?? 0) : 0;
-      }
-      node = tree.end[node] ?? node + 1;
-    } else {
-      node += 1;
-    }
-  }
-  const key = tree.keys.find((each) => each.name === name);
-  return (
-    <div className="profile-details" data-testid="details">
-      <span className="mono name" title={name}>
-        {name}
-      </span>
-      {key?.file ? (
-        <span className="muted mono">
-          {key.file.slice(key.file.lastIndexOf("/") + 1)}:{key.line}
-        </span>
-      ) : null}
-      <span className="muted">
-        {formatWeight(total, unit)} · {formatPercent(total, tree.weight)} total,{" "}
-        {formatPercent(own, tree.weight)} own
-      </span>
-      <span className="spacer" />
-      {ACTIONS.map(({ op, label, title }) => (
-        <button
-          key={op}
-          type="button"
-          className="tb ghost"
-          title={title}
-          onClick={() => setLook((look) => transformed(look, { op, name }), true)}
-        >
-          {label}
-        </button>
-      ))}
-      <button
-        type="button"
-        className="tb ghost"
-        title="Its callers and callees"
-        onClick={() =>
-          setLook((look) => ({ ...withLook(look, "view", "functions"), fn: name }), true)
-        }
-      >
-        Callers and callees
-      </button>
-    </div>
-  );
 }

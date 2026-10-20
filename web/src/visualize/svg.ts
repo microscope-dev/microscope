@@ -2,8 +2,8 @@
 // one the builder names, and text goes in as text, never as markup. Images
 // are canvases the page paints, which name the pixel under the pointer.
 
-import { type OnSelect, pixelName, type Tip } from "./draw";
-import type { Picture, Shape, Style } from "./picture";
+import { type OnSelect, pixelIndex, pixelName, type Tip } from "./draw";
+import { isLine, type Picture, type Shape, type Style } from "./picture";
 
 const SVG = "http://www.w3.org/2000/svg";
 const HTML = "http://www.w3.org/1999/xhtml";
@@ -57,14 +57,10 @@ function element(shape: Shape, building: Building): SVGElement {
       break;
     case "line":
       node = make("line", { x1: shape.x1, y1: shape.y1, x2: shape.x2, y2: shape.y2 });
-      outline(node, shape);
       break;
     case "polyline":
     case "polygon":
       node = make(shape.type, { points: Array.prototype.join.call(shape.points, " ") });
-      if (shape.type === "polyline") {
-        outline(node, shape);
-      }
       break;
     case "path":
       node = make("path", { d: shape.d });
@@ -101,6 +97,9 @@ function element(shape: Shape, building: Building): SVGElement {
       node = image(shape, building.tip);
       break;
   }
+  if (isLine(shape)) {
+    outline(node, shape);
+  }
   styled(node, shape);
   // An image's title goes with the pixel the tip names.
   if (shape.title !== undefined && shape.type !== "image") {
@@ -120,7 +119,10 @@ function element(shape: Shape, building: Building): SVGElement {
     node.classList.add("selectable");
     node.addEventListener("click", () => onSelect(path));
     node.addEventListener("keydown", (event) => {
-      if ((event as KeyboardEvent).key === "Enter") {
+      const { key } = event as KeyboardEvent;
+      if (key === "Enter" || key === " ") {
+        // Space would scroll the page, as it does past a real button.
+        event.preventDefault();
         onSelect(path);
       }
     });
@@ -138,7 +140,6 @@ function make(name: string, attributes: Record<string, string | number | undefin
   return node;
 }
 
-/** Lines are drawn by their stroke, in ink unless they say otherwise. */
 function outline(node: SVGElement, shape: Style): void {
   node.setAttribute("fill", "none");
   if (shape.stroke === undefined) {
@@ -192,10 +193,8 @@ function image(shape: Extract<Shape, { type: "image" }>, tip: Tip | undefined): 
       if (bounds.width === 0 || bounds.height === 0) {
         return;
       }
-      const at = (offset: number, size: number, count: number) =>
-        Math.min(count - 1, Math.max(0, Math.floor((offset / size) * count)));
-      const column = at(event.clientX - bounds.left, bounds.width, canvas.width);
-      const row = at(event.clientY - bounds.top, bounds.height, canvas.height);
+      const column = pixelIndex(event.clientX - bounds.left, bounds.width, canvas.width);
+      const row = pixelIndex(event.clientY - bounds.top, bounds.height, canvas.height);
       tip.show(pixelName(shape.title, column, row), event);
     });
     canvas.addEventListener("mouseleave", () => tip.hide());

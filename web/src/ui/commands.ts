@@ -3,26 +3,17 @@
 
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback } from "react";
-import { type ActionName, action } from "../actions";
-import { breakpointAt } from "../breakpoints";
+import { ACTION_NAMES, type ActionName, action } from "../actions";
+import { breakpointAt, toggleBreakpoint } from "../breakpoints";
 import type { Connection } from "../connection";
-import { followedLook, inView, stopPath, stringifySearch, type View } from "../focus";
+import { type At, inView, stringifySearch, type View } from "../focus";
 import type { Command } from "../keys";
 import type { Model } from "../model";
 import { useConnection, useStoreApi } from "../store";
 import { flash, tab } from "../tab";
+import { go } from "./navigation";
 
-const ACTIONS = new Set<string>([
-  "continue",
-  "pause",
-  "kill",
-  "restart",
-  "over",
-  "into",
-  "out",
-  "instruction",
-  "overInstruction",
-]);
+const ACTIONS = new Set<string>(ACTION_NAMES);
 
 const VIEWS: Record<"viewSource" | "viewDisassembly" | "viewMemory" | "viewDrawings", View> = {
   viewSource: "source",
@@ -41,7 +32,9 @@ export function useCommands(): (command: Command) => boolean {
       const model = store.getState();
       const current = tab.getState();
       if (ACTIONS.has(command)) {
-        const chosen = action(command as ActionName, model, current.at);
+        const cursor =
+          current.cursor && current.cursor.path === current.shown?.path ? current.cursor : null;
+        const chosen = action(command as ActionName, model, current.at, cursor);
         if (chosen.enabled) {
           void chosen.run(connection).catch((failure: Error) => flash(failure.message));
         } else if (!["continue", "pause"].includes(command) || model.state?.target) {
@@ -54,25 +47,11 @@ export function useCommands(): (command: Command) => boolean {
         case "editBreakpoint":
           breakpoint(command, model, connection);
           return true;
-        case "jumpToCursor":
-          jump(model, connection);
-          return true;
-        case "stepIntoCall":
-          stepIntoCall(model);
-          return true;
         case "frameUp":
         case "frameDown": {
-          const at = current.at;
-          if (!at || !current.session) {
-            return true;
-          }
-          const frame = at.frame + (command === "frameUp" ? 1 : -1);
-          if (frame >= 0 && frame < current.frames) {
-            void navigate({
-              href:
-                stopPath(current.session, { ...at, frame }) +
-                stringifySearch({ ...followedLook(current.look) }),
-            });
+          const at = current.at && movedFrame(current.at, current.frames, command === "frameUp");
+          if (at && current.session) {
+            go(navigate, current.session, current.look, at);
           }
           return true;
         }
@@ -166,57 +145,11 @@ export function useCommands(): (command: Command) => boolean {
   );
 }
 
-/** Opens the palette at the calls of the shown thread's line, which a
- * step into one of goes into. */
-function stepIntoCall(model: Model) {
-  const current = tab.getState();
-  const inferior = model.state?.inferior;
-  const at = current.at;
-  if (model.hello?.role !== "control") {
-    flash("This link can only view the session");
-    return;
-  }
-  if (inferior?.state !== "stopped" || !at) {
-    flash("The program is not stopped");
-    return;
-  }
-  if (at.stop !== inferior.stop) {
-    flash(`This tab shows stop #${at.stop}; go to stop #${inferior.stop} to step`);
-    return;
-  }
-  tab.setState({ palette: "calls" });
-}
-
-/** Moves the shown thread, without running it, to the cursor's line. */
-function jump(model: Model, connection: Connection) {
-  const current = tab.getState();
-  const inferior = model.state?.inferior;
-  const at = current.at;
-  if (!current.cursor || current.cursor.path !== current.shown?.path) {
-    flash("Put the cursor on the line the thread should resume at");
-    return;
-  }
-  if (model.hello?.role !== "control") {
-    flash("This link can only view the session");
-    return;
-  }
-  if (inferior?.state !== "stopped" || !at) {
-    flash("The program is not stopped");
-    return;
-  }
-  if (at.stop !== inferior.stop) {
-    flash(`This tab shows stop #${at.stop}; go to stop #${inferior.stop} to jump`);
-    return;
-  }
-  const { path, line } = current.cursor;
-  connection
-    .request("jump", {
-      stop: at.stop,
-      thread: at.thread,
-      task: at.task ?? null,
-      location: `${path}:${line}`,
-    })
-    .catch((failure: Error) => flash(failure.message));
+/** The frame one up (toward callers) or down from `at`'s, if the stack of
+ * `frames` has it. */
+export function movedFrame(at: At, frames: number, up: boolean): At | null {
+  const frame = at.frame + (up ? 1 : -1);
+  return frame >= 0 && frame < frames ? { ...at, frame } : null;
 }
 
 /** Toggles the breakpoint at the cursor, or the line the frame is at. */
@@ -253,8 +186,5 @@ function breakpoint(
       .catch((failure: Error) => flash(failure.message));
     return;
   }
-  const request = existing
-    ? connection.request("removeBreakpoint", { id: existing.id })
-    : connection.request("addBreakpoint", { location: `${where.path}:${where.line}` });
-  request.catch((failure: Error) => flash(failure.message));
+  void toggleBreakpoint(connection, existing, `${where.path}:${where.line}`);
 }

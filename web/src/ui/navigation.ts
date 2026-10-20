@@ -27,46 +27,59 @@ export interface Moving {
 
 export type Go = (at: At | null, look?: Look, options?: Moving) => void;
 
+type Navigate = ReturnType<typeof useNavigate>;
+
+/** Goes to a stop, thread or task, and frame, or to the session itself, from
+ * a tab that looks at `session` as `current`. */
+export function go(
+  navigate: Navigate,
+  session: string,
+  current: Look,
+  at: At | null,
+  look?: Look,
+  options?: Moving,
+): void {
+  // A new frame shows its own code unless the caller says what to show.
+  const search = look ?? followedLook(current);
+  const replace = options?.replace ?? false;
+  const going =
+    at === null
+      ? navigate({ to: "/s/$session", params: { session }, search, replace })
+      : at.task
+        ? navigate({
+            to: "/s/$session/stop/$stop/task/$task/f/$frame",
+            params: {
+              session,
+              stop: String(at.stop),
+              task: taskSegment(at.task),
+              frame: String(at.frame),
+            },
+            search,
+            replace,
+          })
+        : navigate({
+            to: "/s/$session/stop/$stop/t/$thread/f/$frame",
+            params: {
+              session,
+              stop: String(at.stop),
+              thread: String(at.thread),
+              frame: String(at.frame),
+            },
+            search,
+            replace,
+          });
+  // Once the address names it, the code shown opens its file again.
+  if (!look || options?.ask) {
+    void going.then(asked);
+  }
+}
+
 /** Goes to a stop, thread or task, and frame, or to the session itself. */
 export function useGo(): Go {
   const navigate = useNavigate();
   const { session, look: current } = useFocus();
   return useCallback(
-    (at, look, options) => {
-      // A new frame shows its own code unless the caller says what to show.
-      const search = look ?? followedLook(current);
-      const replace = options?.replace ?? false;
-      const going =
-        at === null
-          ? navigate({ to: "/s/$session", params: { session }, search, replace })
-          : at.task
-            ? navigate({
-                to: "/s/$session/stop/$stop/task/$task/f/$frame",
-                params: {
-                  session,
-                  stop: String(at.stop),
-                  task: taskSegment(at.task),
-                  frame: String(at.frame),
-                },
-                search,
-                replace,
-              })
-            : navigate({
-                to: "/s/$session/stop/$stop/t/$thread/f/$frame",
-                params: {
-                  session,
-                  stop: String(at.stop),
-                  thread: String(at.thread),
-                  frame: String(at.frame),
-                },
-                search,
-                replace,
-              });
-      // Once the address names it, the code shown opens its file again.
-      if (!look || options?.ask) {
-        void going.then(asked);
-      }
-    },
+    (at, look, options) => go(navigate, session, current, at, look, options),
     [navigate, session, current],
   );
 }

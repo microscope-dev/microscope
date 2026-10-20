@@ -51,6 +51,9 @@ export class Connection {
   #transport: Transport | null = null;
   #open = false;
   #stopped = true;
+  /** Bumped by each attempt and by stop, so a late event from an older
+   * socket is ignored. */
+  #generation = 0;
   #attempt = 0;
   #nextId = 1;
   #pending = new Map<number, Pending>();
@@ -79,12 +82,14 @@ export class Connection {
 
   stop(): void {
     this.#stopped = true;
+    this.#generation += 1;
     if (this.#timer !== null) {
       clearTimeout(this.#timer);
       this.#timer = null;
     }
     this.#transport?.close();
     this.#transport = null;
+    this.#open = false;
     this.#failPending();
   }
 
@@ -105,14 +110,19 @@ export class Connection {
   }
 
   async #attemptConnection(): Promise<void> {
+    this.#generation += 1;
+    const generation = this.#generation;
+    const current = () => generation === this.#generation;
     let authorized: boolean;
     try {
       authorized = await this.#options.authorized();
     } catch {
-      this.#retry();
+      if (current()) {
+        this.#retry();
+      }
       return;
     }
-    if (this.#stopped) {
+    if (this.#stopped || !current()) {
       return;
     }
     if (!authorized) {
@@ -122,11 +132,25 @@ export class Connection {
     }
     this.#transport = this.#options.connect({
       open: () => {
-        this.#open = true;
+        if (current()) {
+          this.#open = true;
+        }
       },
-      message: (text) => this.#receive(text),
-      binary: (data) => this.#receiveBinary(data),
-      close: () => this.#closed(),
+      message: (text) => {
+        if (current()) {
+          this.#receive(text);
+        }
+      },
+      binary: (data) => {
+        if (current()) {
+          this.#receiveBinary(data);
+        }
+      },
+      close: () => {
+        if (current()) {
+          this.#closed();
+        }
+      },
     });
   }
 
@@ -209,10 +233,8 @@ export class Connection {
   }
 }
 
-/** Takes `connection` out of the session while the browser keeps the page
- * to come back to, which it may do with the socket still open, leaving
- * someone in everyone's presence who has gone, and rejoins once the page is
- * shown again. */
+/** Leaves the session while the browser keeps the page to come back to, with
+ * its socket maybe still open, and rejoins when the page is shown again. */
 export function leaveWhileCached(connection: Connection, page: EventTarget): void {
   let paused = false;
   page.addEventListener("pagehide", (event) => {
@@ -261,12 +283,35 @@ export const browserAuthorized: Authorized = async () => {
   throw new Error(`unexpected status ${response.status}`);
 };
 
-/** Trades a join link's token for this server's cookie. */
+/** Trades a join link's token for this server's cookie: false when the server
+ * refuses the token, and throws when it could not answer. */
 export async function login(token: string): Promise<boolean> {
   const response = await fetch(`${base}api/login`, {
     method: "POST",
     credentials: "same-origin",
     body: token,
   });
-  return response.status === 204;
+  if (response.status === 204) {
+    return true;
+  }
+  if (response.status === 400 || response.status === 403) {
+    return false;
+  }
+  throw new Error(`unexpected status ${response.status}`);
+}
+
+/** Trades a token once its answer is known; a trade that could not reach the
+ * server is forgotten, so trying again asks again. */
+export function tradeOnce(trade: (token: string) => Promise<boolean> = login) {
+  let trading: Promise<boolean> | null = null;
+  return (token: string): Promise<boolean> => {
+    if (!trading) {
+      const asked = trade(token);
+      trading = asked;
+      asked.catch(() => {
+        trading = null;
+      });
+    }
+    return trading;
+  };
 }

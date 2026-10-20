@@ -42,10 +42,10 @@ export interface Model {
 }
 
 /** The most output a tab keeps; older pieces are dropped first. */
-export const OUTPUT_LIMIT = 1024 * 1024;
+const OUTPUT_LIMIT = 1024 * 1024;
 
 /** The most notices a tab keeps. */
-export const NOTICE_LIMIT = 50;
+const NOTICE_LIMIT = 50;
 
 export const initialModel: Model = {
   link: "connecting",
@@ -96,8 +96,14 @@ export function reduce(model: Model, event: ModelEvent): Model {
       // Answers go to the request that asked; the connection routes them.
       return model;
     default:
-      return unknownMessage(message);
+      return unknownMessage(message, model);
   }
+}
+
+/** Fails to compile when a known message type is missed, and ignores the
+ * types a newer server may add. */
+function unknownMessage(_message: never, model: Model): Model {
+  return model;
 }
 
 function appendOutput(model: Model, stream: Stream, text: string): Model {
@@ -115,10 +121,6 @@ function appendOutput(model: Model, stream: Stream, text: string): Model {
     outputBytes: bytes,
     outputSeq: model.outputSeq + 1,
   };
-}
-
-function unknownMessage(message: never): never {
-  throw new Error(`unknown message ${JSON.stringify(message)}`);
 }
 
 /** Whether this tab may run and stop the program. */

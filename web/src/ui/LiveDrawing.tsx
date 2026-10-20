@@ -7,15 +7,15 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Tip } from "../visualize/draw";
 import { isSelect } from "../visualize/picture";
 import {
-  currentTheme,
+  contextFor,
   failureText,
   type LiveContext,
   type LiveFailure,
   type LivePointer,
   type LiveSession,
-  palette,
   type RendererCode,
   type Sandbox,
+  UNRESPONSIVE,
 } from "../visualize/sandbox";
 
 /** What a live card draws: one stop's inputs, and the stop's before. */
@@ -51,22 +51,14 @@ function measure(holder: HTMLElement): Size {
   };
 }
 
-function contextFor(job: LiveJob, size: Size): LiveContext {
-  const theme = currentTheme();
-  return {
-    previous: job.previous,
-    paths: job.paths,
-    width: size.css.width,
-    height: size.css.height,
-    theme,
-    palette: palette(theme),
-  };
+function liveContext(job: LiveJob, size: Size): LiveContext {
+  return { ...contextFor(job.previous, job.paths, size.css.width), height: size.css.height };
 }
 
 function liveProblem(failure: LiveFailure): string {
   switch (failure.kind) {
     case "unresponsive":
-      return "The renderer stopped answering for 2 s, so it was stopped.";
+      return `The renderer stopped answering for ${UNRESPONSIVE / 1_000} s, so it was stopped.`;
     case "lost":
       return "The renderer lost its WebGL context.";
     case "failed":
@@ -214,7 +206,7 @@ export function LiveDrawing({
       card,
       first.source,
       first.inputs,
-      contextFor(first, measured),
+      liveContext(first, measured),
       measured.device,
       {
         waiting: () => setWaiting(true),
@@ -282,7 +274,7 @@ export function LiveDrawing({
       return;
     }
     sent.current = job;
-    live.update(job.inputs, contextFor(job, measured));
+    live.update(job.inputs, liveContext(job, measured));
     want();
   });
 

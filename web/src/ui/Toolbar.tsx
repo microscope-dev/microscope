@@ -3,9 +3,10 @@ import { useState } from "react";
 import { type ActionName, action, continueLabel } from "../actions";
 import { describe } from "../keys";
 import { targetName } from "../model";
-import { useConnection, useModel } from "../store";
-import { tab, useTab } from "../tab";
+import { useConnection, useModel, useStoreApi } from "../store";
+import { useTab } from "../tab";
 import { chooseTheme, THEMES, type Theme, useChosenTheme } from "../theme";
+import { useCommands } from "./commands";
 import { People } from "./People";
 import { Share } from "./Share";
 import { Status } from "./Status";
@@ -21,12 +22,12 @@ const BUTTONS: { name: ActionName; glyph: string; label?: string }[] = [
 ];
 
 export function Toolbar() {
-  const model = useModel((model) => model);
-  const connection = useConnection();
+  const hello = useModel((model) => model.hello !== null);
+  const control = useModel((model) => model.hello?.role === "control");
+  const debugging = useModel((model) => Boolean(targetName(model.state)));
   const navigate = useNavigate();
+  const run = useCommands();
   const [failure, setFailure] = useState<string | null>(null);
-  const control = model.hello?.role === "control";
-  const at = useTab((current) => current.at);
 
   return (
     <header className="toolbar">
@@ -34,42 +35,15 @@ export function Toolbar() {
         <img src="/favicon.svg" alt="" />
         microscope
       </Link>
-      {!control && model.hello && (
+      {!control && hello && (
         <span className="pill idle" title="This link can watch the session but not run or stop it">
           View only
         </span>
       )}
       {control &&
-        BUTTONS.map(({ name, glyph, label }) => {
-          const current = action(name, model, at);
-          const key = describe(name);
-          const primary =
-            (name === "continue" || name === "pause") &&
-            current.enabled &&
-            (name === "pause" || model.state?.inferior.state !== "running");
-          return (
-            <button
-              key={name}
-              type="button"
-              className={`tb ${primary ? "primary" : ""}`}
-              disabled={!current.enabled}
-              title={`${label ?? continueLabel(model)}${key ? ` (${key})` : ""}${current.enabled ? "" : `: ${current.reason}`}`}
-              data-action={name}
-              onClick={() => {
-                if (current.enabled) {
-                  setFailure(null);
-                  current.run(connection).catch((error: Error) => setFailure(error.message));
-                }
-              }}
-            >
-              <span className="glyph">{glyph}</span>
-              <span className={name === "continue" || name === "pause" ? "" : "label"}>
-                {label ?? continueLabel(model)}
-              </span>
-              {key && <span className="hint">{key}</span>}
-            </button>
-          );
-        })}
+        BUTTONS.map((button) => (
+          <ActionButton key={button.name} {...button} onFailure={setFailure} />
+        ))}
       <span className="separator" />
       <Status />
       {failure && (
@@ -87,7 +61,7 @@ export function Toolbar() {
           onClick={() => navigate({ to: "/pick" })}
           title="Launch, attach, or open a core dump"
         >
-          {targetName(model.state) ? "Debug something else" : "Debug something"}
+          {debugging ? "Debug something else" : "Debug something"}
         </button>
       )}
       <ThemeButton />
@@ -96,11 +70,58 @@ export function Toolbar() {
         className="tb ghost"
         aria-label="Every key"
         title="Every key (?)"
-        onClick={() => tab.setState((current) => ({ help: !current.help }))}
+        onClick={() => run("help")}
       >
         ?
       </button>
     </header>
+  );
+}
+
+/** One of the run buttons. It reads only what it shows, so output arriving
+ * does not render the toolbar again. */
+function ActionButton({
+  name,
+  glyph,
+  label,
+  onFailure,
+}: {
+  name: ActionName;
+  glyph: string;
+  label?: string;
+  onFailure(failure: string | null): void;
+}) {
+  const store = useStoreApi();
+  const connection = useConnection();
+  const at = useTab((current) => current.at);
+  const why = useModel((model) => {
+    const current = action(name, model, at);
+    return current.enabled ? null : current.reason;
+  });
+  const running = useModel((model) => model.state?.inferior.state === "running");
+  const text = useModel((model) => label ?? continueLabel(model));
+  const key = describe(name);
+  const primary =
+    (name === "continue" || name === "pause") && why === null && (name === "pause" || !running);
+  return (
+    <button
+      type="button"
+      className={`tb ${primary ? "primary" : ""}`}
+      disabled={why !== null}
+      title={`${text}${key ? ` (${key})` : ""}${why === null ? "" : `: ${why}`}`}
+      data-action={name}
+      onClick={() => {
+        const current = action(name, store.getState(), at);
+        if (current.enabled) {
+          onFailure(null);
+          current.run(connection).catch((error: Error) => onFailure(error.message));
+        }
+      }}
+    >
+      <span className="glyph">{glyph}</span>
+      <span className={name === "continue" || name === "pause" ? "" : "label"}>{text}</span>
+      {key && <span className="hint">{key}</span>}
+    </button>
   );
 }
 

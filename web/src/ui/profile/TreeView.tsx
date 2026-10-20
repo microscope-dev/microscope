@@ -2,9 +2,11 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useMemo, useRef, useState } from "react";
 import { formatChange, formatPercent, shareChange } from "../../profile/paint";
 import { type CallTree, decodeTree, nameOf } from "../../profile/tree";
-import type { ProfileQuery } from "../../protocol";
+import type { ProfileQuery, RequestError } from "../../protocol";
 import { useAnswer, useProfile } from "./context";
-import { Details } from "./FlameView";
+import { Details } from "./Details";
+import { Unanswered } from "./parts";
+import { useActiveRow } from "./rows";
 
 const ROW = 20;
 
@@ -15,15 +17,19 @@ export function TreeView() {
   return (
     <div className="pane grow">
       <div className="pane-head">{query.invert ? "Callers" : "Call tree"}</div>
-      <TreeRows tree={tree} label="Call tree" />
-      {tree.tree && look.fn ? <Details tree={tree.tree} name={look.fn} /> : null}
+      <TreeRows
+        tree={tree}
+        label="Call tree"
+        reading={query.invert ? "Reading callers…" : "Reading the call tree…"}
+      />
+      {look.fn ? <Details name={look.fn} /> : null}
     </div>
   );
 }
 
 export interface Fetched {
   tree: CallTree | null;
-  error: string | null;
+  error: RequestError | undefined;
   current: boolean;
 }
 
@@ -33,7 +39,7 @@ export function useTree(query: ProfileQuery): Fetched {
     () => (answer.data ? decodeTree(answer.data, answer.data.payload) : null),
     [answer.data],
   );
-  return { tree, error: answer.error?.message ?? null, current: answer.current };
+  return { tree, error: answer.error, current: answer.current };
 }
 
 /** The nodes a tree opens with: down the heaviest path while each child
@@ -55,8 +61,17 @@ function opening(tree: CallTree): Set<number> {
 }
 
 /** A tree's rows, each node under its caller, opened and closed by its
- * twist; choosing a row selects its function. */
-export function TreeRows({ tree: fetched, label }: { tree: Fetched; label: string }) {
+ * twist or by Left and Right; choosing a row, or Enter, selects its
+ * function. */
+export function TreeRows({
+  tree: fetched,
+  label,
+  reading,
+}: {
+  tree: Fetched;
+  label: string;
+  reading: string;
+}) {
   const { look, setLook } = useProfile();
   const tree = fetched.tree;
   const body = useRef<HTMLDivElement>(null);
@@ -83,10 +98,11 @@ export function TreeRows({ tree: fetched, label }: { tree: Fetched; label: strin
     estimateSize: () => ROW,
     overscan: 30,
   });
-  if (fetched.error) {
-    return <div className="empty">{fetched.error}</div>;
+  const keys = useActiveRow(rows.length, virtual);
+  if (fetched.error || !tree) {
+    return <Unanswered error={fetched.error} reading={reading} />;
   }
-  if (tree && tree.count === 0) {
+  if (tree.count === 0) {
     return <div className="empty">No samples are selected.</div>;
   }
   const toggle = (node: number) => {
@@ -96,81 +112,120 @@ export function TreeRows({ tree: fetched, label }: { tree: Fetched; label: strin
     }
     setOpened({ tree, open: next });
   };
+  const select = (node: number) => {
+    const name = nameOf(tree, node);
+    setLook((look) => ({ ...look, fn: name }));
+  };
+  const parent = (node: number) => node + 1 < (tree.end[node] ?? 0);
+  const onKey = (key: string) => {
+    const node = rows[keys.active];
+    if (node === undefined) {
+      return false;
+    }
+    if (key === "Enter") {
+      select(node);
+    } else if (key === "ArrowRight") {
+      if (!parent(node)) {
+        return false;
+      }
+      if (open.has(node)) {
+        keys.move(keys.active + 1);
+      } else {
+        toggle(node);
+      }
+    } else if (key === "ArrowLeft") {
+      if (parent(node) && open.has(node)) {
+        toggle(node);
+      } else {
+        const caller = rows.indexOf(tree.parent[node] ?? -1);
+        if (caller < 0) {
+          return false;
+        }
+        keys.move(caller);
+      }
+    } else {
+      return false;
+    }
+    return true;
+  };
+  const diff = tree.baseTotal !== null;
   return (
     <>
-      <ColumnHead columns={tree?.baseTotal ? ["total", "own", "change"] : ["total", "own"]} />
+      <ColumnHead columns={diff ? ["total", "own", "change"] : ["total", "own"]} />
       <div
         ref={body}
         className={`pane-body ${fetched.current ? "" : "stale"}`}
         role="tree"
         aria-label={label}
+        tabIndex={0}
+        aria-activedescendant={rows.length > 0 ? keys.rowId(keys.active) : undefined}
+        onKeyDown={(event) => keys.onKeyDown(event, onKey)}
       >
         <div className="tree-rows" style={{ height: virtual.getTotalSize() }}>
-          {tree
-            ? virtual.getVirtualItems().map((item) => {
-                const node = rows[item.index] ?? 0;
-                const name = nameOf(tree, node);
-                const parent = node + 1 < (tree.end[node] ?? 0);
-                return (
-                  <div
-                    key={node}
-                    role="treeitem"
-                    aria-level={(tree.depth[node] ?? 0) + 1}
-                    aria-expanded={parent ? open.has(node) : undefined}
-                    aria-selected={look.fn === name}
-                    className={`row tree-row ${look.fn === name ? "selected" : ""}`}
-                    style={{ transform: `translateY(${item.start}px)` }}
-                    onClick={() => setLook((look) => ({ ...look, fn: name }))}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        toggle(node);
-                      }
-                    }}
-                    tabIndex={-1}
-                  >
-                    <span className="percent">
-                      {formatPercent(tree.total[node] ?? 0, tree.weight)}
-                    </span>
-                    <span className="percent dim">
-                      {formatPercent(tree.own[node] ?? 0, tree.weight)}
-                    </span>
-                    {tree.baseTotal ? (
-                      <Change
-                        points={shareChange(
-                          tree.total[node] ?? 0,
-                          tree.weight,
-                          tree.baseTotal[node] ?? 0,
-                          tree.baseWeight ?? 0,
-                        )}
-                      />
-                    ) : null}
-                    <span style={{ width: (tree.depth[node] ?? 0) * 12, flex: "none" }} />
-                    <button
-                      type="button"
-                      className="twist"
-                      aria-label={open.has(node) ? "Close" : "Open"}
-                      style={{ visibility: parent ? "visible" : "hidden" }}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        toggle(node);
-                      }}
-                    >
-                      {open.has(node) ? "▾" : "▸"}
-                    </button>
-                    <span className="name" title={name}>
-                      {name}
-                    </span>
-                  </div>
-                );
-              })
-            : null}
+          {virtual.getVirtualItems().map((item) => {
+            const node = rows[item.index] ?? 0;
+            const name = nameOf(tree, node);
+            const total = formatPercent(tree.total[node] ?? 0, tree.weight);
+            const own = formatPercent(tree.own[node] ?? 0, tree.weight);
+            const change = tree.baseTotal
+              ? shareChange(
+                  tree.total[node] ?? 0,
+                  tree.weight,
+                  tree.baseTotal[node] ?? 0,
+                  tree.baseWeight ?? 0,
+                )
+              : null;
+            const active = item.index === keys.active;
+            return (
+              // biome-ignore lint/a11y/useFocusableInteractive: the tree keeps focus and names its active row
+              // biome-ignore lint/a11y/useKeyWithClickEvents: the tree takes the keys for its rows
+              <div
+                key={node}
+                id={keys.rowId(item.index)}
+                role="treeitem"
+                aria-level={(tree.depth[node] ?? 0) + 1}
+                aria-expanded={parent(node) ? open.has(node) : undefined}
+                aria-selected={look.fn === name}
+                aria-label={`${name}, ${total} total, ${own} own${diff ? `, ${formatChange(change)} change` : ""}`}
+                className={`row tree-row ${look.fn === name ? "selected" : ""} ${active ? "active" : ""}`}
+                style={{ transform: `translateY(${item.start}px)` }}
+                onClick={() => {
+                  keys.choose(item.index);
+                  select(node);
+                }}
+              >
+                <span className="percent">{total}</span>
+                <span className="percent dim">{own}</span>
+                {diff ? <Change points={change} /> : null}
+                <span style={{ width: (tree.depth[node] ?? 0) * 12, flex: "none" }} />
+                <button
+                  type="button"
+                  className="twist"
+                  tabIndex={-1}
+                  aria-hidden="true"
+                  style={{ visibility: parent(node) ? "visible" : "hidden" }}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    keys.choose(item.index);
+                    toggle(node);
+                  }}
+                >
+                  {open.has(node) ? "▾" : "▸"}
+                </button>
+                <span className="name" title={name}>
+                  {name}
+                </span>
+              </div>
+            );
+          })}
         </div>
       </div>
     </>
   );
 }
 
-/** What each column of the rows below holds, over them. */
+/** What each column of the rows below holds, over them. Each row names
+ * its own columns for screen readers. */
 export function ColumnHead({ columns, end }: { columns: string[]; end?: string }) {
   return (
     <div className="row column-head" aria-hidden="true">

@@ -8,8 +8,6 @@ export type Command =
   | ActionName
   | "toggleBreakpoint"
   | "editBreakpoint"
-  | "jumpToCursor"
-  | "stepIntoCall"
   | "frameUp"
   | "frameDown"
   | "copyLink"
@@ -191,6 +189,12 @@ export function isTextBox(element: Element | null): boolean {
     return !["checkbox", "radio", "button", "submit"].includes(element.type);
   }
   return element instanceof HTMLElement && element.isContentEditable;
+}
+
+/** Whether a menu or dialog holding `element` closes on Escape itself, so
+ * Escape must not also leave the view. Its other keys stay the debugger's. */
+export function keepsEscape(element: Element | null): boolean {
+  return element?.closest("[data-keys=escape]") != null;
 }
 
 /** How a command's key is written in tooltips and help, such as `⇧F11`. */

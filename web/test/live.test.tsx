@@ -209,6 +209,59 @@ describe("a live renderer", () => {
     expect(await late.next()).toEqual({ type: "hint", text: "move 9" });
   });
 
+  it("sends only the last caption, hint, and select it set, however many it set", async () => {
+    const box = sandbox();
+    const flooding = `microscope.live(() => {
+  setTimeout(() => {
+    for (let i = 0; i < 100000; i++) microscope.hint("late " + i);
+  });
+  return {
+    frame() {
+      for (let i = 0; i < 1000000; i++) {
+        microscope.caption("caption " + i);
+        microscope.select("cells[" + i + "]");
+        microscope.redraw();
+      }
+    },
+  };
+});`;
+    const live = new Watched(box, "card", flooding);
+    await live.expect("started");
+    expect(await live.next()).toEqual({ type: "hint", text: "late 99999" });
+    live.session.frame(0);
+    expect(await live.caption()).toBe("caption 999999");
+    expect(await live.next()).toEqual({ type: "select", path: "cells[999999]" });
+    await live.expect("redraw");
+    await live.expect("frame");
+  });
+
+  it("is ended when its worker floods the page", async () => {
+    // A worker that skips worker.js's own limits, as a broken one might.
+    const hostile = `onmessage = (event) => {
+  if (event.data.type === "live-start") {
+    for (let i = 0; i < 20000; i++) postMessage({ type: "caption", text: "flood " + i });
+  }
+};`;
+    const live = new Watched(sandbox(hostile), "card", "");
+    await live.expect("started");
+    let heard = await live.next();
+    while (heard.type === "caption") {
+      heard = await live.next();
+    }
+    expect(heard).toEqual({
+      type: "failed",
+      failure: {
+        kind: "failed",
+        failure: {
+          message: "the renderer sent more than 1000 messages in 100 ms",
+          file: null,
+          line: null,
+          column: null,
+        },
+      },
+    });
+  });
+
   it("ends with the sandbox", async () => {
     const box = sandbox();
     const live = new Watched(box, "card", "microscope.live(() => ({}));");

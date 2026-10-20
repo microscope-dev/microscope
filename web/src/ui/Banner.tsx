@@ -3,6 +3,7 @@ import { formatPlace } from "../focus";
 import { latestStop } from "../follow";
 import type { Place, StopEntry } from "../protocol";
 import { tab, useTab } from "../tab";
+import { threadLabel } from "./names";
 import { useGo, useLinkPaths } from "./navigation";
 import { fileName } from "./paths";
 import { useFocus } from "./Workspace";
@@ -47,7 +48,7 @@ export function Banner() {
               : `Stop #${at.stop} has passed.`}
           </b>{" "}
           {now
-            ? `The session is at stop #${now.stop}, ${placeText(now.place)} in ${thread?.name ?? `thread ${now.thread}`}.`
+            ? `The session is at stop #${now.stop}, ${placeText(now.place)} in ${threadLabel(now.thread, thread?.name)}.`
             : inferior.state === "running"
               ? "The program is running."
               : "The program is no longer stopped."}{" "}

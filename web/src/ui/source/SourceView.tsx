@@ -54,12 +54,12 @@ export interface Marks {
 }
 
 /** What a hover shows: a value and its type. */
-export interface Hovered {
+interface Hovered {
   text: string;
   type: string | null;
 }
 
-export interface SourceViewProps {
+interface SourceViewProps {
   path: string;
   text: string;
   marks: Marks;

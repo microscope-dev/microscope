@@ -5,13 +5,13 @@
 
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { toggleBreakpoint } from "../breakpoints";
 import { useRequest } from "../data";
 import { type Look, stringifySearch } from "../focus";
 import { controls } from "../model";
 import type { Breakpoint, Disassembled, Instruction, SourceLine, Syntax } from "../protocol";
 import { isString, read, write } from "../storage";
 import { useConnection, useModel } from "../store";
-import { flash } from "../tab";
 import { useLook, useShowSource } from "./navigation";
 import { fileName } from "./paths";
 import { errorClass, hidden } from "./Values";
@@ -291,10 +291,7 @@ function Gutter({ address }: { address: string }) {
       className="asm-gutter"
       aria-label={`${existing ? "Remove the breakpoint" : "Breakpoint"} at ${address}`}
       onClick={() => {
-        const request = existing
-          ? connection.request("removeBreakpoint", { id: existing.id })
-          : connection.request("addBreakpoint", { location: address });
-        request.catch((failure: Error) => flash(failure.message));
+        void toggleBreakpoint(connection, existing, address);
       }}
     >
       {dot}

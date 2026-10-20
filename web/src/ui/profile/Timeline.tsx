@@ -1,14 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { formatRange, parseRange, withLook } from "../../profile/look";
-import { formatDuration } from "../../profile/paint";
+import { useEffect, useMemo, useRef } from "react";
+import { rangeOf, withLook } from "../../profile/look";
+import { formatCount, formatDuration, largest } from "../../profile/paint";
 import type { ProfileLane, ProfileSummary, ProfileThread } from "../../protocol";
 import { useShownScheme } from "../../theme";
+import { NAMES, prepare, shade, useRangeDrag, useWidth } from "./canvas";
 import { type ProfileFocus, token, useAnswer, useProfile } from "./context";
 
 /** One lane, in CSS pixels. */
 const LANE = 18;
-/** The names column. */
-const NAMES = 180;
 /** The most task lanes drawn, the heaviest. */
 const MOST_TASK_LANES = 50;
 
@@ -33,7 +32,7 @@ function rows(summary: ProfileSummary, look: ProfileFocus["look"]): Row[] {
         lane: thread.row,
         label: thread.name ?? "thread",
         dim: String(thread.tid),
-        title: `pid ${thread.pid}, tid ${thread.tid}: ${thread.samples} samples${offCpu(thread)}`,
+        title: `pid ${thread.pid}, tid ${thread.tid}: ${formatCount(thread.samples, "sample")}${offCpu(thread)}`,
       }));
   }
   const weight = (task: ProfileSummary["tasks"][number]) => (waits ? task.waited : task.weight);
@@ -68,22 +67,9 @@ function rows(summary: ProfileSummary, look: ProfileFocus["look"]): Row[] {
  */
 export function Timeline() {
   const { summary, query, look, setLook } = useProfile();
-  const box = useRef<HTMLDivElement>(null);
+  const [box, width] = useWidth();
   const canvas = useRef<HTMLCanvasElement>(null);
-  const [width, setWidth] = useState(0);
   const scheme = useShownScheme();
-  const [dragging, setDragging] = useState<{ from: number; to: number } | null>(null);
-
-  useEffect(() => {
-    const element = box.current;
-    if (!element) {
-      return;
-    }
-    const observer = new ResizeObserver(() => setWidth(element.clientWidth));
-    observer.observe(element);
-    setWidth(element.clientWidth);
-    return () => observer.disconnect();
-  }, []);
 
   // Every thread, over the whole profile: the selection is drawn over it.
   const plot = Math.max(width - NAMES, 0);
@@ -95,29 +81,29 @@ export function Timeline() {
   }, [query, buckets, plot, byTask]);
   const answer = useAnswer("profileTimeline", params);
   const lanes = useMemo(() => rows(summary, look), [summary, look]);
-  const chosen = byTask ? look.tk : look.th;
-  const selected = chosen ? new Set(chosen) : null;
-  const range = look.range ? parseRange(look.range) : null;
+  const chosen = (byTask ? look.tk : look.th)?.join(",");
+  // Kept between renders, so painting runs again only when they change.
+  const selected = useMemo(() => (chosen ? new Set(chosen.split(",")) : null), [chosen]);
+  const range = useMemo(() => rangeOf({ range: look.range }), [look.range]);
   const span = Math.max(summary.duration, 1);
   const height = lanes.length * LANE;
+  const { handlers, shown } = useRangeDrag(span);
 
   useEffect(() => {
     const element = canvas.current;
-    const context = element?.getContext("2d");
-    if (!element || !context || plot === 0) {
+    const context = prepare(element, plot, height);
+    if (!element || !context) {
       return;
     }
-    const ratio = window.devicePixelRatio || 1;
-    element.width = Math.round(plot * ratio);
-    element.height = Math.round(height * ratio);
     // Its colors are the scheme's, so a change of scheme paints it again.
     element.dataset.scheme = scheme;
-    context.setTransform(ratio, 0, 0, ratio, 0, 0);
-    context.clearRect(0, 0, plot, height);
     const answered = new Map(
       (answer.data?.lanes ?? []).map((lane) => [(byTask ? lane.task : lane.thread) ?? -1, lane]),
     );
-    const most = Math.max(1, ...[...answered.values()].flatMap((lane) => lane.weights));
+    let most = 1;
+    for (const lane of answered.values()) {
+      most = largest(lane.weights, most);
+    }
     const bar = token("--accent");
     const [start, end] = answer.data?.range ?? [0, span];
     const width = (plot * (end - start)) / span / Math.max(1, buckets);
@@ -158,17 +144,11 @@ export function Timeline() {
       context.fillRect(x, 0, Math.max((plot * (to - from)) / span, 1), height);
     }
     context.globalAlpha = 1;
-    const shown = dragging
-      ? [Math.min(dragging.from, dragging.to), Math.max(dragging.from, dragging.to)]
-      : range;
-    if (shown) {
-      context.fillStyle = token("--accent-soft");
-      context.globalAlpha = 0.6;
-      const from = (plot * (shown[0] ?? 0)) / span;
-      const to = (plot * (shown[1] ?? 0)) / span;
-      context.fillRect(0, 0, from, height);
-      context.fillRect(to, 0, plot - to, height);
-      context.globalAlpha = 1;
+    const marked = shown ?? range;
+    if (marked) {
+      shade(context, marked, span, plot, height);
+      const from = (plot * marked[0]) / span;
+      const to = (plot * marked[1]) / span;
       // A range too short to see between its shades still shows where it is.
       const wide = Math.max(to - from, 3);
       context.fillStyle = token("--accent");
@@ -185,16 +165,11 @@ export function Timeline() {
     buckets,
     selected,
     range,
-    dragging,
+    shown,
     summary.gaps,
     scheme,
   ]);
 
-  const time = (event: React.PointerEvent) => {
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const fraction = (event.clientX - bounds.left) / bounds.width;
-    return Math.min(Math.max(fraction, 0), 1) * span;
-  };
   const toggle = (id: string) =>
     setLook((look) => {
       const key = byTask ? "tk" : "th";
@@ -220,35 +195,20 @@ export function Timeline() {
           </button>
         ))}
       </div>
-      <canvas
-        ref={canvas}
-        className="lanes"
-        style={{ width: plot, height }}
-        role="img"
-        aria-label={`Samples and time off CPU over ${formatDuration(span)}`}
-        onPointerDown={(event) => {
-          event.currentTarget.setPointerCapture(event.pointerId);
-          const at = time(event);
-          setDragging({ from: at, to: at });
-        }}
-        onPointerMove={(event) => {
-          if (dragging) {
-            setDragging({ ...dragging, to: time(event) });
-          }
-        }}
-        onPointerUp={(event) => {
-          if (!dragging) {
-            return;
-          }
-          const to = time(event);
-          const [from, until] = [Math.min(dragging.from, to), Math.max(dragging.from, to)];
-          setDragging(null);
-          // A click, not a drag, clears the selection.
-          const chosen =
-            (until - from) * (plot / span) >= 3 ? formatRange([from, until]) : undefined;
-          setLook((look) => withLook(look, "range", chosen), true);
-        }}
-      />
+      {answer.error ? (
+        <div className="empty error" style={{ width: plot }}>
+          {answer.error.message}
+        </div>
+      ) : (
+        <canvas
+          ref={canvas}
+          className="lanes"
+          style={{ width: plot, height }}
+          role="img"
+          aria-label={`Samples and time off CPU over ${formatDuration(span)}`}
+          {...handlers}
+        />
+      )}
     </div>
   );
 }

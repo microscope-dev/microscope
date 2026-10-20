@@ -120,7 +120,7 @@ test("the console evaluates, runs commands, and completes in the frame shown", a
   await expect(line).toHaveValue("server");
   await line.fill("req->");
   await line.press("Tab");
-  await expect(page.getByRole("list", { name: "Completions" })).toContainText("key");
+  await expect(page.getByRole("listbox", { name: "Completions" })).toContainText("key");
   await line.press("Escape");
   await line.fill("");
   await line.press("ArrowUp");

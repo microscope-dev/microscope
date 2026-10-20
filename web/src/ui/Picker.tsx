@@ -489,7 +489,7 @@ function RecordForm() {
   );
 }
 
-function AttachForm({ working, submit }: FormProps) {
+export function AttachForm({ working, submit }: FormProps) {
   const connection = useConnection();
   const [processes, setProcesses] = useState<Process[] | null>(null);
   const [scope, setScope] = useState<number | null>(null);
@@ -501,6 +501,7 @@ function AttachForm({ working, submit }: FormProps) {
     connection
       .request("processes")
       .then((answer) => {
+        setError(null);
         setProcesses(answer.processes);
         setScope(answer.ptraceScope);
       })
@@ -566,9 +567,9 @@ function AttachForm({ working, submit }: FormProps) {
         )}
       </Field>
       {error && <div className="banner error">{error}</div>}
-      <div className="table" role="listbox" aria-label="Processes">
+      <div className="process-list" role="listbox" aria-label="Processes">
         {processes === null ? (
-          <div className="empty">Listing processes…</div>
+          <div className="empty">{error ? "Could not list processes." : "Listing processes…"}</div>
         ) : shown.length === 0 ? (
           <div className="empty">No process matches.</div>
         ) : (
@@ -702,6 +703,8 @@ export function PathInput({
   const [selected, setSelected] = useState(0);
   // Tab pressed before the current text's suggestions arrived.
   const [tabbed, setTabbed] = useState(false);
+  // Whether an arrow key chose the selected suggestion.
+  const [picked, setPicked] = useState(false);
   const listId = useId();
 
   useEffect(() => {
@@ -723,9 +726,15 @@ export function PathInput({
               ),
             });
             setSelected(0);
+            setPicked(false);
           }
         })
-        .catch(() => undefined);
+        .catch(() => {
+          // No suggestions, rather than none yet, so Tab is not held back.
+          if (current) {
+            setCompletion({ text: value, entries: [] });
+          }
+        });
     }, 60);
     return () => {
       current = false;
@@ -738,11 +747,15 @@ export function PathInput({
       return;
     }
     onChange(entry.text);
+    setPicked(false);
     // A directory opens onto its contents; a file is chosen.
     setOpen(entry.kind === "directory");
   };
   const current = completion?.text === value ? completion.entries : null;
   const shown = open && current ? current.slice(0, 50) : [];
+  // Tab completes a partial name, or takes what the arrow keys chose; in an
+  // empty field or after a directory it moves on, as it would anywhere else.
+  const completes = picked || (value !== "" && !value.endsWith("/"));
 
   useEffect(() => {
     if (tabbed && current) {
@@ -769,22 +782,26 @@ export function PathInput({
           onChange(event.target.value);
           setOpen(true);
           setTabbed(false);
+          setPicked(false);
         }}
         onFocus={() => setOpen(true)}
         onBlur={() => setOpen(false)}
         onKeyDown={(event) => {
-          if (event.key === "Tab" && !event.shiftKey && open && current === null) {
+          const tab = event.key === "Tab" && !event.shiftKey && completes;
+          if (tab && open && current === null) {
             event.preventDefault();
             setTabbed(true);
-          } else if (event.key === "Tab" && shown.length > 0 && !event.shiftKey) {
+          } else if (tab && shown.length > 0) {
             event.preventDefault();
             accept(shown[selected]);
           } else if (event.key === "ArrowDown" && shown.length > 0) {
             event.preventDefault();
             setSelected(Math.min(selected + 1, shown.length - 1));
+            setPicked(true);
           } else if (event.key === "ArrowUp" && shown.length > 0) {
             event.preventDefault();
             setSelected(Math.max(selected - 1, 0));
+            setPicked(true);
           } else if (event.key === "Escape") {
             setOpen(false);
           } else if (event.key === "Enter" && shown.length > 0 && shown[selected]?.text !== value) {

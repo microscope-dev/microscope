@@ -224,6 +224,22 @@ describe("the worker", () => {
     });
   });
 
+  it("sends nothing for a drawn picture's calls meant for a live one", async () => {
+    const probe = new Probe(`
+      microscope.draw(() => {
+        for (let i = 0; i < 1000; i++) {
+          microscope.caption("c");
+          microscope.hint("h");
+          microscope.select("a");
+          microscope.redraw();
+          microscope.animate(true);
+        }
+        return microscope.picture({ width: 1, height: 1, shapes: [] });
+      });`);
+    await probe.next();
+    expect(await probe.draw({})).toMatchObject({ type: "picture" });
+  });
+
   it("compares inputs deeply and blends colors", async () => {
     const probe = new Probe(
       reporting(`
@@ -351,7 +367,7 @@ describe("the sandbox", () => {
 });
 
 describe("the builder", () => {
-  it("draws text as text, with titles, and selects on click and Enter", async () => {
+  it("draws text as text, with titles, and selects on click, Enter, and Space", async () => {
     const selected: string[] = [];
     const picture = validate({
       type: "picture",
@@ -392,7 +408,11 @@ describe("the builder", () => {
       expect(square?.querySelector("title")?.textContent).toBe("e4: White Pawn");
       square?.dispatchEvent(new MouseEvent("click"));
       square?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
-      expect(selected).toEqual(["mailbox[28]", "mailbox[28]"]);
+      // Space too, as on any button, without scrolling the page.
+      const space = new KeyboardEvent("keydown", { key: " ", cancelable: true });
+      square?.dispatchEvent(space);
+      expect(space.defaultPrevented).toBe(true);
+      expect(selected).toEqual(["mailbox[28]", "mailbox[28]", "mailbox[28]"]);
       const canvas = svg.querySelector("canvas");
       const pixel = canvas?.getContext("2d")?.getImageData(0, 0, 1, 1).data;
       expect([...(pixel ?? [])]).toEqual([255, 0, 0, 255]);

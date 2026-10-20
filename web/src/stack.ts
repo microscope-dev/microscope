@@ -35,3 +35,11 @@ export function stackRows(
   shown(trace.frames.slice(index));
   return rows;
 }
+
+/** The frame `at` names in `trace`, when both are known. */
+export function frameAt(
+  trace: Backtrace | undefined,
+  at: { frame: number } | null,
+): Frame | undefined {
+  return at ? trace?.frames.find((candidate) => candidate.index === at.frame) : undefined;
+}

@@ -12,12 +12,13 @@ import { read, write } from "./storage";
 import { initialTab, isKeptFiles, type KeptFiles, tab } from "./tab";
 import { type Recall, recall } from "./tree";
 
-interface Marks {
+export interface Marks {
   session: string | null;
   latest: number | undefined;
   writes: number | undefined;
   settings: number | undefined;
   connection: number | undefined;
+  open: boolean;
 }
 
 function marks(model: Model): Marks {
@@ -28,6 +29,7 @@ function marks(model: Model): Marks {
     writes: state?.writes,
     settings: state?.settings,
     connection: model.hello?.connection,
+    open: model.link === "open",
   };
 }
 
@@ -38,11 +40,12 @@ export function forget(before: Marks, after: Marks, answers: Cache, values: Reca
     values.clear();
     return true;
   }
-  // The files and modules a program has change as its libraries load, so
-  // each stop asks again.
+  // The files, modules, and functions a program has change as its libraries
+  // load, so each stop asks again.
   if (before.latest !== after.latest) {
     answers.forget("sources ");
     answers.forget("modules ");
+    answers.forget("functions ");
   }
   // What a stop holds changes when someone writes a value or memory, and
   // value handles belong to one connection.
@@ -60,8 +63,10 @@ export function forget(before: Marks, after: Marks, answers: Cache, values: Reca
     }
   }
   if (before.writes !== after.writes) {
-    // Code is memory too.
-    answers.forget("disassemble ");
+    // Code is memory too, and the stack is read from registers and memory.
+    for (const method of ["disassemble ", "backtrace ", "stepTargets "]) {
+      answers.forget(method);
+    }
   }
   // Signal policies and the exceptions that stop change without a stop, and
   // reloading views changes how values are presented and drawn.
@@ -77,6 +82,10 @@ export function forget(before: Marks, after: Marks, answers: Cache, values: Reca
     ]) {
       answers.forget(method);
     }
+  }
+  // Answers a dropped connection lost were not kept; readers ask again.
+  if (!before.open && after.open) {
+    answers.refresh();
   }
   return false;
 }

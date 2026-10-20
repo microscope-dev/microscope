@@ -31,7 +31,7 @@ export function Strip() {
   const current = state?.inferior.state === "stopped" ? state.inferior.stop : null;
 
   return (
-    <footer className="strip" aria-live="polite">
+    <footer className="strip">
       {stops.length > 0 && (
         <nav className="stops" aria-label="Stops" data-testid="stops">
           <span className="muted">Stops</span>
@@ -40,6 +40,7 @@ export function Strip() {
               key={entry.stop}
               type="button"
               className={`stop ${entry.stop === at?.stop ? "on" : ""} ${entry.stop === current ? "current" : ""}`}
+              aria-current={entry.stop === at?.stop ? "true" : undefined}
               title={describeStop(entry)}
               onClick={() =>
                 session &&
@@ -53,11 +54,13 @@ export function Strip() {
               }
             >
               #{entry.stop} {stopKind(entry.reason.kind)} · {placeText(entry.place)}
+              {entry.stop === current && " ◂ now"}
             </button>
           ))}
         </nav>
       )}
-      <span className="end">
+      {/* Only what was just said is read out, not the stops on every stop. */}
+      <span className="end" aria-live="polite">
         {flash && now - flash.at < FLASH ? (
           <span className="notice" data-testid="flash">
             {flash.text}
@@ -73,7 +76,7 @@ export function Strip() {
   );
 }
 
-export function describeStop(entry: StopEntry): string {
+function describeStop(entry: StopEntry): string {
   const who = entry.by ? `${entry.by} ${entry.action ?? "ran the program"} · ` : "";
   return `#${entry.stop} · ${who}${entry.reason.description} · ${placeText(entry.place)}`;
 }

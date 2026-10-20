@@ -1,7 +1,7 @@
 // Zones as the server sends them, in columns, and how the zones view lays
 // each thread's track out: a row per depth, tracks one under another.
 
-import type { ProfileZones } from "../protocol";
+import type { ProfileThread, ProfileZones } from "../protocol";
 
 export interface ZoneBlocks {
   count: number;
@@ -99,6 +99,11 @@ export function blockAt(
     }
   }
   return best;
+}
+
+/** A thread's name, by its row. */
+export function threadName(threads: readonly ProfileThread[], row: number): string {
+  return threads.find((each) => each.row === row)?.name ?? `thread ${row}`;
 }
 
 /** What a zone's flags say was not seen. */

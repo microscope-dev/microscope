@@ -2,11 +2,12 @@
 // SVG draws quickly. It paints what the SVG builder would: groups move and
 // style their shapes, lines are drawn by their stroke, and shapes with no
 // fill are in the page's ink. The page hit-tests it itself, so titles are
-// still hover text and selects still open their parts.
+// still hover text and selects still open their parts, though only for the
+// pointer: the canvas has no element per shape for the keyboard to reach.
 
 import type { OnSelect, Tip } from "./draw";
-import { pixelName } from "./draw";
-import type { Picture, Shape } from "./picture";
+import { pixelIndex, pixelName } from "./draw";
+import { isLine, type Picture, type Shape } from "./picture";
 
 /** What a shape inherits from the groups around it. */
 interface Inherited {
@@ -139,8 +140,8 @@ export function buildCanvas(picture: Picture, tip: Tip, onSelect?: OnSelect): HT
     if (hit.image) {
       const local = hit.matrix.inverse().transformPoint(new DOMPoint(found.x, found.y));
       const { x, y, width, height, columns, rows } = hit.image;
-      const column = clamp(Math.floor(((local.x - x) / width) * columns), columns);
-      const row = clamp(Math.floor(((local.y - y) / height) * rows), rows);
+      const column = pixelIndex(local.x - x, width, columns);
+      const row = pixelIndex(local.y - y, height, rows);
       tip.show(pixelName(hit.title, column, row), event);
     } else if (hit.title !== undefined) {
       tip.show(hit.title, event);
@@ -159,10 +160,6 @@ export function buildCanvas(picture: Picture, tip: Tip, onSelect?: OnSelect): HT
     }
   });
   return canvas;
-}
-
-function clamp(index: number, count: number): number {
-  return Math.min(count - 1, Math.max(0, index));
 }
 
 /** Whether a point is in or near a shape's bounds. */
@@ -221,9 +218,10 @@ function paint(
     return;
   }
   pen.globalAlpha = own.alpha;
+  // Before any shape strokes, text included, so none keeps the last one's.
+  pen.setLineDash(own.dash ?? []);
   const matrix = pen.getTransform();
-  // Lines are drawn by their stroke, in ink unless they say otherwise.
-  const lined = shape.type === "line" || shape.type === "polyline";
+  const lined = isLine(shape);
   const fill = lined || own.fill === "none" ? null : own.fill;
   const stroke = lined ? (shape.stroke ?? page.ink) : own.stroke;
   const stroked = stroke !== undefined && stroke !== "none" ? stroke : null;
@@ -359,7 +357,6 @@ function paint(
       return;
     }
   }
-  pen.setLineDash(own.dash ?? []);
   if (fill !== null) {
     pen.fillStyle = fill;
     pen.fill(path);

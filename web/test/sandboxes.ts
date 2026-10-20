@@ -20,8 +20,10 @@ afterEach(() => {
   }
 });
 
-export function sandbox(): Sandbox {
-  const page = `<!doctype html><script>const WORKER_SOURCE = ${JSON.stringify(workerSource).replaceAll("<", "\\u003c")};\n${frameSource}</script>`;
+/** A sandbox whose workers run `worker`, the real worker script unless a
+ * test stands in one of its own. */
+export function sandbox(worker: string = workerSource): Sandbox {
+  const page = `<!doctype html><script>const WORKER_SOURCE = ${JSON.stringify(worker).replaceAll("<", "\\u003c")};\n${frameSource}</script>`;
   const url = URL.createObjectURL(new Blob([page], { type: "text/html" }));
   const created = new Sandbox(url);
   sandboxes.push(created);

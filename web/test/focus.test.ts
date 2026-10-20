@@ -3,10 +3,13 @@
 import { describe, expect, it } from "vitest";
 import {
   followedLook,
+  formatPinned,
   isPagePath,
   type Look,
   linkPath,
+  type Pinned,
   parseAt,
+  parsePinned,
   parsePlace,
   parseSearch,
   recordedPath,
@@ -87,6 +90,16 @@ describe("places and paths", () => {
     expect(parseAt({ stop: "12", thread: "x", frame: "0" })).toBeNull();
   });
 
+  it("refuses numbers too large to read exactly", () => {
+    const huge = "9007199254740993";
+    expect(parseAt({ stop: huge, thread: "1", frame: "0" })).toBeNull();
+    expect(parseAt({ stop: "1", thread: huge, frame: "0" })).toBeNull();
+    expect(parseAt({ stop: "1", thread: "1", frame: huge })).toBeNull();
+    expect(parseAt({ stop: "1", task: `2.${huge}`, frame: "0" })).toBeNull();
+    expect(parsePlace(`a.c:${huge}`)).toBeNull();
+    expect(parsePlace("a.c:3-9007199254740993")).toBeNull();
+  });
+
   it("names a task by its runtime and number, and reads it back", () => {
     const at = { stop: 7, thread: 0, task: { runtime: 2, number: 31 }, frame: 3 };
     expect(stopPath("k7q2", at)).toBe("/s/k7q2/stop/7/task/2.31/f/3");
@@ -101,6 +114,47 @@ describe("places and paths", () => {
       followedLook({ src: "a.c:3", asm: "0x10", view: "disassembly", w: ["a"], x: ["args/b"] }),
     ).toEqual({ view: "disassembly", w: ["a"], x: ["args/b"] });
     expect(followedLook({ mem: "0x10", view: "memory" })).toEqual({ mem: "0x10", view: "memory" });
+  });
+});
+
+describe("a link's lists", () => {
+  it("keeps at most 64 watches, expanded rows, and drawings", () => {
+    const many = Array.from({ length: 1000 }, (_, index) => `v${index}`);
+    const look = validateLook(parseSearch(stringifySearch({ w: many, x: many, d: many })));
+    expect(look.w).toEqual(many.slice(0, 64));
+    expect(look.x).toEqual(many.slice(0, 64));
+    expect(look.d).toEqual(many.slice(0, 64));
+  });
+});
+
+describe("a pinned drawing", () => {
+  const pins: Pinned[] = [
+    { path: "args/req", renderer: null },
+    { path: "args/req", renderer: "hex" },
+    { path: "flags&~mask", renderer: null },
+    { path: "flags&~mask", renderer: "bits" },
+    { path: "~mask", renderer: null },
+    { path: "~mask", renderer: "bits" },
+    { path: "a~", renderer: null },
+    { path: "a~", renderer: "r" },
+    { path: "a~~b", renderer: null },
+  ];
+
+  it("reads back as it was written", () => {
+    for (const pinned of pins) {
+      expect(parsePinned(formatPinned(pinned)), formatPinned(pinned)).toEqual(pinned);
+    }
+  });
+
+  it("reads links written before a path could end in its marker", () => {
+    expect(parsePinned("args/req")).toEqual({ path: "args/req", renderer: null });
+    expect(parsePinned("args/req~hex")).toEqual({ path: "args/req", renderer: "hex" });
+    expect(parsePinned("~mask")).toEqual({ path: "~mask", renderer: null });
+  });
+
+  it("writes a path without a renderer as itself when that is unambiguous", () => {
+    expect(formatPinned({ path: "args/req", renderer: null })).toBe("args/req");
+    expect(formatPinned({ path: "~mask", renderer: null })).toBe("~mask");
   });
 });
 

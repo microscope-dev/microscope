@@ -227,6 +227,9 @@ declare namespace microscope {
       context: LiveContext<I>,
     ) => Live<I> | undefined | Promise<Live<I> | undefined>,
   ): void;
+  // These five are a live renderer's, and do nothing in `draw`. Each sends
+  // its latest call once the function the page called returns.
+
   /** Asks a live renderer's page for one more frame. */
   function redraw(): void;
   /** Asks for every frame while the card is visible, or stops asking. */

@@ -28,9 +28,11 @@ export type View = "source" | "disassembly" | "memory" | "drawings";
 
 const VIEWS: readonly View[] = ["source", "disassembly", "memory", "drawings"];
 
-/** The keys every route's query may carry, and whether each repeats: a
- * stop's watches, expanded rows, and drawings, and a profile's threads,
- * transforms, and zoomed path. */
+/** The most items a look's list keeps, since each watch or row is a request. */
+const LIST_LIMIT = 64;
+
+/** The query keys that repeat: a stop's watches, expanded rows, and
+ * drawings, and a profile's threads, transforms, and zoomed path. */
 const LISTS = new Set(["w", "x", "d", "th", "tk", "tf", "z", "lb"]);
 
 /**
@@ -79,7 +81,7 @@ export function validateLook(search: Record<string, unknown>): Look {
     const value = search[key];
     const items = Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
     const strings = items.filter((item): item is string => typeof item === "string" && item !== "");
-    return strings.length > 0 ? strings : undefined;
+    return strings.length > 0 ? strings.slice(0, LIST_LIMIT) : undefined;
   };
   const src = text("src");
   if (src && parsePlace(src)) {
@@ -112,7 +114,7 @@ export function validateLook(search: Record<string, unknown>): Look {
   return look;
 }
 
-export function isAddress(text: string): boolean {
+function isAddress(text: string): boolean {
   return /^0x[0-9a-f]{1,16}$/i.test(text);
 }
 
@@ -132,7 +134,7 @@ export function parsePlace(text: string): SourcePlace | null {
   const [, path, first, last] = match as unknown as [string, string, string, string | undefined];
   const line = Number(first);
   const end = last === undefined ? line : Number(last);
-  if (line < 1 || end < line) {
+  if (!Number.isSafeInteger(end) || line < 1 || end < line) {
     return null;
   }
   return { path, line, end };
@@ -222,7 +224,8 @@ export function parseAt(params: {
   task?: string | undefined;
   frame: string;
 }): At | null {
-  const number = (text: string) => (/^\d+$/.test(text) ? Number(text) : Number.NaN);
+  const number = (text: string) =>
+    /^\d+$/.test(text) && Number.isSafeInteger(Number(text)) ? Number(text) : Number.NaN;
   const [stop, frame] = [number(params.stop), number(params.frame)];
   if (Number.isNaN(stop) || Number.isNaN(frame)) {
     return null;
@@ -266,10 +269,13 @@ export interface Pinned {
 
 const RENDERER = /^[A-Za-z0-9_-]{1,64}$/;
 
-/** Parses a `d` entry, `PATH` or `PATH~RENDERER`. A path may hold `~`,
- * C's complement, so only what follows the last one, when it is a
- * renderer's name, names a renderer. */
+/** Parses a `d` entry, `PATH`, `PATH~RENDERER`, or `PATH~`. A path may
+ * hold `~`, C's complement, so only what follows the last one names a
+ * renderer, and a trailing `~` says that none does. */
 export function parsePinned(entry: string): Pinned {
+  if (entry.length > 1 && entry.endsWith("~")) {
+    return { path: entry.slice(0, -1), renderer: null };
+  }
   const at = entry.lastIndexOf("~");
   const renderer = at > 0 ? entry.slice(at + 1) : "";
   return RENDERER.test(renderer)
@@ -278,7 +284,11 @@ export function parsePinned(entry: string): Pinned {
 }
 
 export function formatPinned(pinned: Pinned): string {
-  return pinned.renderer === null ? pinned.path : `${pinned.path}~${pinned.renderer}`;
+  if (pinned.renderer !== null) {
+    return `${pinned.path}~${pinned.renderer}`;
+  }
+  // `flags&~mask` alone would read as `flags&` drawn by `mask`.
+  return parsePinned(pinned.path).path === pinned.path ? pinned.path : `${pinned.path}~`;
 }
 
 /** The same look with `pinned` drawn, once, and the drawings shown. */

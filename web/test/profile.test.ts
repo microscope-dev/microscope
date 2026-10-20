@@ -5,18 +5,35 @@ import { describe, expect, it } from "vitest";
 import { parseSearch, stringifySearch } from "../src/focus";
 import {
   type ProfileLook,
+  parseRange,
+  parseTransform,
   queryOf,
+  rangeOf,
   transformed,
   untransformed,
   validateProfileLook,
 } from "../src/profile/look";
-import { diffFill, formatInstant, formatSpan, formatWeight } from "../src/profile/paint";
+import {
+  diffFill,
+  formatBytes,
+  formatChange,
+  formatCount,
+  formatDuration,
+  formatInstant,
+  formatPercent,
+  formatSpan,
+  formatWeight,
+  largest,
+  shareChange,
+} from "../src/profile/paint";
 import { type CallTree, decodeTree, findPath, hit, layout, pathOf } from "../src/profile/tree";
 import {
   blockAt,
   decodeZones,
+  describeFlags,
   panned,
   plotPath,
+  threadName,
   ticks,
   tracks,
   zoomed,
@@ -352,6 +369,16 @@ describe("a weight", () => {
     expect(formatWeight(1, "goroutine")).toBe("1 goroutine");
     expect(formatWeight(1200, "samples")).toBe("1,200 samples");
   });
+
+  it("never reads in exponents, however large", () => {
+    expect(formatDuration(999_499)).toBe("999 µs");
+    expect(formatDuration(999_999)).toBe("1.00 ms");
+    expect(formatDuration(1.2e12)).toBe("1,200 s");
+    expect(formatDuration(-999_999)).toBe("-1.00 ms");
+    expect(formatBytes(1023 * 1024 + 1000)).toBe("1.00 MiB");
+    expect(formatBytes(1500 * 2 ** 30)).toBe("1,500 GiB");
+    expect(formatBytes(1023.6)).toBe("1.00 KiB");
+  });
 });
 
 describe("a time in the profile", () => {
@@ -392,5 +419,102 @@ describe("a zones view's time", () => {
     });
     expect(ticks([4_385_412_363, 4_388_392_651], 600).step).toBe(500_000);
     expect(ticks([4_385_412_363, 4_388_392_651], 600).times[0]).toBe(4_385_500_000);
+  });
+});
+
+describe("a count", () => {
+  it("groups its digits and names one or many", () => {
+    expect(formatCount(0)).toBe("0");
+    expect(formatCount(1_234_567)).toBe("1,234,567");
+    expect(formatCount(1, "sample")).toBe("1 sample");
+    expect(formatCount(2, "sample")).toBe("2 samples");
+    expect(formatCount(1200, "sample")).toBe("1,200 samples");
+    expect(formatCount(3, "process", "processes")).toBe("3 processes");
+    expect(formatCount(1, "process", "processes")).toBe("1 process");
+  });
+});
+
+describe("the largest value", () => {
+  it("never falls below its floor", () => {
+    expect(largest([], 1)).toBe(1);
+    expect(largest([0.5, 0.25], 1)).toBe(1);
+    expect(largest([3, 9, 2], 1)).toBe(9);
+    expect(largest([-4, -2], Number.NEGATIVE_INFINITY)).toBe(-2);
+  });
+
+  it("reads more values than a call can take as arguments", () => {
+    // A lane per thread of 2048 buckets, for 300 threads.
+    const values = new Array<number>(300 * 2048).fill(1);
+    values[123_456] = 7;
+    expect(largest(values, 0)).toBe(7);
+  });
+});
+
+describe("a share", () => {
+  it("is a percentage, finer below ten, and nothing of nothing", () => {
+    expect(formatPercent(1, 0)).toBe("0%");
+    expect(formatPercent(5, -1)).toBe("0%");
+    expect(formatPercent(1, 3)).toBe("33.3%");
+    expect(formatPercent(1, 10)).toBe("10.0%");
+    expect(formatPercent(999, 10_000)).toBe("9.99%");
+    expect(formatPercent(0, 7)).toBe("0.00%");
+  });
+
+  it("changes by percentage points, or not at all when either side weighs nothing", () => {
+    expect(shareChange(1, 2, 1, 4)).toBe(25);
+    expect(shareChange(1, 0, 1, 4)).toBeNull();
+    expect(shareChange(1, 2, 0, 0)).toBeNull();
+    expect(formatChange(null)).toBe("–");
+    expect(formatChange(25)).toBe("+25.0 pp");
+    expect(formatChange(-2.5)).toBe("−2.50 pp");
+    // Too small to print is no change, of either sign.
+    expect(formatChange(0.001)).toBe("±0");
+    expect(formatChange(-0.001)).toBe("±0");
+    expect(formatChange(0)).toBe("±0");
+  });
+});
+
+describe("a time range in the address", () => {
+  it("is nonempty, and absent when it is not", () => {
+    expect(parseRange("5-90")).toEqual([5, 90]);
+    expect(parseRange("90-90")).toBeNull();
+    expect(parseRange("90-5")).toBeNull();
+    expect(parseRange("-5-90")).toBeNull();
+    expect(rangeOf({ range: "5-90" })).toEqual([5, 90]);
+    expect(rangeOf({})).toBeNull();
+  });
+});
+
+describe("a transform in the address", () => {
+  it("is a known operation, a colon, and a name that may hold colons", () => {
+    expect(parseTransform("merge:a::b")).toEqual({ op: "merge", name: "a::b" });
+    expect(parseTransform("merge")).toBeNull();
+    expect(parseTransform("spin:main")).toBeNull();
+    expect(parseTransform(":main")).toBeNull();
+    expect(parseTransform("drop:")).toBeNull();
+  });
+});
+
+describe("a zone's flags", () => {
+  it("say each thing that was not seen", () => {
+    expect(describeFlags(0)).toEqual([]);
+    expect(describeFlags(2)).toEqual(["its end was not seen"]);
+    expect(describeFlags(7)).toEqual([
+      "its begin was lost",
+      "its end was not seen",
+      "it does not nest",
+    ]);
+  });
+});
+
+describe("a zone's thread", () => {
+  it("is named by its row's thread, or by the row when it has no name", () => {
+    const threads = [
+      { row: 0, pid: 1, tid: 1, name: "main", samples: 0, weight: 0, blocked: 0, preempted: 0 },
+      { row: 1, pid: 1, tid: 2, name: null, samples: 0, weight: 0, blocked: 0, preempted: 0 },
+    ];
+    expect(threadName(threads, 0)).toBe("main");
+    expect(threadName(threads, 1)).toBe("thread 1");
+    expect(threadName(threads, 5)).toBe("thread 5");
   });
 });
