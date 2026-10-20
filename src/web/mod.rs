@@ -256,6 +256,9 @@ pub async fn run(args: &WebArgs) -> Result<()> {
 
     let session = Session::new(cwd, link_base, tokens, debug_files, args.views.clone());
     session.resume_attached(args.resume);
+    if args.trust_proxy {
+        session.stop_sharing();
+    }
     let app = Arc::new(App {
         session: Arc::clone(&session),
         profiles,

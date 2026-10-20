@@ -1,6 +1,7 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { type ActionName, action, continueLabel } from "../actions";
+import { base } from "../base";
 import { describe } from "../keys";
 import { targetName } from "../model";
 import { useConnection, useModel, useStoreApi } from "../store";
@@ -32,7 +33,7 @@ export function Toolbar() {
   return (
     <header className="toolbar">
       <Link to="/" className="brand" aria-label="microscope home">
-        <img src="/favicon.svg" alt="" />
+        <img src={`${base}favicon.svg`} alt="" />
         microscope
       </Link>
       {!control && hello && (

@@ -191,6 +191,8 @@ async fn the_socket_serves_its_profile_to_a_proxy_with_no_token() {
     let hello = next_text(&mut socket).await;
     assert_eq!(hello["type"], "hello", "{hello}");
     assert_eq!(hello["role"], "view", "{hello}");
+    // The proxy shares the page with links of its own.
+    assert_eq!(hello["share"], false, "{hello}");
 
     let request = json!({"id": 1, "method": "profile", "params": {"profile": id}});
     socket
@@ -216,6 +218,21 @@ async fn the_socket_serves_its_profile_to_a_proxy_with_no_token() {
     let refusal = loop {
         let message = next_text(&mut socket).await;
         if message["id"] == 2 {
+            break message;
+        }
+    };
+    assert_eq!(refusal["error"]["kind"], "forbidden", "{refusal}");
+
+    // Nor may it make links of the server's own.
+    socket
+        .send(Message::text(
+            json!({"id": 3, "method": "share", "params": {"role": "view", "to": "/"}}).to_string(),
+        ))
+        .await
+        .expect("send");
+    let refusal = loop {
+        let message = next_text(&mut socket).await;
+        if message["id"] == 3 {
             break message;
         }
     };

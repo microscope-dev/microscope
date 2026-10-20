@@ -75,6 +75,7 @@ class Server {
       role: "control",
       name: "tester",
       cwd: "/work",
+      share: true,
     });
   }
 
