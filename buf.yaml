@@ -1,0 +1,10 @@
+# The agent protocol's schema, which `just proto` checks.
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+breaking:
+  use:
+    - WIRE_JSON

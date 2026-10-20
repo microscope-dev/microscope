@@ -619,6 +619,8 @@
           nodejs_24
           pnpm
           biome
+          # Lints the agent protocol's schema and keeps it compatible.
+          buf
         ];
       };
     in {

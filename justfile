@@ -15,7 +15,7 @@ max_test_threads := "16"
 default: check
 
 # Checks formatting, runs Clippy, and runs the complete test suite.
-check: lint test miri loom web-test docs
+check: lint test miri loom web-test docs proto
 
 # Runs everything to check before committing. The concurrent Miri tests try
 # more seeds than `check` does: ordering bugs planted in the probe SDK showed
@@ -270,6 +270,14 @@ web-deps:
     cd web && pnpm install --frozen-lockfile --silent
 
 # Installs the documentation site's locked dependencies.
+# Lints the agent protocol's schema, and checks that it can still talk to
+# agents and services built from main's, once main has one.
+proto:
+    buf lint
+    if git cat-file -e main:proto/microscope/agent/v1/agent.proto 2>/dev/null; then \
+        buf breaking --against '.git#branch=main'; \
+    fi
+
 docs-deps:
     cd docs && pnpm install --frozen-lockfile --silent
 
