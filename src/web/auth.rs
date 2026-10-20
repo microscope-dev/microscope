@@ -196,17 +196,25 @@ pub struct Origins {
 }
 
 impl Origins {
-    /// The server listening at `address`. A loopback server is also
-    /// `localhost`.
-    pub fn new(address: SocketAddr, extra_origins: Vec<String>, public: Option<PublicUrl>) -> Self {
-        let port = address.port();
-        let mut hosts = vec![match address {
-            SocketAddr::V4(v4) => format!("{}:{port}", v4.ip()),
-            SocketAddr::V6(v6) => format!("[{}]:{port}", v6.ip()),
-        }];
-        if address.ip().is_loopback() {
-            hosts.push(format!("localhost:{port}"));
-        }
+    /// The server listening at `address`, or on a Unix socket with none. A
+    /// loopback server is also `localhost`.
+    pub fn new(
+        address: Option<SocketAddr>,
+        extra_origins: Vec<String>,
+        public: Option<PublicUrl>,
+    ) -> Self {
+        let hosts = address.map_or_else(Vec::new, |address| {
+            let port = address.port();
+            let mut hosts = vec![match address {
+                SocketAddr::V4(v4) => format!("{}:{port}", v4.ip()),
+                SocketAddr::V6(v6) => format!("[{}]:{port}", v6.ip()),
+            }];
+            if address.ip().is_loopback() {
+                hosts.push(format!("localhost:{port}"));
+            }
+
+            hosts
+        });
 
         Self {
             hosts,
@@ -248,9 +256,9 @@ impl Origins {
             || self.extra.iter().any(|extra| extra == origin)
     }
 
-    /// The address links use.
-    pub fn primary(&self) -> &str {
-        &self.hosts[0]
+    /// The address links use, when the server listens on TCP.
+    pub fn primary(&self) -> Option<&str> {
+        self.hosts.first().map(String::as_str)
     }
 }
 
@@ -284,7 +292,7 @@ mod tests {
     #[test]
     fn only_this_servers_own_pages_are_allowed() {
         let origins = Origins::new(
-            "127.0.0.1:7341".parse().expect("address"),
+            Some("127.0.0.1:7341".parse().expect("address")),
             vec!["http://127.0.0.1:5173".to_owned()],
             None,
         );
@@ -318,9 +326,13 @@ mod tests {
         ));
         assert!(!allows(Some("127.0.0.1:7341"), None));
         assert!(!allows(None, Some("http://127.0.0.1:7341")));
-        assert_eq!(origins.primary(), "127.0.0.1:7341");
+        assert_eq!(origins.primary(), Some("127.0.0.1:7341"));
 
-        let public = Origins::new("0.0.0.0:80".parse().expect("address"), Vec::new(), None);
+        let public = Origins::new(
+            Some("0.0.0.0:80".parse().expect("address")),
+            Vec::new(),
+            None,
+        );
         assert!(!public.allows(Some("localhost:80"), Some("http://localhost:80")));
     }
 
@@ -331,7 +343,7 @@ mod tests {
         assert_eq!(public.base, "/debug/7/");
         assert_eq!(public.url(), "https://proxy.example/debug/7/");
         let origins = Origins::new(
-            "127.0.0.1:7341".parse().expect("address"),
+            Some("127.0.0.1:7341".parse().expect("address")),
             Vec::new(),
             Some(public.clone()),
         );
@@ -351,6 +363,13 @@ mod tests {
             "{cookie}"
         );
         assert!(set_cookie(7341, "c-1", None).contains("Path=/;"));
+
+        // On a Unix socket the proxy is the only host and origin.
+        let unix = Origins::new(None, Vec::new(), Some(public));
+        assert_eq!(unix.primary(), None);
+        assert!(unix.allows(Some("proxy.example"), Some("https://proxy.example")));
+        assert!(!unix.allows(Some("127.0.0.1:7341"), Some("http://127.0.0.1:7341")));
+        assert!(!unix.allows(Some("evil.example"), Some("https://evil.example")));
 
         for bad in [
             "proxy.example/x",

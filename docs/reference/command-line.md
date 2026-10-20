@@ -64,6 +64,18 @@ TOOL --help` for one tool.
 | `--disassembly-syntax intel\|att` | Choose assembly syntax |
 | `--timings FILE` | Write a JSON timing and allocation report |
 
+## Web server options
+
+These options apply to `microscope web`.
+
+| Option | Meaning |
+|---|---|
+| `--port PORT` | Listen on `127.0.0.1:PORT` instead of the default port |
+| `--listen ADDRESS` | Listen on `ADDRESS`; anyone who can reach it can use the session |
+| `--listen-unix PATH` | Listen on a Unix socket at `PATH`, which must not exist; requires `--public-url` |
+| `--public-url URL` | Serve pages through a reverse proxy at `URL`; the proxy controls access |
+| `--trust-proxy` | Give every request the proxy sends read-only access to a profile; requires `--public-url` and serves only profiles |
+
 ## REPL commands
 
 Commands accept unique prefixes. `help COMMAND` prints the current syntax for

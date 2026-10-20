@@ -14,7 +14,7 @@ use crate::web::{Client, Web};
 
 /// A profile of each of the six calls of `leaf` in the stacks fixture:
 /// three on the main thread and three on its worker.
-fn record_calls(scratch: &ScratchDir) -> std::path::PathBuf {
+pub fn record_calls(scratch: &ScratchDir) -> std::path::PathBuf {
     record_calls_of(scratch, "leaf", "calls.usprof")
 }
 
