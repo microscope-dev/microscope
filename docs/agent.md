@@ -39,10 +39,11 @@ revoked. Ctrl-C stops it.
 Add `--upload` to `microscope record`:
 
 ```console
-$ microscope record --upload -- ./server
-microscope: recorded 1204 samples to microscope.usprof
-microscope: uploading microscope.usprof; a recording holds the program's paths, command lines, and function names, and stays private to your account until you share it
-https://service.example/recordings/3f2a9c0d1e4b5a6978c0d1e2f3a4b5c6
+$ microscope record --upload --duration 2 -o spin.usprof -- ./spin.sh
+microscope: recorded 1905 samples to spin.usprof
+microscope: the kernel dropped 79 samples
+microscope: uploading spin.usprof; a recording holds the program's paths, command lines, and function names, and stays private to your account until you share it
+http://localhost:8080/recordings/c44ef84733204338dcd02a00bb89b650
 ```
 
 The link goes to standard output. If the agent has not uploaded the
