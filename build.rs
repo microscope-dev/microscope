@@ -18,6 +18,7 @@ fn main() {
     sources_digest(&manifest);
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets it"));
     bpf_programs(&manifest, &out);
+    agent_protocol(&manifest, &out);
     let root = manifest.join("build/web");
     let mut files = Vec::new();
     if std::env::var("PROFILE").as_deref() == Ok("release") {
@@ -205,4 +206,18 @@ fn collect(root: &Path, directory: &Path, files: &mut Vec<(String, String)>) {
             ));
         }
     }
+}
+
+/// Generates the agent protocol's Rust types from its schema, with protox,
+/// so that no protoc is needed.
+fn agent_protocol(manifest: &Path, out: &Path) {
+    let schema = "microscope/agent/v1/agent.proto";
+    let include = manifest.join("proto");
+    println!("cargo::rerun-if-changed={}", include.join(schema).display());
+    let descriptors = protox::compile([schema], [&include]).expect("the agent schema compiles");
+    prost_build::Config::new()
+        .bytes(["."])
+        .out_dir(out)
+        .compile_fds(descriptors)
+        .expect("generating the agent protocol");
 }

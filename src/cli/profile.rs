@@ -163,6 +163,11 @@ pub struct RecordArgs {
     #[arg(long, value_name = "SET", conflicts_with = "pid")]
     syscalls: Option<String>,
 
+    /// Also queue the profile for `microscope agent` to upload to microscope's
+    /// service, and wait up to 30 seconds for the link to it.
+    #[arg(long, conflicts_with = "continuous")]
+    upload: bool,
+
     /// The program to record and its arguments.
     #[arg(last = true, required_unless_present = "pid", value_name = "PROGRAM")]
     command: Vec<OsString>,
@@ -624,12 +629,48 @@ fn record(args: &RecordArgs) -> Result<i32> {
         );
     }
 
+    report_losses(&profile);
+    if args.upload {
+        upload(&profile, &args.output)?;
+    }
+
+    Ok(code)
+}
+
+fn report_losses(profile: &Profile) {
     let lost = profile.lost_samples();
     if lost > 0 {
         eprintln!("microscope: the kernel dropped {lost} samples");
     }
+}
 
-    Ok(code)
+/// Hands the profile written to `path` to the agent, and prints its link
+/// once the agent has uploaded it.
+fn upload(profile: &Profile, path: &std::path::Path) -> Result<()> {
+    let name = profile
+        .setting("program")
+        .and_then(|program| std::path::Path::new(program).file_name())
+        .or_else(|| path.file_stem())
+        .map_or_else(
+            || "recording".to_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+
+    eprintln!(
+        "microscope: uploading {}; a recording holds the program's paths, command lines, and \
+         function names, and stays private to your account until you share it",
+        path.display()
+    );
+    match crate::agent::upload(path, &name)? {
+        Some(url) => {
+            std::io::Write::write_all(&mut std::io::stdout(), format!("{url}\n").as_bytes())
+                .context("writing the link")?;
+        }
+        None => eprintln!(
+            "microscope: the recording waits in the outbox until `microscope agent` connects"
+        ),
+    }
+    Ok(())
 }
 
 /// A duration in seconds, or with a unit: `90`, `30m`, `24h`, or `7d`.

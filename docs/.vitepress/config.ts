@@ -30,6 +30,7 @@ export default defineConfig({
           { text: "Editors", link: "/editors" },
           { text: "Profiling", link: "/profiling" },
           { text: "System calls", link: "/syscalls" },
+          { text: "Uploading", link: "/agent" },
         ],
       },
       {

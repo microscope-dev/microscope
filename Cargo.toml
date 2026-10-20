@@ -9,6 +9,11 @@ readme = "README.md"
 keywords = ["debugger", "dwarf", "linux", "ptrace"]
 categories = ["command-line-utilities", "development-tools::debugging"]
 
+[build-dependencies]
+# Compiles the agent protocol without protoc.
+prost-build = "0.14"
+protox = "0.10"
+
 [features]
 # Fuzz harnesses synthesize object files from structured input.
 fuzzing = ["object/write"]
@@ -85,6 +90,16 @@ twox-hash = { version = "2.1", default-features = false, features = ["std", "xxh
 # The instrumentation ABI, which the collector reads: the SDK without its
 # `enabled` feature is that and nothing else.
 microscope-probes = { path = "sdk/rust-probes" }
+# `microscope agent`: protobuf messages, each compressed with zstd, over a
+# WebSocket to microscope's service. rustls takes ring, as ureq's does.
+prost = "0.14"
+zstd = "0.14"
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1.0"
+sha2 = "0.11"
+getrandom = "0.3"
+futures-util = { version = "0.3.34", default-features = false, features = ["sink"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 aya = "0.14"

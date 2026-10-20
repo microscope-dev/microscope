@@ -26,6 +26,7 @@ TOOL --help` for one tool.
 | `report` | Print a profile summary or call tree |
 | `convert` | Convert microscope, pprof, folded-stack, and Chrome-trace formats |
 | `symbolize` | Add source lines to a profile recorded for later symbolization |
+| `agent` | Upload recordings to a microscope service; see [Upload recordings](../agent.md) |
 
 ## Target options
 
@@ -75,6 +76,21 @@ These options apply to `microscope web`.
 | `--listen-unix PATH` | Listen on a Unix socket at `PATH`, which must not exist; requires `--public-url` |
 | `--public-url URL` | Serve pages through a reverse proxy at `URL`; the proxy controls access |
 | `--trust-proxy` | Give every request the proxy sends read-only access to a profile; requires `--public-url` and serves only profiles |
+
+## Agent options
+
+These options apply to `microscope agent`. `microscope agent login --server
+URL` saves a device token, read from standard input, for the service at
+`URL`.
+
+| Option | Meaning |
+|---|---|
+| `--server URL` | Connect to this service instead of the one `agent.toml` names |
+| `--watch DIR` | Also upload each segment `record --continuous DIR` finishes; repeatable |
+| `--allow-remote` | Run the commands the service sends, such as recording one of your processes |
+
+`microscope record --upload` also queues the profile for the agent, and
+prints its link once the agent has uploaded it.
 
 ## REPL commands
 
