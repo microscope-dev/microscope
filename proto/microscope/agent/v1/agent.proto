@@ -1,0 +1,218 @@
+// The protocol between `microscope agent` and microscope's hosted service.
+//
+// The agent opens a WebSocket to the service's /v1/agent endpoint, with its
+// device token in the upgrade request's Authorization header. Every binary
+// message on the socket is one zstd frame, with its content size in the frame
+// header, that holds one protobuf message: an AgentMessage from the agent or a
+// ServerMessage from the service. Text messages are a protocol error.
+//
+// Evolve this file only in ways protobuf keeps compatible: add fields and
+// messages under new numbers, and reserve the numbers of any you remove.
+// `buf breaking` checks this against main. A change that cannot be made that
+// way becomes package microscope.agent.v2 at /v2/agent.
+
+syntax = "proto3";
+
+package microscope.agent.v1;
+
+// The protocol revision this file describes. An agent sends it in Hello, and
+// the service says Goodbye to revisions it no longer speaks.
+enum Protocol {
+  PROTOCOL_UNSPECIFIED = 0;
+  PROTOCOL_V1 = 1;
+}
+
+// Everything the agent sends.
+message AgentMessage {
+  oneof body {
+    Hello hello = 1;
+    UploadBegin upload_begin = 2;
+    UploadChunk upload_chunk = 3;
+    UploadEnd upload_end = 4;
+    CommandResult command_result = 5;
+  }
+}
+
+// Everything the service sends.
+message ServerMessage {
+  oneof body {
+    Welcome welcome = 1;
+    UploadResume upload_resume = 2;
+    UploadAck upload_ack = 3;
+    UploadDone upload_done = 4;
+    UploadFailed upload_failed = 5;
+    Goodbye goodbye = 6;
+    Command command = 7;
+  }
+}
+
+// The agent's first message on every connection. The service waits a few
+// seconds for it, then closes the connection.
+message Hello {
+  Protocol protocol = 1;
+  // The agent's version, such as "0.1.0".
+  string agent_version = 2;
+  // The machine's host name, shown to the account's owner.
+  string hostname = 3;
+  // Whether the agent runs commands the service sends. It is false unless the
+  // agent's configuration sets allow_remote.
+  bool accepts_commands = 4;
+}
+
+// The service's answer to Hello.
+message Welcome {
+  // The account the device token belongs to.
+  string account_email = 1;
+  // The largest UploadChunk.data the service accepts.
+  uint32 max_chunk_bytes = 2;
+  // How many chunk bytes the agent may send past the last UploadAck.
+  uint64 window_bytes = 3;
+}
+
+enum RecordingKind {
+  RECORDING_KIND_UNSPECIFIED = 0;
+  // A capture file that `microscope record` writes.
+  RECORDING_KIND_USPROF = 1;
+}
+
+// Starts an upload, or resumes one that a dropped connection interrupted. The
+// service answers with UploadResume, or UploadFailed.
+message UploadBegin {
+  // 16 random bytes the agent chooses for the file. The same key from the same
+  // account resumes the same recording, so retries never make duplicates.
+  bytes upload_key = 1;
+  RecordingKind kind = 2;
+  // The file's size in bytes.
+  uint64 size = 3;
+  // The SHA-256 of the whole file, which the service checks at the end.
+  bytes sha256 = 4;
+  // The file's own format revision, for the service's records.
+  uint32 capture_revision = 5;
+  // A short name for people, such as the recorded program's name.
+  string name = 6;
+}
+
+// Where the agent should continue sending: every byte before offset is
+// already stored.
+message UploadResume {
+  bytes upload_key = 1;
+  uint64 offset = 2;
+}
+
+// The next bytes of the file. Chunks go in order, each starting where the
+// last ended.
+message UploadChunk {
+  bytes upload_key = 1;
+  uint64 offset = 2;
+  bytes data = 3;
+}
+
+// Every byte before offset is stored, and the agent may send past it.
+message UploadAck {
+  bytes upload_key = 1;
+  uint64 offset = 2;
+}
+
+// The agent has sent every byte. The service checks the size and digest and
+// answers with UploadDone or UploadFailed.
+message UploadEnd {
+  bytes upload_key = 1;
+}
+
+// The recording is stored.
+message UploadDone {
+  bytes upload_key = 1;
+  string recording_id = 2;
+  // Where the account's owner can open it.
+  string url = 3;
+}
+
+message UploadFailed {
+  enum Reason {
+    REASON_UNSPECIFIED = 0;
+    // A message didn't follow the protocol, such as a chunk out of order.
+    REASON_INVALID = 1;
+    // The file is larger than the service accepts.
+    REASON_TOO_LARGE = 2;
+    // The bytes received don't match UploadBegin's size or digest.
+    REASON_MISMATCH = 3;
+    // The account has used its quota.
+    REASON_QUOTA = 4;
+    // The service failed; trying again later may work.
+    REASON_INTERNAL = 5;
+  }
+  bytes upload_key = 1;
+  Reason reason = 2;
+  string message = 3;
+  // Whether sending the same file again later may succeed.
+  bool retryable = 4;
+}
+
+// The service is closing the connection, and says why.
+message Goodbye {
+  enum Reason {
+    REASON_UNSPECIFIED = 0;
+    // The service is restarting. Reconnect.
+    REASON_SHUTTING_DOWN = 1;
+    // The agent's protocol revision is no longer supported. Upgrade it.
+    REASON_PROTOCOL_UNSUPPORTED = 2;
+    // The device token was revoked.
+    REASON_UNAUTHENTICATED = 3;
+    // The agent broke the protocol.
+    REASON_PROTOCOL_ERROR = 4;
+  }
+  Reason reason = 1;
+  string message = 2;
+  // Whether reconnecting may work.
+  bool retry = 3;
+}
+
+// Something the account's owner asked this machine to do. Only sent to agents
+// whose Hello set accepts_commands.
+message Command {
+  // Answered by the CommandResult with the same id.
+  uint64 id = 1;
+  oneof kind {
+    ListProcesses list_processes = 2;
+    Record record = 3;
+  }
+}
+
+// Lists the processes the agent's user may record.
+message ListProcesses {}
+
+// Records a running process for a while and uploads the recording.
+message Record {
+  uint32 pid = 1;
+  uint32 seconds = 2;
+}
+
+message CommandResult {
+  uint64 id = 1;
+  oneof result {
+    ProcessList processes = 2;
+    // The recording finished and is in the agent's outbox, under this key.
+    Recorded recorded = 3;
+    CommandError error = 4;
+  }
+}
+
+message ProcessList {
+  repeated Process processes = 1;
+}
+
+message Process {
+  uint32 pid = 1;
+  // The process's name, as in /proc/PID/comm.
+  string name = 2;
+  // The command line, with arguments separated by spaces.
+  string command_line = 3;
+}
+
+message Recorded {
+  bytes upload_key = 1;
+}
+
+message CommandError {
+  string message = 1;
+}
