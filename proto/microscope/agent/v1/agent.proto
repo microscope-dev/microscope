@@ -181,7 +181,8 @@ message Command {
 // Lists the processes the agent's user may record.
 message ListProcesses {}
 
-// Records a running process for a while and uploads the recording.
+// Records a running process for a while and uploads the recording. The
+// agent answers as soon as recording starts, since it may take minutes.
 message Record {
   uint32 pid = 1;
   uint32 seconds = 2;
@@ -191,8 +192,9 @@ message CommandResult {
   uint64 id = 1;
   oneof result {
     ProcessList processes = 2;
-    // The recording finished and is in the agent's outbox, under this key.
-    Recorded recorded = 3;
+    // The agent started recording, and uploads the recording under this
+    // key once it finishes.
+    RecordStarted record_started = 3;
     CommandError error = 4;
   }
 }
@@ -209,7 +211,7 @@ message Process {
   string command_line = 3;
 }
 
-message Recorded {
+message RecordStarted {
   bytes upload_key = 1;
 }
 
