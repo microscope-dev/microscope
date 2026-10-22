@@ -1549,12 +1549,17 @@ impl Session {
     /// paths replace the old program's.
     async fn program_changed(
         &mut self,
-        process: microscope::ProcessId,
+        process: Option<microscope::ProcessId>,
         program: &Path,
     ) -> Result<(), Closed> {
         if let Some(target) = self.target.as_mut() {
             target.recorded_paths = None;
         }
+
+        // A new launch going back to the launched program is no news.
+        let Some(process) = process else {
+            return Ok(());
+        };
 
         self.client
             .console(crate::cli::format::program_changed(
@@ -2959,15 +2964,12 @@ fn describe_stop(reason: &StopReason) -> (&'static str, Option<String>, Option<S
         ),
         StopReason::Exec { followed: true } => (
             "entry",
-            Some("the process executed its program again".to_owned()),
+            Some("the process executed a program".to_owned()),
             None,
         ),
         StopReason::Exec { followed: false } => (
             "exception",
-            Some(
-                "the process replaced its executable image (exec), which is not followed"
-                    .to_owned(),
-            ),
+            Some("the process executed a program microscope cannot load".to_owned()),
             Some("exec".to_owned()),
         ),
         StopReason::Unclassifiable { description } => (

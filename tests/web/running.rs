@@ -504,3 +504,37 @@ async fn a_step_goes_into_the_call_the_tab_chose() {
     assert_eq!(into["inferior"]["place"]["function"], "add", "{into}");
     assert_eq!(into["inferior"]["reason"]["kind"], "step", "{into}");
 }
+
+/// A program that executes another is followed into it from the page: a
+/// breakpoint only the new program has waits for it, the page says the
+/// process executed it, and the stop shows the new program's source.
+#[tokio::test]
+async fn the_page_follows_a_program_into_one_it_executes() {
+    let web = Web::start("exec", &[&fixture("exec-other")]);
+    let mut tab = web.control("tab").await;
+    tab.state("the program loaded", |state| state["session"].is_string())
+        .await;
+    tab.ok("addBreakpoint", json!({"location": "target_work"}))
+        .await;
+    tab.ok("continue", json!({})).await;
+
+    let stopped = tab.inferior("stopped").await;
+    let inferior = &stopped["inferior"];
+    assert_eq!(inferior["place"]["function"], "target_work");
+    let log = tab.output_until("log", "exec-target").await;
+    assert!(log.contains(" executed "), "{log}");
+
+    let trace = tab
+        .ok(
+            "backtrace",
+            json!({"stop": inferior["stop"], "thread": inferior["thread"]}),
+        )
+        .await;
+    let top = &trace["frames"][0];
+    assert!(
+        top["source"]["path"]
+            .as_str()
+            .is_some_and(|path| path.ends_with("exec-target.c")),
+        "{top}"
+    );
+}

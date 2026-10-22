@@ -1342,8 +1342,12 @@ impl InferiorOrigin {
 
 /// The program a process runs: its executable and the debug information
 /// read from it, registered as the module `id`.
+#[derive(Clone)]
 struct MainProgram {
     id: crate::ModuleId,
+
+    /// What its module describes variables with.
+    variables: Arc<dyn VariableInfo>,
     executable: Arc<PathBuf>,
     identity: FileIdentity,
 
@@ -1478,6 +1482,10 @@ struct Controller<P: InspectionOps> {
 
     /// The program the inferior runs, which an exec may replace.
     main: MainProgram,
+
+    /// The program the session was made for, which each launch and attach
+    /// starts from again after an exec replaced it.
+    launched: MainProgram,
 
     /// The main program's image as every handle reads it, replaced before
     /// [`DebuggerEvent::ProgramChanged`] is sent.
@@ -1649,20 +1657,23 @@ impl<P: InspectionOps> Controller<P> {
             loaded: LoadedModule::main(module_image.id(), crate::LoadBias::default()),
             image: Arc::clone(&module_image),
             unwind: Arc::clone(&unwind_info),
-            variables: variable_info,
+            variables: Arc::clone(&variable_info),
             tls: None,
+        };
+        let launched = MainProgram {
+            id: main.loaded.id,
+            variables: variable_info,
+            executable: executable.display_path,
+            identity: executable.identity,
+            c_library: executable.c_library,
+            image: module_image,
+            unwind: unwind_info,
         };
 
         Self {
             _lease: lease,
-            main: MainProgram {
-                id: main.loaded.id,
-                executable: executable.display_path,
-                identity: executable.identity,
-                c_library: executable.c_library,
-                image: module_image,
-                unwind: unwind_info,
-            },
+            main: launched.clone(),
+            launched,
             program,
             launch_path: executable.launch_path,
             expected_process_start_time: executable.process_start_time,

@@ -363,8 +363,10 @@ It takes no Python breakpoints; 3.14t does.
 
 A child the program forks, as `multiprocessing` does, runs without microscope:
 its breakpoints and microscope's agent are removed from it. A wrapper that
-execs Python, such as a pyenv shim, is not followed into the interpreter;
-launch the interpreter itself, or attach to it.
+execs Python, such as a pyenv shim or `env python3`, is followed into the
+interpreter. Python 3.14 and later then load the agent as an attach does;
+3.12 and 3.13 take it only from a launch of the interpreter itself, so launch
+those directly to set Python breakpoints.
 
 A hit selects the program's frame. The backtrace folds the frames inside it
 that report the hit: microscope's agent and the interpreter's own. Conditions, hit counts, and log

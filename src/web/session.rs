@@ -739,29 +739,17 @@ impl Session {
                     ..options(add.condition, add.hit_condition, add.log_message)?
                 };
 
-                let breakpoint =
-                    handle
-                        .add_breakpoint_with(spec, options)
-                        .await
-                        .map_err(|error| {
-                            let hint = match &error {
-                                microscope::Error::FunctionNotFound(name) => {
-                                    crate::cli::commands::python_name_hint(
-                                        name,
-                                        &handle.module_image(),
-                                    )
-                                }
-                                _ => None,
-                            };
-                            match hint {
-                                Some(hint) => {
-                                    Failure::new(ErrorKind::Invalid, format!("{error}; {hint}"))
-                                }
-                                None => Failure::from(error),
-                            }
-                        })?;
-
-                self.notice(connection, format!("set breakpoint {}", breakpoint.id));
+                let (breakpoint, waits) = add_breakpoint(&handle, spec, options).await?;
+                let notice = if waits {
+                    format!(
+                        "set breakpoint {}, pending: nothing loaded has it, and the program \
+                         may execute one that does",
+                        breakpoint.id
+                    )
+                } else {
+                    format!("set breakpoint {}", breakpoint.id)
+                };
+                self.notice(connection, notice);
                 return Ok(to_value(&Added {
                     id: breakpoint.id.get(),
                 }));
@@ -2012,6 +2000,51 @@ fn publish(
     });
 }
 
+/// Adds a breakpoint, and returns whether it waits pending for a program
+/// the process may execute because nothing loaded has it. A name that
+/// looks meant for Python is refused with that hint instead.
+async fn add_breakpoint(
+    handle: &DebuggerHandle,
+    spec: microscope::BreakpointSpec,
+    options: BreakpointOptions,
+) -> Result<(microscope::Breakpoint, bool), Failure> {
+    let error = match handle
+        .add_breakpoint_with(spec.clone(), options.clone())
+        .await
+    {
+        Ok(breakpoint) => return Ok((breakpoint, false)),
+        Err(error) => error,
+    };
+
+    let hint = match &error {
+        microscope::Error::FunctionNotFound(name) => {
+            crate::cli::commands::python_name_hint(name, &handle.module_image())
+        }
+        _ => None,
+    };
+    if let Some(hint) = hint {
+        return Err(Failure::new(ErrorKind::Invalid, format!("{error}; {hint}")));
+    }
+
+    let unresolved = matches!(
+        error,
+        microscope::Error::FunctionNotFound(_) | microscope::Error::SourceFileNotFound(_)
+    );
+    if !unresolved
+        || !crate::cli::commands::executes_programs(
+            &crate::cli::commands::loaded_images(handle).await,
+        )
+    {
+        return Err(Failure::from(error));
+    }
+
+    let options = BreakpointOptions {
+        pending: true,
+        ..options
+    };
+    Ok((handle.add_breakpoint_with(spec, options).await?, true))
+}
+
 fn observe(describer: &mut Describer, outlet: &Outlet, event: &DebuggerEvent) {
     describer.ended.observe(event);
 
@@ -2060,6 +2093,10 @@ fn observe(describer: &mut Describer, outlet: &Outlet, event: &DebuggerEvent) {
             program,
             ..
         } => {
+            describer.images.clear();
+            let Some(process_id) = process_id else {
+                return;
+            };
             outlet.publish(
                 Stream::Log,
                 &(format::program_changed(*process_id, &program.path, Renderer::new(false)) + "\n"),

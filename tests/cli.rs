@@ -5612,7 +5612,7 @@ fn a_batch_run_fails_when_the_program_execs_one_it_does_not_follow() {
     let output = batch_output(&["build/test-programs/thread-exec"], &["run"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("inferior replaced its executable image"),
+        stdout.contains("inferior executed a program microscope cannot load"),
         "the stop is reported: {stdout}"
     );
     assert_failure(
@@ -6191,4 +6191,113 @@ fn a_run_that_misses_events_still_stops() {
         .expect("run microscope");
     let stdout = assert_success(output);
     assert!(stdout.contains("stopped at breakpoint 1"), "{stdout}");
+}
+
+/// Writes an executable script whose first line is `line`.
+fn script(path: &std::path::Path, line: &str) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    fs::write(path, format!("{line}\n")).expect("write a script");
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("make it executable");
+}
+
+/// A script runs as the kernel runs it: its interpreter, named directly,
+/// through env, or through another script, is followed to exec-target,
+/// whose breakpoint set before the run is hit, and which sees the same
+/// arguments and exits as it does without microscope.
+#[test]
+fn scripts_run_their_interpreters_and_stop_in_the_program_they_reach() {
+    let scratch = support::ScratchDir::new("scripts");
+    let target = fixture("build/test-programs/exec-target");
+    let env = which("env");
+
+    let direct = scratch.path().join("direct");
+    script(&direct, &format!("#!{}", target.display()));
+    let through_env = scratch.path().join("through-env");
+    script(
+        &through_env,
+        &format!("#!{} {}", env.display(), target.display()),
+    );
+    let nested = scratch.path().join("nested");
+    script(&nested, &format!("#! \t{}", direct.display()));
+
+    for program in [&direct, &through_env, &nested] {
+        let untraced = Command::new(program)
+            .arg("last word")
+            .output()
+            .expect("run the script");
+        let printed = String::from_utf8_lossy(&untraced.stdout).into_owned();
+        assert!(printed.ends_with("last word\n"), "{printed}");
+        let status = untraced.status.code().expect("an exit code");
+
+        let shown = program.display().to_string();
+        let output = batch(
+            &[&shown, "--", "last word"],
+            &["break target_work", "run", "print argc", "continue"],
+        );
+        assert_in_order(
+            &output,
+            &[
+                "stopped at breakpoint 1 (hit 1) in target_work",
+                &format!("= {}", status - 40),
+                &printed,
+                &format!("inferior exited with status {status}\n"),
+            ],
+        );
+    }
+
+    // A script whose interpreter is missing says so before anything runs.
+    let missing = scratch.path().join("missing");
+    script(&missing, "#!/nonexistent/node --flag");
+    let shown = missing.display().to_string();
+    assert_failure(
+        &batch_output(&[&shown], &["run"]),
+        &format!("{shown} names the interpreter /nonexistent/node, which does not exist"),
+    );
+}
+
+/// The file `name` resolves to on `PATH`.
+fn which(name: &str) -> PathBuf {
+    std::env::split_paths(&std::env::var_os("PATH").expect("PATH"))
+        .map(|directory| directory.join(name))
+        .find(|candidate| candidate.is_file())
+        .unwrap_or_else(|| panic!("no {name} on PATH"))
+}
+
+/// In a program that executes another, a breakpoint nothing loaded has
+/// waits for it, with a notice, while a misspelling of a name it has is
+/// still refused. A run goes through the exec, saying so, unless
+/// `catch exec` stops it there.
+#[test]
+fn a_program_that_executes_another_is_followed_into_it() {
+    let (stdout, stderr) = piped(
+        &["build/test-programs/exec-other"],
+        &[
+            "break befor_exec",
+            "break target_work",
+            "run",
+            "continue",
+            "catch exec",
+            "run",
+            "continue",
+        ],
+    );
+    assert!(
+        stderr.contains("no function named 'befor_exec' was found; did you mean 'before_exec'?"),
+        "{stderr}"
+    );
+    assert_in_order(
+        &stdout,
+        &[
+            "breakpoint 1 ",
+            "(pending: nothing loaded has it, and the program may execute one that does)",
+            " executed ",
+            "exec-target",
+            "stopped at breakpoint 1 (hit 1) in target_work",
+            "inferior exited with status 42",
+            "the inferior stops each time it executes a program",
+            "stopped as the inferior executed a program",
+            "stopped at breakpoint 1 (hit 1) in target_work",
+        ],
+    );
 }

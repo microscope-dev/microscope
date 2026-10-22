@@ -15,6 +15,27 @@ Use `--cwd DIR` to choose the program's working directory and `--env
 NAME=VALUE` to add environment variables. A launched program stops before it
 begins. Set breakpoints, then run it.
 
+A script that starts with `#!`, such as `./cli.js` with `#!/usr/bin/env node`,
+runs as the kernel runs it: microscope launches the script and follows its
+interpreter. A program that executes another, as `env`, `bash -c`, and
+version managers' shims do, is followed into the one it executes, with a line
+saying so:
+
+```console
+$ microscope env -- node app.js
+(microscope) break uv_run
+breakpoint 1 set, pending until a module with its code loads
+(pending: nothing loaded has it, and the program may execute one that does)
+(microscope) run
+process 6001 executed /usr/bin/node
+stopped at breakpoint 1 (hit 1) in uv_run from libuv.so.1
+```
+
+A breakpoint whose function or file nothing loaded has is refused, unless
+the program can execute another; then it waits for one that has it. A
+misspelling of a name the program has is still refused with the nearest
+name. `catch exec` stops at each program the process executes.
+
 ## Attach to a process
 
 Attach by process ID or by a name that matches exactly one process:

@@ -69,6 +69,23 @@ parent's siblings stay stopped meanwhile. The child is released only after the
 traps are lifted. A pause requested during the window completes once the child
 execs or exits, since the vforking thread cannot stop until then.
 
+## Exec
+
+The program a process runs is the controller's `MainProgram`. An exec of the
+same file keeps it. An exec of another file loads that file, read through
+`/proc/PID/exe`, as the main program under a new `ModuleId` and
+`ModuleImageId`, so no client cache keyed by either can serve the old image.
+The old program's module unloads, its runtime models are forgotten, and every
+breakpoint's locations are dropped and resolved again in the new program
+before it runs; one set by address stays pending. `ProgramChanged` is sent
+once every handle's `module_image()` already describes the new program. Each
+launch and attach starts from the program the session was made for again.
+
+A followed exec in a continued process runs on unless `set_exec_stops` asked
+it to stop; a step's plan was the old image's, so a step ends there. A
+program that cannot be loaded stops the process with `Exec { followed: false }`
+and the reason, which every image-based request then refuses with.
+
 ## Testing control changes
 
 Cover deterministic reducers or classifiers directly when they contain real

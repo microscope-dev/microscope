@@ -61,6 +61,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     fn launch(&mut self, mut options: LaunchOptions, reply: Reply<ExecutionId>) {
+        self.restore_launched_program();
         let stop_at_entry = options.stop_at_entry;
         // A bootstrap that cannot be made leaves only the agent unavailable.
         let python = self
@@ -105,6 +106,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         release: Box<dyn FnOnce() + Send>,
         reply: Reply<ExecutionId>,
     ) {
+        self.restore_launched_program();
         match self.seize_exec_target(requested) {
             Ok((pid, waiter)) => {
                 let origin = InferiorOrigin::LaunchedByExec;
@@ -188,6 +190,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     fn attach(&mut self, requested: ProcessId, held: bool, reply: Reply<StopId>) {
+        self.restore_launched_program();
         let (tgid, seized, unseized, waiter) = match self.seize_process(requested) {
             Ok(seized) => seized,
             Err(error) => {
@@ -447,8 +450,61 @@ impl<P: LinuxTraceOps> Controller<P> {
             .checked_add(1)
             .ok_or_else(|| backend_error(LinuxError::ModuleImageIdExhausted))?;
 
+        self.install_main_program(
+            super::MainProgram {
+                id: module_id,
+                variables: debug.variables,
+                executable: Arc::new(program.path),
+                identity: program.identity,
+                c_library: program.c_library,
+                image: debug.image,
+                unwind: debug.unwind,
+            },
+            load_bias,
+            Some(process_id(pid)),
+        );
+
+        Ok(load_bias)
+    }
+
+    /// Makes the program the session was made for the main program again,
+    /// before a launch or attach starts from it, if an exec replaced it.
+    fn restore_launched_program(&mut self) {
+        if self.main.id == self.launched.id {
+            return;
+        }
+
+        self.install_main_program(self.launched.clone(), crate::LoadBias::default(), None);
+
+        // An address means the same in the program it was set in.
+        for breakpoint in &mut self.breakpoints {
+            if let crate::BreakpointSpec::Address(address) = breakpoint.spec {
+                breakpoint.locations = Arc::from([crate::ResolvedBreakpointLocation {
+                    location: crate::BreakpointLocation::Virtual(address),
+                    code_instances: Arc::from([]),
+                    library: None,
+                }]);
+            }
+        }
+    }
+
+    /// Replaces the main program with `main`, mapped at `load_bias`: the
+    /// old program's module unloads, its runtime models are forgotten, and
+    /// every breakpoint's locations, which were its, are dropped for the
+    /// caller to resolve again. `process` is the process that executed the
+    /// new program, if one did.
+    fn install_main_program(
+        &mut self,
+        main: super::MainProgram,
+        load_bias: crate::LoadBias,
+        process: Option<ProcessId>,
+    ) {
         let previous = crate::LoadedModuleRecord {
-            module: self.modules[&self.main.id].loaded,
+            module: self.main.loaded(
+                self.modules
+                    .get(&self.main.id)
+                    .map_or_else(crate::LoadBias::default, |module| module.loaded.load_bias),
+            ),
             path: Arc::clone(&self.main.executable),
         };
         self.unregister_module(self.main.id);
@@ -467,22 +523,15 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.publish_breakpoints_changed();
         }
 
-        self.main = super::MainProgram {
-            id: module_id,
-            executable: Arc::new(program.path.clone()),
-            identity: program.identity,
-            c_library: program.c_library,
-            image: Arc::clone(&debug.image),
-            unwind: Arc::clone(&debug.unwind),
-        };
+        self.main = main;
         let loaded = self.main.loaded(load_bias);
         self.modules.insert(
-            module_id,
+            self.main.id,
             super::RuntimeModule {
                 loaded,
-                image: debug.image,
-                unwind: debug.unwind,
-                variables: debug.variables,
+                image: Arc::clone(&self.main.image),
+                unwind: Arc::clone(&self.main.unwind),
+                variables: Arc::clone(&self.main.variables),
                 tls: None,
             },
         );
@@ -499,12 +548,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.bump_revision();
         let _ = self.events.send(DebuggerEvent::ProgramChanged {
             revision: self.revision,
-            process_id: process_id(pid),
+            process_id: process,
             previous,
             program: record,
         });
-
-        Ok(load_bias)
     }
 
     /// Places the executable's image at `load_bias` in a freshly executed

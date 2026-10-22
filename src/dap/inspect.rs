@@ -1043,11 +1043,11 @@ impl Session {
             ),
             StopReason::Exec { followed: true } => (
                 "exec".to_owned(),
-                "the process executed its program again".to_owned(),
+                "the process executed a program".to_owned(),
             ),
             StopReason::Exec { followed: false } => (
                 "exec".to_owned(),
-                "the process replaced its executable image, which is not followed".to_owned(),
+                "the process executed a program microscope cannot load".to_owned(),
             ),
             StopReason::Unclassifiable { description } => {
                 ("unclassifiable stop".to_owned(), description.to_string())

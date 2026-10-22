@@ -1012,12 +1012,13 @@ pub fn stop(reason: &StopReason, renderer: Renderer) -> String {
             stopped(Role::Current),
             renderer.paint(Role::Metadata, address)
         ),
-        StopReason::Exec { followed } => format!(
-            "inferior {} its executable image",
-            renderer.paint(
-                Role::Warning,
-                if *followed { "re-executed" } else { "replaced" }
-            )
+        StopReason::Exec { followed: true } => format!(
+            "{} as the inferior executed a program",
+            stopped(Role::Current)
+        ),
+        StopReason::Exec { followed: false } => format!(
+            "inferior {} a program microscope cannot load",
+            renderer.paint(Role::Warning, "executed")
         ),
         StopReason::ThreadExited { thread_id, status } => format!(
             "thread {} {}: {}",

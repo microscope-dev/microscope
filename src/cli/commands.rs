@@ -229,8 +229,8 @@ pub const COMMANDS: &[CommandSpec] = &[
         Catch,
         "catch",
         [],
-        "catch [exception] [on|off] | catch syscall [entry|exit] [call...] [if <expr>]",
-        "Show or choose which exceptions language runtimes report stop, such as rust-panic, or stop at system calls, every one when none is named; $arg0..$arg5, $ret, and $path read the call"
+        "catch [exception] [on|off] | catch exec [on|off] | catch syscall [entry|exit] [call...] [if <expr>]",
+        "Show or choose which exceptions language runtimes report stop, such as rust-panic, stop each time the program executes one, or stop at system calls, every one when none is named; $arg0..$arg5, $ret, and $path read the call"
     ),
     command!(
         Delete,
@@ -1030,14 +1030,41 @@ impl Cli {
 
         let address = matches!(location, BreakpointSpec::Address(_));
 
-        let breakpoint = match self.debugger.add_breakpoint_with(location, options).await {
+        let mut waits_for_exec = false;
+        let breakpoint = match self
+            .debugger
+            .add_breakpoint_with(location.clone(), options.clone())
+            .await
+        {
             Ok(breakpoint) => breakpoint,
-            Err(error) => return Err(self.suggest(error).await),
+            Err(error) => {
+                if !self.may_wait_for_exec(&error).await {
+                    return Err(self.suggest(error).await);
+                }
+
+                waits_for_exec = true;
+                let options = microscope::BreakpointOptions {
+                    pending: true,
+                    ..options
+                };
+                self.debugger.add_breakpoint_with(location, options).await?
+            }
         };
 
         let placed = self.placed(&breakpoint).await;
         let renderer = self.renderers.stdout;
         let mut output = format::breakpoint(&breakpoint, &placed, renderer);
+
+        if waits_for_exec && breakpoint.locations.is_empty() {
+            let _ = write!(
+                output,
+                "\n{}",
+                renderer.paint(
+                    Role::Muted,
+                    "(pending: nothing loaded has it, and the program may execute one that does)"
+                )
+            );
+        }
 
         if address && !temporary && self.keeps_breakpoints() {
             let _ = write!(
@@ -1127,29 +1154,36 @@ impl Cli {
 
     /// The images of the loaded modules, or the program's before it runs.
     pub(super) async fn loaded_images(&self) -> Vec<std::sync::Arc<microscope::ModuleImage>> {
-        let Ok(loaded) = self.debugger.loaded_modules().await else {
-            return vec![self.debugger.module_image()];
-        };
+        loaded_images(&self.debugger).await
+    }
 
-        let mut images = Vec::new();
-
-        for record in loaded.modules.iter() {
-            if let Ok(image) = self.debugger.loaded_module_image(record.module.id).await {
-                images.push(image);
-            }
+    /// Whether a native breakpoint `error` refused may instead wait for a
+    /// program the process executes: nothing loaded resembles the name, so
+    /// it is no misspelling, and a loaded module imports a function that
+    /// executes programs, as env, shells, and version managers' shims do.
+    async fn may_wait_for_exec(&self, error: &microscope::Error) -> bool {
+        if !matches!(
+            error,
+            microscope::Error::FunctionNotFound(_) | microscope::Error::SourceFileNotFound(_)
+        ) {
+            return false;
         }
 
-        if images.is_empty() {
-            images.push(self.debugger.module_image());
-        }
-
-        images
+        executes_programs(&self.loaded_images().await) && self.hint(error).await.is_none()
     }
 
     /// A breakpoint's failure, with the nearest names when it names a
     /// function or source file that no loaded module has.
     async fn suggest(&self, error: microscope::Error) -> anyhow::Error {
-        let hint = match &error {
+        match self.hint(&error).await {
+            Some(hint) => anyhow!("{error}; {hint}"),
+            None => error.into(),
+        }
+    }
+
+    /// What `error` suggests the user meant, if anything.
+    async fn hint(&self, error: &microscope::Error) -> Option<String> {
+        match error {
             microscope::Error::FunctionNotFound(name) => {
                 let images = self.loaded_images().await;
                 let names = images.iter().flat_map(|image| {
@@ -1191,11 +1225,6 @@ impl Cli {
                 super::suggest::did_you_mean(&written, names)
             }
             _ => None,
-        };
-
-        match hint {
-            Some(hint) => anyhow!("{error}; {hint}"),
-            None => error.into(),
         }
     }
 
@@ -1888,7 +1917,7 @@ impl Cli {
                 process_id, child, ..
             }) => lines.push(format::child_released(process_id, child, renderer)),
             Ok(DebuggerEvent::ProgramChanged {
-                process_id,
+                process_id: Some(process_id),
                 program,
                 ..
             }) => lines.push(format::program_changed(process_id, &program.path, renderer)),
@@ -3597,6 +3626,20 @@ impl Cli {
             return self.catch_syscall(rest, spec).await;
         }
 
+        if arguments.first() == Some(&"exec") {
+            let stops = match arguments[1..] {
+                [] | ["on"] => true,
+                ["off"] => false,
+                _ => return Err(spec.usage_error()),
+            };
+            self.debugger.set_exec_stops(stops).await?;
+            return Ok(if stops {
+                "the inferior stops each time it executes a program".to_owned()
+            } else {
+                "the inferior runs on through the programs it executes".to_owned()
+            });
+        }
+
         let current = self.exception_stops();
         let filters = microscope::ExceptionStops::filters();
 
@@ -3759,6 +3802,51 @@ fn expression_error(text: &str, error: microscope::Error) -> anyhow::Error {
         microscope::Error::Expression(error) => anyhow!(format::expression_error(text, &error)),
         error => error.into(),
     }
+}
+
+/// The images of the loaded modules, or the program's before it runs.
+pub async fn loaded_images(
+    debugger: &microscope::DebuggerHandle,
+) -> Vec<std::sync::Arc<microscope::ModuleImage>> {
+    let Ok(loaded) = debugger.loaded_modules().await else {
+        return vec![debugger.module_image()];
+    };
+
+    let mut images = Vec::new();
+
+    for record in loaded.modules.iter() {
+        if let Ok(image) = debugger.loaded_module_image(record.module.id).await {
+            images.push(image);
+        }
+    }
+
+    if images.is_empty() {
+        images.push(debugger.module_image());
+    }
+
+    images
+}
+
+/// Whether one of `images` imports a function that executes a program, so
+/// that the process may run code none of them has.
+pub fn executes_programs(images: &[std::sync::Arc<microscope::ModuleImage>]) -> bool {
+    const EXECUTES: [&str; 11] = [
+        "execve",
+        "execveat",
+        "fexecve",
+        "execv",
+        "execvp",
+        "execvpe",
+        "execl",
+        "execlp",
+        "execle",
+        "posix_spawn",
+        "posix_spawnp",
+    ];
+
+    images
+        .iter()
+        .any(|image| EXECUTES.iter().any(|name| image.imports_function(name)))
 }
 
 #[cfg(test)]

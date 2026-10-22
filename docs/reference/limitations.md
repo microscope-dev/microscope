@@ -33,10 +33,12 @@ narrower limits and report them when used.
   registers.
 - Source stepping is only as precise as the compiler's line and inline-call
   information.
-- A program that runs itself again with exec is followed. One that execs a
-  different program, as a shell wrapper or a version manager's shim runs
-  Python, stops when it does, and microscope does not debug the new program:
-  launch that program itself.
+- A program that execs another, as `env`, a shell wrapper, or a version
+  manager's shim does, is followed into it, and breakpoints set before the
+  run are placed in the new program. Breakpoints set by address stay
+  pending there. A program microscope cannot read, such as one executed
+  from a memfd or deleted since, stops the process with the reason, and
+  later commands that read it are refused.
 - A child the program forks runs on without microscope, which removes its
   breakpoints, and a Python child's agent, from it first.
 - Core dumps are read-only.

@@ -1792,7 +1792,9 @@ pub enum StopReason {
     /// catches.
     Syscall(Box<SyscallStop>),
 
-    /// The process replaced its executable image.
+    /// The process executed a program: one it is followed into when
+    /// `followed`, which stops only when exec stops were asked for, or one
+    /// that could not be loaded, which every image-based request refuses.
     Exec {
         /// Whether the new image is this debugger's executable, which is
         /// then loaded with every breakpoint in place. Any other image
@@ -2032,7 +2034,11 @@ pub enum DebuggerEvent {
     /// describes it from before this event is sent.
     ProgramChanged {
         revision: u64,
-        process_id: ProcessId,
+
+        /// The process that executed the program, or none when a new
+        /// launch or attach starts from the program the session was made
+        /// for again.
+        process_id: Option<ProcessId>,
         previous: crate::LoadedModuleRecord,
         program: crate::LoadedModuleRecord,
     },

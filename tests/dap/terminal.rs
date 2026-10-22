@@ -163,3 +163,55 @@ fn a_terminal_launch_fails_when_the_client_cannot_run_one() {
     dap.event(launch.mark, "terminated", |_| true);
     dap.finish();
 }
+
+/// A program that executes another is followed into it whether it runs in
+/// the adapter or in the client's terminal: the terminal runs the program
+/// the user named, not the one it executes, and the breakpoint only the
+/// executed program has stops it there.
+#[test]
+fn a_program_that_executes_another_is_followed_into_it() {
+    for console in ["internalConsole", "integratedTerminal"] {
+        let mut dap = Dap::start(format!("exec, {console}"));
+        let started = dap.launch(
+            Profile::VsCode,
+            &fixture("exec-other"),
+            json!({"console": console}),
+            &Configuration {
+                functions: vec!["target_work".to_owned()],
+                ..Configuration::default()
+            },
+        );
+        if console == "integratedTerminal" {
+            let request = dap
+                .messages_since(started.mark)
+                .into_iter()
+                .find(|message| message["type"] == "request")
+                .expect("a runInTerminal request");
+            let args = request["arguments"]["args"].as_array().expect("args");
+            assert!(
+                args.last()
+                    .and_then(Value::as_str)
+                    .is_some_and(|program| program.ends_with("/exec-other")),
+                "{request}"
+            );
+        }
+
+        let note = dap.output_containing(started.mark, "console", " executed ");
+        assert!(note.contains("exec-target"), "{note}");
+        let stop = dap.stopped(started.mark);
+        let frames = dap.inspect_as(Profile::VsCode, &stop);
+        assert_eq!(frames[0]["name"], "target_work", "{console}");
+        assert!(
+            frames[0]["source"]["path"]
+                .as_str()
+                .is_some_and(|path| path.ends_with("exec-target.c")),
+            "{}",
+            frames[0]
+        );
+
+        let resumed = dap.send("continue", json!({"threadId": stop.thread}));
+        dap.success(resumed);
+        assert_eq!(dap.event(resumed.mark, "exited", |_| true)["exitCode"], 42);
+        dap.finish();
+    }
+}

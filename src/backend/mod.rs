@@ -82,10 +82,78 @@ pub struct Executable {
 
 pub fn executable_source(path: &Path) -> Result<ExecutableSource> {
     let named = std::path::absolute(program_file(path)?)?;
-    let path = named.canonicalize()?;
+    let path = script_interpreter(&named)?.canonicalize()?;
     let mut source = read_executable_source(&path, path.clone(), None)?;
     source.launch_path = Arc::new(named);
     Ok(source)
+}
+
+/// The most interpreters a script's interpreter line leads through, as
+/// the kernel follows them, before the program that runs is reached.
+const MAX_INTERPRETERS: usize = 4;
+
+/// The program the kernel runs when it executes `program`: `program`
+/// itself, or for a script, the interpreter its `#!` line names, and that
+/// interpreter's own if it is a script too. The kernel reads the first
+/// word after `#!` as the interpreter's path, without searching `PATH`;
+/// the rest of the line and the script's arguments are its business, and
+/// it builds the command line itself.
+fn script_interpreter(program: &Path) -> Result<PathBuf> {
+    let mut current = program.to_owned();
+
+    for _ in 0..=MAX_INTERPRETERS {
+        let Some(interpreter) = interpreter_line(&current)? else {
+            return Ok(current);
+        };
+
+        if !interpreter.is_file() {
+            return Err(Error::UnsupportedFile(
+                format!(
+                    "{} names the interpreter {}, which does not exist",
+                    current.display(),
+                    interpreter.display()
+                )
+                .into(),
+            ));
+        }
+
+        current = interpreter;
+    }
+
+    Err(Error::UnsupportedFile(
+        format!(
+            "its interpreters lead through more than {MAX_INTERPRETERS} scripts, which the \
+             kernel does not run"
+        )
+        .into(),
+    ))
+}
+
+/// The interpreter a script's `#!` line names, or `None` for a file that
+/// is no script. As the kernel reads it, the line is at most the first 256
+/// bytes, and the path is its first word.
+fn interpreter_line(path: &Path) -> Result<Option<PathBuf>> {
+    use std::io::Read as _;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    // Reading a FIFO would take bytes its reader needs; the kernel runs
+    // only regular files anyway.
+    if !fs::metadata(path)?.is_file() {
+        return Ok(None);
+    }
+
+    let mut head = Vec::with_capacity(256);
+    fs::File::open(path)?.take(256).read_to_end(&mut head)?;
+    let Some(line) = head.strip_prefix(b"#!") else {
+        return Ok(None);
+    };
+
+    let line = line.split(|byte| *byte == b'\n').next().unwrap_or_default();
+    let word = line
+        .split(|byte| matches!(byte, b' ' | b'\t'))
+        .find(|word| !word.is_empty());
+
+    Ok(word.map(|word| PathBuf::from(std::ffi::OsStr::from_bytes(word))))
 }
 
 /// The file a program names: its path, or for a name with no directory and
@@ -384,4 +452,61 @@ pub fn fuzz_debug_register_plan(data: &[u8]) {
 #[cfg(feature = "fuzzing")]
 pub fn fuzz_glibc_tls(data: &[u8]) {
     linux::fuzz_glibc_tls(data);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Writes a script under a fresh directory and reads its interpreter.
+    fn interpreter_of(head: &[u8]) -> Option<PathBuf> {
+        let directory = std::env::temp_dir().join(format!(
+            "microscope-interpreter-{}-{}",
+            std::process::id(),
+            head.len()
+        ));
+        fs::create_dir_all(&directory).expect("make a directory");
+        let script = directory.join("script");
+        fs::write(&script, head).expect("write a script");
+        let interpreter = interpreter_line(&script).expect("read the script");
+        fs::remove_dir_all(&directory).expect("remove the directory");
+        interpreter
+    }
+
+    #[test]
+    fn an_interpreter_is_the_first_word_after_the_marker() {
+        for (head, interpreter) in [
+            (
+                &b"#!/usr/bin/env node\nconsole.log(1)\n"[..],
+                Some("/usr/bin/env"),
+            ),
+            (
+                b"#! \t/usr/bin/env -S node --no-warnings\n",
+                Some("/usr/bin/env"),
+            ),
+            (b"#!/bin/sh", Some("/bin/sh")),
+            (b"#!\n", None),
+            (b"#!  \n/bin/sh\n", None),
+            (b"echo hi\n", None),
+            (b"\x7fELF\x02\x01\x01", None),
+            (b"", None),
+        ] {
+            assert_eq!(
+                interpreter_of(head).as_deref(),
+                interpreter.map(Path::new),
+                "{}",
+                String::from_utf8_lossy(head)
+            );
+        }
+    }
+
+    /// The kernel reads only the first 256 bytes, so a path that runs past
+    /// them is cut where the kernel cuts it.
+    #[test]
+    fn an_interpreter_line_ends_where_the_kernel_stops_reading() {
+        let mut head = b"#!/".to_vec();
+        head.extend(std::iter::repeat_n(b'a', 400));
+        let interpreter = interpreter_of(&head).expect("an interpreter");
+        assert_eq!(interpreter.as_os_str().len(), 254);
+    }
 }

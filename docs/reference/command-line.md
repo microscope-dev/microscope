@@ -128,6 +128,7 @@ one command.
 | `enable ID...`, `disable ID...` | Change whether sites stop |
 | `delete ID...` | Remove sites |
 | `catch syscall [entry\|exit] [CALL...] [if EXPR]` | Stop at system calls |
+| `catch exec [on\|off]` | Stop each time the program executes a program |
 | `info catchpoints` | List catchpoints |
 
 IDs can include breakpoint ranges, watchpoint IDs such as `w2`, catchpoint
