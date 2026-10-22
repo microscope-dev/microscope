@@ -320,8 +320,8 @@ explicit and keep the expected text short.
 ## DAP tests
 
 The DAP support harness starts the adapter, speaks framed JSON, tracks request
-sequence numbers, and records events. It also owns terminal requests, fork
-children, and adapter process cleanup.
+sequence numbers, and records events. It also owns terminal requests, the
+child sessions of a group's members, and adapter process cleanup.
 
 Test the mapping between DAP and the public debugger:
 
@@ -387,7 +387,7 @@ operation, verify:
 
 - the inferior was reaped or detached as promised;
 - attached processes continue with the intended signal state;
-- held fork children are accepted, released, or reaped;
+- a group's fork children are adopted, watched, released, or reaped;
 - waiter and controller threads terminate;
 - pending requests resolve with a result or terminal error;
 - adapters and web servers close sockets and child sessions;

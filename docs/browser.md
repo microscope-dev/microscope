@@ -19,6 +19,15 @@ use.
 A launched program waits for the first continue. Pass `--run` to start it at
 once. An attached process waits at its attach stop unless `--resume` is used.
 
+The processes the program starts are debugged with it as the settings
+file's [`[follow]`](reference/configuration.md#processes-the-program-starts)
+says. Once there is a second one, a process list appears above the stop
+banner. Click a process to show it in every tab; a stop shows the process
+that stopped, which the list marks. When the shown process is stopped and is
+not the program's own, a Detach button lets it run on without microscope
+while the others stay debugged. See
+[Debug the processes a program starts](debugging.md#debug-the-processes-a-program-starts).
+
 ## Move around
 
 The workspace can show source, disassembly, memory, values, registers,

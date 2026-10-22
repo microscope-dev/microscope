@@ -39,8 +39,18 @@ narrower limits and report them when used.
   pending there. A program microscope cannot read, such as one executed
   from a memfd or deleted since, stops the process with the reason, and
   later commands that read it are refused.
-- A child the program forks runs on without microscope, which removes its
-  breakpoints, and a Python child's agent, from it first.
+- The processes a program starts are debugged as the follow policy says
+  (see [Debug the processes a program starts](../debugging.md#debug-the-processes-a-program-starts)).
+  With `--follow none`, each runs on without microscope, which removes its
+  breakpoints, and a Python child's agent, from it first. With the other
+  modes, a process the policy does not debug stays traced, so another
+  debugger cannot attach to it, but each of its stops is resumed at once.
+- A started process that executes a program the policy would debug but
+  microscope cannot load runs on without being debugged, with an error
+  line, and fails a `--batch` run.
+- In a Node.js process, breakpoints are native only; microscope does not set
+  breakpoints in JavaScript.
+- An attach does not take in the processes the program started before it.
 - Core dumps are read-only.
 
 ## System calls

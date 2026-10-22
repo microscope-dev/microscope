@@ -105,18 +105,22 @@ file's `[follow]` table do:
 
 | `follow` | Debugs |
 |---|---|
-| `"auto"` (default) | Processes that run the program, or a runtime microscope models such as Node.js or Python; others are watched until they execute one |
+| `"auto"` (default) | Processes that run the program, or a runtime microscope models: Node.js, Python, or Go; others are watched until they execute one |
 | `"all"` | Every process the program starts |
 | `"none"` | Only the program; its children run on their own |
 | `{"mode": …, "programs": [...], "stop": "process"}` | As the mode says, and the named programs too; `stop` is `"group"` (default), which stops every process when one stops, or `"process"` |
 
 Each debugged process appears as a session of its own, nested under the
 session of the process that started it, and has the program's breakpoints
-before it runs an instruction. Continuing any of them continues them all.
-microscope's VS Code extension connects these sessions to the program's
-adapter itself; nvim-dap needs the adapter function above. A client that cannot
-start them is told which processes are debugged without a session to show
-them. The older `followForks: true` means `follow: "all"`.
+before it runs an instruction. With `stop` at `"group"`, continuing any of
+them continues them all. microscope's VS Code extension connects these
+sessions to the program's adapter itself; nvim-dap needs the adapter
+function above. A client that cannot start them gets a console line for each
+process that is debugged without a session to show it. The adapter does not
+read the settings file's `[follow]`; without `follow`, a configuration
+follows as `"auto"` does. The older `followForks: true` means
+`follow: "all"`, and `followForks: false` means `follow: "none"`; a
+configuration cannot give both.
 
 ## Behavior to expect
 

@@ -10,6 +10,7 @@ like the CLI and DAP server.
 | --- | --- |
 | `src/web/mod.rs`, `src/web/session.rs`, `src/web/connection.rs` | HTTP/WebSocket server and debugger-session ownership |
 | `src/web/protocol.rs` | Rust protocol types and TypeScript generation source |
+| `src/web/group.rs`, `web/src/ui/Processes.tsx` | The selected member of a process group and the process switcher |
 | `src/web/assets.rs`, `src/web/auth.rs` | Built-page serving and access control |
 | `src/web/inspect.rs`, `src/web/values.rs`, `src/web/draw.rs`, `src/web/profiles.rs` | Server adapters for major page features |
 | `src/web/syscalls.rs`, `web/src/profile/syscalls.ts`, `web/src/ui/profile/SyscallsView.tsx` | A profile's Syscalls view; see [system call tracing](syscalls.md) |
@@ -82,8 +83,23 @@ returns notices or typed answers the page can render.
 
 Keep blocking file work and profile loading away from the controller thread.
 Backpressure every stream that can be driven by a browser. A disconnected tab
-must release its subscriptions, pending replies, drawing work, and held child
-decisions.
+must release its subscriptions, pending replies, and drawing work.
+
+## Process groups
+
+A launched or attached program is a `ProcessGroup` that follows as the
+settings' `[follow]` says (`src/web/mod.rs`, `src/web/session.rs`).
+`src/web/group.rs` keeps the session's selected member: the state every tab
+receives describes it, and every request about the program acts on its
+handle, except breakpoints, which are the group's and go to the root. The
+selection belongs to the session, not to a tab. A group stop selects the
+member that stopped. `State::group` carries the members, the selected one,
+and the one whose stop stopped the group. `selectMember` and `detachMember`
+change them.
+
+`web/src/ui/Processes.tsx` draws the switcher above the stop banner once the
+group has a second member, with a Detach button for a stopped member other
+than the root.
 
 ## Generated protocol
 

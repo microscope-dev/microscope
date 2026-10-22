@@ -326,8 +326,14 @@ bootstrap is a private `/tmp/.microscope-python-*` directory that holds:
 
 The launch prepends the directory to `PYTHONPATH`, and names the FIFO and
 the original `PYTHONPATH` in `MICROSCOPE_PYTHON_WAKE` and
-`MICROSCOPE_PYTHON_PATH`. The bootstrap first restores both variables and
-`sys.path`. Only in the process named in `pid` does it then go on:
+`MICROSCOPE_PYTHON_PATH`. The bootstrap first removes its directory from
+`sys.path`, and restores both variables unless `MICROSCOPE_PYTHON_FOLLOW`
+is `1`. A launch whose group follows children sets it, so the variables
+reach child interpreters. A process the group adopts that runs 3.12 or
+3.13 gets a FIFO of its own, `wake-PID` in the same directory, made before
+it runs (`LinuxTraceOps::python_join`); a forked interpreter's bootstrap
+reopens its own FIFO at fork. Only in the process named in `pid`, or one
+whose `wake-PID` exists, does it then go on:
 
 - It records the main thread's ident as `_microscope_bootstrap.main`, since
   3.12 has no `_thread._get_main_thread_ident`.
@@ -469,9 +475,11 @@ source injection. The first source configuration loads a pristine companion
 whose published sequence is zero; subsequent commands use its slot. Generations
 are monotonic within one library owner, and controller hook binding must
 distinguish owners.
-A forked child, which no debugger traces, is disarmed by the agent's
-`after_in_child` fork hook, which frees its tool. Its `before` hook takes the
-agent's lock for the fork, and `after_in_parent` releases it, so no other
+A forked child is disarmed by the agent's `after_in_child` fork hook, which
+frees its tool, unless the installation was made in the child itself: a
+group that adopts the child can configure the agent from an earlier
+at-fork handler, and that installation stays. The agent's `before` hook
+takes its lock for the fork, and `after_in_parent` releases it, so no other
 thread holds it in the child: the child's earlier fork handlers, such as
 `threading`'s, run monitored, and their callbacks would otherwise wait
 forever for a thread that does not exist there. The child reinitializes the

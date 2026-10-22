@@ -54,6 +54,7 @@ launch configuration, `-c` files, then `-e` commands.
 | `[breakpoints]` | Saved-breakpoint behavior |
 | `[debug-info]` | Separate debug-file directories and debuginfod |
 | `[history]` | REPL history size |
+| `[follow]` | Which processes the program starts are debugged, and what a stop in one stops |
 | `[signals]` | Per-signal stop, print, and delivery policy |
 | `[aliases]` | Additional command names |
 | `[startup]` | Commands run at startup |
@@ -70,6 +71,32 @@ each run of a language runtime's own frames, such as an interpreter's frames
 between Python frames, shows as one line. With `"show"`, backtraces show every
 frame. `bt -r` shows every frame for one command, and `set runtime-frames`
 changes the setting for a session.
+
+## Processes the program starts
+
+`[follow]` sets the follow policy, which decides which processes a launched
+or attached program starts are debugged with it. See
+[Debug the processes a program starts](../debugging.md#debug-the-processes-a-program-starts).
+
+```toml
+[follow]
+mode = "auto"
+programs = ["worker*"]
+stop = "group"
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `mode` | `"auto"` | `"auto"`: processes that run the program itself, or Node.js, Python, or Go; `"all"`: every process; `"none"`: only the program's own |
+| `programs` | `[]` | More programs to debug, by file name, where `*` matches any run of characters and `?` any one |
+| `stop` | `"group"` | `"group"`: a stop in one process stops every debugged process; `"process"`: only the one that stopped |
+
+`--follow` overrides `mode` with a mode it names, and replaces `programs`
+with the programs it names. A project file's `[follow]` applies without
+trust. `microscope web` reads `[follow]` from the same files, and takes no
+`--follow`.
+The editor adapter does not read it; a launch or attach configuration sets
+[`follow`](../editors.md#processes-the-program-starts) instead.
 
 ## Launch configurations
 

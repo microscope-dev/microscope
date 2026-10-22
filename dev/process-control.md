@@ -10,6 +10,9 @@ presents one all-stop process.
 | `src/backend/linux.rs` | Controller state and the main Linux event loop |
 | `src/backend/linux/native.rs`, `src/backend/linux/native_tracee.rs` | Real kernel operations and native tracee access |
 | `src/backend/linux/lifecycle.rs`, `src/backend/linux/new_task.rs` | Launch, attach, fork, clone, exec, exit, and detach |
+| `src/backend/linux/tracer.rs`, `src/backend/linux/wait_hub.rs` | The tracer thread that hosts controllers, and the one waiter that routes their statuses |
+| `src/backend/linux/follow.rs` | The follow policy, fork transfer, exec promotion and demotion, and watched processes |
+| `src/group.rs` | `ProcessGroup` and `GroupHandle`: members, group stops, and breakpoint mirroring |
 | `src/backend/linux/classify.rs`, `src/backend/linux/internal_stops.rs` | Raw wait-status classification and internal stops |
 | `src/backend/linux/run_control.rs`, `src/backend/linux/stepping.rs`, `src/backend/linux/step_targets.rs` | Resume, pause, and stepping plans |
 | `src/backend/linux/breakpoints.rs`, `src/backend/linux/managed.rs`, `src/backend/linux/watchpoints.rs`, `src/backend/linux/writes.rs` | Breakpoint sites and runtime arming, hardware watches, and stopped-state writes |
@@ -17,13 +20,31 @@ presents one all-stop process.
 | `src/backend/linux/catchpoints.rs` | System call catchpoints; see [system call tracing](syscalls.md) |
 | `src/backend/linux/recorded.rs`, `src/backend/linux/sim_edge.rs` | Recorded native calls and the simulator boundary |
 | `tests/debugger/`, `tests/watchpoints.rs`, `tests/hit_counts.rs` | End-to-end process-control behavior |
+| `tests/debugger/group.rs`, `tests/dap/forks.rs` | Process groups through the library and through DAP child sessions |
 | `tests/fixtures/c/` | Native programs used to force lifecycle and concurrency states |
 
 ## Thread ownership
 
-The controller runs on the OS thread that created the tracee. Every ptrace call
-must run there. A waiter thread may block in `waitpid` and send the resulting
-status to the controller; it must never call ptrace.
+ptrace ties a tracee to the OS thread that traced it, and the kernel traces a
+traced process's fork children to that same thread. So each live session has
+a tracer thread (`tracer.rs`) that creates or attaches its tracees, and every
+ptrace call runs there. A tracer thread hosts one controller per debugged
+process. It serves each controller's queue in turn, through the same
+`handle_message` a controller always runs, and parks while none has a
+message. A session of one process has a tracer thread to itself
+(`Tracer::alone`); a process group shares one. A core dump's controller runs
+on a thread of its own and makes no ptrace calls.
+
+`waitpid(-1)` returns any traced child's status, so each tracer thread has
+exactly one waiter, the wait hub (`wait_hub.rs`). It routes each status to
+the controller that owns the thread it reports on: the controller of the
+thread's process, or, for a new process whose fork event has not arrived
+yet, its parent's. It remembers each routed thread until that thread's exit
+status. The hub never calls ptrace.
+
+The tracer thread lives until every controller has ended and every handle to
+it is dropped, since a launched process dies with the thread that launched
+it.
 
 Tokio coordinates clients and message passing. It does not own blocking native
 process control.
@@ -65,9 +86,10 @@ their siblings remain stopped.
 A vfork child, and anything `system` or `posix_spawn` starts, shares the
 parent's memory until it execs or exits. Every installed trap is lifted for
 that window, from the parent's `VFORK` event to its `VFORK_DONE`, and the
-parent's siblings stay stopped meanwhile. The child is released only after the
-traps are lifted. A pause requested during the window completes once the child
-execs or exits, since the vforking thread cannot stop until then.
+parent's siblings stay stopped meanwhile. The child is released, or handed to
+its group's watcher, only after the traps are lifted. A pause requested
+during the window completes once the child execs or exits, since the
+vforking thread cannot stop until then.
 
 ## Exec
 
@@ -85,6 +107,12 @@ A followed exec in a continued process runs on unless `set_exec_stops` asked
 it to stop; a step's plan was the old image's, so a step ends there. A
 program that cannot be loaded stops the process with `Exec { followed: false }`
 and the reason, which every image-based request then refuses with.
+
+A group's root follows every program it executes this way, and so does a
+member whose new program the follow policy debugs. A member whose new
+program the policy does not debug is demoted at the exec stop: its
+controller lets the process go to the group's watcher (`demotes_at_exec`).
+See [Process groups](#process-groups).
 
 ## Testing control changes
 
@@ -296,16 +324,78 @@ SIGKILL, group exit, exec, and fork can invalidate normal assumptions about
 memory, thread lists, and ownership. Handle them as lifecycle transitions,
 not ordinary signals.
 
-## Fork children
+## Process groups
 
-When follow-fork behavior is enabled, a fork child begins traced and stopped.
-The session can hand it to a client as a held process. Until a client attaches
-or releases it, ownership must be clear and cleanup must not strand it.
+A launch or attach through `ProcessGroup` debugs the program and the
+processes it starts. The `FollowPolicy` (`src/protocol.rs`) decides which
+are debugged: its `FollowMode`, `programs` globs matched against a
+program's file name, and a `StopScope`. `Policy::decide` in `follow.rs`
+judges a program by its path and inode. `auto` debugs the program the group
+was made for wherever it runs again, by inode, a program
+`program_runtime` recognizes as Node.js, CPython, or Go, and the named
+programs. `all` debugs everything. With `none`, the root never joins the
+group, so its fork children are scrubbed and released as a single session's
+are.
 
-Holding, accepting, refusing, and abandoning children all need tests for
-parent exit, client disconnect, adapter shutdown, and child exit. A child must
-end attached to one controller, running untraced, or reaped; there is no valid
-forgotten state.
+Every process of a group is traced by the group's one tracer thread, and
+each debugged process, a member, has a controller of its own there. A
+process moves between owners on that thread only, so none runs untraced in
+between. A controller hands a process over by queuing a `Handover` in the
+shared `Following`; the tracer thread takes it once the message that found
+it has been served:
+
+- **Fork.** A member's controller removes the traps a fork child inherited,
+  then transfers the child, stopped in its first stop, with the parent's
+  program already read. The child gets a controller (`Start::Adopt`) under
+  every mode but `none`, since it runs a program the group debugs. A child
+  that cannot be scrubbed is killed rather than left with traps.
+- **vfork.** A vfork child goes to the watcher until it executes a program,
+  since it shares its parent's memory.
+- **Promotion at exec.** A watched process that executes a program the
+  policy debugs gets a controller whose initial stop is that exec event
+  (`Start::AdoptExec`). A program that cannot be loaded is reported as
+  `GroupNotice::Unfollowed`, and the process stays watched.
+- **Demotion at exec.** A member, other than the root, that executes a
+  program the policy does not debug goes to the watcher.
+
+An adopted CPython 3.12 or 3.13 process also gets its own channel to the
+launch's Python bootstrap before it runs (`join_python_bootstrap`); see
+[runtime models](runtime-models.md).
+
+The watcher (`Watcher` in `follow.rs`) runs on the tracer thread and keeps
+processes traced without debugging them. It resumes each of their stops at
+once with its signal, and notes only forks, threads, execs, and exits.
+
+`src/group.rs` drives the members from a tokio task. Each new member is a
+`DebuggerHandle` of its own, numbered from 1, the root, in the order members
+joined. While the member is in its first stop, the driver copies every one
+of the root's breakpoints into it, then resumes it unless the group is
+stopped, so a member runs no instruction without them. The root's
+breakpoints are the group's. A change to them is mirrored into every
+member. `Shared::copies` maps each member's copy back to the root's
+breakpoint, and `GroupHandle::group_breakpoint` translates a member's hit
+for clients. The first stop a temporary breakpoint causes in any member
+deletes the group's breakpoint.
+
+With `StopScope::Group`, one member's stop pauses every other running
+member. `GroupEvent::GroupStopped` is published once none is left running.
+A stop that another member made while the group was stopping is queued.
+`continue_all` reports a queued stop before it resumes anything;
+`resume_all` drops the queue, for a client that already shows each
+member's stop. With `StopScope::Process`, each member's stop is reported
+alone.
+
+Ending the group ends every member, killing launched processes and
+releasing attached ones, then the watched processes, and then joins the
+tracer thread. `GroupHandle::detach` releases one stopped member; the root
+cannot be detached alone. A member whose session ends while it still debugs
+its process releases it and reports `MemberLost`. An attached group adopts
+only the processes started after the attach.
+
+A process must end hosted by one controller, watched, running untraced, or
+reaped; there is no valid forgotten state. Test group changes for parent
+exit, child exit, shutdown, detach, and client disconnect, as
+`tests/debugger/group.rs` and `tests/dap/forks.rs` do.
 
 ## Memory access
 

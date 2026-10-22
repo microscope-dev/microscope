@@ -687,32 +687,32 @@ group.add_breakpoint(spec) · group.remove_breakpoint(id) · group.continue_all(
       <h2>Phases</h2>
       <div class="prose"><p>Each phase ships something a user sees, and lands in its own commits with its documentation: <code>docs/reference/limitations.md</code> and <code>docs/languages.md</code> lose the sentences quoted above as each case starts working, and <code>dev/process-control.md</code> gains the group.</p></div>
       <div class="phase">
-        <header><span class="pid">G0</span><h3>Honest refusals</h3><span class="st todo">todo</span></header>
+        <header><span class="pid">G0</span><h3>Honest refusals</h3><span class="st done">done</span></header>
         <p>Reproduce F10 and fix it if it holds. A line for every child released and every exec not followed in the CLI and web. A batch run exits non-zero after an exec it did not follow. Scripts fail naming their interpreter. Attach by name matches script arguments and titles and lists candidates.</p>
         <p class="exit">Exit: no process microscope lets go is unreported in any client.</p>
       </div>
       <div class="phase">
-        <header><span class="pid">G1</span><h3>Exec and scripts</h3><span class="st todo">todo</span></header>
+        <header><span class="pid">G1</span><h3>Exec and scripts</h3><span class="st done">done</span></header>
         <p><code>MainProgram</code> as a refactor; exec into another program with fresh ids and <code>ProgramChanged</code>; the handle's current image; client updates; pending native breakpoints in the CLI and web; <code>catch exec</code>; script launch.</p>
         <p class="exit">Exit: <code>env node</code>, <code>bash -c</code>, a shim, and <code>./cli.js</code> stop at a breakpoint set before <code>run</code>, in every client. <code>just stress</code> and <code>just sim 600</code> pass.</p>
       </div>
       <div class="phase">
-        <header><span class="pid">G2</span><h3>One tracer, several controllers</h3><span class="st todo">todo</span></header>
+        <header><span class="pid">G2</span><h3>One tracer, several controllers</h3><span class="st done">done</span></header>
         <p>The tracer thread and router; controllers driven through <code>handle_message</code>; the blocking-call audit; loading off the thread; a single session as a group of one. No behavior change.</p>
         <p class="exit">Exit: the whole suite passes on the new thread model; the latency check reports nothing.</p>
       </div>
       <div class="phase">
-        <header><span class="pid">G3</span><h3>Following children</h3><span class="st todo">todo</span></header>
+        <header><span class="pid">G3</span><h3>Following children</h3><span class="st done">done</span></header>
         <p>Transfer at fork; watched processes; promotion at exec; vfork children decided at exec; the follow policy; group breakpoints and group stops; <code>ProcessGroup</code>; the simulator extension.</p>
         <p class="exit">Exit: the group scenarios, fake-edge orderings, and <code>just sim 600</code> pass.</p>
       </div>
       <div class="phase">
-        <header><span class="pid">G4</span><h3>The group in every client</h3><span class="st todo">todo</span></header>
+        <header><span class="pid">G4</span><h3>The group in every client</h3><span class="st doing">doing</span></header>
         <p>CLI <code>processes</code>, selection, asynchronous notices, and batch rules; the web switcher; one DAP adapter for the group, with child sessions routed back by VS Code's descriptor factory and nvim-dap's adapter function, replacing <code>followForks</code>' separate adapters; the Node preload for children, with every waiting node released, and the 3.12/3.13 bootstrap for children. G4 needs the Node plan's inspector transport (N3), and N3's exit needs G4, so the two land as one milestone.</p>
         <p class="exit">Exit: <code>npm start</code>, <code>npx</code>, <code>node --test</code>, <code>--watch</code>, and Python pools stop at the user's breakpoint in the CLI, the browser, VS Code, and nvim-dap, with Yama's <code>ptrace_scope</code> 1 and no adoption timeouts. This is the condition the Node plan's N3 exit names.</p>
       </div>
       <div class="phase">
-        <header><span class="pid">G5</span><h3>Retire the held-child hand-over</h3><span class="st todo">todo</span></header>
+        <header><span class="pid">G5</span><h3>Retire the held-child hand-over</h3><span class="st done">done</span></header>
         <p>Remove <code>hold_forks</code>, <code>attach_held</code>, <code>release_held</code>, <code>still_held</code>, <code>MICROSCOPE_ADOPTION_TIMEOUT</code>, and their simulator model, once no client uses them; <code>plans/forks.md</code> stays as the decision record.</p>
         <p class="exit">Exit: the suite and <code>just sim 600</code> pass with the hand-over gone.</p>
       </div>

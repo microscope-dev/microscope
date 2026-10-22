@@ -37,6 +37,7 @@ TOOL --help` for one tool.
 | `-l, --launch NAME` | Use a project launch configuration |
 | `--cwd DIR` | Working directory for a launched program |
 | `--env NAME=VALUE` | Add an environment value; repeatable |
+| `--follow MODE\|PROGRAM` | Which processes the program starts are debugged too: `auto`, `all`, or `none`, or a program to debug by file name, such as `node` or `'py*'`; repeatable. Overrides [`[follow]`](configuration.md#processes-the-program-starts); not with `--core` |
 | `--sysroot DIR` | Root used to find files named by a core dump |
 | `--module-path DIR` | Search for missing core-dump modules; repeatable |
 | `--allow-module-mismatch` | Accept a module that cannot be proven to match the dump |
@@ -57,7 +58,7 @@ TOOL --help` for one tool.
 |---|---|
 | `-c, --command FILE` | Run commands from a file; repeatable |
 | `-e, --eval COMMAND` | Run one command; repeatable |
-| `--batch` | Exit after commands instead of opening the REPL. Fails when the program replaced itself with another program microscope did not follow |
+| `--batch` | Exit after commands instead of opening the REPL. Fails when the program replaced itself with another program microscope did not follow, or a process it started executed a program the follow policy debugs but microscope could not load |
 | `--config FILE` | Use this user configuration file |
 | `--no-config` | Read no configuration files |
 | `--trust-project` | Use active project commands for this session |
@@ -102,7 +103,7 @@ one command.
 | Command | Purpose |
 |---|---|
 | `run` | Start or restart a launched program |
-| `continue` | Resume until the next stop |
+| `continue` | Resume until the next stop; resumes every debugged process |
 | `step` | Step into the next source line or named call |
 | `next` | Step over calls on the next source line |
 | `finish` | Run until the selected frame returns |
@@ -144,6 +145,18 @@ IDs such as `c1`, or `all` where the command permits it.
 | `goroutines`, `goroutine ID` | List or select Go goroutines |
 | `tasks`, `task ID` | List or select runtime tasks |
 | `print`, `pp` | With no expression, show the selected frame's variables |
+
+### Processes
+
+These commands act on the processes a program starts that microscope
+debugs with it; see
+[Debug the processes a program starts](../debugging.md#debug-the-processes-a-program-starts).
+
+| Command | Purpose |
+|---|---|
+| `processes` | List the debugged processes, their numbers, and where each is; `*` marks the selected one |
+| `process N` | Select process `N`, which later commands act on |
+| `detach process N` | Let stopped process `N` run on without microscope; the others stay debugged |
 
 ### Values and machine state
 

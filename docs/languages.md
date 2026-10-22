@@ -345,11 +345,14 @@ off in the interpreter (`PYTHON_DISABLE_REMOTE_DEBUG` or
 Python 3.12 and 3.13 cannot be asked to run the agent. When microscope
 launches one of them, it gives the interpreter a `sitecustomize` through
 `PYTHONPATH` that takes the agent from microscope. That `sitecustomize`
-first restores `PYTHONPATH` and `sys.path`, so neither the program nor its
-children see the change, and then imports the program's own
-`sitecustomize`, if it has one. It keeps one idle thread waiting for
-microscope, which `threading` does not list. The bootstrap does not run in
-these cases:
+first removes its directory from `sys.path`, and then imports the
+program's own `sitecustomize`, if it has one. With `--follow none`, it also
+restores `PYTHONPATH`, so neither the program nor its children see the
+change. With the other follow modes, it leaves `PYTHONPATH` and its
+`MICROSCOPE_PYTHON_*` variables in the environment, so that the
+interpreters the program starts take the agent too. It keeps one idle
+thread waiting for microscope, which `threading` does not list. The
+bootstrap does not run in these cases:
 
 - an interpreter microscope attached to;
 - an interpreter started with `-I`, `-E`, or `-S`, which skip
@@ -361,12 +364,22 @@ free-threaded build stops listing code to its collector once a second
 thread starts, so the agent could not find code that is already running.
 It takes no Python breakpoints; 3.14t does.
 
-A child the program forks, as `multiprocessing` does, runs without microscope:
-its breakpoints and microscope's agent are removed from it. A wrapper that
-execs Python, such as a pyenv shim or `env python3`, is followed into the
-interpreter. Python 3.14 and later then load the agent as an attach does;
-3.12 and 3.13 take it only from a launch of the interpreter itself, so launch
-those directly to set Python breakpoints.
+The interpreters a program starts, as `subprocess` and `multiprocessing`
+do, and the processes it forks are debugged as the follow policy says (see
+[Debug the processes a program starts](debugging.md#debug-the-processes-a-program-starts)).
+Python breakpoints work in each one microscope debugs. Python 3.14 and
+later load the agent as an attach does. 3.12 and 3.13 take it from the
+bootstrap, which reaches a child only when microscope launched a 3.12 or
+3.13 interpreter, the follow mode is not `none`, and the child kept the
+environment and does not skip it with `-I`, `-E`, or `-S`. Like the
+program, a child running CPython 3.13's free-threaded build takes no Python
+breakpoints. With `--follow none`, each child runs without
+microscope: its breakpoints and microscope's agent are removed from it.
+
+A wrapper that execs Python, such as a pyenv shim or `env python3`, is
+followed into the interpreter. Python 3.14 and later then load the agent as
+an attach does; 3.12 and 3.13 take it only from a launch of the interpreter
+itself, so launch those directly to set Python breakpoints.
 
 A hit selects the program's frame. The backtrace folds the frames inside it
 that report the hit: microscope's agent and the interpreter's own. Conditions, hit counts, and log

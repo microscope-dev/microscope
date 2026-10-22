@@ -58,6 +58,74 @@ positional executable when that is not possible.
 Quitting an attached session detaches and leaves the process alive. Killing an
 attached process requires an explicit command.
 
+## Debug the processes a program starts
+
+A launched or attached program and the processes it starts are debugged as
+one group. Each debugged process is a member, numbered from `[1]`, the
+program's own process. A member gets every breakpoint before it runs its
+first instruction, and a breakpoint set later reaches every member. When one
+member stops, the others stop too, unless the `[follow]` setting `stop` is
+`"process"`. The stop selects the member that stopped:
+
+```text
+(microscope) break child_work
+breakpoint 1 set at child_work at tests/fixtures/c/tree.c:31
+(microscope) run
+[2] process 1063951 (tree 1 direct) joined, started by [1]
+in [2] process 1063951 (tree 1 direct)
+stopped at breakpoint 1 (hit 1) in child_work at tests/fixtures/c/tree.c:31
+(microscope [2]) processes
+  [1] process 1063941 (tree 1 direct)  inferior paused
+* [2] process 1063951 (tree 1 direct)  stopped at breakpoint 1 (hit 1)
+(microscope [2]) process 1
+selected [1]
+```
+
+Process IDs differ from run to run. Once the group has a second member, the
+prompt names the selected one. Commands such as `backtrace`, `print`, and
+`step` act on the selected member. `continue` resumes every member, except
+that a stop another member made while the group was stopping is reported
+first, without resuming anything. `detach process N` lets a stopped member
+run on without microscope while the others stay debugged. The program's own
+process, `[1]`, cannot be detached alone. Lines about members that join,
+exit, or stop being debugged print as they happen, between commands too.
+
+The follow policy decides which processes are members. Choose it with
+`--follow MODE` or the [`[follow]` settings](reference/configuration.md#processes-the-program-starts):
+
+| Mode | Members |
+|---|---|
+| `auto` (default) | Processes that run the program itself, or a program of a runtime microscope models: Node.js, Python, or Go |
+| `all` | Every process the program starts |
+| `none` | Only the program's process; each process it starts runs without microscope, with a line saying so |
+
+A fork child runs its parent's program, so under `auto` and `all` a fork
+child of a member is a member too. A process the policy does not debug, such
+as a shell between `npm` and `node`, is watched: it runs as it would without
+microscope, and becomes a member if it executes a program the policy
+debugs. A member other than `[1]` that executes a program the policy does
+not debug is watched from then on, with a line saying so; `[1]` is followed
+into every program it executes. A vfork child, as `system` and
+`posix_spawn` make, is watched until it executes a program.
+
+`--follow` also takes program names to debug besides those the mode
+chooses, matched against the file name with `*` and `?`, and may be
+repeated:
+
+```sh
+microscope --follow 'worker*' ./server
+```
+
+Native breakpoints work in a Node.js member. microscope does not set
+breakpoints in JavaScript. Python breakpoints in members are described under
+[Python](languages.md#python).
+
+An attached group follows the processes the program starts from then on.
+Processes it started before the attach are not members.
+
+In a `--batch` run, microscope exits with an error when a process executed a
+program the policy would debug but microscope could not load.
+
 ## Open a core dump
 
 ```sh
