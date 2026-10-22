@@ -34,8 +34,8 @@ enum Input {
 
 /// What the line editor does after its input is handled.
 enum Reply {
-    /// Reads the next line, completing from the context.
-    Read(Arc<complete::Context>),
+    /// Reads the next line after the prompt, completing from the context.
+    Read(Arc<complete::Context>, String),
     Quit,
 
     /// Asks a question and sends the answer.
@@ -113,11 +113,47 @@ impl rustyline::Helper for LineHelper {}
 /// Rustyline blocks, so it runs on its own thread. After sending each line
 /// the editor waits for a reply, which keeps it from reading the terminal
 /// while a command, and possibly the inferior, is running.
+/// What a line typed at the prompt does: runs its command, or one an empty
+/// line repeats, or asks before a quit would kill the program.
+async fn entered_line(
+    cli: &Cli,
+    entered: &str,
+    confirm: bool,
+    last_repeatable: &mut Option<String>,
+) -> Next {
+    // An empty line repeats the last repeatable command.
+    let command = if entered.is_empty() {
+        last_repeatable.clone().unwrap_or_default()
+    } else {
+        let expanded = cli.expand_alias(entered);
+        let repeatable = expanded
+            .as_deref()
+            .unwrap_or(entered)
+            .split_whitespace()
+            .next()
+            .and_then(|word| resolve_command(word).ok())
+            .is_some_and(|spec| spec.repeatable);
+        *last_repeatable = repeatable.then(|| entered.to_owned());
+        entered.to_owned()
+    };
+
+    if confirm
+        && quits(cli, &command)
+        && let Some(process) = cli.live_process().await
+    {
+        Next::Ask(format!(
+            "the program is still running (process {process}); kill it and quit? (y or n) "
+        ))
+    } else {
+        run_line(cli, &command).await
+    }
+}
+
 pub async fn run(cli: &Cli, confirm: bool) -> Result<()> {
     let (input_sender, mut inputs) = tokio::sync::mpsc::channel(1);
     let (ack_sender, acknowledgements) = mpsc::channel::<Reply>();
     let renderers = cli.renderers;
-    let prompt = cli.settings.config.ui.prompt.clone();
+    let prompt = cli.prompt();
     let history_size = cli.settings.config.history.size;
     let context = Arc::new(cli.completion_context().await);
     let editor = thread::Builder::new()
@@ -127,7 +163,7 @@ pub async fn run(cli: &Cli, confirm: bool) -> Result<()> {
                 &input_sender,
                 &acknowledgements,
                 renderers,
-                &prompt,
+                prompt,
                 history_size,
                 context,
             );
@@ -135,41 +171,40 @@ pub async fn run(cli: &Cli, confirm: bool) -> Result<()> {
 
     let mut outcome = Ok(());
     let mut last_repeatable = None;
-    while let Some(input) = inputs.recv().await {
+    let mut group_events = cli.group_events();
+
+    // What the group does while the editor waits for a line prints before
+    // the next command's output; while a command runs, the command reports
+    // it. Rustyline's external printer would print it above the prompt at
+    // once, but loses typed input that arrives in one read with it.
+    let mut at_prompt = true;
+    let mut notices = Vec::new();
+    loop {
+        let input = tokio::select! {
+            input = inputs.recv() => match input {
+                Some(input) => input,
+                None => break,
+            },
+            event = next_group_event(&mut group_events) => {
+                if at_prompt
+                    && let Some(line) = cli.group_notice(&event)
+                {
+                    notices.push(line);
+                }
+                continue;
+            }
+        };
+        at_prompt = false;
+        for notice in std::mem::take(&mut notices) {
+            println!("{notice}");
+        }
+
         let next = match input {
             Input::Line(text, dimensions) => {
                 if let Some((columns, rows)) = dimensions {
                     cli.set_dimensions(columns, rows);
                 }
-
-                let entered = text.trim();
-
-                // An empty line repeats the last repeatable command.
-                let command = if entered.is_empty() {
-                    last_repeatable.clone().unwrap_or_default()
-                } else {
-                    let expanded = cli.expand_alias(entered);
-                    let repeatable = expanded
-                        .as_deref()
-                        .unwrap_or(entered)
-                        .split_whitespace()
-                        .next()
-                        .and_then(|word| resolve_command(word).ok())
-                        .is_some_and(|spec| spec.repeatable);
-                    last_repeatable = repeatable.then(|| entered.to_owned());
-                    entered.to_owned()
-                };
-
-                if confirm
-                    && quits(cli, &command)
-                    && let Some(process) = cli.live_process().await
-                {
-                    Next::Ask(format!(
-                        "the program is still running (process {process}); kill it and quit? (y or n) "
-                    ))
-                } else {
-                    run_line(cli, &command).await
-                }
+                entered_line(cli, text.trim(), confirm, &mut last_repeatable).await
             }
             Input::Answer(answer) => {
                 if answer.trim().to_ascii_lowercase().starts_with('y') {
@@ -190,7 +225,10 @@ pub async fn run(cli: &Cli, confirm: bool) -> Result<()> {
         };
 
         let reply = match next {
-            Next::Read => Reply::Read(Arc::new(cli.completion_context().await)),
+            Next::Read => {
+                at_prompt = true;
+                Reply::Read(Arc::new(cli.completion_context().await), cli.prompt())
+            }
             Next::Quit => Reply::Quit,
             Next::Ask(question) => Reply::Ask(question),
         };
@@ -236,11 +274,29 @@ fn quits(cli: &Cli, line: &str) -> bool {
         .is_some_and(|spec| spec.command == Command::Quit)
 }
 
+/// The next event of the session's group, or never, for a session of one
+/// process.
+async fn next_group_event(
+    events: &mut Option<tokio::sync::broadcast::Receiver<microscope::GroupEvent>>,
+) -> microscope::GroupEvent {
+    loop {
+        let Some(receiver) = events.as_mut() else {
+            return std::future::pending().await;
+        };
+
+        match receiver.recv().await {
+            Ok(event) => return event,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => *events = None,
+        }
+    }
+}
+
 fn line_editor(
     input: &tokio::sync::mpsc::Sender<Input>,
     acknowledgements: &mpsc::Receiver<Reply>,
     renderers: Renderers,
-    prompt: &str,
+    mut prompt: String,
     history_size: u32,
     context: Arc<complete::Context>,
 ) {
@@ -287,10 +343,9 @@ fn line_editor(
         ));
     }
 
-    let styled_prompt = renderers.stdout.paint(Role::Prompt, prompt).to_string();
-
     loop {
-        match editor.readline(&(prompt, &styled_prompt)) {
+        let styled_prompt = renderers.stdout.paint(Role::Prompt, &prompt).to_string();
+        match editor.readline(&(prompt.as_str(), styled_prompt.as_str())) {
             Ok(line) => {
                 if !line.trim().is_empty()
                     && let Err(error) = editor.add_history_entry(line.as_str())
@@ -305,8 +360,9 @@ fn line_editor(
                     break;
                 }
 
-                if !follow_replies(&mut editor, input, acknowledgements) {
-                    break;
+                match follow_replies(&mut editor, input, acknowledgements) {
+                    Some(next) => prompt = next,
+                    None => break,
                 }
             }
             Err(ReadlineError::Interrupted) => {}
@@ -330,22 +386,23 @@ fn line_editor(
 }
 
 /// Follows the replies to a line, asking the questions they ask, until one
-/// says to read the next line, which returns true, or to stop.
+/// says to read the next line, which returns the prompt to read it after,
+/// or to stop.
 fn follow_replies(
     editor: &mut Editor<LineHelper, DefaultHistory>,
     input: &tokio::sync::mpsc::Sender<Input>,
     replies: &mpsc::Receiver<Reply>,
-) -> bool {
+) -> Option<String> {
     loop {
         let answer = match replies.recv() {
-            Ok(Reply::Read(context)) => {
+            Ok(Reply::Read(context, prompt)) => {
                 if let Some(helper) = editor.helper_mut() {
                     helper.context = context;
                 }
 
-                return true;
+                return Some(prompt);
             }
-            Ok(Reply::Quit) | Err(_) => return false,
+            Ok(Reply::Quit) | Err(_) => return None,
             Ok(Reply::Ask(question)) => match editor.readline(&question) {
                 Ok(answer) => Input::Answer(answer),
                 Err(ReadlineError::Interrupted) => Input::Answer(String::new()),
@@ -356,7 +413,7 @@ fn follow_replies(
         };
 
         if input.blocking_send(answer).is_err() {
-            return false;
+            return None;
         }
     }
 }

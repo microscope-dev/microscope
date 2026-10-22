@@ -2972,6 +2972,180 @@ pub fn program_changed(
     )
 }
 
+/// A group member as a line names it: its number, process, and command.
+pub fn member(member: &microscope::Member, renderer: Renderer) -> String {
+    let process = member.process.map_or_else(String::new, |process| {
+        format!(" process {}", renderer.paint(Role::Metadata, process))
+    });
+    let command = if member.command.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", elide_command(&member.command))
+    };
+
+    format!(
+        "{}{process}{command}",
+        renderer.paint(Role::Metadata, format!("[{}]", member.number))
+    )
+}
+
+/// A command line short enough for one line of a list: its program by
+/// file name, as `ps` names it, then its arguments.
+fn elide_command(command: &str) -> String {
+    const LONGEST: usize = 60;
+    let (program, arguments) = command.split_once(' ').unwrap_or((command, ""));
+    let program = program.rsplit('/').next().unwrap_or(program);
+    let command = if arguments.is_empty() {
+        program.to_owned()
+    } else {
+        format!("{program} {arguments}")
+    };
+    if command.chars().count() <= LONGEST {
+        return command;
+    }
+
+    let mut short = command.chars().take(LONGEST - 1).collect::<String>();
+    short.push('…');
+    short
+}
+
+/// What a member's process did, as a line of a session's output.
+fn exit_description(status: &ExitStatus, renderer: Renderer) -> String {
+    match status {
+        ExitStatus::Code(code) => format!(
+            "{} with status {}",
+            renderer.paint(exit_role(*code), "exited"),
+            exit_code(*code, renderer)
+        ),
+        ExitStatus::Terminated(info) => format!(
+            "{} by {}",
+            renderer.paint(Role::Error, "terminated"),
+            exception(&info.description, info.code, renderer)
+        ),
+    }
+}
+
+/// The line a group event prints, or none for an event the session
+/// reports otherwise, as a stop is, or not at all, as a process the group
+/// keeps watching is.
+pub fn group_event(
+    event: &microscope::GroupEvent,
+    members: &[microscope::Member],
+    renderer: Renderer,
+) -> Option<String> {
+    use microscope::GroupEvent;
+
+    let member = |number: microscope::MemberNumber| {
+        members
+            .iter()
+            .find(|member| member.number == number)
+            .map_or_else(
+                || {
+                    renderer
+                        .paint(Role::Metadata, format!("[{number}]"))
+                        .to_string()
+                },
+                |member| self::member(member, renderer),
+            )
+    };
+    let number = |number: microscope::MemberNumber| {
+        renderer
+            .paint(Role::Metadata, format!("[{number}]"))
+            .to_string()
+    };
+
+    Some(match event {
+        GroupEvent::MemberJoined {
+            member: joined,
+            parent,
+            executed,
+            ..
+        } => {
+            let started = parent.map_or_else(String::new, |parent| {
+                format!(", started by {}", number(parent))
+            });
+            let executed = executed.as_ref().map_or_else(String::new, |program| {
+                format!(
+                    ", as it executed {}",
+                    renderer.paint(Role::Metadata, program.display())
+                )
+            });
+            format!(
+                "{} {}{started}{executed}",
+                member(*joined),
+                renderer.paint(Role::Success, "joined")
+            )
+        }
+        GroupEvent::MemberExited {
+            member: exited,
+            status,
+        } => {
+            format!("{} {}", number(*exited), exit_description(status, renderer))
+        }
+        GroupEvent::MemberWatched {
+            member: left,
+            program,
+        } => format!(
+            "{} executed {}, which microscope watches until it runs a program to debug",
+            number(*left),
+            renderer.paint(Role::Metadata, program.display())
+        ),
+        GroupEvent::MemberDetached { member: detached } => format!(
+            "{} {}, and runs on its own",
+            member(*detached),
+            renderer.paint(Role::Success, "detached")
+        ),
+        GroupEvent::ProcessUnfollowed {
+            process,
+            program,
+            reason,
+        } => format!(
+            "{}: process {} executed {}, which microscope cannot load: {reason}",
+            renderer.paint(Role::Error, "error"),
+            renderer.paint(Role::Metadata, process),
+            renderer.paint(Role::Metadata, program.display())
+        ),
+        GroupEvent::MemberLost { member: lost } => format!(
+            "{}: the session of {} failed, and released its process to run on its own",
+            renderer.paint(Role::Error, "error"),
+            member(*lost)
+        ),
+        GroupEvent::ProcessWatched { .. }
+        | GroupEvent::GroupStopped { .. }
+        | GroupEvent::GroupExited => return None,
+    })
+}
+
+/// A group's members, the selected one marked, each with its state.
+pub fn processes(
+    members: &[microscope::Member],
+    selected: microscope::MemberNumber,
+    renderer: Renderer,
+) -> String {
+    use microscope::MemberState;
+
+    members
+        .iter()
+        .map(|member| {
+            let mark = if member.number == selected { "*" } else { " " };
+            let state = match &member.state {
+                MemberState::NotStarted => "not started".to_owned(),
+                MemberState::Running => renderer.paint(Role::Success, "running").to_string(),
+                MemberState::Stopped(reason) => stop(reason, renderer),
+                MemberState::Exited(status) => exit_description(status, renderer),
+                MemberState::Watched(program) => format!(
+                    "watched, running {}",
+                    renderer.paint(Role::Metadata, program.display())
+                ),
+                MemberState::Detached => "detached".to_owned(),
+                MemberState::Lost => renderer.paint(Role::Error, "lost").to_string(),
+            };
+            format!("{mark} {}  {state}", self::member(member, renderer))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::elide_arguments;

@@ -54,7 +54,7 @@ impl Cli {
     /// once for each set of them, and the selected frame's names, read once
     /// for each stop and frame.
     pub async fn completion_context(&self) -> Context {
-        let snapshot = self.debugger.snapshot().await.ok();
+        let snapshot = self.debugger().snapshot().await.ok();
         let code = self.completion_code().await;
         let names = match snapshot
             .as_ref()
@@ -101,7 +101,7 @@ impl Cli {
 
     /// What completion knows of the loaded modules' code.
     async fn completion_code(&self) -> Code {
-        let modules = match self.debugger.loaded_modules().await {
+        let modules = match self.debugger().loaded_modules().await {
             Ok(loaded) => loaded
                 .modules
                 .iter()
@@ -143,7 +143,7 @@ impl Cli {
             return names.names;
         }
 
-        let names: Arc<[String]> = self.debugger.variables().await.map_or_else(
+        let names: Arc<[String]> = self.debugger().variables().await.map_or_else(
             |_| Arc::default(),
             |variables| {
                 variables
@@ -210,7 +210,7 @@ impl Cli {
         };
 
         let Ok(microscope::Evaluation::Value { value, .. }) =
-            self.debugger.evaluate(&expression).await
+            self.debugger().evaluate(&expression).await
         else {
             return Vec::new();
         };
@@ -222,7 +222,7 @@ impl Cli {
             dereference: microscope::DereferenceState::Available(reference),
             ..
         } = &state
-            && let Ok(pointee) = self.debugger.dereference(reference.clone()).await
+            && let Ok(pointee) = self.debugger().dereference(reference.clone()).await
         {
             state = pointee.state;
         }
@@ -236,7 +236,7 @@ impl Cli {
         };
 
         let Ok(page) = self
-            .debugger
+            .debugger()
             .value_children(
                 children,
                 microscope::ValueChildQuery {

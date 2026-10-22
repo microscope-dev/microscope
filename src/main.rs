@@ -85,6 +85,17 @@ struct Args {
     #[arg(long, value_name = "CORE", help_heading = "Target")]
     core: Option<PathBuf>,
 
+    /// Which processes the program starts are debugged too, over [follow]:
+    /// `auto`, `all`, or `none`, or a program to debug by file name, as
+    /// `node` or 'py*'. May be repeated.
+    #[arg(
+        long = "follow",
+        value_name = "MODE|PROGRAM",
+        conflicts_with = "core",
+        help_heading = "Target"
+    )]
+    follow: Vec<String>,
+
     /// Start the project's launch configuration NAME, from its
     /// .microscope/config.toml. A project with one starts it by default.
     #[arg(
@@ -539,25 +550,90 @@ fn write_timings(recording: microscope::timings::Recording, path: &std::path::Pa
 }
 
 async fn run(session: Session, renderers: Renderers) -> Result<()> {
-    let debugger = open_debugger(&session.target, &session.debug_files).await?;
-    let handle = debugger
+    let opened = open_target(&session).await?;
+    let handle = opened
         .handle()
         .with_source_paths(session.source_paths.clone());
-    let result = Cli::new(
+    let mut cli = Cli::new(
         handle,
         renderers,
         session.settings.clone(),
         session.launch.clone(),
-    )
-    .run(&session)
-    .await;
-    let shutdown = debugger
+    );
+    if let Opened::Group(group) = &opened {
+        cli = cli.with_group(group.handle(), session.source_paths.clone());
+    }
+
+    let result = cli.run(&session).await;
+    let shutdown = opened
         .shutdown()
         .await
         .context("failed to shut down debugger");
 
     result?;
     shutdown
+}
+
+/// What a session debugs: one process, as a core dump is, or a group of the
+/// processes a program starts.
+enum Opened {
+    Single(Debugger),
+    Group(microscope::ProcessGroup),
+}
+
+impl Opened {
+    fn handle(&self) -> microscope::DebuggerHandle {
+        match self {
+            Self::Single(debugger) => debugger.handle(),
+            Self::Group(group) => group.root(),
+        }
+    }
+
+    async fn shutdown(self) -> microscope::Result<()> {
+        match self {
+            Self::Single(debugger) => debugger.shutdown().await,
+            Self::Group(group) => group.shutdown().await,
+        }
+    }
+}
+
+/// Opens the session's target: a launch or an attach as a process group
+/// that follows as the settings say, and a core dump alone.
+async fn open_target(session: &Session) -> Result<Opened> {
+    let policy = session.settings.config.follow.policy(&[]);
+    match &session.target {
+        Target::Program(executable) => {
+            let program = microscope::Program::load(executable, &session.debug_files)
+                .with_context(|| {
+                    format!("failed to initialize debugger for {}", executable.display())
+                })?;
+            Ok(Opened::Group(
+                microscope::ProcessGroup::new(program, policy).with_context(|| {
+                    format!("failed to initialize debugger for {}", executable.display())
+                })?,
+            ))
+        }
+        Target::Attach {
+            process,
+            executable,
+        } => microscope::ProcessGroup::attach(
+            *process,
+            executable.as_deref(),
+            policy,
+            &session.debug_files,
+        )
+        .await
+        .map(Opened::Group)
+        .with_context(|| match executable {
+            Some(_) => format!("failed to attach to process {process}"),
+            None => format!(
+                "failed to attach to process {process}; if automatic /proc executable discovery is unavailable, pass EXECUTABLE explicitly"
+            ),
+        }),
+        Target::Core(_) => open_debugger(&session.target, &session.debug_files)
+            .await
+            .map(Opened::Single),
+    }
 }
 
 /// Checks which views present a program's types, from its debug

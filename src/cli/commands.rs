@@ -17,6 +17,7 @@ use microscope::{
 
 use super::config::{PrintStyle, Radix};
 use super::format::{self, plural};
+use super::group::Start;
 use super::terminal::{Renderer, Role};
 use super::value;
 use super::{Cli, Control};
@@ -88,6 +89,9 @@ pub enum Command {
     Registers,
     Threads,
     Thread,
+    Processes,
+    Process,
+    Detach,
     Save,
     Profile,
     Tasks,
@@ -526,6 +530,27 @@ pub const COMMANDS: &[CommandSpec] = &[
     command!(Threads, "threads", [], "threads", "List threads"),
     command!(Thread, "thread", [], "thread <id>", "Select a thread"),
     command!(
+        Processes,
+        "processes",
+        [],
+        "processes",
+        "List the processes the session debugs together, and how each is"
+    ),
+    command!(
+        Process,
+        "process",
+        [],
+        "process <number>",
+        "Select a process by its number in the processes list"
+    ),
+    command!(
+        Detach,
+        "detach",
+        [],
+        "detach process <number>",
+        "Let a stopped process run on without microscope, leaving the others debugged"
+    ),
+    command!(
         Save,
         "save",
         [],
@@ -674,7 +699,7 @@ impl Cli {
         let (spec, format, rest, arguments) = command_line(line)?;
         let first = arguments.first().copied();
         let renderer = self.renderers.stdout;
-        let debugger = &self.debugger;
+        let debugger = &self.debugger();
 
         let output = match spec.command {
             Command::Break | Command::Tbreak => {
@@ -701,11 +726,8 @@ impl Cli {
             Command::ReadWatch => self.watch(&arguments, WatchAccess::Read, spec).await?,
             Command::Watchpoints => self.list_watchpoints().await?,
             Command::Unwatch => self.delete(&arguments, true, spec).await?,
-            Command::Run => {
-                self.execute_until_stop(debugger.run_with(self.launch.options()))
-                    .await?
-            }
-            Command::Continue => self.execute_until_stop(debugger.resume()).await?,
+            Command::Run => self.run_program(Start::Launch).await?,
+            Command::Continue => self.run_program(Start::Continue).await?,
             Command::Print | Command::Pp => {
                 let layout = self.layout(spec.command, format)?;
                 if first.is_some() {
@@ -758,6 +780,9 @@ impl Cli {
             Command::Registers => format::registers(&debugger.registers().await?, renderer),
             Command::Threads => format::threads(&debugger.snapshot().await?, renderer),
             Command::Thread => self.select_thread(arguments[0]).await?,
+            Command::Processes => self.processes()?,
+            Command::Process => self.process(arguments[0]).await?,
+            Command::Detach => self.detach_member(&arguments, spec).await?,
             Command::Tasks => self.tasks(line, &arguments, spec).await?,
             Command::Task => self.task(line, &arguments).await?,
             Command::Profile => self.profile(&arguments).await?,
@@ -785,7 +810,7 @@ impl Cli {
     /// returns.
     async fn advance(&self, location: &str, spec: &CommandSpec) -> Result<String> {
         let location = parse_breakpoint_location(location)?.ok_or_else(|| spec.usage_error())?;
-        self.execute_until_stop(self.debugger.advance(location))
+        self.execute_until_stop(self.debugger().advance(location))
             .await
     }
 
@@ -797,13 +822,14 @@ impl Cli {
             None => parse_breakpoint_location(written)?.ok_or_else(|| spec.usage_error())?,
         };
 
-        self.execute_until_stop(self.debugger.jump(location)).await
+        self.execute_until_stop(self.debugger().jump(location))
+            .await
     }
 
     /// Runs `info` with its `arguments`, `rest` being them as written.
     async fn info(&self, arguments: &[&str], rest: &str, spec: &CommandSpec) -> Result<String> {
         let renderer = self.renderers.stdout;
-        let debugger = &self.debugger;
+        let debugger = &self.debugger();
 
         Ok(match (arguments[0], arguments.get(1)) {
             ("breakpoints" | "break", None) => self.list_breakpoints().await?,
@@ -833,11 +859,11 @@ impl Cli {
     /// The loaded modules: where each is, what describes its code, and the
     /// separate file its debug information came from.
     async fn list_modules(&self) -> Result<String> {
-        let loaded = match self.debugger.loaded_modules().await {
+        let loaded = match self.debugger().loaded_modules().await {
             Ok(loaded) => loaded,
             // Before the program runs, only its own image is known.
             Err(microscope::Error::NotRunning) => {
-                let image = self.debugger.module_image();
+                let image = self.debugger().module_image();
                 return Ok(format::modules(
                     &[format::ModuleRow {
                         path: std::sync::Arc::new(image.path().to_path_buf()),
@@ -857,7 +883,7 @@ impl Cli {
                 path: std::sync::Arc::clone(&record.path),
                 load_bias: Some(record.module.load_bias),
                 image: self
-                    .debugger
+                    .debugger()
                     .loaded_module_image(record.module.id)
                     .await
                     .ok(),
@@ -914,7 +940,10 @@ impl Cli {
         Ok(format!(
             "{}: {}",
             renderer.paint(Role::Name, symbol),
-            renderer.paint(Role::Metadata, self.debugger.runtime_address(symbol).await?)
+            renderer.paint(
+                Role::Metadata,
+                self.debugger().runtime_address(symbol).await?
+            )
         ))
     }
 
@@ -932,12 +961,12 @@ impl Cli {
         let Some(ids) = self.existing_ids(words, watches, spec).await? else {
             let what = if watches {
                 plural(
-                    self.debugger.remove_all_watchpoints().await?.len() as u64,
+                    self.debugger().remove_all_watchpoints().await?.len() as u64,
                     "watchpoint",
                 )
             } else {
                 plural(
-                    self.debugger.remove_all_breakpoints().await?.len() as u64,
+                    self.group_debugger().remove_all_breakpoints().await?.len() as u64,
                     "breakpoint",
                 )
             };
@@ -948,10 +977,10 @@ impl Cli {
         for &id in &ids {
             match id {
                 CountedId::Breakpoint(id) => {
-                    self.debugger.remove_breakpoint(id).await?;
+                    self.group_debugger().remove_breakpoint(id).await?;
                 }
                 CountedId::Watchpoint(id) => {
-                    self.debugger.remove_watchpoint(id).await?;
+                    self.debugger().remove_watchpoint(id).await?;
                 }
             }
         }
@@ -968,8 +997,9 @@ impl Cli {
         watches: bool,
         spec: &CommandSpec,
     ) -> Result<Option<Vec<CountedId>>> {
-        let snapshot = self.debugger.snapshot().await?;
-        let most = snapshot.breakpoints.len() + snapshot.watchpoints.len();
+        let snapshot = self.debugger().snapshot().await?;
+        let breakpoints = self.group_debugger().snapshot().await?.breakpoints;
+        let most = breakpoints.len() + snapshot.watchpoints.len();
         let Some(ids) = parse_ids(words, watches, most, spec)? else {
             return Ok(None);
         };
@@ -977,10 +1007,9 @@ impl Cli {
         let renderer = Renderer::new(false);
         for &id in &ids {
             let known = match id {
-                CountedId::Breakpoint(id) => snapshot
-                    .breakpoints
-                    .iter()
-                    .any(|breakpoint| breakpoint.id == id),
+                CountedId::Breakpoint(id) => {
+                    breakpoints.iter().any(|breakpoint| breakpoint.id == id)
+                }
                 CountedId::Watchpoint(id) => snapshot
                     .watchpoints
                     .iter()
@@ -1032,7 +1061,7 @@ impl Cli {
 
         let mut waits_for_exec = false;
         let breakpoint = match self
-            .debugger
+            .group_debugger()
             .add_breakpoint_with(location.clone(), options.clone())
             .await
         {
@@ -1047,7 +1076,9 @@ impl Cli {
                     pending: true,
                     ..options
                 };
-                self.debugger.add_breakpoint_with(location, options).await?
+                self.group_debugger()
+                    .add_breakpoint_with(location, options)
+                    .await?
             }
         };
 
@@ -1123,7 +1154,7 @@ impl Cli {
 
         for name in names {
             let breakpoint = self
-                .debugger
+                .group_debugger()
                 .add_breakpoint(BreakpointSpec::Function(name))
                 .await?;
             let placed = self.placed(&breakpoint).await;
@@ -1139,7 +1170,7 @@ impl Cli {
 
     /// Writes the commands that recreate the breakpoints to `file`.
     async fn save_breakpoint_commands(&self, file: &str) -> Result<String> {
-        let snapshot = self.debugger.snapshot().await?;
+        let snapshot = self.debugger().snapshot().await?;
         let text = super::saved::commands(&snapshot.breakpoints, &self.settings.root);
         std::fs::write(file, text).with_context(|| format!("cannot write {file}"))?;
         let renderer = self.renderers.stdout;
@@ -1154,7 +1185,7 @@ impl Cli {
 
     /// The images of the loaded modules, or the program's before it runs.
     pub(super) async fn loaded_images(&self) -> Vec<std::sync::Arc<microscope::ModuleImage>> {
-        loaded_images(&self.debugger).await
+        loaded_images(&self.debugger()).await
     }
 
     /// Whether a native breakpoint `error` refused may instead wait for a
@@ -1196,7 +1227,7 @@ impl Cli {
                 });
                 // A name meant for Python may be a native one misspelled.
                 let native = super::suggest::did_you_mean(name, names);
-                let python = python_name_hint(name, &self.debugger.module_image());
+                let python = python_name_hint(name, &self.debugger().module_image());
 
                 match (native, python) {
                     // Two sentences: the first ends in its question mark.
@@ -1230,12 +1261,12 @@ impl Cli {
 
     /// A line of the selected frame's source file.
     async fn frame_source(&self, line: FrameLine) -> Result<BreakpointSpec> {
-        let location = self.debugger.current_location().await.map_err(|error| {
+        let location = self.debugger().current_location().await.map_err(|error| {
             anyhow!("no frame is selected to take a line from ({error}); name a location")
         })?;
         let (Some(source), Ok(image)) = (
             location.image.source.as_ref(),
-            self.debugger.loaded_module_image(location.module).await,
+            self.debugger().loaded_module_image(location.module).await,
         ) else {
             bail!("the selected frame has no source line");
         };
@@ -1264,24 +1295,28 @@ impl Cli {
     /// Where each of a breakpoint's locations is, as far as its module
     /// tells.
     pub(super) async fn placed(&self, breakpoint: &microscope::Breakpoint) -> Vec<format::Placed> {
+        self.placed_in(&self.group_debugger(), breakpoint).await
+    }
+
+    /// Where `debugger`'s breakpoint `breakpoint` is placed.
+    pub(super) async fn placed_in(
+        &self,
+        debugger: &microscope::DebuggerHandle,
+        breakpoint: &microscope::Breakpoint,
+    ) -> Vec<format::Placed> {
         // The program's own module, whose image addresses a running process
         // shows at their runtime addresses.
-        let main = self
-            .debugger
-            .loaded_modules()
-            .await
-            .ok()
-            .and_then(|loaded| {
-                loaded
-                    .modules
-                    .iter()
-                    .find(|record| record.path.as_path() == self.debugger.module_image().path())
-                    .map(|record| record.module)
-            });
+        let main = debugger.loaded_modules().await.ok().and_then(|loaded| {
+            loaded
+                .modules
+                .iter()
+                .find(|record| record.path.as_path() == debugger.module_image().path())
+                .map(|record| record.module)
+        });
 
         let mut placed = Vec::new();
         for resolved in breakpoint.ready_locations() {
-            placed.push(self.place(resolved.location.clone(), main).await);
+            placed.push(self.place(debugger, resolved.location.clone(), main).await);
         }
 
         placed
@@ -1289,6 +1324,7 @@ impl Cli {
 
     async fn place(
         &self,
+        debugger: &microscope::DebuggerHandle,
         location: microscope::BreakpointLocation,
         main: Option<microscope::LoadedModule>,
     ) -> format::Placed {
@@ -1318,10 +1354,10 @@ impl Cli {
                     placed.location = microscope::BreakpointLocation::Virtual(runtime);
                 }
 
-                (Some(self.debugger.module_image()), address)
+                (Some(debugger.module_image()), address)
             }
             microscope::BreakpointLocation::Virtual(address) => {
-                let Ok(description) = self.debugger.describe_address(address).await else {
+                let Ok(description) = debugger.describe_address(address).await else {
                     return placed;
                 };
 
@@ -1329,12 +1365,12 @@ impl Cli {
                     return placed;
                 };
 
-                if module.path.as_path() != self.debugger.module_image().path() {
+                if module.path.as_path() != debugger.module_image().path() {
                     placed.module = Some(std::sync::Arc::clone(&module.path));
                 }
 
                 (
-                    self.debugger.loaded_module_image(module.module).await.ok(),
+                    debugger.loaded_module_image(module.module).await.ok(),
                     module.image.address,
                 )
             }
@@ -1386,8 +1422,10 @@ impl Cli {
         let ids = if let Some(ids) = self.existing_ids(words, false, spec).await? {
             ids
         } else {
-            let snapshot = self.debugger.snapshot().await?;
-            snapshot
+            let snapshot = self.debugger().snapshot().await?;
+            self.group_debugger()
+                .snapshot()
+                .await?
                 .breakpoints
                 .iter()
                 .map(|breakpoint| CountedId::Breakpoint(breakpoint.id))
@@ -1407,10 +1445,12 @@ impl Cli {
         for &id in &ids {
             match id {
                 CountedId::Breakpoint(id) => {
-                    self.debugger.set_breakpoint_enabled(id, enabled).await?;
+                    self.group_debugger()
+                        .set_breakpoint_enabled(id, enabled)
+                        .await?;
                 }
                 CountedId::Watchpoint(id) => {
-                    self.debugger.set_watchpoint_enabled(id, enabled).await?;
+                    self.debugger().set_watchpoint_enabled(id, enabled).await?;
                 }
             }
         }
@@ -1435,14 +1475,14 @@ impl Cli {
         Ok(match parse_counted_id(id, spec)? {
             CountedId::Breakpoint(id) => format::breakpoint_hit_condition(
                 &self
-                    .debugger
+                    .group_debugger()
                     .set_breakpoint_hit_condition(id, condition)
                     .await?,
                 renderer,
             ),
             CountedId::Watchpoint(id) => format::watchpoint_hit_condition(
                 &self
-                    .debugger
+                    .debugger()
                     .set_watchpoint_hit_condition(id, condition)
                     .await?,
                 renderer,
@@ -1467,7 +1507,7 @@ impl Cli {
             CountedId::Watchpoint(id) => {
                 return Ok(format::watchpoint_condition(
                     &self
-                        .debugger
+                        .debugger()
                         .set_watchpoint_condition(id, condition)
                         .await?,
                     renderer,
@@ -1476,7 +1516,7 @@ impl Cli {
         };
 
         let breakpoint = self
-            .debugger
+            .group_debugger()
             .set_breakpoint_condition(id, condition)
             .await?;
 
@@ -1506,7 +1546,7 @@ impl Cli {
         let condition = if count == 0 {
             None
         } else {
-            let snapshot = self.debugger.snapshot().await?;
+            let snapshot = self.debugger().snapshot().await?;
             let hits = match id {
                 CountedId::Breakpoint(id) => snapshot
                     .breakpoints
@@ -1533,12 +1573,12 @@ impl Cli {
 
         match id {
             CountedId::Breakpoint(id) => {
-                self.debugger
+                self.group_debugger()
                     .set_breakpoint_hit_condition(id, condition)
                     .await?;
             }
             CountedId::Watchpoint(id) => {
-                self.debugger
+                self.debugger()
                     .set_watchpoint_hit_condition(id, condition)
                     .await?;
             }
@@ -1560,7 +1600,7 @@ impl Cli {
             .parse()
             .map_err(|_| anyhow!("invalid thread ID: {argument}"))?;
 
-        self.debugger.select_context(ThreadId::new(id)).await?;
+        self.debugger().select_context(ThreadId::new(id)).await?;
         let renderer = self.renderers.stdout;
 
         Ok(format!(
@@ -1577,7 +1617,7 @@ impl Cli {
         let mut from = None;
 
         loop {
-            let page = self.debugger.tasks(from, TASK_PAGE).await?;
+            let page = self.debugger().tasks(from, TASK_PAGE).await?;
             tasks.extend(page.tasks.iter().cloned());
             gaps.extend(page.gaps.iter().cloned());
             match page.next {
@@ -1597,7 +1637,7 @@ impl Cli {
     /// `tasks`, each with its backtrace or why it has none, and the images
     /// that name their frames' sources.
     async fn traced(&self, tasks: Vec<TaskSnapshot>, gaps: Vec<Arc<str>>) -> Result<TaskTraces> {
-        let snapshot = self.debugger.snapshot().await?;
+        let snapshot = self.debugger().snapshot().await?;
         let stop = snapshot
             .stop_id
             .ok_or_else(|| anyhow!("the program is not stopped"))?;
@@ -1605,7 +1645,7 @@ impl Cli {
         let mut traced = Vec::with_capacity(tasks.len());
         for task in tasks {
             let trace = self
-                .debugger
+                .debugger()
                 .at(StopContext {
                     stop,
                     execution: ExecutionContext::Task(task.id),
@@ -1742,7 +1782,7 @@ impl Cli {
         let renderer = self.renderers.stdout;
         let (tasks, _) = self.task_list().await?;
         let Some(&argument) = arguments.first() else {
-            let selected = self.debugger.snapshot().await?.selected;
+            let selected = self.debugger().snapshot().await?.selected;
             let task = tasks
                 .into_iter()
                 .find(|task| selects(selected, task))
@@ -1781,7 +1821,7 @@ impl Cli {
             .and_then(|(_, rest)| rest.trim_start().split_once(char::is_whitespace))
             .map(|(_, command)| command.trim());
         let Some(command) = command else {
-            self.debugger.select_context(id).await?;
+            self.debugger().select_context(id).await?;
             return Ok(format!(
                 "{} {name} {}",
                 renderer.paint(Role::Success, "selected"),
@@ -1798,17 +1838,17 @@ impl Cli {
             );
         }
 
-        let snapshot = self.debugger.snapshot().await?;
-        self.debugger.select_context(id).await?;
+        let snapshot = self.debugger().snapshot().await?;
+        self.debugger().select_context(id).await?;
 
         let output = Box::pin(self.execute(command)).await;
         if let Some(previous) = snapshot.selected {
-            self.debugger.select_context(previous).await?;
+            self.debugger().select_context(previous).await?;
             if let Some(frame) = snapshot
                 .selected_frame
                 .filter(|frame| *frame != StackFrameId::INNERMOST)
             {
-                self.debugger.select_frame(frame).await?;
+                self.debugger().select_frame(frame).await?;
             }
         }
 
@@ -1835,19 +1875,19 @@ impl Cli {
         let mut images = BTreeMap::new();
 
         for module in modules {
-            images.insert(module, self.debugger.loaded_module_image(module).await?);
+            images.insert(module, self.debugger().loaded_module_image(module).await?);
         }
 
         Ok(images)
     }
 
     async fn step(&self, kind: StepKind) -> Result<String> {
-        let mut output = self.execute_until_stop(self.debugger.step(kind)).await?;
+        let mut output = self.execute_until_stop(self.debugger().step(kind)).await?;
 
         // Finishing a function shows what it returned, as the stop's
         // variables list it.
         if kind == StepKind::Out
-            && let Ok(snapshot) = self.debugger.variables().await
+            && let Ok(snapshot) = self.debugger().variables().await
         {
             for variable in snapshot
                 .variables
@@ -1865,7 +1905,7 @@ impl Cli {
     /// Steps into the call of the line that `call` names: by its callee's
     /// name, the first such call, or by its address after `*`.
     async fn step_into_call(&self, call: &str) -> Result<String> {
-        let targets = self.debugger.step_targets().await?;
+        let targets = self.debugger().step_targets().await?;
 
         let target = if let Some(address) = call.strip_prefix('*') {
             let address = parse_address(address)?;
@@ -1888,58 +1928,28 @@ impl Cli {
                 })?
         };
 
-        self.execute_until_stop(self.debugger.step_into(target.call))
+        self.execute_until_stop(self.debugger().step_into(target.call))
             .await
     }
 
     /// Waits for an execution request, prefixing its stop with a line for
     /// each signal received without stopping, message logged, condition
     /// that failed, and loaded library view that cannot be used.
-    async fn execute_until_stop(
+    pub(super) async fn execute_until_stop(
         &self,
         execution: impl std::future::Future<Output = microscope::Result<StopReason>>,
     ) -> Result<String> {
-        let mut events = self.debugger.subscribe();
+        let debugger = self.debugger();
+        let mut events = debugger.subscribe();
         let started = std::time::Instant::now();
-        let mut lines = Vec::new();
-        let mut loaded = Vec::new();
-        let renderer = self.renderers.stdout;
-
-        let mut record = |event: Result<DebuggerEvent, _>| match event {
-            Ok(DebuggerEvent::ModuleLoaded { module, .. }) => loaded.push(module.module.id),
-            Ok(DebuggerEvent::SignalReceived {
-                thread_id,
-                exception,
-                ..
-            }) => lines.push(format::signal_received(thread_id, &exception, renderer)),
-            Ok(DebuggerEvent::LogMessage { parts, .. }) => lines.push(format::log_message(&parts)),
-            Ok(DebuggerEvent::ChildReleased {
-                process_id, child, ..
-            }) => lines.push(format::child_released(process_id, child, renderer)),
-            Ok(DebuggerEvent::ProgramChanged {
-                process_id: Some(process_id),
-                program,
-                ..
-            }) => lines.push(format::program_changed(process_id, &program.path, renderer)),
-            Ok(DebuggerEvent::ConditionFailed { owner, error, .. }) => lines.push(format!(
-                "{}: the condition of {} could not be evaluated: {error}",
-                renderer.paint(Role::Warning, "warning"),
-                renderer.paint(Role::Metadata, format::condition_owner(owner))
-            )),
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => lines.push(format!(
-                "{}: missed {missed} events, so lines about signals, logged messages, \
-                 conditions, and library views may be missing",
-                renderer.paint(Role::Warning, "warning"),
-            )),
-            _ => {}
-        };
+        let mut lines = RunLines::default();
 
         tokio::pin!(execution);
 
         let reason = loop {
             tokio::select! {
                 biased;
-                event = events.recv() => record(event),
+                event = events.recv() => lines.record(&debugger, event, self.renderers.stdout),
                 reason = &mut execution => break reason?,
             }
         };
@@ -1947,36 +1957,16 @@ impl Cli {
         let elapsed = started.elapsed();
 
         while let Ok(event) = events.try_recv() {
-            record(Ok(event));
+            lines.record(&debugger, Ok(event), self.renderers.stdout);
         }
-
-        // What could not be used of a library's debug information, and what
-        // kept its own views out, once, when it loads.
-        for module in loaded {
-            if let Ok(image) = self.debugger.loaded_module_image(module).await {
-                lines.extend(
-                    crate::present::debug_information::warnings(&image, false)
-                        .into_iter()
-                        .map(|warning| {
-                            format!("{}: {warning}", renderer.paint(Role::Warning, "warning"))
-                        }),
-                );
-                lines.extend(image.view_errors().iter().map(|error| {
-                    format!(
-                        "{}: views: {error}",
-                        renderer.paint(Role::Warning, "warning")
-                    )
-                }));
-            }
-        }
-
+        let lines = lines.finish(self.renderers.stdout).await;
         let stop = self.stop_report(&reason, elapsed).await;
 
-        Ok(join_lines(&lines.join("\n"), &stop))
+        Ok(join_lines(&lines, &stop))
     }
 
     async fn list_breakpoints(&self) -> Result<String> {
-        let snapshot = self.debugger.snapshot().await?;
+        let snapshot = self.group_debugger().snapshot().await?;
         let mut rows = Vec::new();
 
         for breakpoint in snapshot.breakpoints.iter() {
@@ -1988,7 +1978,7 @@ impl Cli {
 
     async fn list_watchpoints(&self) -> Result<String> {
         Ok(format::watchpoints(
-            &self.debugger.snapshot().await?.watchpoints,
+            &self.debugger().snapshot().await?.watchpoints,
             self.renderers.stdout,
         ))
     }
@@ -2023,7 +2013,7 @@ impl Cli {
         };
 
         if !self
-            .debugger
+            .debugger()
             .watchpoint_capabilities()
             .access
             .contains(&access)
@@ -2037,12 +2027,12 @@ impl Cli {
         };
 
         let watchpoint = if let Some(location) = parse_watch_location(argument, spec)? {
-            self.debugger
+            self.debugger()
                 .add_watchpoint_with(location, access, options)
                 .await?
         } else {
             let expression = parse_expression(argument)?;
-            self.debugger
+            self.debugger()
                 .watch_with(&expression, access, options)
                 .await
                 .map_err(|error| expression_error(argument, error))?
@@ -2085,7 +2075,7 @@ impl Cli {
     /// and laid out when `layout` is pretty.
     async fn print_locals(&self, layout: value::Layout) -> Result<String> {
         let renderer = self.renderers.stdout;
-        let snapshot = self.debugger.variables().await?;
+        let snapshot = self.debugger().variables().await?;
 
         // Say so rather than print nothing, as for a program built without
         // variable debug information.
@@ -2108,7 +2098,7 @@ impl Cli {
             let line = match &variable.type_info {
                 Some(type_info) => {
                     value::expanded(
-                        &self.debugger,
+                        &self.debugger(),
                         type_info,
                         &variable.name,
                         &variable.state,
@@ -2140,7 +2130,7 @@ impl Cli {
     ) -> Result<String> {
         let expression = parse_expression(text)?;
         let evaluation = self
-            .debugger
+            .debugger()
             .evaluate(&expression)
             .await
             .map_err(|error| expression_error(text, error))?;
@@ -2154,7 +2144,7 @@ impl Cli {
         let mut output = match &inspected.type_info {
             Some(type_info) => {
                 value::expanded(
-                    &self.debugger,
+                    &self.debugger(),
                     type_info,
                     text,
                     &inspected.state,
@@ -2190,7 +2180,7 @@ impl Cli {
     async fn explain_view(&self, text: &str) -> Result<String> {
         let expression = parse_expression(text)?;
         let explanation = self
-            .debugger
+            .debugger()
             .explain_view(&expression)
             .await
             .map_err(|error| expression_error(text, error))?;
@@ -2204,7 +2194,7 @@ impl Cli {
     async fn whatis(&self, text: &str) -> Result<String> {
         let expression = parse_expression(text)?;
         let type_info = self
-            .debugger
+            .debugger()
             .expression_type(&expression)
             .await
             .map_err(|error| expression_error(text, error))?;
@@ -2217,7 +2207,7 @@ impl Cli {
     /// Shows a type's definition: of a type named, or of an expression's.
     async fn ptype(&self, text: &str) -> Result<String> {
         let as_expression = match microscope::Expression::parse(text) {
-            Ok(expression) => self.debugger.expression_type(&expression).await,
+            Ok(expression) => self.debugger().expression_type(&expression).await,
             Err(error) => Err(microscope::Error::Expression(error)),
         };
 
@@ -2228,7 +2218,7 @@ impl Cli {
                 // nothing.
                 let through = microscope::Expression::parse(&format!("*({text}*)null"));
                 let found = match through {
-                    Ok(expression) => self.debugger.expression_type(&expression).await.ok(),
+                    Ok(expression) => self.debugger().expression_type(&expression).await.ok(),
                     Err(_) => None,
                 };
 
@@ -2246,10 +2236,14 @@ impl Cli {
     }
 
     async fn module_images(&self) -> Result<Vec<std::sync::Arc<microscope::ModuleImage>>> {
-        let modules = self.debugger.loaded_modules().await?;
+        let modules = self.debugger().loaded_modules().await?;
         let mut images = Vec::new();
         for module in modules.modules.iter() {
-            images.push(self.debugger.loaded_module_image(module.module.id).await?);
+            images.push(
+                self.debugger()
+                    .loaded_module_image(module.module.id)
+                    .await?,
+            );
         }
 
         Ok(images)
@@ -2258,7 +2252,7 @@ impl Cli {
     /// Assigns a value in the selected frame, as gdb's `set var` does.
     async fn set(&self, text: &str, spec: &CommandSpec) -> Result<String> {
         if let Some(setting @ ("on" | "off")) = text.strip_prefix("views ").map(str::trim) {
-            self.debugger.enable_views(setting == "on").await?;
+            self.debugger().enable_views(setting == "on").await?;
             return Ok(format!(
                 "values show {}",
                 if setting == "on" {
@@ -2281,7 +2275,9 @@ impl Cli {
         }
 
         if let Some(setting @ ("on" | "off")) = text.strip_prefix("step-runtime ").map(str::trim) {
-            self.debugger.set_step_into_runtime(setting == "on").await?;
+            self.debugger()
+                .set_step_into_runtime(setting == "on")
+                .await?;
             return Ok(if setting == "on" {
                 "steps stop in runtime code".to_owned()
             } else {
@@ -2296,7 +2292,7 @@ impl Cli {
         };
 
         let evaluation = self
-            .debugger
+            .debugger()
             .evaluate_with(
                 &expression,
                 microscope::EvaluationMode::Assign,
@@ -2394,19 +2390,19 @@ impl Cli {
                 Ok("forgot the loaded view files".to_owned())
             }
             ["check"] => {
-                let check = self.debugger.check_views().await?;
+                let check = self.debugger().check_views().await?;
                 Ok(format::view_check(&check, self.renderers.stdout).0)
             }
             ["explain", words @ ..] if !words.is_empty() => {
                 let name = words.join(" ");
-                let types = self.debugger.explain_type(&name).await?;
+                let types = self.debugger().explain_type(&name).await?;
                 Ok(format::type_views(&name, &types, self.renderers.stdout))
             }
             ["record", path, words @ ..] if !words.is_empty() => {
                 let text = words.join(" ");
                 let expression = parse_expression(&text)?;
                 let recordings = self
-                    .debugger
+                    .debugger()
                     .record_kernels(&expression)
                     .await
                     .map_err(|error| expression_error(&text, error))?;
@@ -2430,7 +2426,7 @@ impl Cli {
 
     async fn globals(&self, filter: Option<&str>) -> Result<String> {
         let page = self
-            .debugger
+            .debugger()
             .globals(microscope::GlobalVariableQuery {
                 filter: filter.map(str::to_owned),
                 ..microscope::GlobalVariableQuery::default()
@@ -2457,7 +2453,7 @@ impl Cli {
         let address = match target {
             None => code_address,
             Some(target) if target.starts_with("0x") => parse_address(target)?,
-            Some(name) => self.debugger.runtime_address(name).await?,
+            Some(name) => self.debugger().runtime_address(name).await?,
         };
 
         let range = count.map_or(DisassemblyRange::Function(address), |after| {
@@ -2498,10 +2494,10 @@ impl Cli {
         let mut images = BTreeMap::new();
 
         for module in format::disassembly_modules(disassembly) {
-            images.insert(module, self.debugger.loaded_module_image(module).await?);
+            images.insert(module, self.debugger().loaded_module_image(module).await?);
         }
 
-        let modules = self.debugger.loaded_modules().await?;
+        let modules = self.debugger().loaded_modules().await?;
 
         Ok(format::disassembly(
             disassembly,
@@ -2517,7 +2513,7 @@ impl Cli {
         &self,
         range: DisassemblyRange,
     ) -> microscope::Result<Disassembly> {
-        self.debugger
+        self.debugger()
             .disassemble(DisassemblyQuery {
                 range,
                 syntax: self.syntax,
@@ -2537,7 +2533,7 @@ impl Cli {
             return Ok((program_counter, program_counter));
         }
 
-        let location = match self.debugger.current_location().await {
+        let location = match self.debugger().current_location().await {
             Ok(location) => location,
             Err(microscope::Error::AddressOutsideModule) => {
                 let instruction = self.selected_instruction().await?;
@@ -2546,7 +2542,7 @@ impl Cli {
             Err(error) => return Err(error.into()),
         };
 
-        let modules = self.debugger.loaded_modules().await?;
+        let modules = self.debugger().loaded_modules().await?;
         let module = modules
             .modules
             .iter()
@@ -2564,7 +2560,7 @@ impl Cli {
     async fn selected_instruction(&self) -> Result<VirtualAddress> {
         let level = self.selected_level().await?;
         if level != 0 {
-            let trace = self.debugger.backtrace().await?;
+            let trace = self.debugger().backtrace().await?;
             return trace
                 .frames
                 .iter()
@@ -2574,7 +2570,7 @@ impl Cli {
                 .ok_or_else(|| anyhow!("frame {level} is suspended, and runs no code"));
         }
 
-        let registers = self.debugger.registers().await?;
+        let registers = self.debugger().registers().await?;
 
         registers
             .registers
@@ -2592,7 +2588,7 @@ impl Cli {
 
     async fn selected_level(&self) -> Result<u32> {
         Ok(self
-            .debugger
+            .debugger()
             .snapshot()
             .await?
             .selected_frame
@@ -2604,7 +2600,7 @@ impl Cli {
     async fn frame(&self, target: FrameTarget) -> Result<String> {
         let selected_level = self.selected_level().await?;
         let selected = u64::from(selected_level);
-        let trace = self.debugger.backtrace().await?;
+        let trace = self.debugger().backtrace().await?;
         let outermost = trace.frames.len().saturating_sub(1) as u64;
 
         // Moving between frames passes over those a backtrace folds.
@@ -2660,10 +2656,10 @@ impl Cli {
             .position(|frame| u64::from(frame.level) == level)
             .ok_or_else(|| anyhow!("the backtrace has no frame {level}"))?;
         let iterates = trace.loop_iterators()[index];
-        let frame = self.debugger.select_frame(trace.frames[index].id).await?;
+        let frame = self.debugger().select_frame(trace.frames[index].id).await?;
 
         let renderer = self.renderers.stdout;
-        let modules = self.debugger.loaded_modules().await?;
+        let modules = self.debugger().loaded_modules().await?;
         let images = self.source_images(std::iter::once(&frame)).await?;
         let mut output = format::stack_frame(
             &frame,
@@ -2705,7 +2701,7 @@ impl Cli {
     /// known.
     pub(super) async fn describe_location(&self, with_address: bool) -> Result<String> {
         let renderer = self.renderers.stdout;
-        let location = match self.debugger.current_location().await {
+        let location = match self.debugger().current_location().await {
             Ok(location) => location,
             // No loaded module describes the frame's code, such as a stop in
             // JIT-compiled code.
@@ -2721,8 +2717,8 @@ impl Cli {
             }
             // An interpreted frame is where its interpreter recorded it.
             Err(microscope::Error::FrameInterpreted) => {
-                let selected = self.debugger.snapshot().await?.selected_frame;
-                let trace = self.debugger.backtrace().await?;
+                let selected = self.debugger().snapshot().await?.selected_frame;
+                let trace = self.debugger().backtrace().await?;
                 let frame = trace
                     .frames
                     .iter()
@@ -2750,7 +2746,7 @@ impl Cli {
 
         let source = match &location.image.source {
             Some(source) => self
-                .debugger
+                .debugger()
                 .loaded_module_image(location.module)
                 .await?
                 .source_file(source.file)
@@ -2775,7 +2771,7 @@ impl Cli {
             return Ok(text);
         }
 
-        let modules = self.debugger.loaded_modules().await?;
+        let modules = self.debugger().loaded_modules().await?;
 
         Ok(format!(
             "{} at {} from {}",
@@ -2793,7 +2789,7 @@ impl Cli {
     /// `[source] context` asks for.
     pub(super) async fn source_context(&self) -> microscope::Result<microscope::SourceContext> {
         let [before, after] = self.settings.config.source.context;
-        let mut context = self.debugger.source_context(before.max(after)).await?;
+        let mut context = self.debugger().source_context(before.max(after)).await?;
         let line = context.line.get();
         let first = line.saturating_sub(u64::from(before));
         let last = line.saturating_add(u64::from(after));
@@ -2817,14 +2813,14 @@ impl Cli {
     /// The selected thread's backtrace, of at most `limit` frames.
     pub(super) async fn backtrace(&self, limit: Option<usize>, raw: bool) -> Result<String> {
         let selected = self.selected_level().await?;
-        let trace = self.debugger.backtrace().await?;
+        let trace = self.debugger().backtrace().await?;
 
         let modules = if trace
             .frames
             .iter()
             .any(|frame| frame.module.is_some() && frame.source.is_none())
         {
-            Some(self.debugger.loaded_modules().await?)
+            Some(self.debugger().loaded_modules().await?)
         } else {
             None
         };
@@ -2925,9 +2921,9 @@ impl Cli {
     ) -> String {
         let mut marks = BTreeMap::new();
 
-        if let Ok(snapshot) = self.debugger.snapshot().await {
+        if let Ok(snapshot) = self.debugger().snapshot().await {
             for breakpoint in snapshot.breakpoints.iter() {
-                for placed in self.placed(breakpoint).await {
+                for placed in self.placed_in(&self.debugger(), breakpoint).await {
                     if let Some((path, line)) = placed.source
                         && path == context.recorded
                     {
@@ -3459,7 +3455,7 @@ pub fn python_name_hint(name: &str, program: &microscope::ModuleImage) -> Option
 }
 
 /// Joins two parts of a command's output, either of which may be empty.
-fn join_lines(first: &str, second: &str) -> String {
+pub(super) fn join_lines(first: &str, second: &str) -> String {
     match (first.is_empty(), second.is_empty()) {
         (true, _) => second.to_owned(),
         (false, true) => first.to_owned(),
@@ -3471,7 +3467,7 @@ impl Cli {
     async fn list_signals(&self) -> Result<String> {
         let mut policies = Vec::new();
         for code in microscope::signal_codes() {
-            policies.push((code, self.debugger.signal_policy(code).await?));
+            policies.push((code, self.debugger().signal_policy(code).await?));
         }
 
         Ok(format::signal_policies(&policies, self.renderers.stdout))
@@ -3483,14 +3479,14 @@ impl Cli {
         let name = arguments[0];
         let code =
             microscope::signal_named(name).ok_or_else(|| anyhow!("unknown signal '{name}'"))?;
-        let mut policy = self.debugger.signal_policy(code).await?;
+        let mut policy = self.debugger().signal_policy(code).await?;
 
         for action in &arguments[1..] {
             apply_signal_action(&mut policy, action)?;
         }
 
         if arguments.len() > 1 {
-            self.debugger.set_signal_policy(code, policy).await?;
+            self.debugger().set_signal_policy(code, policy).await?;
         }
 
         Ok(format::signal_policies(
@@ -3556,7 +3552,7 @@ impl Cli {
         }
 
         let catchpoint = self
-            .debugger
+            .debugger()
             .add_catchpoint(calls.into(), phase, condition)
             .await?;
         Ok(format::catchpoint(&catchpoint, self.renderers.stdout))
@@ -3579,7 +3575,7 @@ impl Cli {
                 .parse()
                 .map(microscope::CatchpointId::new)
                 .map_err(|_| spec.usage_error())?;
-            self.debugger.remove_catchpoint(id).await?;
+            self.debugger().remove_catchpoint(id).await?;
             deleted.push(format!(
                 "catchpoint {}",
                 renderer.paint(Role::Metadata, format!("c{id}"))
@@ -3609,7 +3605,7 @@ impl Cli {
             .exception_stops()
             .with(id, stops)
             .ok_or_else(|| anyhow!("no runtime reports exceptions as '{id}'"))?;
-        self.debugger.set_exception_stops(chosen).await?;
+        self.debugger().set_exception_stops(chosen).await?;
 
         *self
             .exceptions
@@ -3632,7 +3628,7 @@ impl Cli {
                 ["off"] => false,
                 _ => return Err(spec.usage_error()),
             };
-            self.debugger.set_exec_stops(stops).await?;
+            self.debugger().set_exec_stops(stops).await?;
             return Ok(if stops {
                 "the inferior stops each time it executes a program".to_owned()
             } else {
@@ -4058,5 +4054,84 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("parsing a wide range finishes");
         assert!(parsed.as_ref().is_ok_and(|&count| count <= 2), "{parsed:?}");
+    }
+}
+
+/// The lines a run reports from its debuggers' events, before its stop:
+/// signals, logged messages, conditions that failed, programs executed,
+/// and what libraries that loaded could not use of their debug information.
+#[derive(Default)]
+pub(super) struct RunLines {
+    lines: Vec<String>,
+    loaded: Vec<(microscope::DebuggerHandle, ModuleId)>,
+}
+
+impl RunLines {
+    pub(super) fn record(
+        &mut self,
+        debugger: &microscope::DebuggerHandle,
+        event: Result<DebuggerEvent, tokio::sync::broadcast::error::RecvError>,
+        renderer: Renderer,
+    ) {
+        let line = match event {
+            Ok(DebuggerEvent::ModuleLoaded { module, .. }) => {
+                self.loaded.push((debugger.clone(), module.module.id));
+                return;
+            }
+            Ok(DebuggerEvent::SignalReceived {
+                thread_id,
+                exception,
+                ..
+            }) => format::signal_received(thread_id, &exception, renderer),
+            Ok(DebuggerEvent::LogMessage { parts, .. }) => format::log_message(&parts),
+            Ok(DebuggerEvent::ChildReleased {
+                process_id, child, ..
+            }) => format::child_released(process_id, child, renderer),
+            Ok(DebuggerEvent::ProgramChanged {
+                process_id: Some(process_id),
+                program,
+                ..
+            }) => format::program_changed(process_id, &program.path, renderer),
+            Ok(DebuggerEvent::ConditionFailed { owner, error, .. }) => format!(
+                "{}: the condition of {} could not be evaluated: {error}",
+                renderer.paint(Role::Warning, "warning"),
+                renderer.paint(Role::Metadata, format::condition_owner(owner))
+            ),
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => format!(
+                "{}: missed {missed} events, so lines about signals, logged messages, \
+                 conditions, and library views may be missing",
+                renderer.paint(Role::Warning, "warning"),
+            ),
+            _ => return,
+        };
+        self.lines.push(line);
+    }
+
+    /// Adds a line the run reports in order with the events'.
+    pub(super) fn push(&mut self, line: String) {
+        self.lines.push(line);
+    }
+
+    /// The lines, with what could not be used of each loaded library's debug
+    /// information, and what kept its own views out, once, when it loads.
+    pub(super) async fn finish(mut self, renderer: Renderer) -> String {
+        for (debugger, module) in std::mem::take(&mut self.loaded) {
+            if let Ok(image) = debugger.loaded_module_image(module).await {
+                self.lines.extend(
+                    crate::present::debug_information::warnings(&image, false)
+                        .into_iter()
+                        .map(|warning| {
+                            format!("{}: {warning}", renderer.paint(Role::Warning, "warning"))
+                        }),
+                );
+                self.lines.extend(image.view_errors().iter().map(|error| {
+                    format!(
+                        "{}: views: {error}",
+                        renderer.paint(Role::Warning, "warning")
+                    )
+                }));
+            }
+        }
+        self.lines.join("\n")
     }
 }

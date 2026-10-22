@@ -89,6 +89,11 @@ pub enum GroupEvent {
     /// A member's process was released to run on its own.
     MemberDetached { member: MemberNumber },
 
+    /// A member's session ended while its process was still debugged, as a
+    /// failure in microscope ends one. Its process was released to run on
+    /// its own.
+    MemberLost { member: MemberNumber },
+
     /// Every member has exited or left; watched processes may still run.
     GroupExited,
 }
@@ -107,6 +112,9 @@ pub enum MemberState {
 
     /// Its process was detached, and runs on its own.
     Detached,
+
+    /// Its session failed, and released its process to run on its own.
+    Lost,
 }
 
 /// A member as [`ProcessGroup::members`] lists it.
@@ -145,6 +153,10 @@ pub struct GroupHandle {
 struct Shared {
     members: Mutex<Vec<Member>>,
     handles: Mutex<BTreeMap<MemberNumber, DebuggerHandle>>,
+
+    /// The root's breakpoint each member's copy of one is, by the member
+    /// and the copy's id.
+    copies: Mutex<BTreeMap<(MemberNumber, BreakpointId), BreakpointId>>,
 }
 
 impl Shared {
@@ -182,6 +194,7 @@ impl ProcessGroup {
                 state: MemberState::NotStarted,
             }]),
             handles: Mutex::new(BTreeMap::from([(1, handle.clone())])),
+            copies: Mutex::default(),
         });
         let (commands, received) = mpsc::unbounded_channel();
         let (events, _) = broadcast::channel(GROUP_EVENT_CAPACITY);
@@ -343,6 +356,22 @@ impl GroupHandle {
         self.command(Command::PauseAll).await
     }
 
+    /// The group's breakpoint, which is the root's, that member `number`'s
+    /// breakpoint `id` is a copy of; the root's own are themselves.
+    #[must_use]
+    pub fn group_breakpoint(&self, number: MemberNumber, id: BreakpointId) -> Option<BreakpointId> {
+        if number == 1 {
+            return Some(id);
+        }
+
+        self.shared
+            .copies
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&(number, id))
+            .copied()
+    }
+
     /// Releases member `number`'s process, stopped, to run on its own; the
     /// rest of the group is unchanged. The root cannot be detached alone.
     pub async fn detach(&self, number: MemberNumber) -> Result<()> {
@@ -383,6 +412,7 @@ struct Live {
 #[derive(Clone, PartialEq, Eq)]
 struct Settings {
     enabled: bool,
+    temporary: bool,
     condition: Option<crate::Condition>,
     hit_condition: Option<crate::HitCondition>,
     log_message: Option<crate::LogMessage>,
@@ -392,6 +422,7 @@ impl Settings {
     fn of(breakpoint: &Breakpoint) -> Self {
         Self {
             enabled: breakpoint.enabled,
+            temporary: breakpoint.temporary,
             condition: breakpoint.condition.clone(),
             hit_condition: breakpoint.hit_condition,
             log_message: breakpoint.log_message.clone(),
@@ -415,6 +446,9 @@ enum Phase {
 enum Internal {
     Event(MemberNumber, DebuggerEvent),
     PauseFailed(MemberNumber),
+
+    /// The member's session ended.
+    Ended(MemberNumber),
 }
 
 /// The task that runs a group: it adopts members, keeps their breakpoints
@@ -485,6 +519,7 @@ impl Driver {
                 Some(internal) = self.internal.1.recv() => match internal {
                     Internal::Event(member, event) => self.event(member, event).await,
                     Internal::PauseFailed(member) => self.paused(member, None),
+                    Internal::Ended(member) => self.ended(member),
                 },
                 Some(notice) = notices.recv() => self.notice(notice).await,
                 command = commands.recv() => match command {
@@ -514,10 +549,25 @@ impl Driver {
     /// Forwards a member's events to the driver.
     fn forward(&self, member: MemberNumber, handle: &DebuggerHandle) {
         let mut events = handle.subscribe();
+        let handle = handle.clone();
         let internal = self.internal.0.clone();
         tokio::spawn(async move {
             loop {
-                match events.recv().await {
+                // Events go first, so that the session's end follows every
+                // event it sent.
+                let event = tokio::select! {
+                    biased;
+                    event = events.recv() => event,
+                    () = handle.ended() => {
+                        while let Ok(event) = events.try_recv() {
+                            let _ = internal.send(Internal::Event(member, event));
+                        }
+                        let _ = internal.send(Internal::Ended(member));
+                        return;
+                    }
+                    () = internal.closed() => return,
+                };
+                match event {
                     Ok(event) => {
                         if internal.send(Internal::Event(member, event)).is_err() {
                             return;
@@ -528,6 +578,24 @@ impl Driver {
                 }
             }
         });
+    }
+
+    /// Notes that member `number`'s session ended. One that still debugged
+    /// its process failed, and released it.
+    fn ended(&mut self, number: MemberNumber) {
+        let Some(live) = self.members.get_mut(&number) else {
+            return;
+        };
+        if live.gone {
+            return;
+        }
+        live.running = false;
+        live.gone = true;
+        self.shared
+            .update(number, |member| member.state = MemberState::Lost);
+        self.emit(GroupEvent::MemberLost { member: number });
+        self.paused(number, None);
+        self.check_exited();
     }
 
     fn emit(&self, event: GroupEvent) {
@@ -627,7 +695,7 @@ impl Driver {
                     .ok()
                     .and_then(|snapshot| snapshot.stop_id);
                 if let Ok(snapshot) = self.root.snapshot().await {
-                    mirror(&snapshot.breakpoints, &mut live).await;
+                    mirror(&self.shared, number, &snapshot.breakpoints, &mut live).await;
                 }
             }
             #[cfg_attr(
@@ -721,6 +789,7 @@ impl Driver {
                 self.set_running(number, false);
                 let state = MemberState::Stopped(reason.clone());
                 self.shared.update(number, |member| member.state = state);
+                self.end_temporaries(number, &reason).await;
                 self.stopped(number, reason);
             }
             DebuggerEvent::InferiorExited { status, .. } => {
@@ -761,9 +830,13 @@ impl Driver {
             live.running = true;
             live.process = Some(process);
         }
+        let command = command_line(process);
         self.shared.update(number, |member| {
             member.process = Some(process);
             member.state = MemberState::Running;
+            if !command.is_empty() {
+                member.command = command;
+            }
         });
     }
 
@@ -875,15 +948,43 @@ impl Driver {
         result
     }
 
+    /// Deletes the group's temporary breakpoints a member's stop hit, as
+    /// the member deleted its copies: the first stop a temporary breakpoint
+    /// causes in any member deletes it.
+    async fn end_temporaries(&mut self, number: MemberNumber, reason: &StopReason) {
+        let StopReason::Breakpoint { hits, .. } = reason else {
+            return;
+        };
+        if number == 1 {
+            return;
+        }
+
+        let Some(live) = self.members.get_mut(&number) else {
+            return;
+        };
+        let ended = live
+            .mirrored
+            .iter()
+            .filter(|(_, (copy, settings))| {
+                settings.temporary && hits.iter().any(|hit| hit.breakpoint == *copy)
+            })
+            .map(|(original, _)| *original)
+            .collect::<Vec<_>>();
+        for original in ended {
+            live.mirrored.remove(&original);
+            let _ = self.root.remove_breakpoint(original).await;
+        }
+    }
+
     /// Makes every member's breakpoints the root's again.
     async fn mirror_all(&mut self) {
         let Ok(snapshot) = self.root.snapshot().await else {
             return;
         };
 
-        for (_, live) in self.members.iter_mut().filter(|(number, _)| **number != 1) {
+        for (&number, live) in self.members.iter_mut().filter(|(number, _)| **number != 1) {
             if !live.gone {
-                mirror(&snapshot.breakpoints, live).await;
+                mirror(&self.shared, number, &snapshot.breakpoints, live).await;
             }
         }
     }
@@ -977,7 +1078,13 @@ async fn continue_stopped(handle: &DebuggerHandle) -> Result<()> {
 /// Makes a member's breakpoints the root's `breakpoints`: each one the
 /// member lacks is added, kept pending where nothing it has loaded has it,
 /// each changed one is changed, and each the root removed is removed.
-async fn mirror(breakpoints: &[Breakpoint], live: &mut Live) {
+async fn mirror(
+    shared: &Shared,
+    number: MemberNumber,
+    breakpoints: &[Breakpoint],
+    live: &mut Live,
+) {
+    let mut copies = BTreeMap::new();
     let handle = live.handle.clone();
     let current = breakpoints
         .iter()
@@ -993,6 +1100,7 @@ async fn mirror(breakpoints: &[Breakpoint], live: &mut Live) {
     for id in removed {
         if let Some((copy, _)) = live.mirrored.remove(&id) {
             let _ = handle.remove_breakpoint(copy).await;
+            copies.insert(copy, None);
         }
     }
 
@@ -1006,13 +1114,14 @@ async fn mirror(breakpoints: &[Breakpoint], live: &mut Live) {
                     log_message: settings.log_message.clone(),
                     pending: true,
                     enabled: settings.enabled,
-                    temporary: breakpoint.temporary,
+                    temporary: settings.temporary,
                 };
                 if let Ok(copy) = handle
                     .add_breakpoint_with(breakpoint.spec.clone(), options)
                     .await
                 {
                     live.mirrored.insert(breakpoint.id, (copy.id, settings));
+                    copies.insert(copy.id, Some(breakpoint.id));
                 }
             }
             Some((copy, old)) if *old != settings => {
@@ -1031,6 +1140,14 @@ async fn mirror(breakpoints: &[Breakpoint], live: &mut Live) {
             }
             Some(_) => {}
         }
+    }
+
+    let mut known = shared.copies.lock().unwrap_or_else(PoisonError::into_inner);
+    for (copy, original) in copies {
+        match original {
+            Some(original) => known.insert((number, copy), original),
+            None => known.remove(&(number, copy)),
+        };
     }
 }
 

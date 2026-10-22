@@ -63,13 +63,8 @@ impl Session {
 
 /// Reads the settings, decides whether to trust the project, and resolves
 /// the target. `warnings` renders what is said before the settings exist.
-pub fn prepare(args: &Args, warnings: Renderer) -> Result<Session> {
-    let start = std::env::current_dir().context("cannot read the working directory")?;
-    let files = read_files(&start, args)?;
-    let interactive = !args.batch && io::stdin().is_terminal() && io::stdout().is_terminal();
-    let trusted = decide_trust(&files, args.trust_project, interactive, warnings)?;
-    let mut settings = files.settings(trusted)?;
-
+/// `settings` with what the command line and environment choose over them.
+fn flagged_settings(mut settings: Settings, args: &Args) -> Settings {
     if let Some(choice) = args.color {
         settings.override_color(choice, Origin::Flag("--color"));
     } else if let Some((choice, variable)) = ColorEnvironment::current().choice() {
@@ -79,6 +74,16 @@ pub fn prepare(args: &Args, warnings: Renderer) -> Result<Session> {
     if let Some(syntax) = args.disassembly_syntax {
         settings.override_syntax(syntax);
     }
+    settings.override_follow(&args.follow);
+    settings
+}
+
+pub fn prepare(args: &Args, warnings: Renderer) -> Result<Session> {
+    let start = std::env::current_dir().context("cannot read the working directory")?;
+    let files = read_files(&start, args)?;
+    let interactive = !args.batch && io::stdin().is_terminal() && io::stdout().is_terminal();
+    let trusted = decide_trust(&files, args.trust_project, interactive, warnings)?;
+    let settings = flagged_settings(files.settings(trusted)?, args);
 
     let mut startup = settings.startup.clone();
     let mut views = Vec::new();

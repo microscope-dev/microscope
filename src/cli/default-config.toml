@@ -69,6 +69,12 @@ debuginfod = false        # download missing debug files from DEBUGINFOD_URLS
 [history]
 size = 10000              # lines kept in $XDG_STATE_HOME/microscope/history
 
+[follow]                  # the processes the program starts
+mode = "auto"             # "auto": the program, Node, Python, and Go programs,
+                          # and those named; "all"; or "none"
+programs = []             # more programs to debug, by file name: "node", "py*"
+stop = "group"            # a stop stops "group", or only its "process"
+
 # [signals]               # as `handle` takes them
 # SIGUSR1 = "nostop noprint pass"
 

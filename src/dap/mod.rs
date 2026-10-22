@@ -213,7 +213,8 @@ async fn serve<R, W>(
     ));
     let console = console.and_then(|read| output::spawn(read, "console", client.clone()).ok());
 
-    Session::new(client, cancelled).run(inbox, shutdown).await;
+    // The session, with its console's command line, is a large future.
+    Box::pin(Session::new(client, cancelled).run(inbox, shutdown)).await;
     reader.abort();
     if let Some(console) = console {
         console.abort();

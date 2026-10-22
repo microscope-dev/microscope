@@ -43,6 +43,7 @@ pub struct Config {
     pub breakpoints: Breakpoints,
     pub debug_info: DebugInfo,
     pub history: History,
+    pub follow: Follow,
 
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub signals: BTreeMap<String, SignalActions>,
@@ -308,6 +309,64 @@ impl Default for History {
     fn default() -> Self {
         Self { size: 10_000 }
     }
+}
+
+/// Which processes a program starts the session debugs too.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct Follow {
+    pub mode: FollowMode,
+
+    /// Programs debugged besides those `mode` chooses, by file name, where
+    /// `*` matches any run of characters and `?` any one.
+    pub programs: Vec<String>,
+
+    /// What a stop in one process stops.
+    pub stop: FollowStop,
+}
+
+impl Follow {
+    /// The policy a group follows, with `programs` named too.
+    pub fn policy(&self, programs: &[String]) -> microscope::FollowPolicy {
+        microscope::FollowPolicy {
+            mode: match self.mode {
+                FollowMode::Auto => microscope::FollowMode::Auto,
+                FollowMode::All => microscope::FollowMode::All,
+                FollowMode::None => microscope::FollowMode::None,
+            },
+            programs: self.programs.iter().chain(programs).cloned().collect(),
+            stop: match self.stop {
+                FollowStop::Group => microscope::StopScope::Group,
+                FollowStop::Process => microscope::StopScope::Process,
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FollowMode {
+    /// The program, programs of a runtime microscope models, and those
+    /// named; others are watched until they execute one of those.
+    #[default]
+    Auto,
+
+    /// Every process the program starts.
+    All,
+
+    /// Only the program's own process.
+    None,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FollowStop {
+    /// Every process stops with the one that stopped.
+    #[default]
+    Group,
+
+    /// Only the process that stopped.
+    Process,
 }
 
 /// A signal's actions as `handle` takes them, such as `nostop noprint pass`.
@@ -1450,6 +1509,32 @@ impl Settings {
     pub fn override_color(&mut self, choice: ColorChoice, origin: Origin) {
         self.config.ui.color = choice;
         self.origins.insert("ui.color".to_owned(), origin);
+    }
+
+    /// Sets which processes are followed from `--follow`: a mode, or
+    /// programs to debug besides those the mode chooses.
+    pub fn override_follow(&mut self, follow: &[String]) {
+        if follow.is_empty() {
+            return;
+        }
+
+        let mut programs = Vec::new();
+        for word in follow {
+            match word.as_str() {
+                "auto" => self.config.follow.mode = FollowMode::Auto,
+                "all" => self.config.follow.mode = FollowMode::All,
+                "none" => self.config.follow.mode = FollowMode::None,
+                program => programs.push(program.to_owned()),
+            }
+        }
+
+        self.origins
+            .insert("follow.mode".to_owned(), Origin::Flag("--follow"));
+        if !programs.is_empty() {
+            self.config.follow.programs = programs;
+            self.origins
+                .insert("follow.programs".to_owned(), Origin::Flag("--follow"));
+        }
     }
 
     /// Sets the disassembly syntax from `--disassembly-syntax`.

@@ -162,7 +162,7 @@ impl Cli {
         }
 
         let renderer = self.renderers.stdout;
-        let snapshot = self.debugger.snapshot().await.ok();
+        let snapshot = self.debugger().snapshot().await.ok();
         let located = in_code(reason) || matches!(reason, StopReason::Attach | StopReason::Entry);
         let mut suffix = String::new();
 
@@ -217,7 +217,7 @@ impl Cli {
                 snapshot
                     .as_ref()
                     .map_or(&[][..], |snapshot| &snapshot.watchpoints[..]),
-                Some(&self.debugger.module_image()),
+                Some(&self.debugger().module_image()),
                 &suffix,
                 renderer,
             ),
@@ -296,7 +296,7 @@ impl Cli {
                 frame: StackFrameId::INNERMOST,
             };
 
-            if let Ok(location) = self.debugger.at(context).location().await
+            if let Ok(location) = self.debugger().at(context).location().await
                 && let Ok(place) = self.describe(&location, false).await
             {
                 let _ = write!(line, " in {place}");
@@ -315,7 +315,7 @@ impl Cli {
         let renderer = self.renderers.stdout;
         let stop = &self.settings.config.stop;
         let variables = if stop.highlight_changes || stop.show.contains(&Section::Locals) {
-            Some(self.debugger.variables().await)
+            Some(self.debugger().variables().await)
         } else {
             None
         };
@@ -358,7 +358,7 @@ impl Cli {
                     .await
                 }
                 Section::Threads => self
-                    .debugger
+                    .debugger()
                     .snapshot()
                     .await
                     .map(|snapshot| format::threads(&snapshot, renderer))
@@ -389,7 +389,7 @@ impl Cli {
         context: ExecutionContext,
         frame: Option<VirtualAddress>,
     ) -> Option<Activation> {
-        let location = self.debugger.current_location().await.ok()?;
+        let location = self.debugger().current_location().await.ok()?;
         Some(Activation {
             stop,
             context,
@@ -491,7 +491,7 @@ impl Cli {
 
     async fn registers_section(&self, activation: Option<&Activation>) -> Result<String> {
         let renderer = self.renderers.stdout;
-        let registers = self.debugger.registers().await?;
+        let registers = self.debugger().registers().await?;
         let text = format::registers(&registers, renderer);
         let mut changed_lines: Option<Vec<String>> = None;
         let lines = text
@@ -543,7 +543,7 @@ impl Cli {
 
     /// Prints the stop's sections again, in the selected frame.
     pub(super) async fn context(&self) -> Result<String> {
-        if self.debugger.snapshot().await?.stop_id.is_none() {
+        if self.debugger().snapshot().await?.stop_id.is_none() {
             anyhow::bail!("the program is not stopped");
         }
 
@@ -568,7 +568,7 @@ impl Cli {
             .add(format, expression);
 
         let stopped = self
-            .debugger
+            .debugger()
             .snapshot()
             .await
             .is_ok_and(|snapshot| snapshot.stop_id.is_some());

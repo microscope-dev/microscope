@@ -6268,6 +6268,104 @@ fn which(name: &str) -> PathBuf {
 /// waits for it, with a notice, while a misspelling of a name it has is
 /// still refused. A run goes through the exec, saying so, unless
 /// `catch exec` stops it there.
+/// The processes a launched program forks join the session with its
+/// breakpoints. A run stops in, and selects, the one that stopped; each
+/// member's commands act on it alone; and the run ends with the program.
+#[test]
+fn fork_children_join_the_session_and_each_stops_where_it_hits() {
+    let stdout = batch(
+        &["build/test-programs/tree", "--", "2", "direct", "serial"],
+        &[
+            "break child_work",
+            "run",
+            "processes",
+            "process 1",
+            "backtrace",
+            "continue",
+            "continue",
+        ],
+    );
+    assert_in_order(
+        &stdout,
+        &[
+            "breakpoint 1 set at child_work",
+            "[2] process ",
+            " (tree 2 direct serial) joined, started by [1]",
+            "in [2] process ",
+            "stopped at breakpoint 1 (hit 1) in child_work",
+            "  [1] process ",
+            "* [2] process ",
+            "stopped at breakpoint 1 (hit 1)",
+            "selected [1]",
+            // The program waits for its child, which only it does.
+            " in wait4",
+            "[2] exited with status 0",
+            "[3] process ",
+            "joined, started by [1]",
+            "in [3] process ",
+            "stopped at breakpoint 1 (hit 1) in child_work",
+            "[3] exited with status 0",
+            "inferior exited with status 0",
+        ],
+    );
+    // The program's own exit ends the run, and says so once.
+    assert!(!stdout.contains("[1] exited"), "{stdout}");
+}
+
+/// `--follow none` leaves every child to run without microscope, which
+/// says so, and the program's breakpoints stay its own.
+#[test]
+fn follow_none_leaves_fork_children_to_run_on_their_own() {
+    let stdout = batch(
+        &[
+            "--follow",
+            "none",
+            "build/test-programs/tree",
+            "--",
+            "2",
+            "direct",
+        ],
+        &["break child_work", "run"],
+    );
+    assert_eq!(
+        stdout.matches(", which runs without microscope").count(),
+        2,
+        "{stdout}"
+    );
+    assert!(!stdout.contains("joined"), "{stdout}");
+    assert!(!stdout.contains("stopped at breakpoint"), "{stdout}");
+    assert!(stdout.contains("inferior exited with status 0"), "{stdout}");
+}
+
+/// `detach process N` lets a stopped member run on alone, without the
+/// group's breakpoints, while the rest of the group stays debugged.
+#[test]
+fn a_detached_member_runs_on_alone() {
+    let stdout = batch(
+        &["build/test-programs/tree", "--", "1", "direct"],
+        &[
+            "break child_work",
+            "run",
+            "detach process 2",
+            "processes",
+            "continue",
+        ],
+    );
+    assert_in_order(
+        &stdout,
+        &[
+            "in [2] process ",
+            "stopped at breakpoint 1 (hit 1) in child_work",
+            "detached [2]",
+            "* [1] process ",
+            "  [2] process ",
+            "  detached",
+            // tree exits with the number of children that went wrong.
+            "inferior exited with status 0",
+        ],
+    );
+}
+
 #[test]
 fn a_program_that_executes_another_is_followed_into_it() {
     let (stdout, stderr) = piped(

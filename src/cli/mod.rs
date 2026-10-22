@@ -7,6 +7,7 @@ pub mod commands;
 mod complete;
 pub mod config;
 pub mod format;
+mod group;
 pub mod help;
 mod highlight;
 pub mod profile;
@@ -225,7 +226,13 @@ impl LaunchSettings {
 }
 
 pub struct Cli {
-    debugger: DebuggerHandle,
+    /// The debugger commands act on: the session's, or in a group, the
+    /// selected member's.
+    selected: std::sync::Mutex<Selected>,
+
+    /// The process group the session debugs, when it follows the
+    /// processes its program starts.
+    group: Option<group::Group>,
     renderers: Renderers,
     settings: Settings,
     syntax: AssemblySyntax,
@@ -268,6 +275,16 @@ pub struct Cli {
     /// Whether the inferior replaced its program with one microscope does
     /// not follow, which fails a batch run.
     unfollowed_exec: std::sync::atomic::AtomicBool,
+
+    /// Whether a process the group's policy would debug executed a program
+    /// microscope could not load, which fails a batch run too.
+    unfollowed_process: std::sync::atomic::AtomicBool,
+}
+
+/// The member commands act on, and its handle.
+struct Selected {
+    member: microscope::MemberNumber,
+    handle: DebuggerHandle,
 }
 
 /// A source file's lines, each with its highlighted spans.
@@ -295,7 +312,11 @@ impl Cli {
         let runtime_frames = settings.config.backtrace.runtime == config::RuntimeFrames::Show;
 
         Self {
-            debugger,
+            selected: std::sync::Mutex::new(Selected {
+                member: 1,
+                handle: debugger,
+            }),
+            group: None,
             renderers,
             syntax: settings.config.disassembly.syntax.into(),
             settings,
@@ -316,12 +337,51 @@ impl Cli {
             completion_names: std::sync::Mutex::default(),
             profiling: std::sync::Mutex::default(),
             unfollowed_exec: std::sync::atomic::AtomicBool::new(false),
+            unfollowed_process: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Makes the session one of a process group, whose root is the
+    /// debugger it was made with, and whose members' handles read source
+    /// files through `source_paths`.
+    #[must_use]
+    pub fn with_group(
+        mut self,
+        group: microscope::GroupHandle,
+        source_paths: microscope::SourcePathMap,
+    ) -> Self {
+        self.group = Some(group::Group::new(group, source_paths));
+        self
+    }
+
+    /// The debugger commands act on.
+    pub(super) fn debugger(&self) -> DebuggerHandle {
+        self.selected
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .handle
+            .clone()
+    }
+
+    /// The debugger breakpoints belong to: a group's root, whose
+    /// breakpoints every member has, or the session's.
+    pub(super) fn group_debugger(&self) -> DebuggerHandle {
+        self.group
+            .as_ref()
+            .map_or_else(|| self.debugger(), |group| group.handle.root())
+    }
+
+    /// The member commands act on.
+    pub(super) fn selected_member(&self) -> microscope::MemberNumber {
+        self.selected
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .member
     }
 
     /// The process the session launched, while it is alive.
     pub async fn live_process(&self) -> Option<microscope::ProcessId> {
-        match self.debugger.snapshot().await.ok()?.inferior {
+        match self.debugger().snapshot().await.ok()?.inferior {
             microscope::InferiorState::Running { process_id, .. }
             | microscope::InferiorState::Stopped { process_id, .. } => Some(process_id),
             microscope::InferiorState::NotRunning => None,
@@ -418,7 +478,7 @@ impl Cli {
         warnings.extend(self.reload_views().await);
 
         warnings.extend(
-            self.debugger
+            self.debugger()
                 .module_image()
                 .view_errors()
                 .iter()
@@ -432,16 +492,16 @@ impl Cli {
     /// the libraries already loaded, as an attached process or a core dump
     /// has them.
     pub async fn debug_information_warnings(&self) -> Vec<String> {
-        let program = self.debugger.module_image();
+        let program = self.debugger().module_image();
         let mut warnings = crate::present::debug_information::warnings(&program, true);
 
         // A program yet to run has loaded nothing else.
-        let Ok(loaded) = self.debugger.loaded_modules().await else {
+        let Ok(loaded) = self.debugger().loaded_modules().await else {
             return warnings;
         };
 
         for record in loaded.modules.iter() {
-            if let Ok(image) = self.debugger.loaded_module_image(record.module.id).await
+            if let Ok(image) = self.debugger().loaded_module_image(record.module.id).await
                 && image.id() != program.id()
             {
                 warnings.extend(crate::present::debug_information::warnings(&image, false));
@@ -499,7 +559,11 @@ impl Cli {
             }
         }
 
-        match self.debugger.load_views(&files, &kernels, &renderers).await {
+        match self
+            .debugger()
+            .load_views(&files, &kernels, &renderers)
+            .await
+        {
             Ok(errors) => errors.iter().map(ToString::to_string).collect(),
             Err(error) => vec![error.to_string()],
         }
@@ -527,6 +591,15 @@ impl Cli {
                         );
                     }
 
+                    if session_batch
+                        && self.unfollowed_process.load(std::sync::atomic::Ordering::Relaxed)
+                    {
+                        bail!(
+                            "a process the program started executed a program microscope \
+                             cannot load; launch that program itself"
+                        );
+                    }
+
                     return Ok(());
                 }
                 signal = tokio::signal::ctrl_c() => {
@@ -540,7 +613,18 @@ impl Cli {
     /// Pauses a running inferior. Ctrl-C never ends the session: with nothing
     /// running there is nothing to interrupt, and `quit` or end-of-input exits.
     async fn interrupt(&self) {
-        match self.debugger.pause().await {
+        // A group stops as a whole once its selected member stops, or at
+        // once when that member has no process left.
+        let paused = match &self.group {
+            Some(group) => match self.debugger().pause().await {
+                Err(Error::NotRunning | Error::AlreadyStopped) => {
+                    group.handle.pause_all().await.map(|()| StopReason::Pause)
+                }
+                paused => paused,
+            },
+            None => self.debugger().pause().await,
+        };
+        match paused {
             Ok(_) | Err(Error::NotRunning | Error::AlreadyStopped | Error::PostMortemTarget) => {}
             Err(error) => self.report_error(&anyhow!(error).context("failed to pause inferior")),
         }
@@ -559,7 +643,7 @@ impl Cli {
         self.apply_signal_settings().await?;
 
         if self.settings.config.step.runtime == config::StepRuntime::Enter {
-            self.debugger.set_step_into_runtime(true).await?;
+            self.debugger().set_step_into_runtime(true).await?;
         }
 
         // Scripts behave the same in every checkout, so only a session at
@@ -567,7 +651,7 @@ impl Cli {
         if !args.batch
             && io::stdin().is_terminal()
             && io::stdout().is_terminal()
-            && self.debugger.core_dump().is_none()
+            && self.debugger().core_dump().is_none()
             && self.settings.config.breakpoints.save
         {
             self.restore_breakpoints(&args.source_paths).await;
@@ -606,7 +690,7 @@ impl Cli {
                 // attached one and leaves a core as it was.
                 let confirm = self.settings.config.ui.confirm_quit
                     && args.attached().is_none()
-                    && self.debugger.core_dump().is_none();
+                    && self.debugger().core_dump().is_none();
                 return repl::run(self, confirm).await;
             }
 
@@ -627,12 +711,12 @@ impl Cli {
                 bail!("unknown signal '{name}' in [signals]");
             };
 
-            let mut policy = self.debugger.signal_policy(code).await?;
+            let mut policy = self.debugger().signal_policy(code).await?;
             for action in actions.actions() {
                 commands::apply_signal_action(&mut policy, action)?;
             }
 
-            self.debugger.set_signal_policy(code, policy).await?;
+            self.debugger().set_signal_policy(code, policy).await?;
         }
 
         Ok(())
@@ -641,7 +725,7 @@ impl Cli {
     fn announce(&self, args: &Session) -> Result<()> {
         let stdout = self.renderers.stdout;
 
-        if let Some(core) = self.debugger.core_dump() {
+        if let Some(core) = self.debugger().core_dump() {
             if !args.batch {
                 emit(&format!(
                     "{} {} of {} (process {})\n{}",
@@ -672,7 +756,7 @@ impl Cli {
             emit(&format!(
                 "{} {}{}",
                 stdout.paint(Role::Success, action),
-                stdout.paint(Role::Metadata, self.debugger.executable().display()),
+                stdout.paint(Role::Metadata, self.debugger().executable().display()),
                 args.attached()
                     .map(|pid| format!(" (process {pid})"))
                     .unwrap_or_default()
@@ -870,7 +954,7 @@ impl Cli {
             ..microscope::BreakpointOptions::default()
         };
 
-        let breakpoint = self.debugger.add_breakpoint_with(spec, options).await?;
+        let breakpoint = self.debugger().add_breakpoint_with(spec, options).await?;
         let Some(text) = &entry.line_text else {
             return Ok(false);
         };
@@ -911,7 +995,7 @@ impl Cli {
             return;
         }
 
-        let Ok(snapshot) = self.debugger.snapshot().await else {
+        let Ok(snapshot) = self.debugger().snapshot().await else {
             return;
         };
 

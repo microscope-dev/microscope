@@ -2235,6 +2235,12 @@ impl DebuggerHandle {
     /// still to come; if not, every event before the answer is already
     /// sent, and those still held are searched for its end, which fails
     /// only where it was lost.
+    /// Waits for the controller to end, as it does once shut down, or once
+    /// it panicked and released its process.
+    pub(crate) async fn ended(&self) {
+        self.requests.closed().await;
+    }
+
     async fn wait_for_execution(
         &self,
         events: &mut broadcast::Receiver<DebuggerEvent>,
