@@ -89,7 +89,9 @@ enum Command {
 
 /// A handle to a tracer thread, through which controllers join it.
 pub(super) struct Tracer {
-    commands: std_mpsc::Sender<Command>,
+    /// Taken only when the handle drops, so that the thread finds it gone
+    /// once woken.
+    commands: Option<std_mpsc::Sender<Command>>,
     thread: Thread,
 }
 
@@ -136,7 +138,7 @@ impl Tracer {
 
         Ok((
             Self {
-                commands,
+                commands: Some(commands),
                 thread: joined.thread().clone(),
             },
             joined,
@@ -147,6 +149,8 @@ impl Tracer {
     pub(super) fn host(&self, build: Build) -> Result<oneshot::Receiver<thread::Result<()>>> {
         let (ended, receiver) = oneshot::channel();
         self.commands
+            .as_ref()
+            .ok_or(crate::Error::BackendThreadPanicked)?
             .send(Command::Host { build, ended })
             .map_err(|_| crate::Error::BackendThreadPanicked)?;
         self.thread.unpark();
@@ -169,6 +173,9 @@ impl Drop for Tracer {
     /// Wakes the thread, which ends once it has no controller left and no
     /// handle to it.
     fn drop(&mut self) {
+        // The sender goes first: a thread woken before it went would find
+        // the queue only empty, and park again with nothing to wake it.
+        drop(self.commands.take());
         self.thread.unpark();
     }
 }
@@ -324,3 +331,29 @@ fn serve_one(member: &mut Member, message: ControllerMessage) -> bool {
 /// The longest one message should hold the tracer thread, which every
 /// other controller on it waits through.
 const LATENCY_BUDGET: std::time::Duration = std::time::Duration::from_millis(50);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Dropping the last handle to an idle tracer thread ends it, however
+    /// the thread's wakeup and the handle's drop interleave.
+    #[test]
+    fn an_idle_tracer_thread_ends_once_its_handle_is_dropped() {
+        for _ in 0..500 {
+            let (tracer, thread) = Tracer::start(None).expect("start a tracer thread");
+            // The thread parks, waiting for work, before the handle drops.
+            thread::sleep(std::time::Duration::from_micros(200));
+            drop(tracer);
+            let (done, ended) = std_mpsc::channel();
+            thread::spawn(move || {
+                let _ = done.send(thread.join().is_ok());
+            });
+            assert_eq!(
+                ended.recv_timeout(std::time::Duration::from_secs(5)),
+                Ok(true),
+                "the tracer thread did not end"
+            );
+        }
+    }
+}
