@@ -1046,10 +1046,18 @@ async fn nonleader_exec_rewrites_the_thread_registry_and_invalidates_the_image()
 
     let snapshot = scenario.snapshot().await;
     assert_eq!(snapshot.threads.len(), 1);
-    assert!(matches!(
-        scenario.handle().resume().await,
-        Err(Error::Backend(_))
-    ));
+
+    // The program is a memfd's, which no path reads, and the refusal says
+    // which program and why.
+    let refusal = scenario.handle().resume().await;
+    let Err(Error::Backend(message)) = &refusal else {
+        panic!("resumed after an exec into an unreadable program: {refusal:?}");
+    };
+    let message = message.to_string();
+    assert!(
+        message.contains("/memfd:true") && message.contains("it was deleted"),
+        "{message}"
+    );
 
     // The catalog describes the program from before the exec, so every
     // view through it refuses.

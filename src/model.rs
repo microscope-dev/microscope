@@ -5066,6 +5066,10 @@ pub struct LoadedModuleSnapshot {
 
     /// Loaded modules ordered by module identifier.
     pub modules: Arc<[LoadedModuleRecord]>,
+
+    /// The module of the program the process runs, which an exec into
+    /// another program replaces with one under a new id.
+    pub main: ModuleId,
 }
 
 impl LoadedModule {

@@ -76,7 +76,7 @@ impl<P: InspectionOps> Controller<P> {
             .image_address(instruction)
             .ok()
             .filter(|address| {
-                !inferior.exec_unsupported && self.main.image.contains_address(*address)
+                inferior.unfollowed_exec.is_none() && self.main.image.contains_address(*address)
             })
         else {
             return Ok(physical());

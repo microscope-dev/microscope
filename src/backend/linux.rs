@@ -994,7 +994,11 @@ struct Inferior {
     barrier: Option<StopBarrier>,
     public_stop: Option<PublicStop>,
     next_execution: u64,
-    exec_unsupported: bool,
+
+    /// Why the program an exec replaced the main program with is not
+    /// followed, once one was not: requests that read the process through
+    /// the main program's image are refused with it.
+    unfollowed_exec: Option<String>,
 
     /// The loader's breakpoint, once the loader is known.
     loader_site: Option<VirtualAddress>,
@@ -1095,7 +1099,7 @@ impl Inferior {
             barrier: None,
             public_stop: None,
             next_execution: 0,
-            exec_unsupported: false,
+            unfollowed_exec: None,
             loader_site: None,
             runtime_hooks: BTreeMap::new(),
             stack_moves: stack_watches::StackMoves::default(),
@@ -1408,8 +1412,8 @@ enum LinuxError {
     #[error("only general registers can be changed")]
     UnsupportedRegisterWrite,
 
-    #[error("the inferior replaced its executable image; loading the new image is not supported")]
-    UnsupportedExec,
+    #[error("{0}")]
+    UnsupportedExec(String),
 
     #[error("could not determine the caller frame: {0}")]
     CallerUnavailable(UnwindTermination),
@@ -1461,6 +1465,12 @@ enum LinuxError {
 
     #[error("the process executed a program other than {}", .0.display())]
     ExecutedAnotherProgram(PathBuf),
+
+    #[error(
+        "the inferior replaced its program with {}, which microscope cannot load: {reason}",
+        path.display()
+    )]
+    ProgramUnreadable { path: PathBuf, reason: String },
 }
 
 struct Controller<P: InspectionOps> {
@@ -2944,10 +2954,10 @@ fn validate_resumable(inferior: &Inferior) -> Result<()> {
 }
 
 /// Rejects requests that interpret the address space through the debugged
-/// image after exec(2) replaced it; the new image is not loaded.
+/// image after exec(2) replaced it with one that could not be loaded.
 fn validate_image_current(inferior: &Inferior) -> Result<()> {
-    if inferior.exec_unsupported {
-        return Err(backend_error(LinuxError::UnsupportedExec));
+    if let Some(reason) = &inferior.unfollowed_exec {
+        return Err(backend_error(LinuxError::UnsupportedExec(reason.clone())));
     }
 
     Ok(())

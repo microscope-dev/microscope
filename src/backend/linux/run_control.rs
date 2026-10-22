@@ -1879,7 +1879,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let exec_replaced = self
             .inferior
             .as_ref()
-            .is_some_and(|inferior| inferior.exec_unsupported);
+            .is_some_and(|inferior| inferior.unfollowed_exec.is_some());
         if !exec_replaced {
             self.refresh_libraries()?;
         }

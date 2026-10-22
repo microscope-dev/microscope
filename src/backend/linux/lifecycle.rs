@@ -2,6 +2,7 @@
 //! threads, forks, and exec.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use super::signals::{Signal, WaitEvent};
 use nix::errno::Errno;
@@ -405,6 +406,91 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.main.image.address_range().start.get(),
             self.main.identity,
         )
+    }
+
+    /// Makes the program `pid` executed, which is not the main program, the
+    /// main program under new ids, and returns where it is loaded. The old
+    /// program's breakpoint locations go with it: one by function or line
+    /// is placed again in the new program, and one by address stays
+    /// pending, since its address means nothing there. Fails with why, and
+    /// changes nothing, when the new program cannot be loaded.
+    fn replace_main_program(&mut self, pid: Pid) -> Result<crate::LoadBias> {
+        let program = self.ptrace.process_program(pid)?;
+        let unloadable = |reason: String| {
+            backend_error(LinuxError::ProgramUnreadable {
+                path: program.path.clone(),
+                reason,
+            })
+        };
+        let image_id = crate::ModuleImageId::new(self.next_image_id);
+        let debug = self
+            .ptrace
+            .load_modules(&[(program.path.clone(), image_id)], &self.debug_files)
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::internal("a load for the program"))?
+            .map_err(|error| unloadable(error.to_string()))?;
+        crate::debug_info::check_architecture(&debug)
+            .map_err(|error| unloadable(error.to_string()))?;
+        let image_base = debug.image.address_range().start.get();
+        let load_bias = self
+            .ptrace
+            .load_bias(pid, &program.path, image_base, program.identity)?;
+
+        let module_id = crate::ModuleId::new(self.next_module_id);
+        self.next_module_id = self
+            .next_module_id
+            .checked_add(1)
+            .ok_or_else(|| backend_error(LinuxError::ModuleIdExhausted))?;
+        self.next_image_id = self
+            .next_image_id
+            .checked_add(1)
+            .ok_or_else(|| backend_error(LinuxError::ModuleImageIdExhausted))?;
+
+        let previous = self.main.image.id();
+        self.unregister_module(self.main.id);
+        self.runtime_models.borrow_mut().remove(&previous);
+
+        let mut cleared = false;
+        for breakpoint in &mut self.breakpoints {
+            if !breakpoint.locations.is_empty() {
+                breakpoint.locations = Arc::from([]);
+                cleared = true;
+            }
+        }
+        if cleared {
+            self.publish_breakpoints_changed();
+        }
+
+        self.main = super::MainProgram {
+            id: module_id,
+            executable: Arc::new(program.path.clone()),
+            identity: program.identity,
+            c_library: program.c_library,
+            image: Arc::clone(&debug.image),
+            unwind: Arc::clone(&debug.unwind),
+        };
+        let loaded = self.main.loaded(load_bias);
+        self.modules.insert(
+            module_id,
+            super::RuntimeModule {
+                loaded,
+                image: debug.image,
+                unwind: debug.unwind,
+                variables: debug.variables,
+                tls: None,
+            },
+        );
+        self.bump_revision();
+        let _ = self.events.send(DebuggerEvent::ModuleLoaded {
+            revision: self.revision,
+            module: crate::LoadedModuleRecord {
+                module: loaded,
+                path: Arc::new(program.path),
+            },
+        });
+
+        Ok(load_bias)
     }
 
     /// Places the executable's image at `load_bias` in a freshly executed
@@ -1188,18 +1274,21 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.reset_runtime_modules();
         self.refresh_thread_names();
 
-        // Only the executable's own image can be followed: it is the one
-        // whose debug information is loaded.
-        let load_bias = self.executable_load_bias(pid);
+        // The same program again keeps its image; another is loaded in
+        // its place, unless it cannot be.
+        let load_bias = self
+            .executable_load_bias(pid)
+            .or_else(|_| self.replace_main_program(pid));
         let followed = load_bias.is_ok();
 
-        if let Ok(load_bias) = load_bias {
-            self.load_main_image(load_bias)?;
-        } else {
-            self.inferior
-                .as_mut()
-                .ok_or(Error::NotRunning)?
-                .exec_unsupported = true;
+        match load_bias {
+            Ok(load_bias) => self.load_main_image(load_bias)?,
+            Err(error) => {
+                self.inferior
+                    .as_mut()
+                    .ok_or(Error::NotRunning)?
+                    .unfollowed_exec = Some(error.to_string());
+            }
         }
         // Arming the new image publishes reasons it reports, but not that
         // the old image's reasons are gone.

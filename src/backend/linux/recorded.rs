@@ -295,6 +295,16 @@ impl<P: LinuxTraceOps> LinuxTraceOps for Recorded<P> {
         self.0.module_mappings(pid)
     }
 
+    fn process_program(&self, pid: Pid) -> Result<super::native::ProcessProgram> {
+        let program = self.0.process_program(pid);
+        match &program {
+            Ok(program) => record!("program of {pid} -> {}", program.path.display()),
+            Err(error) => record!("program of {pid} -> error {error:?}"),
+        }
+
+        program
+    }
+
     fn write_word(&self, pid: Pid, address: u64, value: u64) -> Result<()> {
         issued(
             format_args!("PTRACE_POKEDATA {pid} {address:#x} {value:#018x}"),

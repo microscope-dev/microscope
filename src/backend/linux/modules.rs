@@ -62,6 +62,7 @@ impl<P: InspectionOps> Controller<P> {
                 })
                 .collect::<Vec<_>>()
                 .into(),
+            main: self.main.id,
         })
     }
 

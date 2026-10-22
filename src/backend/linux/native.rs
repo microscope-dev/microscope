@@ -39,6 +39,44 @@ use super::{
     WAITER_THREAD_NAME, Waiter, WaiterThread, allocate_stop_id, backend_error,
 };
 
+/// The program a process runs, as `/proc` shows it after an exec.
+pub(super) struct ProcessProgram {
+    /// Where the program's file is, which its debug information is read
+    /// from.
+    pub(super) path: PathBuf,
+    pub(super) identity: FileIdentity,
+    pub(super) c_library: tls::CLibrary,
+}
+
+/// Reads the program `pid`'s process runs through its `/proc` link, which
+/// names the file it executed even after a later rename. A file deleted
+/// since cannot be read by its path, so it is not followed.
+pub(super) fn process_program(pid: Pid) -> Result<ProcessProgram> {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let link = PathBuf::from(format!("/proc/{pid}/exe"));
+    let path = fs::read_link(&link)?;
+    let unreadable = |reason: String| {
+        backend_error(LinuxError::ProgramUnreadable {
+            path: path.clone(),
+            reason,
+        })
+    };
+
+    if path.as_os_str().as_bytes().ends_with(b" (deleted)") {
+        return Err(unreadable("it was deleted".to_owned()));
+    }
+
+    let (data, stamp) =
+        crate::image::backing::read_input(&link).map_err(|error| unreadable(error.to_string()))?;
+
+    Ok(ProcessProgram {
+        c_library: tls::CLibrary::of_executable(&data),
+        identity: FileIdentity { inode: stamp.inode },
+        path,
+    })
+}
+
 /// Read-only access to a stopped target's registers, memory, and thread-local
 /// storage. Live tracing and post-mortem targets share every inspection path.
 pub(super) trait InspectionOps {
@@ -193,6 +231,15 @@ pub(super) trait LinuxTraceOps: InspectionOps {
     ) -> Result<crate::LoadBias>;
     fn module_mappings(&self, _pid: Pid) -> Result<ProcessMappings> {
         Ok(ProcessMappings::default())
+    }
+
+    /// The program `pid`'s process runs, read through `/proc` after an exec
+    /// replaced it, or why it cannot be followed. An edge that cannot read
+    /// it refuses the exec.
+    fn process_program(&self, _pid: Pid) -> Result<ProcessProgram> {
+        Err(backend_error(LinuxError::UnsupportedExec(
+            "the inferior replaced its program, which this tracer cannot read".to_owned(),
+        )))
     }
 
     fn write_word(&self, pid: Pid, address: u64, value: u64) -> Result<()>;
@@ -615,6 +662,11 @@ impl LinuxTraceOps for LinuxPtrace {
     ) -> Result<crate::LoadBias> {
         self.assert_owner_thread();
         load_bias(pid, executable, image_base, identity)
+    }
+
+    fn process_program(&self, pid: Pid) -> Result<ProcessProgram> {
+        self.assert_owner_thread();
+        process_program(pid)
     }
 
     fn module_mappings(&self, pid: Pid) -> Result<ProcessMappings> {

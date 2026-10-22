@@ -28,7 +28,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(());
         };
 
-        if inferior.loader_site.is_some() || inferior.exec_unsupported {
+        if inferior.loader_site.is_some() || inferior.unfollowed_exec.is_some() {
             return Ok(());
         }
 

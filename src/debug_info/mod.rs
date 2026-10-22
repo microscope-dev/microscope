@@ -574,6 +574,12 @@ pub fn load_bytes(path: &Path, data: &[u8]) -> Result<DebugInfo> {
 /// architecture than the debugger's own cannot be debugged.
 pub fn load_program(path: &Path, data: &[u8], search: &DebugFileSearch) -> Result<DebugInfo> {
     let info = dwarf::load_bytes(path, data, crate::ModuleImageId::new(0), search)?;
+    check_architecture(&info)?;
+    Ok(info)
+}
+
+/// Refuses a program for another architecture than the debugger's own.
+pub fn check_architecture(info: &DebugInfo) -> Result<()> {
     let architecture = info.image.target().architecture;
     if architecture != HOST_ARCHITECTURE {
         return Err(crate::Error::UnsupportedFile(
@@ -586,7 +592,7 @@ pub fn load_program(path: &Path, data: &[u8], search: &DebugFileSearch) -> Resul
         ));
     }
 
-    Ok(info)
+    Ok(())
 }
 
 #[cfg(target_arch = "x86_64")]
