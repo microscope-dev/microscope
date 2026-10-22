@@ -288,20 +288,10 @@ pub(super) trait LinuxTraceOps: InspectionOps {
 
     fn request_stop(&self, process: Pid, thread: Pid) -> Result<()>;
 
-    /// The signals a stopped thread blocks, bit `n - 1` for signal `n`.
-    fn signal_mask(&self, pid: Pid) -> Result<u64>;
-
-    /// Replaces the signals a stopped thread blocks.
-    fn set_signal_mask(&self, pid: Pid, mask: u64) -> Result<()>;
-
-    /// What lets a child this edge held run, for the [`crate::HeldChild`]
-    /// that owns it, or none where processes are not the host's.
-    fn held_release(&self) -> Option<fn(&crate::HeldProcess) -> Result<bool>>;
-
     /// Whether resuming a stopped thread would have it dequeue `signal`
-    /// before running an instruction: the signal is pending in `queue`, and
-    /// the thread does not block it.
-    fn queued_signal(&self, _pid: Pid, _signal: Signal, _queue: SignalQueue) -> Result<bool> {
+    /// before running an instruction: the signal is pending for the thread
+    /// itself, and the thread does not block it.
+    fn queued_signal(&self, _pid: Pid, _signal: Signal) -> Result<bool> {
         Ok(false)
     }
 
@@ -867,22 +857,7 @@ impl LinuxTraceOps for LinuxPtrace {
         Ok(())
     }
 
-    fn held_release(&self) -> Option<fn(&crate::HeldProcess) -> Result<bool>> {
-        Some(super::release_held)
-    }
-
-    fn signal_mask(&self, pid: Pid) -> Result<u64> {
-        self.assert_owner_thread();
-        super::sys::signal_mask(pid).map_err(|error| backend_error(LinuxError::System(error)))
-    }
-
-    fn set_signal_mask(&self, pid: Pid, mask: u64) -> Result<()> {
-        self.assert_owner_thread();
-        super::sys::set_signal_mask(pid, mask)
-            .map_err(|error| backend_error(LinuxError::System(error)))
-    }
-
-    fn queued_signal(&self, pid: Pid, signal: Signal, queue: SignalQueue) -> Result<bool> {
+    fn queued_signal(&self, pid: Pid, signal: Signal) -> Result<bool> {
         self.assert_owner_thread();
         let status = match super::proc_status::read_path(format!("/proc/{pid}/status")) {
             Ok(status) => status,
@@ -890,7 +865,7 @@ impl LinuxTraceOps for LinuxPtrace {
             Err(error) => return Err(error.into()),
         };
 
-        queued_in_status(&status, signal, queue).ok_or_else(|| {
+        queued_in_status(&status, signal).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("/proc/{pid}/status has missing or malformed signal masks"),
@@ -957,23 +932,11 @@ pub(super) fn maps_executable(maps: &str, address: VirtualAddress) -> bool {
     })
 }
 
-/// The pending set a signal waits in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum SignalQueue {
-    /// The thread's own, as for a signal its instruction raised.
-    Thread,
-
-    /// Its process's, as for a signal sent with `kill`.
-    Process,
-}
-
-/// Whether the selected pending signal is unblocked. Missing or malformed
-/// masks are unknown, never evidence that a signal can safely be drained.
-pub(super) fn queued_in_status(status: &[u8], signal: Signal, queue: SignalQueue) -> Option<bool> {
-    let pending = match queue {
-        SignalQueue::Thread => super::proc_status::hex_field(status, b"SigPnd:")?,
-        SignalQueue::Process => super::proc_status::hex_field(status, b"ShdPnd:")?,
-    };
+/// Whether `signal` is pending for the thread itself, as a signal its
+/// instruction raised is, and unblocked. Missing or malformed masks are
+/// unknown, never evidence that a signal can safely be drained.
+pub(super) fn queued_in_status(status: &[u8], signal: Signal) -> Option<bool> {
+    let pending = super::proc_status::hex_field(status, b"SigPnd:")?;
     let blocked = super::proc_status::hex_field(status, b"SigBlk:")?;
     let bit = 1 << (signal.number() - 1);
     Some(pending & bit != 0 && blocked & bit == 0)
@@ -1071,77 +1034,6 @@ pub(super) fn disable_address_randomization() {
 fn tgkill(process: Pid, thread: Pid, signal: Signal) -> Result<()> {
     super::sys::tgkill(process, thread, signal.number())
         .map_err(|error| backend_error(LinuxError::System(error)))
-}
-
-/// Whether `process`, if it started at `start_time`, is still held: no
-/// tracer has it, and it is stopped by job control or has the `SIGSTOP`
-/// that stops it still pending.
-pub(super) fn process_held(process: Pid, start_time: u64) -> Result<bool> {
-    let read = |file: &str| match super::proc_status::read_path(format!("/proc/{process}/{file}")) {
-        Ok(contents) => Ok(Some(contents)),
-        Err(error) if super::proc_status::gone(&error) => Ok(None),
-        Err(error) => Err(Error::from(error)),
-    };
-
-    let Some(status) = read("status")? else {
-        return Ok(false);
-    };
-
-    let Some(stat) = read("stat")? else {
-        return Ok(false);
-    };
-
-    // Read after both, the start time proves that they described the
-    // process that was held.
-    let same = crate::backend::process_start_time(process.as_raw()) == Some(start_time);
-    if !same {
-        return Ok(false);
-    }
-
-    held_in_status(&status, &stat).ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("/proc/{process} has missing or malformed held-process evidence"),
-        )
-        .into()
-    })
-}
-
-/// Ends the job-control stop of `process` with `SIGCONT` if it is still
-/// held, and returns whether it did. The process file descriptor, opened
-/// first, names the process `process` named then, so the signal can never
-/// reach a later process given its identifier. A `SIGCONT` also discards a
-/// `SIGSTOP` still pending, so a child released before it stopped runs on.
-pub(super) fn continue_held(process: Pid, start_time: u64) -> Result<bool> {
-    let handle = match pidfd_open(process) {
-        Ok(handle) => handle,
-        Err(Errno::ESRCH) => return Ok(false),
-        Err(error) => return Err(backend_error(LinuxError::System(error))),
-    };
-
-    if !process_held(process, start_time)? {
-        return Ok(false);
-    }
-
-    match pidfd_send_signal(&handle, Signal::SIGCONT) {
-        Ok(()) => Ok(true),
-        Err(Errno::ESRCH) => Ok(false),
-        Err(error) => Err(backend_error(LinuxError::System(error))),
-    }
-}
-
-/// Whether `/proc/<pid>/status`, and `/proc/<pid>/stat` read after it,
-/// show a held process: untraced, and with `SIGSTOP` pending or stopped by
-/// job control. The status shows the state before the pending signals, so
-/// a thread that takes `SIGSTOP` in between, which stops it at once, shows
-/// neither there; the state the later stat shows is current.
-pub(super) fn held_in_status(status: &[u8], stat: &[u8]) -> Option<bool> {
-    let tracer = super::proc_status::tracer_pid(status)?;
-    let stopped = super::proc_status::stat_state(stat)? == b'T';
-    let thread = queued_in_status(status, Signal::SIGSTOP, SignalQueue::Thread)?;
-    let process = queued_in_status(status, Signal::SIGSTOP, SignalQueue::Process)?;
-
-    Some(tracer == 0 && (thread || process || stopped))
 }
 
 pub(super) fn pidfd_open(process: Pid) -> std::result::Result<std::os::fd::OwnedFd, Errno> {

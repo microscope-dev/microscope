@@ -1,8 +1,7 @@
 //! Which action the world takes next.
 //!
 //! Every action belongs to an actor: a program thread, or a session's
-//! waiter, controller, or client, or the follower that hands the children a
-//! session holds to others. A seed's swarm picks one of two policies:
+//! waiter, controller, or client. A seed's swarm picks one of two policies:
 //!
 //! - A random walk: an action kind by the swarm's weights, then an action
 //!   of that kind uniformly.
@@ -17,7 +16,7 @@
 //! And an actor enabled for [`PATIENCE`] steps runs next, as a machine's
 //! scheduler runs every thread eventually: a controller whose calls keep
 //! reaping the stops of a thread spinning on `sched_yield` never runs out of
-//! work, and would otherwise keep the client from adopting a child forever.
+//! work, and would otherwise keep the client from acting forever.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -27,7 +26,7 @@ use super::kernel::Tid;
 use super::swarm::Weights;
 
 /// A session, by the order it started in: the first is the one the client
-/// drives, and each later one adopts a child the first held.
+/// drives.
 pub type SessionId = usize;
 
 /// One thing the world can do next.
@@ -45,10 +44,6 @@ pub enum Action {
 
     /// A session's client task runs until it waits again.
     Poll(SessionId),
-
-    /// The next child the first session held is adopted by a session of
-    /// its own, or released.
-    Follow,
 }
 
 /// Who performs an action.
@@ -58,7 +53,6 @@ enum Actor {
     Waiter(SessionId),
     Controller(SessionId),
     Client(SessionId),
-    Follower,
 }
 
 impl Action {
@@ -68,7 +62,6 @@ impl Action {
             Self::Collect(session) => Actor::Waiter(session),
             Self::Deliver(session) => Actor::Controller(session),
             Self::Poll(session) => Actor::Client(session),
-            Self::Follow => Actor::Follower,
         }
     }
 
@@ -79,7 +72,7 @@ impl Action {
             Self::Run(_) => 0,
             Self::Collect(_) => 1,
             Self::Deliver(_) => 2,
-            Self::Poll(_) | Self::Follow => 3,
+            Self::Poll(_) => 3,
         }
     }
 }
@@ -344,12 +337,12 @@ mod tests {
             },
             &mut choices,
         );
-        let enabled = [Action::Deliver(0), Action::Follow];
+        let enabled = [Action::Deliver(0), Action::Poll(0)];
         let first = scheduler.choose(&enabled, 1, &mut choices);
-        let other = if first == Action::Follow {
+        let other = if first == Action::Poll(0) {
             Action::Deliver(0)
         } else {
-            Action::Follow
+            Action::Poll(0)
         };
 
         let ran = (2..=2 * PATIENCE)

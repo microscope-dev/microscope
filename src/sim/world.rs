@@ -2,10 +2,8 @@
 //! simulated kernel, advanced one action at a time on one thread.
 //!
 //! The first session is the one the client drives and the oracles judge in
-//! full. When it holds the children its program forks, each child it holds
-//! is adopted by a session of its own, as a DAP client starts one for each
-//! `startDebugging` request, or released. Each session's controller traces
-//! as a process of its own, with a waiter of its own.
+//! full. Each session's controller traces as a process of its own, with a
+//! waiter of its own.
 //!
 //! Each step lists the enabled actions, lets the scheduler pick one,
 //! performs it, records it in the trace, and runs the oracles:
@@ -16,8 +14,6 @@
 //! - `Deliver`: a session's controller serves the message at the front of
 //!   its queue.
 //! - `Poll`: a session's client task runs until it waits again.
-//! - `Follow`: the next child the first session held is adopted or
-//!   released.
 //!
 //! Inside `Deliver`, every call the controller makes into the kernel is a
 //! preemption point, where threads may run and waiters may reap before the
@@ -29,7 +25,7 @@
 //! waits is stuck, which is a failure.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::future::Future;
 use std::pin::Pin;
@@ -44,7 +40,7 @@ use tokio::sync::mpsc;
 use super::audit::Auditor;
 use super::catches;
 use super::choices::{Choices, Stream};
-use super::client::{Adopter, Client, Observation, Script, Shared};
+use super::client::{Client, Observation, Script, Shared};
 use super::corpus::{Corpus, Program, Run, Variant};
 use super::faults::{Faults, Plan};
 use super::kernel::shadow::Tracking;
@@ -65,10 +61,10 @@ use crate::backend::sim_edge::{
     Preemption, SimController, SimExecutable, SimLaunch, SimParts, SimWaiter,
 };
 
-use crate::{DebuggerEvent, DebuggerHandle, HeldChild, HeldProcess, ProcessId};
+use crate::{DebuggerEvent, DebuggerHandle, ProcessId};
 
 /// The process identifier of the first session's debugger, which launches
-/// programs. Each session adopting a held child traces as the next.
+/// programs.
 pub const TRACER: i32 = 100;
 
 /// The session the client drives.
@@ -165,18 +161,6 @@ pub enum Sabotage {
     /// memory, report the node after that successor, so a list walk skips
     /// a node.
     SkipLinkedNodes,
-
-    /// `PTRACE_DETACH` forgets a SIGSTOP pending for the thread, so a fork
-    /// child released to be held runs on instead.
-    ForgetStopRequests,
-
-    /// The kernel never reports a SIGCONT pending, so a session detaching
-    /// from a held child leaves the one that ended its stop for the program.
-    HideQueuedContinue,
-
-    /// SIGCONT is reported sent by no process, so a session cannot tell the
-    /// one it sent to end a held child's stop from the program's own.
-    MisattributeContinues,
 
     /// Ptrace reads of a call instruction the thread the client steps has
     /// come to report its first byte as a no-op, so the debugger cannot
@@ -406,21 +390,12 @@ struct World<'a> {
     variant: &'a Variant,
     run: &'a Run,
 
-    /// The bytes `AT_RANDOM` names.
-    random: [u8; 16],
     machine: Rc<Machine>,
 
     /// The sessions, the first the client's.
     sessions: Vec<Session>,
     shared: Shared,
     auditor: Auditor,
-
-    /// The children the first session held that no session took yet.
-    waiting: VecDeque<HeldChild>,
-
-    /// The children held that no session has seized, and that were not
-    /// released, which the holding oracle watches.
-    held: BTreeSet<Tgid>,
 
     /// Each thread's latest arrival at a trap the controller heard of.
     arrivals: BTreeMap<Tid, Arrival>,
@@ -502,7 +477,6 @@ impl<'a> World<'a> {
             marks: Rc::clone(&marks),
             killed: Rc::clone(&shared.killed),
             ending: Rc::clone(&shared.ending),
-            following: Rc::clone(&shared.following),
             unclean: RefCell::new(Vec::new()),
             leaked: RefCell::new(Vec::new()),
             step: Cell::new(0),
@@ -513,7 +487,7 @@ impl<'a> World<'a> {
             sabotage: settings.sabotage,
         });
         let (controller, handle, events) =
-            start_controller(&machine, variant, &swarm, random, TRACER, None);
+            start_controller(&machine, variant, &swarm, random, TRACER);
         let auditor = Auditor::new(events, Rc::clone(&shared.published));
 
         let client = Client {
@@ -552,13 +526,10 @@ impl<'a> World<'a> {
             program,
             variant,
             run,
-            random,
             machine,
             sessions: vec![first],
             shared,
             auditor,
-            waiting: VecDeque::new(),
-            held: BTreeSet::new(),
             arrivals: BTreeMap::new(),
             stepping: None,
             alone: None,
@@ -625,10 +596,6 @@ impl<'a> World<'a> {
             }
         }
 
-        if !self.waiting.is_empty() {
-            actions.push(Action::Follow);
-        }
-
         actions
     }
 
@@ -665,7 +632,6 @@ impl<'a> World<'a> {
             self.trace.line(format!("    {line}"));
         }
 
-        self.receive_held();
         self.flush();
         performed?;
         if action == Action::Poll(FIRST) {
@@ -777,7 +743,6 @@ impl<'a> World<'a> {
                     }
                 }
             }
-            Action::Follow => self.follow(),
         }
     }
 
@@ -786,127 +751,8 @@ impl<'a> World<'a> {
         self.sessions[FIRST].controller.as_ref()
     }
 
-    /// Takes the children the first session held since the last look,
-    /// which the holding oracle watches from now on.
-    fn receive_held(&mut self) {
-        let mut receiver = self.shared.held.borrow_mut();
-        let Some(receiver) = receiver.as_mut() else {
-            return;
-        };
-
-        let kernel = self.machine.kernel.borrow();
-        let mut marks = self.machine.marks.borrow_mut();
-
-        while let Ok(child) = receiver.try_recv() {
-            let tgid = tgid_of(child.process().process_id);
-            marks.hit(Mark::ChildHeld);
-            if kernel
-                .processes
-                .get(&tgid)
-                .is_some_and(|process| process.parent == Parent::Init)
-            {
-                marks.hit(Mark::HeldAfterParentExit);
-            }
-
-            self.trace.line(format!(
-                "    {} held {tgid} for another session",
-                child.parent()
-            ));
-            self.held.insert(tgid);
-            self.waiting.push_back(child);
-        }
-    }
-
-    /// Hands the next child held to a session of its own, as a client
-    /// answering `startDebugging` does, or releases it, as one refusing
-    /// does. Now and then the first session stops taking children, as one
-    /// ending does, and its debugger releases those it forks from then on.
-    fn follow(&mut self) -> Result<String, Failure> {
-        let held = self
-            .waiting
-            .pop_front()
-            .expect("follow needs a held child")
-            .hand_over();
-        let tgid = tgid_of(held.process_id);
-        let decision = self.machine.choices.borrow_mut().below(Stream::Client, 8);
-        if matches!(decision, 1..=3)
-            && let Some(receiver) = self.shared.held.borrow_mut().as_mut()
-        {
-            receiver.close();
-            self.trace
-                .line("    the first session takes no more children".to_owned());
-        }
-
-        if decision <= 1 {
-            self.release(held)?;
-            return Ok(format!("follow {tgid} -> released"));
-        }
-
-        let id = self.sessions.len();
-        let tracer = TRACER + i32::try_from(id).expect("few sessions");
-        let (controller, handle, _) = start_controller(
-            &self.machine,
-            self.variant,
-            &self.swarm,
-            self.random,
-            tracer,
-            Some(held.start_time),
-        );
-        let notes = Rc::default();
-        let requests = self.machine.choices.borrow_mut().below(Stream::Client, 8) + 1;
-        let adopter = Adopter {
-            handle,
-            choices: Rc::clone(&self.machine.choices),
-            marks: Rc::clone(&self.machine.marks),
-            notes: Rc::clone(&notes),
-            child: held,
-            requests,
-        };
-
-        self.sessions.push(Session::new(
-            tracer,
-            controller,
-            Box::pin(adopter.run()),
-            notes,
-        ));
-
-        Ok(format!(
-            "follow {tgid} -> session {id}, tracing as {tracer}"
-        ))
-    }
-
-    /// Lets a held child run on, as `release_held` does for a client that
-    /// will not adopt it: `SIGCONT` from the first session's process, once
-    /// the child is known to be the one held.
-    fn release(&mut self, held: HeldProcess) -> Result<(), Failure> {
-        let tgid = tgid_of(held.process_id);
-        let mut kernel = self.machine.kernel.borrow_mut();
-        let start_time = kernel
-            .processes
-            .get(&tgid)
-            .map(|process| process.start_time);
-        if start_time != Some(held.start_time) {
-            return Err(Failure::debugger(
-                "holding",
-                format!(
-                    "held child {tgid} started at {}, but its process started at {start_time:?}",
-                    held.start_time
-                ),
-            ));
-        }
-
-        kernel.serve(TRACER);
-        kernel
-            .kill(tgid, libc::SIGCONT)
-            .expect("a held child can be continued");
-        self.held.remove(&tgid);
-        self.machine.marks.borrow_mut().hit(Mark::HeldChildReleased);
-
-        Ok(())
-    }
-
-    /// Lets a session adopting a held child handle the message at the
-    /// front of its controller's queue.
+    /// Lets a later session handle the message at the front of its
+    /// controller's queue.
     fn deliver_to(&mut self, id: SessionId) -> Result<String, Failure> {
         let session = &mut self.sessions[id];
         let controller = session
@@ -1537,7 +1383,6 @@ impl<'a> World<'a> {
             ));
         }
 
-        self.check_held()?;
         if let Some(lost) = self.machine.kernel.borrow().watching.lost.first() {
             return Err(Failure::debugger(
                 "watch accounting",
@@ -1785,27 +1630,6 @@ impl<'a> World<'a> {
         Ok(())
     }
 
-    /// Holding: every child held is as the oracle requires until a session
-    /// seizes it.
-    fn check_held(&mut self) -> Result<(), Failure> {
-        let kernel = self.machine.kernel.borrow();
-        let mut seized = Vec::new();
-
-        for &tgid in &self.held {
-            if !oracles::held(&kernel, tgid)
-                .map_err(|message| Failure::debugger("holding", message))?
-            {
-                seized.push(tgid);
-            }
-        }
-
-        for tgid in seized {
-            self.held.remove(&tgid);
-        }
-
-        Ok(())
-    }
-
     /// Feeds the calls the kernel served since the last action to the
     /// model of the tracepoint stream.
     fn trace_served(&self) -> Result<(), Failure> {
@@ -1914,8 +1738,7 @@ impl<'a> World<'a> {
     }
 }
 
-/// Starts a controller tracing as `tracer`, with a waiter of its own, which
-/// checks the start time of a process it attaches to against `start_time`.
+/// Starts a controller tracing as `tracer`, with a waiter of its own.
 /// Returns it with the handle a client drives it through, and every event
 /// it publishes, for an auditor.
 fn start_controller(
@@ -1924,7 +1747,6 @@ fn start_controller(
     swarm: &Swarm,
     random: [u8; 16],
     tracer: i32,
-    start_time: Option<u64>,
 ) -> (
     SimController,
     DebuggerHandle,
@@ -1947,7 +1769,6 @@ fn start_controller(
             path: Arc::clone(&variant.path),
             data: Arc::clone(&variant.data),
             inode: variant.inode,
-            start_time,
         },
         debug_info,
         queue_capacity: swarm.queue_capacity,
@@ -2017,7 +1838,6 @@ fn script(
         debug: swarm.debug,
         image: Arc::clone(&variant.image),
         attach,
-        follow: swarm.follow,
         catching: swarm.catching,
         statements: statements(program, variant),
         unoptimized_functions: (!variant.facts.optimized).then(|| {

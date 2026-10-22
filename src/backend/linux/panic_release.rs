@@ -139,8 +139,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         // A child keeps the traps its parent held when it forked.
         for child in children.into_iter().filter(live) {
             let child_sites = inferior.fork_children.get(&child).unwrap_or(&sites);
-            let holdable = !inferior.vfork_children.contains(&child);
-            self.scrub_and_settle(tgid, child, child_sites, holdable);
+            let vfork = inferior.vfork_children.contains(&child);
+            self.scrub_and_settle(tgid, child, child_sites, vfork);
         }
 
         record!(

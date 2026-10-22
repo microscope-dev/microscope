@@ -10,19 +10,19 @@ use nix::libc;
 use nix::unistd::Pid;
 
 use crate::protocol::{
-    DebuggerEvent, ExceptionDisposition, ExecutionId, ExitStatus, HeldChild, HeldProcess,
-    LaunchOptions, ProcessId, Reply, ResumeScope, StopId, StopReason,
+    DebuggerEvent, ExceptionDisposition, ExecutionId, ExitStatus, LaunchOptions, ProcessId, Reply,
+    ResumeScope, StopId, StopReason,
 };
 
 use crate::{Error, Result, VirtualAddress};
 
 use super::breakpoints::{install_logical_breakpoint, lift_all_traps, reinstall_all_traps};
-use super::native::{LinuxTraceOps, SignalQueue, is_vanished_tracee};
+use super::native::{LinuxTraceOps, is_vanished_tracee};
 use super::{
     ActiveExecution, ActiveKind, BREAKPOINT_OPCODE, ClassifiedStop, Controller, ExpectedStop,
-    HeldStop, Inferior, InferiorOrigin, LinuxError, MemoryAccessError, NativeThreadState, Orphans,
-    Start, StopBarrier, Terminating, TraceThread, VforkWindow, Waiter, backend_error,
-    debug_thread_id, exception_info, is_superseded, process_id,
+    Inferior, InferiorOrigin, LinuxError, MemoryAccessError, NativeThreadState, Orphans, Start,
+    StopBarrier, Terminating, TraceThread, VforkWindow, Waiter, backend_error, debug_thread_id,
+    exception_info, is_superseded, process_id,
 };
 
 /// How many times an attach may find threads it has not traced before it
@@ -46,11 +46,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         match start {
             Start::Launch(options, reply) => self.launch(options, reply),
-            Start::Attach {
-                requested,
-                held,
-                reply,
-            } => self.attach(requested, held, reply),
+            Start::Attach { requested, reply } => self.attach(requested, reply),
             Start::LaunchByExec {
                 requested,
                 stop_at_entry,
@@ -275,7 +271,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         });
     }
 
-    fn attach(&mut self, requested: ProcessId, held: bool, reply: Reply<StopId>) {
+    fn attach(&mut self, requested: ProcessId, reply: Reply<StopId>) {
         self.restore_launched_program();
         let (tgid, seized, unseized, waiter) = match self.seize_process(requested) {
             Ok(seized) => seized,
@@ -299,7 +295,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             Some(waiter),
         );
         inferior.unseized_threads = unseized;
-        inferior.held = held.then_some(HeldStop::Stopped);
         self.inferior = Some(inferior);
         self.attach_reply = Some(reply);
         self.attach_rescans = 0;
@@ -830,51 +825,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let pid = self.inferior.as_ref().ok_or(Error::NotRunning)?.tgid;
         let load_bias = self.executable_load_bias(pid)?;
         self.place_main_image(load_bias)?;
-        self.clear_attached_debug_registers()?;
-        self.end_held_stop()
-    }
-
-    /// Ends the job-control stop a held process was released in, now that
-    /// every thread is in a ptrace-stop: without it, the process would run
-    /// while job control still counts it stopped, and stop again once
-    /// detached. The `SIGCONT` is delivered when the process next runs,
-    /// and suppressed then.
-    fn end_held_stop(&mut self) -> Result<()> {
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
-        if inferior.held != Some(HeldStop::Stopped) {
-            return Ok(());
-        }
-
-        self.ptrace.kill(inferior.tgid, Signal::SIGCONT)?;
-        inferior.held = Some(HeldStop::Continued);
-        Ok(())
-    }
-
-    /// Whether `pending` is the `SIGCONT` that ended a held process's
-    /// stop, which the program must never see. Recognizing it consumes it,
-    /// and restores the mask a detach changed to take it.
-    pub(super) fn take_held_continue(&mut self, signal: Signal, sender: Option<i32>) -> bool {
-        let tracer = self.ptrace.tracer_process();
-        let Some(inferior) = self.inferior.as_mut() else {
-            return false;
-        };
-
-        let Some(held @ (HeldStop::Continued | HeldStop::Draining { .. })) = inferior.held else {
-            return false;
-        };
-
-        if signal != Signal::SIGCONT || sender != Some(tracer) {
-            return false;
-        }
-
-        record!("suppressed the SIGCONT that ended the held stop");
-        inferior.held = None;
-        if let HeldStop::Draining { thread, mask } = held {
-            // A thread gone since has no mask left to restore.
-            let _ = self.ptrace.set_signal_mask(thread, mask);
-        }
-
-        true
+        self.clear_attached_debug_registers()
     }
 
     pub(super) fn handle_ptrace_event(&mut self, pid: Pid, event: i32) -> Result<()> {
@@ -1137,29 +1088,30 @@ impl<P: LinuxTraceOps> Controller<P> {
             return;
         };
 
-        let holdable = self
+        let vfork = self
             .inferior
             .as_mut()
-            .is_some_and(|inferior| !inferior.vfork_children.remove(&child));
-        if !self.scrub_and_settle(parent, child, sites, holdable)
+            .is_some_and(|inferior| inferior.vfork_children.remove(&child));
+        if !self.scrub_and_settle(parent, child, sites, vfork)
             && let Some(inferior) = self.inferior.as_mut()
         {
             inferior.killed_children.insert(child);
         }
     }
 
-    /// Restores the bytes the traps in `sites` replaced in a stopped fork
-    /// child of `parent`, then releases it, or holds it while a receiver of
-    /// held children is open and the child is `holdable`: a vfork child is
-    /// not. A shutdown releases every child: no client is left to take one. A child that cannot be scrubbed is killed rather than
-    /// released with traps in place. Returns whether it was detached; one
-    /// that was not stays traced until it exits.
+    /// Hands a stopped fork child of `parent` to the group that follows
+    /// it, or else restores the bytes the traps in `sites` replaced and
+    /// releases it; `vfork` says it shares its parent's memory. A shutdown
+    /// releases every child: no group is left to take one. A child that
+    /// cannot be scrubbed is killed rather than released with traps in
+    /// place. Returns whether it was detached or handed over; one that was
+    /// not stays traced until it exits.
     pub(super) fn scrub_and_settle(
         &mut self,
         parent: Pid,
         child: Pid,
         sites: &[(VirtualAddress, u8)],
-        holdable: bool,
+        vfork: bool,
     ) -> bool {
         if !self.shutting_down
             && let Some(following) = self.following()
@@ -1176,7 +1128,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             following.transfer(super::follow::Transfer {
                 child,
                 parent,
-                vfork: !holdable,
+                vfork,
                 program: self.forked_program(child),
                 launched: self
                     .inferior
@@ -1186,27 +1138,15 @@ impl<P: LinuxTraceOps> Controller<P> {
             return true;
         }
 
-        let hold = holdable
-            && !self.shutting_down
-            && self
-                .held_children
-                .as_ref()
-                .is_some_and(|children| !children.is_closed());
-        let settled = self.scrub(child, sites).and_then(|()| {
-            if hold {
-                self.hold_fork_child(parent, child)
-            } else {
-                self.ptrace.detach(child, None)
-            }
-        });
-
-        let Ok(detached) = settled else {
+        let Ok(detached) = self
+            .scrub(child, sites)
+            .and_then(|()| self.ptrace.detach(child, None))
+        else {
             let _ = self.ptrace.kill(child, Signal::SIGKILL);
             return false;
         };
 
-        // A held child is reported to its receiver instead.
-        if detached && !hold {
+        if detached {
             let _ = self.events.send(DebuggerEvent::ChildReleased {
                 revision: self.revision,
                 process_id: process_id(parent),
@@ -1215,42 +1155,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         detached
-    }
-
-    /// Detaches a scrubbed fork child of `parent` stopped, for another
-    /// session to attach to, and sends it to the receiver of held children.
-    /// The `SIGSTOP` queued first stops it before it runs an instruction
-    /// untraced. Its identity is read while it is traced, so that no other
-    /// process can have its identifier yet; one whose identity cannot be
-    /// read is released to run instead, since no session could prove it
-    /// attached to it. Returns whether it was detached.
-    fn hold_fork_child(&self, parent: Pid, child: Pid) -> Result<bool> {
-        let Some(start_time) = self.ptrace.process_start_time(child) else {
-            record!("released {child}, whose start time is unreadable, rather than holding it");
-            return self.ptrace.detach(child, None);
-        };
-
-        self.ptrace.request_stop(child, child)?;
-        if !self.ptrace.detach(child, None)? {
-            return Ok(false);
-        }
-
-        record!("held {child} for another session");
-        let held = HeldChild::new(
-            process_id(parent),
-            HeldProcess {
-                process_id: process_id(child),
-                start_time,
-            },
-            self.ptrace.held_release(),
-        );
-
-        // A receiver gone since drops the child, which releases it.
-        if let Some(children) = &self.held_children {
-            let _ = children.send(held);
-        }
-
-        Ok(true)
     }
 
     /// Restores the bytes the traps in `sites` replaced in a stopped fork
@@ -1335,7 +1239,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 let parent = orphans.parent;
                 let sites = orphans.children.remove(&pid);
                 if let Some(sites) = sites
-                    && !self.scrub_and_settle(parent, pid, &sites, true)
+                    && !self.scrub_and_settle(parent, pid, &sites, false)
                     && let Some(orphans) = self.orphans.as_mut()
                 {
                     orphans.killed.insert(pid);
@@ -1546,10 +1450,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         // failure must leave the all-stop intact for shutdown cleanup.
         let mut queued = Vec::new();
         for pid in candidates {
-            if self
-                .ptrace
-                .queued_signal(pid, Signal::SIGTRAP, SignalQueue::Thread)?
-            {
+            if self.ptrace.queued_signal(pid, Signal::SIGTRAP)? {
                 queued.push(pid);
             }
         }
@@ -1587,78 +1488,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         Ok(())
-    }
-
-    /// Resumes a stopped thread to take the `SIGCONT` that ended a held
-    /// process's stop while it is still queued, since the detached program
-    /// would receive it. Resumed, the thread dequeues it into a
-    /// signal-delivery stop before running any instruction, and that stop
-    /// is suppressed. A thread that blocks it, as a fork child still inside
-    /// `fork` does, has it unblocked until then.
-    fn drain_held_continue(&mut self) -> Result<bool> {
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
-        let thread = match inferior.held {
-            Some(HeldStop::Continued) => inferior
-                .threads
-                .iter()
-                .find(|(_, thread)| {
-                    matches!(thread.state, NativeThreadState::Stopped)
-                        && thread.pending_signal.is_none()
-                })
-                .map(|(&pid, _)| pid),
-            // The thread first reported the interrupt the attach left.
-            Some(HeldStop::Draining { thread, .. }) => inferior
-                .threads
-                .get(&thread)
-                .is_some_and(|state| matches!(state.state, NativeThreadState::Stopped))
-                .then_some(thread),
-            Some(HeldStop::Stopped) | None => None,
-        };
-
-        let Some(thread) = thread else {
-            return Ok(false);
-        };
-
-        if inferior.held == Some(HeldStop::Continued) {
-            let mask = match self.ptrace.signal_mask(thread) {
-                Err(error) if is_vanished_tracee(&error) => {
-                    inferior.thread_mut(thread)?.state = NativeThreadState::Running;
-                    return Ok(true);
-                }
-                result => result?,
-            };
-
-            let continued = 1 << (Signal::SIGCONT.number() - 1);
-            if mask & continued != 0 {
-                match self.ptrace.set_signal_mask(thread, mask & !continued) {
-                    // SIGKILL took the thread out of its stop, to its exit,
-                    // which the detach awaits.
-                    Err(error) if is_vanished_tracee(&error) => {
-                        inferior.thread_mut(thread)?.state = NativeThreadState::Running;
-                        return Ok(true);
-                    }
-                    result => result?,
-                }
-
-                inferior.held = Some(HeldStop::Draining { thread, mask });
-            }
-        }
-
-        if !self
-            .ptrace
-            .queued_signal(thread, Signal::SIGCONT, SignalQueue::Process)?
-        {
-            // Another thread took it, or nothing sent it.
-            if let Some(HeldStop::Draining { thread, mask }) = inferior.held {
-                self.ptrace.set_signal_mask(thread, mask)?;
-            }
-
-            inferior.held = None;
-            return Ok(false);
-        }
-
-        self.resume_to_drain(thread)?;
-        Ok(true)
     }
 }
 
@@ -2094,15 +1923,8 @@ impl<P: LinuxTraceOps> Controller<P> {
                 self.handle_vfork_during_detach(pid)
             }
             WaitEvent::Stopped(pid, signal) => {
-                let classified = self.classify_stop(pid, signal);
-
-                // The program never sees the signal that ended its held stop.
-                let pending = match classified {
-                    ClassifiedStop::SignalDelivery(pending)
-                        if !self.take_held_continue(pending.signal, pending.sender) =>
-                    {
-                        Some(pending)
-                    }
+                let pending = match self.classify_stop(pid, signal) {
+                    ClassifiedStop::SignalDelivery(pending) => Some(pending),
                     _ => None,
                 };
 
@@ -2163,15 +1985,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .iter()
                 .all(|(&pid, thread)| inferior.settled(pid, thread));
         if ready {
-            let draining = self.drain_queued_traps().and_then(|resumed| {
-                if resumed {
-                    Ok(true)
-                } else {
-                    self.drain_held_continue()
-                }
-            });
-
-            match draining {
+            match self.drain_queued_traps() {
                 Ok(false) => self.detach_inferior(),
                 Ok(true) => {}
                 // Queue evidence can be unavailable even at an all-stop.
@@ -2456,15 +2270,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         // Every thread was stopped, and only SIGKILL takes one out of its
         // stop: a thread that refuses to be written belongs to a process
         // that is ending, where what is left can never run.
-        // A queue read can fail after SIGCONT was temporarily unblocked.
-        // Restore its mask even when draining could not finish.
-        if let Some(HeldStop::Draining { thread, mask }) =
-            self.inferior.as_ref().and_then(|inferior| inferior.held)
-            && let Err(error) = self.ptrace.set_signal_mask(thread, mask)
-            && !is_vanished_tracee(&error)
-        {
-            first_error.get_or_insert(error);
-        }
         if let Err(reason) = self.prepare_agents_for_detach() {
             first_error.get_or_insert(Error::RuntimeAgent(reason));
         }

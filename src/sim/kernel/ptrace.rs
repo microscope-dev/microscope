@@ -215,24 +215,6 @@ impl Kernel {
         }
     }
 
-    /// `PTRACE_GETSIGMASK`. No simulated program blocks a signal.
-    pub fn signal_mask(&self, tid: Tid) -> Result<u64, Errno> {
-        self.stopped(tid)?;
-        Ok(0)
-    }
-
-    /// `PTRACE_SETSIGMASK`, which can only leave every signal unblocked:
-    /// blocking is not modeled.
-    pub fn set_signal_mask(&mut self, tid: Tid, mask: u64) -> Result<(), Errno> {
-        self.stopped(tid)?;
-        if mask != 0 {
-            self.gap(format!("blocking signals {mask:#x}"));
-            return Err(Errno::ENOSYS);
-        }
-
-        Ok(())
-    }
-
     /// `PTRACE_GETREGS`, with `orig_rax`.
     pub fn get_registers_and_call(&self, tid: Tid) -> Result<(Registers, u64), Errno> {
         let thread = self.stopped(tid)?;
@@ -538,14 +520,7 @@ impl Kernel {
     /// its process stopped, stops again (K-STOP-2).
     pub fn detach(&mut self, tid: Tid, signal: Option<i32>) -> Result<(), Errno> {
         let tracer = self.caller();
-        #[cfg(test)]
-        let forget = self.sabotage == Some(Sabotage::ForgetStopRequests);
         let thread = self.stopped_mut(tid)?;
-        #[cfg(test)]
-        if forget {
-            thread.pending.remove(super::signals::SIGSTOP);
-        }
-
         thread.tracing = Tracing::Untraced;
         thread.single_step = false;
 
@@ -637,26 +612,12 @@ impl Kernel {
         Ok(())
     }
 
-    /// Whether `signal` is pending for a stopped thread: in its own set,
-    /// or in its process's when `process_wide`.
+    /// Whether `signal` is pending in a stopped thread's own set.
     #[must_use]
-    pub fn signal_queued(&self, tid: Tid, signal: i32, process_wide: bool) -> bool {
-        #[cfg(test)]
-        if self.sabotage == Some(Sabotage::HideQueuedContinue) && signal == libc::SIGCONT {
-            return false;
-        }
-
-        let Some(thread) = self.threads.get(&tid) else {
-            return false;
-        };
-
-        if process_wide {
-            self.processes
-                .get(&thread.tgid)
-                .is_some_and(|process| process.shared.contains(signal))
-        } else {
-            thread.pending.contains(signal)
-        }
+    pub fn signal_queued(&self, tid: Tid, signal: i32) -> bool {
+        self.threads
+            .get(&tid)
+            .is_some_and(|thread| thread.pending.contains(signal))
     }
 }
 

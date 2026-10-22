@@ -18,8 +18,6 @@ use super::core_dump::FXSAVE_SIZE;
 // The kernel's numbers for the requests nix's `Request` lacks with musl.
 // glibc declares requests unsigned and musl signed, so they convert to
 // whichever `libc::ptrace` takes.
-const PTRACE_GETSIGMASK: u16 = 0x420a;
-const PTRACE_SETSIGMASK: u16 = 0x420b;
 const PTRACE_GET_SYSCALL_INFO: u16 = 0x420e;
 
 /// What a launched child does between fork and exec, in this order.
@@ -183,35 +181,6 @@ pub(super) fn ptrace_with_signal(
             pid.as_raw(),
             std::ptr::null_mut::<libc::c_void>(),
             std::ptr::without_provenance_mut::<libc::c_void>(data),
-        )
-    };
-
-    Errno::result(result).map(drop)
-}
-
-/// A stopped tracee's blocked signals.
-pub(super) fn signal_mask(pid: Pid) -> Result<u64, Errno> {
-    let mut mask = 0;
-    signal_mask_request(PTRACE_GETSIGMASK, pid, &mut mask)?;
-    Ok(mask)
-}
-
-/// Sets a stopped tracee's blocked signals.
-pub(super) fn set_signal_mask(pid: Pid, mask: u64) -> Result<(), Errno> {
-    let mut mask = mask;
-    signal_mask_request(PTRACE_SETSIGMASK, pid, &mut mask)
-}
-
-#[allow(unsafe_code, reason = "nix does not wrap the signal mask requests")]
-fn signal_mask_request(request: u16, pid: Pid, mask: &mut u64) -> Result<(), Errno> {
-    // SAFETY: the kernel's signal set is the eight bytes `mask` borrows,
-    // which stay valid and exclusively borrowed throughout the call.
-    let result = unsafe {
-        libc::ptrace(
-            request.into(),
-            pid.as_raw(),
-            std::mem::size_of::<u64>(),
-            std::ptr::from_mut(mask).cast::<libc::c_void>(),
         )
     };
 

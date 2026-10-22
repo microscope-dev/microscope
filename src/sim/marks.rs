@@ -329,29 +329,6 @@ marks! {
     /// interrupt's stop.
     SeizedChildStarted,
 
-    /// The debugger held a fork child, stopped, for another session.
-    ChildHeld,
-
-    /// The debugger held a fork child whose parent had exited.
-    HeldAfterParentExit,
-
-    /// The debugger released a fork child rather than hold it, its session
-    /// shutting down or no longer taking children.
-    ReleasedWhileFollowing,
-
-    /// A held child no session took was released to run on.
-    HeldChildReleased,
-
-    /// A session attached to a held child.
-    Adopted,
-
-    /// A session suppressed the SIGCONT that ended a held child's stop.
-    HeldContinueSuppressed,
-
-    /// A session detached from a held child before ever continuing it,
-    /// taking the SIGCONT still queued.
-    AdoptedChildDetachedAtOnce,
-
     /// The debugger released the program it attached to.
     Detached,
 

@@ -133,17 +133,6 @@ mod writes;
 pub use follow::{Capacity, GroupNotice, Joined, Started};
 pub use post_mortem::{PostMortemSession, open_core};
 
-/// Ends the job-control stop of a held process, and returns whether it
-/// did: a process no longer held is left alone.
-pub fn release_held(held: &crate::HeldProcess) -> Result<bool> {
-    native::continue_held(lifecycle::requested_pid(held.process_id)?, held.start_time)
-}
-
-/// Whether a held process is still held.
-pub fn still_held(held: &crate::HeldProcess) -> Result<bool> {
-    native::process_held(lifecycle::requested_pid(held.process_id)?, held.start_time)
-}
-
 pub use process_names::processes_named;
 
 #[cfg(feature = "fuzzing")]
@@ -977,8 +966,7 @@ struct Inferior {
     fork_children: BTreeMap<Pid, Vec<(VirtualAddress, u8)>>,
 
     /// Vfork children not yet settled. Each shares its parent's memory and
-    /// blocks it until the child execs or exits, so it is always released,
-    /// never held for another session.
+    /// blocks it until the child execs or exits, so it is always released.
     vfork_children: BTreeSet<Pid>,
 
     /// Fork children killed, or found dying, as they were released, whose
@@ -1042,27 +1030,6 @@ struct Inferior {
     /// The signal the debugger sent to end the inferior, which never stops
     /// it whatever its policy.
     terminating: Option<Terminating>,
-
-    /// How far an attach to a process another session held has ended the
-    /// job-control stop it was held in.
-    held: Option<HeldStop>,
-}
-
-/// An attach to a held process ends the job-control stop it was held in
-/// with `SIGCONT`, whose delivery it then suppresses: the program never
-/// sees the signal the debuggers exchanged.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum HeldStop {
-    /// Still stopped, until the attach completes.
-    Stopped,
-
-    /// `SIGCONT` sent, its delivery not yet seen.
-    Continued,
-
-    /// Detaching, with `SIGCONT` unblocked in `thread`, which blocked it
-    /// with `mask`, so that the thread takes it first. A fork child stops
-    /// first inside `fork`, which blocks nearly every signal.
-    Draining { thread: Pid, mask: u64 },
 }
 
 /// The debugger asked the inferior to end with `signal`. Programs often
@@ -1123,7 +1090,6 @@ impl Inferior {
             indirect: indirect::IndirectFunctions::default(),
             watch: WatchState::default(),
             terminating: None,
-            held: None,
         }
     }
 
@@ -1564,10 +1530,6 @@ struct Controller<P: InspectionOps> {
     /// Fork children still traced after the inferior ended.
     orphans: Option<Orphans>,
 
-    /// Where the processes the inferior forks are held, while a receiver
-    /// takes them; otherwise they are released.
-    held_children: Option<tokio::sync::mpsc::UnboundedSender<crate::HeldChild>>,
-
     /// A launch or attach waiting for those children to be released.
     deferred_start: Option<Start>,
     signals: SignalPolicies,
@@ -1633,9 +1595,6 @@ enum Start {
     Launch(crate::LaunchOptions, Reply<ExecutionId>),
     Attach {
         requested: ProcessId,
-
-        /// Whether the process is one a session held.
-        held: bool,
         reply: Reply<StopId>,
     },
     LaunchByExec {
@@ -1903,7 +1862,6 @@ impl<P: InspectionOps> Controller<P> {
             agent_cleanup_error: None,
             kill_reply: None,
             orphans: None,
-            held_children: None,
             deferred_start: None,
             signals: SignalPolicies::default(),
             exception_stops: crate::ExceptionStops::default(),
@@ -2228,13 +2186,8 @@ impl<P: LinuxTraceOps> Controller<P> {
                 self.edit(Edit::RemoveCatchpoint { id, reply });
             }
             Request::Launch { options, reply } => self.start(Start::Launch(*options, reply)),
-            Request::Attach {
-                process_id,
-                held,
-                reply,
-            } => self.start(Start::Attach {
+            Request::Attach { process_id, reply } => self.start(Start::Attach {
                 requested: process_id,
-                held,
                 reply,
             }),
             Request::LaunchByExec {
@@ -2380,10 +2333,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             Request::Kill { reply } => self.kill(reply),
             Request::Terminate { reply } => {
                 let _ = reply.send(self.terminate());
-            }
-            Request::HoldForks { children, reply } => {
-                self.held_children = Some(children);
-                let _ = reply.send(Ok(()));
             }
             request => self.handle_inspection_request(request),
         }
@@ -2785,7 +2734,6 @@ impl<P: InspectionOps> Controller<P> {
             | Request::WriteMemory { .. }
             | Request::Kill { .. }
             | Request::Terminate { .. }
-            | Request::HoldForks { .. }
             | Request::Shutdown { .. } => {
                 // Their replies differ by variant, so this arm cannot answer
                 // them. Dropping the request cancels it at the client.

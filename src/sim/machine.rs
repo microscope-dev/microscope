@@ -42,9 +42,6 @@ pub struct Machine {
     /// Processes that began to end as a whole.
     pub ending: Rc<RefCell<BTreeSet<Tgid>>>,
 
-    /// Whether the first session holds the children its program forks.
-    pub following: Rc<Cell<bool>>,
-
     /// Threads the debugger released with code not the program's: the
     /// address, the byte there, and the program's.
     pub unclean: RefCell<Vec<(Tid, Planted)>>,
@@ -152,10 +149,6 @@ impl Machine {
                 Happening::JobStopped { tid } => lines.push(format!("{tid} stopped untraced")),
                 Happening::Continued { tgid } => lines.push(format!("SIGCONT ended {tgid}'s stop")),
                 Happening::Suppressed { tid, signal } => {
-                    if signal == libc::SIGCONT {
-                        self.marks.borrow_mut().hit(Mark::HeldContinueSuppressed);
-                    }
-
                     lines.push(format!(
                         "{tid} was resumed without {}",
                         signals::name(signal)
@@ -201,29 +194,18 @@ impl Machine {
     }
 
     /// Counts a thread `tracer` released, and notes code it left that is not
-    /// the program's. A session adopting a held child releases a fork
-    /// child too, which the first session's marks do not count.
+    /// the program's. Only the first session's releases are counted.
     fn note_released(&self, tid: Tid, tracer: i32, planted: Option<Planted>) {
         let kernel = self.kernel.borrow();
         let mut marks = self.marks.borrow_mut();
         let parent = kernel.process_of(tid).map(|process| process.parent);
 
-        // A child held for a session of its own is detached stopping, not
-        // released.
-        let held = kernel.threads.get(&tid).is_some_and(|thread| {
-            thread.state == State::JobStopped || thread.pending.contains(signals::SIGSTOP)
-        });
-
         match parent.filter(|_| tracer == TRACER) {
             Some(Parent::Launcher) => marks.hit(Mark::Detached),
-            Some(Parent::Process(_) | Parent::Init) if !held => {
+            Some(Parent::Process(_) | Parent::Init) => {
                 marks.hit(Mark::ForkChildReleased);
                 if parent == Some(Parent::Init) {
                     marks.hit(Mark::ReleasedAfterParentExit);
-                }
-
-                if self.following.get() {
-                    marks.hit(Mark::ReleasedWhileFollowing);
                 }
             }
             Some(_) | None => {}
@@ -382,7 +364,7 @@ impl Preemption for Machine {
                     self.marks.borrow_mut().hit(Mark::ReapedInsideCall);
                     self.collect(session)
                 }
-                Action::Deliver(_) | Action::Poll(_) | Action::Follow => {
+                Action::Deliver(_) | Action::Poll(_) => {
                     unreachable!("only threads and waiters act inside a call")
                 }
             };

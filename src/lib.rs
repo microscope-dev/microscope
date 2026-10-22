@@ -160,16 +160,16 @@ pub use protocol::{
     Catchpoint, CatchpointId, ConditionOwner, CoreDumpInfo, CoreDumpOptions, CoreModule,
     CoreModuleState, DebugFileOptions, DebuggerEvent, ExceptionDisposition, ExceptionFilter,
     ExceptionInfo, ExceptionStops, ExecutionId, ExitStatus, FollowMode, FollowPolicy,
-    FramePresentation, GlobalVariableQuery, HeldChild, HeldProcess, HitComparison, HitCondition,
-    InferiorState, InvalidatedWatchpoint, KernelSource, LanguageException, LanguageExceptionKind,
-    LaunchOptions, LogPart, MAX_DRAWING_BYTES, ModuleIdentity, NameMatch, NamedProcess, NumberKind,
-    Numbers, PendingBreakpointLocation, PresentedFrame, ProcessId, Renderer,
-    ResolvedBreakpointLocation, ResumeScope, SignalPolicy, StateSnapshot, StepKind, StepTarget,
-    StopId, StopReason, StopScope, SyscallStop, TaskEnding, ThreadSnapshot, ThreadState, TypeViews,
-    ValueChildQuery, VariableQuery, ViewCandidate, ViewCheck, ViewExplanation, VisualizerBinding,
-    VisualizerInput, VisualizerInputs, VisualizerValue, WatchAccess, WatchScope, WatchTarget,
-    Watchpoint, WatchpointCapabilities, WatchpointHit, WatchpointId, WatchpointInvalidation,
-    WatchpointOptions, WatchpointSpec,
+    FramePresentation, GlobalVariableQuery, HitComparison, HitCondition, InferiorState,
+    InvalidatedWatchpoint, KernelSource, LanguageException, LanguageExceptionKind, LaunchOptions,
+    LogPart, MAX_DRAWING_BYTES, ModuleIdentity, NameMatch, NamedProcess, NumberKind, Numbers,
+    PendingBreakpointLocation, PresentedFrame, ProcessId, Renderer, ResolvedBreakpointLocation,
+    ResumeScope, SignalPolicy, StateSnapshot, StepKind, StepTarget, StopId, StopReason, StopScope,
+    SyscallStop, TaskEnding, ThreadSnapshot, ThreadState, TypeViews, ValueChildQuery,
+    VariableQuery, ViewCandidate, ViewCheck, ViewExplanation, VisualizerBinding, VisualizerInput,
+    VisualizerInputs, VisualizerValue, WatchAccess, WatchScope, WatchTarget, Watchpoint,
+    WatchpointCapabilities, WatchpointHit, WatchpointId, WatchpointInvalidation, WatchpointOptions,
+    WatchpointSpec,
 };
 
 pub use runtime_model::TASK_NOUNS;
@@ -268,22 +268,6 @@ pub fn signal_named(name: &str) -> Option<u64> {
 pub fn signal_name(code: u64) -> Option<String> {
     backend::signal_name(code)
 }
-
-/// Lets a held process run on its own, for a client that will not attach
-/// to it. Returns whether it did: a process no longer held, because it
-/// ended or a session attached to it, is left alone.
-pub fn release_held(held: &HeldProcess) -> Result<bool> {
-    backend::release_held(held)
-}
-
-/// Whether a held process is still held: no session has attached to it,
-/// nothing released it, and it has not ended.
-pub fn still_held(held: &HeldProcess) -> Result<bool> {
-    backend::still_held(held)
-}
-
-/// The fork children a session holds, in the order they were held.
-pub type HeldChildren = tokio::sync::mpsc::UnboundedReceiver<HeldChild>;
 
 /// The exception codes of every signal this target defines, in order.
 pub fn signal_codes() -> impl Iterator<Item = u64> {
@@ -628,69 +612,18 @@ impl Debugger {
 
         executable.debug_files = debug_info::DebugFileSearch::new(debug_files);
 
-        Self::attach_from_source(process, executable, false).await
-    }
-
-    /// Attaches to a process another session held, handed over from its
-    /// [`HeldChild`], ends the stop it was held in, and returns once it is
-    /// coherently stopped. The process must still be the one held: one that
-    /// ended, and whose identifier was given to another, is refused.
-    pub async fn attach_held(held: HeldProcess) -> Result<Self> {
-        Self::attach_held_with(held, None, &DebugFileOptions::default()).await
-    }
-
-    /// Attaches to a held process as [`Self::attach_held`] does, using an
-    /// explicitly supplied executable.
-    pub async fn attach_held_with_executable(
-        held: HeldProcess,
-        executable: impl AsRef<Path>,
-    ) -> Result<Self> {
-        Self::attach_held_with(
-            held,
-            Some(executable.as_ref()),
-            &DebugFileOptions::default(),
-        )
-        .await
-    }
-
-    /// Attaches to a held process as [`Self::attach_held`] does, reading
-    /// its executable from `executable` when given, and finding its
-    /// modules' separate debug files as `debug_files` says.
-    pub async fn attach_held_with(
-        held: HeldProcess,
-        executable: Option<&Path>,
-        debug_files: &DebugFileOptions,
-    ) -> Result<Self> {
-        let mut executable = if let Some(executable) = executable {
-            let mut executable = backend::executable_source(executable)?;
-
-            // The attach checks this once it has seized the process.
-            executable.process_start_time = Some(held.start_time);
-            executable
-        } else {
-            let executable = backend::process_executable_source(held.process_id)?;
-            if executable.process_start_time != Some(held.start_time) {
-                return Err(Error::HeldProcessGone(held.process_id.get()));
-            }
-
-            executable
-        };
-
-        executable.debug_files = debug_info::DebugFileSearch::new(debug_files);
-        Self::attach_from_source(held.process_id, executable, true).await
+        Self::attach_from_source(process, executable).await
     }
 
     async fn attach_from_source(
         process: ProcessId,
         executable: backend::ExecutableSource,
-        held: bool,
     ) -> Result<Self> {
         let debugger = Self::for_program(Program::from_executable_source(executable)?)?;
         let attached = debugger
             .handle
             .request(|reply| Request::Attach {
                 process_id: process,
-                held,
                 reply,
             })
             .await;
@@ -1141,19 +1074,6 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Holds each process the inferior forks from now on for another
-    /// session, instead of releasing it to run, and returns the children
-    /// held. Dropping the receiver releases the children not yet received,
-    /// and those forked after. A child forked while the session shuts down
-    /// is released: no client is left to take it.
-    pub async fn hold_forks(&self) -> Result<HeldChildren> {
-        let (children, held) = tokio::sync::mpsc::unbounded_channel();
-        self.request(|reply| Request::HoldForks { children, reply })
-            .await?;
-
-        Ok(held)
-    }
-
     /// Changes which exceptions a language runtime reports stop the
     /// inferior, and returns the previous choice. The change applies at
     /// once and lasts for the whole session.
@@ -1227,12 +1147,8 @@ impl DebuggerHandle {
 
     /// Attaches to an existing process and returns its coherent initial stop.
     pub async fn attach_process(&self, process_id: ProcessId) -> Result<StopId> {
-        self.request(|reply| Request::Attach {
-            process_id,
-            held: false,
-            reply,
-        })
-        .await
+        self.request(|reply| Request::Attach { process_id, reply })
+            .await
     }
 
     /// Launches the inferior and waits until that execution stops or exits.

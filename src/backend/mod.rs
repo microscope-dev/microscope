@@ -386,16 +386,6 @@ pub fn open_core(
     linux::open_core(options, channels)
 }
 
-/// Lets a held process run, unless it is no longer held.
-pub fn release_held(held: &crate::HeldProcess) -> Result<bool> {
-    linux::release_held(held)
-}
-
-/// Whether a held process is still held.
-pub fn still_held(held: &crate::HeldProcess) -> Result<bool> {
-    linux::still_held(held)
-}
-
 /// The processes a name names.
 pub fn processes_named(name: &str) -> Result<Vec<crate::NamedProcess>> {
     linux::processes_named(name)

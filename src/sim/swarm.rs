@@ -22,10 +22,6 @@ pub struct Weights {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "each is one independent choice of the run's shape"
-)]
 pub struct Swarm {
     pub program: usize,
     pub variant: usize,
@@ -74,10 +70,6 @@ pub struct Swarm {
     /// before it launches anything, and how many instructions the program
     /// runs before the client acts.
     pub attach: Option<u64>,
-
-    /// Whether the session holds the children the program forks, for
-    /// sessions of their own.
-    pub follow: bool,
 
     /// Whether the client stops at system calls.
     pub catching: bool,
@@ -150,7 +142,6 @@ impl Swarm {
             watching: pick(&[0, 1]) == 1,
             // Early enough that most attaches find the program still running.
             attach: (pick(&[0, 1]) == 1).then(|| choices.below(Stream::Swarm, 500)),
-            follow: forks && choices.below(Stream::Swarm, 2) == 1,
             catching: choices.below(Stream::Swarm, 3) == 0,
         }
     }
@@ -161,8 +152,7 @@ impl fmt::Display for Swarm {
         write!(
             formatter,
             "{} preempt={} fault={} burst={} queue={} events={} entry={} requests={} \
-             launches={} early-breakpoints={} debug={:?} watching={} attach={} follow={} \
-             catching={}",
+             launches={} early-breakpoints={} debug={:?} watching={} attach={} catching={}",
             self.policy,
             self.preempt,
             self.fault
@@ -178,7 +168,6 @@ impl fmt::Display for Swarm {
             self.watching,
             self.attach
                 .map_or_else(|| "none".to_owned(), |after| format!("after({after})")),
-            self.follow,
             self.catching,
         )
     }

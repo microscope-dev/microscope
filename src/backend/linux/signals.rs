@@ -28,8 +28,6 @@ impl Signal {
 
     pub const SIGTERM: Self = Self(libc::SIGTERM);
 
-    pub const SIGCONT: Self = Self(libc::SIGCONT);
-
     pub const SIGSTOP: Self = Self(libc::SIGSTOP);
 
     pub const SIGTSTP: Self = Self(libc::SIGTSTP);

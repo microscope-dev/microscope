@@ -1460,83 +1460,6 @@ pub struct SignalPolicy {
     pub pass: bool,
 }
 
-/// A process the debugger released stopped, which runs no instruction until
-/// a session attaches to it with [`crate::Debugger::attach_held`] or
-/// [`crate::release_held`] lets it run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HeldProcess {
-    pub process_id: ProcessId,
-
-    /// When the process started, in the platform's units, which tells it
-    /// apart from a later process given the same identifier.
-    pub start_time: u64,
-}
-
-/// A process the inferior forked, held for another session.
-///
-/// [`crate::DebuggerHandle::hold_forks`] asks for them. The child has lost
-/// the breakpoints it inherited. Whoever has this owns the child: dropping
-/// it lets the child run, unless it was handed over to a session that will
-/// attach to it.
-#[derive(Debug)]
-pub struct HeldChild {
-    parent: ProcessId,
-    process: HeldProcess,
-
-    /// Lets the child run. A simulated child has none: the simulation
-    /// decides what happens to each.
-    release: Option<fn(&HeldProcess) -> crate::Result<bool>>,
-}
-
-impl HeldChild {
-    pub(crate) const fn new(
-        parent: ProcessId,
-        process: HeldProcess,
-        release: Option<fn(&HeldProcess) -> crate::Result<bool>>,
-    ) -> Self {
-        Self {
-            parent,
-            process,
-            release,
-        }
-    }
-
-    /// The process that forked the child.
-    #[must_use]
-    pub const fn parent(&self) -> ProcessId {
-        self.parent
-    }
-
-    #[must_use]
-    pub const fn process(&self) -> HeldProcess {
-        self.process
-    }
-
-    /// Takes the child over, for a session that will attach to it: the
-    /// caller now answers for releasing it if none does.
-    #[must_use]
-    pub fn hand_over(mut self) -> HeldProcess {
-        self.release = None;
-        self.process
-    }
-
-    /// Lets the child run now, and returns whether it did: a child no
-    /// longer held is left alone.
-    pub fn release(mut self) -> crate::Result<bool> {
-        self.release
-            .take()
-            .map_or(Ok(false), |release| release(&self.process))
-    }
-}
-
-impl Drop for HeldChild {
-    fn drop(&mut self) {
-        if let Some(release) = self.release.take() {
-            let _ = release(&self.process);
-        }
-    }
-}
-
 /// One kind of exception a language runtime reports, which may stop the
 /// inferior.
 ///
@@ -2274,10 +2197,6 @@ pub enum Request {
     },
     Attach {
         process_id: ProcessId,
-
-        /// Whether the process is one a session held, whose job-control
-        /// stop the attach ends.
-        held: bool,
         reply: Reply<StopId>,
     },
     LaunchByExec {
@@ -2550,13 +2469,6 @@ pub enum Request {
         policy: SignalPolicy,
         reply: Reply<SignalPolicy>,
     },
-
-    /// Holds the processes the inferior forks from now on, sending each to
-    /// `children`. Once its receiver is gone, children are released again.
-    HoldForks {
-        children: tokio::sync::mpsc::UnboundedSender<HeldChild>,
-        reply: Reply<()>,
-    },
     SetExceptionStops {
         stops: ExceptionStops,
         reply: Reply<ExceptionStops>,
@@ -2586,9 +2498,7 @@ impl Request {
     pub(crate) fn describe(&self) -> String {
         match self {
             Self::Launch { options, .. } => format!("launch {:?}", options.arguments),
-            Self::Attach {
-                process_id, held, ..
-            } => format!("attach {process_id}{}", if *held { ", held" } else { "" }),
+            Self::Attach { process_id, .. } => format!("attach {process_id}"),
             Self::LaunchByExec {
                 process_id,
                 stop_at_entry,
@@ -2658,7 +2568,6 @@ impl Request {
             Self::SetSignalPolicy { signal, policy, .. } => {
                 format!("set signal policy {signal} {policy:?}")
             }
-            Self::HoldForks { .. } => "hold forks".to_owned(),
             Self::SetExceptionStops { stops, .. } => format!("set exception stops {stops:?}"),
             Self::SetExecStops { stops, .. } => format!("set exec stops {stops}"),
             Self::ReleaseOnShutdown { .. } => "release on shutdown".to_owned(),

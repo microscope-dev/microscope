@@ -1302,7 +1302,6 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// stop, or delivering or discarding the signal as the thread resumes
     /// what it was doing.
     pub(super) fn handle_signal_stop(&mut self, pid: Pid, pending: PendingSignal) -> Result<()> {
-        let held_continue = self.take_held_continue(pending.signal, pending.sender);
         let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
 
         // The debugger's own request to end the inferior never stops it.
@@ -1310,13 +1309,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .terminating
             .as_mut()
             .filter(|terminating| terminating.signal == pending.signal);
-        let policy = if held_continue {
-            SignalPolicy {
-                stop: false,
-                print: false,
-                pass: false,
-            }
-        } else if let Some(terminating) = terminating {
+        let policy = if let Some(terminating) = terminating {
             terminating.delivered = true;
             SignalPolicy {
                 stop: false,

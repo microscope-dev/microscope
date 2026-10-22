@@ -214,9 +214,6 @@ pub enum Error {
     #[error("the target process changed while the debugger was attaching")]
     TargetChangedDuringAttach,
 
-    #[error("process {0} is no longer the process that was held")]
-    HeldProcessGone(u64),
-
     #[error("the group has no member {0}")]
     UnknownMember(u32),
 

@@ -9,9 +9,6 @@ use super::{
     WaitStatus,
 };
 
-#[cfg(test)]
-use crate::sim::world::Sabotage;
-
 pub const SIGTRAP: i32 = libc::SIGTRAP;
 
 pub const SIGKILL: i32 = libc::SIGKILL;
@@ -152,12 +149,6 @@ impl Kernel {
     /// discarded, as an ignored signal is (Linux's `sig_ignored`).
     fn continue_process(&mut self, group: Tgid) {
         let sender = self.caller();
-        #[cfg(test)]
-        let sender = if self.sabotage == Some(Sabotage::MisattributeContinues) {
-            0
-        } else {
-            sender
-        };
 
         let process = self.processes.get_mut(&group).expect("the process lives");
         for signal in STOPPING {

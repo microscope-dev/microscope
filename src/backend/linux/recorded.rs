@@ -24,7 +24,7 @@ use crate::{Result, VirtualAddress};
 
 use super::memory::MemoryAccessError;
 use super::modules::{ModuleMapping, ProcessMappings};
-use super::native::{InspectionOps, LinuxTraceOps, SignalQueue};
+use super::native::{InspectionOps, LinuxTraceOps};
 use super::registers::Fxsave;
 use super::signals::{Signal, WaitEvent};
 use super::tls::TlsModule;
@@ -403,25 +403,6 @@ impl<P: LinuxTraceOps> LinuxTraceOps for Recorded<P> {
         )
     }
 
-    fn held_release(&self) -> Option<fn(&crate::HeldProcess) -> Result<bool>> {
-        self.0.held_release()
-    }
-
-    fn signal_mask(&self, pid: Pid) -> Result<u64> {
-        queried(
-            format_args!("PTRACE_GETSIGMASK {pid}"),
-            self.0.signal_mask(pid),
-        )
-    }
-
-    fn set_signal_mask(&self, pid: Pid, mask: u64) -> Result<()> {
-        issued(
-            format_args!("PTRACE_SETSIGMASK {pid} {mask:#x}"),
-            &(),
-            || self.0.set_signal_mask(pid, mask),
-        )
-    }
-
     fn executable(&self, pid: Pid, address: VirtualAddress) -> Result<bool> {
         queried(
             format_args!("executable {address} in {pid}"),
@@ -429,10 +410,10 @@ impl<P: LinuxTraceOps> LinuxTraceOps for Recorded<P> {
         )
     }
 
-    fn queued_signal(&self, pid: Pid, signal: Signal, queue: SignalQueue) -> Result<bool> {
+    fn queued_signal(&self, pid: Pid, signal: Signal) -> Result<bool> {
         queried(
-            format_args!("queued {signal} of {pid} in its {queue:?} queue"),
-            self.0.queued_signal(pid, signal, queue),
+            format_args!("queued {signal} of {pid}"),
+            self.0.queued_signal(pid, signal),
         )
     }
 

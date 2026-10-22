@@ -26,8 +26,7 @@ use tokio::sync::{broadcast, mpsc};
 use super::memory::MemoryAccessError;
 use super::modules::{ModuleMapping, ProcessMappings, load_bias_in, process_mappings_in};
 use super::native::{
-    InspectionOps, LinuxTraceOps, SignalQueue, maps_executable, siginfo_has_fault_address,
-    siginfo_names_sender,
+    InspectionOps, LinuxTraceOps, maps_executable, siginfo_has_fault_address, siginfo_names_sender,
 };
 
 use super::registers::Fxsave;
@@ -68,10 +67,6 @@ pub struct SimExecutable {
     pub path: Arc<str>,
     pub data: Arc<[u8]>,
     pub inode: u64,
-
-    /// The start time of the process a session attaches to, which it
-    /// checks, as it checks a held child's.
-    pub start_time: Option<u64>,
 }
 
 /// Lets the rest of the simulated machine act before a call the controller
@@ -720,32 +715,14 @@ impl LinuxTraceOps for SimTrace {
         self.kernel().signal_info(tid(pid)).map(signal_metadata)
     }
 
-    fn signal_mask(&self, pid: Pid) -> Result<u64> {
-        self.kernel().signal_mask(tid(pid)).map_err(system)
-    }
-
-    fn set_signal_mask(&self, pid: Pid, mask: u64) -> Result<()> {
-        self.kernel_mut()
-            .set_signal_mask(tid(pid), mask)
-            .map_err(system)
-    }
-
-    /// The world receives every child held, and releases those no session
-    /// adopts itself, through the simulated kernel.
-    fn held_release(&self) -> Option<fn(&crate::HeldProcess) -> Result<bool>> {
-        None
-    }
-
     fn request_stop(&self, process: Pid, thread: Pid) -> Result<()> {
         self.kernel_mut()
             .tgkill(tgid(process), tid(thread), libc::SIGSTOP)
             .map_err(system)
     }
 
-    fn queued_signal(&self, pid: Pid, signal: Signal, queue: SignalQueue) -> Result<bool> {
-        Ok(self
-            .kernel()
-            .signal_queued(tid(pid), signal.number(), queue == SignalQueue::Process))
+    fn queued_signal(&self, pid: Pid, signal: Signal) -> Result<bool> {
+        Ok(self.kernel().signal_queued(tid(pid), signal.number()))
     }
 
     fn executable(&self, pid: Pid, address: VirtualAddress) -> Result<bool> {
@@ -912,7 +889,7 @@ impl SimController {
                 identity: FileIdentity {
                     inode: executable.inode,
                 },
-                process_start_time: executable.start_time,
+                process_start_time: None,
                 debug_files: crate::debug_info::DebugFileSearch::default(),
             }
             .described(),

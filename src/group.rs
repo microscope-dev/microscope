@@ -241,7 +241,6 @@ impl ProcessGroup {
             .root
             .request(|reply| crate::protocol::Request::Attach {
                 process_id: process,
-                held: false,
                 reply,
             })
             .await;
