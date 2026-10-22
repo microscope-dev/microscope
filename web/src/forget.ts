@@ -19,6 +19,8 @@ export interface Marks {
   settings: number | undefined;
   connection: number | undefined;
   open: boolean;
+  /** The process of a group the session shows. */
+  member: number | null;
 }
 
 function marks(model: Model): Marks {
@@ -30,6 +32,7 @@ function marks(model: Model): Marks {
     settings: state?.settings,
     connection: model.hello?.connection,
     open: model.link === "open",
+    member: state?.group?.selected ?? null,
   };
 }
 
@@ -39,6 +42,13 @@ export function forget(before: Marks, after: Marks, answers: Cache, values: Reca
     answers.clear();
     values.clear();
     return true;
+  }
+  // Every answer is the selected process's, and another process numbers its
+  // stops and threads apart, so an answer kept for one could stand for the
+  // other's under the same key.
+  if (before.member !== after.member) {
+    answers.clear();
+    return false;
   }
   // The files, modules, and functions a program has change as its libraries
   // load, so each stop asks again.

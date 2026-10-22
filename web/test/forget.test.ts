@@ -55,6 +55,7 @@ const base: Marks = {
   settings: 0,
   connection: 1,
   open: true,
+  member: 1,
 };
 
 function forgets(after: Partial<Marks>, before: Partial<Marks> = {}) {
@@ -119,6 +120,14 @@ describe("forgetting cached answers", () => {
       "tasks",
       "draw",
     ]);
+  });
+
+  it("forgets every answer when another process is selected, keeping values", () => {
+    // Each process has its own stops, so its answers may share another's keys.
+    const { cleared, forgot, values } = forgets({ member: 2 });
+    expect(cleared).toBe(false);
+    expect(forgot).toEqual(METHODS);
+    expect(values.stops()).toBe(1);
   });
 
   it("keeps everything when nothing changed", () => {
