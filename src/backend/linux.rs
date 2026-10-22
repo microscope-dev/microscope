@@ -122,8 +122,10 @@ mod stepping;
 mod sys;
 pub mod syscalls;
 mod tls;
+mod tracer;
 mod vdso;
 mod visualizers;
+mod wait_hub;
 mod watchpoints;
 mod writes;
 
@@ -1281,6 +1283,9 @@ impl Inferior {
 /// statuses itself, as test fakes and the simulator do.
 struct Waiter {
     thread: Option<WaiterThread>,
+
+    /// The tracer thread's shared waiter, waiting for this process.
+    hub: Option<wait_hub::HubEdge>,
 }
 
 struct WaiterThread {
@@ -1292,13 +1297,20 @@ impl Waiter {
     /// A waiter whose statuses the controller's driver delivers.
     #[cfg(any(test, feature = "sim"))]
     const fn external() -> Self {
-        Self { thread: None }
+        Self {
+            thread: None,
+            hub: None,
+        }
     }
 
     /// Stops the waiter, calling `serve` until it ends: one blocked
     /// sending a status to a full queue waits for the controller to make
     /// room, which `serve` does.
     fn stop_and_join(self, mut serve: impl FnMut()) -> Result<()> {
+        if let Some(hub) = self.hub {
+            hub.stop_and_join(&mut serve);
+        }
+
         let Some(thread) = self.thread else {
             return Ok(());
         };
@@ -1619,24 +1631,76 @@ pub fn spawn_controller(
     executable: Executable,
     debug_info: DebugInfo,
     channels: ControllerChannels,
-) -> Result<(watch::Receiver<Arc<ModuleImage>>, JoinHandle<()>)> {
-    let lease = SessionLease::acquire()?;
+) -> Result<(watch::Receiver<Arc<ModuleImage>>, ControllerJoin)> {
     let program = watch::Sender::new(Arc::clone(&debug_info.image));
     let current = program.subscribe();
 
-    let controller = thread::Builder::new()
-        .name(CONTROLLER_THREAD_NAME.into())
-        .spawn(move || {
-            record!("started for {}", executable.display_path.display());
-            #[cfg(debug_assertions)]
-            let ptrace = recorded::Recorded(LinuxPtrace::new());
-            #[cfg(not(debug_assertions))]
-            let ptrace = LinuxPtrace::new();
-            Controller::new(lease, executable, debug_info, channels, program, ptrace).run();
-            record!("exited");
-        })?;
+    let hosting = tracer::Tracer::alone(Box::new(move |host| {
+        record!("started for {}", executable.display_path.display());
+        let membership = host.membership(channels.sender.clone());
+        #[cfg(debug_assertions)]
+        let ptrace = recorded::Recorded(LinuxPtrace::hosted(membership));
+        #[cfg(not(debug_assertions))]
+        let ptrace = LinuxPtrace::hosted(membership);
+        Box::new(Controller::new(
+            // The tracer thread holds the process's lease.
+            SessionLease::detached(),
+            executable,
+            debug_info,
+            channels,
+            program,
+            ptrace,
+        ))
+    }))?;
 
-    Ok((current, controller))
+    Ok((current, ControllerJoin::Hosted(hosting)))
+}
+
+/// What a debugger joins once its controller is asked to end.
+pub enum ControllerJoin {
+    /// A controller with a thread of its own.
+    Thread(JoinHandle<()>),
+
+    /// A controller a tracer thread serves.
+    Hosted(tracer::Hosting),
+}
+
+impl ControllerJoin {
+    /// Waits for the controller to end, failing when it panicked.
+    pub fn join(self) -> std::result::Result<(), ()> {
+        match self {
+            Self::Thread(thread) => thread.join().map_err(|_| ()),
+            Self::Hosted(hosting) => hosting.join(),
+        }
+    }
+}
+
+impl<P: LinuxTraceOps> tracer::Hosted for Controller<P> {
+    fn next_message(&self) -> Option<ControllerMessage> {
+        Self::next_message(self, false)
+    }
+
+    fn handle_message(&mut self, message: ControllerMessage) -> bool {
+        Self::handle_message(self, message)
+    }
+
+    fn poll_queue(&self, context: &mut std::task::Context<'_>) -> bool {
+        match self.messages.borrow_mut().poll_recv(context) {
+            std::task::Poll::Ready(Some(message)) => {
+                self.pending.borrow_mut().push_back(message);
+                true
+            }
+            std::task::Poll::Ready(None) | std::task::Poll::Pending => false,
+        }
+    }
+
+    fn deadline(&self) -> Option<std::time::Instant> {
+        self.agent_deadline()
+    }
+
+    fn release_after_panic(&mut self) {
+        Self::release_after_panic(self);
+    }
 }
 
 impl<P: InspectionOps> Controller<P> {
@@ -1864,26 +1928,6 @@ impl<P: InspectionOps> Controller<P> {
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
-    fn run(mut self) {
-        // Any panic ends the controller, an assertion's or another's; an
-        // attached process is released before it does.
-        let served = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            while let Some(message) = self.next_message(true) {
-                if !self.handle_message(message) {
-                    return;
-                }
-            }
-
-            // The controller holds a request sender for its waiter, so the
-            // queue never closes; dropping the `Debugger` sends a shutdown
-            // request.
-        }));
-        if let Err(panic) = served {
-            self.release_after_panic();
-            std::panic::resume_unwind(panic);
-        }
-    }
-
     /// Serves one queued request or wait status, and returns whether the
     /// controller keeps running. A driver that owns the queue, such as the
     /// simulator, delivers messages one at a time through this.

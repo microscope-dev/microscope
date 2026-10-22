@@ -73,7 +73,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .spawn(&self.launch_path, options)
             .and_then(|pid| {
                 self.ptrace
-                    .spawn_waiter(self.message_sender.clone())
+                    .spawn_waiter(pid, self.message_sender.clone())
                     .map(|waiter| (pid, waiter))
                     .inspect_err(|_| {
                         let _ = self.ptrace.kill(pid, Signal::SIGKILL);
@@ -137,7 +137,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         self.ptrace
-            .spawn_waiter(self.message_sender.clone())
+            .spawn_waiter(pid, self.message_sender.clone())
             .inspect_err(|_| self.rollback_seized(&BTreeSet::from([pid])))
             .map(|waiter| (pid, waiter))
     }
@@ -267,7 +267,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         let waiter = self
             .ptrace
-            .spawn_waiter(self.message_sender.clone())
+            .spawn_waiter(tgid, self.message_sender.clone())
             .inspect_err(|_| self.rollback_seized(&seized))?;
         Ok((tgid, seized, unseized, waiter))
     }

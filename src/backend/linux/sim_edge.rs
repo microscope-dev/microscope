@@ -497,7 +497,11 @@ impl LinuxTraceOps for SimTrace {
         Ok(Pid::from_raw(tid))
     }
 
-    fn spawn_waiter(&self, messages: mpsc::Sender<ControllerMessage>) -> Result<Waiter> {
+    fn spawn_waiter(
+        &self,
+        _process: Pid,
+        messages: mpsc::Sender<ControllerMessage>,
+    ) -> Result<Waiter> {
         self.waiter.borrow_mut().messages = Some(messages);
         Ok(Waiter::external())
     }

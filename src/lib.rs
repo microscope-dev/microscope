@@ -91,7 +91,6 @@ pub mod view_files;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::thread::JoinHandle;
 use std::time::Duration;
 
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -447,7 +446,7 @@ fn event_capacity() -> usize {
 /// [`Debugger::shutdown`], which reports whether cleanup succeeded.
 pub struct Debugger {
     handle: DebuggerHandle,
-    controller: Option<JoinHandle<()>>,
+    controller: Option<backend::ControllerJoin>,
     shutdown_permit: Option<mpsc::OwnedPermit<ControllerMessage>>,
 }
 
@@ -650,7 +649,11 @@ impl Debugger {
         Self::start(Arc::new(options.core.clone()), |channels| {
             let session = backend::open_core(options, channels)?;
             let (_, program) = watch::channel(session.image);
-            Ok((program, Some(session.info), session.controller))
+            Ok((
+                program,
+                Some(session.info),
+                backend::ControllerJoin::Thread(session.controller),
+            ))
         })
     }
 
@@ -663,7 +666,7 @@ impl Debugger {
         ) -> Result<(
             watch::Receiver<Arc<ModuleImage>>,
             Option<Arc<CoreDumpInfo>>,
-            JoinHandle<()>,
+            backend::ControllerJoin,
         )>,
     ) -> Result<Self> {
         #[cfg(debug_assertions)]
@@ -733,7 +736,7 @@ impl Debugger {
             tokio::task::spawn_blocking(move || controller.join())
                 .await
                 .map_err(|_| Error::BackendThreadPanicked)?
-                .map_err(|_| Error::BackendThreadPanicked)?;
+                .map_err(|()| Error::BackendThreadPanicked)?;
         }
 
         result

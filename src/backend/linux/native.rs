@@ -157,7 +157,13 @@ pub(super) trait LinuxTraceOps: InspectionOps {
         Ok(None)
     }
 
-    fn spawn_waiter(&self, messages: mpsc::Sender<ControllerMessage>) -> Result<Waiter>;
+    /// Starts collecting the wait statuses of `process`, the inferior, and
+    /// of every thread it starts, which go to `messages`.
+    fn spawn_waiter(
+        &self,
+        process: Pid,
+        messages: mpsc::Sender<ControllerMessage>,
+    ) -> Result<Waiter>;
 
     fn process_threads(&self, process: Pid) -> Result<Vec<Pid>>;
 
@@ -391,14 +397,29 @@ pub(super) struct LinuxPtrace {
     /// The current inferior's waiter, woken by every request that makes a
     /// tracee report a new wait status.
     waiter: RefCell<Option<Thread>>,
+
+    /// The tracer thread's shared waiter, for an edge on one.
+    hub: Option<super::tracer::HubMembership>,
 }
 
 impl LinuxPtrace {
+    /// An edge with a waiter of its own, which no other edge in the process
+    /// may have while it waits.
     pub(super) fn new() -> Self {
         Self {
             owner: thread::current().id(),
             not_send: PhantomData,
             waiter: RefCell::new(None),
+            hub: None,
+        }
+    }
+
+    /// An edge on a tracer thread, whose shared waiter collects its
+    /// statuses.
+    pub(super) fn hosted(hub: super::tracer::HubMembership) -> Self {
+        Self {
+            hub: Some(hub),
+            ..Self::new()
         }
     }
 
@@ -415,6 +436,10 @@ impl LinuxPtrace {
     /// syscall, so the poll the wake triggers cannot run too early to see
     /// the status and leave the waiter backing off.
     fn wake_waiter(&self) {
+        if let Some(hub) = &self.hub {
+            hub.edge().wake();
+        }
+
         if let Some(waiter) = self.waiter.borrow().as_ref() {
             waiter.unpark();
         }
@@ -520,8 +545,20 @@ impl LinuxTraceOps for LinuxPtrace {
         super::agent_files::create(pid, library)
     }
 
-    fn spawn_waiter(&self, messages: mpsc::Sender<ControllerMessage>) -> Result<Waiter> {
+    fn spawn_waiter(
+        &self,
+        process: Pid,
+        messages: mpsc::Sender<ControllerMessage>,
+    ) -> Result<Waiter> {
         self.assert_owner_thread();
+        if let Some(hub) = &self.hub {
+            hub.edge().start(process);
+            return Ok(Waiter {
+                thread: None,
+                hub: Some(hub.edge().clone()),
+            });
+        }
+
         let waiter = spawn_waiter(messages)?;
         *self.waiter.borrow_mut() = waiter
             .thread
@@ -975,6 +1012,7 @@ fn spawn_waiter(messages: mpsc::Sender<ControllerMessage>) -> Result<Waiter> {
 
     Ok(Waiter {
         thread: Some(WaiterThread { stop, handle }),
+        hub: None,
     })
 }
 

@@ -208,6 +208,12 @@ pub(super) fn tgid(status: &[u8]) -> Option<u32> {
     valid_pid(value).then_some(value)
 }
 
+/// The process that started the one a `/proc/PID/status` describes.
+pub(super) fn parent_pid(status: &[u8]) -> Option<u32> {
+    let value = u32::try_from(decimal(field(status, b"PPid:")?.trim_ascii())?).ok()?;
+    valid_pid(value).then_some(value)
+}
+
 pub(super) fn tracer_pid(status: &[u8]) -> Option<u32> {
     let value = u32::try_from(decimal(field(status, b"TracerPid:")?.trim_ascii())?).ok()?;
     (value == 0 || valid_pid(value)).then_some(value)

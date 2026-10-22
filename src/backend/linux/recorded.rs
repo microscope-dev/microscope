@@ -181,8 +181,12 @@ impl<P: LinuxTraceOps> LinuxTraceOps for Recorded<P> {
         pid
     }
 
-    fn spawn_waiter(&self, messages: mpsc::Sender<ControllerMessage>) -> Result<Waiter> {
-        let waiter = self.0.spawn_waiter(messages);
+    fn spawn_waiter(
+        &self,
+        process: Pid,
+        messages: mpsc::Sender<ControllerMessage>,
+    ) -> Result<Waiter> {
+        let waiter = self.0.spawn_waiter(process, messages);
         match &waiter {
             Ok(_) => record!("spawned the waiter"),
             Err(error) => record!("spawn waiter -> error {error:?}"),

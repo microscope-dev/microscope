@@ -6,7 +6,6 @@ mod linux;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::thread::JoinHandle;
 
 use tokio::sync::{broadcast, mpsc};
 
@@ -14,6 +13,7 @@ use crate::debug_info::DebugInfo;
 use crate::protocol::{CoreDumpOptions, DebuggerEvent, Request};
 use crate::{Error, ProcessId, Result};
 
+pub use linux::ControllerJoin;
 pub use linux::PostMortemSession;
 pub use linux::bpf;
 #[cfg(test)]
@@ -372,7 +372,7 @@ pub fn spawn_controller(
     channels: ControllerChannels,
 ) -> Result<(
     tokio::sync::watch::Receiver<Arc<crate::ModuleImage>>,
-    JoinHandle<()>,
+    ControllerJoin,
 )> {
     linux::spawn_controller(executable, debug_info, channels)
 }

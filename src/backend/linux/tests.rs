@@ -1225,7 +1225,11 @@ impl LinuxTraceOps for FakeTrace {
         Ok(Pid::from_raw(7000))
     }
 
-    fn spawn_waiter(&self, _messages: mpsc::Sender<ControllerMessage>) -> Result<Waiter> {
+    fn spawn_waiter(
+        &self,
+        _process: Pid,
+        _messages: mpsc::Sender<ControllerMessage>,
+    ) -> Result<Waiter> {
         Ok(Waiter::external())
     }
 
@@ -2530,6 +2534,7 @@ fn ending_a_session_lets_through_a_waiter_blocked_on_a_full_queue() {
     });
     harness.inferior().waiter = Some(Waiter {
         thread: Some(WaiterThread { stop, handle }),
+        hub: None,
     });
 
     let (ended, end) = std::sync::mpsc::channel();
