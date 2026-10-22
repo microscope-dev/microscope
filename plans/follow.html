@@ -279,7 +279,7 @@ table.data td:first-child code { white-space: nowrap; }
         <p><b>The public model stays as it is.</b> A <code>Debugger</code> is still one process and all-stop. The group is a new layer above it that creates debuggers and reports which processes joined and left. Each member's <code>DebuggerHandle</code> works exactly as a single session's does.</p>
         <p><b>Testing stays real and fast.</b> Every case is a C fixture driven through <code>Scenario</code> in milliseconds, with the kernel as the oracle: <code>/proc</code> state, exit codes, and the fixtures' own reports. Controller orderings the kernel will not produce on demand are scripted on the fake edge. The simulator gains one small extension, for watched processes that fork and exit; it does not learn exec or vfork (F14).</p>
       </div>
-      <div class="callout">The decisions that most change the work are in <a href="#decisions">Decisions</a>. Five questions with a recommendation each are in <a href="#questions">Questions</a>. The experiments are throwaway: a 120-line watch-only tracer in C, a hand-over probe, and a routing probe. Their results are recorded in <a href="#findings">Findings</a>.</div>
+      <div class="callout">The decisions that most change the work are in <a href="#decisions">Decisions</a>. Five questions were decided on 22 October 2026, in <a href="#questions">Questions</a>; DAP hosts the group in one adapter from the start (Q4). The experiments are throwaway: a 120-line watch-only tracer in C, a hand-over probe, and a routing probe. Their results are recorded in <a href="#findings">Findings</a>.</div>
     </section>
 
     <section id="experience">
@@ -355,7 +355,7 @@ error: 3 processes match 'server.js'; attach to one by its id:
       <div class="prose"><p>A name matches a process's command name, its first argument's file name, a script argument's file name, or a title the program set, and every candidate is listed with what matched (F12).</p></div>
 
       <h3>In VS Code and the browser</h3>
-      <div class="prose"><p>Each member is a session in VS Code's Call Stack view, nested under the process that started it, as <code>followForks</code> already does for forks. In the browser, a process switcher beside the stop banner lists the members, their state, and how each joined. The <code>followForks</code> setting becomes <code>follow</code>, with <code>followForks: true</code> meaning <code>follow: "all"</code>.</p></div>
+      <div class="prose"><p>Each member is a session in VS Code's Call Stack view, nested under the process that started it, served by the one adapter that hosts the whole group. In the browser, a process switcher beside the stop banner lists the members, their state, and how each joined. The <code>followForks</code> setting becomes <code>follow</code>, with <code>followForks: true</code> meaning <code>follow: "all"</code>.</p></div>
     </section>
 
     <section id="decisions">
@@ -370,6 +370,7 @@ error: 3 processes match 'server.js'; attach to one by its id:
           <tr><td>Stops</td><td class="good">Group all-stop: a stop in any member stops every debugged member; <code>continue</code> resumes them all</td><td>Matches microscope's all-stop promise across the processes a user debugs together (Q1)</td></tr>
           <tr><td>Exec stops</td><td class="good">An exec prints a line and continues; <code>catch exec</code> stops at it</td><td>Today every exec stops. The existing tests that expect it set the catchpoint</td></tr>
           <tr><td>Scripts</td><td class="good">Launched as the kernel runs them, with the interpreter's image loaded first</td><td>No reimplementation of <code>env -S</code> or nested interpreters (F8)</td></tr>
+          <tr><td>DAP</td><td class="good">One adapter hosts the whole group; child sessions connect back to it (Q4)</td><td>No detach and re-attach, so no Yama limit or adoption timeouts. Editors route child sessions; the held-child API is retired in G5</td></tr>
           <tr><td>Simulator</td><td class="good">One small extension for watched processes and in-tracer transfer; no exec or vfork model</td><td>Exec, scripts, vfork, and races between members are covered by real-kernel scenarios and fake-edge units (F14)</td></tr>
         </tbody>
       </table></div>
@@ -431,7 +432,7 @@ error: 3 processes match 'server.js'; attach to one by its id:
         </div>
         <div class="card">
           <header><span class="id">F7</span><h3>A process handed over at its exec runs nothing first</h3></header>
-          <p>The watch tracer stopped npm's final node at its exec event, sent <code>SIGSTOP</code>, and detached it. <code>/proc</code> showed it stopped with no tracer, at the loader's entry (<code>rip</code> 0x7ffff7fe3d40, in <code>ld-linux</code>). A second tracer seized it, interrupted, sent <code>SIGCONT</code>, saw the interrupt stop and then the <code>SIGCONT</code> at the same address, suppressed it, and the app ran and printed normally. This is the fallback for DAP's separate sessions. Inside one tracer thread no hand-over is needed at all.</p>
+          <p>The watch tracer stopped npm's final node at its exec event, sent <code>SIGSTOP</code>, and detached it. <code>/proc</code> showed it stopped with no tracer, at the loader's entry (<code>rip</code> 0x7ffff7fe3d40, in <code>ld-linux</code>). A second tracer seized it, interrupted, sent <code>SIGCONT</code>, saw the interrupt stop and then the <code>SIGCONT</code> at the same address, suppressed it, and the app ran and printed normally. Inside one tracer thread no hand-over is needed at all, and DAP hosts every member in one adapter (Q4), so this probe is recorded only as the fallback that design does not need.</p>
         </div>
         <div class="card">
           <header><span class="id">F8</span><h3>The kernel runs every script form; microscope need not parse them</h3></header>
@@ -594,7 +595,8 @@ group.add_breakpoint(spec) · group.remove_breakpoint(id) · group.continue_all(
       <div class="prose">
         <p><b>CLI.</b> A selected member, shown in the prompt when the group has more than one: <code>(microscope [2])</code>. New commands: <code>processes</code> lists members with state and how they joined; <code>process N</code> selects one; <code>detach process N</code>. Every existing command acts on the selected member, and breakpoint commands on the group. Joins, exits, and releases that happen while the user is at the prompt print through rustyline's <code>ExternalPrinter</code>, above the prompt line. <code>run</code> and <code>continue</code> wait for a group stop or the whole group's exit. A batch run exits non-zero when a process the policy wanted could not be followed, and with the root's status otherwise; a fixed-string <code>-e</code> transcript is the test.</p>
         <p><b>Web.</b> The session's single target becomes a group. A process switcher sits beside the stop banner, and every panel's state is keyed by member. Joins and exits arrive through the existing pump, and the console shares the CLI's commands.</p>
-        <p><b>DAP.</b> Two steps. First, keep one child session per member through <code>startDebugging</code>, as <code>followForks</code> does, extended with the follow policy and exec following: a member is handed over at its exec stop with the probed <code>SIGSTOP</code> and detach (F7), and vfork children are no longer held (F10). Second, host every member in the parent adapter: the child configuration names the parent adapter's socket, and VS Code's descriptor factory and nvim-dap's adapter function connect the child session to it. That removes the per-member adapter process, Yama's <code>ptrace_scope</code> refusal, and the adoption timeouts (Q4).</p>
+        <p><b>DAP.</b> One adapter hosts the whole group (Q4). The parent adapter owns the tracer thread and every member. For each member that joins, it sends <code>startDebugging</code> with a configuration naming the member and the parent adapter's socket. VS Code's descriptor factory in <code>editors/vscode</code> and nvim-dap's adapter function connect that child session back to the same adapter, which serves it from the member's <code>DebuggerHandle</code>. No process is detached or re-attached, so Yama's <code>ptrace_scope</code> 1, the <code>SIGSTOP</code> hand-over, and the adoption timeouts all go away.</p>
+        <p>This replaces <code>followForks</code>' separate-adapter path from <code>plans/forks.md</code>; <code>followForks: true</code> becomes <code>follow: "all"</code>. A client that cannot start child sessions, or cannot route them back, gets one console line per member saying it is debugged but not shown, and <code>follow</code> can be set to <code>none</code>. Once no client uses it, the held-child API (<code>hold_forks</code>, <code>attach_held</code>, <code>release_held</code>) and its simulator model are retired in a follow-up, which F7's probe would otherwise have served as a fallback.</p>
         <p><b>Messages.</b> Each client says when a process is not followed, with its command and the reason, once per process. Nothing the program starts disappears silently in any client.</p>
       </div>
     </section>
@@ -694,13 +696,13 @@ group.add_breakpoint(spec) · group.remove_breakpoint(id) · group.continue_all(
       </div>
       <div class="phase">
         <header><span class="pid">G4</span><h3>The group in every client</h3><span class="st todo">todo</span></header>
-        <p>CLI <code>processes</code>, selection, asynchronous notices, and batch rules; the web switcher; DAP's policy and exec hand-over for member sessions; <code>NODE_OPTIONS</code> and the 3.12/3.13 bootstrap for children.</p>
-        <p class="exit">Exit: <code>npm start</code>, <code>npx</code>, <code>node --test</code>, <code>--watch</code>, and Python pools stop at the user's breakpoint in the CLI, the browser, and VS Code. This is the condition the Node plan's N3 exit names.</p>
+        <p>CLI <code>processes</code>, selection, asynchronous notices, and batch rules; the web switcher; one DAP adapter for the group, with child sessions routed back by VS Code's descriptor factory and nvim-dap's adapter function, replacing <code>followForks</code>' separate adapters; <code>NODE_OPTIONS</code> and the 3.12/3.13 bootstrap for children.</p>
+        <p class="exit">Exit: <code>npm start</code>, <code>npx</code>, <code>node --test</code>, <code>--watch</code>, and Python pools stop at the user's breakpoint in the CLI, the browser, VS Code, and nvim-dap, with Yama's <code>ptrace_scope</code> 1 and no adoption timeouts. This is the condition the Node plan's N3 exit names.</p>
       </div>
       <div class="phase">
-        <header><span class="pid">G5</span><h3>One DAP adapter for the group</h3><span class="st todo">todo</span></header>
-        <p>Child sessions connect to the parent adapter, which hosts every member on its tracer thread; VS Code's descriptor factory and nvim-dap's adapter function route them.</p>
-        <p class="exit">Exit: DAP follows with Yama's <code>ptrace_scope</code> 1 and without adoption timeouts.</p>
+        <header><span class="pid">G5</span><h3>Retire the held-child hand-over</h3><span class="st todo">todo</span></header>
+        <p>Remove <code>hold_forks</code>, <code>attach_held</code>, <code>release_held</code>, <code>still_held</code>, <code>MICROSCOPE_ADOPTION_TIMEOUT</code>, and their simulator model, once no client uses them; <code>plans/forks.md</code> stays as the decision record.</p>
+        <p class="exit">Exit: the suite and <code>just sim 600</code> pass with the hand-over gone.</p>
       </div>
     </section>
 
@@ -721,27 +723,28 @@ group.add_breakpoint(spec) · group.remove_breakpoint(id) · group.continue_all(
     </section>
 
     <section id="questions">
-      <h2>Questions</h2>
+      <h2>Questions and decisions</h2>
+      <div class="prose"><p>Each question below was decided on 22 October 2026. Each card marks its decision in bold, with the reasoning beside it.</p></div>
       <div class="cards">
         <div class="card">
           <header><span class="id">Q1</span><h3>Group stop or process stop by default?</h3></header>
-          <p><b>Recommended:</b> group stop, so everything the user debugs together is frozen while they read it, as threads are. <code>stop = "process"</code> serves servers whose workers must keep answering.</p>
+          <p><b>Decided, as recommended:</b> group stop, so everything the user debugs together is frozen while they read it, as threads are. <code>stop = "process"</code> serves servers whose workers must keep answering.</p>
         </div>
         <div class="card">
           <header><span class="id">Q2</span><h3>Should npm's own node be a member?</h3></header>
-          <p>Under <code>auto</code> it is, because it runs a runtime microscope models. <b>Recommended:</b> yes, and say so in its join line. Excluding it would need a rule about npm specifically, and native breakpoints in node legitimately hit there. <code>--follow-skip npm-cli.js</code> could exclude by script if users ask.</p>
+          <p>Under <code>auto</code> it is, because it runs a runtime microscope models. <b>Decided, as recommended:</b> yes, and say so in its join line. Excluding it would need a rule about npm specifically, and native breakpoints in node legitimately hit there. <code>--follow-skip npm-cli.js</code> could exclude by script if users ask.</p>
         </div>
         <div class="card">
           <header><span class="id">Q3</span><h3>Stop at every exec?</h3></header>
-          <p><b>Recommended:</b> no: print a line and continue, with <code>catch exec</code> to stop. A chain like <code>env</code> then node would otherwise stop twice before the program starts.</p>
+          <p><b>Decided, as recommended:</b> no: print a line and continue, with <code>catch exec</code> to stop. A chain like <code>env</code> then node would otherwise stop twice before the program starts.</p>
         </div>
         <div class="card">
           <header><span class="id">Q4</span><h3>One DAP adapter for the group, or one per member?</h3></header>
-          <p><b>Recommended:</b> per member first (G4), since it extends what works, then one adapter (G5), which removes Yama's limit and the timeouts but needs editor-side routing.</p>
+          <p><b>Decided: one adapter from the start</b>, against the recommendation to ship per-member adapters first. The per-member step would have extended <code>followForks</code>' hand-over to execs, only to be replaced. Going straight to one adapter removes Yama's <code>ptrace_scope</code> limit, the <code>SIGSTOP</code> hand-over, and the adoption timeouts in G4, at the cost of editor-side routing in VS Code's descriptor factory and nvim-dap's adapter function before DAP follows anything new. G5 then retires the held-child API.</p>
         </div>
         <div class="card">
           <header><span class="id">Q5</span><h3>Python 3.12 and 3.13 children?</h3></header>
-          <p><b>Recommended:</b> keep the bootstrap's variables for children when following, so spawned workers load the agent; forked children re-enable it after fork. The alternative is native-only debugging of those children, with the reason.</p>
+          <p><b>Decided, as recommended:</b> keep the bootstrap's variables for children when following, so spawned workers load the agent; forked children re-enable it after fork. The alternative is native-only debugging of those children, with the reason.</p>
         </div>
       </div>
     </section>
