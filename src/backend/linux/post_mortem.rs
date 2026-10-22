@@ -862,6 +862,7 @@ pub fn open_core(
     };
 
     let image = Arc::clone(&main_debug.image);
+    let main_image = Arc::clone(&image);
     let main_loaded = LoadedModule::main(image.id(), main_file.load_bias);
     let executable = dump_executable(main_file);
     let (ready_sender, ready) = std::sync::mpsc::sync_channel(1);
@@ -874,6 +875,7 @@ pub fn open_core(
                 executable,
                 main_debug,
                 channels,
+                tokio::sync::watch::Sender::new(main_image),
                 target,
             );
 
@@ -1049,6 +1051,9 @@ impl Controller<CoreTarget> {
                 // A dump runs nothing, but the choice stays the session's.
                 Request::SetExceptionStops { stops, reply } => {
                     let _ = reply.send(Ok(std::mem::replace(&mut self.exception_stops, stops)));
+                }
+                Request::SetExecStops { stops, reply } => {
+                    let _ = reply.send(Ok(std::mem::replace(&mut self.exec_stops, stops)));
                 }
                 request => self.handle_inspection_request(request),
             }

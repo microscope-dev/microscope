@@ -889,6 +889,10 @@ async fn exec_retires_old_agent_files_and_reinstalls_before_the_next_requested_l
             matches!(reason, StopReason::Breakpoint { .. }),
             "{interpreter}: {reason:?}"
         );
+        session
+            .scenario
+            .operation("catch exec", session.scenario.handle().set_exec_stops(true))
+            .await;
 
         let reason = session.scenario.resume_to_stop().await;
         assert_eq!(
@@ -964,6 +968,10 @@ async fn exec_retires_a_launch_bootstrap() {
             matches!(reason, StopReason::Breakpoint { .. }),
             "{interpreter}: {reason:?}"
         );
+        session
+            .scenario
+            .operation("catch exec", session.scenario.handle().set_exec_stops(true))
+            .await;
         assert_eq!(
             session.scenario.resume_to_stop().await,
             StopReason::Exec { followed: true },

@@ -103,7 +103,7 @@ async fn the_processor_leaves_each_dispatch_where_the_debugger_says() {
 
         assert!(matches!(reason, StopReason::Entry), "{fixture}: {reason:?}");
 
-        let image = Arc::clone(scenario.handle().module_image());
+        let image = scenario.handle().module_image();
         let bodies = bodies(&image);
         assert!(!bodies.is_empty(), "{fixture}: no decoded dispatch");
 

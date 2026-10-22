@@ -217,7 +217,7 @@ impl Cli {
                 snapshot
                     .as_ref()
                     .map_or(&[][..], |snapshot| &snapshot.watchpoints[..]),
-                Some(self.debugger.module_image()),
+                Some(&self.debugger.module_image()),
                 &suffix,
                 renderer,
             ),

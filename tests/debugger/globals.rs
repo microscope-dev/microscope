@@ -75,7 +75,7 @@ async fn global_catalogs_normalize_qualification_and_optimized_storage_and_list_
         let handle = debugger.handle();
         let image = handle.module_image();
         for qualified in expected {
-            catalog_global(image, qualified);
+            catalog_global(&image, qualified);
         }
 
         for global in image.globals() {
@@ -172,7 +172,7 @@ async fn c_globals_cover_local_shadowing_collisions_relocation_and_optimization(
         assert_eq!(shadow.kind, VariableKind::Local);
         assert_variable_value(&shadow, ScalarValue::Signed(999));
 
-        let external = catalog_global(scenario.handle().module_image(), "external_value");
+        let external = catalog_global(&scenario.handle().module_image(), "external_value");
         let external = scenario
             .operation(
                 "inspect exact external global",
@@ -429,8 +429,8 @@ async fn go_package_globals_are_printable_without_source_stepping() {
         Debugger::new(Scenario::fixture("globals-go-o2")).expect("load optimized Go globals");
 
     let handle = debugger.handle();
-    catalog_global(handle.module_image(), "main.packageValue");
-    let pointer = catalog_global(handle.module_image(), "main.packagePointer");
+    catalog_global(&handle.module_image(), "main.packageValue");
+    let pointer = catalog_global(&handle.module_image(), "main.packagePointer");
     assert!(matches!(
         &pointer.type_info,
         microscope::GlobalVariableType::Resolved(microscope::TypeInfo {
@@ -597,7 +597,7 @@ async fn shared_library_globals_track_load_unload_reload_and_stale_identity() {
 
     assert_variable_value(&value, ScalarValue::Signed(211));
     let cross_module_pointer =
-        catalog_global(scenario.handle().module_image(), "cross_module_pointer");
+        catalog_global(&scenario.handle().module_image(), "cross_module_pointer");
 
     let cross_module_pointer = scenario
         .operation(
@@ -810,8 +810,8 @@ async fn tls_globals_resolve_per_selected_thread_for_gcc_and_clang() {
             StopReason::Breakpoint { .. }
         ));
 
-        let global = catalog_global(scenario.handle().module_image(), "tls_value").id;
-        let pointer = catalog_global(scenario.handle().module_image(), "tls_pointer").id;
+        let global = catalog_global(&scenario.handle().module_image(), "tls_value").id;
+        let pointer = catalog_global(&scenario.handle().module_image(), "tls_pointer").id;
         let snapshot = scenario.snapshot().await;
         assert_eq!(snapshot.threads.len(), 3, "{fixture}: {snapshot:?}");
         let mut values = Vec::new();

@@ -227,7 +227,7 @@ impl Session {
         };
 
         // The program's lines, and those of the libraries loaded now.
-        let mut images = vec![Arc::clone(handle.module_image())];
+        let mut images = vec![handle.module_image()];
         images.extend(
             self.code()
                 .modules()
@@ -267,7 +267,7 @@ impl Session {
             return Ok(json!({"targets": []}));
         };
 
-        let mut images = vec![Arc::clone(handle.module_image())];
+        let mut images = vec![handle.module_image()];
         images.extend(
             self.code()
                 .modules()

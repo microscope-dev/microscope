@@ -38,7 +38,7 @@ async fn malformed_dwarf_leaves_a_program_described_by_its_symbols() {
         let program = scratch.path().join(section.trim_start_matches('.'));
         corrupt_section(&Scenario::fixture("basic"), &program, section);
         let mut scenario = Scenario::new(section, &program);
-        let image = Arc::clone(scenario.handle().module_image());
+        let image = scenario.handle().module_image();
         let reason = unusable_reason(&image);
         assert!(reason.starts_with(expected), "{section}: {reason}");
         assert_eq!(image.functions().len(), 0, "{section}");
@@ -148,7 +148,7 @@ async fn a_library_with_malformed_dwarf_is_described_by_its_symbols() {
 #[tokio::test]
 async fn split_dwarf_is_reported_as_incomplete() {
     let mut scenario = Scenario::launch("basic-split-dwarf");
-    let image = Arc::clone(scenario.handle().module_image());
+    let image = scenario.handle().module_image();
     let microscope::DebugInformation::Incomplete { reason } = image.debug_information() else {
         panic!("{:?}", image.debug_information());
     };

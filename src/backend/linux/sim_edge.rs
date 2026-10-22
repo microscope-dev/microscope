@@ -836,6 +836,9 @@ pub struct ClientChannels {
     pub requests: mpsc::Sender<ControllerMessage>,
     pub events: broadcast::Sender<DebuggerEvent>,
 
+    /// The program the controller's process runs.
+    pub program: tokio::sync::watch::Receiver<Arc<crate::ModuleImage>>,
+
     /// Every event the controller publishes, which no reader falls behind
     /// on, unlike the clients' subscriptions to `events`.
     pub audit: mpsc::UnboundedReceiver<DebuggerEvent>,
@@ -893,6 +896,8 @@ impl SimController {
         #[cfg(debug_assertions)]
         let trace = super::recorded::Recorded(trace);
         let executable = parts.executable;
+        let program = tokio::sync::watch::Sender::new(Arc::clone(&parts.debug_info.image));
+        let current = program.subscribe();
         let controller = Controller::new(
             // A simulated session traces nothing real.
             SessionLease::detached(),
@@ -913,6 +918,7 @@ impl SimController {
                 receiver,
                 events: EventSender::tapped(events.clone(), tap),
             },
+            program,
             trace,
         );
 
@@ -921,6 +927,7 @@ impl SimController {
             ClientChannels {
                 requests: sender,
                 events,
+                program: current,
                 audit,
             },
         )

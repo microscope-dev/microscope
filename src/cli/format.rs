@@ -2957,6 +2957,20 @@ pub fn child_released(
     )
 }
 
+/// The line saying a process executed another program, which microscope
+/// now debugs in its place.
+pub fn program_changed(
+    process: microscope::ProcessId,
+    program: &std::path::Path,
+    renderer: Renderer,
+) -> String {
+    format!(
+        "process {} executed {}",
+        renderer.paint(Role::Metadata, process),
+        renderer.paint(Role::Metadata, program.display()),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::elide_arguments;

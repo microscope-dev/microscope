@@ -330,7 +330,7 @@ async fn zig_identities_text_and_text_budgets_follow_zig_syntax() {
     use SourceLanguage::Zig;
     let scenario =
         stop_at_marker("generics-zig-o0", "zig/generics.zig", "generics stop here").await;
-    let image = Arc::clone(scenario.handle().module_image());
+    let image = scenario.handle().module_image();
     let list = identity(spelled(&image, "array_list.Aligned(u32,null)"));
     assert_eq!(list.language, Zig);
     assert_eq!(list.origin, ArgumentOrigin::ParsedName);

@@ -380,7 +380,7 @@ async fn go_backtraces_match_the_runtimes_own_frames_with_and_without_dwarf() {
             matches!(reason, StopReason::Breakpoint { .. }),
             "{fixture}: {reason:?}"
         );
-        let image = Arc::clone(scenario.handle().module_image());
+        let image = scenario.handle().module_image();
         let trace = scenario
             .operation("backtrace", scenario.handle().backtrace())
             .await;

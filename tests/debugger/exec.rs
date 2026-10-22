@@ -8,6 +8,13 @@ use super::libraries::{breakpoint, pending_function};
 use super::support::ExternalProcess;
 use super::*;
 
+/// Asks the session to stop at every exec, as `catch exec` does.
+async fn catch_exec(scenario: &Scenario) {
+    scenario
+        .operation("catch exec", scenario.handle().set_exec_stops(true))
+        .await;
+}
+
 fn function_name(trace: &microscope::Backtrace, index: usize) -> Option<&str> {
     trace.frames[index]
         .function
@@ -53,6 +60,7 @@ async fn assert_vdso_follows_the_image(scenario: &mut Scenario) {
 #[tokio::test]
 async fn a_program_that_executes_itself_again_is_followed_with_its_breakpoints() {
     let mut scenario = Scenario::launch("reexec");
+    catch_exec(&scenario).await;
     scenario.add_breakpoint("reexecuted").await;
     let library = pending_function(&scenario, "puts").await;
 
@@ -96,6 +104,7 @@ async fn a_program_that_executes_itself_again_is_followed_with_its_breakpoints()
 #[tokio::test]
 async fn indirect_functions_wait_again_after_exec() {
     let mut scenario = Scenario::launch("reexec");
+    catch_exec(&scenario).await;
     for name in ["strlen", "strcasestr", "wcsnlen", "rawmemchr", "memrchr"] {
         pending_function(&scenario, name).await;
     }
@@ -321,6 +330,7 @@ fn assert_program_replaced(
 /// one set by address is never planted in the new program.
 async fn follows_an_exec_into_another_program(arguments: &[&str]) {
     let mut scenario = Scenario::launch("exec-other");
+    catch_exec(&scenario).await;
     let old = scenario.add_breakpoint("before_exec").await;
     let by_name = pending_function(&scenario, "target_work").await;
     let by_line = pending_target_line(&scenario).await;
@@ -417,4 +427,45 @@ async fn an_exec_into_another_program_is_followed_into_it() {
 #[tokio::test]
 async fn an_exec_from_a_second_thread_into_another_program_is_followed_into_it() {
     follows_an_exec_into_another_program(&["thread"]).await;
+}
+
+/// Without `catch exec`, a run through an exec into another program goes on
+/// to the breakpoint in it, and the handle describes the program the
+/// process runs while still naming the one launched.
+#[tokio::test]
+async fn a_followed_exec_runs_on_unless_caught() {
+    let mut scenario = Scenario::launch("exec-other");
+    let target = pending_function(&scenario, "target_work").await;
+    let mut events = scenario.handle().subscribe();
+
+    let reason = scenario.run_to_stop().await;
+    let StopReason::Breakpoint { hits, .. } = &reason else {
+        panic!("stopped for {reason:?}");
+    };
+    assert_eq!(hits[0].breakpoint, target.id);
+
+    let mut changed = None;
+    while let Ok(event) = events.try_recv() {
+        if let microscope::DebuggerEvent::ProgramChanged {
+            previous, program, ..
+        } = event
+        {
+            assert!(changed.is_none(), "one exec changed the program once");
+            changed = Some((previous, program));
+        }
+    }
+    let (previous, program) = changed.expect("the program changed");
+    assert_eq!(previous.path.file_name().unwrap(), "exec-other");
+    assert_eq!(program.path.file_name().unwrap(), "exec-target");
+
+    let handle = scenario.handle();
+    assert_eq!(handle.module_image().path(), program.path.as_path());
+    assert_eq!(handle.executable(), *program.path);
+    assert_eq!(handle.launched().file_name().unwrap(), "exec-other");
+
+    assert_eq!(
+        scenario.resume_to_stop().await,
+        StopReason::Exited(ExitStatus::Code(42))
+    );
+    scenario.shutdown().await;
 }

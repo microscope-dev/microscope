@@ -13,7 +13,7 @@ use crate::{
 };
 
 use std::cell::RefCell;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 use super::activation::StackView;
 use super::classify::{WatchStatus, classify_stop_evidence};
@@ -1878,6 +1878,7 @@ fn watch_harness_of(thread_count: i32, image: &Arc<ModuleImage>) -> WatchHarness
             receiver,
             events: events.into(),
         },
+        watch::Sender::new(Arc::clone(image)),
         FakeTrace::default(),
     );
     let pid = threads[0];

@@ -118,7 +118,7 @@ impl Images {
         }
 
         if loaded.is_empty() {
-            loaded.push((LoadBias::default(), Arc::clone(self.handle.module_image())));
+            loaded.push((LoadBias::default(), self.handle.module_image()));
         }
 
         loaded
@@ -127,7 +127,7 @@ impl Images {
     /// The images that have source files: the executable's and each loaded
     /// module's, once each.
     pub async fn with_sources(&self) -> Vec<Arc<ModuleImage>> {
-        let mut images = vec![Arc::clone(self.handle.module_image())];
+        let mut images = vec![self.handle.module_image()];
         for (_, image) in self.loaded().await {
             if !images.iter().any(|known| known.path() == image.path()) {
                 images.push(image);
@@ -407,7 +407,7 @@ impl Describer {
     ) -> Place {
         let (image, address, shown) = match (&resolved.location, resolved.library) {
             (BreakpointLocation::Image(address), _) => (
-                Some(Arc::clone(self.handle.module_image())),
+                Some(self.handle.module_image()),
                 *address,
                 // Before the program runs, there is no virtual address yet.
                 self.main_bias()

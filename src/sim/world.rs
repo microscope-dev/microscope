@@ -1933,7 +1933,6 @@ fn start_controller(
     let waiter = Rc::new(RefCell::new(SimWaiter::new(tracer)));
     machine.waiters.borrow_mut().push(Rc::clone(&waiter));
     let debug_info = variant.debug_info();
-    let module_image = Arc::clone(&debug_info.image);
     let (controller, channels) = SimController::new(SimParts {
         tracer,
         kernel: Rc::clone(&machine.kernel),
@@ -1956,7 +1955,8 @@ fn start_controller(
     });
 
     let handle = DebuggerHandle {
-        module_image,
+        launched: Arc::new(std::path::PathBuf::from(&*variant.path)),
+        program: channels.program,
         core_dump: None,
         source_paths: Arc::default(),
         requests: channels.requests,

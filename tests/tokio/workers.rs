@@ -395,7 +395,7 @@ async fn tasks_are_listed_exactly(current: bool) {
         assert!(truth.check_tasks(&sabotaged).is_err(), "{fixture}");
 
         let image = workers.scenario.handle().module_image();
-        let spawned = spawn_lines(&tasks, image);
+        let spawned = spawn_lines(&tasks, &image);
         if [UNSTABLE, TRACED].contains(&fixture) {
             assert_eq!(spawned, truth.spawns(), "{fixture}");
         } else {

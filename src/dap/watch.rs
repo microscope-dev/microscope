@@ -526,7 +526,7 @@ impl Session {
                 );
                 let type_info = watchpoint.and_then(|watchpoint| watchpoint.type_info.as_ref());
                 let (previous, current) =
-                    crate::cli::value::hit_values(hit, type_info, Some(image));
+                    crate::cli::value::hit_values(hit, type_info, Some(&image));
 
                 if hit.changed() {
                     format!("{subject} changed from {previous} to {current}")

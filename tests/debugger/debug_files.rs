@@ -49,7 +49,7 @@ fn build_id_debug_file() -> (PathBuf, String) {
 /// information came from `debug_file`: the stop names the function and its
 /// line, which only DWARF knows in a stripped program.
 async fn stops_with_debug_information(mut scenario: Scenario, debug_file: &Path) {
-    let image = Arc::clone(scenario.handle().module_image());
+    let image = scenario.handle().module_image();
     assert_eq!(
         image.debug_file().map(|path| path.as_path()),
         Some(debug_file),
@@ -425,7 +425,7 @@ async fn sharing_through_a_supplementary_file_changes_nothing_the_debug_informat
             let load = async |layout: &str| {
                 let path = dwz(&format!("{variant}/{layout}/{module}"));
                 let scenario = Scenario::new(format!("{variant}-{layout}-{module}"), path);
-                let described = described(scenario.handle().module_image());
+                let described = described(&scenario.handle().module_image());
                 scenario.shutdown().await;
                 described
             };
@@ -506,7 +506,7 @@ async fn debug_files_read_what_they_share_from_their_supplementary_file() {
     };
 
     let mut scenario = Scenario::with_debug_files("dwz", &program, &options);
-    let image = Arc::clone(scenario.handle().module_image());
+    let image = scenario.handle().module_image();
     assert_eq!(
         image.debug_file().map(|path| path.as_path()),
         Some(filed(&dwz_debug_root(), &build_id(&program)).as_path())
@@ -721,7 +721,7 @@ async fn a_debug_file_whose_supplementary_file_is_missing_is_refused_with_its_re
     };
 
     let mut scenario = Scenario::with_debug_files("altlink", split("basic-build-id"), &options);
-    let image = Arc::clone(scenario.handle().module_image());
+    let image = scenario.handle().module_image();
     assert_eq!(image.functions().len(), 0);
     assert_eq!(image.debug_file(), None);
     let Some(microscope::DebugFile::Unusable { path, reason }) = image.separate_debug_file() else {

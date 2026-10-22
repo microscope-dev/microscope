@@ -116,7 +116,7 @@ async fn coroutines_read_as_readelf_reads_them() {
             "{fixture}: readelf found no coroutine"
         );
 
-        let actual = normalized(scenario.handle().module_image());
+        let actual = normalized(&scenario.handle().module_image());
         let missing = expected.difference(&actual).collect::<Vec<_>>();
         let extra = actual.difference(&expected).collect::<Vec<_>>();
 

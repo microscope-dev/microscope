@@ -447,9 +447,14 @@ impl<P: LinuxTraceOps> Controller<P> {
             .checked_add(1)
             .ok_or_else(|| backend_error(LinuxError::ModuleImageIdExhausted))?;
 
-        let previous = self.main.image.id();
+        let previous = crate::LoadedModuleRecord {
+            module: self.modules[&self.main.id].loaded,
+            path: Arc::clone(&self.main.executable),
+        };
         self.unregister_module(self.main.id);
-        self.runtime_models.borrow_mut().remove(&previous);
+        self.runtime_models
+            .borrow_mut()
+            .remove(&previous.module.image);
 
         let mut cleared = false;
         for breakpoint in &mut self.breakpoints {
@@ -481,13 +486,22 @@ impl<P: LinuxTraceOps> Controller<P> {
                 tls: None,
             },
         );
+        let record = crate::LoadedModuleRecord {
+            module: loaded,
+            path: Arc::clone(&self.main.executable),
+        };
         self.bump_revision();
         let _ = self.events.send(DebuggerEvent::ModuleLoaded {
             revision: self.revision,
-            module: crate::LoadedModuleRecord {
-                module: loaded,
-                path: Arc::new(program.path),
-            },
+            module: record.clone(),
+        });
+        self.program.send_replace(Arc::clone(&self.main.image));
+        self.bump_revision();
+        let _ = self.events.send(DebuggerEvent::ProgramChanged {
+            revision: self.revision,
+            process_id: process_id(pid),
+            previous,
+            program: record,
         });
 
         Ok(load_bias)
@@ -1299,6 +1313,22 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .is_some_and(|inferior| inferior.managed.unarmed.is_empty())
         {
             self.publish_breakpoints_changed();
+        }
+
+        // A followed exec in a continued process runs on unless asked to
+        // stop; a step's plan was the old image's, so it ends here.
+        let continued = self
+            .inferior
+            .as_ref()
+            .and_then(|inferior| inferior.active.as_ref())
+            .is_some_and(|active| {
+                matches!(
+                    active.kind,
+                    super::ActiveKind::Continue | super::ActiveKind::Launch
+                )
+            });
+        if followed && agent_cleanup.is_ok() && continued && !self.exec_stops {
+            return self.restart_after_internal(pid);
         }
 
         let reason = agent_cleanup.map_or_else(

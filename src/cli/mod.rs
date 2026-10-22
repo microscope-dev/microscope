@@ -433,7 +433,7 @@ impl Cli {
     /// has them.
     pub async fn debug_information_warnings(&self) -> Vec<String> {
         let program = self.debugger.module_image();
-        let mut warnings = crate::present::debug_information::warnings(program, true);
+        let mut warnings = crate::present::debug_information::warnings(&program, true);
 
         // A program yet to run has loaded nothing else.
         let Ok(loaded) = self.debugger.loaded_modules().await else {

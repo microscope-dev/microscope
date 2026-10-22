@@ -302,7 +302,10 @@ pub fn spawn_controller(
     executable: Executable,
     debug_info: DebugInfo,
     channels: ControllerChannels,
-) -> Result<JoinHandle<()>> {
+) -> Result<(
+    tokio::sync::watch::Receiver<Arc<crate::ModuleImage>>,
+    JoinHandle<()>,
+)> {
     linux::spawn_controller(executable, debug_info, channels)
 }
 

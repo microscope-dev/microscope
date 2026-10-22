@@ -33,7 +33,7 @@ use nix::libc;
 use nix::unistd::Pid;
 use signals::SignalPolicies;
 pub use signals::{Signal, WaitEvent};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::debug_info::{DebugInfo, UnwindInfo, VariableInfo};
 use crate::protocol::{
@@ -1479,6 +1479,10 @@ struct Controller<P: InspectionOps> {
     /// The program the inferior runs, which an exec may replace.
     main: MainProgram,
 
+    /// The main program's image as every handle reads it, replaced before
+    /// [`DebuggerEvent::ProgramChanged`] is sent.
+    program: watch::Sender<Arc<ModuleImage>>,
+
     /// The path a launch runs, which may be a link to the executable.
     launch_path: Arc<PathBuf>,
     expected_process_start_time: Option<u64>,
@@ -1544,6 +1548,9 @@ struct Controller<P: InspectionOps> {
     /// Which exceptions that runtimes report stop the program.
     exception_stops: crate::ExceptionStops,
 
+    /// Whether an exec the session follows stops a continued process.
+    exec_stops: bool,
+
     /// Whether steps stop in a language runtime's own code.
     step_into_runtime: bool,
 
@@ -1604,10 +1611,12 @@ pub fn spawn_controller(
     executable: Executable,
     debug_info: DebugInfo,
     channels: ControllerChannels,
-) -> Result<JoinHandle<()>> {
+) -> Result<(watch::Receiver<Arc<ModuleImage>>, JoinHandle<()>)> {
     let lease = SessionLease::acquire()?;
+    let program = watch::Sender::new(Arc::clone(&debug_info.image));
+    let current = program.subscribe();
 
-    Ok(thread::Builder::new()
+    let controller = thread::Builder::new()
         .name(CONTROLLER_THREAD_NAME.into())
         .spawn(move || {
             record!("started for {}", executable.display_path.display());
@@ -1615,9 +1624,11 @@ pub fn spawn_controller(
             let ptrace = recorded::Recorded(LinuxPtrace::new());
             #[cfg(not(debug_assertions))]
             let ptrace = LinuxPtrace::new();
-            Controller::new(lease, executable, debug_info, channels, ptrace).run();
+            Controller::new(lease, executable, debug_info, channels, program, ptrace).run();
             record!("exited");
-        })?)
+        })?;
+
+    Ok((current, controller))
 }
 
 impl<P: InspectionOps> Controller<P> {
@@ -1626,6 +1637,7 @@ impl<P: InspectionOps> Controller<P> {
         executable: Executable,
         debug_info: DebugInfo,
         channels: ControllerChannels,
+        program: watch::Sender<Arc<ModuleImage>>,
         ptrace: P,
     ) -> Self {
         let DebugInfo {
@@ -1651,6 +1663,7 @@ impl<P: InspectionOps> Controller<P> {
                 image: module_image,
                 unwind: unwind_info,
             },
+            program,
             launch_path: executable.launch_path,
             expected_process_start_time: executable.process_start_time,
             debug_files: executable.debug_files,
@@ -1683,6 +1696,7 @@ impl<P: InspectionOps> Controller<P> {
             deferred_start: None,
             signals: SignalPolicies::default(),
             exception_stops: crate::ExceptionStops::default(),
+            exec_stops: false,
             step_into_runtime: false,
             runtime_models: RefCell::default(),
             revision: 0,
@@ -1997,6 +2011,9 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
             Request::SetExceptionStops { stops, reply } => {
                 self.edit(Edit::SetExceptionStops { stops, reply });
+            }
+            Request::SetExecStops { stops, reply } => {
+                let _ = reply.send(Ok(std::mem::replace(&mut self.exec_stops, stops)));
             }
 
             Request::AddCatchpoint {
@@ -2556,6 +2573,7 @@ impl<P: InspectionOps> Controller<P> {
             | Request::RemoveWatchpoint { .. }
             | Request::RemoveAllWatchpoints { .. }
             | Request::SetExceptionStops { .. }
+            | Request::SetExecStops { .. }
             | Request::AddCatchpoint { .. }
             | Request::RemoveCatchpoint { .. }
             | Request::Launch { .. }

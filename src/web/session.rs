@@ -748,7 +748,7 @@ impl Session {
                                 microscope::Error::FunctionNotFound(name) => {
                                     crate::cli::commands::python_name_hint(
                                         name,
-                                        handle.module_image(),
+                                        &handle.module_image(),
                                     )
                                 }
                                 _ => None,
@@ -1153,7 +1153,7 @@ impl Session {
             .await
             .as_ref()
             .and_then(|target| Some((target.handle.clone(), target.launch.clone()?)))?;
-        if !crate::present::debug_information::interprets_python(handle.module_image()) {
+        if !crate::present::debug_information::interprets_python(&handle.module_image()) {
             return None;
         }
 
@@ -2052,6 +2052,17 @@ fn observe(describer: &mut Describer, outlet: &Outlet, event: &DebuggerEvent) {
             outlet.publish(
                 Stream::Log,
                 &(format::child_released(*process_id, *child, Renderer::new(false)) + "\n"),
+            );
+        }
+
+        DebuggerEvent::ProgramChanged {
+            process_id,
+            program,
+            ..
+        } => {
+            outlet.publish(
+                Stream::Log,
+                &(format::program_changed(*process_id, &program.path, Renderer::new(false)) + "\n"),
             );
         }
         _ => {}

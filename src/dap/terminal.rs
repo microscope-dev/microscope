@@ -39,7 +39,7 @@ pub(super) async fn launch(
         ));
     }
 
-    let program = handle.executable().to_owned();
+    let program = handle.launched().to_owned();
     let failed = |error: &dyn std::fmt::Display| {
         ErrorBody::shown(format!("failed to launch {}: {error}", program.display()))
     };

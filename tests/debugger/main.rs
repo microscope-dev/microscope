@@ -158,7 +158,7 @@ fn parsed_value_expression(expression: &str) -> microscope::Expression {
 async fn load_fixture_image(fixture: &str) -> Arc<ModuleImage> {
     let debugger = Debugger::new(Scenario::fixture(fixture))
         .unwrap_or_else(|error| panic!("load {fixture} metadata: {error}"));
-    let image = Arc::clone(debugger.handle().module_image());
+    let image = debugger.handle().module_image();
 
     debugger
         .shutdown()

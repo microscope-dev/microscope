@@ -94,7 +94,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::time::timeout;
 
 use backend::ControllerMessage;
@@ -458,7 +458,11 @@ pub struct Debugger {
 /// subscribe to events, or use the methods that wait, to observe the stop.
 #[derive(Clone)]
 pub struct DebuggerHandle {
-    module_image: Arc<ModuleImage>,
+    /// The program the process runs, which an exec replaces.
+    program: watch::Receiver<Arc<ModuleImage>>,
+
+    /// The program the session was made for, which a launch executes.
+    launched: Arc<PathBuf>,
     core_dump: Option<Arc<CoreDumpInfo>>,
     source_paths: Arc<SourcePathMap>,
     requests: mpsc::Sender<ControllerMessage>,
@@ -519,10 +523,11 @@ impl Debugger {
             debug_info,
         } = program;
 
-        Self::start(|channels| {
-            let image = Arc::clone(&debug_info.image);
-            let controller = backend::spawn_controller(executable, debug_info, channels)?;
-            Ok((image, None, controller))
+        let launched = Arc::clone(&executable.launch_path);
+        Self::start(launched, |channels| {
+            let (program, controller) =
+                backend::spawn_controller(executable, debug_info, channels)?;
+            Ok((program, None, controller))
         })
     }
 
@@ -642,19 +647,24 @@ impl Debugger {
     /// Execution control, memory writes, and breakpoints fail with
     /// [`Error::PostMortemTarget`].
     pub fn open_core(options: &CoreDumpOptions) -> Result<Self> {
-        Self::start(|channels| {
+        Self::start(Arc::new(options.core.clone()), |channels| {
             let session = backend::open_core(options, channels)?;
-            Ok((session.image, Some(session.info), session.controller))
+            let (_, program) = watch::channel(session.image);
+            Ok((program, Some(session.info), session.controller))
         })
     }
 
     /// Creates the request and event channels and starts a controller that
     /// serves them, reserving request capacity so shutdown can always be sent.
     fn start(
+        launched: Arc<PathBuf>,
         spawn: impl FnOnce(
             backend::ControllerChannels,
-        )
-            -> Result<(Arc<ModuleImage>, Option<Arc<CoreDumpInfo>>, JoinHandle<()>)>,
+        ) -> Result<(
+            watch::Receiver<Arc<ModuleImage>>,
+            Option<Arc<CoreDumpInfo>>,
+            JoinHandle<()>,
+        )>,
     ) -> Result<Self> {
         #[cfg(debug_assertions)]
         flight_recorder::record_panics();
@@ -665,7 +675,7 @@ impl Debugger {
             .try_reserve_owned()
             .map_err(|_| Error::internal("a new request channel has no shutdown capacity"))?;
         let (events, _) = broadcast::channel(event_capacity());
-        let (module_image, core_dump, controller) = spawn(backend::ControllerChannels {
+        let (program, core_dump, controller) = spawn(backend::ControllerChannels {
             sender: requests.clone(),
             receiver,
             events: events.clone().into(),
@@ -673,7 +683,8 @@ impl Debugger {
 
         Ok(Self {
             handle: DebuggerHandle {
-                module_image,
+                program,
+                launched,
                 core_dump,
                 source_paths: Arc::default(),
                 requests,
@@ -747,16 +758,26 @@ impl DebuggerHandle {
         self
     }
 
-    /// Returns the canonical path of the executable being debugged.
+    /// Returns the canonical path of the program the process runs, which
+    /// an exec into another program changes.
     #[must_use]
-    pub fn executable(&self) -> &Path {
-        self.module_image.path()
+    pub fn executable(&self) -> PathBuf {
+        self.program.borrow().path().to_owned()
     }
 
-    /// Returns the immutable debug metadata for the main executable.
+    /// Returns the program the session was made for, which a launch
+    /// executes: a script rather than its interpreter, for one.
     #[must_use]
-    pub const fn module_image(&self) -> &Arc<ModuleImage> {
-        &self.module_image
+    pub fn launched(&self) -> &Path {
+        &self.launched
+    }
+
+    /// Returns the immutable debug metadata of the program the process
+    /// runs, which an exec into another program replaces, as
+    /// [`DebuggerEvent::ProgramChanged`] reports.
+    #[must_use]
+    pub fn module_image(&self) -> Arc<ModuleImage> {
+        Arc::clone(&self.program.borrow())
     }
 
     /// Describes the opened core dump, or `None` for a live session.
@@ -1070,6 +1091,16 @@ impl DebuggerHandle {
     /// once and lasts for the whole session.
     pub async fn set_exception_stops(&self, stops: ExceptionStops) -> Result<ExceptionStops> {
         self.request(|reply| Request::SetExceptionStops { stops, reply })
+            .await
+    }
+
+    /// Chooses whether the process stops when it executes a program, as
+    /// gdb's `catch exec` does, and returns the previous choice. Without
+    /// it, a continued process that executes a program it is followed into
+    /// runs on, with [`DebuggerEvent::ProgramChanged`] sent when the
+    /// program is another; a step that executes one ends there either way.
+    pub async fn set_exec_stops(&self, stops: bool) -> Result<bool> {
+        self.request(|reply| Request::SetExecStops { stops, reply })
             .await
     }
 
@@ -1504,7 +1535,7 @@ impl DebuggerHandle {
     /// dynamic loader binds it; otherwise the name must be one address's.
     pub async fn runtime_address(&self, name: &str) -> Result<VirtualAddress> {
         let loaded = self.loaded_module().await?;
-        let mut modules = vec![(loaded, Arc::clone(&self.module_image))];
+        let mut modules = vec![(loaded, self.module_image())];
 
         for record in self.loaded_modules().await?.modules.iter() {
             if record.module.id != loaded.id

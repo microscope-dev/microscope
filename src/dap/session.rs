@@ -947,7 +947,7 @@ impl Session {
             return Ok(());
         };
 
-        for warning in crate::present::debug_information::warnings(handle.module_image(), true) {
+        for warning in crate::present::debug_information::warnings(&handle.module_image(), true) {
             self.client.important(warning).await?;
         }
 
@@ -1545,6 +1545,26 @@ impl Session {
         }
     }
 
+    /// Says the process executed another program, whose recorded source
+    /// paths replace the old program's.
+    async fn program_changed(
+        &mut self,
+        process: microscope::ProcessId,
+        program: &Path,
+    ) -> Result<(), Closed> {
+        if let Some(target) = self.target.as_mut() {
+            target.recorded_paths = None;
+        }
+
+        self.client
+            .console(crate::cli::format::program_changed(
+                process,
+                program,
+                crate::cli::terminal::Renderer::new(false),
+            ))
+            .await
+    }
+
     /// Forgets the current stop and everything that referred to it.
     fn leave_stop(&mut self) {
         self.stop = None;
@@ -1632,6 +1652,11 @@ impl Session {
                     ))
                     .await?;
             }
+            DebuggerEvent::ProgramChanged {
+                process_id,
+                program,
+                ..
+            } => self.program_changed(process_id, &program.path).await?,
             DebuggerEvent::BreakpointsChanged { .. } => self.sync_breakpoints().await?,
             DebuggerEvent::LogMessage { parts, .. } => {
                 self.client
@@ -2366,7 +2391,7 @@ impl Session {
         // A location's image, and its address there.
         let (image, address, virtual_address) = match (&first.location, first.library) {
             (microscope::BreakpointLocation::Image(address), _) => {
-                (Arc::clone(handle.module_image()), *address, None)
+                (handle.module_image(), *address, None)
             }
 
             // A runtime's location has no address: it is where the runtime
@@ -2575,7 +2600,7 @@ impl Session {
             return client.to_owned();
         };
 
-        let image = Arc::clone(target.handle.module_image());
+        let image = target.handle.module_image();
         let index = target.recorded_paths.get_or_insert_with(|| {
             let mut index = HashMap::new();
             for file in image.source_files() {

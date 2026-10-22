@@ -2027,6 +2027,16 @@ pub enum DebuggerEvent {
         module: crate::LoadedModuleRecord,
     },
 
+    /// The process executed another program, which is now the main
+    /// module under a new id; [`crate::DebuggerHandle::module_image`]
+    /// describes it from before this event is sent.
+    ProgramChanged {
+        revision: u64,
+        process_id: ProcessId,
+        previous: crate::LoadedModuleRecord,
+        program: crate::LoadedModuleRecord,
+    },
+
     /// The inferior process exited.
     InferiorExited {
         revision: u64,
@@ -2112,6 +2122,7 @@ impl DebuggerEvent {
             | Self::ChildReleased { revision, .. }
             | Self::ModuleLoaded { revision, .. }
             | Self::ModuleUnloaded { revision, .. }
+            | Self::ProgramChanged { revision, .. }
             | Self::InferiorExited { revision, .. }
             | Self::InferiorDetached { revision, .. }
             | Self::SignalReceived { revision, .. }
@@ -2500,6 +2511,13 @@ pub enum Request {
         stops: ExceptionStops,
         reply: Reply<ExceptionStops>,
     },
+
+    /// Chooses whether an exec the session follows stops, and replies
+    /// with the previous choice.
+    SetExecStops {
+        stops: bool,
+        reply: Reply<bool>,
+    },
     Shutdown {
         reply: Reply<()>,
     },
@@ -2586,6 +2604,7 @@ impl Request {
             }
             Self::HoldForks { .. } => "hold forks".to_owned(),
             Self::SetExceptionStops { stops, .. } => format!("set exception stops {stops:?}"),
+            Self::SetExecStops { stops, .. } => format!("set exec stops {stops}"),
             Self::RemoveAllBreakpoints { .. } => "remove all breakpoints".to_owned(),
             Self::ResolveWatchTarget { .. } => "resolve watch target".to_owned(),
             Self::RemoveAllWatchpoints { .. } => "remove all watchpoints".to_owned(),

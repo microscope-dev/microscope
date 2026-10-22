@@ -837,7 +837,7 @@ impl Cli {
             Ok(loaded) => loaded,
             // Before the program runs, only its own image is known.
             Err(microscope::Error::NotRunning) => {
-                let image = std::sync::Arc::clone(self.debugger.module_image());
+                let image = self.debugger.module_image();
                 return Ok(format::modules(
                     &[format::ModuleRow {
                         path: std::sync::Arc::new(image.path().to_path_buf()),
@@ -1128,7 +1128,7 @@ impl Cli {
     /// The images of the loaded modules, or the program's before it runs.
     pub(super) async fn loaded_images(&self) -> Vec<std::sync::Arc<microscope::ModuleImage>> {
         let Ok(loaded) = self.debugger.loaded_modules().await else {
-            return vec![std::sync::Arc::clone(self.debugger.module_image())];
+            return vec![self.debugger.module_image()];
         };
 
         let mut images = Vec::new();
@@ -1140,7 +1140,7 @@ impl Cli {
         }
 
         if images.is_empty() {
-            images.push(std::sync::Arc::clone(self.debugger.module_image()));
+            images.push(self.debugger.module_image());
         }
 
         images
@@ -1162,7 +1162,7 @@ impl Cli {
                 });
                 // A name meant for Python may be a native one misspelled.
                 let native = super::suggest::did_you_mean(name, names);
-                let python = python_name_hint(name, self.debugger.module_image());
+                let python = python_name_hint(name, &self.debugger.module_image());
 
                 match (native, python) {
                     // Two sentences: the first ends in its question mark.
@@ -1289,10 +1289,7 @@ impl Cli {
                     placed.location = microscope::BreakpointLocation::Virtual(runtime);
                 }
 
-                (
-                    Some(std::sync::Arc::clone(self.debugger.module_image())),
-                    address,
-                )
+                (Some(self.debugger.module_image()), address)
             }
             microscope::BreakpointLocation::Virtual(address) => {
                 let Ok(description) = self.debugger.describe_address(address).await else {
@@ -1890,6 +1887,11 @@ impl Cli {
             Ok(DebuggerEvent::ChildReleased {
                 process_id, child, ..
             }) => lines.push(format::child_released(process_id, child, renderer)),
+            Ok(DebuggerEvent::ProgramChanged {
+                process_id,
+                program,
+                ..
+            }) => lines.push(format::program_changed(process_id, &program.path, renderer)),
             Ok(DebuggerEvent::ConditionFailed { owner, error, .. }) => lines.push(format!(
                 "{}: the condition of {} could not be evaluated: {error}",
                 renderer.paint(Role::Warning, "warning"),
