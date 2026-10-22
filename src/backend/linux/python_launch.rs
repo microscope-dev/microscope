@@ -4,11 +4,16 @@
 //! `PYTHONPATH`; the FIFO beside it, which microscope holds open to read
 //! and write and writes each script's path to; and the launched process's
 //! ID, which only that process's bootstrap answers to. The bootstrap puts
-//! the variables and the path back before the program runs.
+//! the variables and the path back before the program runs, unless the
+//! launch follows the processes the program starts: then they stay for
+//! child interpreters, and each one a group debugs gets a FIFO of its own
+//! in the same directory, `wake-PID`, which its bootstrap reads instead, as
+//! a forked interpreter's does once it forks.
 
 use std::ffi::OsString;
 use std::io::{Read as _, Write as _};
 use std::os::fd::OwnedFd;
+use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -25,6 +30,9 @@ const SITECUSTOMIZE: &str = include_str!("../../runtime_model/python/launch.py")
 const WAKE: &str = "MICROSCOPE_PYTHON_WAKE";
 const ORIGINAL_PATH: &str = "MICROSCOPE_PYTHON_PATH";
 
+/// Set when the variables stay for child interpreters.
+const FOLLOW: &str = "MICROSCOPE_PYTHON_FOLLOW";
+
 /// The longest script path one request writes, which one write to a FIFO
 /// keeps whole.
 const MAX_REQUEST: usize = 4096;
@@ -38,6 +46,10 @@ fn problem(error: impl std::fmt::Display) -> Arc<str> {
 pub(super) struct PythonLaunch {
     directory: PathBuf,
     channel: std::fs::File,
+
+    /// For a process the launch's program started, its own FIFO, which is
+    /// all this removes: the directory is the launch's.
+    member: Option<PathBuf>,
 }
 
 impl PythonLaunch {
@@ -48,6 +60,7 @@ impl PythonLaunch {
     pub(super) fn prepare(
         executable: &Path,
         environment: &mut Vec<(OsString, Option<OsString>)>,
+        follows: bool,
     ) -> Result<Option<Self>, Arc<str>> {
         if !launches_bootstrapped_python(executable) {
             return Ok(None);
@@ -79,8 +92,75 @@ impl PythonLaunch {
             WAKE.into(),
             Some(launch.directory.join("wake").into_os_string()),
         ));
+        if follows {
+            environment.push((FOLLOW.into(), Some("1".into())));
+        }
 
         Ok(Some(launch))
+    }
+
+    /// The bootstrap of `pid`, a process a launch's program started that
+    /// runs `executable`, when it is CPython 3.12 or 3.13: a FIFO of its
+    /// own in the directory the variables it inherited name. Made before
+    /// the process runs, so that its bootstrap finds the FIFO.
+    pub(super) fn join(executable: &Path, pid: Pid) -> Result<Option<Self>, Arc<str>> {
+        if !launches_bootstrapped_python(executable) {
+            return Ok(None);
+        }
+
+        let environment = std::fs::read(format!("/proc/{pid}/environ")).map_err(problem)?;
+        let prefix = format!("{WAKE}=");
+        let wake = environment
+            .split(|&byte| byte == 0)
+            .find_map(|entry| entry.strip_prefix(prefix.as_bytes()))
+            .map(|path| PathBuf::from(std::ffi::OsStr::from_bytes(path)))
+            .ok_or(
+                "the interpreter was not started with microscope's launch bootstrap, which \
+                 CPython 3.12 and 3.13 need for the Python agent; launch the program that \
+                 starts it with microscope",
+            )?;
+        let directory = wake
+            .parent()
+            .filter(|directory| directory.parent() == Some(Path::new("/tmp")))
+            .filter(|directory| {
+                directory.file_name().is_some_and(|name| {
+                    name.to_string_lossy()
+                        .starts_with(crate::runtime_model::PYTHON_BOOTSTRAP_PREFIX)
+                })
+            })
+            .ok_or("the interpreter's bootstrap variables do not name microscope's directory")?
+            .to_owned();
+
+        let held = open(
+            &directory,
+            OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(problem)?;
+        let stat = fstat(&held).map_err(problem)?;
+        if stat.st_uid != rustix::process::geteuid().as_raw() || stat.st_mode & 0o777 != 0o700 {
+            return Err("the Python launch directory is not private to the debugger".into());
+        }
+
+        let member = directory.join(format!("wake-{pid}"));
+        nix::unistd::mkfifo(&member, Mode::S_IRUSR | Mode::S_IWUSR).map_err(problem)?;
+        let channel: OwnedFd = match open(
+            &member,
+            OFlag::O_RDWR | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW,
+            Mode::empty(),
+        ) {
+            Ok(channel) => channel,
+            Err(error) => {
+                let _ = std::fs::remove_file(&member);
+                return Err(problem(error));
+            }
+        };
+
+        Ok(Some(Self {
+            directory,
+            channel: channel.into(),
+            member: Some(member),
+        }))
     }
 
     fn create() -> Result<Self, Arc<str>> {
@@ -127,7 +207,11 @@ impl PythonLaunch {
         };
 
         match made() {
-            Ok(channel) => Ok(Self { directory, channel }),
+            Ok(channel) => Ok(Self {
+                directory,
+                channel,
+                member: None,
+            }),
             Err(reason) => {
                 let _ = std::fs::remove_dir_all(&directory);
                 Err(reason)
@@ -187,7 +271,10 @@ impl PythonLaunch {
 impl Drop for PythonLaunch {
     fn drop(&mut self) {
         // A child that inherited the path finds no bootstrap and goes on.
-        let _ = std::fs::remove_dir_all(&self.directory);
+        let _ = match &self.member {
+            Some(member) => std::fs::remove_file(member),
+            None => std::fs::remove_dir_all(&self.directory),
+        };
     }
 }
 

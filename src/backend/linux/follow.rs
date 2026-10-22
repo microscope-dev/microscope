@@ -100,6 +100,11 @@ impl Following {
         });
     }
 
+    /// Whether the group debugs any process its program starts.
+    pub(super) fn follows(&self) -> bool {
+        self.policy.policy.mode != crate::FollowMode::None
+    }
+
     /// Whether a member that executed `program` stays one.
     pub(super) fn debugs(&self, program: &Path) -> bool {
         let inode = std::fs::metadata(program)

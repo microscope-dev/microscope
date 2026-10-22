@@ -152,8 +152,21 @@ pub(super) trait LinuxTraceOps: InspectionOps {
         &self,
         executable: &Path,
         environment: &mut Vec<(std::ffi::OsString, Option<std::ffi::OsString>)>,
+        follows: bool,
     ) -> std::result::Result<Option<super::python_launch::PythonLaunch>, Arc<str>> {
-        let _ = (executable, environment);
+        let _ = (executable, environment, follows);
+        Ok(None)
+    }
+
+    /// The bootstrap through which `pid`, a process the launch's program
+    /// started that runs `executable`, takes the Python agent, when it is
+    /// CPython 3.12 or 3.13.
+    fn python_join(
+        &self,
+        executable: &Path,
+        pid: Pid,
+    ) -> std::result::Result<Option<super::python_launch::PythonLaunch>, Arc<str>> {
+        let _ = (executable, pid);
         Ok(None)
     }
 
@@ -728,8 +741,17 @@ impl LinuxTraceOps for LinuxPtrace {
         &self,
         executable: &Path,
         environment: &mut Vec<(std::ffi::OsString, Option<std::ffi::OsString>)>,
+        follows: bool,
     ) -> std::result::Result<Option<super::python_launch::PythonLaunch>, Arc<str>> {
-        super::python_launch::PythonLaunch::prepare(executable, environment)
+        super::python_launch::PythonLaunch::prepare(executable, environment, follows)
+    }
+
+    fn python_join(
+        &self,
+        executable: &Path,
+        pid: Pid,
+    ) -> std::result::Result<Option<super::python_launch::PythonLaunch>, Arc<str>> {
+        super::python_launch::PythonLaunch::join(executable, pid)
     }
 
     fn spawn(&self, executable: &Path, options: LaunchOptions) -> Result<Pid> {

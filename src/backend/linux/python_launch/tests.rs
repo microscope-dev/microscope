@@ -78,7 +78,7 @@ fn only_cpython_3_12_and_3_13_are_bootstrapped() {
     assert!(!launches_bootstrapped_python(Path::new("/nonexistent")));
 
     let mut environment = vec![("PYTHONPATH".into(), Some("/mine".into()))];
-    let launch = PythonLaunch::prepare(&root.join("3.12").join("python"), &mut environment)
+    let launch = PythonLaunch::prepare(&root.join("3.12").join("python"), &mut environment, false)
         .expect("prepare")
         .expect("a bootstrap for 3.12");
 
@@ -104,4 +104,6 @@ fn only_cpython_3_12_and_3_13_are_bootstrapped() {
         value(WAKE),
         Some(launch.directory.join("wake").into_os_string())
     );
+    // Only a launch that follows its children keeps the variables for them.
+    assert_eq!(value(FOLLOW), None);
 }

@@ -84,10 +84,23 @@ impl<P: LinuxTraceOps> Controller<P> {
                     InferiorOrigin::Attached
                 };
                 self.begin_launch(origin, ExpectedStop::AdoptedExec, pid, true, waiter, reply);
+                self.join_python_bootstrap(pid);
             }
             Err(error) => {
                 let _ = reply.send(Err(error));
             }
+        }
+    }
+
+    /// Gives an adopted process its own channel to the launch's Python
+    /// bootstrap, before it runs, when it is CPython 3.12 or 3.13.
+    fn join_python_bootstrap(&mut self, pid: Pid) {
+        let python = self
+            .ptrace
+            .python_join(&self.main.executable, pid)
+            .transpose();
+        if let Some(inferior) = self.inferior.as_mut() {
+            inferior.python_launch = python;
         }
     }
 
@@ -116,6 +129,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         );
         inferior.barrier = Some(StopBarrier::visible(pid, StopReason::Attach));
         self.inferior = Some(inferior);
+        self.join_python_bootstrap(pid);
         self.attach_reply = Some(reply);
         self.attach_rescans = 0;
 
@@ -128,9 +142,13 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.restore_launched_program();
         let stop_at_entry = options.stop_at_entry;
         // A bootstrap that cannot be made leaves only the agent unavailable.
+        let follows = self
+            .group
+            .as_ref()
+            .is_some_and(|group| group.following.follows());
         let python = self
             .ptrace
-            .python_launch(&self.main.executable, &mut options.environment)
+            .python_launch(&self.main.executable, &mut options.environment, follows)
             .transpose();
         let started = self
             .ptrace

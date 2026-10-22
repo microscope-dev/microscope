@@ -164,10 +164,21 @@ impl<P: LinuxTraceOps> LinuxTraceOps for Recorded<P> {
         &self,
         executable: &Path,
         environment: &mut Vec<(std::ffi::OsString, Option<std::ffi::OsString>)>,
+        follows: bool,
     ) -> std::result::Result<Option<super::python_launch::PythonLaunch>, Arc<str>> {
-        let launch = self.0.python_launch(executable, environment);
+        let launch = self.0.python_launch(executable, environment, follows);
         record!("python launch bootstrap: {launch:?}");
         launch
+    }
+
+    fn python_join(
+        &self,
+        executable: &Path,
+        pid: Pid,
+    ) -> std::result::Result<Option<super::python_launch::PythonLaunch>, Arc<str>> {
+        let joined = self.0.python_join(executable, pid);
+        record!("python bootstrap of {pid}: {joined:?}");
+        joined
     }
 
     fn spawn(&self, executable: &Path, options: LaunchOptions) -> Result<Pid> {

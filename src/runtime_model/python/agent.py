@@ -40,7 +40,7 @@ import gc
 import json
 import _thread
 import _weakref
-from os import register_at_fork as _register_at_fork
+from os import getpid as _getpid, register_at_fork as _register_at_fork
 from os.path import realpath as _realpath
 from types import FunctionType as _FUNCTION, ModuleType as _MODULE
 from types import TracebackType as _TRACEBACK
@@ -53,6 +53,7 @@ probes = ()
 hook = None
 _library = None
 _owner = None
+_configured_in = None  # The process whose debugger installed the probes.
 _control = None
 _sequence = None
 _local = _thread._local()
@@ -888,7 +889,7 @@ def transport(library):
 
 def configure(library, wanted_generation, wanted_probes, replacement=None,
               wanted_step=None, wanted_exceptions=0, wanted_assignment=None):
-    global _library, hook, generation, tool, probes, _owner, _control, _sequence
+    global _library, hook, generation, tool, probes, _owner, _control, _sequence, _configured_in
     global step, stepping, step_generation, raising, assignment
     if type(wanted_generation) is not int or not 0 <= wanted_generation < 2**64:
         raise CommandError("invalid microscope generation")
@@ -932,6 +933,7 @@ def configure(library, wanted_generation, wanted_probes, replacement=None,
     if library != _owner:
         _library, hook, _control, _sequence = replacement
         _owner = library
+    _configured_in = _getpid()
     generation = wanted_generation
     assignment = wanted_assignment
     if not wanted_probes and wanted_step is None and not wanted_exceptions:
@@ -1057,11 +1059,15 @@ def forked_parent():
 
 
 def forked():
-    """Disarms the agent in a forked child, which no debugger traces, so its
-    monitoring would only slow the child and report to no one; a debugger
-    that adopts the child installs it anew."""
+    """Disarms the parent's installation in a forked child: no one hears its
+    reports there, and its monitoring would only slow the child. A debugger
+    that follows the child can configure the agent from an at-fork handler
+    that runs before this one; that installation belongs to the child and
+    stays."""
     lock._at_fork_reinit()
     _local.forking = _local.busy = False
+    if _configured_in == _getpid():
+        return
     try:
         clear()
     except Exception:
