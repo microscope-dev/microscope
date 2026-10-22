@@ -1,5 +1,5 @@
 /* Starts COUNT children and waits for them, as a test runner or a watcher
- * does: `tree COUNT HOW [serial]`. Each child, by HOW:
+ * does: `process-tree COUNT HOW [serial]`. Each child, by HOW:
  *   direct  runs child_work after its fork, and exits 0;
  *   shell   executes /bin/sh -c "exec-target child", which exits 42;
  *   spawn   is started by posix_spawn, a vfork and an exec, as exec-target;

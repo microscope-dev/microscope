@@ -267,7 +267,7 @@ fn named(program: &str) -> FollowPolicy {
 
 #[tokio::test]
 async fn concurrent_children_each_join_and_stop() {
-    let mut group = Group::new("tree", FollowPolicy::default());
+    let mut group = Group::new("process-tree", FollowPolicy::default());
     group.break_at("child_work").await;
     group.launch(&["3", "direct"]).await;
 
@@ -290,7 +290,7 @@ async fn concurrent_children_each_join_and_stop() {
 
 #[tokio::test]
 async fn a_restarted_child_joins_again_with_the_same_breakpoints() {
-    let mut group = Group::new("tree", FollowPolicy::default());
+    let mut group = Group::new("process-tree", FollowPolicy::default());
     group.break_at("child_work").await;
     group.launch(&["3", "direct", "serial"]).await;
 
@@ -305,7 +305,7 @@ async fn a_restarted_child_joins_again_with_the_same_breakpoints() {
 
 #[tokio::test]
 async fn a_child_is_watched_through_a_shell_and_joins_at_the_program_it_executes() {
-    let mut group = Group::new("tree", named("exec-target"));
+    let mut group = Group::new("process-tree", named("exec-target"));
     group.break_pending("target_work").await;
     group.launch(&["2", "shell"]).await;
 
@@ -346,7 +346,7 @@ async fn a_child_is_watched_through_a_shell_and_joins_at_the_program_it_executes
 
 #[tokio::test]
 async fn a_vfork_child_is_watched_until_it_executes_a_program_to_debug() {
-    let mut group = Group::new("tree", named("exec-target"));
+    let mut group = Group::new("process-tree", named("exec-target"));
     group.break_pending("target_work").await;
     group.break_at("children_started").await;
     group.launch(&["2", "spawn"]).await;
@@ -370,7 +370,7 @@ async fn a_vfork_child_is_watched_until_it_executes_a_program_to_debug() {
 
 #[tokio::test]
 async fn shutdown_ends_every_process_the_group_launched() {
-    let mut group = Group::new("tree", FollowPolicy::default());
+    let mut group = Group::new("process-tree", FollowPolicy::default());
     group.break_at("children_started").await;
     group.launch(&["2", "hang"]).await;
 
@@ -752,7 +752,7 @@ async fn a_watched_app_restarted_joins_again_with_its_breakpoints() {
 
 #[tokio::test]
 async fn a_member_detached_alone_runs_on_without_its_traps() {
-    let mut group = Group::new("tree", FollowPolicy::default());
+    let mut group = Group::new("process-tree", FollowPolicy::default());
     group.break_at("child_work").await;
     group.launch(&["2", "direct"]).await;
 

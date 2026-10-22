@@ -142,7 +142,7 @@ fn a_members_stop_pauses_the_program_and_its_continue_resumes_both() {
     dap.follow_children(child_work());
     let started = dap.launch(
         Profile::VsCode,
-        &fixture("tree"),
+        &fixture("process-tree"),
         json!({"args": ["1", "direct"], "follow": "all"}),
         &child_work(),
     );

@@ -943,13 +943,13 @@ mod tests {
     #[test]
     fn a_runtime_is_recognized_by_the_marks_it_leaves_in_its_program() {
         assert_eq!(program_runtime(&fixture("callers-go")), Some("go"));
-        assert_eq!(program_runtime(&fixture("tree")), None);
+        assert_eq!(program_runtime(&fixture("process-tree")), None);
         assert_eq!(program_runtime(Path::new("/nonexistent")), None);
     }
 
     #[test]
     fn the_policy_debugs_the_launched_program_runtimes_and_named_programs() {
-        let launched = fixture("tree");
+        let launched = fixture("process-tree");
         let other = fixture("exec-target");
         let go = fixture("callers-go");
         let policy = |mode, programs: &[&str]| Policy {

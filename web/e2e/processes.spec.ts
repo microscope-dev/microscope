@@ -4,7 +4,7 @@
 
 import { expect, fixture, join, test } from "./server";
 
-test.use({ program: [fixture("tree"), "--", "2", "direct", "serial"] });
+test.use({ program: [fixture("process-tree"), "--", "2", "direct", "serial"] });
 
 test("a child that stops shows in the switcher, and the panes switch processes", async ({
   page,
@@ -22,7 +22,7 @@ test("a child that stops shows in the switcher, and the panes switch processes",
   await page.keyboard.press("F5");
 
   const switcher = page.getByRole("navigation", { name: "Processes" });
-  const child = switcher.getByRole("button", { name: /\[2\] tree/ });
+  const child = switcher.getByRole("button", { name: /\[2\] process-tree/ });
   await expect(child).toHaveAttribute("aria-pressed", "true");
   await expect(child).toContainText("forked by [1]");
   await expect(child).toContainText("stopped here");
@@ -30,8 +30,8 @@ test("a child that stops shows in the switcher, and the panes switch processes",
   await expect(page.getByTestId("stack")).toContainText("child_work");
 
   // The program's own process, waiting for its child.
-  await switcher.getByRole("button", { name: /\[1\] tree/ }).click();
-  await expect(switcher.getByRole("button", { name: /\[1\] tree/ })).toHaveAttribute(
+  await switcher.getByRole("button", { name: /\[1\] process-tree/ }).click();
+  await expect(switcher.getByRole("button", { name: /\[1\] process-tree/ })).toHaveAttribute(
     "aria-pressed",
     "true",
   );
@@ -40,9 +40,11 @@ test("a child that stops shows in the switcher, and the panes switch processes",
 
   // Continuing runs every process, until the next child stops.
   await page.keyboard.press("F5");
-  await expect(switcher.getByRole("button", { name: /\[3\] tree/ })).toHaveAttribute(
+  await expect(switcher.getByRole("button", { name: /\[3\] process-tree/ })).toHaveAttribute(
     "aria-pressed",
     "true",
   );
-  await expect(switcher.getByRole("button", { name: /\[2\] tree/ })).toContainText("exited");
+  await expect(switcher.getByRole("button", { name: /\[2\] process-tree/ })).toContainText(
+    "exited",
+  );
 });

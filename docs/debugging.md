@@ -69,14 +69,14 @@ member stops, the others stop too, unless the `[follow]` setting `stop` is
 
 ```text
 (microscope) break child_work
-breakpoint 1 set at child_work at tests/fixtures/c/tree.c:31
+breakpoint 1 set at child_work at tests/fixtures/c/process-tree.c:31
 (microscope) run
-[2] process 1063951 (tree 1 direct) joined, started by [1]
-in [2] process 1063951 (tree 1 direct)
-stopped at breakpoint 1 (hit 1) in child_work at tests/fixtures/c/tree.c:31
+[2] process 1063951 (process-tree 1 direct) joined, started by [1]
+in [2] process 1063951 (process-tree 1 direct)
+stopped at breakpoint 1 (hit 1) in child_work at tests/fixtures/c/process-tree.c:31
 (microscope [2]) processes
-  [1] process 1063941 (tree 1 direct)  inferior paused
-* [2] process 1063951 (tree 1 direct)  stopped at breakpoint 1 (hit 1)
+  [1] process 1063941 (process-tree 1 direct)  inferior paused
+* [2] process 1063951 (process-tree 1 direct)  stopped at breakpoint 1 (hit 1)
 (microscope [2]) process 1
 selected [1]
 ```

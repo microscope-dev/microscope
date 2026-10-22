@@ -6274,7 +6274,13 @@ fn which(name: &str) -> PathBuf {
 #[test]
 fn fork_children_join_the_session_and_each_stops_where_it_hits() {
     let stdout = batch(
-        &["build/test-programs/tree", "--", "2", "direct", "serial"],
+        &[
+            "build/test-programs/process-tree",
+            "--",
+            "2",
+            "direct",
+            "serial",
+        ],
         &[
             "break child_work",
             "run",
@@ -6290,7 +6296,7 @@ fn fork_children_join_the_session_and_each_stops_where_it_hits() {
         &[
             "breakpoint 1 set at child_work",
             "[2] process ",
-            " (tree 2 direct serial) joined, started by [1]",
+            " (process-tree 2 direct serial) joined, started by [1]",
             "in [2] process ",
             "stopped at breakpoint 1 (hit 1) in child_work",
             "  [1] process ",
@@ -6320,7 +6326,7 @@ fn follow_none_leaves_fork_children_to_run_on_their_own() {
         &[
             "--follow",
             "none",
-            "build/test-programs/tree",
+            "build/test-programs/process-tree",
             "--",
             "2",
             "direct",
@@ -6342,7 +6348,7 @@ fn follow_none_leaves_fork_children_to_run_on_their_own() {
 #[test]
 fn a_detached_member_runs_on_alone() {
     let stdout = batch(
-        &["build/test-programs/tree", "--", "1", "direct"],
+        &["build/test-programs/process-tree", "--", "1", "direct"],
         &[
             "break child_work",
             "run",
@@ -6360,7 +6366,7 @@ fn a_detached_member_runs_on_alone() {
             "* [1] process ",
             "  [2] process ",
             "  detached",
-            // tree exits with the number of children that went wrong.
+            // process-tree exits with the number of children that went wrong.
             "inferior exited with status 0",
         ],
     );

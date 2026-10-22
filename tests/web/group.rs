@@ -7,7 +7,7 @@ use crate::support::Scenario;
 use crate::web::{Client, Web};
 
 fn tree() -> String {
-    Scenario::fixture("tree").display().to_string()
+    Scenario::fixture("process-tree").display().to_string()
 }
 
 /// The member numbered `number` in a state's group.
@@ -59,7 +59,7 @@ async fn fork_children_join_the_page_and_each_stops_where_it_hits() {
     assert!(
         child["command"]
             .as_str()
-            .is_some_and(|command| command.contains("tree 2 direct serial")),
+            .is_some_and(|command| command.contains("process-tree 2 direct serial")),
         "{child}"
     );
     assert_eq!(member(&first, 1)["state"], "stopped", "{first}");
