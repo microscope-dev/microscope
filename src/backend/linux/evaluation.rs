@@ -878,6 +878,36 @@ impl<P: InspectionOps> Scope for Frame<'_, P> {
     }
 }
 
+/// The members by which the elements of a type its language makes a tuple
+/// are reached, in order: a Rust tuple's `__0`, `__1`, …, in a type rustc
+/// names by its elements' types, as `(i32, &str)`, which a tuple struct's
+/// name is not; or a Zig tuple's `0`, `1`, …. `None` for any other type.
+fn tuple_members(info: &TypeInfo) -> Option<Vec<Arc<str>>> {
+    let TypeKind::Record { members, bases, .. } = &info.kind else {
+        return None;
+    };
+
+    let prefix = match info.identity.as_ref()?.language {
+        crate::SourceLanguage::Rust if info.name.starts_with('(') => "__",
+        crate::SourceLanguage::Zig => "",
+        _ => return None,
+    };
+
+    let positional = bases.is_empty()
+        && members.iter().enumerate().all(|(position, member)| {
+            !member.artificial
+                && member.name.as_deref() == Some(format!("{prefix}{position}").as_str())
+        });
+
+    // A record of no members has no names to tell a tuple from a struct.
+    (positional && !members.is_empty()).then(|| {
+        members
+            .iter()
+            .filter_map(|member| member.name.clone())
+            .collect()
+    })
+}
+
 /// A frame's state at one stop, which a bound program runs against.
 pub(super) struct StopMachine<'a, 'b, P: InspectionOps> {
     pub(super) frame: &'b Frame<'a, P>,
@@ -1268,6 +1298,57 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
         };
 
         self.view_element(&bound, at, index).map(Some)
+    }
+
+    fn presented_entry(
+        &mut self,
+        at: &Place,
+        key: &Key,
+    ) -> std::result::Result<Option<Place>, Stop> {
+        let at = at.native()?;
+        let Some(bound) = self.view_of(at)? else {
+            return Err(Stop::Refused(Refusal::new(
+                ErrorKind::Type,
+                "no view presents the value the view presents",
+            )));
+        };
+
+        self.view_entry_place(&bound, at, key)
+    }
+
+    fn tuple_elements(&mut self, at: &Place) -> std::result::Result<Option<Vec<Place>>, Stop> {
+        // An interpreter's tuple is compared by its runtime.
+        let Place::Native(at) = at else {
+            return Ok(None);
+        };
+
+        if let Some(bound) = self.view_of(at)?
+            && let Some(places) = self.view_tuple(&bound, at)?
+        {
+            return Ok(Some(places));
+        }
+
+        let ty = TypeReference {
+            image: self.module(at.module)?.loaded.image,
+            id: at.located.ty,
+        };
+
+        let Some(members) = crate::eval::types::representation(self, ty)
+            .ok()
+            .and_then(|(_, info)| tuple_members(info))
+        else {
+            return Ok(None);
+        };
+
+        let from = Place::Native(at.clone());
+        let mut places = Vec::with_capacity(members.len());
+        for member in &members {
+            let planned = plan_in(self.frame.controller, ty, StepKind::Member(member))
+                .map_err(Stop::Refused)?;
+            places.push(self.step(&from, &planned.step, &[])?);
+        }
+
+        Ok(Some(places))
     }
 
     fn text_span(&mut self, at: &Place) -> std::result::Result<Option<TextSpan>, Stop> {

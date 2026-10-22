@@ -222,8 +222,13 @@ pub enum BoundShape<St> {
         otherwise: Box<Self>,
     },
 
-    /// A record whose members are its children, before the view's fields.
-    Record(Vec<BoundField<St>>),
+    /// A record whose members are its children, before the view's fields;
+    /// a `tuple` when its members are a tuple's elements, in order: named
+    /// by their positions, or by a `tuple` shape.
+    Record {
+        members: Vec<BoundField<St>>,
+        tuple: bool,
+    },
 
     /// An interpreter's object as the debugger presents it without a view,
     /// lending its children, as a view of one that does not `show` presents
@@ -376,7 +381,7 @@ impl<St> BoundView<St> {
             out: &mut Vec<(Arc<str>, &'b ViewProgram<St>)>,
         ) {
             match shape {
-                BoundShape::Record(members) => out.extend(
+                BoundShape::Record { members, .. } => out.extend(
                     members
                         .iter()
                         .map(|member| (Arc::clone(&member.name), &member.program)),
@@ -755,7 +760,10 @@ pub fn bind<S: Scope>(
     // bases as members named by their types.
     let shape = match shape {
         Some(shape) => shape,
-        None if view.extend => BoundShape::Record(Vec::new()),
+        None if view.extend => BoundShape::Record {
+            members: Vec::new(),
+            tuple: false,
+        },
         None => members(&mut scope, view.line)?,
     };
 
@@ -1004,7 +1012,10 @@ fn members<S: Scope>(
         });
     }
 
-    Ok(BoundShape::Record(fields))
+    Ok(BoundShape::Record {
+        members: fields,
+        tuple: false,
+    })
 }
 
 /// An expression the binder writes for a view.
@@ -1393,8 +1404,14 @@ fn bind_shape<S: Scope>(
             then: Box::new(bind_shape(then, scope)?),
             otherwise: Box::new(bind_shape(otherwise, scope)?),
         },
-        Shape::Record(members) => BoundShape::Record(
-            members
+        Shape::Record { members, tuple } => BoundShape::Record {
+            tuple: *tuple
+                || (!members.is_empty()
+                    && members
+                        .iter()
+                        .enumerate()
+                        .all(|(position, (name, _))| *name == position.to_string())),
+            members: members
                 .iter()
                 .map(|(name, value)| {
                     Ok(BoundField {
@@ -1403,7 +1420,7 @@ fn bind_shape<S: Scope>(
                     })
                 })
                 .collect::<Result<_, Rejection>>()?,
-        ),
+        },
         Shape::Dynamic { pointer, ty } => BoundShape::Dynamic {
             pointer: bind_category(pointer, scope, is_pointer, "is not a pointer")?,
             ty: bind_dynamic_type(ty, pointer.line, scope)?,

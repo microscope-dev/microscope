@@ -1869,6 +1869,13 @@ build_cpp_fixture_directory g++ "$cpp_fixtures_dir/expressions" \
     "$output_dir/expressions-cpp-gcc-o0" -O0 -g3 -gdwarf-5 -fPIE -pie
 build_cpp_fixture_directory clang++ "$cpp_fixtures_dir/expressions" \
     "$output_dir/expressions-cpp-clang-o2" -O2 -g3 -gdwarf-5 -fPIE -pie
+# Pair and tuple keys, whose layouts libc++ and libstdc++ each choose.
+build_cpp_fixture_directory g++ "$cpp_fixtures_dir/keys" \
+    "$output_dir/keys-cpp-gcc-o0" -O0 -g3 -gdwarf-5 -fPIE -pie
+build_cpp_fixture_directory clang++ "$cpp_fixtures_dir/keys" \
+    "$output_dir/keys-cpp-clang-o2" -O2 -g3 -gdwarf-5 -fPIE -pie
+build_cpp_fixture_directory clang++-libc++ "$cpp_fixtures_dir/keys" \
+    "$output_dir/keys-cpp-libcxx-o0" -O0 -g3 -gdwarf-5 -fPIE -pie
 build_cpp_fixture g++ "$cpp_fixtures_dir/records.cpp" "$output_dir/records-cpp-gcc-o0" \
     -O0 -g3 -gdwarf-5 -fno-omit-frame-pointer -fPIE -pie
 build_cpp_fixture clang++ "$cpp_fixtures_dir/records.cpp" "$output_dir/records-cpp-clang-o0" \
@@ -2027,6 +2034,10 @@ done
 # Line tables only: no variables or types, so nothing to present.
 build_program rustc "$rust_fixtures_dir/containers.rs" "$output_dir/containers-rust-limited" \
     --edition=2024 -D warnings -C debuginfo=limited -C codegen-units=1 -C opt-level=0
+for level in 0 2; do
+    build_program rustc "$rust_fixtures_dir/keys.rs" "$output_dir/keys-rust-o${level}" \
+        --edition=2024 -D warnings -C debuginfo=2 -C codegen-units=1 -C opt-level="$level"
+done
 build_go_fixture "$go_fixtures_dir/expressions" "$output_dir/expressions-go-o0" \
     -buildmode=pie "-gcflags=all=-N -l"
 build_go_fixture "$go_fixtures_dir/expressions" "$output_dir/expressions-go-o2" \
@@ -2086,6 +2097,10 @@ build_zig_fixture "$zig_fixtures_dir/containers.zig" "$output_dir/containers-zig
     -O ReleaseSafe -fPIE -fomit-frame-pointer
 build_zig_self_hosted_fixture "$zig_fixtures_dir/containers.zig" "$output_dir/containers-zig-self-hosted" \
     -O Debug
+build_zig_fixture "$zig_fixtures_dir/keys.zig" "$output_dir/keys-zig-o0" \
+    -O Debug -fPIE -fno-omit-frame-pointer
+build_zig_fixture "$zig_fixtures_dir/keys.zig" "$output_dir/keys-zig-o2" \
+    -O ReleaseSafe -fPIE -fomit-frame-pointer
 build_zig_fixture "$zig_fixtures_dir/expressions.zig" "$output_dir/expressions-zig-o0" \
     -O Debug -fPIE -fno-omit-frame-pointer
 build_zig_fixture "$zig_fixtures_dir/expressions.zig" "$output_dir/expressions-zig-o2" \

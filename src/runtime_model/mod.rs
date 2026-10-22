@@ -1683,6 +1683,13 @@ pub enum InterpretedKey {
 
     /// The value for nothing, such as Python's `None`.
     Nothing,
+
+    /// Several keys in order: a tuple.
+    Tuple(Vec<Self>),
+
+    /// The program's own object at this address, which a lookup compares
+    /// by its identity before its value, as Python's does.
+    Object(VirtualAddress),
 }
 
 /// An interpreter's object, as an operation computes with it.

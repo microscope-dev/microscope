@@ -292,6 +292,18 @@ impl<M: Machine> Machine for ViewMachine<'_, M> {
         self.base.presented_element(at, index)
     }
 
+    fn presented_entry(
+        &mut self,
+        at: &Self::Place,
+        key: &Key,
+    ) -> Result<Option<Self::Place>, Stop> {
+        self.base.presented_entry(at, key)
+    }
+
+    fn tuple_elements(&mut self, at: &Self::Place) -> Result<Option<Vec<Self::Place>>, Stop> {
+        self.base.tuple_elements(at)
+    }
+
     fn text_span(&mut self, at: &Self::Place) -> Result<Option<TextSpan>, Stop> {
         self.base.text_span(at)
     }
@@ -482,7 +494,7 @@ fn named<'b, St>(bound: &'b BoundView<St>, shape: &'b BoundShape<St>) -> Vec<Nam
     };
 
     let members = match shape {
-        BoundShape::Record(members) => members.as_slice(),
+        BoundShape::Record { members, .. } => members.as_slice(),
         _ => &[],
     };
 
@@ -884,7 +896,7 @@ pub fn present<M: Machine>(
         BoundShape::Sequence { scan, .. } | BoundShape::Map { scan, .. } => {
             preview(shape, scan, &mut machine, checkpoints)?
         }
-        BoundShape::Record(members) => {
+        BoundShape::Record { members, .. } => {
             // The summary shows the record's members the view does not
             // hide, as their formats write them.
             let shown = named(bound, shape)
@@ -1428,7 +1440,7 @@ pub fn length<M: Machine>(
                 .presented_length(&place)?
                 .ok_or_else(|| refused(NO_LENGTH))
         }
-        BoundShape::Record(_) => Err(refused("a record has no length")),
+        BoundShape::Record { .. } => Err(refused("a record has no length")),
         BoundShape::Stored => Err(refused(NO_LENGTH)),
         BoundShape::If { .. } | BoundShape::Unmatched { .. } => {
             Err(internal("`if` and `match` are resolved"))
@@ -1520,6 +1532,39 @@ pub fn element_place<M: Machine>(
             "the view computes its elements, which have no place",
         )),
     }
+}
+
+/// The places of the elements of `this`, when its view presents it as a
+/// tuple, for a key of several values; `None` when it presents no tuple.
+pub fn tuple_places<M: Machine>(
+    bound: &BoundView<M::Step>,
+    machine: &mut M,
+    this: M::Place,
+) -> Result<Option<Vec<M::Place>>, Failure> {
+    let mut machine = ViewMachine::new(machine, bound, this);
+    let BoundShape::Record {
+        members,
+        tuple: true,
+    } = resolve(bound, &mut machine)?
+    else {
+        return Ok(None);
+    };
+
+    let mut places = Vec::with_capacity(members.len());
+    for member in members {
+        machine.set_variables(&[]);
+        match interp::value(&member.program, &mut machine)? {
+            Value::Place(place) => places.push(place),
+            _ => {
+                return Err(refused(format!(
+                    "the view computes the tuple's element `{}`, which has no place",
+                    member.name
+                )));
+            }
+        }
+    }
+
+    Ok(Some(places))
 }
 
 /// The text a `text` shape presents, at most [`TextSummary::MAX_BYTES`].
@@ -1767,6 +1812,16 @@ pub fn entry_place<M: Machine>(
 ) -> Result<Option<M::Place>, Failure> {
     let mut machine = ViewMachine::new(machine, bound, this);
     let shape = resolve(bound, &mut machine)?;
+
+    // A value presented as another has that one's entries.
+    if let BoundShape::Value(program) = shape {
+        let Value::Place(place) = interp::value(program, &mut machine)? else {
+            return Err(refused("the view computes the value it presents"));
+        };
+
+        return Ok(machine.presented_entry(&place, key)?);
+    }
+
     let BoundShape::Map {
         scan,
         key: key_program,
@@ -1788,8 +1843,14 @@ pub fn entry_place<M: Machine>(
     let mut unreadable = None;
 
     while walk.next(&mut machine, checkpoints)?.is_some() {
-        let candidate = element(key_program, &mut machine)?;
-        match key.matches(&candidate) {
+        let matched = if let Key::Tuple(items) = key {
+            tuple_key_matches(items, key_program, &mut machine)
+        } else {
+            let candidate = element(key_program, &mut machine)?;
+            key.matches(&candidate)
+        };
+
+        match matched {
             Ok(true) => {
                 return match interp::value(value, &mut machine)? {
                     Value::Place(place) => Ok(Some(place)),
@@ -1805,6 +1866,36 @@ pub fn entry_place<M: Machine>(
     }
 
     unreadable.map_or_else(|| Ok(None), |stop| Err(stop.into()))
+}
+
+/// Whether the key a map's view gives for its current entry, by the
+/// program `key_program`, is the tuple `key`, element by element. A key
+/// the view cannot compute leaves the entry unreadable, as an element's
+/// problem does.
+fn tuple_key_matches<M: Machine>(
+    key: &[Key],
+    key_program: &ViewProgram<M::Step>,
+    machine: &mut ViewMachine<'_, M>,
+) -> Result<bool, Stop> {
+    let place = match interp::value(key_program, machine) {
+        Ok(Value::Place(place)) => place,
+        Ok(_) => {
+            return Err(unsupported(
+                "the view computes its keys, whose elements have no places",
+            ));
+        }
+        Err(Stop::Refused(refusal)) => {
+            return Err(Stop::missing(VariableState::Malformed(
+                crate::VariableMalformedReason {
+                    kind: crate::VariableMalformedKind::InvalidExpression,
+                    description: refusal.message.into(),
+                },
+            )));
+        }
+        Err(stop) => return Err(stop),
+    };
+
+    crate::eval::target::tuple_matches(key, &place, machine, &mut |machine, at| machine.present(at))
 }
 
 /// Reads text at `address`, `length` bytes or up to a NUL, a page at a

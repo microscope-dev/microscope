@@ -1637,20 +1637,19 @@ impl Machine for World {
         let (keys, values, count) = (word(0), word(8), word(16));
         let (key_size, value_size) = (self.size(*key_type) as u64, self.size(*value) as u64);
         for index in 0..count {
-            // A key is presented with its text, as the debugger presents
-            // a string.
             let place = Place::Memory {
                 address: keys + index * key_size,
                 ty: *key_type,
             };
 
-            let mut candidate = self.present(&place)?;
-            let read = self.text(&place)?;
-            if let VariableState::Available { text, .. } = &mut candidate.state {
-                *text = read.map(Arc::new);
-            }
+            let matched = match key {
+                Key::Tuple(items) => {
+                    super::target::tuple_matches(items, &place, self, &mut Self::presented_key)?
+                }
+                key => key.matches(&self.presented_key(&place)?)?,
+            };
 
-            if key.matches(&candidate)? {
+            if matched {
                 return Ok(Some(Place::Memory {
                     address: values + index * value_size,
                     ty: *value,
@@ -1659,6 +1658,39 @@ impl Machine for World {
         }
 
         Ok(None)
+    }
+
+    fn tuple_elements(&mut self, at: &Place) -> Result<Option<Vec<Place>>, Stop> {
+        let Place::Memory { address, ty } = at else {
+            return Ok(None);
+        };
+
+        // The world's tuples are named as rustc names Rust's, by their
+        // elements' types.
+        let info = self.representation(*ty);
+        let TypeKind::Record { members, .. } = &info.kind else {
+            return Ok(None);
+        };
+
+        if !info.name.starts_with('(') {
+            return Ok(None);
+        }
+
+        Ok(Some(
+            members
+                .iter()
+                .map(|member| {
+                    let RecordMemberLayout::ByteOffset(offset) = member.layout else {
+                        panic!("the world's members are at byte offsets");
+                    };
+
+                    Place::Memory {
+                        address: address + offset,
+                        ty: member.type_ref,
+                    }
+                })
+                .collect(),
+        ))
     }
 
     fn function_generics(&mut self, address: u64) -> Result<Vec<(Arc<str>, TypeReference)>, Stop> {
@@ -1921,10 +1953,63 @@ impl World {
             })
     }
 
+    /// A map's key as the debugger presents it to compare, with its text.
+    fn presented_key(&mut self, place: &Place) -> Result<InspectedValue, Stop> {
+        let mut candidate = self.present(place)?;
+        let read = self.text(place)?;
+        if let VariableState::Available { text, .. } = &mut candidate.state {
+            *text = read.map(Arc::new);
+        }
+
+        Ok(candidate)
+    }
+
+    /// The index of the value of a dynamic type at an address.
+    fn dynamic_at_address(&self, address: u64) -> usize {
+        (0..self.dynamic.len())
+            .find(|index| dynamic_address(*index) == address)
+            .expect("an object of the world's")
+    }
+
+    /// A value of a dynamic type as the key an expression would write for
+    /// it, its tuples' items being the world's objects; one of another
+    /// type is refused, as Python's runtime refuses it.
+    fn as_key(&self, index: usize) -> Result<Key, Stop> {
+        Ok(match &self.dynamic[index] {
+            Dynamic::Nothing => Key::Nothing,
+            Dynamic::Bool(value) => Key::Bool(*value),
+            Dynamic::Int(value) => Key::Integer(Exact::from(*value)),
+            Dynamic::Float(value) => Key::Float(Float::from_f64(*value)),
+            Dynamic::Str(text) => Key::Text(text.as_bytes().to_vec()),
+            Dynamic::Tuple(items) => Key::Tuple(
+                items
+                    .iter()
+                    .map(|item| Key::Object(dynamic_address(*item)))
+                    .collect(),
+            ),
+            other => {
+                return Err(Stop::Refused(Refusal::new(
+                    ErrorKind::Unsupported,
+                    format!("a `{}` is no key the world compares", other.type_name()),
+                )));
+            }
+        })
+    }
+
     /// The item of a sequence at an index, from its end when negative, or
     /// of a dict for a key, as Python's indexing finds it.
     fn item(&self, index: usize, key: &Key) -> Result<Place, Stop> {
         let value = &self.dynamic[index];
+        let held = match key {
+            Key::Object(address) => Some(self.dynamic_at_address(*address)),
+            _ => None,
+        };
+
+        let key = &match key {
+            Key::Object(address) => self.as_key(self.dynamic_at_address(*address))?,
+            key => key.clone(),
+        };
+
         match value {
             Dynamic::List(items) | Dynamic::Tuple(items) => {
                 let position = match key {
@@ -1962,7 +2047,7 @@ impl World {
             }
             Dynamic::Dict(entries) => entries
                 .iter()
-                .find(|(entry, _)| self.equals(*entry, key))
+                .find(|(entry, _)| self.equals(*entry, key, held))
                 .map(|(_, value)| Place::Dynamic(*value))
                 .ok_or_else(|| {
                     Stop::Refused(Refusal::new(
@@ -1981,9 +2066,29 @@ impl World {
         }
     }
 
-    /// Whether a dict's key equals the key written, as Python's `==` says.
-    fn equals(&self, entry: usize, key: &Key) -> bool {
+    /// Whether a dict's key equals the key written, as Python's `==` says:
+    /// the very object the key was `held` as, or its value, a tuple's item
+    /// by item.
+    fn equals(&self, entry: usize, key: &Key, held: Option<usize>) -> bool {
+        if held == Some(entry) {
+            return true;
+        }
+
         let number = match &self.dynamic[entry] {
+            Dynamic::Tuple(items) => {
+                return matches!(key, Key::Tuple(wanted)
+                if wanted.len() == items.len()
+                    && items.iter().zip(wanted).all(|(item, wanted)| {
+                        match wanted {
+                            Key::Object(address) => {
+                                let object = self.dynamic_at_address(*address);
+                                self.as_key(object)
+                                    .is_ok_and(|key| self.equals(*item, &key, Some(object)))
+                            }
+                            wanted => self.equals(*item, wanted, None),
+                        }
+                    }));
+            }
             Dynamic::Bool(value) => Some(f64::from(u8::from(*value))),
             #[expect(clippy::cast_precision_loss, reason = "the world's ints are small")]
             Dynamic::Int(value) => Some(*value as f64),
@@ -2177,6 +2282,32 @@ pub fn python() -> World {
         "labels",
         Dynamic::Dict(vec![(one, one_text), (none, none_text)]),
     );
+
+    // A dict keyed by tuples, and a tuple equal to one of its keys that is
+    // another object.
+    let tuple = |world: &mut World, items: &[Dynamic]| {
+        let items = items
+            .iter()
+            .map(|item| world.dynamic(item.clone()))
+            .collect();
+        world.dynamic(Dynamic::Tuple(items))
+    };
+    let one_two = tuple(&mut world, &[Dynamic::Int(1), Dynamic::Int(2)]);
+    let two_three = tuple(&mut world, &[Dynamic::Int(2), Dynamic::Int(3)]);
+    let one = world.dynamic(Dynamic::Int(1));
+    let nested = world.dynamic(Dynamic::Tuple(vec![one, two_three]));
+    let ann_three = tuple(&mut world, &[Dynamic::Str("ann"), Dynamic::Int(3)]);
+    let empty_tuple = tuple(&mut world, &[]);
+    let single = tuple(&mut world, &[Dynamic::Int(1)]);
+    let entries = [one_two, nested, ann_three, empty_tuple, single]
+        .into_iter()
+        .zip(["a", "b", "c", "d", "e"])
+        .map(|(key, value)| (key, world.dynamic(Dynamic::Str(value))))
+        .collect();
+    variable(&mut world, "grid", Dynamic::Dict(entries));
+    let cell = tuple(&mut world, &[Dynamic::Int(1), Dynamic::Int(2)]);
+    world.dynamic_variable("cell", cell);
+
     let x = world.dynamic(Dynamic::Int(3));
     let y = world.dynamic(Dynamic::Int(4));
     variable(
@@ -2392,6 +2523,32 @@ fn containers(world: &mut World, int: TypeReference, char_pointer: TypeReference
         .collect();
     let bytes = world.map_bytes(&keys, &values, 2);
     world.variable("ages", ages, &bytes);
+
+    // A map keyed by tuples, as Rust's are, a tuple variable equal to one
+    // of its keys, and a map keyed by a struct.
+    let pair = world.record("(int, int)", 8, &[("__0", int, 0), ("__1", int, 4)]);
+    let grid = world.map_type("Grid", pair, int);
+    let keys: Vec<u8> = [1_i32, 2, 2, 3]
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
+    let values: Vec<u8> = [12_i32, 23]
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
+    let bytes = world.map_bytes(&keys, &values, 2);
+    world.variable("grid", grid, &bytes);
+    let cell: Vec<u8> = [2_i32, 3]
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
+    world.variable("cell", pair, &cell);
+    let point = world.record("Point", 8, &[("x", int, 0), ("y", int, 4)]);
+    let spots = world.map_type("Spots", point, int);
+    let values = 7_i32.to_le_bytes();
+    let bytes = world.map_bytes(&keys[..8], &values, 1);
+    world.variable("spots", spots, &bytes);
+
     let shared = world.shared_type("Shared", int);
     let value = world.allocate(&22_i32.to_le_bytes());
     let mut bytes = 2_u64.to_le_bytes().to_vec();

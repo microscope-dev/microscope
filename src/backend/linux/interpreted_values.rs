@@ -317,6 +317,13 @@ pub(super) fn interpreted_key(key: &Key) -> Result<InterpretedKey, Stop> {
         Key::Bool(value) => InterpretedKey::Bool(*value),
         Key::Text(bytes) => InterpretedKey::Text(bytes.clone()),
         Key::Nothing => InterpretedKey::Nothing,
+        Key::Tuple(items) => InterpretedKey::Tuple(
+            items
+                .iter()
+                .map(interpreted_key)
+                .collect::<Result<_, _>>()?,
+        ),
+        Key::Object(address) => InterpretedKey::Object(crate::VirtualAddress::new(*address)),
         Key::Address(_) => {
             return Err(refused(
                 "an interpreter's object is indexed by numbers, truth values, text, and the \

@@ -144,6 +144,12 @@ spelling of `null`, which prints as `null`. `nullptr` and `NULL` are refused
 with a hint to write `null`: C's `NULL` is a macro, and the two spellings
 are enough for a condition to read the same in every language.
 
+A tuple is written `(a, b)`, `(a,)` for one value, or `()` for none, as
+Python and Rust write one; `(a)` only groups. In brackets, `m[a, b]` is
+`m[(a, b)]`, as Python reads it. A tuple is only a map's key (see Maps):
+it is no value of its own, so it is not printed, compared, or computed
+with, and a view's expressions write none.
+
 ```microscope-example
 0x2a + 0b1010_1010 + 0o17 => reads as `42 + 170 + 15`
 0xffu8                    => reads as `255u8`
@@ -159,6 +165,11 @@ are enough for a condition to read the same in every language.
 'ab'                      => error syntax at `'a`
 nil                       => reads as `null`
 nullptr                   => error syntax at `nullptr`
+( 1 ,2 )                  => reads as `(1, 2)`
+(a,)                      => reads as `(a,)`
+()                        => reads as `()`
+m[1, (2, "b")]            => reads as `m[(1, (2, "b"))]`
+m[1, 2:3]                 => error syntax at `:`
 ```
 
 ```microscope-example
@@ -461,9 +472,15 @@ a type error, and a key the map does not hold is a missing-key error, never
 a zero value. The entries are searched in the view's order, as far as the
 inspection's budget allows. A map is never indexed by position.
 
-A key made of several values, such as a Rust tuple, a C++ `std::pair`, or a
-Go struct, is not supported yet: no expression writes one, and a variable
-that holds one is refused as a key.
+A tuple key finds an entry whose key is a tuple of as many elements, each
+equal to the tuple's item at its position: `grid[(1, 2)]`, `grid[1, 2]`,
+or `grid[cell]`, where `cell` is a tuple the program holds. Its elements
+may be tuples themselves, nested at most 8 deep, with at most 64 keys in
+one tuple. A tuple is a Rust or Zig tuple, a C++ `std::pair` or
+`std::tuple`, or a value another view presents as one ([Views](views.md)).
+A map whose keys are tuples of another length, or are not tuples, is a type
+error: a struct's members are not matched by position, so a Go, C, C++, or
+Rust struct key, a Rust tuple struct among them, is not found by a tuple.
 
 ```microscope-example
 world: memory
@@ -478,6 +495,20 @@ ages[name[:3]]         => error missing-key at `ages[name[:3]]`
 ages["ann"] + squares[1] => 31 : integer
 ages[s]                => error type at `s`
 ages[arr]              => error type at `arr`
+grid[(1, 2)]           => 12 : int
+grid[2, 3]             => 23 : int
+grid[cell]             => 23 : int
+grid[(1, 2.0)]         => 12 : int
+grid[(3, 1)]           => error missing-key at `grid[(3, 1)]`
+grid[1]                => error type at `grid[1]`
+grid[(1, 2, 3)]        => error type at `grid[(1, 2, 3)]`
+grid[(1, "2")]         => error type at `grid[(1, "2")]`
+squares[1, 2]          => error type at `squares[1, 2]`
+spots[(1, 2)]          => error type at `spots[(1, 2)]`
+arr[1, 2]              => error type at `1, 2`
+m[(1, 2)]              => error type at `(1, 2)`
+(1, 2)                 => error type at `(1, 2)`
+(1, 2) == cell         => error type at `(1, 2)`
 ```
 
 ## Casts
@@ -691,12 +722,16 @@ type does not allow is refused when it runs.
 `x[i]` indexes a list or tuple, from its end when `i` is negative, and
 `d[key]` finds a dict's key as Python's `==` would: numbers compare exactly,
 so `d[1]`, `d[1.0]`, and `d[true]` find one key, text equals only text, and
-`d[None]` finds a `None` key. A key of a type whose own `__eq__` decides
-what it equals, such as an instance of a class, is refused where the lookup
-would have to compare with it. A `tuple`, `bytes`, or `frozenset` key is
-not supported yet: no expression writes one, and a variable that holds one
-is refused as a key. An index past the end is a bounds error, and a key the
-dict does not hold is a missing-key error. `len(x)` is the length of a `str` in characters, of
+`d[None]` finds a `None` key. A tuple key, written `d[(1, "a")]` or
+`d[1, "a"]`, or a `tuple` the program holds, finds a tuple key item by
+item, as Python compares tuples. A key taken from the program is that very
+object, which the dict finds as Python does, by identity before value: a
+NaN finds itself, though it equals nothing. A key of a type whose own
+`__eq__` decides what it equals, such as an instance of a class, is refused
+where the lookup would have to compare with it, as is a key the program
+holds of such a type. A `bytes` or `frozenset` key is not supported yet. An
+index past the end is a bounds error, and a key the dict does not hold is a
+missing-key error. `len(x)` is the length of a `str` in characters, of
 `bytes` in bytes, and of a list, tuple, dict, set, or frozenset in items. A
 value is true as Python says: `None`, zero, and empty text and collections
 are false.
@@ -779,6 +814,19 @@ squares[count - 4]     => 9 : int
 labels[None]           => 'none' : str
 labels[1]              => 'one' : str
 labels["one"]          => error missing-key at `labels["one"]`
+grid[(1, 2)]           => 'a' : str
+grid[1, 2]             => 'a' : str
+grid[cell]             => 'a' : str
+grid[1.0, True + 1]    => 'a' : str
+grid[(1, (2, 3))]      => 'b' : str
+grid["ann", count - 4] => 'c' : str
+grid[()]               => 'd' : str
+grid[1,]               => 'e' : str
+grid[(2, 1)]           => error missing-key at `grid[(2, 1)]`
+grid[(1, 2, 3)]        => error missing-key at `grid[(1, 2, 3)]`
+grid[1]                => error missing-key at `grid[1]`
+numbers[1, 2]          => error type at `numbers[1, 2]`
+numbers[count - 6]     => 20 : int
 ages[name] < 40        => true : bool
 name[0]                => error unsupported at `name[0]`
 count[0]               => error type at `count[0]`

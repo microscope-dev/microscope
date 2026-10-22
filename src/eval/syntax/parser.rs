@@ -686,13 +686,48 @@ impl<'tokens> Parser<'tokens> {
     }
 
     /// `( expression )`; the expression's span takes in the parentheses, so
-    /// whatever contains it points at balanced text.
+    /// whatever contains it points at balanced text. A comma after the
+    /// expression makes a tuple, as `(a, b)` and `(a,)` are, and `()` is
+    /// the empty one.
     fn grouped(&mut self) -> Result<NodeId, ExpressionError> {
         let open = self.expect(Punct::OpenParen, "")?;
+        if self.peek_punct() == Some(Punct::CloseParen) {
+            let close = self.advance();
+            return self.tuple(Vec::new(), open.to(close));
+        }
+
         let inner = self.expression(ASSIGN)?;
+        if self.peek_punct() == Some(Punct::Comma) {
+            let items = self.items(inner, Punct::CloseParen)?;
+            let close = self.expect(Punct::CloseParen, "to close the tuple")?;
+            return self.tuple(items, open.to(close));
+        }
+
         let close = self.expect(Punct::CloseParen, "to close `(`")?;
         self.nodes[inner.0 as usize].span = open.to(close);
         Ok(inner)
+    }
+
+    /// The items of a tuple, from the comma after its first: each comma
+    /// is followed by another item, or ends the tuple before `close`.
+    fn items(&mut self, first: NodeId, close: Punct) -> Result<Vec<NodeId>, ExpressionError> {
+        let mut items = vec![first];
+        while self.eat(Punct::Comma) && self.peek_punct() != Some(close) {
+            items.push(self.expression(ASSIGN)?);
+        }
+
+        Ok(items)
+    }
+
+    fn tuple(&mut self, items: Vec<NodeId>, span: Span) -> Result<NodeId, ExpressionError> {
+        if self.dialect == Dialect::View {
+            return Err(ExpressionError::syntax(
+                span,
+                "views write no tuples: a tuple is only the key of a map an expression indexes",
+            ));
+        }
+
+        self.push(NodeKind::Tuple(items), span)
     }
 
     fn primary(&mut self) -> Result<NodeId, ExpressionError> {
@@ -881,6 +916,18 @@ impl<'tokens> Parser<'tokens> {
                     }
 
                     let index = self.expression(ASSIGN)?;
+
+                    // `x[a, b]` indexes by the tuple `(a, b)`.
+                    if self.peek_punct() == Some(Punct::Comma) {
+                        let items = self.items(index, Punct::CloseBracket)?;
+                        let span = self.span(index).to(self.previous_span());
+                        let index = self.tuple(items, span)?;
+                        let close = self.expect(Punct::CloseBracket, "to close `[`")?;
+                        let span = self.span(base).to(close);
+                        base = self.push(NodeKind::Index { base, index }, span)?;
+                        continue;
+                    }
+
                     if self.peek_punct() == Some(Punct::Colon) {
                         base = self.slice(base, Some(index))?;
                     } else if self.eat(Punct::DotDot) {

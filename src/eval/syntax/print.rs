@@ -263,6 +263,23 @@ impl Printer<'_> {
                 self.child(*operand, ASSIGN);
                 self.out.push(')');
             }
+            NodeKind::Tuple(items) => {
+                self.out.push('(');
+                for (position, item) in items.iter().enumerate() {
+                    if position > 0 {
+                        self.out.push_str(", ");
+                    }
+
+                    self.child(*item, ASSIGN);
+                }
+
+                // `(a,)` is a tuple where `(a)` only groups.
+                if items.len() == 1 {
+                    self.out.push(',');
+                }
+
+                self.out.push(')');
+            }
             leaf => self.leaf(leaf),
         }
     }

@@ -64,6 +64,7 @@ type fixture struct {
 	node    node
 	ages    map[string]int
 	squares map[int]int
+	spots   map[inner]int
 	queue   chan int
 }
 
@@ -98,6 +99,7 @@ func main() {
 		},
 		ages:    map[string]int{"ann": 30, "bob": 41},
 		squares: map[int]int{},
+		spots:   map[inner]int{{1, 2}: 7},
 		queue:   make(chan int, 4),
 	}
 	// Enough entries for several groups; a key is found by searching
@@ -170,6 +172,8 @@ func main() {
 	expect("f.squares[40] + f.squares[1]", "int", f.squares[40]+f.squares[1])
 	expect("f.squares[2.0]", "int", f.squares[int(2.0)])
 	expect(`f.squares["3"]`, "error", "type")
+	// A struct is no tuple, so a tuple key never finds a struct's entry.
+	expect("f.spots[1, 2]", "error", "type")
 	if _, held := f.squares[0]; !held {
 		expect("f.squares[0]", "error", "missing-key")
 	}

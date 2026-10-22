@@ -419,6 +419,10 @@ pub enum NodeKind {
         function: Builtin,
         operand: NodeId,
     },
+
+    /// `(a, b)`, `(a,)`, or `()`, or `a, b` in brackets: a map's key of
+    /// several values.
+    Tuple(Vec<NodeId>),
 }
 
 impl NodeKind {
@@ -458,6 +462,7 @@ impl NodeKind {
             Self::Slice { base, start, end } => {
                 std::iter::once(*base).chain(*start).chain(*end).collect()
             }
+            Self::Tuple(items) => items.clone(),
         }
     }
 
@@ -493,6 +498,7 @@ impl NodeKind {
                     ..
                 },
             ) => start.is_some() == other_start.is_some() && end.is_some() == other_end.is_some(),
+            (Self::Tuple(items), Self::Tuple(other)) => items.len() == other.len(),
             (Self::Unary { op, .. }, Self::Unary { op: other, .. }) => op == other,
             (
                 Self::Call { function, .. },

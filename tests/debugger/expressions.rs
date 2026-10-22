@@ -225,3 +225,20 @@ async fn cpp_rust_go_and_zig_expressions_agree_with_their_programs() {
         check_fixture(fixture, barrier, optimized).await;
     }
 }
+
+/// Maps keyed by tuples, pairs among them, are indexed by tuple keys as
+/// each program's own lookup indexes them, in each standard library.
+#[tokio::test]
+async fn tuple_keys_find_what_each_programs_maps_find() {
+    for (fixture, optimized) in [
+        ("keys-rust-o0", false),
+        ("keys-rust-o2", true),
+        ("keys-cpp-gcc-o0", false),
+        ("keys-cpp-clang-o2", true),
+        ("keys-cpp-libcxx-o0", false),
+        ("keys-zig-o0", false),
+        ("keys-zig-o2", true),
+    ] {
+        check_fixture(fixture, "barrier", optimized).await;
+    }
+}

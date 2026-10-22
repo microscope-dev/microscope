@@ -368,6 +368,11 @@ something => unbound: line 7: `format kind`: the format writes an array of 16-bi
 - `record { NAME = EXPR, … }` is a record of the members it names, which
   are its children before the view's fields. Members named by their
   positions, from 0, make it a tuple.
+- `tuple { NAME = EXPR, … }` is a record presented as `record` presents
+  it, whose members are also a tuple's elements, in order, whatever their
+  names. A map whose keys are tuples is indexed by a tuple key, as in
+  `m[1, 2]`, which matches a key element by element; each element must be
+  the place of a value in the program, not one the view computes.
 - `dynamic(PTR, TYPE)` is what `PTR` points to, as a value of `TYPE`,
   presented as any value of that type is. `TYPE` may be `arg(TYPE, EXPR)`,
   the type's argument at a position the program's data holds, as a

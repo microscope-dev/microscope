@@ -2,8 +2,8 @@
 itself gives for each expression the test passes as an argument, evaluated
 in that frame before it parks: names a local, a global, or a built-in
 binds, numbers at their edges, text beyond ASCII, dicts whose keys are
-found by hash among collisions, deleted entries, and a key whose own type
-decides what it equals, and objects of every way CPython keeps attributes:
+found by hash among collisions, deleted entries, a key whose own type
+decides what it equals, and tuple keys, a NaN among their items, and objects of every way CPython keeps attributes:
 in values inline or kept apart, in a dict, and in slots, with the
 descriptors and hooks whose code decides what an attribute is. Objects of
 classes deriving from built-in types hold those types' values, and some
@@ -231,6 +231,18 @@ def values():
     squares = {1: 1, 2: 4, 3: 9, -1: 1, 2**40: 0, 0.5: 0.25}
     labels = {None: "none", True: "yes", (1, 2): "pair", b"k": "bytes"}
     doubtful = {Key(7): "seven", 1.5: "float", "s": "str"}
+    # Tuple keys, compared item by item; `cell` equals a key but is
+    # another object, built at run time so the compiler cannot share it.
+    grid = {(1, 2): "a", (1, (2, 3)): "b", ("ann", 3): "c", (): "d", (1,): "e", (1.5, None): "f"}
+    cell = tuple([1, 2])
+    # A NaN equals only itself, and hashes by its address.
+    nan = float("nan")
+    by_nan = {nan: 1}
+    nan_pair = (1, nan)
+    by_nan_pair = {nan_pair: 2}
+    # A tuple holding an object whose equality is its own type's code.
+    seven = Key(7)
+    keyed = {(seven, 1): "k"}
     point = Point(3, 4)
     fresh = Point(7, 8)
     slotted = Slotted()

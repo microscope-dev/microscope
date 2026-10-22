@@ -202,7 +202,9 @@ In a Python frame, a name is the frame's local, then a global of its module,
 then a built-in, as Python finds it. `::name` skips to the native program's
 globals. Expressions index lists, tuples, and deques, find the keys of a
 dict, a `defaultdict`, or an `OrderedDict` as Python's own lookup finds them,
-read attributes, take `len`, compare, and compute with numbers. An item of a
+read attributes, take `len`, compare, and compute with numbers. A dict keyed
+by tuples takes a tuple key, `grid[1, 2]` or `grid[cell]`, compared item by
+item as Python compares tuples. An item of a
 numpy array is a new object numpy makes, so indexing one is refused; expand
 the array instead:
 

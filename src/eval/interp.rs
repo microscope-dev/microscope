@@ -8,11 +8,13 @@ use std::cmp::Ordering;
 
 use super::dynamic::{self, Number};
 use super::error::{ErrorKind, ExpressionError};
-use super::ir::{Capacity, Comparison, Constant, Conversion, Length, Node, Op, Program};
+use super::ir::{Capacity, Comparison, Constant, Conversion, KeyNode, Length, Node, Op, Program};
 use super::number::{Bits, Exact, Float, FloatFormat, IntType, Integer, NumberError};
 use super::syntax::Span;
 use super::syntax::ast::BinaryOp;
-use super::target::{Key, Loaded, LoadedValue, Machine, Refusal, Register, Stop};
+use super::target::{
+    Key, Loaded, LoadedValue, MAX_TUPLE_DEPTH, MAX_TUPLE_KEYS, Machine, Refusal, Register, Stop,
+};
 use super::types::{Category, Ty, category, size_of, type_info};
 use crate::{
     ByteOrder, DereferenceState, InspectedValue, ScalarValue, TextCompletion,
@@ -1197,8 +1199,22 @@ impl<M: Machine> Interpreter<'_, M> {
         }))
     }
 
-    /// A map's key, from its bound value or the text a place holds.
-    fn key(&mut self, node: &Node<M::Object, M::Step>) -> Result<Key, Halt> {
+    /// A map's key: a tuple of keys, or one key's value. A place holds
+    /// text, or is a tuple of the program's, or, of a dynamic type, is the
+    /// object it holds, which its runtime compares.
+    fn key(&mut self, key: &KeyNode<M::Object, M::Step>) -> Result<Key, Halt> {
+        let node = match key {
+            KeyNode::Value(node) => node,
+            KeyNode::Tuple(items) => {
+                let mut keys = Vec::with_capacity(items.len());
+                for item in items {
+                    keys.push(self.key(item)?);
+                }
+
+                return Ok(Key::Tuple(keys));
+            }
+        };
+
         Ok(match self.eval(node)? {
             Value::Int(integer) => Key::Integer(integer.value()),
             Value::Float(value) => Key::Float(value),
@@ -1206,25 +1222,82 @@ impl<M: Machine> Interpreter<'_, M> {
             Value::Pointer(address) => Key::Address(address),
             Value::Text(bytes) => Key::Text(bytes),
             Value::Loaded(loaded) => Self::at(node.span, dynamic::key(&loaded))?,
-            Value::Place(place) => {
-                let Some(text) = Self::at(node.span, self.machine.text(&place))? else {
-                    return Err(Self::error(
-                        node.span,
-                        ErrorKind::Type,
-                        "the key holds no text, and is no number, truth value, or pointer",
-                    ));
-                };
-
-                if text.completion != TextCompletion::Complete {
-                    return Err(Halt::Missing {
-                        state: Box::new(unavailable(incomplete(text.completion))),
-                        cause: node.span,
-                    });
-                }
-
-                Key::Text(text.bytes.to_vec())
+            Value::Place(place) if matches!(node.ty, Ty::Dynamic) => {
+                Key::Object(Self::at(node.span, self.machine.address(&place))?)
             }
+            Value::Place(place) => self.held_key(&place, node.span, 0)?,
             Value::Raw(_) => return Self::invariant("the binder loads raw keys"),
+        })
+    }
+
+    /// The key a place of the program's holds: its text, or a tuple of
+    /// the keys its elements hold. An element may also hold a number,
+    /// truth value, or pointer; the binder loads those where it can see
+    /// them, so a key itself holds text or is a tuple.
+    fn held_key(&mut self, place: &M::Place, span: Span, depth: usize) -> Result<Key, Halt> {
+        if let Some(text) = Self::at(span, self.machine.text(place))? {
+            if text.completion != TextCompletion::Complete {
+                return Err(Halt::Missing {
+                    state: Box::new(unavailable(incomplete(text.completion))),
+                    cause: span,
+                });
+            }
+
+            return Ok(Key::Text(text.bytes.to_vec()));
+        }
+
+        if let Some(elements) = Self::at(span, self.machine.tuple_elements(place))? {
+            if elements.len() > MAX_TUPLE_KEYS || depth + 1 >= MAX_TUPLE_DEPTH {
+                return Err(Self::error(
+                    span,
+                    ErrorKind::Limit,
+                    format!(
+                        "a tuple key may hold at most {MAX_TUPLE_KEYS} keys, in tuples nested \
+                         at most {MAX_TUPLE_DEPTH} deep"
+                    ),
+                ));
+            }
+
+            let mut keys = Vec::with_capacity(elements.len());
+            for element in &elements {
+                Self::at(span, self.machine.charge())?;
+                keys.push(self.held_key(element, span, depth + 1)?);
+            }
+
+            return Ok(Key::Tuple(keys));
+        }
+
+        let value = if depth == 0 {
+            None
+        } else {
+            Some(Self::at(span, self.machine.load(place))?)
+        };
+
+        Ok(match value {
+            Some(VariableValue::Scalar(ScalarValue::Signed(value))) => {
+                Key::Integer(Exact::from(value))
+            }
+            Some(VariableValue::Scalar(ScalarValue::Unsigned(value))) => {
+                Key::Integer(Exact::from(value))
+            }
+            Some(VariableValue::Enumeration { value, .. }) => Key::Integer(Exact::from(value)),
+            Some(VariableValue::Scalar(ScalarValue::Floating(value))) => {
+                Key::Float(Float::from_value(value))
+            }
+            Some(VariableValue::Scalar(ScalarValue::Boolean(value))) => Key::Bool(value),
+            Some(VariableValue::Address(address)) => Key::Address(address.address.get()),
+            _ => {
+                return Err(Self::error(
+                    span,
+                    ErrorKind::Type,
+                    if depth == 0 {
+                        "the key holds no text and is no tuple, number, truth value, or pointer"
+                    } else {
+                        "an element of the key holds no text and is no tuple, number, truth \
+                         value, or pointer"
+                    },
+                ));
+            }
         })
     }
 

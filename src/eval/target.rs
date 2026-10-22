@@ -226,6 +226,13 @@ pub trait Scope: TypeSource {
     }
 }
 
+/// The most keys one tuple key may hold, and how deep tuples may nest in
+/// one. A lookup hashes and compares a tuple key item by item, recursively,
+/// reading the program's items for each, so these bound its work and its
+/// recursion; a map's composite keys hold a few values.
+pub const MAX_TUPLE_KEYS: usize = 64;
+pub const MAX_TUPLE_DEPTH: usize = 8;
+
 /// A key a map is indexed by: the value written in its brackets.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Key {
@@ -237,6 +244,14 @@ pub enum Key {
 
     /// A dynamic language's value for nothing, such as Python's `None`.
     Nothing,
+
+    /// Several keys in order, written `(a, b)`: a tuple.
+    Tuple(Vec<Self>),
+
+    /// The object of a dynamic type at this address, which the program
+    /// holds: its runtime finds the item its language's indexing finds,
+    /// which may compare the object's identity before its value.
+    Object(u64),
 }
 
 impl Key {
@@ -244,19 +259,7 @@ impl Key {
     /// `==` would compare them. A key the program state cannot provide
     /// stops the search; one of a type this key cannot equal is refused.
     pub fn matches(&self, key: &InspectedValue) -> Result<bool, Stop> {
-        let mismatch = || {
-            let name = key
-                .type_info
-                .as_ref()
-                .map_or_else(|| "?".to_owned(), |info| info.name.to_string());
-            Stop::Refused(Refusal::new(
-                ErrorKind::Type,
-                format!(
-                    "the map's keys are `{name}`, which {} cannot equal",
-                    self.describe()
-                ),
-            ))
-        };
+        let mismatch = || self.mismatch(key.type_info.as_ref());
 
         let VariableState::Available { value, text, .. } = &key.state else {
             return Err(Stop::missing(key.state.clone()));
@@ -295,7 +298,7 @@ impl Key {
                 VariableValue::Address(address) => Ok(address.address.get() == *wanted),
                 _ => Err(mismatch()),
             },
-            Self::Nothing => Err(mismatch()),
+            Self::Nothing | Self::Tuple(_) | Self::Object(_) => Err(mismatch()),
             Self::Text(wanted) => {
                 let Some(text) = text else {
                     return Err(mismatch());
@@ -315,6 +318,19 @@ impl Key {
         }
     }
 
+    /// Why a map whose keys are of the type `info` describes holds no key
+    /// equal to this one.
+    fn mismatch(&self, info: Option<&TypeInfo>) -> Stop {
+        let name = info.map_or_else(|| "?".to_owned(), |info| info.name.to_string());
+        Stop::Refused(Refusal::new(
+            ErrorKind::Type,
+            format!(
+                "the map's keys are `{name}`, which {} cannot equal",
+                self.describe()
+            ),
+        ))
+    }
+
     /// The key as a message describes it.
     fn describe(&self) -> String {
         match self {
@@ -324,6 +340,9 @@ impl Key {
             Self::Address(value) => format!("the address {value:#x}"),
             Self::Text(_) => "a string".to_owned(),
             Self::Nothing => "the value for nothing".to_owned(),
+            Self::Tuple(items) if items.len() == 1 => "a tuple of 1 key".to_owned(),
+            Self::Tuple(items) => format!("a tuple of {} keys", items.len()),
+            Self::Object(address) => format!("the object at {address:#x}"),
         }
     }
 }
@@ -337,7 +356,103 @@ impl fmt::Display for Key {
             Self::Address(value) => write!(formatter, "{value:#x}"),
             Self::Text(bytes) => write!(formatter, "{:?}", String::from_utf8_lossy(bytes)),
             Self::Nothing => formatter.write_str("nothing"),
+            Self::Tuple(items) => {
+                formatter.write_str("(")?;
+                for (position, item) in items.iter().enumerate() {
+                    if position > 0 {
+                        formatter.write_str(", ")?;
+                    }
+
+                    write!(formatter, "{item}")?;
+                }
+
+                formatter.write_str(if items.len() == 1 { ",)" } else { ")" })
+            }
+            Self::Object(address) => write!(formatter, "the object at {address:#x}"),
         }
+    }
+}
+
+/// Whether the key a map holds at `at` equals `key`, a tuple, as the
+/// language's `==` would compare them: element by element, each element of
+/// the map's key found by [`Machine::tuple_elements`], and each element that
+/// is no tuple compared as `present` presents it. Comparing a program's
+/// data runs none of its code, so every element is compared, and an
+/// element of a type its key cannot equal is refused whatever the others
+/// hold. An unequal element makes the keys unequal even where another
+/// cannot be read; a key that is no tuple, or a tuple of another length,
+/// is refused.
+pub fn tuple_matches<M: Machine>(
+    key: &[Key],
+    at: &M::Place,
+    machine: &mut M,
+    present: &mut impl FnMut(&mut M, &M::Place) -> Result<InspectedValue, Stop>,
+) -> Result<bool, Stop> {
+    tuple_matches_in(key, at, machine, present, 0)
+}
+
+fn tuple_matches_in<M: Machine>(
+    key: &[Key],
+    at: &M::Place,
+    machine: &mut M,
+    present: &mut impl FnMut(&mut M, &M::Place) -> Result<InspectedValue, Stop>,
+    depth: usize,
+) -> Result<bool, Stop> {
+    let Some(elements) = machine.tuple_elements(at)? else {
+        let info = present(machine, at)?.type_info;
+        let name = info.map_or_else(|| "?".to_owned(), |info| info.name.to_string());
+        return Err(Stop::Refused(Refusal::new(
+            ErrorKind::Type,
+            format!(
+                "the map's keys are `{name}`, which is no tuple: a key of several values \
+                     matches a tuple's elements by position, never a record's members"
+            ),
+        )));
+    };
+
+    if elements.len() != key.len() {
+        let info = present(machine, at)?.type_info;
+        let name = info.map_or_else(|| "?".to_owned(), |info| info.name.to_string());
+        return Err(Stop::Refused(Refusal::new(
+            ErrorKind::Type,
+            format!(
+                "the map's keys are `{name}`, tuples of {} elements, which {} cannot equal",
+                elements.len(),
+                Key::Tuple(key.to_vec()).describe()
+            ),
+        )));
+    }
+
+    let mut unequal = false;
+    let mut unreadable = None;
+    for (wanted, element) in key.iter().zip(&elements) {
+        machine.charge()?;
+        let equal = match wanted {
+            Key::Tuple(items) if depth + 1 < MAX_TUPLE_DEPTH => {
+                tuple_matches_in(items, element, machine, present, depth + 1)
+            }
+            Key::Tuple(_) => Err(Stop::Refused(Refusal::new(
+                ErrorKind::Limit,
+                format!("tuples in a key may nest at most {MAX_TUPLE_DEPTH} deep"),
+            ))),
+            wanted => {
+                let presented = present(machine, element)?;
+                wanted.matches(&presented)
+            }
+        };
+
+        match equal {
+            Ok(equal) => unequal |= !equal,
+            Err(Stop::Missing(state)) => {
+                unreadable.get_or_insert(Stop::Missing(state));
+            }
+            Err(stop) => return Err(stop),
+        }
+    }
+
+    match unreadable {
+        Some(stop) if !unequal => Err(stop),
+        _ => Ok(!unequal),
     }
 }
 
@@ -517,6 +632,31 @@ pub trait Machine: TypeSource {
         index: i128,
     ) -> Result<Option<Self::Place>, Stop> {
         let _ = (at, index);
+        Ok(None)
+    }
+
+    /// The place of the entry for `key` of a value, as the view that
+    /// presents it as a map says, for a view that presents a value as
+    /// another; `None` when the map holds no such key, and refused when no
+    /// view presents the value as a map.
+    fn presented_entry(
+        &mut self,
+        at: &Self::Place,
+        key: &Key,
+    ) -> Result<Option<Self::Place>, Stop> {
+        let _ = (at, key);
+        Err(Stop::Refused(Refusal::new(
+            ErrorKind::Type,
+            "the value the view presents is no map",
+        )))
+    }
+
+    /// The places of the elements of the tuple at `at`, in order, or `None`
+    /// when its type is no tuple: a type its language makes one, such as a
+    /// Rust or Zig tuple, or one a view presents as a tuple, such as a C++
+    /// `std::pair`. A struct is no tuple, though its members have an order.
+    fn tuple_elements(&mut self, at: &Self::Place) -> Result<Option<Vec<Self::Place>>, Stop> {
+        let _ = at;
         Ok(None)
     }
 

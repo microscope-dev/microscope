@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use super::error::{ErrorKind, ExpressionError};
-use super::ir::{Capacity, Comparison, Constant, Conversion, Length, Node, Op, Program};
+use super::ir::{Capacity, Comparison, Constant, Conversion, KeyNode, Length, Node, Op, Program};
 use super::number::{BitOperator, Bits, Exact, FloatFormat, FloatOperator, IntType, Integer};
 use super::syntax::ast::{
     BinaryOp, Builtin, Field, NodeId, NodeKind, Path, Separator, SizeOf, Suffix, Tree, TypeBase,
@@ -12,7 +12,9 @@ use super::syntax::ast::{
 };
 
 use super::syntax::{Expression, Span};
-use super::target::{Lookup, Refusal, Scope, StepKind, TypeLookup, TypeQuery};
+use super::target::{
+    Lookup, MAX_TUPLE_DEPTH, MAX_TUPLE_KEYS, Refusal, Scope, StepKind, TypeLookup, TypeQuery,
+};
 use super::types::{
     Category, Ty, builtin, c_type_key, category, is_character, representation, size_of, type_name,
 };
@@ -498,6 +500,14 @@ impl<'a, S: Scope> Binder<'a, S> {
                 let operand = self.bind(operand)?;
                 self.inner(operand, span)
             }
+
+            // A map's key binds as one, by `key_node`; a tuple anywhere
+            // else would be a value the evaluator cannot make.
+            NodeKind::Tuple(_) => Err(Self::error(
+                span,
+                ErrorKind::Type,
+                "a tuple is only a map's key, as in `d[(1, 2)]`",
+            )),
         }
     }
 
@@ -2446,23 +2456,7 @@ impl<'a, S: Scope> Binder<'a, S> {
                     pending = &pending[1..];
                 }
                 Category::Pointer(target) if !self.represents(&node.ty) => {
-                    let pointer = self.value(node)?;
-                    let scale = self.element_size(&pointer, target.as_ref())?;
-                    let index = self.bind(*first)?;
-                    let index = self.integer_value(index)?;
-                    let ty = pointer.ty.clone();
-                    let moved = self.node(
-                        Op::Offset {
-                            pointer: Box::new(pointer),
-                            count: Box::new(index),
-                            scale,
-                            backward: false,
-                        },
-                        ty,
-                        *span,
-                    )?;
-                    let target = target.ok_or_else(|| Self::broken(*span, "a sized pointee"))?;
-                    node = self.deref_value(moved, &target, *span)?;
+                    node = self.pointer_index(node, target, *first, *span)?;
                     pending = &pending[1..];
                 }
 
@@ -2492,6 +2486,10 @@ impl<'a, S: Scope> Binder<'a, S> {
                         continue;
                     }
 
+                    if native {
+                        self.one_index(&node, *first)?;
+                    }
+
                     let available = pending.len();
                     let planned = self
                         .scope
@@ -2512,6 +2510,7 @@ impl<'a, S: Scope> Binder<'a, S> {
                     let (taken, rest) = pending.split_at(consumed);
                     let mut indices = Vec::new();
                     for (index, _) in taken {
+                        self.one_index(&node, *index)?;
                         let index = self.bind(*index)?;
                         indices.push(self.integer_value(index)?);
                     }
@@ -2537,6 +2536,52 @@ impl<'a, S: Scope> Binder<'a, S> {
         }
 
         Ok(node)
+    }
+
+    /// `p[i]`: the element `i` elements past the one a pointer points to.
+    fn pointer_index(
+        &mut self,
+        node: Bound<S>,
+        target: Option<Ty>,
+        index: NodeId,
+        span: Span,
+    ) -> BindResult<S> {
+        self.one_index(&node, index)?;
+        let pointer = self.value(node)?;
+        let scale = self.element_size(&pointer, target.as_ref())?;
+        let index = self.bind(index)?;
+        let index = self.integer_value(index)?;
+        let ty = pointer.ty.clone();
+        let moved = self.node(
+            Op::Offset {
+                pointer: Box::new(pointer),
+                count: Box::new(index),
+                scale,
+                backward: false,
+            },
+            ty,
+            span,
+        )?;
+        let target = target.ok_or_else(|| Self::broken(span, "a sized pointee"))?;
+        self.deref_value(moved, &target, span)
+    }
+
+    /// Refuses a tuple as the index of an array, slice, or pointer, which
+    /// takes one integer in each pair of brackets.
+    fn one_index(&self, base: &Bound<S>, index: NodeId) -> Result<(), ExpressionError> {
+        if !matches!(self.tree().kind(index), NodeKind::Tuple(_)) {
+            return Ok(());
+        }
+
+        Err(Self::error(
+            self.tree().span(index),
+            ErrorKind::Type,
+            format!(
+                "`{}` is indexed by one integer in each pair of brackets, not by a tuple",
+                self.quote(base.span)
+            ),
+        )
+        .with_hint("write `a[1][2]` for an element of an array of arrays"))
     }
 
     fn measured_as_text(&self, category: &Category, ty: &Ty) -> bool {
@@ -2764,22 +2809,62 @@ impl<'a, S: Scope> Binder<'a, S> {
         let ty = Self::reached(planned.result, span, || {
             "the map's values have a type the debugger cannot compute with".to_owned()
         })?;
-        let key = self.bind(key)?;
-        let key = self.key(key)?;
+        let key = self.key_node(key, false, 0)?;
         self.node(
             Op::Entry {
                 base: Box::new(map),
                 step: planned.step,
-                key: Box::new(key),
+                key,
             },
             ty,
             span,
         )
     }
 
-    /// A map's key: a number, truth value, pointer, or string, or text the
-    /// program holds.
-    fn key(&mut self, node: Bound<S>) -> BindResult<S> {
+    /// A map's key as written: a tuple of keys, or one key. Where `held`,
+    /// the key indexes a value of a dynamic type, and a value of a dynamic
+    /// type in it stays a place, so that its runtime finds the item by the
+    /// object the program holds.
+    fn key_node(
+        &mut self,
+        id: NodeId,
+        held: bool,
+        depth: usize,
+    ) -> Result<KeyNode<S::Object, S::Step>, ExpressionError> {
+        let NodeKind::Tuple(items) = self.tree().kind(id) else {
+            let node = self.bind(id)?;
+            return Ok(KeyNode::Value(Box::new(self.key(node, held)?)));
+        };
+
+        let span = self.tree().span(id);
+        if items.len() > MAX_TUPLE_KEYS {
+            return Err(Self::error(
+                span,
+                ErrorKind::Limit,
+                format!("a tuple key may hold at most {MAX_TUPLE_KEYS} keys"),
+            ));
+        }
+
+        if depth >= MAX_TUPLE_DEPTH {
+            return Err(Self::error(
+                span,
+                ErrorKind::Limit,
+                format!("tuples in a key may nest at most {MAX_TUPLE_DEPTH} deep"),
+            ));
+        }
+
+        items
+            .clone()
+            .into_iter()
+            .map(|item| self.key_node(item, held, depth + 1))
+            .collect::<Result<_, _>>()
+            .map(KeyNode::Tuple)
+    }
+
+    /// A map's key: a number, truth value, pointer, or string, or text or
+    /// a tuple the program holds. A value of a dynamic type is loaded,
+    /// unless the key is `held`.
+    fn key(&mut self, node: Bound<S>, held: bool) -> BindResult<S> {
         let node = self.value(node)?;
         match self.category(&node.ty) {
             Category::Integer { .. }
@@ -2789,6 +2874,7 @@ impl<'a, S: Scope> Binder<'a, S> {
             | Category::Null
             | Category::Text => Ok(node),
             Category::Record | Category::Slice(_) if node.is_place() => Ok(node),
+            Category::Dynamic if held && node.is_place() => Ok(node),
             Category::Dynamic => self.dynamic_value(node),
             category => Err(self.type_error(
                 &node,
@@ -2864,13 +2950,12 @@ impl<'a, S: Scope> Binder<'a, S> {
             .scope
             .plan_dynamic(StepKind::Entry)
             .map_err(|refusal| Self::refused(span, refusal))?;
-        let key = self.bind(key)?;
-        let key = self.key(key)?;
+        let key = self.key_node(key, true, 0)?;
         self.node(
             Op::Entry {
                 base: Box::new(base),
                 step,
-                key: Box::new(key),
+                key,
             },
             Ty::Dynamic,
             span,

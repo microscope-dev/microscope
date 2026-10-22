@@ -401,15 +401,31 @@ fn presented_type(shape: &BoundShape<StopStep>) -> Option<TypeReference> {
 
 /// The program type of a map's values, when every branch that presents
 /// one agrees and its values are places.
-fn entry_type(shape: &BoundShape<StopStep>) -> Option<TypeReference> {
+fn entry_type<P: InspectionOps>(
+    controller: &Controller<P>,
+    shape: &BoundShape<StopStep>,
+    depth: u8,
+) -> Option<TypeReference> {
     match shape {
         BoundShape::Map { value, .. } => match value.result() {
             Ty::Program(reference) if value.is_place() => Some(*reference),
             _ => None,
         },
+        // A value presented as another has that one's entries, as it has
+        // that one's elements.
+        BoundShape::Value(program) if depth < MAX_DEPTH => match program.result() {
+            Ty::Program(inner) if program.is_place() => {
+                let bound = controller.view_choice(*inner).bound.clone()?;
+                entry_type(controller, &bound.shape, depth + 1)
+            }
+            _ => None,
+        },
         BoundShape::If {
             then, otherwise, ..
-        } => match (entry_type(then), entry_type(otherwise)) {
+        } => match (
+            entry_type(controller, then, depth),
+            entry_type(controller, otherwise, depth),
+        ) {
             (Some(left), Some(right)) if left == right => Some(left),
             (Some(found), None) if !otherwise.has_elements() => Some(found),
             (None, Some(found)) if !then.has_elements() => Some(found),
@@ -771,7 +787,7 @@ impl<P: InspectionOps> Controller<P> {
         }
 
         let bound = self.view_choice(from).bound.clone()?;
-        let value = entry_type(&bound.shape)?;
+        let value = entry_type(self, &bound.shape, 0)?;
 
         Some(Planned {
             step: StopStep::Entry(bound),
@@ -2686,6 +2702,19 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         let mut machine = self.nested(self.depth);
 
         crate::view::run::presented_place(bound, &mut machine, from.clone().into())
+            .map_err(|failure| view_stop(failure, bound, ErrorKind::Type))
+    }
+
+    /// The places of the elements of the value at `from`, when its view
+    /// presents it as a tuple.
+    pub(super) fn view_tuple(
+        &mut self,
+        bound: &Arc<ViewBound>,
+        from: &StopPlace,
+    ) -> std::result::Result<Option<Vec<Place>>, Stop> {
+        let mut machine = self.nested(self.depth);
+
+        crate::view::run::tuple_places(bound, &mut machine, from.clone().into())
             .map_err(|failure| view_stop(failure, bound, ErrorKind::Type))
     }
 

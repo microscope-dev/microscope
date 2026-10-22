@@ -119,7 +119,7 @@ impl<O, S> Node<O, S> {
         match &self.op {
             Op::Object(object) | Op::Bound(object) => test(object),
             Op::Task | Op::Register(_) | Op::Constant(_) => false,
-            Op::Entry { base, key, .. } => any(&[base, key]),
+            Op::Entry { base, key, .. } => base.mentions(test) || key.mentions(test),
             Op::Step { base, indices, .. } => {
                 base.mentions(test) || indices.iter().any(|index| index.mentions(test))
             }
@@ -158,6 +158,23 @@ impl<O, S> Node<O, S> {
             Op::Range { base, start, end } | Op::TextSlice { base, start, end } => {
                 base.mentions(test) || start.iter().chain(end).any(|bound| bound.mentions(test))
             }
+        }
+    }
+}
+
+/// A map's key: one value, or a tuple of keys, which no other operation
+/// takes.
+#[derive(Debug, Clone)]
+pub enum KeyNode<O, S> {
+    Value(Box<Node<O, S>>),
+    Tuple(Vec<Self>),
+}
+
+impl<O, S> KeyNode<O, S> {
+    fn mentions(&self, test: &impl Fn(&O) -> bool) -> bool {
+        match self {
+            Self::Value(node) => node.mentions(test),
+            Self::Tuple(items) => items.iter().any(|item| item.mentions(test)),
         }
     }
 }
@@ -289,7 +306,7 @@ pub enum Op<O, S> {
     Entry {
         base: Box<Node<O, S>>,
         step: S,
-        key: Box<Node<O, S>>,
+        key: KeyNode<O, S>,
     },
 
     /// The id of the stopped thread's task.

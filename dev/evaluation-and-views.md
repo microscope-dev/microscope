@@ -205,6 +205,30 @@ next candidate try. A value-level check happens later and falls back to raw
 presentation with a problem; it does not select another structurally different
 view behind the user's back.
 
+## Composite keys
+
+A tuple, `(a, b)` or `m[a, b]`, is only ever a map's key: it binds to an
+`ir::KeyNode` inside `Op::Entry` and nowhere else, and evaluates to
+`Key::Tuple`. Each language matches it where its keys are already
+matched:
+
+- Native maps match in `view::run::entry_place`, through
+  `target::tuple_matches`, element by element against the places
+  `Machine::tuple_elements` gives. A tuple is a type the language makes
+  one, a Rust tuple (`(…)` with members `__0`, …) or a Zig tuple (members
+  `0`, …), or one a view presents as a `tuple { … }` or a `record` of
+  positions, as the C++ `std::pair` and `std::tuple` views do. A struct is
+  no tuple.
+- Python matches in `runtime_model/python/expressions.rs`: tuples hash as
+  CPython's `tuplehash` and compare in `tuple_richcompare`'s order. A key
+  the program holds is passed as `Key::Object`, its address, because
+  CPython finds an entry by identity before equality, which is how
+  `d[nan]` finds a NaN key.
+
+`MAX_TUPLE_KEYS` and `MAX_TUPLE_DEPTH` bound a key, written or held, and
+so bound every lookup's work. `plans/composite-keys.md`
+records the decisions.
+
 ## View execution
 
 View expressions use the expression evaluator through a restricted target.

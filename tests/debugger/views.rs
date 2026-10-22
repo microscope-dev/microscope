@@ -1259,7 +1259,7 @@ view rust nowhere {
     assert_eq!(
         errors.iter().map(ToString::to_string).collect::<Vec<_>>(),
         [
-            "session.views:10:10: expected a shape: `text`, `value`, `empty`, `sequence`, `map`, `record`, `dynamic`, or `if`, found `nothing`"
+            "session.views:10:10: expected a shape: `text`, `value`, `empty`, `sequence`, `map`, `record`, `tuple`, `dynamic`, or `if`, found `nothing`"
         ]
     );
 

@@ -419,6 +419,113 @@ fn only_views_call_built_in_functions() {
     assert_eq!(unclosed.kind, ErrorKind::Syntax);
 }
 
+/// A tuple is written in parentheses with commas, or in brackets with
+/// commas, and a single parenthesized expression still only groups.
+#[test]
+fn tuples_are_read_in_parentheses_and_in_brackets() {
+    let items = |text: &str| {
+        let t = tree(text);
+        let NodeKind::Tuple(items) = t.kind(t.root()).clone() else {
+            panic!("`{text}` is a tuple");
+        };
+
+        items
+            .iter()
+            .map(|item| t.span(*item).text(text).to_owned())
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(items("(1, 2)"), ["1", "2"]);
+    assert_eq!(items("(a,)"), ["a"]);
+    assert!(items("()").is_empty());
+    assert_eq!(
+        items("((1, 2), x + 1, \"s\")"),
+        ["(1, 2)", "x + 1", "\"s\""]
+    );
+    assert_eq!(items("(1, 2,)"), ["1", "2"]);
+
+    for (text, index) in [
+        ("d[1, 2]", "1, 2"),
+        ("d[1,]", "1,"),
+        ("d[(1, 2)]", "(1, 2)"),
+        ("d[a, (b, c)]", "a, (b, c)"),
+    ] {
+        let t = tree(text);
+        let NodeKind::Index { index: key, .. } = t.kind(t.root()) else {
+            panic!("`{text}` is an index");
+        };
+
+        assert!(
+            matches!(t.kind(*key), NodeKind::Tuple(_)),
+            "`{text}` indexes by a tuple"
+        );
+        assert_eq!(t.span(*key).text(text), index, "`{text}`");
+    }
+
+    assert!(parse("d[1, 2]").same_shape(&parse("d[(1, 2)]")));
+    assert!(!parse("d[(1)]").same_shape(&parse("d[(1,)]")));
+    assert!(!parse("(1, 2)").same_shape(&parse("(1, 2, 3)")));
+
+    // One parenthesized expression groups, and a cast is still a cast.
+    assert!(matches!(
+        tree("(a)").kind(tree("(a)").root()),
+        NodeKind::Name(_)
+    ));
+    for text in ["(int)x", "(py)x", "(T*)p", "(n) - 1"] {
+        let expression = parse(text);
+        let reading = expression
+            .reading(expression.ambiguities().len())
+            .expect("a reading");
+        assert!(
+            !matches!(reading.kind(reading.root()), NodeKind::Tuple(_)),
+            "`{text}`"
+        );
+    }
+
+    for (text, expected) in [
+        ("( 1 ,2 )", "(1, 2)"),
+        ("(a ,)", "(a,)"),
+        ("( )", "()"),
+        ("d [ 1 , 2 ]", "d[(1, 2)]"),
+        ("d[1,]", "d[(1,)]"),
+        ("d[((1, 2))]", "d[(1, 2)]"),
+        ("((1, 2), 3)", "((1, 2), 3)"),
+        ("(a = 1, b)", "(a = 1, b)"),
+        ("(c ? 1 : 2, 3)", "(c ? 1 : 2, 3)"),
+    ] {
+        assert_eq!(normal(text), expected, "`{text}`");
+        assert!(
+            parse(expected).same_shape(&parse(text)),
+            "`{expected}` reads as `{text}`"
+        );
+    }
+
+    for (text, pointed) in [
+        ("d[1, 2:3]", ":"),
+        ("d[1, 2..3]", ".."),
+        ("d[:1, 2]", ","),
+        ("(1, 2", ""),
+        ("(1 2)", "2"),
+        ("(,)", ","),
+        ("d[,]", ","),
+        ("(1,,)", ","),
+        ("f(1, 2)", "f("),
+    ] {
+        assert_eq!(points_at(text), (ErrorKind::Syntax, pointed), "`{text}`");
+    }
+
+    // A view's expressions never hold tuples.
+    for text in ["(1, 2)", "m[1, 2]", "()", "(a,)"] {
+        let error = Expression::parse_view(text).expect_err(text);
+        assert_eq!(error.kind, ErrorKind::Syntax, "`{text}`");
+        assert!(
+            error.message.contains("tuple"),
+            "`{text}`: {}",
+            error.message
+        );
+    }
+}
+
 #[test]
 fn syntax_errors_point_at_the_offending_text() {
     for (text, kind, pointed) in [
@@ -573,6 +680,10 @@ fn expression_text() -> impl Strategy<Value = String> {
                 .clone()
                 .prop_map(|operand| format!("({operand})->g.0")),
             (inner.clone(), inner.clone()).prop_map(|(base, index)| format!("({base})[{index}]")),
+            (inner.clone(), inner.clone())
+                .prop_map(|(base, index)| format!("({base})[{index}, 1]")),
+            (inner.clone(), inner.clone()).prop_map(|(a, b)| format!("({a}, {b})")),
+            inner.clone().prop_map(|item| format!("({item},)")),
             (inner.clone(), inner.clone(), inner.clone())
                 .prop_map(|(a, b, c)| format!("{a} ? {b} : {c}")),
             (types.clone(), inner.clone()).prop_map(|(ty, operand)| format!("({ty}){operand}")),
@@ -610,7 +721,7 @@ proptest! {
     }
 
     #[test]
-    fn arbitrary_text_holds_the_invariants(text in "[-a-z0-9 ()\\[\\].*&!~<>=+?:`$'\"\\\\]{0,40}") {
+    fn arbitrary_text_holds_the_invariants(text in "[-a-z0-9 ()\\[\\],.*&!~<>=+?:`$'\"\\\\]{0,40}") {
         check_invariants(&text).map_err(TestCaseError::fail)?;
     }
 }

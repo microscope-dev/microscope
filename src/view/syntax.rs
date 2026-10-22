@@ -498,8 +498,12 @@ pub enum Shape {
     },
 
     /// `record { NAME = EXPR, … }`: a record of the members it names, each
-    /// a name or a position.
-    Record(Vec<(String, Expr)>),
+    /// a name or a position; or `tuple { … }`, whose members are a tuple's
+    /// elements, in order, whatever their names.
+    Record {
+        members: Vec<(String, Expr)>,
+        tuple: bool,
+    },
 
     /// `dynamic(PTR, TYPE)`: what a pointer points to, as a type that may
     /// be chosen as the program runs.
@@ -1350,9 +1354,9 @@ impl<'a> Parser<'a> {
                     otherwise: Box::new(otherwise),
                 })
             }
-            "record" => {
+            "record" | "tuple" => {
                 self.position += word.len();
-                self.record()
+                self.record(word == "tuple")
             }
             "dynamic" => {
                 self.position += word.len();
@@ -1388,7 +1392,8 @@ impl<'a> Parser<'a> {
                 self.match_shape(depth)
             }
             _ => Err(self.unexpected(
-                "a shape: `text`, `value`, `empty`, `sequence`, `map`, `record`, `dynamic`, or `if`",
+                "a shape: `text`, `value`, `empty`, `sequence`, `map`, `record`, `tuple`, `dynamic`, \
+                 or `if`",
             )),
         }
     }
@@ -1463,7 +1468,7 @@ impl<'a> Parser<'a> {
 
     /// `{ NAME = EXPR, … }`, after `record`: names, or positions from 0,
     /// each once.
-    fn record(&mut self) -> Parsed<Shape> {
+    fn record(&mut self, tuple: bool) -> Parsed<Shape> {
         self.skip_blank();
         self.expect("{", "to open the record")?;
         let mut members: Vec<(String, Expr)> = Vec::new();
@@ -1471,7 +1476,7 @@ impl<'a> Parser<'a> {
         loop {
             self.skip_blank();
             if self.eat("}") {
-                return Ok(Shape::Record(members));
+                return Ok(Shape::Record { members, tuple });
             }
 
             if members.len() == MAX_RECORD_MEMBERS {

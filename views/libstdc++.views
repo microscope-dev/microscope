@@ -288,9 +288,10 @@ view c++ std::tuple<A, B, C, D, E, F> {
 }
 
 # A pair's two members, without the empty base libstdc++ gives it. The
-# standard names a pair's members, so this view presents libc++'s too.
+# standard names a pair's members, so this view presents libc++'s too. A
+# pair is a tuple, so a map keyed by pairs is indexed as `m[1, 2]`.
 view c++ std::pair<A, B> {
-    show record { first = first, second = second }
+    show tuple { first = first, second = second }
 }
 
 # The adaptors present the containers they adapt, whose member the

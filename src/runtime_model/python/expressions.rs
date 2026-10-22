@@ -7,14 +7,22 @@
 //! is found as Python's lookup finds it, without running any code: by the
 //! key's hash, through the dict's table, comparing only the keys of equal
 //! hash it passes. A key of `None`, `bool`, `int`, `float`, `str`, `bytes`,
-//! or `tuple` is compared by value, and one of any other type only its own
-//! `__eq__` could compare, so meeting one refuses the lookup.
+//! or `tuple` is compared by value, a `tuple` with a tuple key item by
+//! item, in order, as `tuple_richcompare` does; a key of any other type
+//! only its own `__eq__` could compare, so meeting one refuses the lookup.
 //!
-//! A number's hash is CPython's, and a `str`'s is SipHash-1-3 keyed by the
-//! process's secret, once a key of the dict shows that hashing gives the
-//! hashes its strings keep. Where no hash is known, as for a NaN or where
-//! the secret cannot be read, every entry is compared, and a key of
-//! another type is ruled out only by the hash its entry keeps.
+//! A key the expression takes from the program is that object, which a
+//! lookup, and a tuple's comparison of its items, find by identity before
+//! comparing values, as CPython's do: a NaN finds itself.
+//!
+//! A number's hash is CPython's, a `tuple`'s is `tuplehash` of its items'
+//! hashes, and a `str`'s is SipHash-1-3 keyed by the process's secret, once
+//! a key of the dict shows that hashing gives the hashes its strings keep,
+//! or the hash a `str` of the program keeps. A NaN of the program hashes
+//! by its address. Where no hash is known, as for a NaN the expression
+//! computed or where the secret cannot be read, every entry is compared,
+//! and a key of another type is ruled out only by the hash its entry
+//! keeps.
 
 use std::sync::Arc;
 
@@ -25,6 +33,7 @@ use super::objects::{Problem, Record, malformed};
 use super::text;
 use super::values::{Dict, Object, Values, exact};
 use crate::eval::error::ErrorKind;
+use crate::eval::target::{MAX_TUPLE_DEPTH, MAX_TUPLE_KEYS};
 use crate::image::python::{Constant, Field};
 use crate::runtime_model::{
     InterpretedFailure, InterpretedKey, InterpretedKind, InterpretedName, InterpretedOperand,
@@ -49,6 +58,13 @@ const HASH_WITNESSES: u64 = 8;
 const HASH_MODULUS: u64 = (1 << 61) - 1;
 const HASH_BITS: u32 = 61;
 const HASH_INFINITY: i64 = 314_159;
+
+/// The primes of xxHash64, by which CPython's `tuplehash` mixes its items'
+/// hashes, and the hash it gives where the mix comes to -1.
+const XXPRIME_1: u64 = 11_400_714_785_074_694_791;
+const XXPRIME_2: u64 = 14_029_467_366_897_019_727;
+const XXPRIME_5: u64 = 2_870_177_450_012_600_261;
+const TUPLE_HASH_ERROR: i64 = 1_546_275_796;
 
 /// How a key of a `dict` compares with a key an expression wrote.
 enum Compared {
@@ -252,7 +268,7 @@ impl Values<'_, '_> {
 
         match read {
             Object::List { items, length } | Object::Tuple { items, length } => {
-                let position = position(key, length, &read)?;
+                let position = position(&self.resolved(key)?, length, &read)?;
                 let item = self
                     .items(items, position, position + 1)
                     .map_err(|problem| self.unavailable(problem))?;
@@ -271,7 +287,7 @@ impl Values<'_, '_> {
                     },
                 ..
             } => {
-                let position = position(key, length, &read)?;
+                let position = position(&self.resolved(key)?, length, &read)?;
                 let item = self
                     .deque_items((block, index, length), position..position + 1)
                     .map_err(|problem| self.unavailable(problem))?;
@@ -294,7 +310,7 @@ impl Values<'_, '_> {
                     }
                     _ => Err(refused(
                         ErrorKind::MissingKey,
-                        format!("the dict holds no key {}", key_text(key)),
+                        format!("the dict holds no key {}", self.key_text(key, 0)),
                     )),
                 },
             },
@@ -364,12 +380,173 @@ impl Values<'_, '_> {
         dict: Dict,
         key: &InterpretedKey,
     ) -> Result<Option<VirtualAddress>, InterpretedFailure> {
-        let hash = match key {
-            InterpretedKey::Text(text) => self.text_hash(dict, text)?,
-            key => hash(key),
+        let hash = self.key_hash(dict, key, 0)?;
+        hash.map_or_else(|| self.scan(dict, key), |hash| self.probe(dict, key, hash))
+    }
+
+    /// CPython's hash of `key`, where it is known: text's needs the
+    /// process's secret, which `dict`'s keys may show hashing gives, and a
+    /// tuple's needs each of its items'.
+    fn key_hash(
+        &self,
+        dict: Dict,
+        key: &InterpretedKey,
+        depth: usize,
+    ) -> Result<Option<i64>, InterpretedFailure> {
+        let items = match key {
+            InterpretedKey::Text(text) => return self.text_hash(dict, text),
+            InterpretedKey::Tuple(items) => items,
+            InterpretedKey::Object(object) => {
+                match self.read(*object)? {
+                    // A NaN equals nothing, itself included, so its hash is
+                    // its object's identity.
+                    Object::Float(value) if value.is_nan() => {
+                        return Ok(Some(hash_pointer(*object)));
+                    }
+
+                    // A str keeps its hash once one is asked of it.
+                    Object::Str { .. } => {
+                        let kept = self
+                            .reader
+                            .head(*object)
+                            .and_then(|head| head.field_word(Field::UnicodeHash))
+                            .map(u64::cast_signed)
+                            .map_err(|problem| self.unavailable(problem))?;
+                        if kept != -1 {
+                            return Ok(Some(kept));
+                        }
+                    }
+                    _ => {}
+                }
+
+                return self.key_hash(dict, &self.held(*object, depth)?, depth);
+            }
+            key => return Ok(hash(key)),
         };
 
-        hash.map_or_else(|| self.scan(dict, key), |hash| self.probe(dict, key, hash))
+        if depth >= MAX_TUPLE_DEPTH {
+            return Err(too_deep());
+        }
+
+        let mut hashes = Vec::with_capacity(items.len());
+        for item in items {
+            let Some(hash) = self.key_hash(dict, item, depth + 1)? else {
+                return Ok(None);
+            };
+
+            hashes.push(hash);
+        }
+
+        Ok(Some(hash_tuple(&hashes)))
+    }
+
+    /// The value of the program's object at `object` as a key, one level
+    /// deep: `None`, a `bool`, an `int`, a `float`, or a `str` is its
+    /// value, and a `tuple` holds its items, each the program's object.
+    /// One of any other type only its own code could hash or compare, and
+    /// is refused, as an `int` beyond 128 bits is. `depth` is how deep in
+    /// tuples the object is.
+    fn held(
+        &self,
+        object: VirtualAddress,
+        depth: usize,
+    ) -> Result<InterpretedKey, InterpretedFailure> {
+        let read = self.read(object)?;
+        Ok(match &read {
+            Object::Nothing => InterpretedKey::Nothing,
+            Object::Bool(value) => InterpretedKey::Bool(*value),
+            Object::Int { negative, digits } => match exact(*negative, digits, self.shift()) {
+                Some(value) => InterpretedKey::Int(value),
+                None => return Err(beyond_128_bits()),
+            },
+            Object::LargeInt { .. } => return Err(beyond_128_bits()),
+            Object::Float(value) => InterpretedKey::Float(*value),
+            Object::Str { .. } => {
+                let (points, length) = self.code_points(object)?;
+                if points.len() as u64 != length {
+                    return Err(refused(
+                        ErrorKind::Unsupported,
+                        format!(
+                            "a key's str holds {length} characters, more than the \
+                             {OPERAND_TEXT} microscope compares"
+                        ),
+                    ));
+                }
+
+                // A lone surrogate is no character of UTF-8 text, which
+                // keys hold.
+                if points.iter().any(|point| char::from_u32(*point).is_none()) {
+                    return Err(refused(
+                        ErrorKind::Unsupported,
+                        "a key's str holds a lone surrogate, which microscope does not compare",
+                    ));
+                }
+
+                InterpretedKey::Text(text::utf8(&points))
+            }
+            Object::Tuple { items, length } => {
+                if depth >= MAX_TUPLE_DEPTH {
+                    return Err(too_deep());
+                }
+
+                if *length > MAX_TUPLE_KEYS as u64 {
+                    return Err(refused(
+                        ErrorKind::Limit,
+                        format!(
+                            "the key is a tuple of {length} items, and microscope finds a tuple \
+                             key of at most {MAX_TUPLE_KEYS}"
+                        ),
+                    ));
+                }
+
+                let items = self
+                    .items(*items, 0, *length)
+                    .map_err(|problem| self.unavailable(problem))?;
+                InterpretedKey::Tuple(items.into_iter().map(InterpretedKey::Object).collect())
+            }
+            read => {
+                return Err(refused(
+                    ErrorKind::Unsupported,
+                    format!(
+                        "a `{}` is no key microscope compares: it finds keys of None, bool, int, \
+                         float, str, and tuples of them, and only a type's own code could hash or \
+                         compare another",
+                        type_text(read)
+                    ),
+                ));
+            }
+        })
+    }
+
+    /// `key` with the program's object it names read as its value, for an
+    /// index of a sequence, which takes no identity.
+    fn resolved(&self, key: &InterpretedKey) -> Result<InterpretedKey, InterpretedFailure> {
+        match key {
+            InterpretedKey::Object(object) => self.held(*object, 0),
+            key => Ok(key.clone()),
+        }
+    }
+
+    /// A key as Python's `repr` writes it, for messages; an object of the
+    /// program's that cannot be read is written by its address.
+    fn key_text(&self, key: &InterpretedKey, depth: usize) -> String {
+        match key {
+            InterpretedKey::Object(object) => self.held(*object, depth).map_or_else(
+                |_| format!("<object at {:#x}>", object.get()),
+                |held| self.key_text(&held, depth),
+            ),
+            InterpretedKey::Tuple(items) => {
+                let items: Vec<String> = items
+                    .iter()
+                    .map(|item| self.key_text(item, depth + 1))
+                    .collect();
+                match items.as_slice() {
+                    [item] => format!("({item},)"),
+                    items => format!("({})", items.join(", ")),
+                }
+            }
+            key => scalar_text(key),
+        }
     }
 
     /// The value `dict` holds for `key`, whose hash is `hash`, found by
@@ -406,13 +583,21 @@ impl Values<'_, '_> {
             // passes over.
             if let Ok(index) = u64::try_from(index) {
                 let entry = self.entry(dict, index).map_err(unavailable)?;
+
+                // The very object is found before any hash is compared.
+                if entry.value != VirtualAddress::new(0)
+                    && matches!(key, InterpretedKey::Object(object) if *object == entry.key)
+                {
+                    return Ok(Some(entry.value));
+                }
+
                 if entry.value != VirtualAddress::new(0)
                     && self.entry_hash(entry.key, entry.hash)? == hash
                 {
-                    match self.compare(entry.key, key)? {
+                    match self.compare(entry.key, key, 0)? {
                         Compared::Equal => return Ok(Some(entry.value)),
                         Compared::Unequal => {}
-                        Compared::Unknown(name) => return Err(doubtful(&name, key)),
+                        Compared::Unknown(name) => return Err(self.doubtful(&name, key)),
                     }
                 }
             }
@@ -489,7 +674,7 @@ impl Values<'_, '_> {
         let mut uncompared = Vec::new();
         let mut failure = None;
         let scanned = self.entries(dict, 0..u64::MAX, |entry| {
-            match self.compare(entry.key, key) {
+            match self.compare(entry.key, key, 0) {
                 Ok(Compared::Equal) => {
                     found.get_or_insert((entry.value, entry.hash));
                 }
@@ -510,9 +695,10 @@ impl Values<'_, '_> {
 
         scanned.map_err(|problem| self.unavailable(problem))?;
 
-        // A str's hash is salted for each process: the matching key's entry
-        // gives it.
-        let hash = hash(key).or_else(|| found.and_then(|(_, hash)| hash));
+        // A key is scanned for only where its hash is not known, as a
+        // str's salted for the process, or a NaN's: the matching key's
+        // entry gives it.
+        let hash = found.and_then(|(_, hash)| hash);
         for (name, entry) in uncompared {
             if let (Some(hash), Some(entry)) = (hash, entry)
                 && hash != entry
@@ -520,18 +706,31 @@ impl Values<'_, '_> {
                 continue;
             }
 
-            return Err(doubtful(&name, key));
+            return Err(self.doubtful(&name, key));
         }
 
         Ok(found.map(|(value, _)| value))
     }
 
-    /// How the key of a `dict` at `address` compares with `wanted`.
+    /// How the key of a `dict`, or an item of one, at `address` compares
+    /// with `wanted`, `depth` tuples deep in the key: the program's own
+    /// object is equal to itself before any value is compared.
     fn compare(
         &self,
         address: VirtualAddress,
         wanted: &InterpretedKey,
+        depth: usize,
     ) -> Result<Compared, InterpretedFailure> {
+        let held;
+        let wanted = match wanted {
+            InterpretedKey::Object(object) if *object == address => return Ok(Compared::Equal),
+            InterpretedKey::Object(object) => {
+                held = self.held(*object, depth)?;
+                &held
+            }
+            wanted => wanted,
+        };
+
         let object = self.read(address)?;
         let number = match &object {
             Object::Bool(value) => Number::Int(i128::from(*value)),
@@ -573,7 +772,15 @@ impl Values<'_, '_> {
                     Compared::Unequal
                 });
             }
-            Object::Bytes { .. } | Object::Tuple { .. } | Object::Set { frozen: true, .. } => {
+            Object::Tuple { items, length } => {
+                return match wanted {
+                    InterpretedKey::Tuple(wanted) => {
+                        self.compare_items(*items, *length, wanted, depth)
+                    }
+                    _ => Ok(Compared::Unequal),
+                };
+            }
+            Object::Bytes { .. } | Object::Set { frozen: true, .. } => {
                 return Ok(Compared::Unequal);
             }
             object => return Ok(Compared::Unknown(type_text(object).into())),
@@ -583,7 +790,10 @@ impl Values<'_, '_> {
             InterpretedKey::Int(value) => Number::Int(*value),
             InterpretedKey::Bool(value) => Number::Int(i128::from(*value)),
             InterpretedKey::Float(value) => Number::Float(*value),
-            InterpretedKey::Text(_) | InterpretedKey::Nothing => return Ok(Compared::Unequal),
+            InterpretedKey::Text(_)
+            | InterpretedKey::Nothing
+            | InterpretedKey::Tuple(_)
+            | InterpretedKey::Object(_) => return Ok(Compared::Unequal),
         };
 
         Ok(if number.equals(wanted) {
@@ -591,6 +801,52 @@ impl Values<'_, '_> {
         } else {
             Compared::Unequal
         })
+    }
+
+    /// How a `tuple` of `length` items at `items` compares with `wanted`,
+    /// as `tuple_richcompare` compares for `==`: item by item, in order, to
+    /// the shorter's end, the first item that is not equal deciding, and
+    /// then the lengths. An item only its own type's code could compare
+    /// leaves the answer unknown, unless an item before it was unequal.
+    fn compare_items(
+        &self,
+        items: VirtualAddress,
+        length: u64,
+        wanted: &[InterpretedKey],
+        depth: usize,
+    ) -> Result<Compared, InterpretedFailure> {
+        if depth >= MAX_TUPLE_DEPTH {
+            return Err(too_deep());
+        }
+
+        let shared = length.min(wanted.len() as u64);
+        let stored = self
+            .items(items, 0, shared)
+            .map_err(|problem| self.unavailable(problem))?;
+        for (item, wanted) in stored.into_iter().zip(wanted) {
+            match self.compare(item, wanted, depth + 1)? {
+                Compared::Equal => {}
+                unequal_or_unknown => return Ok(unequal_or_unknown),
+            }
+        }
+
+        Ok(if length == wanted.len() as u64 {
+            Compared::Equal
+        } else {
+            Compared::Unequal
+        })
+    }
+
+    /// Why a key of the type named `name` refuses a lookup of `key`.
+    fn doubtful(&self, name: &str, key: &InterpretedKey) -> InterpretedFailure {
+        refused(
+            ErrorKind::Unsupported,
+            format!(
+                "the dict holds a key of type `{name}`, which only its type's `__eq__` could \
+                 compare with {}, and microscope runs no code",
+                self.key_text(key, 0)
+            ),
+        )
     }
 
     /// The code points of the `str` at `object`, up to [`OPERAND_TEXT`],
@@ -797,15 +1053,19 @@ fn position(key: &InterpretedKey, length: u64, read: &Object) -> Result<u64, Int
     })
 }
 
-/// Why a key of the type named `name` refuses a lookup of `key`.
-fn doubtful(name: &str, key: &InterpretedKey) -> InterpretedFailure {
+/// Why a tuple key that nests too deep is refused.
+fn too_deep() -> InterpretedFailure {
+    refused(
+        ErrorKind::Limit,
+        format!("microscope compares tuples in a key nested at most {MAX_TUPLE_DEPTH} deep"),
+    )
+}
+
+/// Why an `int` of the program's beyond 128 bits is no key.
+fn beyond_128_bits() -> InterpretedFailure {
     refused(
         ErrorKind::Unsupported,
-        format!(
-            "the dict holds a key of type `{name}`, which only its type's `__eq__` could \
-             compare with {}, and microscope runs no code",
-            key_text(key)
-        ),
+        "the key is an int beyond the 128 bits microscope computes with",
     )
 }
 
@@ -926,18 +1186,42 @@ fn integral(value: f64) -> Option<i128> {
         .then_some(value as i128)
 }
 
-/// CPython's hash of a key, where it does not depend on the process:
-/// `None` for text, whose hash is salted, and for NaN, whose hash is its
-/// object's identity.
+/// CPython's hash of a key that is one value, where it does not depend on
+/// the process: `None` for text, whose hash is salted, and for NaN, whose
+/// hash is its object's identity.
 fn hash(key: &InterpretedKey) -> Option<i64> {
     match key {
         InterpretedKey::Int(value) => Some(hash_int(*value)),
         InterpretedKey::Bool(value) => Some(i64::from(*value)),
         InterpretedKey::Float(value) => hash_float(*value),
-        InterpretedKey::Text(_) => None,
         // A constant since CPython 3.12, the oldest microscope reads.
         InterpretedKey::Nothing => Some(0xfca8_6420),
+        InterpretedKey::Text(_) | InterpretedKey::Tuple(_) | InterpretedKey::Object(_) => None,
     }
+}
+
+/// CPython's `tuplehash` of a tuple whose items hash to `hashes`: xxHash64's
+/// rounds over them, unchanged from CPython 3.8 to 3.15.
+fn hash_tuple(hashes: &[i64]) -> i64 {
+    let mut accumulator = XXPRIME_5;
+    for hash in hashes {
+        accumulator = accumulator.wrapping_add(hash.cast_unsigned().wrapping_mul(XXPRIME_2));
+        accumulator = accumulator.rotate_left(31);
+        accumulator = accumulator.wrapping_mul(XXPRIME_1);
+    }
+
+    accumulator = accumulator.wrapping_add(hashes.len() as u64 ^ (XXPRIME_5 ^ 0x0035_d373));
+    if accumulator == u64::MAX {
+        TUPLE_HASH_ERROR
+    } else {
+        accumulator.cast_signed()
+    }
+}
+
+/// CPython's `Py_HashPointer`: an object's address, rotated right by
+/// four bits, as an object that hashes by identity hashes.
+const fn hash_pointer(object: VirtualAddress) -> i64 {
+    never_error(object.get().rotate_right(4).cast_signed())
 }
 
 /// `-1` is CPython's hash for an error, so a value that would hash to it
@@ -1043,11 +1327,13 @@ const fn key_kind(key: &InterpretedKey) -> &'static str {
         InterpretedKey::Bool(_) => "a truth value",
         InterpretedKey::Text(_) => "text",
         InterpretedKey::Nothing => "`None`",
+        InterpretedKey::Tuple(_) => "a tuple",
+        InterpretedKey::Object(_) => "an object",
     }
 }
 
-/// A key, as Python writes it.
-fn key_text(key: &InterpretedKey) -> String {
+/// A key that is one value, as Python writes it.
+fn scalar_text(key: &InterpretedKey) -> String {
     match key {
         InterpretedKey::Int(value) => value.to_string(),
         InterpretedKey::Float(value) => text::float(*value),
@@ -1058,12 +1344,13 @@ fn key_text(key: &InterpretedKey) -> String {
             |_| text::bytes(bytes),
             |text| text::string(&text.chars().map(u32::from).collect::<Vec<_>>()),
         ),
+        InterpretedKey::Tuple(_) | InterpretedKey::Object(_) => key_kind(key).to_owned(),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{frexp, hash_float, hash_int, hash_text};
+    use super::{frexp, hash_float, hash_int, hash_text, hash_tuple};
 
     #[test]
     fn text_hashes_as_cpython_hashes_it_with_a_zero_secret() {
@@ -1106,6 +1393,31 @@ mod tests {
         assert_eq!(hash_float(1e-300), Some(482_449_582_752_280_463));
         assert_eq!(hash_float(5e-324), Some(16_777_216));
         assert_eq!(hash_float(2.0_f64.powi(70)), Some(hash_int(1 << 70)));
+    }
+
+    #[test]
+    fn tuples_hash_as_cpython_hashes_them() {
+        // Each value is `hash(t)` in CPython 3.12 to 3.15, free-threaded
+        // builds included; an item hashes as the tests above check.
+        let empty = hash_tuple(&[]);
+        assert_eq!(empty, 5_740_354_900_026_072_187);
+        assert_eq!(hash_tuple(&[1]), -6_644_214_454_873_602_895);
+        assert_eq!(hash_tuple(&[1, 2]), -3_550_055_125_485_641_917);
+        assert_eq!(
+            hash_tuple(&[1, hash_tuple(&[2, 3])]),
+            7_267_574_591_690_527_098
+        );
+        assert_eq!(
+            hash_tuple(&[0xfca8_6420, 1, hash_int(-1)]),
+            1_423_733_903_558_920_243
+        );
+        assert_eq!(
+            hash_tuple(&[hash_int((1 << 61) - 1), hash_int(-2)]),
+            8_374_038_142_897_728_572
+        );
+        assert_eq!(hash_tuple(&[empty]), -5_486_347_211_504_344_842);
+        let half = hash_float(0.5).unwrap_or_default();
+        assert_eq!(hash_tuple(&[half]), -408_149_959_306_781_352);
     }
 
     #[test]
