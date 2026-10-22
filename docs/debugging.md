@@ -22,7 +22,14 @@ Attach by process ID or by a name that matches exactly one process:
 ```sh
 microscope --attach 1842
 microscope --attach my-server
+microscope --attach server.js
 ```
+
+A name matches a process's command name, the file name of the program it
+was started as, a title it set (npm's `npm start` matches `npm`), or the
+file name of a script it runs (`node server.js` matches `server.js`). When
+several processes match, microscope lists each with what matched, and you
+attach to one by its ID.
 
 microscope normally finds the executable through `/proc`. Supply it as the
 positional executable when that is not possible.

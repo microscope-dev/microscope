@@ -156,6 +156,11 @@ impl Cli {
     /// Formats a stop: its header, saying where and after how long, then,
     /// for a stop in the program's code, its sections.
     pub(super) async fn stop_report(&self, reason: &StopReason, elapsed: Duration) -> String {
+        if matches!(reason, StopReason::Exec { followed: false }) {
+            self.unfollowed_exec
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+
         let renderer = self.renderers.stdout;
         let snapshot = self.debugger.snapshot().await.ok();
         let located = in_code(reason) || matches!(reason, StopReason::Attach | StopReason::Entry);

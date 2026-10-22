@@ -324,8 +324,8 @@ pub fn still_held(held: &crate::HeldProcess) -> Result<bool> {
     linux::still_held(held)
 }
 
-/// The processes with a name, as `pgrep -x` finds them.
-pub fn processes_named(name: &str) -> Result<Vec<crate::ProcessId>> {
+/// The processes a name names.
+pub fn processes_named(name: &str) -> Result<Vec<crate::NamedProcess>> {
     linux::processes_named(name)
 }
 

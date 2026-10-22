@@ -102,6 +102,7 @@ pub mod perf;
 mod post_mortem;
 mod presentation;
 mod proc_status;
+mod process_names;
 mod python_launch;
 pub mod reaped;
 #[cfg(debug_assertions)]
@@ -139,50 +140,7 @@ pub fn still_held(held: &crate::HeldProcess) -> Result<bool> {
     native::process_held(lifecycle::requested_pid(held.process_id)?, held.start_time)
 }
 
-/// The processes named `name`, as `pgrep -x` matches them: by the
-/// command name the kernel records, or by the file name of the first
-/// argument, which outlasts the kernel's fifteen-character limit. This
-/// process is never one of them.
-pub fn processes_named(name: &str) -> Result<Vec<crate::ProcessId>> {
-    let own = std::process::id();
-    let mut found = Vec::new();
-    let entries = std::fs::read_dir("/proc")?;
-    for entry in entries.filter_map(std::result::Result::ok) {
-        let Some(pid) = entry
-            .file_name()
-            .to_str()
-            .and_then(|pid| pid.parse::<u32>().ok())
-        else {
-            continue;
-        };
-
-        if pid == own {
-            continue;
-        }
-
-        // A process that ended meanwhile matches nothing.
-        let command = std::fs::read_to_string(entry.path().join("comm")).unwrap_or_default();
-        let first_argument = std::fs::read(entry.path().join("cmdline"))
-            .ok()
-            .and_then(|line| {
-                let first = line.split(|byte| *byte == 0).next()?.to_vec();
-                let first = String::from_utf8(first).ok()?;
-                Some(
-                    std::path::Path::new(&first)
-                        .file_name()?
-                        .to_string_lossy()
-                        .into_owned(),
-                )
-            });
-
-        if command.trim_end_matches('\n') == name || first_argument.as_deref() == Some(name) {
-            found.push(crate::ProcessId::new(u64::from(pid)));
-        }
-    }
-
-    found.sort_unstable_by_key(|pid| pid.get());
-    Ok(found)
-}
+pub use process_names::processes_named;
 
 #[cfg(feature = "fuzzing")]
 pub fn fuzz_core_dump(data: &[u8]) {

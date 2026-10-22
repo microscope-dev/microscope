@@ -633,8 +633,9 @@ fn a_controller_panic_releases_an_attached_process_unharmed() {
     }
 }
 
-/// `--attach NAME` attaches to the one process of that name, and refuses
-/// to choose among several.
+/// `--attach NAME` attaches to the one process of that name, or that runs a
+/// script of that name, and refuses to choose among several, listing each
+/// with what matched.
 #[test]
 fn attach_by_name_needs_exactly_one_process_of_that_name() {
     let directory = support::ScratchDir::new("cli-attach-name");
@@ -647,18 +648,34 @@ fn attach_by_name_needs_exactly_one_process_of_that_name() {
     target.release();
     assert_eq!(target.wait().code(), Some(23));
 
+    // A script argument names a process as `node server.js` is named.
+    let script = format!("app-{}.js", std::process::id());
+    let mut runner = support::ExternalProcess::spawn_command(
+        Command::new(fixture("build/test-programs/attach")).arg(directory.path().join(&script)),
+    );
+    let stdout = batch(&["--attach", &script], &["quit"]);
+    assert!(stdout.is_empty(), "{stdout}");
+    runner.release();
+    assert_eq!(runner.wait().code(), Some(23));
+
     let first = support::ExternalProcess::spawn(&copy);
     let second = support::ExternalProcess::spawn(&copy);
     let output = batch_output(&["--attach", &name], &["quit"]);
 
     for process in [&first, &second] {
-        assert_failure(&output, &process.process_id().to_string());
+        assert_failure(
+            &output,
+            &format!("  {}  {}  (command)", process.process_id(), copy.display()),
+        );
     }
 
-    assert_failure(&output, &format!("2 processes are named '{name}'"));
+    assert_failure(
+        &output,
+        &format!("2 processes match '{name}'; attach to one by its id:\n"),
+    );
     assert_failure(
         &batch_output(&["--attach", "no-such-process-name"], &["quit"]),
-        "no process is named 'no-such-process-name'",
+        "no process matches 'no-such-process-name'",
     );
 }
 
@@ -5585,6 +5602,24 @@ fn files_that_are_no_program_to_debug_say_what_they_are() {
             &format!("error: failed to initialize debugger for {program}: {reason}\n"),
         );
     }
+}
+
+/// A batch run whose program replaces itself with another, which
+/// microscope does not follow, fails rather than exiting 0 with the user's
+/// code never debugged, and says why after the stop's own line.
+#[test]
+fn a_batch_run_fails_when_the_program_execs_one_it_does_not_follow() {
+    let output = batch_output(&["build/test-programs/thread-exec"], &["run"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("inferior replaced its executable image"),
+        "the stop is reported: {stdout}"
+    );
+    assert_failure(
+        &output,
+        "error: the inferior replaced its program with another, which microscope does not \
+         follow; launch that program itself\n",
+    );
 }
 
 /// Debug information that cannot be used is warned of as the session

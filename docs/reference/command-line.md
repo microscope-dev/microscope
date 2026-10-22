@@ -32,7 +32,7 @@ TOOL --help` for one tool.
 
 | Option | Meaning |
 |---|---|
-| `-p, --attach PID\|NAME` | Attach by process ID or exact process name |
+| `-p, --attach PID\|NAME` | Attach by process ID, or by a name that matches one process's command, program, title, or script |
 | `--core FILE` | Open a core dump |
 | `-l, --launch NAME` | Use a project launch configuration |
 | `--cwd DIR` | Working directory for a launched program |
@@ -57,7 +57,7 @@ TOOL --help` for one tool.
 |---|---|
 | `-c, --command FILE` | Run commands from a file; repeatable |
 | `-e, --eval COMMAND` | Run one command; repeatable |
-| `--batch` | Exit after commands instead of opening the REPL |
+| `--batch` | Exit after commands instead of opening the REPL. Fails when the program replaced itself with another program microscope did not follow |
 | `--config FILE` | Use this user configuration file |
 | `--no-config` | Read no configuration files |
 | `--trust-project` | Use active project commands for this session |

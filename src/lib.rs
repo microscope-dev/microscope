@@ -161,13 +161,14 @@ pub use protocol::{
     ExceptionInfo, ExceptionStops, ExecutionId, ExitStatus, FramePresentation, GlobalVariableQuery,
     HeldChild, HeldProcess, HitComparison, HitCondition, InferiorState, InvalidatedWatchpoint,
     KernelSource, LanguageException, LanguageExceptionKind, LaunchOptions, LogPart,
-    MAX_DRAWING_BYTES, ModuleIdentity, NumberKind, Numbers, PendingBreakpointLocation,
-    PresentedFrame, ProcessId, Renderer, ResolvedBreakpointLocation, ResumeScope, SignalPolicy,
-    StateSnapshot, StepKind, StepTarget, StopId, StopReason, SyscallStop, TaskEnding,
-    ThreadSnapshot, ThreadState, TypeViews, ValueChildQuery, VariableQuery, ViewCandidate,
-    ViewCheck, ViewExplanation, VisualizerBinding, VisualizerInput, VisualizerInputs,
-    VisualizerValue, WatchAccess, WatchScope, WatchTarget, Watchpoint, WatchpointCapabilities,
-    WatchpointHit, WatchpointId, WatchpointInvalidation, WatchpointOptions, WatchpointSpec,
+    MAX_DRAWING_BYTES, ModuleIdentity, NameMatch, NamedProcess, NumberKind, Numbers,
+    PendingBreakpointLocation, PresentedFrame, ProcessId, Renderer, ResolvedBreakpointLocation,
+    ResumeScope, SignalPolicy, StateSnapshot, StepKind, StepTarget, StopId, StopReason,
+    SyscallStop, TaskEnding, ThreadSnapshot, ThreadState, TypeViews, ValueChildQuery,
+    VariableQuery, ViewCandidate, ViewCheck, ViewExplanation, VisualizerBinding, VisualizerInput,
+    VisualizerInputs, VisualizerValue, WatchAccess, WatchScope, WatchTarget, Watchpoint,
+    WatchpointCapabilities, WatchpointHit, WatchpointId, WatchpointInvalidation, WatchpointOptions,
+    WatchpointSpec,
 };
 
 pub use runtime_model::TASK_NOUNS;
@@ -244,10 +245,12 @@ pub fn is_built_in_view(name: &ViewName) -> bool {
         .any(|view| view.source == name.source && view.line == name.line)
 }
 
-/// The processes named `name`, matched exactly as `pgrep -x` matches:
-/// by the command name the platform records, or by the file name the
-/// process was started as. The calling process is never one of them.
-pub fn processes_named(name: &str) -> Result<Vec<ProcessId>> {
+/// The processes `name` names exactly.
+///
+/// A name matches the command name the platform records, the file name the
+/// process was started as, a title it set, or the file name of a script it
+/// runs. The calling process is never one of them.
+pub fn processes_named(name: &str) -> Result<Vec<NamedProcess>> {
     backend::processes_named(name)
 }
 

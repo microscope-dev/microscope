@@ -264,6 +264,10 @@ pub struct Cli {
     /// The program's profile, recording or recorded, boxed as a profile is
     /// large.
     profiling: std::sync::Mutex<Box<profile::Profiling>>,
+
+    /// Whether the inferior replaced its program with one microscope does
+    /// not follow, which fails a batch run.
+    unfollowed_exec: std::sync::atomic::AtomicBool,
 }
 
 /// A source file's lines, each with its highlighted spans.
@@ -311,6 +315,7 @@ impl Cli {
             completion_code: std::sync::Mutex::default(),
             completion_names: std::sync::Mutex::default(),
             profiling: std::sync::Mutex::default(),
+            unfollowed_exec: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -503,11 +508,27 @@ impl Cli {
     /// Runs the session's scripts and then its REPL, pausing the inferior on
     /// Ctrl-C.
     pub async fn run(&self, session: &Session) -> Result<()> {
+        let session_batch = session.batch;
         let session = self.run_inputs(session);
         tokio::pin!(session);
         loop {
             tokio::select! {
-                result = &mut session => return result,
+                result = &mut session => {
+                    result?;
+
+                    // A script that ran to its end still failed when the
+                    // program it debugged was replaced by one it did not.
+                    if session_batch
+                        && self.unfollowed_exec.load(std::sync::atomic::Ordering::Relaxed)
+                    {
+                        bail!(
+                            "the inferior replaced its program with another, which microscope \
+                             does not follow; launch that program itself"
+                        );
+                    }
+
+                    return Ok(());
+                }
                 signal = tokio::signal::ctrl_c() => {
                     signal.context("failed to listen for Ctrl-C")?;
                     self.interrupt().await;

@@ -321,17 +321,35 @@ fn attach_process(target: &AttachTarget) -> Result<ProcessId> {
 
     let found = microscope::processes_named(name)?;
     match found.as_slice() {
-        [] => bail!("no process is named '{name}'"),
-        [process] => Ok(*process),
-        several => bail!(
-            "{} processes are named '{name}'; attach to one by its id: {}",
-            several.len(),
-            several
+        [] => bail!("no process matches '{name}'"),
+        [process] => Ok(process.process_id),
+        several => {
+            let width = several
                 .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
+                .map(|process| process.process_id.to_string().len())
+                .max()
+                .unwrap_or(0);
+            let lines: Vec<String> = several
+                .iter()
+                .map(|process| {
+                    let matched = match process.matched {
+                        microscope::NameMatch::Command => "command",
+                        microscope::NameMatch::Program => "program",
+                        microscope::NameMatch::Title => "title",
+                        microscope::NameMatch::Script => "script",
+                    };
+                    format!(
+                        "  {:>width$}  {}  ({matched})",
+                        process.process_id, process.command_line
+                    )
+                })
+                .collect();
+            bail!(
+                "{} processes match '{name}'; attach to one by its id:\n{}",
+                several.len(),
+                lines.join("\n")
+            )
+        }
     }
 }
 

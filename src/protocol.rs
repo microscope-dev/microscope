@@ -1930,6 +1930,33 @@ pub struct StateSnapshot {
 ///
 /// Every event carries the state revision it produced; a
 /// [`StateSnapshot`] at that revision or later reflects it.
+/// A process an attach by name found, with what its name matched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedProcess {
+    pub process_id: ProcessId,
+
+    /// Its arguments, joined with spaces, or the title it set.
+    pub command_line: Arc<str>,
+    pub matched: NameMatch,
+}
+
+/// What of a process a name matched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameMatch {
+    /// The command name the platform records for it.
+    Command,
+
+    /// The file name of the program it was started as.
+    Program,
+
+    /// A title the program set over its arguments, such as `npm start`.
+    Title,
+
+    /// The file name of an argument it runs, such as `node server.js`'s
+    /// script.
+    Script,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DebuggerEvent {
     /// Debugger state changed in a way no more specific event describes.
