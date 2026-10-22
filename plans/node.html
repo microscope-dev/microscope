@@ -727,7 +727,7 @@ tests/node/, tests/fixtures/node/</pre>
           <tr><td>G5</td><td>Facts gathered before the barrier: a runtime transport may attach facts it collected before the all-stop barrier completed to the stop, invalidated with it</td><td>CDP's local names (F11) must be fetched while the paused thread can still answer, never at a published stop</td></tr>
           <tr><td>G6</td><td>Source maps as debug information: a recorded place maps to an original place, and a breakpoint on an original place maps back, segment-exactly per the v3 format</td><td>Any language that compiles to JavaScript or carries maps; tested on hand-written maps</td></tr>
           <tr><td>G7</td><td>Prologue-aware frame-pointer unwinding in pseudo-modules: a top frame stopped before its frame pointer is pushed unwinds by the decoded prologue</td><td>The perf-map pseudo-modules already decode instructions; this extends the same rule to every frame-pointer pseudo-module</td></tr>
-          <tr><td>G8</td><td>Following the program to the code the user meant (F26), in its own plan:
+          <tr><td>G8</td><td>Following the program to the code the user meant (F26), in its own plan, <a href="follow.html">plans/follow.html</a>:
             <ul>
               <li>launch a <code>#!</code> script through its interpreter line;</li>
               <li>follow an exec into a different ELF by loading the new main image, instead of stopping with <code>UnsupportedExec</code>;</li>
