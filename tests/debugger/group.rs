@@ -589,6 +589,167 @@ async fn npm_start_is_followed_through_its_shell_into_the_app() {
     group.shutdown().await;
 }
 
+/// `npx` runs a package's bin, here a `#!/usr/bin/env node` script, through
+/// a shell: the script's node joins the group at its exec and stops at a
+/// breakpoint set before the run.
+#[tokio::test]
+async fn npx_is_followed_through_the_bins_interpreter_line() {
+    let scratch = support::ScratchDir::new("group-npx");
+    fs::write(
+        scratch.path().join("package.json"),
+        r#"{"name": "app", "version": "1.0.0"}"#,
+    )
+    .expect("write package.json");
+    let bin = scratch.path().join("node_modules/.bin");
+    fs::create_dir_all(&bin).expect("make the bin directory");
+    let hello = bin.join("hello");
+    fs::write(&hello, "#!/usr/bin/env node\nconsole.log('hello');\n").expect("write the bin");
+    fs::set_permissions(&hello, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("make the bin executable");
+    let npx = node().with_file_name("npx");
+
+    let program = Program::load(&npx, &microscope::DebugFileOptions::default()).expect("load npx");
+    let group = ProcessGroup::new(program, FollowPolicy::default()).expect("start the group");
+    let events = group.subscribe();
+    let mut group = Group {
+        inner: group,
+        events,
+        seen: Vec::new(),
+    };
+    group.break_at("uv_setup_args").await;
+    let cache = scratch.path().join("npm-cache");
+    group
+        .inner
+        .root()
+        .launch_with(LaunchOptions {
+            arguments: vec!["hello".into()],
+            working_directory: Some(scratch.path().to_owned()),
+            environment: vec![
+                ("npm_config_cache".into(), Some(cache.into_os_string())),
+                ("npm_config_offline".into(), Some("true".into())),
+                ("npm_config_update_notifier".into(), Some("false".into())),
+            ],
+            ..LaunchOptions::default()
+        })
+        .await
+        .expect("launch npx");
+
+    let stops = group.run_to_exit().await;
+    let members = group.inner.members();
+    let script = members
+        .iter()
+        .skip(1)
+        .find(|member| {
+            member
+                .executed
+                .as_ref()
+                .is_some_and(|program| program.ends_with("node"))
+        })
+        .unwrap_or_else(|| panic!("the bin's node joined by executing node: {members:#?}"));
+    let stopped = breakpoint_members(&stops);
+    assert!(stopped.contains(&1), "npx's own node stops: {stops:#?}");
+    assert!(
+        stopped.contains(&script.number),
+        "the bin's node stops: {stops:#?}"
+    );
+    assert_eq!(
+        group.root_status(),
+        MemberState::Exited(ExitStatus::Code(0))
+    );
+    group.shutdown().await;
+}
+
+/// `node --watch` runs the app in a child node and starts it again when its
+/// file changes. The restarted app joins as a new member with the group's
+/// breakpoints, and the one it replaced is shown as exited.
+#[tokio::test]
+async fn a_watched_app_restarted_joins_again_with_its_breakpoints() {
+    let scratch = support::ScratchDir::new("group-node-watch");
+    // The first run changes its own file and waits to be replaced; the
+    // second, which finds the marker, ends.
+    fs::write(
+        scratch.path().join("app.js"),
+        "const fs = require('node:fs');\n\
+         const marker = __dirname + '/restarted';\n\
+         if (!fs.existsSync(marker)) {\n\
+           fs.writeFileSync(marker, '');\n\
+           setTimeout(() => fs.appendFileSync(__filename, '// changed\\n'), 200);\n\
+           setInterval(() => {}, 1000);\n\
+         }\n",
+    )
+    .expect("write app.js");
+
+    let program =
+        Program::load(node(), &microscope::DebugFileOptions::default()).expect("load node");
+    let group = ProcessGroup::new(program, FollowPolicy::default()).expect("start the group");
+    let events = group.subscribe();
+    let mut group = Group {
+        inner: group,
+        events,
+        seen: Vec::new(),
+    };
+    group.break_at("uv_setup_args").await;
+    group
+        .inner
+        .root()
+        .launch_with(LaunchOptions {
+            arguments: vec!["--watch".into(), "app.js".into()],
+            working_directory: Some(scratch.path().to_owned()),
+            ..LaunchOptions::default()
+        })
+        .await
+        .expect("launch node --watch");
+
+    // The watcher, the first app, and the restarted one each stop once.
+    let mut stopped = Vec::new();
+    while stopped.len() < 3 {
+        let (member, reason) = group.stop().await;
+        if function_breakpoint(&reason) && !stopped.contains(&member) {
+            stopped.push(member);
+        }
+        group
+            .inner
+            .continue_all()
+            .await
+            .expect("continue the group");
+    }
+    let [watcher, first, restarted] = stopped[..] else {
+        unreachable!("three members stopped");
+    };
+    assert_eq!(watcher, 1);
+    assert_ne!(first, restarted);
+    loop {
+        if let GroupEvent::MemberExited { member, .. } = group.next().await
+            && member == restarted
+        {
+            break;
+        }
+    }
+    assert!(
+        group.seen.iter().any(
+            |event| matches!(event, GroupEvent::MemberExited { member, .. } if *member == first)
+        ),
+        "the replaced app is shown as exited: {:#?}",
+        group.seen
+    );
+
+    // The watcher waits for the next change until the group ends it.
+    let processes = group
+        .inner
+        .members()
+        .iter()
+        .filter_map(|member| member.process)
+        .collect::<Vec<_>>();
+    group.shutdown().await;
+    for process in processes {
+        let state = process_state(process);
+        assert!(
+            matches!(state, None | Some('Z')),
+            "{process:?} is {state:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn a_member_detached_alone_runs_on_without_its_traps() {
     let mut group = Group::new("tree", FollowPolicy::default());
