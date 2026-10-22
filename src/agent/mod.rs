@@ -1,3 +1,9 @@
+//! TODO: Delete this temporary agent implementation once we have thought through
+//! the product experience. Removal includes `src/agent/`, the agent CLI wiring,
+//! `record --upload`, `proto/microscope/agent/v1/agent.proto` and its build/dependency
+//! wiring, and the trusted-proxy profile serving in `src/web/` (`--trust-proxy`,
+//! `--listen-unix`, `--public-url`), along with their tests and docs.
+//!
 //! `microscope agent`: keeps this machine connected to microscope's service,
 //! uploads the recordings queued in its outbox, and, when allowed, records
 //! the processes the service asks for.
