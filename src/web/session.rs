@@ -1,13 +1,16 @@
 //! The one debugging session a `microscope web` server holds, shared by every
 //! connected tab.
 //!
-//! The session owns at most one [`Debugger`] at a time. Choosing something
-//! else to debug ends the current one first: a launched program is killed
-//! and an attached one detached, as [`Debugger::shutdown`] does. Each
-//! debugger gets a new session id, so links to an earlier one say it ended
-//! instead of opening something else.
+//! The session owns at most one target at a time: a process group for a
+//! launched or attached program, which follows the processes it starts as
+//! the settings' `[follow]` says, or a [`Debugger`] for a core dump.
+//! Choosing something else to debug ends the current one first: a launched
+//! program is killed and an attached one detached. Each target gets a new
+//! session id, so links to an earlier one say it ended instead of opening
+//! something else. Requests act on the group's selected member; see
+//! [`super::group`].
 //!
-//! State is pushed: a task per debugger turns its events into whole
+//! State is pushed: a task per target turns its events into whole
 //! [`State`]s published through a watch channel, so a burst of events sends
 //! only the newest state, and a lagged event stream costs nothing but a
 //! fresh snapshot.
@@ -23,8 +26,8 @@ use std::time::Duration;
 
 use microscope::{
     BreakpointOptions, CoreDumpOptions, Debugger, DebuggerEvent, DebuggerHandle, EvaluationMode,
-    ExceptionDisposition, Expression, InferiorState, InspectionLimits, LaunchOptions, ProcessId,
-    ResumeScope, StopId,
+    ExceptionDisposition, Expression, FollowPolicy, GroupHandle, InferiorState, InspectionLimits,
+    LaunchOptions, MemberNumber, ProcessGroup, ProcessId, ResumeScope, StopId,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -34,6 +37,7 @@ use tokio::task::JoinHandle;
 
 use super::auth::{Tokens, random_hex};
 use super::describe::{Cause, Describer, Images};
+use super::group::{Pump, Selection};
 use super::protocol::{
     self, Added, ConsoleResult, ErrorBody, ErrorKind, FrameAt, Inferior, Output, PathCompletions,
     Person, Presence, Processes, Request, Role, ServerMessage, ShareLink, State, StepKind, Stream,
@@ -181,14 +185,31 @@ pub struct Session {
     resume_attached: AtomicBool,
     /// Whether `share` makes links; see [`Session::stop_sharing`].
     share_links: AtomicBool,
+
+    /// Which processes a launched or attached program starts are debugged
+    /// too.
+    follow: Mutex<FollowPolicy>,
 }
 
 struct Target {
     /// The session id, which a new target replaces.
     id: String,
+
+    /// A core dump's debugger.
     debugger: Option<Debugger>,
-    handle: DebuggerHandle,
-    images: Arc<Images>,
+
+    /// A launched or attached program's processes.
+    group: Option<ProcessGroup>,
+
+    /// The program's own process: the group's root, whose breakpoints are
+    /// the group's, or the core dump's.
+    root: DebuggerHandle,
+
+    /// The member requests act on.
+    selection: Arc<Selection>,
+
+    /// The member the console last selected, or 0 when not known.
+    console_member: Arc<AtomicU32>,
     launch: Option<LaunchSpec>,
 
     /// The launched program's standard input, until closed.
@@ -257,7 +278,14 @@ impl Session {
             handles: values::Handles::default(),
             resume_attached: AtomicBool::new(false),
             share_links: AtomicBool::new(true),
+            follow: Mutex::default(),
         })
+    }
+
+    /// Follows the processes programs debugged from now on start as
+    /// `policy` says.
+    pub fn follow(&self, policy: FollowPolicy) {
+        *self.follow.lock().unwrap_or_else(PoisonError::into_inner) = policy;
     }
 
     /// Stops making links that share the session, as behind a trusted
@@ -494,6 +522,12 @@ impl Session {
             | Request::RemoveWatchpoint(_)
             | Request::SetSignal(_) => return self.low_level(connection, request).await,
             Request::SetException(choice) => Some(self.set_exception(&choice).await?),
+            Request::SelectMember(protocol::MemberRef { member }) => {
+                Some(self.select_member(member).await?)
+            }
+            Request::DetachMember(protocol::MemberRef { member }) => {
+                Some(self.detach_member(member).await?)
+            }
             Request::ReloadViews => {
                 self.reload_views(connection).await?;
                 return Ok(Value::Null);
@@ -695,13 +729,11 @@ impl Session {
             Request::Step(step) => self.step(connection, step).await?,
             Request::Jump(jump) => self.jump(connection, jump).await?,
             Request::Pause => {
-                let handle = self.current_handle().await?;
-                self.caused(connection, "paused");
-                handle.pause().await?;
+                self.pause(connection).await?;
                 "paused".to_owned()
             }
             Request::Kill => {
-                self.current_handle().await?.kill().await?;
+                self.kill().await?;
                 "killed the program".to_owned()
             }
             Request::Restart => {
@@ -721,8 +753,9 @@ impl Session {
         }))
     }
 
+    /// Changes the group's breakpoints, which are its root's.
     async fn breakpoints(&self, connection: u32, request: Request) -> Answer {
-        let handle = self.current_handle().await?;
+        let handle = self.root_handle().await?;
 
         match request {
             Request::AddBreakpoint(add) => {
@@ -1062,12 +1095,17 @@ impl Session {
         Ok(format!("ended the {name} session"))
     }
 
-    /// Continues the stop named, or starts a launched program that is not
-    /// running.
+    /// Continues the stop named, and with it every process of the group,
+    /// or starts a launched program that is not running.
     async fn resume(&self, connection: u32, stop: Option<u64>) -> Result<String, Failure> {
         let (handle, launch, started) = self.current_launch().await?;
         if let Some(stop) = stop {
-            let InferiorState::Stopped { process_id, .. } = handle.snapshot().await?.inferior
+            let selected = self.current_handle().await?;
+            let InferiorState::Stopped {
+                process_id,
+                stop_id,
+                ..
+            } = selected.snapshot().await?.inferior
             else {
                 return Err(Failure::new(
                     ErrorKind::NotStopped,
@@ -1076,13 +1114,23 @@ impl Session {
             };
 
             self.caused(connection, "continued");
-            handle
-                .continue_execution(
-                    StopId::new(stop),
-                    ResumeScope::Process(process_id),
-                    ExceptionDisposition::Pass,
-                )
-                .await?;
+            match self.group_handle().await {
+                Some(group) => {
+                    if stop_id != StopId::new(stop) {
+                        return Err(microscope::Error::StaleStop.into());
+                    }
+                    group.continue_all().await?;
+                }
+                None => {
+                    selected
+                        .continue_execution(
+                            StopId::new(stop),
+                            ResumeScope::Process(process_id),
+                            ExceptionDisposition::Pass,
+                        )
+                        .await?;
+                }
+            }
             return Ok("continued".to_owned());
         }
 
@@ -1114,13 +1162,134 @@ impl Session {
             ));
         };
 
-        match handle.kill().await {
+        let group = self.group_handle().await;
+        match kill_program(group.as_ref(), &handle).await {
             Ok(()) | Err(microscope::Error::NotRunning) => {}
             Err(error) => return Err(error.into()),
+        }
+        if let Some(group) = group {
+            // The group runs again, rather than staying stopped where it
+            // was killed; with every member gone, this resumes none.
+            for _ in 0..group.members().len() {
+                if group.continue_all().await.is_err() {
+                    break;
+                }
+            }
         }
 
         self.caused(connection, "restarted the program");
         self.run(&handle, &spec).await
+    }
+
+    /// Pauses the program: in a group, every process, once one is running.
+    async fn pause(&self, connection: u32) -> Result<(), Failure> {
+        let Some(group) = self.group_handle().await else {
+            let handle = self.current_handle().await?;
+            self.caused(connection, "paused");
+            handle.pause().await?;
+            return Ok(());
+        };
+
+        if !group
+            .members()
+            .iter()
+            .any(|member| member.state == microscope::MemberState::Running)
+        {
+            return Err(microscope::Error::NotRunning.into());
+        }
+
+        self.caused(connection, "paused");
+        group.pause_all().await?;
+        Ok(())
+    }
+
+    /// Kills the program: in a group, every process it debugs.
+    async fn kill(&self) -> Result<(), Failure> {
+        let group = self.group_handle().await;
+        let handle = self.root_handle().await?;
+        kill_program(group.as_ref(), &handle)
+            .await
+            .map_err(Failure::from)
+    }
+
+    /// Selects member `number` of the group, which every tab then shows and
+    /// requests act on.
+    async fn select_member(&self, number: MemberNumber) -> Result<String, Failure> {
+        let (group, selection) = self.group_selection().await?;
+        let handle = group
+            .member(number)
+            .ok_or_else(|| Failure::new(ErrorKind::Invalid, format!("no process is [{number}]")))?;
+        if handle.snapshot().await.is_err() {
+            return Err(Failure::new(
+                ErrorKind::Invalid,
+                format!("[{number}] is no longer debugged"),
+            ));
+        }
+
+        selection.select(number, handle);
+        Ok(group
+            .members()
+            .iter()
+            .find(|member| member.number == number)
+            .map_or_else(
+                || format!("selected [{number}]"),
+                |member| format!("selected {}", format::member(member, Renderer::new(false))),
+            ))
+    }
+
+    /// Lets member `number`'s process run on without microscope.
+    async fn detach_member(&self, number: MemberNumber) -> Result<String, Failure> {
+        let (group, _) = self.group_selection().await?;
+        if number == 1 {
+            return Err(Failure::new(
+                ErrorKind::Invalid,
+                "the program's own process leaves only with the session; end it instead",
+            ));
+        }
+
+        let member = group
+            .members()
+            .into_iter()
+            .find(|member| member.number == number)
+            .ok_or_else(|| Failure::new(ErrorKind::Invalid, format!("no process is [{number}]")))?;
+        group.detach(number).await?;
+        Ok(format!(
+            "detached {}",
+            format::member(&member, Renderer::new(false))
+        ))
+    }
+
+    /// The group and its selection, for requests that only a group has.
+    async fn group_selection(&self) -> Result<(GroupHandle, Arc<Selection>), Failure> {
+        let found = self.target.lock().await.as_ref().map(|target| {
+            (
+                target.group.as_ref().map(ProcessGroup::handle),
+                Arc::clone(&target.selection),
+            )
+        });
+        let (group, selection) =
+            found.ok_or_else(|| Failure::new(ErrorKind::Invalid, "nothing is being debugged"))?;
+        let group = group
+            .ok_or_else(|| Failure::new(ErrorKind::Unsupported, "a core dump has one process"))?;
+        Ok((group, selection))
+    }
+
+    async fn group_handle(&self) -> Option<GroupHandle> {
+        self.target
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|target| target.group.as_ref().map(ProcessGroup::handle))
+    }
+
+    /// The program's own process, whose breakpoints are the group's.
+    async fn root_handle(&self) -> Result<DebuggerHandle, Failure> {
+        self.target
+            .lock()
+            .await
+            .as_ref()
+            .map(|target| target.root.clone())
+            .ok_or_else(|| Failure::new(ErrorKind::Invalid, "nothing is being debugged"))
     }
 
     async fn current_images(&self) -> Result<(DebuggerHandle, Arc<Images>), Failure> {
@@ -1128,19 +1297,20 @@ impl Session {
             .lock()
             .await
             .as_ref()
-            .map(|target| (target.handle.clone(), Arc::clone(&target.images)))
+            .map(|target| {
+                let view = target.selection.view();
+                (view.handle, view.images)
+            })
             .ok_or_else(|| Failure::new(ErrorKind::Invalid, "nothing is being debugged"))
     }
 
     /// Where a launched Python program's own files are, as its interpreter
     /// begins `sys.path`; none for any other program, or one attached to.
     async fn python_project(&self) -> Option<crate::present::python_files::Project> {
-        let (handle, spec) = self
-            .target
-            .lock()
-            .await
-            .as_ref()
-            .and_then(|target| Some((target.handle.clone(), target.launch.clone()?)))?;
+        let (handle, spec) =
+            self.target.lock().await.as_ref().and_then(|target| {
+                Some((target.selection.view().handle, target.launch.clone()?))
+            })?;
         if !crate::present::debug_information::interprets_python(&handle.module_image()) {
             return None;
         }
@@ -1165,12 +1335,13 @@ impl Session {
         ))
     }
 
+    /// The selected member's handle, which requests act on.
     async fn current_handle(&self) -> Result<DebuggerHandle, Failure> {
         self.target
             .lock()
             .await
             .as_ref()
-            .map(|target| target.handle.clone())
+            .map(|target| target.selection.view().handle)
             .ok_or_else(|| Failure::new(ErrorKind::Invalid, "nothing is being debugged"))
     }
 
@@ -1272,11 +1443,8 @@ impl Session {
             .await
             .as_ref()
             .map(|target| {
-                (
-                    target.handle.clone(),
-                    Arc::clone(&target.images),
-                    target.id.clone(),
-                )
+                let view = target.selection.view();
+                (view.handle, view.images, target.id.clone())
             })
             .ok_or_else(|| Failure::new(ErrorKind::Invalid, "nothing is being debugged"))?;
         let code = Code::new(images.loaded().await);
@@ -1421,14 +1589,32 @@ impl Session {
             ));
         }
 
-        let (handle, console) = self
+        let (view, console, synced, selection, group) = self
             .target
             .lock()
             .await
             .as_ref()
-            .map(|target| (target.handle.clone(), Arc::clone(&target.console)))
+            .map(|target| {
+                (
+                    target.selection.view(),
+                    Arc::clone(&target.console),
+                    Arc::clone(&target.console_member),
+                    Arc::clone(&target.selection),
+                    target.group.as_ref().map(ProcessGroup::handle),
+                )
+            })
             .ok_or_else(|| Failure::new(ErrorKind::Invalid, "nothing is being debugged"))?;
+        let handle = view.handle;
         let console = console.lock().await;
+
+        // The console acts on the member the tabs show.
+        if group.is_some() && synced.load(Ordering::Relaxed) != view.member {
+            console
+                .console(&format!("process {}", view.member))
+                .await
+                .map_err(|error| Failure::new(ErrorKind::Failed, format!("{error:#}")))?;
+            synced.store(view.member, Ordering::Relaxed);
+        }
 
         if let Some(at) = at {
             let context = inspect::context(&handle, at.stop, at.execution(), at.frame).await?;
@@ -1445,10 +1631,25 @@ impl Session {
             })?;
         drop(console);
 
-        // `set` changes values the tabs show, and `catch` which exceptions
-        // stop.
+        // `set` changes values the tabs show, `catch` which exceptions
+        // stop, and `process` which member the tabs show.
         match crate::cli::commands::line_command(text).map(|(spec, _)| spec.command) {
             Some(crate::cli::commands::Command::Set) => self.wrote().await,
+            Some(crate::cli::commands::Command::Process) => {
+                let number = text
+                    .split_whitespace()
+                    .nth(1)
+                    .map(|word| word.trim_start_matches('[').trim_end_matches(']'))
+                    .and_then(|word| word.parse::<MemberNumber>().ok());
+                if let Some((number, handle)) =
+                    number.and_then(|number| Some((number, group.as_ref()?.member(number)?)))
+                {
+                    synced.store(number, Ordering::Relaxed);
+                    selection.select(number, handle);
+                }
+            }
+            // It may select another member.
+            Some(crate::cli::commands::Command::Detach) => synced.store(0, Ordering::Relaxed),
             Some(crate::cli::commands::Command::Catch) => {
                 self.count(
                     |target| &target.settings,
@@ -1468,19 +1669,25 @@ impl Session {
     /// The handle, the launch spec of a launched program, and whether the
     /// program is running or stopped, rather than not started or ended.
     async fn current_launch(&self) -> Result<(DebuggerHandle, Option<LaunchSpec>, bool), Failure> {
-        let current = self
-            .target
-            .lock()
-            .await
-            .as_ref()
-            .map(|target| (target.handle.clone(), target.launch.clone()));
-        let (handle, launch) =
+        let current = self.target.lock().await.as_ref().map(|target| {
+            (
+                target.root.clone(),
+                target.launch.clone(),
+                target.group.is_some(),
+            )
+        });
+        let (handle, launch, group) =
             current.ok_or_else(|| Failure::new(ErrorKind::Invalid, "nothing is being debugged"))?;
 
-        let started = matches!(
-            self.state.borrow().inferior,
-            Inferior::Running { .. } | Inferior::Stopped { .. }
-        );
+        // A group's program has started while its own process runs.
+        let started = if group {
+            !matches!(handle.snapshot().await?.inferior, InferiorState::NotRunning)
+        } else {
+            matches!(
+                self.state.borrow().inferior,
+                Inferior::Running { .. } | Inferior::Stopped { .. }
+            )
+        };
         Ok((handle, launch, started))
     }
 
@@ -1539,16 +1746,20 @@ impl Session {
             .unwrap_or_else(PoisonError::into_inner)
             .clear();
         self.loading(&start);
-        let opened = open(&start, &self.debug_files).await;
-        let debugger = match opened {
-            Ok(debugger) => debugger,
+        let policy = self
+            .follow
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let opened = match open(&start, &self.debug_files, policy).await {
+            Ok(opened) => opened,
             Err(message) => {
                 self.state.send_replace(Arc::new(State::idle(None)));
                 return Err(Failure::new(ErrorKind::Failed, message));
             }
         };
 
-        let handle = debugger.handle();
+        let handle = opened.handle();
         let attached = matches!(start, Start::Attach(_));
         let (info, launch, run) = describe_target(start, &handle);
         let id =
@@ -1557,57 +1768,62 @@ impl Session {
             || info.program.clone(),
             |name| name.to_string_lossy().into_owned(),
         );
+        let (debugger, group) = match opened {
+            Opened::Single(debugger) => (Some(debugger), None),
+            Opened::Group(group) => (None, Some(group)),
+        };
+        let members = group.as_ref().map(ProcessGroup::handle);
 
         // The new session's state goes out before the request is answered,
         // so a page can open it; the pump takes every later change.
         let events = handle.subscribe();
-        let snapshot = handle.snapshot().await?;
         self.cause
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take();
 
-        let mut describer = Describer::new(id, info, handle.clone(), Arc::clone(&self.cause));
-        self.state
-            .send_replace(Arc::new(describer.describe(&snapshot).await));
-        let images = Arc::clone(&describer.images);
+        let describer = Describer::new(id, info, handle.clone(), Arc::clone(&self.cause));
+        let selection = Arc::new(Selection::new(
+            handle.clone(),
+            Arc::clone(&describer.images),
+        ));
         let writes = Arc::clone(&describer.writes);
         let settings = Arc::clone(&describer.settings);
+        let session = describer.id.clone();
         let outlet = Outlet {
             history: Arc::clone(&self.history),
             messages: self.messages.clone(),
         };
-
-        // The console's commands read no settings files, as the debug
-        // adapter's do not.
-        let root = crate::cli::config::project_root(&self.cwd);
-        let console = Cli::new(
-            handle.clone(),
-            Renderers::console(false, root.clone()),
-            crate::cli::config::Settings::defaults(root),
-            LaunchSettings::default(),
+        let mut pump = Pump::new(
+            Arc::clone(&self.state),
+            outlet.clone(),
+            members.clone(),
+            Arc::clone(&selection),
+            describer,
+            if attached {
+                protocol::Joined::Attached
+            } else {
+                protocol::Joined::Launched
+            },
         );
-        for warning in console.debug_information_warnings().await {
-            outlet.publish(Stream::Log, &format!("warning: {warning}\n"));
-        }
-
-        // The session's, the project's, and the user's views apply, as in
-        // the terminal.
-        for warning in console.load_view_sources(&self.cwd, &self.views).await {
-            outlet.publish(Stream::Log, &format!("views: {warning}\n"));
-        }
-
-        let session = describer.id.clone();
-        let pump = tokio::spawn(pump(Arc::clone(&self.state), describer, events, outlet));
+        let first = pump
+            .first_state()
+            .await
+            .ok_or_else(|| Failure::new(ErrorKind::Failed, "the debugger ended as it started"))?;
+        self.state.send_replace(Arc::new(first));
+        let console = self.console_for(&handle, members.as_ref(), &outlet).await;
+        let pump = tokio::spawn(pump.run(events));
 
         *target = Some(Target {
             id: session,
             console: Arc::new(tokio::sync::Mutex::new(console)),
             writes,
             settings,
-            debugger: Some(debugger),
-            handle: handle.clone(),
-            images,
+            debugger,
+            group,
+            root: handle.clone(),
+            selection,
+            console_member: Arc::new(AtomicU32::new(1)),
             launch: launch.clone(),
             input: Arc::default(),
             pump,
@@ -1615,21 +1831,8 @@ impl Session {
             name,
         });
 
-        if attached
-            && self.resume_attached.load(Ordering::Relaxed)
-            && let InferiorState::Stopped {
-                process_id,
-                stop_id,
-                ..
-            } = handle.snapshot().await?.inferior
-        {
-            handle
-                .continue_execution(
-                    stop_id,
-                    ResumeScope::Process(process_id),
-                    ExceptionDisposition::Pass,
-                )
-                .await?;
+        if attached && self.resume_attached.load(Ordering::Relaxed) {
+            resume_attached(members.as_ref(), &handle).await?;
         }
 
         if run && let Some(spec) = launch {
@@ -1641,6 +1844,40 @@ impl Session {
         }
 
         Ok(())
+    }
+
+    /// The console for a session whose program's own process is `root`,
+    /// in `group` when it has one, with the views that apply, saying what
+    /// it could not read.
+    async fn console_for(
+        &self,
+        root: &DebuggerHandle,
+        group: Option<&GroupHandle>,
+        outlet: &Outlet,
+    ) -> Cli {
+        // The console's commands read no settings files, as the debug
+        // adapter's do not.
+        let project = crate::cli::config::project_root(&self.cwd);
+        let mut console = Cli::new(
+            root.clone(),
+            Renderers::console(false, project.clone()),
+            crate::cli::config::Settings::defaults(project),
+            LaunchSettings::default(),
+        );
+        if let Some(group) = group {
+            console = console.with_group(group.clone(), microscope::SourcePathMap::default());
+        }
+        for warning in console.debug_information_warnings().await {
+            outlet.publish(Stream::Log, &format!("warning: {warning}\n"));
+        }
+
+        // The session's, the project's, and the user's views apply, as in
+        // the terminal.
+        for warning in console.load_view_sources(&self.cwd, &self.views).await {
+            outlet.publish(Stream::Log, &format!("views: {warning}\n"));
+        }
+
+        console
     }
 
     /// Starts a launched program, recording its output readers and input.
@@ -1722,9 +1959,10 @@ impl Session {
     async fn end(&self, mut target: Target) -> Result<(), Failure> {
         target.pump.abort();
         let _ = (&mut target.pump).await;
-        let shutdown = match target.debugger.take() {
-            Some(debugger) => debugger.shutdown().await,
-            None => Ok(()),
+        let shutdown = match (target.debugger.take(), target.group.take()) {
+            (Some(debugger), _) => debugger.shutdown().await,
+            (None, Some(group)) => group.shutdown().await,
+            (None, None) => Ok(()),
         };
 
         // The program's end closes its streams; a reader still waiting is
@@ -1759,6 +1997,42 @@ impl History {
     fn clear(&mut self) {
         self.pieces.clear();
         self.bytes = 0;
+    }
+}
+
+/// Kills `root`'s program, and in a group every process it debugs, the
+/// root's last.
+async fn kill_program(
+    group: Option<&GroupHandle>,
+    root: &DebuggerHandle,
+) -> microscope::Result<()> {
+    let Some(group) = group else {
+        return root.kill().await;
+    };
+
+    let (mut killed, mut failed) = (false, None);
+    for member in group.members().iter().rev() {
+        let Some(handle) = group.member(member.number) else {
+            continue;
+        };
+        if !matches!(
+            member.state,
+            microscope::MemberState::Running | microscope::MemberState::Stopped(_)
+        ) {
+            continue;
+        }
+
+        match handle.kill().await {
+            Ok(()) => killed = true,
+            Err(microscope::Error::NotRunning) => {}
+            Err(error) => failed = failed.or(Some(error)),
+        }
+    }
+
+    match failed {
+        Some(error) => Err(error),
+        None if killed => Ok(()),
+        None => Err(microscope::Error::NotRunning),
     }
 }
 
@@ -1886,23 +2160,78 @@ fn to_value<T: serde::Serialize>(value: &T) -> Value {
     serde_json::to_value(value).unwrap_or_else(|error| json!({ "error": error.to_string() }))
 }
 
-/// Opens the debugger `start` describes, off the async threads where it
-/// loads debug information.
+/// Lets a process attached to run on: in a group, every member.
+async fn resume_attached(
+    group: Option<&GroupHandle>,
+    handle: &DebuggerHandle,
+) -> Result<(), Failure> {
+    if let Some(group) = group {
+        return Ok(group.continue_all().await?);
+    }
+
+    if let InferiorState::Stopped {
+        process_id,
+        stop_id,
+        ..
+    } = handle.snapshot().await?.inferior
+    {
+        handle
+            .continue_execution(
+                stop_id,
+                ResumeScope::Process(process_id),
+                ExceptionDisposition::Pass,
+            )
+            .await?;
+    }
+
+    Ok(())
+}
+
+/// What a session debugs: a launched or attached program's processes, or
+/// a core dump.
+enum Opened {
+    Group(ProcessGroup),
+    Single(Debugger),
+}
+
+impl Opened {
+    /// The program's own process.
+    fn handle(&self) -> DebuggerHandle {
+        match self {
+            Self::Group(group) => group.root(),
+            Self::Single(debugger) => debugger.handle(),
+        }
+    }
+}
+
+/// Opens what `start` describes, off the async threads where it loads debug
+/// information. A launched or attached program's processes are followed as
+/// `policy` says.
 async fn open(
     start: &Start,
     debug_files: &microscope::DebugFileOptions,
-) -> Result<Debugger, String> {
+    policy: FollowPolicy,
+) -> Result<Opened, String> {
     match start {
         Start::Launch { spec, .. } => {
             let program = spec.program.clone();
             let debug_files = debug_files.clone();
-            tokio::task::spawn_blocking(move || Debugger::new_with(&program, &debug_files))
-                .await
-                .map_err(|error| error.to_string())?
-                .map_err(|error| format!("failed to load {}: {error}", spec.program.display()))
-        }
-        Start::Attach(process) => Debugger::attach_with(*process, None, debug_files)
+            let failed = |error: microscope::Error| {
+                format!("failed to load {}: {error}", spec.program.display())
+            };
+            let program = tokio::task::spawn_blocking(move || {
+                microscope::Program::load(&program, &debug_files)
+            })
             .await
+            .map_err(|error| error.to_string())?
+            .map_err(failed)?;
+            ProcessGroup::new(program, policy)
+                .map(Opened::Group)
+                .map_err(failed)
+        }
+        Start::Attach(process) => ProcessGroup::attach(*process, None, policy, debug_files)
+            .await
+            .map(Opened::Group)
             .map_err(|error| format!("failed to attach to process {process}: {error}")),
         Start::Core(options) => {
             let options = microscope::CoreDumpOptions {
@@ -1914,6 +2243,7 @@ async fn open(
             tokio::task::spawn_blocking(move || Debugger::open_core(&options))
                 .await
                 .map_err(|error| error.to_string())?
+                .map(Opened::Single)
                 .map_err(|error| format!("failed to open the core dump {core}: {error}"))
         }
     }
@@ -1922,13 +2252,13 @@ async fn open(
 /// Where program output and logged messages go: every tab, and the history
 /// a tab that joins later receives.
 #[derive(Clone)]
-struct Outlet {
+pub(super) struct Outlet {
     history: Arc<Mutex<History>>,
     messages: broadcast::Sender<Arc<str>>,
 }
 
 impl Outlet {
-    fn publish(&self, stream: Stream, text: &str) {
+    pub(super) fn publish(&self, stream: Stream, text: &str) {
         for piece in output::pieces(text, OUTPUT_CHUNK) {
             let message = ServerMessage::Output(Output {
                 stream,
@@ -1946,43 +2276,10 @@ impl Outlet {
     }
 }
 
-/// Publishes the debugger's state after every burst of its events, and
-/// what its logpoints and conditions say.
-async fn pump(
-    state: Arc<watch::Sender<Arc<State>>>,
-    mut describer: Describer,
-    mut events: broadcast::Receiver<DebuggerEvent>,
-    outlet: Outlet,
-) {
-    loop {
-        let Ok(snapshot) = describer.handle.snapshot().await else {
-            return;
-        };
-
-        let next = describer.describe(&snapshot).await;
-        publish(&state, next, &describer.writes, &describer.settings);
-
-        match events.recv().await {
-            Ok(event) => observe(&mut describer, &outlet, &event),
-            Err(broadcast::error::RecvError::Lagged(_)) => {}
-            Err(broadcast::error::RecvError::Closed) => return,
-        }
-
-        // Take every event already queued, so the burst publishes once.
-        loop {
-            match events.try_recv() {
-                Ok(event) => observe(&mut describer, &outlet, &event),
-                Err(broadcast::error::TryRecvError::Lagged(_)) => {}
-                Err(_) => break,
-            }
-        }
-    }
-}
-
 /// Publishes `next` unless it changes nothing, with the counts as they are
 /// now. Read under the state's lock, they are never lower than what a
 /// count published before.
-fn publish(
+pub(super) fn publish(
     state: &watch::Sender<Arc<State>>,
     mut next: State,
     writes: &AtomicU64,
@@ -2045,16 +2342,23 @@ async fn add_breakpoint(
     Ok((handle.add_breakpoint_with(spec, options).await?, true))
 }
 
-fn observe(describer: &mut Describer, outlet: &Outlet, event: &DebuggerEvent) {
+/// Notes what a member's event means for its state, and says what its
+/// logpoints, conditions, and signals report, each line after `tag`.
+pub(super) fn observe(
+    describer: &mut Describer,
+    outlet: &Outlet,
+    event: &DebuggerEvent,
+    tag: &str,
+) {
     describer.ended.observe(event);
+    let log = |text: String| outlet.publish(Stream::Log, &format!("{tag}{text}\n"));
+    let renderer = Renderer::new(false);
 
     match event {
         DebuggerEvent::InferiorLaunched { .. }
         | DebuggerEvent::InferiorAttached { .. }
         | DebuggerEvent::InferiorExited { .. } => describer.images.clear(),
-        DebuggerEvent::LogMessage { parts, .. } => {
-            outlet.publish(Stream::Log, &(format::log_message(parts) + "\n"));
-        }
+        DebuggerEvent::LogMessage { parts, .. } => log(format::log_message(parts)),
         DebuggerEvent::ConditionFailed { owner, error, .. } => {
             let owner = match owner {
                 microscope::ConditionOwner::Breakpoint(id) => format!("breakpoint {id}"),
@@ -2062,31 +2366,20 @@ fn observe(describer: &mut Describer, outlet: &Outlet, event: &DebuggerEvent) {
                 microscope::ConditionOwner::Catchpoint(id) => format!("catchpoint {id}"),
             };
 
-            outlet.publish(
-                Stream::Log,
-                &format!("the condition of {owner} failed, so it stopped: {error}\n"),
-            );
+            log(format!(
+                "the condition of {owner} failed, so it stopped: {error}"
+            ));
         }
 
         DebuggerEvent::SignalReceived {
             thread_id,
             exception,
             ..
-        } => {
-            outlet.publish(
-                Stream::Log,
-                &(format::signal_received(*thread_id, exception, Renderer::new(false)) + "\n"),
-            );
-        }
+        } => log(format::signal_received(*thread_id, exception, renderer)),
 
         DebuggerEvent::ChildReleased {
             process_id, child, ..
-        } => {
-            outlet.publish(
-                Stream::Log,
-                &(format::child_released(*process_id, *child, Renderer::new(false)) + "\n"),
-            );
-        }
+        } => log(format::child_released(*process_id, *child, renderer)),
 
         DebuggerEvent::ProgramChanged {
             process_id,
@@ -2094,13 +2387,13 @@ fn observe(describer: &mut Describer, outlet: &Outlet, event: &DebuggerEvent) {
             ..
         } => {
             describer.images.clear();
-            let Some(process_id) = process_id else {
-                return;
-            };
-            outlet.publish(
-                Stream::Log,
-                &(format::program_changed(*process_id, &program.path, Renderer::new(false)) + "\n"),
-            );
+            if let Some(process_id) = process_id {
+                log(format::program_changed(
+                    *process_id,
+                    &program.path,
+                    renderer,
+                ));
+            }
         }
         _ => {}
     }

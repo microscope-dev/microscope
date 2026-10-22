@@ -38,6 +38,7 @@ export function stoppedState(changes: Partial<State> = {}): State {
     writes: 0,
     watchpoints: [],
     settings: 0,
+    group: null,
     ...changes,
   };
 }

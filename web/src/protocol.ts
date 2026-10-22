@@ -26,6 +26,8 @@ export interface Results {
   pause: null;
   kill: null;
   restart: null;
+  selectMember: null;
+  detachMember: null;
   step: null;
   stepTargets: P.StepTargets;
   jump: null;

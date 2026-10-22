@@ -274,3 +274,19 @@ async function openConnection(emit: (event: ModelEvent) => void = () => undefine
   transport.open();
   return { connection, sent, transport };
 }
+
+describe("a program whose children join the session", () => {
+  const states = replay(received("group")).flatMap((model) => (model.state ? [model.state] : []));
+
+  it("shows the child that stopped, and then the process selected", () => {
+    const stopped = states.find(
+      (state) => state.group?.stopped === 2 && state.inferior.state === "stopped",
+    );
+    expect(stopped?.group?.selected).toBe(2);
+    expect(stopped?.group?.members.map((member) => member.joined)).toEqual(["launched", "forked"]);
+    expect(states.some((state) => state.group?.selected === 1 && state.group.stopped === 2)).toBe(
+      true,
+    );
+    expect(states.at(-1)?.group?.members.every((member) => member.state === "exited")).toBe(true);
+  });
+});

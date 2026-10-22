@@ -27,17 +27,19 @@ export function shown(model: Model): Shown {
     return { pill: "idle", label: "Nothing loaded", detail: null };
   }
   const inferior = state.inferior;
+  // Which process the panes show, once there are several.
+  const member = (state.group?.members.length ?? 0) > 1 ? `[${state.group?.selected}] ` : "";
   switch (inferior.state) {
     case "notStarted":
       return { pill: "idle", label: "Not started", detail: "F5 runs it" };
     case "running":
-      return { pill: "running", label: "Running", detail: `process ${inferior.pid}` };
+      return { pill: "running", label: "Running", detail: `${member}process ${inferior.pid}` };
     case "stopped": {
       const thread = state.threads.find((candidate) => candidate.id === inferior.thread);
       return {
         pill: "stopped",
         label: state.target.kind === "core" ? "Core dump" : "Stopped",
-        detail: `stop #${inferior.stop} · ${inferior.reason.description} · ${threadLabel(inferior.thread, thread?.name)}`,
+        detail: `${member}stop #${inferior.stop} · ${inferior.reason.description} · ${threadLabel(inferior.thread, thread?.name)}`,
       };
     }
     case "exited":

@@ -84,6 +84,14 @@ pub enum Request {
     /// Kills the program and starts it again.
     Restart,
 
+    /// Chooses the process of the session's group that the state and every
+    /// request about the program act on.
+    SelectMember(MemberRef),
+
+    /// Lets one stopped process of the group run on without microscope,
+    /// leaving the others debugged.
+    DetachMember(MemberRef),
+
     /// Steps one thread of a stop.
     Step(Step),
 
@@ -773,6 +781,13 @@ pub struct EditBreakpoint {
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct BreakpointRef {
     pub id: u64,
+}
+
+/// A process of the session's group, by its number there.
+#[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct MemberRef {
+    pub member: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1652,6 +1667,10 @@ pub struct State {
     /// Counts changes to settings that publish nothing else, such as
     /// signal policies.
     pub settings: u64,
+
+    /// The processes debugged together, of which this state describes the
+    /// selected one; none for a core dump, or when nothing is debugged.
+    pub group: Option<Group>,
 }
 
 impl State {
@@ -1669,8 +1688,85 @@ impl State {
             writes: 0,
             watchpoints: Vec::new(),
             settings: 0,
+            group: None,
         }
     }
+}
+
+/// The processes a session debugs together: the program's, and those it
+/// started that the follow policy debugs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct Group {
+    /// Every member so far, in the order they joined.
+    pub members: Vec<Member>,
+
+    /// The member the state describes and requests act on.
+    pub selected: u32,
+
+    /// The member whose stop stopped the group, while it is stopped there.
+    pub stopped: Option<u32>,
+}
+
+/// One process of a group.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct Member {
+    /// Its number in the group, from 1 for the program's own process.
+    pub number: u32,
+    pub pid: Option<u64>,
+
+    /// The member whose process started it, when one did.
+    pub parent: Option<u32>,
+
+    /// Its command line, as it was when it joined.
+    pub command: String,
+    pub joined: Joined,
+
+    /// The program it executed to join, for one that joined by executing.
+    pub program: Option<String>,
+    pub state: MemberState,
+
+    /// Its state in words, such as `breakpoint 1 at main` or `exited with
+    /// status 0`.
+    pub description: String,
+}
+
+/// How a member joined its group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub enum Joined {
+    /// The program microscope launched.
+    Launched,
+
+    /// The process microscope attached to.
+    Attached,
+
+    /// A member forked it, and it runs its parent's program.
+    Forked,
+
+    /// It executed a program the follow policy debugs.
+    Executed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub enum MemberState {
+    NotStarted,
+    Running,
+    Stopped,
+    Exited,
+
+    /// It executed a program microscope does not debug, and is watched.
+    Watched,
+
+    /// It was let go, and runs on its own.
+    Detached,
+
+    /// Its session failed, and let its process go.
+    Lost,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2663,10 +2759,15 @@ mod tests {
         AddBreakpoint::decl,
         EditBreakpoint::decl,
         BreakpointRef::decl,
+        MemberRef::decl,
         Input::decl,
         ServerMessage::decl,
         Hello::decl,
         State::decl,
+        Group::decl,
+        Member::decl,
+        Joined::decl,
+        MemberState::decl,
         Target::decl,
         TargetKind::decl,
         Inferior::decl,

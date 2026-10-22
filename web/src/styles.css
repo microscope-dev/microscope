@@ -1561,6 +1561,72 @@ textarea.input {
   background: var(--surface-2);
 }
 
+/* The processes a session debugs together, a bar like the stop banner's. */
+.processes {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+  font-size: 12.5px;
+}
+
+.processes ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.processes .process {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+
+.processes .process:hover:not(:disabled) {
+  border-color: var(--line-strong);
+}
+
+.processes .process.on {
+  border-color: var(--line-strong);
+  background: var(--accent-soft);
+}
+
+.processes .process:disabled {
+  cursor: default;
+}
+
+.processes .process:disabled:not(.on) {
+  color: var(--ink-3);
+}
+
+.processes .number {
+  font-family: var(--mono);
+}
+
+.processes .state.stopped {
+  color: var(--pc-mark);
+}
+
+.processes .state.running {
+  color: var(--run);
+}
+
+.processes .state.lost {
+  color: var(--error);
+}
+
 /* Output and program input */
 
 .pane.bottom {

@@ -148,6 +148,9 @@ pub struct GroupHandle {
     commands: mpsc::UnboundedSender<Command>,
     events: broadcast::Sender<GroupEvent>,
     root: DebuggerHandle,
+
+    /// What a stop in one member stops.
+    stops: StopScope,
 }
 
 struct Shared {
@@ -170,6 +173,7 @@ impl Shared {
 
 enum Command {
     ContinueAll(oneshot::Sender<Result<()>>),
+    ResumeAll(oneshot::Sender<Result<()>>),
     PauseAll(oneshot::Sender<Result<()>>),
     Detach(MemberNumber, oneshot::Sender<Result<()>>),
     Shutdown(oneshot::Sender<Result<()>>),
@@ -207,6 +211,7 @@ impl ProcessGroup {
                 commands,
                 events,
                 root: handle,
+                stops,
             },
             task: Some(tokio::spawn(task)),
             backend: Some(backend),
@@ -348,6 +353,19 @@ impl GroupHandle {
     /// without resuming anything.
     pub async fn continue_all(&self) -> Result<()> {
         self.command(Command::ContinueAll).await
+    }
+
+    /// What a stop in one member stops: the group, or that member alone.
+    #[must_use]
+    pub const fn stops(&self) -> StopScope {
+        self.stops
+    }
+
+    /// Resumes every stopped member, including those whose stops
+    /// [`continue_all`](Self::continue_all) would report first, for a client
+    /// that already shows each member's stop on its own.
+    pub async fn resume_all(&self) -> Result<()> {
+        self.command(Command::ResumeAll).await
     }
 
     /// Pauses every running member, and reports the group stop once they
@@ -526,12 +544,29 @@ impl Driver {
                     Some(Command::ContinueAll(reply)) => {
                         let _ = reply.send(self.continue_all().await);
                     }
+                    Some(Command::ResumeAll(reply)) => {
+                        self.pending.clear();
+                        let _ = reply.send(self.continue_all().await);
+                    }
                     Some(Command::Detach(number, reply)) => {
                         let _ = reply.send(self.detach(number).await);
                     }
                     Some(Command::PauseAll(reply)) => {
-                        self.pause_all(None);
-                        let _ = reply.send(Ok(()));
+                        if self.members.values().any(|live| live.running && !live.gone) {
+                            self.pause_all(None);
+                            let _ = reply.send(Ok(()));
+                        } else {
+                            // With nothing running yet, the root pauses as
+                            // it starts, or says it is not running.
+                            let root = self.root.clone();
+                            tokio::spawn(async move {
+                                let paused = match root.pause().await {
+                                    Ok(_) | Err(Error::AlreadyStopped) => Ok(()),
+                                    Err(error) => Err(error),
+                                };
+                                let _ = reply.send(paused);
+                            });
+                        }
                     }
                     Some(Command::Shutdown(reply)) => {
                         let _ = reply.send(self.shutdown().await);

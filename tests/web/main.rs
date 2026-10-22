@@ -8,6 +8,7 @@ mod web;
 
 mod access;
 mod drawing;
+mod group;
 mod inspecting;
 mod lowlevel;
 mod profiles;

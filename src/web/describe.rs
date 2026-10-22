@@ -311,6 +311,7 @@ impl Describer {
             writes: self.writes.load(Ordering::Relaxed),
             watchpoints: snapshot.watchpoints.iter().map(watchpoint).collect(),
             settings: self.settings.load(Ordering::Relaxed),
+            group: None,
         }
     }
 

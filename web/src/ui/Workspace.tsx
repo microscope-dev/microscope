@@ -17,6 +17,7 @@ import { BottomPanel } from "./BottomPanel";
 import { Breakpoints } from "./Breakpoints";
 import { CodeArea } from "./CodeArea";
 import { Palette } from "./Palette";
+import { Processes } from "./Processes";
 import { Registers } from "./Registers";
 import { useSplit } from "./Split";
 import { Stack } from "./Stack";
@@ -133,6 +134,7 @@ export function Workspace() {
         </div>
         <div {...left.handle} />
         <div className="column center">
+          <Processes />
           <Banner />
           <CodeArea />
           <BottomPanel />

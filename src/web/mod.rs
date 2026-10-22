@@ -11,6 +11,7 @@ mod connection;
 mod describe;
 mod draw;
 mod frame;
+mod group;
 mod inspect;
 mod live;
 mod lowlevel;
@@ -232,6 +233,16 @@ pub async fn run(args: &WebArgs) -> Result<()> {
     // ends the server once it has, so nothing is left half launched.
     let terminated = crate::dap::termination();
     let cwd = std::env::current_dir().context("the working directory")?;
+
+    // The processes a program starts are debugged too, as the terminal's
+    // [follow] settings say.
+    let follow =
+        crate::cli::config::Files::read(&cwd, &crate::cli::config::UserFile::choose(false, None))
+            .and_then(|files| files.settings(false))
+            .context("failed to read the settings")?
+            .config
+            .follow
+            .policy(&[]);
     let profiles = profiles::Profiles::new(cwd.clone());
     let (start, profile) = what_to_serve(args, &profiles)?;
     if args.trust_proxy {
@@ -256,6 +267,7 @@ pub async fn run(args: &WebArgs) -> Result<()> {
 
     let session = Session::new(cwd, link_base, tokens, debug_files, args.views.clone());
     session.resume_attached(args.resume);
+    session.follow(follow);
     if args.trust_proxy {
         session.stop_sharing();
     }
