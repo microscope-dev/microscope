@@ -132,6 +132,13 @@ __attribute__((noinline)) void handler_write(void) {
     if (sigaction(SIGUSR1, &action, NULL) != 0) {
         _exit(71);
     }
+    // The handler must run even when the launcher blocked SIGUSR1.
+    sigset_t unblocked;
+    sigemptyset(&unblocked);
+    if (sigaddset(&unblocked, SIGUSR1) != 0 ||
+        sigprocmask(SIG_UNBLOCK, &unblocked, NULL) != 0) {
+        _exit(71);
+    }
     raise(SIGUSR1);
     if (!handled) {
         _exit(72);
