@@ -416,6 +416,7 @@ async fn an_attached_groups_fork_children_join_and_are_released_with_it() {
     let mut parent = support::ExternalProcess::spawn(&Scenario::fixture("attach-fork"));
     let group = ProcessGroup::attach(
         parent.process_id(),
+        None,
         FollowPolicy::default(),
         &microscope::DebugFileOptions::default(),
     )
@@ -581,6 +582,38 @@ async fn npm_start_is_followed_through_its_shell_into_the_app() {
         "the shell between them is watched: {:#?}",
         group.seen
     );
+    assert_eq!(
+        group.root_status(),
+        MemberState::Exited(ExitStatus::Code(0))
+    );
+    group.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_member_detached_alone_runs_on_without_its_traps() {
+    let mut group = Group::new("tree", FollowPolicy::default());
+    group.break_at("child_work").await;
+    group.launch(&["2", "direct"]).await;
+
+    let (member, reason) = group.stop().await;
+    assert!(function_breakpoint(&reason), "{reason:?}");
+    assert_ne!(member, 1);
+    assert!(matches!(
+        group.inner.detach(1).await,
+        Err(microscope::Error::RootDetached)
+    ));
+    group.inner.detach(member).await.expect("detach the member");
+    assert!(group.inner.member(member).is_none());
+
+    // The detached child left its stop at the breakpoint without the trap,
+    // so it exits 0, and its parent with it.
+    group.inner.continue_all().await.expect("continue");
+    let stops = group.run_to_exit().await;
+    assert!(
+        stops.iter().all(|(stopped, _)| *stopped != member),
+        "{stops:#?}"
+    );
+    assert!(group.seen.contains(&GroupEvent::MemberDetached { member }));
     assert_eq!(
         group.root_status(),
         MemberState::Exited(ExitStatus::Code(0))

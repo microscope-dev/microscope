@@ -217,6 +217,12 @@ pub enum Error {
     #[error("process {0} is no longer the process that was held")]
     HeldProcessGone(u64),
 
+    #[error("the group has no member {0}")]
+    UnknownMember(u32),
+
+    #[error("the group's first process ends with the group, and cannot be detached alone")]
+    RootDetached,
+
     #[error("the inferior has not been launched")]
     NotRunning,
 

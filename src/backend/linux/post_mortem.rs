@@ -1046,6 +1046,7 @@ impl Controller<CoreTarget> {
                 Request::Attach { reply, .. } => reject(reply),
                 Request::Kill { reply }
                 | Request::Terminate { reply }
+                | Request::ReleaseOnShutdown { reply }
                 | Request::HoldForks { reply, .. } => reject(reply),
                 Request::WriteMemory { reply, .. } => reject(reply),
                 // A dump runs nothing, but the choice stays the session's.

@@ -2568,6 +2568,12 @@ pub enum Request {
         stops: bool,
         reply: Reply<bool>,
     },
+
+    /// Makes a shutdown release a launched process, stopped, as it releases
+    /// an attached one, rather than kill it.
+    ReleaseOnShutdown {
+        reply: Reply<()>,
+    },
     Shutdown {
         reply: Reply<()>,
     },
@@ -2655,6 +2661,7 @@ impl Request {
             Self::HoldForks { .. } => "hold forks".to_owned(),
             Self::SetExceptionStops { stops, .. } => format!("set exception stops {stops:?}"),
             Self::SetExecStops { stops, .. } => format!("set exec stops {stops}"),
+            Self::ReleaseOnShutdown { .. } => "release on shutdown".to_owned(),
             Self::RemoveAllBreakpoints { .. } => "remove all breakpoints".to_owned(),
             Self::ResolveWatchTarget { .. } => "resolve watch target".to_owned(),
             Self::RemoveAllWatchpoints { .. } => "remove all watchpoints".to_owned(),

@@ -1880,7 +1880,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return;
         };
 
-        if inferior.origin != InferiorOrigin::Attached {
+        if inferior.origin != InferiorOrigin::Attached && self.ending == super::Ending::Kill {
             if let Err(error) = self.kill_inferior() {
                 self.finish_shutdown(Err(error));
             }

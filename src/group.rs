@@ -86,6 +86,9 @@ pub enum GroupEvent {
         reason: StopReason,
     },
 
+    /// A member's process was released to run on its own.
+    MemberDetached { member: MemberNumber },
+
     /// Every member has exited or left; watched processes may still run.
     GroupExited,
 }
@@ -122,13 +125,21 @@ pub struct Member {
 }
 
 /// The processes a program starts that microscope debugs together.
+///
+/// Its [`GroupHandle`], which it dereferences to, is what clients share.
 pub struct ProcessGroup {
+    handle: GroupHandle,
+    task: Option<tokio::task::JoinHandle<()>>,
+    backend: Option<backend::GroupBackend>,
+}
+
+/// A clonable client of a running [`ProcessGroup`].
+#[derive(Clone)]
+pub struct GroupHandle {
     shared: Arc<Shared>,
     commands: mpsc::UnboundedSender<Command>,
     events: broadcast::Sender<GroupEvent>,
     root: DebuggerHandle,
-    task: Option<tokio::task::JoinHandle<()>>,
-    backend: Option<backend::GroupBackend>,
 }
 
 struct Shared {
@@ -148,13 +159,14 @@ impl Shared {
 enum Command {
     ContinueAll(oneshot::Sender<Result<()>>),
     PauseAll(oneshot::Sender<Result<()>>),
+    Detach(MemberNumber, oneshot::Sender<Result<()>>),
     Shutdown(oneshot::Sender<Result<()>>),
 }
 
 impl ProcessGroup {
     /// Makes a group whose root is a session for `program`, which a client
-    /// launches or attaches through [`Self::root`]. The processes it starts
-    /// are followed as `policy` says.
+    /// launches or attaches through [`GroupHandle::root`]. The processes it
+    /// starts are followed as `policy` says.
     pub fn new(program: Program, policy: FollowPolicy) -> Result<Self> {
         let stops = policy.stop;
         let (root, mut backend) = Debugger::for_group(program, policy)?;
@@ -177,10 +189,12 @@ impl ProcessGroup {
             Driver::new(Arc::clone(&shared), events.clone(), root, stops).run(notices, received);
 
         Ok(Self {
-            shared,
-            commands,
-            events,
-            root: handle,
+            handle: GroupHandle {
+                shared,
+                commands,
+                events,
+                root: handle,
+            },
             task: Some(tokio::spawn(task)),
             backend: Some(backend),
         })
@@ -188,14 +202,20 @@ impl ProcessGroup {
 
     /// Attaches a group's root to `process`, following the processes it
     /// starts from now on as `policy` says, and returns once the root is
-    /// stopped. Processes it started before are not adopted. Ending the
-    /// group releases every process it debugs or watches.
+    /// stopped. Its program is read from `executable` when given, and
+    /// otherwise from the process. Processes it started before are not
+    /// adopted. Ending the group releases every process it debugs or
+    /// watches.
     pub async fn attach(
         process: ProcessId,
+        executable: Option<&std::path::Path>,
         policy: FollowPolicy,
         debug_files: &crate::DebugFileOptions,
     ) -> Result<Self> {
-        let mut source = backend::process_executable_source(process)?;
+        let mut source = match executable {
+            Some(executable) => backend::executable_source(executable)?,
+            None => backend::process_executable_source(process)?,
+        };
         source.debug_files = crate::debug_info::DebugFileSearch::new(debug_files);
         let group = Self::new(Program::from_executable_source(source)?, policy)?;
         let mut events = group.subscribe();
@@ -234,6 +254,49 @@ impl ProcessGroup {
         }
     }
 
+    /// A clonable handle for the group's clients.
+    #[must_use]
+    pub fn handle(&self) -> GroupHandle {
+        self.handle.clone()
+    }
+
+    /// Ends every member, killing launched processes and releasing attached
+    /// ones, then the processes the group watches, and joins the tracer
+    /// thread.
+    pub async fn shutdown(mut self) -> Result<()> {
+        let result = self.handle.command(Command::Shutdown).await;
+        if let Some(task) = self.task.take() {
+            let _ = task.await;
+        }
+
+        if let Some(backend) = self.backend.take() {
+            tokio::task::spawn_blocking(move || backend.join())
+                .await
+                .map_err(|_| Error::BackendThreadPanicked)?
+                .map_err(|()| Error::BackendThreadPanicked)?;
+        }
+
+        result
+    }
+}
+
+impl std::ops::Deref for ProcessGroup {
+    type Target = GroupHandle;
+
+    fn deref(&self) -> &GroupHandle {
+        &self.handle
+    }
+}
+
+impl Drop for ProcessGroup {
+    fn drop(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+}
+
+impl GroupHandle {
     /// The root member's handle, through which the group's program is
     /// launched or attached, and whose breakpoints are the group's.
     #[must_use]
@@ -280,6 +343,12 @@ impl ProcessGroup {
         self.command(Command::PauseAll).await
     }
 
+    /// Releases member `number`'s process, stopped, to run on its own; the
+    /// rest of the group is unchanged. The root cannot be detached alone.
+    pub async fn detach(&self, number: MemberNumber) -> Result<()> {
+        self.command(|reply| Command::Detach(number, reply)).await
+    }
+
     async fn command(
         &self,
         command: impl FnOnce(oneshot::Sender<Result<()>>) -> Command,
@@ -289,33 +358,6 @@ impl ProcessGroup {
             .send(command(reply))
             .map_err(|_| Error::RequestCancelled)?;
         answer.await.map_err(|_| Error::RequestCancelled)?
-    }
-
-    /// Ends every member, killing launched processes and releasing attached
-    /// ones, then the processes the group watches, and joins the tracer
-    /// thread.
-    pub async fn shutdown(mut self) -> Result<()> {
-        let result = self.command(Command::Shutdown).await;
-        if let Some(task) = self.task.take() {
-            let _ = task.await;
-        }
-
-        if let Some(backend) = self.backend.take() {
-            tokio::task::spawn_blocking(move || backend.join())
-                .await
-                .map_err(|_| Error::BackendThreadPanicked)?
-                .map_err(|()| Error::BackendThreadPanicked)?;
-        }
-
-        result
-    }
-}
-
-impl Drop for ProcessGroup {
-    fn drop(&mut self) {
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
     }
 }
 
@@ -448,6 +490,9 @@ impl Driver {
                 command = commands.recv() => match command {
                     Some(Command::ContinueAll(reply)) => {
                         let _ = reply.send(self.continue_all().await);
+                    }
+                    Some(Command::Detach(number, reply)) => {
+                        let _ = reply.send(self.detach(number).await);
                     }
                     Some(Command::PauseAll(reply)) => {
                         self.pause_all(None);
@@ -847,6 +892,42 @@ impl Driver {
         if self.members.values().all(|live| live.gone) {
             self.emit(GroupEvent::GroupExited);
         }
+    }
+
+    /// Releases member `number`, which must be stopped, and ends its
+    /// session.
+    async fn detach(&mut self, number: MemberNumber) -> Result<()> {
+        if number == 1 {
+            return Err(Error::RootDetached);
+        }
+
+        let Some(live) = self.members.get(&number) else {
+            return Err(Error::UnknownMember(number));
+        };
+        if live.gone {
+            return Err(Error::NotRunning);
+        }
+        if live.running {
+            return Err(Error::NotStopped);
+        }
+
+        let Some(live) = self.members.remove(&number) else {
+            return Err(Error::UnknownMember(number));
+        };
+        live.handle
+            .request(|reply| crate::protocol::Request::ReleaseOnShutdown { reply })
+            .await?;
+        live.debugger.shutdown().await?;
+        self.shared
+            .update(number, |member| member.state = MemberState::Detached);
+        self.shared
+            .handles
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&number);
+        self.emit(GroupEvent::MemberDetached { member: number });
+        self.check_exited();
+        Ok(())
     }
 
     async fn shutdown(&mut self) -> Result<()> {

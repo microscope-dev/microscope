@@ -1578,6 +1578,9 @@ struct Controller<P: InspectionOps> {
     /// Whether an exec the session follows stops a continued process.
     exec_stops: bool,
 
+    /// What a shutdown does with a launched process.
+    ending: Ending,
+
     /// The session's group, which its fork children go to instead of
     /// being released, when it is a member of one that follows them.
     group: Option<follow::Membership>,
@@ -1613,6 +1616,16 @@ struct Orphans {
     /// Children that could not be scrubbed, killed and awaiting their exit.
     killed: BTreeSet<Pid>,
     waiter: Option<Waiter>,
+}
+
+/// What a shutdown does with a launched process.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ending {
+    Kill,
+
+    /// Releases it, stopped, as an attached process is released, as a
+    /// group's member detached on its own is.
+    Release,
 }
 
 /// A requested launch or attach.
@@ -1895,6 +1908,7 @@ impl<P: InspectionOps> Controller<P> {
             signals: SignalPolicies::default(),
             exception_stops: crate::ExceptionStops::default(),
             exec_stops: false,
+            ending: Ending::Kill,
             group: None,
             step_into_runtime: false,
             runtime_models: RefCell::default(),
@@ -2193,6 +2207,10 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
             Request::SetExecStops { stops, reply } => {
                 let _ = reply.send(Ok(std::mem::replace(&mut self.exec_stops, stops)));
+            }
+            Request::ReleaseOnShutdown { reply } => {
+                self.ending = Ending::Release;
+                let _ = reply.send(Ok(()));
             }
 
             Request::AddCatchpoint {
@@ -2753,6 +2771,7 @@ impl<P: InspectionOps> Controller<P> {
             | Request::RemoveAllWatchpoints { .. }
             | Request::SetExceptionStops { .. }
             | Request::SetExecStops { .. }
+            | Request::ReleaseOnShutdown { .. }
             | Request::AddCatchpoint { .. }
             | Request::RemoveCatchpoint { .. }
             | Request::Launch { .. }

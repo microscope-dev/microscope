@@ -154,7 +154,7 @@ pub use model::{
     VisualizerReference,
 };
 
-pub use group::{GroupEvent, Member, MemberNumber, MemberState, ProcessGroup};
+pub use group::{GroupEvent, GroupHandle, Member, MemberNumber, MemberState, ProcessGroup};
 pub use protocol::{
     Breakpoint, BreakpointHit, BreakpointId, BreakpointOptions, BreakpointSpec, CatchPhase,
     Catchpoint, CatchpointId, ConditionOwner, CoreDumpInfo, CoreDumpOptions, CoreModule,
