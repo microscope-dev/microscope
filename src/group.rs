@@ -173,7 +173,10 @@ impl Shared {
 
 enum Command {
     ContinueAll(oneshot::Sender<Result<()>>),
-    ResumeAll(oneshot::Sender<Result<()>>),
+    ResumeAll(
+        Option<(MemberNumber, crate::StopId)>,
+        oneshot::Sender<Result<()>>,
+    ),
     PauseAll(oneshot::Sender<Result<()>>),
     Detach(MemberNumber, oneshot::Sender<Result<()>>),
     Shutdown(oneshot::Sender<Result<()>>),
@@ -362,9 +365,12 @@ impl GroupHandle {
 
     /// Resumes every stopped member, including those whose stops
     /// [`continue_all`](Self::continue_all) would report first, for a client
-    /// that already shows each member's stop on its own.
-    pub async fn resume_all(&self) -> Result<()> {
-        self.command(Command::ResumeAll).await
+    /// that already shows each member's stop on its own. `observed` is the
+    /// stop the client showed, from the member's own events, which the
+    /// group may not have seen yet; it is resumed all the same.
+    pub async fn resume_all(&self, observed: Option<(MemberNumber, crate::StopId)>) -> Result<()> {
+        self.command(|reply| Command::ResumeAll(observed, reply))
+            .await
     }
 
     /// Pauses every running member, and reports the group stop once they
@@ -417,6 +423,10 @@ struct Live {
 
     /// The stop the member joined in, which is not one of its own.
     joined_at: Option<crate::StopId>,
+
+    /// A stop a client resumed before the member's event for it reached
+    /// the group, which the event must not report again.
+    passed: Option<crate::StopId>,
 
     /// The member's copy of each of the root's breakpoints, by the root's
     /// id, with the root's settings it was given.
@@ -515,6 +525,7 @@ impl Driver {
                 handle,
                 process: None,
                 joined_at: None,
+                passed: None,
                 mirrored: BTreeMap::new(),
                 running: false,
                 gone: false,
@@ -543,9 +554,14 @@ impl Driver {
                     Some(Command::ContinueAll(reply)) => {
                         let _ = reply.send(self.continue_all().await);
                     }
-                    Some(Command::ResumeAll(reply)) => {
+                    Some(Command::ResumeAll(observed, reply)) => {
                         self.pending.clear();
-                        let _ = reply.send(self.continue_all().await);
+                        let caught_up = match observed {
+                            Some((number, stop)) => self.catch_up(number, stop).await,
+                            None => false,
+                        };
+                        let resumed = self.continue_all().await;
+                        let _ = reply.send(if caught_up { resumed.or(Ok(())) } else { resumed });
                     }
                     Some(Command::Detach(number, reply)) => {
                         let _ = reply.send(self.detach(number).await);
@@ -717,6 +733,7 @@ impl Driver {
             handle: handle.clone(),
             process: Some(process),
             joined_at: None,
+            passed: None,
             mirrored: BTreeMap::new(),
             running: false,
             gone: false,
@@ -812,11 +829,9 @@ impl Driver {
             DebuggerEvent::InferiorStopped {
                 reason, stop_id, ..
             } => {
-                if self
-                    .members
-                    .get(&number)
-                    .is_some_and(|live| live.joined_at == Some(stop_id))
-                {
+                if self.members.get(&number).is_some_and(|live| {
+                    live.joined_at == Some(stop_id) || live.passed == Some(stop_id)
+                }) {
                     return;
                 }
 
@@ -953,6 +968,33 @@ impl Driver {
         self.phase = Phase::Stopped;
         let (member, reason) = first.unwrap_or((1, StopReason::Pause));
         self.emit(GroupEvent::GroupStopped { member, reason });
+    }
+
+    /// Resumes member `number` at `stop`, which a client showed from the
+    /// member's own events before they reached the group, and returns
+    /// whether it did. A member the group already saw stop is left to
+    /// [`Self::continue_all`].
+    async fn catch_up(&mut self, number: MemberNumber, stop: crate::StopId) -> bool {
+        let Some(live) = self.members.get_mut(&number) else {
+            return false;
+        };
+        let Some(process) = live.process.filter(|_| live.running && !live.gone) else {
+            return false;
+        };
+
+        let resumed = live
+            .handle
+            .continue_execution(
+                stop,
+                ResumeScope::Process(process),
+                ExceptionDisposition::Pass,
+            )
+            .await
+            .is_ok();
+        if resumed {
+            live.passed = Some(stop);
+        }
+        resumed
     }
 
     async fn continue_all(&mut self) -> Result<()> {

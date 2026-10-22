@@ -265,18 +265,27 @@ enum Owner {
     },
 
     /// A member of a group another session of this adapter hosts.
-    Member(GroupHandle),
+    Member(GroupHandle, MemberNumber),
 
     /// Nothing, once the session ended it.
     Ended,
 }
 
 impl Owner {
+    /// The number of the session's process in its group, if it is one's.
+    const fn member(&self) -> Option<MemberNumber> {
+        match self {
+            Self::Group { .. } => Some(1),
+            Self::Member(_, number) => Some(*number),
+            Self::Single(_) | Self::Ended => None,
+        }
+    }
+
     /// The group the session's process belongs to, if it is one's.
     fn group(&self) -> Option<&GroupHandle> {
         match self {
             Self::Group { group, .. } => Some(group),
-            Self::Member(group) => Some(group),
+            Self::Member(group, _) => Some(group),
             Self::Single(_) | Self::Ended => None,
         }
     }
@@ -292,7 +301,7 @@ impl Owner {
                 }
                 group.shutdown().await
             }
-            Self::Member(_) | Self::Ended => Ok(()),
+            Self::Member(..) | Self::Ended => Ok(()),
         }
     }
 }
@@ -843,7 +852,7 @@ impl Session {
                 member.number
             ))
         })?;
-        Ok((Owner::Member(route.group.clone()), handle))
+        Ok((Owner::Member(route.group.clone(), member.number), handle))
     }
 
     /// Reports slow work, such as loading debug information, to a client
@@ -1218,7 +1227,7 @@ impl Session {
         match &target.start {
             Start::Core(_) => self.stopped(stop_id, thread_id, reason).await?,
             // The group runs and stops its members together.
-            Start::Attach { .. } if matches!(target.owner, Owner::Member(_)) => {
+            Start::Attach { .. } if matches!(target.owner, Owner::Member(..)) => {
                 self.stopped(stop_id, thread_id, reason).await?;
             }
             Start::Attach { .. } if target.stop_on_entry => {
@@ -1446,7 +1455,7 @@ impl Session {
         let launched = matches!(target.start, Start::Launch(_));
         // A member's session ends with its group, unless asked to end its
         // process.
-        let member = matches!(target.owner, Owner::Member(_));
+        let member = matches!(target.owner, Owner::Member(..));
         if terminate.unwrap_or(launched && !member)
             && target.process.is_some()
             && target.handle.core_dump().is_none()
@@ -1594,7 +1603,13 @@ impl Session {
         if let Some(group) = group {
             // Every member the group stopped resumes with this one; the
             // client already shows each one's stop.
-            group.resume_all().await.map_err(error)?;
+            // The group may not have seen the stop the client shows yet.
+            let observed = self
+                .target
+                .as_ref()
+                .and_then(|target| target.owner.member())
+                .map(|member| (member, stop.id));
+            group.resume_all(observed).await.map_err(error)?;
         } else {
             let handle = self.target_handle()?;
             let execution = handle
