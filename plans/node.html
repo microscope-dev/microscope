@@ -1,0 +1,1104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>microscope Node.js plan</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+/* The same tokens as plans/web-ui.html, so the plans read as one set. */
+:root {
+  color-scheme: light;
+  --paper: #f5f6f8;
+  --surface: #ffffff;
+  --surface-2: #eef1f5;
+  --line: #dce1e8;
+  --line-strong: #c4cbd6;
+  --ink: #1a2230;
+  --ink-2: #4a5566;
+  --ink-3: #7b8696;
+  --accent: #2f56c9;
+  --accent-ink: #ffffff;
+  --accent-soft: #e2e8fa;
+  --good: #1d8248;
+  --good-soft: #dff2e6;
+  --bad: #c23a3a;
+  --bad-soft: #fbe3e3;
+  --warn-bg: #fff5dc;
+  --warn-line: #e3bd5f;
+  --bar-1: #2f56c9;
+  --bar-2: #0f7287;
+  --bar-3: #7b3fb5;
+  --bar-4: #a24a1a;
+  --bar-5: #3b7d23;
+  --bar-6: #8a93a1;
+  --shadow: 0 1px 2px rgb(20 30 50 / 6%), 0 8px 24px rgb(20 30 50 / 8%);
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --display: "IBM Plex Sans Condensed", "IBM Plex Sans", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --paper: #101318;
+    --surface: #161a20;
+    --surface-2: #1d222a;
+    --line: #29303a;
+    --line-strong: #39424f;
+    --ink: #e3e7ee;
+    --ink-2: #aab3c0;
+    --ink-3: #748090;
+    --accent: #7da2ff;
+    --accent-ink: #0c1530;
+    --accent-soft: #212f4f;
+    --good: #4cc27e;
+    --good-soft: #17301f;
+    --bad: #ff7b7b;
+    --bad-soft: #3a1c1c;
+    --warn-bg: #2e2712;
+    --warn-line: #7c6526;
+    --bar-1: #7da2ff;
+    --bar-2: #5fc8d8;
+    --bar-3: #c69bff;
+    --bar-4: #f0a070;
+    --bar-5: #9bd47a;
+    --bar-6: #6f7a89;
+    --shadow: 0 1px 2px rgb(0 0 0 / 30%), 0 8px 24px rgb(0 0 0 / 35%);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #101318;
+  --surface: #161a20;
+  --surface-2: #1d222a;
+  --line: #29303a;
+  --line-strong: #39424f;
+  --ink: #e3e7ee;
+  --ink-2: #aab3c0;
+  --ink-3: #748090;
+  --accent: #7da2ff;
+  --accent-ink: #0c1530;
+  --accent-soft: #212f4f;
+  --good: #4cc27e;
+  --good-soft: #17301f;
+  --bad: #ff7b7b;
+  --bad-soft: #3a1c1c;
+  --warn-bg: #2e2712;
+  --warn-line: #7c6526;
+  --bar-1: #7da2ff;
+  --bar-2: #5fc8d8;
+  --bar-3: #c69bff;
+  --bar-4: #f0a070;
+  --bar-5: #9bd47a;
+  --bar-6: #6f7a89;
+  --shadow: 0 1px 2px rgb(0 0 0 / 30%), 0 8px 24px rgb(0 0 0 / 35%);
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 15px/1.6 var(--sans);
+  padding-inline: 16px;
+}
+a { color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+code, .mono { font-family: var(--mono); font-size: 0.86em; }
+code { background: var(--surface-2); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; overflow-wrap: anywhere; }
+pre {
+  margin: 0; padding: 12px 14px; overflow-x: auto;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+  font: 12.5px/1.55 var(--mono); color: var(--ink);
+}
+pre .c { color: var(--ink-3); }
+
+.page {
+  max-width: 1320px; margin: 0 auto; padding-block: 32px 96px;
+  display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 40px;
+}
+.toc {
+  position: sticky; top: 24px; align-self: start;
+  font-size: 13px; display: grid; gap: 2px;
+}
+.toc b { font: 600 11px/1 var(--sans); text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-3); margin-block: 0 10px; display: block; }
+.toc a { color: var(--ink-2); text-decoration: none; padding: 3px 8px; border-radius: 4px; }
+.toc a:hover { background: var(--surface-2); color: var(--ink); }
+main { min-width: 0; display: grid; gap: 72px; }
+section { display: grid; gap: 18px; min-width: 0; }
+.prose { max-width: 74ch; display: grid; gap: 12px; }
+.prose p, .prose ul, .prose ol { margin: 0; }
+.prose ul, .prose ol { padding-left: 1.2em; display: grid; gap: 6px; }
+
+h1, h2, h3, h4 { font-family: var(--display); text-wrap: balance; margin: 0; letter-spacing: -0.005em; }
+h1 { font-size: 44px; line-height: 1.05; font-weight: 600; }
+h2 { font-size: 27px; line-height: 1.2; font-weight: 600; }
+h3 { font-size: 19px; line-height: 1.3; font-weight: 600; }
+h4 { font-size: 15.5px; line-height: 1.3; font-weight: 600; }
+.eyebrow { font: 600 11px/1 var(--sans); text-transform: uppercase; letter-spacing: 0.09em; color: var(--ink-3); }
+.lede { font-size: 18px; line-height: 1.55; color: var(--ink-2); max-width: 70ch; margin: 0; }
+.muted { color: var(--ink-3); }
+.small { font-size: 13px; }
+
+header.top { display: grid; gap: 18px; }
+.meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; color: var(--ink-2); }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--surface);
+  font-size: 12.5px; white-space: nowrap;
+}
+.chip.draft { border-color: var(--warn-line); background: var(--warn-bg); }
+.theme-toggle { margin-left: auto; display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: var(--surface); }
+.theme-toggle button {
+  font: 500 12px/1 var(--sans); color: var(--ink-2); background: none; border: 0;
+  padding: 7px 10px; cursor: pointer;
+}
+.theme-toggle button[aria-pressed="true"] { background: var(--accent-soft); color: var(--ink); }
+.tile .l { font-size: 13px; color: var(--ink-2); line-height: 1.45; }
+
+/* ---------- cards ---------- */
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 14px; }
+.card {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+  padding: 16px 18px; display: grid; gap: 10px; align-content: start;
+}
+.card header { display: flex; gap: 10px; align-items: baseline; }
+.card .id { font: 600 12px/1 var(--mono); color: var(--ink-3); flex: none; }
+.card h3, .card h4 { font-size: 16px; }
+.card p, .card ul { margin: 0; font-size: 14px; color: var(--ink-2); }
+/* ---------- tables ---------- */
+.scroller { overflow-x: auto; min-width: 0; }
+table.data {
+  border-collapse: collapse; width: 100%; font-size: 13.5px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+}
+table.data th, table.data td { padding: 7px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+table.data th { font: 600 11.5px/1.3 var(--sans); text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); background: var(--surface-2); }
+table.data td.n, table.data th.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+table.data tr:last-child td { border-bottom: 0; }
+table.data td .sub { display: block; color: var(--ink-3); font-size: 12.5px; }
+#review table.data { min-width: 780px; }
+.bad { color: var(--bad); }
+.good { color: var(--good); }
+figure { margin: 0; display: grid; gap: 10px; min-width: 0; }
+figcaption { font-size: 13px; color: var(--ink-3); max-width: 90ch; }
+/* ---------- tracker ---------- */
+.st { display: inline-block; font: 600 10.5px/1.6 var(--sans); text-transform: uppercase; letter-spacing: 0.05em; padding: 0 7px; border-radius: 4px; white-space: nowrap; }
+.st.todo { background: var(--surface-2); color: var(--ink-3); border: 1px solid var(--line); }
+.st.doing { background: var(--warn-bg); color: var(--ink); border: 1px solid var(--warn-line); }
+.st.done { background: var(--good-soft); color: var(--good); border: 1px solid var(--good); }
+.st.cut { background: var(--surface-2); color: var(--ink-3); border: 1px dashed var(--line); text-decoration: line-through; }
+.phase { display: grid; gap: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px; }
+.phase header { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; }
+.phase .pid { font: 600 13px/1 var(--mono); color: var(--accent); }
+.phase p { margin: 0; font-size: 14px; color: var(--ink-2); max-width: 90ch; }
+.phase .exit { font-size: 13.5px; color: var(--ink-2); border-left: 3px solid var(--good); padding-left: 10px; }
+.phase table.data { font-size: 13px; table-layout: fixed; min-width: 640px; }
+.phase table.data th:nth-child(1) { width: 64px; }
+.phase table.data th:nth-child(3) { width: 84px; }
+.phase table.data th:nth-child(4) { width: 22%; }
+.phase table.data td:first-child { font: 600 12px/1.5 var(--mono); color: var(--ink-3); white-space: nowrap; }
+
+.callout { border-left: 3px solid var(--warn-line); background: var(--warn-bg); padding: 10px 14px; border-radius: 0 6px 6px 0; font-size: 14px; max-width: 90ch; }
+.quote { border-left: 3px solid var(--accent); padding: 4px 14px; color: var(--ink-2); font-style: italic; max-width: 74ch; }
+.quote cite { display: block; font-style: normal; font-size: 12.5px; color: var(--ink-3); margin-top: 4px; }
+
+@media (max-width: 860px) {
+  .page { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+  .toc { position: static; display: flex; flex-wrap: wrap; gap: 4px; }
+  .toc b { width: 100%; margin: 0; }
+  h1 { font-size: 34px; }
+  .bar { grid-template-columns: minmax(0, 1fr) 64px; }
+  .bar .track { grid-column: 1 / -1; grid-row: 2; }
+}
+ul.prose { margin: 0; padding-left: 1.2em; }
+.card ul { margin: 0; padding-left: 1.2em; display: grid; gap: 4px; font-size: 14px; color: var(--ink-2); }
+.card p { font-size: 14px; }
+section > h3 { margin-top: 8px; }
+.cards figure pre { height: 100%; }
+table.data td:first-child code { white-space: nowrap; }
+</style>
+</head>
+<body>
+<div class="page">
+  <nav class="toc" aria-label="Contents">
+    <b>Node.js</b>
+    <a href="#summary">Summary</a>
+    <a href="#experience">User experience</a>
+    <a href="#decisions">Decisions</a>
+    <a href="#versions">Versions</a>
+    <a href="#scope">What support means</a>
+    <a href="#findings">Findings</a>
+    <a href="#architecture">Architecture</a>
+    <a href="#alternatives">Rejected designs</a>
+    <a href="#groundwork">Groundwork</a>
+    <a href="#model">Model changes</a>
+    <a href="#stacks">Stacks</a>
+    <a href="#values">Values</a>
+    <a href="#control">Run control</a>
+    <a href="#async">Async and tasks</a>
+    <a href="#profiling">Profiling</a>
+    <a href="#syscalls">Syscalls</a>
+    <a href="#flake">Nix flake</a>
+    <a href="#testing">Testing</a>
+    <a href="#performance">Performance</a>
+    <a href="#phases">Phases</a>
+    <a href="#runtimes">Other runtimes</a>
+    <a href="#risks">Risks</a>
+    <a href="#questions">Questions</a>
+    <a href="#sources">Sources</a>
+  </nav>
+
+  <main>
+    <header class="top">
+      <div class="meta">
+        <span class="chip draft">Draft · design, research complete</span>
+        <span class="chip">Node.js 22, 24, and 26 LTS (V8 12.4, 13.6, 14.6)</span>
+        <span class="chip">researched 2026-10-22</span>
+        <div class="theme-toggle" role="group" aria-label="Theme">
+          <button type="button" data-theme-choice="system" aria-pressed="true">Auto</button>
+          <button type="button" data-theme-choice="light" aria-pressed="false">Light</button>
+          <button type="button" data-theme-choice="dark" aria-pressed="false">Dark</button>
+        </div>
+      </div>
+      <div class="eyebrow">microscope plan</div>
+      <h1>Node.js, the second managed runtime</h1>
+      <p class="lede">Node runs JavaScript on V8. Unlike CPython, V8's frames live on the native stack. Its machine code, though, is written at run time into anonymous memory that no image describes, and its builtins are copied out of the executable at startup. Its own description of its heap, the <code>v8dbg_</code> postmortem symbols, leaves out the fields that turn a frame into a source line. This plan says how microscope reads all of that exactly from outside the process, how it drives breakpoints and steps through the inspector Node already ships, and how both fit the provider and runtime-model split that Go and Python use. It covers the debugger, values, views, profiling, system calls, the flake, and a testing strategy whose oracles are V8's own accounts of itself.</p>
+    </header>
+
+    <section id="summary">
+      <h2>Summary</h2>
+      <div class="prose">
+        <p><b>It feels like Node.</b> A user runs <code>microscope node -- server.js</code>, breaks in a <code>.js</code> or <code>.ts</code> file, steps across <code>await</code>, and sees values written as <code>console.log</code> writes them, with Node's own frames folded away. On top of that they get what Node's debugger cannot give: native and addon frames, every worker stopped at once, core dumps, profiles, and system calls. <a href="#experience">What debugging Node feels like</a> walks through a session and the eight changes it made to this plan.</p>
+        <p><b>Read the target from outside; let Node's own debugger move it.</b> Stacks, values, expressions, views, profiling, syscall stacks, and core dumps read V8's memory directly, with no code in the target. Breakpoints, steps, exception stops, and assignments go through V8's inspector (the Chrome DevTools Protocol, CDP). Node ships the inspector in every build and can start it in a running process with <code>SIGUSR1</code>. Python needed an injected agent because CPython had no such facility. Node needs none, so microscope puts no JavaScript of its own in the target.</p>
+        <p><b>The layout comes from V8's own build, not from guesses.</b> Every official and nixpkgs Node binary exports about 480 <code>v8dbg_</code> constants (F2). They are read by name. Each Node line renumbers frame types and instance types and moves fields (F3), so no value is ever hard-coded. The symbols leave out what lines and names need, such as the bytecode's position table, <code>ScopeInfo</code>'s variable-length layout, and external string data. Those come from V8's Torque compiler, which already generates exact offsets and slice macros for debuggers (<code>class-debug-readers.cc</code>, <code>debug-macros.cc</code>). The flake runs Torque once per supported V8 version, and a checked-in generated file holds the result, exactly as <code>layouts.gen.rs</code> does for CPython. Wherever both sources name a field they must agree, or the binary is refused.</p>
+        <p><b>JavaScript frames are native frames with a recorded function.</b> A V8 frame has a frame pointer, a return address, and slots holding its <code>JSFunction</code> and bytecode offset, so the native unwinder walks it. The runtime model only names it. That needs two pieces of groundwork: a pseudo-module that maps V8's remapped copies of its builtins back to the executable's symbols (F7), and a way for a runtime to describe a physical frame whose code is in no image (G2). Optimized frames expand into their inlined functions as inline frames do.</p>
+        <p><b>Every LTS line in support, never an old one.</b> microscope supports Node 22, 24, and 26, the three LTS lines in support today, and Node 22 leaves at its end of life in April 2027. From Node 27, each line joins when it enters LTS and leaves at its end of life (<a href="#versions">Versions</a>). Debian's shared-<code>libnode</code> build is supported from the start too (F28).</p>
+        <p><b>The test oracles are V8, twice.</b> A fixture prints what V8's own <code>CallSite</code> API knows at a synchronization point. At inspector stops, CDP's <code>Debugger.paused</code> frames and scopes are a second, independent oracle that microscope's out-of-process reader must match frame by frame. The simulator is not extended (as asked). The CDP controller's interleavings are tested against a scripted inspector instead, which is cheaper and deterministic.</p>
+      </div>
+      <div class="callout">The decisions that most change the work are in <a href="#decisions">Decisions</a>. The smaller ones in <a href="#questions">Questions</a> were decided on 22 October 2026, three of them against the original recommendation: Node 22 is supported, Debian's <code>libnode</code> build is supported from the start, and nothing is contributed upstream. The research prototypes (a core-dump frame walker in Python, CDP timing clients, and inspector probes) are throwaway and not checked in. Their results are recorded in <a href="#findings">Findings</a>. A second round of eleven experiments (F16–F26) tested the riskiest parts end to end. The out-of-process reader rendered 75 of 76 values byte-identical to <code>util.inspect</code>. The inspector survives the all-stop. Task lists, the flake's recipes, and the layout translator all worked. They also found the largest gap a Node user will meet first: <code>npm start</code>, <code>node --test</code>, and <code>node --watch</code> run the user's code in a child process that microscope does not follow today (F26).</div>
+    </section>
+
+    <section id="experience">
+      <h2>What debugging Node feels like</h2>
+      <div class="prose">
+        <p>The goal: a Node developer who has never heard of V8's internals debugs their program the way they would with <code>node inspect</code> or VS Code's built-in JavaScript debugger. They see the names, lines, and values Node itself would print. They also get what those tools cannot give them: native frames, core dumps, every thread stopped at once, profiles, and system calls, all in one session. Everything in the rest of this plan exists to make that true. V8 shows up only as the reason something cannot be done, written so the user knows what to do next.</p>
+        <p>The sessions below show the designed behavior; none of it is implemented yet. The output follows the formats microscope already prints for Python and native code.</p>
+      </div>
+
+      <h3>Starting</h3>
+      <pre>microscope node -- server.js --port 8080     <span class="c">launch; stops before the program begins</span>
+microscope node -- src/app.ts                <span class="c">TypeScript Node runs itself, at its own lines</span>
+microscope --attach server                   <span class="c">a running process, by PID or name</span>
+microscope --core core.4121 node             <span class="c">a crash, e.g. from --abort-on-uncaught-exception</span>
+microscope web node -- server.js             <span class="c">the same session in the browser</span>
+microscope ./cli.js                          <span class="c">a #!/usr/bin/env node script                (G8)</span>
+microscope npm -- start                      <span class="c">follows npm's child into the app's node     (G8)</span>
+microscope node -- --test test/users.test.js <span class="c">follows each test file's process           (G8)</span></pre>
+      <div class="prose">
+        <p>Nothing is asked of the user beyond naming <code>node</code>. microscope adds <code>--inspect</code> itself, and on attach it starts Node's inspector with <code>SIGUSR1</code>. Breakpoints set before <code>run</code> are armed before the program's first line, including breakpoints in files not yet loaded.</p>
+        <p>The last three forms are how most Node developers start a program, and none of them works today (F26). Each runs the user's code in a process that microscope did not launch. The forms marked G8 need general process-following work, which is not specific to Node. Until it lands, each one fails with a message that names its direct form: <code>microscope node -- app.js</code>, or <code>node --test --test-isolation=none</code>, which runs the tests in the launched process.</p>
+      </div>
+
+      <h3>A breakpoint, a stack, and the variables</h3>
+      <pre>$ microscope node -- server.js
+(microscope) break routes/users.js:14
+breakpoint 1 at routes/users.js:14 (pending: no script by that name has loaded yet)
+(microscope) run
+listening on :8080
+stopped at breakpoint 1 in getUser at routes/users.js:14
+   13      const id = Number(req.params.id);
+→  14      const user = await db.find(id);
+   15      if (!user) return res.status(404).end();
+(microscope) bt
+#0  in getUser at routes/users.js:14
+#1  in handle at node_modules/express/lib/router/layer.js:95
+#2  in next at node_modules/express/lib/router/route.js:149
+    … #3–#11: 9 frames of Node and V8; `bt -r` shows them
+#12 in processTicksAndRejections at node:internal/process/task_queues:105
+(microscope) print
+(Request) req = Request { method: 'GET', url: '/users/7', params: { id: '7' }, … }
+(ServerResponse) res = ServerResponse { statusCode: 200, … }
+(number) id = 7
+(undefined) user = &lt;uninitialized&gt;
+(microscope) print req.params.id == "7" &amp;&amp; id &gt; 0
+(bool) req.params.id == "7" &amp;&amp; id &gt; 0 = true
+(microscope) next
+stopped after step in getUser at routes/users.js:15
+(microscope) print user
+(Object) user = { id: 7, name: 'Ada', roles: [ 'admin' ], createdAt: 2026-10-01T09:30:00.000Z }</pre>
+      <div class="prose">
+        <ul>
+          <li><b>Pending until loaded.</b> A breakpoint in a file Node has not loaded yet is pending, with that reason. It turns ready, a hollow dot becoming a filled one in the browser and editors, the moment Node loads the file.</li>
+          <li><b><code>next</code> over <code>await</code> stays with this request.</b> Other requests may run while <code>db.find</code> waits, and their hits on other breakpoints stop as usual, but the step ends in <i>this</i> call of <code>getUser</code>, not another request's.</li>
+          <li><b>Node's own frames fold.</b> Frames of <code>node:</code> scripts and V8's builtins fold into one line, as CPython's interpreter frames do. <code>node_modules</code> frames are the user's dependencies and are shown.</li>
+          <li><b>Variables are listed as JavaScript scopes:</b> locals, then each closure, then the module, then globals. <code>let</code> and <code>const</code> before their declaration are <code>&lt;uninitialized&gt;</code>, as the error Node would throw calls them.</li>
+        </ul>
+      </div>
+
+      <h3>Values read as Node prints them</h3>
+      <div class="prose"><p>A value is written exactly as <code>util.inspect</code> writes it with its default options, so it looks like <code>console.log</code> output. The only difference is that microscope never runs the program's code, including custom inspect methods and getters.</p></div>
+      <div class="scroller"><table class="data">
+        <thead><tr><th>Value</th><th>Shown as</th></tr></thead>
+        <tbody>
+          <tr><td>Numbers, BigInts, strings</td><td><code>-0</code>, <code>NaN</code>, <code>123456789012345678901234567890n</code>, <code>'it\'s'</code></td></tr>
+          <tr><td>Arrays, sparse arrays, typed arrays, Buffers</td><td><code>[ 1, 2, &lt;1 empty item&gt;, 4 ]</code>, <code>Uint8Array(3) [ 1, 2, 3 ]</code>, <code>&lt;Buffer 68 69&gt;</code></td></tr>
+          <tr><td>Map, Set, Date, RegExp</td><td><code>Map(2) { 'a' =&gt; 1, 'b' =&gt; 2 }</code>, <code>Set(1) { 'x' }</code>, <code>2026-10-22T09:30:00.000Z</code>, <code>/ab+c/gi</code></td></tr>
+          <tr><td>Promises</td><td><code>Promise { &lt;pending&gt; }</code>, <code>Promise { 42 }</code>, <code>Promise { &lt;rejected&gt; Error: timeout }</code></td></tr>
+          <tr><td>Instances, functions, classes</td><td><code>User { id: 7 }</code>, <code>[Function: getUser]</code>, <code>[AsyncFunction: load]</code>, <code>[class User]</code></td></tr>
+          <tr><td>Accessors, proxies</td><td><code>fullName: [Getter]</code>, never called; a proxy as its target and handler</td></tr>
+          <tr><td>Errors</td><td><code>TypeError: Cannot read properties of undefined (reading 'id')</code>, expanding to its stack text and own properties</td></tr>
+        </tbody>
+      </table></div>
+      <div class="prose"><p>Objects, arrays, Maps, and Sets expand in the browser and in editors, in the order JavaScript iterates them. Typed arrays and Buffers can be drawn as images and plots.</p></div>
+
+      <h3>When something goes wrong in the program</h3>
+      <pre>(microscope) catch javascript-uncaught on
+(microscope) continue
+stopped at an uncaught exception in getUser at routes/users.js:15:
+  TypeError: Cannot read properties of undefined (reading 'roles')
+(microscope) print user
+(undefined) user = undefined</pre>
+      <div class="prose"><p>The uncaught stop comes before Node prints the error and exits, with the throwing frame selected. <code>javascript-thrown</code> also stops at exceptions the program catches. A crash that already happened is a core dump, which gives the same stacks and values (<a href="#ux-limits">limits</a>).</p></div>
+
+      <h3>What only microscope shows</h3>
+      <pre>(microscope) bt                         <span class="c">a Node-API addon between JavaScript frames</span>
+#0  in resize_rgba at addon/resize.c:88
+#1  in Resize at addon/binding.c:41
+#2  in thumbnail at lib/images.js:23
+#3  in handleUpload at routes/upload.js:51
+(microscope) frame 1
+(microscope) print (js)argv[0]
+(Buffer) (js)argv[0] = &lt;Buffer 89 50 4e 47 0d 0a 1a 0a … 48121 more bytes&gt;
+(microscope) threads
+* 1  main          isolate 1   in getUser at routes/users.js:14
+  2  worker 1      isolate 2   in hashPassword at lib/crypto-worker.js:9
+  7  libuv pool    –           in uv__fs_read
+(microscope) tasks
+  [1] TCP server :8080 — listening
+  [2] timeout 30000 ms — callback at lib/session.js:40
+  [3] fs open — pending, callback at config.js:12
+  [4] thread-pool job on thread 7 — Node's readFile, no JavaScript callback recorded</pre>
+      <pre>$ microscope syscalls -k -- node server.js
+openat(AT_FDCWD, "config.json", O_RDONLY|O_CLOEXEC) = 21
+ &gt; readConfig at /srv/app/config.js:12
+ &gt; main at /srv/app/server.js:4
+$ microscope record -o server.usprof -- node server.js   <span class="c">a profile with JavaScript and native frames together</span></pre>
+      <div class="prose"><p>A stop stops every thread, workers included, so a worker's state is the one it had at the same moment as the main thread's. Each worker can be selected, stepped, and broken in as its own thread.</p></div>
+
+      <h3>In VS Code and the browser</h3>
+      <pre>{
+  "type": "microscope",
+  "request": "launch",
+  "name": "Debug server",
+  "program": "node",
+  "args": ["${workspaceFolder}/server.js"]
+}</pre>
+      <div class="prose">
+        <p>Breakpoints go in the gutter of <code>.js</code>, <code>.mjs</code>, <code>.cjs</code>, and <code>.ts</code> files, with conditions, hit counts, and log points. Variables show Local, Closure, Module, and Global scopes, the names VS Code's own JavaScript debugger uses. The Call Stack shows JavaScript and native frames together, with Node's own frames deemphasized. Exception breakpoints offer “JavaScript: thrown” and “JavaScript: uncaught”, and hovering a variable shows its value. A “Launch a Node program” snippet fills in the entry above. In the browser, frames carry a <code>js</code> or <code>ts</code> mark, Ctrl+P lists the project's own <code>.js</code> and <code>.ts</code> files (skipping <code>node_modules</code>, as it already does for Python), and the tasks panel lists the event loop's handles.</p>
+      </div>
+
+      <h3 id="ux-limits">Where it differs from Node's own debugger</h3>
+      <div class="prose"><p>Each limit is shown where it applies, in words that name the fix:</p></div>
+      <div class="scroller"><table class="data">
+        <thead><tr><th>The user tries</th><th>microscope says</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td><code>print user.fullName</code>, a getter</td><td><code>error: `fullName` of a `User` is a getter, which runs code microscope does not run</code></td><td>Expressions never run the program's code; calls, getters, and proxies are refused, as in Python</td></tr>
+          <tr><td>Locals in a core dump, or at a native breakpoint in C</td><td><code>(number) r3 = 7 — this local's name is in the function's source only; names are known at JavaScript stops</code></td><td>V8 keeps local names only in source (F11); closure, module, and global variables keep their names everywhere</td></tr>
+          <tr><td><code>next</code> with a JavaScript frame selected at a native stop, such as inside a C addon</td><td>Runs to the next JavaScript statement that thread executes, and says so: <code>stopped at the next JavaScript statement in thumbnail at lib/images.js:24</code>. A callback into JavaScript from the addon would stop first</td><td>V8 cannot step from a frame it did not pause in, only pause at the next statement (F19)</td></tr>
+          <tr><td><code>microscope npm -- start</code> before G8</td><td><code>error: npm is a script run by node; microscope follows the program it launches only, so run `microscope node -- app.js` (what `npm start` runs)</code></td><td>Today this prints “not an ELF file”. npm and npx run the app as a grandchild, through <code>sh</code>, which microscope does not follow (F26, Q7)</td></tr>
+          <tr><td>Ctrl-C on an idle server</td><td><code>stopped (interrupted) in epoll_wait</code>, with every thread's stack. Then <code>next</code> runs to the next JavaScript statement the loop runs, in the user's code</td><td>An idle loop runs no JavaScript, so V8 cannot pause it (F19)</td></tr>
+          <tr><td>Expanding an error whose <code>.stack</code> the program never read</td><td>The stack's frames, formatted by microscope from V8's raw call sites as Node would format them (Q8)</td><td>V8 formats a stack only when it is first read (F24)</td></tr>
+          <tr><td>Attach to <code>node --disable-sigusr1</code></td><td>Stacks and values work; JavaScript breakpoints stay pending: “the process was started with --disable-sigusr1, so its inspector cannot be started”</td><td>Node offers no other way in</td></tr>
+          <tr><td>A launched program's stderr</td><td>Two lines, <code>Debugger listening on ws://…</code>, as with any <code>node --inspect</code></td><td>The only private way to learn the inspector's address (Q1)</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>What this changes in the plan</h3>
+      <div class="prose"><p>Thinking about the session rather than the reader found six changes, and the second round of experiments two more. Each is reflected in the phases below.</p></div>
+      <div class="scroller"><table class="data">
+        <thead><tr><th>Change</th><th>Why the user needs it</th><th>Phase</th></tr></thead>
+        <tbody>
+          <tr><td><b>An interrupt pauses JavaScript.</b> Ctrl-C, or an editor's Pause, first sends <code>Debugger.pause</code> to each isolate whose thread is running. It waits up to 50 ms for the pause, then makes the all-stop as today. Running JavaScript, including a thread in <code>Atomics.wait</code>, paused in about 1 ms (F19). An idle loop, a blocking system call, or a long C++ call stops natively. A pause request that comes too late cannot be cancelled. The controller absorbs it at the next resume, silently</td><td>The user hits Ctrl-C on a hung server and expects named locals and a working <code>next</code>. Without this, every pause would be a native stop with unnamed registers and no stepping</td><td>N3</td></tr>
+          <tr><td><b>A step from a native stop runs to the next user JavaScript statement</b>: <code>Debugger.pause</code>, resume, then <code>stepInto</code> until the top frame is not a <code>node:</code> script. That took 59 steps and 10 ms from an idle loop to the timer's callback (F19)</td><td>After Ctrl-C on an idle server, <code>next</code> should mean “show me the next thing my program does”, not an error</td><td>N3</td></tr>
+          <tr><td><b>Following the program into <code>node</code></b>: <code>#!</code> scripts, exec through <code>env</code> and shells, and children that become <code>node</code>, in every client (G8)</td><td><code>npm start</code>, <code>npx</code>, <code>node --test</code>, and <code>node --watch</code> are how most users run code. Today the user's code runs untraced, and only npm's and env's launches print anything (F26)</td><td>Before N3</td></tr>
+          <tr><td><b>Values written as <code>util.inspect</code> writes them</b>, with the truth fixture's canonical values produced by <code>util.inspect</code> itself (custom inspect off)</td><td>Values look like <code>console.log</code>. The oracle comes free and is exactly what users compare against</td><td>N2</td></tr>
+          <tr><td><b>Source maps move from N6 to N3</b>, beside breakpoints</td><td>tsx, ts-node, esbuild, Vite, and Next.js all run code through source maps. A breakpoint in a <code>.ts</code> file that never hits is the worst first impression</td><td>N3</td></tr>
+          <tr><td><b>Steps never stop in <code>node:</code> scripts</b> (V8's <code>Debugger.setBlackboxPatterns</code>), and a <code>[node] skip</code> setting adds patterns such as <code>node_modules/**</code></td><td><code>step</code> into <code>res.json(x)</code> should reach the user's code, not Node's stream internals. VS Code users know this as “skipFiles”. Blackboxing does not move a pause or step that starts inside <code>node:</code> code, so microscope steps out of it itself (F19)</td><td>N3</td></tr>
+          <tr><td><b>Pending reasons that suggest the fix.</b> A breakpoint path that matches no loaded script names the closest loaded one; an unreachable inspector names the flag that disabled it</td><td>A typo in a path, or <code>routes/user.js</code> for <code>routes/users.js</code>, otherwise looks like microscope being broken</td><td>N3</td></tr>
+          <tr><td><b>Scopes named as JavaScript names them</b> in DAP and the browser (Local, Closure, Module, Global), and frames with columns</td><td>Users moving from VS Code's JavaScript debugger find what they expect where they expect it</td><td>N1, N3</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="decisions">
+      <h2>Decisions</h2>
+      <div class="scroller"><table class="data">
+        <thead><tr><th>Question</th><th>Decision</th><th>Consequence</th></tr></thead>
+        <tbody>
+          <tr><td>Versions</td><td class="good">Node 22, 24, and 26 now; 22 until its end of life on 30 April 2027. Each later line joins at LTS and leaves at end of life. Node 20 and older are not supported.</td><td>Three V8 layouts today (12.4, 13.6, 14.6), two after April 2027, at most three at once later. A binary whose V8 major.minor is not generated is refused by name, never read by the nearest table</td></tr>
+          <tr><td>Builds</td><td class="good">Official nodejs.org binaries, the pinned nixpkgs builds, and Debian's shared-<code>libnode</code> build (Q5, F28); pointer compression and the V8 sandbox off, as all three ship</td><td>A build with pointer compression or the sandbox on (Electron, custom builds) is refused with that reason. Deno and Bun are other runtimes</td></tr>
+          <tr><td>Control plane</td><td class="good">The V8 inspector over CDP, which Node ships, for breakpoints, steps, exceptions, and assignments</td><td>No code of microscope's in the target. Breakpoint and step semantics are V8's own, including lazily compiled functions and optimized code. Attach works through <code>SIGUSR1</code></td></tr>
+          <tr><td>Reading</td><td class="good">Out of process from memory, for every stop and for core dumps</td><td>Profiling, syscall tracing, and inspection never use the inspector. CDP is never asked for a value at a published stop</td></tr>
+          <tr><td>Expressions</td><td class="good">microscope's expression language only</td><td>No <code>Runtime.evaluate</code>, even for conditions or log points. Getters, proxies, and calls are refused with their reason, as for Python</td></tr>
+          <tr><td>Simulator</td><td class="good">Not extended</td><td>The CDP controller is tested against a scripted inspector and against real Node. Native run-control changes still run <code>just sim 600</code>, as the repository requires</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="versions">
+      <h2>Versions</h2>
+      <div class="prose">
+        <p>Status on 22 October 2026, from the Node.js Release Working Group's schedule and nodejs.org:</p>
+      </div>
+      <div class="scroller"><table class="data">
+        <thead><tr><th>Line</th><th>V8</th><th>Status</th><th>End of life</th><th>microscope</th></tr></thead>
+        <tbody>
+          <tr><td>20</td><td>11.3</td><td>End of life</td><td>30 Apr 2026</td><td>Not supported</td></tr>
+          <tr><td>22</td><td>12.4</td><td>Maintenance LTS</td><td>30 Apr 2027</td><td class="good">Supported until end of life (Q3, F27)</td></tr>
+          <tr><td>24</td><td>13.6</td><td>Maintenance LTS since 20 Oct 2026</td><td>30 Apr 2028</td><td class="good">Supported</td></tr>
+          <tr><td>26</td><td>14.6</td><td>Current; Active LTS on 28 Oct 2026</td><td>30 Apr 2029</td><td class="good">Supported, primary</td></tr>
+          <tr><td>27</td><td>–</td><td>Alpha from 28 Oct 2026; Current Apr 2027; LTS Oct 2027</td><td>30 Apr 2030</td><td>Joins at LTS; the work begins when it becomes Current</td></tr>
+        </tbody>
+      </table></div>
+      <div class="prose">
+        <p>From Node 27, Node makes one major release a year, in April, and every line becomes LTS after six months as Current. The policy is therefore mechanical. A new line joins each October, which is one flake entry, one regenerated layout, and the conformance and truth suites run on it. A line leaves each April at end of life, and its layout file and matrix entries are deleted; Node 22 is the first, in April 2027. At most three lines are ever supported. Within a line, V8's major and minor version do not change: nixpkgs' 24.16.0 and the official 24.22.1 export identical values for all 480 shared symbols (F2). A V8 version with no generated layout gets an explicit <code>Unsupported</code> that names the version found.</p>
+      </div>
+    </section>
+
+    <section id="scope">
+      <h2>What Node support means</h2>
+      <div class="prose"><p>This table is the contract. Each later section explains one row.</p></div>
+      <div class="scroller"><table class="data">
+        <thead><tr><th>Feature</th><th>What the user gets</th><th>How</th><th>Needs</th></tr></thead>
+        <tbody>
+          <tr><td>Stacks</td><td>JavaScript frames with function, file, line, and column, interleaved with native frames where they ran, including inlined functions of optimized code; Node's own <code>node:</code> frames folded</td><td>Native unwinding by frame pointer through V8 frames; the runtime names each from its <code>JSFunction</code> slot and code</td><td>Any stop; core dumps</td></tr>
+          <tr><td>Threads and isolates</td><td>Main thread and each worker labelled with their isolate; V8 helper threads labelled as such</td><td>The thread-local <code>g_current_isolate_</code> per thread</td><td>Read-only</td></tr>
+          <tr><td>Values</td><td>Context variables, <code>this</code>, arguments, globals and module bindings; numbers, BigInts, strings of every representation, objects with their properties in order, arrays by elements kind, Map, Set, Date, RegExp, typed arrays, Promise state, functions and their closures. Stack locals by name at inspector stops</td><td>Object model over maps, descriptor arrays, and dictionaries, from the layout</td><td>Read-only; stack local names need V8's parser (F11)</td></tr>
+          <tr><td>Expressions</td><td><code>req.headers["host"]</code>, <code>items.length &gt; 10</code>, <code>map.size</code> in watches, conditions, and log points</td><td>The evaluator's dynamic type category, which Python added</td><td>No code runs in the target</td></tr>
+          <tr><td>Views, visualizers</td><td>Views selected by a JavaScript class name; typed arrays and <code>Buffer</code> as images and plots</td><td>View language <code>javascript</code>; bulk reads of typed array storage</td><td>–</td></tr>
+          <tr><td>Breakpoints</td><td>Line and function breakpoints in <code>.js</code>, <code>.mjs</code>, <code>.cjs</code>, and <code>.ts</code> files, pending until the script loads; conditions, hit counts, log points evaluated by microscope</td><td>CDP <code>setBreakpointByUrl</code>; function breakpoints through each script's function table</td><td>The inspector; launch or <code>SIGUSR1</code> attach</td></tr>
+          <tr><td>Stepping</td><td>Into, over, out, owned by one isolate; across <code>await</code></td><td>CDP steps, whose pause becomes an all-stop</td><td>The inspector</td></tr>
+          <tr><td>Exceptions</td><td>Stop on thrown or uncaught exceptions, with the exception as a value</td><td>CDP <code>setPauseOnExceptions</code>; neutral <code>LanguageException</code></td><td>The inspector</td></tr>
+          <tr><td>Workers</td><td>Every worker thread debugged as its own isolate, under one all-stop</td><td>CDP <code>NodeWorker</code> sessions over the one connection</td><td>The inspector</td></tr>
+          <tr><td>Async</td><td>A suspended <code>await</code> chain as logical frames below the running async function; pending event loop handles and requests as tasks</td><td><code>JSAsyncFunctionObject</code> and promise reactions; Node's handle and request lists</td><td>Read-only</td></tr>
+          <tr><td>Mixed mode</td><td>Node-API addon frames between JavaScript frames; a <code>napi_value</code> or <code>v8::Local</code> shown as the JavaScript value; step into an addon function and back</td><td>DWARF for the addon; <code>object_types</code> for V8 handles</td><td>The addon's DWARF</td></tr>
+          <tr><td>Sampling</td><td>JavaScript, mixed, and native CPU profiles; per isolate</td><td>Frames are on the native stack, so the perf sample's stack copy holds them; a BPF V8 walker records each frame's function and offset at sample time</td><td>BPF needs <code>CAP_BPF</code> and <code>CAP_PERFMON</code>, as today</td></tr>
+          <tr><td>Instrumentation</td><td>Zones, plots, and messages from JavaScript</td><td>A Node-API package over the probes library's run-time sites</td><td>Probes ABI 2, which exists</td></tr>
+          <tr><td>Syscalls</td><td>Each call shows the JavaScript line that made it; catchpoints stop with mixed stacks</td><td>The same reader at each ptrace stop; the BPF walker in the BPF engine</td><td>As today</td></tr>
+          <tr><td>Source maps</td><td>TypeScript and bundled code shown, and broken in, at original lines</td><td>Source maps read at the debug-information edge; Node's type stripping needs none (F13)</td><td>The map file</td></tr>
+        </tbody>
+      </table></div>
+      <div class="prose"><p>Out of scope, and said so where they appear: WebAssembly frames (named as Wasm, without source); <code>vm</code> contexts beyond their script names; Electron, Deno, and Bun.</p></div>
+    </section>
+
+    <section id="findings">
+      <h2>Findings</h2>
+      <div class="prose"><p>The research read V8 14.6's and 13.6's sources from the Node 26.12.1 and 24.22.1 tarballs, ran V8's Torque compiler on both, and read the OpenTelemetry eBPF profiler's V8 unwinder and llnode. It then ran experiments against nixpkgs' 24.16.0 and the official 24.22.1 and 26.12.1 binaries: a core-dump frame walker, CDP clients timing every operation, and probes of the inspector's startup, worker, and attach paths. Each finding changed the plan. F16 to F26 come from a second round, run on the official 24.22.1 and 26.12.1 builds, with nixpkgs' builds where named. It covered the inspector under the all-stop, binding local names, optimized-code lookup, pause latency and inspector cost, cores, the flake's recipes, task lists, values against <code>util.inspect</code>, and how users launch Node.</p></div>
+      <div class="cards">
+        <div class="card">
+          <header><span class="id">F1</span><h3>Node's release model changes this month</h3></header>
+          <p>Node 26 is the last line made under the old twice-yearly model. From 27 there is one major a year and every one becomes LTS. So every supported line is an even-numbered line until 26, and every line after it. nixpkgs at the pinned revision has <code>nodejs_22</code> 22.23.1, <code>nodejs_24</code> 24.16.0, and <code>nodejs_26</code> 26.5.0. Node 25 was removed at its end of life.</p>
+        </div>
+        <div class="card">
+          <header><span class="id">F2</span><h3>Every build exports its V8 layout</h3></header>
+          <p><code>v8dbg_</code> symbols are present in the nixpkgs build (480) and the official 24.22.1 (480) and 26.12.1 (477) builds, with 16–17 <code>nodedbg_</code> symbols beside them. The values are in <code>.data</code>, readable from the file. nixpkgs' 24.16.0 and the official 24.22.1 differ in none of them. A <code>v8dbg_</code> symbol in <code>.bss</code> means zero, as <code>v8dbg_SmiTag</code> does. On Node 24, though, the <code>nodedbg_</code> offsets are also in <code>.bss</code> and are non-zero on 26, so on 24 they are set at run time and cannot be read from the file. The plan does not use them where Torque gives the same fact.</p>
+        </div>
+        <div class="card">
+          <header><span class="id">F3</span><h3>Each line renumbers everything</h3></header>
+          <p>Between V8 13.6 and 14.6, 44 shared non-type constants changed value. Every frame type was renumbered (<code>InterpretedFrame</code> 14→4, <code>TurbofanJSFrame</code> 17→7). Most instance types moved by one to seven. <code>DescriptorArray</code>'s header grew from 24 to 32 bytes. 22 symbols disappeared and 19 appeared. A reader that remembers any number from one line misreads the next, so every number is read by name, every time an image loads.</p>
+        </div>
+        <div class="card">
+          <header><span class="id">F4</span><h3>The metadata stops short of source lines</h3></header>
+          <p>No <code>v8dbg_</code> symbol gives <code>BytecodeArray</code>'s source position table, <code>TrustedByteArray</code>'s data, <code>ExternalString</code>'s data, <code>SharedFunctionInfo</code>'s function data, or <code>ScopeInfo</code>'s variable-length slices, which hold function names. The OpenTelemetry unwinder hard-codes these per V8 version, and one of its comments calls its own bytecode-table offset uncertain. V8's Torque compiler emits all of them exactly, for its own debug helper: <code>class-debug-readers.cc</code> (753 fixed-offset fields on 13.6, 736 on 14.6, in the release configuration) and <code>debug-macros.cc</code>, 105 and 109 distinct slice functions in a small subset of C++ (integer add and multiply, field reads, bit fields, and branches). Producing them takes <code>configure</code> (about 13 s) and the <code>run_torque</code> target (3 s), with no V8 build. Of 635 fields both versions name, 52 moved, in 18 classes.</p>
+        </div>
+        <div class="card">
+          <header><span class="id">F5</span><h3>A table change that looks right</h3></header>
+          <p>The prototype first gave Node's own <code>timers</code> frames lines 649 and 610, where V8's truth said 685 and 618. The cause: V8 14.6 encodes a position table's code offset as an unsigned varint with two flag bits, and 13.6 as a signed one whose sign means "statement". Both decode without error, and both give plausible lines. The encoding is now per-version data in the generated layout, and the conformance suite checks it against each binary's own tables (<a href="#testing">Testing</a>).</p>
+        </div>
+        <div class="card">
+          <header><span class="id">F6</span><h3>Reading a core works on both lines</h3></header>
+          <p>From a <code>gcore</code> of each official build, the 230-line prototype used only <code>v8dbg_</code> symbols and Torque offsets to name the main thread's JavaScript frames. The fixture parked the thread in <code>Atomics.wait</code> after printing its own stack. The prototype's output matched it on every interpreted frame's function, file, and line, through <code>listOnTimeout</code> and <code>processTimers</code> to the <code>EntryFrame</code>, on 24.22.1 and 26.12.1. The Sparkplug frame was named but had no line, because that needs the baseline code's offset table. Node's built-in scripts keep their source as external strings in the executable's read-only data, which the core omits. Those reads go to the module file, as microscope's post-mortem reader already does for file-backed mappings.</p>
+        </div>
+        <div class="card">
+          <header><span class="id">F7</span><h3>Builtins run from copies no image describes</h3></header>
+          <p>The executable has 2,415 <code>Builtins_</code> symbols, but return addresses on the stack point into anonymous memory. V8 copies its whole embedded blob (2,182,848 bytes on 26.12.1) next to each code range for short builtin calls. The core held two copies, both byte-identical to the executable's. One return address fell 0xe4 bytes into the copy of <code>Builtins_InterpreterEntryTrampoline</code>. Today microscope's unwinder ends a stack at the first such address. A copy proven identical byte for byte can borrow the executable's symbols, roles, and unwind rules exactly (G1).</p>
+        </div>
+        <div class="card">
+          <header><span class="id">F8</span><h3>Each thread names its isolate</h3></header>
+          <p><code>v8::internal::g_current_isolate_</code> is a static TLS variable in the executable. Reading it at the thread pointer minus the executable's aligned TLS block, plus the symbol's offset, gave the main thread's isolate and zero for libuv's and V8's helper threads. This is how threads map to isolates, and how a helper thread is told apart from a JavaScript thread. A shared <code>libnode</code> would put it in dynamic TLS, which needs glibc's DTV descriptors.</p>
+        </div>
+        <div class="card">
+          <header><span class="id">F9</span><h3>gcore lost a worker's stack, because of glibc's guard pages</h3></header>
+          <p>The core held only zeros for the worker thread's stack mapping, which also holds its TLS. The cause is gdb, not Node. glibc 2.42 and later install each thread stack's guard with <code>MADV_GUARD_INSTALL</code> inside the stack mapping, so the kernel merges neighbouring stacks into one mapping (45 MiB holding six threads' stacks). Reads of a guard page fail with EIO through both <code>/proc/PID/mem</code> and ptrace. <code>gcore</code> stops at the first failed read and writes nothing more of that mapping. Official binaries run on the host's glibc, here Fedora's 2.43.</p>
+          <p>The repository already solves this. <code>make_core</code> in <code>scripts/build-test-programs.sh</code> runs fixtures under <code>scripts/stack-guard-mappings</code>, which makes <code>MADV_GUARD_INSTALL</code> fail so that glibc falls back to separate guard mappings, and rejects any “Memory read failed” warning. Under it, every thread's stack and TLS matched the live process. Kernel cores, through <code>coredumpctl</code>, skip guard pages and are complete without it. A core reports 1.9 GB but allocates about 70 MB, and 23 MB after zstd, because 1 GiB of it is two code-range reservations and 0.8 GiB inaccessible reservations, both holes. <code>--abort-on-uncaught-exception</code> dies by <code>SIGTRAP</code>, not <code>SIGABRT</code>. Users' own <code>gcore</code> cores have the same hole, so the core reader reports a thread whose stack bytes are all absent as missing, never as an empty stack.</p>
+        </div>
+        <div class="card">
+          <header><span class="id">F10</span><h3>CDP is fast, once delayed ACKs are off</h3></header>
+          <p>Over the inspector's WebSocket, with Node's own client, a raw client, and <code>TCP_NODELAY</code> set, every paused request and every hit-and-resume cycle took 41 ms on both lines. Re-arming <code>TCP_QUICKACK</code> after each read brought a paused request and reply to 0.061 ms and a breakpoint hit-and-resume to 0.165 ms. <code>setBreakpointByUrl</code> takes about 1 ms. <code>Debugger.enable</code> replays every parsed script, and costs about 8 ms plus 8 µs per script (F20). The transport sets quick acknowledgement after every read, and a test holds the round trip under 1 ms.</p>
+        </div>
+        <div class="card">
+          <header><span class="id">F11</span><h3>Stack locals are named only in source</h3></header>
+          <p><code>ScopeInfo</code> names only context-allocated variables, the ones closures capture. A stack-allocated local lives in an interpreter register, whose name V8 itself finds by reparsing the function's source (<code>ScopeIterator::TryParseAndRetrieveScopes</code>). So outside an inspector pause no exact reader can name <code>let total</code> in a function no closure captures. Its register is readable, its name is not. At an inspector pause, CDP's scope chain gives the names in V8's allocation order, which binds them to registers (<a href="#values">Values</a>).</p>
+        </div>
+        <div class="card">
+          <header><span class="id">F12</span><h3>The inspector can be started and found</h3></header>
+          <p>Every process starts with a <code>SignalInspector</code> thread. After <code>SIGUSR1</code> an <code>InspectorIo</code> thread listens on 127.0.0.1:9229. microscope found the port of a process started with <code>--inspect=127.0.0.1:0</code> through <code>/proc/PID/fd</code> and <code>/proc/PID/net/tcp</code>. Workers attach through the main session's <code>NodeWorker</code> domain: a breakpoint inside a worker hit on both lines. <code>inspector.Session.connectToMainThread()</code> from a worker never answered unless an inspector was already started, so microscope does not use in-process sessions. No setting publishes the URL privately: <code>--inspect-publish-uid=stderr</code> prints it on the program's stderr, and <code>http</code> lists it to any local user (Q1).</p>
+        </div>
+        <div class="card">
+          <header><span class="id">F13</span><h3>TypeScript needs no map for erasable syntax</h3></header>
+          <p>Node 24, 26, and 22.23.4 run <code>.ts</code> files by replacing type syntax with spaces. A stack trace from a <code>.ts</code> fixture gave the original line 6 and column 35. Lines are therefore exact for erasable TypeScript, and breakpoints in <code>.ts</code> files work as in JavaScript. Node 24 names the script by path and 26 by <code>file://</code> URL, which the provider normalizes. Enums, namespaces, and bundlers need source maps; <code>Script</code> carries the <code>sourceMappingURL</code> (a Torque field).</p>
+        </div>
+        <div class="card">
+          <header><span class="id">F14</span><h3>A tier fixture must prove its tier from inside</h3></header>
+          <p>The fixture compiled one function each with Sparkplug, Maglev, and Turbofan through <code>--allow-natives-syntax</code>, and <code>%GetOptimizationStatus</code> reported each one optimized. But the frames on the stack showed only the Sparkplug one compiled. Calling with arguments the warm-up never used deoptimized the others. Truth fixtures assert each frame's tier from inside that frame with <code>%ActiveTierIs*</code> before they report it.</p>
+        </div>
+        <div class="card">
+          <header><span class="id">F15</span><h3>Existing tools are references, not oracles</h3></header>
+          <p>llnode has had no release since September 2022 and is tested on Node 14–18 only. It shows a function's first line instead of the current one, and has no bytecode-offset support. The OpenTelemetry profiler supports Node 24, names no limit for 26, and lists its gaps: OSR and deoptimized frames, two-byte strings, and heuristic <code>ScopeInfo</code> parsing. It is a useful catalogue of where the metadata falls short. V8 itself, through <code>CallSite</code> and CDP, is the oracle.</p>
+        </div>
+        <div class="card">
+          <header><span class="id">F16</span><h3>The inspector survives the all-stop</h3></header>
+          <p>With a CDP pause in place, every thread of the process was stopped by ptrace for 0.1, 5, and 30 s. After release, the paused isolate answered <code>evaluateOnCallFrame</code> and <code>getProperties</code> in under 1.3 ms. A request sent during the all-stop got no reply until release, then arrived in 0.5 ms, so nothing is lost and nothing arrives early. 300 rounds of pausing the main thread and two workers, with and without ptrace, on both lines, missed no pause: median 1.2 ms, maximum 2.94 ms. The barrier itself took 0.1 to 0.8 ms. One early run on 24 timed out waiting for a second pause and did not recur in about 300 more; the scripted inspector covers that ordering.</p>
+        </div>
+        <div class="card">
+          <header><span class="id">F17</span><h3>Local names bind to registers in declaration order</h3></header>
+          <p>In interpreted frames, CDP's local and block scope names, in order, were exactly registers <code>r1</code> to <code>rN</code> on both lines: twenty locals in one function, and a block's shadowing <code>v</code> in <code>r2</code> beside the outer one in <code>r1</code>. Sparkplug frames keep the same order, but their register file starts at an offset that must come from the frame's layout constants, not a heuristic. The exceptions are the ones the plan's check by value exists for. Captured variables live in the context, not a register. A <code>catch</code> binding appeared at <code>r50</code> on one line and nowhere on the other. A destructured value appeared twice, once in a temporary. So a name binds only when its register holds the value CDP reported, and context variables keep binding through <code>ScopeInfo</code>.</p>
+        </div>
+        <div class="card">
+          <header><span class="id">F18</span><h3>Optimized code is found through a table no metadata locates</h3></header>
+          <p>With leaptiering, a <code>JSFunction</code> has no code field. Its <code>DispatchHandle</code> (+24 on both lines) indexes V8's dispatch table, 16-byte entries whose second word, shifted right by 16 and tagged, is the <code>Code</code> object. The table moved between the lines: on 24 it hangs off the global <code>IsolateGroup::default_isolate_group_</code> at +0x3270, on 26 off each isolate at +0x268. No <code>v8dbg_</code> symbol or Torque output gives either. Both were read from <code>ExternalReference::js_dispatch_table_address</code>, a three-instruction accessor in every build. <code>DeoptimizationData</code>'s indices, which name inlined functions, are Torque constants. Naming live Maglev and Turbofan frames from these was not prototyped (<a href="#risks">Risks</a>).</p>
+        </div>
+        <div class="card">
+          <header><span class="id">F19</span><h3>A pause needs running JavaScript</h3></header>
+          <p><code>Debugger.pause</code> arrived in about 0.5 ms in a JavaScript loop, about 1 ms inside <code>Atomics.wait</code> (which keeps waiting after resume), and 0.6 to 0.8 ms in a worker. It never arrived while the thread was blocked in a system call (a FIFO's <code>open</code>) until the call returned. In a 1.7 s <code>pbkdf2Sync</code> it waited for the call to end. In an idle loop it waited for the next timer, and landed in Node's <code>processTimers</code> with no user frame, even with <code>node:</code> blackboxed. A scheduled pause cannot be cancelled: <code>Debugger.resume</code> answers “Can only perform operation while paused”, and the pause fires later. From the landing frame, repeated <code>stepInto</code> reached the user's timer callback in 59 steps and 10 ms on both lines. Paused events carry an empty <code>url</code>, so scripts are named through <code>scriptParsed</code>.</p>
+        </div>
+        <div class="card">
+          <header><span class="id">F20</span><h3>The inspector is free until it evaluates</h3></header>
+          <p>Measured against a hot allocation benchmark, <code>--inspect</code> with no client, a connected client with <code>Debugger.enable</code>, and a breakpoint never hit each cost nothing measurable. <code>--inspect</code> adds 0.1 to 0.2 ms to startup. <code>Debugger.enable</code> costs about 8 ms plus 8 µs per loaded script (26 to 29 ms with 2,000 modules) and 3 to 5 MB. But a V8 conditional breakpoint whose condition is <code>false</code>, in a hot function, ran the code 20,000 times slower. Each evaluation emitted a <code>scriptParsed</code> event, and resident memory grew 285 MB outside the JavaScript heap. microscope's conditions were already its own; this makes V8's unusable, not just unwanted. <code>HeapProfiler.collectGarbage</code> did not finish in 30 s while JavaScript was busy.</p>
+        </div>
+        <div class="card">
+          <header><span class="id">F21</span><h3>Layouts must come from the release configuration</h3></header>
+          <p>Torque built offline in the Nix sandbox in about 20 s per version, and identically on a rebuild. Its instance types depend on configuration. Without Intl, 28 to 30 types per line differ from the shipped binary. On 26, configure silently turns Temporal off when <code>cargo</code> is missing, which shifts types again. Configured as the release is (<code>--without-npm</code>, full ICU, Rust present, clang), every type the binary also exports matched: 215 on 24, 217 on 26. nixpkgs' 24.16.0 and 26.5.0 have Intl and the same Temporal setting, and export the same type numbers as the official builds. gcc and clang emit the same offsets in a different order, so the derivation pins clang. The patched official binaries keep every <code>v8dbg_</code> symbol at the same address with the same bytes.</p>
+        </div>
+        <div class="card">
+          <header><span class="id">F22</span><h3>Torque's slice macros translate mechanically</h3></header>
+          <p>A 150-line translator turned all 105 (24) and 109 (26) distinct functions of <code>debug-macros.cc</code> into code with no construct left over. They use about ten statement shapes, every branch an <code>if (t) goto a else goto b</code>. Against offsets derived by hand from <code>scope-info.tq</code>, the translated <code>ScopeInfo</code> slices agreed in all 7,360 cases, across scope types, context-local counts on both sides of the inline limit of 75, module variables, and flags. Eight constants come from V8's headers rather than Torque, such as <code>kScopeInfoMaxInlinedLocalNamesSize</code> and the swiss table's group width. They are the hand-maintained part, checked per version.</p>
+        </div>
+        <div class="card">
+          <header><span class="id">F23</span><h3>Node's task lists are readable, with three holes</h3></header>
+          <p>From memory alone, the prototype found each thread's Node <code>Environment</code> through its isolate's current context and embedder data. It walked both handle and request lists and named each entry's class (exactly, by vtable), libuv type and state, and JavaScript callback with its file. This worked for main and worker threads on both lines. The holes: all JavaScript timers share one libuv timer, so individual timers live in <code>internal/timers</code>' JavaScript lists, which no <code>nodedbg_</code> offset reaches. Node 26's <code>fs.readFile</code> is a thread-pool job in neither list, as zlib and crypto jobs are. And a worker whose isolate is not entered has no global list to find it. Callbacks are often Node's wrappers (<code>onconnection @ node:net</code>), with the user's function one capture further. On 24 the <code>nodedbg_</code> offsets are set by a static initializer and read zero from the file, so tasks need a live process or a core. Only libuv and c-ares carry DWARF, which gives libuv's layouts.</p>
+        </div>
+        <div class="card">
+          <header><span class="id">F24</span><h3>Values match <code>util.inspect</code></h3></header>
+          <p>A Python prototype read 76 values from memory and rendered them with a port of <code>inspect.js</code> (650 lines). It ran no code in the target and walked no heap. On both lines, 75 were byte-identical to <code>util.inspect(v, {customInspect: false})</code>: numbers, BigInts, strings in every representation, fast, slow, and dictionary objects, holey and dictionary arrays, nesting and cycles, Map, Set, Date, RegExp, classes, getters, functions, errors, promises, typed arrays, and Buffers. The one miss was an error whose <code>.stack</code> was never read. Its stack is still a raw array of call sites under a private symbol. Reading all 76 cost 13,300 reads (105 KB); a type's first value pays for its prototype chain (about 470 reads for <code>Object.prototype</code>). It found five breaking layout changes between the lines. On 26, <code>JSTypedArray</code>'s length field holds a stale word and the length is computed from the byte length, and <code>AccessorPair</code> left both <code>v8dbg_</code> and Torque. About 40 facts came from neither source (F25).</p>
+        </div>
+        <div class="card">
+          <header><span class="id">F25</span><h3>Some facts are only in machine code or headers</h3></header>
+          <p>Neither <code>v8dbg_</code> nor Torque gives four kinds of facts the experiments needed:</p>
+          <ul>
+            <li>the isolate's current context (+0x150 on 24, +0x158 on 26, from <code>v8::Isolate::GetCurrentContext</code>)</li>
+            <li>the dispatch table (F18)</li>
+            <li>the root index of <code>error_stack_symbol</code>, a private symbol with no description</li>
+            <li>a few C++ layouts: <code>AsyncWrap::provider_type_</code>, <code>HandleWrap::handle_</code>, and enum orders such as <code>FunctionKind</code>, <code>ElementsKind</code>, and RegExp flags</li>
+          </ul>
+          <p>Each is either a tiny exported accessor, whose instructions can be decoded and checked, or a header the layout generator parses. Nothing found is a heuristic, but each needs a conformance test against the binary. The prototype's fallback for the error symbol, “the private symbol whose string contains <code>\n    at</code>”, is a heuristic, and the design does not use it.</p>
+        </div>
+        <div class="card">
+          <header><span class="id">F26</span><h3>Most Node launches lose the user's code</h3></header>
+          <p>Only <code>microscope node -- app.js</code> debugs the app, and a program that re-execs its own <code>node</code> is followed. Every other form loses it:</p>
+          <ul>
+            <li>A <code>#!/usr/bin/env node</code> script, <code>npm</code>, and <code>npx</code> fail with “not an ELF file”.</li>
+            <li><code>env node</code> and <code>bash -c</code> stop with “inferior replaced its executable image”, and a batch run then exits 0.</li>
+            <li>npm and npx run the app as a grandchild (node, fork, <code>sh -c</code>, exec node). <code>node --test</code> runs each file in a forked node, and <code>--watch</code> runs the app in one. Those children run untraced, and nothing is printed.</li>
+          </ul>
+          <p>libuv spawns with a plain <code>fork</code> and <code>execve</code>, so a follow decision can be made only once the child's exec chain has settled. At fork time npm's child is still node, and then it becomes <code>sh</code>. Fork following exists today only in DAP (<code>followForks</code>). <code>--attach node</code> is usually ambiguous: Node 24 names its main thread <code>MainThread</code>, npm retitles itself, and a desktop runs many node processes. <code>--test-isolation=none</code> keeps tests in the launched process on both lines.</p>
+        </div>
+        <div class="card">
+          <header><span class="id">F27</span><h3>Node 22 is a smaller step than feared</h3></header>
+          <p>The official 22.23.4 (V8 12.4) exports 457 <code>v8dbg_</code> and 15 <code>nodedbg_</code> symbols. Like 24, its <code>nodedbg_</code> values are set at run time. It has <code>g_current_isolate_</code> in the executable's static TLS. Its position table uses the same signed encoding as 13.6, so it adds no third encoding. Its <code>JSFunction</code> has a direct <code>code</code> field, without leaptiering, so optimized frames find their code with one read instead of through the dispatch table (F18). Torque built in 13 s with the release configuration (no Temporal on 22), and all 204 instance types the binary exports matched the generated ones.</p>
+        </div>
+        <div class="card">
+          <header><span class="id">F28</span><h3>Debian's libnode is readable without debug packages</h3></header>
+          <p>Debian testing and unstable ship Node 24 (24.22.0) as <code>libnode137</code>, with a 400 KB <code>node</code> that links it. Ubuntu packages Node the same way, but its current version was not checked. Debian's stable release ships Node 20, which is past end of life. The findings:</p>
+          <ul>
+            <li><code>libnode.so.137</code> exports all 480 <code>v8dbg_</code> and 16 <code>nodedbg_</code> symbols in its dynamic table. All 496 values equal the official 24.22.1's, so it uses the 13.6 layout unchanged.</li>
+            <li><code>g_current_isolate_</code> is a local symbol, present only in the 1.6 GB debug package. The exported <code>v8::Isolate::GetCurrent</code> jumps to a two-instruction dynamic-TLS sequence, whose GOT entry holds the module's TLS offset, 0x170, the same as the debug symbol. Decoding that accessor finds each thread's isolate with no debug package.</li>
+            <li>It links 16 Debian libraries and needs glibc 2.43, newer than the flake's, so it cannot be patched onto the flake's glibc. A closure of 24 packages fetched by hash, about 140 MB, runs with Debian's own loader.</li>
+            <li>Debian moves bundled JavaScript (undici, acorn, minimatch) to absolute paths under <code>/usr/share/nodejs</code>, so Node aborts unless they exist. A user and mount namespace (<code>unshare -rm</code>, no root) binding the closure's <code>/usr/share</code> runs it: workers, <code>fetch</code>, and the inspector all worked.</li>
+          </ul>
+        </div>
+      </div>
+      <h3>The prototype's output beside V8's</h3>
+      <div class="cards" style="grid-template-columns: repeat(auto-fill, minmax(440px, 1fr))">
+        <figure style="margin:0"><pre><span class="c">prototype, core of 26.12.1, main thread</span>
+[BuiltinExitFrame]
+park@frames.js:21          interpreted
+interpreted@frames.js:24   interpreted
+baseline@frames.js         compiled (Sparkplug)
+maglev@frames.js:26        interpreted
+turbofan@frames.js:27      interpreted
+&lt;anonymous&gt;@frames.js:48   interpreted
+listOnTimeout@timers:685   interpreted
+processTimers@timers:618   interpreted
+[InternalFrame]
+[EntryFrame]</pre></figure>
+        <figure style="margin:0"><pre><span class="c">V8's CallSite API, one call earlier</span>
+park@frames.js:20
+interpreted@frames.js:24
+baseline@frames.js:25
+maglev@frames.js:26
+turbofan@frames.js:27
+&lt;anonymous&gt;@frames.js:48
+listOnTimeout@timers:685
+processTimers@timers:618
+<span class="c">park printed at line 20, then waited
+at line 21, where the core found it.</span></pre></figure>
+      </div>
+    </section>
+
+    <section id="architecture">
+      <h2>Architecture: a provider, a runtime model, and an inspector transport</h2>
+      <div class="prose">
+        <p>Go and Python each have two halves: a debug-information provider that turns module bytes into an image table, and a runtime model that reads one stop through <code>RuntimeStop</code>. Node has the same two halves. Python's third piece, the agent, becomes Node's inspector transport. It plugs into the same installation and readiness machinery, with a different transport underneath.</p>
+      </div>
+      <div class="scroller"><table class="data">
+        <thead><tr><th>Concern</th><th>Existing home</th><th>Node fills in</th><th>Python's counterpart</th></tr></thead>
+        <tbody>
+          <tr><td>Recognize and describe</td><td>A provider in <code>src/debug_info</code>, an image table, code roles</td><td><code>debug_info/v8.rs</code>: <code>v8dbg_</code> symbols by name, V8's version from <code>Version::major_</code> and the others, the generated completion layout, builtin roles</td><td><code>.PyRuntime</code> and <code>layouts.gen.rs</code></td></tr>
+          <tr><td>Bind to a process</td><td><code>runtime_model::detect</code></td><td><code>NodeRuntime</code>, one per image with V8 metadata (executable or <code>libnode</code>)</td><td><code>PythonRuntime</code></td></tr>
+          <tr><td>Code that no image holds</td><td>Perf-map and GDB-JIT pseudo-modules</td><td>Builtin blob copies (G1); JIT code pages as frame-pointer pseudo-modules</td><td>3.15's JIT objects</td></tr>
+          <tr><td>Stacks</td><td>The native unwinder; <code>splice_driven</code> for interpreters</td><td>A runtime describes a physical frame whose code is its own (G2), with inlined frames</td><td>Splicing by activation count</td></tr>
+          <tr><td>Values</td><td>Dynamic type category; <code>InterpretedChildren</code>; views by runtime type</td><td>V8's object model in <code>runtime_model/node/</code></td><td><code>values.rs</code>, <code>instances.rs</code></td></tr>
+          <tr><td>Tasks</td><td><code>RuntimeModel::tasks</code></td><td>Event loop handles and requests; await chains</td><td>asyncio tasks</td></tr>
+          <tr><td>Control</td><td><code>runtime_agents.rs</code> installations; <code>BreakpointLocation::Managed</code>; runtime step plans</td><td><code>backend/linux/inspector.rs</code>: a CDP session per process, worker sessions inside it</td><td>The injected agent and its command slot</td></tr>
+          <tr><td>Sample-time capture</td><td>The perf sampler, shared BPF walker headers</td><td><code>bpf/v8.bpf.h</code>: a frame-pointer walk recording each JS frame's function proof and offset</td><td><code>python.bpf.h</code></td></tr>
+          <tr><td>Instrumentation</td><td>Probes ABI 2 run-time sites</td><td><code>sdk/node</code>, a Node-API package</td><td><code>sdk/python</code></td></tr>
+        </tbody>
+      </table></div>
+      <pre><span class="c">// new files, and only these</span>
+src/debug_info/v8.rs                    read v8dbg_ symbols and V8's version; choose and check a layout
+src/debug_info/v8/layouts.gen.rs        generated from Torque, one per supported V8 major.minor
+src/debug_info/js_source_map.rs         source map v3 decoding (src/source_map.rs is path remapping)
+src/image/v8.rs                         the one-row table: version, flags, symbol addresses, layout
+src/runtime_model/node/                 mod.rs, isolates.rs, frames.rs, positions.rs, scopes.rs,
+                                        objects.rs, strings.rs, values.rs, expressions.rs, tasks.rs
+src/backend/linux/inspector.rs          the CDP transport: connect, sessions, readiness, pause to all-stop
+src/backend/linux/bpf/v8.bpf.h          the frame walker, shared by the sampler and syscall programs
+scripts/v8-layouts.py                   Torque output to layouts.gen.rs, run by the conformance test
+views/javascript-std.views              Map, Set, Date, typed arrays, Buffer, URL, Error
+sdk/node/                               the probes package
+tests/node/, tests/fixtures/node/</pre>
+      <div class="prose">
+        <p>The repository's rules apply unchanged. Static facts, such as the layout, symbol addresses, and builtin roles, are image data, cached and validated with the image. Dynamic facts are read at one stop. The one cache that spans stops, the script and function table, re-proves each row before use. Only the controller calls ptrace; the inspector transport is a controller-owned socket and never writes memory. The runtime model never writes, and an assignment is a CDP command the controller sends during an execution.</p>
+        <p>The layout is read only by name. The generated file holds, per V8 version, the fields the symbols leave out, each slice function translated to Rust, and each per-version encoding (F5). This is the same exception to Go's "from DWARF by name, never a table of versions" rule that CPython took, and it is stated in the provider's module comment: generated, never hand-copied, and checked against the binary's own symbols wherever both name a field.</p>
+      </div>
+    </section>
+
+    <section id="alternatives">
+      <h2>Rejected designs</h2>
+      <div class="scroller"><table class="data">
+        <thead><tr><th>Design</th><th>Why not</th></tr></thead>
+        <tbody>
+          <tr><td>CDP for everything, as VS Code's js-debug does</td><td>CDP pauses one isolate, not a process. It cannot see native frames, read a core, or stop at a native breakpoint, and every value it returns runs inspector code in the target. It is the right control plane and the wrong reader</td></tr>
+          <tr><td>Breakpoints by patching code from outside</td><td>V8 rewrites, tiers, and moves code. An <code>int3</code> in JIT code or a <code>DebugBreak</code> bytecode written from outside would race the compiler and the GC, and lose V8's handling of lazily compiled and optimized functions</td></tr>
+          <tr><td>An injected agent, as for CPython 3.12 and 3.13</td><td>Node's inspector already does the agent's whole job and is always built in. Injecting JavaScript would add an attack surface and code to maintain for nothing</td></tr>
+          <tr><td>An in-process inspector session from a worker</td><td>It never answered without an inspector already running (F12), and it would add a thread the program can see</td></tr>
+          <tr><td>Linking V8's <code>v8_debug_helper</code></td><td>C++ per V8 version linked into microscope, against its no-unsafe and static-build rules. The same Torque output it is built from is generated into Rust instead</td></tr>
+          <tr><td>Scanning the heap for tasks or code</td><td>The runtime-model rule: traversal follows type and storage facts, never values that look plausible. Tasks come from Node's own lists</td></tr>
+          <tr><td>llnode's or OpenTelemetry's offsets</td><td>Hand-maintained per version, some by heuristic (F15); Torque's are exact</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="groundwork">
+      <h2>Groundwork</h2>
+      <div class="prose"><p>Each change below lands in its own commit with a test that involves no Node, before the Node code that uses it. Most also serve the next runtime: HotSpot also runs frames on the native stack in code no image describes.</p></div>
+      <div class="scroller"><table class="data">
+        <thead><tr><th>#</th><th>Change</th><th>Why it stands alone</th></tr></thead>
+        <tbody>
+          <tr><td>G1</td><td>Alias pseudo-modules: anonymous executable memory proven byte-identical to a range of a loaded image takes that image's symbols, roles, and unwind rules, at an offset. The proof is a full comparison per mapping, cached until the mapping changes</td><td>Any runtime that copies code (V8's builtins, a relocated trampoline) unwinds through it. Tested with a C fixture that copies a function into an anonymous page and calls it</td></tr>
+          <tr><td>G2</td><td>Runtime-described physical frames: when the unwinder meets code a runtime owns, the runtime model returns the frame's recorded function and place, its inlined callers as <code>FrameKind::Inline</code> frames with recorded functions, and the unwind rule (frame pointer)</td><td><code>RecordedFrame</code> today serves only <code>Interpreted</code> frames. HotSpot and any JIT runtime need this exact shape</td></tr>
+          <tr><td>G3</td><td>Thread-local reads for a runtime: a static TLS variable of the executable from the thread pointer and <code>PT_TLS</code>; dynamic TLS of a library through glibc's thread_db DTV descriptors, which microscope already resolves for the thread ID</td><td>Used by any runtime with a per-thread pointer; tested with a C fixture's <code>__thread</code> variables in both kinds of module</td></tr>
+          <tr><td>G4</td><td>Transport-neutral installations: the readiness record, acknowledgement deadlines, and pending explanations in <code>runtime_agents.rs</code> are split from Python's command-slot transport, so a socket transport fills the same record</td><td>Python keeps working unchanged; its tests are the check. The split is made now because a second transport exists</td></tr>
+          <tr><td>G5</td><td>Facts gathered before the barrier: a runtime transport may attach facts it collected before the all-stop barrier completed to the stop, invalidated with it</td><td>CDP's local names (F11) must be fetched while the paused thread can still answer, never at a published stop</td></tr>
+          <tr><td>G6</td><td>Source maps as debug information: a recorded place maps to an original place, and a breakpoint on an original place maps back, segment-exactly per the v3 format</td><td>Any language that compiles to JavaScript or carries maps; tested on hand-written maps</td></tr>
+          <tr><td>G7</td><td>Prologue-aware frame-pointer unwinding in pseudo-modules: a top frame stopped before its frame pointer is pushed unwinds by the decoded prologue</td><td>The perf-map pseudo-modules already decode instructions; this extends the same rule to every frame-pointer pseudo-module</td></tr>
+          <tr><td>G8</td><td>Following the program to the code the user meant (F26), in its own plan:
+            <ul>
+              <li>launch a <code>#!</code> script through its interpreter line;</li>
+              <li>follow an exec into a different ELF by loading the new main image, instead of stopping with <code>UnsupportedExec</code>;</li>
+              <li>fork following in the CLI and TUI, as DAP has it, with a filter decided at the child's settled exec, not at fork. A child that will not be debugged is never lost silently: “process 4121 started process 4130 (node), which runs without microscope”;</li>
+              <li>a batch run fails on an exec it did not follow;</li>
+              <li><code>--attach</code> matching a process's script argument or title, listing the candidates when ambiguous.</li>
+            </ul></td><td>Python has the same gaps: shims, <code>multiprocessing</code>, <code>pytest-xdist</code>. Node users meet them on their first command. It is lifecycle and run-control work under the repository's existing rules, including <code>just stress</code> and <code>just sim 600</code>, with no Node-specific simulator model</td></tr>
+        </tbody>
+      </table></div>
+      <div class="prose"><p>Already built for Python and reused as they are: the evaluator's dynamic type category, view selection per runtime type and stop, <code>InterpretedChildren</code> paging, <code>BreakpointLocation::Managed</code>, the optional breakpoint address, <code>StopReason::Assignment</code>, <code>LanguageException</code>, <code>CodeRole::Interpreter</code>, <code>object_types</code> for native handles, the truth harness in <code>tests/support/truth.rs</code>, probes ABI 2, and capture revision 9's interpreted frames.</p></div>
+    </section>
+
+    <section id="model">
+      <h2>Public model changes</h2>
+      <div class="scroller"><table class="data">
+        <thead><tr><th>Change</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td><code>SourceLanguage::JavaScript</code> and <code>SourceLanguage::TypeScript</code></td><td>Views, highlighting, and recorded frames name the language. A <code>.ts</code> script, or a place a source map leads to in one, is TypeScript</td></tr>
+          <tr><td>Two exception filters, <code>javascript-thrown</code> and <code>javascript-uncaught</code></td><td>The constants Python's two are beside</td></tr>
+          <tr><td>A task noun for Node's event loop work (Q4)</td><td><code>TASK_NOUNS</code> names what each runtime calls its tasks</td></tr>
+        </tbody>
+      </table></div>
+      <div class="prose"><p>Nothing else changes publicly. A JavaScript frame is a <code>Physical</code> frame with registers and a <code>recorded</code> function, because it has both. An inlined one is an <code>Inline</code> frame with a recorded function. Frames are not <code>Interpreted</code>, which means a frame with no registers that an interpreter keeps on the heap, as CPython's are.</p></div>
+    </section>
+
+    <section id="stacks">
+      <h2>Stacks</h2>
+      <h3>Finding V8 and its isolates</h3>
+      <div class="prose">
+        <p>A module is a V8 runtime when its symbol table has the <code>v8dbg_</code> constants and V8's version symbols. The provider reads them from the module's own bytes, picks the generated layout for the version's major.minor, and checks every field both name. Every exported <code>v8dbg_type_</code> must equal the layout's instance type too, which catches a build configured differently from the release (F21). The per-build facts of F25 are decoded from their accessors at bind time and checked against the layout's expected instruction shape, or the binary is refused by name. It refuses builds with pointer compression, the sandbox, or 31-bit Smis (<code>v8dbg_SmiShiftSize</code>), with each reason named. The result is one image row. At a stop, each thread's isolate comes from <code>g_current_isolate_</code> (G3). In an executable it is a static TLS symbol. In a shared <code>libnode</code>, where it is local and only in the debug package, its module TLS offset is decoded from the exported <code>v8::Isolate::GetCurrent</code>'s general-dynamic TLS sequence, and read through the thread's DTV (F28). Threads with no isolate are native threads: libuv's pool, V8's platform workers, the inspector's threads. They are labelled from <code>/proc</code> names, never assumed.</p>
+      </div>
+      <h3>Frames</h3>
+      <div class="prose">
+        <p>The native unwinder walks from the thread's registers, by CFI through C++ and by frame pointer through V8 code (G1, G7). For each frame whose code is V8's (a builtin copy, the executable's builtins, or a code page), the model reads the frame's marker slot (<code>v8dbg_off_fp_context</code>):</p>
+        <ul>
+          <li>A Smi marker is a typed frame: entry, exit, internal, construct, stub, or Wasm. It is named by its frame type and given <code>CodeRole::Interpreter</code>, so the default view folds it.</li>
+          <li>Otherwise the function slot must hold a <code>JSFunction</code> (instance type in the range the symbols give), whose <code>SharedFunctionInfo</code> names the function and whose <code>Script</code> names the file.</li>
+          <li><b>Interpreted and Sparkplug frames</b> carry their <code>BytecodeArray</code> and offset in the frame, so their position is the bytecode position table's (F5). For Sparkplug, a native offset first maps to a bytecode offset through the baseline code's own table.</li>
+          <li><b>Maglev and Turbofan frames</b> give their <code>Code</code> object, which must contain the PC. The function's current code comes through its dispatch handle and the dispatch table, whose location is per line (F18). Its source position table and inlining positions expand the frame into its inlined functions, innermost first. When the function's current code no longer contains the PC, as after an OSR or a deoptimization, the frame gets its function without a line and the reason. It never gets the nearest line.</li>
+          <li>The line comes from <code>Script::line_ends</code> when V8 computed them, or else from the source text. Source in external strings is read from the module file (F6).</li>
+        </ul>
+        <p>A function's name follows V8's rules: the <code>SharedFunctionInfo</code>'s name, or its <code>ScopeInfo</code>'s function variable, or the inferred name, such as <code>Module._compile</code>. The truth fixtures check names against <code>CallSite.getFunctionName</code>. Scripts whose names start with <code>node:</code> are Node's own and get <code>CodeRole::RuntimeInternal</code>, which folds them like Go's runtime frames. A setting shows them.</p>
+      </div>
+      <h3>Script and function table</h3>
+      <div class="prose"><p>A process-lifetime table, like Python's <code>CodeTable</code>, interns scripts and functions by address, with each row's proof: the <code>SharedFunctionInfo</code>'s script ID and start position. Because V8's GC can move both, every use re-proves the row, and a moved or reused address misses rather than misnames. Line ends are decoded once per script.</p></div>
+    </section>
+
+    <section id="values">
+      <h2>Values, expressions, and views</h2>
+      <h3>The object model</h3>
+      <div class="prose">
+        <ul>
+          <li><b>Primitives.</b> Smis and <code>HeapNumber</code>s are numbers. <code>Oddball</code>s are <code>undefined</code>, <code>null</code>, <code>true</code>, and <code>false</code>. The hole is shown as "uninitialized" (the temporal dead zone). BigInts are shown exactly from their digits; arithmetic takes them up to 128 bits, as Python's ints. Symbols show their description.</li>
+          <li><b>Strings</b> in every representation: sequential one- and two-byte (decoded as UTF-16, which llnode and OpenTelemetry do not do), cons, sliced, thin, and external, with depth and length bounds.</li>
+          <li><b>Objects</b> show their properties in V8's order: in-object and out-of-object fields through the map's descriptor array, dictionary-mode properties through the name dictionary, and elements by elements kind (packed, holey, double, dictionary). Accessors are shown as accessors and never called; proxies show their target and handler.</li>
+          <li><b>Built-ins</b>: arrays, <code>Map</code> and <code>Set</code> (ordered hash tables, in insertion order), <code>Date</code>, <code>RegExp</code>, <code>ArrayBuffer</code> and typed arrays (with the detached state), <code>Promise</code> state and result, errors with their message and stack text, functions with their closure context, async functions and generators with their state.</li>
+          <li><b>Errors whose stack was never read</b> hold V8's raw call sites. Each names a function, script, and position, so the frame namer formats them as Node would (<code>    at getUser (/srv/routes/users.js:15:22)</code>), marked as formatted by microscope (Q8).</li>
+        </ul>
+        <p>The prototype shows this is achievable exactly (F24). The renderer is a port of the parts of <code>inspect.js</code> the gallery covers, and grows with it. It needs JavaScript's own number-to-string conversion, which differs from Rust's for exponents, and <code>getStringWidth</code> for wide characters. Per-version rules, such as Node 26's computed typed-array length, are named rows in the generated layout, not branches in the reader. A stop's reads go through the stop's page cache, so prototype chains and maps are read once per stop. The global object is found from the selected frame's context, and only a thread with no JavaScript frame uses the isolate's current context (F25).</p>
+        <p>Every read is charged to the inspection budget, and a malformed object ends with a problem and its address. Views select by a class's constructor name and the script that defines it, and <code>views/javascript-std.views</code> covers Node's library types, such as <code>Buffer</code>, <code>URL</code>, and <code>EventEmitter</code>. Typed arrays and <code>Buffer</code> feed the bitmap, heatmap, and line-plot visualizers through bulk reads.</p>
+      </div>
+      <h3>Variables in a frame</h3>
+      <div class="prose">
+        <p>At every stop and in cores, a JavaScript frame shows four things. Its receiver (<code>this</code>) and arguments by position come from the frame. Its context variables come by name from the context chain and each <code>ScopeInfo</code>. Module and script bindings come from the script context table. The global object is shown too. Its stack locals are listed as the interpreter's registers, <code>r0</code> to <code>rN</code>, with the reason they have no names (F11).</p>
+        <p>At an inspector pause, the paused thread answers CDP before the all-stop barrier completes (G5). microscope asks for each frame's local scope with <code>Runtime.getProperties</code> (own properties, no accessors invoked, no previews), and binds each name to its register in declaration order, which F17 confirmed on both lines. Sparkplug frames use the same order from the register file's base, which the layout gives. The binding is accepted only if, for every local, the register holds what CDP reported: the same primitive, or an object of the same class. Otherwise the frame keeps unnamed registers and gives the reason. Values themselves are always read from memory, so one presentation path serves every stop. Optimized frames keep their context variables; their stack locals are unavailable, with the reason, because V8 keeps them in the deoptimizer's translation (Q2).</p>
+      </div>
+      <h3>Expressions</h3>
+      <div class="prose"><p>Names bind as JavaScript resolves them: register locals where named, then the context chain, then the script context, then the global object. Members follow own data properties and then the prototype chain. A getter, a proxy, an interceptor, or an object without a fast or dictionary map refuses with its reason. <code>x[i]</code> reads elements, and <code>.length</code> and <code>.size</code> read the built-in fields. Comparison and arithmetic follow microscope's exact rules on numbers and BigInts. A C or C++ frame's <code>napi_value</code> or <code>v8::Local&lt;T&gt;</code> is a pointer to a tagged value, which <code>object_types</code> names, so <code>(js)value</code> reaches it as Python's <code>(py)</code> does.</p></div>
+    </section>
+
+    <section id="control">
+      <h2>Run control through the inspector</h2>
+      <h3>Connecting</h3>
+      <div class="prose">
+        <ul>
+          <li><b>Launch.</b> microscope adds <code>--inspect=127.0.0.1:0</code> and, when breakpoints exist before <code>run</code>, waits for the inspector before user code runs, so the first line can be armed. It learns the URL as Q1 decides and finds the port through <code>/proc</code> (F12).</li>
+          <li><b>Attach.</b> microscope sends <code>SIGUSR1</code> and waits for the listening socket owned by the process. A process started with <code>--disable-sigusr1</code>, or with the inspector disabled by policy, gets read-only support, and every JavaScript breakpoint stays pending with that reason.</li>
+          <li><b>Workers.</b> One connection to the main isolate; <code>NodeWorker.enable</code> with <code>waitForDebuggerOnStart</code> makes each new worker wait until its breakpoints are armed.</li>
+          <li><b>Transport.</b> A controller-owned task with a bounded channel; <code>TCP_NODELAY</code>, and <code>TCP_QUICKACK</code> re-armed after each read (F10). A disconnect or a target exit resolves every outstanding request with a typed error.</li>
+        </ul>
+      </div>
+      <h3>From a CDP pause to an all-stop</h3>
+      <pre><span class="c">JS thread hits a CDP breakpoint or step end</span>
+  └ V8 sends Debugger.paused, then parks the thread in runMessageLoopOnPause
+controller receives Debugger.paused
+  ├ asks the paused isolate for each frame's local scope names       (G5, under 1 ms each)
+  ├ stops every thread                                                (the existing barrier)
+  ├ judges the hit: condition, hit count, log message, by microscope's evaluator over memory
+  └ publishes a Breakpoint, step, or LanguageException stop, or resumes silently
+resume
+  ├ sends breakpoint changes made while stopped, awaiting their replies (locations stay pending)
+  ├ resumes every thread
+  └ sends Debugger.resume or the step command to the isolate that owns the execution</pre>
+      <div class="prose">
+        <p>The paused thread waits in V8's message loop, not in JavaScript, so stopping the other threads is safe. Nothing is asked of CDP while a stop is published: CDP's answers need the paused thread and the inspector's thread to run, and that would change memory under a published <code>StopId</code>. Edits made while stopped are queued and applied at the next resume, and each location is pending until V8 confirms it, as for Python's agent. An assignment (<code>Debugger.setVariableValue</code>) is an execution that publishes a new stop with <code>StopReason::Assignment</code>, exactly as Python's does.</p>
+        <p><b>Breakpoints.</b> A source breakpoint is <code>setBreakpointByUrl</code> on the script's URL, whether path or <code>file://</code>, whose resolved locations are its ready locations. A function breakpoint <code>js:NAME</code> is found through each parsed script's function table (<code>Script::infos</code>), with a breakpoint at each match's start. Conditions and log points are microscope's, never V8's, so their language and semantics are the same as native ones. V8's own conditions would also be unusable: on a hot line they ran the code 20,000 times slower and leaked memory (F20). A microscope condition costs a pause and resume per hit, about 1 ms with the all-stop, which the documentation states for hot lines. Native breakpoints, watchpoints, signals, and catchpoints work as before and now show JavaScript frames.</p>
+        <p><b>Steps</b> are V8's <code>stepInto</code>, <code>stepOver</code>, and <code>stepOut</code>, owned by the isolate that paused. A pause in another isolate does not complete the step, and is a stop of its own. V8 steps across <code>await</code> itself. From an inspector pause a step is V8's. From a native or interrupted stop whose selected thread has an isolate, a JavaScript step means “to the next user JavaScript statement”. microscope sends <code>Debugger.pause</code>, resumes, and then repeats <code>stepInto</code> while the top frame is a <code>node:</code> or skipped script, within a step budget, because blackboxing does not move a pause that lands in Node's code (F19). Python's steps from a native stop are refused instead, since its agent cannot pause from outside. Stepping into a Node-API addon's C function uses the callee's callback address, read from its function template, with a native trap in the step's plan. A native step that returns into V8 code becomes a CDP <code>Debugger.pause</code> on that isolate, which stops at its next JavaScript statement.</p>
+        <p><b>Interrupts.</b> An interrupt sends <code>Debugger.pause</code> to each isolate and waits up to 50 ms. Running JavaScript pauses in about 1 ms, so the interrupt becomes an inspector stop with named locals. A thread that is idle, in a system call, or in a long C++ call cannot pause (F19), so the controller makes the native all-stop as today. A pause request cannot be withdrawn, so the controller records it as outstanding per isolate. When it fires after the next resume, the controller resumes it silently, with no stop and no event to the client. The scripted inspector tests every ordering of that late pause against breakpoints and steps.</p>
+        <p><b>Exceptions.</b> The two filters map to <code>setPauseOnExceptions</code> (<code>caught</code> and <code>uncaught</code>). The exception value comes from the pause and is read from memory as any value is.</p>
+        <p><b>Detach</b> removes every breakpoint, resumes the isolates, and closes the connection. An inspector that microscope started by signal stays listening, because Node cannot stop it from outside, and the user documentation says so.</p>
+      </div>
+    </section>
+
+    <section id="async">
+      <h2>Async and tasks</h2>
+      <div class="prose">
+        <p><b>Await chains.</b> A running async function's own promise lists its reactions. A reaction whose handler is an <code>await</code> continuation names the awaiting <code>JSAsyncFunctionObject</code>, whose function, context, and suspended bytecode offset make a logical frame. Repeating this gives the chain of callers suspended in <code>await</code>, appended below the running frames, as tokio's awaited-by frames are. Every step follows a type, and the chain ends with its reason at the first reaction that is not an await continuation, such as <code>Promise.all</code> or a user's <code>then</code>.</p>
+        <p><b>Tasks.</b> The event loop's pending work is in Node's own lists: each environment's handle and request queues, which <code>nodedbg_</code> describes. Each handle (socket, server, child process, message port) and request (fs, DNS, write) is a task, with its kind, state, and the JavaScript callback's function and place where its wrapper holds one. The prototype read all of these on both lines (F23). Pending promises that nothing references from a list are not enumerable without walking the heap, and are not shown (Q4).</p>
+        <ul>
+          <li><b>Classes</b> come from each wrapper's vtable, matched to the executable's <code>vtable for</code> symbols, so a <code>node::TCPWrap</code> is named exactly. The libuv handle behind it must point back at the wrapper, or the entry is a problem.</li>
+          <li><b>Callbacks.</b> Where the callback is one of Node's wrappers, the task shows the user's function it captured, when one capture holds a function from a non-<code>node:</code> script. Otherwise it shows the wrapper.</li>
+          <li><b>JavaScript timers</b> share one libuv timer. The task list shows that timer's next expiry until the timer lists in <code>internal/timers</code> are reached. They are reachable through the module context of Node's timer callback, which the Environment holds without a <code>nodedbg_</code> offset. N4 reaches it through a decoded accessor (F25), because nothing is proposed upstream (Q6).</li>
+          <li><b>Thread-pool jobs</b> such as Node 26's <code>fs.readFile</code>, zlib, and crypto are in neither list. They appear through the libuv pool thread running them, with that thread's native stack, and are named “thread-pool job” without a callback.</li>
+          <li><b>Node 24's <code>nodedbg_</code></b> offsets are zero in the file, so tasks are read only from a live process or a core, which holds the initialized <code>.bss</code>.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="profiling">
+      <h2>Profiling</h2>
+      <div class="prose">
+        <p>V8's frames are on the native stack, so a perf sample's stack copy already holds every JavaScript frame's frame pointer, function slot, and bytecode offset. What a later read cannot trust is the heap behind the function slot, because the GC can move it. The BPF V8 walker, attached to the sampler's own events as Python's is, follows the frame-pointer chain. For each JavaScript frame it records the <code>SharedFunctionInfo</code> address and its proof (script ID and start position, two more reads), plus the bytecode or code offset. The symbolizer names a frame only where its proof matches the table's row, and counts the others as unknown. The stopped and live snapshot engines use the debugger's reader directly. The builtin alias modules (G1) and code-page pseudo-modules make native stacks continue through JavaScript, which today's sampler truncates at the first V8 frame.</p>
+        <p>Programs started with <code>--perf-basic-prof</code> or <code>--perf-prof</code> already write a perf map, which microscope reads today. Their names serve where the walker cannot read a frame.</p>
+        <p><b>Instrumentation.</b> <code>sdk/node</code> is a Node-API addon over the probes library's run-time sites (ABI 2), with <code>zone</code>, <code>plot</code>, <code>message</code>, and <code>label</code>, as the Python package has. Programs opt in by importing it, and microscope writes to no program that did not.</p>
+      </div>
+    </section>
+
+    <section id="syscalls">
+      <h2>System calls</h2>
+      <div class="prose"><p>The ptrace engine reads the stopped thread's stack through <code>Stacks</code> with the same reader, so each call names the JavaScript line that made it. Most calls come from libuv's thread pool, whose stacks hold no JavaScript; they show the request and its callback's place, from the task lists, where provable. The BPF engine runs the V8 walker in <code>sys_enter</code>, and the dual-engine tests hold the two engines to the same frames. Catchpoints stop with mixed stacks unchanged.</p></div>
+    </section>
+
+    <section id="flake">
+      <h2>The Nix flake</h2>
+      <div class="prose">
+        <p><code>MICROSCOPE_NODE</code> is a link farm like <code>MICROSCOPE_CPYTHON</code>, kept out of the shell's packages. Each entry is a directory holding <code>node</code> and <code>include</code>, Node's headers, for Node-API fixtures. Tests fail with the variable's name when an entry is missing; they never fall back to the <code>node</code> on <code>PATH</code>, which remains the web tooling's <code>nodejs_24</code>.</p>
+      </div>
+      <div class="scroller"><table class="data">
+        <thead><tr><th>Entry</th><th>Source</th><th>What only it covers</th></tr></thead>
+        <tbody>
+          <tr><td><code>26</code></td><td>Official 26.12.1, by hash (<code>6170b2d4…</code>), patched to the flake's glibc as python-build-standalone is</td><td>The primary entry, run by <code>just</code>: what <code>nvm</code>, Docker images, and CI's setup actions install; partial DWARF</td></tr>
+          <tr><td><code>24</code></td><td>Official 24.22.1, by hash (<code>6c172a9a…</code>)</td><td>V8 13.6's layout and table encoding</td></tr>
+          <tr><td><code>nixpkgs-26</code></td><td><code>nodejs_26</code> (26.5.0), cached</td><td>A different build: shared libuv, OpenSSL, and ICU; no DWARF; another 26 patch release</td></tr>
+          <tr><td><code>nixpkgs-24</code></td><td><code>nodejs_24</code> (24.16.0), cached</td><td>The same for 24</td></tr>
+          <tr><td><code>22</code></td><td>Official 22.23.4, by hash (<code>1805bcd3…</code>), patched as the others; leaves in April 2027</td><td>V8 12.4's layout and direct code field (F27)</td></tr>
+          <tr><td><code>nixpkgs-22</code></td><td><code>nodejs_22</code> (22.23.1), cached</td><td>The same for 22</td></tr>
+          <tr><td><code>debian-24</code></td><td>Debian's <code>nodejs</code> and <code>libnode137</code> 24.22.0 with their library and JavaScript dependencies, 24 <code>.deb</code> files by hash, unpacked unmodified into one root and run by its own loader (F28)</td><td>A shared <code>libnode</code>: V8 in a library, the isolate in dynamic TLS, symbols only in the dynamic table</td></tr>
+        </tbody>
+      </table></div>
+      <div class="prose">
+        <p><b>Official binaries</b> are the release tarball's <code>bin/node</code> and <code>include</code>, with <code>patchelf</code> setting the interpreter to the flake's glibc and the rpath to it and <code>stdenv.cc.cc.lib</code>, which supplies <code>libstdc++</code>, <code>libgcc_s</code>, and Node 26's <code>libatomic</code>. This was built and tested for both lines (F21). It takes 3.5 s, needs no other fixup, and leaves every symbol in place. The pinned hashes are <code>sha256-bBcqmrZx…</code> (24.22.1) and <code>sha256-YXCy1HTh…</code> (26.12.1).</p>
+        <p><b>Layouts.</b> A derivation per supported V8 version fetches Node's source tarball by hash and runs <code>configure</code> and the <code>run_torque</code> target. It keeps only <code>class-debug-readers.cc</code>, <code>debug-macros.cc</code>, <code>bit-fields.h</code>, <code>instance-types.h</code>, and the headers for F22's constants and F25's enums, about 1.2 MiB. It uses <code>clangStdenv</code> with <code>python3</code>, <code>gnumake</code>, <code>which</code>, <code>cargo</code>, and <code>rustc</code>, configured as the release is (<code>--without-npm</code>, full ICU, Temporal on), because any other configuration shifts instance types (F21). The derivation fails if configure prints a warning that it disabled a feature. It builds offline in about 20 s per version, identically on a rebuild. <code>MICROSCOPE_V8_TORQUE</code> names them. <code>scripts/v8-layouts.py</code> turns them into <code>layouts.gen.rs</code>, translating <code>debug-macros.cc</code>'s slice functions into Rust mechanically (F22) and failing on any construct it does not know. A test fails when the checked-in file is stale and rewrites it under <code>MICROSCOPE_UPDATE_V8=1</code>, as for CPython. The file joins the generated-files table in <code>dev/index.md</code>.</p>
+        <p><b>The Debian entry</b> is a derivation that unpacks the pinned <code>.deb</code> files into one root without patching them. They are fetched from <code>snapshot.debian.org</code>, which keeps every version, because the main pool deletes superseded ones. A script regenerates the list and hashes from a Packages index. Its tests run as a separate group, <code>just test node-debian</code>, which runs the test binary inside <code>unshare -rm</code> with the root's <code>/usr/share</code> bound in place. microscope, the tracee, and the test harness then share one namespace, so ptrace and <code>/proc</code> paths need nothing new. The group joins <code>just all</code>. Moving the entry to a newer Debian Node, or to an Ubuntu build, is a change of package list.</p>
+        <p><b>Adding a line</b> is one commit: its two binaries and source tarball by hash, its regenerated layout, and the matrix rows. <b>Dropping a line</b> deletes the same. Both toolchains join <code>suite_signature</code>, so a change rebuilds the fixtures.</p>
+      </div>
+    </section>
+
+    <section id="testing">
+      <h2>Testing</h2>
+      <div class="prose">
+        <p>The goal is the one the Python suite reached: a failure almost always means a real bug, the oracles are not microscope, and the fast loop stays fast. The Python plan's six rules carry over unchanged. Every test has an independent oracle. Expectations are produced at run time, never checked in. Tests assert public results. A matrix dimension must change a layout or a build. There are no retries, sleeps, or silent skips. And every oracle proves it can fail.</p>
+      </div>
+      <h3>Methods</h3>
+      <div class="scroller"><table class="data">
+        <thead><tr><th>Method</th><th>Catches</th><th>Oracle</th><th>Runs in</th></tr></thead>
+        <tbody>
+          <tr><td>Truth scenarios, the main signal</td><td>Wrong frames, lines, columns, names, isolates, inlining, values</td><td><code>tests/fixtures/node/truth.js</code>: at each checkpoint, V8's <code>CallSite</code> frames per thread (function, file, line, column), the thread's ID from <code>/proc/thread-self</code>, each frame's tier from <code>%ActiveTierIs*</code> (F14), and selected values in canonical text. Threads park in <code>Atomics.wait</code>, which froze the stacks in every experiment</td><td><code>just</code> on 26; <code>just all</code> on every entry</td></tr>
+          <tr><td>CDP differential</td><td>Disagreement between microscope's reader and V8's own debugger: names, lines, scopes, local values, await chains</td><td>CDP's <code>Debugger.paused</code> call frames and scope chains at the same pause. Every inspector stop in every test compares them, frame by frame</td><td>Every inspector test</td></tr>
+          <tr><td>Layout conformance</td><td>A new line or build that breaks an assumption, in one place each October</td><td>The binary's own <code>v8dbg_</code> values against the generated layout; the generated file against Torque's output; each binary's position tables decoded under its own encoding must end exactly at their length with offsets inside the bytecode</td><td><code>just</code>, every entry; no process</td></tr>
+          <tr><td>Tier matrix</td><td>Frames read right in one tier and wrong in another</td><td>One fixture puts interpreted, Sparkplug, Maglev, Turbofan, inlined, deoptimized, and OSR frames on one stack with <code>--allow-natives-syntax</code>, each proving its tier from inside</td><td><code>just</code></td></tr>
+          <tr><td>Core dumps</td><td>Paths only post-mortem reads take: external strings from the file, missing mappings, Node 24's run-time <code>nodedbg_</code> values</td><td>The same truth, saved beside each core. Cores are made by <code>make_core</code> under <code>stack-guard-mappings</code>, which fails on any lost mapping (F9), and one kernel-shaped core proves a thread with absent stack bytes is reported missing</td><td><code>just all</code></td></tr>
+          <tr><td>Values gallery</td><td>Any rendering that differs from Node's, in any value kind the reader supports</td><td><code>util.inspect(v, {customInspect: false})</code> in the fixture, compared byte for byte, as F24's prototype did. Each new kind joins the gallery before it is rendered</td><td><code>just</code> on 26; <code>just all</code> on every entry</td></tr>
+          <tr><td>Scripted inspector</td><td>Controller races: a pause arriving with a native breakpoint, two isolates pausing at once, a disconnect mid-request, a reply after its deadline, a target exiting during arming, a worker created while stopped, a pause that never arrives (an idle loop), and a late interrupt pause after resume, beside a breakpoint hit and a step (F19)</td><td>A fake CDP server with exact scripted orderings, driving the real controller through <code>Scenario</code> on a native fixture</td><td><code>just</code>; this replaces simulator coverage</td></tr>
+          <tr><td>Unit and property tests</td><td>Varint and position table decoding in both encodings, string representations, Smi and BigInt decoding, line ends, slice macros, source map segments</td><td>Round trips and values the truth fixtures print</td><td><code>just</code></td></tr>
+          <tr><td>Fuzzing</td><td>Panics, unbounded reads, loops on hostile memory</td><td>No crash, no hang, the budget respected. Targets: symbol table and layout validation, position tables, the object reader over arbitrary memory, source maps, CDP messages</td><td><code>just fuzz</code>, on demand</td></tr>
+          <tr><td>Engine agreement</td><td>BPF walker bugs</td><td>A thread parked in a known syscall: the BPF and ptrace engines must give the same JavaScript frames</td><td><code>just test-bpf</code></td></tr>
+          <tr><td>Read-only checks</td><td>Any write by inspection, profiling, or tracing</td><td>The flight recorder records no memory writes and no CDP command in those sessions</td><td><code>just</code></td></tr>
+          <tr><td>Scoped mutation testing</td><td>Code the suite runs but never checks</td><td><code>cargo-mutants</code> on the provider, frames, positions, and scopes</td><td><code>just node-mutants</code>, on demand</td></tr>
+          <tr><td>Clients</td><td>DAP scopes and frames, web rendering, CLI text, VS Code focus</td><td>One thin test per client; <code>just uat-vscode</code> gains a Node scenario</td><td><code>just</code>, <code>just web-e2e</code></td></tr>
+        </tbody>
+      </table></div>
+      <h3>Matrix by scenario</h3>
+      <div class="scroller"><table class="data">
+        <thead><tr><th>Scenario family</th><th>Entries</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td>Layout conformance</td><td>All</td><td>Cheap, and where every layout change should fail first</td></tr>
+          <tr><td>Stacks, tiers, values (truth)</td><td>26 in <code>just</code>; all in <code>just all</code></td><td>Each line has its own layout; the nixpkgs builds differ in linkage and symbols</td></tr>
+          <tr><td>Inspector: breakpoints, steps, exceptions, workers, attach</td><td>26, 24, and 22</td><td>The protocol's behavior and every layout in the differential</td></tr>
+          <tr><td>Core dumps</td><td>26, 24, 22, and <code>debian-24</code></td><td>One per line through the post-mortem path; Debian's finds its isolate through the decoded accessor in a core</td></tr>
+          <tr><td>Node-API mixed stacks</td><td>26, 24, and 22</td><td>The addon is built against each line's headers</td></tr>
+          <tr><td>Shared <code>libnode</code>: detection, isolates, stacks, values, one breakpoint and step</td><td><code>debian-24</code></td><td>Only V8 in a library, dynamic TLS, and dynamic-table symbols; the layout is 24's and already covered</td></tr>
+          <tr><td>Profiler and syscalls</td><td>26</td><td>The reader is shared; these test its use</td></tr>
+          <tr><td>Clients</td><td>26</td><td>Mapping, not layout</td></tr>
+          <tr><td>Launch forms (G8): <code>#!</code> script, <code>npm start</code>, <code>npx</code>, <code>node --test</code>, <code>node --watch</code></td><td><code>nixpkgs-26</code></td><td>The only entry that ships npm; npm needs no network for a local script. Each asserts the user's breakpoint hits in the right process</td></tr>
+        </tbody>
+      </table></div>
+      <h3>Fast feedback</h3>
+      <div class="prose">
+        <p>Node starts in about 40 ms, and a CDP round trip is under 0.1 ms, so each scenario should cost tenths of a second. Tests wait for <code>READY</code> lines and CDP events, never for time. The default <code>just</code> runs one entry, Node 26; the matrix and cores run in <code>just all</code>; and <code>just test node</code> runs the Node suite alone. A target is set before the suite becomes a gate: under 20 s added to <code>just</code> at 16 threads, measured first. Generated layouts make the conformance tests pure and instant. Core fixtures are made at test time by the existing <code>make_core</code>, kept sparse, about 70 MB allocated each (F9).</p>
+        <p>Each harness proves it can fail: a self-test feeds the comparison a dropped frame, a wrong line, a swapped isolate, a wrong tier, and a wrong value, and requires each to fail. The CDP differential has the same self-test.</p>
+      </div>
+    </section>
+
+    <section id="performance">
+      <h2>Performance budgets</h2>
+      <div class="scroller"><table class="data">
+        <thead><tr><th>Path</th><th>Budget</th><th>How</th></tr></thead>
+        <tbody>
+          <tr><td>Binding a runtime</td><td>One pass over the symbol table per image, cached</td><td>A fixed layout struct; symbol lookup by the existing index</td></tr>
+          <tr><td>Backtrace, 100 JavaScript frames</td><td>Under 1 ms warm; about one read per frame</td><td>Frame-sized reads; function table hits for repeated functions; line ends decoded once per script. The prototype's 10 million reads came from scanning stacks for exit frames, which the design does not do</td></tr>
+          <tr><td>CDP round trip</td><td>Under 0.1 ms; held under 1 ms by a test</td><td><code>TCP_QUICKACK</code> after every read (F10)</td></tr>
+          <tr><td>Silent conditional hit</td><td>Under 1 ms</td><td>Pause, local names, all-stop, evaluate, resume. Measured parts: hit and resume 0.165 ms (F10), barrier 0.1–0.8 ms (F16)</td></tr>
+          <tr><td>Interrupt</td><td>Under 5 ms when JavaScript runs; 50 ms at most otherwise</td><td><code>Debugger.pause</code> arrives in about 1 ms, 4 ms at worst (F19); the native all-stop after the 50 ms wait</td></tr>
+          <tr><td>Arming on launch</td><td>Under 30 ms with 2,000 scripts loaded</td><td><code>Debugger.enable</code> at about 8 ms plus 8 µs per script (F20), sent only when a breakpoint, step, or exception filter exists</td></tr>
+          <tr><td>Locals view of one frame</td><td>Under 2,000 reads cold, a few hundred warm</td><td>F24's prototype took 47 to 1,123 reads per value, mostly prototype chains; the stop's page cache and a hashed global lookup, not a scan of the global dictionary</td></tr>
+          <tr><td>BPF walk per sample</td><td>Single-digit µs for 64 frames</td><td>Three reads per JavaScript frame; bounded loop</td></tr>
+          <tr><td>Idle cost in the target</td><td>None until a breakpoint, step, or exception filter exists</td><td>The inspector is not connected before then; <code>Debugger.enable</code> deoptimizes nothing until a breakpoint does. Measured: no throughput change with a client connected and a breakpoint never hit (F20)</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="phases">
+      <h2>Phases</h2>
+      <div class="prose"><p>Each phase ships something a user can see. Groundwork lands first in its own commits. Documentation moves with the code: <code>dev/runtime-models.md</code> gains a Node section, <code>dev/index.md</code> its rows, and the user docs pages whose examples run against the fixtures. This plan stays the decision record.</p></div>
+      <div class="phase">
+        <header><span class="pid">N0</span><h3>Foundations</h3><span class="st todo">todo</span></header>
+        <p>The flake's <code>MICROSCOPE_NODE</code> (22, 24, 26, their nixpkgs builds, and <code>debian-24</code>) and <code>MICROSCOPE_V8_TORQUE</code> (12.4, 13.6, 14.6), with the recipes F21 and F28 tested; the <code>node-debian</code> namespace test group; <code>truth.js</code> and the tier fixture; Node cores through the existing <code>make_core</code> (F9) and reporting missing thread stacks in cores; G1 alias modules; G3 thread-local reads; G7 prologue-aware unwinding.</p>
+        <p class="exit">Exit: a native backtrace of a Node process continues through V8 frames to <code>_start</code> on every entry, with builtins named.</p>
+      </div>
+      <div class="phase">
+        <header><span class="pid">N1</span><h3>See JavaScript</h3><span class="st todo">todo</span></header>
+        <p>The provider, generated layouts, and conformance tests; detection and isolates, with the type-number and accessor checks of F21 and F25; G2 and JavaScript frames in every tier with inlining, starting with a Maglev and Turbofan prototype through the dispatch table (F18); the script and function table; core dumps; frames in the CLI, DAP, and web clients; JavaScript and TypeScript highlighting.</p>
+        <p class="exit">Exit: every truth checkpoint matches on every entry (three official, three nixpkgs, and Debian's), live and post-mortem.</p>
+      </div>
+      <div class="phase">
+        <header><span class="pid">N2</span><h3>Values, expressions, views</h3><span class="st todo">todo</span></header>
+        <p>Values written as <code>util.inspect</code> writes them, with <code>util.inspect</code> as the gallery's oracle. The object model, starting from F24's 76-value gallery; error stacks formatted from raw call sites (Q8); context and script variables, receivers and arguments, unnamed registers, expressions, <code>javascript-std.views</code>, typed array visualizers, and <code>(js)</code> for Node-API handles in addon frames.</p>
+        <p class="exit">Exit: a values gallery's every canonical value matches V8's own text.</p>
+      </div>
+      <div class="phase">
+        <header><span class="pid">N3</span><h3>Breakpoints, steps, exceptions</h3><span class="st todo">todo</span></header>
+        <p>G4, G5, and G6 source maps; the inspector transport; launch and attach; workers; breakpoints with conditions, hit counts, and log points; steps that skip <code>node:</code> scripts and the <code>[node] skip</code> patterns; interrupts that pause JavaScript, with late pauses absorbed; JavaScript steps from native stops; exceptions; stack local names at pauses; pending reasons that suggest the fix; the CDP differential; the scripted inspector; VS Code registration and a UAT scenario.</p>
+        <p class="exit">Exit: a VS Code user can break, step, and stop on an exception in a <code>.js</code> or <code>.ts</code> file, including one compiled by tsx or esbuild, and in a worker, launched or attached, on 24 and 26; Ctrl-C on a busy server gives a stop with named locals that can step, and on an idle one a native stop whose <code>next</code> reaches the user's next callback. With G8 delivered by its own plan, the same holds for <code>npm start</code> and <code>node --test</code>. <code>just stress</code> and <code>just sim 600</code> pass for the controller changes.</p>
+      </div>
+      <div class="phase">
+        <header><span class="pid">N4</span><h3>Async and tasks</h3><span class="st todo">todo</span></header>
+        <p>Await chains as logical frames; event loop handles and requests as tasks, from F23's walk; user callbacks behind Node's wrappers; individual JavaScript timers; thread-pool jobs by their pool thread; their DAP and web presentation.</p>
+      </div>
+      <div class="phase">
+        <header><span class="pid">N5</span><h3>Profiling and system calls</h3><span class="st todo">todo</span></header>
+        <p>The BPF V8 walker and its proofs; snapshot and live engines; JavaScript frames in syscall stacks from both engines; <code>sdk/node</code>.</p>
+      </div>
+      <div class="phase">
+        <header><span class="pid">N6</span><h3>Depth</h3><span class="st todo">todo</span></header>
+        <p>Assignments through the inspector; watchpoints on context slots (refused for objects in the young generation, which a scavenge moves) and on interpreter registers (ended by the frame's exit, OSR, or deoptimization); stepping into Node-API addons and back.</p>
+      </div>
+    </section>
+
+    <section id="runtimes">
+      <h2>What this leaves for the next runtime</h2>
+      <div class="prose">
+        <p>After Python and Node, the shape is settled enough to state. A runtime is a provider (static layout from the target's own self-description, completed by generated data and checked where both speak), a runtime model (one stop, through <code>RuntimeStop</code>, with typed partial results), and, if it needs control, a transport filling the shared installation record (G4). Its frames take one of two forms. They are heap frames placed by counting activations, as CPython's, or native frames in runtime-owned code that the model names (G2), as V8's and HotSpot's will be.</p>
+        <p>For HotSpot, <code>gHotSpotVMStructs</code> is the self-description, as <code>v8dbg_</code> is here. Its frames sit on the native stack in the code cache, so G1, G2, and G7 serve it unchanged. JVMTI or JDWP is its transport, which would fill the same record CDP does, and its JDK LTS lines would follow the same version policy. Ruby's YJIT frames and its <code>rb_control_frame_t</code> chain are a CPython-shaped heap chain with a JIT beside it. Nothing in this plan's public model is V8's; each addition names a fact a JVM or Ruby frame also has.</p>
+      </div>
+    </section>
+
+    <section id="risks">
+      <h2>Risks</h2>
+      <div class="scroller"><table class="data">
+        <thead><tr><th>Risk</th><th>Mitigation</th></tr></thead>
+        <tbody>
+          <tr><td>V8 changes its layout every year, and <code>v8dbg_</code> symbols disappear by accident, as OpenTelemetry's comments record</td><td>A required symbol's absence refuses the binary by name; generated layouts fill what the symbols lack; the conformance suite fails first each October</td></tr>
+          <tr><td>Generated data is wrong where it looks right (F5)</td><td>Per-version encodings; position tables checked against each binary's own; the truth and CDP oracles on every tier</td></tr>
+          <tr><td>Node turns on pointer compression or the sandbox by default</td><td>Refused by name until supported. Compressed pointers need the cage base, which V8 exposes; the work would be one decoding layer in the object reader</td></tr>
+          <tr><td>The GC moves objects between a sample and its symbolization</td><td>Proof fields recorded at sample time; unproven frames counted, never named</td></tr>
+          <tr><td>The inspector is reachable by local users</td><td>Bound to 127.0.0.1 with a random UUID; Q1 chooses how it is published. The user documentation states the exposure</td></tr>
+          <tr><td>The inspector is unavailable (<code>--disable-sigusr1</code>, policy, permission model without <code>--allow-inspector</code>)</td><td>Read-only support remains; breakpoints stay pending with the reason</td></tr>
+          <tr><td>Another debugger is connected</td><td>V8 supports several sessions; microscope's pauses are its own. Pauses caused by another session are stops whose reason says so</td></tr>
+          <tr><td>Stopping all threads while one isolate is paused deadlocks a CDP reply</td><td>No CDP request is made at a published stop; edits wait for resume</td></tr>
+          <tr><td>Cores lose thread stacks on glibc 2.42 and later (F9)</td><td>Test cores through <code>make_core</code>'s guard wrapper, which fails on any lost mapping. Users' cores with the hole get missing stacks reported, never empty ones</td></tr>
+          <tr><td>Maglev and Turbofan frames are the least proven path: the dispatch table was decoded but no live optimized frame was named (F18)</td><td>N1 starts with that prototype. Until it passes, optimized frames get their function without a line, with the reason</td></tr>
+          <tr><td>Facts only in machine code drift silently (F25)</td><td>Each accessor is decoded against an expected instruction shape and the result checked against a known object, such as the current context being a <code>NativeContext</code>; any mismatch refuses the binary by name</td></tr>
+          <tr><td>A build configured unlike the release (no Intl, no Temporal) shifts instance types (F21)</td><td>Every exported <code>v8dbg_type_</code> is checked against the layout at bind time; a mismatch refuses the build, naming the first differing type</td></tr>
+          <tr><td>No upstream metadata (Q6), so each new line repeats the full derivation, and a reshaped accessor delays support</td><td>The derivation is generated and checked by conformance tests each April, when a line becomes Current, six months before it is supported. A binary that fails a check is refused by name, never misread</td></tr>
+          <tr><td>Debian moves its packages, renames <code>libnode</code>'s soname, or changes its JavaScript paths</td><td>The entry pins exact <code>.deb</code> hashes and fetches them from <code>snapshot.debian.org</code>, because Debian's pool deletes superseded versions, so nothing moves under the tests. Refreshing the list is a deliberate change, and detection keys on symbols, not file names</td></tr>
+          <tr><td>The value renderer drifts from <code>inspect.js</code> as Node changes it</td><td>The gallery compares against each entry's own <code>util.inspect</code>, so a change in Node fails a test on the line that made it</td></tr>
+          <tr><td>Licensing</td><td>V8 is BSD-licensed and Node MIT. The generated layouts derive from V8's Torque output and carry its notice. OpenTelemetry's code (Apache-2.0) is read, not copied</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="questions">
+      <h2>Questions and decisions</h2>
+      <div class="prose"><p>Each question below was decided on 22 October 2026. Each card marks its decision in bold, with the reasoning beside it.</p></div>
+      <div class="cards">
+        <div class="card">
+          <header><span class="id">Q1</span><h3>How does microscope learn the inspector's URL?</h3></header>
+          <p><b>Decided, as recommended:</b> launch with <code>--inspect-publish-uid=stderr</code>, which keeps the UUID secret from other local users (<code>/json/list</code> answers 404), and read the URL from the banner Node prints. The program's stderr then gains two lines, as with any <code>node --inspect</code>. The alternative, <code>http</code>, keeps stderr clean but lets any local user find the URL and connect. On attach by <code>SIGUSR1</code> Node uses its defaults, which publish over HTTP, and the documentation says so.</p>
+        </div>
+        <div class="card">
+          <header><span class="id">Q2</span><h3>Names of stack locals outside inspector pauses</h3></header>
+          <p>V8 names them only by reparsing source (F11). An exact reader could do the same: parse the function with a JavaScript parser crate and allocate as V8 does. Its result is checkable against <code>ScopeInfo</code>'s context locals and the register count. <b>Decided, as recommended:</b> not now. Unnamed registers are honest, and the CDP binding covers the common case. Revisit with a prototype measured against the CDP differential.</p>
+        </div>
+        <div class="card">
+          <header><span class="id">Q3</span><h3>Node 22?</h3></header>
+          <p><b>Decided: yes</b>, until its end of life on 30 April 2027, against the recommendation, which was to skip a line with six months left. F27 showed the cost is smaller than assumed. It is the 13.6 table encoding, not a third. Its direct code field is simpler than leaptiering, and its Torque output matches the binary. It costs two flake entries (<code>22</code>, <code>nixpkgs-22</code>) and one generated layout, all deleted in April 2027.</p>
+        </div>
+        <div class="card">
+          <header><span class="id">Q4</span><h3>What is a Node task?</h3></header>
+          <p><b>Decided, as recommended:</b> pending event loop handles and requests, from Node's own lists, named "handles" in clients. Every pending promise would need a heap walk, which the runtime-model rules forbid. Await chains attach to the frames that run them instead.</p>
+        </div>
+        <div class="card">
+          <header><span class="id">Q5</span><h3>Shared <code>libnode</code> builds?</h3></header>
+          <p><b>Decided: supported from the start</b>, against the recommendation to wait. The flake pins Debian's build by hash, never the host's. F28 showed it is practical. Debian testing ships Node 24 as <code>libnode137</code>, with every <code>v8dbg_</code> symbol in the dynamic table and values equal to the official build's. Each thread's isolate is found by decoding the exported <code>v8::Isolate::GetCurrent</code>, so no 1.6 GB debug package is needed. The pinned closure runs under a rootless namespace.</p>
+          <p>The user experience: someone who ran <code>apt install nodejs</code> on a supported line gets the same stacks, values, cores, breakpoints, and steps as with an official build. Detection, isolates, and the namespace test group are N1 work (<code>debian-24</code>).</p>
+        </div>
+        <div class="card">
+          <header><span class="id">Q6</span><h3>Contribute upstream?</h3></header>
+          <p><b>Decided: no</b>, against the recommendation to propose missing metadata to V8 and Node. Users of today's lines see no difference, since an accepted patch would ship in Node 27 at the earliest. The cost is maintenance. Every new line keeps the whole yearly derivation: generated layouts, plus the facts decoded from machine code (F25). A line whose accessor changes shape is refused by name until microscope is updated (<a href="#risks">Risks</a>). Individual JavaScript timers are reached through a decoded accessor rather than a new <code>nodedbg_</code> field.</p>
+        </div>
+        <div class="card">
+          <header><span class="id">Q7</span><h3>Programs started through npm, npx, <code>--test</code>, or <code>--watch</code>?</h3></header>
+          <p>Many users never type <code>node</code>. They run <code>npm run dev</code>, <code>npx</code>, <code>node --test</code>, or <code>node --watch</code>, and in every one the user's code runs in a child microscope does not follow (F26).</p>
+          <p><b>Decided, as recommended:</b> do G8 as its own plan, alongside N1–N2, so it lands before N3's exit. The order follows the common chains:</p>
+          <ol>
+            <li>Follow exec into a new image, which covers <code>env node</code>, <code>bash -c</code>, and version-manager shims.</li>
+            <li>Launch <code>#!</code> scripts, which with step 1 covers <code>./cli.js</code>, <code>npm</code>, and <code>npx</code>.</li>
+            <li>Follow children in every client, decided at their settled exec, which covers npm's grandchild, <code>--test</code>, and <code>--watch</code>.</li>
+            <li>Report every child that is let go.</li>
+          </ol>
+          <p>Until then, the refusals name the direct form, the docs give each tool's recipe, and a batch run fails on an exec it did not follow. Python gains the same.</p>
+        </div>
+        <div class="card">
+          <header><span class="id">Q8</span><h3>Format error stacks V8 has not formatted?</h3></header>
+          <p>An error whose <code>.stack</code> was never read holds raw call sites, not text (F24). The choices are: show only the message and name, marked “stack not formatted”; or format the call sites as V8 and Node would, with function names, receivers, positions, and <code>async</code> frames. <b>Decided, as recommended:</b> format them, in N2. Each call site's function, script, and position go through the frame namer that stacks already use, and the gallery compares the result with the stack text the fixture reads afterwards. Source-mapped positions follow G6. Where a call site cannot be read, that frame says so and the rest are shown.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="sources">
+      <h2>Sources</h2>
+      <div class="prose small">
+        <ul>
+          <li>Node.js Release Working Group schedule (<code>nodejs/Release</code>), nodejs.org's releases page, and NodeSource's note on the new release model, read 22 October 2026.</li>
+          <li>Node 24.22.1 and 26.12.1 binaries and source tarballs from nodejs.org, checked against their published SHA-256 sums; nixpkgs <code>nodejs_24</code> 24.16.0 and <code>nodejs_26</code> 26.5.0 at the pinned revision.</li>
+          <li>V8 sources in those tarballs: <code>codegen/source-position-table.cc</code>, <code>debug/debug-scopes.cc</code>, <code>objects/scope-info.tq</code>, <code>common/globals.h</code>; Torque output <code>class-debug-readers.cc</code>, <code>debug-macros.cc</code>, <code>bit-fields.h</code>.</li>
+          <li>OpenTelemetry eBPF profiler, <code>interpreter/nodev8</code> and <code>support/ebpf/v8_tracer.ebpf.c</code>; llnode (<code>nodejs/llnode</code>), last released 4.0.0 in September 2022.</li>
+          <li>Chrome DevTools Protocol: Debugger, Runtime, and NodeWorker domains; Node's <code>inspector</code> and <code>worker_threads</code> documentation.</li>
+          <li>microscope: <code>plans/python.html</code>, <code>dev/runtime-models.md</code>, <code>dev/architecture.md</code>, <code>src/runtime_model/agents.rs</code>, <code>src/model.rs</code>.</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+</div>
+<script>
+(() => {
+  const root = document.documentElement;
+  const themeButtons = document.querySelectorAll("[data-theme-choice]");
+  const applyTheme = (choice) => {
+    if (choice === "system") root.removeAttribute("data-theme");
+    else root.setAttribute("data-theme", choice);
+    themeButtons.forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.themeChoice === choice)));
+  };
+  let saved = "system";
+  try { saved = localStorage.getItem("microscope-plan-theme") || "system"; } catch (_) {}
+  applyTheme(saved);
+  themeButtons.forEach((b) => b.addEventListener("click", () => {
+    applyTheme(b.dataset.themeChoice);
+    try { localStorage.setItem("microscope-plan-theme", b.dataset.themeChoice); } catch (_) {}
+  }));
+})();
+</script>
+</body>
+</html>
