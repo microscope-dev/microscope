@@ -1149,6 +1149,50 @@ pub struct LaunchOptions {
     pub stop_at_entry: bool,
 }
 
+/// Which processes a group debugs among those its program starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FollowMode {
+    /// Only the launched or attached process, through its own execs; the
+    /// processes it starts run without microscope.
+    None,
+
+    /// The program the group was started for wherever it runs, programs of
+    /// a runtime microscope models, and programs named in the policy. The
+    /// rest, such as shells, `env`, and compilers, are watched until they
+    /// execute one of those.
+    #[default]
+    Auto,
+
+    /// Every process, once it executes a program of its own or forks.
+    All,
+}
+
+/// How a group decides which of the processes its program starts it
+/// debugs.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FollowPolicy {
+    pub mode: FollowMode,
+
+    /// Programs debugged in addition to those `mode` chooses, by file
+    /// name, where `*` matches any run of characters and `?` any one.
+    pub programs: Vec<String>,
+
+    /// What a member's stop stops.
+    pub stop: StopScope,
+}
+
+/// What a stop in one member of a process group stops.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StopScope {
+    /// Every member: the others are paused, as the threads of one process
+    /// are at its stop.
+    #[default]
+    Group,
+
+    /// Only the process that stopped; the others run on.
+    Process,
+}
+
 /// Where a session finds the debug information that modules' files leave
 /// out, as distributions ship it in separate debug files.
 ///

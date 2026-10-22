@@ -2231,6 +2231,8 @@ build_fixture gcc "$c_fixtures_dir/exec-other.c" "$output_dir/exec-other" \
     -O0 -g3 -fPIE -pie -pthread
 build_fixture gcc "$c_fixtures_dir/exec-target.c" "$output_dir/exec-target" \
     -O0 -g3 -fPIE -pie
+build_fixture gcc "$c_fixtures_dir/tree.c" "$output_dir/tree" \
+    -O0 -g3 -fPIE -pie
 # Without debug information: breakpoints resolve by symbol, an indirect
 # function's once its resolver has chosen, whether the loader binds at
 # startup, binds lazily, or a static program relocates itself.

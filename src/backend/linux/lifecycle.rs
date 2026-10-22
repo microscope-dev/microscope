@@ -57,6 +57,70 @@ impl<P: LinuxTraceOps> Controller<P> {
                 release,
                 reply,
             } => self.launch_by_exec(requested, stop_at_entry, release, reply),
+            Start::Adopt {
+                pid,
+                launched,
+                reply,
+            } => self.adopt(pid, launched, reply),
+            Start::AdoptExec {
+                pid,
+                launched,
+                reply,
+            } => self.adopt_exec(pid, launched, reply),
+        }
+    }
+
+    /// Takes over `pid`, a process this thread already traces and that is
+    /// stopped in a ptrace-stop, as a fork child is once its parent's
+    /// controller has removed the traps it inherited. The adoption ends in
+    /// a published attach stop, from which the session's breakpoints are
+    /// planted before the process runs an instruction.
+    fn adopt_exec(&mut self, pid: Pid, launched: bool, reply: Reply<ExecutionId>) {
+        match self.ptrace.spawn_waiter(pid, self.message_sender.clone()) {
+            Ok(waiter) => {
+                let origin = if launched {
+                    InferiorOrigin::Launched
+                } else {
+                    InferiorOrigin::Attached
+                };
+                self.begin_launch(origin, ExpectedStop::AdoptedExec, pid, true, waiter, reply);
+            }
+            Err(error) => {
+                let _ = reply.send(Err(error));
+            }
+        }
+    }
+
+    fn adopt(&mut self, pid: Pid, launched: bool, reply: Reply<StopId>) {
+        let waiter = match self.ptrace.spawn_waiter(pid, self.message_sender.clone()) {
+            Ok(waiter) => waiter,
+            Err(error) => {
+                let _ = reply.send(Err(error));
+                return;
+            }
+        };
+
+        let mut thread = TraceThread::starting(ExpectedStop::None);
+        thread.state = NativeThreadState::Stopped;
+        self.reset_breakpoint_hit_counts();
+        let mut inferior = Inferior::new(
+            if launched {
+                InferiorOrigin::Launched
+            } else {
+                InferiorOrigin::Attached
+            },
+            pid,
+            self.main.loaded(crate::LoadBias::default()),
+            BTreeMap::from([(pid, thread)]),
+            Some(waiter),
+        );
+        inferior.barrier = Some(StopBarrier::visible(pid, StopReason::Attach));
+        self.inferior = Some(inferior);
+        self.attach_reply = Some(reply);
+        self.attach_rescans = 0;
+
+        if let Err(error) = self.finish_barrier_if_ready() {
+            self.fail_inferior(error);
         }
     }
 
@@ -83,7 +147,15 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         match started {
             Ok((pid, waiter)) => {
-                self.begin_launch(InferiorOrigin::Launched, pid, stop_at_entry, waiter, reply);
+                let expected = ExpectedStop::InitialExec;
+                self.begin_launch(
+                    InferiorOrigin::Launched,
+                    expected,
+                    pid,
+                    stop_at_entry,
+                    waiter,
+                    reply,
+                );
                 let python = python
                     .map(|launch| launch.and_then(|launch| launch.launched(pid).map(|()| launch)));
 
@@ -110,7 +182,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         match self.seize_exec_target(requested) {
             Ok((pid, waiter)) => {
                 let origin = InferiorOrigin::LaunchedByExec;
-                self.begin_launch(origin, pid, stop_at_entry, waiter, reply);
+                let expected = ExpectedStop::AdoptedExec;
+                self.begin_launch(origin, expected, pid, stop_at_entry, waiter, reply);
                 release();
             }
             Err(error) => {
@@ -147,17 +220,12 @@ impl<P: LinuxTraceOps> Controller<P> {
     fn begin_launch(
         &mut self,
         origin: InferiorOrigin,
+        expected: ExpectedStop,
         pid: Pid,
         stop_at_entry: bool,
         waiter: Waiter,
         reply: Reply<ExecutionId>,
     ) {
-        let expected = if origin == InferiorOrigin::LaunchedByExec {
-            ExpectedStop::AdoptedExec
-        } else {
-            ExpectedStop::InitialExec
-        };
-
         let process_id = process_id(pid);
         let execution_id = ExecutionId::new(1);
         self.reset_breakpoint_hit_counts();
@@ -348,7 +416,13 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     pub(super) fn handle_initial_stop(&mut self, pid: Pid) -> Result<()> {
-        self.ptrace.set_options(pid, true)?;
+        // A process adopted at its exec in an attached group is detached,
+        // not killed, when the session ends.
+        let owned = self
+            .inferior
+            .as_ref()
+            .is_none_or(|inferior| inferior.origin.owned());
+        self.ptrace.set_options(pid, owned)?;
         self.refresh_thread_names();
         let load_bias = self.executable_load_bias(pid)?;
         self.load_main_image(load_bias)?;
@@ -1063,12 +1137,37 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// released with traps in place. Returns whether it was detached; one
     /// that was not stays traced until it exits.
     pub(super) fn scrub_and_settle(
-        &self,
+        &mut self,
         parent: Pid,
         child: Pid,
         sites: &[(VirtualAddress, u8)],
         holdable: bool,
     ) -> bool {
+        if !self.shutting_down
+            && let Some(following) = self.following()
+        {
+            let following = Arc::clone(following);
+            if self.scrub(child, sites).is_err() {
+                let _ = self.ptrace.kill(child, Signal::SIGKILL);
+                return false;
+            }
+
+            if let Some(inferior) = self.inferior.as_mut() {
+                inferior.handed_over.insert(child);
+            }
+            following.transfer(super::follow::Transfer {
+                child,
+                parent,
+                vfork: !holdable,
+                program: self.forked_program(child),
+                launched: self
+                    .inferior
+                    .as_ref()
+                    .is_some_and(|inferior| inferior.origin != InferiorOrigin::Attached),
+            });
+            return true;
+        }
+
         let hold = holdable
             && !self.shutting_down
             && self
@@ -1197,6 +1296,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
             if !inferior.fork_children.contains_key(&child)
                 && !inferior.killed_children.contains(&child)
+                && !inferior.handed_over.contains(&child)
                 && !inferior.threads.contains_key(&child)
             {
                 self.track_fork_child(child, sites.clone());
@@ -1330,6 +1430,16 @@ impl<P: LinuxTraceOps> Controller<P> {
         if let Some(thread) = inferior.threads.get_mut(&pid) {
             thread.armed = Some(generation);
             thread.watch_hits.clear();
+        }
+
+        // A member of a group that executed a program the group does not
+        // debug, such as a shell, is watched from here instead.
+        if self.group.is_some()
+            && let Ok(program) = std::fs::read_link(format!("/proc/{pid}/exe"))
+            && self.demotes_at_exec(&program)
+        {
+            self.leave_for_watching(pid, program);
+            return Ok(());
         }
 
         self.reset_runtime_modules();
@@ -2056,6 +2166,39 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
+    /// Ends the session of a group member stopped at the exec of `program`,
+    /// which the group watches, handing the process to the group's
+    /// watcher still stopped. The exec left no trap in it.
+    fn leave_for_watching(&mut self, pid: Pid, program: std::path::PathBuf) {
+        let Some(mut inferior) = self.inferior.take() else {
+            return;
+        };
+
+        if let Some(waiter) = inferior.waiter.take() {
+            match self.join_waiter(waiter) {
+                Ok(()) => {}
+                #[cfg_attr(
+                    not(debug_assertions),
+                    expect(unused_variables, reason = "only recorded")
+                )]
+                Err(error) => record!("the waiter did not stop: {error}"),
+            }
+        }
+
+        let parent = self.group.as_ref().and_then(|group| group.parent);
+        if let Some(following) = self.following() {
+            following.demote(pid, parent, inferior.origin.owned(), program);
+        }
+
+        self.reset_runtime_modules();
+        self.bump_revision();
+        let _ = self.events.send(DebuggerEvent::InferiorDetached {
+            revision: self.revision,
+            process_id: process_id(inferior.tgid),
+        });
+        self.settle_pending_edits(inferior.take_pending_edits());
+    }
+
     /// Ends the session of an attached process whose threads all exited.
     /// Its children still due are left to the orphans, as at its exit.
     fn forget_vanished_inferior(&mut self) {
@@ -2469,10 +2612,12 @@ impl Start {
     /// Answers the start's client with `error`.
     fn fail(self, error: Error) {
         match self {
-            Self::Launch(_, reply) | Self::LaunchByExec { reply, .. } => {
+            Self::Launch(_, reply)
+            | Self::LaunchByExec { reply, .. }
+            | Self::AdoptExec { reply, .. } => {
                 let _ = reply.send(Err(error));
             }
-            Self::Attach { reply, .. } => {
+            Self::Attach { reply, .. } | Self::Adopt { reply, .. } => {
                 let _ = reply.send(Err(error));
             }
         }

@@ -17,6 +17,7 @@ use std::task::{Context, Wake, Waker};
 use std::thread::{self, JoinHandle, Thread};
 use std::time::Instant;
 
+use super::follow::{Group, GroupSetup};
 use super::wait_hub::{HubEdge, MemberKey, WaitHub};
 use super::{ControllerMessage, SessionLease};
 use crate::Result;
@@ -102,6 +103,15 @@ pub struct Hosting {
 }
 
 impl Hosting {
+    /// What the owner of a group's member waits for: the tracer thread is
+    /// the group's, and outlives the member.
+    pub(super) const fn member(ended: oneshot::Receiver<thread::Result<()>>) -> Self {
+        Self {
+            ended,
+            thread: None,
+        }
+    }
+
     /// Waits for the controller to end, and for the tracer thread too
     /// when this hosting owns it. Fails when the controller panicked.
     pub fn join(self) -> std::result::Result<(), ()> {
@@ -117,12 +127,12 @@ impl Hosting {
 impl Tracer {
     /// Starts a tracer thread, which holds the process's tracing lease, and
     /// returns its handle and its join handle.
-    pub(super) fn start() -> Result<(Self, JoinHandle<()>)> {
+    pub(super) fn start(group: Option<GroupSetup>) -> Result<(Self, JoinHandle<()>)> {
         let lease = SessionLease::acquire()?;
         let (commands, received) = std_mpsc::channel();
         let joined = thread::Builder::new()
             .name(super::CONTROLLER_THREAD_NAME.into())
-            .spawn(move || serve(&lease, &received))?;
+            .spawn(move || serve(&lease, &received, group))?;
 
         Ok((
             Self {
@@ -146,12 +156,20 @@ impl Tracer {
     /// Starts a tracer thread serving one controller, which ends when it
     /// does.
     pub(super) fn alone(build: Build) -> Result<Hosting> {
-        let (tracer, thread) = Self::start()?;
+        let (tracer, thread) = Self::start(None)?;
         let ended = tracer.host(build)?;
         Ok(Hosting {
             ended,
             thread: Some(thread),
         })
+    }
+}
+
+impl Drop for Tracer {
+    /// Wakes the thread, which ends once it has no controller left and no
+    /// handle to it.
+    fn drop(&mut self) {
+        self.thread.unpark();
     }
 }
 
@@ -173,7 +191,7 @@ struct Member {
 }
 
 /// The tracer thread's loop.
-fn serve(_lease: &SessionLease, commands: &std_mpsc::Receiver<Command>) {
+fn serve(_lease: &SessionLease, commands: &std_mpsc::Receiver<Command>, group: Option<GroupSetup>) {
     let hub = match WaitHub::new() {
         Ok(hub) => hub,
         #[cfg_attr(
@@ -188,6 +206,7 @@ fn serve(_lease: &SessionLease, commands: &std_mpsc::Receiver<Command>) {
     let waker = Waker::from(Arc::new(Unparker(thread::current())));
     let mut members: Vec<Member> = Vec::new();
     let mut closed = false;
+    let mut group = group.map(|setup| Group::new(setup, &HostContext { hub: &hub }));
 
     loop {
         loop {
@@ -207,7 +226,11 @@ fn serve(_lease: &SessionLease, commands: &std_mpsc::Receiver<Command>) {
             }
         }
 
-        if closed && members.is_empty() {
+        // A group's watched processes end only once the group has no
+        // owner left, and every member has ended.
+        let watching =
+            closed && members.is_empty() && group.as_mut().is_some_and(|group| !group.close());
+        if closed && members.is_empty() && !watching {
             break;
         }
 
@@ -221,6 +244,15 @@ fn serve(_lease: &SessionLease, commands: &std_mpsc::Receiver<Command>) {
             serve_one(member, message)
         });
 
+        if let Some(group) = &mut group {
+            let (joined, served_group) = group.serve(&HostContext { hub: &hub });
+            served |= served_group;
+            members.extend(joined.into_iter().map(|(hosted, ended)| Member {
+                hosted,
+                ended: Some(ended),
+            }));
+        }
+
         if served {
             continue;
         }
@@ -229,6 +261,9 @@ fn serve(_lease: &SessionLease, commands: &std_mpsc::Receiver<Command>) {
         let mut ready = false;
         for member in &members {
             ready |= member.hosted.poll_queue(&mut context);
+        }
+        if let Some(group) = &mut group {
+            ready |= group.poll(&mut context);
         }
 
         if ready {
@@ -250,6 +285,7 @@ fn serve(_lease: &SessionLease, commands: &std_mpsc::Receiver<Command>) {
 
     // Controllers end before the hub that routes their statuses.
     drop(members);
+    drop(group);
     drop(hub);
 }
 

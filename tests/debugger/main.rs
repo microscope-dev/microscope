@@ -12,6 +12,7 @@ mod flight_recorder;
 mod forks;
 mod gallery;
 mod globals;
+mod group;
 mod identities;
 mod libraries;
 mod locations;

@@ -8738,3 +8738,93 @@ fn recorded_identity_batches_preserve_nested_and_unknown_thread_mappings() {
     );
     assert_eq!(edge.target_thread_id(host, collision), None);
 }
+
+impl WatchHarness {
+    /// Makes the session a member of a group that follows the children its
+    /// process forks, the next of which is `child`.
+    fn follow_forks(&mut self, child: Pid) -> Arc<super::follow::Following> {
+        let following = Arc::new(super::follow::Following::new(super::follow::Policy {
+            policy: crate::FollowPolicy::default(),
+            launched: None,
+        }));
+        self.controller.join_group(super::follow::Membership {
+            following: Arc::clone(&following),
+            root: true,
+            parent: None,
+        });
+        self.trace().clone.replace(Some((child, child)));
+        following
+    }
+}
+
+#[test]
+fn a_followed_fork_child_is_scrubbed_and_handed_over_still_traced_whichever_stop_comes_first() {
+    for child_first in [false, true] {
+        let mut harness = hit_harness(1, ">=1");
+        let parent = harness.threads[0];
+        let child = Pid::from_raw(6000);
+        let following = harness.follow_forks(child);
+        let fork = WaitEvent::PtraceEvent(parent, Signal::SIGTRAP, libc::PTRACE_EVENT_FORK);
+        let first_stop = WaitEvent::Stopped(child, Signal::SIGSTOP);
+        let order = if child_first {
+            [first_stop, fork]
+        } else {
+            [fork, first_stop]
+        };
+
+        for status in order {
+            assert!(harness.controller.handle_wait(status));
+        }
+
+        // The child keeps its tracer: nothing stops, detaches, or resumes
+        // it, so it runs no instruction before its own controller does.
+        let actions = harness.trace().take_actions();
+        let touched = actions
+            .iter()
+            .filter(|action| action.contains(&child.to_string()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            touched,
+            [&format!("write_word {child} {HIT_SITE:#x} 0x90")],
+            "child first: {child_first}: {actions:?}"
+        );
+        assert_eq!(following.take_forks(), [(child, parent, false)]);
+        assert_eq!(harness.thread(parent).state, NativeThreadState::Running);
+    }
+}
+
+#[test]
+fn a_handed_over_child_is_not_taken_for_a_lost_one_as_its_parent_exits() {
+    let mut harness = hit_harness(1, ">=1");
+    let parent = harness.threads[0];
+    let child = Pid::from_raw(6000);
+    let following = harness.follow_forks(child);
+    for status in [
+        WaitEvent::PtraceEvent(parent, Signal::SIGTRAP, libc::PTRACE_EVENT_FORK),
+        WaitEvent::Stopped(child, Signal::SIGSTOP),
+    ] {
+        assert!(harness.controller.handle_wait(status));
+    }
+    assert_eq!(following.take_forks().len(), 1);
+    harness.trace().take_actions();
+
+    // The tracer thread still traces the child, as its new owner's, when
+    // the parent exits: the parent's session must not wait for it.
+    harness.trace().traced_children.borrow_mut().push(child);
+    for status in [
+        WaitEvent::PtraceEvent(parent, Signal::SIGTRAP, libc::PTRACE_EVENT_EXIT),
+        WaitEvent::Exited(parent, 0),
+    ] {
+        harness.controller.handle_wait(status);
+    }
+
+    let actions = harness.trace().take_actions();
+    assert!(
+        !actions
+            .iter()
+            .any(|action| action.contains(&child.to_string())),
+        "{actions:?}"
+    );
+    assert!(harness.controller.inferior.is_none());
+    assert!(harness.controller.orphans.is_none());
+}

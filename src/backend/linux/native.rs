@@ -423,6 +423,15 @@ impl LinuxPtrace {
         }
     }
 
+    /// Routes the statuses of `process` and its threads to this edge's
+    /// queue from now on, as the watcher of a group takes a process over.
+    pub(super) fn route_here(&self, process: Pid) {
+        self.assert_owner_thread();
+        if let Some(hub) = &self.hub {
+            hub.edge().start(process);
+        }
+    }
+
     fn assert_owner_thread(&self) {
         assert_eq!(
             self.owner,

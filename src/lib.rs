@@ -40,6 +40,7 @@ mod eval;
 #[cfg(debug_assertions)]
 #[doc(hidden)]
 pub mod flight_recorder;
+mod group;
 pub(crate) mod image;
 pub use image::functions::{CodeInstance, Function};
 pub use image::symbols::Symbol;
@@ -153,21 +154,22 @@ pub use model::{
     VisualizerReference,
 };
 
+pub use group::{GroupEvent, Member, MemberNumber, MemberState, ProcessGroup};
 pub use protocol::{
     Breakpoint, BreakpointHit, BreakpointId, BreakpointOptions, BreakpointSpec, CatchPhase,
     Catchpoint, CatchpointId, ConditionOwner, CoreDumpInfo, CoreDumpOptions, CoreModule,
     CoreModuleState, DebugFileOptions, DebuggerEvent, ExceptionDisposition, ExceptionFilter,
-    ExceptionInfo, ExceptionStops, ExecutionId, ExitStatus, FramePresentation, GlobalVariableQuery,
-    HeldChild, HeldProcess, HitComparison, HitCondition, InferiorState, InvalidatedWatchpoint,
-    KernelSource, LanguageException, LanguageExceptionKind, LaunchOptions, LogPart,
-    MAX_DRAWING_BYTES, ModuleIdentity, NameMatch, NamedProcess, NumberKind, Numbers,
-    PendingBreakpointLocation, PresentedFrame, ProcessId, Renderer, ResolvedBreakpointLocation,
-    ResumeScope, SignalPolicy, StateSnapshot, StepKind, StepTarget, StopId, StopReason,
-    SyscallStop, TaskEnding, ThreadSnapshot, ThreadState, TypeViews, ValueChildQuery,
-    VariableQuery, ViewCandidate, ViewCheck, ViewExplanation, VisualizerBinding, VisualizerInput,
-    VisualizerInputs, VisualizerValue, WatchAccess, WatchScope, WatchTarget, Watchpoint,
-    WatchpointCapabilities, WatchpointHit, WatchpointId, WatchpointInvalidation, WatchpointOptions,
-    WatchpointSpec,
+    ExceptionInfo, ExceptionStops, ExecutionId, ExitStatus, FollowMode, FollowPolicy,
+    FramePresentation, GlobalVariableQuery, HeldChild, HeldProcess, HitComparison, HitCondition,
+    InferiorState, InvalidatedWatchpoint, KernelSource, LanguageException, LanguageExceptionKind,
+    LaunchOptions, LogPart, MAX_DRAWING_BYTES, ModuleIdentity, NameMatch, NamedProcess, NumberKind,
+    Numbers, PendingBreakpointLocation, PresentedFrame, ProcessId, Renderer,
+    ResolvedBreakpointLocation, ResumeScope, SignalPolicy, StateSnapshot, StepKind, StepTarget,
+    StopId, StopReason, StopScope, SyscallStop, TaskEnding, ThreadSnapshot, ThreadState, TypeViews,
+    ValueChildQuery, VariableQuery, ViewCandidate, ViewCheck, ViewExplanation, VisualizerBinding,
+    VisualizerInput, VisualizerInputs, VisualizerValue, WatchAccess, WatchScope, WatchTarget,
+    Watchpoint, WatchpointCapabilities, WatchpointHit, WatchpointId, WatchpointInvalidation,
+    WatchpointOptions, WatchpointSpec,
 };
 
 pub use runtime_model::TASK_NOUNS;
@@ -528,6 +530,69 @@ impl Debugger {
                 backend::spawn_controller(executable, debug_info, channels)?;
             Ok((program, None, controller))
         })
+    }
+
+    /// Creates the root session of a process group for `program`, whose
+    /// tracer thread follows the processes it starts as `policy` says.
+    fn for_group(program: Program, policy: FollowPolicy) -> Result<(Self, backend::GroupBackend)> {
+        let Program {
+            executable,
+            debug_info,
+        } = program;
+
+        let launched = Arc::clone(&executable.launch_path);
+        let mut group = None;
+        let debugger = Self::start(launched, |channels| {
+            let (program, controller, backend) = backend::spawn_group(
+                executable,
+                debug_info,
+                channels,
+                policy,
+                backend::Capacity {
+                    requests: REQUEST_CAPACITY,
+                    events: event_capacity(),
+                },
+            )?;
+            group = Some(backend);
+            Ok((program, None, controller))
+        })?;
+
+        let group = group.ok_or_else(|| Error::internal("a group's tracer started"))?;
+        Ok((debugger, group))
+    }
+
+    /// The debugger of a process that joined a group, and the stop it
+    /// joins in, which it publishes before it runs an instruction.
+    fn joined(joined: backend::Joined) -> Result<(Self, backend::Started)> {
+        let backend::Joined {
+            requests,
+            events,
+            program,
+            launched,
+            controller,
+            started,
+            ..
+        } = joined;
+        let shutdown_permit = requests
+            .clone()
+            .try_reserve_owned()
+            .map_err(|_| Error::internal("a new request channel has no shutdown capacity"))?;
+
+        Ok((
+            Self {
+                handle: DebuggerHandle {
+                    program,
+                    launched,
+                    core_dump: None,
+                    source_paths: Arc::default(),
+                    requests,
+                    events,
+                },
+                controller: Some(controller),
+                shutdown_permit: Some(shutdown_permit),
+            },
+            started,
+        ))
     }
 
     /// Attaches to an existing local process and returns once it is coherently stopped.

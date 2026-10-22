@@ -77,6 +77,7 @@ mod core_files;
 mod debug_registers;
 mod disassembly;
 mod evaluation;
+mod follow;
 mod frames;
 mod indirect;
 mod inspection;
@@ -129,6 +130,7 @@ mod wait_hub;
 mod watchpoints;
 mod writes;
 
+pub use follow::{Capacity, GroupNotice, Joined, Started};
 pub use post_mortem::{PostMortemSession, open_core};
 
 /// Ends the job-control stop of a held process, and returns whether it
@@ -983,6 +985,10 @@ struct Inferior {
     /// exits are still due: another process's exit may follow the leader's.
     killed_children: BTreeSet<Pid>,
 
+    /// Fork children handed to the session's group, which the same tracer
+    /// thread traces but this session no longer owns.
+    handed_over: BTreeSet<Pid>,
+
     /// Threads in a vfork that shares this memory, by the thread that
     /// vforked. The traps are lifted while any window is open.
     vfork_windows: BTreeMap<Pid, VforkWindow>,
@@ -1093,6 +1099,7 @@ impl Inferior {
             fork_children: BTreeMap::new(),
             vfork_children: BTreeSet::new(),
             killed_children: BTreeSet::new(),
+            handed_over: BTreeSet::new(),
             vfork_windows: BTreeMap::new(),
             traps_lifted: false,
             waiter,
@@ -1571,6 +1578,10 @@ struct Controller<P: InspectionOps> {
     /// Whether an exec the session follows stops a continued process.
     exec_stops: bool,
 
+    /// The session's group, which its fork children go to instead of
+    /// being released, when it is a member of one that follows them.
+    group: Option<follow::Membership>,
+
     /// Whether steps stop in a language runtime's own code.
     step_into_runtime: bool,
 
@@ -1620,6 +1631,26 @@ enum Start {
         release: Box<dyn FnOnce() + Send>,
         reply: Reply<ExecutionId>,
     },
+
+    /// Takes over a process the tracer thread already traces, stopped, as
+    /// a fork child its parent's controller handed over is.
+    Adopt {
+        pid: Pid,
+
+        /// Whether the process descends from a launched one, so that the
+        /// session ends it rather than detaching.
+        launched: bool,
+        reply: Reply<StopId>,
+    },
+
+    /// Takes over a process the tracer thread traces, stopped at the exec
+    /// of the program, as a launch whose initial stop that exec is; the
+    /// launch stops there.
+    AdoptExec {
+        pid: Pid,
+        launched: bool,
+        reply: Reply<ExecutionId>,
+    },
 }
 
 /// In development builds, the variable that names a request after which
@@ -1636,24 +1667,116 @@ pub fn spawn_controller(
     let current = program.subscribe();
 
     let hosting = tracer::Tracer::alone(Box::new(move |host| {
-        record!("started for {}", executable.display_path.display());
-        let membership = host.membership(channels.sender.clone());
-        #[cfg(debug_assertions)]
-        let ptrace = recorded::Recorded(LinuxPtrace::hosted(membership));
-        #[cfg(not(debug_assertions))]
-        let ptrace = LinuxPtrace::hosted(membership);
-        Box::new(Controller::new(
-            // The tracer thread holds the process's lease.
-            SessionLease::detached(),
-            executable,
-            debug_info,
-            channels,
-            program,
-            ptrace,
+        Box::new(hosted_controller(
+            host, executable, debug_info, channels, program,
         ))
     }))?;
 
     Ok((current, ControllerJoin::Hosted(hosting)))
+}
+
+/// The edge of a controller a tracer thread serves.
+#[cfg(debug_assertions)]
+type HostedEdge = recorded::Recorded<LinuxPtrace>;
+#[cfg(not(debug_assertions))]
+type HostedEdge = LinuxPtrace;
+
+/// Makes a controller on the tracer thread `host` describes.
+fn hosted_controller(
+    host: &tracer::HostContext<'_>,
+    executable: Executable,
+    debug_info: DebugInfo,
+    channels: ControllerChannels,
+    program: watch::Sender<Arc<ModuleImage>>,
+) -> Controller<HostedEdge> {
+    record!("started for {}", executable.display_path.display());
+    let membership = host.membership(channels.sender.clone());
+    #[cfg(debug_assertions)]
+    let ptrace = recorded::Recorded(LinuxPtrace::hosted(membership));
+    #[cfg(not(debug_assertions))]
+    let ptrace = LinuxPtrace::hosted(membership);
+    Controller::new(
+        // The tracer thread holds the process's lease.
+        SessionLease::detached(),
+        executable,
+        debug_info,
+        channels,
+        program,
+        ptrace,
+    )
+}
+
+/// A group's tracer thread, as its owner holds it.
+pub struct GroupBackend {
+    tracer: Option<tracer::Tracer>,
+    thread: Option<JoinHandle<()>>,
+
+    /// What the tracer thread reports: members that joined, and processes
+    /// watched or not followed.
+    pub notices: tokio::sync::mpsc::UnboundedReceiver<follow::GroupNotice>,
+}
+
+impl GroupBackend {
+    /// Lets the tracer thread end once every member has, ending or
+    /// releasing the processes it watches, and waits for it.
+    pub fn join(mut self) -> std::result::Result<(), ()> {
+        drop(self.tracer.take());
+        self.thread
+            .take()
+            .map_or(Ok(()), |thread| thread.join().map_err(|_| ()))
+    }
+}
+
+/// Starts the tracer thread of a group whose root is a session for
+/// `executable`, which hands the processes its program starts to the
+/// thread as `policy` says.
+pub fn spawn_group(
+    executable: Executable,
+    debug_info: DebugInfo,
+    channels: ControllerChannels,
+    policy: crate::FollowPolicy,
+    capacity: follow::Capacity,
+) -> Result<(
+    watch::Receiver<Arc<ModuleImage>>,
+    ControllerJoin,
+    GroupBackend,
+)> {
+    let program = watch::Sender::new(Arc::clone(&debug_info.image));
+    let current = program.subscribe();
+    let follows = policy.mode != crate::FollowMode::None;
+    let following = Arc::new(follow::Following::new(follow::Policy {
+        policy,
+        launched: Some(executable.identity.inode),
+    }));
+    let (notices, received) = tokio::sync::mpsc::unbounded_channel();
+    let (tracer, thread) = tracer::Tracer::start(Some(follow::GroupSetup {
+        following: Arc::clone(&following),
+        notices,
+        capacity,
+        debug_files: executable.debug_files.clone(),
+    }))?;
+
+    let ended = tracer.host(Box::new(move |host| {
+        let mut controller = hosted_controller(host, executable, debug_info, channels, program);
+        if follows {
+            controller.join_group(follow::Membership {
+                following,
+                root: true,
+                parent: None,
+            });
+        }
+        Box::new(controller)
+    }))?;
+
+    Ok((
+        current,
+        ControllerJoin::Hosted(tracer::Hosting::member(ended)),
+        GroupBackend {
+            tracer: Some(tracer),
+            thread: Some(thread),
+            notices: received,
+        },
+    ))
 }
 
 /// What a debugger joins once its controller is asked to end.
@@ -1772,6 +1895,7 @@ impl<P: InspectionOps> Controller<P> {
             signals: SignalPolicies::default(),
             exception_stops: crate::ExceptionStops::default(),
             exec_stops: false,
+            group: None,
             step_into_runtime: false,
             runtime_models: RefCell::default(),
             revision: 0,
