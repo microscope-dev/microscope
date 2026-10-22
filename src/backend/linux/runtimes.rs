@@ -253,7 +253,7 @@ impl<P: InspectionOps> Controller<P> {
         &'a self,
         inferior: &'a Inferior,
     ) -> impl Iterator<Item = (LoadedModule, &'a Arc<ModuleImage>)> {
-        std::iter::once((inferior.loaded_module, &self.module_image)).chain(
+        std::iter::once((inferior.loaded_module, &self.main.image)).chain(
             self.modules
                 .values()
                 .filter(|module| module.loaded.id != inferior.loaded_module.id)
@@ -617,7 +617,7 @@ impl<P: InspectionOps> Controller<P> {
             code.address
         };
 
-        let found = std::iter::once((inferior.loaded_module, &self.module_image))
+        let found = std::iter::once((inferior.loaded_module, &self.main.image))
             .chain(
                 self.modules
                     .values()
@@ -660,7 +660,7 @@ impl<P: InspectionOps> Controller<P> {
         place: &RecordedPlace,
     ) -> TaskLocation {
         let image = if module.id == inferior.loaded_module.id {
-            Some(&self.module_image)
+            Some(&self.main.image)
         } else {
             self.modules.get(&module.id).map(|found| &found.image)
         };

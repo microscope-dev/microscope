@@ -79,8 +79,9 @@ impl<P: InspectionOps> Controller<P> {
                 )
             })
             .collect();
-        let main_load_bias = self.modules[&crate::ModuleId::new(0)].loaded.load_bias;
+        let main_load_bias = self.modules[&self.main.id].loaded.load_bias;
         let tls_modules = self
+            .main
             .c_library
             .tls_modules(link_maps, main_load_bias, &has_tls);
 
@@ -110,7 +111,7 @@ impl<P: InspectionOps> Controller<P> {
             .modules
             .keys()
             .copied()
-            .filter(|id| *id != crate::ModuleId::new(0))
+            .filter(|id| *id != self.main.id)
             .collect::<Vec<_>>();
 
         for id in dynamic {
@@ -119,11 +120,11 @@ impl<P: InspectionOps> Controller<P> {
 
         // Without the main module there is nothing to reset. Launches register
         // it before any stop, so this only guards a state that cannot arise.
-        let Some(main) = self.modules.get_mut(&crate::ModuleId::new(0)) else {
+        let Some(main) = self.modules.get_mut(&self.main.id) else {
             return;
         };
 
-        main.loaded = LoadedModule::main(main.image.id(), LoadBias::default());
+        main.loaded.load_bias = LoadBias::default();
         main.tls = None;
 
         if self.drop_library_locations() {
@@ -149,7 +150,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         // The leader may have exited before the rest of its process.
         let pid = inferior.memory_thread();
         let main_loaded = inferior.loaded_module;
-        let link_maps = loader_link_maps(&self.ptrace, pid, &self.module_image, main_loaded)?;
+        let link_maps = loader_link_maps(&self.ptrace, pid, &self.main.image, main_loaded)?;
         let mappings = self.ptrace.module_mappings(pid)?;
         let mut observed = self.observe_files(mappings.files, mappings.headers, &link_maps);
         let moved = self.moved_code(&observed, mappings.vdso.as_ref());
@@ -167,7 +168,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .modules
             .iter()
             .filter(|(id, module)| {
-                **id != crate::ModuleId::new(0)
+                **id != self.main.id
                     && !observed_modules
                         .contains(&(module.image.path().to_owned(), module.loaded.load_bias))
             })
@@ -258,7 +259,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             Some(module)
         };
 
-        let executable_inode = self.executable_identity.inode;
+        let executable_inode = self.main.identity.inode;
 
         // A library with no code maps nothing executable; the loader lists
         // an object at its first page, which holds image address zero.
@@ -279,7 +280,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
 
             if let Some(module) = identify(mapping)
-                && module.0 != *self.executable
+                && module.0 != *self.main.executable
             {
                 observed.push(module);
             }
@@ -333,14 +334,14 @@ impl<P: LinuxTraceOps> Controller<P> {
         let files = mappings
             .files
             .iter()
-            .filter(|mapping| mapping.inode != self.executable_identity.inode)
+            .filter(|mapping| mapping.inode != self.main.identity.inode)
             .filter_map(|mapping| {
                 self.mapped_modules
                     .get(mapping)
                     .cloned()
                     .or_else(|| self.ptrace.identify_module(mapping))
             })
-            .filter(|(path, _)| *path != *self.executable)
+            .filter(|(path, _)| *path != *self.main.executable)
             .collect::<Vec<_>>();
 
         Ok(self.moved_code(&files, mappings.vdso.as_ref()))
@@ -362,7 +363,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         self.modules
             .values()
-            .filter(|module| module.loaded.id != crate::ModuleId::new(0))
+            .filter(|module| module.loaded.id != self.main.id)
             .filter_map(|module| {
                 let path = module.image.path();
                 let code = module.image.address_range();

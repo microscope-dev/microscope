@@ -13,7 +13,7 @@ use crate::protocol::{
     LaunchOptions, ProcessId, Reply, ResumeScope, StopId, StopReason,
 };
 
-use crate::{Error, LoadedModule, Result, VirtualAddress};
+use crate::{Error, Result, VirtualAddress};
 
 use super::breakpoints::{install_logical_breakpoint, lift_all_traps, reinstall_all_traps};
 use super::native::{LinuxTraceOps, SignalQueue, is_vanished_tracee};
@@ -64,7 +64,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         // A bootstrap that cannot be made leaves only the agent unavailable.
         let python = self
             .ptrace
-            .python_launch(&self.executable, &mut options.environment)
+            .python_launch(&self.main.executable, &mut options.environment)
             .transpose();
         let started = self
             .ptrace
@@ -172,7 +172,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             ..Inferior::new(
                 origin,
                 pid,
-                LoadedModule::main(self.module_image.id(), crate::LoadBias::default()),
+                self.main.loaded(crate::LoadBias::default()),
                 BTreeMap::from([(pid, TraceThread::starting(expected))]),
                 Some(waiter),
             )
@@ -204,7 +204,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let mut inferior = Inferior::new(
             InferiorOrigin::Attached,
             tgid,
-            LoadedModule::main(self.module_image.id(), crate::LoadBias::default()),
+            self.main.loaded(crate::LoadBias::default()),
             threads,
             Some(waiter),
         );
@@ -401,9 +401,9 @@ impl<P: LinuxTraceOps> Controller<P> {
     fn executable_load_bias(&self, pid: Pid) -> Result<crate::LoadBias> {
         self.ptrace.load_bias(
             pid,
-            &self.executable,
-            self.module_image.address_range().start.get(),
-            self.executable_identity,
+            &self.main.executable,
+            self.main.image.address_range().start.get(),
+            self.main.identity,
         )
     }
 
@@ -422,9 +422,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
         let main = self
             .modules
-            .get_mut(&crate::ModuleId::new(0))
+            .get_mut(&self.main.id)
             .ok_or_else(|| Error::internal("main module is registered"))?;
-        inferior.loaded_module = LoadedModule::main(self.module_image.id(), load_bias);
+        inferior.loaded_module = self.main.loaded(load_bias);
         main.loaded = inferior.loaded_module;
 
         for breakpoint in self
@@ -1135,7 +1135,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             inferior.threads.insert(pid, survivor);
             if self.executable_load_bias(pid).is_err() {
                 return Err(backend_error(LinuxError::ExecutedAnotherProgram(
-                    self.executable.to_path_buf(),
+                    self.main.executable.to_path_buf(),
                 )));
             }
 

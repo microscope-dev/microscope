@@ -90,7 +90,7 @@ impl<P: InspectionOps> Controller<P> {
         Ok(x86_64_register_snapshot(
             self.revision,
             root.context,
-            self.module_image.target(),
+            self.main.image.target(),
             native.as_ref(),
             caller,
         ))
@@ -265,7 +265,7 @@ impl<P: InspectionOps> Controller<P> {
             stack_frame: frame,
             frame: resolved.presented,
             frame_address: resolved.cfa.ok(),
-            target: self.module_image.target(),
+            target: self.main.image.target(),
             variables: variables.into(),
             completion: budget.completion(),
             usage: budget.usage(),

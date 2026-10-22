@@ -304,16 +304,12 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// The module and out-of-line code instance holding an address.
     fn physical_function_at(&self, address: VirtualAddress) -> Option<(ModuleId, CodeInstanceId)> {
         let inferior = self.inferior.as_ref()?;
-        let main = (
-            ModuleId::new(0),
-            &self.module_image,
-            &inferior.loaded_module,
-        );
+        let main = (self.main.id, &self.main.image, &inferior.loaded_module);
         std::iter::once(main)
             .chain(
                 self.modules
                     .iter()
-                    .filter(|(id, _)| **id != ModuleId::new(0))
+                    .filter(|(id, _)| **id != self.main.id)
                     .map(|(id, module)| (*id, &module.image, &module.loaded)),
             )
             .find_map(|(id, image, loaded)| {

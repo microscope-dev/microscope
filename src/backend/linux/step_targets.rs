@@ -40,23 +40,23 @@ impl<P: InspectionOps> Controller<P> {
             return Ok(Arc::from([]));
         };
 
-        let Some(source) = source_for_code_instance(&self.module_image, &location, instance_id)
+        let Some(source) = source_for_code_instance(&self.main.image, &location, instance_id)
         else {
             return Ok(Arc::from([]));
         };
 
-        let Some(instance) = self.module_image.code_instance(instance_id) else {
+        let Some(instance) = self.main.image.code_instance(instance_id) else {
             return Ok(Arc::from([]));
         };
 
         let mut ranges = Vec::<AddressRange<ImageAddress>>::new();
-        for line in self.module_image.line_entries_in(instance) {
+        for line in self.main.image.line_entries_in(instance) {
             if line.range.end <= location.address {
                 continue;
             }
 
-            let at = self.module_image.locate(line.range.start);
-            if source_for_code_instance(&self.module_image, &at, instance_id)
+            let at = self.main.image.locate(line.range.start);
+            if source_for_code_instance(&self.main.image, &at, instance_id)
                 .is_some_and(|candidate| !source_line_changed(Some(&source), Some(&candidate)))
             {
                 ranges.push(AddressRange {
@@ -69,7 +69,7 @@ impl<P: InspectionOps> Controller<P> {
         ranges.sort_unstable_by_key(|range| range.start);
 
         let mut decoder =
-            crate::disassembly::decoder_for(self.module_image.target(), AssemblySyntax::Intel)?;
+            crate::disassembly::decoder_for(self.main.image.target(), AssemblySyntax::Intel)?;
         let modules = self.unwind_modules(inferior);
         let mut targets = Vec::new();
         let mut read_bytes = 0;
@@ -234,5 +234,5 @@ fn locate<P: InspectionOps>(
     address: VirtualAddress,
 ) -> Option<crate::ImageLocation> {
     let image = inferior.loaded_module.image_address(address).ok()?;
-    Some(controller.module_image.locate(image))
+    Some(controller.main.image.locate(image))
 }

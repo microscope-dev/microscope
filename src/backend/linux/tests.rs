@@ -5199,7 +5199,7 @@ fn a_step_resumed_to_a_trap_edited_away_while_running(
 
     let image = lined_test_image(&[(0, None, None, (0, 0x100))], lines);
     let mut harness = watch_harness_of(2, &image);
-    harness.controller.unwind_info = Arc::new(FlatUnwindInfo);
+    harness.controller.main.unwind = Arc::new(FlatUnwindInfo);
     let stepping = harness.threads[0];
     let breakpoint = harness.add_breakpoint(SITE);
     harness.start_continue();
@@ -5641,10 +5641,10 @@ fn begin_task_step(harness: &mut WatchHarness, thread: Pid, task: crate::TaskId)
 #[test]
 fn a_step_follows_its_task_to_another_thread_and_passes_the_others() {
     let mut harness = watch_harness(3);
-    harness.controller.unwind_info = Arc::new(FlatUnwindInfo);
+    harness.controller.main.unwind = Arc::new(FlatUnwindInfo);
     let (first, moved, other) = (harness.threads[0], harness.threads[1], harness.threads[2]);
     let runtime = Arc::new(ScriptedRuntime::default());
-    let image = Arc::clone(&harness.controller.module_image);
+    let image = Arc::clone(&harness.controller.main.image);
     harness
         .controller
         .runtime_models
@@ -5727,7 +5727,7 @@ fn a_step_follows_its_task_to_another_thread_and_passes_the_others() {
 /// Binds `runtime` to the harness's executable.
 fn scripted_runtime(harness: &WatchHarness, runtime: ScriptedRuntime) -> Arc<ScriptedRuntime> {
     let runtime = Arc::new(runtime);
-    let image = Arc::clone(&harness.controller.module_image);
+    let image = Arc::clone(&harness.controller.main.image);
     harness
         .controller
         .runtime_models
@@ -5767,7 +5767,7 @@ fn steps_over_alone(harness: &mut WatchHarness, hitting: Pid) {
 fn a_runtime_hook_asks_at_each_hit_whether_its_thread_stops() {
     const HOOK: u64 = 0x40;
     let mut harness = watch_harness(2);
-    harness.controller.unwind_info = Arc::new(FlatUnwindInfo);
+    harness.controller.main.unwind = Arc::new(FlatUnwindInfo);
     let hitting = harness.threads[0];
     let runtime = scripted_runtime(
         &harness,
@@ -5866,7 +5866,7 @@ fn a_runtime_hook_in_a_companion_image_is_armed_while_it_is_loaded() {
     const HOOK: crate::runtime_model::HookPlace =
         crate::runtime_model::HookPlace::Companion("scripted_hook");
     let mut harness = watch_harness(1);
-    harness.controller.unwind_info = Arc::new(FlatUnwindInfo);
+    harness.controller.main.unwind = Arc::new(FlatUnwindInfo);
     let hitting = harness.threads[0];
     let runtime = scripted_runtime(
         &harness,
@@ -5949,7 +5949,7 @@ fn a_runtime_hook_in_a_companion_image_is_armed_while_it_is_loaded() {
 fn a_runtime_resolves_arms_and_reports_a_managed_breakpoint() {
     const HOOK: u64 = 0x40;
     let mut harness = watch_harness(1);
-    harness.controller.unwind_info = Arc::new(FlatUnwindInfo);
+    harness.controller.main.unwind = Arc::new(FlatUnwindInfo);
     let hitting = harness.threads[0];
     let runtime = scripted_runtime(
         &harness,
@@ -6055,7 +6055,7 @@ fn a_runtime_resolves_arms_and_reports_a_managed_breakpoint() {
 fn one_report_of_several_managed_hits_stops_once_for_them_all() {
     const HOOK: u64 = 0x40;
     let mut harness = watch_harness(1);
-    harness.controller.unwind_info = Arc::new(FlatUnwindInfo);
+    harness.controller.main.unwind = Arc::new(FlatUnwindInfo);
     let hitting = harness.threads[0];
     let runtime = scripted_runtime(
         &harness,
@@ -6387,7 +6387,7 @@ fn a_module_refresh_publishes_new_managed_arming_state_once() {
 #[test]
 fn unconfirmed_runtime_arming_still_judges_hits_from_the_previous_configuration() {
     let mut harness = watch_harness(1);
-    harness.controller.unwind_info = Arc::new(FlatUnwindInfo);
+    harness.controller.main.unwind = Arc::new(FlatUnwindInfo);
     let hitting = harness.threads[0];
     let runtime = scripted_runtime(
         &harness,
@@ -6466,7 +6466,7 @@ fn unconfirmed_runtime_arming_still_judges_hits_from_the_previous_configuration(
 #[test]
 fn runtime_step_arming_updates_breakpoint_confirmation() {
     let mut harness = watch_harness(1);
-    harness.controller.unwind_info = Arc::new(FlatUnwindInfo);
+    harness.controller.main.unwind = Arc::new(FlatUnwindInfo);
     let pid = harness.threads[0];
     let runtime = scripted_runtime(
         &harness,
@@ -6557,7 +6557,7 @@ fn runtime_step_arming_updates_breakpoint_confirmation() {
 fn a_runtime_step_ends_where_its_runtime_reports_it_on_its_thread() {
     const HOOK: u64 = 0x40;
     let mut harness = watch_harness(2);
-    harness.controller.unwind_info = Arc::new(FlatUnwindInfo);
+    harness.controller.main.unwind = Arc::new(FlatUnwindInfo);
     let (stepping, other) = (harness.threads[0], harness.threads[1]);
     let runtime = scripted_runtime(
         &harness,
@@ -6653,7 +6653,7 @@ fn a_runtime_step_ends_where_its_runtime_reports_it_on_its_thread() {
 fn a_runtime_step_it_cannot_follow_stops_incomplete_with_its_reason() {
     const HOOK: u64 = 0x40;
     let mut harness = watch_harness(1);
-    harness.controller.unwind_info = Arc::new(FlatUnwindInfo);
+    harness.controller.main.unwind = Arc::new(FlatUnwindInfo);
     let stepping = harness.threads[0];
     let runtime = scripted_runtime(
         &harness,
@@ -7781,7 +7781,7 @@ fn lost_frame_harness() -> WatchHarness {
     let site = VirtualAddress::new(0x30);
     let execution = ExecutionId::new(2);
     let controller = &mut harness.controller;
-    controller.unwind_info = Arc::new(LostUnwindInfo);
+    controller.main.unwind = Arc::new(LostUnwindInfo);
     let inferior = controller.inferior.as_mut().expect("inferior");
     controller
         .ptrace
@@ -7866,7 +7866,7 @@ fn a_step_whose_thread_sigkill_ends_as_it_unwinds_publishes_no_lost_frame() {
 
     // Something outside the debugger kills the program after the hit is
     // classified, as the step reads its frame from the stack.
-    harness.controller.unwind_info = Arc::new(StackReadingUnwindInfo);
+    harness.controller.main.unwind = Arc::new(StackReadingUnwindInfo);
     *harness.trace().kill_at_read.borrow_mut() = Some((pid, StackReadingUnwindInfo::SLOT.get()));
     harness.trace().set_pc(pid, 0x31);
     harness.trace().set_siginfo(pid, libc::SI_KERNEL, None);
@@ -8042,7 +8042,7 @@ impl UnwindInfo for OutermostCallerUnwindInfo {
 #[test]
 fn an_activation_missing_from_a_wholly_unwound_stack_has_returned() {
     let mut harness = watch_harness(1);
-    harness.controller.unwind_info = Arc::new(OutermostCallerUnwindInfo);
+    harness.controller.main.unwind = Arc::new(OutermostCallerUnwindInfo);
     let mut registers = harness
         .trace()
         .registers(harness.threads[0])

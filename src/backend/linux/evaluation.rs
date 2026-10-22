@@ -257,7 +257,7 @@ impl<P: InspectionOps> Controller<P> {
     }
 
     pub(super) fn pointer_size(&self) -> u8 {
-        self.module_image.target().pointer_width.bytes()
+        self.main.image.target().pointer_width.bytes()
     }
 }
 
@@ -343,7 +343,7 @@ impl<'a, P: InspectionOps> Frame<'a, P> {
                 Some(x86_64_register_snapshot(
                     self.controller.revision,
                     self.root.context,
-                    self.controller.module_image.target(),
+                    self.controller.main.image.target(),
                     native.as_ref(),
                     caller,
                 ))
@@ -514,11 +514,11 @@ impl<P: InspectionOps> TypeSource for Frame<'_, P> {
     }
 
     fn byte_order(&self) -> ByteOrder {
-        self.controller.module_image.target().byte_order
+        self.controller.main.image.target().byte_order
     }
 
     fn c_base_type(&self, ty: crate::CBaseType) -> Option<crate::BaseType> {
-        self.controller.module_image.target().c_base_type(ty)
+        self.controller.main.image.target().c_base_type(ty)
     }
 
     fn same_type(&self, left: TypeReference, right: TypeReference) -> bool {

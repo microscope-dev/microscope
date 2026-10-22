@@ -183,7 +183,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         let inline = start
             .code_instance
-            .and_then(|instance| self.module_image.code_instance(instance))
+            .and_then(|instance| self.main.image.code_instance(instance))
             .is_some_and(|instance| matches!(instance.kind(), CodeInstanceKind::Inline { .. }));
         let (future, inlined) = if inline {
             self.inlined_body(pid, start)?
@@ -222,10 +222,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         start: &StepStart,
     ) -> Option<(RunningFuture, Option<Inlined>)> {
         let instance = start.code_instance?;
-        let info = self.module_image.code_instance(instance)?;
+        let info = self.main.image.code_instance(instance)?;
         let function = info.function();
         if !matches!(info.kind(), CodeInstanceKind::Inline { .. })
-            || self.module_image.function(function)?.coroutine().is_none()
+            || self.main.image.function(function)?.coroutine().is_none()
         {
             return None;
         }
@@ -252,16 +252,16 @@ impl<P: LinuxTraceOps> Controller<P> {
             .copied()
             .chain(location.physical_instance)
             .filter(|outer| {
-                self.module_image
+                self.main
+                    .image
                     .code_instance(*outer)
-                    .and_then(|outer| self.module_image.function(outer.function()))
+                    .and_then(|outer| self.main.image.function(outer.function()))
                     .is_some_and(|function| function.coroutine().is_some())
             })
             .collect::<Vec<_>>();
 
         for outer in awaiters {
-            let line =
-                super::frames::source_for_code_instance(&self.module_image, &location, outer)?;
+            let line = super::frames::source_for_code_instance(&self.main.image, &location, outer)?;
             statements.extend(self.other_lines(outer, &line).ok()?);
         }
 
@@ -313,9 +313,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         instance: CodeInstanceId,
     ) -> Result<BTreeSet<VirtualAddress>> {
         let header = self
-            .module_image
+            .main
+            .image
             .code_instance(instance)
-            .and_then(|instance| self.module_image.function(instance.function()))
+            .and_then(|instance| self.main.image.function(instance.function()))
             .and_then(crate::image::functions::Function::declaration);
         self.statements_of(instance, header.as_ref())
     }
@@ -336,7 +337,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 inferior
                     .loaded_module
                     .image_address(*address)
-                    .is_ok_and(|address| !self.module_image.is_resume_code(address))
+                    .is_ok_and(|address| !self.main.image.is_resume_code(address))
             })
             .collect()
     }
@@ -480,7 +481,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// as the type the body names.
     fn named_by_body(&self, future: &futures::AsyncFrame) -> RunningFuture {
         let ty = self
-            .module_image
+            .main
+            .image
             .coroutine_functions(future.ty.id)
             .first()
             .and_then(|function| function.coroutine())
@@ -514,7 +516,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         // A coroutine's function may have a copy in each unit that uses
         // it, and any copy may be the one that runs, or is inlined.
         let functions_of = |index: usize| {
-            self.module_image
+            self.main
+                .image
                 .coroutine_functions(stack.futures[index].ty.id)
                 .iter()
                 .map(|function| function.id())
@@ -524,7 +527,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let out_of_line = |functions: &[FunctionId]| {
             functions
                 .iter()
-                .flat_map(|function| self.module_image.instances_for_function(*function))
+                .flat_map(|function| self.main.image.instances_for_function(*function))
                 .filter(|instance| matches!(instance.kind(), CodeInstanceKind::OutOfLine))
                 .collect::<Vec<_>>()
         };
@@ -539,7 +542,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let inlined_in = |functions: &[FunctionId]| {
             functions
                 .iter()
-                .flat_map(|function| self.module_image.instances_for_function(*function))
+                .flat_map(|function| self.main.image.instances_for_function(*function))
                 .filter(|instance| {
                     matches!(instance.kind(), CodeInstanceKind::Inline { .. })
                         && instance.ranges().next().is_some_and(|range| {
@@ -610,12 +613,13 @@ impl<P: LinuxTraceOps> Controller<P> {
             .loaded_module
             .image_address(innermost.context.instruction)
             .ok()?;
-        let physical = self.module_image.locate(address).physical_instance?;
+        let physical = self.main.image.locate(address).physical_instance?;
         let instance = selected.unwrap_or(physical);
         let coroutine = self
-            .module_image
+            .main
+            .image
             .code_instance(instance)
-            .and_then(|instance| self.module_image.function(instance.function()))?
+            .and_then(|instance| self.main.image.function(instance.function()))?
             .coroutine()?;
         let code = Some((inferior.loaded_module.id, address));
         let modules = self.unwind_modules(inferior);
@@ -1088,10 +1092,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         // function of its own or inlined into the dropper's.
         let physical = |level: usize| {
             let location = self.image_location(stack.lookup_address(level)?)?;
-            let instance = self
-                .module_image
-                .code_instance(location.physical_instance?)?;
-            self.module_image.function(instance.function())
+            let instance = self.main.image.code_instance(location.physical_instance?)?;
+            self.main.image.function(instance.function())
         };
 
         let dropper = (0..stack.frames.len())
@@ -1203,7 +1205,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
 
         let Some(source) =
-            super::frames::source_for_code_instance(&self.module_image, &location, instance)
+            super::frames::source_for_code_instance(&self.main.image, &location, instance)
         else {
             return Ok(None);
         };
@@ -1288,8 +1290,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         stack.frames[..dispatch].iter().all(|frame| {
             self.image_location(frame.context.instruction)
                 .and_then(|location| location.physical_instance)
-                .and_then(|instance| self.module_image.code_instance(instance))
-                .and_then(|instance| self.module_image.function(instance.function()))
+                .and_then(|instance| self.main.image.code_instance(instance))
+                .and_then(|instance| self.main.image.function(instance.function()))
                 .is_none_or(|function| function.coroutine().is_none())
         })
     }
@@ -1520,9 +1522,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
 
         let instance = chain.instances[depth];
-        let moved =
-            super::frames::source_for_code_instance(&self.module_image, &location, instance)
-                .is_some_and(|line| super::frames::source_line_changed(source, Some(&line)));
+        let moved = super::frames::source_for_code_instance(&self.main.image, &location, instance)
+            .is_some_and(|line| super::frames::source_line_changed(source, Some(&line)));
         Reentry::Body((
             crate::FramePresentation {
                 instruction: address,

@@ -246,11 +246,11 @@ impl<P: InspectionOps> TypeSource for ModuleScope<'_, P> {
     }
 
     fn byte_order(&self) -> crate::ByteOrder {
-        self.controller.module_image.target().byte_order
+        self.controller.main.image.target().byte_order
     }
 
     fn c_base_type(&self, ty: crate::CBaseType) -> Option<crate::BaseType> {
-        self.controller.module_image.target().c_base_type(ty)
+        self.controller.main.image.target().c_base_type(ty)
     }
 
     fn same_type(&self, left: TypeReference, right: TypeReference) -> bool {

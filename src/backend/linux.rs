@@ -1336,6 +1336,30 @@ impl InferiorOrigin {
     }
 }
 
+/// The program a process runs: its executable and the debug information
+/// read from it, registered as the module `id`.
+struct MainProgram {
+    id: crate::ModuleId,
+    executable: Arc<PathBuf>,
+    identity: FileIdentity,
+
+    /// The C library the executable runs on, whose structures locate TLS.
+    c_library: CLibrary,
+    image: Arc<ModuleImage>,
+    unwind: Arc<dyn UnwindInfo>,
+}
+
+impl MainProgram {
+    /// The program mapped at `load_bias`.
+    fn loaded(&self, load_bias: crate::LoadBias) -> LoadedModule {
+        LoadedModule {
+            id: self.id,
+            image: self.image.id(),
+            load_bias,
+        }
+    }
+}
+
 struct RuntimeModule {
     loaded: LoadedModule,
     image: Arc<ModuleImage>,
@@ -1441,17 +1465,13 @@ enum LinuxError {
 
 struct Controller<P: InspectionOps> {
     _lease: SessionLease,
-    executable: Arc<PathBuf>,
 
-    /// The path a launch runs, which may be a link to `executable`.
+    /// The program the inferior runs, which an exec may replace.
+    main: MainProgram,
+
+    /// The path a launch runs, which may be a link to the executable.
     launch_path: Arc<PathBuf>,
-    executable_identity: FileIdentity,
-
-    /// The C library the executable runs on, whose structures locate TLS.
-    c_library: CLibrary,
     expected_process_start_time: Option<u64>,
-    module_image: Arc<ModuleImage>,
-    unwind_info: Arc<dyn UnwindInfo>,
     modules: BTreeMap<crate::ModuleId, RuntimeModule>,
 
     /// Where loaded modules' separate debug files are found.
@@ -1613,14 +1633,17 @@ impl<P: InspectionOps> Controller<P> {
 
         Self {
             _lease: lease,
-            executable: executable.display_path,
+            main: MainProgram {
+                id: main.loaded.id,
+                executable: executable.display_path,
+                identity: executable.identity,
+                c_library: executable.c_library,
+                image: module_image,
+                unwind: unwind_info,
+            },
             launch_path: executable.launch_path,
-            c_library: executable.c_library,
-            executable_identity: executable.identity,
             expected_process_start_time: executable.process_start_time,
             debug_files: executable.debug_files,
-            module_image,
-            unwind_info,
             modules: BTreeMap::from([(main.loaded.id, main)]),
             mapped_modules: BTreeMap::new(),
             next_module_id: 1,

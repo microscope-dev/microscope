@@ -35,7 +35,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let Some(address) = self
             .modules
             .values()
-            .filter(|module| module.loaded.id != crate::ModuleId::new(0))
+            .filter(|module| module.loaded.id != self.main.id)
             .find_map(|module| {
                 let symbol = module.image.symbol_named(LOADER_HOOK).ok()?;
                 module.loaded.virtual_address(symbol.address()).ok()

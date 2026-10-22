@@ -303,8 +303,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(statements);
         }
 
-        for function in self.module_image.coroutine_functions(coroutine.id) {
-            for instance in self.module_image.instances_for_function(function.id()) {
+        for function in self.main.image.coroutine_functions(coroutine.id) {
+            for instance in self.main.image.instances_for_function(function.id()) {
                 if matches!(instance.kind(), CodeInstanceKind::Inline { .. }) {
                     statements.extend(self.body_statements(instance.id())?);
                 }

@@ -151,7 +151,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
 
             let image_address = inferior.loaded_module.image_address(current.instruction)?;
-            let location = self.module_image.locate(image_address);
+            let location = self.main.image.locate(image_address);
             let InlineFrameLookup::Unique(chain) = &location.inline_frames else {
                 return Err(Error::AmbiguousInlineFrame);
             };
@@ -1828,7 +1828,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
         statements_in(
             inferior.loaded_module,
-            &self.module_image,
+            &self.main.image,
             instance_id,
             except,
         )
@@ -1842,7 +1842,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         pid: Pid,
         registers: &libc::user_regs_struct,
     ) -> Result<Option<(VirtualAddress, StackPosition)>> {
-        let mut decoder = decoder_for(self.module_image.target(), AssemblySyntax::Intel)?;
+        let mut decoder = decoder_for(self.main.image.target(), AssemblySyntax::Intel)?;
         let read = read_logical_memory(
             &self.ptrace,
             pid,
@@ -1895,7 +1895,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             ));
         };
 
-        let location = self.module_image.locate(address);
+        let location = self.main.image.locate(address);
         let code_instance = match &resolved.presented {
             PresentedFrame::Inline(instance) => Some(*instance),
             PresentedFrame::Physical => location.physical_instance,
@@ -2001,8 +2001,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             .loaded_module
             .image_address(address)
             .ok()
-            .filter(|address| self.module_image.contains_address(*address))
-            .map(|address| self.module_image.locate(address)))
+            .filter(|address| self.main.image.contains_address(*address))
+            .map(|address| self.main.image.locate(address)))
     }
 
     /// Where a live `activation` runs, in whichever module holds it, or
@@ -2151,7 +2151,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     pub(super) fn image_location(&self, address: VirtualAddress) -> Option<ImageLocation> {
         let inferior = self.inferior.as_ref()?;
         let image = inferior.loaded_module.image_address(address).ok()?;
-        Some(self.module_image.locate(image))
+        Some(self.main.image.locate(image))
     }
 
     /// Where `address` is in whichever loaded module's image holds it, as

@@ -76,13 +76,13 @@ impl<P: InspectionOps> Controller<P> {
             .image_address(instruction)
             .ok()
             .filter(|address| {
-                !inferior.exec_unsupported && self.module_image.contains_address(*address)
+                !inferior.exec_unsupported && self.main.image.contains_address(*address)
             })
         else {
             return Ok(physical());
         };
 
-        let location = self.module_image.locate(image_address);
+        let location = self.main.image.locate(image_address);
         let chain = match &location.inline_frames {
             InlineFrameLookup::Unique(chain) => chain,
             InlineFrameLookup::Ambiguous(chains) => {
@@ -137,7 +137,7 @@ impl<P: InspectionOps> Controller<P> {
         };
 
         let visible = default_inline_visible_count(
-            &self.module_image,
+            &self.main.image,
             chain.instances.as_ref(),
             image_address,
             reveal_new_inline,
@@ -215,7 +215,7 @@ impl<P: InspectionOps> Controller<P> {
         // The stop presentation describes inline frames of the main image only.
         if module.loaded.id == inferior.loaded_module.id {
             let presentation = self.presentation_for_stopped_thread(pid)?;
-            apply_presentation(&self.module_image, &mut image, &presentation)?;
+            apply_presentation(&self.main.image, &mut image, &presentation)?;
         }
 
         Ok(ExecutionLocation {
@@ -759,8 +759,8 @@ impl<P: InspectionOps> Controller<P> {
     pub(super) fn unwind_modules<'a>(&'a self, inferior: &Inferior) -> Vec<UnwindModule<'a>> {
         let main = UnwindModule {
             loaded: inferior.loaded_module,
-            image: &self.module_image,
-            unwind: self.unwind_info.as_ref(),
+            image: &self.main.image,
+            unwind: self.main.unwind.as_ref(),
         };
 
         std::iter::once(main)

@@ -1297,7 +1297,7 @@ mod tests {
     fn detach_cancels_a_pending_source_but_preserves_unconfirmed_consumption() {
         for consumed in [false, true] {
             let mut harness = watch_harness(1);
-            let image = Arc::clone(&harness.controller.module_image);
+            let image = Arc::clone(&harness.controller.main.image);
             harness
                 .controller
                 .runtime_models
@@ -1452,7 +1452,7 @@ mod tests {
     fn scripted_agent(harness: &super::super::tests::WatchHarness, agent: Agent) -> BoundRuntime {
         let mut model = ScriptedRuntime::default();
         model.agent = Some(Arc::new(agent));
-        let image = Arc::clone(&harness.controller.module_image);
+        let image = Arc::clone(&harness.controller.main.image);
         harness
             .controller
             .runtime_models
@@ -1616,7 +1616,7 @@ mod tests {
                 process_scope: false,
                 calls: Arc::clone(&calls),
             }));
-            let image = Arc::clone(&harness.controller.module_image);
+            let image = Arc::clone(&harness.controller.main.image);
             harness
                 .controller
                 .runtime_models
@@ -1761,7 +1761,7 @@ mod tests {
             process_scope: false,
             calls,
         }));
-        let image = Arc::clone(&harness.controller.module_image);
+        let image = Arc::clone(&harness.controller.main.image);
         harness
             .controller
             .runtime_models
@@ -1821,7 +1821,7 @@ mod tests {
     fn failed_native_publication_does_not_invent_an_outstanding_sequence() {
         for successful_words in 0..=3 {
             let mut harness = watch_harness(1);
-            let image = Arc::clone(&harness.controller.module_image);
+            let image = Arc::clone(&harness.controller.main.image);
             harness
                 .controller
                 .runtime_models

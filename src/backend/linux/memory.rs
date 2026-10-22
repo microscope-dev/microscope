@@ -50,7 +50,7 @@ impl<P: InspectionOps> Controller<P> {
         Ok(MemoryRead {
             revision: self.revision,
             stop_id,
-            target: self.module_image.target(),
+            target: self.main.image.target(),
             address,
             requested: byte_count,
             bytes: read.bytes.into(),

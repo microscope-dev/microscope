@@ -108,7 +108,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         activation: Option<Activation>,
         plan: &mut BTreeSet<VirtualAddress>,
     ) -> Result<Option<StepLoops>> {
-        let image = &self.module_image;
+        let image = &self.main.image;
         let (Some(instance), Some(activation)) = (
             code_instance.and_then(|instance| image.code_instance(instance)),
             activation,
@@ -215,11 +215,11 @@ impl<P: LinuxTraceOps> Controller<P> {
             if level > 0
                 && frame_lookup_address(level, &context)
                     .and_then(|address| inferior.loaded_module.image_address(address).ok())
-                    .filter(|address| self.module_image.contains_address(*address))
+                    .filter(|address| self.main.image.contains_address(*address))
                     .is_some_and(|address| {
                         runs_function(
-                            &self.module_image,
-                            &self.module_image.locate(address),
+                            &self.main.image,
+                            &self.main.image.locate(address),
                             enclosing,
                         )
                     })
@@ -349,7 +349,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         // activation runs it.
         let ours = self
             .location_for_activation(pid, &registers, loops.activation)?
-            .is_some_and(|location| runs_function(&self.module_image, &location, loops.enclosing));
+            .is_some_and(|location| runs_function(&self.main.image, &location, loops.enclosing));
         if !ours {
             return Ok(LoopReach::Pass);
         }
@@ -414,7 +414,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(());
         };
 
-        let elsewhere = innermost_function(&self.module_image, &location).is_some_and(|function| {
+        let elsewhere = innermost_function(&self.main.image, &location).is_some_and(|function| {
             !loops.bodies.contains(&function) && function != loops.enclosing
         });
         if elsewhere && let Some(start) = self.active_step_mut() {
@@ -438,7 +438,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return BTreeSet::new();
         };
 
-        let image = &self.module_image;
+        let image = &self.main.image;
         image
             .line_entries_in(instance)
             .filter(|line| line.statement)
@@ -462,7 +462,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             return BTreeSet::new();
         };
 
-        self.module_image
+        self.main
+            .image
             .instances_for_function(function)
             .filter(|instance| matches!(instance.kind(), CodeInstanceKind::OutOfLine))
             .filter_map(crate::image::functions::CodeInstance::breakpoint_entry)

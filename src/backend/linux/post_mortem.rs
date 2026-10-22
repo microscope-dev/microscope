@@ -944,7 +944,7 @@ impl Controller<CoreTarget> {
         // loader's state leaves the TLS they name explicitly unavailable instead
         // of failing.
         let link_maps =
-            loader_link_maps(&self.ptrace, selected, &self.module_image, main).unwrap_or_default();
+            loader_link_maps(&self.ptrace, selected, &self.main.image, main).unwrap_or_default();
 
         let main_module = self
             .modules

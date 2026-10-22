@@ -354,11 +354,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         // Whether a module knows the spec but has no code for it yet, as
         // one whose indirect function's resolver has yet to choose.
         let mut known = false;
-        let main = (crate::ModuleId::new(0), &*self.module_image, None);
+        let main = (self.main.id, &*self.main.image, None);
         let libraries = self
             .modules
             .values()
-            .filter(|module| module.loaded.id != crate::ModuleId::new(0))
+            .filter(|module| module.loaded.id != self.main.id)
             .map(|module| {
                 (
                     module.loaded.id,
@@ -465,7 +465,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Whether the program or a loaded module imports a function of the
     /// name.
     fn imports_function(&self, name: &str) -> bool {
-        self.module_image.imports_function(name)
+        self.main.image.imports_function(name)
             || self
                 .modules
                 .values()

@@ -383,7 +383,7 @@ impl<'a, P: InspectionOps> Callers<'a, P> {
     /// functions' place. Untyped symbols count: assembly often leaves
     /// functions so.
     fn defined_elsewhere(&self, module: ModuleId, name: &str) -> bool {
-        module != ModuleId::new(0)
+        module != self.controller.main.id
             && self.controller.modules.values().any(|other| {
                 other.loaded.id != module
                     && other.image.symbols_named(name).any(|symbol| {

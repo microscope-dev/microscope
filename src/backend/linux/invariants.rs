@@ -6,7 +6,6 @@
 use std::collections::BTreeSet;
 
 use super::{BreakpointOwner, Controller, Inferior, NativeThreadState, debug_thread_id};
-use crate::ModuleId;
 use crate::backend::linux::native::InspectionOps;
 
 /// The state size up to which every message is followed by a check.
@@ -116,10 +115,11 @@ impl<P: InspectionOps> Controller<P> {
 
         debug_assert!(
             self.modules
-                .get(&ModuleId::new(0))
-                .is_some_and(|main| main.loaded.image == self.module_image.id()),
-            "module 0 is not the executable's image {:?}",
-            self.module_image.id()
+                .get(&self.main.id)
+                .is_some_and(|main| main.loaded.image == self.main.image.id()),
+            "main module {:?} is not the executable's image {:?}",
+            self.main.id,
+            self.main.image.id()
         );
     }
 

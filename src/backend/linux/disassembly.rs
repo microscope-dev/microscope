@@ -35,7 +35,7 @@ impl<P: InspectionOps> Controller<P> {
             return Err(Error::InvalidDisassemblyWindow { before, after });
         }
 
-        let target = self.module_image.target();
+        let target = self.main.image.target();
         let mut decoder = decoder_for(target, query.syntax)?;
         let modules = self.unwind_modules(inferior);
         let native = self.ptrace.registers(pid)?;
