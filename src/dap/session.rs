@@ -1621,6 +1621,17 @@ impl Session {
                     ))
                     .await?;
             }
+            DebuggerEvent::ChildReleased {
+                process_id, child, ..
+            } => {
+                self.client
+                    .console(crate::cli::format::child_released(
+                        process_id,
+                        child,
+                        crate::cli::terminal::Renderer::new(false),
+                    ))
+                    .await?;
+            }
             DebuggerEvent::BreakpointsChanged { .. } => self.sync_breakpoints().await?,
             DebuggerEvent::LogMessage { parts, .. } => {
                 self.client

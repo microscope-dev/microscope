@@ -137,6 +137,41 @@ async fn a_vfork_child_runs_breakpointed_code_untraced_and_the_parent_still_stop
     scenario.shutdown().await;
 }
 
+/// A vfork child is never held for another session, even while held
+/// children are wanted: its parent stays blocked in `vfork` until the child
+/// execs or exits, and a session of its own would plant traps in memory the
+/// parent shares. It runs on untraced, as without holding, and the parent
+/// still stops with the child's status.
+#[tokio::test]
+async fn a_vfork_child_runs_on_while_forks_are_held() {
+    let mut scenario = Scenario::launch("vfork");
+    let mut held = scenario
+        .operation("hold forks", scenario.handle().hold_forks())
+        .await;
+
+    scenario.add_breakpoint("child_work").await;
+    assert!(matches!(
+        scenario.run_to_stop().await,
+        StopReason::Breakpoint { .. }
+    ));
+    assert_eq!(
+        support::evaluate_value(&scenario, "code").await.signed(),
+        7,
+        "the vfork child ran untraced and exited"
+    );
+
+    assert_eq!(
+        scenario.resume_to_stop().await,
+        StopReason::Exited(ExitStatus::Code(0))
+    );
+    assert!(
+        held.try_recv().is_err(),
+        "no vfork child, of vfork or of system, was held"
+    );
+
+    scenario.shutdown().await;
+}
+
 /// `system` vforks, and its child execs `/bin/sh` under the parent's memory.
 /// A trap in `execve`, which that child calls, must not kill it: the program
 /// exits 0 only when the shell's status is a clean exit.

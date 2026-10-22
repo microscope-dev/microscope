@@ -2943,6 +2943,20 @@ pub fn signal_received(
     )
 }
 
+/// The line for a process the inferior started that runs without the
+/// debugger.
+pub fn child_released(
+    parent: microscope::ProcessId,
+    child: microscope::ProcessId,
+    renderer: Renderer,
+) -> String {
+    format!(
+        "process {} started process {}, which runs without microscope",
+        renderer.paint(Role::Metadata, parent),
+        renderer.paint(Role::Metadata, child),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::elide_arguments;

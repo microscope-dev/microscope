@@ -877,6 +877,17 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
+    /// Settles a vfork child as [`Self::track_fork_child`] does a fork
+    /// child, except that it is always released. It inherits no traps of
+    /// its own: they are lifted from the memory it shares.
+    fn track_vfork_child(&mut self, child: Pid) {
+        if let Some(inferior) = self.inferior.as_mut() {
+            inferior.vfork_children.insert(child);
+        }
+
+        self.track_fork_child(child, Vec::new());
+    }
+
     /// Releases a stopped fork child of the inferior, or holds it for
     /// another session, after removing the breakpoints it inherited,
     /// `sites`, which would otherwise kill it with SIGTRAP once untraced.
@@ -887,7 +898,11 @@ impl<P: LinuxTraceOps> Controller<P> {
             return;
         };
 
-        if !self.scrub_and_settle(parent, child, sites)
+        let holdable = self
+            .inferior
+            .as_mut()
+            .is_some_and(|inferior| !inferior.vfork_children.remove(&child));
+        if !self.scrub_and_settle(parent, child, sites, holdable)
             && let Some(inferior) = self.inferior.as_mut()
         {
             inferior.killed_children.insert(child);
@@ -896,8 +911,8 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     /// Restores the bytes the traps in `sites` replaced in a stopped fork
     /// child of `parent`, then releases it, or holds it while a receiver of
-    /// held children is open. A shutdown releases every child: no client is
-    /// left to take one. A child that cannot be scrubbed is killed rather than
+    /// held children is open and the child is `holdable`: a vfork child is
+    /// not. A shutdown releases every child: no client is left to take one. A child that cannot be scrubbed is killed rather than
     /// released with traps in place. Returns whether it was detached; one
     /// that was not stays traced until it exits.
     pub(super) fn scrub_and_settle(
@@ -905,8 +920,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         parent: Pid,
         child: Pid,
         sites: &[(VirtualAddress, u8)],
+        holdable: bool,
     ) -> bool {
-        let hold = !self.shutting_down
+        let hold = holdable
+            && !self.shutting_down
             && self
                 .held_children
                 .as_ref()
@@ -919,10 +936,21 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
         });
 
-        settled.unwrap_or_else(|_| {
+        let Ok(detached) = settled else {
             let _ = self.ptrace.kill(child, Signal::SIGKILL);
-            false
-        })
+            return false;
+        };
+
+        // A held child is reported to its receiver instead.
+        if detached && !hold {
+            let _ = self.events.send(DebuggerEvent::ChildReleased {
+                revision: self.revision,
+                process_id: process_id(parent),
+                child: process_id(child),
+            });
+        }
+
+        detached
     }
 
     /// Detaches a scrubbed fork child of `parent` stopped, for another
@@ -1042,7 +1070,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 let parent = orphans.parent;
                 let sites = orphans.children.remove(&pid);
                 if let Some(sites) = sites
-                    && !self.scrub_and_settle(parent, pid, &sites)
+                    && !self.scrub_and_settle(parent, pid, &sites, true)
                     && let Some(orphans) = self.orphans.as_mut()
                 {
                     orphans.killed.insert(pid);
@@ -1635,6 +1663,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 let retired = inferior.retired_threads.remove(&pid);
                 let killed = inferior.killed_children.remove(&pid);
                 let forked = inferior.fork_children.remove(&pid).is_some();
+                inferior.vfork_children.remove(&pid);
 
                 if !(retired || killed || forked) {
                     inferior.vanished_threads.insert(pid);
@@ -1673,6 +1702,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         let stopped = std::mem::take(&mut inferior.unowned_stops);
         let pending = std::mem::take(&mut inferior.fork_children);
         let sites = inferior.inherited_sites();
+
+        // Their parent is gone, so a vfork child no longer blocks it, and
+        // an orphan is settled as any other.
+        inferior.vfork_children.clear();
 
         for &pid in stopped.keys() {
             self.settle_fork_child(pid, &sites);
@@ -2023,7 +2056,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 },
             );
 
-            self.track_fork_child(window.child, Vec::new());
+            self.track_vfork_child(window.child);
             self.continue_thread(parent)?;
         }
 
@@ -2043,7 +2076,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         inferior.thread_mut(parent)?.state = NativeThreadState::Stopped;
         lift_all_traps(&self.ptrace, inferior)?;
-        self.track_fork_child(child, Vec::new());
+        self.track_vfork_child(child);
         Ok(())
     }
 

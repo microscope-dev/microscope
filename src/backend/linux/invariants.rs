@@ -340,6 +340,13 @@ impl Inferior {
             }
         }
 
+        for pid in &self.vfork_children {
+            debug_assert!(
+                self.fork_children.contains_key(pid),
+                "vfork child {pid} is marked but no longer awaits its first stop"
+            );
+        }
+
         for pid in self.fork_children.keys() {
             debug_assert!(
                 !self.killed_children.contains(pid),

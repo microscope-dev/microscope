@@ -942,6 +942,7 @@ async fn synchronous_faults_are_retained_and_delivered() {
 #[tokio::test]
 async fn forked_children_are_released_without_inherited_breakpoints() {
     let mut scenario = Scenario::launch("fork");
+    let mut events = scenario.handle().subscribe();
     scenario.add_breakpoint("shared_work").await;
     assert!(matches!(
         scenario.run_to_stop().await,
@@ -954,6 +955,26 @@ async fn forked_children_are_released_without_inherited_breakpoints() {
     assert_eq!(
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
+    );
+
+    // The child was let go, and said so once, naming its parent.
+    let mut launched = None;
+    let mut released = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        match event {
+            microscope::DebuggerEvent::InferiorLaunched { process_id, .. } => {
+                launched = Some(process_id);
+            }
+            microscope::DebuggerEvent::ChildReleased {
+                process_id, child, ..
+            } => released.push((process_id, child)),
+            _ => {}
+        }
+    }
+    let parent = launched.expect("the launch was reported");
+    assert!(
+        matches!(released.as_slice(), [(from, child)] if *from == parent && *child != parent),
+        "one released child of {parent:?}, got {released:?}"
     );
 
     scenario.shutdown().await;

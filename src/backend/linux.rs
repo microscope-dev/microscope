@@ -1014,6 +1014,11 @@ struct Inferior {
     /// breakpoint sites each inherited.
     fork_children: BTreeMap<Pid, Vec<(VirtualAddress, u8)>>,
 
+    /// Vfork children not yet settled. Each shares its parent's memory and
+    /// blocks it until the child execs or exits, so it is always released,
+    /// never held for another session.
+    vfork_children: BTreeSet<Pid>,
+
     /// Fork children killed, or found dying, as they were released, whose
     /// exits are still due: another process's exit may follow the leader's.
     killed_children: BTreeSet<Pid>,
@@ -1122,6 +1127,7 @@ impl Inferior {
             unseized_threads: BTreeSet::new(),
             former_sites: BTreeMap::new(),
             fork_children: BTreeMap::new(),
+            vfork_children: BTreeSet::new(),
             killed_children: BTreeSet::new(),
             vfork_windows: BTreeMap::new(),
             traps_lifted: false,

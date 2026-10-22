@@ -2045,6 +2045,15 @@ fn observe(describer: &mut Describer, outlet: &Outlet, event: &DebuggerEvent) {
                 &(format::signal_received(*thread_id, exception, Renderer::new(false)) + "\n"),
             );
         }
+
+        DebuggerEvent::ChildReleased {
+            process_id, child, ..
+        } => {
+            outlet.publish(
+                Stream::Log,
+                &(format::child_released(*process_id, *child, Renderer::new(false)) + "\n"),
+            );
+        }
         _ => {}
     }
 }

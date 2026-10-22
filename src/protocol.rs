@@ -2016,6 +2016,15 @@ pub enum DebuggerEvent {
         process_id: ProcessId,
     },
 
+    /// A process the inferior started, `child`, was let go as it forked:
+    /// it runs without the debugger, with the inferior's breakpoints
+    /// removed from it.
+    ChildReleased {
+        revision: u64,
+        process_id: ProcessId,
+        child: ProcessId,
+    },
+
     /// A thread received a signal whose policy neither stops nor discards
     /// its report: it was delivered or discarded and the thread ran on.
     SignalReceived {
@@ -2073,6 +2082,7 @@ impl DebuggerEvent {
             | Self::InferiorStopped { revision, .. }
             | Self::ThreadStarted { revision, .. }
             | Self::ThreadExited { revision, .. }
+            | Self::ChildReleased { revision, .. }
             | Self::ModuleLoaded { revision, .. }
             | Self::ModuleUnloaded { revision, .. }
             | Self::InferiorExited { revision, .. }

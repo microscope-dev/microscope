@@ -1887,6 +1887,9 @@ impl Cli {
                 ..
             }) => lines.push(format::signal_received(thread_id, &exception, renderer)),
             Ok(DebuggerEvent::LogMessage { parts, .. }) => lines.push(format::log_message(&parts)),
+            Ok(DebuggerEvent::ChildReleased {
+                process_id, child, ..
+            }) => lines.push(format::child_released(process_id, child, renderer)),
             Ok(DebuggerEvent::ConditionFailed { owner, error, .. }) => lines.push(format!(
                 "{}: the condition of {} could not be evaluated: {error}",
                 renderer.paint(Role::Warning, "warning"),
