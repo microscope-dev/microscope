@@ -28,11 +28,18 @@ static void handler(int signal) {
 int main(void) {
     int signals[] = {SIGUSR1, SIGALRM, SIGURG, SIGCHLD, SIGWINCH, SIGRTMIN + 1};
     struct sigaction action = {.sa_handler = handler};
+    sigset_t unblocked;
     sigemptyset(&action.sa_mask);
+    sigemptyset(&unblocked);
     for (size_t index = 0; index < sizeof signals / sizeof signals[0]; ++index) {
-        if (sigaction(signals[index], &action, NULL) != 0) {
+        if (sigaction(signals[index], &action, NULL) != 0 ||
+            sigaddset(&unblocked, signals[index]) != 0) {
             return 100;
         }
+    }
+    // An inherited mask must not keep the fixture's signals pending.
+    if (sigprocmask(SIG_UNBLOCK, &unblocked, NULL) != 0) {
+        return 100;
     }
     raise(SIGUSR1);
     raise(SIGALRM);

@@ -5202,6 +5202,17 @@ fn registers_show_the_selected_frames_own_values() {
 }
 
 #[test]
+fn signal_policy_fixture_unblocks_inherited_signals() {
+    let output = Command::new("env")
+        .arg("--block-signal=USR1")
+        .arg(fixture("build/test-programs/signal-policy"))
+        .stdin(Stdio::null())
+        .output()
+        .expect("run the signal-policy fixture with SIGUSR1 blocked");
+    assert_eq!(output.status.code(), Some(63), "{output:?}");
+}
+
+#[test]
 fn handle_shows_and_changes_signal_policies_like_gdb() {
     let stdout = batch(
         &["build/test-programs/signal-policy"],
