@@ -44,7 +44,7 @@ pub(super) async fn launch(
         ErrorBody::shown(format!("failed to launch {}: {error}", program.display()))
     };
 
-    let socket = LauncherSocket::bind().map_err(|error| failed(&error))?;
+    let socket = PrivateSocket::bind("launcher").map_err(|error| failed(&error))?;
     let adapter = std::env::current_exe().map_err(|error| failed(&error))?;
     let mut args = vec![
         adapter.display().to_string(),
@@ -91,7 +91,7 @@ pub(super) async fn launch(
         )));
     }
 
-    let (mut launcher, process) = tokio::time::timeout(LAUNCHER_TIMEOUT, socket.accept())
+    let (mut launcher, process) = tokio::time::timeout(LAUNCHER_TIMEOUT, socket.accept_process())
         .await
         .map_err(|_| {
             failed(&format!(
@@ -110,15 +110,16 @@ pub(super) async fn launch(
         .map_err(|error| failed(&error))
 }
 
-/// The socket a launcher connects to, in a directory only this user can
-/// enter, removed when dropped.
-struct LauncherSocket {
+/// A socket in a directory only this user can enter, removed when dropped:
+/// what a launcher, or a group member's session, connects to.
+pub(super) struct PrivateSocket {
     directory: PathBuf,
-    listener: UnixListener,
+    name: &'static str,
+    pub(super) listener: UnixListener,
 }
 
-impl LauncherSocket {
-    fn bind() -> io::Result<Self> {
+impl PrivateSocket {
+    pub(super) fn bind(name: &'static str) -> io::Result<Self> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let base = std::env::temp_dir();
 
@@ -139,19 +140,20 @@ impl LauncherSocket {
         };
 
         let socket = Self {
-            listener: UnixListener::bind(directory.join("launcher"))?,
+            listener: UnixListener::bind(directory.join(name))?,
             directory,
+            name,
         };
 
         Ok(socket)
     }
 
-    fn path(&self) -> PathBuf {
-        self.directory.join("launcher")
+    pub(super) fn path(&self) -> PathBuf {
+        self.directory.join(self.name)
     }
 
     /// Accepts the launcher's connection, returning it and its process.
-    async fn accept(&self) -> io::Result<(std::os::unix::net::UnixStream, ProcessId)> {
+    async fn accept_process(&self) -> io::Result<(std::os::unix::net::UnixStream, ProcessId)> {
         let (stream, _) = self.listener.accept().await?;
         let process = stream
             .peer_cred()?
@@ -164,7 +166,7 @@ impl LauncherSocket {
     }
 }
 
-impl Drop for LauncherSocket {
+impl Drop for PrivateSocket {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.directory);
     }

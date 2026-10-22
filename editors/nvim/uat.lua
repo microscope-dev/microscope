@@ -143,17 +143,23 @@ event('terminated')
 local lines = table.concat(vim.api.nvim_buf_get_lines(terminal, 0, -1, false), '\n')
 expect(lines:find('argument 1: one', 1, true) ~= nil, 'the terminal shows the output: ' .. lines)
 
--- With followForks, nvim-dap starts a child session for a forked process at
--- the adapter's request. The child stops at the breakpoint after its fork,
--- having run nothing untraced, and each session ends as its process does.
-dap.adapters.microscope = function(callback, config, parent)
-  local name = parent and (parent.config.name .. '.child') or config.name
-  callback({ type = 'executable', command = 'microscope', args = { 'dap', '--log', record .. '/' .. name .. '.log' } })
+-- With follow, nvim-dap starts a session for a forked process at the
+-- adapter's request, which the adapter function relays back to the same
+-- adapter with microscope dap --connect, as docs/editors.md shows. The child stops at the breakpoint after
+-- its fork, having run nothing untraced, and each session ends as its process
+-- does. Process stops keep the two stops independent of which comes first.
+dap.adapters.microscope = function(callback, config)
+  local member = config.__microscopeMember
+  if member then
+    callback({ type = 'executable', command = 'microscope', args = { 'dap', '--connect', member.socket } })
+  else
+    callback({ type = 'executable', command = 'microscope', args = { 'dap', '--log', record .. '/' .. config.name .. '.log' } })
+  end
 end
 breakpoint(source('fork.c'), 'work_done += 1;')
 dap.run({
   type = 'microscope', request = 'launch', name = 'nvim-fork', program = fixture('fork'), cwd = root,
-  followForks = true,
+  follow = { mode = 'all', stop = 'process' },
 })
 local stops = {}
 for _ = 1, 2 do

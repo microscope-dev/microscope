@@ -5,10 +5,11 @@ use serde_json::{Value, json};
 use crate::dap::{Configuration, Dap, Profile, Stopped, breakpoints, fixture};
 
 fn stopped_in(dap: &mut Dap, program: &str, function: &str) -> (Stopped, Value) {
+    // The fixture's forked writer is the program's own business.
     let started = dap.launch(
         Profile::VsCode,
         &fixture(program),
-        json!({}),
+        json!({"follow": "none"}),
         &Configuration {
             functions: vec![function.to_owned()],
             ..Configuration::default()

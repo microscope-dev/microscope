@@ -12,9 +12,10 @@ use std::sync::{Arc, Mutex};
 
 use microscope::{
     Backtrace, BreakpointSpec, Debugger, DebuggerEvent, DebuggerHandle, Error,
-    ExceptionDisposition, ExecutionContext, ExitStatus, HeldProcess, InferiorState, LaunchOptions,
-    LineNumber, ModuleId, ModuleImage, ProcessId, ResumeScope, SignalPolicy, StackFrameId,
-    StepKind, StopContext, StopId, StopReason, ThreadId, VariableSnapshot, VirtualAddress,
+    ExceptionDisposition, ExecutionContext, ExitStatus, GroupEvent, GroupHandle, InferiorState,
+    LaunchOptions, LineNumber, MemberNumber, ModuleId, ModuleImage, ProcessGroup, ProcessId,
+    ResumeScope, SignalPolicy, StackFrameId, StepKind, StopContext, StopId, StopReason, ThreadId,
+    VariableSnapshot, VirtualAddress,
 };
 use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -251,9 +252,57 @@ impl ClientSupport {
     };
 }
 
+/// What a session's debugger belongs to, and so what ending it ends.
+enum Owner {
+    /// A core dump's debugger.
+    Single(Debugger),
+
+    /// The group the session launched or attached, whose root it shows,
+    /// with the socket its members' sessions connect to.
+    Group {
+        group: ProcessGroup,
+        routes: Option<super::group::Routes>,
+    },
+
+    /// A member of a group another session of this adapter hosts.
+    Member(GroupHandle),
+
+    /// Nothing, once the session ended it.
+    Ended,
+}
+
+impl Owner {
+    /// The group the session's process belongs to, if it is one's.
+    fn group(&self) -> Option<&GroupHandle> {
+        match self {
+            Self::Group { group, .. } => Some(group),
+            Self::Member(group) => Some(group),
+            Self::Single(_) | Self::Ended => None,
+        }
+    }
+
+    /// Ends what the session owns: a group's members' sessions first, then
+    /// its processes, as [`ProcessGroup::shutdown`] ends them.
+    async fn end(&mut self) -> microscope::Result<()> {
+        match std::mem::replace(self, Self::Ended) {
+            Self::Single(debugger) => debugger.shutdown().await,
+            Self::Group { group, routes } => {
+                if let Some(routes) = routes {
+                    routes.close().await;
+                }
+                group.shutdown().await
+            }
+            Self::Member(_) | Self::Ended => Ok(()),
+        }
+    }
+}
+
 /// The program being debugged.
+/// A member no session shows, and why.
+type Unshown = (MemberNumber, String);
+
 struct Target {
-    debugger: Option<Debugger>,
+    owner: Owner,
     handle: DebuggerHandle,
     start: Start,
     stop_on_entry: bool,
@@ -326,11 +375,26 @@ pub struct Session {
     target: Option<Target>,
     events: Option<broadcast::Receiver<DebuggerEvent>>,
 
-    /// The processes the program forked, held for child sessions.
-    held: Option<microscope::HeldChildren>,
+    /// The group this session's adapter hosts and this session shows a
+    /// member of, when the client connected it to the group's socket.
+    route: Option<super::group::Route>,
+    log: super::Log,
 
-    /// The requests for child sessions still waiting for the client.
+    /// What the group whose root this session shows reports.
+    group_events: Option<broadcast::Receiver<GroupEvent>>,
+
+    /// The requests for members' sessions still waiting for the client.
     follows: Vec<JoinHandle<()>>,
+
+    /// Members whose sessions the client did not start, with why, as the
+    /// requests for them learn it.
+    unshown: (
+        mpsc::UnboundedSender<Unshown>,
+        mpsc::UnboundedReceiver<Unshown>,
+    ),
+
+    /// The members no session shows.
+    hidden: BTreeSet<MemberNumber>,
     pub(super) breakpoints: Breakpoints,
     pub(super) data: super::watch::Data,
     exceptions: Selection,
@@ -384,8 +448,12 @@ impl Session {
             starting: None,
             target: None,
             events: None,
-            held: None,
+            route: None,
+            log: super::Log::default(),
+            group_events: None,
             follows: Vec::new(),
+            unshown: mpsc::unbounded_channel(),
+            hidden: BTreeSet::new(),
             breakpoints: Breakpoints::default(),
             data: super::watch::Data::default(),
             exceptions: Selection::default(),
@@ -404,6 +472,14 @@ impl Session {
             queue: VecDeque::new(),
             ended: false,
         }
+    }
+
+    /// The session for a connection to a group's socket, which shows one of
+    /// `route`'s members, writing what it logs to `log`.
+    pub(super) fn serving(mut self, route: Option<super::group::Route>, log: super::Log) -> Self {
+        self.route = route;
+        self.log = log;
+        self
     }
 
     /// Serves the session until the client disconnects, the connection
@@ -428,19 +504,29 @@ impl Session {
                     biased;
                     () = &mut shutdown => None,
                     message = inbox.recv() => message.map(Input::Message),
-                    child = next_held(&mut self.held) => Some(Input::Held(child)),
                     event = next_event(&mut self.events) => Some(Input::Event(event)),
+                    event = next_group_event(&mut self.group_events) => Some(Input::Group(event)),
+                    Some(unshown) = self.unshown.1.recv() => Some(Input::Unshown(unshown)),
                 }
             };
 
             let result = match input {
                 None => break,
                 Some(Input::Message(message)) => self.message(message).await,
-                Some(Input::Held(Some(child))) => self.follow(child).await,
-                Some(Input::Held(None)) => {
-                    self.held = None;
+                Some(Input::Group(Ok(event))) => self.group_event(event).await,
+                Some(Input::Group(Err(broadcast::error::RecvError::Lagged(missed)))) => {
+                    self.client
+                        .important(format!(
+                            "missed {missed} events of the process group; processes may have \
+                             joined or ended unannounced"
+                        ))
+                        .await
+                }
+                Some(Input::Group(Err(broadcast::error::RecvError::Closed))) => {
+                    self.group_events = None;
                     Ok(())
                 }
+                Some(Input::Unshown((member, reason))) => self.unshown(member, reason).await,
                 Some(Input::Event(Ok(event))) => self.event(event).await,
                 Some(Input::Event(Err(broadcast::error::RecvError::Lagged(_)))) => {
                     self.resync().await
@@ -635,21 +721,36 @@ impl Session {
         let program = launch.program.clone();
         let title = format!("Loading {}", launch.program.display());
         let debug_files = configuration.debug_files.clone();
-        let debugger = self
+        let failed = |error: &dyn std::fmt::Display| {
+            ErrorBody::shown(format!(
+                "failed to load {}: {error}",
+                launch.program.display()
+            ))
+        };
+        let loaded = self
             .with_progress(
                 title,
-                tokio::task::spawn_blocking(move || Debugger::new_with(&program, &debug_files)),
+                tokio::task::spawn_blocking(move || {
+                    microscope::Program::load(&program, &debug_files)
+                }),
             )
             .await
             .map_err(|error| ErrorBody::shown(error.to_string()))?
-            .map_err(|error| {
-                ErrorBody::shown(format!(
-                    "failed to load {}: {error}",
-                    launch.program.display()
-                ))
-            })?;
+            .map_err(|error| failed(&error))?;
+        let group = ProcessGroup::new(loaded, configuration.follow.clone())
+            .map_err(|error| failed(&error))?;
+        let handle = group.root();
 
-        self.adopt(debugger, configuration, header).await
+        self.adopt(
+            Owner::Group {
+                group,
+                routes: None,
+            },
+            handle,
+            configuration,
+            header,
+        )
+        .await
     }
 
     async fn attach(
@@ -659,44 +760,37 @@ impl Session {
     ) -> Result<Option<Value>, ErrorBody> {
         self.check_unstarted()?;
         let configuration = config::attach(arguments).map_err(ErrorBody::shown)?;
-        let debugger = match &configuration.start {
+        let (owner, handle) = match &configuration.start {
+            Start::Attach {
+                member: Some(member),
+                ..
+            } => self.member(member)?,
             Start::Attach {
                 process,
                 executable,
-                held,
+                member: None,
             } => {
                 let process = *process;
-                let held = held.map(|start_time| HeldProcess {
-                    process_id: process,
-                    start_time,
-                });
-                let debug_files = &configuration.debug_files;
-                let attached = async {
-                    match held {
-                        Some(held) => {
-                            Debugger::attach_held_with(held, executable.as_deref(), debug_files)
-                                .await
-                        }
-                        None => {
-                            Debugger::attach_with(process, executable.as_deref(), debug_files).await
-                        }
-                    }
-                };
-
-                let attached = self
+                let attached = ProcessGroup::attach(
+                    process,
+                    executable.as_deref(),
+                    configuration.follow.clone(),
+                    &configuration.debug_files,
+                );
+                let group = self
                     .with_progress(format!("Attaching to process {process}"), attached)
-                    .await;
-
-                attached.map_err(|error| {
-                    // A held process this session cannot take runs on.
-                    let released = held.is_some_and(|held| {
-                        microscope::release_held(&held).is_ok_and(|released| released)
-                    });
-                    let released = if released { "; it runs on its own" } else { "" };
-                    ErrorBody::shown(format!(
-                        "failed to attach to process {process}: {error}{released}"
-                    ))
-                })?
+                    .await
+                    .map_err(|error| {
+                        ErrorBody::shown(format!("failed to attach to process {process}: {error}"))
+                    })?;
+                let handle = group.root();
+                (
+                    Owner::Group {
+                        group,
+                        routes: None,
+                    },
+                    handle,
+                )
             }
             Start::Core(options) => {
                 let core = options.core.display().to_string();
@@ -709,6 +803,10 @@ impl Session {
                 .map_err(|error| ErrorBody::shown(error.to_string()))?
                 .map_err(|error| {
                     ErrorBody::shown(format!("failed to open the core dump {core}: {error}"))
+                })
+                .map(|debugger| {
+                    let handle = debugger.handle();
+                    (Owner::Single(debugger), handle)
                 })?
             }
             Start::Launch(_) => {
@@ -718,7 +816,34 @@ impl Session {
             }
         };
 
-        self.adopt(debugger, configuration, header).await
+        self.adopt(owner, handle, configuration, header).await
+    }
+
+    /// The member of the group this adapter hosts that `member` names, for
+    /// a session the client connected to the group's socket.
+    fn member(&self, member: &config::MemberRoute) -> Result<(Owner, DebuggerHandle), ErrorBody> {
+        let Some(route) = self
+            .route
+            .as_ref()
+            .filter(|route| route.socket == member.socket)
+        else {
+            return Err(ErrorBody::shown(format!(
+                "this session shows process [{}] of a group the adapter at {} debugs, so the \
+                 client must connect it to that socket instead of starting an adapter for it, \
+                 as microscope's VS Code extension does, and as nvim-dap does with the adapter \
+                 function microscope's documentation gives",
+                member.number,
+                member.socket.display()
+            )));
+        };
+
+        let handle = route.group.member(member.number).ok_or_else(|| {
+            ErrorBody::shown(format!(
+                "process [{}] is no longer debugged in its group",
+                member.number
+            ))
+        })?;
+        Ok((Owner::Member(route.group.clone()), handle))
     }
 
     /// Reports slow work, such as loading debug information, to a client
@@ -762,7 +887,8 @@ impl Session {
     /// `launch` or `attach` response until configuration is done.
     async fn adopt(
         &mut self,
-        debugger: Debugger,
+        owner: Owner,
+        handle: DebuggerHandle,
         configuration: Configuration,
         header: &Header,
     ) -> Result<Option<Value>, ErrorBody> {
@@ -774,7 +900,7 @@ impl Session {
             signals,
             view_files,
             working_directory,
-            follow_forks,
+            follow: _,
             inherited,
             threads,
             debug_files: _,
@@ -782,7 +908,7 @@ impl Session {
         } = configuration;
         let launched = matches!(start, Start::Launch(_));
         let core = matches!(start, Start::Core(_));
-        let handle = debugger.handle().with_source_paths(source_paths.clone());
+        let handle = handle.with_source_paths(source_paths.clone());
         self.events = Some(handle.subscribe());
 
         // The console's commands read no settings files: an editor's
@@ -812,8 +938,11 @@ impl Session {
             handle.set_step_into_runtime(true).await.map_err(error)?;
         }
 
+        if let Owner::Group { group, .. } = &owner {
+            self.group_events = Some(group.subscribe());
+        }
         self.target = Some(Target {
-            debugger: Some(debugger),
+            owner,
             handle,
             start,
             stop_on_entry,
@@ -832,10 +961,6 @@ impl Session {
             inherited,
             threads,
         });
-        if follow_forks && !core {
-            self.hold_forks().await?;
-        }
-
         self.warn_debug_information().await?;
         self.load_views(working_directory, &view_files).await?;
         self.apply_signal_policies().await?;
@@ -864,27 +989,93 @@ impl Session {
         Ok(None)
     }
 
-    /// Holds the processes the program forks for child sessions, if the
-    /// client can start them; otherwise says that they run on their own.
-    async fn hold_forks(&mut self) -> Result<(), ErrorBody> {
-        if !self.support().start_debugging {
-            self.client
-                .important(
-                    "followForks: this client cannot start child sessions, so processes the \
-                     program forks run on their own",
-                )
-                .await?;
-            return Ok(());
+    /// Shows what the group whose root this session shows did: each member
+    /// that joins in a session of its own, and the processes it does not
+    /// debug, so that none disappears silently.
+    async fn group_event(&mut self, event: GroupEvent) -> Result<(), Closed> {
+        match event {
+            GroupEvent::MemberJoined { member, .. } => self.show_member(member).await,
+            GroupEvent::MemberWatched { member, program } => {
+                self.client
+                    .console(format!(
+                        "process [{member}] executed {}, which microscope watches until it runs \
+                         a program to debug",
+                        program.display()
+                    ))
+                    .await
+            }
+            GroupEvent::ProcessUnfollowed {
+                process,
+                program,
+                reason,
+            } => {
+                self.client
+                    .important(format!(
+                        "process {process} executed {}, which microscope cannot debug: {reason}",
+                        program.display()
+                    ))
+                    .await
+            }
+            GroupEvent::MemberLost { member } => {
+                self.client
+                    .important(format!(
+                        "the session of process [{member}] failed, and released it to run on \
+                         its own"
+                    ))
+                    .await
+            }
+            GroupEvent::GroupStopped { member, .. } if self.hidden.contains(&member) => {
+                self.client
+                    .important(format!(
+                        "process [{member}] stopped, which no session shows; continue to resume \
+                         it with the others"
+                    ))
+                    .await
+            }
+            GroupEvent::MemberExited { .. }
+            | GroupEvent::ProcessWatched { .. }
+            | GroupEvent::GroupStopped { .. }
+            | GroupEvent::MemberDetached { .. }
+            | GroupEvent::GroupExited => Ok(()),
         }
-
-        let handle = self.target_handle()?;
-        self.held = Some(handle.hold_forks().await.map_err(error)?);
-        Ok(())
     }
 
-    /// Asks the client to debug a forked process in a session of its own.
-    async fn follow(&mut self, child: microscope::HeldChild) -> Result<(), Closed> {
-        let Some(target) = self.target.as_ref() else {
+    /// Asks the client to show `number` in a session of its own, which it
+    /// connects to the group's socket.
+    async fn show_member(&mut self, number: MemberNumber) -> Result<(), Closed> {
+        let start_debugging = self.support().start_debugging;
+        let log = self.log.clone();
+        let Some(target) = self.target.as_mut() else {
+            return Ok(());
+        };
+        let Owner::Group { group, routes } = &mut target.owner else {
+            return Ok(());
+        };
+        let Some(member) = group
+            .members()
+            .into_iter()
+            .find(|member| member.number == number)
+        else {
+            return Ok(());
+        };
+
+        if !start_debugging {
+            return self
+                .unshown(number, "this client cannot start sessions".to_owned())
+                .await;
+        }
+
+        if routes.is_none() {
+            match super::group::Routes::open(group.handle(), log) {
+                Ok(opened) => *routes = Some(opened),
+                Err(error) => {
+                    return self
+                        .unshown(number, format!("its session has no socket: {error}"))
+                        .await;
+                }
+            }
+        }
+        let Some(routes) = routes.as_ref() else {
             return Ok(());
         };
 
@@ -892,22 +1083,28 @@ impl Session {
             || target.handle.executable().display().to_string(),
             |name| name.to_string_lossy().into_owned(),
         );
-        let arguments = super::forks::start_arguments(&target.inherited, &program, &child);
-        self.client
-            .console(format!(
-                "process {} forked process {}, which is debugged in a session of its own",
-                child.parent(),
-                child.process().process_id
-            ))
-            .await?;
+        let arguments = routes.start_arguments(&target.inherited, &program, &member);
+        let client = self.client.clone();
+        let unshown = self.unshown.0.clone();
         self.follows.retain(|follow| !follow.is_finished());
-        self.follows.push(tokio::spawn(super::forks::follow(
-            self.client.clone(),
-            arguments,
-            child,
-        )));
-
+        self.follows.push(tokio::spawn(async move {
+            if let Ok(Err(message)) = client.request("startDebugging", arguments).await {
+                let _ = unshown.send((number, format!("the client did not start it: {message}")));
+            }
+        }));
         Ok(())
+    }
+
+    /// Says a member is debugged but no session shows it.
+    async fn unshown(&mut self, member: MemberNumber, reason: String) -> Result<(), Closed> {
+        self.hidden.insert(member);
+        self.client
+            .important(format!(
+                "process [{member}] is debugged with the program, but no session shows it: \
+                 {reason}; set \"follow\" to \"none\" to let the processes the program starts \
+                 run on their own"
+            ))
+            .await
     }
 
     /// Presents values with the configuration's view files and the
@@ -1020,6 +1217,10 @@ impl Session {
 
         match &target.start {
             Start::Core(_) => self.stopped(stop_id, thread_id, reason).await?,
+            // The group runs and stops its members together.
+            Start::Attach { .. } if matches!(target.owner, Owner::Member(_)) => {
+                self.stopped(stop_id, thread_id, reason).await?;
+            }
             Start::Attach { .. } if target.stop_on_entry => {
                 self.stopped(stop_id, thread_id, StopReason::Entry).await?;
             }
@@ -1243,7 +1444,10 @@ impl Session {
         };
 
         let launched = matches!(target.start, Start::Launch(_));
-        if terminate.unwrap_or(launched)
+        // A member's session ends with its group, unless asked to end its
+        // process.
+        let member = matches!(target.owner, Owner::Member(_));
+        if terminate.unwrap_or(launched && !member)
             && target.process.is_some()
             && target.handle.core_dump().is_none()
             && let Err(error) = target.handle.kill().await
@@ -1254,12 +1458,7 @@ impl Session {
                 .await?;
         }
 
-        let shutdown = match target.debugger.take() {
-            Some(debugger) => debugger.shutdown().await,
-            None => Ok(()),
-        };
-
-        if let Err(error) = shutdown {
+        if let Err(error) = target.owner.end().await {
             self.client
                 .important(format!("the debugger did not shut down cleanly: {error}"))
                 .await?;
@@ -1307,18 +1506,15 @@ impl Session {
     /// its answer.
     async fn release(&mut self) {
         if let Some(target) = self.target.as_mut() {
-            if let Some(debugger) = target.debugger.take() {
-                let _ = debugger.shutdown().await;
-            }
-
+            let _ = target.owner.end().await;
             for pump in target.pumps.drain(..) {
                 pump.abort();
             }
         }
 
-        self.held = None;
+        // The client no longer answers for sessions it was asked to start.
         for follow in self.follows.drain(..) {
-            let _ = follow.await;
+            follow.abort();
         }
     }
 
@@ -1389,12 +1585,24 @@ impl Session {
         let stop = self.current_stop()?;
         let single = arguments.single_thread.unwrap_or(false);
         let scope = self.resume_scope(single, &arguments)?;
-        let handle = self.target_handle()?;
-        let execution = handle
-            .continue_execution(stop.id, scope, ExceptionDisposition::Pass)
-            .await
-            .map_err(error)?;
-        self.resumed = Some(execution);
+        let group = self
+            .target
+            .as_ref()
+            .and_then(|target| target.owner.group())
+            .filter(|group| !single && group.stops() == microscope::StopScope::Group)
+            .cloned();
+        if let Some(group) = group {
+            // Every member the group stopped resumes with this one; the
+            // client already shows each one's stop.
+            group.resume_all().await.map_err(error)?;
+        } else {
+            let handle = self.target_handle()?;
+            let execution = handle
+                .continue_execution(stop.id, scope, ExceptionDisposition::Pass)
+                .await
+                .map_err(error)?;
+            self.resumed = Some(execution);
+        }
         self.leave_stop();
         self.cancel_inspections();
 
@@ -1537,9 +1745,19 @@ impl Session {
     }
 
     async fn pause(&self) -> Result<Value, ErrorBody> {
-        let handle = self.target_handle()?;
-        match handle.pause().await {
-            Ok(_) | Err(Error::AlreadyStopped) => Ok(json!({})),
+        let paused = if let Some(group) = self
+            .target
+            .as_ref()
+            .and_then(|target| target.owner.group())
+            .filter(|group| group.stops() == microscope::StopScope::Group)
+        {
+            group.pause_all().await
+        } else {
+            self.target_handle()?.pause().await.map(drop)
+        };
+
+        match paused {
+            Ok(()) | Err(Error::AlreadyStopped) => Ok(json!({})),
             Err(Error::NotRunning) => Err(ErrorBody::new("the program is not running")),
             Err(error) => Err(self::error(error)),
         }
@@ -2839,13 +3057,18 @@ enum Input {
     Message(Inbound),
     Event(Result<DebuggerEvent, broadcast::error::RecvError>),
 
-    /// A child the program forked, or none once the debugger is gone.
-    Held(Option<microscope::HeldChild>),
+    /// What the group whose root the session shows did.
+    Group(Result<GroupEvent, broadcast::error::RecvError>),
+
+    /// A member no session shows, and why.
+    Unshown((MemberNumber, String)),
 }
 
-async fn next_held(held: &mut Option<microscope::HeldChildren>) -> Option<microscope::HeldChild> {
-    match held {
-        Some(held) => held.recv().await,
+async fn next_group_event(
+    events: &mut Option<broadcast::Receiver<GroupEvent>>,
+) -> Result<GroupEvent, broadcast::error::RecvError> {
+    match events {
+        Some(events) => events.recv().await,
         None => std::future::pending().await,
     }
 }

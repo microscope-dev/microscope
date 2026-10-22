@@ -6,7 +6,7 @@
 
 mod breakpoints;
 mod config;
-mod forks;
+mod group;
 mod handles;
 mod inspect;
 pub mod launcher;
@@ -31,7 +31,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context as _, Result};
 use serde_json::Value;
-use tokio::io::{AsyncBufRead, AsyncWrite, BufReader};
+use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
@@ -54,33 +54,57 @@ pub struct DapArgs {
     /// Append every message to FILE.
     #[arg(long, value_name = "FILE")]
     log: Option<PathBuf>,
+
+    /// Relay stdin and stdout to the group socket SOCKET, which a child
+    /// session's configuration names, for a client that can start a child
+    /// session only as a program it runs, as nvim-dap does.
+    #[arg(long, value_name = "SOCKET", conflicts_with_all = ["port", "listen", "log"])]
+    connect: Option<PathBuf>,
 }
 
 /// Appends messages to the `--log` file.
+/// Where the adapter records the protocol messages, if anywhere, and the
+/// label of the session they belong to, for a session other than the one
+/// the adapter was started for.
 #[derive(Clone, Default)]
-struct Log(Option<Arc<Mutex<File>>>);
+struct Log(Option<Arc<Mutex<File>>>, Option<Arc<str>>);
 
 impl Log {
     fn record(&self, direction: &str, text: &str) {
         if let Some(file) = &self.0
             && let Ok(mut file) = file.lock()
         {
-            let _ = writeln!(file, "{direction} {text}");
+            let _ = match &self.1 {
+                Some(label) => writeln!(file, "{label} {direction} {text}"),
+                None => writeln!(file, "{direction} {text}"),
+            };
         }
+    }
+
+    /// The same log, for messages of the session `label` names.
+    fn labelled(&self, label: String) -> Self {
+        Self(self.0.clone(), Some(label.into()))
     }
 }
 
 /// Runs the adapter until its client disconnects, or with `--port` and
 /// `--listen` until it is interrupted.
 pub async fn run(args: &DapArgs) -> Result<()> {
+    if let Some(socket) = &args.connect {
+        return relay(socket).await;
+    }
+
     let log = match &args.log {
-        Some(path) => Log(Some(Arc::new(Mutex::new(
-            File::options()
-                .create(true)
-                .append(true)
-                .open(path)
-                .with_context(|| format!("failed to open log {}", path.display()))?,
-        )))),
+        Some(path) => Log(
+            Some(Arc::new(Mutex::new(
+                File::options()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .with_context(|| format!("failed to open log {}", path.display()))?,
+            ))),
+            None,
+        ),
         None => Log::default(),
     };
 
@@ -93,6 +117,36 @@ pub async fn run(args: &DapArgs) -> Result<()> {
         Some(address) => listen(address, log).await,
         None => serve_stdio(log).await,
     }
+}
+
+/// Copies stdin to the group socket at `socket` and what it answers to
+/// stdout, until either side closes.
+async fn relay(socket: &std::path::Path) -> Result<()> {
+    let stream = tokio::net::UnixStream::connect(socket)
+        .await
+        .with_context(|| format!("failed to connect to {}", socket.display()))?;
+    let (mut read, mut write) = stream.into_split();
+    let mut stdin = tokio::io::stdin();
+    let mut stdout = tokio::io::stdout();
+    let sent = async {
+        tokio::io::copy(&mut stdin, &mut write).await?;
+        write.shutdown().await
+    };
+    let received = async {
+        tokio::io::copy(&mut read, &mut stdout).await?;
+        stdout.flush().await
+    };
+    tokio::pin!(sent, received);
+    // The session is over once the adapter closes it. A client that closes
+    // first ends it by the shutdown, and is still sent the adapter's answers.
+    tokio::select! {
+        result = &mut received => result,
+        result = &mut sent => match result {
+            Ok(()) => received.await,
+            Err(error) => Err(error),
+        },
+    }
+    .context("failed to relay the session")
 }
 
 /// Completes when the adapter is asked to stop: an editor closing the
@@ -137,7 +191,7 @@ async fn serve_stdio(log: Log) -> Result<()> {
     drop(console_write);
     let writer = tokio::fs::File::from_std(File::from(protocol_out));
     let reader = BufReader::new(tokio::io::stdin());
-    serve(reader, writer, Some(console_read), log, termination()).await;
+    serve(reader, writer, Some(console_read), log, termination(), None).await;
     Ok(())
 }
 
@@ -160,9 +214,16 @@ async fn listen(address: SocketAddr, log: Log) -> Result<()> {
 
         // A session ends early when the adapter is asked to stop.
         let (stopped, stopping) = tokio::sync::oneshot::channel::<()>();
-        let session = serve(BufReader::new(read), write, None, log.clone(), async {
-            let _ = stopping.await;
-        });
+        let session = serve(
+            BufReader::new(read),
+            write,
+            None,
+            log.clone(),
+            async {
+                let _ = stopping.await;
+            },
+            None,
+        );
         tokio::pin!(session);
 
         let interrupted = tokio::select! {
@@ -189,6 +250,7 @@ async fn serve<R, W>(
     console: Option<OwnedFd>,
     log: Log,
     shutdown: impl std::future::Future<Output = ()>,
+    route: Option<group::Route>,
 ) where
     R: AsyncBufRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -207,14 +269,17 @@ async fn serve<R, W>(
     let reader = tokio::spawn(read_messages(
         reader,
         inbound,
-        log,
+        log.clone(),
         client.clone(),
         cancelled.clone(),
     ));
     let console = console.and_then(|read| output::spawn(read, "console", client.clone()).ok());
 
-    // The session, with its console's command line, is a large future.
-    Box::pin(Session::new(client, cancelled).run(inbox, shutdown)).await;
+    // The session holds the last sender of the client's messages, so the
+    // writer ends once the session does. With its console's command line,
+    // it is a large future.
+    let session = Session::new(client, cancelled).serving(route, log);
+    Box::pin(session.run(inbox, shutdown)).await;
     reader.abort();
     if let Some(console) = console {
         console.abort();

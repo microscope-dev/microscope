@@ -997,9 +997,11 @@ async function pickAProcess() {
 }
 
 /**
- * With followForks, VS Code starts a child session for a forked process at
- * the adapter's request. The child stops at the breakpoint after its fork,
- * having run nothing untraced, and each session ends as its process does.
+ * With follow, VS Code starts a session for a forked process at the
+ * adapter's request, which the extension connects back to the same
+ * adapter. The child stops at the breakpoint after its fork, having run
+ * nothing untraced, and each session ends as its process does. Process
+ * stops keep the two stops independent of which comes first.
  */
 async function followAForkedChild() {
     const breakpoint = new vscode.FunctionBreakpoint('shared_work');
@@ -1016,7 +1018,7 @@ async function followAForkedChild() {
         sent.type === 'response' && sent.command === 'startDebugging' && sent.success, 'client');
     assert.ok(await vscode.debug.startDebugging(undefined, {
         type: 'microscope', request: 'launch', name: 'vscode-fork', program: fixture('fork'), cwd: root,
-        followForks: true,
+        follow: { mode: 'all', stop: 'process' },
     }));
     const asking = (await asked).message.arguments;
     assert.strictEqual(asking.request, 'attach');
@@ -1025,7 +1027,7 @@ async function followAForkedChild() {
     await started;
     assert.strictEqual(child.parentSession.id, parent.id);
     assert.strictEqual(child.configuration.pid, asking.configuration.pid);
-    assert.strictEqual(child.configuration.followForks, true);
+    assert.strictEqual(child.configuration.__microscopeMember.number, 2);
     assert.strictEqual(child.name, asking.configuration.name);
     for (const [session, stop] of [[parent, parentStop], [child, childStop]]) {
         assert.strictEqual((await topFrame(session, stop.body.threadId)).name, 'shared_work', session.name);

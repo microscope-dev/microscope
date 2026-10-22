@@ -24,12 +24,27 @@ pub enum Start {
         process: ProcessId,
         executable: Option<PathBuf>,
 
-        /// The start time of a process another session held for this one,
-        /// which the attach ends the hold of.
-        held: Option<u64>,
+        /// The group member this session shows, which the adapter that
+        /// started the session hosts.
+        member: Option<MemberRoute>,
     },
     Core(CoreDumpOptions),
 }
+
+/// Where a child session for a group's member connects, and which member
+/// it shows: what the adapter hosting the group puts in the configuration
+/// it asks the client to start.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MemberRoute {
+    /// The socket of the adapter that hosts the group.
+    pub socket: PathBuf,
+    pub number: microscope::MemberNumber,
+}
+
+/// The key of a configuration that names a [`MemberRoute`]; the editors
+/// route a session whose configuration has it to the socket it names.
+pub const MEMBER_KEY: &str = "__microscopeMember";
 
 /// A program to launch.
 #[derive(Debug, Clone)]
@@ -75,8 +90,9 @@ pub struct Configuration {
     pub view_files: Vec<PathBuf>,
     pub working_directory: Option<PathBuf>,
 
-    /// Whether processes the program forks are debugged in child sessions.
-    pub follow_forks: bool,
+    /// Which processes the program starts are debugged too, each in a
+    /// child session.
+    pub follow: microscope::FollowPolicy,
 
     /// The settings a child session's configuration carries over.
     pub inherited: Map<String, Value>,
@@ -125,11 +141,10 @@ enum Threads {
 /// the session presents and handles a program, which a fork does not
 /// change, and the adapter's `type`, by which a client such as nvim-dap
 /// finds the adapter to start for the child.
-const INHERITED: [&str; 13] = [
+const INHERITED: [&str; 12] = [
     "type",
     "debugDirectories",
     "debuginfod",
-    "followForks",
     "sourceMap",
     "viewFiles",
     "disassemblySyntax",
@@ -185,9 +200,11 @@ struct Arguments {
     #[serde(default)]
     debuginfod: bool,
 
-    #[serde(default)]
-    follow_forks: bool,
-    held: Option<Held>,
+    follow: Option<FollowSetting>,
+    follow_forks: Option<bool>,
+
+    #[serde(rename = "__microscopeMember")]
+    member: Option<MemberRoute>,
     threads: Option<Threads>,
 
     #[serde(default)]
@@ -198,12 +215,13 @@ struct Arguments {
     step_into_runtime: bool,
 }
 
-/// A process another session held for this one, which only that session
-/// names.
+/// Which processes the program starts are debugged: a mode, or a table as
+/// the settings file's `[follow]`.
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Held {
-    start_time: u64,
+#[serde(untagged)]
+enum FollowSetting {
+    Mode(crate::cli::config::FollowMode),
+    Table(crate::cli::config::Follow),
 }
 
 #[derive(Deserialize)]
@@ -233,12 +251,11 @@ enum Actions {
 pub fn launch(arguments: Value) -> Result<Configuration, String> {
     let inherited = inherited(&arguments, false);
     let parsed = parse::<Arguments>(arguments, "launch configuration")?;
-    if parsed.pid.is_some() || parsed.core_file.is_some() || parsed.held.is_some() {
-        return Err(
-            "invalid launch configuration: `pid`, `held`, and `coreFile` belong to attach \
-                    configurations"
-                .to_owned(),
-        );
+    if parsed.pid.is_some() || parsed.core_file.is_some() || parsed.member.is_some() {
+        return Err(format!(
+            "invalid launch configuration: `pid`, `{MEMBER_KEY}`, and `coreFile` belong to \
+             attach configurations"
+        ));
     }
 
     let program = parsed
@@ -292,11 +309,13 @@ pub fn attach(arguments: Value) -> Result<Configuration, String> {
             Start::Attach {
                 process: ProcessId::new(number),
                 executable: parsed.program.clone(),
-                held: parsed.held.as_ref().map(|held| held.start_time),
+                member: parsed.member.clone(),
             }
         }
-        (None, Some(_)) if parsed.held.is_some() => {
-            return Err("invalid attach configuration: `held` needs `pid`".to_owned());
+        (None, Some(_)) if parsed.member.is_some() => {
+            return Err(format!(
+                "invalid attach configuration: `{MEMBER_KEY}` needs `pid`"
+            ));
         }
         (None, Some(core)) => Start::Core(CoreDumpOptions {
             core: core.clone(),
@@ -370,6 +389,31 @@ fn common(
         signals.push((code, actions));
     }
 
+    let follow = match (parsed.follow, parsed.follow_forks) {
+        (Some(_), Some(_)) => {
+            return Err(format!(
+                "invalid {what}: give `follow` or `followForks`, not both"
+            ));
+        }
+        (Some(FollowSetting::Mode(mode)), None) => crate::cli::config::Follow {
+            mode,
+            ..crate::cli::config::Follow::default()
+        },
+        (Some(FollowSetting::Table(follow)), None) => follow,
+        // `followForks` is what `follow` was before processes were
+        // followed into the programs they execute.
+        (None, Some(forks)) => crate::cli::config::Follow {
+            mode: if forks {
+                crate::cli::config::FollowMode::All
+            } else {
+                crate::cli::config::FollowMode::None
+            },
+            ..crate::cli::config::Follow::default()
+        },
+        (None, None) => crate::cli::config::Follow::default(),
+    }
+    .policy(&[]);
+
     let max_tasks = match parsed.max_tasks {
         Some(0) => return Err(format!("invalid {what} at maxTasks: expected at least 1")),
         Some(max) => usize::try_from(max).unwrap_or(usize::MAX),
@@ -387,7 +431,7 @@ fn common(
         stop_on_entry: parsed.stop_on_entry,
         view_files: parsed.view_files,
         working_directory: parsed.cwd,
-        follow_forks: parsed.follow_forks,
+        follow,
         step_into_runtime: parsed.step_into_runtime,
         inherited,
         source_paths,
@@ -453,6 +497,7 @@ fn source_map<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<[String;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use microscope::{FollowMode, StopScope};
     use serde_json::json;
 
     #[test]
@@ -563,28 +608,31 @@ mod tests {
         }
 
         assert_eq!(
-            attach(json!({"coreFile": "c", "held": {"startTime": 1}})).map(|_| ()),
-            Err("invalid attach configuration: `held` needs `pid`".to_owned())
+            attach(json!({"coreFile": "c", "__microscopeMember": {"socket": "/s", "number": 2}}))
+                .map(|_| ()),
+            Err("invalid attach configuration: `__microscopeMember` needs `pid`".to_owned())
         );
         let configuration = attach(json!({"pid": "42"})).expect("string pid");
         assert!(matches!(
             configuration.start,
-            Start::Attach { process, executable: None, held: None } if process == ProcessId::new(42)
+            Start::Attach { process, executable: None, member: None } if process == ProcessId::new(42)
         ));
     }
 
     #[test]
     fn a_child_session_carries_over_what_presents_and_handles_the_program() {
         let shared = json!({
-            "type": "microscope", "followForks": true, "sourceMap": [["/a", "/b"]], "viewFiles": ["v.toml"],
+            "type": "microscope", "sourceMap": [["/a", "/b"]], "viewFiles": ["v.toml"],
             "disassemblySyntax": "att", "signals": {"SIGUSR1": "nostop"}, "cwd": "/w",
         });
         let mut parent = shared.clone();
         parent["program"] = json!("/bin/p");
         parent["stopOnEntry"] = json!(true);
         parent["args"] = json!(["x"]);
+        parent["follow"] = json!("all");
         let launched = launch(parent.clone()).expect("launch");
-        assert!(launched.follow_forks);
+        assert_eq!(launched.follow.mode, microscope::FollowMode::All);
+        parent.as_object_mut().expect("object").remove("follow");
         assert_eq!(Value::Object(launched.inherited), shared);
 
         parent["pid"] = json!(7);
@@ -596,12 +644,59 @@ mod tests {
 
         let mut child = Value::Object(attached.inherited);
         child["pid"] = json!(8);
-        child["held"] = json!({"startTime": 99});
+        child[MEMBER_KEY] = json!({"socket": "/run/s", "number": 3});
         let child = attach(child).expect("a child's configuration is valid");
         assert!(matches!(
             child.start,
-            Start::Attach { process, held: Some(99), .. } if process == ProcessId::new(8)
+            Start::Attach { process, member: Some(MemberRoute { number: 3, .. }), .. }
+                if process == ProcessId::new(8)
         ));
+    }
+
+    /// `follow` takes a mode or a table as the settings file's; the older
+    /// `followForks` maps onto it; and following is the default, as in the
+    /// command line.
+    #[test]
+    fn follow_takes_a_mode_a_table_or_the_older_follow_forks() {
+        let follow = |extra: Value| {
+            let mut arguments = json!({"program": "/bin/p"});
+            for (key, value) in extra.as_object().expect("object") {
+                arguments[key] = value.clone();
+            }
+            launch(arguments).map(|configuration| configuration.follow)
+        };
+        let policy = |mode, programs: &[&str], stop| microscope::FollowPolicy {
+            mode,
+            programs: programs.iter().map(|&program| program.to_owned()).collect(),
+            stop,
+        };
+        assert_eq!(
+            follow(json!({})),
+            Ok(policy(FollowMode::Auto, &[], StopScope::Group))
+        );
+        assert_eq!(
+            follow(json!({"follow": "none"})),
+            Ok(policy(FollowMode::None, &[], StopScope::Group))
+        );
+        assert_eq!(
+            follow(json!({"follow": {"programs": ["worker*"], "stop": "process"}})),
+            Ok(policy(FollowMode::Auto, &["worker*"], StopScope::Process))
+        );
+        assert_eq!(
+            follow(json!({"followForks": true})),
+            Ok(policy(FollowMode::All, &[], StopScope::Group))
+        );
+        assert_eq!(
+            follow(json!({"followForks": false})),
+            Ok(policy(FollowMode::None, &[], StopScope::Group))
+        );
+        assert_eq!(
+            follow(json!({"follow": "all", "followForks": true})),
+            Err(
+                "invalid launch configuration: give `follow` or `followForks`, not both".to_owned()
+            )
+        );
+        assert!(follow(json!({"follow": "some"})).is_err());
     }
 
     /// The VS Code extension's manifest documents the configurations.

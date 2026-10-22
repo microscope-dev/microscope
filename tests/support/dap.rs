@@ -186,6 +186,26 @@ pub struct Dap {
     children: Children,
 }
 
+/// The writing side of a member session's socket, which closes the
+/// session when dropped, as a client's closing its connection does.
+struct MemberStream(std::os::unix::net::UnixStream);
+
+impl std::io::Write for MemberStream {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.write(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
+}
+
+impl Drop for MemberStream {
+    fn drop(&mut self) {
+        let _ = self.0.shutdown(std::net::Shutdown::Write);
+    }
+}
+
 /// How a session answers `startDebugging`.
 enum Children {
     /// It is not expected: the scenario fails.
@@ -194,21 +214,27 @@ enum Children {
     /// With an error, as a client that cannot start the session does.
     Refused(String),
 
-    /// With success, starting no session, as nvim-dap answers for a
-    /// session it started that never attaches.
-    Abandoned,
-
-    /// By starting each child session with a program that does not exist,
-    /// so that its attach fails, and answering with that failure, as VS
-    /// Code does. The failures are kept, in order.
+    /// By starting another adapter for each child session, as a client
+    /// that does not route members' sessions back does, and answering with
+    /// the failure of its attach. The failures are kept, in order.
     Unattachable(Vec<String>),
 
-    /// By starting each child session as VS Code does, configured so, and
-    /// answering once it has attached.
+    /// By starting each child session as microscope's VS Code extension
+    /// does, connected to the socket its configuration names, configured
+    /// so, and answering once it has attached.
     Followed {
         configuration: Configuration,
         started: Vec<Dap>,
+
+        /// Whether each session runs `microscope dap --connect` to reach
+        /// the socket, as nvim-dap's adapter function has it do.
+        relayed: bool,
     },
+
+    /// By connecting each child session to the socket its configuration
+    /// names and answering at once, leaving the session's requests to the
+    /// caller, as a replay of the client's recording sends them.
+    Routed(Vec<(Dap, Value)>),
 }
 
 /// Ordering rules checked on every message.
@@ -283,6 +309,15 @@ impl Dap {
         dap
     }
 
+    /// Connects to the socket an adapter serves a group member's session
+    /// on, as an editor routes the member's session there.
+    pub fn connect_member(name: impl Into<String>, socket: &std::path::Path) -> Self {
+        let stream = std::os::unix::net::UnixStream::connect(socket)
+            .unwrap_or_else(|error| panic!("connect to {}: {error}", socket.display()));
+        let output = stream.try_clone().expect("clone the socket");
+        Self::over(name, Box::new(MemberStream(stream)), output, None)
+    }
+
     /// Connects to an adapter serving TCP; its process is the caller's.
     pub fn connect(name: impl Into<String>, address: SocketAddr) -> Self {
         let stream = TcpStream::connect(address).expect("connect to the adapter");
@@ -329,14 +364,35 @@ impl Dap {
         }
     }
 
-    /// Answers `startDebugging` as VS Code does: starts another adapter,
-    /// initializes it, attaches it with the requested configuration, sets
+    /// Answers `startDebugging` as microscope's VS Code extension does:
+    /// connects to the socket the configuration names, initializes the
+    /// session, attaches it with the requested configuration, sets
     /// `configuration`'s breakpoints, and answers once it has attached.
     pub fn follow_children(&mut self, configuration: Configuration) {
         self.children = Children::Followed {
             configuration,
             started: Vec::new(),
+            relayed: false,
         };
+    }
+
+    /// Answers `startDebugging` as nvim-dap does with the adapter function
+    /// microscope's documentation gives: runs `microscope dap --connect`
+    /// with the socket the configuration names as each child session's
+    /// adapter, and otherwise as [`Self::follow_children`].
+    pub fn follow_children_relayed(&mut self, configuration: Configuration) {
+        self.children = Children::Followed {
+            configuration,
+            started: Vec::new(),
+            relayed: true,
+        };
+    }
+
+    /// Answers `startDebugging` by connecting the child session to its
+    /// socket and nothing more; [`Self::routed_child`] returns it
+    /// unstarted.
+    pub fn route_children(&mut self) {
+        self.children = Children::Routed(Vec::new());
     }
 
     /// Answers `startDebugging` with an error.
@@ -344,13 +400,8 @@ impl Dap {
         self.children = Children::Refused(message.to_owned());
     }
 
-    /// Answers `startDebugging` with success, but starts no session.
-    pub fn abandon_children(&mut self) {
-        self.children = Children::Abandoned;
-    }
-
-    /// Starts child sessions whose attach fails, and answers
-    /// `startDebugging` with the failure.
+    /// Starts each child session in another adapter, whose attach fails,
+    /// and answers `startDebugging` with the failure.
     pub fn fail_children(&mut self) {
         self.children = Children::Unattachable(Vec::new());
     }
@@ -385,6 +436,22 @@ impl Dap {
         }
     }
 
+    /// Waits for the next child session connected by
+    /// [`Self::route_children`], and returns it with the configuration the
+    /// adapter asked it to start with.
+    pub fn routed_child(&mut self) -> (Self, Value) {
+        let deadline = Instant::now() + EVENT_TIMEOUT;
+        loop {
+            if let Children::Routed(started) = &mut self.children
+                && !started.is_empty()
+            {
+                return started.remove(0);
+            }
+
+            self.receive(deadline, "a startDebugging request");
+        }
+    }
+
     /// Starts a child session for a `startDebugging` request, and answers
     /// it.
     fn start_debugging(&mut self, request: &Value) {
@@ -392,14 +459,12 @@ impl Dap {
         let result = match &mut self.children {
             Children::Unexpected => None,
             Children::Refused(message) => Some(Err(message.clone())),
-            Children::Abandoned => Some(Ok(())),
             Children::Unattachable(failures) => {
                 let name = arguments["configuration"]["name"]
                     .as_str()
                     .expect("child name");
                 let mut child = Self::start(format!("{} › {name}", self.name));
-                let mut start = arguments["configuration"].clone();
-                start["program"] = "/nonexistent/program".into();
+                let start = arguments["configuration"].clone();
                 child.initialize(Profile::VsCode);
                 let attach = child.send("attach", start);
                 let failure = child.failure(attach);
@@ -411,16 +476,45 @@ impl Dap {
             Children::Followed {
                 configuration,
                 started,
+                relayed,
             } => {
                 let request = arguments["request"].as_str().expect("request");
                 let child_configuration = &arguments["configuration"];
                 let name = child_configuration["name"].as_str().expect("child name");
-                let mut child = Self::start(format!("{} › {name}", self.name));
+                let socket = child_configuration["__microscopeMember"]["socket"]
+                    .as_str()
+                    .expect("a member's session names the socket that serves it");
+                let name = format!("{} › {name}", self.name);
+                let mut child = if *relayed {
+                    Self::spawn(
+                        name,
+                        Command::new(env!("CARGO_BIN_EXE_microscope")).args([
+                            "dap",
+                            "--connect",
+                            socket,
+                        ]),
+                    )
+                } else {
+                    Self::connect_member(name, socket.as_ref())
+                };
                 let mut start = child_configuration.clone();
                 start["type"] = "microscope".into();
                 start["request"] = request.into();
                 child.begin(Profile::VsCode, (request, start), configuration);
                 started.push(child);
+                Some(Ok(()))
+            }
+
+            Children::Routed(started) => {
+                let configuration = &arguments["configuration"];
+                let name = configuration["name"].as_str().expect("child name");
+                let socket = configuration["__microscopeMember"]["socket"]
+                    .as_str()
+                    .expect("a member's session names the socket that serves it");
+                started.push((
+                    Self::connect_member(format!("{} › {name}", self.name), socket.as_ref()),
+                    configuration.clone(),
+                ));
                 Some(Ok(()))
             }
         };

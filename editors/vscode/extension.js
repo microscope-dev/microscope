@@ -52,6 +52,12 @@ function activate(context) {
 
 /** @param {vscode.DebugSession} session */
 function createDebugAdapterDescriptor(session) {
+    // A process the program started, which the adapter that debugs the
+    // program hosts: its session connects back to that adapter.
+    const member = session.configuration.__microscopeMember;
+    if (member !== undefined) {
+        return new vscode.DebugAdapterNamedPipeServer(member.socket);
+    }
     const folder = session.workspaceFolder;
     const settings = vscode.workspace.getConfiguration('microscope', folder);
     const setting = settings.get('path', 'microscope');

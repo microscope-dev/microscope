@@ -270,7 +270,8 @@ fn signal_stops(exceptions: Value) -> (Vec<String>, Value, String) {
     let started = dap.launch(
         Profile::Neovim,
         &fixture("signal-policy"),
-        json!({}),
+        // The child it forks exits at once, which only raises SIGCHLD.
+        json!({"follow": "none"}),
         &Configuration {
             exceptions: Some(exceptions),
             ..Configuration::default()

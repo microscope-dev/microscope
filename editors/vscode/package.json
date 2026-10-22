@@ -113,10 +113,26 @@
                 "default": false,
                 "description": "Stop at the program's first instruction, in the dynamic loader."
               },
+              "follow": {
+                "description": "Which processes the program starts are debugged too, each shown in a session of its own with the program's breakpoints. auto debugs those that run the program or a runtime microscope models, such as Node.js or Python, and watches the rest until they run one; all debugs every one; none lets them run on their own. A table also names programs to debug and what a stop stops.",
+                "default": "auto",
+                "oneOf": [
+                  { "type": "string", "enum": ["auto", "all", "none"] },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "mode": { "type": "string", "enum": ["auto", "all", "none"], "default": "auto" },
+                      "programs": { "type": "array", "items": { "type": "string" }, "description": "Programs to debug too, by file name, where * matches any run of characters and ? any one." },
+                      "stop": { "type": "string", "enum": ["group", "process"], "default": "group", "description": "group stops every process when one stops; process stops only that one." }
+                    }
+                  }
+                ]
+              },
               "followForks": {
                 "type": "boolean",
-                "default": false,
-                "description": "Debug each process the program forks in a session of its own, which stops at its breakpoints. Otherwise children run on their own."
+                "deprecationMessage": "Use follow instead: true is \"all\", and false is \"none\".",
+                "description": "The older form of follow: true debugs every process the program starts, false none."
               },
               "console": {
                 "type": "string",
@@ -210,10 +226,26 @@
                 "default": false,
                 "description": "Stay stopped after attaching instead of continuing the process."
               },
+              "follow": {
+                "description": "Which processes the program starts are debugged too, each shown in a session of its own with the program's breakpoints. auto debugs those that run the program or a runtime microscope models, such as Node.js or Python, and watches the rest until they run one; all debugs every one; none lets them run on their own. A table also names programs to debug and what a stop stops.",
+                "default": "auto",
+                "oneOf": [
+                  { "type": "string", "enum": ["auto", "all", "none"] },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "mode": { "type": "string", "enum": ["auto", "all", "none"], "default": "auto" },
+                      "programs": { "type": "array", "items": { "type": "string" }, "description": "Programs to debug too, by file name, where * matches any run of characters and ? any one." },
+                      "stop": { "type": "string", "enum": ["group", "process"], "default": "group", "description": "group stops every process when one stops; process stops only that one." }
+                    }
+                  }
+                ]
+              },
               "followForks": {
                 "type": "boolean",
-                "default": false,
-                "description": "Debug each process the program forks in a session of its own, which stops at its breakpoints. Otherwise children run on their own."
+                "deprecationMessage": "Use follow instead: true is \"all\", and false is \"none\".",
+                "description": "The older form of follow: true debugs every process the program starts, false none."
               },
               "sysroot": {
                 "type": "string",
