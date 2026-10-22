@@ -404,6 +404,186 @@ async fn shutdown_ends_every_process_the_group_launched() {
         // A process killed and reported to the tracer stays a zombie
         // until its parent, or init once that parent died too, reaps it.
         let state = process_state(*process);
-        assert!(matches!(state, None | Some('Z')), "{process:?} is {state:?}");
+        assert!(
+            matches!(state, None | Some('Z')),
+            "{process:?} is {state:?}"
+        );
     }
+}
+
+#[tokio::test]
+async fn an_attached_groups_fork_children_join_and_are_released_with_it() {
+    let mut parent = support::ExternalProcess::spawn(&Scenario::fixture("attach-fork"));
+    let group = ProcessGroup::attach(
+        parent.process_id(),
+        FollowPolicy::default(),
+        &microscope::DebugFileOptions::default(),
+    )
+    .await
+    .expect("attach the group");
+    let events = group.subscribe();
+    let mut group = Group {
+        inner: group,
+        events,
+        seen: Vec::new(),
+    };
+    group.break_at("child_work").await;
+    group.inner.continue_all().await.expect("continue the root");
+    parent.release();
+
+    let (member, reason) = group.stop().await;
+    assert_eq!(member, 2);
+    assert!(function_breakpoint(&reason), "{reason:?}");
+    group.inner.continue_all().await.expect("continue");
+    loop {
+        if let GroupEvent::MemberExited { member, status } = group.next().await {
+            assert_eq!((member, status), (2, ExitStatus::Code(7)));
+            break;
+        }
+    }
+
+    // Released, the parent exits with its child's code: 7 for a child that
+    // ran its work once and never received SIGCONT.
+    group.shutdown().await;
+    parent.release();
+    wait_for_zombie(parent.process_id());
+    assert_eq!(parent.wait().code(), Some(7));
+}
+
+/// The node on `PATH`, which the dev shell provides.
+fn node() -> std::path::PathBuf {
+    std::env::var_os("PATH")
+        .and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|directory| directory.join("node"))
+                .find(|candidate| candidate.is_file())
+        })
+        .expect("node is on PATH in the dev shell")
+}
+
+/// `node --test` runs each file in a node of its own, concurrently: each
+/// joins the group, through its fork and its exec of node, and stops at a
+/// native breakpoint set before the run.
+#[tokio::test]
+async fn each_file_node_test_runs_joins_the_group() {
+    let scratch = support::ScratchDir::new("group-node-test");
+    for name in ["a.test.js", "b.test.js"] {
+        fs::write(
+            scratch.path().join(name),
+            "require('node:test')('runs', () => {});\n",
+        )
+        .expect("write a test file");
+    }
+
+    let program =
+        Program::load(node(), &microscope::DebugFileOptions::default()).expect("load node");
+    let group = ProcessGroup::new(program, FollowPolicy::default()).expect("start the group");
+    let events = group.subscribe();
+    let mut group = Group {
+        inner: group,
+        events,
+        seen: Vec::new(),
+    };
+    group.break_at("uv_setup_args").await;
+    group
+        .inner
+        .root()
+        .launch_with(LaunchOptions {
+            arguments: ["--test", "a.test.js", "b.test.js"]
+                .map(std::ffi::OsString::from)
+                .to_vec(),
+            working_directory: Some(scratch.path().to_owned()),
+            ..LaunchOptions::default()
+        })
+        .await
+        .expect("launch node");
+
+    let stops = group.run_to_exit().await;
+    let members = breakpoint_members(&stops);
+    assert_eq!(
+        members.len(),
+        3,
+        "the runner and one node per file: {stops:#?}"
+    );
+    assert_eq!(
+        members.iter().collect::<BTreeSet<_>>().len(),
+        3,
+        "each stops once: {stops:#?}"
+    );
+    assert_eq!(
+        group.root_status(),
+        MemberState::Exited(ExitStatus::Code(0))
+    );
+    group.shutdown().await;
+}
+
+/// `npm start` runs npm's own node, which starts a shell, which executes
+/// the app's node. npm and the app are members; the shell is watched
+/// between them, and the app stops at a breakpoint set before the run.
+#[tokio::test]
+async fn npm_start_is_followed_through_its_shell_into_the_app() {
+    let scratch = support::ScratchDir::new("group-npm-start");
+    fs::write(
+        scratch.path().join("package.json"),
+        r#"{"name": "app", "version": "1.0.0", "scripts": {"start": "node server.js"}}"#,
+    )
+    .expect("write package.json");
+    fs::write(
+        scratch.path().join("server.js"),
+        "console.log('listening');\n",
+    )
+    .expect("write server.js");
+    let npm = node().with_file_name("npm");
+
+    let program = Program::load(&npm, &microscope::DebugFileOptions::default()).expect("load npm");
+    let group = ProcessGroup::new(program, FollowPolicy::default()).expect("start the group");
+    let events = group.subscribe();
+    let mut group = Group {
+        inner: group,
+        events,
+        seen: Vec::new(),
+    };
+    group.break_at("uv_setup_args").await;
+    let cache = scratch.path().join("npm-cache");
+    group
+        .inner
+        .root()
+        .launch_with(LaunchOptions {
+            arguments: vec!["start".into()],
+            working_directory: Some(scratch.path().to_owned()),
+            environment: vec![
+                ("npm_config_cache".into(), Some(cache.into_os_string())),
+                ("npm_config_update_notifier".into(), Some("false".into())),
+            ],
+            ..LaunchOptions::default()
+        })
+        .await
+        .expect("launch npm");
+
+    let stops = group.run_to_exit().await;
+    let members = group.inner.members();
+    let app = members
+        .iter()
+        .find(|member| {
+            member
+                .executed
+                .as_ref()
+                .is_some_and(|program| program.ends_with("node"))
+        })
+        .unwrap_or_else(|| panic!("the app joined by executing node: {members:#?}"));
+    let stopped = breakpoint_members(&stops);
+    assert!(stopped.contains(&1), "npm's own node stops: {stops:#?}");
+    assert!(stopped.contains(&app.number), "the app stops: {stops:#?}");
+    assert!(
+        group.seen.iter().any(|event| matches!(event,
+            GroupEvent::MemberWatched { program, .. }
+                if program.file_name().is_some_and(|name| name.to_string_lossy().contains("sh")))),
+        "the shell between them is watched: {:#?}",
+        group.seen
+    );
+    assert_eq!(
+        group.root_status(),
+        MemberState::Exited(ExitStatus::Code(0))
+    );
+    group.shutdown().await;
 }

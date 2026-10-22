@@ -918,7 +918,61 @@ impl Watcher {
 
 #[cfg(test)]
 mod tests {
-    use super::matches_glob;
+    use std::path::{Path, PathBuf};
+
+    use super::{Decision, Policy, matches_glob, program_runtime};
+    use crate::{FollowMode, FollowPolicy};
+
+    fn fixture(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("build/test-programs")
+            .join(name)
+    }
+
+    fn inode(path: &Path) -> Option<u64> {
+        std::fs::metadata(path)
+            .ok()
+            .map(|metadata| std::os::unix::fs::MetadataExt::ino(&metadata))
+    }
+
+    #[test]
+    fn a_runtime_is_recognized_by_the_marks_it_leaves_in_its_program() {
+        assert_eq!(program_runtime(&fixture("callers-go")), Some("go"));
+        assert_eq!(program_runtime(&fixture("tree")), None);
+        assert_eq!(program_runtime(Path::new("/nonexistent")), None);
+    }
+
+    #[test]
+    fn the_policy_debugs_the_launched_program_runtimes_and_named_programs() {
+        let launched = fixture("tree");
+        let other = fixture("exec-target");
+        let go = fixture("callers-go");
+        let policy = |mode, programs: &[&str]| Policy {
+            policy: FollowPolicy {
+                mode,
+                programs: programs.iter().map(|name| (*name).to_owned()).collect(),
+                ..FollowPolicy::default()
+            },
+            launched: inode(&launched),
+        };
+        let decide = |policy: &Policy, path: &Path| policy.decide(path, inode(path));
+
+        let auto = policy(FollowMode::Auto, &[]);
+        assert_eq!(decide(&auto, &launched), Decision::Debug);
+        assert_eq!(decide(&auto, &go), Decision::Debug);
+        assert_eq!(decide(&auto, &other), Decision::Watch);
+
+        let named = policy(FollowMode::Auto, &["exec-*"]);
+        assert_eq!(decide(&named, &other), Decision::Debug);
+
+        assert_eq!(
+            decide(&policy(FollowMode::All, &[]), &other),
+            Decision::Debug
+        );
+        let none = policy(FollowMode::None, &["exec-*"]);
+        assert_eq!(decide(&none, &launched), Decision::Watch);
+        assert_eq!(decide(&none, &other), Decision::Watch);
+    }
 
     #[test]
     fn globs_match_names_as_a_shell_does() {

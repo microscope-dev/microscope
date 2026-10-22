@@ -23,6 +23,7 @@ mod breakpoints;
 mod expressions;
 mod extension;
 mod gallery;
+mod group;
 mod jit;
 mod layouts;
 mod locals;

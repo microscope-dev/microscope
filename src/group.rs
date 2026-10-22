@@ -186,6 +186,54 @@ impl ProcessGroup {
         })
     }
 
+    /// Attaches a group's root to `process`, following the processes it
+    /// starts from now on as `policy` says, and returns once the root is
+    /// stopped. Processes it started before are not adopted. Ending the
+    /// group releases every process it debugs or watches.
+    pub async fn attach(
+        process: ProcessId,
+        policy: FollowPolicy,
+        debug_files: &crate::DebugFileOptions,
+    ) -> Result<Self> {
+        let mut source = backend::process_executable_source(process)?;
+        source.debug_files = crate::debug_info::DebugFileSearch::new(debug_files);
+        let group = Self::new(Program::from_executable_source(source)?, policy)?;
+        let mut events = group.subscribe();
+        let attached = group
+            .root
+            .request(|reply| crate::protocol::Request::Attach {
+                process_id: process,
+                held: false,
+                reply,
+            })
+            .await;
+
+        // The group is stopped once its driver has seen the root's stop.
+        let stopped = async {
+            loop {
+                match events.recv().await {
+                    Ok(GroupEvent::GroupStopped { .. }) => return Ok(()),
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => {
+                        return Err(Error::RequestCancelled);
+                    }
+                }
+            }
+        };
+        let attached = match attached {
+            Ok(_) => stopped.await,
+            Err(error) => Err(error),
+        };
+
+        match attached {
+            Ok(()) => Ok(group),
+            Err(error) => {
+                let _ = group.shutdown().await;
+                Err(error)
+            }
+        }
+    }
+
     /// The root member's handle, through which the group's program is
     /// launched or attached, and whose breakpoints are the group's.
     #[must_use]
@@ -388,12 +436,15 @@ impl Driver {
         mut commands: mpsc::UnboundedReceiver<Command>,
     ) {
         loop {
+            // A member's events are served before a client's command, so
+            // that a command acts on the group as the events left it.
             tokio::select! {
-                Some(notice) = notices.recv() => self.notice(notice).await,
+                biased;
                 Some(internal) = self.internal.1.recv() => match internal {
                     Internal::Event(member, event) => self.event(member, event).await,
                     Internal::PauseFailed(member) => self.paused(member, None),
                 },
+                Some(notice) = notices.recv() => self.notice(notice).await,
                 command = commands.recv() => match command {
                     Some(Command::ContinueAll(reply)) => {
                         let _ = reply.send(self.continue_all().await);
