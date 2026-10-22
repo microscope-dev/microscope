@@ -562,6 +562,12 @@
         PLAYWRIGHT_BROWSERS_PATH = "${pkgs.playwright-driver.browsers}";
         PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS = "true";
         PLAYWRIGHT_DRIVER_VERSION = pkgs.playwright-driver.version;
+        # The certificate authorities that pnpm and other downloads trust.
+        # nixpkgs' OpenSSL otherwise looks for a bundle at a path that only
+        # some distributions provide (not Fedora's), and --ignore-env drops
+        # the host's own setting.
+        SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+        NIX_SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
         RUSTFLAGS = "-C link-arg=-fuse-ld=mold -C link-arg=-Wl,--dynamic-linker=${pkgs.glibc}/lib/ld-linux-x86-64.so.2";
         # `just build-static` links microscope against the musl and libunwind
         # this flake pins, not the copies Rust ships, so its C dependencies
