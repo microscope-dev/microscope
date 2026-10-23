@@ -35,14 +35,20 @@ export async function stubClipboard(page: Page): Promise<void> {
   });
 }
 
-/** A card's inputs as Copy CSV copies them, by path. A card draws only
- * on screen, so it is scrolled there first. */
+/** A card's inputs as Copy CSV copies them, by path. Keep it on screen
+ * until it draws: earlier drawings can grow and push it out of view. */
 export async function copyCsv(page: Page, board: Locator): Promise<Map<string, string>> {
-  await board.scrollIntoViewIfNeeded();
+  const button = board.getByRole("button", { name: "Copy CSV" });
+  await expect
+    .poll(async () => {
+      await board.scrollIntoViewIfNeeded();
+      return button.count();
+    })
+    .toBe(1);
   await page.evaluate(() => {
     (window as unknown as { copied?: string | undefined }).copied = undefined;
   });
-  await board.getByRole("button", { name: "Copy CSV" }).click();
+  await button.click();
   const copied = () =>
     page.evaluate(() => (window as unknown as { copied?: string | undefined }).copied);
   await expect.poll(copied).toBeDefined();

@@ -1954,6 +1954,7 @@ impl Cli {
             }
         };
 
+        self.member_execution_end(&reason, &mut lines).await?;
         let elapsed = started.elapsed();
 
         while let Ok(event) = events.try_recv() {

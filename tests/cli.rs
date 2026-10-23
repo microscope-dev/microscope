@@ -5782,6 +5782,43 @@ fn jump_moves_the_thread_to_resume_elsewhere_in_its_function() {
 }
 
 #[test]
+fn continuing_after_a_jump_waits_for_exit_not_the_previous_stop() {
+    let start = support::source_line("tests/fixtures/c/jump.c", "jump: start");
+    let target = support::source_line("tests/fixtures/c/jump.c", "jump: target");
+    let mut commands = vec![format!("break jump.c:{start}")];
+    for _ in 0..64 {
+        commands.extend([
+            "run".to_owned(),
+            format!("jump {target}"),
+            "print status".to_owned(),
+            "set var $rax = 5".to_owned(),
+            "print $rax".to_owned(),
+            "jump +1".to_owned(),
+            "continue".to_owned(),
+        ]);
+    }
+
+    let output = batch_with_settings(
+        "[stop]\nshow = []\nhighlight-changes = false\n",
+        &["build/test-programs/jump"],
+        &commands.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        output.matches("inferior exited with status 0").count(),
+        64,
+        "{output}"
+    );
+    assert_eq!(
+        output
+            .matches("stopped where the thread was moved to resume")
+            .count(),
+        128,
+        "{output}"
+    );
+    assert!(!output.contains("source unavailable"), "{output}");
+}
+
+#[test]
 fn step_goes_into_one_call_of_the_line() {
     let line = |marker: &str| support::source_line("tests/fixtures/c/step-targets.c", marker);
     let next = format!(

@@ -105,6 +105,11 @@ fn main() {
         }
         for (value, open) in (0..).zip(gates) {
             open.send(value).expect("the task waits"); // WAKES: gate
+            if value == 0 {
+                while truth::parked_at("gate") == TASKS {
+                    std::thread::yield_now();
+                }
+            }
         }
     });
     let joined = async {

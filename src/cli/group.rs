@@ -152,6 +152,59 @@ impl Cli {
         }
     }
 
+    pub(super) async fn member_execution_end(
+        &self,
+        reason: &StopReason,
+        lines: &mut RunLines,
+    ) -> Result<()> {
+        let Some(group) = &self.group else {
+            return Ok(());
+        };
+        let member = self.selected_member();
+        let mut events = group.events.lock().await;
+        loop {
+            let event = events.recv().await?;
+            match event {
+                GroupEvent::GroupStopped {
+                    member: stopped, ..
+                } if !matches!(reason, StopReason::Exited(_))
+                    && (group.handle.stops() == microscope::StopScope::Group
+                        || stopped == member) =>
+                {
+                    break;
+                }
+                GroupEvent::MemberExited { member: ended, .. }
+                | GroupEvent::MemberWatched { member: ended, .. }
+                    if ended == member =>
+                {
+                    if group.handle.members().iter().any(|member| {
+                        matches!(
+                            member.state,
+                            MemberState::NotStarted
+                                | MemberState::Running
+                                | MemberState::Stopped(_)
+                        )
+                    }) {
+                        break;
+                    }
+                }
+                GroupEvent::GroupExited => break,
+                GroupEvent::MemberLost { member: lost } if lost == member => {
+                    bail!(
+                        "the session of [{member}] failed, and released its process to run on its own"
+                    );
+                }
+                event => {
+                    if let Some(line) = self.group_notice(&event) {
+                        lines.push(line);
+                    }
+                }
+            }
+        }
+        drop(events);
+        Ok(())
+    }
+
     /// Runs the group, by launching its root or continuing every member,
     /// until it stops or every member has exited, and reports what the
     /// group did meanwhile and the stop, in the member that stopped, which

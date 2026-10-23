@@ -6,7 +6,7 @@ use std::process::Stdio;
 
 use microscope::{
     BreakpointSpec, InferiorState, LaunchOptions, LineNumber, StepKind, StopReason, TaskEnding,
-    ThreadActivity, VariableKind,
+    TaskState, ThreadActivity, VariableKind,
 };
 
 use crate::invariants::checked;
@@ -321,6 +321,48 @@ async fn a_task_condition_stops_only_in_its_task() {
                 .expect("the breakpoint")
                 .hit_count;
             assert_eq!(hits, 9, "{context}: three tasks go round three times");
+            scenario.shutdown().await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn tasks_at_the_gate_stay_suspended_until_the_first_task_resumes() {
+    for fixture in BUILDS {
+        for mode in modes(fixture) {
+            let context = format!("{fixture} {mode:?}");
+            let scenario = stopped_once(fixture, mode, "// STEP: inner-after").await;
+            let page = scenario
+                .operation("tasks", scenario.handle().tasks(None, 16))
+                .await;
+            let suspended: Vec<_> = page
+                .tasks
+                .iter()
+                .filter(|task| !task.internal && task.state == TaskState::Blocked)
+                .collect();
+            assert_eq!(suspended.len(), 2, "{context}: {:#?}", page.tasks);
+
+            for task in suspended {
+                assert_eq!(task.thread, None, "{context}: {task:#?}");
+                scenario
+                    .operation("select task", scenario.handle().select_context(task.id))
+                    .await;
+                let trace = crate::stops::backtrace(&scenario).await;
+                assert!(
+                    trace.frames.iter().any(|frame| {
+                        frame
+                            .function
+                            .as_ref()
+                            .is_some_and(|function| function.name.as_ref() == "inner")
+                            && frame.source.as_ref().is_some_and(|source| {
+                                source.line.get() == line(SOURCE, "// AWAIT: inner")
+                            })
+                    }),
+                    "{context}: {}: {trace:#?}",
+                    task.id,
+                );
+            }
+
             scenario.shutdown().await;
         }
     }

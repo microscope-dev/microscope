@@ -49,6 +49,40 @@ async function step(page: Page, board: Locator, stop: string): Promise<void> {
   await expect(board.locator(".drawing-head")).toContainText(`stop ${stop}`);
 }
 
+test("Copy CSV keeps a lazy drawing in view when an earlier drawing grows", async ({ page }) => {
+  await page.setContent(`
+    <style>html { overflow-anchor: none; }</style>
+    <div id="earlier" style="height: 900px"></div>
+    <section aria-label="Drawing of bytes" style="height: 80px">
+      bytes <button hidden>Copy CSV</button>
+    </section>
+  `);
+  await page.evaluate(() => {
+    const earlier = document.getElementById("earlier") as HTMLElement;
+    const board = document.querySelector("section") as HTMLElement;
+    const button = board.querySelector("button") as HTMLButtonElement;
+    let grew = false;
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) {
+        return;
+      }
+      if (!grew) {
+        // The earlier renderer finishes before this card starts its draw.
+        grew = true;
+        earlier.style.height = "2000px";
+      } else {
+        button.hidden = false;
+        observer.disconnect();
+      }
+    });
+    observer.observe(board);
+    button.onclick = () => {
+      (window as unknown as { copied: string }).copied = "path,value\nvalues[0],7\n";
+    };
+  });
+  expect(await copyCsv(page, card(page, "bytes"))).toEqual(new Map([["values[0]", "7"]]));
+});
+
 test.describe("a C program's metrics", () => {
   const metrics = (page: Page, microscope: Microscope) =>
     open(page, microscope, "metrics", "c/metrics/metrics.views");
