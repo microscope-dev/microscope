@@ -586,10 +586,6 @@ pub struct ModuleImage {
     /// Lines, files, symbols, sections, functions, and code, as tables.
     tables: Arc<crate::image::Image>,
 
-    /// Symbols by the last part of each name they answer to, built on the
-    /// first search for one, since it demangles every symbol.
-    symbols_by_last_part: std::sync::OnceLock<HashMap<Box<str>, Vec<SymbolId>>>,
-
     /// The functions that run each coroutine type, by the type's identity,
     /// built on the first search for one.
     coroutine_functions: std::sync::OnceLock<HashMap<u32, Vec<FunctionId>>>,
@@ -656,7 +652,6 @@ impl ModuleImage {
         let debug_file = facts.debug_file(binding.debug_path.clone())?;
 
         Ok(Self {
-            symbols_by_last_part: std::sync::OnceLock::new(),
             coroutine_functions: std::sync::OnceLock::new(),
             panic_entries: std::sync::OnceLock::new(),
             globals_by_selector: std::sync::OnceLock::new(),
@@ -1593,38 +1588,16 @@ impl ModuleImage {
 
     /// Every symbol that answers to a name as [`Symbol::answers_to`]
     /// reads it.
+    ///
+    /// Such a symbol's name holds the name's last part as written: it is
+    /// the name, or the name with a version after it, or a mangled name
+    /// [`crate::demangle::spells`] accepts only if it holds the last part.
+    /// So only the few names that hold it are demangled, never all of a
+    /// module's, which for a large C++ program takes most of a second.
     pub fn symbols_answering<'a>(&'a self, name: &'a str) -> impl Iterator<Item = Symbol<'a>> {
-        let index = self.symbols_by_last_part.get_or_init(|| {
-            let mut index = HashMap::<Box<str>, Vec<SymbolId>>::new();
-            for symbol in self.symbols() {
-                let demangled = crate::demangle::demangle(symbol.name());
-                let parts = [
-                    Some(symbol.name()),
-                    Some(symbol.unversioned_name()),
-                    demangled.as_deref().map(crate::demangle::last_part),
-                ];
-                for part in parts.into_iter().flatten() {
-                    let ids = index.entry(part.into()).or_default();
-                    if ids.last() != Some(&symbol.id()) {
-                        ids.push(symbol.id());
-                    }
-                }
-            }
-
-            index
-        });
-
-        let mut candidates = [name, crate::demangle::last_part(name)]
-            .into_iter()
-            .filter_map(|part| index.get(part))
-            .flatten()
-            .copied()
-            .collect::<Vec<_>>();
-        candidates.sort_unstable();
-        candidates.dedup();
-        candidates
-            .into_iter()
-            .filter_map(|id| self.symbol(id))
+        let last = crate::demangle::last_part(name);
+        self.symbols()
+            .filter(move |symbol| symbol.name().contains(last))
             .filter(move |symbol| symbol.answers_to(name))
     }
 
