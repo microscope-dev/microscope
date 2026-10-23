@@ -15,5 +15,6 @@
     "../../views/visualizers/*.js",
     "../../tests/fixtures/**/*.js",
     "../../web/e2e/visualizers/*.js"
-  ]
+  ],
+  "exclude": ["../../tests/fixtures/node"]
 }
