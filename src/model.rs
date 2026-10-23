@@ -1380,6 +1380,13 @@ pub enum SourceLanguage {
     /// Python, which an interpreter runs rather than a compiler's code.
     Python,
 
+    /// JavaScript, which a runtime such as V8 runs.
+    JavaScript,
+
+    /// TypeScript, which a runtime runs once its types are erased or it
+    /// is compiled to JavaScript.
+    TypeScript,
+
     /// Another language, by its DWARF language code.
     Other(u16),
 

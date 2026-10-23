@@ -18,6 +18,7 @@ pub use agents::{
 
 pub mod futures;
 mod go;
+mod node;
 mod python;
 pub use python::BOOTSTRAP_DIRECTORY_PREFIX as PYTHON_BOOTSTRAP_PREFIX;
 pub use python::{
@@ -179,7 +180,6 @@ pub trait RuntimeImage: std::fmt::Debug {
     }
 
     /// The V8 runtime the image carries, as its loader read it.
-    #[allow(dead_code, reason = "until the Node runtime model reads it")]
     fn v8(&self) -> Option<crate::image::v8::V8Runtime> {
         None
     }
@@ -1389,7 +1389,6 @@ pub struct SampledCode {
 
 /// A physical frame whose code a runtime owns, as the unwinder found it.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code, reason = "until the Node runtime model reads frames")]
 pub struct CodeFrame<'a> {
     /// Whether its instruction is the return address of a call it made,
     /// as every caller's is.
@@ -1857,6 +1856,7 @@ pub fn detect(
         .chain(rust::detect(image).map(Ok))
         .chain(self::tokio::detect(image))
         .chain(python::detect(image))
+        .chain(node::detect(image))
         .collect()
 }
 
@@ -1867,6 +1867,10 @@ impl RuntimeImage for ModuleImage {
 
     fn python(&self) -> Option<crate::image::python::PythonRuntime> {
         self.python_runtime()
+    }
+
+    fn v8(&self) -> Option<crate::image::v8::V8Runtime> {
+        self.v8_runtime()
     }
 
     fn constant(&self, name: &str) -> Option<IntegerValue> {

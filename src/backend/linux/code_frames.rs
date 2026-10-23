@@ -198,7 +198,7 @@ mod tests {
     fn recorded(function: &str) -> RecordedFrame {
         RecordedFrame {
             function: function.into(),
-            language: SourceLanguage::Python,
+            language: SourceLanguage::JavaScript,
             place: None,
             first_line: None,
             problem: None,

@@ -6,6 +6,7 @@
 #[path = "../support/mod.rs"]
 mod support;
 
+mod frames;
 mod native;
 mod session;
 mod stacks;

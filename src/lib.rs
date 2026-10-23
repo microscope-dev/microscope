@@ -2309,37 +2309,27 @@ impl StopView<'_> {
     /// the handle's [`SourcePathMap`].
     pub async fn source_context(&self, radius: u32) -> Result<SourceContext> {
         let (module, source) = match self.location().await {
-            Ok(location) => (location.module, location.image.source),
+            Ok(location) if location.image.source.is_some() => {
+                (location.module, location.image.source)
+            }
+            // A runtime's frame can run code its image has no source for,
+            // such as V8's interpreter or compiled code; the runtime
+            // recorded where it is.
+            Ok(location) => {
+                let frame = self.selected_trace_frame().await?;
+                if let Some(context) = self.recorded_source(&frame, radius).await {
+                    return context;
+                }
+                (location.module, location.image.source)
+            }
             // A suspended task's frame with no code to locate still waits
             // at a line, and an interpreted frame runs one its runtime
             // recorded.
             Err(Error::FrameSuspended | Error::FrameInterpreted) => {
-                let trace = self.backtrace().await?;
-                let frame = trace
-                    .frames
-                    .iter()
-                    .find(|frame| frame.id == self.context.frame)
-                    .ok_or(Error::SourceLocationUnavailable)?;
-                if let Some(place) = frame
-                    .recorded
-                    .as_ref()
-                    .and_then(|recorded| recorded.place.as_ref())
-                {
-                    let line = LineNumber::new(u64::from(place.line))
-                        .ok_or(Error::SourceLocationUnavailable)?;
-                    let column = ColumnNumber::new(u64::from(place.column));
-                    if place.path.starts_with('<') && place.path.ends_with('>') {
-                        return Err(Error::SourceNotAFile {
-                            name: Arc::clone(&place.path),
-                        });
-                    }
-                    let recorded = Arc::new(PathBuf::from(&*place.path));
-                    return self
-                        .handle
-                        .source_around(recorded, line, column, radius)
-                        .await;
+                let frame = self.selected_trace_frame().await?;
+                if let Some(context) = self.recorded_source(&frame, radius).await {
+                    return context;
                 }
-
                 (
                     frame.module.ok_or(Error::SourceLocationUnavailable)?,
                     frame.source.clone(),
@@ -2349,6 +2339,47 @@ impl StopView<'_> {
         };
 
         self.handle.source_context_at(module, source, radius).await
+    }
+
+    /// The selected frame, as the backtrace presents it.
+    async fn selected_trace_frame(&self) -> Result<StackFrame> {
+        let trace = self.backtrace().await?;
+        trace
+            .frames
+            .iter()
+            .find(|frame| frame.id == self.context.frame)
+            .cloned()
+            .ok_or(Error::SourceLocationUnavailable)
+    }
+
+    /// The source around the place `frame`'s runtime recorded, or `None`
+    /// where it recorded none.
+    async fn recorded_source(
+        &self,
+        frame: &StackFrame,
+        radius: u32,
+    ) -> Option<Result<SourceContext>> {
+        let place = frame.recorded.as_ref()?.place.as_ref()?;
+        let Some(line) = LineNumber::new(u64::from(place.line)) else {
+            return Some(Err(Error::SourceLocationUnavailable));
+        };
+        let column = ColumnNumber::new(u64::from(place.column));
+        // Names in angle brackets, as Python's `<string>`, and a runtime's
+        // module ids, as Node's `node:fs`, name no file.
+        let module_id = place.path.split_once(':').is_some_and(|(scheme, _)| {
+            scheme.len() > 1 && scheme.bytes().all(|byte| byte.is_ascii_alphabetic())
+        });
+        if (place.path.starts_with('<') && place.path.ends_with('>')) || module_id {
+            return Some(Err(Error::SourceNotAFile {
+                name: Arc::clone(&place.path),
+            }));
+        }
+        let recorded = Arc::new(PathBuf::from(&*place.path));
+        Some(
+            self.handle
+                .source_around(recorded, line, column, radius)
+                .await,
+        )
     }
 
     /// Inspects every visible parameter and local variable of the frame.

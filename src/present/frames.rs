@@ -42,11 +42,18 @@ pub fn place(frame: &StackFrame, image: Option<&ModuleImage>) -> Option<FramePla
 }
 
 /// What `frame` runs: the function its runtime recorded, its function, or
-/// its symbol, or `<unknown>`.
+/// its symbol, or `<unknown>`. A function its runtime recorded with no
+/// name, such as a module's top level, is `<anonymous>`.
 pub fn code(frame: &StackFrame) -> String {
     frame.recorded.as_ref().map_or_else(
         || format::code_name(frame.function.as_ref(), frame.symbol.as_ref()),
-        |recorded| recorded.function.to_string(),
+        |recorded| {
+            if recorded.function.is_empty() {
+                "<anonymous>".to_owned()
+            } else {
+                recorded.function.to_string()
+            }
+        },
     )
 }
 
@@ -113,6 +120,8 @@ pub fn language(frame: &StackFrame) -> Option<(&'static str, &'static str)> {
         SourceLanguage::Nim => ("nim", "Nim"),
         SourceLanguage::Ada => ("ada", "Ada"),
         SourceLanguage::Python => ("py", "Python"),
+        SourceLanguage::JavaScript => ("js", "JavaScript"),
+        SourceLanguage::TypeScript => ("ts", "TypeScript"),
         _ => return None,
     })
 }

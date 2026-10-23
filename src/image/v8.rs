@@ -769,10 +769,6 @@ pub struct Slice {
 /// `Ok(None)` when the version has no such slice. An error when the
 /// version has no translation, a word cannot be read, or one is not what
 /// V8 would have written there, such as a count that is no Smi.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "until the Node runtime model reads scopes")
-)]
 pub fn scope_info_slice(
     version: V8Version,
     slice: ScopeInfoSlice,

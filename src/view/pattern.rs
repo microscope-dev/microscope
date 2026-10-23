@@ -31,7 +31,10 @@ pub type Captures = Vec<(String, Captured)>;
 pub const fn language_matches(language: Language, actual: SourceLanguage) -> bool {
     matches!(
         (language, actual),
-        (Language::Any, actual) if !matches!(actual, SourceLanguage::Python)
+        (Language::Any, actual) if !matches!(
+            actual,
+            SourceLanguage::Python | SourceLanguage::JavaScript | SourceLanguage::TypeScript
+        )
     ) || matches!(
         (language, actual),
         (Language::Python, SourceLanguage::Python)

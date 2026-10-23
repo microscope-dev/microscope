@@ -35,7 +35,9 @@
 // process.abort() under checkpoint(). A test skips a thread's innermost frames
 // up to the first one outside this file and node:fs. FUNCTION is
 // getFunctionName(), FILE getFileName() or else getScriptNameOrSourceURL(),
-// and LINE and COLUMN V8's, counted from 1; each is - when V8 has none.
+// as the path url.fileURLToPath() gives where that is a file: URL, as an ES
+// module's is, and LINE and COLUMN V8's, counted from 1; each is - when V8
+// has none.
 //
 // TIER is the tier of the frame's code at the checkpoint, read from inside
 // the process while every frame is on the stack, for a frame whose function
@@ -68,6 +70,7 @@
 const fs = require('node:fs');
 const util = require('node:util');
 const threads = require('node:worker_threads');
+const url = require('node:url');
 
 // How long checkpoint() waits for every worker to park.
 const PARK_DEADLINE_MS = 30000;
@@ -206,7 +209,8 @@ function describe(role, name, above, locals) {
   const sites = callSites(above);
   const lines = [line(['thread', id, name, role])];
   sites.forEach((site, depth) => {
-    const file = site.getFileName() ?? site.getScriptNameOrSourceURL() ?? '-';
+    const given = site.getFileName() ?? site.getScriptNameOrSourceURL() ?? '-';
+    const file = given.startsWith('file:') ? url.fileURLToPath(given) : given;
     const fn = site.getFunctionName() ?? '-';
     lines.push(line(['frame', id, depth, fn, file, site.getLineNumber() ?? '-',
       site.getColumnNumber() ?? '-', tierAt(sites.length - 1 - depth, fn)]));

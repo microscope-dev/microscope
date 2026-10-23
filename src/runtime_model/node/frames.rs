@@ -1,0 +1,287 @@
+//! What a physical frame in V8's code runs.
+//!
+//! V8 keeps its frames on the native stack. Each holds, below the word
+//! that saved its caller's frame pointer, either a marker, a small integer
+//! naming a frame of V8's own (entry, exit, stub), or the frame's context,
+//! a heap object, followed by the JavaScript function it runs. An
+//! interpreted frame also holds its bytecode and the offset of the
+//! instruction it runs or called from. Each fact is read only as the type
+//! it is proven to be.
+
+use super::objects::{Object, Problem, Reader};
+use super::positions::{self, Encoding};
+use crate::image::v8::{Constant, Field};
+use crate::runtime_model::{CodeFrame, DescribedFrame};
+use crate::unwind::RBP;
+use crate::{CodeRole, RecordedFrame, RecordedPlace, SourceLanguage};
+
+/// The frame `frame`, in V8's code, describes; `None` where nothing proves
+/// what it runs, which keeps the name its code's symbol gives it.
+pub(super) fn describe(
+    reader: &Reader<'_>,
+    encoding: Encoding,
+    frame: &CodeFrame<'_>,
+) -> Option<DescribedFrame> {
+    // A frame stopped inside its code may not have entered its frame yet,
+    // or may have left it; only a call is made from inside one.
+    if !frame.after_call {
+        return None;
+    }
+    let fp = frame.registers.get(RBP)?;
+    let marker = reader
+        .word(fp.wrapping_add_signed(reader.constant(Constant::OffFpContextOrFrameType).ok()?))
+        .ok()?;
+    // A frame of V8's own keeps a marker, a small integer with the Smi
+    // tag, where a JavaScript frame keeps its context.
+    if reader.object(marker).ok()?.is_none() {
+        return Some(DescribedFrame {
+            functions: Vec::new(),
+            role: CodeRole::Interpreter,
+        });
+    }
+
+    let function = javascript_function(reader, fp).ok()??;
+    let recorded = match recorded(reader, encoding, frame, fp, function) {
+        // A function V8's own stack traces hide is its machinery.
+        Ok(None) => {
+            return Some(DescribedFrame {
+                functions: Vec::new(),
+                role: CodeRole::Interpreter,
+            });
+        }
+        Ok(Some(recorded)) => recorded,
+        Err(problem) => RecordedFrame {
+            function: "<unknown>".into(),
+            language: SourceLanguage::JavaScript,
+            place: None,
+            first_line: None,
+            problem: Some(problem),
+        },
+    };
+    let role = if recorded
+        .place
+        .as_ref()
+        .is_none_or(|place| place.path.starts_with("node:"))
+    {
+        CodeRole::RuntimeInternal
+    } else {
+        CodeRole::Ordinary
+    };
+    Some(DescribedFrame {
+        functions: vec![recorded],
+        role,
+    })
+}
+
+/// The function the JavaScript frame at `fp` runs, or `None` where its
+/// slot holds no function, as in a frame of V8's that keeps a context.
+fn javascript_function(reader: &Reader<'_>, fp: u64) -> Result<Option<Object>, Problem> {
+    let slot = fp.wrapping_add_signed(reader.constant(Constant::OffFpFunction)?);
+    let Some(function) = reader.object(reader.word(slot)?)? else {
+        return Ok(None);
+    };
+    let ty = reader.instance_type(function)?;
+    let first = reader.constant(Constant::FirstJSFunctionType)?;
+    let last = reader.constant(Constant::LastJSFunctionType)?;
+    Ok((first..=last).contains(&ty).then_some(function))
+}
+
+/// What the frame at `fp` that runs `function` records. `None` for a
+/// function V8's stack traces hide: one of no script that is not exposed
+/// to the program as a native function, such as the closures that resume
+/// an `await`.
+fn recorded(
+    reader: &Reader<'_>,
+    encoding: Encoding,
+    frame: &CodeFrame<'_>,
+    fp: u64,
+    function: Object,
+) -> Result<Option<RecordedFrame>, Problem> {
+    let shared = reader.typed_field(
+        function,
+        Field::JSFunctionSharedFunctionInfo,
+        Constant::SharedFunctionInfoType,
+    )?;
+    // A name that cannot be read leaves the frame its place.
+    let (name, unnamed) = match super::names::function_name(reader, shared) {
+        Ok(name) => (name, None),
+        Err(problem) => (String::new(), Some(problem)),
+    };
+    let script = reader.field(shared, Field::SharedFunctionInfoScript)?;
+    let script = match reader.object(script)? {
+        Some(script) if reader.is(script, Constant::ScriptType)? => Some(script),
+        _ => None,
+    };
+    if script.is_none() && !super::names::is_native(reader, shared)? {
+        return Ok(None);
+    }
+    let path = script
+        .map(|script| script_name(reader, script))
+        .transpose()?
+        .flatten()
+        .map(|name| file_url_path(&name).unwrap_or(name));
+
+    let (place, problem) = match (script, &path) {
+        (Some(script), Some(path)) => match offset_in_script(reader, encoding, frame, fp, shared) {
+            Ok(offset) => {
+                let (line, column) = positions::line_column(reader, script, offset)?;
+                let place = RecordedPlace {
+                    path: path.as_str().into(),
+                    line,
+                    column,
+                };
+                (Some(place), None)
+            }
+            Err(problem) => (None, Some(problem)),
+        },
+        _ => (None, None),
+    };
+
+    let language = match &path {
+        Some(path)
+            if [".ts", ".mts", ".cts"]
+                .iter()
+                .any(|end| path.ends_with(end)) =>
+        {
+            SourceLanguage::TypeScript
+        }
+        _ => SourceLanguage::JavaScript,
+    };
+    Ok(Some(RecordedFrame {
+        function: name.into(),
+        language,
+        place,
+        first_line: None,
+        problem: problem.or(unnamed),
+    }))
+}
+
+/// The name of `script`, or its source URL where it has no name, as V8's
+/// call sites give it; `None` where it has neither.
+fn script_name(reader: &Reader<'_>, script: Object) -> Result<Option<String>, Problem> {
+    for field in [Field::ScriptName, Field::ScriptSourceUrl] {
+        let word = reader.field(script, field)?;
+        if let Some(name) = reader.object(word)?
+            && reader.instance_type(name)? < reader.constant(Constant::FirstNonstringType)?
+        {
+            let name = reader.string(name)?;
+            if !name.is_empty() {
+                return Ok(Some(name));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// The path a `file:` URL names, as Node names an ES module's script, or
+/// `None` for any other name or a URL that does not name a local path.
+fn file_url_path(name: &str) -> Option<String> {
+    let rest = name.strip_prefix("file://")?;
+    let path = rest.strip_prefix("localhost").unwrap_or(rest);
+    if !path.starts_with('/') {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(path.len());
+    let mut chars = path.bytes();
+    while let Some(byte) = chars.next() {
+        if byte == b'?' || byte == b'#' {
+            return None;
+        }
+        if byte != b'%' {
+            bytes.push(byte);
+            continue;
+        }
+        let high = char::from(chars.next()?).to_digit(16)?;
+        let low = char::from(chars.next()?).to_digit(16)?;
+        let decoded = u8::try_from(high * 16 + low).ok()?;
+        // Node's fileURLToPath refuses an encoded separator or NUL.
+        if decoded == b'/' || decoded == 0 {
+            return None;
+        }
+        bytes.push(decoded);
+    }
+    String::from_utf8(bytes).ok()
+}
+
+/// The offset in its script of the code the frame at `fp` runs: from its
+/// bytecode and the offset it keeps, for a frame the interpreter runs.
+fn offset_in_script(
+    reader: &Reader<'_>,
+    encoding: Encoding,
+    frame: &CodeFrame<'_>,
+    fp: u64,
+    shared: Object,
+) -> Result<u64, Problem> {
+    if frame.generated {
+        return Err("the place of compiled code is not read yet".into());
+    }
+    let slot = |constant| -> Result<u64, Problem> {
+        reader.word(fp.wrapping_add_signed(reader.constant(constant)?))
+    };
+    let bytecode = reader
+        .object(slot(Constant::OffFpBytecodeArray)?)?
+        .filter(|bytecode| {
+            reader
+                .is(*bytecode, Constant::BytecodeArrayType)
+                .unwrap_or(false)
+        })
+        .ok_or("the frame keeps no bytecode")?;
+    if let Some(own) = super::names::bytecode(reader, shared)?
+        && own != bytecode
+    {
+        return Err("the frame's bytecode is not its function's".into());
+    }
+
+    // The frame keeps the offset from the bytecode array's tagged address,
+    // past its header.
+    let raw = reader
+        .smi(slot(Constant::OffFpBytecodeOffset)?)?
+        .ok_or("the frame's bytecode offset is no Smi")?;
+    let header = i64::try_from(reader.offset(Field::BytecodeArrayBytes)?)
+        .map_err(|_| "a bytecode header is out of range")?;
+    let offset = raw - header + reader.constant(Constant::HeapObjectTag)?;
+    let length = reader.smi_field(bytecode, Field::BytecodeArrayLength)?;
+    if !(0..length).contains(&offset) {
+        return Err(
+            format!("the frame's bytecode offset {offset} is outside its {length} bytes").into(),
+        );
+    }
+
+    let table = positions::decode(&positions::table_bytes(reader, bytecode)?, encoding)?;
+    positions::position_at(&table, offset)
+        .and_then(positions::script_offset)
+        .ok_or_else(|| "the bytecode has no position at the frame's offset".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::file_url_path;
+
+    #[test]
+    fn a_file_url_names_the_path_node_encoded_into_it() {
+        let path = |url: &str| file_url_path(url);
+        assert_eq!(
+            path("file:///srv/app/a.mjs").as_deref(),
+            Some("/srv/app/a.mjs")
+        );
+        assert_eq!(
+            path("file:///srv/my%20app/%C3%A9t%C3%A9.mjs").as_deref(),
+            Some("/srv/my app/été.mjs")
+        );
+        assert_eq!(path("file://localhost/a.mjs").as_deref(), Some("/a.mjs"));
+        // Not a file URL, or one no local path decodes from.
+        for url in [
+            "node:fs",
+            "/srv/app/a.js",
+            "file://host/a.mjs",
+            "file:///a%2Fb.mjs",
+            "file:///a%00.mjs",
+            "file:///a%2.mjs",
+            "file:///a%zz.mjs",
+            "file:///a%ff.mjs",
+            "file:///a.mjs?x=1",
+        ] {
+            assert_eq!(path(url), None, "{url}");
+        }
+    }
+}
