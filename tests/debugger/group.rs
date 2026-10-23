@@ -405,7 +405,7 @@ async fn shutdown_ends_every_process_the_group_launched() {
         // until its parent, or init once that parent died too, reaps it.
         let state = process_state(*process);
         assert!(
-            matches!(state, None | Some('Z')),
+            matches!(state, None | Some('Z' | 'X')),
             "{process:?} is {state:?}"
         );
     }
@@ -744,7 +744,7 @@ async fn a_watched_app_restarted_joins_again_with_its_breakpoints() {
     for process in processes {
         let state = process_state(process);
         assert!(
-            matches!(state, None | Some('Z')),
+            matches!(state, None | Some('Z' | 'X')),
             "{process:?} is {state:?}"
         );
     }
