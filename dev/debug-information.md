@@ -302,9 +302,25 @@ pseudo-module, `debug_info::runtime_code`, with no symbols. It unwinds by the
 convention, except where the instructions at the frame's own address prove
 otherwise: a `push rbp; mov rbp, rsp` prologue that has not run yet, or a
 `ret`. A caller's address is the end of the call it made, which is never
-either. Debian's shared `libnode` names no builtin, so its own copy of the
-builtins is not described until the V8 runtime model reads their bounds from
-the process (G2 in `plans/node.html`).
+either.
+
+Debian's shared `libnode` names no builtin and has no CFI for them, so no
+table describes them. There, `RuntimeModel::process_code` gives the code a
+runtime owns as the process says at a stop, in process addresses: the Node
+model reads the pointer and 32-bit size at the `embedded_blob` variables,
+relocated by the stop's load bias. It is empty before V8 stores them, where
+they cannot be read, and wherever `Builtins_` symbols bound the builtins, so
+a symbolled build is unchanged. The backend reads the ranges once per walk
+(`runtimes.rs` `runtime_process_code`), with where each lies in the carrying
+module's image. Every unwinder is built by `Controller::caller_provider`,
+which carries them: where a module's rules give `NoUnwindInfo` for an
+address in such a range, or in a binding of the same image at the same image
+address, `runtime_code::caller_at` unwinds it by the convention.
+`code_frames.rs` takes such a frame to be the runtime's, not generated, so
+its interpreted frames are named. `code_copies.rs` also tries the start of
+that image range as a copy's candidate, so a worker isolate's copy of the
+builtins, which begins with no symbol, binds `libnode`'s image rather than
+becoming V8's compiled code.
 
 GCC's epilogues pop the registers a caller keeps but leave the CFI rules that
 name their slots, now below the stack pointer, until the function returns. A

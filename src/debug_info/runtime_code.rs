@@ -64,26 +64,47 @@ pub fn load(
 /// process's.
 struct RuntimeCodeUnwind;
 
-impl RuntimeCodeUnwind {
-    fn frame(address: ImageAddress, memory: &mut dyn MemoryReader) -> CodeFrame {
-        let address = address.get();
-        let based = CodeFrame::Based {
-            offset: 16,
-            below: None,
-        };
-        let Some(start) = address.checked_sub(BEFORE) else {
-            return based;
-        };
-        let mut bytes = Vec::with_capacity(usize::try_from(BEFORE + FROM).unwrap_or(16));
-        for word in [start, address] {
-            match memory.read_u64(VirtualAddress::new(word)) {
-                Some(value) => bytes.extend_from_slice(&value.to_le_bytes()),
-                // Code that cannot be read proves no instruction.
-                None => return based,
-            }
+/// The canonical frame address of the runtime's frame whose address in the
+/// process is `address`: its instruction in the innermost frame, the last
+/// byte of its call in a caller. The frame is found by the runtime's
+/// convention, from the code at `address`, as [`load`]'s are.
+pub fn cfa_at(
+    address: VirtualAddress,
+    registers: &RegisterFile,
+    memory: &mut dyn MemoryReader,
+) -> Result<VirtualAddress, UnwindTermination> {
+    frame_cfa(frame(address, memory), registers)
+}
+
+/// The caller of the runtime's frame whose address in the process is
+/// `address`, as [`cfa_at`] finds the frame.
+pub fn caller_at(
+    address: VirtualAddress,
+    registers: &RegisterFile,
+    memory: &mut dyn MemoryReader,
+) -> Result<UnwindStep, UnwindTermination> {
+    frame_caller(frame(address, memory), registers, memory)
+}
+
+/// The frame at `address` of the process, by the instructions around it.
+fn frame(address: VirtualAddress, memory: &mut dyn MemoryReader) -> CodeFrame {
+    let address = address.get();
+    let based = CodeFrame::Based {
+        offset: 16,
+        below: None,
+    };
+    let Some(start) = address.checked_sub(BEFORE) else {
+        return based;
+    };
+    let mut bytes = Vec::with_capacity(usize::try_from(BEFORE + FROM).unwrap_or(16));
+    for word in [start, address] {
+        match memory.read_u64(VirtualAddress::new(word)) {
+            Some(value) => bytes.extend_from_slice(&value.to_le_bytes()),
+            // Code that cannot be read proves no instruction.
+            None => return based,
         }
-        frame_at(&bytes, start, address).unwrap_or(based)
     }
+    frame_at(&bytes, start, address).unwrap_or(based)
 }
 
 /// The frame proved at `address` by the bytes from `start`, which hold
@@ -162,7 +183,7 @@ impl UnwindInfo for RuntimeCodeUnwind {
         registers: &RegisterFile,
         memory: &mut dyn MemoryReader,
     ) -> Result<VirtualAddress, UnwindTermination> {
-        frame_cfa(Self::frame(address, memory), registers)
+        cfa_at(VirtualAddress::new(address.get()), registers, memory)
     }
 
     fn unwind(
@@ -171,7 +192,7 @@ impl UnwindInfo for RuntimeCodeUnwind {
         registers: &RegisterFile,
         memory: &mut dyn MemoryReader,
     ) -> Result<UnwindStep, UnwindTermination> {
-        frame_caller(Self::frame(address, memory), registers, memory)
+        caller_at(VirtualAddress::new(address.get()), registers, memory)
     }
 }
 

@@ -16,9 +16,9 @@ use crate::runtime_model::{
 
 use crate::unwind::DEFAULT_MAX_FRAMES;
 use crate::{
-    ColumnNumber, Error, ExecutionContext, ImageAddress, InspectionUsage, LineNumber, LoadedModule,
-    ModuleImage, RecordedPlace, Result, RuntimeId, SourceLocation, StackSegment, TaskCursor,
-    TaskId, TaskLocation, TaskPage, TaskSnapshot, TaskState, ThreadActivity, ThreadId,
+    AddressRange, ColumnNumber, Error, ExecutionContext, ImageAddress, InspectionUsage, LineNumber,
+    LoadedModule, ModuleImage, RecordedPlace, Result, RuntimeId, SourceLocation, StackSegment,
+    TaskCursor, TaskId, TaskLocation, TaskPage, TaskSnapshot, TaskState, ThreadActivity, ThreadId,
     VirtualAddress,
 };
 
@@ -48,6 +48,36 @@ pub(super) struct BoundRuntime {
     pub(super) id: RuntimeId,
     pub(super) module: LoadedModule,
     pub(super) model: Arc<dyn RuntimeModel>,
+}
+
+/// Code a runtime owns as the process says at a stop
+/// ([`RuntimeModel::process_code`]), where the image cannot say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ProcessCode {
+    pub(super) process: AddressRange<VirtualAddress>,
+
+    /// Where the code lies in the image of the module carrying the
+    /// runtime, which also binds each copy the runtime made of it; `None`
+    /// where that module's mapping does not hold it.
+    pub(super) image: Option<(crate::ModuleImageId, AddressRange<ImageAddress>)>,
+}
+
+impl ProcessCode {
+    /// Whether the code holds the process's `address`, which `code` gives
+    /// as an image's, if a module holds it.
+    pub(super) fn holds(
+        &self,
+        address: VirtualAddress,
+        code: Option<(crate::ModuleImageId, ImageAddress)>,
+    ) -> bool {
+        self.process.contains(address)
+            || self
+                .image
+                .zip(code)
+                .is_some_and(|((image, range), (held, address))| {
+                    image == held && range.contains(address)
+                })
+    }
 }
 
 /// The models bound to each image so far, each with why binding it failed
@@ -303,6 +333,52 @@ impl<P: InspectionOps> Controller<P> {
             .entry(image.id())
             .or_insert_with(|| runtime_model::detect(&(Arc::clone(image) as _)))
             .clone()
+    }
+
+    /// The code each of `runtimes` owns as the process says at the stop,
+    /// read through the stopped thread `reader`, in the order of
+    /// `runtimes` (see [`RuntimeModel::process_code`]).
+    pub(super) fn runtime_process_code(
+        &self,
+        inferior: &Inferior,
+        runtimes: &[BoundRuntime],
+        reader: Pid,
+    ) -> Vec<Vec<ProcessCode>> {
+        runtimes
+            .iter()
+            .map(|runtime| {
+                let ranges = self.with_runtime_stop(inferior, runtime, reader, |stop| {
+                    runtime.model.process_code(stop)
+                });
+                ranges
+                    .into_iter()
+                    .map(|process| ProcessCode {
+                        process,
+                        image: self.image_range(inferior, &runtime.module, process),
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Where the process's code `range` lies in the image of `module`,
+    /// if the module's mapping holds all of it.
+    fn image_range(
+        &self,
+        inferior: &Inferior,
+        module: &LoadedModule,
+        range: AddressRange<VirtualAddress>,
+    ) -> Option<(crate::ModuleImageId, AddressRange<ImageAddress>)> {
+        let last = VirtualAddress::new(range.end.get().checked_sub(1)?);
+        let held = |address| {
+            self.module_holding(inferior, address)
+                .filter(|(image, _)| image.id() == module.image)
+                .map(|(_, address)| address)
+        };
+        let start = held(range.start)?;
+        let last = held(last)?;
+        let end = ImageAddress::new(last.get().checked_add(1)?);
+        (start <= last).then_some((module.image, AddressRange { start, end }))
     }
 
     /// Runs `read` against one runtime while the process is stopped,

@@ -75,7 +75,10 @@ pub(super) fn places(
         }
     }
     let Some(code) = found else {
-        let mut reason = String::from("none of its function's code holds the frame's instruction");
+        let mut reason = String::from(
+            "none of its function's code holds the frame's instruction, so neither its place \
+             nor the functions its code inlined are known",
+        );
         for problem in problems {
             reason.push_str("; ");
             reason.push_str(&problem);

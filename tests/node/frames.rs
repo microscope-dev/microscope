@@ -13,6 +13,16 @@ use crate::truth::{Frame, Thread, check_threads, threads};
 /// The JavaScript frames of a backtrace, innermost first, past those
 /// `truth.js` and Node's `fs`, which the fixture parks in, run.
 pub fn javascript(trace: &Backtrace) -> Vec<Frame> {
+    javascript_recorded(trace)
+        .into_iter()
+        .map(|(frame, _)| frame)
+        .collect()
+}
+
+/// The JavaScript frames of a backtrace as [`javascript`] gives them, each
+/// with the problem that kept its place unknown, if one did. A frame with a
+/// problem is never taken for V8's own.
+pub fn javascript_recorded(trace: &Backtrace) -> Vec<(Frame, Option<String>)> {
     trace
         .frames
         .iter()
@@ -25,7 +35,7 @@ pub fn javascript(trace: &Backtrace) -> Vec<Frame> {
         })
         .map(|recorded| {
             let place = recorded.place.as_ref();
-            Frame {
+            let frame = Frame {
                 function: if recorded.function.is_empty() {
                     "-".to_owned()
                 } else {
@@ -35,18 +45,19 @@ pub fn javascript(trace: &Backtrace) -> Vec<Frame> {
                 line: place.map(|place| place.line),
                 column: place.map(|place| place.column),
                 tier: None,
-            }
+            };
+            (frame, recorded.problem.as_deref().map(str::to_owned))
         })
-        .skip_while(|frame| {
+        .skip_while(|(frame, problem)| {
             frame.file.ends_with("/tests/fixtures/node/truth.js")
                 || frame.file.starts_with("node:fs")
-                || frame.file == "-"
+                || (frame.file == "-" && problem.is_none())
         })
         .collect()
 }
 
 /// Each reported thread as microscope reads it at the stop.
-async fn observed(scenario: &Scenario, reported: &[Thread]) -> Vec<Thread> {
+pub async fn observed(scenario: &Scenario, reported: &[Thread]) -> Vec<Thread> {
     let mut observed = Vec::new();
     for thread in reported {
         scenario

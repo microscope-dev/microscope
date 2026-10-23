@@ -11,7 +11,7 @@ use crate::truth::threads;
 /// Holds one thread's native backtrace to a complete walk in which every
 /// frame lies in a module, and returns how many frames ran V8's compiled
 /// code and how many its interpreter.
-fn check_thread(
+pub fn check_thread(
     context: &str,
     main: bool,
     trace: &Backtrace,
@@ -35,13 +35,23 @@ fn check_thread(
         .iter()
         .filter(|(module, _)| module.starts_with("[V8 code "))
         .count();
-    // Builtins have symbols, not debug information.
+    // Builtins have symbols, not debug information, where the build keeps
+    // them; elsewhere an interpreted frame is one outside V8's compiled
+    // code that runs a fixture's function.
     let interpreted = trace
         .frames
         .iter()
-        .filter(|frame| {
+        .zip(&frames)
+        .filter(|(frame, (module, _))| {
             frame.symbol.as_ref().map(|symbol| &*symbol.name)
                 == Some("Builtins_InterpreterEntryTrampoline")
+                || (!module.starts_with("[V8 code ")
+                    && frame.recorded.as_ref().is_some_and(|recorded| {
+                        recorded
+                            .place
+                            .as_ref()
+                            .is_some_and(|place| place.path.contains("/tests/fixtures/node/"))
+                    }))
         })
         .count();
     (compiled, interpreted)

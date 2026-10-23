@@ -35,9 +35,10 @@ use std::sync::Arc;
 use crate::inspection::InspectionBudget;
 use crate::unwind::RegisterFile;
 use crate::{
-    CodeRole, CoroutineInfo, EntryProvenance, ExceptionFilter, ImageAddress, IntegerValue,
-    ModuleImage, RecordMemberLayout, RecordedPlace, SourceLanguage, StackFrame, StackSegment,
-    TaskState, ThreadId, ThreadLocal, TypeInfo, TypeKind, TypeReference, VirtualAddress,
+    AddressRange, CodeRole, CoroutineInfo, EntryProvenance, ExceptionFilter, ImageAddress,
+    IntegerValue, ModuleImage, RecordMemberLayout, RecordedPlace, SourceLanguage, StackFrame,
+    StackSegment, TaskState, ThreadId, ThreadLocal, TypeInfo, TypeKind, TypeReference,
+    VirtualAddress,
 };
 
 /// A result with the reasons it may be incomplete, such as a task whose
@@ -1233,6 +1234,20 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
     fn owns_code(&self, address: ImageAddress) -> bool {
         let _ = address;
         false
+    }
+
+    /// The code the runtime owns as the process says at `stop`, in the
+    /// process's addresses, where the image cannot say: V8's builtins in a
+    /// module stripped of the symbols that bound them, whose bounds V8
+    /// stores when it starts. The code keeps the runtime's frame-pointer
+    /// convention, by which the unwinder walks it where no call-frame
+    /// information describes it, and [`Self::code_frame`] describes its
+    /// frames as it does those of [`Self::owns_code`]. Empty where
+    /// [`Self::owns_code`] already bounds the code, before the runtime has
+    /// stored the bounds, and where they cannot be read.
+    fn process_code(&self, stop: &dyn RuntimeStop) -> Vec<AddressRange<VirtualAddress>> {
+        let _ = stop;
+        Vec::new()
     }
 
     /// Whether the code no image holds that the runtime generated, which

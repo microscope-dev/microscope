@@ -26,7 +26,7 @@ use super::{
     TaskRef, TaskStarter, ThreadActivity, Unbound,
 };
 use crate::ThreadLocal;
-use crate::image::v8::{DispatchTable, V8Layout, V8Version};
+use crate::image::v8::{DispatchTable, EmbeddedBlob, V8Layout, V8Version};
 use crate::unwind::RegisterFile;
 use crate::{AddressRange, ImageAddress, StackSegment, ThreadId, VirtualAddress};
 
@@ -51,6 +51,7 @@ pub fn detect(
         version: runtime.version,
         reading,
         builtins: builtins(image.as_ref()),
+        blob: runtime.embedded_blob.ok(),
         statics,
     })))
 }
@@ -87,13 +88,52 @@ struct NodeRuntime {
     /// The layout V8's frames and objects are read by, or why none can be.
     reading: Result<V8Layout, Arc<str>>,
     builtins: Option<AddressRange<ImageAddress>>,
+
+    /// Where the process keeps the bounds of the embedded builtins, which
+    /// bound them where no symbol does.
+    blob: Option<EmbeddedBlob>,
     statics: Statics,
+}
+
+impl NodeRuntime {
+    /// The embedded builtins' code as `stop` says V8 stored its bounds:
+    /// a pointer, then a 32-bit size. `None` before V8 stored them, and
+    /// where they cannot be read.
+    fn stored_builtins(&self, stop: &dyn RuntimeStop) -> Option<AddressRange<VirtualAddress>> {
+        let blob = self.blob?;
+        let bias = stop.load_bias();
+        let mut pointer = [0; 8];
+        let mut size = [0; 4];
+        if !stop.read(bias.load(blob.code)?, &mut pointer)
+            || !stop.read(bias.load(blob.code_size)?, &mut size)
+        {
+            return None;
+        }
+        let start = u64::from_le_bytes(pointer);
+        let size = u64::from(u32::from_le_bytes(size));
+        if start == 0 || size == 0 {
+            return None;
+        }
+        Some(AddressRange {
+            start: VirtualAddress::new(start),
+            end: VirtualAddress::new(start.checked_add(size)?),
+        })
+    }
 }
 
 impl RuntimeModel for NodeRuntime {
     fn owns_code(&self, address: ImageAddress) -> bool {
         self.builtins
             .is_some_and(|range| range.start <= address && address < range.end)
+    }
+
+    fn process_code(&self, stop: &dyn RuntimeStop) -> Vec<AddressRange<VirtualAddress>> {
+        // Where symbols bound the builtins, they own them in the image and
+        // in any copy V8 made of them, which the stored bounds may name.
+        if self.builtins.is_some() {
+            return Vec::new();
+        }
+        self.stored_builtins(stop).into_iter().collect()
     }
 
     fn owns_generated_code(&self) -> bool {

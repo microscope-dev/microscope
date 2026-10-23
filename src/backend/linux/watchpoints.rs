@@ -25,8 +25,8 @@ use crate::{
 };
 
 use super::debug_registers::{DebugRegisterPlan, SlotAccess};
-use super::frames::{DwarfCallerProvider, StackRoot, frame_lookup_address};
-use super::memory::{PtraceMemory, read_logical_memory};
+use super::frames::{StackRoot, frame_lookup_address};
+use super::memory::read_logical_memory;
 use super::native::{InspectionOps, LinuxTraceOps, is_vanished_tracee};
 use super::registers::x86_64_registers;
 use super::{
@@ -1022,15 +1022,13 @@ impl<P: InspectionOps> Controller<P> {
         };
 
         let native = self.ptrace.registers(pid)?;
-        let mut provider = DwarfCallerProvider {
-            modules: self.unwind_modules(inferior),
-            registers: x86_64_registers(&native),
-            memory: PtraceMemory {
-                ptrace: &self.ptrace,
-                pid,
-            },
-            first: true,
-        };
+        let mut provider = self.caller_provider(
+            inferior,
+            &self.runtimes(inferior),
+            pid,
+            x86_64_registers(&native),
+            true,
+        );
 
         let mut context = FrameContext {
             instruction: VirtualAddress::new(native.rip),

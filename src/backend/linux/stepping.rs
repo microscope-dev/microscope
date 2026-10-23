@@ -29,7 +29,6 @@ use super::frames::{
 };
 
 use super::loops::{StepLoops, inline_loop_step_is_complete};
-use super::memory::PtraceMemory;
 use super::native::LinuxTraceOps;
 use super::registers::x86_64_registers;
 use super::returns::Returning;
@@ -2094,15 +2093,13 @@ impl<P: LinuxTraceOps> Controller<P> {
         pid: Pid,
         native: &libc::user_regs_struct,
     ) -> DwarfCallerProvider<'a> {
-        DwarfCallerProvider {
-            modules: self.unwind_modules(inferior),
-            registers: x86_64_registers(native),
-            memory: PtraceMemory {
-                ptrace: &self.ptrace,
-                pid,
-            },
-            first: true,
-        }
+        self.caller_provider(
+            inferior,
+            &self.runtimes(inferior),
+            pid,
+            x86_64_registers(native),
+            true,
+        )
     }
 
     /// The program's code that the runtime function a stopped thread is

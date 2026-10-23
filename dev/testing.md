@@ -313,10 +313,13 @@ bound in place and a `/tmp` of its own. Outside it, `node` fails to find
 just dev --command bash -c '$MICROSCOPE_NODE/debian-24/enter $MICROSCOPE_NODE/debian-24/node -p process.version'
 ```
 
-Its tests are the Node suite's tests named `debian`, and they run only under
-`just test-node-debian`, which runs the suite inside `enter`. The tests,
-microscope, and node share the namespace, so tracing and `/proc` work as
-outside it, with the user as uid 0. `just all` runs the group. To move the
+Its tests are the Node suite's tests in `tests/node/debian.rs`, and they run
+with the rest of it, in `just test` and `just node`. Each runs its own test
+binary again inside `enter`, with only itself selected and
+`MICROSCOPE_NODE_DEBIAN_INSIDE` set; that run debugs, and the outer one waits
+for it with a deadline and fails with its output. The tests, microscope, and
+node share the namespace, so tracing and `/proc` work as outside it, with the
+user as uid 0. To move the
 entry to a newer Debian, run `scripts/debian-node-debs.sh TIMESTAMP` on the
 host with a snapshot.debian.org timestamp and replace `debianNodeDebs` in
 `flake.nix` with what it prints.

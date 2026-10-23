@@ -11,7 +11,7 @@
 use std::collections::BTreeSet;
 
 use super::frames::{Expanded, FrameSource, PhysicalStack, StackRoot};
-use super::runtimes::BoundRuntime;
+use super::runtimes::{BoundRuntime, ProcessCode};
 use super::{Controller, Inferior};
 use crate::backend::linux::native::InspectionOps;
 use crate::error::{Error, Result};
@@ -40,10 +40,15 @@ impl<P: InspectionOps> Controller<P> {
         }
         let _span = crate::span!("code_frames");
         let generated = self.generated_code_modules();
+        let process_code = self.runtime_process_code(inferior, &runtimes, root.reader());
+        let owners = Owned {
+            runtimes: &runtimes,
+            generated: &generated,
+            process_code: &process_code,
+        };
         let mut described = Vec::new();
         for (activation, physical) in stack.frames.iter().enumerate() {
-            let Some((owner, generated)) = owner(&runtimes, &generated, modules, stack, activation)
-            else {
+            let Some((owner, generated)) = owner(&owners, modules, stack, activation) else {
                 continue;
             };
 
@@ -70,30 +75,55 @@ impl<P: InspectionOps> Controller<P> {
     }
 }
 
-/// The runtime that owns the code of a stack's `activation`, if one does:
-/// the code is in one of the modules a runtime generated, or in the image
-/// the runtime was bound to, as the runtime says, through any binding of
-/// that image, such as a copy of its code.
-fn owner<'a>(
+/// What the process's runtimes own at a stop.
+struct Owned<'a> {
     runtimes: &'a [BoundRuntime],
-    generated: &BTreeSet<ModuleId>,
+
+    /// The modules of code a runtime generated.
+    generated: &'a BTreeSet<ModuleId>,
+
+    /// The code each runtime owns as the process says, in the order of
+    /// `runtimes`.
+    process_code: &'a [Vec<ProcessCode>],
+}
+
+/// The runtime that owns the code of a stack's `activation`, if one does:
+/// the code is in one of the modules a runtime generated, in the image the
+/// runtime was bound to, as the runtime says, through any binding of that
+/// image, such as a copy of its code, or where the runtime says the
+/// process keeps code it owns.
+fn owner<'a>(
+    owned: &Owned<'a>,
     modules: &[UnwindModule<'_>],
     stack: &PhysicalStack,
     activation: usize,
 ) -> Option<(&'a BoundRuntime, bool)> {
     let lookup = stack.lookup_address(activation)?;
-    let (module, address) = unwind_module_for(modules, lookup)?;
-    if generated.contains(&module.loaded.id) {
-        return runtimes
+    let in_module = unwind_module_for(modules, lookup);
+    if let Some((module, _)) = in_module
+        && owned.generated.contains(&module.loaded.id)
+    {
+        return owned
+            .runtimes
             .iter()
             .find(|runtime| runtime.model.owns_generated_code())
             .map(|runtime| (runtime, true));
     }
 
-    runtimes
-        .iter()
-        .find(|runtime| {
+    let by_image = in_module.and_then(|(module, address)| {
+        owned.runtimes.iter().find(|runtime| {
             runtime.module.image == module.loaded.image && runtime.model.owns_code(address)
+        })
+    });
+    let code = in_module.map(|(module, address)| (module.loaded.image, address));
+    by_image
+        .or_else(|| {
+            owned
+                .runtimes
+                .iter()
+                .zip(owned.process_code)
+                .find(|(_, ranges)| ranges.iter().any(|range| range.holds(lookup, code)))
+                .map(|(runtime, _)| runtime)
         })
         .map(|runtime| (runtime, false))
 }

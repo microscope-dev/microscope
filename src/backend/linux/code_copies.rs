@@ -12,7 +12,9 @@
 //! The proof is a full comparison of the bytes. A candidate is found from
 //! where copies begin: a page of anonymous memory that may be executed but
 //! not written, whose first bytes are those of a function that begins a
-//! page of the module, as code copied whole begins. Writable memory, such
+//! page of the module, as code copied whole begins, or of code a runtime
+//! says the process keeps in the module, as V8's builtins where no symbol
+//! names them. Writable memory, such
 //! as a JIT compiler's, is never taken for a copy, since its bytes may
 //! change between stops. A proven copy, and memory proven to be none, is
 //! remembered until its mapping changes.
@@ -119,7 +121,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             ) {
                 return None;
             }
-            self.prove_copy(memory, mapping)?
+            self.prove_copy(memory, mapping, &self.stored_code(memory))?
                 .traps
                 .iter()
                 .any(|trap| trap.address == address)
@@ -192,13 +194,14 @@ impl<P: InspectionOps> Controller<P> {
             .modules
             .values()
             .any(|module| crate::debug_info::v8::is_v8(&module.image));
+        let stored = self.stored_code(pid);
         for code in anonymous {
             let mapping = &code.range;
             if known.contains_key(&(mapping.start, mapping.end)) {
                 continue;
             }
             let copy = (!code.writable)
-                .then(|| self.prove_copy(pid, mapping))
+                .then(|| self.prove_copy(pid, mapping, &stored))
                 .flatten()
                 .and_then(|proven| {
                     // The copied traps come out before the copy's own
@@ -274,8 +277,36 @@ impl<P: InspectionOps> Controller<P> {
         Some(id)
     }
 
-    /// The range of a module's code `mapping` begins with a copy of, if any.
-    fn prove_copy(&self, pid: Pid, mapping: &Range<u64>) -> Option<Proven> {
+    /// The code of each loaded module that its runtimes own as the process
+    /// says at the stop ([`crate::runtime_model::RuntimeModel::process_code`]),
+    /// read through `pid`, which a copy may begin with: V8's builtins, where
+    /// no symbol begins them.
+    fn stored_code(&self, pid: Pid) -> Vec<(ModuleId, ImageAddress, ImageAddress)> {
+        let Some(inferior) = self.inferior.as_ref() else {
+            return Vec::new();
+        };
+        let runtimes = self.runtimes(inferior);
+        self.runtime_process_code(inferior, &runtimes, pid)
+            .into_iter()
+            .zip(&runtimes)
+            .flat_map(|(code, runtime)| {
+                let module = runtime.module.id;
+                code.into_iter()
+                    .filter_map(move |code| Some((module, code.image?.1)))
+            })
+            .map(|(module, range)| (module, range.start, range.end))
+            .collect()
+    }
+
+    /// The range of a module's code `mapping` begins with a copy of, if any:
+    /// from a function that begins a page, or from where `stored` code
+    /// begins.
+    fn prove_copy(
+        &self,
+        pid: Pid,
+        mapping: &Range<u64>,
+        stored: &[(ModuleId, ImageAddress, ImageAddress)],
+    ) -> Option<Proven> {
         let probe = raw_block(&self.ptrace, pid, mapping.start, PROBE)?;
         // Unused memory proves nothing.
         if probe.len() < PROBE || probe.iter().all(|byte| *byte == 0) {
@@ -286,7 +317,11 @@ impl<P: InspectionOps> Controller<P> {
             .values()
             .filter(|module| module.loaded.window.is_none())
             .find_map(|module| {
-                candidates(module).find_map(|(start, end)| {
+                let stored = stored
+                    .iter()
+                    .filter(|(source, ..)| *source == module.loaded.id)
+                    .map(|&(_, start, end)| (start, end));
+                candidates(module).chain(stored).find_map(|(start, end)| {
                     let source = module.loaded.virtual_address(start).ok()?.get();
                     let limit = (end.get() - start.get())
                         .min(mapping.end - mapping.start)

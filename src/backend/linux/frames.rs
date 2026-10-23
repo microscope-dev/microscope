@@ -401,15 +401,7 @@ impl<P: InspectionOps> Controller<P> {
         };
 
         let mut provider = RoleCallerProvider {
-            dwarf: DwarfCallerProvider {
-                modules: self.unwind_modules(inferior),
-                registers,
-                memory: PtraceMemory {
-                    ptrace: &self.ptrace,
-                    pid: root.reader(),
-                },
-                first: !after_call,
-            },
+            dwarf: self.caller_provider(inferior, &runtimes, root.reader(), registers, !after_call),
             stacks,
             other: if root.thread().is_some() {
                 StackSegment::Thread
@@ -1782,9 +1774,59 @@ pub(super) struct DwarfCallerProvider<'a> {
     pub(super) registers: RegisterFile,
     pub(super) memory: PtraceMemory<'a>,
     pub(super) first: bool,
+
+    /// The code runtimes own as the process says, which keeps the
+    /// runtime's frame-pointer convention: a frame there that no
+    /// call-frame information describes is unwound by it.
+    pub(super) runtime_code: Vec<super::runtimes::ProcessCode>,
+}
+
+impl<P: InspectionOps> Controller<P> {
+    /// Unwinds `pid`'s stack from `registers` through every loaded
+    /// module's call-frame information, and by the convention of
+    /// `runtimes` through the code they own where none describes it.
+    /// `first` says the registers are a stopped thread's own, whose
+    /// instruction is not a return address.
+    pub(super) fn caller_provider<'a>(
+        &'a self,
+        inferior: &Inferior,
+        runtimes: &[super::runtimes::BoundRuntime],
+        pid: Pid,
+        registers: RegisterFile,
+        first: bool,
+    ) -> DwarfCallerProvider<'a> {
+        DwarfCallerProvider {
+            modules: self.unwind_modules(inferior),
+            registers,
+            memory: PtraceMemory {
+                ptrace: &self.ptrace,
+                pid,
+            },
+            first,
+            runtime_code: self
+                .runtime_process_code(inferior, runtimes, pid)
+                .into_iter()
+                .flatten()
+                .collect(),
+        }
+    }
 }
 
 impl DwarfCallerProvider<'_> {
+    /// Whether `address`, which `module` holds at its image's
+    /// `image_address`, is in code a runtime owns as the process says.
+    fn in_runtime_code(
+        &self,
+        address: VirtualAddress,
+        module: &UnwindModule<'_>,
+        image_address: ImageAddress,
+    ) -> bool {
+        let code = Some((module.loaded.image, image_address));
+        self.runtime_code
+            .iter()
+            .any(|range| range.holds(address, code))
+    }
+
     /// The address whose unwind rules describe `current`: its instruction in
     /// the innermost or a signal frame, and otherwise the byte before its
     /// return address, which still belongs to the call. `None` means a
@@ -1808,16 +1850,24 @@ impl DwarfCallerProvider<'_> {
         let (module, image_address) = unwind_module_for(&self.modules, lookup)
             .ok_or(UnwindTermination::ModuleNotFound { address: lookup })?;
 
-        module
+        let cfa = module
             .unwind
-            .cfa(image_address, &self.registers, &mut self.memory)
-            .map_err(|mut termination| {
-                if let UnwindTermination::NoUnwindInfo { address } = &mut termination {
-                    *address = lookup;
-                }
+            .cfa(image_address, &self.registers, &mut self.memory);
+        match cfa {
+            Err(UnwindTermination::NoUnwindInfo { .. })
+                if self.in_runtime_code(lookup, &module, image_address) =>
+            {
+                crate::debug_info::runtime_code::cfa_at(lookup, &self.registers, &mut self.memory)
+            }
+            cfa => cfa,
+        }
+        .map_err(|mut termination| {
+            if let UnwindTermination::NoUnwindInfo { address } = &mut termination {
+                *address = lookup;
+            }
 
-                termination
-            })
+            termination
+        })
     }
 }
 
@@ -1847,6 +1897,18 @@ impl CallerProvider for DwarfCallerProvider<'_> {
             .unwind
             .unwind(image_address, &self.registers, &mut self.memory)
         {
+            Err(UnwindTermination::NoUnwindInfo { .. })
+                if self.in_runtime_code(lookup, &module, image_address) =>
+            {
+                crate::debug_info::runtime_code::caller_at(
+                    lookup,
+                    &self.registers,
+                    &mut self.memory,
+                )
+            }
+            step => step,
+        };
+        let step = match step {
             Ok(step) => step,
             Err(mut termination) => {
                 if let UnwindTermination::NoUnwindInfo { address } = &mut termination {

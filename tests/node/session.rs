@@ -15,9 +15,9 @@ use crate::support::{Scenario, ScratchDir, node};
 /// Every Node build in the matrix, as the flake names it.
 pub const MATRIX: [&str; 6] = ["26", "24", "22", "nixpkgs-26", "nixpkgs-24", "nixpkgs-22"];
 
-/// The builds the flake provides that the suite does not run here: Debian's
-/// shared libnode runs only inside its own mount namespace, in a test group
-/// of its own.
+/// The builds the flake provides that the matrix's tests do not run:
+/// Debian's shared libnode runs only inside its own mount namespace, so its
+/// tests (`debian.rs`) run themselves there.
 pub const SEPARATE: [&str; 1] = ["debian-24"];
 
 /// The builds whose fixtures' cores the build saves, one per V8 line.
