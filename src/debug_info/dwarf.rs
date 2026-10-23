@@ -1557,6 +1557,7 @@ fn load_image(
                 thread_locals
             },
             python: super::cpython::runtime(&object),
+            v8: super::v8::runtime(&object),
             debug_information: match dwarf_use {
                 DwarfUse::Unusable(reason) => crate::DebugInformation::Unusable { reason },
                 DwarfUse::Read => match (split_units(&dwarf, &catalog)?, &locals_left_out) {

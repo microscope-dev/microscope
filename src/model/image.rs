@@ -71,6 +71,9 @@ pub struct ModuleMetadata {
     /// The Python runtime the module carries.
     pub python: Option<crate::image::python::PythonRuntime>,
 
+    /// The V8 runtime the module carries.
+    pub v8: Option<crate::image::v8::V8Runtime>,
+
     /// Integer constants the debug information declares by name, such as a
     /// Go package's `const`s, Rust trait objects' vtables, and the
     /// compilers and versions that produced the debug information, as each
@@ -385,6 +388,7 @@ fn seal_image(
     }
 
     crate::image::python::add_to(&mut builder, &mut strings, metadata.python.as_ref())?;
+    crate::image::v8::add_to(&mut builder, &mut strings, metadata.v8.as_ref())?;
 
     builder
         .bytes(
@@ -1166,6 +1170,12 @@ impl ModuleImage {
     #[must_use]
     pub fn python_runtime(&self) -> Option<crate::image::python::PythonRuntime> {
         crate::image::python::runtime(&self.tables)
+    }
+
+    /// The V8 runtime the module carries, if it carries one.
+    #[must_use]
+    pub fn v8_runtime(&self) -> Option<crate::image::v8::V8Runtime> {
+        crate::image::v8::runtime(&self.tables)
     }
 
     /// The distinct producers of the image's debug information, such as

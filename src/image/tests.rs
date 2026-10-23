@@ -7,6 +7,7 @@ use super::functions::{
     StartRecord,
 };
 use super::python::PythonRuntimeRecord;
+use super::v8::V8RuntimeRecord;
 
 use super::index::{Interval, NameEntry};
 use super::lines::{
@@ -237,6 +238,13 @@ fn the_schema_is_the_records_layout() {
             problem,
             offsets,
             constants
+        ]
+    );
+    check!(
+        TableKind::V8Runtime,
+        V8RuntimeRecord,
+        [
+            major, minor, build, patch, flags, reserved, problem, offsets, constants
         ]
     );
     check!(
@@ -599,7 +607,7 @@ fn the_schema_is_the_records_layout() {
     // layouts before reading tables; the container format is independent.
     assert_eq!(
         schema::layout_fingerprint(),
-        0xab9e_1a2c_5642_993a,
+        0xa152_db0c_cb1f_f5cc,
         "the layout changed:\n{}",
         schema::schema_text()
     );
@@ -3760,6 +3768,84 @@ fn validation_rejects_a_python_runtime_that_names_nothing() {
     flagged.flags = 8.into();
     assert!(refusal(vec![flagged]).contains("flags it does not define"));
     let mut reserved = record(1, 2, u32::MAX);
+    reserved.reserved = 1.into();
+    assert!(refusal(vec![reserved]).contains("flags it does not define"));
+}
+
+/// A V8 runtime reads back as it was sealed, with its layout or the reason
+/// it has none; a field or constant the layout lacks reads back absent.
+#[test]
+fn a_v8_runtime_reads_back_with_its_layout_or_its_problem() {
+    use super::v8::{self, Constant, DYNAMIC_SYMBOLS, Field, V8Layout, V8Runtime, V8Version};
+
+    let sealed = |runtime: Option<&V8Runtime>| {
+        let mut builder = Builder::new(TARGET);
+        let mut strings = StringsBuilder::default();
+        v8::add_to(&mut builder, &mut strings, runtime).unwrap();
+        builder.bytes(TableKind::Strings, strings.into_bytes());
+        v8::runtime(&builder.seal(Limits::default()).unwrap())
+    };
+
+    let mut layout = V8Layout::default();
+    layout.set_field(Field::JSFunctionSharedFunctionInfo, 32);
+    layout.set_field(Field::ScriptSource, 0x1_0000_0000);
+    layout.set_constant(Constant::OffFpFunction, -16);
+    layout.set_constant(Constant::ScriptType, 166);
+    let runtime = V8Runtime {
+        version: V8Version {
+            major: 14,
+            minor: 6,
+            build: 202,
+            patch: 33,
+        },
+        flags: DYNAMIC_SYMBOLS,
+        layout: Ok(layout),
+    };
+    let read = sealed(Some(&runtime)).unwrap();
+    assert_eq!(read, runtime);
+    assert_eq!(read.version.to_string(), "14.6.202.33");
+    let layout = read.layout.unwrap();
+    assert_eq!(layout.field(Field::JSFunctionSharedFunctionInfo), Some(32));
+    assert_eq!(layout.field(Field::ScriptSource), None, "past a u32");
+    assert_eq!(layout.field(Field::JSFunctionCode), None);
+    assert_eq!(layout.constant(Constant::OffFpFunction), Some(-16));
+    assert_eq!(layout.constant(Constant::ScriptType), Some(166));
+    assert_eq!(layout.constant(Constant::FrameTurbofan), None);
+
+    let refused = V8Runtime {
+        layout: Err("V8 12.3 has no layout in this build of microscope".into()),
+        ..runtime
+    };
+    assert_eq!(sealed(Some(&refused)), Some(refused));
+    assert_eq!(sealed(None), None);
+}
+
+#[test]
+fn validation_rejects_a_v8_runtime_that_names_nothing() {
+    let record = |problem: u32| V8RuntimeRecord {
+        major: 14.into(),
+        minor: 6.into(),
+        build: 0.into(),
+        patch: 0.into(),
+        flags: 0.into(),
+        reserved: 0.into(),
+        problem: problem.into(),
+        offsets: [u32::MAX.into(); super::v8::Field::COUNT],
+        constants: [i64::MIN.into(); super::v8::Constant::COUNT],
+    };
+
+    let refusal = |records: Vec<V8RuntimeRecord>| {
+        let mut builder = Builder::new(TARGET);
+        builder.owned_table(records);
+        builder.seal(Limits::default()).unwrap_err().to_string()
+    };
+
+    assert!(refusal(vec![record(7)]).contains("is no string"));
+    assert!(refusal(vec![record(u32::MAX); 2]).contains("2 V8 runtimes"));
+    let mut flagged = record(u32::MAX);
+    flagged.flags = 2.into();
+    assert!(refusal(vec![flagged]).contains("flags it does not define"));
+    let mut reserved = record(u32::MAX);
     reserved.reserved = 1.into();
     assert!(refusal(vec![reserved]).contains("flags it does not define"));
 }

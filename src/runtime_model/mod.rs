@@ -177,6 +177,12 @@ pub trait RuntimeImage: std::fmt::Debug {
     fn python(&self) -> Option<crate::image::python::PythonRuntime> {
         None
     }
+
+    /// The V8 runtime the image carries, as its loader read it.
+    #[allow(dead_code, reason = "until the Node runtime model reads it")]
+    fn v8(&self) -> Option<crate::image::v8::V8Runtime> {
+        None
+    }
 }
 
 /// A native thread identifier as the target observes it. This is distinct

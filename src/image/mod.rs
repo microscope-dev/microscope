@@ -30,6 +30,7 @@ pub mod symbols;
 pub mod type_facts;
 pub mod types;
 pub mod unwind;
+pub mod v8;
 mod validate;
 pub mod variables;
 

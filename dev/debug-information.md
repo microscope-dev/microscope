@@ -19,6 +19,7 @@ layouts, and ABI rules stay behind this boundary.
 | `src/backend/linux/code_copies.rs` | Copies of an image's code a program made in anonymous memory, and V8's compiled code |
 | `src/debug_info/v8.rs`, `src/debug_info/runtime_code.rs` | V8's builtins and the frames of code V8 generates, unwound by its frame-pointer convention |
 | `src/debug_info/cpython.rs`, `src/debug_info/cpython/` | CPython's runtime layout: its offsets table, generated layouts, and their checks |
+| `src/debug_info/v8.rs`, `src/debug_info/v8/`, `src/image/v8.rs` | V8's runtime layout: its `v8dbg_` constants, layouts generated from Torque, and their checks |
 | `src/image/` | Validated immutable table image and checked views |
 | `src/model/image.rs`, `src/model/image/` | Public image model and location types |
 | `src/cache.rs` | Persistent image cache and cache-key construction |
@@ -348,6 +349,8 @@ Language providers can add static facts without changing clients:
 - CPython's `.PyRuntime` section and its symbols give the layout the Python
   runtime model reads, and the roles of the evaluation loop and its call
   machinery.
+- V8's `v8dbg_` constants and version symbols, with layouts generated from
+  V8's Torque output, give the layout of V8's heap objects and frames.
 
 These facts belong in image tables when they depend only on module bytes. Live
 runtime traversal belongs in the runtime model and reads them through the
@@ -386,6 +389,60 @@ in one place:
 When a new CPython release arrives, add it to the flake's interpreter set, run
 `scripts/cpython-layouts.sh` in the dev shell, add a schema if its minor
 version is new, and run these tests.
+
+### V8
+
+`debug_info::v8::runtime` makes the image of a Node executable or a libnode
+one `V8Runtime` row (`src/image/v8.rs`): V8's version, and a layout of
+`Field` offsets and `Constant` values, or the reason the module cannot be
+read. A module is V8's when it defines `v8dbg_off_fp_function`. The
+provider reads every `v8dbg_` symbol from the module's own file, from its
+symbol table or, as in Debian's libnode, its dynamic table only. Each is an
+`int` in the module's data; one in a section with no file bytes, such as
+`.bss`, is 0. The version is `v8::internal::Version`'s `major_`, `minor_`,
+`build_`, and `patch_`.
+
+The constants leave out most fields the runtime model reads, such as a
+bytecode array's position table and a shared function info's function data.
+Those come from `v8/layouts.gen.rs`, generated for each V8 major.minor
+version from the Torque output in `MICROSCOPE_V8_TORQUE`:
+`class-debug-readers.cc` gives each field's offset, `instance-types.h` every
+instance type Torque assigns, and `bit-fields.h` the shift and mask of each
+bit field of the flags of `SharedFunctionInfo`, `ScopeInfo`, and `Script`.
+`Code`'s fields have no Torque reader and come from the module's own
+`v8dbg_class_Code__` constants. A field Torque renamed has one `Field`, named
+by its newest name, such as `ByteArray::Values`, which 12.4 calls
+`ByteArray::Bytes`.
+
+Binding a module checks, in order, and refuses it with the first reason:
+
+- its major.minor version has a generated layout. Any other version is
+  refused by name, as `V8 12.3 has no layout in this build of microscope`,
+  and never read by the nearest version's layout;
+- `v8dbg_TaggedSize` is 8: a build with pointer compression is refused;
+- `v8dbg_SmiShiftSize` is 31: a build with 31-bit Smis is refused;
+- it is not built with V8's sandbox. A sandboxed build declares the
+  `v8::V8::*Sandbox*` functions of V8's public API, which every build exports
+  in its dynamic table, and the members of `v8::internal::Sandbox`. The
+  sandbox also requires pointer compression;
+- each `v8dbg_class_` constant that names a `Field` gives the generated
+  offset, and the layout has that field;
+- each exported `v8dbg_type_` constant whose name Torque assigns has
+  Torque's number. A build configured unlike the release, such as one
+  without Intl or Temporal, numbers its types differently;
+- the layout has every field and constant its version needs.
+
+`v8/conformance.rs` checks the layouts against both sources.
+`layouts_match_torque` regenerates the file from `MICROSCOPE_V8_TORQUE` and
+fails when the checked-in file differs, or when the Torque output lacks a
+field or constant that a version must have. Rerun it with
+`MICROSCOPE_UPDATE_V8=1` to rewrite the file.
+`every_build_in_the_matrix_binds_to_its_layout` binds every build in
+`MICROSCOPE_NODE`, Debian's libnode included, and checks its version and the
+counts of agreeing fields and instance types. When a new Node line arrives,
+add its V8 version's Torque output to the flake, rerun the generator, and
+extend the version tables in `debug_info/v8.rs` where the new version adds
+or drops a field.
 
 ## Load testing
 

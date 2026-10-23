@@ -15,7 +15,7 @@ pub const FORMAT_VERSION: u32 = 1;
 /// What the tables mean. Bump it with any change to how metadata is
 /// normalized, even one that changes no record's layout, such as a
 /// demangling rule, so that no cached image built before is used.
-pub const NORMALIZATION_REVISION: u32 = 7;
+pub const NORMALIZATION_REVISION: u32 = 8;
 
 /// Every table starts at a multiple of this.
 pub const TABLE_ALIGNMENT: usize = 64;
@@ -381,11 +381,14 @@ pub enum TableKind {
     /// describes, as its instructions and the runtime's conventions prove
     /// them, for lookups by address.
     ProvedFrames = 99,
+
+    /// The V8 runtime the module carries.
+    V8Runtime = 100,
 }
 
 impl TableKind {
     /// Every kind, in the order tables are laid out.
-    pub const ALL: [Self; 99] = [
+    pub const ALL: [Self; 100] = [
         Self::Strings,
         Self::Files,
         Self::LineAddresses,
@@ -485,6 +488,7 @@ impl TableKind {
         Self::PythonRuntime,
         Self::RestoredFrames,
         Self::ProvedFrames,
+        Self::V8Runtime,
     ];
 
     pub const COUNT: usize = Self::ALL.len();
