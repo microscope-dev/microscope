@@ -592,6 +592,7 @@ fn normal_form_spaces_operators_and_keeps_needed_parentheses() {
         ("a [ 1 .. 4 ]", "a[1..4]"),
         ("`a b` + `c`", "`a b` + c"),
         ("`as`", "`as`"),
+        ("o.null.true->as", "o.`null`.`true`->`as`"),
         ("`int` + 1", "`int` + 1"),
         ("'\\u{1}' + '\\''", "'\\u{1}' + '\\''"),
         ("\"a\\x00\\xff\\\"\"", "\"a\\0\\xff\\\"\""),

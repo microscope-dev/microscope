@@ -885,8 +885,10 @@ impl<'tokens> Parser<'tokens> {
                     self.advance();
                     let field_span = self.peek_span();
                     let field = match self.peek().clone() {
-                        TokenKind::Ident(word) if is_operand_word(&word) => Field::Named(word),
-                        TokenKind::Quoted(name) => Field::Named(name),
+                        // A member name stands where no literal can, so a
+                        // reserved word there is the name, as JavaScript's
+                        // `values.null` is.
+                        TokenKind::Ident(word) | TokenKind::Quoted(word) => Field::Named(word),
                         TokenKind::Integer {
                             value,
                             suffix: None,
