@@ -10,6 +10,7 @@
 
 mod compiled;
 mod frames;
+mod inspect;
 mod names;
 mod objects;
 mod positions;
