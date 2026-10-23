@@ -270,3 +270,28 @@ async fn lengths_sizes_and_typed_elements_are_javascripts() {
     }
     assert!(lies.is_empty(), "{} lies:\n{}", lies.len(), lies.join("\n"));
 }
+
+/// On every build, `process.env`, whose variables an interceptor gives, is
+/// refused with that reason rather than shown as `{}`, and so is a member
+/// of it rather than reported absent.
+#[tokio::test]
+async fn an_interceptors_object_is_refused_rather_than_shown_empty() {
+    let mut wrong = Vec::new();
+    for entry in MATRIX {
+        let mut session = NodeSession::launch(entry, "interceptors.js", &[], &[]).await;
+        let reported = threads(&session.stop_at("look").await);
+        let printer = reported
+            .iter()
+            .find(|thread| thread.printer)
+            .expect("the printer's thread");
+        select_function(&session, printer.native, "look").await;
+        for text in ["env", "env.HOME"] {
+            let (summary, _) = presented(&session, text).await;
+            if !summary.contains("an interceptor gives this object's properties") {
+                wrong.push(format!("{}: {text} is {summary}", session.context()));
+            }
+        }
+        session.shutdown().await;
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}

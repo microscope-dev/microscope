@@ -80,6 +80,43 @@ pub(super) fn elements_kind(reader: &Reader<'_>, map: Object) -> Result<i64, Pro
     )
 }
 
+/// Refuses an object whose map makes V8 run code to find its properties:
+/// an interceptor (named or indexed, as `named` says), or an access check.
+fn plainly_held(reader: &Reader<'_>, map: Object, named: bool) -> Result<(), Problem> {
+    let bits = i64::from(reader.byte_field(map, Field::MapBitField)?);
+    let (mask, shift, kind) = if named {
+        (
+            Constant::MapHasNamedInterceptorMask,
+            Constant::MapHasNamedInterceptorShift,
+            "properties",
+        )
+    } else {
+        (
+            Constant::MapHasIndexedInterceptorMask,
+            Constant::MapHasIndexedInterceptorShift,
+            "elements",
+        )
+    };
+    if part(reader, bits, mask, Some(shift))? != 0 {
+        return Err(format!(
+            "an interceptor gives this object's {kind}, and microscope does not call interceptors"
+        )
+        .into());
+    }
+    let checked = part(
+        reader,
+        bits,
+        Constant::MapIsAccessCheckNeededMask,
+        Some(Constant::MapIsAccessCheckNeededShift),
+    )?;
+    if checked != 0 {
+        return Err(
+            "V8 checks access to this object, and microscope does not run the check".into(),
+        );
+    }
+    Ok(())
+}
+
 /// How an object of elements kind `kind` keeps its elements.
 pub(super) fn store(reader: &Reader<'_>, kind: i64) -> Result<Store, Problem> {
     let is = |constants: &[Constant]| {
@@ -137,6 +174,7 @@ pub(super) fn elements(
     below: u32,
 ) -> Result<Vec<Element>, Problem> {
     let map = reader.map(holder)?;
+    plainly_held(reader, map, false)?;
     let store = store(reader, elements_kind(reader, map)?)?;
     let backing = || -> Result<Object, Problem> {
         let word = reader.field(holder, Field::JSObjectElements)?;
@@ -304,6 +342,7 @@ pub(super) fn named(reader: &Reader<'_>, holder: Object) -> Result<Vec<Named>, P
 /// Like [`named`], but includes properties keyed by private symbols.
 pub(super) fn all_named(reader: &Reader<'_>, holder: Object) -> Result<Vec<Named>, Problem> {
     let map = reader.map(holder)?;
+    plainly_held(reader, map, true)?;
     let bits = i64::from(
         reader
             .int32_field(map, Field::MapBitField3)?
