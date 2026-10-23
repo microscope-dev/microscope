@@ -8,6 +8,7 @@
 //! them by V8's frame-pointer convention. The model names each such frame
 //! as V8 recorded it ([`RuntimeModel::code_frame`]).
 
+mod compiled;
 mod frames;
 mod names;
 mod objects;
@@ -16,12 +17,14 @@ mod positions;
 use std::path::Path;
 use std::sync::Arc;
 
+use super::ImageSymbol;
 use super::{
     CodeFrame, Crossing, DescribedFrame, Partial, RuntimeException, RuntimeHook, RuntimeImage,
     RuntimeModel, RuntimeSignals, RuntimeStop, StartedTask, StoredValue, TaskContext, TaskPage,
     TaskRef, TaskStarter, ThreadActivity, Unbound,
 };
-use crate::image::v8::{V8Layout, V8Version};
+use crate::ThreadLocal;
+use crate::image::v8::{DispatchTable, V8Layout, V8Version};
 use crate::unwind::RegisterFile;
 use crate::{AddressRange, ImageAddress, StackSegment, ThreadId, VirtualAddress};
 
@@ -37,11 +40,30 @@ pub fn detect(
     let reading = runtime
         .layout
         .map_err(|reason| format!("the JavaScript frames cannot be read: {reason}").into());
+    let statics = Statics {
+        isolate: image.thread_local(crate::image::v8::CURRENT_ISOLATE),
+        dispatch_table: runtime.dispatch_table,
+        bytecode_sizes: image.symbol(BYTECODE_SIZES),
+    };
     Some(Ok(Arc::new(NodeRuntime {
         version: runtime.version,
         reading,
         builtins: builtins(image.as_ref()),
+        statics,
     })))
+}
+
+/// `v8::internal::interpreter::Bytecodes::kBytecodeSizes`, each bytecode's
+/// size at each operand scale, which only a symbol table names.
+const BYTECODE_SIZES: &str = "_ZN2v88internal11interpreter9Bytecodes14kBytecodeSizesE";
+
+/// What reading V8's compiled code needs of the module that carries it.
+#[derive(Debug)]
+struct Statics {
+    /// Where each thread keeps its current isolate.
+    isolate: Option<Result<ThreadLocal, Arc<str>>>,
+    dispatch_table: Result<Option<DispatchTable>, Arc<str>>,
+    bytecode_sizes: Option<ImageSymbol>,
 }
 
 /// The range of the image's code its embedded builtins span, where it
@@ -63,6 +85,7 @@ struct NodeRuntime {
     /// The layout V8's frames and objects are read by, or why none can be.
     reading: Result<V8Layout, Arc<str>>,
     builtins: Option<AddressRange<ImageAddress>>,
+    statics: Statics,
 }
 
 impl RuntimeModel for NodeRuntime {
@@ -82,7 +105,12 @@ impl RuntimeModel for NodeRuntime {
             layout,
             version: self.version,
         };
-        frames::describe(&reader, positions::Encoding::of(self.version), frame)
+        frames::describe(
+            &reader,
+            positions::Encoding::of(self.version),
+            &self.statics,
+            frame,
+        )
     }
 
     fn tasks(

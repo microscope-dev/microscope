@@ -64,8 +64,7 @@ const EMBEDDED_BLOB: &str = "v8_Default_embedded_blob_code_";
 /// What the symbol of each builtin's code begins with.
 const BUILTIN: &str = "Builtins_";
 
-/// The variable each thread's current isolate is kept in.
-pub const CURRENT_ISOLATE: &str = "_ZN2v88internal18g_current_isolate_E";
+use crate::image::v8::CURRENT_ISOLATE;
 
 /// The exported function that reads [`CURRENT_ISOLATE`].
 const GET_CURRENT: &str = "_ZN2v87Isolate10GetCurrentEv";

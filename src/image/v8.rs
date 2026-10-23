@@ -878,6 +878,10 @@ pub enum DispatchTable {
     Group { group: ImageAddress, offset: u64 },
 }
 
+/// The variable each thread keeps its current isolate in, which a shared
+/// library names only in its debug package.
+pub const CURRENT_ISOLATE: &str = "_ZN2v88internal18g_current_isolate_E";
+
 /// Where a process keeps the bounds of V8's embedded blob, the builtins
 /// compiled ahead of time, which V8 sets when it starts: the variables
 /// `v8::Isolate::GetEmbeddedCodeRange` reads. `code` and `data` hold

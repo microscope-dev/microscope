@@ -119,7 +119,10 @@ fn inferred_name(
 
 /// The object a `SharedFunctionInfo` keeps its code in: its bytecode, the
 /// interpreter data that holds it, or its uncompiled data.
-fn function_data(reader: &Reader<'_>, shared: Object) -> Result<Option<Object>, Problem> {
+pub(super) fn function_data(
+    reader: &Reader<'_>,
+    shared: Object,
+) -> Result<Option<Object>, Problem> {
     let field = if reader
         .layout
         .has(Field::SharedFunctionInfoTrustedFunctionData)

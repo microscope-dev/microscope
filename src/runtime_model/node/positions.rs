@@ -85,8 +85,9 @@ pub(super) fn decode(bytes: &[u8], encoding: Encoding) -> Result<Vec<Entry>, Pro
     Ok(entries)
 }
 
-/// The varint at `at`, seven bits a byte, low bits first.
-fn unsigned(bytes: &[u8], at: &mut usize) -> Result<u64, Problem> {
+/// The varint at `at`, seven bits a byte, low bits first, as V8 writes
+/// its position and baseline offset tables.
+pub(super) fn unsigned(bytes: &[u8], at: &mut usize) -> Result<u64, Problem> {
     let mut value = 0_u64;
     for shift in (0..64).step_by(7) {
         let byte = *bytes
@@ -136,27 +137,32 @@ pub(super) fn table_bytes(reader: &Reader<'_>, bytecode: Object) -> Result<Vec<u
     let table = reader
         .object(word)?
         .ok_or("a bytecode array's position table is no object")?;
-    let (length, values) = if reader.is(table, Constant::TrustedByteArrayType)? {
+    byte_array(reader, table)
+}
+
+/// The bytes of the byte array `array`, trusted or not.
+pub(super) fn byte_array(reader: &Reader<'_>, array: Object) -> Result<Vec<u8>, Problem> {
+    let (length, values) = if reader.is(array, Constant::TrustedByteArrayType)? {
         (Field::TrustedByteArrayLength, Field::TrustedByteArrayValues)
-    } else if reader.is(table, Constant::ByteArrayType)? {
+    } else if reader.is(array, Constant::ByteArrayType)? {
         (Field::FixedArrayBaseLength, Field::ByteArrayValues)
     } else {
-        return Err("a bytecode array's position table is no byte array".into());
+        return Err(format!("{:#x} is no byte array", array.0).into());
     };
-    let length = usize::try_from(reader.smi_field(table, length)?)
-        .map_err(|_| "a position table has a negative length")?;
+    let length = usize::try_from(reader.smi_field(array, length)?)
+        .map_err(|_| "a byte array has a negative length")?;
     if length > 1 << 24 {
-        return Err("a position table is implausibly long".into());
+        return Err("a byte array is implausibly long".into());
     }
     let mut bytes = vec![0; length];
     reader
         .stop
         .read(
-            crate::VirtualAddress::new(reader.field_address(table, values)?),
+            crate::VirtualAddress::new(reader.field_address(array, values)?),
             &mut bytes,
         )
         .then_some(bytes)
-        .ok_or_else(|| "a position table is unreadable".into())
+        .ok_or_else(|| format!("the byte array at {:#x} is unreadable", array.0).into())
 }
 
 /// The line and column, each from 1, of the character `offset` of

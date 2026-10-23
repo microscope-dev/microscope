@@ -30,9 +30,9 @@ impl<P: InspectionOps> Controller<P> {
         modules: &[UnwindModule<'_>],
         expanded: &mut Expanded,
     ) -> Result<()> {
-        if root.thread().is_none() {
+        let Some(thread) = root.thread().map(super::debug_thread_id) else {
             return Ok(());
-        }
+        };
 
         let runtimes = self.runtimes(inferior);
         if runtimes.is_empty() {
@@ -48,6 +48,8 @@ impl<P: InspectionOps> Controller<P> {
             };
 
             let frame = CodeFrame {
+                thread,
+                instruction: physical.context.instruction,
                 after_call: activation != 0 || stack.after_call,
                 generated,
                 registers: &physical.registers,

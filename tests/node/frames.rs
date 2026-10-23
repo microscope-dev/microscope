@@ -197,10 +197,12 @@ const GAPS: &[(&[&str], &str)] = &[
     ),
     (
         &[
+            "node nixpkgs-24 tiers.js",
             "is Frame { function: \"osr\", file: \"-\", line: None, column: None",
             "not Frame { function: \"osr\", file: \"",
         ],
-        "compiled frames have no place yet",
+        "Maglev code records no position table on this build; its places need the \
+         deoptimization translation",
     ),
 ];
 

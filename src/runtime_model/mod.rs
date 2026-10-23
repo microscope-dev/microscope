@@ -1390,6 +1390,13 @@ pub struct SampledCode {
 /// A physical frame whose code a runtime owns, as the unwinder found it.
 #[derive(Debug, Clone, Copy)]
 pub struct CodeFrame<'a> {
+    /// The thread whose stack the frame is on.
+    pub thread: ThreadId,
+
+    /// The frame's instruction: the return address of its call where
+    /// [`Self::after_call`].
+    pub instruction: VirtualAddress,
+
     /// Whether its instruction is the return address of a call it made,
     /// as every caller's is.
     pub after_call: bool,

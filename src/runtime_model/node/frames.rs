@@ -8,6 +8,8 @@
 //! instruction it runs or called from. Each fact is read only as the type
 //! it is proven to be.
 
+use super::Statics;
+use super::compiled;
 use super::objects::{Object, Problem, Reader};
 use super::positions::{self, Encoding};
 use crate::image::v8::{Constant, Field};
@@ -20,6 +22,7 @@ use crate::{CodeRole, RecordedFrame, RecordedPlace, SourceLanguage};
 pub(super) fn describe(
     reader: &Reader<'_>,
     encoding: Encoding,
+    statics: &Statics,
     frame: &CodeFrame<'_>,
 ) -> Option<DescribedFrame> {
     // A frame stopped inside its code may not have entered its frame yet,
@@ -41,7 +44,7 @@ pub(super) fn describe(
     }
 
     let function = javascript_function(reader, fp).ok()??;
-    let recorded = match recorded(reader, encoding, frame, fp, function) {
+    let functions = match functions(reader, encoding, statics, frame, fp, function) {
         // A function V8's own stack traces hide is its machinery.
         Ok(None) => {
             return Some(DescribedFrame {
@@ -49,27 +52,71 @@ pub(super) fn describe(
                 role: CodeRole::Interpreter,
             });
         }
-        Ok(Some(recorded)) => recorded,
-        Err(problem) => RecordedFrame {
+        Ok(Some(functions)) => functions,
+        Err(problem) => vec![RecordedFrame {
             function: "<unknown>".into(),
             language: SourceLanguage::JavaScript,
             place: None,
             first_line: None,
             problem: Some(problem),
-        },
+        }],
     };
-    let role = if recorded
-        .place
-        .as_ref()
+    // The frame's own function, outermost, decides whose code it is.
+    let role = if functions
+        .last()
+        .and_then(|own| own.place.as_ref())
         .is_none_or(|place| place.path.starts_with("node:"))
     {
         CodeRole::RuntimeInternal
     } else {
         CodeRole::Ordinary
     };
-    Some(DescribedFrame {
-        functions: vec![recorded],
-        role,
+    Some(DescribedFrame { functions, role })
+}
+
+/// The functions the frame at `fp`, which runs `function`, runs, innermost
+/// first: those its code inlined, then its own. `None` for a function
+/// V8's stack traces hide: one of no script that is not exposed to the
+/// program as a native function, such as the closures that resume an
+/// `await`.
+fn functions(
+    reader: &Reader<'_>,
+    encoding: Encoding,
+    statics: &Statics,
+    frame: &CodeFrame<'_>,
+    fp: u64,
+    function: Object,
+) -> Result<Option<Vec<RecordedFrame>>, Problem> {
+    let shared = reader.typed_field(
+        function,
+        Field::JSFunctionSharedFunctionInfo,
+        Constant::SharedFunctionInfoType,
+    )?;
+    if script(reader, shared)?.is_none() && !super::names::is_native(reader, shared)? {
+        return Ok(None);
+    }
+    let places = if frame.generated {
+        compiled::places(reader, encoding, statics, frame, (function, shared))
+    } else {
+        offset_in_script(reader, encoding, fp, shared).map(|offset| vec![(shared, offset)])
+    };
+    let functions = match places {
+        Ok(places) => places
+            .into_iter()
+            .map(|(shared, offset)| recorded(reader, shared, Ok(offset)))
+            .collect::<Result<_, _>>()?,
+        // The frame's function is known where its place is not.
+        Err(problem) => vec![recorded(reader, shared, Err(problem))?],
+    };
+    Ok(Some(functions))
+}
+
+/// The script `shared` was compiled from, if it was.
+fn script(reader: &Reader<'_>, shared: Object) -> Result<Option<Object>, Problem> {
+    let script = reader.field(shared, Field::SharedFunctionInfoScript)?;
+    Ok(match reader.object(script)? {
+        Some(script) if reader.is(script, Constant::ScriptType)? => Some(script),
+        _ => None,
     })
 }
 
@@ -86,35 +133,19 @@ fn javascript_function(reader: &Reader<'_>, fp: u64) -> Result<Option<Object>, P
     Ok((first..=last).contains(&ty).then_some(function))
 }
 
-/// What the frame at `fp` that runs `function` records. `None` for a
-/// function V8's stack traces hide: one of no script that is not exposed
-/// to the program as a native function, such as the closures that resume
-/// an `await`.
+/// The function `shared` as V8 records it, at `offset` in its script, or
+/// with the problem that it has no place known.
 fn recorded(
     reader: &Reader<'_>,
-    encoding: Encoding,
-    frame: &CodeFrame<'_>,
-    fp: u64,
-    function: Object,
-) -> Result<Option<RecordedFrame>, Problem> {
-    let shared = reader.typed_field(
-        function,
-        Field::JSFunctionSharedFunctionInfo,
-        Constant::SharedFunctionInfoType,
-    )?;
+    shared: Object,
+    offset: Result<u64, Problem>,
+) -> Result<RecordedFrame, Problem> {
     // A name that cannot be read leaves the frame its place.
     let (name, unnamed) = match super::names::function_name(reader, shared) {
         Ok(name) => (name, None),
         Err(problem) => (String::new(), Some(problem)),
     };
-    let script = reader.field(shared, Field::SharedFunctionInfoScript)?;
-    let script = match reader.object(script)? {
-        Some(script) if reader.is(script, Constant::ScriptType)? => Some(script),
-        _ => None,
-    };
-    if script.is_none() && !super::names::is_native(reader, shared)? {
-        return Ok(None);
-    }
+    let script = script(reader, shared)?;
     let path = script
         .map(|script| script_name(reader, script))
         .transpose()?
@@ -122,7 +153,7 @@ fn recorded(
         .map(|name| file_url_path(&name).unwrap_or(name));
 
     let (place, problem) = match (script, &path) {
-        (Some(script), Some(path)) => match offset_in_script(reader, encoding, frame, fp, shared) {
+        (Some(script), Some(path)) => match offset {
             Ok(offset) => {
                 let (line, column) = positions::line_column(reader, script, offset)?;
                 let place = RecordedPlace {
@@ -147,13 +178,13 @@ fn recorded(
         }
         _ => SourceLanguage::JavaScript,
     };
-    Ok(Some(RecordedFrame {
+    Ok(RecordedFrame {
         function: name.into(),
         language,
         place,
         first_line: None,
         problem: problem.or(unnamed),
-    }))
+    })
 }
 
 /// The name of `script`, or its source URL where it has no name, as V8's
@@ -208,13 +239,9 @@ fn file_url_path(name: &str) -> Option<String> {
 fn offset_in_script(
     reader: &Reader<'_>,
     encoding: Encoding,
-    frame: &CodeFrame<'_>,
     fp: u64,
     shared: Object,
 ) -> Result<u64, Problem> {
-    if frame.generated {
-        return Err("the place of compiled code is not read yet".into());
-    }
     let slot = |constant| -> Result<u64, Problem> {
         reader.word(fp.wrapping_add_signed(reader.constant(constant)?))
     };
