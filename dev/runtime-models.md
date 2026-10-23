@@ -18,6 +18,8 @@ their own, join native backtraces as interpreted frames.
 | `src/runtime_model/python/` | CPython's threads, frames, code objects, line tables, and built-in values |
 | `src/runtime_model/python/agent.rs`, `agent.py`, `hook.rs` | Whole-state scripts, monitoring transport, native hook ELF and ABI |
 | `src/runtime_model/python/injection.rs` | Bounded PEP 768 request preparation |
+| `src/runtime_model/node/` | V8's frames, scripts, objects, and values in Node, and `util.inspect`'s text |
+| `src/debug_info/v8.rs`, `src/debug_info/v8/`, `src/image/v8.rs` | V8 detection and the layouts generated from each version's Torque output and headers |
 | `src/backend/linux/agent_files.rs` | Private target-namespace artifacts and explicit acknowledgement/exit cleanup |
 | `src/backend/linux/runtime_agents.rs` | Controller-owned agent installations, generations, acknowledgements, and detach |
 | `src/backend/linux/interpreted.rs` | Interpreted frames placed in backtraces, and their variables |
@@ -25,9 +27,9 @@ their own, join native backtraces as interpreted frames.
 | `src/image/resumes.rs` | Validated resume-point tables |
 | `src/backend/linux/runtimes.rs`, `src/backend/linux/async_frames.rs`, `src/backend/linux/frames.rs` | Stop-scoped runtime snapshots and logical stacks |
 | `src/backend/linux/holdings.rs` | Process-lifetime numbers for the thread labels, such as `isolate 1` |
-| `tests/go/`, `tests/tokio/`, `tests/python/` | Runtime integration suites |
-| `tests/fixtures/go/`, `tests/fixtures/rust/tokio/`, `tests/fixtures/python/` | Programs that expose scheduler, task, and frame states |
-| `views/` | Built-in Go, Rust, Tokio, and Python value views |
+| `tests/go/`, `tests/tokio/`, `tests/python/`, `tests/node/` | Runtime integration suites |
+| `tests/fixtures/go/`, `tests/fixtures/rust/tokio/`, `tests/fixtures/python/`, `tests/fixtures/node/` | Programs that expose scheduler, task, and frame states |
+| `views/` | Built-in Go, Rust, Tokio, Python, and JavaScript value views |
 
 ## Boundary
 
@@ -937,6 +939,62 @@ the evaluator, the binder reads `(py)x` as a cast whenever
 otherwise be a bitwise and, and binds it to `Op::Interpreted`, which runs
 `Machine::dynamic_at` on the address. The result is a `Place::Interpreted` like
 any Python value, so every operation on Python values applies to it.
+
+## Node
+
+Node support reads V8 from outside, as a core dump allows, and puts no code
+in the process. It covers V8 12.4, 13.6, and 14.6 (Node 22, 24, and 26),
+the official and nixpkgs builds, and Debian's shared `libnode`.
+`plans/node.html` records the decisions and findings (F1 to F31) behind it.
+
+**Layouts.** `src/debug_info/v8.rs` detects V8 and binds one generated
+layout per version. The layouts come from each version's Torque output and
+headers (`src/debug_info/v8/headers.rs`, `conformance.rs`), and stale tests
+regenerate and compare them. A build's own `v8dbg_` exports complete the
+layout and are checked against it. Nothing reads a V8 object except
+through `Field` and `Constant` names; a field one version lacks is absent,
+never guessed.
+
+**Frames.** `node/frames.rs` describes a physical frame in V8's code. A
+frame that keeps a Smi marker is V8's own. Otherwise the frame's function
+gives its shared info, and:
+
+- an interpreted frame's bytecode offset gives a script offset through the
+  position table (`positions.rs`);
+- a Sparkplug frame maps its pc to a bytecode offset first;
+- a Maglev or Turbofan frame reads its safepoint and deoptimization
+  translation (`compiled.rs`, `translation.rs`), which names inlined
+  functions too.
+
+Names follow `JSFunction::GetDebugName` (`names.rs`). Scripts, function
+names, and line ends are kept in `scripts.rs`'s process-lifetime table.
+Each use proves its row again: a script by its id and source, a function
+by its script and its function literal id.
+
+**Values.** `node/objects.rs`'s `Reader` reads the heap at a stop through
+the stop's block cache, charging an inspection's budget. `values.rs` and
+`own.rs` read objects, properties, and elements into a value graph, and
+`inspect/` writes it as `util.inspect` does for the target's Node release,
+read from `napi_get_node_version`. Release-specific rules are named
+`Change`s in `inspect/format.rs`. Errors whose stack nothing read are
+written from their raw call sites (`call_sites.rs`), as Node's
+`prepareStackTrace` would. Getters, proxy traps, and interceptors are
+never called; a value that needs one says so.
+
+**Variables and expressions.** `variables.rs` gives a frame its receiver
+and arguments, its own contexts' locals, captured, module, and global
+bindings, and its unnamed registers (F11). `access.rs` resolves names in
+JavaScript's order and reads members, elements, `.length`, and `.size`.
+`lineage.rs` names a class by its constructor and the script that defines
+it, which chooses its view.
+
+**Threads.** `thread_holding` labels a thread with the isolate it works
+for, as described under [Thread labels](#thread-labels).
+
+The suite is `just node`; Debian's tests run inside its namespace
+(`tests/node/debian.rs`). `tests/fixtures/node/truth.js` makes each fixture
+report V8's own frames and `util.inspect`'s text at named checkpoints, and
+the tests compare microscope against them on every build.
 
 ## Expressions and values in tasks
 
