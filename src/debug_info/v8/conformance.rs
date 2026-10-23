@@ -703,6 +703,80 @@ fn translations_match_torque() {
     );
 }
 
+const BYTECODES_FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/image/v8/bytecodes.gen.rs");
+
+/// Fails when `src/image/v8/bytecodes.gen.rs` no longer matches the
+/// bytecodes of the headers in `MICROSCOPE_V8_TORQUE`. Set
+/// `MICROSCOPE_UPDATE_V8=1` to rewrite it.
+#[test]
+fn bytecode_sizes_match_torque() {
+    let expected = super::bytecodes::generate(&torque_versions(), V8_NOTICE);
+    if std::env::var_os("MICROSCOPE_UPDATE_V8").is_some() {
+        std::fs::write(BYTECODES_FILE, &expected).expect("write the generated sizes");
+        return;
+    }
+
+    let actual = std::fs::read_to_string(BYTECODES_FILE).unwrap_or_default();
+    assert!(
+        actual == expected,
+        "src/image/v8/bytecodes.gen.rs is stale; rerun with MICROSCOPE_UPDATE_V8=1"
+    );
+}
+
+/// V8's own table of its bytecodes' sizes, which only a symbol table names.
+const BYTECODE_SIZES: &str = "_ZN2v88internal11interpreter9Bytecodes14kBytecodeSizesE";
+
+/// The bytecode sizes generated for each build's V8 are its own table's,
+/// byte for byte, where its symbols name the table; Debian's libnode,
+/// which names none, holds them once, in its read-only data.
+#[test]
+fn each_builds_bytecode_sizes_are_the_generated_ones() {
+    use object::{Object, ObjectSection, ObjectSymbol, SectionKind};
+
+    for (entry, path, (major, minor)) in matrix() {
+        let data = std::fs::read(&path)
+            .unwrap_or_else(|error| panic!("{entry}: read {}: {error}", path.display()));
+        let object = object::File::parse(data.as_slice()).expect("an ELF file");
+        let version = crate::image::v8::V8Version {
+            major,
+            minor,
+            build: 0,
+            patch: 0,
+        };
+        let generated = crate::image::v8::bytecode_sizes(version)
+            .unwrap_or_else(|problem| panic!("{entry}: {problem}"));
+
+        let symbol = object
+            .symbols()
+            .find(|symbol| symbol.name() == Ok(BYTECODE_SIZES));
+        if let Some(symbol) = symbol {
+            let section = object
+                .section_by_index(symbol.section_index().expect("a section"))
+                .expect("the symbol's section");
+            let own = section
+                .data_range(symbol.address(), symbol.size())
+                .expect("the section's data")
+                .expect("the symbol's bytes");
+            assert_eq!(own, generated, "{entry}: kBytecodeSizes");
+            continue;
+        }
+
+        assert_eq!(entry, "debian-24", "{entry}: no {BYTECODE_SIZES}");
+        let found: usize = object
+            .sections()
+            .filter(|section| section.kind() == SectionKind::ReadOnlyData)
+            .map(|section| {
+                let bytes = section.data().expect("the section's data");
+                bytes
+                    .windows(generated.len())
+                    .filter(|window| *window == generated)
+                    .count()
+            })
+            .sum();
+        assert_eq!(found, 1, "{entry}: copies of the generated sizes");
+    }
+}
+
 /// Each build of the dev shell's Node matrix, the file that holds its V8,
 /// and V8's major.minor version: Node 26 has 14.6, 24 has 13.6, and 22
 /// has 12.4.

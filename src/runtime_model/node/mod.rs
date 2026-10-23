@@ -19,7 +19,6 @@ mod translation;
 use std::path::Path;
 use std::sync::Arc;
 
-use super::ImageSymbol;
 use super::{
     CodeFrame, Crossing, DescribedFrame, HeldIdentity, Partial, RuntimeException, RuntimeHook,
     RuntimeImage, RuntimeModel, RuntimeSignals, RuntimeStop, StartedTask, StoredValue, TaskContext,
@@ -45,7 +44,6 @@ pub fn detect(
     let statics = Statics {
         isolate: image.thread_local(crate::image::v8::CURRENT_ISOLATE),
         dispatch_table: runtime.dispatch_table,
-        bytecode_sizes: image.symbol(BYTECODE_SIZES),
     };
     Some(Ok(Arc::new(NodeRuntime {
         version: runtime.version,
@@ -56,17 +54,12 @@ pub fn detect(
     })))
 }
 
-/// `v8::internal::interpreter::Bytecodes::kBytecodeSizes`, each bytecode's
-/// size at each operand scale, which only a symbol table names.
-const BYTECODE_SIZES: &str = "_ZN2v88internal11interpreter9Bytecodes14kBytecodeSizesE";
-
 /// What reading V8's compiled code needs of the module that carries it.
 #[derive(Debug)]
 struct Statics {
     /// Where each thread keeps its current isolate.
     isolate: Option<Result<ThreadLocal, Arc<str>>>,
     dispatch_table: Result<Option<DispatchTable>, Arc<str>>,
-    bytecode_sizes: Option<ImageSymbol>,
 }
 
 /// The range of the image's code its embedded builtins span, where it

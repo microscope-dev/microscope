@@ -87,7 +87,7 @@ pub(super) fn places(
     };
 
     if code.kind == reader.constant(Constant::CodeKindBaseline)? {
-        let (bytecode, offset) = baseline_offset(reader, statics, &code, pc - code.start)?;
+        let (bytecode, offset) = baseline_offset(reader, &code, pc - code.start)?;
         let table = positions::decode(&positions::table_bytes(reader, bytecode)?, encoding)?;
         let position = positions::position_at(&table, offset)
             .and_then(positions::script_offset)
@@ -343,7 +343,6 @@ fn optimized_places(
 /// bytecode whose code holds the instruction `offset` bytes into `code`.
 fn baseline_offset(
     reader: &Reader<'_>,
-    statics: &Statics,
     code: &Code,
     offset: u64,
 ) -> Result<(Object, i64), Problem> {
@@ -375,8 +374,8 @@ fn baseline_offset(
         reader.field_address(bytecode, Field::BytecodeArrayBytes)?,
         &mut bytes,
     )?;
-    let sizes = bytecode_sizes(reader, statics)?;
-    Ok((bytecode, bytecode_at(&table, &bytes, &sizes, offset)?))
+    let sizes = crate::image::v8::bytecode_sizes(reader.version)?;
+    Ok((bytecode, bytecode_at(&table, &bytes, sizes, offset)?))
 }
 
 /// The offset of the bytecode whose baseline code holds the instruction
@@ -423,26 +422,6 @@ fn bytecode_at(table: &[u8], bytecodes: &[u8], sizes: &[u8], offset: u64) -> Res
         next += size;
     }
     Ok(current)
-}
-
-/// V8's table of bytecode sizes, three rows of one size a bytecode, read
-/// from the process.
-fn bytecode_sizes(reader: &Reader<'_>, statics: &Statics) -> Result<Vec<u8>, Problem> {
-    let symbol = statics
-        .bytecode_sizes
-        .ok_or("the build names no table of bytecode sizes, which Sparkplug frames are read by")?;
-    let size = symbol
-        .size
-        .filter(|size| *size % 3 == 0 && (3..=3 * 1024).contains(size))
-        .ok_or("the table of bytecode sizes has no plausible size")?;
-    let address = reader
-        .stop
-        .load_bias()
-        .load(symbol.address)
-        .ok_or("the table of bytecode sizes lies outside the process")?;
-    let mut sizes = vec![0; usize::try_from(size).map_err(|_| "a size is out of range")?];
-    reader.bytes_into(address.get(), &mut sizes)?;
-    Ok(sizes)
 }
 
 #[cfg(test)]

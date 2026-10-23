@@ -24,6 +24,27 @@ pub use translation::{TranslationOpcode, Translations};
 #[path = "v8/slices.gen.rs"]
 mod slices;
 
+#[rustfmt::skip]
+#[path = "v8/bytecodes.gen.rs"]
+mod bytecodes;
+
+/// V8 `version`'s `Bytecodes::kBytecodeSizes`, generated from its headers:
+/// three rows, at the operand scales 1, 2, and 4, of one size per
+/// bytecode; or why microscope has none.
+pub fn bytecode_sizes(version: V8Version) -> Result<&'static [u8], std::sync::Arc<str>> {
+    bytecodes::BYTECODE_SIZES
+        .iter()
+        .find(|(major, minor, _)| (*major, *minor) == (version.major, version.minor))
+        .map(|(_, _, sizes)| *sizes)
+        .ok_or_else(|| {
+            format!(
+                "V8 {}.{} has no bytecode sizes in this build of microscope",
+                version.major, version.minor
+            )
+            .into()
+        })
+}
+
 #[cfg(test)]
 #[path = "v8/scope_info_tests.rs"]
 mod scope_info_tests;

@@ -927,6 +927,11 @@
           # compress it, and how a builtin continuation names its builtin.
           (cd deps/v8 && cp --parents src/deoptimizer/translation-opcode.h src/base/vlq.h \
             src/flags/flag-definitions.h src/utils/utils.h $out/v8/)
+          # The bytecodes and their operands, whose sizes map a Sparkplug
+          # frame's instruction to its bytecode where no symbol names V8's
+          # own table of them.
+          (cd deps/v8 && cp --parents src/interpreter/bytecodes.h \
+            src/interpreter/bytecode-operands.h $out/v8/)
           cp deps/v8/include/v8-version.h $out/v8/
           runHook postInstall
         '';

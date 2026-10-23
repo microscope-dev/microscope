@@ -136,11 +136,6 @@ async fn debian_parked_threads_are_the_ones_v8_reported_and_unwind_to_where_they
 /// why. Such a frame names its function and no place.
 const TIER_GAPS: &[(&str, &str, &str)] = &[
     (
-        "sparkplug",
-        "names no table of bytecode sizes",
-        "kBytecodeSizes is a local symbol, which Debian strips",
-    ),
-    (
         "maglev",
         "the dispatch table cannot be found",
         "no symbol names js_dispatch_table_address, so the function's current code is unknown",

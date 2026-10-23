@@ -42,6 +42,10 @@ mod headers;
 mod deoptimization;
 
 #[cfg(test)]
+#[path = "v8/bytecodes.rs"]
+mod bytecodes;
+
+#[cfg(test)]
 #[path = "v8/translate.rs"]
 mod translate;
 

@@ -507,7 +507,14 @@ field or constant that a version must have. Rerun it with
 does the same for `src/image/v8/translation.gen.rs`, each version's
 translation opcodes with their operand counts, from `translation-opcode.h`,
 which `image::v8::Translations` serves to the runtime model by version and
-refuses by name for any other.
+refuses by name for any other. `bytecode_sizes_match_torque` does the
+same for `src/image/v8/bytecodes.gen.rs`, each version's
+`Bytecodes::kBytecodeSizes` computed from `src/interpreter/bytecodes.h` and
+`bytecode-operands.h` (`v8/bytecodes.rs`), by which a Sparkplug frame's
+instruction maps to its bytecode. The table is a local symbol, which
+Debian's libnode strips. `each_builds_bytecode_sizes_are_the_generated_ones`
+holds it to each build's own table byte for byte, and to the one copy in
+Debian's read-only data.
 `every_build_in_the_matrix_binds_to_its_layout` binds every build in
 `MICROSCOPE_NODE`, Debian's libnode included, and checks its version, the
 counts of agreeing fields, instance types, and header constants, the code
