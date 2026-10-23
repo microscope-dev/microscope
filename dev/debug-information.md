@@ -457,6 +457,9 @@ The rest comes from the V8 headers beside the Torque output, parsed by
   `globals.h`'s non-MIPS branch; the ordered hash tables' layout; the
   number and global dictionaries' entries; and the context slots, with the
   native context's expanded from `NATIVE_CONTEXT_FIELDS`;
+- the fp-relative slots of standard and unoptimized frames from
+  `frame-constants.h`, its frame macros expanded from their own
+  definitions, and `kJSArgcReceiverSlots`;
 - what reading an optimized frame's deoptimization translation needs, by
   `v8/deoptimization.rs`: both safepoint tables' headers and entry
   configuration bits (`safepoint-table.h`, `maglev-safepoint-table.h`; 12.4's

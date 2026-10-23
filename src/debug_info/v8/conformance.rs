@@ -418,6 +418,7 @@ fn add_value_constants(headers: &Headers, constants: &mut BTreeMap<String, i64>)
         "internal::kHoleNanInt64".to_owned(),
         headers.hole_nan_int64(),
     );
+    add_frame_constants(headers, &mut add);
 
     assert!(
         headers.global_dictionary_cell_is_key(),
@@ -448,6 +449,34 @@ fn add_value_constants(headers: &Headers, constants: &mut BTreeMap<String, i64>)
             );
         }
     }
+}
+
+/// Where JavaScript frames keep their slots, from `frame-constants.h`,
+/// and the receiver's place in their argument count, from `globals.h`.
+fn add_frame_constants(headers: &Headers, add: &mut impl FnMut(String, i64)) {
+    for (name, value) in headers.frame_constants(&[
+        ("StandardFrameConstants", "kArgCOffset"),
+        ("UnoptimizedFrameConstants", "kRegisterFileFromFp"),
+        ("UnoptimizedFrameConstants", "kFirstParamFromFp"),
+        ("UnoptimizedFrameConstants", "kFeedbackVectorFromFp"),
+        ("UnoptimizedFrameConstants", "kBytecodeArrayFromFp"),
+        ("InterpreterFrameConstants", "kBytecodeOffsetFromFp"),
+    ]) {
+        add(name, value);
+    }
+    let globals = "src/common/globals.h";
+    assert_eq!(
+        headers
+            .file(globals)
+            .matches("kJSArgcReceiverSlots =")
+            .count(),
+        1,
+        "globals.h defines kJSArgcReceiverSlots once"
+    );
+    add(
+        "internal::kJSArgcReceiverSlots".to_owned(),
+        headers.constant(globals, "kJSArgcReceiverSlots"),
+    );
 }
 
 /// The JS dispatch table's constants, from the 64-bit branches of
@@ -664,8 +693,9 @@ fn checked_constants(
 
 /// The `v8dbg_` constants of JavaScript's values the headers and Torque
 /// output give too: the bits of a map's elements kind and of a detached
-/// array buffer, the oddballs' kinds, three elements kinds, and a
-/// context's first slots.
+/// array buffer, the oddballs' kinds, three elements kinds, a context's
+/// first slots, and where an unoptimized frame keeps its arguments, its
+/// bytecode array, and its bytecode offset.
 fn add_value_checks(
     constants: &BTreeMap<String, i64>,
     bits: &BTreeMap<String, (u32, u32)>,
@@ -700,6 +730,18 @@ fn add_value_checks(
         ("context_idx_scope_info", "Context::SCOPE_INFO_INDEX"),
         ("context_idx_prev", "Context::PREVIOUS_INDEX"),
         ("context_min_slots", "Context::MIN_CONTEXT_SLOTS"),
+        (
+            "off_fp_args",
+            "UnoptimizedFrameConstants::kFirstParamFromFp",
+        ),
+        (
+            "off_fp_bytecode_array",
+            "UnoptimizedFrameConstants::kBytecodeArrayFromFp",
+        ),
+        (
+            "off_fp_bytecode_offset",
+            "InterpreterFrameConstants::kBytecodeOffsetFromFp",
+        ),
     ] {
         check(name, constants[own]);
     }
@@ -843,7 +885,7 @@ fn generate() -> String {
          // heap-object.h, primitive-heap-object.h, bigint.h, struct.h,\n\
          // oddball.h, name.h, elements-kind.h, function-kind.h,\n\
          // ordered-hash-table.h, contexts.h, contexts-inl.h, map-inl.h,\n\
-         // call-site-info.h, v8-promise.h), by\n\
+         // call-site-info.h, v8-promise.h, frame-constants.h), by\n\
          // `debug_info::v8::conformance::layouts_match_torque`. Do not edit;\n\
          // rerun that test with MICROSCOPE_UPDATE_V8=1.\n\
          //\n\

@@ -1284,6 +1284,22 @@ entries! {
         /// A native context's script context table and global proxy.
         ContextScriptContextTableIndex = "Context::SCRIPT_CONTEXT_TABLE_INDEX",
         ContextGlobalProxyIndex = "Context::GLOBAL_PROXY_INDEX",
+
+        /// Where a JavaScript frame keeps its argument count, from its
+        /// frame pointer (`frame-constants.h`): with its receiver, which
+        /// [`Constant::JSArgcReceiverSlots`] counts.
+        StandardFrameArgCOffset = "StandardFrameConstants::kArgCOffset",
+
+        /// An unoptimized frame's slots from its frame pointer: its first
+        /// register, where its arguments begin above its return address
+        /// (`v8dbg_off_fp_args`), and its feedback vector.
+        UnoptimizedFrameRegisterFileFromFp = "UnoptimizedFrameConstants::kRegisterFileFromFp",
+        UnoptimizedFrameFirstParamFromFp = "UnoptimizedFrameConstants::kFirstParamFromFp",
+        UnoptimizedFrameFeedbackVectorFromFp = "UnoptimizedFrameConstants::kFeedbackVectorFromFp",
+
+        /// How many of a JavaScript call's argument count are its receiver
+        /// (`globals.h`).
+        JSArgcReceiverSlots = "internal::kJSArgcReceiverSlots",
     }
 }
 

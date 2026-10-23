@@ -59,7 +59,7 @@ pub(super) struct Headers {
     config: BTreeMap<&'static str, bool>,
 }
 
-const FILES: [&str; 38] = [
+const FILES: [&str; 39] = [
     "src/common/globals.h",
     "include/v8-internal.h",
     "src/objects/trusted-object.h",
@@ -98,6 +98,7 @@ const FILES: [&str; 38] = [
     "src/objects/map-inl.h",
     "src/objects/call-site-info.h",
     "include/v8-promise.h",
+    "src/execution/frame-constants.h",
 ];
 
 /// The headers of 12.4, which has no JS dispatch table.
@@ -796,6 +797,92 @@ impl Headers {
         pattern.is_match(self.file("src/objects/dictionary-inl.h"))
     }
 
+    /// Each `class::name` of `names`, a constant of `frame-constants.h`'s
+    /// classes of frames: its classes' bodies with the header's own frame
+    /// macros, `DEFINE_STANDARD_FRAME_SIZES` and the like, expanded from
+    /// their definitions, each name looked up as C++ does, in the class
+    /// that uses it and then the classes it derives from, and then among
+    /// `globals.h`'s constants and the configuration, which gives
+    /// `kCPSlotSize` no constant pool.
+    pub(super) fn frame_constants(&self, names: &[(&str, &str)]) -> Vec<(String, i64)> {
+        let file = "src/execution/frame-constants.h";
+        let text = self.file(file);
+        let macros = super::bytecodes::defines(text);
+        let call = Regex::new(r"(\w+)\s*\(").expect("a pattern");
+        let mut bodies = BTreeMap::new();
+        for (class, parent) in FRAME_CLASSES {
+            assert!(
+                text.contains(&format!("class {class} : public {parent} {{")),
+                "{file}'s {class} no longer derives from {parent}"
+            );
+            let body = expand_macros(self.class_text(file, class), &macros);
+            assert!(
+                !body.contains('#'),
+                "{file}'s {class} has a conditional: {body:?}"
+            );
+            if let Some(left) = call
+                .captures_iter(&body)
+                .find(|captures| macros.contains_key(&captures[1]))
+            {
+                panic!("{file}'s {class} still calls {}", &left[1]);
+            }
+            bodies.insert(class, body);
+        }
+
+        names
+            .iter()
+            .map(|&(class, name)| {
+                let value = self
+                    .frame_constant(&bodies, class, name, 0)
+                    .unwrap_or_else(|| panic!("{file} gives {class} no {name}"));
+                (format!("{class}::{name}"), value)
+            })
+            .collect()
+    }
+
+    /// The value of `name` in `class` of `frame_constants`' expanded
+    /// `bodies`: the first of the class and those it derives from that
+    /// defines it, its expression evaluated in that class.
+    fn frame_constant(
+        &self,
+        bodies: &BTreeMap<&str, String>,
+        class: &str,
+        name: &str,
+        depth: usize,
+    ) -> Option<i64> {
+        assert!(depth < 32, "{class}::{name} is defined through itself");
+        let file = "src/execution/frame-constants.h";
+        let pattern = format!(r"static\s+constexpr\s+int\s+{name}\s*=\s*([^;]+);");
+        let pattern = Regex::new(&pattern).expect("a pattern");
+        let mut own = Some(class);
+        while let Some(class) = own {
+            let body = bodies.get(class)?;
+            let definitions: Vec<_> = pattern.captures_iter(body).collect();
+            assert!(definitions.len() <= 1, "{class} defines {name} twice");
+            if let Some(definition) = definitions.first() {
+                let lookup = |used: &str| match used.rsplit_once("::") {
+                    Some((owner, member)) if bodies.contains_key(owner) => {
+                        self.frame_constant(bodies, owner, member, depth + 1)
+                    }
+                    Some(_) => self.lookup(file, &[], used),
+                    None => self
+                        .frame_constant(bodies, class, used, depth + 1)
+                        .or_else(|| self.lookup(file, &[], used)),
+                };
+                let expression = &definition[1];
+                return Some(eval(expression, &lookup).unwrap_or_else(|| {
+                    panic!("{file}: cannot evaluate {class}::{name} = {expression:?}")
+                }));
+            }
+            own = FRAME_CLASSES
+                .iter()
+                .find(|(own, _)| *own == class)
+                .map(|(_, parent)| *parent)
+                .filter(|parent| bodies.contains_key(parent));
+        }
+        None
+    }
+
     /// `struct InliningPosition`'s size and its members' offsets, laid out
     /// as C does: a `SourcePosition`, whose only member is a `uint64_t`, and
     /// an `int`.
@@ -1023,6 +1110,78 @@ fn members(body: &str) -> Vec<(String, String)> {
         })
         .map(|captures| (captures[1].to_owned(), captures[2].to_owned()))
         .collect()
+}
+
+/// The classes of frames `Headers::frame_constants` reads, each with the
+/// class it derives from, which the header must declare.
+const FRAME_CLASSES: [(&str, &str); 4] = [
+    ("InterpreterFrameConstants", "UnoptimizedFrameConstants"),
+    ("UnoptimizedFrameConstants", "StandardFrameConstants"),
+    ("StandardFrameConstants", "CommonFrameConstants"),
+    ("CommonFrameConstants", "AllStatic"),
+];
+
+/// `text` with each call of a function-like macro of `macros` replaced by
+/// its body, its parameters by the call's arguments, and the result
+/// expanded again, as the preprocessor does for these macros, which
+/// neither stringize nor paste. A macro with more than one definition, or
+/// a call with the wrong number of arguments, fails.
+fn expand_macros(text: &str, macros: &BTreeMap<String, Vec<(Vec<String>, String)>>) -> String {
+    let call = Regex::new(r"\b(\w+)\s*\(").expect("a pattern");
+    let identifier = Regex::new(r"\w+").expect("a pattern");
+    let mut text = text.to_owned();
+    let mut at = 0;
+    for _ in 0..10_000 {
+        let Some(found) = call.captures_at(&text, at) else {
+            return text;
+        };
+        let whole = found.get(0).expect("the match").range();
+        let name = found[1].to_owned();
+        let Some(definitions) = macros.get(&name) else {
+            at = whole.end;
+            continue;
+        };
+        let [(parameters, body)] = definitions.as_slice() else {
+            panic!("{name} has {} definitions", definitions.len());
+        };
+        assert!(!body.contains('#'), "{name} stringizes or pastes: {body:?}");
+
+        let mut depth = 1;
+        let mut arguments = vec![String::new()];
+        let mut end = None;
+        for (index, c) in text[whole.end..].char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                ',' if depth == 1 => {
+                    arguments.push(String::new());
+                    continue;
+                }
+                _ => {}
+            }
+            if depth == 0 {
+                end = Some(whole.end + index + 1);
+                break;
+            }
+            arguments.last_mut().expect("an argument").push(c);
+        }
+        let end = end.unwrap_or_else(|| panic!("an unbalanced call of {name}"));
+        let arguments: Vec<&str> = arguments.iter().map(|argument| argument.trim()).collect();
+        assert_eq!(
+            arguments.len(),
+            parameters.len(),
+            "{name} is called with {arguments:?}"
+        );
+        let expanded = identifier.replace_all(body, |token: &regex::Captures<'_>| {
+            parameters
+                .iter()
+                .position(|parameter| *parameter == token[0])
+                .map_or_else(|| token[0].to_owned(), |at| arguments[at].to_owned())
+        });
+        text.replace_range(whole.start..end, expanded.trim());
+        at = whole.start;
+    }
+    panic!("the macros do not finish expanding")
 }
 
 /// The text with each run of whitespace one space, as a source shape is

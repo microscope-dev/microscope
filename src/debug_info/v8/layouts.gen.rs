@@ -7,7 +7,7 @@
 // heap-object.h, primitive-heap-object.h, bigint.h, struct.h,
 // oddball.h, name.h, elements-kind.h, function-kind.h,
 // ordered-hash-table.h, contexts.h, contexts-inl.h, map-inl.h,
-// call-site-info.h, v8-promise.h), by
+// call-site-info.h, v8-promise.h, frame-constants.h), by
 // `debug_info::v8::conformance::layouts_match_torque`. Do not edit;
 // rerun that test with MICROSCOPE_UPDATE_V8=1.
 //
@@ -682,6 +682,11 @@ pub(super) const GENERATED: &[Generated] = &[
             (Constant::ContextMinContextExtendedSlots, 3),
             (Constant::ContextScriptContextTableIndex, 191),
             (Constant::ContextGlobalProxyIndex, 3),
+            (Constant::StandardFrameArgCOffset, -24),
+            (Constant::UnoptimizedFrameRegisterFileFromFp, -56),
+            (Constant::UnoptimizedFrameFirstParamFromFp, 16),
+            (Constant::UnoptimizedFrameFeedbackVectorFromFp, -48),
+            (Constant::JSArgcReceiverSlots, 1),
         ],
         instance_types: &[
             ("FIRST_HEAP_OBJECT_TYPE", 0),
@@ -1118,6 +1123,9 @@ pub(super) const GENERATED: &[Generated] = &[
             ("context_idx_scope_info", 0),
             ("context_idx_prev", 1),
             ("context_min_slots", 2),
+            ("off_fp_args", 16),
+            ("off_fp_bytecode_array", -32),
+            ("off_fp_bytecode_offset", -40),
             ("namedictionary_prefix_start_index", 3),
             ("namedictionaryshape_entry_size", 3),
             ("namedictionaryshape_prefix_size", 3),
@@ -1782,6 +1790,11 @@ pub(super) const GENERATED: &[Generated] = &[
             (Constant::ContextMinContextExtendedSlots, 3),
             (Constant::ContextScriptContextTableIndex, 201),
             (Constant::ContextGlobalProxyIndex, 3),
+            (Constant::StandardFrameArgCOffset, -24),
+            (Constant::UnoptimizedFrameRegisterFileFromFp, -56),
+            (Constant::UnoptimizedFrameFirstParamFromFp, 16),
+            (Constant::UnoptimizedFrameFeedbackVectorFromFp, -48),
+            (Constant::JSArgcReceiverSlots, 1),
         ],
         instance_types: &[
             ("FIRST_HEAP_OBJECT_TYPE", 0),
@@ -2240,6 +2253,9 @@ pub(super) const GENERATED: &[Generated] = &[
             ("context_idx_scope_info", 0),
             ("context_idx_prev", 1),
             ("context_min_slots", 2),
+            ("off_fp_args", 16),
+            ("off_fp_bytecode_array", -32),
+            ("off_fp_bytecode_offset", -40),
             ("namedictionary_prefix_start_index", 3),
             ("namedictionaryshape_entry_size", 3),
             ("namedictionaryshape_prefix_size", 3),
@@ -2917,6 +2933,11 @@ pub(super) const GENERATED: &[Generated] = &[
             (Constant::ContextMinContextExtendedSlots, 3),
             (Constant::ContextScriptContextTableIndex, 204),
             (Constant::ContextGlobalProxyIndex, 3),
+            (Constant::StandardFrameArgCOffset, -24),
+            (Constant::UnoptimizedFrameRegisterFileFromFp, -56),
+            (Constant::UnoptimizedFrameFirstParamFromFp, 16),
+            (Constant::UnoptimizedFrameFeedbackVectorFromFp, -48),
+            (Constant::JSArgcReceiverSlots, 1),
         ],
         instance_types: &[
             ("FIRST_HEAP_OBJECT_TYPE", 0),
@@ -3387,6 +3408,9 @@ pub(super) const GENERATED: &[Generated] = &[
             ("context_idx_scope_info", 0),
             ("context_idx_prev", 1),
             ("context_min_slots", 2),
+            ("off_fp_args", 16),
+            ("off_fp_bytecode_array", -32),
+            ("off_fp_bytecode_offset", -40),
             ("namedictionary_prefix_start_index", 3),
             ("namedictionaryshape_entry_size", 3),
             ("namedictionaryshape_prefix_size", 3),
