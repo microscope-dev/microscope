@@ -367,6 +367,7 @@ pub(super) fn sample_unwind() -> unwind::Unwind {
             (range(0x340b, 0x3410), 1),
         ],
         restored: vec![(range(0x3500, 0x350c), 0x3f), (range(0x3508, 0x3510), 2)],
+        proved_frames: vec![(range(0x3600, 0x3601), 0), (range(0x3601, 0x3604), 0x21)],
     }
 }
 

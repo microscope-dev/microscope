@@ -219,20 +219,19 @@ impl CoreDump {
             .find_map(|&(entry, value)| (entry == key).then_some(value))
     }
 
-    /// The saved mappings no file backed that the process could execute
-    /// but not write, which may hold a copy of a module's code.
-    pub(super) fn anonymous_code(&self) -> Vec<std::ops::Range<u64>> {
+    /// The saved mappings no file backed that the process could execute,
+    /// with whether it could write them too.
+    pub(super) fn anonymous_code(&self) -> Vec<(std::ops::Range<u64>, bool)> {
         self.segments
             .iter()
             .filter(|segment| {
                 segment.flags & elf::PF_X != 0
-                    && segment.flags & elf::PF_W == 0
                     && !self
                         .files
                         .iter()
                         .any(|file| file.start < segment.end && segment.start < file.end)
             })
-            .map(|segment| segment.start..segment.end)
+            .map(|segment| (segment.start..segment.end, segment.flags & elf::PF_W != 0))
             .collect()
     }
 

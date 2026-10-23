@@ -16,6 +16,8 @@ use iced_x86::{
 };
 
 use super::{full_register, is_immediate, is_push_register, is_register_move};
+use crate::unwind::{MemoryReader, RBP, RETURN_ADDRESS, RSP, RegisterFile, UnwindStep};
+use crate::{AddressRange, ImageAddress, UnwindTermination, VirtualAddress};
 
 /// Where a frame keeps what its caller needs, at one instruction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -351,6 +353,197 @@ fn is_plain_memory(instruction: &Instruction, base: Register) -> bool {
         && instruction.segment_prefix() == Register::None
 }
 
+/// The most bytes an encoded frame names as pushed or as an offset.
+const MOST_ENCODED_BYTES: u64 = (1 << 15) - 1;
+
+impl CodeFrame {
+    /// The frame as an image table holds it: a tag in the low two bits
+    /// and up to two byte counts of 15 bits each above it. A frame whose
+    /// counts do not fit has no encoding, and `below`, which no unwind
+    /// reads, is not kept.
+    pub(in crate::debug_info) fn encode(self) -> Option<u32> {
+        let (tag, first, second) = match self {
+            Self::Stack {
+                pushed,
+                caller_frame_pointer: CallerFramePointer::Kept,
+            } => (0, pushed, 0),
+            Self::Stack {
+                pushed,
+                caller_frame_pointer: CallerFramePointer::Saved(offset),
+            } => (1, pushed, offset),
+            Self::Stack {
+                pushed,
+                caller_frame_pointer: CallerFramePointer::Lost,
+            } => (2, pushed, 0),
+            Self::Based { offset, .. } => (3, offset, 0),
+        };
+        if first > MOST_ENCODED_BYTES || second > MOST_ENCODED_BYTES {
+            return None;
+        }
+        u32::try_from(tag | first << 2 | second << 17).ok()
+    }
+
+    /// The frame `encode` gave `value`, if it names one.
+    pub(in crate::debug_info) fn decode(value: u32) -> Option<Self> {
+        let value = u64::from(value);
+        let (first, second) = ((value >> 2) & MOST_ENCODED_BYTES, value >> 17);
+        let stack = |caller_frame_pointer| Self::Stack {
+            pushed: first,
+            caller_frame_pointer,
+        };
+        match (value & 3, second) {
+            (0, 0) => Some(stack(CallerFramePointer::Kept)),
+            (1, offset) => Some(stack(CallerFramePointer::Saved(offset))),
+            (2, 0) => Some(stack(CallerFramePointer::Lost)),
+            (3, 0) => Some(Self::Based {
+                offset: first,
+                below: None,
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// Adds the frames of one function of a runtime's code that no call-frame
+/// information describes, whose code is `code`, at `address`, by encoded
+/// frame. Where its instructions prove the frame, that frame is kept.
+/// Past that, the runtime's convention holds at each call the code makes:
+/// it calls only from a frame it has entered, whose rbp holds the address
+/// of the word that saved the caller's, 16 bytes below the canonical frame
+/// address. Elsewhere nothing is known.
+pub(in crate::debug_info) fn runtime_frames(
+    code: &[u8],
+    address: u64,
+    frames: &mut Vec<(AddressRange<ImageAddress>, u32)>,
+) {
+    let range = |start: u64, end: u64| AddressRange {
+        start: ImageAddress::new(address.saturating_add(start)),
+        end: ImageAddress::new(address.saturating_add(end)),
+    };
+    let proved = CodeFrames::analyze(code);
+    let ends = proved
+        .changes
+        .iter()
+        .skip(1)
+        .map(|(offset, _)| *offset)
+        .chain(std::iter::once(proved.proved));
+    for ((start, frame), end) in proved.changes.iter().zip(ends) {
+        if let Some(value) = frame.encode().filter(|_| start < &end) {
+            frames.push((range(*start, end), value));
+        }
+    }
+
+    let convention = CodeFrame::Based {
+        offset: 16,
+        below: None,
+    }
+    .encode();
+    let Some(convention) = convention else {
+        return;
+    };
+    let mut decoder = Decoder::with_ip(64, code, 0, DecoderOptions::NONE);
+    decoder
+        .set_position(
+            usize::try_from(proved.proved)
+                .unwrap_or(code.len())
+                .min(code.len()),
+        )
+        .ok();
+    decoder.set_ip(proved.proved);
+    while decoder.can_decode() {
+        let instruction = decoder.decode();
+        if instruction.is_invalid() {
+            continue;
+        }
+        if matches!(
+            instruction.flow_control(),
+            FlowControl::Call | FlowControl::IndirectCall
+        ) {
+            frames.push((range(instruction.ip(), instruction.next_ip()), convention));
+        }
+    }
+}
+
+/// The canonical frame address of `frame`, with `registers` its own.
+pub(in crate::debug_info) fn frame_cfa(
+    frame: CodeFrame,
+    registers: &RegisterFile,
+) -> Result<VirtualAddress, UnwindTermination> {
+    let cfa = match frame {
+        CodeFrame::Stack { pushed, .. } => register(registers, RSP, "rsp")?
+            .checked_add(pushed)
+            .and_then(|top| top.checked_add(8)),
+        CodeFrame::Based { offset, .. } => register(registers, RBP, "rbp")?.checked_add(offset),
+    };
+
+    cfa.map(VirtualAddress::new)
+        .ok_or_else(|| UnwindTermination::InvalidCaller {
+            description: "a frame ends past the address space".into(),
+        })
+}
+
+/// The caller of `frame`: its stack pointer, return address, and frame
+/// pointer, as far as the frame proves them. The code's calling
+/// convention is not known, so no other register is.
+pub(in crate::debug_info) fn frame_caller(
+    frame: CodeFrame,
+    registers: &RegisterFile,
+    memory: &mut dyn MemoryReader,
+) -> Result<UnwindStep, UnwindTermination> {
+    let cfa = frame_cfa(frame, registers)?;
+    let return_address = read(memory, cfa, 8)?;
+
+    let frame_pointer = match frame {
+        CodeFrame::Based { offset, .. }
+        | CodeFrame::Stack {
+            caller_frame_pointer: CallerFramePointer::Saved(offset),
+            ..
+        } => Some(read(memory, cfa, offset)?),
+        CodeFrame::Stack {
+            caller_frame_pointer: CallerFramePointer::Kept,
+            ..
+        } => registers.get(RBP),
+        CodeFrame::Stack {
+            caller_frame_pointer: CallerFramePointer::Lost,
+            ..
+        } => None,
+    };
+
+    let mut caller = RegisterFile::new([(RETURN_ADDRESS, return_address), (RSP, cfa.get())]);
+    if let Some(frame_pointer) = frame_pointer {
+        caller.set(RBP, frame_pointer);
+    }
+
+    Ok(UnwindStep {
+        registers: caller,
+        cfa,
+        signal_frame: false,
+    })
+}
+
+fn register(
+    registers: &RegisterFile,
+    number: crate::unwind::DwarfRegister,
+    name: &str,
+) -> Result<u64, UnwindTermination> {
+    registers
+        .get(number)
+        .ok_or_else(|| UnwindTermination::RegisterUnavailable {
+            register: name.into(),
+        })
+}
+
+fn read(
+    memory: &mut dyn MemoryReader,
+    cfa: VirtualAddress,
+    below: u64,
+) -> Result<u64, UnwindTermination> {
+    let address = VirtualAddress::new(cfa.get().wrapping_sub(below));
+    memory
+        .read_u64(address)
+        .ok_or(UnwindTermination::MemoryReadFailed { address })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,6 +569,79 @@ mod tests {
         (0..=code.len() as u64)
             .map(|offset| frames.at(offset))
             .collect()
+    }
+
+    #[test]
+    fn an_encoded_frame_decodes_to_itself_and_bounds_are_refused() {
+        for frame in [
+            Stack {
+                pushed: 0,
+                caller_frame_pointer: Kept,
+            },
+            Stack {
+                pushed: 0x7ff8,
+                caller_frame_pointer: Saved(0x7fff),
+            },
+            Stack {
+                pushed: 24,
+                caller_frame_pointer: Lost,
+            },
+            Based {
+                offset: 16,
+                below: None,
+            },
+        ] {
+            let encoded = frame.encode().expect("it fits");
+            assert_eq!(CodeFrame::decode(encoded), Some(frame), "{frame:?}");
+        }
+        // `below` is not kept, and a count past 15 bits has no encoding.
+        let based = Based {
+            offset: 16,
+            below: Some(8),
+        };
+        assert_eq!(
+            based.encode().and_then(CodeFrame::decode),
+            Some(Based {
+                offset: 16,
+                below: None
+            })
+        );
+        assert_eq!(stack(1 << 15, Kept).and_then(CodeFrame::encode), None);
+        // A Kept or Lost frame with a second count is no encoding.
+        assert_eq!(CodeFrame::decode(1 << 17), None);
+        assert_eq!(CodeFrame::decode(2 | 1 << 17), None);
+        assert_eq!(CodeFrame::decode(3 | 1 << 17), None);
+    }
+
+    #[test]
+    fn a_runtime_function_is_proved_to_its_first_unproved_instruction_then_at_calls() {
+        // V8's CallApiCallbackGeneric opens with `pop rax`, its return
+        // address, which nothing proves; later, `call [r13+0x40]` keeps
+        // the convention's frame.
+        // pop rax; push rbp; mov rbp, rsp; call [r13+0x40]; leave; ret
+        let code = [
+            0x58, 0x55, 0x48, 0x89, 0xe5, 0x41, 0xff, 0x55, 0x40, 0xc9, 0xc3,
+        ];
+        let mut frames = Vec::new();
+        runtime_frames(&code, 0x1000, &mut frames);
+        let entry = stack(0, Kept).and_then(CodeFrame::encode).expect("entry");
+        let convention = Based {
+            offset: 16,
+            below: None,
+        }
+        .encode()
+        .expect("convention");
+        let range = |start: u64, end: u64| AddressRange {
+            start: ImageAddress::new(start),
+            end: ImageAddress::new(end),
+        };
+        assert_eq!(
+            frames,
+            [
+                (range(0x1000, 0x1001), entry),
+                (range(0x1005, 0x1009), convention)
+            ]
+        );
     }
 
     #[test]

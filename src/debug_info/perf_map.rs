@@ -13,9 +13,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
-use super::x86_64::frames::{CallerFramePointer, CodeFrame, CodeFrames};
+use super::x86_64::frames::{CodeFrame, CodeFrames, frame_caller, frame_cfa};
 use super::{DebugInfo, UnwindInfo};
-use crate::unwind::{MemoryReader, RBP, RETURN_ADDRESS, RSP, RegisterFile, UnwindStep};
+use crate::unwind::{MemoryReader, RegisterFile, UnwindStep};
 use crate::{
     AddressRange, CodeRole, ImageAddress, ModuleImageId, SymbolBinding, SymbolExtent,
     SymbolExtentProvenance, SymbolId, SymbolInfo, SymbolKind, UnwindTermination, VirtualAddress,
@@ -216,43 +216,6 @@ impl PerfMapUnwind {
     }
 }
 
-fn register(
-    registers: &RegisterFile,
-    number: crate::unwind::DwarfRegister,
-    name: &str,
-) -> Result<u64, UnwindTermination> {
-    registers
-        .get(number)
-        .ok_or_else(|| UnwindTermination::RegisterUnavailable {
-            register: name.into(),
-        })
-}
-
-fn cfa(frame: CodeFrame, registers: &RegisterFile) -> Result<VirtualAddress, UnwindTermination> {
-    let cfa = match frame {
-        CodeFrame::Stack { pushed, .. } => register(registers, RSP, "rsp")?
-            .checked_add(pushed)
-            .and_then(|top| top.checked_add(8)),
-        CodeFrame::Based { offset, .. } => register(registers, RBP, "rbp")?.checked_add(offset),
-    };
-
-    cfa.map(VirtualAddress::new)
-        .ok_or_else(|| UnwindTermination::InvalidCaller {
-            description: "a frame ends past the address space".into(),
-        })
-}
-
-fn read(
-    memory: &mut dyn MemoryReader,
-    cfa: VirtualAddress,
-    below: u64,
-) -> Result<u64, UnwindTermination> {
-    let address = VirtualAddress::new(cfa.get().wrapping_sub(below));
-    memory
-        .read_u64(address)
-        .ok_or(UnwindTermination::MemoryReadFailed { address })
-}
-
 impl UnwindInfo for PerfMapUnwind {
     fn cfa(
         &self,
@@ -260,55 +223,23 @@ impl UnwindInfo for PerfMapUnwind {
         registers: &RegisterFile,
         _memory: &mut dyn MemoryReader,
     ) -> Result<VirtualAddress, UnwindTermination> {
-        cfa(self.frame(address)?, registers)
+        frame_cfa(self.frame(address)?, registers)
     }
 
-    /// The caller keeps the stack pointer, return address, and frame
-    /// pointer the code proves; the code's calling convention is not
-    /// known, so no other register is.
     fn unwind(
         &self,
         address: ImageAddress,
         registers: &RegisterFile,
         memory: &mut dyn MemoryReader,
     ) -> Result<UnwindStep, UnwindTermination> {
-        let frame = self.frame(address)?;
-        let cfa = cfa(frame, registers)?;
-        let return_address = read(memory, cfa, 8)?;
-
-        let frame_pointer = match frame {
-            CodeFrame::Based { offset, .. }
-            | CodeFrame::Stack {
-                caller_frame_pointer: CallerFramePointer::Saved(offset),
-                ..
-            } => Some(read(memory, cfa, offset)?),
-            CodeFrame::Stack {
-                caller_frame_pointer: CallerFramePointer::Kept,
-                ..
-            } => registers.get(RBP),
-            CodeFrame::Stack {
-                caller_frame_pointer: CallerFramePointer::Lost,
-                ..
-            } => None,
-        };
-
-        let mut caller = RegisterFile::new([(RETURN_ADDRESS, return_address), (RSP, cfa.get())]);
-        if let Some(frame_pointer) = frame_pointer {
-            caller.set(RBP, frame_pointer);
-        }
-
-        Ok(UnwindStep {
-            registers: caller,
-            cfa,
-            signal_frame: false,
-        })
+        frame_caller(self.frame(address)?, registers, memory)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::unwind::FramePointerRule;
+    use crate::unwind::{FramePointerRule, RBP, RETURN_ADDRESS, RSP};
 
     fn named(start: u64, end: u64, name: &str) -> Entry {
         Entry {

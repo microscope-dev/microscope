@@ -165,6 +165,11 @@ pub struct Unwind {
     /// the slots it saved them in, each with the registers as bits of
     /// rbx, rbp, and r12-r15.
     pub restored: Vec<(AddressRange<ImageAddress>, u32)>,
+
+    /// The frame of each instruction of a runtime's code that no
+    /// call-frame information describes, where it is proved, encoded as
+    /// `debug_info`'s frame prover encodes it.
+    pub proved_frames: Vec<(AddressRange<ImageAddress>, u32)>,
 }
 
 /// Why unwinding information could not be encoded.
@@ -173,28 +178,8 @@ pub struct Unwind {
 pub struct TooLarge;
 
 /// Adds `unwind` to `builder`, pooling error descriptions in `strings`.
-pub fn add_to<'a>(
-    builder: &mut Builder<'a>,
-    strings: &mut StringsBuilder,
-    unwind: &'a Unwind,
-) -> Result<(), TooLarge> {
-    let mut error = |index: &FdeIndex| -> Result<(u64, u32), TooLarge> {
-        Ok(match &index.first_error {
-            Some((offset, text)) => (*offset, strings.push(text).ok_or(TooLarge)?.0),
-            None => (0, NONE),
-        })
-    };
-
-    // Each entry's offset is an interval's 32-bit value.
-    if [&unwind.eh_frame, &unwind.debug_frame]
-        .iter()
-        .any(|section| u32::try_from(section.len()).is_err())
-    {
-        return Err(TooLarge);
-    }
-
-    let (eh_frame_error_offset, eh_frame_error) = error(&unwind.eh_frame_index)?;
-    let (debug_frame_error_offset, debug_frame_error) = error(&unwind.debug_frame_index)?;
+/// The record's flags for what `unwind` holds.
+fn record_flags(unwind: &Unwind) -> u8 {
     let mut flags = 0;
     for (present, flag) in [
         (unwind.bases.eh_frame.is_some(), unwind_flags::EH_FRAME_BASE),
@@ -221,6 +206,32 @@ pub fn add_to<'a>(
             flags |= flag;
         }
     }
+    flags
+}
+
+pub fn add_to<'a>(
+    builder: &mut Builder<'a>,
+    strings: &mut StringsBuilder,
+    unwind: &'a Unwind,
+) -> Result<(), TooLarge> {
+    let mut error = |index: &FdeIndex| -> Result<(u64, u32), TooLarge> {
+        Ok(match &index.first_error {
+            Some((offset, text)) => (*offset, strings.push(text).ok_or(TooLarge)?.0),
+            None => (0, NONE),
+        })
+    };
+
+    // Each entry's offset is an interval's 32-bit value.
+    if [&unwind.eh_frame, &unwind.debug_frame]
+        .iter()
+        .any(|section| u32::try_from(section.len()).is_err())
+    {
+        return Err(TooLarge);
+    }
+
+    let (eh_frame_error_offset, eh_frame_error) = error(&unwind.eh_frame_index)?;
+    let (debug_frame_error_offset, debug_frame_error) = error(&unwind.debug_frame_index)?;
+    let flags = record_flags(unwind);
 
     let go = unwind.go.as_ref();
     let facts = go.map(|go| go.facts);
@@ -260,6 +271,10 @@ pub fn add_to<'a>(
         .owned_shared(
             TableKind::RestoredFrames,
             index::intervals(unwind.restored.iter().copied()),
+        )
+        .owned_shared(
+            TableKind::ProvedFrames,
+            index::intervals(unwind.proved_frames.iter().copied()),
         );
 
     if let Some(go) = go {
@@ -438,6 +453,11 @@ impl<'a> UnwindView<'a> {
             .fold(0, |registers, more| registers | more)
     }
 
+    /// The encoded frame proved for the instruction at `address`, if any.
+    pub fn proved_frame(self, address: ImageAddress) -> Option<u32> {
+        index::containing(self.image.shared(TableKind::ProvedFrames), address).next()
+    }
+
     /// Go's table, when the image has it.
     pub fn go(self) -> Option<(&'a [u8], GoTableFacts)> {
         let record = self.record?;
@@ -544,6 +564,7 @@ pub(super) fn validate(image: &Image) -> Result<(), String> {
             image.shared(TableKind::RestoredFrames),
             MOST_RESTORED_REGISTERS as usize + 1,
         )
+        || !index::valid_intervals(image.shared(TableKind::ProvedFrames), u32::MAX as usize + 1)
     {
         return Err("an unwinding index is malformed".into());
     }

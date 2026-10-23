@@ -16,14 +16,20 @@
 //! as a JIT compiler's, is never taken for a copy, since its bytes may
 //! change between stops. A proven copy, and memory proven to be none, is
 //! remembered until its mapping changes.
+//!
+//! In a process that runs V8, anonymous code that is no copy is code V8
+//! generated, which keeps the frame-pointer chain by its convention; it
+//! becomes a module of its own whose frames are unwound by that convention
+//! (see [`crate::debug_info::runtime_code`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::sync::Arc;
 
 use nix::unistd::Pid;
 
 use super::memory::read_logical_block;
+use super::modules::AnonymousCode;
 use super::native::{InspectionOps, LinuxTraceOps};
 use super::{BREAKPOINT_OPCODE, Controller, RuntimeModule};
 use crate::protocol::DebuggerEvent;
@@ -49,7 +55,10 @@ pub(super) enum Copy {
     /// A copy of the code of the module `source`, which `module` binds.
     Of { module: ModuleId, source: ModuleId },
 
-    /// No copy of any module's code.
+    /// Code a runtime generated, which `module` holds.
+    Runtime { module: ModuleId },
+
+    /// No copy of any module's code, nor code a runtime is known to make.
     None,
 }
 
@@ -74,7 +83,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Brings the modules that bind copies up to date with the process's
     /// mappings of anonymous code, `anonymous`. The debugger's traps a
     /// copy holds come out of it before it becomes a module.
-    pub(super) fn observe_code_copies(&mut self, pid: Pid, anonymous: &[Range<u64>]) {
+    pub(super) fn observe_code_copies(&mut self, pid: Pid, anonymous: &[AnonymousCode]) {
         self.observe_code_copies_with(pid, anonymous, |controller, traps| {
             for trap in traps {
                 let word = controller.ptrace.read_word(pid, trap.address).ok()?;
@@ -99,10 +108,11 @@ impl<P: LinuxTraceOps> Controller<P> {
             let address = registers.rip.checked_sub(1)?;
             let memory = inferior.memory_thread();
             let mappings = self.ptrace.module_mappings(memory).ok()?;
-            let mapping = mappings
+            let mapping = &mappings
                 .anonymous_code
                 .iter()
-                .find(|mapping| mapping.contains(&address))?;
+                .find(|mapping| !mapping.writable && mapping.range.contains(&address))?
+                .range;
             if matches!(
                 self.code_copies.get(&(mapping.start, mapping.end)),
                 Some(Copy::Of { .. })
@@ -124,26 +134,42 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// copy, so that the next refresh proves it again: the program copied
     /// code there since.
     pub(super) fn forget_copy_at(&mut self, address: u64) {
-        self.code_copies.retain(|mapping, copy| {
-            !(matches!(copy, Copy::None) && (mapping.0..mapping.1).contains(&address))
+        let mut known = std::mem::take(&mut self.code_copies);
+        known.retain(|mapping, copy| {
+            if !(mapping.0..mapping.1).contains(&address) {
+                return true;
+            }
+            match *copy {
+                Copy::Of { .. } => true,
+                Copy::Runtime { module } => {
+                    self.unregister_module(module);
+                    false
+                }
+                Copy::None => false,
+            }
         });
+        self.code_copies = known;
     }
 }
 
 impl<P: InspectionOps> Controller<P> {
-    /// Brings the modules that bind copies up to date with the mappings of
-    /// anonymous code, `anonymous`: a copy whose mapping is gone, or whose
-    /// source module is, is unregistered, and each new mapping that is a
-    /// copy becomes a module once `scrub` took out the traps it holds.
+    /// Brings the modules that bind copies, and that hold a runtime's code,
+    /// up to date with the mappings of anonymous code, `anonymous`: one
+    /// whose mapping is gone, or whose source module is, is unregistered.
+    /// Each new mapping the process cannot write that is a copy becomes a
+    /// module once `scrub` took out the traps it holds; in a process that
+    /// runs V8, each other one becomes a module of V8's code.
     pub(super) fn observe_code_copies_with(
         &mut self,
         pid: Pid,
-        anonymous: &[Range<u64>],
+        anonymous: &[AnonymousCode],
         scrub: impl Fn(&Self, &[CopiedTrap]) -> Option<()>,
     ) {
         let mut known = std::mem::take(&mut self.code_copies);
         known.retain(|mapping, copy| {
-            let current = anonymous.contains(&(mapping.0..mapping.1));
+            let current = anonymous
+                .iter()
+                .any(|code| code.range == (mapping.0..mapping.1));
             match *copy {
                 Copy::Of { module, source } => {
                     let kept = current && self.modules.contains_key(&source);
@@ -152,16 +178,28 @@ impl<P: InspectionOps> Controller<P> {
                     }
                     kept
                 }
+                Copy::Runtime { module } => {
+                    if !current {
+                        self.unregister_module(module);
+                    }
+                    current
+                }
                 Copy::None => current,
             }
         });
 
-        for mapping in anonymous {
+        let runtime = self
+            .modules
+            .values()
+            .any(|module| crate::debug_info::v8::is_v8(&module.image));
+        for code in anonymous {
+            let mapping = &code.range;
             if known.contains_key(&(mapping.start, mapping.end)) {
                 continue;
             }
-            let copy = self
-                .prove_copy(pid, mapping)
+            let copy = (!code.writable)
+                .then(|| self.prove_copy(pid, mapping))
+                .flatten()
                 .and_then(|proven| {
                     // The copied traps come out before the copy's own
                     // sites go in.
@@ -172,11 +210,56 @@ impl<P: InspectionOps> Controller<P> {
                         source: proven.source,
                     })
                 })
+                .or_else(|| {
+                    runtime
+                        .then(|| self.register_runtime_code(mapping))
+                        .flatten()
+                        .map(|module| Copy::Runtime { module })
+                })
                 .unwrap_or(Copy::None);
             known.insert((mapping.start, mapping.end), copy);
         }
 
         self.code_copies = known;
+    }
+
+    /// The modules that hold anonymous code: copies and a runtime's code.
+    pub(super) fn anonymous_code_modules(&self) -> BTreeSet<ModuleId> {
+        self.code_copies
+            .values()
+            .filter_map(|copy| match *copy {
+                Copy::Of { module, .. } | Copy::Runtime { module } => Some(module),
+                Copy::None => None,
+            })
+            .collect()
+    }
+
+    /// Makes the module that holds V8's code in `mapping`.
+    fn register_runtime_code(&mut self, mapping: &Range<u64>) -> Option<ModuleId> {
+        let id = ModuleId::new(self.next_module_id);
+        let image_id = crate::ModuleImageId::new(self.next_image_id);
+        let path = std::path::PathBuf::from(format!("[V8 code {:#x}]", mapping.start));
+        let range = AddressRange {
+            start: ImageAddress::new(mapping.start),
+            end: ImageAddress::new(mapping.end),
+        };
+        let debug = crate::debug_info::runtime_code::load(&path, image_id, range).ok()?;
+        self.next_module_id = self.next_module_id.checked_add(1)?;
+        self.next_image_id = self.next_image_id.checked_add(1)?;
+        let loaded = LoadedModule {
+            id,
+            image: image_id,
+            load_bias: LoadBias::new(0),
+            window: None,
+        };
+        self.add_module(RuntimeModule {
+            loaded,
+            image: debug.image,
+            unwind: debug.unwind,
+            variables: debug.variables,
+            tls: None,
+        });
+        Some(id)
     }
 
     /// The range of a module's code `mapping` begins with a copy of, if any.
@@ -278,8 +361,15 @@ impl<P: InspectionOps> Controller<P> {
             variables: Arc::clone(&source.variables),
             tls: None,
         };
+        self.add_module(module);
+        Some(id)
+    }
+
+    /// Registers `module` and says so.
+    fn add_module(&mut self, module: RuntimeModule) {
         let path = Arc::new(module.image.path().to_owned());
-        self.modules.insert(id, module);
+        let loaded = module.loaded;
+        self.modules.insert(loaded.id, module);
         self.bump_revision();
         let _ = self.events.send(DebuggerEvent::ModuleLoaded {
             revision: self.revision,
@@ -288,7 +378,6 @@ impl<P: InspectionOps> Controller<P> {
                 path,
             },
         });
-        Some(id)
     }
 }
 

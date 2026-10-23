@@ -782,6 +782,7 @@ pub(super) const SCHEMA: &[TableSchema] = &[
         ],
     },
     intervals(TableKind::RestoredFrames),
+    intervals(TableKind::ProvedFrames),
 ];
 
 /// Where a Python runtime record's offsets begin.

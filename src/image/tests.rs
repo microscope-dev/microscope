@@ -584,6 +584,7 @@ fn the_schema_is_the_records_layout() {
         TableKind::GoCode,
         TableKind::StubFrames,
         TableKind::RestoredFrames,
+        TableKind::ProvedFrames,
     ] {
         assert_eq!(schema::record(kind), "Interval");
     }
@@ -598,7 +599,7 @@ fn the_schema_is_the_records_layout() {
     // layouts before reading tables; the container format is independent.
     assert_eq!(
         schema::layout_fingerprint(),
-        0x6e4a_61da_98b2_ab74,
+        0xab9e_1a2c_5642_993a,
         "the layout changed:\n{}",
         schema::schema_text()
     );
@@ -1449,6 +1450,20 @@ fn unwinding_tables_read_back_as_their_lookups() {
         assert_eq!(
             view.restored(ImageAddress::new(address)),
             restored,
+            "{address:#x}"
+        );
+    }
+
+    for (address, frame) in [
+        (0x35ff, None),
+        (0x3600, Some(0)),
+        (0x3601, Some(0x21)),
+        (0x3603, Some(0x21)),
+        (0x3604, None),
+    ] {
+        assert_eq!(
+            view.proved_frame(ImageAddress::new(address)),
+            frame,
             "{address:#x}"
         );
     }

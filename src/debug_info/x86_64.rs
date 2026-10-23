@@ -231,14 +231,18 @@ fn decode(decoder: &mut Decoder<'_>) -> Result<Instruction, PrologueAnalysisErro
 // Structural prologue checks compare exact registers: operand-size overrides
 // (`push bp`, `mov ebp, esp`) are not the canonical eight-byte frame
 // operations this proof requires.
-fn is_push_register(instruction: &Instruction, register: Register) -> bool {
+pub(super) fn is_push_register(instruction: &Instruction, register: Register) -> bool {
     instruction.mnemonic() == Mnemonic::Push
         && instruction.op_count() == 1
         && instruction.op0_kind() == OpKind::Register
         && instruction.op0_register() == register
 }
 
-fn is_register_move(instruction: &Instruction, destination: Register, source: Register) -> bool {
+pub(super) fn is_register_move(
+    instruction: &Instruction,
+    destination: Register,
+    source: Register,
+) -> bool {
     instruction.mnemonic() == Mnemonic::Mov
         && instruction.op_count() == 2
         && instruction.op0_kind() == OpKind::Register

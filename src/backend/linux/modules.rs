@@ -166,13 +166,14 @@ impl<P: LinuxTraceOps> Controller<P> {
         observed.dedup();
 
         let observed_modules = observed.iter().cloned().collect::<BTreeSet<_>>();
+        // A module of anonymous code goes with its mapping, below.
+        let anonymous_modules = self.anonymous_code_modules();
         let unloaded = self
             .modules
             .iter()
             .filter(|(id, module)| {
-                // A copy's module goes with its mapping, below.
                 **id != self.main.id
-                    && module.loaded.window.is_none()
+                    && !anonymous_modules.contains(id)
                     && !observed_modules
                         .contains(&(module.image.path().to_owned(), module.loaded.load_bias))
             })
@@ -513,9 +514,9 @@ pub(super) struct ProcessMappings {
     /// The vDSO, which no file backs.
     pub(super) vdso: Option<Range<u64>>,
 
-    /// Anonymous memory the process may execute but not write, which may
-    /// hold a copy of a module's code.
-    pub(super) anonymous_code: Vec<Range<u64>>,
+    /// Anonymous memory the process may execute, with whether it may
+    /// write it too: a copy of a module's code, or code a runtime made.
+    pub(super) anonymous_code: Vec<AnonymousCode>,
 }
 
 /// The mappings holding loaded modules in a process whose memory map is
@@ -533,9 +534,16 @@ pub(super) fn process_mappings_in(maps: &str) -> Result<ProcessMappings> {
     })
 }
 
-/// The mappings of `maps` that no file backs and that may be executed but
-/// not written: those with no name, or a name an `anon:` prefix gives.
-fn anonymous_code(maps: &str) -> Vec<Range<u64>> {
+/// A mapping of anonymous memory the process may execute.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct AnonymousCode {
+    pub(super) range: Range<u64>,
+    pub(super) writable: bool,
+}
+
+/// The mappings of `maps` that no file backs and that may be executed:
+/// those with no name, or a name an `anon:` prefix gives.
+fn anonymous_code(maps: &str) -> Vec<AnonymousCode> {
     maps.lines()
         .filter_map(|line| {
             let mut fields = line.splitn(6, char::is_whitespace);
@@ -544,13 +552,15 @@ fn anonymous_code(maps: &str) -> Vec<Range<u64>> {
             let inode = fields.nth(2)?;
             let name = fields.next().map_or("", str::trim_start);
             let anonymous = inode == "0" && (name.is_empty() || name.starts_with("[anon:"));
-            let code = permissions.as_bytes().get(1) == Some(&b'-')
-                && permissions.as_bytes().get(2) == Some(&b'x');
-            if !(anonymous && code) {
+            let permissions = permissions.as_bytes();
+            if !(anonymous && permissions.get(2) == Some(&b'x')) {
                 return None;
             }
             let (start, end) = range.split_once('-')?;
-            Some(u64::from_str_radix(start, 16).ok()?..u64::from_str_radix(end, 16).ok()?)
+            Some(AnonymousCode {
+                range: u64::from_str_radix(start, 16).ok()?..u64::from_str_radix(end, 16).ok()?,
+                writable: permissions.get(1) == Some(&b'w'),
+            })
         })
         .collect()
 }

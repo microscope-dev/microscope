@@ -1005,7 +1005,14 @@ impl Controller<CoreTarget> {
         });
 
         // A dump holds no trap of the debugger's to take out of a copy.
-        let anonymous = self.ptrace.memory.core().anonymous_code();
+        let anonymous: Vec<_> = self
+            .ptrace
+            .memory
+            .core()
+            .anonymous_code()
+            .into_iter()
+            .map(|(range, writable)| super::modules::AnonymousCode { range, writable })
+            .collect();
         self.observe_code_copies_with(selected, &anonymous, |_, _| Some(()));
 
         let presentation = self.presentation_for_thread(selected, Some(reason))?;

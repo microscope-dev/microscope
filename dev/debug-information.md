@@ -16,7 +16,8 @@ layouts, and ABI rules stay behind this boundary.
 | `src/debug_info/x86_64/frames.rs` | Frames of undescribed code, proved from its instructions |
 | `src/debug_info/perf_map.rs` | Perf maps: names and frames of code a compiler generated |
 | `src/debug_info/gdb_jit.rs`, `src/backend/linux/jit_objects.rs` | Objects a JIT compiler registers through the GDB JIT interface |
-| `src/backend/linux/code_copies.rs` | Copies of an image's code a program made in anonymous memory |
+| `src/backend/linux/code_copies.rs` | Copies of an image's code a program made in anonymous memory, and V8's compiled code |
+| `src/debug_info/v8.rs`, `src/debug_info/runtime_code.rs` | V8's builtins and the frames of code V8 generates, unwound by its frame-pointer convention |
 | `src/debug_info/cpython.rs`, `src/debug_info/cpython/` | CPython's runtime layout: its offsets table, generated layouts, and their checks |
 | `src/image/` | Validated immutable table image and checked views |
 | `src/model/image.rs`, `src/model/image/` | Public image model and location types |
@@ -268,6 +269,26 @@ memory reads, and a `CallerProvider`. The DWARF provider uses gimli to
 interpret CFI. Go stack transitions and signal frames add explicit transition
 rules at their edges. PLT stubs, which mold and lld leave without CFI, get a
 rule decoded at load: how many words each stub instruction finds pushed.
+
+V8's code has no CFI either, and its frames follow V8's convention instead:
+code calls only from a frame it has entered, whose rbp holds the address of
+the word that saved the caller's rbp, 16 bytes below the canonical frame
+address. Two pieces apply it. `src/debug_info/v8.rs` finds an image's
+embedded builtins by their `Builtins_` symbols past
+`v8_Default_embedded_blob_code_`. The `ProvedFrames` table, decoded at load,
+holds each builtin's frame from its entry, as far as
+`x86_64::frames::CodeFrames` proves it from the instructions, then the
+convention's frame at each call it makes. A frame in the copy of the
+builtins (see module discovery) uses the image's table. Code V8 compiles for
+JavaScript lies in anonymous memory that the process can write. In a process
+that has loaded a V8 image, `code_copies.rs` makes each such mapping a
+pseudo-module, `debug_info::runtime_code`, with no symbols. It unwinds by the
+convention, except where the instructions at the frame's own address prove
+otherwise: a `push rbp; mov rbp, rsp` prologue that has not run yet, or a
+`ret`. A caller's address is the end of the call it made, which is never
+either. Debian's shared `libnode` names no builtin, so its own copy of the
+builtins is not described until the V8 runtime model reads their bounds from
+the process (G2 in `plans/node.html`).
 
 GCC's epilogues pop the registers a caller keeps but leave the CFI rules that
 name their slots, now below the stack pointer, until the function returns. A

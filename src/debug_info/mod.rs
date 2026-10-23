@@ -24,9 +24,11 @@ pub mod gopclntab;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub mod perf_map;
 mod roles;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub mod runtime_code;
 #[cfg(target_os = "linux")]
 mod separate;
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub mod v8;
 mod x86_64;
 
 #[cfg(feature = "fuzzing")]

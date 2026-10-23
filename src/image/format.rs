@@ -376,11 +376,16 @@ pub enum TableKind {
     /// The instructions at which a function has restored registers its
     /// caller keeps, by which, for lookups by address.
     RestoredFrames = 98,
+
+    /// The frames of a runtime's code that no call-frame information
+    /// describes, as its instructions and the runtime's conventions prove
+    /// them, for lookups by address.
+    ProvedFrames = 99,
 }
 
 impl TableKind {
     /// Every kind, in the order tables are laid out.
-    pub const ALL: [Self; 98] = [
+    pub const ALL: [Self; 99] = [
         Self::Strings,
         Self::Files,
         Self::LineAddresses,
@@ -479,6 +484,7 @@ impl TableKind {
         Self::StubFrames,
         Self::PythonRuntime,
         Self::RestoredFrames,
+        Self::ProvedFrames,
     ];
 
     pub const COUNT: usize = Self::ALL.len();

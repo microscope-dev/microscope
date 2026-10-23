@@ -1966,9 +1966,53 @@ fn load_unwind_info(
             &code,
         ));
         unwind.restored = restored;
+        unwind.proved_frames = proved_frames(object, debug_object, &unwind);
     }
 
     Ok(unwind)
+}
+
+/// The frames of V8's builtins, which no call-frame information
+/// describes, as their code and V8's conventions prove them. A separate
+/// debug file may name the builtins its module's file was stripped of.
+#[cfg(target_arch = "x86_64")]
+fn proved_frames(
+    object: &object::File<'_>,
+    debug_object: Option<&object::File<'_>>,
+    unwind: &crate::image::unwind::Unwind,
+) -> Vec<(AddressRange<ImageAddress>, u32)> {
+    let mut builtins = super::v8::builtins(object);
+    if builtins.is_empty()
+        && let Some(debug_object) = debug_object
+    {
+        // The debug file holds the symbols; the module's file, the code.
+        builtins = super::v8::builtins(debug_object)
+            .into_iter()
+            .filter_map(|(address, code)| {
+                Some((
+                    address,
+                    code_bytes(object, address, address + code.len() as u64)?,
+                ))
+            })
+            .collect();
+    }
+
+    let described = |address: u64| {
+        [&unwind.eh_frame_index, &unwind.debug_frame_index]
+            .iter()
+            .any(|index| {
+                crate::image::index::containing(&index.entries, ImageAddress::new(address))
+                    .next()
+                    .is_some()
+            })
+    };
+    let mut frames = Vec::new();
+    for (address, code) in builtins {
+        if !described(address) {
+            super::x86_64::frames::runtime_frames(code, address, &mut frames);
+        }
+    }
+    frames
 }
 
 /// The instructions of `section`'s functions at which registers their
@@ -2286,6 +2330,10 @@ impl UnwindInfo for DwarfUnwindInfo {
             return stub_cfa(pushed, registers);
         }
 
+        if let Some(frame) = proved_frame(view, address) {
+            return super::x86_64::frames::frame_cfa(frame, registers);
+        }
+
         self.go()
             .and_then(|go| go.cfa(address, registers))
             .unwrap_or(result)
@@ -2331,6 +2379,13 @@ impl UnwindInfo for DwarfUnwindInfo {
             (result, _) => result,
         };
 
+        let result = match (result, proved_frame(view, address)) {
+            (Err(UnwindTermination::NoUnwindInfo { .. }), Some(frame)) => {
+                super::x86_64::frames::frame_caller(frame, registers, memory)
+            }
+            (result, _) => result,
+        };
+
         let Some(go) = self.go() else {
             return result;
         };
@@ -2361,6 +2416,16 @@ impl UnwindInfo for DwarfUnwindInfo {
             .is_some_and(|go| go.compiled(address))
             .then_some(R14)
     }
+}
+
+/// The frame proved for the instruction at `address` of runtime code no
+/// call-frame information describes.
+fn proved_frame(
+    view: crate::image::unwind::UnwindView<'_>,
+    address: ImageAddress,
+) -> Option<super::x86_64::frames::CodeFrame> {
+    view.proved_frame(address)
+        .and_then(super::x86_64::frames::CodeFrame::decode)
 }
 
 fn cfa_from_section<'data, S>(
