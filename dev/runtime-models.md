@@ -122,10 +122,15 @@ key/value text per sample, such as `gil=held`, and needs no identity across
 stops.
 
 Node reads the thread-local `g_current_isolate_`. Node enters the main
-thread's isolate, and each worker's, for the whole of its event loop. The
-value is 0 on threads that run no JavaScript: libuv's pool, V8's platform
-workers, and the inspector. The variable is a thread-local, so cores
-show labels too.
+thread's isolate, and each worker's, for the whole of its event loop, so a
+thread that runs JavaScript always has its isolate's label. The value is 0
+on libuv's pool and the inspector. From V8 13.6 (Node 24), a `LocalHeap`
+on any other thread also sets it (`heap/local-heap.cc`), so V8's platform
+workers carry the isolate's label while they compile or mark for it. The
+label therefore means "works for this isolate", not "runs JavaScript";
+telling helpers apart needs `g_current_local_heap_` and
+`LocalHeap::is_main_thread_`, and Debian's libnode names neither. The
+variable is a thread-local, so cores show labels too.
 
 ## Logical stacks
 

@@ -1008,6 +1008,7 @@ resume
           <li>None on any of the seven entries: the frame tests' lists of known gaps, Debian's included, are empty.</li>
         </ul>
         <p class="progress"><strong>Decided, 23 October 2026: isolates in the thread list.</strong> A thread snapshot gains a general runtime-labels field, shown wherever threads are listed (CLI, DAP, browser), which any runtime model may fill; Python's GIL holder can use it later. Node labels each thread that runs JavaScript <code>isolate N</code>. N is assigned in the order microscope first sees each isolate and kept in a table for the life of the process, so a label never changes between stops.</p>
+        <p class="progress"><strong>Amended, 23 October 2026.</strong> From V8 13.6, V8 sets <code>g_current_isolate_</code> on its helper threads while their <code>LocalHeap</code> works for an isolate (a background compile, concurrent marking), so a <code>node-V8Worker</code> can carry <code>isolate 1</code>. Telling helpers apart would need <code>g_current_local_heap_</code> and <code>LocalHeap::is_main_thread_</code>, which Debian's libnode does not name, so the label now promises less: a thread that runs JavaScript always shows its isolate, a thread with no label runs none, and a helper shows the isolate it works for while it does.</p>
       </div>
       <div class="phase">
         <header><span class="pid">N2</span><h3>Values, expressions, views</h3><span class="st todo">todo</span></header>

@@ -580,7 +580,7 @@ pub enum ThreadActivity {
 
 /// What a language runtime says of a stopped thread, shown beside it
 /// wherever threads are listed, such as `isolate 1` for the V8 isolate a
-/// Node thread runs.
+/// Node thread works for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreadLabel {
     /// The runtime instance that gives the label.

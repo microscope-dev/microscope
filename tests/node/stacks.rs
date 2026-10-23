@@ -105,21 +105,20 @@ fn check_listed(context: &str, reported: &[Thread], listed: &[u64]) {
 
 /// The isolate each thread `reported`, which runs JavaScript, is labelled
 /// with at the stop `snapshot` lists, by thread id: each its own number,
-/// the main thread's 1. Every other thread has no label.
+/// the main thread's 1. Any other thread has no label, or, as a V8 helper
+/// working for an isolate, that isolate's.
 pub fn check_isolates(
     context: &str,
     reported: &[Thread],
     snapshot: &StateSnapshot,
 ) -> BTreeMap<u64, u64> {
     let mut isolates = BTreeMap::new();
+    let mut helpers = Vec::new();
     for thread in snapshot.threads.iter() {
         let id = thread.id.get();
         let labels: Vec<String> = thread.labels.iter().map(ToString::to_string).collect();
         let Some(javascript) = reported.iter().find(|r| r.native == id) else {
-            assert!(
-                labels.is_empty(),
-                "{context}: thread {id} runs no JavaScript: {labels:?}"
-            );
+            helpers.push((id, labels));
             continue;
         };
         let [label] = &thread.labels[..] else {
@@ -137,6 +136,14 @@ pub fn check_isolates(
 
     let numbers: std::collections::BTreeSet<u64> = isolates.values().copied().collect();
     assert_eq!(numbers.len(), reported.len(), "{context}: {isolates:?}");
+    let shown: Vec<String> = numbers.iter().map(|n| format!("isolate {n}")).collect();
+    for (id, labels) in helpers {
+        assert!(
+            labels.len() <= 1 && labels.iter().all(|label| shown.contains(label)),
+            "{context}: thread {id} runs no JavaScript, and works for no isolate a \
+             JavaScript thread runs: {labels:?}"
+        );
+    }
     assert_eq!(
         isolates.get(&reported[0].native),
         Some(&1),

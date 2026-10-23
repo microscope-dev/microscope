@@ -285,10 +285,11 @@ impl RuntimeModel for NodeRuntime {
         ThreadActivity::Outside
     }
 
-    /// The isolate the thread has entered, by its address: Node enters the
-    /// main thread's, and each worker's, for the whole of its event loop.
-    /// A thread that runs no JavaScript, as libuv's and V8's own workers,
-    /// has none.
+    /// The isolate the thread is working for, by its address: Node enters
+    /// the main thread's, and each worker's, for the whole of its event
+    /// loop. From 13.6 a V8 helper thread holds it too while its `LocalHeap`
+    /// does work for the isolate, as a background compile does. libuv's
+    /// workers hold none.
     fn thread_holding(&self, stop: &dyn RuntimeStop, thread: ThreadId) -> Option<ThreadHolding> {
         let identity = match &self.statics.isolate {
             Some(Ok(place)) => match current_isolate(stop, thread, *place) {

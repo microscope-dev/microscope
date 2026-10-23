@@ -1059,10 +1059,10 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         }
     }
 
-    /// What the stopped thread `thread` runs in, of the things of a kind
+    /// What the stopped thread `thread` works for, of the things of a kind
     /// the runtime keeps several of, such as the V8 isolate a Node thread
-    /// runs JavaScript in; `None` when it runs in none, as a thread that
-    /// runs no JavaScript. The debugger numbers each identity of a kind in
+    /// runs JavaScript in or a V8 helper thread compiles for; `None` when
+    /// it works for none. The debugger numbers each identity of a kind in
     /// the order it first sees it, and keeps the number while a thread it
     /// saw holding it lives, so the thread list shows `isolate 1` rather
     /// than an address.
