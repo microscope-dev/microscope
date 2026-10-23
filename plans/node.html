@@ -1003,6 +1003,7 @@ resume
           <li>Compiled frames (Sparkplug, Maglev, Turbofan, inlined, OSR) have no place yet. An OSR frame runs code that is neither the function's current code nor named by the frame. V8 caches it as weak references in the FeedbackVector, so the model takes a frame's code from the candidates (current code, baseline code, the OSR cache) whose instruction range contains the pc, and otherwise gives the function without a line.</li>
           <li>Debian's builtins need the embedded blob's bounds.</li>
         </ul>
+        <p class="progress"><strong>Decision needed: isolates in the thread list.</strong> The walkthrough shows <code>isolate 1</code> beside each thread, but the public model section allows only three changes, and a thread snapshot has no runtime labels today. <code>RuntimeModel::thread_labels</code> reaches only the profiler. The options are a public field on thread snapshots for runtime labels (Python's GIL holder could use it too), or keeping isolates to the profiler and the threads' <code>/proc</code> names. Also open: an isolate's number needs a process-lifetime table to stay stable across stops. Its address would be stable but unreadable. Not started until decided.</p>
       </div>
       <div class="phase">
         <header><span class="pid">N2</span><h3>Values, expressions, views</h3><span class="st todo">todo</span></header>
