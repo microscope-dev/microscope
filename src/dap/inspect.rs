@@ -437,7 +437,21 @@ impl Session {
 
         match crate::present::frames::place(frame, image.as_deref()) {
             Some(place) => {
-                body["source"] = super::sources::source_json(&self.local_path(&place.path));
+                // A runtime's own module, as Node's `node:fs`, is named
+                // without a path no editor could open.
+                let names_file = frame
+                    .recorded
+                    .as_ref()
+                    .and_then(|recorded| recorded.place.as_ref())
+                    .is_none_or(microscope::RecordedPlace::names_file);
+                body["source"] = if names_file {
+                    super::sources::source_json(&self.local_path(&place.path))
+                } else {
+                    json!({
+                        "name": place.path.display().to_string(),
+                        "presentationHint": "deemphasize",
+                    })
+                };
                 body["line"] = self.line_to_client(place.line).into();
                 body["column"] = place
                     .column

@@ -2372,12 +2372,7 @@ impl StopView<'_> {
             return Some(Err(Error::SourceLocationUnavailable));
         };
         let column = ColumnNumber::new(u64::from(place.column));
-        // Names in angle brackets, as Python's `<string>`, and a runtime's
-        // module ids, as Node's `node:fs`, name no file.
-        let module_id = place.path.split_once(':').is_some_and(|(scheme, _)| {
-            scheme.len() > 1 && scheme.bytes().all(|byte| byte.is_ascii_alphabetic())
-        });
-        if (place.path.starts_with('<') && place.path.ends_with('>')) || module_id {
+        if !place.names_file() {
             return Some(Err(Error::SourceNotAFile {
                 name: Arc::clone(&place.path),
             }));

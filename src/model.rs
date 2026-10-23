@@ -474,6 +474,20 @@ pub struct RecordedPlace {
     pub column: u32,
 }
 
+impl RecordedPlace {
+    /// Whether the path names a file, rather than code a runtime compiled
+    /// from something else: a name in angle brackets, as Python's
+    /// `<string>`, or a module id with a scheme, as Node's `node:fs`.
+    #[must_use]
+    pub fn names_file(&self) -> bool {
+        let bracketed = self.path.starts_with('<') && self.path.ends_with('>');
+        let module_id = self.path.split_once(':').is_some_and(|(scheme, _)| {
+            scheme.len() > 1 && scheme.bytes().all(|byte| byte.is_ascii_alphabetic())
+        });
+        !bracketed && !module_id
+    }
+}
+
 /// One task of a language runtime at a stop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskSnapshot {

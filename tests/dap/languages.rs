@@ -302,6 +302,67 @@ fn stack_traces_show_the_functions_that_left_by_tail_calls() {
     finish_running(dap, thread);
 }
 
+/// In a Node core, a JavaScript frame is at the file and line V8 recorded,
+/// and a frame of Node's own `node:` scripts names its module without
+/// claiming a file an editor could open.
+#[test]
+fn javascript_frames_show_their_recorded_source() {
+    let mut dap = Dap::start("node");
+    let started = dap.begin(
+        Profile::VsCode,
+        (
+            "attach",
+            json!({"coreFile": fixture("node-stacks-26.core")}),
+        ),
+        &Configuration::default(),
+    );
+    dap.stopped(started.mark);
+
+    let threads = dap.request("threads", Value::Null);
+    let frames: Vec<Value> = threads["threads"]
+        .as_array()
+        .expect("threads")
+        .iter()
+        .flat_map(|thread| {
+            let trace = dap.request(
+                "stackTrace",
+                json!({"threadId": thread["id"], "startFrame": 0, "levels": 128}),
+            );
+            trace["stackFrames"].as_array().expect("frames").clone()
+        })
+        .collect();
+
+    let inner = frames
+        .iter()
+        .find(|frame| frame["name"] == "betaInner")
+        .expect("the frame of betaInner");
+    assert!(
+        inner["source"]["path"]
+            .as_str()
+            .is_some_and(|path| path.ends_with("tests/fixtures/node/stacks.js")),
+        "{inner}"
+    );
+    let parks = line_of(&source("node/stacks.js"), "truth.park({label})");
+    assert_eq!(inner["line"], parks, "{inner}");
+
+    let internal = frames
+        .iter()
+        .find(|frame| {
+            frame["source"]["name"]
+                .as_str()
+                .is_some_and(|name| name.starts_with("node:"))
+        })
+        .expect("a frame of Node's own scripts");
+    assert!(internal["source"].get("path").is_none(), "{internal}");
+    assert_eq!(
+        internal["source"]["presentationHint"], "deemphasize",
+        "{internal}"
+    );
+    assert!(internal["line"].as_u64() > Some(0), "{internal}");
+
+    dap.finish();
+}
+
 #[test]
 fn python_frames_show_their_recorded_source_and_their_locals() {
     let mut dap = Dap::start("python");

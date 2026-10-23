@@ -40,15 +40,19 @@ impl Images {
     }
 
     /// Notes the file a runtime recorded for `frame`, at `place`, as one the
-    /// page was shown. A runtime's `<string>` and the like name no file.
+    /// page was shown. A runtime's `<string>`, `node:fs`, and the like name
+    /// no file.
     pub fn note_recorded(
         &self,
         frame: &StackFrame,
         place: Option<&crate::present::frames::FramePlace>,
     ) {
-        if let Some(place) = place.filter(|_| frame.recorded.is_some())
-            && !place.path.to_string_lossy().starts_with('<')
-        {
+        let names_file = frame
+            .recorded
+            .as_ref()
+            .and_then(|recorded| recorded.place.as_ref())
+            .is_some_and(microscope::RecordedPlace::names_file);
+        if let Some(place) = place.filter(|_| names_file) {
             self.recorded
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
