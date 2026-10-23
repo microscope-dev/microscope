@@ -17,11 +17,9 @@
 use super::Statics;
 use super::objects::{Object, Problem, Reader};
 use super::positions::{self, Encoding};
+use super::translation::{self, Offset};
 use crate::image::v8::{Constant, DispatchTable, Field};
 use crate::runtime_model::CodeFrame;
-
-/// The most functions one position's inlining chain names.
-const MAX_INLINING_DEPTH: usize = 64;
 
 /// The most feedback slots searched for a function's OSR code.
 const MAX_FEEDBACK_SLOTS: u64 = 1 << 16;
@@ -31,6 +29,10 @@ const MAX_FEEDBACK_SLOTS: u64 = 1 << 16;
 /// `Wide`, `ExtraWide`, `DebugBreakWide`, and `DebugBreakExtraWide`, the
 /// first four bytecodes on 12.4, 13.6, and 14.6.
 const PREFIXES: [usize; 4] = [1, 2, 1, 2];
+
+/// A function a frame runs, by its `SharedFunctionInfo`, and its offset
+/// in its script, or why it has none.
+pub(super) type Place = (Object, Result<u64, Problem>);
 
 /// A `Code` object, with the facts of it every reading needs.
 #[derive(Debug, Clone, Copy)]
@@ -56,7 +58,7 @@ pub(super) fn places(
     statics: &Statics,
     frame: &CodeFrame<'_>,
     (function, shared): (Object, Object),
-) -> Result<Vec<(Object, u64)>, Problem> {
+) -> Result<Vec<Place>, Problem> {
     let pc = frame.instruction.get();
     // A caller's instruction is its return address, past its call.
     let lookup = pc.checked_sub(1).ok_or("the frame's instruction is 0")?;
@@ -87,12 +89,12 @@ pub(super) fn places(
         let position = positions::position_at(&table, offset)
             .and_then(positions::script_offset)
             .ok_or("the bytecode has no position at the frame's offset")?;
-        return Ok(vec![(shared, position)]);
+        return Ok(vec![(shared, Ok(position))]);
     }
     if code.kind == reader.constant(Constant::CodeKindMaglev)?
         || code.kind == reader.constant(Constant::CodeKindTurbofanJS)?
     {
-        return optimized_places(reader, encoding, &code, shared, lookup - code.start);
+        return optimized_places(reader, encoding, &code, shared, pc - code.start);
     }
     Err(format!(
         "the frame runs code of kind {}, which is no JavaScript's",
@@ -297,112 +299,41 @@ fn code(reader: &Reader<'_>, object: Object) -> Result<Code, Problem> {
     })
 }
 
-/// The functions optimized `code` runs at its instruction `offset`,
-/// innermost first, with their script offsets.
+/// The functions optimized `code` runs at the frame's pc, `pc_offset`
+/// bytes into it, innermost first, with their script offsets: the frames
+/// its deoptimization translation stands for there, each at its bytecode's
+/// position, as V8's `OptimizedJSFrame::Summarize` gives them.
 fn optimized_places(
     reader: &Reader<'_>,
     encoding: Encoding,
     code: &Code,
     shared: Object,
-    offset: u64,
-) -> Result<Vec<(Object, u64)>, Problem> {
-    let table = reader
-        .object(reader.field(code.object, Field::CodePositionTable)?)?
-        .ok_or("the optimized code keeps no position table")?;
-    let entries = positions::decode(&positions::byte_array(reader, table)?, encoding)?;
-    let offset = i64::try_from(offset).map_err(|_| "the code offset is out of range")?;
-    let external = reader.constant(Constant::SourcePositionIsExternalMask)?;
-    // V8's own reading (Code::SourcePosition) passes over positions in
-    // other languages' files, and keeps the function's entry.
-    let mut position = entries
-        .iter()
-        .filter(|entry| entry.position & external == 0)
-        .take_while(|entry| entry.code_offset <= offset)
-        .last()
-        .map(|entry| entry.position)
-        .ok_or("the optimized code has no position at the frame's instruction")?;
-
-    let deoptimization = reader
-        .object(reader.field(code.object, Field::CodeDeoptimizationDataOrInterpreterData)?)?
-        .ok_or("the optimized code keeps no deoptimization data")?;
-    let mut places = Vec::new();
-    loop {
-        let script_offset = positions::script_offset(position)
-            .ok_or("an inlined position names no offset in its script")?;
-        let Some(id) = inlining_id(reader, position)? else {
-            places.push((shared, script_offset));
-            return Ok(places);
-        };
-        if places.len() >= MAX_INLINING_DEPTH {
-            return Err("the code's inlining nests implausibly deep".into());
-        }
-        let (outer, function) = inlined(reader, deoptimization, id)?;
-        places.push((function.unwrap_or(shared), script_offset));
-        position = outer;
-    }
-}
-
-/// The inlining id of `position`, or `None` for one not inlined.
-fn inlining_id(reader: &Reader<'_>, position: i64) -> Result<Option<u64>, Problem> {
-    let stored = (position & reader.constant(Constant::SourcePositionInliningIdMask)?)
-        >> reader.constant(Constant::SourcePositionInliningIdShift)?;
-    // The field holds the id plus one; 0 is kNotInlined.
-    Ok(stored.checked_sub(1).and_then(|id| u64::try_from(id).ok()))
-}
-
-/// The inlining `id` of the code whose deoptimization data is
-/// `deoptimization`: the position of the call that inlined it, and the
-/// function inlined, `None` for the code's own.
-fn inlined(
-    reader: &Reader<'_>,
-    deoptimization: Object,
-    id: u64,
-) -> Result<(i64, Option<Object>), Problem> {
-    let index = reader.constant(Constant::DeoptimizationDataInliningPositionsIndex)?;
-    let records = reader
-        .object(reader.element(deoptimization, index)?)?
-        .ok_or("the deoptimization data keeps no inlining positions")?;
-    let bytes = positions::byte_array(reader, records)?;
-    let size = reader
-        .constant(Constant::InliningPositionSize)?
-        .cast_unsigned();
-    let record = |field: Constant, width: usize| -> Result<i64, Problem> {
-        let at = usize::try_from(id * size + reader.constant(field)?.cast_unsigned())
-            .map_err(|_| "an inlining position is out of range")?;
-        let bytes = bytes
-            .get(at..at + width)
-            .ok_or("an inlining id is past the code's inlining positions")?;
-        let mut word = [0; 8];
-        word[..width].copy_from_slice(bytes);
-        Ok(match width {
-            4 => i64::from(i32::from_le_bytes([word[0], word[1], word[2], word[3]])),
-            _ => i64::from_le_bytes(word),
+    pc_offset: u64,
+) -> Result<Vec<Place>, Problem> {
+    let frames = translation::call_site(reader, code.object, shared, pc_offset)?;
+    frames
+        .into_iter()
+        .map(|frame| {
+            let offset = match frame.offset {
+                Offset::Bytecode(offset) => offset,
+                // V8 places a builtin's continuation in the builtin's code,
+                // which no script holds.
+                Offset::Builtin(_) => {
+                    return Ok((
+                        frame.shared,
+                        Err("a builtin's continuation is in no script".into()),
+                    ));
+                }
+            };
+            let bytecode = super::names::bytecode(reader, frame.shared)?
+                .ok_or("an optimized frame's function keeps no bytecode")?;
+            let table = positions::decode(&positions::table_bytes(reader, bytecode)?, encoding)?;
+            let position = positions::position_at(&table, offset)
+                .and_then(positions::script_offset)
+                .ok_or("the bytecode has no position at the frame's offset");
+            Ok((frame.shared, position.map_err(Problem::from)))
         })
-    };
-    let position = record(Constant::InliningPositionPosition, 8)?;
-    let function = record(Constant::InliningPositionInlinedFunctionId, 4)?;
-    if function == -1 {
-        return Ok((position, None));
-    }
-
-    let literals = reader
-        .object(reader.element(
-            deoptimization,
-            reader.constant(Constant::DeoptimizationDataLiteralArrayIndex)?,
-        )?)?
-        .ok_or("the deoptimization data keeps no literals")?;
-    let word = reader.element(literals, function)?;
-    let shared = match weak(reader, word)? {
-        Some(object) => Some(object),
-        None => reader.object(word)?,
-    }
-    .filter(|object| {
-        reader
-            .is(*object, Constant::SharedFunctionInfoType)
-            .unwrap_or(false)
-    })
-    .ok_or("an inlined function's literal is no function")?;
-    Ok((position, Some(shared)))
+        .collect()
 }
 
 /// The bytecode baseline `code` compiled, and the offset in it of the

@@ -14,6 +14,7 @@ mod names;
 mod objects;
 mod positions;
 mod properties;
+mod translation;
 
 use std::path::Path;
 use std::sync::Arc;

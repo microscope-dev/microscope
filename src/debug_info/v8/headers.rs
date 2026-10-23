@@ -59,7 +59,7 @@ pub(super) struct Headers {
     config: BTreeMap<&'static str, bool>,
 }
 
-const FILES: [&str; 15] = [
+const FILES: [&str; 23] = [
     "src/common/globals.h",
     "include/v8-internal.h",
     "src/objects/trusted-object.h",
@@ -75,6 +75,14 @@ const FILES: [&str; 15] = [
     "src/objects/js-function.h",
     "src/objects/property-array.h",
     "src/objects/property-array.tq",
+    "src/objects/code-inl.h",
+    "src/codegen/safepoint-table-base.h",
+    "src/codegen/safepoint-table.h",
+    "src/codegen/maglev-safepoint-table.h",
+    "src/deoptimizer/translation-opcode.h",
+    "src/base/vlq.h",
+    "src/flags/flag-definitions.h",
+    "src/utils/utils.h",
 ];
 
 /// The headers of 12.4, which has no JS dispatch table.
@@ -87,7 +95,7 @@ impl Headers {
             let path = v8.join(file);
             match std::fs::read_to_string(&path) {
                 Ok(text) => {
-                    files.insert(file, strip_comments(&text));
+                    files.insert(file, release(&strip_comments(&text)));
                 }
                 Err(error) => assert!(
                     OPTIONAL.contains(&file) && !leaptiering,
@@ -106,7 +114,7 @@ impl Headers {
         self.file(file).contains(text)
     }
 
-    fn file(&self, file: &str) -> &str {
+    pub(super) fn file(&self, file: &str) -> &str {
         self.files
             .get(file)
             .unwrap_or_else(|| panic!("{file} is not read"))
@@ -165,7 +173,11 @@ impl Headers {
             return Some(value);
         }
 
-        if name == "kSystemPointerSize" {
+        if name == "kSystemPointerSize"
+            || self
+                .file("src/common/globals.h")
+                .contains(&format!("constexpr int {name} = sizeof("))
+        {
             return Some(self.size(name));
         }
 
@@ -473,6 +485,126 @@ impl Headers {
         }
         true
     }
+
+    /// The body of `class` in `file`, without its comments.
+    pub(super) fn class_text(&self, file: &str, class: &str) -> &str {
+        class_body(self.file(file), class).unwrap_or_else(|| panic!("{file} declares no {class}"))
+    }
+
+    /// The offsets `class`'s header layout gives its fields, by their
+    /// `kNameOffset` names and `kHeaderSize`: its `static constexpr`
+    /// constants, as 12.4 gives a safepoint table's, or its `FIELD_LIST`
+    /// from 0, as 13.6 does.
+    pub(super) fn header_offsets(&self, file: &str, class: &str) -> BTreeMap<String, i64> {
+        let body = self.class_text(file, class);
+        if !body.contains("#define FIELD_LIST(V)") {
+            let pattern = Regex::new(r"static\s+constexpr\s+int\s+(k\w*(?:Offset|HeaderSize))\s*=")
+                .expect("a pattern");
+            return pattern
+                .captures_iter(body)
+                .map(|captures| {
+                    let name = captures[1].to_owned();
+                    let value = self
+                        .class_constant(file, &[class], &name)
+                        .unwrap_or_else(|| panic!("{class}::{name}"));
+                    (name, value)
+                })
+                .collect();
+        }
+
+        assert!(
+            body.contains("DEFINE_FIELD_OFFSET_CONSTANTS(0, FIELD_LIST)"),
+            "{class}'s fields do not begin at 0"
+        );
+        let mut offsets = BTreeMap::new();
+        let mut offset = 0;
+        for (name, size) in v_entries(&macro_body(body, "#define FIELD_LIST(V)")) {
+            offsets.insert(name.clone(), offset);
+            if name == "kHeaderSize" {
+                return offsets;
+            }
+            offset += size
+                .strip_prefix("sizeof(")
+                .and_then(|ty| ty.strip_suffix(')'))
+                .map_or_else(|| self.size(&size), |alias| self.alias_size(alias));
+        }
+        panic!("{class}'s field list has no kHeaderSize")
+    }
+
+    /// The size of a type `safepoint-table-base.h` names, as
+    /// `SafepointTableStackSlotsField_t`.
+    fn alias_size(&self, alias: &str) -> i64 {
+        let base = self.file("src/codegen/safepoint-table-base.h");
+        let pattern = format!(r"using\s+{alias}\s*=\s*(\w+);");
+        let ty = Regex::new(&pattern)
+            .expect("a pattern")
+            .captures(base)
+            .map_or_else(
+                || panic!("no type {alias}"),
+                |captures| captures[1].to_owned(),
+            );
+        type_size(self.file("src/common/globals.h"), &ty)
+    }
+
+    /// `TRANSLATION_OPCODE_LIST`, each opcode by its name with its operand
+    /// count, in their order, which numbers them; and how many of the first
+    /// are JS frames' and frames'. WebAssembly's are among them: every
+    /// build defines `V8_ENABLE_WEBASSEMBLY`.
+    pub(super) fn translation_opcodes(&self) -> (Vec<(String, i64)>, usize, usize) {
+        let file = "src/deoptimizer/translation-opcode.h";
+        let text = self.file(file);
+        let list = |name: &str| self.opcode_list(&macro_body(text, &format!("#define {name}(V)")));
+        let js_frames = list("TRANSLATION_JS_FRAME_OPCODE_LIST");
+        let frames = list("TRANSLATION_FRAME_OPCODE_LIST");
+        let all = list("TRANSLATION_OPCODE_LIST");
+        assert!(
+            all.starts_with(&js_frames) && all[js_frames.len()..].starts_with(&frames),
+            "the opcode list does not begin with its frames'"
+        );
+        for expected in [
+            "static constexpr int kNumTranslationOpcodes =\n    0 TRANSLATION_OPCODE_LIST(PLUS_ONE);",
+            "static constexpr int kNumTranslationFrameOpcodes =\n    \
+             kNumTranslationJsFrameOpcodes TRANSLATION_FRAME_OPCODE_LIST(PLUS_ONE);",
+            "return static_cast<int>(o) < kNumTranslationFrameOpcodes;",
+            "return static_cast<int>(o) < kNumTranslationJsFrameOpcodes;",
+            "#define CASE(name, ...) name,\n  TRANSLATION_OPCODE_LIST(CASE)",
+        ] {
+            assert!(
+                text.contains(expected),
+                "{file} no longer says {expected:?}"
+            );
+        }
+        let (js_frames, frames) = (js_frames.len(), js_frames.len() + frames.len());
+        (all, js_frames, frames)
+    }
+
+    /// The entries of an opcode list's body: `V(NAME, count)`,
+    /// `IF_WASM(V, NAME, count)`, and other lists' `NAME(V)`.
+    fn opcode_list(&self, body: &str) -> Vec<(String, i64)> {
+        let text = self.file("src/deoptimizer/translation-opcode.h");
+        let entry =
+            Regex::new(r"IF_WASM\(V,\s*(\w+),\s*(\d+)\)|V\((\w+),\s*(\d+)\)|(\w+_LIST)\(V\)")
+                .expect("a pattern");
+        assert!(
+            entry.replace_all(body, "").trim().is_empty(),
+            "an opcode list has more than its entries: {body:?}"
+        );
+        let mut opcodes = Vec::new();
+        for captures in entry.captures_iter(body) {
+            if let Some(list) = captures.get(5) {
+                let head = format!("#define {}(V)", list.as_str());
+                opcodes.extend(self.opcode_list(&macro_body(text, &head)));
+                continue;
+            }
+            let (name, count) = match (captures.get(1), captures.get(3)) {
+                (Some(name), _) => (name, &captures[2]),
+                (None, Some(name)) => (name, &captures[4]),
+                (None, None) => panic!("an opcode entry {:?}", &captures[0]),
+            };
+            opcodes.push((name.as_str().to_owned(), count.parse().expect("a count")));
+        }
+        opcodes
+    }
 }
 
 /// `value` rounded up to a multiple of `alignment`, which is positive.
@@ -527,6 +659,57 @@ fn strip_comments(text: &str) -> String {
     let line = Regex::new(r"//[^\n]*").expect("a pattern");
     line.replace_all(&block.replace_all(text, ""), "")
         .into_owned()
+}
+
+/// The text as a release build compiles it: without the branches of `#ifdef
+/// DEBUG` and `#if DEBUG`, nor the other branches of `#ifndef DEBUG`, as
+/// `DeoptimizationData::kDeoptEntrySize` has one per build type. Every
+/// other conditional is kept, with its directives.
+fn release(text: &str) -> String {
+    // Each open conditional: whether its current branch is compiled, for one
+    // about DEBUG, or `None` for another, which is kept.
+    let mut open: Vec<Option<bool>> = Vec::new();
+    let compiled = |open: &[Option<bool>]| open.iter().all(|branch| branch.unwrap_or(true));
+    let debug = |condition: &str| matches!(condition.trim(), "DEBUG" | "defined(DEBUG)");
+    let mut kept = String::with_capacity(text.len());
+    for line in text.lines() {
+        let directive = line.trim_start();
+        let outer = compiled(&open);
+        let keep = if let Some(condition) = directive
+            .strip_prefix("#ifdef ")
+            .or_else(|| directive.strip_prefix("#if "))
+        {
+            open.push(debug(condition).then_some(false));
+            outer && !debug(condition)
+        } else if let Some(condition) = directive.strip_prefix("#ifndef ") {
+            open.push(debug(condition).then_some(true));
+            outer && !debug(condition)
+        } else if directive.starts_with("#el") {
+            match open.last_mut() {
+                Some(Some(branch)) => {
+                    assert!(
+                        directive.starts_with("#else"),
+                        "a DEBUG conditional has {line:?}"
+                    );
+                    *branch = !*branch;
+                    false
+                }
+                _ => compiled(&open[..open.len().saturating_sub(1)]),
+            }
+        } else if directive.starts_with("#endif") {
+            match open.pop() {
+                Some(Some(_)) => false,
+                _ => compiled(&open),
+            }
+        } else {
+            outer
+        };
+        if keep {
+            kept.push_str(line);
+            kept.push('\n');
+        }
+    }
+    kept
 }
 
 /// The body of the macro `head` defines, its lines joined.

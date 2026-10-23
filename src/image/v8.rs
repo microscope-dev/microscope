@@ -16,6 +16,9 @@ use super::{Builder, Image, NONE, Record, TableKind};
 use crate::ImageAddress;
 
 mod program;
+mod translation;
+
+pub use translation::{TranslationOpcode, Translations};
 
 #[rustfmt::skip]
 #[path = "v8/slices.gen.rs"]
@@ -495,6 +498,62 @@ entries! {
         DeoptimizationDataOsrPcOffsetIndex = "DeoptimizationData::kOsrPcOffsetIndex",
         DeoptimizationDataDeoptExitStartIndex = "DeoptimizationData::kDeoptExitStartIndex",
         DeoptimizationDataFirstDeoptEntryIndex = "DeoptimizationData::kFirstDeoptEntryIndex",
+
+        /// A deoptimization entry's slots from
+        /// [`Constant::DeoptimizationDataFirstDeoptEntryIndex`], in a
+        /// release build: entry `i`'s translation index, a Smi, is slot
+        /// `kFirstDeoptEntryIndex + i * kDeoptEntrySize +
+        /// kTranslationIndexOffset`.
+        DeoptimizationDataDeoptEntrySize = "DeoptimizationData::kDeoptEntrySize",
+        DeoptimizationDataTranslationIndexOffset = "DeoptimizationData::kTranslationIndexOffset",
+
+        /// Optimized code's safepoint table, at its metadata's start, just
+        /// past its instructions, and `Code::HandlerTableOffset` bytes long
+        /// (`safepoint-table.h`): a header, then `length` entries, each its
+        /// return pc's offset in `PcSize` bytes; with deoptimization data,
+        /// its deoptimization index plus one in `DeoptIndexSize` bytes and
+        /// its trampoline's pc plus one in `PcSize`; then its registers'
+        /// bits in `RegisterIndexesSize`. All little-endian, the sizes in
+        /// the header's entry configuration.
+        SafepointTableLengthOffset = "SafepointTable::kLengthOffset",
+        SafepointTableEntryConfigurationOffset = "SafepointTable::kEntryConfigurationOffset",
+        SafepointTableHeaderSize = "SafepointTable::kHeaderSize",
+        SafepointHasDeoptDataShift = "SafepointTable::HasDeoptDataField::kShift",
+        SafepointHasDeoptDataMask = "SafepointTable::HasDeoptDataField::kMask",
+        SafepointRegisterIndexesSizeShift = "SafepointTable::RegisterIndexesSizeField::kShift",
+        SafepointRegisterIndexesSizeMask = "SafepointTable::RegisterIndexesSizeField::kMask",
+        SafepointPcSizeShift = "SafepointTable::PcSizeField::kShift",
+        SafepointPcSizeMask = "SafepointTable::PcSizeField::kMask",
+        SafepointDeoptIndexSizeShift = "SafepointTable::DeoptIndexSizeField::kShift",
+        SafepointDeoptIndexSizeMask = "SafepointTable::DeoptIndexSizeField::kMask",
+
+        /// Maglev code's safepoint table (`maglev-safepoint-table.h`), as
+        /// Turbofan's but for its header, and the bytes of its extra spill
+        /// slots' count between an entry's deoptimization data and its
+        /// registers.
+        MaglevSafepointTableLengthOffset = "MaglevSafepointTable::kLengthOffset",
+        MaglevSafepointTableEntryConfigurationOffset =
+            "MaglevSafepointTable::kEntryConfigurationOffset",
+        MaglevSafepointTableHeaderSize = "MaglevSafepointTable::kHeaderSize",
+        MaglevSafepointTableNumPushedRegistersSize =
+            "MaglevSafepointTable::num_pushed_registers_size",
+        MaglevSafepointHasDeoptDataShift = "MaglevSafepointTable::HasDeoptDataField::kShift",
+        MaglevSafepointHasDeoptDataMask = "MaglevSafepointTable::HasDeoptDataField::kMask",
+        MaglevSafepointRegisterIndexesSizeShift =
+            "MaglevSafepointTable::RegisterIndexesSizeField::kShift",
+        MaglevSafepointRegisterIndexesSizeMask =
+            "MaglevSafepointTable::RegisterIndexesSizeField::kMask",
+        MaglevSafepointPcSizeShift = "MaglevSafepointTable::PcSizeField::kShift",
+        MaglevSafepointPcSizeMask = "MaglevSafepointTable::PcSizeField::kMask",
+        MaglevSafepointDeoptIndexSizeShift = "MaglevSafepointTable::DeoptIndexSizeField::kShift",
+        MaglevSafepointDeoptIndexSizeMask = "MaglevSafepointTable::DeoptIndexSizeField::kMask",
+
+        /// The bytecode offset of a function's entry, before its first
+        /// bytecode (`globals.h`), and what a builtin continuation's
+        /// translated bytecode offset adds to its builtin's id
+        /// (`BytecodeOffset` in `utils.h`).
+        FunctionEntryBytecodeOffset = "internal::kFunctionEntryBytecodeOffset",
+        FirstBuiltinContinuationId = "BytecodeOffset::kFirstBuiltinContinuationId",
 
         /// An inlining position, as the `InliningPositions` byte array
         /// holds them: a `SourcePosition` and the index of the inlined

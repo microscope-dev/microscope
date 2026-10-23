@@ -98,7 +98,7 @@ fn functions(
     let places = if frame.generated {
         compiled::places(reader, encoding, statics, frame, (function, shared))
     } else {
-        offset_in_script(reader, encoding, fp, shared).map(|offset| vec![(shared, offset)])
+        offset_in_script(reader, encoding, fp, shared).map(|offset| vec![(shared, Ok(offset))])
     };
     // Only the frame's own function, outermost, is known as a function;
     // those its code inlined are known by their shared information.
@@ -115,7 +115,7 @@ fn functions(
                     } else {
                         Named::Shared(inlined)
                     };
-                    recorded(reader, named, Ok(offset))
+                    recorded(reader, named, offset)
                 })
                 .collect::<Result<_, _>>()?
         }

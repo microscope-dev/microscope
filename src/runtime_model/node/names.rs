@@ -193,13 +193,18 @@ pub(super) fn function_data(
     Ok(data)
 }
 
-/// The bytecode `shared` runs, where it keeps it where a reader can prove
-/// it: `None` for a function with none or one kept another way, as in its
-/// baseline code.
+/// The bytecode `shared` runs, as V8's `GetActiveBytecodeArray` finds it:
+/// kept by itself, by its interpreter data, or by its baseline code;
+/// `None` for a function with none.
 pub(super) fn bytecode(reader: &Reader<'_>, shared: Object) -> Result<Option<Object>, Problem> {
-    let Some(data) = function_data(reader, shared)? else {
+    let Some(mut data) = function_data(reader, shared)? else {
         return Ok(None);
     };
+    if reader.is(data, Constant::CodeType)? {
+        data = reader
+            .object(reader.field(data, Field::CodeDeoptimizationDataOrInterpreterData)?)?
+            .ok_or("a function's baseline code keeps no bytecode")?;
+    }
     if reader.is(data, Constant::BytecodeArrayType)? {
         return Ok(Some(data));
     }

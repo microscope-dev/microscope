@@ -283,6 +283,7 @@ fn header_constants(headers: &Headers, leaptiering: bool) -> BTreeMap<String, i6
     if leaptiering {
         add_dispatch_constants(headers, &mut constants);
     }
+    super::deoptimization::add_constants(headers, &mut constants);
     constants
 }
 
@@ -675,6 +676,30 @@ fn slices_match_torque() {
     assert!(
         actual == expected,
         "src/image/v8/slices.gen.rs is stale; rerun with MICROSCOPE_UPDATE_V8=1"
+    );
+}
+
+const TRANSLATIONS_FILE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/image/v8/translation.gen.rs"
+);
+
+/// Fails when `src/image/v8/translation.gen.rs` no longer matches the
+/// translation opcodes of the headers in `MICROSCOPE_V8_TORQUE`, or when a
+/// header no longer encodes a translation or a safepoint table as the
+/// runtime model decodes it. Set `MICROSCOPE_UPDATE_V8=1` to rewrite it.
+#[test]
+fn translations_match_torque() {
+    let expected = super::deoptimization::generate(&torque_versions(), V8_NOTICE);
+    if std::env::var_os("MICROSCOPE_UPDATE_V8").is_some() {
+        std::fs::write(TRANSLATIONS_FILE, &expected).expect("write the generated opcodes");
+        return;
+    }
+
+    let actual = std::fs::read_to_string(TRANSLATIONS_FILE).unwrap_or_default();
+    assert!(
+        actual == expected,
+        "src/image/v8/translation.gen.rs is stale; rerun with MICROSCOPE_UPDATE_V8=1"
     );
 }
 

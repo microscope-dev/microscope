@@ -38,6 +38,10 @@ mod conformance;
 mod headers;
 
 #[cfg(test)]
+#[path = "v8/deoptimization.rs"]
+mod deoptimization;
+
+#[cfg(test)]
 #[path = "v8/translate.rs"]
 mod translate;
 
@@ -171,6 +175,16 @@ impl Generated {
             .find(|(own, _)| *own == name)
             .map(|&(_, value)| value)
     }
+}
+
+/// The layout generated for V8 `major.minor`, before any build's own
+/// constants complete it, for tests of what reads it.
+#[cfg(test)]
+pub fn generated_layout(major: u32, minor: u32) -> Option<V8Layout> {
+    layouts::GENERATED
+        .iter()
+        .find(|generated| (generated.major, generated.minor) == (major, minor))
+        .map(Generated::layout)
 }
 
 /// What the names of V8's own constants begin with.

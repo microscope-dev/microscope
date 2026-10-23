@@ -120,12 +120,14 @@ pub(super) const fn script_offset(position: i64) -> Option<u64> {
     }
 }
 
-/// The source position of the code at `offset`: that of the last entry
-/// at or before it, as V8 finds it, past the function's entry.
+/// The source position of the bytecode at `offset`, or of the function's
+/// entry at [`FUNCTION_ENTRY`]: that of the last entry at or before it in
+/// the script, as V8's `SourcePosition` finds it, the function's entry
+/// included.
 pub(super) fn position_at(entries: &[Entry], offset: i64) -> Option<i64> {
     entries
         .iter()
-        .filter(|entry| entry.code_offset != FUNCTION_ENTRY)
+        .filter(|entry| script_offset(entry.position).is_some())
         .take_while(|entry| entry.code_offset <= offset)
         .last()
         .map(|entry| entry.position)
@@ -328,11 +330,8 @@ mod tests {
         assert_eq!(at(3), Some(25));
         assert_eq!(at(8), Some(25));
         assert_eq!(at(100), Some(7));
-        assert_eq!(
-            position_at(&entries, FUNCTION_ENTRY),
-            None,
-            "the entry is skipped"
-        );
+        assert_eq!(at(FUNCTION_ENTRY), Some(4), "the entry is kept");
+        assert_eq!(at(FUNCTION_ENTRY - 1), None);
     }
 
     #[test]

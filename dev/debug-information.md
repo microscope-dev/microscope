@@ -429,6 +429,19 @@ The rest comes from the V8 headers beside the Torque output, parsed by
   `InliningPosition`'s C layout and `SourcePosition`'s bit fields, the slots
   of `hash-table.h` and `dictionary.h`, the weak-reference encoding, and,
   from 13.6, the JS dispatch table's entry layout;
+- what reading an optimized frame's deoptimization translation needs, by
+  `v8/deoptimization.rs`: both safepoint tables' headers and entry
+  configuration bits (`safepoint-table.h`, `maglev-safepoint-table.h`; 12.4's
+  headers have no stack slots' count), a deoptimization entry's size and its
+  translation index's slot in a release build (the parser drops `#ifdef
+  DEBUG` branches), `kFunctionEntryBytecodeOffset`, and
+  `BytecodeOffset::kFirstBuiltinContinuationId`. It also checks the facts
+  the runtime model relies on but takes no number from: that the safepoint
+  table begins the code's metadata just past its instructions and runs to its
+  handler table, each table's entry order, the VLQ encoding of `base/vlq.h`,
+  and that `--turbo-compress-frame-translations` is off by default. The
+  flake copies `src/deoptimizer/translation-opcode.h`, `src/base/vlq.h`,
+  `src/flags/flag-definitions.h`, and `src/utils/utils.h` for it;
 - the values of `v8dbg_` constants the headers define too, kept in each
   generated layout's `checked` list: the descriptor and property-details
   `prop_` constants, the dictionary shapes, the code kinds, and the
@@ -474,7 +487,11 @@ Binding a module checks, in order, and refuses it with the first reason:
 `layouts_match_torque` regenerates the file from `MICROSCOPE_V8_TORQUE` and
 fails when the checked-in file differs, or when the Torque output lacks a
 field or constant that a version must have. Rerun it with
-`MICROSCOPE_UPDATE_V8=1` to rewrite the file.
+`MICROSCOPE_UPDATE_V8=1` to rewrite the file. `translations_match_torque`
+does the same for `src/image/v8/translation.gen.rs`, each version's
+translation opcodes with their operand counts, from `translation-opcode.h`,
+which `image::v8::Translations` serves to the runtime model by version and
+refuses by name for any other.
 `every_build_in_the_matrix_binds_to_its_layout` binds every build in
 `MICROSCOPE_NODE`, Debian's libnode included, and checks its version, the
 counts of agreeing fields, instance types, and header constants, the code

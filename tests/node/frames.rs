@@ -187,15 +187,7 @@ async fn a_cores_javascript_frames_are_the_ones_v8_reported() {
 /// What N1 does not read yet, each as text a lie about it contains and
 /// why. Every other lie fails a test; these are printed, and leave with the
 /// work that ends them.
-const GAPS: &[(&[&str], &str)] = &[(
-    &[
-        "node nixpkgs-24 tiers.js",
-        "is Frame { function: \"osr\", file: \"-\", line: None, column: None",
-        "not Frame { function: \"osr\", file: \"",
-    ],
-    "Maglev code records no position table on this build; its places need the \
-         deoptimization translation",
-)];
+const GAPS: &[(&[&str], &str)] = &[];
 
 /// Fails on any lie but the known gaps', which it prints.
 fn assert_truthful(lies: &[String]) {

@@ -922,6 +922,11 @@
           done
           (cd deps/v8 && find include src/objects src/common src/execution src/codegen src/sandbox src/builtins src/debug \
             -maxdepth 1 \( -name '*.h' -o -name '*.tq' \) -exec cp --parents {} $out/v8/ \;)
+          # What reading an optimized frame's deoptimization translation
+          # needs: its opcodes, its operands' encoding, the flag that would
+          # compress it, and how a builtin continuation names its builtin.
+          (cd deps/v8 && cp --parents src/deoptimizer/translation-opcode.h src/base/vlq.h \
+            src/flags/flag-definitions.h src/utils/utils.h $out/v8/)
           cp deps/v8/include/v8-version.h $out/v8/
           runHook postInstall
         '';
