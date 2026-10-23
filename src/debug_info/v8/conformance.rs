@@ -7,8 +7,10 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use super::{BINARY_FIELDS, layouts, requires_constant, requires_field};
-use crate::image::v8::{Constant, DYNAMIC_SYMBOLS, Field};
+use super::headers::Headers;
+use super::{layouts, requires_constant, requires_field};
+use crate::ImageAddress;
+use crate::image::v8::{Constant, DYNAMIC_SYMBOLS, DispatchTable, Field};
 
 const GENERATED_FILE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -25,10 +27,13 @@ const RENAMED: [(Field, &str); 3] = [
 
 /// The class each bit-field constant names, and the macro of
 /// `bit-fields.h` that defines its bit fields.
-const BIT_FIELDS: [(&str, &str); 3] = [
+const BIT_FIELDS: [(&str, &str); 6] = [
     ("SharedFunctionInfo", "SHARED_FUNCTION_INFO_FLAGS"),
     ("ScopeInfo", "SCOPE_FLAGS"),
     ("Script", "SCRIPT_FLAGS"),
+    ("FeedbackVector", "FEEDBACK_VECTOR_FLAGS"),
+    ("FeedbackVector", "OSR_STATE"),
+    ("Map", "MAP_BIT_FIELDS3"),
 ];
 
 /// V8's license, which the generated layouts carry because they derive
@@ -211,20 +216,324 @@ fn torque_constant(
         .map(|&(_, value)| i64::from(value))
 }
 
+/// The constants V8's headers give, by the name [`Constant`] gives each,
+/// for a version with or without leaptiering.
+fn header_constants(headers: &Headers, leaptiering: bool) -> BTreeMap<String, i64> {
+    let mut constants: BTreeMap<String, i64> = headers
+        .code_kinds()
+        .into_iter()
+        .map(|(kind, value)| (format!("CodeKind::{kind}"), value))
+        .collect();
+    // Optimized code's kind is TURBOFAN through 12.4, then TURBOFAN_JS.
+    if let Some(&turbofan) = constants.get("CodeKind::TURBOFAN") {
+        let previous = constants.insert("CodeKind::TURBOFAN_JS".to_owned(), turbofan);
+        assert!(previous.is_none(), "both TURBOFAN and TURBOFAN_JS");
+    }
+
+    let deopt = "src/objects/deoptimization-data.h";
+    for index in DEOPTIMIZATION_INDICES {
+        let name = format!("k{index}Index");
+        if let Some(value) = headers.class_constant(deopt, &["DeoptimizationData"], &name) {
+            constants.insert(format!("DeoptimizationData::{name}"), value);
+        }
+    }
+
+    let (size, offsets) = headers.inlining_position();
+    constants.insert("sizeof(InliningPosition)".to_owned(), size);
+    for (member, offset) in offsets {
+        constants.insert(format!("offsetof(InliningPosition, {member})"), offset);
+    }
+
+    let positions = "src/codegen/source-position.h";
+    for (field, (shift, size)) in headers.bit_fields(positions, "SourcePosition") {
+        constants.insert(format!("SourcePosition::{field}::kShift"), shift);
+        constants.insert(
+            format!("SourcePosition::{field}::kMask"),
+            ((1i64 << size) - 1) << shift,
+        );
+    }
+    // The field holds the inlining id plus one, so that 0 is kNotInlined.
+    assert!(
+        headers.contains(positions, "return InliningIdField::decode(value_) - 1;"),
+        "SourcePosition's inlining id is no longer the field less one"
+    );
+    let not_inlined = headers.class_constant(positions, &["SourcePosition"], "kNotInlined");
+    constants.insert(
+        "SourcePosition::kNotInlined".to_owned(),
+        not_inlined.expect("kNotInlined"),
+    );
+
+    for (class, chain, file, names) in HEADER_CLASS_CONSTANTS {
+        for name in names {
+            let value = headers
+                .class_constant(file, chain, name)
+                .unwrap_or_else(|| panic!("{file} gives {class} no {name}"));
+            constants.insert(format!("{class}::{name}"), value);
+        }
+    }
+
+    for (file, name) in [
+        ("include/v8-internal.h", "kWeakHeapObjectTag"),
+        ("src/common/globals.h", "kWeakHeapObjectMask"),
+        ("src/common/globals.h", "kClearedWeakHeapObjectLower32"),
+    ] {
+        constants.insert(format!("internal::{name}"), headers.constant(file, name));
+    }
+
+    if leaptiering {
+        add_dispatch_constants(headers, &mut constants);
+    }
+    constants
+}
+
+/// The JS dispatch table's constants, from the 64-bit branches of
+/// `globals.h` and `js-dispatch-table.h`.
+fn add_dispatch_constants(headers: &Headers, constants: &mut BTreeMap<String, i64>) {
+    let globals = "src/common/globals.h";
+    let table = "src/sandbox/js-dispatch-table.h";
+    for name in ["kJSDispatchTableEntrySize", "kJSDispatchHandleShift"] {
+        if name == "kJSDispatchHandleShift" {
+            assert!(headers.first_is_64_bit(globals, name), "{name} is 64-bit's");
+        }
+        constants.insert(format!("internal::{name}"), headers.constant(globals, name));
+    }
+    for name in [
+        "kEntrypointOffset",
+        "kCodeObjectOffset",
+        "kObjectPointerShift",
+        "kParameterCountMask",
+    ] {
+        if matches!(name, "kObjectPointerShift" | "kParameterCountMask") {
+            assert!(headers.first_is_64_bit(table, name), "{name} is 64-bit's");
+        }
+        let value = headers
+            .class_constant(table, &["JSDispatchEntry"], name)
+            .unwrap_or_else(|| panic!("JSDispatchEntry has no {name}"));
+        constants.insert(format!("JSDispatchEntry::{name}"), value);
+    }
+}
+
+/// The slots of `DeoptimizationData` the headers may give, as
+/// `k{Name}Index`; the binary exports some as `DeoptimizationData{Name}Index`.
+const DEOPTIMIZATION_INDICES: [&str; 12] = [
+    "FrameTranslation",
+    "InlinedFunctionCount",
+    "ProtectedLiteralArray",
+    "LiteralArray",
+    "OsrBytecodeOffset",
+    "OsrPcOffset",
+    "OptimizationId",
+    "SharedFunctionInfo",
+    "WrappedSharedFunctionInfo",
+    "InliningPositions",
+    "DeoptExitStart",
+    "FirstDeoptEntry",
+];
+
+/// Class constants the generated layouts take from the headers: the name
+/// [`Constant`] gives the class, the classes searched for each, in order
+/// from the class to those it derives from, its header, and the names.
+const HEADER_CLASS_CONSTANTS: [(&str, &[&str], &str, &[&str]); 4] = [
+    (
+        "HashTableBase",
+        &["HashTableBase"],
+        "src/objects/hash-table.h",
+        &[
+            "kNumberOfElementsIndex",
+            "kNumberOfDeletedElementsIndex",
+            "kCapacityIndex",
+            "kPrefixStartIndex",
+        ],
+    ),
+    (
+        "HashTable",
+        &["HashTable"],
+        "src/objects/hash-table.h",
+        &["kEntryKeyIndex"],
+    ),
+    (
+        "BaseNameDictionary",
+        &["BaseNameDictionary"],
+        "src/objects/dictionary.h",
+        &["kNextEnumerationIndexIndex", "kObjectHashIndex"],
+    ),
+    (
+        "NameDictionary",
+        &["NameDictionary", "BaseNameDictionary"],
+        "src/objects/dictionary.h",
+        &["kFlagsIndex", "kEntryValueIndex", "kEntryDetailsIndex"],
+    ),
+];
+
+/// The value V8's headers and Torque output give each `v8dbg_` constant
+/// they name too, by the constant's name without `v8dbg_`.
+fn checked_constants(
+    headers: &Headers,
+    constants: &BTreeMap<String, i64>,
+    bits: &BTreeMap<String, (u32, u32)>,
+) -> Vec<(String, i64)> {
+    let mut checked = Vec::new();
+    let mut check = |name: &str, value: i64| checked.push((name.to_owned(), value));
+    for (name, kind) in [
+        ("CodeKindInterpretedFunction", "INTERPRETED_FUNCTION"),
+        ("CodeKindBaseline", "BASELINE"),
+        ("CodeKindBytecodeHandler", "BYTECODE_HANDLER"),
+    ] {
+        check(name, constants[&format!("CodeKind::{kind}")]);
+    }
+    let (shift, size) = headers.code_kind_field();
+    check("CodeKindFieldShift", shift);
+    check("CodeKindFieldMask", ((1 << size) - 1) << shift);
+
+    for index in DEOPTIMIZATION_INDICES {
+        if let Some(&value) = constants.get(&format!("DeoptimizationData::k{index}Index")) {
+            check(&format!("DeoptimizationData{index}Index"), value);
+        }
+    }
+
+    let descriptors = "src/objects/descriptor-array.h";
+    for (name, own) in [
+        ("prop_desc_key", "kEntryKeyIndex"),
+        ("prop_desc_details", "kEntryDetailsIndex"),
+        ("prop_desc_value", "kEntryValueIndex"),
+        ("prop_desc_size", "kEntrySize"),
+    ] {
+        let value = headers.class_constant(descriptors, &["DescriptorArray"], own);
+        check(
+            name,
+            value.unwrap_or_else(|| panic!("DescriptorArray has no {own}")),
+        );
+    }
+
+    add_property_details(headers, &mut check);
+
+    let map = |name: &str| {
+        bits.get(name)
+            .map(|&(shift, size)| (i64::from(shift), i64::from(size)))
+    };
+    let (dictionary_map, _) = map("Map::IsDictionaryMapBit").expect("Map::IsDictionaryMapBit");
+    check("bit_field3_is_dictionary_map_shift", dictionary_map);
+    let (shift, size) = map("Map::NumberOfOwnDescriptorsBits").expect("NumberOfOwnDescriptorsBits");
+    check("bit_field3_number_of_own_descriptors_shift", shift);
+    check(
+        "bit_field3_number_of_own_descriptors_mask",
+        ((1 << size) - 1) << shift,
+    );
+
+    check(
+        "namedictionary_prefix_start_index",
+        constants["HashTableBase::kPrefixStartIndex"],
+    );
+    let dictionaries = "src/objects/dictionary.h";
+    for (name, class, own) in [
+        (
+            "namedictionaryshape_entry_size",
+            "NameDictionaryShape",
+            "kEntrySize",
+        ),
+        (
+            "namedictionaryshape_prefix_size",
+            "NameDictionaryShape",
+            "kPrefixSize",
+        ),
+        (
+            "globaldictionaryshape_entry_size",
+            "GlobalDictionaryShape",
+            "kEntrySize",
+        ),
+        (
+            "numberdictionaryshape_entry_size",
+            "NumberDictionaryShape",
+            "kEntrySize",
+        ),
+        (
+            "numberdictionaryshape_prefix_size",
+            "NumberDictionaryShape",
+            "kPrefixSize",
+        ),
+    ] {
+        let value = headers.class_constant(dictionaries, &[class], own);
+        check(
+            name,
+            value.unwrap_or_else(|| panic!("{class} has no {own}")),
+        );
+    }
+
+    check(
+        "HeapObjectTag",
+        headers.constant("include/v8-internal.h", "kHeapObjectTag"),
+    );
+    checked
+}
+
+/// The `prop_` constants `property-details.h` gives: the kinds, locations,
+/// and representations, and where each field of a property's details is.
+fn add_property_details(headers: &Headers, check: &mut impl FnMut(&str, i64)) {
+    let file = "src/objects/property-details.h";
+    let kinds = headers.enumerators(file, "enum class PropertyKind");
+    check("prop_kind_Data", kinds["kData"]);
+    check("prop_kind_Accessor", kinds["kAccessor"]);
+    let locations = headers.enumerators(file, "enum class PropertyLocation");
+    check("prop_location_Field", locations["kField"]);
+    check("prop_location_Descriptor", locations["kDescriptor"]);
+    let representations = headers.enumerators(file, "enum Kind");
+    for (name, own) in [
+        ("smi", "kSmi"),
+        ("double", "kDouble"),
+        ("heapobject", "kHeapObject"),
+        ("tagged", "kTagged"),
+    ] {
+        check(&format!("prop_representation_{name}"), representations[own]);
+    }
+
+    let fields = headers.bit_fields(file, "PropertyDetails");
+    let field = |name: &str| {
+        fields
+            .get(name)
+            .copied()
+            .unwrap_or_else(|| panic!("no {name}"))
+    };
+    let (_, kind_size) = field("KindField");
+    check("prop_kind_mask", (1 << kind_size) - 1);
+    for (prefix, name) in [
+        ("prop_location", "LocationField"),
+        ("prop_representation", "RepresentationField"),
+        ("prop_attributes", "AttributesField"),
+        ("prop_index", "FieldIndexField"),
+    ] {
+        let (shift, size) = field(name);
+        check(&format!("{prefix}_shift"), shift);
+        check(&format!("{prefix}_mask"), ((1 << size) - 1) << shift);
+    }
+}
+
 /// One version's entry of `layouts.gen.rs`.
 fn generate_version(text: &mut String, (major, minor): (u32, u32), torque: &Path) {
-    let fields = torque_fields(&read(torque, "class-debug-readers.cc"));
+    let mut fields = torque_fields(&read(torque, "class-debug-readers.cc"));
     let types = torque_instance_types(&read(torque, "instance-types.h"));
     let bits = torque_bit_fields(&read(torque, "bit-fields.h"));
+    let leaptiering = fields.contains_key("JSFunction::DispatchHandle");
+    let v8 = torque.parent().expect("a version's directory").join("v8");
+    let headers = Headers::read(&v8, leaptiering);
+    for (name, offset) in headers
+        .code_fields()
+        .into_iter()
+        .chain(headers.code_wrapper_fields())
+    {
+        let offset = u32::try_from(offset).expect("an offset");
+        let previous = fields.insert(name.clone(), offset);
+        assert!(
+            previous.is_none_or(|previous| previous == offset),
+            "{name} is at two offsets"
+        );
+    }
+    let constants = header_constants(&headers, leaptiering);
+    let checked = checked_constants(&headers, &constants, &bits);
 
     writeln!(text, "    Generated {{").expect("write");
     writeln!(text, "        major: {major},\n        minor: {minor},").expect("write");
     writeln!(text, "        fields: &[").expect("write");
     for &field in Field::ALL {
-        if BINARY_FIELDS.iter().any(|(own, _)| *own == field) {
-            continue;
-        }
-
         let names = std::iter::once(field.name()).chain(
             RENAMED
                 .iter()
@@ -245,7 +554,11 @@ fn generate_version(text: &mut String, (major, minor): (u32, u32), torque: &Path
 
     writeln!(text, "        ],\n        constants: &[").expect("write");
     for &constant in Constant::ALL.iter().filter(|constant| constant.is_torque()) {
-        match torque_constant(constant, &types, &bits) {
+        let value = constants
+            .get(constant.name())
+            .copied()
+            .or_else(|| torque_constant(constant, &types, &bits));
+        match value {
             Some(value) => {
                 writeln!(text, "            (Constant::{constant:?}, {value}),").expect("write");
             }
@@ -262,6 +575,11 @@ fn generate_version(text: &mut String, (major, minor): (u32, u32), torque: &Path
         writeln!(text, "            ({name:?}, {value}),").expect("write");
     }
 
+    writeln!(text, "        ],\n        checked: &[").expect("write");
+    for (name, value) in checked {
+        writeln!(text, "            ({name:?}, {value}),").expect("write");
+    }
+
     writeln!(text, "        ],\n    }},").expect("write");
 }
 
@@ -269,7 +587,10 @@ fn generate() -> String {
     let mut text = String::from(
         "// @generated from V8's Torque output for each supported version, the\n\
          // class-debug-readers.cc, instance-types.h, and bit-fields.h that\n\
-         // MICROSCOPE_V8_TORQUE holds, by\n\
+         // MICROSCOPE_V8_TORQUE holds, and from the V8 headers beside them\n\
+         // (code.h, deoptimization-data.h, source-position.h, hash-table.h,\n\
+         // dictionary.h, descriptor-array.h, property-details.h, globals.h,\n\
+         // v8-internal.h, js-dispatch-table.h), by\n\
          // `debug_info::v8::conformance::layouts_match_torque`. Do not edit;\n\
          // rerun that test with MICROSCOPE_UPDATE_V8=1.\n\
          //\n\
@@ -448,15 +769,39 @@ fn every_build_in_the_matrix_binds_to_its_layout() {
             6 if major == 13 => 215,
             _ => 217,
         };
-        assert!(checked >= 47, "{entry}: {checked} fields checked");
+        // Every constant the headers give that the build exports too.
+        let constants = generated
+            .checked
+            .iter()
+            .filter(|(name, _)| exports.values.contains_key(&format!("v8dbg_{name}")))
+            .count();
+        assert!(checked >= 55, "{entry}: {checked} fields checked");
         assert!(
             types >= exported_types,
             "{entry}: {types} instance types checked"
         );
+        // The binary exports each one but a few of deoptimization data's
+        // slots.
+        let unexported: Vec<_> = generated
+            .checked
+            .iter()
+            .filter(|(name, _)| !exports.values.contains_key(&format!("v8dbg_{name}")))
+            .map(|(name, _)| *name)
+            .filter(|name| !name.starts_with("DeoptimizationData"))
+            .collect();
+        assert!(
+            unexported.is_empty(),
+            "{entry}: {unexported:?} are not exported"
+        );
 
-        for (field, _) in BINARY_FIELDS {
-            assert!(layout.has(field), "{entry}: {}", field.name());
-        }
+        check_code_fields(entry, &object, &layout, (major, minor));
+
+        check_accessors(
+            entry,
+            &object,
+            &runtime.dispatch_table,
+            &runtime.embedded_blob,
+        );
 
         assert_eq!(layout.constant(Constant::TaggedSize), Some(8), "{entry}");
         // v8dbg_SmiTag is in .bss, which keeps no bytes in the file.
@@ -468,8 +813,133 @@ fn every_build_in_the_matrix_binds_to_its_layout() {
             "{entry}"
         );
         eprintln!(
-            "{entry}: V8 {}, {checked} field constants and {types} instance types agree",
-            runtime.version
+            "{entry}: V8 {}, {checked} field constants, {types} instance types, and \
+             {constants} header constants agree; dispatch table {:?}; embedded blob {:?}",
+            runtime.version, runtime.dispatch_table, runtime.embedded_blob
+        );
+    }
+}
+
+/// Whether `object` defines a symbol named `name`.
+fn defines(object: &object::File<'_>, name: &str) -> bool {
+    use object::{Object, ObjectSymbol};
+
+    object
+        .symbols()
+        .chain(object.dynamic_symbols())
+        .any(|symbol| symbol.is_definition() && symbol.name() == Ok(name))
+}
+
+/// The address of the local variable whose symbol's name has `part`, as
+/// `_ZN2v88internal12_GLOBAL__N_1{L,}27current_embedded_blob_code_E{.0,}`.
+fn variable(object: &object::File<'_>, part: &str) -> Option<ImageAddress> {
+    use object::{Object, ObjectSymbol};
+
+    object
+        .symbols()
+        .find(|symbol| {
+            symbol.name().is_ok_and(|name| {
+                name.starts_with("_ZN2v88internal12_GLOBAL__N_1") && name.contains(part)
+            })
+        })
+        .map(|symbol| ImageAddress::new(symbol.address()))
+}
+
+/// Each build's dispatch table and embedded blob are where its code says:
+/// as found by reading each build's instructions, and, where the build
+/// names the blob's variables, at those variables.
+fn check_accessors(
+    entry: &str,
+    object: &object::File<'_>,
+    dispatch: &Result<Option<DispatchTable>, std::sync::Arc<str>>,
+    blob: &Result<crate::image::v8::EmbeddedBlob, std::sync::Arc<str>>,
+) {
+    let group = {
+        use object::{Object, ObjectSymbol};
+        object
+            .symbols()
+            .find(|symbol| {
+                symbol.name() == Ok("_ZN2v88internal12IsolateGroup22default_isolate_group_E")
+            })
+            .map(|symbol| ImageAddress::new(symbol.address()))
+    };
+    match entry {
+        "22" | "nixpkgs-22" => assert_eq!(dispatch, &Ok(None), "{entry}"),
+        "26" | "nixpkgs-26" => {
+            assert_eq!(
+                dispatch,
+                &Ok(Some(DispatchTable::Isolate { offset: 0x268 })),
+                "{entry}"
+            );
+        }
+        "24" | "nixpkgs-24" => {
+            let offset = if entry == "24" { 0x3270 } else { 0x3268 };
+            let group = group.expect("IsolateGroup::default_isolate_group_");
+            assert_eq!(
+                dispatch,
+                &Ok(Some(DispatchTable::Group { group, offset })),
+                "{entry}"
+            );
+        }
+        _ => assert!(
+            dispatch
+                .as_ref()
+                .is_err_and(|problem| problem.contains("names no ExternalReference")),
+            "{entry}: {dispatch:?}"
+        ),
+    }
+
+    let blob = blob
+        .as_ref()
+        .unwrap_or_else(|problem| panic!("{entry}: {problem}"));
+    let names = [
+        ("27current_embedded_blob_code_E", blob.code),
+        ("32current_embedded_blob_code_size_E", blob.code_size),
+        ("27current_embedded_blob_data_E", blob.data),
+        ("32current_embedded_blob_data_size_E", blob.data_size),
+    ];
+    if entry == "debian-24" {
+        // Its symbols are gone; the accessors its code calls read these.
+        let addresses = names.map(|(_, at)| at.get());
+        assert_eq!(addresses, [0x465_c518, 0x465_c510, 0x465_c508, 0x465_c500]);
+        return;
+    }
+    for (part, decoded) in names {
+        assert_eq!(variable(object, part), Some(decoded), "{entry}: {part}");
+    }
+}
+
+/// The code fields the build's constants give and those only the headers
+/// do, which the cores of tests/fixtures/node/tiers.js confirm: a builtin's
+/// id, an optimized code's parameter count.
+fn check_code_fields(
+    entry: &str,
+    object: &object::File<'_>,
+    layout: &crate::image::v8::V8Layout,
+    (major, minor): (u32, u32),
+) {
+    let code = |field: Field| layout.field(field).unwrap_or(u64::MAX);
+    assert_eq!(code(Field::CodeInstructionStart), 40, "{entry}");
+    assert_eq!(code(Field::CodeWrapperCode), 8, "{entry}");
+    let (flags, builtin_id) = match (major, minor) {
+        (12, 4) => (48, 80),
+        (13, 6) => (52, 86),
+        _ => (52, 90),
+    };
+    assert_eq!(
+        (code(Field::CodeFlags), code(Field::CodeBuiltinId)),
+        (flags, builtin_id),
+        "{entry}"
+    );
+    if (major, minor) == (14, 6) {
+        // V8_JUMP_TABLE_INFO_BOOL is ENABLE_DISASSEMBLER, which every
+        // 14.6 build has, as its Code::Disassemble says.
+        assert!(
+            defines(
+                object,
+                "_ZN2v88internal4Code11DisassembleEPKcRSoPNS0_7IsolateEm"
+            ),
+            "{entry}: built without the disassembler the layout assumes"
         );
     }
 }

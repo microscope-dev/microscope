@@ -244,7 +244,22 @@ fn the_schema_is_the_records_layout() {
         TableKind::V8Runtime,
         V8RuntimeRecord,
         [
-            major, minor, build, patch, flags, reserved, problem, offsets, constants
+            major,
+            minor,
+            build,
+            patch,
+            flags,
+            reserved,
+            problem,
+            dispatch_kind,
+            dispatch_reserved,
+            dispatch_problem,
+            dispatch_address,
+            dispatch_offset,
+            blob_problem,
+            blob,
+            offsets,
+            constants
         ]
     );
     check!(
@@ -607,7 +622,7 @@ fn the_schema_is_the_records_layout() {
     // layouts before reading tables; the container format is independent.
     assert_eq!(
         schema::layout_fingerprint(),
-        0x02cc_1034_6194_e59c,
+        0x563d_302f_8986_c58e,
         "the layout changed:\n{}",
         schema::schema_text()
     );
@@ -3776,7 +3791,11 @@ fn validation_rejects_a_python_runtime_that_names_nothing() {
 /// it has none; a field or constant the layout lacks reads back absent.
 #[test]
 fn a_v8_runtime_reads_back_with_its_layout_or_its_problem() {
-    use super::v8::{self, Constant, DYNAMIC_SYMBOLS, Field, V8Layout, V8Runtime, V8Version};
+    use super::v8::{
+        self, Constant, DYNAMIC_SYMBOLS, DispatchTable, EmbeddedBlob, Field, V8Layout, V8Runtime,
+        V8Version,
+    };
+    use crate::ImageAddress;
 
     let sealed = |runtime: Option<&V8Runtime>| {
         let mut builder = Builder::new(TARGET);
@@ -3800,6 +3819,16 @@ fn a_v8_runtime_reads_back_with_its_layout_or_its_problem() {
         },
         flags: DYNAMIC_SYMBOLS,
         layout: Ok(layout),
+        dispatch_table: Ok(Some(DispatchTable::Group {
+            group: ImageAddress::new(0x6bb_c928),
+            offset: 0x3270,
+        })),
+        embedded_blob: Ok(EmbeddedBlob {
+            code: ImageAddress::new(0x10),
+            code_size: ImageAddress::new(0x18),
+            data: ImageAddress::new(0x20),
+            data_size: ImageAddress::new(0x28),
+        }),
     };
     let read = sealed(Some(&runtime)).unwrap();
     assert_eq!(read, runtime);
@@ -3814,9 +3843,18 @@ fn a_v8_runtime_reads_back_with_its_layout_or_its_problem() {
 
     let refused = V8Runtime {
         layout: Err("V8 12.3 has no layout in this build of microscope".into()),
+        dispatch_table: Err("names no js_dispatch_table_address".into()),
+        embedded_blob: Err("names no GetEmbeddedCodeRange".into()),
         ..runtime
     };
     assert_eq!(sealed(Some(&refused)), Some(refused));
+    for dispatch_table in [Ok(None), Ok(Some(DispatchTable::Isolate { offset: 0x268 }))] {
+        let other = V8Runtime {
+            dispatch_table,
+            ..runtime.clone()
+        };
+        assert_eq!(sealed(Some(&other)), Some(other));
+    }
     assert_eq!(sealed(None), None);
 }
 
@@ -3830,6 +3868,13 @@ fn validation_rejects_a_v8_runtime_that_names_nothing() {
         flags: 0.into(),
         reserved: 0.into(),
         problem: problem.into(),
+        dispatch_kind: 0.into(),
+        dispatch_reserved: 0.into(),
+        dispatch_problem: u32::MAX.into(),
+        dispatch_address: 0.into(),
+        dispatch_offset: 0.into(),
+        blob_problem: u32::MAX.into(),
+        blob: [0.into(); 4],
         offsets: [u32::MAX.into(); super::v8::Field::COUNT],
         constants: [i64::MIN.into(); super::v8::Constant::COUNT],
     };
@@ -3848,4 +3893,41 @@ fn validation_rejects_a_v8_runtime_that_names_nothing() {
     let mut reserved = record(u32::MAX);
     reserved.reserved = 1.into();
     assert!(refusal(vec![reserved]).contains("flags it does not define"));
+    let mut kind = record(u32::MAX);
+    kind.dispatch_kind = 3.into();
+    assert!(refusal(vec![kind]).contains("dispatch table of kind 3"));
+    let mut stray = record(u32::MAX);
+    stray.dispatch_address = 8.into();
+    assert!(refusal(vec![stray]).contains("dispatch table of kind 0"));
+    let mut placed = record(u32::MAX);
+    placed.blob_problem = 7.into();
+    assert!(refusal(vec![placed]).contains("is no string"));
+    let mut both = record(u32::MAX);
+    both.blob = [8.into(); 4];
+    both.blob_problem = 0.into();
+    assert!(refusal(vec![both]).contains("is no string"));
+    let mut kind = record(u32::MAX);
+    kind.dispatch_kind = 3.into();
+    assert!(refusal(vec![kind]).contains("dispatch table of kind 3"));
+    let mut stray = record(u32::MAX);
+    stray.dispatch_address = 8.into();
+    assert!(refusal(vec![stray]).contains("dispatch table of kind 0"));
+    let mut placed = record(u32::MAX);
+    placed.blob_problem = 7.into();
+    assert!(refusal(vec![placed]).contains("is no string"));
+
+    // A blob placed beside the reason it cannot be.
+    let mut strings = StringsBuilder::default();
+    let problem = strings.push("no accessor").unwrap().0;
+    let mut both = record(u32::MAX);
+    both.blob = [8.into(); 4];
+    both.blob_problem = problem.into();
+    let mut builder = Builder::new(TARGET);
+    builder.owned_table(vec![both]);
+    builder.bytes(TableKind::Strings, strings.into_bytes());
+    let refused = builder.seal(Limits::default()).unwrap_err().to_string();
+    assert!(
+        refused.contains("places its embedded blob and says it cannot"),
+        "{refused}"
+    );
 }

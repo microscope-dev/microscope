@@ -8,11 +8,12 @@
 //! each indexed by its enum, so that no per-version number or name reaches
 //! the runtime model.
 
-use zerocopy::little_endian::{I64, U16, U32};
+use zerocopy::little_endian::{I64, U16, U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 use super::strings::{StrId, StringsBuilder};
 use super::{Builder, Image, NONE, Record, TableKind};
+use crate::ImageAddress;
 
 mod program;
 
@@ -29,7 +30,7 @@ macro_rules! entries {
     ($(#[$meta:meta])* $kind:ident { $($(#[$doc:meta])* $variant:ident = $name:literal,)* }) => {
         $(#[$meta])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-        #[repr(u8)]
+        #[repr(u16)]
         pub enum $kind {
             $($(#[$doc])* $variant,)*
         }
@@ -107,6 +108,31 @@ entries! {
         MapPrototype = "Map::Prototype",
         MapConstructorOrBackPointerOrNativeContext = "Map::ConstructorOrBackPointerOrNativeContext",
         MapInstanceDescriptors = "Map::InstanceDescriptors",
+        MapUsedOrUnusedInstanceSizeInWords = "Map::UsedOrUnusedInstanceSizeInWords",
+
+        /// An object's out-of-object properties: a `PropertyArray`, a
+        /// dictionary when its map is a dictionary map, or its hash.
+        JSReceiverPropertiesOrHash = "JSReceiver::PropertiesOrHash",
+        JSObjectElements = "JSObject::Elements",
+        NameRawHashField = "Name::RawHashField",
+
+        /// A map's own descriptors, each `prop_desc_size` words from
+        /// `Descriptors`: its key, its details, and its value.
+        DescriptorArrayNumberOfAllDescriptors = "DescriptorArray::NumberOfAllDescriptors",
+        DescriptorArrayNumberOfDescriptors = "DescriptorArray::NumberOfDescriptors",
+        DescriptorArrayDescriptors = "DescriptorArray::Descriptors",
+        PropertyArrayLengthAndHash = "PropertyArray::LengthAndHash",
+        AccessorInfoName = "AccessorInfo::Name",
+        SwissNameDictionaryHash = "SwissNameDictionary::Hash",
+        SwissNameDictionaryCapacity = "SwissNameDictionary::Capacity",
+        SwissNameDictionaryMetaTable = "SwissNameDictionary::MetaTable",
+        SwissNameDictionaryDataTable = "SwissNameDictionary::DataTable",
+        WeakFixedArrayLength = "WeakFixedArray::Length",
+        WeakFixedArrayObjects = "WeakFixedArray::Objects",
+
+        /// From 13.6.
+        TrustedWeakFixedArrayLength = "TrustedWeakFixedArray::Length",
+        TrustedWeakFixedArrayObjects = "TrustedWeakFixedArray::Objects",
 
         /// A function's code, through 12.4; from 13.6 a function has its
         /// [`Field::JSFunctionDispatchHandle`] instead.
@@ -116,6 +142,21 @@ entries! {
         JSFunctionContext = "JSFunction::Context",
         JSFunctionFeedbackCell = "JSFunction::FeedbackCell",
         FeedbackCellValue = "FeedbackCell::Value",
+
+        /// From 13.6.
+        FeedbackCellDispatchHandle = "FeedbackCell::DispatchHandle",
+
+        /// A function's feedback: `Length` slots from `RawFeedbackSlots`,
+        /// among them, as weak references to `CodeWrapper`s, the code its
+        /// loops entered on stack replacement (OSR), which `OsrState`'s
+        /// bits say may be cached.
+        FeedbackVectorLength = "FeedbackVector::Length",
+        FeedbackVectorOsrState = "FeedbackVector::OsrState",
+        FeedbackVectorFlags = "FeedbackVector::Flags",
+
+        /// 12.4 only.
+        FeedbackVectorMaybeOptimizedCode = "FeedbackVector::MaybeOptimizedCode",
+        FeedbackVectorRawFeedbackSlots = "FeedbackVector::RawFeedbackSlots",
 
         /// A function's bytecode or the like, through 12.4; from 13.6 it
         /// is split into the trusted and the untrusted function data.
@@ -178,13 +219,40 @@ entries! {
         ScriptSourceUrl = "Script::SourceUrl",
         ScriptSourceMappingUrl = "Script::SourceMappingUrl",
 
+        /// A code object's fields, from `CODE_DATA_FIELDS` in `code.h`,
+        /// which Torque has no readers of, as the release configuration
+        /// lays them out. Optimized code's deoptimization data, or a
+        /// baseline code's bytecode or interpreter data.
+        CodeDeoptimizationDataOrInterpreterData = "Code::DeoptimizationDataOrInterpreterData",
+
+        /// The source position table, or a baseline code's bytecode offset
+        /// table; `Smi::zero()` for an embedded builtin's.
+        CodePositionTable = "Code::PositionTable",
+        CodeWrapper = "Code::Wrapper",
+        CodeInstructionStream = "Code::InstructionStream",
+
         /// Where a code object's instructions begin and how long they are,
-        /// and its flags, which hold its kind. Torque has no readers of
-        /// `Code`, so these come from the binary's own `v8dbg_class_Code__`
-        /// constants.
+        /// and its flags, which hold its kind.
         CodeInstructionStart = "Code::InstructionStart",
-        CodeInstructionSize = "Code::InstructionSize",
+
+        /// From 13.6.
+        CodeDispatchHandle = "Code::DispatchHandle",
         CodeFlags = "Code::Flags",
+        CodeInstructionSize = "Code::InstructionSize",
+        CodeMetadataSize = "Code::MetadataSize",
+        CodeInlinedBytecodeSize = "Code::InlinedBytecodeSize",
+        CodeOsrOffset = "Code::OsrOffset",
+        CodeHandlerTableOffset = "Code::HandlerTableOffset",
+
+        /// From 13.6.
+        CodeParameterCount = "Code::ParameterCount",
+
+        /// The builtin the code is, a 16-bit number; -1 for none.
+        CodeBuiltinId = "Code::BuiltinId",
+
+        /// The code a wrapper points to, as an OSR slot's weak reference
+        /// does: from `CodeWrapper`'s `FIELD_LIST` in `code.h`.
+        CodeWrapperCode = "CodeWrapper::Code",
     }
 }
 
@@ -312,6 +380,58 @@ entries! {
         ScopeInfoIdxNcontextlocals = "scopeinfo_idx_ncontextlocals",
         ScopeInfoIdxNparams = "scopeinfo_idx_nparams",
 
+        /// A descriptor's words, from its descriptor array's
+        /// [`Field::DescriptorArrayDescriptors`]: its key, its details,
+        /// and its value, and how many words each descriptor has.
+        PropDescKey = "prop_desc_key",
+        PropDescDetails = "prop_desc_details",
+        PropDescValue = "prop_desc_value",
+        PropDescSize = "prop_desc_size",
+
+        /// The bits of a property's details, a Smi: its kind, where its
+        /// value is, the field it is in, its representation, and its
+        /// attributes.
+        PropKindData = "prop_kind_Data",
+        PropKindAccessor = "prop_kind_Accessor",
+        PropKindMask = "prop_kind_mask",
+        PropLocationField = "prop_location_Field",
+        PropLocationDescriptor = "prop_location_Descriptor",
+        PropLocationMask = "prop_location_mask",
+        PropLocationShift = "prop_location_shift",
+        PropIndexMask = "prop_index_mask",
+        PropIndexShift = "prop_index_shift",
+        PropRepresentationSmi = "prop_representation_smi",
+        PropRepresentationDouble = "prop_representation_double",
+        PropRepresentationHeapObject = "prop_representation_heapobject",
+        PropRepresentationTagged = "prop_representation_tagged",
+        PropRepresentationMask = "prop_representation_mask",
+        PropRepresentationShift = "prop_representation_shift",
+        PropAttributesNone = "prop_attributes_NONE",
+        PropAttributesReadOnly = "prop_attributes_READ_ONLY",
+        PropAttributesDontEnum = "prop_attributes_DONT_ENUM",
+        PropAttributesDontDelete = "prop_attributes_DONT_DELETE",
+        PropAttributesMask = "prop_attributes_mask",
+        PropAttributesShift = "prop_attributes_shift",
+
+        /// Where [`Field::MapBitField3`] says a map is a dictionary map and
+        /// how many of its descriptors are its own.
+        BitField3IsDictionaryMapShift = "bit_field3_is_dictionary_map_shift",
+        BitField3NumberOfOwnDescriptorsMask = "bit_field3_number_of_own_descriptors_mask",
+        BitField3NumberOfOwnDescriptorsShift = "bit_field3_number_of_own_descriptors_shift",
+
+        /// A dictionary's slots, in words from its first element.
+        NameDictionaryPrefixStartIndex = "namedictionary_prefix_start_index",
+        NameDictionaryShapeEntrySize = "namedictionaryshape_entry_size",
+        NameDictionaryShapePrefixSize = "namedictionaryshape_prefix_size",
+        GlobalDictionaryShapeEntrySize = "globaldictionaryshape_entry_size",
+        NumberDictionaryShapeEntrySize = "numberdictionaryshape_entry_size",
+        NumberDictionaryShapePrefixSize = "numberdictionaryshape_prefix_size",
+
+        /// The elements kinds of an object's map's [`Field::MapBitField2`].
+        ElementsFastElements = "elements_fast_elements",
+        ElementsFastHoleyElements = "elements_fast_holey_elements",
+        ElementsDictionaryElements = "elements_dictionary_elements",
+
         ScriptType = "SCRIPT_TYPE",
         SharedFunctionInfoType = "SHARED_FUNCTION_INFO_TYPE",
 
@@ -338,6 +458,100 @@ entries! {
         SymbolType = "SYMBOL_TYPE",
         NativeContextType = "NATIVE_CONTEXT_TYPE",
         FeedbackCellType = "FEEDBACK_CELL_TYPE",
+        FeedbackVectorType = "FEEDBACK_VECTOR_TYPE",
+        CodeWrapperType = "CODE_WRAPPER_TYPE",
+        WeakFixedArrayType = "WEAK_FIXED_ARRAY_TYPE",
+
+        /// From 13.6.
+        TrustedWeakFixedArrayType = "TRUSTED_WEAK_FIXED_ARRAY_TYPE",
+        ProtectedWeakFixedArrayType = "PROTECTED_WEAK_FIXED_ARRAY_TYPE",
+        DescriptorArrayType = "DESCRIPTOR_ARRAY_TYPE",
+        StrongDescriptorArrayType = "STRONG_DESCRIPTOR_ARRAY_TYPE",
+        PropertyArrayType = "PROPERTY_ARRAY_TYPE",
+        NameDictionaryType = "NAME_DICTIONARY_TYPE",
+        GlobalDictionaryType = "GLOBAL_DICTIONARY_TYPE",
+        SwissNameDictionaryType = "SWISS_NAME_DICTIONARY_TYPE",
+        AccessorInfoType = "ACCESSOR_INFO_TYPE",
+        AccessorPairType = "ACCESSOR_PAIR_TYPE",
+        JSObjectType = "JS_OBJECT_TYPE",
+
+        /// The kinds of code, as [`Constant::CodeKindFieldMask`] of its
+        /// flags holds them: `CODE_KIND_LIST`'s order in `code-kind.h`.
+        /// Optimized code is `TURBOFAN` in 12.4, then `TURBOFAN_JS`.
+        CodeKindBuiltin = "CodeKind::BUILTIN",
+        CodeKindMaglev = "CodeKind::MAGLEV",
+        CodeKindTurbofanJS = "CodeKind::TURBOFAN_JS",
+
+        /// The slots of optimized code's deoptimization data, from
+        /// `deoptimization-data.h`, beside those the binary exports. From
+        /// 13.6 the inlined functions' shared infos are among the
+        /// protected literals.
+        DeoptimizationDataFrameTranslationIndex = "DeoptimizationData::kFrameTranslationIndex",
+        DeoptimizationDataProtectedLiteralArrayIndex =
+            "DeoptimizationData::kProtectedLiteralArrayIndex",
+        DeoptimizationDataOsrBytecodeOffsetIndex = "DeoptimizationData::kOsrBytecodeOffsetIndex",
+        DeoptimizationDataOsrPcOffsetIndex = "DeoptimizationData::kOsrPcOffsetIndex",
+        DeoptimizationDataDeoptExitStartIndex = "DeoptimizationData::kDeoptExitStartIndex",
+        DeoptimizationDataFirstDeoptEntryIndex = "DeoptimizationData::kFirstDeoptEntryIndex",
+
+        /// An inlining position, as the `InliningPositions` byte array
+        /// holds them: a `SourcePosition` and the index of the inlined
+        /// function, in `source-position.h`, laid out as C does.
+        InliningPositionSize = "sizeof(InliningPosition)",
+        InliningPositionPosition = "offsetof(InliningPosition, position)",
+        InliningPositionInlinedFunctionId = "offsetof(InliningPosition, inlined_function_id)",
+
+        /// The bit fields of a `SourcePosition`'s 64-bit value, and the
+        /// inlining id of a position in no inlined function. The
+        /// `InliningIdField` holds the inlining id plus one, so that 0 is
+        /// `kNotInlined`; a script offset is valid only where
+        /// `IsExternalField` is 0.
+        SourcePositionIsExternalShift = "SourcePosition::IsExternalField::kShift",
+        SourcePositionIsExternalMask = "SourcePosition::IsExternalField::kMask",
+        SourcePositionScriptOffsetShift = "SourcePosition::ScriptOffsetField::kShift",
+        SourcePositionScriptOffsetMask = "SourcePosition::ScriptOffsetField::kMask",
+        SourcePositionInliningIdShift = "SourcePosition::InliningIdField::kShift",
+        SourcePositionInliningIdMask = "SourcePosition::InliningIdField::kMask",
+        SourcePositionExternalLineShift = "SourcePosition::ExternalLineField::kShift",
+        SourcePositionExternalLineMask = "SourcePosition::ExternalLineField::kMask",
+        SourcePositionExternalFileIdShift = "SourcePosition::ExternalFileIdField::kShift",
+        SourcePositionExternalFileIdMask = "SourcePosition::ExternalFileIdField::kMask",
+        SourcePositionNotInlined = "SourcePosition::kNotInlined",
+
+        /// A hash table's slots before its prefix, in words from its first
+        /// element (`hash-table.h`), and a name dictionary's own (its
+        /// prefix and its entries', `dictionary.h`).
+        HashTableNumberOfElementsIndex = "HashTableBase::kNumberOfElementsIndex",
+        HashTableNumberOfDeletedElementsIndex = "HashTableBase::kNumberOfDeletedElementsIndex",
+        HashTableCapacityIndex = "HashTableBase::kCapacityIndex",
+        HashTablePrefixStartIndex = "HashTableBase::kPrefixStartIndex",
+        HashTableEntryKeyIndex = "HashTable::kEntryKeyIndex",
+        NameDictionaryNextEnumerationIndexIndex = "BaseNameDictionary::kNextEnumerationIndexIndex",
+        NameDictionaryObjectHashIndex = "BaseNameDictionary::kObjectHashIndex",
+        NameDictionaryFlagsIndex = "NameDictionary::kFlagsIndex",
+        NameDictionaryEntryValueIndex = "NameDictionary::kEntryValueIndex",
+        NameDictionaryEntryDetailsIndex = "NameDictionary::kEntryDetailsIndex",
+
+        /// How a weak reference is told from a strong one, and the value
+        /// of a cleared one's low 32 bits (`v8-internal.h`, `globals.h`).
+        WeakHeapObjectTag = "internal::kWeakHeapObjectTag",
+        WeakHeapObjectMask = "internal::kWeakHeapObjectMask",
+        ClearedWeakHeapObjectLower32 = "internal::kClearedWeakHeapObjectLower32",
+
+        /// From 13.6, the JS dispatch table's entries (`globals.h`,
+        /// `js-dispatch-table.h`): a handle shifted right by
+        /// `kJSDispatchHandleShift` is its entry's index; an entry is
+        /// `kJSDispatchTableEntrySize` bytes, whose word at
+        /// `kCodeObjectOffset`, shifted right by `kObjectPointerShift`
+        /// with `kHeapObjectTag` set, is its code, the bit it shifts into
+        /// the tag's place being the entry's marking bit; the word's low
+        /// bits under `kParameterCountMask` are the parameter count.
+        JSDispatchTableEntrySize = "internal::kJSDispatchTableEntrySize",
+        JSDispatchHandleShift = "internal::kJSDispatchHandleShift",
+        JSDispatchEntryEntrypointOffset = "JSDispatchEntry::kEntrypointOffset",
+        JSDispatchEntryCodeObjectOffset = "JSDispatchEntry::kCodeObjectOffset",
+        JSDispatchEntryObjectPointerShift = "JSDispatchEntry::kObjectPointerShift",
+        JSDispatchEntryParameterCountMask = "JSDispatchEntry::kParameterCountMask",
 
         /// The bit fields of [`Field::SharedFunctionInfoFlags`].
         SfiFunctionKindShift = "SharedFunctionInfo::FunctionKindBits::kShift",
@@ -473,16 +687,41 @@ entries! {
         ScriptProduceCompileHintsMask = "Script::ProduceCompileHintsBit::kMask",
         ScriptDeserializedShift = "Script::DeserializedBit::kShift",
         ScriptDeserializedMask = "Script::DeserializedBit::kMask",
+
+        /// The bits of [`Field::FeedbackVectorOsrState`]: whether a loop's
+        /// Maglev or Turbofan OSR code may be cached in a slot.
+        FeedbackOsrUrgencyShift = "FeedbackVector::OsrUrgencyBits::kShift",
+        FeedbackOsrUrgencyMask = "FeedbackVector::OsrUrgencyBits::kMask",
+        FeedbackMaybeHasMaglevOsrCodeShift = "FeedbackVector::MaybeHasMaglevOsrCodeBit::kShift",
+        FeedbackMaybeHasMaglevOsrCodeMask = "FeedbackVector::MaybeHasMaglevOsrCodeBit::kMask",
+        FeedbackMaybeHasTurbofanOsrCodeShift =
+            "FeedbackVector::MaybeHasTurbofanOsrCodeBit::kShift",
+        FeedbackMaybeHasTurbofanOsrCodeMask = "FeedbackVector::MaybeHasTurbofanOsrCodeBit::kMask",
+
+        /// The bits of [`Field::FeedbackVectorFlags`] in 12.4: whether
+        /// [`Field::FeedbackVectorMaybeOptimizedCode`] may hold code.
+        FeedbackMaybeHasMaglevCodeShift = "FeedbackVector::MaybeHasMaglevCodeBit::kShift",
+        FeedbackMaybeHasMaglevCodeMask = "FeedbackVector::MaybeHasMaglevCodeBit::kMask",
+        FeedbackMaybeHasTurbofanCodeShift = "FeedbackVector::MaybeHasTurbofanCodeBit::kShift",
+        FeedbackMaybeHasTurbofanCodeMask = "FeedbackVector::MaybeHasTurbofanCodeBit::kMask",
+
+        /// From 13.6.
+        FeedbackTieringInProgressShift = "FeedbackVector::TieringInProgressBit::kShift",
+        FeedbackTieringInProgressMask = "FeedbackVector::TieringInProgressBit::kMask",
+        FeedbackOsrTieringInProgressShift = "FeedbackVector::OsrTieringInProgressBit::kShift",
+        FeedbackOsrTieringInProgressMask = "FeedbackVector::OsrTieringInProgressBit::kMask",
     }
 }
 
 impl Constant {
-    /// Whether the constant comes from Torque's output, an instance type
-    /// or a bit field, rather than from the binary's `v8dbg_` constants.
+    /// Whether the constant comes from V8's sources, its Torque output or
+    /// its headers, rather than from the binary's `v8dbg_` constants: an
+    /// instance type, a bit field, a class's or namespace's constant, or a
+    /// struct's layout.
     #[must_use]
     pub fn is_torque(self) -> bool {
         let name = self.name();
-        name.ends_with("_TYPE") || name.contains("::")
+        name.ends_with("_TYPE") || name.contains("::") || name.contains('(')
     }
 }
 
@@ -515,9 +754,33 @@ pub struct V8RuntimeRecord {
     /// Why the module's runtime cannot be read, a string, or [`NONE`]
     /// when its layout is complete.
     pub problem: U32,
+
+    /// Where the JS dispatch table is: a `DISPATCH_` kind, with its
+    /// address and offset; or why the module's code does not say, a
+    /// string, or [`NONE`].
+    pub dispatch_kind: U16,
+    pub dispatch_reserved: U16,
+    pub dispatch_problem: U32,
+    pub dispatch_address: U64,
+    pub dispatch_offset: U64,
+
+    /// Where the embedded blob's bounds are kept: its code, its code's
+    /// size, its data, and its data's size; or why the module's code does
+    /// not say, a string, or [`NONE`].
+    pub blob_problem: U32,
+    pub blob: [U64; 4],
     pub offsets: [U32; Field::COUNT],
     pub constants: [I64; Constant::COUNT],
 }
+
+/// The version has no JS dispatch table.
+const DISPATCH_NONE: u16 = 0;
+
+/// [`DispatchTable::Isolate`].
+const DISPATCH_ISOLATE: u16 = 1;
+
+/// [`DispatchTable::Group`].
+const DISPATCH_GROUP: u16 = 2;
 
 impl Record for V8RuntimeRecord {
     const KIND: TableKind = TableKind::V8Runtime;
@@ -601,6 +864,32 @@ impl V8Layout {
     }
 }
 
+/// Where a process keeps the base of its JS dispatch table, the table
+/// of 13.6's leaptiering through which a function's
+/// [`Field::JSFunctionDispatchHandle`] finds its code: as the module's
+/// `ExternalReference::js_dispatch_table_address` reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchTable {
+    /// The base is the word `offset` bytes into each isolate, as in 14.6.
+    Isolate { offset: u64 },
+
+    /// The base is the word `offset` bytes into the isolate group the
+    /// pointer variable at `group` points to, as in 13.6.
+    Group { group: ImageAddress, offset: u64 },
+}
+
+/// Where a process keeps the bounds of V8's embedded blob, the builtins
+/// compiled ahead of time, which V8 sets when it starts: the variables
+/// `v8::Isolate::GetEmbeddedCodeRange` reads. `code` and `data` hold
+/// pointers, and `code_size` and `data_size` 32-bit sizes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmbeddedBlob {
+    pub code: ImageAddress,
+    pub code_size: ImageAddress,
+    pub data: ImageAddress,
+    pub data_size: ImageAddress,
+}
+
 /// What a module's loader found of its V8 runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct V8Runtime {
@@ -610,6 +899,15 @@ pub struct V8Runtime {
     /// The layout, or why the runtime cannot be read, as for a version
     /// microscope has no layout of.
     pub layout: Result<V8Layout, std::sync::Arc<str>>,
+
+    /// Where the JS dispatch table is; `None` for a version without one,
+    /// whose functions hold their code. An error, which leaves the rest of
+    /// the runtime readable, when the module's code does not say.
+    pub dispatch_table: Result<Option<DispatchTable>, std::sync::Arc<str>>,
+
+    /// Where the embedded blob's bounds are, or why the module's code does
+    /// not say, which leaves the rest of the runtime readable.
+    pub embedded_blob: Result<EmbeddedBlob, std::sync::Arc<str>>,
 }
 
 /// Why a runtime could not be encoded.
@@ -624,38 +922,89 @@ pub fn add_to(
     runtime: Option<&V8Runtime>,
 ) -> Result<(), TooLarge> {
     let records = runtime
-        .map(|runtime| {
-            let (layout, problem) = match &runtime.layout {
-                Ok(layout) => (layout.clone(), NONE),
-                Err(problem) => (
-                    V8Layout::default(),
-                    strings.push(problem).ok_or(TooLarge)?.0,
-                ),
-            };
-
-            Ok(V8RuntimeRecord {
-                major: runtime.version.major.into(),
-                minor: runtime.version.minor.into(),
-                build: runtime.version.build.into(),
-                patch: runtime.version.patch.into(),
-                flags: runtime.flags.into(),
-                reserved: 0.into(),
-                problem: problem.into(),
-                offsets: layout.offsets.map(U32::new),
-                constants: layout.constants.map(I64::new),
-            })
-        })
+        .map(|runtime| encode(strings, runtime))
         .transpose()?;
 
     builder.owned_table(records.into_iter().collect());
     Ok(())
 }
 
+fn encode(strings: &mut StringsBuilder, runtime: &V8Runtime) -> Result<V8RuntimeRecord, TooLarge> {
+    let mut problem = |problem: &str| strings.push(problem).map(|id| id.0).ok_or(TooLarge);
+    let (layout, layout_problem) = match &runtime.layout {
+        Ok(layout) => (layout.clone(), NONE),
+        Err(error) => (V8Layout::default(), problem(error)?),
+    };
+    let (dispatch_kind, dispatch_address, dispatch_offset, dispatch_problem) =
+        match &runtime.dispatch_table {
+            Ok(None) => (DISPATCH_NONE, 0, 0, NONE),
+            Ok(Some(DispatchTable::Isolate { offset })) => (DISPATCH_ISOLATE, 0, *offset, NONE),
+            Ok(Some(DispatchTable::Group { group, offset })) => {
+                (DISPATCH_GROUP, group.get(), *offset, NONE)
+            }
+            Err(error) => (DISPATCH_NONE, 0, 0, problem(error)?),
+        };
+    let (blob, blob_problem) = match &runtime.embedded_blob {
+        Ok(blob) => (
+            [blob.code, blob.code_size, blob.data, blob.data_size].map(|at| U64::new(at.get())),
+            NONE,
+        ),
+        Err(error) => ([U64::new(0); 4], problem(error)?),
+    };
+
+    Ok(V8RuntimeRecord {
+        major: runtime.version.major.into(),
+        minor: runtime.version.minor.into(),
+        build: runtime.version.build.into(),
+        patch: runtime.version.patch.into(),
+        flags: runtime.flags.into(),
+        reserved: 0.into(),
+        problem: layout_problem.into(),
+        dispatch_kind: dispatch_kind.into(),
+        dispatch_reserved: 0.into(),
+        dispatch_problem: dispatch_problem.into(),
+        dispatch_address: dispatch_address.into(),
+        dispatch_offset: dispatch_offset.into(),
+        blob_problem: blob_problem.into(),
+        blob,
+        offsets: layout.offsets.map(U32::new),
+        constants: layout.constants.map(I64::new),
+    })
+}
+
 /// The V8 runtime of a validated image, if it has one.
 #[must_use]
 pub fn runtime(image: &Image) -> Option<V8Runtime> {
     let record: &V8RuntimeRecord = image.table().first()?;
-    let problem = record.problem.get();
+    let problem = |id: u32| -> std::sync::Arc<str> { image.strings().get(StrId(id)).into() };
+    let layout = match record.problem.get() {
+        NONE => Ok(V8Layout {
+            offsets: record.offsets.map(U32::get),
+            constants: record.constants.map(I64::get),
+        }),
+        id => Err(problem(id)),
+    };
+    let offset = record.dispatch_offset.get();
+    let dispatch_table = match (record.dispatch_problem.get(), record.dispatch_kind.get()) {
+        (NONE, DISPATCH_ISOLATE) => Ok(Some(DispatchTable::Isolate { offset })),
+        (NONE, DISPATCH_GROUP) => Ok(Some(DispatchTable::Group {
+            group: ImageAddress::new(record.dispatch_address.get()),
+            offset,
+        })),
+        (NONE, _) => Ok(None),
+        (id, _) => Err(problem(id)),
+    };
+    let [code, code_size, data, data_size] = record.blob.map(|at| ImageAddress::new(at.get()));
+    let embedded_blob = match record.blob_problem.get() {
+        NONE => Ok(EmbeddedBlob {
+            code,
+            code_size,
+            data,
+            data_size,
+        }),
+        id => Err(problem(id)),
+    };
+
     Some(V8Runtime {
         version: V8Version {
             major: record.major.get(),
@@ -664,19 +1013,16 @@ pub fn runtime(image: &Image) -> Option<V8Runtime> {
             patch: record.patch.get(),
         },
         flags: record.flags.get(),
-        layout: if problem == NONE {
-            Ok(V8Layout {
-                offsets: record.offsets.map(U32::get),
-                constants: record.constants.map(I64::get),
-            })
-        } else {
-            Err(image.strings().get(StrId(problem)).into())
-        },
+        layout,
+        dispatch_table,
+        embedded_blob,
     })
 }
 
 /// Checks that an image has at most one runtime, which sets only the
-/// flags this format defines, and whose problem names a string.
+/// flags and the kind of dispatch table this format defines, whose
+/// problems name strings, and which leaves no address where it has a
+/// problem instead.
 pub(super) fn validate(image: &Image) -> Result<(), String> {
     let records: &[V8RuntimeRecord] = image.table();
     if records.len() > 1 {
@@ -687,13 +1033,41 @@ pub(super) fn validate(image: &Image) -> Result<(), String> {
         return Ok(());
     };
 
-    if record.flags.get() & !DYNAMIC_SYMBOLS != 0 || record.reserved.get() != 0 {
+    if record.flags.get() & !DYNAMIC_SYMBOLS != 0
+        || record.reserved.get() != 0
+        || record.dispatch_reserved.get() != 0
+    {
         return Err("the V8 runtime sets flags it does not define".to_owned());
     }
 
-    let problem = record.problem.get();
-    if problem != NONE && !image.strings().contains(StrId(problem)) {
-        return Err(format!("the V8 runtime's problem {problem} is no string"));
+    for problem in [
+        record.problem.get(),
+        record.dispatch_problem.get(),
+        record.blob_problem.get(),
+    ] {
+        if problem != NONE && !image.strings().contains(StrId(problem)) {
+            return Err(format!("the V8 runtime's problem {problem} is no string"));
+        }
+    }
+
+    let kind = record.dispatch_kind.get();
+    let address = record.dispatch_address.get();
+    let offset = record.dispatch_offset.get();
+    let dispatch_valid = match kind {
+        DISPATCH_NONE => address == 0 && offset == 0,
+        DISPATCH_ISOLATE => address == 0 && record.dispatch_problem.get() == NONE,
+        DISPATCH_GROUP => record.dispatch_problem.get() == NONE,
+        _ => false,
+    };
+    if !dispatch_valid {
+        return Err(format!(
+            "the V8 runtime's dispatch table of kind {kind} at {address:#x}+{offset:#x} \
+             is not one this format defines"
+        ));
+    }
+
+    if record.blob_problem.get() != NONE && record.blob.iter().any(|at| at.get() != 0) {
+        return Err("the V8 runtime places its embedded blob and says it cannot".to_owned());
     }
 
     Ok(())

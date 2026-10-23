@@ -26,9 +26,16 @@
 #[path = "v8/layouts.gen.rs"]
 mod layouts;
 
+#[path = "v8/accessors.rs"]
+mod accessors;
+
 #[cfg(test)]
 #[path = "v8/conformance.rs"]
 mod conformance;
+
+#[cfg(test)]
+#[path = "v8/headers.rs"]
+mod headers;
 
 #[cfg(test)]
 #[path = "v8/translate.rs"]
@@ -138,6 +145,11 @@ pub(super) struct Generated {
     /// Every instance type Torque assigns, by name, which the binary's
     /// own `v8dbg_type_` constants are checked against.
     pub instance_types: &'static [(&'static str, u16)],
+
+    /// The value V8's headers give each `v8dbg_` constant they define too,
+    /// by the constant's name without `v8dbg_`, which the binary's must
+    /// equal where it exports the constant.
+    pub checked: &'static [(&'static str, i64)],
 }
 
 impl Generated {
@@ -270,14 +282,20 @@ const CHECKED_FIELDS: &[(Field, &str)] = &[
         "Script__eval_from_shared_or_wrapped_arguments",
     ),
     (Field::ScriptEvalFromPosition, "Script__eval_from_position"),
-];
-
-/// The fields only the binary's `v8dbg_class_` constants give, which
-/// Torque has no readers of.
-const BINARY_FIELDS: [(Field, &str); 3] = [
+    (
+        Field::JSReceiverPropertiesOrHash,
+        "JSReceiver__raw_properties_or_hash",
+    ),
+    (Field::JSObjectElements, "JSObject__elements"),
+    (
+        Field::DescriptorArrayDescriptors,
+        "DescriptorArray__header_size",
+    ),
     (Field::CodeInstructionStart, "Code__instruction_start"),
     (Field::CodeInstructionSize, "Code__instruction_size"),
     (Field::CodeFlags, "Code__flags"),
+    (Field::CodeInstructionStream, "Code__instruction_stream"),
+    (Field::CodeWrapper, "Code__wrapper"),
 ];
 
 /// What a module exports of V8's constants and version.
@@ -297,8 +315,18 @@ struct Exports {
 /// separate debug file keeps no data sections' bytes. A module that
 /// exports no `v8dbg_` constants carries none.
 pub(super) fn runtime(object: &object::File<'_>) -> Option<V8Runtime> {
-    describe(&exports(object))
+    let exports = exports(object);
+    let mut runtime = describe(&exports)?;
+    if exports.version.iter().all(Option::is_some) {
+        runtime.dispatch_table = accessors::dispatch_table(object, runtime.version);
+        runtime.embedded_blob = accessors::embedded_blob(object);
+    }
+    Some(runtime)
 }
+
+/// Why a runtime whose version is unknown cannot be read.
+const UNKNOWN_VERSION: &str =
+    "it exports V8's v8dbg_ constants but not v8::internal::Version, so its version is unknown";
 
 /// The V8 runtime of a module that exports `exports`, if it is V8's.
 fn describe(exports: &Exports) -> Option<V8Runtime> {
@@ -315,9 +343,9 @@ fn describe(exports: &Exports) -> Option<V8Runtime> {
         return Some(V8Runtime {
             version: V8Version::default(),
             flags,
-            layout: Err("it exports V8's v8dbg_ constants but not \
-                 v8::internal::Version, so its version is unknown"
-                .into()),
+            layout: Err(UNKNOWN_VERSION.into()),
+            dispatch_table: Err(UNKNOWN_VERSION.into()),
+            embedded_blob: Err(UNKNOWN_VERSION.into()),
         });
     };
 
@@ -327,10 +355,13 @@ fn describe(exports: &Exports) -> Option<V8Runtime> {
         build,
         patch,
     };
+    let unread: Arc<str> = "the module's code was not read".into();
     Some(V8Runtime {
         version,
         flags,
         layout: bind(version, &exports.values, exports.sandbox),
+        dispatch_table: Err(unread.clone()),
+        embedded_blob: Err(unread),
     })
 }
 
@@ -424,19 +455,32 @@ fn bind(
         }
     }
 
-    for (field, name) in BINARY_FIELDS {
-        if let Some((_, value)) = class_values(values, name).next() {
-            let offset = u64::try_from(value).map_err(|_| -> Arc<str> {
-                format!("V8 {version}'s v8dbg_class_{name} is {value}").into()
-            })?;
-            layout.set_field(field, offset);
+    check_fields(version, &layout, values)?;
+    check_instance_types(version, generated, values)?;
+    check_constants(version, generated, values)?;
+    check_complete(version, &layout)?;
+    Ok(layout)
+}
+
+/// Checks that each `v8dbg_` constant the binary exports whose value V8's
+/// headers give too has that value.
+fn check_constants(
+    version: V8Version,
+    generated: &Generated,
+    values: &BTreeMap<String, i64>,
+) -> Result<(), Arc<str>> {
+    for &(name, own) in generated.checked {
+        if let Some(&value) = values.get(&format!("{PREFIX}{name}"))
+            && value != own
+        {
+            return Err(format!(
+                "V8 {version}'s {PREFIX}{name} is {value}, but its headers make it {own}"
+            )
+            .into());
         }
     }
 
-    check_fields(version, &layout, values)?;
-    check_instance_types(version, generated, values)?;
-    check_complete(version, &layout)?;
-    Ok(layout)
+    Ok(())
 }
 
 /// Refuses a build whose objects are not laid out as the generated
@@ -599,12 +643,19 @@ const LEAPTIERING: (u32, u32) = (13, 6);
 /// Whether V8 `major.minor` has `field`, which its layout must then give.
 fn requires_field(field: Field, version: (u32, u32)) -> bool {
     match field {
-        Field::JSFunctionCode | Field::SharedFunctionInfoFunctionData => version < LEAPTIERING,
+        Field::JSFunctionCode
+        | Field::SharedFunctionInfoFunctionData
+        | Field::FeedbackVectorMaybeOptimizedCode => version < LEAPTIERING,
         Field::JSFunctionDispatchHandle
         | Field::SharedFunctionInfoTrustedFunctionData
         | Field::SharedFunctionInfoUntrustedFunctionData
         | Field::SharedFunctionInfoWrapperSharedInfo
-        | Field::ScopeInfoPositionInfo => version >= LEAPTIERING,
+        | Field::ScopeInfoPositionInfo
+        | Field::FeedbackCellDispatchHandle
+        | Field::CodeDispatchHandle
+        | Field::CodeParameterCount
+        | Field::TrustedWeakFixedArrayLength
+        | Field::TrustedWeakFixedArrayObjects => version >= LEAPTIERING,
         _ => true,
     }
 }
@@ -633,7 +684,20 @@ fn requires_constant(constant: Constant, version: (u32, u32)) -> bool {
         C::FrameTurbofanJS | C::DeoptimizationDataWrappedSharedFunctionInfoIndex => since_13_6,
         constant if constant.name().starts_with("frametype_") => false,
 
-        C::SharedFunctionInfoWrapperType
+        C::TrustedWeakFixedArrayType
+        | C::ProtectedWeakFixedArrayType
+        | C::DeoptimizationDataProtectedLiteralArrayIndex
+        | C::JSDispatchTableEntrySize
+        | C::JSDispatchHandleShift
+        | C::JSDispatchEntryEntrypointOffset
+        | C::JSDispatchEntryCodeObjectOffset
+        | C::JSDispatchEntryObjectPointerShift
+        | C::JSDispatchEntryParameterCountMask
+        | C::FeedbackTieringInProgressShift
+        | C::FeedbackTieringInProgressMask
+        | C::FeedbackOsrTieringInProgressShift
+        | C::FeedbackOsrTieringInProgressMask
+        | C::SharedFunctionInfoWrapperType
         | C::SfiLiveEditedShift
         | C::SfiLiveEditedMask
         | C::ScopeSomeContextHasExtensionShift
@@ -645,7 +709,11 @@ fn requires_constant(constant: Constant, version: (u32, u32)) -> bool {
         C::ScopeIsReplModeScopeShift
         | C::ScopeIsReplModeScopeMask
         | C::ScopeHasLocalsBlockListShift
-        | C::ScopeHasLocalsBlockListMask => !since_13_6,
+        | C::ScopeHasLocalsBlockListMask
+        | C::FeedbackMaybeHasMaglevCodeShift
+        | C::FeedbackMaybeHasMaglevCodeMask
+        | C::FeedbackMaybeHasTurbofanCodeShift
+        | C::FeedbackMaybeHasTurbofanCodeMask => !since_13_6,
         C::ScopeHasNewTargetShift | C::ScopeHasNewTargetMask => !since_14_6,
         C::ScopeAllocatesArgumentsShift
         | C::ScopeAllocatesArgumentsMask
@@ -716,12 +784,20 @@ mod tests {
             .filter(|constant| !constant.is_torque())
             .map(|constant| (format!("{PREFIX}{}", constant.name()), 0))
             .collect();
+        let generated = layouts::GENERATED
+            .iter()
+            .find(|generated| (generated.major, generated.minor) == (14, 6))
+            .expect("14.6's layout");
+        for &(name, value) in generated.checked {
+            values.insert(format!("{PREFIX}{name}"), value);
+        }
         values.insert("v8dbg_TaggedSize".to_owned(), 8);
         values.insert("v8dbg_SmiShiftSize".to_owned(), 31);
         values.insert("v8dbg_off_fp_function".to_owned(), -16);
-        for (_, name) in BINARY_FIELDS {
-            values.insert(format!("{PREFIX}class_{name}__int"), 40);
-        }
+        values.insert(
+            "v8dbg_class_Code__instruction_start__Address".to_owned(),
+            40,
+        );
 
         values.insert(
             "v8dbg_class_JSFunction__shared__SharedFunctionInfo".to_owned(),
@@ -742,7 +818,10 @@ mod tests {
         let layout = bind(V14_6, &exported(), false).expect("a layout");
         assert_eq!(layout.field(Field::JSFunctionSharedFunctionInfo), Some(32));
         assert_eq!(layout.field(Field::CodeInstructionStart), Some(40));
+        assert_eq!(layout.field(Field::CodeBuiltinId), Some(90));
         assert_eq!(layout.field(Field::JSFunctionCode), None);
+        assert_eq!(layout.field(Field::FeedbackVectorMaybeOptimizedCode), None);
+        assert_eq!(layout.constant(Constant::JSDispatchHandleShift), Some(8));
         assert_eq!(layout.constant(Constant::OffFpFunction), Some(-16));
         assert_eq!(layout.constant(Constant::ScriptType), Some(166));
         assert_eq!(layout.constant(Constant::FrameTurbofan), Some(0));
@@ -840,6 +919,28 @@ mod tests {
             "{refused_type}"
         );
 
+        let mut code = exported();
+        code.insert(
+            "v8dbg_class_Code__instruction_start__Address".to_owned(),
+            48,
+        );
+        assert!(
+            refused(&code, false).contains("puts Code::InstructionStart at 40"),
+            "a code field the headers place elsewhere"
+        );
+
+        let mut kind = exported();
+        kind.insert("v8dbg_CodeKindBaseline".to_owned(), 10);
+        let refused_kind = refused(&kind, false);
+        assert!(
+            refused_kind.contains("v8dbg_CodeKindBaseline is 10, but its headers make it 11"),
+            "{refused_kind}"
+        );
+
+        let mut descriptors = exported();
+        descriptors.insert("v8dbg_prop_desc_size".to_owned(), 2);
+        assert!(refused(&descriptors, false).contains("v8dbg_prop_desc_size is 2"));
+
         // A type Torque does not assign, as a string's, is not checked.
         let mut string = exported();
         string.insert(
@@ -856,8 +957,8 @@ mod tests {
         assert!(refused(&values, false).contains("layout has no v8dbg_frametype_InterpretedFrame"));
 
         let mut values = exported();
-        values.remove("v8dbg_class_Code__instruction_start__int");
-        assert!(refused(&values, false).contains("layout has no Code::InstructionStart"));
+        values.remove("v8dbg_CodeKindFieldMask");
+        assert!(refused(&values, false).contains("layout has no v8dbg_CodeKindFieldMask"));
 
         // A frame type only some versions have is read where it is
         // exported.

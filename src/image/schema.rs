@@ -795,6 +795,13 @@ pub(super) const SCHEMA: &[TableSchema] = &[
             ("flags", 16, 2),
             ("reserved", 18, 2),
             ("problem", 20, 4),
+            ("dispatch_kind", 24, 2),
+            ("dispatch_reserved", 26, 2),
+            ("dispatch_problem", 28, 4),
+            ("dispatch_address", 32, 8),
+            ("dispatch_offset", 40, 8),
+            ("blob_problem", 48, 4),
+            ("blob", 52, 32),
             ("offsets", V8_OFFSETS, 4 * v8::Field::COUNT),
             (
                 "constants",
@@ -809,7 +816,7 @@ pub(super) const SCHEMA: &[TableSchema] = &[
 const PYTHON_OFFSETS: usize = 28;
 
 /// Where a V8 runtime record's offsets begin.
-const V8_OFFSETS: usize = 24;
+const V8_OFFSETS: usize = 84;
 
 const fn keyed(kind: TableKind) -> TableSchema {
     TableSchema {

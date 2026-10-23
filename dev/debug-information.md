@@ -409,11 +409,47 @@ Those come from `v8/layouts.gen.rs`, generated for each V8 major.minor
 version from the Torque output in `MICROSCOPE_V8_TORQUE`:
 `class-debug-readers.cc` gives each field's offset, `instance-types.h` every
 instance type Torque assigns, and `bit-fields.h` the shift and mask of each
-bit field of the flags of `SharedFunctionInfo`, `ScopeInfo`, and `Script`.
-`Code`'s fields have no Torque reader and come from the module's own
-`v8dbg_class_Code__` constants. A field Torque renamed has one `Field`, named
-by its newest name, such as `ByteArray::Values`, which 12.4 calls
-`ByteArray::Bytes`.
+bit field of the flags of `SharedFunctionInfo`, `ScopeInfo`, `Script`,
+`FeedbackVector` (its flags and OSR state), and `Map`'s third bit field. A
+field Torque renamed has one `Field`, named by its newest name, such as
+`ByteArray::Values`, which 12.4 calls `ByteArray::Bytes`.
+
+The rest comes from the V8 headers beside the Torque output, parsed by
+`v8/headers.rs`, which fails on any construct, size, or name it does not know:
+
+- `Code`'s and `CodeWrapper`'s fields, from `code.h`'s `CODE_DATA_FIELDS` and
+  `FIELD_LIST`, which have no Torque reader. Their sizes depend on
+  configuration macros, which `headers::configuration` resolves for the
+  configuration binding requires, each with its evidence: no sandbox, no
+  embedded constant pool (PPC only), leaptiering from 13.6, no builtin jump
+  table info in 13.6 (an off-by-default build argument), jump table info in
+  14.6 (`ENABLE_DISASSEMBLER`, which every 14.6 build's `Code::Disassemble`
+  shows), and no lower-limits mode;
+- the code kinds of `code-kind.h`, the slots of `deoptimization-data.h`, an
+  `InliningPosition`'s C layout and `SourcePosition`'s bit fields, the slots
+  of `hash-table.h` and `dictionary.h`, the weak-reference encoding, and,
+  from 13.6, the JS dispatch table's entry layout;
+- the values of `v8dbg_` constants the headers define too, kept in each
+  generated layout's `checked` list: the descriptor and property-details
+  `prop_` constants, the dictionary shapes, the code kinds, and the
+  deoptimization data slots.
+
+Two things only the module's machine code says are decoded from it by
+`v8/accessors.rs`, each into its own `Result` on the runtime, so that a
+failure refuses only what needs it:
+
+- `dispatch_table`, where the JS dispatch table's base is kept, from
+  `ExternalReference::js_dispatch_table_address`: a word of each isolate in
+  14.6, or of the isolate group a global points to in 13.6; `None` before
+  13.6. That function is local, so a module stripped of its symbols, as
+  Debian's libnode, has an error here;
+- `embedded_blob`, the variables that hold the embedded builtins' bounds,
+  from the exported `v8::Isolate::GetEmbeddedCodeRange`, by following which
+  call's result it stores through each argument, then the one rip-relative
+  load of each accessor it calls.
+
+Each decoder accepts only the instruction shapes it names and reports the
+first instruction it did not expect.
 
 Binding a module checks, in order, and refuses it with the first reason:
 
@@ -431,6 +467,7 @@ Binding a module checks, in order, and refuses it with the first reason:
 - each exported `v8dbg_type_` constant whose name Torque assigns has
   Torque's number. A build configured unlike the release, such as one
   without Intl or Temporal, numbers its types differently;
+- each `v8dbg_` constant the headers define too has the headers' value;
 - the layout has every field and constant its version needs.
 
 `v8/conformance.rs` checks the layouts against both sources.
@@ -439,8 +476,11 @@ fails when the checked-in file differs, or when the Torque output lacks a
 field or constant that a version must have. Rerun it with
 `MICROSCOPE_UPDATE_V8=1` to rewrite the file.
 `every_build_in_the_matrix_binds_to_its_layout` binds every build in
-`MICROSCOPE_NODE`, Debian's libnode included, and checks its version and the
-counts of agreeing fields and instance types. When a new Node line arrives,
+`MICROSCOPE_NODE`, Debian's libnode included, and checks its version, the
+counts of agreeing fields, instance types, and header constants, the code
+fields the cores of the tiers fixture confirm, and its dispatch table and
+embedded blob variables, against the local symbols where the build has
+them. When a new Node line arrives,
 add its V8 version's Torque output to the flake, rerun the generator, and
 extend the version tables in `debug_info/v8.rs` where the new version adds
 or drops a field.
