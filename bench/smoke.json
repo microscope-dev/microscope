@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "measurement": "cold-load/jobs=1/system-alloc=false/debug-assertions=true",
+  "workloads": {
+    "cpp": {
+      "sha256": "e4b350c14215d3dbaf356e400ae8b57847f4ad5320773327889587f9806579f6",
+      "allocations": 57000,
+      "allocated_bytes": 13100000
+    },
+    "go": {
+      "sha256": "e00910fd76a043d46fb4a1002cdcc021e0d5b34ca1bb47ffeca5ba8a07b04420",
+      "allocations": 181000,
+      "allocated_bytes": 64600000
+    },
+    "rust": {
+      "sha256": "2acbd463e6448f5993efc66beed8c87a81330a643f3804fec2ceef11132e5405",
+      "allocations": 711000,
+      "allocated_bytes": 153500000
+    },
+    "zig": {
+      "sha256": "e540f4c0bac3f80f972d674919bc89e15daefb650f54227e99c199236b3397fc",
+      "allocations": 338000,
+      "allocated_bytes": 101500000
+    }
+  }
+}

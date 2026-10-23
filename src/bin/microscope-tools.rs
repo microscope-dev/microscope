@@ -15,7 +15,7 @@
     )
 )]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt as _;
@@ -29,6 +29,9 @@ use microscope::timings::Report;
 use microscope::tools::Measured;
 use microscope::tools::dump::{Options as DumpOptions, Section};
 use serde::{Deserialize, Serialize};
+
+#[path = "microscope-tools/smoke.rs"]
+mod smoke;
 
 // Allocates as microscope does, so that loads cost what they cost there.
 #[global_allocator]
@@ -110,6 +113,9 @@ enum Tool {
     /// Load each program of a pinned corpus in processes of their own, and
     /// report what loading costs.
     Bench(BenchArgs),
+
+    /// Check cold, single-worker loads of an immutable corpus against resource budgets.
+    BenchSmoke(smoke::Args),
 
     /// Run reference workloads bare and under each preset, and report what
     /// recording cost them.
@@ -201,10 +207,6 @@ struct SyscallOverheadArgs {
 
 #[derive(clap::Args)]
 struct BenchArgs {
-    /// The seconds-long corpus of small programs, or every program.
-    #[arg(long, value_enum, default_value = "full")]
-    corpus: Corpus,
-
     /// Loads per program, in processes of their own.
     #[arg(long, default_value_t = 5)]
     repeat: usize,
@@ -217,17 +219,6 @@ struct BenchArgs {
     #[arg(long, value_name = "BASE")]
     compare: Option<PathBuf>,
 
-    /// Fail unless the deterministic counts are within those BASELINE
-    /// records for the same programs.
-    #[arg(long, value_name = "BASELINE")]
-    check: Option<PathBuf>,
-
-    /// Rewrite BASELINE with this run's deterministic counts, without
-    /// checking them against it. With `--only`, the other programs keep
-    /// their counts.
-    #[arg(long, value_name = "BASELINE")]
-    record: Option<PathBuf>,
-
     /// Also count each load's instructions under Callgrind.
     #[arg(long)]
     callgrind: bool,
@@ -235,12 +226,6 @@ struct BenchArgs {
     /// Only the programs whose names contain one of these.
     #[arg(long, value_delimiter = ',')]
     only: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-enum Corpus {
-    Smoke,
-    Full,
 }
 
 fn main() -> ExitCode {
@@ -260,8 +245,16 @@ fn main() -> ExitCode {
     }
 }
 
+#[expect(clippy::too_many_lines, reason = "developer command dispatch")]
 fn run(args: Args) -> Result<bool> {
-    let jobs = microscope::pool::configure(args.jobs, None)?;
+    let jobs = if matches!(&args.command, Tool::BenchSmoke(_)) {
+        if args.cache.is_some() || args.jobs.is_some_and(|jobs| jobs.get() != 1) {
+            bail!("input/configuration mismatch: bench-smoke requires --jobs=1 and no image cache");
+        }
+        microscope::pool::configure(Some(std::num::NonZeroUsize::MIN), None)?
+    } else {
+        microscope::pool::configure(args.jobs, None)?
+    };
     microscope::cache::configure(Some(args.cache.clone().map_or(
         microscope::cache::Setting::Off,
         microscope::cache::Setting::Directory,
@@ -302,7 +295,10 @@ fn run(args: Args) -> Result<bool> {
         } => {
             let measured = microscope::tools::measure_load(&program, instructions)?;
             println!("{}", serde_json::to_string(&measured)?);
-            Ok(true)
+            if let Err(error) = &measured.outcome {
+                eprintln!("{}: {error}", program.display());
+            }
+            Ok(measured.outcome.is_ok())
         }
         Tool::Warm { paths } => {
             if args.cache.is_none() {
@@ -366,6 +362,7 @@ fn run(args: Args) -> Result<bool> {
                 None => vec![1, jobs],
             },
         ),
+        Tool::BenchSmoke(args) => smoke::run(&args),
         Tool::Overhead(overhead) => run_overhead(&overhead),
         Tool::SyscallOverhead(args) => run_syscall_overhead(&args),
         Tool::Heap { profile, rows } => {
@@ -712,22 +709,13 @@ impl ProgramResult {
     }
 }
 
-/// The deterministic counts a baseline holds for each program, loaded on
-/// one worker.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct Counts {
-    digest: String,
-    allocations: Option<u64>,
-    callgrind_instructions: Option<u64>,
-}
-
 /// One program of the corpus, by its name and where it is built.
 struct Program {
     name: String,
     path: PathBuf,
 }
 
-fn corpus(kind: Corpus) -> Result<Vec<Program>> {
+fn corpus() -> Result<Vec<Program>> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut programs = Vec::new();
 
@@ -767,44 +755,37 @@ fn corpus(kind: Corpus) -> Result<Vec<Program>> {
         "containers-zig-self-hosted",
         "containers-rust-o0",
         "server-go-o0",
+        "tokio-server-o0",
+        "tokio-values-o0",
     ];
-    let large = ["tokio-server-o0", "tokio-values-o0"];
-    let fixture_names = match kind {
-        Corpus::Smoke => fixtures.to_vec(),
-        Corpus::Full => fixtures.iter().chain(&large).copied().collect(),
-    };
 
-    for name in fixture_names {
+    for name in fixtures {
         programs.push(Program {
             name: name.to_owned(),
             path: root.join("build/test-programs").join(name),
         });
     }
 
-    if kind == Corpus::Full {
-        // The Go command the pinned toolchain ships: 23 MB with compressed
-        // debug sections.
-        let go = Command::new("go")
-            .args(["env", "GOROOT"])
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .map(|output| {
-                PathBuf::from(String::from_utf8_lossy(&output.stdout).trim()).join("bin/go")
-            });
+    // The Go command the pinned toolchain ships: 23 MB with compressed
+    // debug sections.
+    let go = Command::new("go")
+        .args(["env", "GOROOT"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| PathBuf::from(String::from_utf8_lossy(&output.stdout).trim()).join("bin/go"));
 
-        if let Some(go) = go {
-            programs.push(Program {
-                name: "go-command".to_owned(),
-                path: go,
-            });
-        }
-
+    if let Some(go) = go {
         programs.push(Program {
-            name: "microscope-large".to_owned(),
-            path: root.join("target/bench/large/microscope"),
+            name: "go-command".to_owned(),
+            path: go,
         });
     }
+
+    programs.push(Program {
+        name: "microscope-large".to_owned(),
+        path: root.join("target/bench/large/microscope"),
+    });
 
     Ok(programs)
 }
@@ -870,11 +851,11 @@ fn median(values: &mut [f64]) -> f64 {
     values[values.len() / 2]
 }
 
-fn load_once(program: &Path, jobs: usize) -> Result<Measured> {
+fn load_once(program: &Path, jobs: usize, instructions: bool) -> Result<Measured> {
     let output = Command::new(std::env::current_exe()?)
         .arg(format!("--jobs={jobs}"))
         .arg("load")
-        .arg("--instructions")
+        .args(instructions.then_some("--instructions"))
         .arg(program)
         .output()?;
 
@@ -922,9 +903,8 @@ fn callgrind(program: &Path) -> Result<u64> {
         .context("callgrind wrote no instruction total")
 }
 
-#[expect(clippy::too_many_lines, reason = "one benchmark run, start to end")]
 fn run_bench(args: &BenchArgs, sweep: &[usize]) -> Result<bool> {
-    let mut programs = corpus(args.corpus)?;
+    let mut programs = corpus()?;
 
     if !args.only.is_empty() {
         programs.retain(|program| args.only.iter().any(|only| program.name.contains(only)));
@@ -949,7 +929,7 @@ fn run_bench(args: &BenchArgs, sweep: &[usize]) -> Result<bool> {
         let mut measured = Vec::new();
 
         for _ in 0..args.repeat.max(1) {
-            measured.push(load_once(&program.path, jobs)?);
+            measured.push(load_once(&program.path, jobs, true)?);
             eprint!(".");
         }
 
@@ -1025,58 +1005,12 @@ fn run_bench(args: &BenchArgs, sweep: &[usize]) -> Result<bool> {
         std::fs::write(out, serde_json::to_string_pretty(&report)?)?;
     }
 
-    let mut passed = true;
-
     if let Some(base) = &args.compare {
         let base: BenchReport = serde_json::from_str(&std::fs::read_to_string(base)?)?;
         print!("\n{}", compare_text(&base, &report));
     }
 
-    // A baseline being recorded again is not checked: its counts are the
-    // ones this run replaces.
-    if let Some(path) = args
-        .check
-        .as_ref()
-        .filter(|path| args.record.as_ref() != Some(*path))
-    {
-        let baseline: BTreeMap<String, Counts> =
-            serde_json::from_str(&std::fs::read_to_string(path)?)?;
-        let (text, ok) = check_counts(&baseline, &report, args.only.is_empty());
-        print!("\n{text}");
-        passed &= ok;
-    }
-
-    if let Some(path) = &args.record {
-        // A run of some programs keeps the others' counts; a run of all
-        // replaces the baseline, dropping programs no longer measured.
-        let mut counts: BTreeMap<String, Counts> = if args.only.is_empty() {
-            BTreeMap::new()
-        } else {
-            serde_json::from_str(&std::fs::read_to_string(path)?)?
-        };
-
-        let measured = report.programs.iter().filter(|program| program.jobs == 1);
-        let mut recorded = 0;
-
-        for program in measured {
-            counts.insert(
-                program.name.clone(),
-                Counts {
-                    digest: program.digest.clone(),
-                    allocations: program.allocations,
-                    callgrind_instructions: program.callgrind_instructions,
-                },
-            );
-            recorded += 1;
-        }
-
-        let mut text = serde_json::to_string_pretty(&counts)?;
-        text.push('\n');
-        std::fs::write(path, text)?;
-        println!("\nrecorded {recorded} programs in {}", path.display());
-    }
-
-    Ok(passed)
+    Ok(true)
 }
 
 #[expect(clippy::cast_precision_loss, reason = "reported approximately")]
@@ -1261,75 +1195,4 @@ fn compare_text(base: &BenchReport, new: &BenchReport) -> String {
     }
 
     text
-}
-
-/// Whether every deterministic count is at most its baseline's, for each
-/// program whose input is the one the baseline measured.
-fn check_counts(
-    baseline: &BTreeMap<String, Counts>,
-    report: &BenchReport,
-    whole_corpus: bool,
-) -> (String, bool) {
-    let mut text = String::new();
-    let mut ok = true;
-    let mut seen = BTreeSet::new();
-
-    for program in report.programs.iter().filter(|program| program.jobs == 1) {
-        let Some(counts) = baseline.get(&program.name) else {
-            let _ = writeln!(text, "{}: not in the baseline", program.name);
-            continue;
-        };
-
-        seen.insert(program.name.as_str());
-
-        if counts.digest != program.digest {
-            let _ = writeln!(
-                text,
-                "{}: rebuilt since the baseline, which must be recorded again",
-                program.name
-            );
-            ok = false;
-            continue;
-        }
-
-        for (measure, limit, now) in [
-            ("allocations", counts.allocations, program.allocations),
-            (
-                "callgrind instructions",
-                counts.callgrind_instructions,
-                program.callgrind_instructions,
-            ),
-        ] {
-            match (limit, now) {
-                (Some(limit), Some(now)) if now > limit => {
-                    let _ = writeln!(
-                        text,
-                        "{}: {measure} rose from {limit} to {now}",
-                        program.name
-                    );
-                    ok = false;
-                }
-                (Some(limit), Some(now)) if now < limit => {
-                    let _ = writeln!(
-                        text,
-                        "{}: {measure} fell from {limit} to {now}; record the baseline again",
-                        program.name
-                    );
-                }
-                _ => {}
-            }
-        }
-    }
-
-    for name in baseline.keys().filter(|_| whole_corpus) {
-        if !seen.contains(name.as_str()) {
-            let _ = writeln!(text, "{name}: in the baseline but not measured");
-        }
-    }
-
-    if ok {
-        text.push_str("deterministic counts are within the baseline\n");
-    }
-
-    (text, ok)
 }

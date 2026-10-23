@@ -18,6 +18,54 @@ const BASIC: &str = "build/test-programs/basic";
 const SEGV_CORE: &str = "build/test-programs/crash-gcc-o0-segv.core";
 const FRAMES_CORE: &str = "build/test-programs/frames-gcc-o0.core";
 
+#[cfg(feature = "tools")]
+#[test]
+fn tools_load_reports_failure_in_both_json_and_exit_status() {
+    let scratch = support::ScratchDir::new("tools-load-failure");
+    let input = scratch.path().join("not-an-elf");
+    fs::write(&input, b"not an ELF file").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_microscope-tools"))
+        .args(["--jobs=1", "load"])
+        .arg(input)
+        .output()
+        .unwrap();
+    let measured: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(measured["outcome"]["Err"].as_str().is_some());
+    assert!(!output.status.success(), "{output:?}");
+}
+
+#[cfg(feature = "tools")]
+#[test]
+fn bench_smoke_checks_the_nix_corpus_without_host_worker_or_cache_settings() {
+    let scratch = support::ScratchDir::new("bench-smoke");
+    let report = scratch.path().join("measurements.json");
+    let corpus = std::env::var_os("MICROSCOPE_BENCH_CORPUS").expect("Nix benchmark corpus");
+    let output = Command::new(env!("CARGO_BIN_EXE_microscope-tools"))
+        .env("MICROSCOPE_JOBS", "8")
+        .env("MICROSCOPE_CACHE_DIR", scratch.path().join("cache"))
+        .arg("bench-smoke")
+        .arg("--corpus")
+        .arg(corpus)
+        .arg("--budgets")
+        .arg(fixture("bench/smoke.json"))
+        .arg("--out")
+        .arg(&report)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let measured: serde_json::Value = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
+    let workloads = measured["workloads"].as_object().unwrap();
+    assert_eq!(
+        workloads.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["cpp", "go", "rust", "zig"]
+    );
+    for usage in workloads.values() {
+        assert!(usage["allocations"].as_u64().is_some_and(|n| n > 0));
+        assert!(usage["allocated_bytes"].as_u64().is_some_and(|n| n > 0));
+    }
+    assert!(!scratch.path().join("cache").exists());
+}
+
 /// A profile converts to pprof, which Go's own tool reads, and to folded
 /// stacks, each holding every stack's weight; a name with no format is
 /// refused.

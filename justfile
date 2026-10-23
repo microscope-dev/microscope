@@ -381,12 +381,11 @@ syscall-overhead LAUNCHER="/run/wrappers/bin/microscope-bpf" *ARGS: build-test-p
     cargo build --quiet --release --features tools --bin microscope-tools
     ./scripts/contained.sh ./target/release/microscope-tools syscall-overhead --launcher "$1" "${@:2}"
 
-# The seconds-long benchmark `just all` runs: it fails when loading the
-# small programs allocates more than bench/baseline.json records. Record a
-# deliberate change with `just bench-smoke --record bench/baseline.json`.
-bench-smoke *ARGS: build-test-programs
+# Checks cold, single-worker loads of the pinned Nix corpus against reviewed
+# allocation-count and allocated-byte ceilings. No test-fixture build needed.
+bench-smoke *ARGS:
     cargo build --quiet --profile test --features tools --bin microscope-tools
-    ./scripts/contained.sh ./target/debug/microscope-tools bench --corpus smoke --repeat 1 --check bench/baseline.json "$@"
+    ./scripts/contained.sh ./target/debug/microscope-tools bench-smoke --corpus "$MICROSCOPE_BENCH_CORPUS" --budgets bench/smoke.json "$@"
 
 # Builds the full benchmark's large program: microscope's own development build
 # at a pinned commit, in a worktree, with its paths remapped so that its

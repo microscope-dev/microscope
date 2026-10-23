@@ -25,9 +25,9 @@ readonly checkout="checkout=${PWD}"
 # The Nix shell's compile flags carry a -frandom-seed named after the
 # shell's own store path, and gcc records it in every program's
 # DW_AT_producer. Any change to the shell, such as adding a tool to it,
-# then changed the bytes of every C and C++ output that was rebuilt, and
-# bench/baseline.json's digests with them, though no signature names the
-# shell. Builds drop it; the signature line rebuilds those built with it.
+# then changed the bytes of every C and C++ output that was rebuilt, though
+# no signature names the shell. Builds drop it; the signature line rebuilds
+# those built with it.
 shell_seed=$(grep -o -- '-frandom-seed=[^ ]*' <<<"${NIX_CFLAGS_COMPILE-}" || true)
 if [[ -n "$shell_seed" ]]; then
     export NIX_CFLAGS_COMPILE="${NIX_CFLAGS_COMPILE//"$shell_seed"/}"

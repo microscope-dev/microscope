@@ -966,8 +966,51 @@
         ];
       };
 
+      benchCorpus = pkgs.runCommand "microscope-bench-corpus" {
+        src = ./bench/corpus;
+        nativeBuildInputs = [ pkgs.gcc rust goStable pkgs.zig ];
+        hardeningDisable = [ "all" ];
+        dontStrip = true;
+        dontFixup = true;
+      } ''
+        build=$(mktemp -d)
+        # Zig has no debug-path remapping; compile from the immutable source.
+        cd "$src"
+        export HOME="$build/home" XDG_CACHE_HOME="$build/cache"
+        mkdir -p "$HOME" "$XDG_CACHE_HOME"
+        export SOURCE_DATE_EPOCH=1
+        # The stdenv seed and RPATH name $out; neither belongs in corpus bytes.
+        export NIX_CFLAGS_COMPILE="-frandom-seed=microscope-bench-corpus"
+        export NIX_LDFLAGS=""
+
+        g++ main.cpp -o "$build/cpp" -std=c++20 -O0 -g -gdwarf-5 \
+          -march=x86-64 -mtune=generic \
+          -ffile-prefix-map="$PWD"=/microscope/bench/corpus
+        rustc main.rs -o "$build/rust" --edition=2024 --crate-name bench_corpus \
+          --target=x86_64-unknown-linux-gnu -C target-cpu=x86-64 \
+          -C opt-level=0 -C debuginfo=2 -C codegen-units=1 \
+          --remap-path-prefix="$PWD"=/microscope/bench/corpus
+
+        export GOENV=off GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off
+        export GOOS=linux GOARCH=amd64 GOAMD64=v1 CGO_ENABLED=0 GOMAXPROCS=1
+        export GOPATH="$build/go-path" GOCACHE="$build/go-cache" GOMODCACHE="$build/go-mod-cache"
+        go build -trimpath -buildvcs=false -gcflags='all=-N -l' \
+          -ldflags=-buildid= -o "$build/go" main.go
+
+        # FD paths keep compiler-rt's DWARF stable without sharing its caches.
+        mkdir "$build/zig-cache" "$build/zig-global-cache"
+        exec 3<"$build/zig-cache" 4<"$build/zig-global-cache"
+        zig build-exe main.zig -femit-bin="$build/zig" -target x86_64-linux-gnu \
+          -mcpu=baseline -O Debug -fno-llvm -fno-strip -j1 \
+          --cache-dir /proc/self/fd/3 --global-cache-dir /proc/self/fd/4
+
+        mkdir "$out"
+        install -m755 "$build/"{cpp,rust,go,zig} "$out/"
+      '';
+
       default = pkgs.mkShell {
         NIX_HARDENING_ENABLE = "";
+        MICROSCOPE_BENCH_CORPUS = "${benchCorpus}";
         # glibc's static libraries, which only statically linked fixtures link
         # against: on the default search path they would shadow the shared C
         # library for every program.
@@ -1063,6 +1106,8 @@
         ];
       };
     in {
+      packages.${system}.bench-corpus = benchCorpus;
+
       devShells.${system} = {
         inherit default;
         # The default shell with the profilers people read at a screen, kept

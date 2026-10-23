@@ -9,7 +9,9 @@ timing prints.
 | --- | --- |
 | `src/timings/mod.rs` | `span!`, `count!`, measurement storage, and report entry points |
 | `src/timings/alloc.rs`, `src/timings/report.rs` | Allocation counting and timing report rendering |
-| `bench/baseline.json` | Expected load-allocation counts for smoke checks |
+| `bench/corpus/`, `flake.nix` | Sources and hermetic build of the smoke corpus |
+| `bench/smoke.json` | Reviewed input hashes and smoke resource ceilings |
+| `src/bin/microscope-tools/smoke.rs` | Smoke measurement contract and gate |
 | `bench/overhead.json` | Flight-recorder overhead baseline |
 | `bench/reports/` | Checked-in comparison reports used during performance work |
 | `src/bin/microscope-tools.rs`, `src/tools/` | Benchmark and overhead helper commands |
@@ -33,9 +35,50 @@ work that caused it.
 
 ## Allocation and load benchmarks
 
-`just bench-smoke` compares load allocation counts with
-`bench/baseline.json`. Record a new baseline only when the allocation change is
-intentional. Use `just bench --compare BASE` to compare a larger run.
+`just bench-smoke` checks major loader regressions. Nix builds four dedicated
+C++, Rust, Go, and Zig programs from `bench/corpus/`; it does not use ordinary
+test fixtures or the simulator's compiler matrix. The pinned compilers target
+baseline x86-64, retain debug information, and use fixed source paths and
+private caches. The shell exposes the result as `MICROSCOPE_BENCH_CORPUS`.
+
+Each program loads in a fresh process, with one worker and the image cache
+off. The gate ignores host worker and cache environment settings and rejects
+explicit incompatible flags. It checks both allocation count and total
+allocated bytes against absolute ceilings in `bench/smoke.json`. Wall time,
+RSS, hardware counters, and multiworker performance are not portable gates;
+use `just bench --compare BASE` for those investigations.
+
+Missing or extra workloads, changed SHA-256 hashes, incompatible measurement
+configuration, unavailable allocation counters, and failed loads all fail.
+Input/configuration errors are separate from resource regressions. The gate
+never regenerates its budgets or skips a mismatching input.
+
+Save measurements and machine/build provenance without changing budgets:
+
+```sh
+just bench-smoke --out target/bench-smoke.json
+```
+
+The initial ceilings allow 10% over these measured loads, rounded up to the
+next 1,000 allocations and 100,000 bytes. This headroom tolerates small
+implementation changes while catching duplicated loading and substantial
+growth; it is not an exact-count oracle.
+
+| Workload | Measured allocations | Measured allocated bytes |
+| --- | ---: | ---: |
+| C++ | 51,090 | 11,864,703 |
+| Go | 163,908 | 58,694,378 |
+| Rust | 645,944 | 139,520,294 |
+| Zig | 307,175 | 92,184,222 |
+
+For an intentional loader change, inspect the phases, explain the resource
+increase, and edit only the affected ceilings after review. Do not widen
+budgets merely to make a machine pass. For an intentional corpus or pinned
+toolchain change, rebuild `.#bench-corpus`, verify reproducibility with a clean
+rebuild (`nix build .#bench-corpus --rebuild`), then review hashes and resource
+ceilings together. Ordinary fixture edits and checkout moves need no updates.
+The former `bench --corpus/--check/--record` gate and its baseline are removed;
+historical broad benchmark reports remain readable by `bench --compare`.
 
 ## Recorder overhead
 
@@ -94,18 +137,17 @@ thread boundary.
 ## Allocation accounting
 
 The development allocator counts allocations, frees, live bytes, and peak
-bytes. `bench-smoke` compares stable load workloads against
-`bench/baseline.json`.
+bytes. `bench-smoke` enforces the count and byte ceilings described above.
 
 When the count moves:
 
 1. identify the changed phase in the timing report;
 2. use an allocation profiler if the source is unclear;
 3. decide whether the added ownership or index is necessary;
-4. record a baseline only after reviewing the exact reason.
+4. change an affected ceiling only after reviewing the exact reason.
 
-Do not hide an allocation regression by widening tolerance or combining
-several unrelated baseline changes.
+Do not hide an allocation regression by widening headroom or combining
+several unrelated budget changes.
 
 Large immutable data should normally live in the sealed image or a shared
 `Arc`, not be rebuilt for each module binding, frame, or client request.
