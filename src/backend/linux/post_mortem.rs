@@ -157,6 +157,14 @@ impl InspectionOps for CoreTarget {
             })
     }
 
+    fn read_block(&self, _pid: Pid, address: u64, size: usize) -> Option<Vec<u8>> {
+        let mut bytes = vec![0; size];
+        self.memory
+            .read(address, &mut bytes)
+            .is_ok()
+            .then_some(bytes)
+    }
+
     fn read_memory_word(
         &self,
         _pid: Pid,
@@ -706,6 +714,7 @@ fn resolve_modules(core: &CoreDump, options: &CoreDumpOptions) -> Result<Resolve
             id: ModuleId::new(number),
             image: image_id,
             load_bias: file.load_bias,
+            window: None,
         };
 
         modules.push(core_module(image, build_id, loaded_state(loaded, &file)));
@@ -793,6 +802,7 @@ fn resolve_vdso(
         id: ModuleId::new(number),
         image: image_id,
         load_bias: image.load_bias,
+        window: None,
     };
 
     let state = CoreModuleState::Loaded {
@@ -993,6 +1003,10 @@ impl Controller<CoreTarget> {
             )),
             ..Inferior::new(InferiorOrigin::PostMortem, tgid, main, trace_threads, None)
         });
+
+        // A dump holds no trap of the debugger's to take out of a copy.
+        let anonymous = self.ptrace.memory.core().anonymous_code();
+        self.observe_code_copies_with(selected, &anonymous, |_, _| Some(()));
 
         let presentation = self.presentation_for_thread(selected, Some(reason))?;
         self.inferior

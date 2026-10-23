@@ -16,6 +16,7 @@ layouts, and ABI rules stay behind this boundary.
 | `src/debug_info/x86_64/frames.rs` | Frames of undescribed code, proved from its instructions |
 | `src/debug_info/perf_map.rs` | Perf maps: names and frames of code a compiler generated |
 | `src/debug_info/gdb_jit.rs`, `src/backend/linux/jit_objects.rs` | Objects a JIT compiler registers through the GDB JIT interface |
+| `src/backend/linux/code_copies.rs` | Copies of an image's code a program made in anonymous memory |
 | `src/debug_info/cpython.rs`, `src/debug_info/cpython/` | CPython's runtime layout: its offsets table, generated layouts, and their checks |
 | `src/image/` | Validated immutable table image and checked views |
 | `src/model/image.rs`, `src/model/image/` | Public image model and location types |
@@ -148,6 +149,25 @@ replaced code is a new module. Such an image has no program headers, so its
 address range is its allocated sections'. A list read while the compiler
 changes it is read as far as it is sound; what could not be read is
 recorded, and a frame in unread code stays unnamed.
+
+A program may also copy part of a loaded image's code into anonymous memory
+and run it there, as V8 copies its embedded builtins next to each code
+range. `src/backend/linux/code_copies.rs` finds such copies at each module
+refresh, and in a core when it opens. A candidate mapping is executable and
+not writable, and no file backs it. Its first bytes must equal a function
+that begins a page of a loaded image. The proof is a full comparison of the
+mapping against the image's code, cached per mapping until the mapping
+changes. A proven copy becomes a second binding of the same image whose
+`LoadedModule::window` is the copied range of image addresses.
+`virtual_address` and `image_address` refuse addresses outside a window, so
+breakpoint resolution plants a location in a copy only for code the copy
+holds. The copy's symbols, roles, and unwind rules are the image's.
+
+A trap the debugger installed in the source before the program copied it is
+in the copy too. The comparison accepts a `0xCC` where the source has an
+installed site and records it. The trap comes out before the copy's own sites
+go in. A thread that hits such a trap first is classified as a carried trap,
+rewound, and resumed once the refresh has registered the copy.
 
 An ELF build ID identifies file content for lookup; it is not a runtime module
 ID. `ModuleId` identifies one public session binding. `ModuleImageId`

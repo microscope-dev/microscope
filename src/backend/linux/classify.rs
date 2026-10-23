@@ -53,7 +53,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         let trap = signal == Signal::SIGTRAP && !expected_trace && code == Some(libc::SI_KERNEL);
         let breakpoint = trap.then(|| self.normalize_breakpoint_pc(pid)).flatten();
         let removed = trap && breakpoint.is_none() && self.rewind_removed_trap(pid);
-        let carried = trap && breakpoint.is_none() && !removed && self.rewind_carried_trap(pid);
+        let carried = trap
+            && breakpoint.is_none()
+            && !removed
+            && (self.rewind_carried_trap(pid) || self.rewind_copied_trap(pid));
         let program_trap = (trap && breakpoint.is_none() && !removed && !carried)
             .then(|| self.program_trap(pid))
             .flatten();

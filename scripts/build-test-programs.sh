@@ -1670,6 +1670,8 @@ build_shared_fixture gcc "$c_fixtures_dir/moved-code/library.c" "$output_dir/lib
     -O0 -g3 -gdwarf-5
 build_fixture gcc "$c_fixtures_dir/moved-code/main.c" "$output_dir/moved-code" \
     -O0 -g3 -gdwarf-5 -fPIE -pie "-L$output_dir" -lmoved-code '-Wl,-rpath,$ORIGIN'
+build_fixture gcc "$c_fixtures_dir/code-copy.c" "$output_dir/code-copy" \
+    -O2 -g3 -gdwarf-5 -fPIE -pie
 build_shared_fixture gcc "$c_fixtures_dir/module-frames/library.c" "$output_dir/libmodule-frames.so" \
     -O0 -g3 -gdwarf-5 -fno-omit-frame-pointer
 build_fixture gcc "$c_fixtures_dir/module-frames/main.c" "$output_dir/module-frames-gcc-o0" \
@@ -2645,6 +2647,9 @@ for entry in 26 24 22; do
             env -i "$node" "${flags[@]}" "$fixtures_dir/node/${fixture}.js" --abort
     done
 done
+# A stack that runs through code the program copied into anonymous memory.
+generate_core "$output_dir/code-copy.core" 6 "$default_core_filter" \
+    "$output_dir/code-copy" "$output_dir/code-copy" abort
 generate_core "$output_dir/crash-gcc-o0-headerless.core" 11 "$headerless_core_filter" \
     "$output_dir/crash-gcc-o0 $output_dir/libcrash.so" "$output_dir/crash-gcc-o0" segv
 generate_core "$output_dir/crash-gcc-o0-headers-only.core" 11 "$headers_only_core_filter" \

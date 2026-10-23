@@ -159,6 +159,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let (vdso, vdso_image) = self.observe_vdso(pid, mappings.vdso.as_ref()).unzip();
         observed.extend(vdso);
         let mut vdso_image = vdso_image.flatten();
+        let anonymous_code = mappings.anonymous_code;
         let (jit, jit_objects) = self.observe_jit_objects(pid);
         observed.extend(jit);
         observed.sort();
@@ -169,7 +170,9 @@ impl<P: LinuxTraceOps> Controller<P> {
             .modules
             .iter()
             .filter(|(id, module)| {
+                // A copy's module goes with its mapping, below.
                 **id != self.main.id
+                    && module.loaded.window.is_none()
                     && !observed_modules
                         .contains(&(module.image.path().to_owned(), module.loaded.load_bias))
             })
@@ -208,6 +211,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 id: module_id,
                 image: image_id,
                 load_bias,
+                window: None,
             };
 
             self.modules.insert(
@@ -236,6 +240,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .ok_or_else(|| Error::internal("the main module is registered"))?;
         main.loaded = main_loaded;
         self.locate_tls_modules(&link_maps);
+        self.observe_code_copies(pid, &anonymous_code);
         Ok(lost_locations)
     }
 }
@@ -507,6 +512,10 @@ pub(super) struct ProcessMappings {
 
     /// The vDSO, which no file backs.
     pub(super) vdso: Option<Range<u64>>,
+
+    /// Anonymous memory the process may execute but not write, which may
+    /// hold a copy of a module's code.
+    pub(super) anonymous_code: Vec<Range<u64>>,
 }
 
 /// The mappings holding loaded modules in a process whose memory map is
@@ -520,7 +529,30 @@ pub(super) fn process_mappings_in(maps: &str) -> Result<ProcessMappings> {
         files,
         headers,
         vdso: vdso_mapping(maps),
+        anonymous_code: anonymous_code(maps),
     })
+}
+
+/// The mappings of `maps` that no file backs and that may be executed but
+/// not written: those with no name, or a name an `anon:` prefix gives.
+fn anonymous_code(maps: &str) -> Vec<Range<u64>> {
+    maps.lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(6, char::is_whitespace);
+            let range = fields.next()?;
+            let permissions = fields.next()?;
+            let inode = fields.nth(2)?;
+            let name = fields.next().map_or("", str::trim_start);
+            let anonymous = inode == "0" && (name.is_empty() || name.starts_with("[anon:"));
+            let code = permissions.as_bytes().get(1) == Some(&b'-')
+                && permissions.as_bytes().get(2) == Some(&b'x');
+            if !(anonymous && code) {
+                return None;
+            }
+            let (start, end) = range.split_once('-')?;
+            Some(u64::from_str_radix(start, 16).ok()?..u64::from_str_radix(end, 16).ok()?)
+        })
+        .collect()
 }
 
 /// Resolves the file behind a module mapping and the load bias it was mapped

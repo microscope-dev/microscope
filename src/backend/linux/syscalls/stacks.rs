@@ -202,6 +202,7 @@ impl Stacks {
             id: ModuleId::new(self.next_module),
             image: id,
             load_bias: bias,
+            window: None,
         };
 
         self.next_module += 1;

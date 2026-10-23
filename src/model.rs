@@ -5046,6 +5046,12 @@ pub struct LoadedModule {
 
     /// The load bias applied to image addresses.
     pub load_bias: LoadBias,
+
+    /// The image addresses the mapping holds, when it holds only some of
+    /// the image's code: a copy of part of it the process made, which is
+    /// byte for byte the image's, as V8's copy of its builtins is. No
+    /// address outside the window belongs to the module.
+    pub window: Option<AddressRange<ImageAddress>>,
 }
 
 /// Public identity and path for one runtime module mapping.
@@ -5078,11 +5084,15 @@ impl LoadedModule {
             id: ModuleId::new(0),
             image,
             load_bias,
+            window: None,
         }
     }
 
     /// Converts an image address into a process virtual address.
     pub fn virtual_address(self, address: ImageAddress) -> Result<VirtualAddress> {
+        if !self.windows(address) {
+            return Err(Error::AddressOutsideModule);
+        }
         self.load_bias.load(address).ok_or(Error::AddressOverflow)
     }
 
@@ -5090,6 +5100,12 @@ impl LoadedModule {
     pub fn image_address(self, address: VirtualAddress) -> Result<ImageAddress> {
         self.load_bias
             .unload(address)
+            .filter(|address| self.windows(*address))
             .ok_or(Error::AddressOutsideModule)
+    }
+
+    /// Whether the mapping holds the image's `address`.
+    fn windows(self, address: ImageAddress) -> bool {
+        self.window.is_none_or(|window| window.contains(address))
     }
 }

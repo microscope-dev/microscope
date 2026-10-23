@@ -1253,6 +1253,7 @@ impl LinuxTraceOps for FakeTrace {
                 .collect(),
             headers: Vec::new(),
             vdso: None,
+            anonymous_code: Vec::new(),
         })
     }
 

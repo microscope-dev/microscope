@@ -72,6 +72,7 @@ mod breakpoints;
 mod callers;
 mod catchpoints;
 mod classify;
+mod code_copies;
 mod core_dump;
 mod core_files;
 mod debug_registers;
@@ -1352,6 +1353,7 @@ impl MainProgram {
             id: self.id,
             image: self.image.id(),
             load_bias,
+            window: None,
         }
     }
 }
@@ -1491,6 +1493,9 @@ struct Controller<P: InspectionOps> {
     /// modules are not re-read from disk at every stop.
     mapped_modules: BTreeMap<ModuleMapping, (PathBuf, crate::LoadBias)>,
     next_module_id: u32,
+
+    /// What each mapping of anonymous code, by its range, was proven to be.
+    code_copies: std::collections::BTreeMap<(u64, u64), code_copies::Copy>,
     next_image_id: u32,
     messages: RefCell<mpsc::Receiver<ControllerMessage>>,
 
@@ -1844,6 +1849,7 @@ impl<P: InspectionOps> Controller<P> {
             modules: BTreeMap::from([(main.loaded.id, main)]),
             mapped_modules: BTreeMap::new(),
             next_module_id: 1,
+            code_copies: std::collections::BTreeMap::new(),
             next_image_id: 1,
             messages: RefCell::new(channels.receiver),
             pending: RefCell::new(VecDeque::new()),

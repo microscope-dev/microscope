@@ -732,6 +732,7 @@ impl Processor {
             id: ModuleId::new(self.next_module),
             image: self.images[image].id,
             load_bias: bias,
+            window: None,
         };
 
         self.next_module += 1;
@@ -919,6 +920,7 @@ impl Processor {
             id: ModuleId::new(self.next_module),
             image: id,
             load_bias: LoadBias::new(0),
+            window: None,
         };
         self.next_module += 1;
 

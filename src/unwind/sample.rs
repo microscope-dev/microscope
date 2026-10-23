@@ -588,6 +588,7 @@ mod tests {
                     id: ModuleId::new(1),
                     image: ModuleImageId::new(1),
                     load_bias: crate::LoadBias::default(),
+                    window: None,
                 },
                 image: &self.info.image,
                 unwind: self.info.unwind.as_ref(),

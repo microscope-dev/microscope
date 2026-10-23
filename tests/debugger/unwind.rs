@@ -273,6 +273,170 @@ async fn backtraces_unwind_through_shared_libraries_and_libc() {
     }
 }
 
+/// Code the program copied into anonymous memory is the program's code at
+/// another address, as V8's copy of its builtins is: its frame is named and
+/// unwound by the program's own symbols and call-frame information, and the
+/// module that binds the copy holds only what was copied.
+#[tokio::test]
+async fn backtraces_unwind_through_a_copy_of_the_programs_code() {
+    let mut scenario = Scenario::launch("code-copy");
+    scenario.add_breakpoint("copy_callback").await;
+    assert!(matches!(
+        scenario.run_to_stop().await,
+        StopReason::Breakpoint { .. }
+    ));
+
+    let modules = scenario
+        .operation("modules", scenario.handle().loaded_modules())
+        .await;
+    let trace = scenario
+        .operation("backtrace", scenario.handle().backtrace())
+        .await;
+    let frames = frame_modules(&trace, &modules);
+    let names: Vec<_> = frames.iter().map(|(_, name)| name.as_deref()).collect();
+    assert_eq!(
+        names[..3],
+        [Some("copy_callback"), Some("copied_twice"), Some("main")],
+        "{frames:#?}"
+    );
+    assert_eq!(
+        trace.termination,
+        UnwindTermination::Complete,
+        "{frames:#?}"
+    );
+
+    let module_of = |level: usize| {
+        let id = trace.frames[level].module.expect("the frame has a module");
+        modules
+            .modules
+            .iter()
+            .find(|record| record.module.id == id)
+            .expect("the module is loaded")
+    };
+    let program = module_of(0);
+    let copy = module_of(1);
+    assert_ne!(copy.module.id, program.module.id);
+    assert_eq!(copy.path, program.path);
+    assert_eq!(copy.module.image, program.module.image);
+    assert_eq!(program.module.window, None);
+
+    let window = copy.module.window.expect("a copy binds part of the image");
+    let instruction = trace.frames[1].instruction.expect("the frame has a pc");
+    let image = copy
+        .module
+        .image_address(instruction)
+        .expect("the copy holds its frame");
+    assert!(window.contains(image), "{window:?} {image:?}");
+    assert!(
+        copy.module.virtual_address(window.end).is_err(),
+        "the copy ends where the copied bytes do"
+    );
+    assert_ne!(copy.module.load_bias, program.module.load_bias);
+
+    scenario.remove_all_breakpoints().await;
+    assert_eq!(
+        scenario.resume_to_stop().await,
+        StopReason::Exited(ExitStatus::Code(0))
+    );
+    scenario.shutdown().await;
+}
+
+/// A core's stack runs through the copy as the live process's did: the
+/// dump saved the copy's memory, which proves it a copy as the process's
+/// memory does.
+#[tokio::test]
+async fn a_cores_backtrace_unwinds_through_a_copy_of_the_programs_code() {
+    let scenario = Scenario::open_core(
+        "code-copy.core",
+        &microscope::CoreDumpOptions::new(Scenario::fixture("code-copy.core")),
+    );
+    let modules = scenario
+        .operation("modules", scenario.handle().loaded_modules())
+        .await;
+    let trace = scenario
+        .operation("backtrace", scenario.handle().backtrace())
+        .await;
+    let frames = frame_modules(&trace, &modules);
+    let callback = position_of(&frames, "code-copy", "copy_callback");
+    assert_eq!(
+        frames[callback + 1..callback + 3],
+        [
+            ("code-copy".to_owned(), Some("copied_twice".to_owned())),
+            ("code-copy".to_owned(), Some("main".to_owned())),
+        ],
+        "{frames:#?}"
+    );
+    let copy = trace.frames[callback + 1].module.expect("a module");
+    let record = modules
+        .modules
+        .iter()
+        .find(|record| record.module.id == copy)
+        .expect("the copy is loaded");
+    assert!(record.module.window.is_some(), "{record:?}");
+    assert_eq!(
+        trace.termination,
+        UnwindTermination::Complete,
+        "{frames:#?}"
+    );
+}
+
+/// A breakpoint set before the program copies its code is copied with the
+/// code, as V8 copies a builtin a pending breakpoint names. The copy's trap
+/// is the debugger's, not the program's: the program stops at the
+/// breakpoint in the copy, which reads as the code it copied, and runs on
+/// to exit as it would undebugged.
+#[tokio::test]
+async fn a_breakpoint_the_program_copies_with_its_code_stops_in_the_copy() {
+    let mut scenario = Scenario::launch("code-copy");
+    let copied = scenario.add_breakpoint("copied_twice").await;
+    let reason = scenario.run_to_stop().await;
+    let StopReason::Breakpoint { hits, .. } = &reason else {
+        panic!("stopped for {reason:?}");
+    };
+    assert_eq!(hits[0].breakpoint, copied.id);
+
+    let modules = scenario
+        .operation("modules", scenario.handle().loaded_modules())
+        .await;
+    let trace = scenario
+        .operation("backtrace", scenario.handle().backtrace())
+        .await;
+    let frames = frame_modules(&trace, &modules);
+    let names: Vec<_> = frames.iter().map(|(_, name)| name.as_deref()).collect();
+    assert_eq!(
+        names[..2],
+        [Some("copied_twice"), Some("main")],
+        "{frames:#?}"
+    );
+    let module = trace.frames[0].module.expect("the frame has a module");
+    let copy = modules
+        .modules
+        .iter()
+        .find(|record| record.module.id == module)
+        .expect("the module is loaded");
+    assert!(copy.module.window.is_some(), "{copy:?}");
+
+    // Both the original and the copy hold the breakpoint, and neither
+    // shows its trap.
+    let site = support::breakpoint_address(&reason).get();
+    let resolved = super::libraries::breakpoint(&mut scenario, copied.id).await;
+    assert_eq!(resolved.locations.len(), 2, "{resolved:#?}");
+    let read = scenario
+        .operation(
+            "read memory",
+            scenario.handle().read_memory(VirtualAddress::new(site), 1),
+        )
+        .await;
+    assert_eq!(read.bytes[0], 0x55, "push %rbp begins the copied function");
+
+    scenario.remove_all_breakpoints().await;
+    assert_eq!(
+        scenario.resume_to_stop().await,
+        StopReason::Exited(ExitStatus::Code(0))
+    );
+    scenario.shutdown().await;
+}
+
 /// Resumes past the preemption signals the Go runtime sends itself.
 async fn go_stop(scenario: &mut Scenario, mut reason: StopReason) -> StopReason {
     while matches!(&reason, StopReason::Exception(exception) if exception.code == 23) {

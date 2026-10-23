@@ -160,6 +160,10 @@ struct CoreSegment {
     file_offset: u64,
     recorded: u64,
     saved: u64,
+
+    /// The mapping's `p_flags`: whether it could be read, written, and
+    /// executed.
+    flags: u32,
 }
 
 /// A parsed core dump and its saved memory.
@@ -213,6 +217,23 @@ impl CoreDump {
         self.auxv
             .iter()
             .find_map(|&(entry, value)| (entry == key).then_some(value))
+    }
+
+    /// The saved mappings no file backed that the process could execute
+    /// but not write, which may hold a copy of a module's code.
+    pub(super) fn anonymous_code(&self) -> Vec<std::ops::Range<u64>> {
+        self.segments
+            .iter()
+            .filter(|segment| {
+                segment.flags & elf::PF_X != 0
+                    && segment.flags & elf::PF_W == 0
+                    && !self
+                        .files
+                        .iter()
+                        .any(|file| file.start < segment.end && segment.start < file.end)
+            })
+            .map(|segment| segment.start..segment.end)
+            .collect()
     }
 
     pub(super) fn thread(&self, tid: u32) -> Option<&CoreThread> {
@@ -344,6 +365,7 @@ fn parse<'data, R: ReadRef<'data>>(data: R, len: u64) -> Result<Metadata, CoreEr
                     file_offset,
                     recorded: file_size,
                     saved,
+                    flags: program_header.p_flags(endian),
                 });
             }
             elf::PT_NOTE => {

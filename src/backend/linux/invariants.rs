@@ -105,10 +105,27 @@ impl<P: InspectionOps> Controller<P> {
                 module.loaded.image,
                 self.next_image_id
             );
+            // A copy of a module's code binds its image a second time,
+            // through a window; the image's own mapping binds it whole once.
+            if let Some(window) = module.loaded.window {
+                debug_assert!(
+                    !window.is_empty(),
+                    "module {id:?} has an empty window {window:?}"
+                );
+                debug_assert!(
+                    self.modules
+                        .values()
+                        .any(|source| source.loaded.window.is_none()
+                            && source.loaded.image == module.loaded.image),
+                    "module {id:?} copies image {:?}, which no module binds whole",
+                    module.loaded.image
+                );
+                continue;
+            }
             let first = images.insert(module.loaded.image);
             debug_assert!(
                 first,
-                "image {:?} is bound to more than one loaded module",
+                "image {:?} is bound whole to more than one loaded module",
                 module.loaded.image
             );
         }

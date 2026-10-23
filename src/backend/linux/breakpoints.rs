@@ -359,28 +359,27 @@ impl<P: LinuxTraceOps> Controller<P> {
             .modules
             .values()
             .filter(|module| module.loaded.id != self.main.id)
-            .map(|module| {
-                (
-                    module.loaded.id,
-                    &*module.image,
-                    Some(module.loaded.load_bias),
-                )
-            });
-        for (module, image, bias) in std::iter::once(main).chain(libraries) {
+            .map(|module| (module.loaded.id, &*module.image, Some(module.loaded)));
+        for (module, image, loaded) in std::iter::once(main).chain(libraries) {
             let chosen = |resolver| self.chosen_implementation(module, resolver);
             match resolve_in_image(image, spec, &chosen) {
                 Ok(addresses) => {
                     known = true;
                     for (address, code_instances) in addresses {
-                        locations.push(ResolvedBreakpointLocation {
-                            location: match bias {
-                                None => BreakpointLocation::Image(address),
-                                Some(bias) => BreakpointLocation::Virtual(
-                                    bias.load(address).ok_or(Error::AddressOverflow)?,
-                                ),
+                        let location = match loaded {
+                            None => BreakpointLocation::Image(address),
+                            // A copy of part of an image holds only the
+                            // locations in what it copied.
+                            Some(loaded) => match loaded.virtual_address(address) {
+                                Ok(address) => BreakpointLocation::Virtual(address),
+                                Err(Error::AddressOutsideModule) => continue,
+                                Err(error) => return Err(error),
                             },
+                        };
+                        locations.push(ResolvedBreakpointLocation {
+                            location,
                             code_instances,
-                            library: bias.map(|_| module),
+                            library: loaded.map(|_| module),
                         });
                     }
                 }

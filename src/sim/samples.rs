@@ -115,6 +115,7 @@ impl Sampler {
                 id: ModuleId::new(1),
                 image: ModuleImageId::new(1),
                 load_bias: crate::LoadBias::new(variant.image.bias()),
+                window: None,
             },
             image: &info.image,
             unwind: info.unwind.as_ref(),
