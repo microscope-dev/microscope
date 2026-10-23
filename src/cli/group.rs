@@ -7,7 +7,7 @@ use anyhow::{Result, anyhow, bail};
 use microscope::{
     ExitStatus, GroupEvent, GroupHandle, MemberNumber, MemberState, SourcePathMap, StopReason,
 };
-use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::broadcast::{self, error::RecvError, error::TryRecvError};
 
 use super::commands::{RunLines, join_lines};
 use super::terminal::Role;
@@ -17,13 +17,19 @@ use super::{Cli, Selected, format};
 pub struct Group {
     pub handle: GroupHandle,
     source_paths: SourcePathMap,
+
+    /// The group's events, read by a run while it waits and by the prompt
+    /// between commands, so each prints once.
+    events: tokio::sync::Mutex<broadcast::Receiver<GroupEvent>>,
 }
 
 impl Group {
-    pub const fn new(handle: GroupHandle, source_paths: SourcePathMap) -> Self {
+    pub fn new(handle: GroupHandle, source_paths: SourcePathMap) -> Self {
+        let events = tokio::sync::Mutex::new(handle.subscribe());
         Self {
             handle,
             source_paths,
+            events,
         }
     }
 }
@@ -155,7 +161,10 @@ impl Cli {
             .group
             .as_ref()
             .ok_or_else(|| anyhow!("the session debugs one process"))?;
-        let mut events = group.handle.subscribe();
+        let mut events = group.events.lock().await;
+        let renderer = self.renderers.stdout;
+        let mut lines = RunLines::default();
+        self.earlier_notices(&mut events, &mut lines);
         let mut member_events = MemberEvents::of(&group.handle);
         let started = Instant::now();
         match start {
@@ -169,8 +178,6 @@ impl Cli {
             Start::Continue => group.handle.continue_all().await?,
         }
 
-        let renderer = self.renderers.stdout;
-        let mut lines = RunLines::default();
         let mut root_exit = None;
         let (member, reason) = loop {
             let received = tokio::select! {
@@ -231,6 +238,8 @@ impl Cli {
             }
         };
 
+        // The prompt reads what the group does from here on.
+        drop(events);
         let elapsed = started.elapsed();
         if let Some(line) = root_exit
             && !matches!(reason, StopReason::Exited(_))
@@ -243,6 +252,22 @@ impl Cli {
             .group_stop(&group.handle, member, reason, elapsed)
             .await?;
         Ok(join_lines(&lines, &stop))
+    }
+
+    /// What the group did since the prompt last read its events, which a
+    /// run reports first, as the prompt would have printed it.
+    fn earlier_notices(&self, events: &mut broadcast::Receiver<GroupEvent>, lines: &mut RunLines) {
+        loop {
+            match events.try_recv() {
+                Ok(event) => {
+                    if let Some(line) = self.group_notice(&event) {
+                        lines.push(line);
+                    }
+                }
+                Err(TryRecvError::Lagged(_)) => {}
+                Err(TryRecvError::Empty | TryRecvError::Closed) => break,
+            }
+        }
     }
 
     /// Selects the member that stopped, and reports its stop.
@@ -267,9 +292,20 @@ impl Cli {
         Ok(stop)
     }
 
-    /// The group's events, for a session of one.
-    pub(super) fn group_events(&self) -> Option<tokio::sync::broadcast::Receiver<GroupEvent>> {
-        self.group.as_ref().map(|group| group.handle.subscribe())
+    /// The group's next event that no run reported, which never comes for
+    /// a session of one.
+    pub(super) async fn next_group_event(&self) -> GroupEvent {
+        let Some(group) = self.group.as_ref() else {
+            return std::future::pending().await;
+        };
+        let mut events = group.events.lock().await;
+        loop {
+            match events.recv().await {
+                Ok(event) => return event,
+                Err(RecvError::Lagged(_)) => {}
+                Err(RecvError::Closed) => return std::future::pending().await,
+            }
+        }
     }
 
     /// The line a group event prints between commands, if any.

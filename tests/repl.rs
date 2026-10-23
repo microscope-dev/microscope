@@ -501,3 +501,40 @@ fn interactive_tab_completes_commands_locations_and_members() {
     session.expect("(microscope) ").expect("prompt");
     quit_killing(session);
 }
+
+/// What a run reports of the processes a program starts, it reports once:
+/// the next command at the prompt does not print the joins and exits
+/// again.
+#[test]
+fn a_runs_process_notices_are_not_repeated_at_the_next_prompt() {
+    let state = support::ScratchDir::new("repl-group-notices");
+    let mut command = command(&fixture("process-tree"), state.path());
+    command.args(["--color", "never", "--", "2", "direct", "serial"]);
+    let mut session = spawn(command);
+    session.expect("(microscope) ").expect("initial prompt");
+    run(&mut session, "break child_work", "breakpoint 1 set");
+
+    session.send_line("run").expect("run");
+    session
+        .expect("(microscope [2]) ")
+        .expect("the first child's stop");
+    session.send_line("continue").expect("continue");
+    session
+        .expect("[2] exited with status 0")
+        .expect("the first child's exit");
+    session
+        .expect("(microscope [3]) ")
+        .expect("the second child's stop");
+
+    session.send_line("processes").expect("list the processes");
+    let listed = session.expect("(microscope [3]) ").expect("the listing");
+    let listed = String::from_utf8_lossy(listed.before()).into_owned();
+    assert!(listed.contains("* [3] process "), "{listed}");
+    // The listing gives [2]'s state; the exit's own notice is not repeated.
+    assert!(
+        !listed.lines().any(|line| line.starts_with("[2] exited")),
+        "{listed}"
+    );
+    assert!(!listed.contains("joined"), "{listed}");
+    quit_killing(session);
+}

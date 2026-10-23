@@ -171,7 +171,6 @@ pub async fn run(cli: &Cli, confirm: bool) -> Result<()> {
 
     let mut outcome = Ok(());
     let mut last_repeatable = None;
-    let mut group_events = cli.group_events();
 
     // What the group does while the editor waits for a line prints before
     // the next command's output; while a command runs, the command reports
@@ -185,7 +184,7 @@ pub async fn run(cli: &Cli, confirm: bool) -> Result<()> {
                 Some(input) => input,
                 None => break,
             },
-            event = next_group_event(&mut group_events) => {
+            event = cli.next_group_event() => {
                 if at_prompt
                     && let Some(line) = cli.group_notice(&event)
                 {
@@ -272,24 +271,6 @@ fn quits(cli: &Cli, line: &str) -> bool {
         .next()
         .and_then(|word| resolve_command(word).ok())
         .is_some_and(|spec| spec.command == Command::Quit)
-}
-
-/// The next event of the session's group, or never, for a session of one
-/// process.
-async fn next_group_event(
-    events: &mut Option<tokio::sync::broadcast::Receiver<microscope::GroupEvent>>,
-) -> microscope::GroupEvent {
-    loop {
-        let Some(receiver) = events.as_mut() else {
-            return std::future::pending().await;
-        };
-
-        match receiver.recv().await {
-            Ok(event) => return event,
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => *events = None,
-        }
-    }
 }
 
 fn line_editor(
