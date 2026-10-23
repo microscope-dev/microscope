@@ -246,7 +246,7 @@ impl Cli {
         {
             lines.push(line);
         }
-        member_events.finish(&mut lines, renderer);
+        member_events.finish(&mut lines, renderer).await;
         let lines = lines.finish(renderer).await;
         let stop = self
             .group_stop(&group.handle, member, reason, elapsed)
@@ -366,6 +366,10 @@ struct MemberEvents {
 
     /// The tasks that forward them, which end when this drops.
     forwarders: tokio::task::JoinSet<()>,
+
+    /// Tells the forwarders to pass on what their members already sent,
+    /// and end.
+    stop: tokio::sync::watch::Sender<bool>,
 }
 
 impl MemberEvents {
@@ -376,6 +380,7 @@ impl MemberEvents {
             forward,
             received,
             forwarders: tokio::task::JoinSet::new(),
+            stop: tokio::sync::watch::Sender::new(false),
         };
         for member in group.members() {
             if let Some(debugger) = group.member(member.number) {
@@ -389,21 +394,40 @@ impl MemberEvents {
     fn watch(&mut self, debugger: microscope::DebuggerHandle) {
         let mut events = debugger.subscribe();
         let forward = self.forward.clone();
+        let mut stop = self.stop.subscribe();
         self.forwarders.spawn(async move {
             loop {
-                let event = events.recv().await;
+                let event = tokio::select! {
+                    biased;
+                    event = events.recv() => event,
+                    _ = stop.changed() => break,
+                };
                 if matches!(event, Err(RecvError::Closed))
                     || forward.send((debugger.clone(), event)).is_err()
                 {
-                    break;
+                    return;
+                }
+            }
+
+            // A member sends its events before the stop that ends the run,
+            // so those still queued belong to the run.
+            loop {
+                let event = match events.try_recv() {
+                    Ok(event) => Ok(event),
+                    Err(TryRecvError::Lagged(missed)) => Err(RecvError::Lagged(missed)),
+                    Err(TryRecvError::Empty | TryRecvError::Closed) => return,
+                };
+                if forward.send((debugger.clone(), event)).is_err() {
+                    return;
                 }
             }
         });
     }
 
-    /// Records the events already forwarded.
-    fn finish(mut self, lines: &mut RunLines, renderer: super::terminal::Renderer) {
-        self.forwarders.abort_all();
+    /// Records every event the members sent during the run.
+    async fn finish(mut self, lines: &mut RunLines, renderer: super::terminal::Renderer) {
+        let _ = self.stop.send(true);
+        while self.forwarders.join_next().await.is_some() {}
         while let Ok((debugger, event)) = self.received.try_recv() {
             lines.record(&debugger, event, renderer);
         }
