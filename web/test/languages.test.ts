@@ -1,10 +1,16 @@
 // The languages without a CodeMirror package of their own are tokenized by
 // small stream languages: each with its own comments, strings, and case.
 
+import {
+  javascriptLanguage,
+  jsxLanguage,
+  tsxLanguage,
+  typescriptLanguage,
+} from "@codemirror/lang-javascript";
 import { Language } from "@codemirror/language";
 import { classHighlighter, highlightTree } from "@lezer/highlight";
 import { describe, expect, it } from "vitest";
-import { language } from "../src/ui/source/languages";
+import { language, tokenStyle } from "../src/ui/source/languages";
 
 /** The highlighted tokens of `text`, as [text, class] pairs. */
 function tokens(path: string, text: string): [string, string][] {
@@ -140,5 +146,65 @@ describe("stream languages", () => {
     expect(of(found, "comment")).toEqual(["-- end"]);
     expect(of(found, "string")).toEqual(["'q'", '"a""b"']);
     expect(of(found, "keyword")).toEqual(["BEGIN"]);
+  });
+});
+
+describe("JavaScript and TypeScript", () => {
+  /** The text of each `tk-` theme role in `text`, as the source view colors it. */
+  function roles(path: string, text: string): Record<string, string[]> {
+    const syntax = language(path);
+    if (!(syntax instanceof Language)) {
+      throw new Error(`no language for ${path}`);
+    }
+    const found: Record<string, string[]> = {};
+    highlightTree(syntax.parser.parse(text), tokenStyle, (from, to, classes) => {
+      found[classes] = [...(found[classes] ?? []), text.slice(from, to)];
+    });
+    return found;
+  }
+
+  it("choose the language by extension", () => {
+    const chosen = ["a.js", "a.mjs", "a.cjs", "a.jsx", "a.ts", "a.mts", "a.cts", "a.TSX"].map(
+      language,
+    );
+    expect(chosen).toEqual([
+      javascriptLanguage,
+      javascriptLanguage,
+      javascriptLanguage,
+      jsxLanguage,
+      typescriptLanguage,
+      typescriptLanguage,
+      typescriptLanguage,
+      tsxLanguage,
+    ]);
+    expect(language("a.json")).toEqual([]);
+    expect(language("a.ts.map")).toEqual([]);
+  });
+
+  it("read JSX only in .jsx and .tsx", () => {
+    const text = 'let e = <a href="x">y</a>;';
+    expect(roles("a.jsx", text)["tk-s"]).toEqual(['"x"']);
+    expect(roles("a.tsx", text)["tk-s"]).toEqual(['"x"']);
+    expect(roles("a.ts", text)["tk-s"]).not.toEqual(['"x"']);
+  });
+
+  it("color JavaScript's keywords, strings, templates, and comments", () => {
+    const found = roles(
+      "a.cjs",
+      `// note\nconst re = /a+/g; /* b */ async function f() { return \`x\${await g('s')}\`; }`,
+    );
+    expect(found["tk-c"]).toEqual(["// note", "/* b */"]);
+    expect(found["tk-k"]).toEqual(["const", "async", "function", "return", "await"]);
+    expect(found["tk-s"]).toEqual(["/a+/g", "`x", "'s'", "`"]);
+    expect(found["tk-f"]).toEqual(["f", "g"]);
+  });
+
+  it("color TypeScript's type annotations in .mts but not in .mjs", () => {
+    const text = "interface P { x: number }\nlet p: P = { x: 1 };";
+    const typescript = roles("a.mts", text);
+    expect(typescript["tk-k"]).toEqual(["interface", "let"]);
+    expect(typescript["tk-t"]).toEqual(["P", "number", "P"]);
+    expect(typescript["tk-n"]).toEqual(["1"]);
+    expect(roles("a.mjs", text)["tk-t"]).not.toContain("number");
   });
 });

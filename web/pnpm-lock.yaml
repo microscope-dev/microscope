@@ -14,6 +14,9 @@ importers:
       '@codemirror/lang-go':
         specifier: 6.0.1
         version: 6.0.1
+      '@codemirror/lang-javascript':
+        specifier: 6.2.5
+        version: 6.2.5
       '@codemirror/lang-rust':
         specifier: 6.0.2
         version: 6.0.2
@@ -114,11 +117,17 @@ packages:
   '@codemirror/lang-go@6.0.1':
     resolution: {integrity: sha512-7fNvbyNylvqCphW9HD6WFnRpcDjr+KXX/FgqXy5H5ZS0eC5edDljukm/yNgYkwTsgp2busdod50AOTIy6Jikfg==}
 
+  '@codemirror/lang-javascript@6.2.5':
+    resolution: {integrity: sha512-zD4e5mS+50htS7F+TYjBPsiIFGanfVqg4HyUz6WNFikgOPf2BgKlx+TQedI1w6n/IqRBVBbBWmGFdLB/7uxO4A==}
+
   '@codemirror/lang-rust@6.0.2':
     resolution: {integrity: sha512-EZaGjCUegtiU7kSMvOfEZpaCReowEf3yNidYu7+vfuGTm9ow4mthAparY5hisJqOHmJowVH3Upu+eJlUji6qqA==}
 
   '@codemirror/language@6.12.4':
     resolution: {integrity: sha512-1q4PaT+o6PbgpkJt4Q8Fv5XJxTy4FUZ4MWETtyiDw3J0Pyr9E2vqcKL+k9wcvjNTIsauxvE7OfmWj3FRPHQ76A==}
+
+  '@codemirror/lint@6.9.7':
+    resolution: {integrity: sha512-28/+iWLYxKxsvGYhSYL7zaCZqLz5+FFFDq9tVsvGv9kv8RY4fFAchJ5WX9M3YrrRlTIsECjsXPqeNgnSmNP2dg==}
 
   '@codemirror/state@6.7.6':
     resolution: {integrity: sha512-kAz+AncRtKuIknedxT1bq4XwXv4UowhbkHU1myPrtVb/jZtImWuV5BXzv5vK6i3kYACsdiZiQKFQQ5Mq7elW8w==}
@@ -153,6 +162,9 @@ packages:
 
   '@lezer/highlight@1.2.5':
     resolution: {integrity: sha512-O1GMVKgtf5YspFaRzpmqkVgMtIk2HG9uMAbH6wdAIdNh3TVzCsch/+cRi+6l2//UGDKe6NB9BW3cvuR5ezMQ0w==}
+
+  '@lezer/javascript@1.5.6':
+    resolution: {integrity: sha512-sEvOqpl4vJQca0NugSQK02vQPbc5KrvoojnYGoqqFgFO0MtcYhwGiHKVEB+LuXYJnfyXo4QPA8ztbrEa4Fw5NA==}
 
   '@lezer/lr@1.4.10':
     resolution: {integrity: sha512-rnCpTIBafOx4mRp43xOxDJbFipJm/c0cia/V5TiGlhmMa+wsSdoGmUN3w5Bqrks/09Q/D4tNAmWaT8p6NRi77A==}
@@ -963,6 +975,16 @@ snapshots:
       '@lezer/common': 1.5.3
       '@lezer/go': 1.0.1
 
+  '@codemirror/lang-javascript@6.2.5':
+    dependencies:
+      '@codemirror/autocomplete': 6.20.3
+      '@codemirror/language': 6.12.4
+      '@codemirror/lint': 6.9.7
+      '@codemirror/state': 6.7.6
+      '@codemirror/view': 6.43.13
+      '@lezer/common': 1.5.3
+      '@lezer/javascript': 1.5.6
+
   '@codemirror/lang-rust@6.0.2':
     dependencies:
       '@codemirror/language': 6.12.4
@@ -976,6 +998,12 @@ snapshots:
       '@lezer/highlight': 1.2.5
       '@lezer/lr': 1.4.10
       style-mod: 4.1.4
+
+  '@codemirror/lint@6.9.7':
+    dependencies:
+      '@codemirror/state': 6.7.6
+      '@codemirror/view': 6.43.13
+      crelt: 1.0.7
 
   '@codemirror/state@6.7.6':
     dependencies:
@@ -1018,6 +1046,12 @@ snapshots:
   '@lezer/highlight@1.2.5':
     dependencies:
       '@lezer/common': 1.5.3
+
+  '@lezer/javascript@1.5.6':
+    dependencies:
+      '@lezer/common': 1.5.3
+      '@lezer/highlight': 1.2.5
+      '@lezer/lr': 1.4.10
 
   '@lezer/lr@1.4.10':
     dependencies:

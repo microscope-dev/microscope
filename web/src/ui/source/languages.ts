@@ -2,6 +2,12 @@
 
 import { cpp } from "@codemirror/lang-cpp";
 import { go } from "@codemirror/lang-go";
+import {
+  javascriptLanguage,
+  jsxLanguage,
+  tsxLanguage,
+  typescriptLanguage,
+} from "@codemirror/lang-javascript";
 import { rust } from "@codemirror/lang-rust";
 import {
   HighlightStyle,
@@ -525,26 +531,43 @@ export function language(path: string): Extension {
     case "py":
     case "pyi":
       return python;
+    // The bare languages, not `javascript()`, whose completions and tag
+    // closing a read-only view has no use for.
+    case "js":
+    case "mjs":
+    case "cjs":
+      return javascriptLanguage;
+    case "jsx":
+      return jsxLanguage;
+    case "ts":
+    case "mts":
+    case "cts":
+      return typescriptLanguage;
+    case "tsx":
+      return tsxLanguage;
     default:
       return [];
   }
 }
 
 /** Token colors, as the page's tokens define them in both themes. */
-export const highlighting = syntaxHighlighting(
-  HighlightStyle.define([
-    {
-      tag: [tags.keyword, tags.controlKeyword, tags.modifier, tags.operatorKeyword],
-      class: "tk-k",
-    },
-    { tag: [tags.typeName, tags.className, tags.standard(tags.typeName)], class: "tk-t" },
-    {
-      tag: [tags.function(tags.variableName), tags.function(tags.propertyName), tags.macroName],
-      class: "tk-f",
-    },
-    { tag: [tags.string, tags.character, tags.special(tags.string)], class: "tk-s" },
-    { tag: [tags.number, tags.bool, tags.atom, tags.null], class: "tk-n" },
-    { tag: [tags.comment, tags.lineComment, tags.blockComment], class: "tk-c" },
-    { tag: [tags.processingInstruction, tags.standard(tags.name)], class: "tk-p" },
-  ]),
-);
+export const tokenStyle = HighlightStyle.define([
+  {
+    tag: [tags.keyword, tags.controlKeyword, tags.modifier, tags.operatorKeyword],
+    class: "tk-k",
+  },
+  { tag: [tags.typeName, tags.className, tags.standard(tags.typeName)], class: "tk-t" },
+  {
+    tag: [tags.function(tags.variableName), tags.function(tags.propertyName), tags.macroName],
+    class: "tk-f",
+  },
+  {
+    tag: [tags.string, tags.character, tags.special(tags.string), tags.regexp],
+    class: "tk-s",
+  },
+  { tag: [tags.number, tags.bool, tags.atom, tags.null], class: "tk-n" },
+  { tag: [tags.comment, tags.lineComment, tags.blockComment], class: "tk-c" },
+  { tag: [tags.processingInstruction, tags.standard(tags.name)], class: "tk-p" },
+]);
+
+export const highlighting = syntaxHighlighting(tokenStyle);
