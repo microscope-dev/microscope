@@ -148,6 +148,10 @@ entries! {
         PropertyArrayLengthAndHash = "PropertyArray::LengthAndHash",
         PropertyArrayObjects = "PropertyArray::Objects",
         AccessorInfoName = "AccessorInfo::Name",
+
+        /// The name an API constructor's template gives its instances, a
+        /// string or undefined.
+        FunctionTemplateInfoClassName = "FunctionTemplateInfo::ClassName",
         SwissNameDictionaryHash = "SwissNameDictionary::Hash",
         SwissNameDictionaryCapacity = "SwissNameDictionary::Capacity",
         SwissNameDictionaryMetaTable = "SwissNameDictionary::MetaTable",
@@ -944,9 +948,30 @@ entries! {
         EvalContextType = "EVAL_CONTEXT_TYPE",
         AwaitContextType = "AWAIT_CONTEXT_TYPE",
 
+        /// The instance types `JSReceiver::class_name` and
+        /// `GetConstructorHelper` tell apart.
+        FunctionTemplateInfoType = "FUNCTION_TEMPLATE_INFO_TYPE",
+        Tuple2Type = "TUPLE2_TYPE",
+        WasmExportedFunctionDataType = "WASM_EXPORTED_FUNCTION_DATA_TYPE",
+        JSArrayIteratorType = "JS_ARRAY_ITERATOR_TYPE",
+        JSSharedStructType = "JS_SHARED_STRUCT_TYPE",
+        JSSharedArrayType = "JS_SHARED_ARRAY_TYPE",
+        JSAtomicsMutexType = "JS_ATOMICS_MUTEX_TYPE",
+        JSAtomicsConditionType = "JS_ATOMICS_CONDITION_TYPE",
+
         /// The first and last instance types of a range, inclusive.
         FirstJSReceiverType = "FIRST_JS_RECEIVER_TYPE",
         LastJSReceiverType = "LAST_JS_RECEIVER_TYPE",
+        FirstJSFunctionOrBoundFunctionOrWrappedFunctionType =
+            "FIRST_JS_FUNCTION_OR_BOUND_FUNCTION_OR_WRAPPED_FUNCTION_TYPE",
+        LastJSFunctionOrBoundFunctionOrWrappedFunctionType =
+            "LAST_JS_FUNCTION_OR_BOUND_FUNCTION_OR_WRAPPED_FUNCTION_TYPE",
+        FirstJSGeneratorObjectType = "FIRST_JS_GENERATOR_OBJECT_TYPE",
+        LastJSGeneratorObjectType = "LAST_JS_GENERATOR_OBJECT_TYPE",
+        FirstJSMapIteratorType = "FIRST_JS_MAP_ITERATOR_TYPE",
+        LastJSMapIteratorType = "LAST_JS_MAP_ITERATOR_TYPE",
+        FirstJSSetIteratorType = "FIRST_JS_SET_ITERATOR_TYPE",
+        LastJSSetIteratorType = "LAST_JS_SET_ITERATOR_TYPE",
         FirstJSObjectType = "FIRST_JS_OBJECT_TYPE",
         LastJSObjectType = "LAST_JS_OBJECT_TYPE",
         FirstJSArrayBufferViewType = "FIRST_JS_ARRAY_BUFFER_VIEW_TYPE",
@@ -968,6 +993,12 @@ entries! {
         MapIsAccessCheckNeededMask = "Map::IsAccessCheckNeededBit::kMask",
         MapElementsKindShift = "Map::ElementsKindBits::kShift",
         MapElementsKindMask = "Map::ElementsKindBits::kMask",
+        MapNewTargetIsBaseShift = "Map::NewTargetIsBaseBit::kShift",
+        MapNewTargetIsBaseMask = "Map::NewTargetIsBaseBit::kMask",
+
+        /// The bit of [`Field::MapBitField3`] set on a prototype's map.
+        MapIsPrototypeMapShift = "Map::IsPrototypeMapBit::kShift",
+        MapIsPrototypeMapMask = "Map::IsPrototypeMapBit::kMask",
 
         /// The bits of [`Field::SymbolFlags`]. Through 13.6 a private
         /// symbol has `IsPrivateBit`, and a private name or brand its own

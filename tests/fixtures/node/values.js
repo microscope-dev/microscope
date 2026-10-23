@@ -80,10 +80,41 @@ function objects() {
   };
   const nullPrototype = Object.assign(Object.create(null), {bare: true});
   const symbolKeyed = {[Symbol('tag')]: 'symbol value', plain: 1};
+  // No prototype names a constructor, so inspect names each object as V8
+  // does and ends at a prototype whose own prototype is null.
+  function Orphan() {}
+  Orphan.prototype = Object.create(null);
+  // Through 13.6 V8 names an instance by its constructor's shared name,
+  // 14.6 by its `name` property: `Renamed`, and `Object` for an empty one.
+  function Named() {}
+  Named.prototype = Object.create(null);
+  Object.defineProperty(Named, 'name', {value: 'Renamed'});
+  function Nameless() {}
+  Nameless.prototype = Object.create(null);
+  Object.defineProperty(Nameless, 'name', {value: ''});
+  class Classless {
+    constructor() {
+      this.k = 1;
+    }
+  }
+  Object.setPrototypeOf(Classless.prototype, null);
+  delete Classless.prototype.constructor;
+  const tagged = Object.create(Object.create(null), {
+    [Symbol.toStringTag]: {value: 'Tagged'},
+  });
   return {
     fast, slow, dictionary, cyclic, getters, nullPrototype, symbolKeyed,
     nested: {level1: {level2: {level3: {level4: 'deep'}}}},
     empty: {},
+    unnamedChain: Object.create(Object.create(null)),
+    unnamedChains: Object.create(Object.create(Object.create(null))),
+    unnamedKeyedEnd: Object.create(Object.assign(Object.create(null), {end: 1})),
+    unnamedInstance: new Orphan(),
+    unnamedRenamed: new Named(),
+    unnamedNameless: new Nameless(),
+    unnamedClass: new Classless(),
+    unnamedTagged: Object.create(tagged),
+    unnamedDeep: {a: {b: {c: Object.create(Object.create(Object.create(null)))}}},
   };
 }
 
@@ -214,4 +245,177 @@ function paths(root, values) {
     Object.entries(members).map(([name, value]) => [`${root}.${group}.${name}`, value])));
 }
 
-gallery(new SyntaxError('never read'));
+// The errors of unread, none of whose stacks anything reads: each is made
+// where V8 writes a call site its own way, so that inspecting unread at
+// "unread" formats every one.
+
+class Widget {}
+
+function describeWidget() {
+  return new Error('a method under another name');
+}
+
+class Gadget {
+  constructor() {
+    this.error = new Error('a constructor');
+  }
+}
+
+class Fielded {
+  error = new Error('a field initializer');
+}
+
+class Shape {
+  static create() {
+    return new Error('a static method');
+  }
+
+  area() {
+    return new Error('an instance method');
+  }
+}
+
+// A plain function's own method. V8 12.4 names the receiver's type by its
+// constructor, Function, and 13.6 by the function itself.
+function Registry() {}
+Registry.lookup = function lookup() {
+  return new Error("a function's method");
+};
+
+const withGetter = {
+  get broken() {
+    return new Error('a getter');
+  },
+};
+
+function mapOne() {
+  return [1].map(function mapped() {
+    return new Error('a callback under a builtin');
+  })[0];
+}
+
+function evaluate() {
+  return eval("new Error('an eval')");
+}
+
+// Scripts given line and column offsets, one named by its sourceURL, whose
+// positions V8 counts from the comment's script rather than the offsets.
+const vm = require('node:vm');
+const fromUrl = vm.runInThisContext(
+  "(function fromUrl() { return new Error('a sourceURL'); })\n//# sourceURL=named-by-url.js",
+  {filename: 'offset-script.js', lineOffset: 10, columnOffset: 4});
+const fromOffset = vm.runInThisContext(
+  "(function fromOffset() { return new Error('a script with offsets'); })",
+  {filename: 'offset-script.js', lineOffset: 10, columnOffset: 4});
+
+async function settle() {
+  await null;
+  return new Error('after an await');
+}
+
+async function awaitSettle() {
+  return await settle();
+}
+
+async function second() {
+  await null;
+  return new Error('under Promise.all');
+}
+
+async function gatherAll() {
+  const [, error] = await Promise.all([Promise.resolve(1), second()]);
+  return error;
+}
+
+function nodeError() {
+  try {
+    Buffer.alloc(-1);
+  } catch (error) {
+    return error;
+  }
+  throw new Error('Buffer.alloc(-1) did not throw');
+}
+
+// Functions each run in one tier when they make their error, forced with
+// V8's natives, which code compiled after the flag may call.
+function inTurbofan() {
+  return new Error('in Turbofan code');
+}
+
+function inlinedHere() {
+  return new Error('inlined into Turbofan code');
+}
+
+function inlining() {
+  return inlinedHere();
+}
+
+function inMaglev() {
+  return new Error('in Maglev code');
+}
+
+function inSparkplug() {
+  return new Error('in Sparkplug code');
+}
+
+/** The error `fn` makes once its code is `tier`'s, which `force` asks for. */
+function tiered(natives, fn, force, tier) {
+  natives.prepare(fn);
+  fn();
+  fn();
+  force(fn);
+  const error = fn();
+  const now = natives.tier(fn);
+  if (now !== tier) {
+    throw new Error(`${fn.name} ran in ${now}, not ${tier}`);
+  }
+  return error;
+}
+
+function tieredErrors() {
+  require('node:v8').setFlagsFromString('--allow-natives-syntax');
+  /* eslint-disable no-new-func */
+  const natives = {
+    prepare: new Function('f', '%PrepareFunctionForOptimization(f);'),
+    turbofan: new Function('f', '%OptimizeFunctionOnNextCall(f);'),
+    maglev: new Function('f', '%OptimizeMaglevOnNextCall(f);'),
+    sparkplug: new Function('f', '%CompileBaseline(f);'),
+    tier: new Function('f', `return %ActiveTierIsTurbofan(f) ? 'turbofan' :
+      %ActiveTierIsMaglev(f) ? 'maglev' : %ActiveTierIsSparkplug(f) ? 'sparkplug' : 'ignition';`),
+    hasMaglev: new Function('return %IsMaglevEnabled();'),
+  };
+  /* eslint-enable no-new-func */
+  return {
+    turbofan: tiered(natives, inTurbofan, natives.turbofan, 'turbofan'),
+    inlined: tiered(natives, inlining, natives.turbofan, 'turbofan'),
+    // Node 22 builds V8 without Maglev enabled.
+    ...(natives.hasMaglev() && {maglev: tiered(natives, inMaglev, natives.maglev, 'maglev')}),
+    sparkplug: tiered(natives, inSparkplug, natives.sparkplug, 'sparkplug'),
+  };
+}
+
+async function unreadErrors(topLevel) {
+  const widget = new Widget();
+  widget.describe = describeWidget;
+  return {
+    topLevel,
+    method: widget.describe(),
+    constructed: new Gadget().error,
+    fieldInitializer: new Fielded().error,
+    staticMethod: Shape.create(),
+    instanceMethod: new Shape().area(),
+    functionMethod: Registry.lookup(),
+    getter: withGetter.broken,
+    callback: mapOne(),
+    evaluated: evaluate(),
+    sourceUrl: fromUrl(),
+    offsets: fromOffset(),
+    afterAwait: await awaitSettle(),
+    promiseAll: await gatherAll(),
+    node: nodeError(),
+    ...tieredErrors(),
+  };
+}
+
+const topLevel = new SyntaxError('never read');
+unreadErrors(topLevel).then(gallery);

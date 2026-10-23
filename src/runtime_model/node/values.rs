@@ -574,14 +574,59 @@ impl<'r> Builder<'r> {
                 None => break,
             }
         }
-        if first == Some(None) && reader.is(object, Constant::JSObjectType)? {
-            // V8's `GetConstructorName` for an ordinary object made with no
-            // prototype, as `Object.create(null)` makes it.
-            return Ok(Constructor::NullPrototype {
-                internal: JsString::from("Object"),
-            });
+        match first {
+            Some(Some(first)) => self.unnamed(object, first),
+            Some(None) if reader.is(object, Constant::JSObjectType)? => {
+                // V8's `GetConstructorName` for an ordinary object made with
+                // no prototype, as `Object.create(null)` makes it.
+                Ok(Constructor::NullPrototype {
+                    internal: JsString::from("Object"),
+                })
+            }
+            _ => Err("no prototype of the object names its constructor".into()),
         }
-        Err("no prototype of the object names its constructor".into())
+    }
+
+    /// What `getConstructorName` gives for `object`, whose first prototype
+    /// is `first`, where no prototype names a constructor: V8's name for
+    /// the object and each prototype before the last, then the last as
+    /// `inspect` writes it at depth -1. Only a last prototype that is an
+    /// ordinary object with no tag, which inspect writes as one, is read.
+    fn unnamed(&self, object: Object, first: Object) -> Result<Constructor, Problem> {
+        let reader = self.reader;
+        let name =
+            |object| super::constructors::constructor_name(&reader, object).map(JsString::complete);
+        let mut names = vec![name(object)?];
+        let mut end = first;
+        for _ in 0..64 {
+            let Some(next) = lookup::prototype(&reader, end)? else {
+                if !reader.is(end, Constant::JSObjectType)? {
+                    return Err("the last prototype is no ordinary object".into());
+                }
+                let own = |key| lookup::own(&reader, end, key).map(|found| found.is_some());
+                if own(lookup::Key::WellKnown("Symbol.toStringTag"))? {
+                    return Err("the last prototype has its own Symbol.toStringTag".into());
+                }
+                if own(lookup::Key::Name("href"))? {
+                    // inspect may take it for a URL.
+                    return Err("the last prototype has its own href".into());
+                }
+                let end_has_keys = own::elements(&reader, end, None, u32::MAX)?
+                    .iter()
+                    .any(|element| element.enumerable)
+                    || own::named(&reader, end)?
+                        .iter()
+                        .any(|named| named.enumerable);
+                return Ok(Constructor::Unnamed {
+                    names,
+                    end: name(end)?,
+                    end_has_keys,
+                });
+            };
+            names.push(name(end)?);
+            end = next;
+        }
+        Err(format!("the prototypes of {:#x} are too many", object.0).into())
     }
 
     /// `function.name` as a string, or `None` where it is no string.

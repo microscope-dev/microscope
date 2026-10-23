@@ -228,10 +228,6 @@ pub enum Constructor {
     /// last before the one whose prototype is null; that one, the end, is
     /// taken as an ordinary object, with V8's name `end` and with or without
     /// own enumerable properties.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "the reader does not yet name an unnamed chain")
-    )]
     Unnamed {
         names: Vec<JsString>,
         end: JsString,
