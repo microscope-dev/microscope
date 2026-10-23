@@ -27,6 +27,39 @@ const EMBEDDED_BLOB: &str = "v8_Default_embedded_blob_code_";
 /// What the symbol of each builtin's code begins with.
 const BUILTIN: &str = "Builtins_";
 
+/// The variable each thread's current isolate is kept in.
+pub const CURRENT_ISOLATE: &str = "_ZN2v88internal18g_current_isolate_E";
+
+/// The exported function that reads [`CURRENT_ISOLATE`].
+const GET_CURRENT: &str = "_ZN2v87Isolate10GetCurrentEv";
+
+/// Adds to `thread_locals` where each thread's current isolate is, when
+/// `object` is V8's and no symbol names its variable, as in a shared
+/// library stripped of its local symbols: the exported accessor's code
+/// says. A variable a symbol names is left as the symbol places it.
+pub(super) fn add_thread_locals(
+    object: &object::File<'_>,
+    thread_locals: &mut std::collections::BTreeMap<
+        std::sync::Arc<str>,
+        Result<crate::ThreadLocal, std::sync::Arc<str>>,
+    >,
+) {
+    if thread_locals.contains_key(CURRENT_ISOLATE) {
+        return;
+    }
+    let Some(accessor) = object
+        .symbols()
+        .chain(object.dynamic_symbols())
+        .find(|symbol| symbol.name() == Ok(GET_CURRENT) && symbol.kind() == SymbolKind::Text)
+    else {
+        return;
+    };
+    thread_locals.insert(
+        CURRENT_ISOLATE.into(),
+        super::elf::accessor_thread_local(object, accessor.address()),
+    );
+}
+
 /// The address and code of each embedded builtin `object` names, in
 /// address order. An image that is not V8's, or that names no builtin,
 /// has none.
@@ -61,4 +94,50 @@ pub(super) fn builtins<'data>(object: &object::File<'data>) -> Vec<(u64, &'data 
     builtins.sort_unstable_by_key(|(address, _)| *address);
     builtins.dedup_by_key(|(address, _)| *address);
     builtins
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every build in the dev shell's matrix places each thread's current
+    /// isolate: by its symbol, or, in Debian's libnode, which names none,
+    /// by the code of the accessor it exports.
+    #[test]
+    fn every_build_places_the_current_isolate() {
+        let root = std::env::var("MICROSCOPE_NODE").expect("MICROSCOPE_NODE; run in the dev shell");
+        for entry in [
+            "26",
+            "24",
+            "22",
+            "nixpkgs-26",
+            "nixpkgs-24",
+            "nixpkgs-22",
+            "debian-24",
+        ] {
+            let path = if entry == "debian-24" {
+                format!("{root}/debian-24/root/usr/lib/x86_64-linux-gnu/libnode.so.137")
+            } else {
+                format!("{root}/{entry}/node")
+            };
+            let data = std::fs::read(&path).expect("the build");
+            let object = object::File::parse(data.as_slice()).expect("an ELF file");
+            let mut thread_locals = super::super::elf::load_thread_locals(&object);
+            add_thread_locals(&object, &mut thread_locals);
+            let place = thread_locals.get(CURRENT_ISOLATE);
+            match entry {
+                // F28: the offset its debug package's symbol gives.
+                "debian-24" => assert_eq!(place, Some(&Ok(crate::ThreadLocal::Dynamic(0x170)))),
+                _ => assert!(
+                    matches!(
+                        place,
+                        Some(Ok(
+                            crate::ThreadLocal::Offset(_) | crate::ThreadLocal::Slot(_)
+                        ))
+                    ),
+                    "{entry}: {place:?}"
+                ),
+            }
+        }
+    }
 }

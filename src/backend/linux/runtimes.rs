@@ -28,7 +28,8 @@ use super::memory::read_logical_block;
 use super::native::InspectionOps;
 use super::signals::Signal;
 use super::{
-    BreakpointSite, Controller, Inferior, debug_pid, debug_thread_id, validate_public_stop,
+    BreakpointSite, Controller, Inferior, TlsModule, debug_pid, debug_thread_id,
+    validate_public_stop,
 };
 
 /// The sets of tasks the futures threads drive at a stop run, by where
@@ -87,6 +88,10 @@ struct ProcessStop<'a, P> {
     reader: Pid,
     breakpoints: &'a std::collections::BTreeMap<VirtualAddress, BreakpointSite>,
     bias: crate::LoadBias,
+
+    /// How the C library names the module's block of thread-local
+    /// storage, when it was found.
+    tls: Option<TlsModule>,
 
     /// Where the reads made are counted, when they are.
     usage: Option<&'a Cell<InspectionUsage>>,
@@ -196,6 +201,18 @@ impl<P: InspectionOps> RuntimeStop for ProcessStop<'_, P> {
             .registers(pid)
             .ok()
             .map(|registers| registers.fs_base)
+    }
+
+    fn module_thread_local(
+        &self,
+        thread: ThreadId,
+        offset: u64,
+    ) -> std::result::Result<VirtualAddress, Arc<str>> {
+        let module = self
+            .tls
+            .ok_or("the C library names no block of the module's thread-local storage")?;
+        let pid = debug_pid(thread).map_err(|error| Arc::<str>::from(error.to_string()))?;
+        self.ptrace.tls_address(pid, module, offset)
     }
 
     fn instruction(&self, thread: ThreadId) -> Option<VirtualAddress> {
@@ -339,6 +356,7 @@ impl<P: InspectionOps> Controller<P> {
             reader,
             breakpoints: &inferior.breakpoints,
             bias: module.load_bias,
+            tls: self.modules.get(&module.id).and_then(|module| module.tls),
             usage,
             threads: inferior
                 .threads
@@ -986,6 +1004,7 @@ mod identity_tests {
             reader: Pid::from_raw(5000),
             breakpoints: sites,
             bias: crate::LoadBias::default(),
+            tls: None,
             usage: None,
             threads: vec![ThreadId::new(7), ThreadId::new(5000)],
             task_sets: Vec::new(),

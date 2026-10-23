@@ -15,7 +15,7 @@ use std::sync::Arc;
 use object::read::elf::{Dyn as _, ElfFile, FileHeader, ProgramHeader as _, SectionHeader as _};
 use object::{
     Object, ObjectSection, ObjectSegment, ObjectSymbol, ObjectSymbolTable, SectionFlags,
-    SegmentFlags, SymbolFlags, SymbolSection, elf,
+    SectionKind, SegmentFlags, SymbolFlags, SymbolSection, elf,
 };
 
 use crate::{
@@ -124,8 +124,10 @@ pub fn load_symbols(
 /// A symbol's value is its offset in the image's block of thread-local
 /// storage. A library's code reaches a variable through a GOT slot that the
 /// loader fills, by an `R_X86_64_TPOFF64` relocation, with the variable's
-/// offset from the thread pointer. An executable's block lies just below
-/// the thread pointer, at the block's size rounded up to its alignment.
+/// offset from the thread pointer, or else through `__tls_get_addr`, which
+/// finds the library's block through the thread's dynamic thread vector.
+/// An executable's block lies just below the thread pointer, at the
+/// block's size rounded up to its alignment.
 pub fn load_thread_locals(
     object: &object::File<'_>,
 ) -> BTreeMap<Arc<str>, Result<ThreadLocal, Arc<str>>> {
@@ -210,7 +212,7 @@ pub fn load_thread_locals(
     let executable = is_executable(elf);
     let fixed = |offset: u64| -> Result<ThreadLocal, Arc<str>> {
         if !executable {
-            return Err("the library's code reaches it only through the loader".into());
+            return Ok(ThreadLocal::Dynamic(offset));
         }
 
         let (start, size, align) = tls.ok_or("the image has no thread-local storage")?;
@@ -242,6 +244,193 @@ pub fn load_thread_locals(
             (name, place)
         })
         .collect()
+}
+
+/// Where the thread-local variable that the function at `address` reads
+/// is, decoded from the function's own code, for a variable no symbol
+/// names, as a stripped library's: V8's `v8::Isolate::GetCurrent` reads
+/// `g_current_isolate_`, which only the library's debug package names.
+///
+/// The function may jump straight to the code that reads it, and may open
+/// a frame first. That code is one of the four sequences the x86-64 TLS
+/// ABI defines, with the linker's relaxations:
+///
+/// - general dynamic: `lea rdi, [rip+pair]` with a 0x66 prefix, then a
+///   call to `__tls_get_addr`; the pair's second word, or the
+///   `R_X86_64_DTPOFF64` relocation that fills it, holds the offset;
+/// - local dynamic: the same lea without the prefix, the call, then an
+///   access at a displacement from rax, which is the offset;
+/// - initial exec: `mov reg, [rip+slot]`, where the loader fills the slot
+///   by an `R_X86_64_TPOFF64` relocation, then an fs-relative access;
+/// - local exec, an executable's own: an fs-relative access at a fixed
+///   displacement.
+pub fn accessor_thread_local(
+    object: &object::File<'_>,
+    address: u64,
+) -> Result<ThreadLocal, Arc<str>> {
+    let relocations: BTreeMap<u64, object::Relocation> =
+        object.dynamic_relocations().into_iter().flatten().collect();
+    match tls_access(object, &relocations, address)? {
+        TlsAccess::Found(place) => Ok(place),
+        // A function that only jumps elsewhere, as an exported wrapper of
+        // an internal accessor does.
+        TlsAccess::Jump(target) => match tls_access(object, &relocations, target)? {
+            TlsAccess::Found(place) => Ok(place),
+            TlsAccess::Jump(_) => Err("the accessor jumps more than once".into()),
+        },
+    }
+}
+
+/// What the code of an accessor begins with.
+enum TlsAccess {
+    Found(ThreadLocal),
+    Jump(u64),
+}
+
+/// The thread-local variable the code at `address` reads, or where it
+/// jumps first.
+fn tls_access(
+    object: &object::File<'_>,
+    relocations: &BTreeMap<u64, object::Relocation>,
+    address: u64,
+) -> Result<TlsAccess, Arc<str>> {
+    use iced_x86::{Decoder, DecoderOptions, Mnemonic, OpKind, Register};
+
+    let bytes = object
+        .sections()
+        .find_map(|section| {
+            let start = section.address();
+            let end = start.checked_add(section.size())?;
+            if section.kind() != SectionKind::Text || !(start..end).contains(&address) {
+                return None;
+            }
+            let data = section.data().ok()?;
+            let at = usize::try_from(address - start).ok()?;
+            data.get(at..data.len().min(at + 64))
+        })
+        .ok_or("the accessor's code is not in the image")?;
+    let r_type = |slot: u64| match relocations.get(&slot).map(object::Relocation::flags) {
+        Some(object::RelocationFlags::Elf { r_type }) => Some(r_type),
+        _ => None,
+    };
+    let fs_access = |instruction: &iced_x86::Instruction| {
+        instruction.segment_prefix() == Register::FS
+            && (0..instruction.op_count())
+                .any(|operand| instruction.op_kind(operand) == OpKind::Memory)
+    };
+
+    let mut decoder = Decoder::with_ip(64, bytes, address, DecoderOptions::NONE);
+    let mut instructions = std::iter::from_fn(|| decoder.can_decode().then(|| decoder.decode()))
+        .filter(|instruction| {
+            instruction.mnemonic() != Mnemonic::Endbr64
+                && !super::x86_64::is_push_register(instruction, Register::RBP)
+                && !super::x86_64::is_register_move(instruction, Register::RBP, Register::RSP)
+        });
+    let first = instructions.next().ok_or("the accessor has no code")?;
+
+    if first.mnemonic() == Mnemonic::Jmp && first.op0_kind() == OpKind::NearBranch64 {
+        return Ok(TlsAccess::Jump(first.near_branch_target()));
+    }
+
+    if first.mnemonic() == Mnemonic::Lea
+        && first.op0_register() == Register::RDI
+        && first.is_ip_rel_memory_operand()
+    {
+        let pair = first.ip_rel_memory_address();
+        if instructions
+            .next()
+            .is_none_or(|call| call.mnemonic() != Mnemonic::Call)
+        {
+            return Err("the accessor's lea is not followed by a call".into());
+        }
+        if r_type(pair) != Some(elf::R_X86_64_DTPMOD64) {
+            return Err("the accessor's lea names no module and offset pair".into());
+        }
+        // Only the general-dynamic sequence's lea carries the prefix.
+        let at = usize::try_from(first.ip() - address).unwrap_or(usize::MAX);
+        if bytes.get(at) == Some(&0x66) {
+            let offset = dynamic_pair_offset(object, relocations, pair + 8)?;
+            return Ok(TlsAccess::Found(ThreadLocal::Dynamic(offset)));
+        }
+        let access = instructions
+            .find(|instruction| {
+                instruction.op_count() == 2
+                    && instruction.op1_kind() == OpKind::Memory
+                    && instruction.memory_base() == Register::RAX
+                    && instruction.memory_index() == Register::None
+            })
+            .ok_or("the accessor reads nothing in its module's block")?;
+        return Ok(TlsAccess::Found(ThreadLocal::Dynamic(
+            access.memory_displacement64(),
+        )));
+    }
+
+    if first.mnemonic() == Mnemonic::Mov
+        && first.op1_kind() == OpKind::Memory
+        && first.is_ip_rel_memory_operand()
+    {
+        let slot = first.ip_rel_memory_address();
+        if r_type(slot) != Some(elf::R_X86_64_TPOFF64) {
+            return Err("the accessor's slot is not one the loader fills with an offset".into());
+        }
+        if !instructions.next().is_some_and(|next| fs_access(&next)) {
+            return Err("the accessor reads its slot but not through the thread pointer".into());
+        }
+        return Ok(TlsAccess::Found(ThreadLocal::Slot(ImageAddress::new(slot))));
+    }
+
+    if fs_access(&first)
+        && first.memory_base() == Register::None
+        && first.memory_index() == Register::None
+    {
+        return Ok(TlsAccess::Found(ThreadLocal::Offset(
+            first.memory_displacement64().cast_signed(),
+        )));
+    }
+
+    Err("the accessor reads no thread-local variable the TLS ABI's way".into())
+}
+
+/// The offset a general-dynamic pair's second word, at `slot`, holds once
+/// loaded: what its `R_X86_64_DTPOFF64` relocation computes, or, for a
+/// variable only its module sees, what the linker wrote there.
+fn dynamic_pair_offset(
+    object: &object::File<'_>,
+    relocations: &BTreeMap<u64, object::Relocation>,
+    slot: u64,
+) -> Result<u64, Arc<str>> {
+    if let Some(relocation) = relocations.get(&slot) {
+        if relocation.flags()
+            != (object::RelocationFlags::Elf {
+                r_type: elf::R_X86_64_DTPOFF64,
+            })
+        {
+            return Err("the pair's offset is relocated some other way".into());
+        }
+        let base = match relocation.target() {
+            object::RelocationTarget::Absolute => 0,
+            object::RelocationTarget::Symbol(index) => object
+                .dynamic_symbol_table()
+                .and_then(|table| table.symbol_by_index(index).ok())
+                .filter(|symbol| matches!(symbol.section(), SymbolSection::Section(_)))
+                .ok_or("the pair's offset names a variable another module defines")?
+                .address(),
+            _ => return Err("the pair's offset names no variable".into()),
+        };
+        return base
+            .checked_add_signed(relocation.addend())
+            .ok_or_else(|| "the pair's offset overflows".into());
+    }
+
+    object
+        .sections()
+        .find_map(|section| {
+            let start = section.address();
+            let at = usize::try_from(slot.checked_sub(start)?).ok()?;
+            let word = section.data().ok()?.get(at..at.checked_add(8)?)?;
+            Some(u64::from_le_bytes(word.try_into().ok()?))
+        })
+        .ok_or_else(|| "the pair's offset is not in the image".into())
 }
 
 /// Whether an ELF image is an executable rather than a library: one the
@@ -1375,6 +1564,60 @@ mod tests {
     use object::{Architecture, BinaryFormat, Endianness};
 
     use super::*;
+
+    /// Each accessor of the TLS fixture reads, by the model its code
+    /// uses, the variable the symbols place where the decode does.
+    #[test]
+    fn accessors_are_decoded_to_their_variables_under_every_tls_model() {
+        let fixture = |name: &str| {
+            std::fs::read(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("build/test-programs")
+                    .join(name),
+            )
+            .expect("the fixture; run `just build-test-programs`")
+        };
+        let library = fixture("libtls-accessors.so");
+        let program = fixture("tls-accessors");
+        for (data, accessor, variable) in [
+            (&library, "tls_general_get", "tls_general"),
+            (&library, "tls_hidden_get", "tls_hidden"),
+            // Local dynamic: the first variable it reads.
+            (&library, "tls_local_get", "tls_local_first"),
+            (&library, "tls_initial_get", "tls_initial"),
+            (&program, "tls_program_get", "tls_program"),
+        ] {
+            let object = object::File::parse(data.as_slice()).expect("an ELF file");
+            let address = object
+                .symbols()
+                .find(|symbol| symbol.name() == Ok(accessor))
+                .expect("the accessor")
+                .address();
+            let placed = load_thread_locals(&object);
+            assert_eq!(
+                accessor_thread_local(&object, address),
+                placed[variable].clone(),
+                "{accessor}"
+            );
+        }
+
+        // The library's code reaches each variable but the initial-exec one
+        // only through its module's block.
+        let object = object::File::parse(library.as_slice()).expect("an ELF file");
+        let placed = load_thread_locals(&object);
+        for (name, offset) in [("tls_general", 0x20), ("tls_hidden", 0x18)] {
+            assert_eq!(placed[name], Ok(ThreadLocal::Dynamic(offset)), "{name}");
+        }
+        assert!(matches!(placed["tls_initial"], Ok(ThreadLocal::Slot(_))));
+
+        // A function that reads no thread-local variable is refused.
+        let set = object
+            .symbols()
+            .find(|symbol| symbol.name() == Ok("tls_set"))
+            .expect("tls_set")
+            .address();
+        assert!(accessor_thread_local(&object, set).is_err());
+    }
 
     /// One symbol of a synthesized relocatable object.
     struct Spec {

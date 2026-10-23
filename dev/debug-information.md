@@ -231,6 +231,20 @@ libc since 2.34 and in libpthread before. The TLS fixtures run on Ubuntu's
 glibc 2.27, 2.31, and 2.35, which the dev shell provides in
 `MICROSCOPE_UBUNTU_GLIBC`, as well as on the toolchain's glibc and musl.
 
+A runtime model reads a thread-local variable without debug information,
+through the image's `ThreadLocals` table, which `elf::load_thread_locals`
+fills from TLS symbols. A `ThreadLocal` is where the image's own code finds
+the variable. `Offset` is a fixed offset from the thread pointer, as for an
+executable's variables. `Slot` is a GOT slot the loader fills with that
+offset (initial exec). `Dynamic` is an offset in the module's own block, which
+`__tls_get_addr` reaches through the thread's DTV (general and local
+dynamic). `RuntimeStop::thread_local_address` resolves all three; `Dynamic`
+goes through the C library lookup above. A stripped library may name no
+symbol for a variable. `elf::accessor_thread_local` then decodes the
+placement from the code of a function that reads it, by the x86-64 TLS ABI's
+sequences. V8 uses this for `g_current_isolate_` in Debian's `libnode`,
+through the exported `v8::Isolate::GetCurrent`.
+
 ## Types and layout
 
 Providers resolve ABI and language layout into explicit model facts:

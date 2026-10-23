@@ -112,6 +112,12 @@ pub enum ThreadLocal {
     /// writes as it loads the image, as a library's code reads its
     /// thread-locals.
     Slot(ImageAddress),
+
+    /// This far into the image's own block, which the C library may
+    /// allocate apart from the thread pointer and names in the thread's
+    /// dynamic thread vector, as a library's code that calls
+    /// `__tls_get_addr` reaches its thread-locals.
+    Dynamic(u64),
 }
 
 /// An image's types by name and base, as name lookups search them.

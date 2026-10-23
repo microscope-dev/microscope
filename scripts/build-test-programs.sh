@@ -1670,6 +1670,10 @@ build_shared_fixture gcc "$c_fixtures_dir/moved-code/library.c" "$output_dir/lib
     -O0 -g3 -gdwarf-5
 build_fixture gcc "$c_fixtures_dir/moved-code/main.c" "$output_dir/moved-code" \
     -O0 -g3 -gdwarf-5 -fPIE -pie "-L$output_dir" -lmoved-code '-Wl,-rpath,$ORIGIN'
+build_shared_fixture gcc "$c_fixtures_dir/tls-accessors/library.c" "$output_dir/libtls-accessors.so" \
+    -O2 -g3 -gdwarf-5
+build_fixture gcc "$c_fixtures_dir/tls-accessors/main.c" "$output_dir/tls-accessors" \
+    -O2 -g3 -gdwarf-5 -fPIE -pie "-L$output_dir" -ltls-accessors '-Wl,-rpath,$ORIGIN'
 build_fixture gcc "$c_fixtures_dir/code-copy.c" "$output_dir/code-copy" \
     -O2 -g3 -gdwarf-5 -fPIE -pie
 build_shared_fixture gcc "$c_fixtures_dir/module-frames/library.c" "$output_dir/libmodule-frames.so" \

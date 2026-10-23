@@ -22,9 +22,7 @@ use crate::unwind::{
     DwarfRegister, R12, RAX, RBP, RDI, RETURN_ADDRESS as RIP, RSI, RSP, RegisterFile,
 };
 
-use crate::{
-    AddressRange, ImageAddress, StackSegment, TaskState, ThreadId, ThreadLocal, VirtualAddress,
-};
+use crate::{AddressRange, ImageAddress, StackSegment, TaskState, ThreadId, VirtualAddress};
 
 /// The release the contract was checked against. Another release is read
 /// the same way wherever its debug information binds, and says it is
@@ -1023,9 +1021,6 @@ impl GoRuntime {
         thread: ThreadId,
     ) -> Result<Option<ThreadGs>, Arc<str>> {
         let threads = self.threads()?;
-        let pointer = stop
-            .thread_pointer(thread)
-            .ok_or("the thread's thread pointer is unreadable")?;
         if let Some(instruction) = stop.instruction(thread) {
             let image = stop.load_bias().wrapping_unload(instruction);
             if self.starting.iter().any(|range| range.contains(image)) {
@@ -1033,17 +1028,7 @@ impl GoRuntime {
             }
         }
 
-        let offset = match threads.tls_g {
-            ThreadLocal::Offset(offset) => offset,
-            ThreadLocal::Slot(slot) => {
-                let slot = stop.load_bias().wrapping_load(slot);
-                word(stop, slot)
-                    .map(u64::cast_signed)
-                    .ok_or("the slot of the goroutine's place is unreadable")?
-            }
-        };
-
-        let slot = VirtualAddress::new(pointer.wrapping_add_signed(offset));
+        let slot = stop.thread_local_address(thread, threads.tls_g)?;
         let g = word(stop, slot).ok_or("the thread's goroutine is unreadable")?;
         if g == 0 {
             return Ok(None);

@@ -1551,7 +1551,11 @@ fn load_image(
             unwind: Some(unwind),
             sections: super::elf::load_sections(&object),
             thread_local_storage: super::elf::has_thread_local_storage(&object),
-            thread_locals: super::elf::load_thread_locals(&object),
+            thread_locals: {
+                let mut thread_locals = super::elf::load_thread_locals(&object);
+                super::v8::add_thread_locals(&object, &mut thread_locals);
+                thread_locals
+            },
             python: super::cpython::runtime(&object),
             debug_information: match dwarf_use {
                 DwarfUse::Unusable(reason) => crate::DebugInformation::Unusable { reason },

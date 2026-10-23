@@ -204,6 +204,43 @@ pub trait RuntimeStop {
     /// The thread pointer (`fs_base` on x86-64) of a stopped thread.
     fn thread_pointer(&self, thread: ThreadId) -> Option<u64>;
 
+    /// Where `thread`'s copy of a thread-local variable of the module
+    /// carrying the runtime is, which the module's image places at
+    /// `place`.
+    fn thread_local_address(
+        &self,
+        thread: ThreadId,
+        place: ThreadLocal,
+    ) -> Result<VirtualAddress, Arc<str>> {
+        let offset = match place {
+            ThreadLocal::Offset(offset) => offset,
+            ThreadLocal::Slot(slot) => {
+                let mut word = [0; 8];
+                if !self.read(self.load_bias().wrapping_load(slot), &mut word) {
+                    return Err(
+                        "the slot of its offset from the thread pointer is unreadable".into(),
+                    );
+                }
+                i64::from_le_bytes(word)
+            }
+            ThreadLocal::Dynamic(offset) => return self.module_thread_local(thread, offset),
+        };
+        let pointer = self
+            .thread_pointer(thread)
+            .ok_or("the thread's thread pointer is unreadable")?;
+        Ok(VirtualAddress::new(pointer.wrapping_add_signed(offset)))
+    }
+
+    /// Where `offset` lies in `thread`'s block of the thread-local storage
+    /// of the module carrying the runtime, as the C library allocated it.
+    fn module_thread_local(
+        &self,
+        _thread: ThreadId,
+        _offset: u64,
+    ) -> Result<VirtualAddress, Arc<str>> {
+        Err("the module's block of thread-local storage cannot be found here".into())
+    }
+
     /// The instruction a stopped thread will execute next.
     fn instruction(&self, thread: ThreadId) -> Option<VirtualAddress>;
 

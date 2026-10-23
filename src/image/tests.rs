@@ -827,7 +827,7 @@ fn the_header_is_checked() {
         ImageError::Format { .. }
     ));
     assert!(matches!(
-        header(|header| header.normalization = 7.into()),
+        header(|header| header.normalization = (format::NORMALIZATION_REVISION + 1).into()),
         ImageError::Normalization { .. }
     ));
     assert_eq!(
@@ -847,7 +847,7 @@ fn the_header_is_checked() {
         ImageError::Malformed(_)
     ));
     assert!(matches!(
-        header(|header| header.tables = 99.into()),
+        header(|header| header.tables = u32::try_from(TableKind::COUNT + 1).unwrap().into()),
         ImageError::Malformed(_)
     ));
 
@@ -2138,7 +2138,7 @@ fn validation_rejects_facts_that_disagree() {
         ),
         (
             "an unknown place",
-            local(|l| l[0].place = 3),
+            local(|l| l[0].place = 4),
             "thread-local variable",
         ),
         (

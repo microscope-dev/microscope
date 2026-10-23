@@ -568,20 +568,7 @@ fn thread_local(
     tls: &ThreadLocal,
     thread: ThreadId,
 ) -> Result<VirtualAddress, Arc<str>> {
-    let pointer = stop
-        .thread_pointer(thread)
-        .ok_or("the thread's thread pointer is unreadable")?;
-    let offset = match *tls {
-        ThreadLocal::Offset(offset) => offset,
-        ThreadLocal::Slot(slot) => {
-            let slot = stop.load_bias().wrapping_load(slot);
-            records::word(stop, slot)
-                .map(u64::cast_signed)
-                .ok_or("the slot of tokio's context is unreadable")?
-        }
-    };
-
-    Ok(VirtualAddress::new(pointer.wrapping_add_signed(offset)))
+    stop.thread_local_address(thread, *tls)
 }
 
 impl RuntimeModel for TokioRuntime {

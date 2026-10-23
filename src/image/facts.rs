@@ -104,13 +104,15 @@ pub mod fact_flags {
 pub struct ThreadLocalRecord {
     pub name: U32,
 
-    /// The offset's two's-complement bits, or the slot's address.
+    /// The offset's two's-complement bits, the slot's address, or the
+    /// offset in the image's block.
     pub value: U64,
 
     /// Why the place is unknown, when [`PLACE_UNKNOWN`].
     pub reason: U32,
 
-    /// [`PLACE_OFFSET`], [`PLACE_SLOT`], or [`PLACE_UNKNOWN`].
+    /// [`PLACE_OFFSET`], [`PLACE_SLOT`], [`PLACE_DYNAMIC`], or
+    /// [`PLACE_UNKNOWN`].
     pub place: u8,
 }
 
@@ -123,6 +125,8 @@ pub const PLACE_OFFSET: u8 = 0;
 pub const PLACE_SLOT: u8 = 1;
 
 pub const PLACE_UNKNOWN: u8 = 2;
+
+pub const PLACE_DYNAMIC: u8 = 3;
 
 /// Why facts could not be encoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -219,6 +223,7 @@ pub fn add_to(
             let (place, value, reason) = match place {
                 Ok(ThreadLocal::Offset(offset)) => (PLACE_OFFSET, offset.cast_unsigned(), NONE),
                 Ok(ThreadLocal::Slot(address)) => (PLACE_SLOT, address.get(), NONE),
+                Ok(ThreadLocal::Dynamic(offset)) => (PLACE_DYNAMIC, *offset, NONE),
                 Err(reason) => (PLACE_UNKNOWN, 0, push(reason)?),
             };
 
@@ -364,6 +369,7 @@ impl<'a> FactsView<'a> {
         match record.place {
             PLACE_OFFSET => Ok(ThreadLocal::Offset(record.value.get().cast_signed())),
             PLACE_SLOT => Ok(ThreadLocal::Slot(ImageAddress::new(record.value.get()))),
+            PLACE_DYNAMIC => Ok(ThreadLocal::Dynamic(record.value.get())),
             _ => Err(self.strings.get(StrId(record.reason.get())).into()),
         }
     }
@@ -417,7 +423,7 @@ pub(super) fn validate(image: &Image) -> Result<(), String> {
     if !thread_locals.iter().all(|record| {
         strings.contains(StrId(record.name.get()))
             && match record.place {
-                PLACE_OFFSET | PLACE_SLOT => record.reason.get() == NONE,
+                PLACE_OFFSET | PLACE_SLOT | PLACE_DYNAMIC => record.reason.get() == NONE,
                 PLACE_UNKNOWN => {
                     record.value.get() == 0 && strings.contains(StrId(record.reason.get()))
                 }
