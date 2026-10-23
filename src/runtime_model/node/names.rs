@@ -58,39 +58,60 @@ fn keeps_name_accessor(reader: &Reader<'_>, function: Object) -> Result<bool, Pr
 /// one V8 inferred from where it was defined; empty for an anonymous
 /// function.
 pub(super) fn function_name(reader: &Reader<'_>, shared: Object) -> Result<String, Problem> {
+    let (name, scope) = shared_name(reader, shared)?;
+    if let Some(name) = name {
+        let name = reader.string(name)?;
+        if !name.is_empty() {
+            return Ok(name);
+        }
+    }
+    inferred_name(reader, shared, scope)
+}
+
+/// A function's own name, if any, and its scope with its flags, if any.
+type SharedName = (Option<Object>, Option<(Object, i64)>);
+
+/// The string `SharedFunctionInfo::Name` gives, its own name with none
+/// inferred, or `None` for none; and the function's scope with its flags,
+/// where it keeps one.
+pub(super) fn shared_name(reader: &Reader<'_>, shared: Object) -> Result<SharedName, Problem> {
     let word = reader.field(shared, Field::SharedFunctionInfoNameOrScopeInfo)?;
     // V8 keeps the Smi 0 for a function with no name and no scope.
     let Some(held) = reader.object(word)? else {
-        return inferred_name(reader, shared, None);
+        return Ok((None, None));
     };
     if !reader.is(held, Constant::ScopeInfoType)? {
-        let name = reader.string(held)?;
-        return if name.is_empty() {
-            inferred_name(reader, shared, None)
-        } else {
-            Ok(name)
-        };
+        if reader.instance_type(held)? >= reader.constant(Constant::FirstNonstringType)? {
+            return Err(format!("the name of {:#x} is no string", shared.0).into());
+        }
+        return Ok((Some(held), None));
     }
 
     let flags = scope_flags(reader, held)?;
     let function_variable = (flags & reader.constant(Constant::ScopeFunctionVariableMask)?)
         >> reader.constant(Constant::ScopeFunctionVariableShift)?;
     // VariableAllocationInfo::NONE is 0: the scope keeps no name.
-    if function_variable != 0 {
-        let name = scope_word(reader, held, ScopeInfoSlice::FunctionVariableInfo)?;
-        if let Some(name) = name.map(|word| reader.object(word)).transpose()?.flatten() {
-            let name = reader.string(name)?;
-            if !name.is_empty() {
-                return Ok(name);
-            }
-        }
-    }
-    inferred_name(reader, shared, Some((held, flags)))
+    let name = if function_variable == 0 {
+        None
+    } else {
+        scope_word(reader, held, ScopeInfoSlice::FunctionVariableInfo)?
+            .map(|word| reader.object(word))
+            .transpose()?
+            .flatten()
+            .filter(|name| {
+                reader.instance_type(*name).is_ok_and(|ty| {
+                    reader
+                        .constant(Constant::FirstNonstringType)
+                        .is_ok_and(|end| ty < end)
+                })
+            })
+    };
+    Ok((name, Some((held, flags))))
 }
 
 /// The flags of the scope `scope`: a Smi before V8 13, a 32-bit integer
 /// since.
-fn scope_flags(reader: &Reader<'_>, scope: Object) -> Result<i64, Problem> {
+pub(super) fn scope_flags(reader: &Reader<'_>, scope: Object) -> Result<i64, Problem> {
     let word = reader.field(scope, Field::ScopeInfoFlags)?;
     if reader.version.major < 13 {
         return reader

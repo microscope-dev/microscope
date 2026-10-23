@@ -195,8 +195,14 @@ function gallery(unread) {
     promises: promises(),
     binary: binary(),
   };
+  // A closure that captures values and unread makes V8 keep both in the
+  // frame's context, where its scope names them at any stop. A variable
+  // no closure captures lives in a register, which only V8's parser can
+  // name (F11).
+  const captured = () => [values, unread];
   truth.checkpoint('gallery', {locals: paths('values', values)});
   truth.checkpoint('unread', {locals: {unread}});
+  return captured;
 }
 
 /**

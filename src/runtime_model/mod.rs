@@ -1231,6 +1231,12 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         Err(InterpretedFailure::interprets_nothing())
     }
 
+    /// The language whose values the runtime interprets, which names their
+    /// types. Only a runtime that interprets values is asked.
+    fn interpreted_language(&self) -> crate::SourceLanguage {
+        crate::SourceLanguage::Python
+    }
+
     /// The names native code gives the interpreter's objects: the type a
     /// pointer to one points to, as C's `PyObject`, and the dynamic type an
     /// expression casts such a pointer to, to reach into the object. A

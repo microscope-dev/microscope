@@ -34,11 +34,6 @@
 //! `<unreadable: REASON>`. A state this port does not reproduce prints as
 //! `<unsupported: REASON>`. Neither text is ever Node's.
 
-#![cfg_attr(
-    not(test),
-    allow(dead_code, reason = "the V8 value reader is being written beside it")
-)]
-
 mod error;
 mod format;
 mod text;
@@ -76,6 +71,12 @@ impl ValueGraph {
     /// its contents refer back to it.
     pub fn object_mut(&mut self, id: ObjectId) -> Option<&mut Object> {
         self.objects.get_mut(id.index())
+    }
+
+    /// The object in a row.
+    #[must_use]
+    pub fn row(&self, id: ObjectId) -> Option<&Object> {
+        self.objects.get(id.index())
     }
 
     fn object(&self, id: ObjectId) -> Option<&Object> {
@@ -227,6 +228,10 @@ pub enum Constructor {
     /// last before the one whose prototype is null; that one, the end, is
     /// taken as an ordinary object, with V8's name `end` and with or without
     /// own enumerable properties.
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "the reader does not yet name an unnamed chain")
+    )]
     Unnamed {
         names: Vec<JsString>,
         end: JsString,

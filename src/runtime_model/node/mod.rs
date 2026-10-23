@@ -8,25 +8,40 @@
 //! them by V8's frame-pointer convention. The model names each such frame
 //! as V8 recorded it ([`RuntimeModel::code_frame`]).
 
+mod access;
+mod call_sites;
+mod collections;
 mod compiled;
+mod errors;
 mod frames;
 mod inspect;
+mod lookup;
 mod names;
 mod objects;
+mod own;
 mod positions;
+mod present;
 mod properties;
 mod translation;
+mod typed;
+mod values;
+mod variables;
 
 use std::path::Path;
 use std::sync::Arc;
 
 use super::{
     CodeFrame, Crossing, DescribedFrame, HeldIdentity, Partial, RuntimeException, RuntimeHook,
-    RuntimeImage, RuntimeModel, RuntimeSignals, RuntimeStop, StartedTask, StoredValue, TaskContext,
-    TaskPage, TaskRef, TaskStarter, ThreadActivity, ThreadHolding, Unbound,
+    RuntimeImage, RuntimeModel, RuntimeSignals, RuntimeStop, StartedTask, StopMemory, StoredValue,
+    TaskContext, TaskPage, TaskRef, TaskStarter, ThreadActivity, ThreadHolding, Unbound,
 };
 use crate::ThreadLocal;
 use crate::image::v8::{DispatchTable, EmbeddedBlob, V8Layout, V8Version};
+use crate::inspection::InspectionBudget;
+use crate::runtime_model::{
+    InterpretedChild, InterpretedFailure, InterpretedHandle, InterpretedLocal, InterpretedName,
+    InterpretedOperand, InterpretedSlot, InterpretedStep, ObjectTypes,
+};
 use crate::unwind::RegisterFile;
 use crate::{AddressRange, ImageAddress, StackSegment, ThreadId, VirtualAddress};
 
@@ -105,6 +120,62 @@ struct NodeRuntime {
 }
 
 impl NodeRuntime {
+    /// What `read` gives of the process at `stop`, read through the layout,
+    /// each read charged to `budget`; or why nothing can be read.
+    fn reading<T>(
+        &self,
+        stop: &dyn RuntimeStop,
+        budget: &mut InspectionBudget,
+        read: impl FnOnce(&objects::Reader<'_>) -> Result<T, objects::Problem>,
+    ) -> Result<T, objects::Problem> {
+        let layout = self.reading.as_ref().map_err(Arc::clone)?;
+        let budget = std::cell::RefCell::new(budget);
+        let read_now = StopMemory::default();
+        let charge = |bytes: usize| -> Result<(), objects::Problem> {
+            budget
+                .borrow_mut()
+                .consume_memory(bytes)
+                .map_err(|exhaustion| {
+                    crate::VariableUnavailableReason::InspectionLimit(exhaustion)
+                        .to_string()
+                        .into()
+                })
+        };
+        let reader = objects::Reader {
+            stop,
+            layout,
+            version: self.version,
+            charge: Some(&charge),
+            // Blocks read at the stop are kept while it lasts, where the
+            // debugger keeps them, and while this read lasts otherwise.
+            blocks: Some(stop.memory().unwrap_or(&read_now)),
+        };
+        read(&reader)
+    }
+
+    /// The Node major version whose `util.inspect` values are written as:
+    /// V8 12 is Node 22's, 13 Node 24's, and 14 Node 26's.
+    const fn node_major(&self) -> u32 {
+        match self.version.major {
+            ..=12 => 22,
+            13 => 24,
+            _ => 26,
+        }
+    }
+
+    /// As [`Self::reading`], for an expression, whose failure is the value
+    /// being unavailable.
+    fn expression<T>(
+        &self,
+        stop: &dyn RuntimeStop,
+        budget: &mut InspectionBudget,
+        read: impl FnOnce(&objects::Reader<'_>) -> Result<T, objects::Problem>,
+    ) -> Result<T, InterpretedFailure> {
+        self.reading(stop, budget, read).map_err(|problem| {
+            InterpretedFailure::Unavailable(crate::VariableUnavailableReason::Interpreted(problem))
+        })
+    }
+
     /// The embedded builtins' code as `stop` says V8 stored its bounds:
     /// a pointer, then a 32-bit size. `None` before V8 stored them, and
     /// where they cannot be read.
@@ -155,6 +226,8 @@ impl RuntimeModel for NodeRuntime {
             stop,
             layout,
             version: self.version,
+            charge: None,
+            blocks: stop.memory(),
         };
         frames::describe(
             &reader,
@@ -303,5 +376,170 @@ impl RuntimeModel for NodeRuntime {
 
     fn own_source(&self, path: &Path) -> bool {
         path.to_str().is_some_and(|path| path.starts_with("node:"))
+    }
+
+    fn interpreted_language(&self) -> crate::SourceLanguage {
+        crate::SourceLanguage::JavaScript
+    }
+
+    fn interpreted_locals(
+        &self,
+        stop: &dyn RuntimeStop,
+        frame: VirtualAddress,
+        budget: &mut InspectionBudget,
+    ) -> Result<Vec<InterpretedLocal>, Arc<str>> {
+        let major = self.node_major();
+        self.reading(stop, budget, |reader| {
+            Ok(variables::variables(reader, frame.get())?
+                .into_iter()
+                .map(|variable| InterpretedLocal {
+                    name: variable.name.into(),
+                    parameter: matches!(
+                        variable.kind,
+                        variables::Kind::Receiver | variables::Kind::Argument(_)
+                    ),
+                    slot: match variable.word {
+                        Ok(word) => {
+                            present::value(reader, present::Handle::Tagged(word).handle(), major)
+                        }
+                        Err(problem) => InterpretedSlot::Unreadable(problem),
+                    },
+                })
+                .collect())
+        })
+    }
+
+    fn interpreted_children(
+        &self,
+        stop: &dyn RuntimeStop,
+        (object, _part): (InterpretedHandle, &[u64]),
+        range: std::ops::Range<u64>,
+        budget: &mut InspectionBudget,
+    ) -> Result<Vec<InterpretedChild>, Arc<str>> {
+        let major = self.node_major();
+        self.reading(stop, budget, |reader| {
+            present::children(reader, object, range, major)
+        })
+    }
+
+    fn interpreted_name(
+        &self,
+        stop: &dyn RuntimeStop,
+        frame: VirtualAddress,
+        name: &str,
+        budget: &mut InspectionBudget,
+    ) -> Result<Option<InterpretedName>, InterpretedFailure> {
+        self.expression(stop, budget, |reader| {
+            Ok(
+                access::bind(reader, frame.get(), name)?.map(|bound| match bound {
+                    access::Bound::Variable(index) => InterpretedName::Variable(index),
+                    access::Bound::Value(handle) => InterpretedName::Object(handle),
+                }),
+            )
+        })
+    }
+
+    fn interpreted_variable(
+        &self,
+        stop: &dyn RuntimeStop,
+        frame: VirtualAddress,
+        slot: u32,
+        budget: &mut InspectionBudget,
+    ) -> Result<InterpretedHandle, InterpretedFailure> {
+        self.expression(stop, budget, |reader| {
+            access::variable(reader, frame.get(), slot)
+        })
+    }
+
+    fn interpreted_step(
+        &self,
+        stop: &dyn RuntimeStop,
+        object: InterpretedHandle,
+        taken: InterpretedStep<'_>,
+        budget: &mut InspectionBudget,
+    ) -> Result<InterpretedHandle, InterpretedFailure> {
+        let found = self.expression(stop, budget, |reader| match taken {
+            InterpretedStep::Attribute(name) => access::member(reader, object, name),
+            InterpretedStep::Item(key) => access::item(reader, object, key),
+        })?;
+        // A property no object along the chain has is undefined, which no
+        // handle names apart from its oddball, as a lookup of it reads.
+        found.ok_or_else(|| {
+            InterpretedFailure::Refused(
+                crate::eval::error::ErrorKind::MissingKey,
+                "the value has no such property".into(),
+            )
+        })
+    }
+
+    fn interpreted_operand(
+        &self,
+        stop: &dyn RuntimeStop,
+        object: InterpretedHandle,
+        budget: &mut InspectionBudget,
+    ) -> Result<InterpretedOperand, InterpretedFailure> {
+        let major = self.node_major();
+        self.expression(stop, budget, |reader| {
+            access::operand(reader, object, major)
+        })
+    }
+
+    fn interpreted_length(
+        &self,
+        stop: &dyn RuntimeStop,
+        object: InterpretedHandle,
+        budget: &mut InspectionBudget,
+    ) -> Result<u64, InterpretedFailure> {
+        self.expression(stop, budget, |reader| access::length(reader, object))
+    }
+
+    fn interpreted_address(&self, handle: InterpretedHandle) -> Option<VirtualAddress> {
+        match present::Handle::of(handle) {
+            present::Handle::Double(address) => Some(VirtualAddress::new(address)),
+            present::Handle::Tagged(word) => {
+                let layout = self.reading.as_ref().ok()?;
+                let mask = layout.constant(crate::image::v8::Constant::HeapObjectTagMask)?;
+                let tag = layout.constant(crate::image::v8::Constant::HeapObjectTag)?;
+                (word & mask.cast_unsigned() == tag.cast_unsigned())
+                    .then(|| VirtualAddress::new(word - tag.cast_unsigned()))
+            }
+        }
+    }
+
+    /// A Node-API handle, `napi_value`, points to the slot that holds the
+    /// value's tagged word.
+    fn interpreted_handle(
+        &self,
+        stop: &dyn RuntimeStop,
+        address: VirtualAddress,
+        budget: &mut InspectionBudget,
+    ) -> Result<InterpretedHandle, InterpretedFailure> {
+        self.expression(stop, budget, |reader| {
+            let word = reader.word(address.get())?;
+            if reader.smi(word)?.is_none() && reader.object(word)?.is_none() {
+                return Err(format!("{address} holds no JavaScript value").into());
+            }
+            Ok(present::Handle::Tagged(word).handle())
+        })
+    }
+
+    fn object_types(&self) -> Option<ObjectTypes> {
+        Some(ObjectTypes {
+            native: "napi_value__",
+            cast: "js",
+        })
+    }
+
+    fn interpreted_value(
+        &self,
+        stop: &dyn RuntimeStop,
+        object: InterpretedHandle,
+        budget: &mut InspectionBudget,
+    ) -> InterpretedSlot {
+        let major = self.node_major();
+        self.reading(stop, budget, |reader| {
+            Ok(present::value(reader, object, major))
+        })
+        .unwrap_or_else(InterpretedSlot::Unreadable)
     }
 }

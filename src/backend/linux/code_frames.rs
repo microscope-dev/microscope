@@ -10,14 +10,14 @@
 
 use std::collections::BTreeSet;
 
-use super::frames::{Expanded, FrameSource, PhysicalStack, StackRoot};
+use super::frames::{Expanded, FrameOrigin, FrameSource, PhysicalStack, StackRoot};
 use super::runtimes::{BoundRuntime, ProcessCode};
 use super::{Controller, Inferior};
 use crate::backend::linux::native::InspectionOps;
 use crate::error::{Error, Result};
 use crate::runtime_model::{CodeFrame, DescribedFrame};
 use crate::unwind::{UnwindModule, unwind_module_for};
-use crate::{FrameKind, ModuleId, StackFrame};
+use crate::{FrameKind, ModuleId, RuntimeId, StackFrame};
 
 impl<P: InspectionOps> Controller<P> {
     /// Names each frame of `expanded` whose code a runtime owns as the
@@ -63,7 +63,7 @@ impl<P: InspectionOps> Controller<P> {
                 owner.model.code_frame(stop, &frame)
             });
             if let Some(description) = description {
-                described.push((activation, description));
+                described.push((activation, owner.id, description));
             }
         }
 
@@ -130,9 +130,13 @@ fn owner<'a>(
 
 /// Replaces each described activation's frames with the functions its
 /// runtime recorded: those inlined as inline frames, then its own as the
-/// physical frame, which keeps its instruction, module, and symbol. A
-/// description with no function only sets the role.
-fn rewrite(expanded: &mut Expanded, described: &[(usize, DescribedFrame)]) -> Result<()> {
+/// physical frame, which keeps its instruction, module, and symbol, each
+/// with its runtime as its source. A description with no function only
+/// sets the role.
+fn rewrite(
+    expanded: &mut Expanded,
+    described: &[(usize, RuntimeId, DescribedFrame)],
+) -> Result<()> {
     let mut frames = Vec::with_capacity(expanded.trace.frames.len());
     let mut origins = Vec::with_capacity(expanded.origins.len());
     let mut next = described.iter().peekable();
@@ -143,11 +147,11 @@ fn rewrite(expanded: &mut Expanded, described: &[(usize, DescribedFrame)]) -> Re
         let origin = expanded.origins[index];
         let description = next
             .peek()
-            .filter(|(activation, _)| {
+            .filter(|(activation, ..)| {
                 *activation == origin.activation && origin.source == FrameSource::Activation
             })
-            .map(|(_, description)| description);
-        let Some(description) = description else {
+            .map(|(_, runtime, description)| (*runtime, description));
+        let Some((runtime, description)) = description else {
             frames.push(old[index].clone());
             origins.push(origin);
             index += 1;
@@ -161,8 +165,20 @@ fn rewrite(expanded: &mut Expanded, described: &[(usize, DescribedFrame)]) -> Re
             .find(|&at| !matches!(old[at].kind, FrameKind::Inline))
             .filter(|&end| expanded.origins[end] == origin)
             .ok_or_else(|| Error::internal("an activation's frames end in its physical frame"))?;
+        let first = frames.len();
         push_described(&mut frames, &old[index..=end], description);
-        origins.resize(frames.len(), origin);
+        let count = frames.len() - first;
+        origins.extend((0..count).map(|at| FrameOrigin {
+            activation: origin.activation,
+            source: if description.functions.is_empty() {
+                origin.source
+            } else {
+                FrameSource::Described {
+                    runtime,
+                    inlined: at + 1 < count,
+                }
+            },
+        }));
         index = end + 1;
     }
 
@@ -224,8 +240,8 @@ mod tests {
     use super::rewrite;
     use crate::runtime_model::DescribedFrame;
     use crate::{
-        Backtrace, CodeRole, FrameKind, RecordedFrame, SourceLanguage, StackFrame, ThreadId,
-        UnwindTermination, VirtualAddress,
+        Backtrace, CodeRole, FrameKind, RecordedFrame, RuntimeId, SourceLanguage, StackFrame,
+        ThreadId, UnwindTermination, VirtualAddress,
     };
 
     fn frame(kind: FrameKind, instruction: u64) -> StackFrame {
@@ -281,7 +297,7 @@ mod tests {
             functions: vec![recorded("inner"), recorded("middle"), recorded("outer")],
             role: CodeRole::Ordinary,
         };
-        rewrite(&mut expanded, &[(1, description)]).unwrap();
+        rewrite(&mut expanded, &[(1, RuntimeId::new(7), description)]).unwrap();
 
         let shape = expanded
             .trace
@@ -313,6 +329,34 @@ mod tests {
             .map(|origin| origin.activation)
             .collect::<Vec<_>>();
         assert_eq!(activations, [0, 1, 1, 1, 2]);
+
+        // The runtime reads the described functions' state: only the
+        // activation's own from its frame.
+        let runtime = RuntimeId::new(7);
+        let sources = expanded
+            .origins
+            .iter()
+            .map(|origin| origin.source)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            sources,
+            [
+                FrameSource::Activation,
+                FrameSource::Described {
+                    runtime,
+                    inlined: true
+                },
+                FrameSource::Described {
+                    runtime,
+                    inlined: true
+                },
+                FrameSource::Described {
+                    runtime,
+                    inlined: false
+                },
+                FrameSource::Activation,
+            ]
+        );
     }
 
     /// A description with no function, as of V8's own machinery, keeps the
@@ -324,7 +368,7 @@ mod tests {
             functions: Vec::new(),
             role: CodeRole::Interpreter,
         };
-        rewrite(&mut expanded, &[(1, description)]).unwrap();
+        rewrite(&mut expanded, &[(1, RuntimeId::new(7), description)]).unwrap();
 
         let roles = expanded
             .trace

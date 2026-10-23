@@ -530,7 +530,7 @@ impl<P: InspectionOps> Controller<P> {
 
         let FrameOrigin { activation, source } = expanded.origins[level];
         let jump = match source {
-            FrameSource::Activation => None,
+            FrameSource::Activation | FrameSource::Described { .. } => None,
             FrameSource::TailCall(module, address) => Some((module, address)),
             FrameSource::Future(future) => {
                 return Ok(self.suspended_frame(frame, selected, &expanded.futures[future]));
@@ -568,10 +568,29 @@ impl<P: InspectionOps> Controller<P> {
             | FrameKind::Interpreted { .. } => PresentedFrame::Physical,
         };
 
-        // Only code a function describes has a source scope.
-        let scope = match (selected.kind, selected.code_instance) {
-            (_, None) => FrameScope::Unavailable,
-            (FrameKind::Inline, Some(instance)) => FrameScope::Inline(instance),
+        // Only code a function describes has a source scope. A function a
+        // runtime recorded is in its runtime's, which reads it from the
+        // frame its frame pointer locates; one its code inlined has none
+        // the frame keeps.
+        let scope = match (selected.kind, selected.code_instance, source) {
+            (
+                _,
+                _,
+                FrameSource::Described {
+                    runtime,
+                    inlined: false,
+                },
+            ) => physical
+                .registers
+                .get(crate::unwind::RBP)
+                .map_or(FrameScope::Unavailable, |fp| FrameScope::Interpreted {
+                    runtime,
+                    frame: VirtualAddress::new(fp),
+                }),
+            (_, _, FrameSource::Described { inlined: true, .. }) | (_, None, _) => {
+                FrameScope::Unavailable
+            }
+            (FrameKind::Inline, Some(instance), _) => FrameScope::Inline(instance),
             (
                 FrameKind::Physical
                 | FrameKind::Signal
@@ -580,6 +599,7 @@ impl<P: InspectionOps> Controller<P> {
                 | FrameKind::Awaited { .. }
                 | FrameKind::Interpreted { .. },
                 Some(_),
+                _,
             ) => FrameScope::Function,
         };
 
@@ -1100,6 +1120,13 @@ pub(super) enum FrameSource {
     /// An interpreted frame its activation runs, or that its thread runs
     /// where its place is unknown, in [`Expanded::interpreted`].
     Interpreted(usize),
+
+    /// A function its activation runs as `runtime` recorded it, as V8
+    /// records its frames: the activation's own, or one its code inlined.
+    Described {
+        runtime: crate::RuntimeId,
+        inlined: bool,
+    },
 }
 
 /// A stack's logical frames, and where each comes from.
@@ -1148,7 +1175,9 @@ impl Expanded {
                 match origin.source {
                     FrameSource::Future(future) => future < self.futures.len(),
                     FrameSource::Interpreted(frame) => frame < self.interpreted.len(),
-                    FrameSource::Activation | FrameSource::TailCall(..) => true,
+                    FrameSource::Activation
+                    | FrameSource::TailCall(..)
+                    | FrameSource::Described { .. } => true,
                 },
                 "the frame at {level} is {:?} of {} futures and {} interpreted frames",
                 origin.source,

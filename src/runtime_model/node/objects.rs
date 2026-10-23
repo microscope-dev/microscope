@@ -29,6 +29,15 @@ pub(super) struct Reader<'a> {
     pub(super) stop: &'a dyn RuntimeStop,
     pub(super) layout: &'a V8Layout,
     pub(super) version: V8Version,
+
+    /// What pays for each read of this many bytes, if anything does: an
+    /// inspection's budget, which refuses a read once it is spent.
+    pub(super) charge: Option<&'a dyn Fn(usize) -> Result<(), Problem>>,
+
+    /// Where the blocks read are kept, if they are: a read of at most a
+    /// block is then read by the block, from those kept where it can be,
+    /// and only a block read anew is paid for.
+    pub(super) blocks: Option<&'a StopMemory>,
 }
 
 /// A tagged word that points to a heap object: its address with the tag.
@@ -37,14 +46,40 @@ pub(super) struct Object(pub(super) u64);
 
 impl Reader<'_> {
     pub(super) fn bytes_into(&self, address: u64, bytes: &mut [u8]) -> Result<(), Problem> {
-        let read = match self.stop.memory() {
-            Some(memory) if bytes.len() <= StopMemory::BLOCK => {
-                copy_through(memory, self.stop, address, bytes)
+        let unreadable = || format!("the memory at {address:#x} is unreadable").into();
+        if let Some(blocks) = self.blocks
+            && bytes.len() <= StopMemory::BLOCK
+            && address.checked_add(bytes.len() as u64).is_some()
+        {
+            // At most two blocks hold the bytes. Where one cannot be read,
+            // the bytes themselves may yet be, as at the end of a mapping
+            // that ends inside a block, so they are read as without blocks.
+            let mut done = 0;
+            while let Some(rest) = bytes.get_mut(done..)
+                && !rest.is_empty()
+            {
+                let copied = blocks.copy(address + done as u64, rest, |start, block| {
+                    if let Some(charge) = self.charge {
+                        charge(block.len())?;
+                    }
+                    Ok::<_, Problem>(self.stop.read(start, block))
+                })?;
+                match copied {
+                    Some(copied) if copied > 0 => done += copied,
+                    _ => break,
+                }
             }
-            _ => self.stop.read(VirtualAddress::new(address), bytes),
-        };
-        read.then_some(())
-            .ok_or_else(|| format!("the memory at {address:#x} is unreadable").into())
+            if done == bytes.len() {
+                return Ok(());
+            }
+        }
+        if let Some(charge) = self.charge {
+            charge(bytes.len())?;
+        }
+        self.stop
+            .read(VirtualAddress::new(address), bytes)
+            .then_some(())
+            .ok_or_else(unreadable)
     }
 
     pub(super) fn word(&self, address: u64) -> Result<u64, Problem> {
@@ -151,6 +186,26 @@ impl Reader<'_> {
             // A hash table is a fixed array of its own type.
             (
                 Constant::NameDictionaryType,
+                Field::FixedArrayBaseLength,
+                Field::FixedArrayObjects,
+            ),
+            (
+                Constant::NumberDictionaryType,
+                Field::FixedArrayBaseLength,
+                Field::FixedArrayObjects,
+            ),
+            (
+                Constant::GlobalDictionaryType,
+                Field::FixedArrayBaseLength,
+                Field::FixedArrayObjects,
+            ),
+            (
+                Constant::OrderedHashMapType,
+                Field::FixedArrayBaseLength,
+                Field::FixedArrayObjects,
+            ),
+            (
+                Constant::OrderedHashSetType,
                 Field::FixedArrayBaseLength,
                 Field::FixedArrayObjects,
             ),
@@ -302,10 +357,7 @@ impl Reader<'_> {
         let width = if one_byte { 1 } else { 2 };
         let length = usize::try_from((end - start) * width).map_err(|_| "a string is too long")?;
         let mut bytes = vec![0; length];
-        self.stop
-            .read(VirtualAddress::new(address + start * width), &mut bytes)
-            .then_some(())
-            .ok_or_else(|| format!("the characters at {address:#x} are unreadable"))?;
+        self.bytes_into(address + start * width, &mut bytes)?;
         if one_byte {
             text.extend(bytes.iter().map(|byte| u16::from(*byte)));
         } else {
@@ -319,25 +371,4 @@ impl Reader<'_> {
         }
         Ok(())
     }
-}
-
-/// Reads `bytes` at `address` through the stop's kept blocks.
-fn copy_through(
-    memory: &StopMemory,
-    stop: &dyn RuntimeStop,
-    address: u64,
-    bytes: &mut [u8],
-) -> bool {
-    let mut done = 0;
-    while done < bytes.len() {
-        let copied =
-            memory.copy::<()>(address + done as u64, &mut bytes[done..], |start, block| {
-                Ok(stop.read(start, block))
-            });
-        match copied {
-            Ok(Some(copied)) if copied > 0 => done += copied,
-            _ => return stop.read(VirtualAddress::new(address), bytes),
-        }
-    }
-    true
 }

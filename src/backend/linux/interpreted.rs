@@ -414,6 +414,9 @@ struct Origin {
     frame: StackFrameId,
     runtime: RuntimeId,
     module: LoadedModule,
+
+    /// The language whose values the runtime interprets.
+    language: SourceLanguage,
 }
 
 impl<P: InspectionOps> Controller<P> {
@@ -593,6 +596,7 @@ pub(super) fn present_slot(
         frame,
         runtime: runtime.id,
         module: runtime.module,
+        language: runtime.model.interpreted_language(),
     }
     .slot(slot)
 }
@@ -612,6 +616,7 @@ pub(super) fn children_reference(
         frame,
         runtime: runtime.id,
         module: runtime.module,
+        language: runtime.model.interpreted_language(),
     }
     .children(object, (Arc::from([]), None), (elements, fields))
 }
@@ -637,7 +642,7 @@ impl Origin {
     fn slot(&self, slot: InterpretedSlot) -> (Option<TypeInfo>, VariableState) {
         let value = match slot {
             InterpretedSlot::Value(value) => value,
-            InterpretedSlot::Number(number) => return Self::number(&number),
+            InterpretedSlot::Number(number) => return self.number(&number),
             InterpretedSlot::Unbound => {
                 return (
                     None,
@@ -692,7 +697,7 @@ impl Origin {
             view: Arc::new(ViewName {
                 source: "microscope".into(),
                 line: 0,
-                header: "Python objects".into(),
+                header: header(self.language).into(),
                 extend: false,
             }),
             shape,
@@ -735,13 +740,13 @@ impl Origin {
             presentation: Some(Arc::new(presentation)),
         };
 
-        (Some(python_type(&value)), state)
+        (Some(interpreted_type(self.language, &value)), state)
     }
 
     /// The type and state the debugger presents a number an object keeps
     /// as the machine does as: the number as stored, written in the
     /// runtime's notation.
-    fn number(number: &InterpretedNumber) -> (Option<TypeInfo>, VariableState) {
+    fn number(&self, number: &InterpretedNumber) -> (Option<TypeInfo>, VariableState) {
         let (encoding, byte_size) = match number.element {
             ArrayElement::Bool => (BaseTypeEncoding::Boolean, 1),
             ArrayElement::Number(
@@ -770,7 +775,7 @@ impl Origin {
                 bit_size: None,
             }),
             identity: Some(Arc::new(interpreted_identity(
-                SourceLanguage::Python,
+                self.language,
                 number.module.as_deref(),
                 &number.type_name,
             ))),
@@ -780,7 +785,7 @@ impl Origin {
             view: Arc::new(ViewName {
                 source: "microscope".into(),
                 line: 0,
-                header: "Python objects".into(),
+                header: header(self.language).into(),
                 extend: false,
             }),
             shape: PresentedShape::Formatted,
@@ -844,9 +849,9 @@ impl Origin {
     }
 }
 
-/// The type of an interpreter's object: a Python type, named by its module
+/// The type of an interpreter's object of `language`, named by its module
 /// and its name there, with no layout the debugger computes with.
-fn python_type(value: &InterpretedValue) -> TypeInfo {
+fn interpreted_type(language: SourceLanguage, value: &InterpretedValue) -> TypeInfo {
     let name = match value.module.as_deref() {
         Some(module) if module != "builtins" => format!("{module}.{}", value.type_name),
         _ => value.type_name.to_string(),
@@ -857,10 +862,13 @@ fn python_type(value: &InterpretedValue) -> TypeInfo {
         name: name.into(),
         byte_size: None,
         kind: TypeKind::Opaque {
-            description: "a Python object".into(),
+            description: match language {
+                SourceLanguage::Python => "a Python object".into(),
+                language => format!("a {} value", language_name(language)).into(),
+            },
         },
         identity: Some(Arc::new(interpreted_identity(
-            SourceLanguage::Python,
+            language,
             value.module.as_deref(),
             &value.type_name,
         ))),
@@ -875,5 +883,23 @@ fn untyped() -> TypeInfo {
         byte_size: None,
         kind: TypeKind::Unspecified,
         identity: None,
+    }
+}
+
+/// The language of an interpreter's values, as messages name it.
+const fn language_name(language: SourceLanguage) -> &'static str {
+    match language {
+        SourceLanguage::JavaScript => "JavaScript",
+        SourceLanguage::TypeScript => "TypeScript",
+        _ => "Python",
+    }
+}
+
+/// The view an interpreter's values are presented through when no view of
+/// the program's presents them.
+fn header(language: SourceLanguage) -> String {
+    match language {
+        SourceLanguage::Python => "Python objects".to_owned(),
+        language => format!("{} values", language_name(language)),
     }
 }

@@ -126,7 +126,7 @@ fn functions(
 }
 
 /// The script `shared` was compiled from, if it was.
-fn script(reader: &Reader<'_>, shared: Object) -> Result<Option<Object>, Problem> {
+pub(super) fn script(reader: &Reader<'_>, shared: Object) -> Result<Option<Object>, Problem> {
     let script = reader.field(shared, Field::SharedFunctionInfoScript)?;
     Ok(match reader.object(script)? {
         Some(script) if reader.is(script, Constant::ScriptType)? => Some(script),
@@ -136,7 +136,7 @@ fn script(reader: &Reader<'_>, shared: Object) -> Result<Option<Object>, Problem
 
 /// The function the JavaScript frame at `fp` runs, or `None` where its
 /// slot holds no function, as in a frame of V8's that keeps a context.
-fn javascript_function(reader: &Reader<'_>, fp: u64) -> Result<Option<Object>, Problem> {
+pub(super) fn javascript_function(reader: &Reader<'_>, fp: u64) -> Result<Option<Object>, Problem> {
     let slot = fp.wrapping_add_signed(reader.constant(Constant::OffFpFunction)?);
     let Some(function) = reader.object(reader.word(slot)?)? else {
         return Ok(None);

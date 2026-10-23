@@ -116,7 +116,7 @@ fn own(reader: &Reader<'_>, holder: Object, map: Object, name: &str) -> Result<O
 
 /// A part of a property's `details`: the bits `mask` takes, shifted down by
 /// `shift`, or by the mask's own zero bits where V8 gives no shift.
-fn part(
+pub(super) fn part(
     reader: &Reader<'_>,
     details: i64,
     mask: Constant,
@@ -167,7 +167,7 @@ pub(super) fn descriptor(
 
 /// The value of the field `index` of `holder`, whose map is `map`: in the
 /// object for the first of them, then in its property array.
-fn field_value(
+pub(super) fn field_value(
     reader: &Reader<'_>,
     holder: Object,
     map: Object,
