@@ -360,7 +360,7 @@ fn inlined(
 ) -> Result<(i64, Option<Object>), Problem> {
     let index = reader.constant(Constant::DeoptimizationDataInliningPositionsIndex)?;
     let records = reader
-        .object(element(reader, deoptimization, index)?)?
+        .object(reader.element(deoptimization, index)?)?
         .ok_or("the deoptimization data keeps no inlining positions")?;
     let bytes = positions::byte_array(reader, records)?;
     let size = reader
@@ -386,13 +386,12 @@ fn inlined(
     }
 
     let literals = reader
-        .object(element(
-            reader,
+        .object(reader.element(
             deoptimization,
             reader.constant(Constant::DeoptimizationDataLiteralArrayIndex)?,
         )?)?
         .ok_or("the deoptimization data keeps no literals")?;
-    let word = element(reader, literals, function)?;
+    let word = reader.element(literals, function)?;
     let shared = match weak(reader, word)? {
         Some(object) => Some(object),
         None => reader.object(word)?,
@@ -404,48 +403,6 @@ fn inlined(
     })
     .ok_or("an inlined function's literal is no function")?;
     Ok((position, Some(shared)))
-}
-
-/// The word at `index` of a fixed array of any of V8's kinds.
-fn element(reader: &Reader<'_>, array: Object, index: i64) -> Result<u64, Problem> {
-    let kinds = [
-        (
-            Constant::FixedArrayType,
-            Field::FixedArrayBaseLength,
-            Field::FixedArrayObjects,
-        ),
-        (
-            Constant::TrustedFixedArrayType,
-            Field::TrustedFixedArrayLength,
-            Field::TrustedFixedArrayObjects,
-        ),
-        (
-            Constant::ProtectedFixedArrayType,
-            Field::ProtectedFixedArrayLength,
-            Field::ProtectedFixedArrayObjects,
-        ),
-        (
-            Constant::WeakFixedArrayType,
-            Field::WeakFixedArrayLength,
-            Field::WeakFixedArrayObjects,
-        ),
-        (
-            Constant::TrustedWeakFixedArrayType,
-            Field::TrustedWeakFixedArrayLength,
-            Field::TrustedWeakFixedArrayObjects,
-        ),
-    ];
-    let ty = reader.instance_type(array)?;
-    let (_, length, objects) = kinds
-        .into_iter()
-        .find(|(kind, length, _)| {
-            reader.layout.has(*length) && reader.constant(*kind).ok() == Some(ty)
-        })
-        .ok_or_else(|| format!("{:#x} is no fixed array", array.0))?;
-    if !(0..reader.smi_field(array, length)?).contains(&index) {
-        return Err(format!("index {index} is past the end of {:#x}", array.0).into());
-    }
-    reader.word(reader.field_address(array, objects)? + index.cast_unsigned() * 8)
 }
 
 /// The bytecode baseline `code` compiled, and the offset in it of the

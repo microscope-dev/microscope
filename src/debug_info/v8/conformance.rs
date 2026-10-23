@@ -333,7 +333,7 @@ const DEOPTIMIZATION_INDICES: [&str; 12] = [
 /// Class constants the generated layouts take from the headers: the name
 /// [`Constant`] gives the class, the classes searched for each, in order
 /// from the class to those it derives from, its header, and the names.
-const HEADER_CLASS_CONSTANTS: [(&str, &[&str], &str, &[&str]); 4] = [
+const HEADER_CLASS_CONSTANTS: [(&str, &[&str], &str, &[&str]); 6] = [
     (
         "HashTableBase",
         &["HashTableBase"],
@@ -362,6 +362,18 @@ const HEADER_CLASS_CONSTANTS: [(&str, &[&str], &str, &[&str]); 4] = [
         &["NameDictionary", "BaseNameDictionary"],
         "src/objects/dictionary.h",
         &["kFlagsIndex", "kEntryValueIndex", "kEntryDetailsIndex"],
+    ),
+    (
+        "PropertyArray",
+        &["PropertyArray"],
+        "src/objects/property-array.h",
+        &["kLengthFieldSize"],
+    ),
+    (
+        "JSFunction",
+        &["JSFunction", "JSFunctionOrBoundFunctionOrWrappedFunction"],
+        "src/objects/js-function.h",
+        &["kNameDescriptorIndex", "kMinDescriptorsForFastBindAndWrap"],
     ),
 ];
 
@@ -527,6 +539,12 @@ fn generate_version(text: &mut String, (major, minor): (u32, u32), torque: &Path
             "{name} is at two offsets"
         );
     }
+    let length_and_hash = fields["PropertyArray::LengthAndHash"];
+    let objects = headers.property_array_objects(i64::from(length_and_hash));
+    fields.insert(
+        "PropertyArray::Objects".to_owned(),
+        u32::try_from(objects).expect("an offset"),
+    );
     let constants = header_constants(&headers, leaptiering);
     let checked = checked_constants(&headers, &constants, &bits);
 

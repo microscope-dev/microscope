@@ -125,18 +125,25 @@ pub fn check_frames(observed: &[Frame], truth: &[Frame]) -> Result<(), String> {
 /// Whether `observed` are the threads `truth` reports, by native id, each
 /// with its frames.
 pub fn check_threads(observed: &[Thread], truth: &[Thread]) -> Result<(), String> {
+    // Every thread's first lie, so that one thread's hides no other's.
+    let mut lies = Vec::new();
     for real in truth {
-        let seen = observed
-            .iter()
-            .find(|thread| thread.native == real.native)
-            .ok_or_else(|| format!("no thread {} ({})", real.native, real.name))?;
-        check_frames(&seen.frames, &real.frames)
-            .map_err(|lie| format!("thread {} ({}): {lie}", real.native, real.name))?;
+        let Some(seen) = observed.iter().find(|thread| thread.native == real.native) else {
+            lies.push(format!("no thread {} ({})", real.native, real.name));
+            continue;
+        };
+        if let Err(lie) = check_frames(&seen.frames, &real.frames) {
+            lies.push(format!("thread {} ({}): {lie}", real.native, real.name));
+        }
     }
     if observed.len() != truth.len() {
-        return Err(format!("{} threads, not {}", observed.len(), truth.len()));
+        lies.push(format!("{} threads, not {}", observed.len(), truth.len()));
     }
-    Ok(())
+    if lies.is_empty() {
+        Ok(())
+    } else {
+        Err(lies.join("; "))
+    }
 }
 
 /// The names of a thread's frames in the fixture `file`, in order.

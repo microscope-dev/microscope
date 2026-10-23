@@ -13,6 +13,7 @@ mod frames;
 mod names;
 mod objects;
 mod positions;
+mod properties;
 
 use std::path::Path;
 use std::sync::Arc;

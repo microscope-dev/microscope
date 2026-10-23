@@ -187,24 +187,15 @@ async fn a_cores_javascript_frames_are_the_ones_v8_reported() {
 /// What N1 does not read yet, each as text a lie about it contains and
 /// why. Every other lie fails a test; these are printed, and leave with the
 /// work that ends them.
-const GAPS: &[(&[&str], &str)] = &[
-    (
-        &[
-            "is Frame { function: \"-\", file: \"node:internal/event_target\"",
-            "not Frame { function: \"[nodejs.internal.kHybridDispatch]\", file: \"node:internal/event_target\"",
-        ],
-        "a symbol-keyed method is named by its `name` property, which needs property lookup",
-    ),
-    (
-        &[
-            "node nixpkgs-24 tiers.js",
-            "is Frame { function: \"osr\", file: \"-\", line: None, column: None",
-            "not Frame { function: \"osr\", file: \"",
-        ],
-        "Maglev code records no position table on this build; its places need the \
+const GAPS: &[(&[&str], &str)] = &[(
+    &[
+        "node nixpkgs-24 tiers.js",
+        "is Frame { function: \"osr\", file: \"-\", line: None, column: None",
+        "not Frame { function: \"osr\", file: \"",
+    ],
+    "Maglev code records no position table on this build; its places need the \
          deoptimization translation",
-    ),
-];
+)];
 
 /// Fails on any lie but the known gaps', which it prints.
 fn assert_truthful(lies: &[String]) {

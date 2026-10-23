@@ -122,6 +122,7 @@ entries! {
         DescriptorArrayNumberOfDescriptors = "DescriptorArray::NumberOfDescriptors",
         DescriptorArrayDescriptors = "DescriptorArray::Descriptors",
         PropertyArrayLengthAndHash = "PropertyArray::LengthAndHash",
+        PropertyArrayObjects = "PropertyArray::Objects",
         AccessorInfoName = "AccessorInfo::Name",
         SwissNameDictionaryHash = "SwissNameDictionary::Hash",
         SwissNameDictionaryCapacity = "SwissNameDictionary::Capacity",
@@ -474,6 +475,7 @@ entries! {
         AccessorInfoType = "ACCESSOR_INFO_TYPE",
         AccessorPairType = "ACCESSOR_PAIR_TYPE",
         JSObjectType = "JS_OBJECT_TYPE",
+        JSObjectPrototypeType = "JS_OBJECT_PROTOTYPE_TYPE",
 
         /// The kinds of code, as [`Constant::CodeKindFieldMask`] of its
         /// flags holds them: `CODE_KIND_LIST`'s order in `code-kind.h`.
@@ -531,6 +533,16 @@ entries! {
         NameDictionaryFlagsIndex = "NameDictionary::kFlagsIndex",
         NameDictionaryEntryValueIndex = "NameDictionary::kEntryValueIndex",
         NameDictionaryEntryDetailsIndex = "NameDictionary::kEntryDetailsIndex",
+
+        /// The bits of a `PropertyArray`'s `LengthAndHash` its length takes,
+        /// the lowest.
+        PropertyArrayLengthFieldSize = "PropertyArray::kLengthFieldSize",
+
+        /// Where a function's map keeps its `name` descriptor while V8
+        /// names the function from its `SharedFunctionInfo`, and the fewest
+        /// own descriptors such a map has (`js-function.h`).
+        JSFunctionNameDescriptorIndex = "JSFunction::kNameDescriptorIndex",
+        JSFunctionMinDescriptorsForFastBindAndWrap = "JSFunction::kMinDescriptorsForFastBindAndWrap",
 
         /// How a weak reference is told from a strong one, and the value
         /// of a cleared one's low 32 bits (`v8-internal.h`, `globals.h`).

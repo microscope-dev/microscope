@@ -334,8 +334,8 @@ fn javascript_frames_show_their_recorded_source() {
 
     let inner = frames
         .iter()
-        .find(|frame| frame["name"] == "betaInner")
-        .expect("the frame of betaInner");
+        .find(|frame| frame["name"] == "betaInnermost")
+        .expect("the frame of betaInnermost");
     assert!(
         inner["source"]["path"]
             .as_str()

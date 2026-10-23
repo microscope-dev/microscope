@@ -130,12 +130,71 @@ impl Reader<'_> {
             })
     }
 
+    /// The word at `index` of a fixed array of any of V8's kinds.
+    pub(super) fn element(&self, array: Object, index: i64) -> Result<u64, Problem> {
+        let kinds = [
+            (
+                Constant::FixedArrayType,
+                Field::FixedArrayBaseLength,
+                Field::FixedArrayObjects,
+            ),
+            (
+                Constant::TrustedFixedArrayType,
+                Field::TrustedFixedArrayLength,
+                Field::TrustedFixedArrayObjects,
+            ),
+            (
+                Constant::ProtectedFixedArrayType,
+                Field::ProtectedFixedArrayLength,
+                Field::ProtectedFixedArrayObjects,
+            ),
+            // A hash table is a fixed array of its own type.
+            (
+                Constant::NameDictionaryType,
+                Field::FixedArrayBaseLength,
+                Field::FixedArrayObjects,
+            ),
+            (
+                Constant::WeakFixedArrayType,
+                Field::WeakFixedArrayLength,
+                Field::WeakFixedArrayObjects,
+            ),
+            (
+                Constant::TrustedWeakFixedArrayType,
+                Field::TrustedWeakFixedArrayLength,
+                Field::TrustedWeakFixedArrayObjects,
+            ),
+        ];
+        let ty = self.instance_type(array)?;
+        let (_, length, objects) = kinds
+            .into_iter()
+            .find(|(kind, length, _)| {
+                self.layout.has(*length) && self.constant(*kind).ok() == Some(ty)
+            })
+            .ok_or_else(|| format!("{:#x} is no fixed array", array.0))?;
+        if !(0..self.smi_field(array, length)?).contains(&index) {
+            return Err(format!("index {index} is past the end of {:#x}", array.0).into());
+        }
+        self.word(self.field_address(array, objects)? + index.cast_unsigned() * 8)
+    }
+
+    /// The map of `object`.
+    pub(super) fn map(&self, object: Object) -> Result<Object, Problem> {
+        let map = self.field(object, Field::HeapObjectMap)?;
+        self.object(map)?
+            .ok_or_else(|| format!("the map of {:#x} is no object", object.0).into())
+    }
+
+    /// The byte `field` of `object` holds.
+    pub(super) fn byte_field(&self, object: Object, field: Field) -> Result<u8, Problem> {
+        let mut byte = [0; 1];
+        self.bytes_into(self.field_address(object, field)?, &mut byte)?;
+        Ok(byte[0])
+    }
+
     /// The instance type of `object`, from its map.
     pub(super) fn instance_type(&self, object: Object) -> Result<i64, Problem> {
-        let map = self.field(object, Field::HeapObjectMap)?;
-        let map = self
-            .object(map)?
-            .ok_or_else(|| format!("the map of {:#x} is no object", object.0))?;
+        let map = self.map(object)?;
         let mut bytes = [0; 2];
         self.bytes_into(self.field_address(map, Field::MapInstanceType)?, &mut bytes)?;
         Ok(i64::from(u16::from_le_bytes(bytes)))

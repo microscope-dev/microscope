@@ -25,7 +25,7 @@ const STACKS: [(&str, &[&str], (&str, &str)); 3] = [
     ),
     (
         "beta",
-        &["betaInner", "betaHandle", "betaFetch"],
+        &["betaInnermost", "betaHandled", "betaFetched"],
         ("label", "'beta-7'"),
     ),
 ];

@@ -59,7 +59,7 @@ pub(super) struct Headers {
     config: BTreeMap<&'static str, bool>,
 }
 
-const FILES: [&str; 12] = [
+const FILES: [&str; 15] = [
     "src/common/globals.h",
     "include/v8-internal.h",
     "src/objects/trusted-object.h",
@@ -72,6 +72,9 @@ const FILES: [&str; 12] = [
     "src/objects/descriptor-array.h",
     "src/objects/property-details.h",
     "src/sandbox/js-dispatch-table.h",
+    "src/objects/js-function.h",
+    "src/objects/property-array.h",
+    "src/objects/property-array.tq",
 ];
 
 /// The headers of 12.4, which has no JS dispatch table.
@@ -201,6 +204,25 @@ impl Headers {
         let expression = namespace_constant(self.file(file), name)
             .unwrap_or_else(|| panic!("{file} defines no {name}"));
         self.eval(file, &[], &expression)
+    }
+
+    /// Where a `PropertyArray`'s properties begin, given where its
+    /// `length_and_hash` is: just after it, the one field
+    /// `property-array.tq` declares, as Torque's `kHeaderSize` puts them.
+    pub(super) fn property_array_objects(&self, length_and_hash: i64) -> i64 {
+        let declared =
+            Regex::new(r"extern\s+class\s+PropertyArray\s+extends\s+HeapObject\s*\{([^}]*)\}")
+                .expect("a pattern")
+                .captures(self.file("src/objects/property-array.tq"))
+                .expect("property-array.tq declares PropertyArray")[1]
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+        assert_eq!(
+            declared, "length_and_hash: Smi;",
+            "PropertyArray declares fields beside length_and_hash"
+        );
+        length_and_hash + self.size("kTaggedSize")
     }
 
     /// The fields of `Code`, from `code.h`'s `CODE_DATA_FIELDS`, which

@@ -100,13 +100,27 @@ fn functions(
     } else {
         offset_in_script(reader, encoding, fp, shared).map(|offset| vec![(shared, offset)])
     };
+    // Only the frame's own function, outermost, is known as a function;
+    // those its code inlined are known by their shared information.
+    let own = (function, shared);
     let functions = match places {
-        Ok(places) => places
-            .into_iter()
-            .map(|(shared, offset)| recorded(reader, shared, Ok(offset)))
-            .collect::<Result<_, _>>()?,
+        Ok(places) => {
+            let count = places.len();
+            places
+                .into_iter()
+                .enumerate()
+                .map(|(index, (inlined, offset))| {
+                    let named = if index + 1 == count && inlined == shared {
+                        Named::Function(own)
+                    } else {
+                        Named::Shared(inlined)
+                    };
+                    recorded(reader, named, Ok(offset))
+                })
+                .collect::<Result<_, _>>()?
+        }
         // The frame's function is known where its place is not.
-        Err(problem) => vec![recorded(reader, shared, Err(problem))?],
+        Err(problem) => vec![recorded(reader, Named::Function(own), Err(problem))?],
     };
     Ok(Some(functions))
 }
@@ -133,15 +147,30 @@ fn javascript_function(reader: &Reader<'_>, fp: u64) -> Result<Option<Object>, P
     Ok((first..=last).contains(&ty).then_some(function))
 }
 
-/// The function `shared` as V8 records it, at `offset` in its script, or
+/// A function a frame runs: one known as a function, with its shared
+/// information, or one an optimized frame inlined, known only by its
+/// shared information.
+#[derive(Clone, Copy)]
+enum Named {
+    Function((Object, Object)),
+    Shared(Object),
+}
+
+/// The function `named` as V8 records it, at `offset` in its script, or
 /// with the problem that it has no place known.
 fn recorded(
     reader: &Reader<'_>,
-    shared: Object,
+    named: Named,
     offset: Result<u64, Problem>,
 ) -> Result<RecordedFrame, Problem> {
+    let (name, shared) = match named {
+        Named::Function((function, shared)) => {
+            (super::names::debug_name(reader, function, shared), shared)
+        }
+        Named::Shared(shared) => (super::names::function_name(reader, shared), shared),
+    };
     // A name that cannot be read leaves the frame its place.
-    let (name, unnamed) = match super::names::function_name(reader, shared) {
+    let (name, unnamed) = match name {
         Ok(name) => (name, None),
         Err(problem) => (String::new(), Some(problem)),
     };

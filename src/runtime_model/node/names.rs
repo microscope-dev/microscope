@@ -4,6 +4,55 @@
 use super::objects::{Object, Problem, Reader};
 use crate::image::v8::{Constant, Field, ScopeInfoSlice, scope_info_slice};
 
+/// The name of `function`, whose shared information is `shared`, as V8's
+/// `JSFunction::GetDebugName` gives it. A function whose map still keeps
+/// the `name` accessor every function starts with is named by `shared`;
+/// any other, as a method keyed by a symbol whose name V8 defined as the
+/// data property `[description]`, by its `name` property where that is a
+/// string.
+pub(super) fn debug_name(
+    reader: &Reader<'_>,
+    function: Object,
+    shared: Object,
+) -> Result<String, Problem> {
+    if !keeps_name_accessor(reader, function)? {
+        let name = super::properties::data_property(reader, function, "name")?;
+        if let Some(name) = name.map(|word| reader.object(word)).transpose()?.flatten()
+            && reader.instance_type(name)? < reader.constant(Constant::FirstNonstringType)?
+        {
+            return reader.string(name);
+        }
+    }
+    function_name(reader, shared)
+}
+
+/// Whether `function`'s map keeps its `name` as V8 first defines it, an
+/// `AccessorInfo` at `kNameDescriptorIndex` (`UseFastFunctionNameLookup`).
+fn keeps_name_accessor(reader: &Reader<'_>, function: Object) -> Result<bool, Problem> {
+    let map = reader.map(function)?;
+    let bits = i64::from(
+        reader
+            .int32_field(map, Field::MapBitField3)?
+            .cast_unsigned(),
+    );
+    let own = (bits & reader.constant(Constant::BitField3NumberOfOwnDescriptorsMask)?)
+        >> reader.constant(Constant::BitField3NumberOfOwnDescriptorsShift)?;
+    if own < reader.constant(Constant::JSFunctionMinDescriptorsForFastBindAndWrap)? {
+        return Ok(false);
+    }
+    let index = reader.constant(Constant::JSFunctionNameDescriptorIndex)?;
+    let key = super::properties::descriptor(reader, map, index, Constant::PropDescKey)?;
+    if !super::properties::is_named(reader, key, "name")? {
+        return Ok(false);
+    }
+    // A weak reference is no object to the reader, so only a strong
+    // pointer is followed, as `GetHeapObjectIfStrong` follows it.
+    let value = super::properties::descriptor(reader, map, index, Constant::PropDescValue)?;
+    reader.object(value)?.map_or(Ok(false), |value| {
+        reader.is(value, Constant::AccessorInfoType)
+    })
+}
+
 /// The function's name as V8's `SharedFunctionInfo::DebugName` gives it:
 /// its own, kept in the function's scope once it is compiled, or else the
 /// one V8 inferred from where it was defined; empty for an anonymous
