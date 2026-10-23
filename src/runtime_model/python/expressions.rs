@@ -32,6 +32,7 @@ use super::library::Library;
 use super::objects::{Problem, Record, malformed};
 use super::text;
 use super::values::{Dict, Object, Values, exact};
+use super::{address, handle};
 use crate::eval::error::ErrorKind;
 use crate::eval::target::{MAX_TUPLE_DEPTH, MAX_TUPLE_KEYS};
 use crate::image::python::{Constant, Field};
@@ -133,7 +134,7 @@ impl Values<'_, '_> {
             };
 
             if let Some(object) = self.lookup(dict, &key)? {
-                return Ok(Some(InterpretedName::Object(object)));
+                return Ok(Some(InterpretedName::Object(handle(object))));
             }
         }
 
@@ -397,18 +398,19 @@ impl Values<'_, '_> {
             InterpretedKey::Text(text) => return self.text_hash(dict, text),
             InterpretedKey::Tuple(items) => items,
             InterpretedKey::Object(object) => {
-                match self.read(*object)? {
+                let object = address(*object);
+                match self.read(object)? {
                     // A NaN equals nothing, itself included, so its hash is
                     // its object's identity.
                     Object::Float(value) if value.is_nan() => {
-                        return Ok(Some(hash_pointer(*object)));
+                        return Ok(Some(hash_pointer(object)));
                     }
 
                     // A str keeps its hash once one is asked of it.
                     Object::Str { .. } => {
                         let kept = self
                             .reader
-                            .head(*object)
+                            .head(object)
                             .and_then(|head| head.field_word(Field::UnicodeHash))
                             .map(u64::cast_signed)
                             .map_err(|problem| self.unavailable(problem))?;
@@ -419,7 +421,7 @@ impl Values<'_, '_> {
                     _ => {}
                 }
 
-                return self.key_hash(dict, &self.held(*object, depth)?, depth);
+                return self.key_hash(dict, &self.held(object, depth)?, depth);
             }
             key => return Ok(hash(key)),
         };
@@ -502,7 +504,12 @@ impl Values<'_, '_> {
                 let items = self
                     .items(*items, 0, *length)
                     .map_err(|problem| self.unavailable(problem))?;
-                InterpretedKey::Tuple(items.into_iter().map(InterpretedKey::Object).collect())
+                InterpretedKey::Tuple(
+                    items
+                        .into_iter()
+                        .map(|item| InterpretedKey::Object(handle(item)))
+                        .collect(),
+                )
             }
             read => {
                 return Err(refused(
@@ -522,7 +529,7 @@ impl Values<'_, '_> {
     /// index of a sequence, which takes no identity.
     fn resolved(&self, key: &InterpretedKey) -> Result<InterpretedKey, InterpretedFailure> {
         match key {
-            InterpretedKey::Object(object) => self.held(*object, 0),
+            InterpretedKey::Object(object) => self.held(address(*object), 0),
             key => Ok(key.clone()),
         }
     }
@@ -531,7 +538,7 @@ impl Values<'_, '_> {
     /// program's that cannot be read is written by its address.
     fn key_text(&self, key: &InterpretedKey, depth: usize) -> String {
         match key {
-            InterpretedKey::Object(object) => self.held(*object, depth).map_or_else(
+            InterpretedKey::Object(object) => self.held(address(*object), depth).map_or_else(
                 |_| format!("<object at {:#x}>", object.get()),
                 |held| self.key_text(&held, depth),
             ),
@@ -586,7 +593,7 @@ impl Values<'_, '_> {
 
                 // The very object is found before any hash is compared.
                 if entry.value != VirtualAddress::new(0)
-                    && matches!(key, InterpretedKey::Object(object) if *object == entry.key)
+                    && matches!(key, InterpretedKey::Object(object) if address(*object) == entry.key)
                 {
                     return Ok(Some(entry.value));
                 }
@@ -723,9 +730,11 @@ impl Values<'_, '_> {
     ) -> Result<Compared, InterpretedFailure> {
         let held;
         let wanted = match wanted {
-            InterpretedKey::Object(object) if *object == address => return Ok(Compared::Equal),
+            InterpretedKey::Object(object) if *object == handle(address) => {
+                return Ok(Compared::Equal);
+            }
             InterpretedKey::Object(object) => {
-                held = self.held(*object, depth)?;
+                held = self.held(super::address(*object), depth)?;
                 &held
             }
             wanted => wanted,

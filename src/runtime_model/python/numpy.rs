@@ -449,8 +449,9 @@ impl Values<'_, '_> {
                 };
                 let text = self.array_text(&row, &mut summary);
                 InterpretedSlot::Value(InterpretedValue {
-                    object,
-                    class: class.address,
+                    object: super::handle(object),
+                    address: Some(object),
+                    class: super::handle(class.address),
                     module: class.module.clone(),
                     type_name: Arc::clone(&class.name),
                     kind: row.kind(),

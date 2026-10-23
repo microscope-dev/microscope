@@ -772,8 +772,8 @@ impl<P: InspectionOps> Controller<P> {
     }
 
     /// The watched bytes, and an interpreted variable's value as its
-    /// runtime presents it. Such a variable's word names its object by an
-    /// address the runtime may tag; the object's address stands for its
+    /// runtime presents it. Such a variable's word names its object in an
+    /// encoding the runtime may tag; the object's handle stands for its
     /// bytes, so that a variable given the same object again is unchanged.
     fn observe(
         &self,
@@ -825,7 +825,7 @@ impl<P: InspectionOps> Controller<P> {
                 }
             },
         );
-        let object = object.map_or(0, VirtualAddress::get);
+        let object = object.map_or(0, crate::runtime_model::InterpretedHandle::get);
 
         Ok((Some(Arc::from(object.to_le_bytes())), Some(value)))
     }

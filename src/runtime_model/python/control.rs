@@ -240,7 +240,7 @@ impl super::Reading {
             AssignedValue::Bool(value) => serde_json::json!(["bool", u8::from(*value)]),
             AssignedValue::Text(text) => serde_json::json!(["str", text.as_ref()]),
             AssignedValue::Nothing => serde_json::json!(["none"]),
-            AssignedValue::Object(address) => serde_json::json!(["object", address.get()]),
+            AssignedValue::Object(object) => serde_json::json!(["object", object.get()]),
         };
 
         Ok(Some((

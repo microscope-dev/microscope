@@ -15,8 +15,8 @@ use crate::eval::number::{Exact, Float, FloatFormat};
 use crate::eval::target::{Key, Loaded, LoadedValue, Lookup, Refusal, Stop};
 use crate::inspection::InspectionBudget;
 use crate::runtime_model::{
-    InterpretedFailure, InterpretedKey, InterpretedKind, InterpretedName, InterpretedStep,
-    RuntimeStop,
+    InterpretedFailure, InterpretedHandle, InterpretedKey, InterpretedKind, InterpretedName,
+    InterpretedStep, RuntimeStop,
 };
 use crate::{Error, InspectedValue, Presentation, RuntimeId, VariableState, VirtualAddress};
 
@@ -161,11 +161,46 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
         })
     }
 
+    /// The address of an interpreter's object, refused where its value
+    /// lives in no memory.
+    pub(super) fn interpreted_address(
+        &self,
+        runtime: RuntimeId,
+        object: InterpretedHandle,
+    ) -> Result<u64, Stop> {
+        let bound = self.frame.bound(runtime).map_err(Stop::Failed)?;
+        bound
+            .model
+            .interpreted_address(object)
+            .map(VirtualAddress::get)
+            .ok_or_else(|| {
+                Stop::Refused(Refusal::new(
+                    ErrorKind::NotAnLvalue,
+                    "the interpreter's value lives in no memory, which has no address",
+                ))
+            })
+    }
+
+    /// The place of the object of `runtime` that a native pointer to its
+    /// objects, whose value is `address`, points to.
+    pub(super) fn interpreted_cast(
+        &mut self,
+        runtime: RuntimeId,
+        address: VirtualAddress,
+    ) -> Result<Place, Stop> {
+        let object = self
+            .interpreted(runtime, |bound, stop, budget| {
+                bound.model.interpreted_handle(stop, address, budget)
+            })?
+            .map_err(stop)?;
+        Ok(Place::Interpreted { runtime, object })
+    }
+
     /// The length of an interpreter's object.
     pub(super) fn interpreted_length(
         &mut self,
         runtime: RuntimeId,
-        object: VirtualAddress,
+        object: InterpretedHandle,
     ) -> Result<u64, Stop> {
         self.interpreted(runtime, |bound, stop, budget| {
             bound.model.interpreted_length(stop, object, budget)
@@ -177,7 +212,7 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
     pub(super) fn interpreted_operand(
         &mut self,
         runtime: RuntimeId,
-        object: VirtualAddress,
+        object: InterpretedHandle,
     ) -> Result<Loaded, Stop> {
         let operand = self
             .interpreted(runtime, |bound, stop, budget| {
@@ -242,10 +277,19 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
             return Ok(None);
         };
 
+        // A pointer that names none of the runtime's objects is presented
+        // as the pointer it is.
         let budget = &mut *self.budget;
         let slot = frame.with_stop(&bound, |stop| {
-            bound.model.interpreted_value(stop, object, budget)
+            match bound.model.interpreted_handle(stop, object, budget) {
+                Ok(object) => Ok(Some(bound.model.interpreted_value(stop, object, budget))),
+                Err(InterpretedFailure::Refused(..)) => Ok(None),
+                Err(failure) => Err(failure),
+            }
         });
+        let Some(slot) = slot.map_err(stop)? else {
+            return Ok(None);
+        };
 
         Ok(match self.present_interpreted(&bound, slot)? {
             (_, VariableState::Available { presentation, .. }) => presentation,
@@ -258,7 +302,7 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
     pub(super) fn interpreted_present(
         &mut self,
         runtime: RuntimeId,
-        object: VirtualAddress,
+        object: InterpretedHandle,
     ) -> Result<InspectedValue, Stop> {
         let bound = self.frame.bound(runtime).map_err(Stop::Failed)?;
         let slot = self.interpreted(runtime, |bound, stop, budget| {
@@ -273,7 +317,7 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
     pub(super) fn interpreted_present_stored(
         &mut self,
         runtime: RuntimeId,
-        object: VirtualAddress,
+        object: InterpretedHandle,
     ) -> Result<InspectedValue, Stop> {
         let frame = self.frame;
         let (type_info, state) = self.interpreted(runtime, |bound, stop, budget| {
@@ -323,7 +367,7 @@ pub(super) fn interpreted_key(key: &Key) -> Result<InterpretedKey, Stop> {
                 .map(interpreted_key)
                 .collect::<Result<_, _>>()?,
         ),
-        Key::Object(address) => InterpretedKey::Object(crate::VirtualAddress::new(*address)),
+        Key::Object(object) => InterpretedKey::Object(InterpretedHandle::new(*object)),
         Key::Address(_) => {
             return Err(refused(
                 "an interpreter's object is indexed by numbers, truth values, text, and the \

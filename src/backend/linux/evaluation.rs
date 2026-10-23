@@ -187,10 +187,10 @@ pub(super) enum Place {
     /// A value of one module's types.
     Native(StopPlace),
 
-    /// An interpreter's object, which `runtime` keeps at `object`.
+    /// An interpreter's object, which `runtime` names by `object`.
     Interpreted {
         runtime: crate::RuntimeId,
-        object: VirtualAddress,
+        object: crate::runtime_model::InterpretedHandle,
     },
 }
 
@@ -1167,7 +1167,9 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
     fn address(&self, at: &Place) -> std::result::Result<u64, Stop> {
         let at = match at {
             Place::Native(at) => at,
-            Place::Interpreted { object, .. } => return Ok(object.get()),
+            Place::Interpreted { runtime, object } => {
+                return self.interpreted_address(*runtime, *object);
+            }
         };
 
         let not_in_memory = |where_: &str| {
@@ -1438,10 +1440,17 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
                 "the binder casts only to an interpreter's dynamic type",
             ))
         })?;
-        Ok(Place::Interpreted {
-            runtime,
-            object: VirtualAddress::new(address),
-        })
+        self.interpreted_cast(runtime, VirtualAddress::new(address))
+    }
+
+    fn dynamic_key(&mut self, at: &Place) -> std::result::Result<u64, Stop> {
+        let Place::Interpreted { object, .. } = at else {
+            return Err(Stop::Failed(Error::internal(
+                "only an interpreter's object has a dynamic type",
+            )));
+        };
+
+        Ok(object.get())
     }
 
     fn load_dynamic(&mut self, at: &Place) -> std::result::Result<Loaded, Stop> {

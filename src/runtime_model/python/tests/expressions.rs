@@ -13,8 +13,8 @@ use super::{Process, SMALL, layout};
 use crate::eval::error::ErrorKind;
 use crate::image::python::Field;
 use crate::runtime_model::{
-    InterpretedFailure, InterpretedKey, InterpretedKind, InterpretedName, InterpretedOperand,
-    InterpretedStep,
+    InterpretedFailure, InterpretedHandle, InterpretedKey, InterpretedKind, InterpretedName,
+    InterpretedOperand, InterpretedStep,
 };
 use crate::{
     InspectionLimit, InspectionLimits, TextCompletion, VariableUnavailableReason, VirtualAddress,
@@ -248,11 +248,13 @@ fn a_name_is_a_global_before_a_built_in_of_the_same_name() {
 
     assert_eq!(
         name_in(&process, types, secret, frame, "y"),
-        Ok(Some(InterpretedName::Object(VirtualAddress::new(global))))
+        Ok(Some(InterpretedName::Object(InterpretedHandle::new(
+            global
+        ))))
     );
     assert_eq!(
         name_in(&process, types, secret, frame, "len"),
-        Ok(Some(InterpretedName::Object(VirtualAddress::new(
+        Ok(Some(InterpretedName::Object(InterpretedHandle::new(
             builtin_len
         ))))
     );
@@ -286,7 +288,9 @@ fn a_hidden_local_is_not_a_name_and_a_name_in_no_namespace_is_none() {
     // namespace holds is no name.
     assert_eq!(
         name_in(&process, types, secret, frame, "h"),
-        Ok(Some(InterpretedName::Object(VirtualAddress::new(global))))
+        Ok(Some(InterpretedName::Object(InterpretedHandle::new(
+            global
+        ))))
     );
     assert_eq!(name_in(&process, types, secret, frame, "zz"), Ok(None));
 }

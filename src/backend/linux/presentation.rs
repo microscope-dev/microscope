@@ -79,15 +79,29 @@ pub(super) struct Views {
 #[derive(Default)]
 struct ClassChoices {
     stop: Option<StopId>,
-    choices: BTreeMap<(crate::RuntimeId, crate::VirtualAddress), Arc<Choice<StopStep>>>,
+    choices: BTreeMap<
+        (crate::RuntimeId, crate::runtime_model::InterpretedHandle),
+        Arc<Choice<StopStep>>,
+    >,
 }
 
-/// Which value a scan presents: its type, its view, and its storage.
+/// Which value a scan presents: its type, its view, and the value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ScanKey {
     ty: TypeReference,
     view: (Arc<str>, u32),
-    storage: ValueStorage,
+    scanned: Scanned,
+}
+
+/// The value a scan presents.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Scanned {
+    /// A native value, where it is stored.
+    Stored(ValueStorage),
+
+    /// An interpreter's object, by the runtime that names it and its
+    /// handle, which may name no memory.
+    Interpreted(crate::RuntimeId, crate::runtime_model::InterpretedHandle),
 }
 
 /// The checkpoints of scans at one stop, oldest first. They hold while the
@@ -131,7 +145,7 @@ impl Views {
         &self,
         stop: StopId,
         runtime: crate::RuntimeId,
-        class: crate::VirtualAddress,
+        class: crate::runtime_model::InterpretedHandle,
     ) -> Option<Arc<Choice<StopStep>>> {
         let mut classes = self.classes.borrow_mut();
         if classes.stop != Some(stop) {
@@ -149,7 +163,7 @@ impl Views {
         &self,
         stop: StopId,
         runtime: crate::RuntimeId,
-        class: crate::VirtualAddress,
+        class: crate::runtime_model::InterpretedHandle,
         choice: Arc<Choice<StopStep>>,
     ) {
         let mut classes = self.classes.borrow_mut();
@@ -212,7 +226,7 @@ fn scan_key(bound: &ViewBound, image: crate::ModuleImageId, place: &StopPlace) -
             id: place.located.ty,
         },
         view: (Arc::clone(&bound.view.source), bound.view.line),
-        storage: place.located.storage.clone(),
+        scanned: Scanned::Stored(place.located.storage.clone()),
     }
 }
 
@@ -917,10 +931,10 @@ impl<P: InspectionOps> Controller<P> {
 enum Viewed {
     Native(StopPlace),
 
-    /// An interpreter's object, which `runtime` keeps at `object`.
+    /// An interpreter's object, which `runtime` names by `object`.
     Interpreted {
         runtime: crate::RuntimeId,
-        object: crate::VirtualAddress,
+        object: crate::runtime_model::InterpretedHandle,
     },
 }
 
@@ -939,7 +953,7 @@ impl Viewed {
     fn scan_key(&self, bound: &ViewBound, image: crate::ModuleImageId) -> ScanKey {
         match self {
             Self::Native(place) => scan_key(bound, image, place),
-            Self::Interpreted { object, .. } => interpreted_scan_key(bound, *object),
+            Self::Interpreted { runtime, object } => interpreted_scan_key(bound, *runtime, *object),
         }
     }
 
@@ -958,12 +972,16 @@ impl Viewed {
     }
 }
 
-/// The scan of an interpreter's object at `object` through `bound`.
-pub(super) fn interpreted_scan_key(bound: &ViewBound, object: crate::VirtualAddress) -> ScanKey {
+/// The scan of `runtime`'s object `object` through `bound`.
+pub(super) fn interpreted_scan_key(
+    bound: &ViewBound,
+    runtime: crate::RuntimeId,
+    object: crate::runtime_model::InterpretedHandle,
+) -> ScanKey {
     ScanKey {
         ty: crate::eval::types::UNIDENTIFIED,
         view: (Arc::clone(&bound.view.source), bound.view.line),
-        storage: ValueStorage::Memory(object),
+        scanned: Scanned::Interpreted(runtime, object),
     }
 }
 
@@ -979,15 +997,11 @@ fn viewed(
     };
 
     if let Some(interpreted) = bound.downcast_ref::<super::interpreted_views::InterpretedView>() {
-        let ValueStorage::Memory(object) = reference.storage else {
-            return Err(Error::internal("an interpreter's object is in memory"));
-        };
-
         return Ok((
             Some(Arc::clone(&interpreted.bound)),
             Viewed::Interpreted {
                 runtime: interpreted.runtime,
-                object,
+                object: interpreted.object,
             },
         ));
     }

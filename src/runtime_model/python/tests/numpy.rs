@@ -7,7 +7,9 @@ use super::super::values::Types;
 use super::values::{describe, read_value, with_values};
 use super::{Process, layout};
 use crate::image::python::Field;
-use crate::runtime_model::{ArrayElement, InterpretedChild, InterpretedKind, InterpretedSlot};
+use crate::runtime_model::{
+    ArrayElement, InterpretedChild, InterpretedHandle, InterpretedKind, InterpretedSlot,
+};
 use crate::{InspectionLimits, NumberKind, ScalarValue, VirtualAddress};
 
 /// numpy's type numbers of the types the tests write.
@@ -198,7 +200,7 @@ fn an_array_of_two_axes_has_rows_which_are_its_parts() {
     assert_eq!(&*row.part, [1]);
     assert_eq!(
         row.object,
-        VirtualAddress::new(object),
+        InterpretedHandle::new(object),
         "a part of the object"
     );
     assert!(

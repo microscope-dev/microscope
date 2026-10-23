@@ -40,11 +40,11 @@ use std::sync::{Arc, Mutex};
 
 use super::{
     Crossing, Driven, DynamicValue, InterpretedChild, InterpretedFailure, InterpretedFrame,
-    InterpretedLocal, InterpretedName, InterpretedOperand, InterpretedSlot, InterpretedStacks,
-    InterpretedStep, InterpretedThread, InterpretedWatch, Partial, RuntimeException, RuntimeHook,
-    RuntimeImage, RuntimeModel, RuntimeSignals, RuntimeStop, SampledFrame, StartedTask, StopMemory,
-    StoredValue, TaskContext, TaskPage, TaskRef, TaskStarter, ThreadActivity, ThreadLabels,
-    Unbound, WalkedThread,
+    InterpretedHandle, InterpretedLocal, InterpretedName, InterpretedOperand, InterpretedSlot,
+    InterpretedStacks, InterpretedStep, InterpretedThread, InterpretedWatch, Partial,
+    RuntimeException, RuntimeHook, RuntimeImage, RuntimeModel, RuntimeSignals, RuntimeStop,
+    SampledFrame, StartedTask, StopMemory, StoredValue, TaskContext, TaskPage, TaskRef,
+    TaskStarter, ThreadActivity, ThreadLabels, Unbound, WalkedThread,
 };
 use crate::demangle::split_from;
 use crate::image::python::{EVALUATION_LOOP, Field, PyVersion, PythonLayout, TAIL_CALL_PREFIX};
@@ -53,6 +53,16 @@ use crate::unwind::RegisterFile;
 use crate::{
     AddressRange, CodeRole, ImageAddress, StackFrame, StackSegment, ThreadId, VirtualAddress,
 };
+
+/// The object a handle names: CPython's handle is its object's address.
+pub(super) const fn address(object: InterpretedHandle) -> VirtualAddress {
+    VirtualAddress::new(object.get())
+}
+
+/// The handle of the object at `object`.
+pub(super) const fn handle(object: VirtualAddress) -> InterpretedHandle {
+    InterpretedHandle::new(object.get())
+}
 
 /// The CPython runtime a module carries. One whose frames cannot be read,
 /// as one of a version microscope does not know, still finds its loop's
@@ -1142,12 +1152,12 @@ impl RuntimeModel for PythonRuntime {
     fn interpreted_children(
         &self,
         stop: &dyn RuntimeStop,
-        (object, part): (VirtualAddress, &[u64]),
+        (object, part): (InterpretedHandle, &[u64]),
         range: std::ops::Range<u64>,
         budget: &mut InspectionBudget,
     ) -> Result<Vec<InterpretedChild>, Arc<str>> {
         self.reading()?.values(stop, budget, |values, _| {
-            values.children(object, part, range)
+            values.children(address(object), part, range)
         })
     }
 
@@ -1172,13 +1182,12 @@ impl RuntimeModel for PythonRuntime {
         frame: VirtualAddress,
         slot: u32,
         budget: &mut InspectionBudget,
-    ) -> Result<VirtualAddress, InterpretedFailure> {
-        self.expressions()?.interpreted_frame(
-            stop,
-            frame,
-            budget,
-            |values, table, (_, code), record| values.variable(table, code, record, slot),
-        )
+    ) -> Result<InterpretedHandle, InterpretedFailure> {
+        self.expressions()?
+            .interpreted_frame(stop, frame, budget, |values, table, (_, code), record| {
+                values.variable(table, code, record, slot)
+            })
+            .map(handle)
     }
 
     fn interpreted_watch(
@@ -1259,50 +1268,53 @@ impl RuntimeModel for PythonRuntime {
         })
     }
 
-    fn interpreted_watched(&self, bits: u64) -> Result<Option<VirtualAddress>, Arc<str>> {
-        values::reference(&self.reading()?.layout, bits)
+    fn interpreted_watched(&self, bits: u64) -> Result<Option<InterpretedHandle>, Arc<str>> {
+        values::reference(&self.reading()?.layout, bits).map(|object| object.map(handle))
     }
 
     fn interpreted_step(
         &self,
         stop: &dyn RuntimeStop,
-        object: VirtualAddress,
+        object: InterpretedHandle,
         taken: InterpretedStep<'_>,
         budget: &mut InspectionBudget,
-    ) -> Result<VirtualAddress, InterpretedFailure> {
+    ) -> Result<InterpretedHandle, InterpretedFailure> {
         self.expressions()?
-            .interpreted(stop, budget, |values, _| values.step(object, taken))
+            .interpreted(stop, budget, |values, _| {
+                values.step(address(object), taken)
+            })
+            .map(handle)
     }
 
     fn interpreted_operand(
         &self,
         stop: &dyn RuntimeStop,
-        object: VirtualAddress,
+        object: InterpretedHandle,
         budget: &mut InspectionBudget,
     ) -> Result<InterpretedOperand, InterpretedFailure> {
         self.expressions()?
-            .interpreted(stop, budget, |values, _| values.operand(object))
+            .interpreted(stop, budget, |values, _| values.operand(address(object)))
     }
 
     fn interpreted_length(
         &self,
         stop: &dyn RuntimeStop,
-        object: VirtualAddress,
+        object: InterpretedHandle,
         budget: &mut InspectionBudget,
     ) -> Result<u64, InterpretedFailure> {
         self.expressions()?
-            .interpreted(stop, budget, |values, _| values.length(object))
+            .interpreted(stop, budget, |values, _| values.length(address(object)))
     }
 
     fn interpreted_lineage(
         &self,
         stop: &dyn RuntimeStop,
-        class: VirtualAddress,
+        class: InterpretedHandle,
         budget: &mut InspectionBudget,
     ) -> Result<Vec<crate::TypeIdentity>, InterpretedFailure> {
         self.expressions()?.interpreted(stop, budget, |values, _| {
             values
-                .lineage(class)
+                .lineage(address(class))
                 .map_err(|problem| values.unavailable(problem))
         })
     }
@@ -1314,15 +1326,28 @@ impl RuntimeModel for PythonRuntime {
         })
     }
 
+    fn interpreted_address(&self, handle: InterpretedHandle) -> Option<VirtualAddress> {
+        Some(address(handle))
+    }
+
+    fn interpreted_handle(
+        &self,
+        _stop: &dyn RuntimeStop,
+        address: VirtualAddress,
+        _budget: &mut InspectionBudget,
+    ) -> Result<InterpretedHandle, InterpretedFailure> {
+        Ok(handle(address))
+    }
+
     fn interpreted_value(
         &self,
         stop: &dyn RuntimeStop,
-        object: VirtualAddress,
+        object: InterpretedHandle,
         budget: &mut InspectionBudget,
     ) -> InterpretedSlot {
         match self.reading() {
             Ok(reading) => reading
-                .values(stop, budget, |values, _| Ok(values.value(object)))
+                .values(stop, budget, |values, _| Ok(values.value(address(object))))
                 .unwrap_or_else(InterpretedSlot::Unreadable),
             Err(reason) => InterpretedSlot::Unreadable(reason),
         }

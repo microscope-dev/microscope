@@ -434,8 +434,9 @@ impl Values<'_, '_> {
         };
 
         Ok(InterpretedValue {
-            object: address,
-            class,
+            object: super::handle(address),
+            address: Some(address),
+            class: super::handle(class),
             module,
             type_name,
             kind,

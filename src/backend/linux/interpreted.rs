@@ -24,9 +24,9 @@ use crate::model::FrameMetadata;
 use crate::model::{ValueStorage, ViewChildren};
 use crate::protocol::PresentedFrame;
 use crate::runtime_model::{
-    ArrayElement, Driven, InterpretedArray, InterpretedChild, InterpretedFrame, InterpretedKind,
-    InterpretedNumber, InterpretedSlot, InterpretedStacks, InterpretedValue, Partial,
-    interpreted_identity,
+    ArrayElement, Driven, InterpretedArray, InterpretedChild, InterpretedFrame, InterpretedHandle,
+    InterpretedKind, InterpretedNumber, InterpretedSlot, InterpretedStacks, InterpretedValue,
+    Partial, interpreted_identity,
 };
 use crate::{
     AddressValue, Backtrace, BaseType, BaseTypeEncoding, CallFrameUnavailableReason,
@@ -398,6 +398,7 @@ fn plural(count: usize, noun: &str) -> String {
 #[derive(Debug)]
 pub(super) struct InterpretedChildren {
     runtime: RuntimeId,
+    object: InterpretedHandle,
 
     /// The part of the object whose children these are, and the numbers
     /// it keeps as an array, if it keeps them so.
@@ -503,10 +504,6 @@ impl<P: InspectionOps> Controller<P> {
         query: &ValueChildQuery,
         budget: &mut InspectionBudget,
     ) -> Result<ValueChildPage> {
-        let ValueStorage::Memory(object) = reference.storage else {
-            return Err(Error::VariableContextUnsupported);
-        };
-
         let bound = self.bound_runtime(inferior, children.runtime)?;
         let end = query
             .offset
@@ -517,7 +514,7 @@ impl<P: InspectionOps> Controller<P> {
             .with_runtime_stop(inferior, &bound, root.reader(), |runtime_stop| {
                 bound.model.interpreted_children(
                     runtime_stop,
-                    (object, &children.part),
+                    (children.object, &children.part),
                     start..end,
                     budget,
                 )
@@ -600,13 +597,13 @@ pub(super) fn present_slot(
     .slot(slot)
 }
 
-/// The capability of the children of the object at `object`, which
-/// `runtime` read at the frame `frame` of `context` at the stop `stop`: its
+/// The capability of the children of the object `object`, at its address
+/// if it has one, which `runtime` read at the frame `frame` of `context` at the stop `stop`: its
 /// `elements` elements or entries, then its `fields` attributes.
 pub(super) fn children_reference(
     (stop, context, frame): (StopId, ExecutionContext, StackFrameId),
     runtime: &BoundRuntime,
-    object: VirtualAddress,
+    object: (InterpretedHandle, Option<VirtualAddress>),
     (elements, fields): (u64, u64),
 ) -> ValueChildrenReference {
     Origin {
@@ -617,6 +614,22 @@ pub(super) fn children_reference(
         module: runtime.module,
     }
     .children(object, (Arc::from([]), None), (elements, fields))
+}
+
+/// The storage a children capability names an interpreter's object by:
+/// its memory, or, for one that lives in none, a value computed with no
+/// bytes. The capability reads the object through its handle, not this.
+fn interpreted_storage(address: Option<VirtualAddress>) -> ValueStorage {
+    address.map_or_else(
+        || ValueStorage::Bytes {
+            source: VariableValueSource::Computed,
+            raw: Arc::from([]),
+            start: 0,
+            end: 0,
+            address: None,
+        },
+        ValueStorage::Memory,
+    )
 }
 
 impl Origin {
@@ -669,7 +682,7 @@ impl Origin {
             ValueChildren::NotApplicable
         } else {
             ValueChildren::Available(Arc::new(self.children(
-                value.object,
+                (value.object, value.address),
                 (Arc::clone(&value.part), value.array.clone()),
                 (value.elements(), value.attributes),
             )))
@@ -698,16 +711,24 @@ impl Origin {
             visualizers: Arc::from([]),
         };
 
+        // A value that lives in no memory, as a V8 small integer, is
+        // computed from the handle its runtime gave.
+        let unaddressed = || {
+            value
+                .address
+                .map_or(VariableValue::ImplicitPointer, |address| {
+                    VariableValue::Address(AddressValue {
+                        address,
+                        function: None,
+                    })
+                })
+        };
         let state = VariableState::Available {
-            source: VariableValueSource::Memory(value.object),
+            source: value
+                .address
+                .map_or(VariableValueSource::Computed, VariableValueSource::Memory),
             raw: None,
-            value: scalar.map_or(
-                VariableValue::Address(AddressValue {
-                    address: value.object,
-                    function: None,
-                }),
-                VariableValue::Scalar,
-            ),
+            value: scalar.map_or_else(unaddressed, VariableValue::Scalar),
             dereference: DereferenceState::NotApplicable,
             children: ValueChildren::NotApplicable,
             text: None,
@@ -785,12 +806,13 @@ impl Origin {
         (Some(type_info), state)
     }
 
-    /// The capability of the children of the object at `object`, or of
-    /// its part at `part`, which keeps `array`: its `elements` elements or
-    /// entries, then its `fields` attributes.
+    /// The capability of the children of the object `object`, at its
+    /// address if it has one, or of its part at `part`, which keeps
+    /// `array`: its `elements` elements or entries, then its `fields`
+    /// attributes.
     fn children(
         &self,
-        object: VirtualAddress,
+        (object, address): (InterpretedHandle, Option<VirtualAddress>),
         (part, array): (Arc<[u64]>, Option<Arc<InterpretedArray>>),
         (elements, fields): (u64, u64),
     ) -> ValueChildrenReference {
@@ -802,12 +824,13 @@ impl Origin {
             image: self.module.image,
             context_address: None,
             target_type: UNIDENTIFIED.id,
-            storage: ValueStorage::Memory(object),
+            storage: interpreted_storage(address),
             total: elements.saturating_add(fields),
             active_variant: None,
             view: Some(ViewChildren {
                 bound: Some(Arc::new(InterpretedChildren {
                     runtime: self.runtime,
+                    object,
                     part,
                     array,
                 })),

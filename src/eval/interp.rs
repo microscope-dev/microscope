@@ -1223,7 +1223,7 @@ impl<M: Machine> Interpreter<'_, M> {
             Value::Text(bytes) => Key::Text(bytes),
             Value::Loaded(loaded) => Self::at(node.span, dynamic::key(&loaded))?,
             Value::Place(place) if matches!(node.ty, Ty::Dynamic) => {
-                Key::Object(Self::at(node.span, self.machine.address(&place))?)
+                Key::Object(Self::at(node.span, self.machine.dynamic_key(&place))?)
             }
             Value::Place(place) => self.held_key(&place, node.span, 0)?,
             Value::Raw(_) => return Self::invariant("the binder loads raw keys"),

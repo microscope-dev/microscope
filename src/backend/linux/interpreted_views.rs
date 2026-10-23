@@ -2,7 +2,7 @@
 //! has at a stop, chosen by the class's identity and then those of the
 //! classes it derives from, and an object's presentation through it.
 //!
-//! A class is only known at run time, and only by its address while the
+//! A class is only known at run time, and only by its handle while the
 //! stop lasts, so the choice is kept for one stop. The view binds once for
 //! the class: `self` is a value of a dynamic type, whose attributes the
 //! view reaches as expressions do.
@@ -16,10 +16,10 @@ use super::presentation::{
 };
 use super::runtimes::BoundRuntime;
 use crate::eval::target::Stop;
-use crate::runtime_model::InterpretedSlot;
+use crate::runtime_model::{InterpretedHandle, InterpretedSlot};
 use crate::view::run::Failure;
 use crate::view::{Choice, ViewSet};
-use crate::{Presentation, RuntimeId, TypeInfo, ValueChildren, VariableState, VirtualAddress};
+use crate::{Presentation, RuntimeId, TypeInfo, ValueChildren, VariableState};
 
 /// The children of an interpreter's object as the view that presents it
 /// gives them, which only this backend pages, through the runtime that
@@ -27,6 +27,7 @@ use crate::{Presentation, RuntimeId, TypeInfo, ValueChildren, VariableState, Vir
 #[derive(Debug)]
 pub(super) struct InterpretedView {
     pub(super) runtime: RuntimeId,
+    pub(super) object: InterpretedHandle,
     pub(super) bound: Arc<ViewBound>,
 }
 
@@ -42,7 +43,7 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
         let at = (frame.stop_id, frame.root().context, frame.resolved().id);
         let viewed = match &slot {
             InterpretedSlot::Value(value) => Some((
-                value.object,
+                (value.object, value.address),
                 value.class,
                 (value.elements(), value.attributes),
             )),
@@ -50,7 +51,7 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
         };
 
         let (type_info, mut state) = super::interpreted::present_slot(at, runtime, slot);
-        let Some((object, class, children)) = viewed else {
+        let Some(((object, address), class, children)) = viewed else {
             return Ok((type_info, state));
         };
 
@@ -78,7 +79,7 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
         };
         let result = controller.views.scan(
             frame.stop_id,
-            interpreted_scan_key(&bound, object),
+            interpreted_scan_key(&bound, runtime.id, object),
             |checkpoints| {
                 self.in_share(|machine| {
                     crate::view::run::present(&bound, machine, this, checkpoints)
@@ -89,10 +90,15 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
         let name = crate::view::name_of(&bound.view);
         match result {
             Ok(presented) => {
-                let raw = super::interpreted::children_reference(at, runtime, object, children);
+                let raw = super::interpreted::children_reference(
+                    at,
+                    runtime,
+                    (object, address),
+                    children,
+                );
                 let shown = presented.text.clone();
                 let presentation = view_presentation(name, &bound, &raw, presented);
-                *stored = Arc::new(through_runtime(presentation, runtime.id, &bound));
+                *stored = Arc::new(through_runtime(presentation, (runtime.id, object), &bound));
                 *text = shown.map(Arc::new);
             }
 
@@ -130,7 +136,7 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
     fn class_view(
         &mut self,
         runtime: &BoundRuntime,
-        class: VirtualAddress,
+        class: InterpretedHandle,
     ) -> Arc<Choice<super::evaluation::StopStep>> {
         let frame = self.frame;
         let controller = frame.controller;
@@ -168,11 +174,11 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
 }
 
 /// `presentation`, whose children `bound` presents, with children that
-/// page through the runtime numbered `runtime`, which reads the object, and
-/// drawings whose inputs it reads too.
+/// page through the runtime numbered `runtime`, which reads the object
+/// `object`, and drawings whose inputs it reads too.
 fn through_runtime(
     mut presentation: Presentation,
-    runtime: RuntimeId,
+    (runtime, object): (RuntimeId, InterpretedHandle),
     bound: &Arc<ViewBound>,
 ) -> Presentation {
     if let ValueChildren::Available(reference) = &presentation.children {
@@ -180,6 +186,7 @@ fn through_runtime(
         if let Some(view) = &mut reference.view {
             view.bound = Some(Arc::new(InterpretedView {
                 runtime,
+                object,
                 bound: Arc::clone(bound),
             }));
         }
@@ -197,15 +204,16 @@ mod tests {
     use std::sync::Arc;
 
     use super::super::presentation::Views;
+    use crate::runtime_model::InterpretedHandle;
     use crate::view::Choice;
-    use crate::{RuntimeId, StopId, VirtualAddress};
+    use crate::{RuntimeId, StopId};
 
     /// A class's view is kept for its stop alone: once the program runs, the
     /// class's address may name another class, which is chosen for again.
     #[test]
     fn a_class_view_is_kept_for_its_stop_alone() {
         let views = Views::default();
-        let (runtime, class) = (RuntimeId::new(1), VirtualAddress::new(0x1000));
+        let (runtime, class) = (RuntimeId::new(1), InterpretedHandle::new(0x1000));
         let (first, second) = (StopId::new(1), StopId::new(2));
         assert!(views.class_choice(first, runtime, class).is_none());
         views.keep_class_choice(first, runtime, class, Arc::new(Choice::default()));

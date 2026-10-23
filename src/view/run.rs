@@ -341,6 +341,10 @@ impl<M: Machine> Machine for ViewMachine<'_, M> {
         self.base.dynamic_at(ty, address)
     }
 
+    fn dynamic_key(&mut self, at: &Self::Place) -> Result<u64, Stop> {
+        self.base.dynamic_key(at)
+    }
+
     fn load_dynamic(&mut self, at: &Self::Place) -> Result<crate::eval::target::Loaded, Stop> {
         self.base.load_dynamic(at)
     }

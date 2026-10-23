@@ -248,9 +248,10 @@ pub enum Key {
     /// Several keys in order, written `(a, b)`: a tuple.
     Tuple(Vec<Self>),
 
-    /// The object of a dynamic type at this address, which the program
-    /// holds: its runtime finds the item its language's indexing finds,
-    /// which may compare the object's identity before its value.
+    /// The object of a dynamic type, which the program holds, by the
+    /// value [`Machine::dynamic_key`] gives it: its runtime finds the item
+    /// its language's indexing finds, which may compare the object's
+    /// identity before its value.
     Object(u64),
 }
 
@@ -713,6 +714,13 @@ pub trait Machine: TypeSource {
             ErrorKind::Unsupported,
             "this machine reads no interpreter's objects",
         )))
+    }
+
+    /// The value that names the object of a dynamic type at a place to
+    /// its runtime, as [`Key::Object`] carries it: its address, unless the
+    /// runtime names its objects otherwise.
+    fn dynamic_key(&mut self, at: &Self::Place) -> Result<u64, Stop> {
+        self.address(at)
     }
 
     /// What the place of a value of a dynamic type holds, for an operation

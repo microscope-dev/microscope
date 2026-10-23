@@ -726,8 +726,8 @@ pub struct RuntimeAssignment {
 }
 
 /// What a variable of an interpreted frame is given: a value the runtime
-/// makes, or the object at an address, which the agent takes only where a
-/// name of the frame still finds it.
+/// makes, or one of its objects, which the agent takes only where a name
+/// of the frame still finds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AssignedValue {
     /// An integer, in decimal.
@@ -738,7 +738,7 @@ pub enum AssignedValue {
     Bool(bool),
     Text(Arc<str>),
     Nothing,
-    Object(VirtualAddress),
+    Object(InterpretedHandle),
 }
 
 /// A step a runtime arms and judges itself, as Python's agent steps by the
@@ -1111,14 +1111,14 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         Err("the runtime interprets no frames".into())
     }
 
-    /// The children `range` of the interpreter's object at `object`, or of
+    /// The children `range` of the interpreter's object `object`, or of
     /// its part at `part` ([`InterpretedValue::part`]), which
     /// [`InterpretedValue::children`] counted at this stop: a sequence's
     /// elements, or a map's entries, in order.
     fn interpreted_children(
         &self,
         stop: &dyn RuntimeStop,
-        (object, part): (VirtualAddress, &[u64]),
+        (object, part): (InterpretedHandle, &[u64]),
         range: std::ops::Range<u64>,
         budget: &mut InspectionBudget,
     ) -> Result<Vec<InterpretedChild>, Arc<str>> {
@@ -1149,7 +1149,7 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         frame: VirtualAddress,
         slot: u32,
         budget: &mut InspectionBudget,
-    ) -> Result<VirtualAddress, InterpretedFailure> {
+    ) -> Result<InterpretedHandle, InterpretedFailure> {
         let _ = (stop, frame, slot, budget);
         Err(InterpretedFailure::interprets_nothing())
     }
@@ -1190,41 +1190,41 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
 
     /// The object a watched variable whose word is `bits` holds, none when
     /// it holds none.
-    fn interpreted_watched(&self, bits: u64) -> Result<Option<VirtualAddress>, Arc<str>> {
+    fn interpreted_watched(&self, bits: u64) -> Result<Option<InterpretedHandle>, Arc<str>> {
         let _ = bits;
         Err("the runtime interprets no frames".into())
     }
 
-    /// The object a step from the interpreter's object at `object` reaches.
+    /// The object a step from the interpreter's object `object` reaches.
     fn interpreted_step(
         &self,
         stop: &dyn RuntimeStop,
-        object: VirtualAddress,
+        object: InterpretedHandle,
         taken: InterpretedStep<'_>,
         budget: &mut InspectionBudget,
-    ) -> Result<VirtualAddress, InterpretedFailure> {
+    ) -> Result<InterpretedHandle, InterpretedFailure> {
         let _ = (stop, object, taken, budget);
         Err(InterpretedFailure::interprets_nothing())
     }
 
-    /// The interpreter's object at `object`, as an operation computes with
+    /// The interpreter's object `object`, as an operation computes with
     /// it.
     fn interpreted_operand(
         &self,
         stop: &dyn RuntimeStop,
-        object: VirtualAddress,
+        object: InterpretedHandle,
         budget: &mut InspectionBudget,
     ) -> Result<InterpretedOperand, InterpretedFailure> {
         let _ = (stop, object, budget);
         Err(InterpretedFailure::interprets_nothing())
     }
 
-    /// The length of the interpreter's object at `object`, as its language
+    /// The length of the interpreter's object `object`, as its language
     /// measures it.
     fn interpreted_length(
         &self,
         stop: &dyn RuntimeStop,
-        object: VirtualAddress,
+        object: InterpretedHandle,
         budget: &mut InspectionBudget,
     ) -> Result<u64, InterpretedFailure> {
         let _ = (stop, object, budget);
@@ -1237,6 +1237,25 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
     /// pointer of that type is presented as the object it points to.
     fn object_types(&self) -> Option<ObjectTypes> {
         None
+    }
+
+    /// The memory the value of `handle` lives at, if it lives in memory.
+    fn interpreted_address(&self, handle: InterpretedHandle) -> Option<VirtualAddress> {
+        let _ = handle;
+        None
+    }
+
+    /// The object a native pointer to [`ObjectTypes::native`] whose value
+    /// is `address` points to, as a cast to [`ObjectTypes::cast`] reaches
+    /// it.
+    fn interpreted_handle(
+        &self,
+        stop: &dyn RuntimeStop,
+        address: VirtualAddress,
+        budget: &mut InspectionBudget,
+    ) -> Result<InterpretedHandle, InterpretedFailure> {
+        let _ = (stop, address, budget);
+        Err(InterpretedFailure::interprets_nothing())
     }
 
     /// Whether the code at `address` of the image the runtime was bound to
@@ -1278,25 +1297,25 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         None
     }
 
-    /// The identities of the class at `class` and of each class it derives
+    /// The identities of the class `class` and of each class it derives
     /// from, in the order the language looks attributes up in, which
     /// choose the view that presents its objects.
     fn interpreted_lineage(
         &self,
         stop: &dyn RuntimeStop,
-        class: VirtualAddress,
+        class: InterpretedHandle,
         budget: &mut InspectionBudget,
     ) -> Result<Vec<crate::TypeIdentity>, InterpretedFailure> {
         let _ = (stop, class, budget);
         Err(InterpretedFailure::interprets_nothing())
     }
 
-    /// The interpreter's object at `object`, presented as a variable's
-    /// value is.
+    /// The interpreter's object `object`, presented as a variable's value
+    /// is.
     fn interpreted_value(
         &self,
         stop: &dyn RuntimeStop,
-        object: VirtualAddress,
+        object: InterpretedHandle,
         budget: &mut InspectionBudget,
     ) -> InterpretedSlot {
         let _ = (stop, object, budget);
@@ -1638,14 +1657,36 @@ pub fn interpreted_identity(
     }
 }
 
+/// A value of the runtime's own, in an encoding only the runtime that gave
+/// it decodes, valid for the stop it was read at: CPython's is a
+/// `PyObject` address, V8's a tagged word. It is no address; only
+/// [`RuntimeModel::interpreted_address`] says where its value lives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct InterpretedHandle(u64);
+
+impl InterpretedHandle {
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
 /// An object the interpreter keeps, as the debugger presents it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct InterpretedValue {
-    pub object: VirtualAddress,
+    pub object: InterpretedHandle,
 
-    /// The address of the object's class, which names the class for as long
-    /// as the stop lasts.
-    pub class: VirtualAddress,
+    /// Where the value lives in memory, if it does.
+    pub address: Option<VirtualAddress>,
+
+    /// The object's class, which names the class for as long as the stop
+    /// lasts.
+    pub class: InterpretedHandle,
 
     /// The object's type: the module that defines it, where the debugger
     /// knows it, and its name there.
@@ -1809,7 +1850,7 @@ pub enum InterpretedName {
 
     /// A global of the frame's module, or a built-in: the object the name
     /// is bound to.
-    Object(VirtualAddress),
+    Object(InterpretedHandle),
 }
 
 /// A step an expression takes from an interpreter's object to another.
@@ -1838,9 +1879,9 @@ pub enum InterpretedKey {
     /// Several keys in order: a tuple.
     Tuple(Vec<Self>),
 
-    /// The program's own object at this address, which a lookup compares
-    /// by its identity before its value, as Python's does.
-    Object(VirtualAddress),
+    /// The program's own object, which a lookup compares by its identity
+    /// before its value, as Python's does.
+    Object(InterpretedHandle),
 }
 
 /// An interpreter's object, as an operation computes with it.
