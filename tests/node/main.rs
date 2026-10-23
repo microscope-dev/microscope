@@ -6,6 +6,7 @@
 #[path = "../support/mod.rs"]
 mod support;
 
+mod addon;
 mod debian;
 mod frames;
 mod native;
@@ -13,3 +14,4 @@ mod session;
 mod stacks;
 mod truth;
 mod values;
+mod views;

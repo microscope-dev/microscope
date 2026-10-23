@@ -35,7 +35,7 @@ async fn select_function(session: &NodeSession, native: u64, function: &str) {
 
 /// The summary and full text microscope presents for `text`, or why it
 /// could not.
-async fn presented(session: &NodeSession, text: &str) -> (String, String) {
+pub async fn presented(session: &NodeSession, text: &str) -> (String, String) {
     let expression = Expression::parse(text).unwrap_or_else(|error| panic!("{text}: {error}"));
     match session.scenario.handle().evaluate(&expression).await {
         Ok(Evaluation::Value { value, .. }) => match value.state {
@@ -68,7 +68,7 @@ fn summary_of(value: &Named) -> String {
 }
 
 /// Each way the shown summary and text differ from what Node gave `value`.
-fn lies_about(context: &str, value: &Named, (summary, text): &(String, String)) -> Vec<String> {
+pub fn lies_about(context: &str, value: &Named, (summary, text): &(String, String)) -> Vec<String> {
     let mut lies = Vec::new();
     let name = &value.name;
     if text != &value.text {
