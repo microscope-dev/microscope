@@ -622,7 +622,7 @@ fn the_schema_is_the_records_layout() {
     // layouts before reading tables; the container format is independent.
     assert_eq!(
         schema::layout_fingerprint(),
-        0x6a25_9d46_140c_69ba,
+        0x3db2_1982_6f99_dbb4,
         "the layout changed:\n{}",
         schema::schema_text()
     );

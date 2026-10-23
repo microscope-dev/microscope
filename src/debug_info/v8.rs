@@ -317,7 +317,6 @@ const CHECKED_FIELDS: &[(Field, &str)] = &[
     (Field::OddballKind, "Oddball__kind"),
     (Field::JSDateValue, "JSDate__value"),
     (Field::JSRegExpSource, "JSRegExp__source"),
-    (Field::JSTypedArrayRawLength, "JSTypedArray__length"),
     (Field::JSTypedArrayBasePointer, "JSTypedArray__base_pointer"),
     (
         Field::JSTypedArrayExternalPointer,

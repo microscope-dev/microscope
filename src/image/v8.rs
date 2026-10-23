@@ -305,7 +305,6 @@ entries! {
         JSRegExpFlags = "JSRegExp::Flags",
         JSPromiseReactionsOrResult = "JSPromise::ReactionsOrResult",
         JSPromiseFlags = "JSPromise::Flags",
-        JSTypedArrayRawLength = "JSTypedArray::RawLength",
         JSTypedArrayExternalPointer = "JSTypedArray::ExternalPointer",
         JSTypedArrayBasePointer = "JSTypedArray::BasePointer",
         JSArrayBufferViewBuffer = "JSArrayBufferView::Buffer",
@@ -1225,6 +1224,11 @@ entries! {
         /// NaN, as a 64-bit pattern.
         HoleNanInt64 = "internal::kHoleNanInt64",
 
+        /// 1 where [`Field::JSDateValue`] holds the time as a raw `float64`,
+        /// as from 13.6, and 0 where it holds a tagged number, as
+        /// `class-debug-readers.cc` reads it.
+        JSDateValueIsFloat64 = "JSDate::value is float64",
+
         /// An ordered hash table's slots (`ordered-hash-table.h`), in
         /// elements from its `FixedArray::Objects`: its counts, then its
         /// buckets from `HashTableStartIndex()`, each the first entry of its
@@ -1284,6 +1288,11 @@ entries! {
         /// A native context's script context table and global proxy.
         ContextScriptContextTableIndex = "Context::SCRIPT_CONTEXT_TABLE_INDEX",
         ContextGlobalProxyIndex = "Context::GLOBAL_PROXY_INDEX",
+
+        /// A native context's `%Error%`, whose initial map's first
+        /// descriptor is keyed by the private symbol every error keeps its
+        /// stack under (`InstallError` in `bootstrapper.cc`).
+        ContextErrorFunctionIndex = "Context::ERROR_FUNCTION_INDEX",
 
         /// Where a JavaScript frame keeps its argument count, from its
         /// frame pointer (`frame-constants.h`): with its receiver, which

@@ -142,6 +142,26 @@ fn torque_fields(readers: &str) -> BTreeMap<String, u32> {
     fields
 }
 
+/// Whether `class-debug-readers.cc` reads `class`'s `field` as a raw
+/// `double`, not as a tagged word: its reader is
+/// `Value<double ...> TqClass::GetFieldValue(...)` or
+/// `Value<uintptr_t> TqClass::GetFieldValue(...)`. Any other type fails.
+fn torque_reads_double(readers: &str, class: &str, field: &str) -> bool {
+    let getter = format!("> Tq{class}::Get{field}Value(d::MemoryAccessor accessor) const {{");
+    let line = readers
+        .lines()
+        .find(|line| line.starts_with("Value<") && line.ends_with(&getter))
+        .unwrap_or_else(|| panic!("class-debug-readers.cc reads no {class}::{field}"));
+    if line.starts_with("Value<double ") || line.starts_with("Value<double>") {
+        return true;
+    }
+    assert!(
+        line.starts_with("Value<uintptr_t>"),
+        "{class}::{field} is read as {line:?}"
+    );
+    false
+}
+
 /// Every instance type `instance-types.h`'s `TORQUE_ASSIGNED_INSTANCE_TYPES`
 /// lists, as `V(NAME, number)`, in its order.
 fn torque_instance_types(header: &str) -> Vec<(String, u16)> {
@@ -791,7 +811,8 @@ fn add_property_details(headers: &Headers, check: &mut impl FnMut(&str, i64)) {
 /// One version's entry of `layouts.gen.rs`, and where its accessor pair
 /// keeps its getter and setter.
 fn generate_version(text: &mut String, (major, minor): (u32, u32), torque: &Path) -> [u32; 2] {
-    let mut fields = torque_fields(&read(torque, "class-debug-readers.cc"));
+    let readers = read(torque, "class-debug-readers.cc");
+    let mut fields = torque_fields(&readers);
     let types = torque_instance_types(&read(torque, "instance-types.h"));
     let bits = torque_bit_fields(&read(torque, "bit-fields.h"));
     let leaptiering = fields.contains_key("JSFunction::DispatchHandle");
@@ -817,7 +838,11 @@ fn generate_version(text: &mut String, (major, minor): (u32, u32), torque: &Path
         "PropertyArray::Objects".to_owned(),
         u32::try_from(objects).expect("an offset"),
     );
-    let constants = header_constants(&headers, leaptiering);
+    let mut constants = header_constants(&headers, leaptiering);
+    constants.insert(
+        "JSDate::value is float64".to_owned(),
+        i64::from(torque_reads_double(&readers, "JSDate", "Value")),
+    );
     let checked = checked_constants(&headers, &constants, &bits);
 
     writeln!(text, "    Generated {{").expect("write");
