@@ -530,6 +530,31 @@ fn outstanding_debugger_stop_is_reused_across_barriers() {
 }
 
 #[test]
+fn an_exec_stop_does_not_turn_an_outstanding_debugger_stop_into_a_signal() {
+    let mut harness = watch_harness(1);
+    let pid = harness.threads[0];
+    harness.start_continue();
+    harness.controller.request_stops().expect("request a stop");
+    *harness.trace().clone.borrow_mut() = Some((pid, pid));
+
+    harness
+        .event(pid, libc::PTRACE_EVENT_EXEC)
+        .expect("exec overtook the requested SIGSTOP");
+    harness.published();
+    harness.trace().set_siginfo(
+        pid,
+        libc::SI_TKILL,
+        Some(i32::try_from(std::process::id()).expect("tracer pid fits")),
+    );
+    harness
+        .controller
+        .process_wait(WaitEvent::Stopped(pid, Signal::SIGSTOP))
+        .expect("consume the outstanding SIGSTOP");
+
+    assert_eq!(harness.stopped(), None, "the debugger's signal is internal");
+}
+
+#[test]
 fn user_breakpoint_supersedes_a_coincident_exception_barrier() {
     let mut harness = watch_harness(3);
     let [pid, breakpoint_thread, pending_thread] = harness.threads[..] else {

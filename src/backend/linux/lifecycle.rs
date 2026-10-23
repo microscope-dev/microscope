@@ -1322,7 +1322,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         survivor.stopped_at_breakpoint = None;
         survivor.trapped_at = None;
         survivor.awaiting_breakpoint = None;
-        survivor.debugger_stop_pending = false;
 
         // The execing thread takes over the leader's TID, whose exit the
         // kernel never reports.

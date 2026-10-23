@@ -649,6 +649,7 @@ impl Driver {
     }
 
     fn emit(&self, event: GroupEvent) {
+        record!("group event {event:?}");
         let _ = self.events.send(event);
     }
 
@@ -932,7 +933,11 @@ impl Driver {
             let handle = live.handle.clone();
             let internal = self.internal.0.clone();
             tokio::spawn(async move {
-                if handle.pause().await.is_err() {
+                // AlreadyStopped means its stop event is still on the way.
+                if let Err(error) = handle.pause().await
+                    && !matches!(error, Error::AlreadyStopped)
+                {
+                    record!("member {number} pause failed: {error}");
                     let _ = internal.send(Internal::PauseFailed(number));
                 }
             });
@@ -949,8 +954,8 @@ impl Driver {
             return;
         };
 
-        if waiting.remove(&number)
-            && let Some(reason) = reason
+        waiting.remove(&number);
+        if let Some(reason) = reason
             && reason != StopReason::Pause
         {
             if first.is_none() {
@@ -1238,4 +1243,62 @@ fn command_line(process: ProcessId) -> String {
                 .join(" ")
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_stop_arriving_after_a_pause_failure_is_still_reported() {
+        let root = Debugger::new(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("build/test-programs/fork"),
+        )
+        .expect("make the root session");
+        let shared = Arc::new(Shared {
+            members: Mutex::default(),
+            handles: Mutex::default(),
+            copies: Mutex::default(),
+        });
+        let (events, mut received) = broadcast::channel(GROUP_EVENT_CAPACITY);
+        let mut driver = Driver::new(shared, events, root, StopScope::Group);
+        driver.phase = Phase::Stopping {
+            first: Some((2, StopReason::Pause)),
+            waiting: BTreeSet::from([1, 3]),
+        };
+        let breakpoint = StopReason::Breakpoint {
+            address: Some(crate::VirtualAddress::new(0x1234)),
+            hits: Arc::from([crate::BreakpointHit {
+                breakpoint: BreakpointId::new(1),
+                hit_count: 1,
+            }]),
+        };
+
+        driver.paused(1, None);
+        driver.stopped(1, breakpoint.clone());
+        driver.paused(3, None);
+        assert_eq!(
+            received.try_recv().expect("the first group stop"),
+            GroupEvent::GroupStopped {
+                member: 2,
+                reason: StopReason::Pause,
+            }
+        );
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), driver.continue_all())
+            .await
+            .expect("report the queued stop in time")
+            .expect("report the queued stop");
+        assert_eq!(
+            received.try_recv().expect("the coincident breakpoint"),
+            GroupEvent::GroupStopped {
+                member: 1,
+                reason: breakpoint,
+            }
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), driver.shutdown())
+            .await
+            .expect("end the root session in time")
+            .expect("end the root session");
+    }
 }

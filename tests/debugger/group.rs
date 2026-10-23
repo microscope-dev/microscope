@@ -20,6 +20,7 @@ struct Group {
 
 impl Group {
     fn new(fixture: &str, policy: FollowPolicy) -> Self {
+        support::flight_recordings::watch_scenarios();
         let program = Program::load(
             Scenario::fixture(fixture),
             &microscope::DebugFileOptions::default(),
@@ -419,18 +420,22 @@ async fn a_vfork_child_is_watched_until_it_executes_a_program_to_debug() {
     let mut group = Group::new("process-tree", named("exec-target"));
     group.break_pending("target_work").await;
     group.break_at("children_started").await;
-    group.launch(&["2", "spawn"]).await;
+    group.launch(&["16", "spawn"]).await;
 
     let stops = group.run_to_exit().await;
     let members = group.inner.members();
-    assert_eq!(members.len(), 3, "{members:#?}");
+    assert_eq!(members.len(), 17, "{members:#?}");
     for member in &members[1..] {
         // A vfork child never becomes a member before its exec, so it
         // joins by executing, and is not the root's fork child.
         assert!(member.executed.is_some(), "{member:#?}");
         assert_eq!(member.state, MemberState::Exited(ExitStatus::Code(42)));
     }
-    assert_eq!(breakpoint_members(&stops), [1, 2, 3], "{stops:#?}");
+    assert_eq!(
+        breakpoint_members(&stops),
+        (1..=17).collect::<Vec<_>>(),
+        "{stops:#?}"
+    );
     assert_eq!(
         group.root_status(),
         MemberState::Exited(ExitStatus::Code(0))
@@ -537,6 +542,7 @@ fn node() -> std::path::PathBuf {
 /// native breakpoint set before the run.
 #[tokio::test]
 async fn each_file_node_test_runs_joins_the_group() {
+    support::flight_recordings::watch_scenarios();
     let scratch = support::ScratchDir::new("group-node-test");
     for name in ["a.test.js", "b.test.js"] {
         fs::write(
@@ -571,6 +577,10 @@ async fn each_file_node_test_runs_joins_the_group() {
 
     let stops = group.run_to_exit().await;
     let members = breakpoint_members(&stops);
+    assert!(
+        stops.iter().all(|(_, reason)| function_breakpoint(reason)),
+        "only the requested breakpoints stop the group: {stops:#?}"
+    );
     assert_eq!(
         members.len(),
         3,
