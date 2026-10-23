@@ -15,15 +15,25 @@ pub(super) fn debug_name(
     function: Object,
     shared: Object,
 ) -> Result<String, Problem> {
-    if !keeps_name_accessor(reader, function)? {
-        let name = super::properties::data_property(reader, function, "name")?;
-        if let Some(name) = name.map(|word| reader.object(word)).transpose()?.flatten()
-            && reader.instance_type(name)? < reader.constant(Constant::FirstNonstringType)?
-        {
-            return reader.string(name);
-        }
+    property_name(reader, function)?.map_or_else(|| function_name(reader, shared), Ok)
+}
+
+/// The `name` data property that names `function` in place of its shared
+/// information, if [`debug_name`] uses one.
+pub(super) fn property_name(
+    reader: &Reader<'_>,
+    function: Object,
+) -> Result<Option<String>, Problem> {
+    if keeps_name_accessor(reader, function)? {
+        return Ok(None);
     }
-    function_name(reader, shared)
+    let name = super::properties::data_property(reader, function, "name")?;
+    if let Some(name) = name.map(|word| reader.object(word)).transpose()?.flatten()
+        && reader.instance_type(name)? < reader.constant(Constant::FirstNonstringType)?
+    {
+        return reader.string(name).map(Some);
+    }
+    Ok(None)
 }
 
 /// Whether `function`'s map keeps its `name` as V8 first defines it, an

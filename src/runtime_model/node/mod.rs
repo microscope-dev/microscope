@@ -24,6 +24,7 @@ mod own;
 mod positions;
 mod present;
 mod properties;
+mod scripts;
 mod translation;
 mod typed;
 mod values;
@@ -70,6 +71,7 @@ pub fn detect(
         blob: runtime.embedded_blob.ok(),
         writer: writer(runtime.version, runtime.node),
         statics,
+        table: std::sync::Mutex::default(),
     })))
 }
 
@@ -155,6 +157,9 @@ struct NodeRuntime {
     /// The release whose `util.inspect` output values should match.
     writer: present::Writer,
     statics: Statics,
+
+    /// The scripts and functions frames name, for the life of the process.
+    table: std::sync::Mutex<scripts::Table>,
 }
 
 impl NodeRuntime {
@@ -257,8 +262,13 @@ impl RuntimeModel for NodeRuntime {
             charge: None,
             blocks: stop.memory(),
         };
+        let mut table = self
+            .table
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         frames::describe(
             &reader,
+            &mut table,
             positions::Encoding::of(self.version),
             &self.statics,
             frame,

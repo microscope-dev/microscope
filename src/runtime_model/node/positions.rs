@@ -167,69 +167,6 @@ pub(super) fn byte_array(reader: &Reader<'_>, array: Object) -> Result<Vec<u8>, 
         .ok_or_else(|| format!("the byte array at {:#x} is unreadable", array.0).into())
 }
 
-/// The line and column, each from 1, of the character `offset` of
-/// `script`.
-pub(super) fn line_column(
-    reader: &Reader<'_>,
-    script: Object,
-    offset: u64,
-) -> Result<(u32, u32), Problem> {
-    let ends = line_ends(reader, script, offset)?;
-    // Lines end at their newline; the line of `offset` is the first whose
-    // end is at or past it.
-    let line = ends.partition_point(|end| *end < offset);
-    let start = line.checked_sub(1).map_or(0, |previous| ends[previous] + 1);
-    let mut column = offset - start;
-    if line == 0 {
-        let first = reader.smi_field(script, Field::ScriptColumnOffset)?;
-        column = column.saturating_add_signed(first);
-    }
-    let line_offset = reader.smi_field(script, Field::ScriptLineOffset)?;
-    let line = i64::try_from(line).map_err(|_| "a line is out of range")? + line_offset;
-    let line = u32::try_from(line + 1).map_err(|_| "a line is out of range")?;
-    let column = u32::try_from(column + 1).map_err(|_| "a column is out of range")?;
-    Ok((line, column))
-}
-
-/// The offsets of the newlines of `script`, as V8 computed them, or else
-/// found in its source as far as `offset`.
-fn line_ends(reader: &Reader<'_>, script: Object, offset: u64) -> Result<Vec<u64>, Problem> {
-    let word = reader.field(script, Field::ScriptLineEnds)?;
-    if let Some(ends) = reader.object(word)?
-        && reader.is(ends, Constant::FixedArrayType)?
-    {
-        let count = u64::try_from(reader.smi_field(ends, Field::FixedArrayBaseLength)?)
-            .map_err(|_| "a script's line ends have a negative length")?;
-        let first = reader.field_address(ends, Field::FixedArrayObjects)?;
-        let mut found = Vec::new();
-        for index in 0..count.min(1 << 22) {
-            let end = reader.word(first + index * 8)?;
-            let end = reader
-                .smi(end)?
-                .and_then(|end| u64::try_from(end).ok())
-                .ok_or("a script's line end is no offset")?;
-            found.push(end);
-            if end >= offset {
-                break;
-            }
-        }
-        return Ok(found);
-    }
-
-    let source = reader.field(script, Field::ScriptSource)?;
-    let source = reader
-        .object(source)?
-        .ok_or("the script keeps no source and no line ends")?;
-    let mut text = Vec::new();
-    reader.string_into(source, 0, offset.saturating_add(1), 0, &mut text)?;
-    Ok(text
-        .iter()
-        .enumerate()
-        .filter(|(_, unit)| **unit == u16::from(b'\n'))
-        .map(|(at, _)| at as u64)
-        .collect())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

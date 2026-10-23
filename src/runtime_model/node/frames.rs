@@ -8,10 +8,13 @@
 //! instruction it runs or called from. Each fact is read only as the type
 //! it is proven to be.
 
+use std::sync::Arc;
+
 use super::Statics;
 use super::compiled;
 use super::objects::{Object, Problem, Reader};
 use super::positions::{self, Encoding};
+use super::scripts::Table;
 use crate::image::v8::{Constant, Field};
 use crate::runtime_model::{CodeFrame, DescribedFrame};
 use crate::unwind::RBP;
@@ -21,6 +24,7 @@ use crate::{CodeRole, RecordedFrame, RecordedPlace, SourceLanguage};
 /// what it runs, which keeps the name its code's symbol gives it.
 pub(super) fn describe(
     reader: &Reader<'_>,
+    table: &mut Table,
     encoding: Encoding,
     statics: &Statics,
     frame: &CodeFrame<'_>,
@@ -44,7 +48,7 @@ pub(super) fn describe(
     }
 
     let function = javascript_function(reader, fp).ok()??;
-    let functions = match functions(reader, encoding, statics, frame, fp, function) {
+    let functions = match functions(reader, table, encoding, statics, frame, fp, function) {
         // A function V8's own stack traces hide is its machinery.
         Ok(None) => {
             return Some(DescribedFrame {
@@ -81,6 +85,7 @@ pub(super) fn describe(
 /// `await`.
 fn functions(
     reader: &Reader<'_>,
+    table: &mut Table,
     encoding: Encoding,
     statics: &Statics,
     frame: &CodeFrame<'_>,
@@ -115,12 +120,12 @@ fn functions(
                     } else {
                         Named::Shared(inlined)
                     };
-                    recorded(reader, named, offset)
+                    recorded(reader, table, named, offset)
                 })
                 .collect::<Result<_, _>>()?
         }
         // The frame's function is known where its place is not.
-        Err(problem) => vec![recorded(reader, Named::Function(own), Err(problem))?],
+        Err(problem) => vec![recorded(reader, table, Named::Function(own), Err(problem))?],
     };
     Ok(Some(functions))
 }
@@ -160,33 +165,38 @@ enum Named {
 /// with the problem that it has no place known.
 fn recorded(
     reader: &Reader<'_>,
+    table: &mut Table,
     named: Named,
     offset: Result<u64, Problem>,
 ) -> Result<RecordedFrame, Problem> {
     let (name, shared) = match named {
         Named::Function((function, shared)) => {
-            (super::names::debug_name(reader, function, shared), shared)
+            let name = match super::names::property_name(reader, function) {
+                Ok(Some(name)) => Ok(name.into()),
+                Ok(None) => table.function_name(reader, shared),
+                Err(problem) => Err(problem),
+            };
+            (name, shared)
         }
-        Named::Shared(shared) => (super::names::function_name(reader, shared), shared),
+        Named::Shared(shared) => (table.function_name(reader, shared), shared),
     };
     // A name that cannot be read leaves the frame its place.
     let (name, unnamed) = match name {
         Ok(name) => (name, None),
-        Err(problem) => (String::new(), Some(problem)),
+        Err(problem) => (Arc::from(""), Some(problem)),
     };
     let script = script(reader, shared)?;
     let path = script
-        .map(|script| script_name(reader, script))
+        .map(|script| table.path(reader, script))
         .transpose()?
-        .flatten()
-        .map(|name| file_url_path(&name).unwrap_or(name));
+        .flatten();
 
     let (place, problem) = match (script, &path) {
         (Some(script), Some(path)) => match offset {
             Ok(offset) => {
-                let (line, column) = positions::line_column(reader, script, offset)?;
+                let (line, column) = table.line_column(reader, script, offset)?;
                 let place = RecordedPlace {
-                    path: path.as_str().into(),
+                    path: Arc::clone(path),
                     line,
                     column,
                 };
@@ -208,7 +218,7 @@ fn recorded(
         _ => SourceLanguage::JavaScript,
     };
     Ok(RecordedFrame {
-        function: name.into(),
+        function: name,
         language,
         place,
         first_line: None,
