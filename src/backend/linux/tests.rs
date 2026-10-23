@@ -8262,6 +8262,7 @@ impl WatchHarness {
             following: Arc::clone(&following),
             root: true,
             parent: None,
+            settings_taken: 0,
         });
         self.trace().clone.replace(Some((child, child)));
         following

@@ -1,6 +1,8 @@
 /* Starts COUNT children and waits for them, as a test runner or a watcher
  * does: `process-tree COUNT HOW [serial]`. Each child, by HOW:
  *   direct  runs child_work after its fork, and exits 0;
+ *   signal  runs child_work, then raises SIGUSR1, and exits 0 once its
+ *           handler ran;
  *   shell   executes /bin/sh -c "exec-target child", which exits 42;
  *   spawn   is started by posix_spawn, a vfork and an exec, as exec-target;
  *   hang    executes /bin/sh -c "sleep 100; true", and is never waited for.
@@ -25,6 +27,13 @@ static volatile sig_atomic_t continued;
 static void on_continue(int signal) {
     (void)signal;
     continued = 1;
+}
+
+static volatile sig_atomic_t signalled;
+
+static void on_signal(int signal) {
+    (void)signal;
+    signalled = 1;
 }
 
 __attribute__((noinline)) int child_work(int index) {
@@ -71,6 +80,13 @@ static pid_t start(const char *how, int index) {
         _exit(continued ? 3 : 0);
     }
 
+    if (strcmp(how, "signal") == 0) {
+        signal(SIGUSR1, on_signal);
+        child_work(index);
+        raise(SIGUSR1);
+        _exit(signalled ? 0 : 4);
+    }
+
     char command[PATH_MAX + 16];
     if (strcmp(how, "shell") == 0) {
         snprintf(command, sizeof command, "%s child", target);
@@ -82,7 +98,7 @@ static pid_t start(const char *how, int index) {
 }
 
 static int expected(const char *how) {
-    return strcmp(how, "direct") == 0 ? 0 : 42;
+    return strcmp(how, "direct") == 0 || strcmp(how, "signal") == 0 ? 0 : 42;
 }
 
 static int failed(pid_t child, const char *how) {

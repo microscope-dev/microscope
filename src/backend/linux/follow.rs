@@ -21,6 +21,7 @@ use super::native::{LinuxPtrace, LinuxTraceOps};
 use super::signals::{Signal, WaitEvent};
 use super::tracer::{HostContext, Hosted, Hosting};
 use super::{Controller, Executable, Start, process_id};
+use crate::Catchpoint;
 use crate::backend::{ControllerChannels, ControllerJoin, ControllerMessage};
 use crate::debug_info::{DebugFileSearch, DebugInfo};
 use crate::{
@@ -75,6 +76,40 @@ enum Handover {
 pub(super) struct Following {
     policy: Policy,
     handovers: Mutex<VecDeque<Handover>>,
+    settings: Mutex<Settings>,
+}
+
+/// The session settings a group's members share. A client's change to any
+/// member's is recorded here, and every other member takes it before it
+/// serves its next message, as one that joins later does before its first.
+#[derive(Clone, Default)]
+struct Settings {
+    /// Counts the changes, so that a member knows whether it has them all.
+    revision: u64,
+
+    /// Each signal's policy, as a client last chose it.
+    signals: BTreeMap<Signal, crate::SignalPolicy>,
+    exception_stops: Option<crate::ExceptionStops>,
+    exec_stops: Option<bool>,
+    step_into_runtime: Option<bool>,
+    views: Option<Arc<crate::view::ViewSet>>,
+    views_enabled: Option<bool>,
+
+    /// The group's catchpoints, whose ids are the same in every member.
+    catchpoints: BTreeMap<crate::CatchpointId, crate::Catchpoint>,
+    next_catchpoint: u64,
+}
+
+/// A change to the settings a group's members share.
+pub(super) enum Setting {
+    Signal(Signal, crate::SignalPolicy),
+    ExceptionStops(crate::ExceptionStops),
+    ExecStops(bool),
+    StepIntoRuntime(bool),
+    Views(Arc<crate::view::ViewSet>),
+    ViewsEnabled(bool),
+    AddCatchpoint(crate::Catchpoint),
+    RemoveCatchpoint(crate::CatchpointId),
 }
 
 impl Following {
@@ -82,7 +117,23 @@ impl Following {
         Self {
             policy,
             handovers: Mutex::default(),
+            settings: Mutex::new(Settings {
+                next_catchpoint: 1,
+                ..Settings::default()
+            }),
         }
+    }
+
+    /// A catchpoint id no member of the group has used.
+    pub(super) fn next_catchpoint(&self) -> crate::CatchpointId {
+        let mut settings = self.settings();
+        let id = crate::CatchpointId::new(settings.next_catchpoint);
+        settings.next_catchpoint += 1;
+        id
+    }
+
+    fn settings(&self) -> std::sync::MutexGuard<'_, Settings> {
+        self.settings.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     pub(super) fn transfer(&self, transfer: Transfer) {
@@ -149,6 +200,67 @@ pub(super) struct Membership {
 
     /// The member whose process started this one's, if any.
     pub(super) parent: Option<Pid>,
+
+    /// The revision of the group's settings the controller has taken.
+    pub(super) settings_taken: u64,
+}
+
+impl<P: super::native::InspectionOps> Controller<P> {
+    /// Records a client's change to the session's settings as the group's,
+    /// when the session is a member of one. A change the group already has,
+    /// as a member taking the group's own makes, is not recorded again.
+    pub(super) fn share(&mut self, setting: Setting) {
+        let Some(membership) = self.group.as_mut() else {
+            return;
+        };
+
+        let mut settings = membership.following.settings();
+        let changed = match setting {
+            Setting::Signal(signal, policy) => {
+                settings.signals.insert(signal, policy) != Some(policy)
+            }
+            Setting::ExceptionStops(stops) => {
+                settings.exception_stops.replace(stops) != Some(stops)
+            }
+            Setting::ExecStops(stops) => settings.exec_stops.replace(stops) != Some(stops),
+            Setting::StepIntoRuntime(enter) => {
+                settings.step_into_runtime.replace(enter) != Some(enter)
+            }
+            Setting::Views(views) => !settings
+                .views
+                .replace(Arc::clone(&views))
+                .is_some_and(|old| Arc::ptr_eq(&old, &views)),
+            Setting::ViewsEnabled(enabled) => {
+                settings.views_enabled.replace(enabled) != Some(enabled)
+            }
+            Setting::AddCatchpoint(catchpoint) => {
+                let id = catchpoint.id;
+                settings
+                    .catchpoints
+                    .insert(
+                        id,
+                        Catchpoint {
+                            hit_count: 0,
+                            ..catchpoint
+                        },
+                    )
+                    .is_none()
+            }
+            Setting::RemoveCatchpoint(id) => settings.catchpoints.remove(&id).is_some(),
+        };
+        if !changed {
+            return;
+        }
+
+        // A member that had every earlier change has this one too, as its
+        // own; one that lacks some takes them all again, which repeats this
+        // change harmlessly.
+        let complete = membership.settings_taken == settings.revision;
+        settings.revision += 1;
+        if complete {
+            membership.settings_taken = settings.revision;
+        }
+    }
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
@@ -156,6 +268,73 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// `following`.
     pub(super) fn join_group(&mut self, membership: Membership) {
         self.group = Some(membership);
+    }
+
+    /// Takes the changes other members made to the group's settings since
+    /// the controller last did. Each is applied as the client's request for
+    /// it would be, so applying one again changes nothing.
+    pub(super) fn take_group_settings(&mut self) {
+        let Some(membership) = self.group.as_mut() else {
+            return;
+        };
+        let settings = {
+            let settings = membership.following.settings();
+            if settings.revision == membership.settings_taken {
+                return;
+            }
+            settings.clone()
+        };
+        membership.settings_taken = settings.revision;
+
+        for (&signal, &policy) in &settings.signals {
+            self.signals.set(signal, policy);
+        }
+        if let Some(stops) = settings.exec_stops {
+            self.exec_stops = stops;
+        }
+        if let Some(enter) = settings.step_into_runtime {
+            self.step_into_runtime = enter;
+        }
+        if let Some(views) = settings.views
+            && !Arc::ptr_eq(&views, &self.views.set)
+        {
+            self.views.replace(views);
+        }
+        if let Some(enabled) = settings.views_enabled {
+            self.views.enabled = enabled;
+        }
+        if let Some(stops) = settings.exception_stops
+            && stops != self.exception_stops
+        {
+            self.edit(super::Edit::SetExceptionStops {
+                stops,
+                reply: oneshot::channel().0,
+            });
+        }
+
+        let removed = self
+            .catchpoints
+            .keys()
+            .filter(|id| !settings.catchpoints.contains_key(id))
+            .copied()
+            .collect::<Vec<_>>();
+        for id in removed {
+            self.edit(super::Edit::RemoveCatchpoint {
+                id,
+                reply: oneshot::channel().0,
+            });
+        }
+        for (id, catchpoint) in settings.catchpoints {
+            if !self.catchpoints.contains_key(&id) {
+                self.edit(super::Edit::AddCatchpoint {
+                    id: Some(id),
+                    calls: catchpoint.calls,
+                    phase: catchpoint.phase,
+                    condition: catchpoint.condition,
+                    reply: oneshot::channel().0,
+                });
+            }
+        }
     }
 
     /// The program a fork child of the inferior runs, which is the main
@@ -632,6 +811,7 @@ impl Group {
             following: Arc::clone(&self.setup.following),
             root: false,
             parent,
+            settings_taken: 0,
         });
         start(&mut controller);
 

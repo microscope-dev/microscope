@@ -377,6 +377,16 @@ breakpoint, and `GroupHandle::group_breakpoint` translates a member's hit
 for clients. The first stop a temporary breakpoint causes in any member
 deletes the group's breakpoint.
 
+The other session settings are shared in the backend, not by the driver.
+A group controller that serves a client's change to signal policy,
+exception stops, exec stops, stepping into runtimes, views, or catchpoints
+records it in `Following`'s settings, and every group controller takes the
+changes it lacks at the start of each message it serves, a new member before
+its first. Taking a change repeats the client's request, so taking it twice
+changes nothing. Catchpoint ids come from the group, so a member's
+catchpoint stop names the group's id without translation. A DAP member's
+session therefore makes no system-call catchpoint of its own.
+
 With `StopScope::Group`, one member's stop pauses every other running
 member. `GroupEvent::GroupStopped` is published once none is left running.
 A stop that another member made while the group was stopping is queued.

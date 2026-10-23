@@ -21,14 +21,20 @@ use crate::syscalls::{Capture, CaptureState, Outcome, ReadAt, SyscallId};
 use crate::{CatchPhase, Catchpoint, CatchpointId, Condition, Error, Result, VirtualAddress};
 
 impl<P: LinuxTraceOps> Controller<P> {
+    /// Adds a catchpoint under `id`, another member's of the group, or
+    /// under a new id, which a group's members share.
     pub(super) fn add_catchpoint(
         &mut self,
+        id: Option<CatchpointId>,
         calls: Arc<[SyscallId]>,
         phase: CatchPhase,
         condition: Option<Condition>,
     ) -> Catchpoint {
-        let id = CatchpointId::new(self.next_catchpoint_id);
-        self.next_catchpoint_id += 1;
+        let id = id.unwrap_or_else(|| match &self.group {
+            Some(membership) => membership.following.next_catchpoint(),
+            None => CatchpointId::new(self.next_catchpoint_id),
+        });
+        self.next_catchpoint_id = self.next_catchpoint_id.max(id.get() + 1);
         let catchpoint = Catchpoint {
             id,
             calls,
@@ -38,6 +44,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
 
         self.catchpoints.insert(id, catchpoint.clone());
+        self.share(super::follow::Setting::AddCatchpoint(catchpoint.clone()));
         self.publish_catchpoints_changed();
         catchpoint
     }
@@ -47,6 +54,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .catchpoints
             .remove(&id)
             .ok_or(Error::CatchpointNotFound(id.get()))?;
+        self.share(super::follow::Setting::RemoveCatchpoint(id));
         self.publish_catchpoints_changed();
         Ok(removed)
     }

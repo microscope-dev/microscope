@@ -63,7 +63,10 @@ attached process requires an explicit command.
 A launched or attached program and the processes it starts are debugged as
 one group. Each debugged process is a member, numbered from `[1]`, the
 program's own process. A member gets every breakpoint before it runs its
-first instruction, and a breakpoint set later reaches every member. When one
+first instruction, and a breakpoint set later reaches every member. The
+group also shares catchpoints, signal handling (`handle`), exception stops,
+`catch exec`, and view settings: changing one in any member changes it in
+every member, including those that join later. When one
 member stops, the others stop too, unless the `[follow]` setting `stop` is
 `"process"`. The stop selects the member that stopped:
 

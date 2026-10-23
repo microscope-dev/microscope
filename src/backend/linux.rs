@@ -825,6 +825,9 @@ enum Edit {
         reply: Reply<crate::ExceptionStops>,
     },
     AddCatchpoint {
+        /// The group's id for it, when it is another member's; otherwise
+        /// it gets a new one.
+        id: Option<crate::CatchpointId>,
         calls: Arc<[crate::syscalls::SyscallId]>,
         phase: crate::CatchPhase,
         condition: Option<crate::Condition>,
@@ -1735,6 +1738,7 @@ pub fn spawn_group(
                 following,
                 root: true,
                 parent: None,
+                settings_taken: 0,
             });
         }
         Box::new(controller)
@@ -2028,6 +2032,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// controller keeps running. A driver that owns the queue, such as the
     /// simulator, delivers messages one at a time through this.
     fn handle_message(&mut self, message: ControllerMessage) -> bool {
+        self.take_group_settings();
         let keeps_running = match message {
             ControllerMessage::Request(request) => {
                 record!("request {}", request.describe());
@@ -2161,9 +2166,11 @@ impl<P: LinuxTraceOps> Controller<P> {
                 self.edit(Edit::RemoveAllWatchpoints { reply });
             }
             Request::SetExceptionStops { stops, reply } => {
+                self.share(follow::Setting::ExceptionStops(stops));
                 self.edit(Edit::SetExceptionStops { stops, reply });
             }
             Request::SetExecStops { stops, reply } => {
+                self.share(follow::Setting::ExecStops(stops));
                 let _ = reply.send(Ok(std::mem::replace(&mut self.exec_stops, stops)));
             }
             Request::ReleaseOnShutdown { reply } => {
@@ -2177,6 +2184,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 condition,
                 reply,
             } => self.edit(Edit::AddCatchpoint {
+                id: None,
                 calls,
                 phase,
                 condition,
@@ -2591,14 +2599,17 @@ impl<P: InspectionOps> Controller<P> {
                 let _ = reply.send(self.globals(&query));
             }
             Request::SetViews { views, reply } => {
+                self.share(follow::Setting::Views(Arc::clone(&views)));
                 self.views.replace(views);
                 let _ = reply.send(Ok(()));
             }
             Request::EnableViews { enabled, reply } => {
+                self.share(follow::Setting::ViewsEnabled(enabled));
                 self.views.enabled = enabled;
                 let _ = reply.send(Ok(()));
             }
             Request::SetStepIntoRuntime { enter, reply } => {
+                self.share(follow::Setting::StepIntoRuntime(enter));
                 let _ = reply.send(Ok(std::mem::replace(&mut self.step_into_runtime, enter)));
             }
             Request::ExplainType { name, reply } => {
@@ -2698,11 +2709,13 @@ impl<P: InspectionOps> Controller<P> {
                 policy,
                 reply,
             } => {
-                let _ = reply.send(
-                    Signal::from_code(signal)
-                        .map(|signal| self.signals.set(signal, policy))
-                        .ok_or(Error::UnknownSignal(signal)),
-                );
+                let _ = reply.send(match Signal::from_code(signal) {
+                    Some(signal) => {
+                        self.share(follow::Setting::Signal(signal, policy));
+                        Ok(self.signals.set(signal, policy))
+                    }
+                    None => Err(Error::UnknownSignal(signal)),
+                });
             }
 
             Request::AddBreakpoint { .. }

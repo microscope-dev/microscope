@@ -132,12 +132,13 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
 
             Edit::AddCatchpoint {
+                id,
                 calls,
                 phase,
                 condition,
                 reply,
             } => {
-                let _ = reply.send(Ok(self.add_catchpoint(calls, phase, condition)));
+                let _ = reply.send(Ok(self.add_catchpoint(id, calls, phase, condition)));
             }
             Edit::RemoveCatchpoint { id, reply } => {
                 let _ = reply.send(self.remove_catchpoint(id));

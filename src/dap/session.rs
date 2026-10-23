@@ -2772,7 +2772,12 @@ impl Session {
             target.applied_exceptions = exceptions;
         }
 
-        let syscalls = self.exceptions.syscalls();
+        // A member has the catchpoints of its group, which its root's
+        // session makes.
+        let syscalls = self
+            .exceptions
+            .syscalls()
+            .filter(|_| !matches!(target.owner, Owner::Member(..)));
         if target.applied_syscalls.as_ref().map(|(calls, _)| calls) != syscalls {
             if let Some((_, id)) = target.applied_syscalls.take() {
                 target.handle.remove_catchpoint(id).await.map_err(error)?;

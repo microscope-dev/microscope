@@ -289,6 +289,76 @@ async fn concurrent_children_each_join_and_stop() {
 }
 
 #[tokio::test]
+async fn the_roots_signal_policy_is_every_members() {
+    let usr1 = microscope::signal_named("SIGUSR1").expect("SIGUSR1");
+    let mut group = Group::new("process-tree", FollowPolicy::default());
+    group.break_at("child_work").await;
+    group.launch(&["2", "signal", "serial"]).await;
+
+    // [2] stops before it raises SIGUSR1, which stops by default. The
+    // root's new policy must reach [2], already a member, and [3], which
+    // joins after it.
+    let (member, reason) = group.stop().await;
+    assert_eq!(member, 2, "{reason:?}");
+    group
+        .inner
+        .root()
+        .set_signal_policy(
+            usr1,
+            microscope::SignalPolicy {
+                stop: false,
+                print: false,
+                pass: true,
+            },
+        )
+        .await
+        .expect("change the root's policy");
+    group.inner.continue_all().await.expect("continue");
+
+    let stops = group.run_to_exit().await;
+    assert!(
+        stops
+            .iter()
+            .all(|(_, reason)| !matches!(reason, StopReason::Exception(_))),
+        "no member stops at SIGUSR1: {stops:#?}"
+    );
+    assert_eq!(breakpoint_members(&stops), [3], "{stops:#?}");
+
+    // Each child exits 0 only when its handler ran, so the signal was
+    // delivered to both.
+    assert_eq!(
+        group.root_status(),
+        MemberState::Exited(ExitStatus::Code(0))
+    );
+    group.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_roots_catchpoints_are_every_members() {
+    let mut group = Group::new("process-tree", FollowPolicy::default());
+    let tgkill =
+        microscope::syscalls::SyscallId::named(microscope::syscalls::Abi::X86_64, "tgkill")
+            .expect("tgkill");
+    let catchpoint = group
+        .inner
+        .root()
+        .add_catchpoint(Arc::from([tgkill]), microscope::CatchPhase::Entry, None)
+        .await
+        .expect("catch tgkill");
+    group.launch(&["1", "signal"]).await;
+
+    // Only the child calls tgkill, to raise its SIGUSR1.
+    let (member, reason) = group.stop().await;
+    assert_eq!(member, 2, "{reason:?}");
+    let StopReason::Syscall(stop) = reason else {
+        panic!("expected the catchpoint's stop, got {reason:?}");
+    };
+    // A catchpoint has the same id in every member.
+    assert_eq!(*stop.catchpoints, [catchpoint.id]);
+    group.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_restarted_child_joins_again_with_the_same_breakpoints() {
     let mut group = Group::new("process-tree", FollowPolicy::default());
     group.break_at("child_work").await;
