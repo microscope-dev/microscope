@@ -668,21 +668,18 @@ const fn variable_kind(kind: VariableKind) -> u8 {
         VariableKind::Local => 2,
         VariableKind::Global => 3,
         VariableKind::Returned => 4,
-        VariableKind::Captured => 5,
-        VariableKind::Module => 6,
-        VariableKind::Unnamed => 7,
+        // Only a JavaScript frame has these, and validation refuses the byte.
+        VariableKind::Captured | VariableKind::Module | VariableKind::Unnamed => u8::MAX,
     }
 }
 
-const VARIABLE_KINDS: [VariableKind; 8] = [
+/// The kinds a data object can have, by the byte that stores them.
+const VARIABLE_KINDS: [VariableKind; 5] = [
     VariableKind::Parameter,
     VariableKind::Result,
     VariableKind::Local,
     VariableKind::Global,
     VariableKind::Returned,
-    VariableKind::Captured,
-    VariableKind::Module,
-    VariableKind::Unnamed,
 ];
 
 /// Adds the data objects, their functions, and their indexes to
@@ -1031,7 +1028,10 @@ fn encode_object(
             None => NONE.into(),
         },
         debug_info_offset: object.debug_info_offset.unwrap_or(0).into(),
-        kind: variable_kind(object.kind),
+        kind: {
+            debug_assert!(VARIABLE_KINDS.contains(&object.kind), "{:?}", object.kind);
+            variable_kind(object.kind)
+        },
         value_kind,
         flags,
     })
