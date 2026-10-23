@@ -19,21 +19,32 @@ const GENERATED_FILE: &str = concat!(
 
 /// The names older versions' Torque gives a field the enum names by its
 /// newest.
-const RENAMED: [(Field, &str); 3] = [
+const RENAMED: [(Field, &str); 4] = [
     (Field::ByteArrayValues, "ByteArray::Bytes"),
     (Field::TrustedByteArrayValues, "TrustedByteArray::Bytes"),
     (Field::ScriptInfos, "Script::SharedFunctionInfos"),
+    (Field::FixedDoubleArrayValues, "FixedDoubleArray::Floats"),
 ];
 
 /// The class each bit-field constant names, and the macro of
-/// `bit-fields.h` that defines its bit fields.
-const BIT_FIELDS: [(&str, &str); 6] = [
+/// `bit-fields.h` that defines its bit fields. A context local's
+/// `VARIABLE_PROPERTIES` are `ScopeInfo`'s, which `scope-info.h` defines.
+const BIT_FIELDS: [(&str, &str); 15] = [
     ("SharedFunctionInfo", "SHARED_FUNCTION_INFO_FLAGS"),
     ("ScopeInfo", "SCOPE_FLAGS"),
     ("Script", "SCRIPT_FLAGS"),
     ("FeedbackVector", "FEEDBACK_VECTOR_FLAGS"),
     ("FeedbackVector", "OSR_STATE"),
+    ("Map", "MAP_BIT_FIELDS1"),
+    ("Map", "MAP_BIT_FIELDS2"),
     ("Map", "MAP_BIT_FIELDS3"),
+    ("Symbol", "SYMBOL_FLAGS"),
+    ("JSPromise", "JS_PROMISE_FLAGS"),
+    ("JSArrayBuffer", "JS_ARRAY_BUFFER_FLAGS"),
+    ("JSArrayBufferView", "JS_ARRAY_BUFFER_VIEW_FLAGS"),
+    ("JSRegExp", "JS_REG_EXP_FLAGS"),
+    ("CallSiteInfo", "CALL_SITE_INFO_FLAGS"),
+    ("ScopeInfo", "VARIABLE_PROPERTIES"),
 ];
 
 /// V8's license, which the generated layouts carry because they derive
@@ -161,7 +172,9 @@ fn torque_instance_types(header: &str) -> Vec<(String, u16)> {
 
 /// Each bit field of the class [`BIT_FIELDS`] names, as `Class::NameBits`,
 /// with where it begins and its width: `bit-fields.h` defines each as
-/// `using Name = base::BitField<Type, shift, size, Storage>;`.
+/// `using Name = base::BitField<Type, shift, size, Storage>;`. Where every
+/// field is one bit, an `enum Flag` follows that must name each field's
+/// bit as `kName`.
 fn torque_bit_fields(header: &str) -> BTreeMap<String, (u32, u32)> {
     let mut fields = BTreeMap::new();
     for (class, flags) in BIT_FIELDS {
@@ -170,7 +183,17 @@ fn torque_bit_fields(header: &str) -> BTreeMap<String, (u32, u32)> {
             .split_once(&start)
             .unwrap_or_else(|| panic!("bit-fields.h defines {flags}"))
             .1;
-        for line in list.lines().take_while(|line| !line.trim().is_empty()) {
+        let mut lines = list.lines().take_while(|line| !line.trim().is_empty());
+        let mut own = Vec::new();
+        for line in lines.by_ref() {
+            if let Some(storage) = line
+                .trim()
+                .strip_prefix("enum Flag: ")
+                .and_then(|rest| rest.strip_suffix(" { \\"))
+            {
+                check_flag_enum(flags, &own, storage, lines.by_ref());
+                break;
+            }
             let (name, shift, size) = line
                 .trim()
                 .strip_prefix("using ")
@@ -185,10 +208,41 @@ fn torque_bit_fields(header: &str) -> BTreeMap<String, (u32, u32)> {
                 })
                 .unwrap_or_else(|| panic!("a bit field of {flags} is {line:?}"));
             fields.insert(format!("{class}::{name}"), (shift, size));
+            own.push((name, shift, size));
         }
     }
 
     fields
+}
+
+/// Checks the `enum Flag` of `storage` that follows the one-bit fields
+/// `fields` of `flags`: `kNone = 0`, then each field `NameBit` as `kName =
+/// storage{1} << shift`, in order, then `Flags` and `kFlagCount`, the
+/// number of fields.
+fn check_flag_enum<'a>(
+    flags: &str,
+    fields: &[(&str, u32, u32)],
+    storage: &str,
+    lines: impl Iterator<Item = &'a str>,
+) {
+    let lines: Vec<&str> = lines
+        .map(|line| line.trim().trim_end_matches('\\').trim_end())
+        .collect();
+    let mut expected = vec!["kNone = 0,".to_owned()];
+    for &(name, shift, size) in fields {
+        assert_eq!(
+            size, 1,
+            "{flags} has a Flag enum but its {name} is {size} bits"
+        );
+        let flag = name.strip_suffix("Bit").unwrap_or(name);
+        expected.push(format!("k{flag} = {storage}{{1}} << {shift},"));
+    }
+    expected.extend([
+        "};".to_owned(),
+        "using Flags = base::Flags<Flag>;".to_owned(),
+        format!("static constexpr int kFlagCount = {};", fields.len()),
+    ]);
+    assert_eq!(lines, expected, "{flags}'s Flag enum");
 }
 
 /// The value a Torque constant has in the version whose Torque output
@@ -284,7 +338,116 @@ fn header_constants(headers: &Headers, leaptiering: bool) -> BTreeMap<String, i6
         add_dispatch_constants(headers, &mut constants);
     }
     super::deoptimization::add_constants(headers, &mut constants);
+    add_value_constants(headers, &mut constants);
     constants
+}
+
+/// The constants of JavaScript's values the headers give: their kinds and
+/// states, the bits of a `BigInt`'s and a property's details, and the
+/// layouts of ordered hash tables and contexts.
+fn add_value_constants(headers: &Headers, constants: &mut BTreeMap<String, i64>) {
+    let mut add = |name: String, value: i64| {
+        let previous = constants.insert(name.clone(), value);
+        assert!(previous.is_none(), "{name} is given twice");
+    };
+
+    let enums: [(&str, &str, &str, bool); 7] = [
+        (
+            "ElementsKind",
+            "src/objects/elements-kind.h",
+            "enum ElementsKind",
+            false,
+        ),
+        (
+            "FunctionKind",
+            "src/objects/function-kind.h",
+            "enum class FunctionKind",
+            true,
+        ),
+        ("Promise", "include/v8-promise.h", "enum PromiseState", true),
+        (
+            "VariableMode",
+            "src/common/globals.h",
+            "enum class VariableMode",
+            true,
+        ),
+        (
+            "InitializationFlag",
+            "src/common/globals.h",
+            "enum InitializationFlag",
+            true,
+        ),
+        // From 14.6.
+        (
+            "PrivateSymbolKind",
+            "src/objects/name.h",
+            "enum class PrivateSymbolKind",
+            true,
+        ),
+        // From 14.6, the slots of a raw frame of an error's stack data.
+        (
+            "CallSiteInfo",
+            "src/objects/call-site-info.h",
+            "enum Fields",
+            true,
+        ),
+    ];
+    for (class, file, head, plain) in enums {
+        if !headers.contains(file, head) {
+            continue;
+        }
+        let values = if plain {
+            headers.enumerators(file, head)
+        } else {
+            headers.elements_kinds()
+        };
+        for (name, value) in values {
+            add(format!("{class}::{name}"), value);
+        }
+    }
+
+    for class in ["OrderedHashMap", "OrderedHashSet"] {
+        for (name, value) in headers.ordered_hash_table(class) {
+            add(name, value);
+        }
+    }
+    for (name, value) in headers.context_slots() {
+        add(format!("Context::{name}"), value);
+    }
+    add(
+        "internal::kHoleNanInt64".to_owned(),
+        headers.hole_nan_int64(),
+    );
+
+    assert!(
+        headers.global_dictionary_cell_is_key(),
+        "a global dictionary's entry is no longer the property cell at its key"
+    );
+    for (file, class, fields) in [
+        (
+            "src/objects/bigint.h",
+            "BigIntBase",
+            &["SignBits", "LengthBits"][..],
+        ),
+        (
+            "src/objects/property-details.h",
+            "PropertyDetails",
+            &["DictionaryStorageField"][..],
+        ),
+    ] {
+        let bits = headers.bit_fields(file, class);
+        for field in fields {
+            let (shift, size) = bits
+                .get(*field)
+                .copied()
+                .unwrap_or_else(|| panic!("{class} has no {field}"));
+            add(format!("{class}::{field}::kShift"), shift);
+            add(
+                format!("{class}::{field}::kMask"),
+                ((1i64 << size) - 1) << shift,
+            );
+        }
+    }
 }
 
 /// The JS dispatch table's constants, from the 64-bit branches of
@@ -334,7 +497,25 @@ const DEOPTIMIZATION_INDICES: [&str; 12] = [
 /// Class constants the generated layouts take from the headers: the name
 /// [`Constant`] gives the class, the classes searched for each, in order
 /// from the class to those it derives from, its header, and the names.
-const HEADER_CLASS_CONSTANTS: [(&str, &[&str], &str, &[&str]); 6] = [
+const HEADER_CLASS_CONSTANTS: [(&str, &[&str], &str, &[&str]); 9] = [
+    (
+        "Oddball",
+        &["Oddball"],
+        "src/objects/oddball.h",
+        &["kUndefined", "kNull", "kTrue", "kFalse"],
+    ),
+    (
+        "NumberDictionary",
+        &["NumberDictionary"],
+        "src/objects/dictionary.h",
+        &["kEntryValueIndex", "kEntryDetailsIndex"],
+    ),
+    (
+        "GlobalDictionaryShape",
+        &["GlobalDictionaryShape"],
+        "src/objects/dictionary.h",
+        &["kPrefixSize"],
+    ),
     (
         "HashTableBase",
         &["HashTableBase"],
@@ -433,6 +614,8 @@ fn checked_constants(
         ((1 << size) - 1) << shift,
     );
 
+    add_value_checks(constants, bits, &mut check);
+
     check(
         "namedictionary_prefix_start_index",
         constants["HashTableBase::kPrefixStartIndex"],
@@ -479,6 +662,49 @@ fn checked_constants(
     checked
 }
 
+/// The `v8dbg_` constants of JavaScript's values the headers and Torque
+/// output give too: the bits of a map's elements kind and of a detached
+/// array buffer, the oddballs' kinds, three elements kinds, and a
+/// context's first slots.
+fn add_value_checks(
+    constants: &BTreeMap<String, i64>,
+    bits: &BTreeMap<String, (u32, u32)>,
+    check: &mut impl FnMut(&str, i64),
+) {
+    for (prefix, name) in [
+        ("bit_field2_elements_kind", "Map::ElementsKindBits"),
+        (
+            "jsarray_buffer_was_detached",
+            "JSArrayBuffer::WasDetachedBit",
+        ),
+    ] {
+        let (shift, size) = bits.get(name).unwrap_or_else(|| panic!("no {name}"));
+        let (shift, size) = (i64::from(*shift), i64::from(*size));
+        check(&format!("{prefix}_shift"), shift);
+        check(&format!("{prefix}_mask"), ((1 << size) - 1) << shift);
+    }
+    for (name, own) in [
+        ("OddballUndefined", "Oddball::kUndefined"),
+        ("OddballNull", "Oddball::kNull"),
+        ("OddballTrue", "Oddball::kTrue"),
+        ("OddballFalse", "Oddball::kFalse"),
+        ("elements_fast_elements", "ElementsKind::PACKED_ELEMENTS"),
+        (
+            "elements_fast_holey_elements",
+            "ElementsKind::HOLEY_ELEMENTS",
+        ),
+        (
+            "elements_dictionary_elements",
+            "ElementsKind::DICTIONARY_ELEMENTS",
+        ),
+        ("context_idx_scope_info", "Context::SCOPE_INFO_INDEX"),
+        ("context_idx_prev", "Context::PREVIOUS_INDEX"),
+        ("context_min_slots", "Context::MIN_CONTEXT_SLOTS"),
+    ] {
+        check(name, constants[own]);
+    }
+}
+
 /// The `prop_` constants `property-details.h` gives: the kinds, locations,
 /// and representations, and where each field of a property's details is.
 fn add_property_details(headers: &Headers, check: &mut impl FnMut(&str, i64)) {
@@ -520,8 +746,9 @@ fn add_property_details(headers: &Headers, check: &mut impl FnMut(&str, i64)) {
     }
 }
 
-/// One version's entry of `layouts.gen.rs`.
-fn generate_version(text: &mut String, (major, minor): (u32, u32), torque: &Path) {
+/// One version's entry of `layouts.gen.rs`, and where its accessor pair
+/// keeps its getter and setter.
+fn generate_version(text: &mut String, (major, minor): (u32, u32), torque: &Path) -> [u32; 2] {
     let mut fields = torque_fields(&read(torque, "class-debug-readers.cc"));
     let types = torque_instance_types(&read(torque, "instance-types.h"));
     let bits = torque_bit_fields(&read(torque, "bit-fields.h"));
@@ -532,6 +759,8 @@ fn generate_version(text: &mut String, (major, minor): (u32, u32), torque: &Path
         .code_fields()
         .into_iter()
         .chain(headers.code_wrapper_fields())
+        .chain(headers.bigint_fields())
+        .chain(headers.accessor_pair_fields().into_iter().flatten())
     {
         let offset = u32::try_from(offset).expect("an offset");
         let previous = fields.insert(name.clone(), offset);
@@ -600,6 +829,7 @@ fn generate_version(text: &mut String, (major, minor): (u32, u32), torque: &Path
     }
 
     writeln!(text, "        ],\n    }},").expect("write");
+    [Field::AccessorPairGetter, Field::AccessorPairSetter].map(|field| fields[field.name()])
 }
 
 fn generate() -> String {
@@ -608,8 +838,12 @@ fn generate() -> String {
          // class-debug-readers.cc, instance-types.h, and bit-fields.h that\n\
          // MICROSCOPE_V8_TORQUE holds, and from the V8 headers beside them\n\
          // (code.h, deoptimization-data.h, source-position.h, hash-table.h,\n\
-         // dictionary.h, descriptor-array.h, property-details.h, globals.h,\n\
-         // v8-internal.h, js-dispatch-table.h), by\n\
+         // dictionary.h, dictionary-inl.h, descriptor-array.h,\n\
+         // property-details.h, globals.h, v8-internal.h, js-dispatch-table.h,\n\
+         // heap-object.h, primitive-heap-object.h, bigint.h, struct.h,\n\
+         // oddball.h, name.h, elements-kind.h, function-kind.h,\n\
+         // ordered-hash-table.h, contexts.h, contexts-inl.h, map-inl.h,\n\
+         // call-site-info.h, v8-promise.h), by\n\
          // `debug_info::v8::conformance::layouts_match_torque`. Do not edit;\n\
          // rerun that test with MICROSCOPE_UPDATE_V8=1.\n\
          //\n\
@@ -632,9 +866,18 @@ fn generate() -> String {
          use crate::image::v8::{Constant, Field};\n\n\
          pub(super) const GENERATED: &[Generated] = &[\n",
     );
+    // Where Torque reads an accessor pair's fields and where struct.h lays
+    // them out, from 14.6, they agree.
+    let mut accessor_pairs = Vec::new();
     for (version, torque) in torque_versions() {
-        generate_version(&mut text, version, &torque);
+        accessor_pairs.push((version, generate_version(&mut text, version, &torque)));
     }
+    assert!(
+        accessor_pairs
+            .iter()
+            .all(|(_, fields)| *fields == accessor_pairs[0].1),
+        "the versions' accessor pairs disagree: {accessor_pairs:?}"
+    );
 
     text.push_str("];\n");
     text

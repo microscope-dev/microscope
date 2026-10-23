@@ -18,7 +18,7 @@ use regex::Regex;
 
 /// The parameters and body of each definition of each function-like macro
 /// of `text`, its comments removed and its lines joined.
-fn defines(text: &str) -> BTreeMap<String, Vec<(Vec<String>, String)>> {
+pub(super) fn defines(text: &str) -> BTreeMap<String, Vec<(Vec<String>, String)>> {
     let text = Regex::new(r"(?s)/\*.*?\*/")
         .expect("a pattern")
         .replace_all(text, " ");
@@ -71,7 +71,10 @@ fn calls(body: &str) -> Vec<(String, Vec<String>)> {
 
 /// The entries the list macro `name` gives its callbacks, each by its
 /// arguments, through the lists it calls.
-fn expand(macros: &BTreeMap<String, Vec<(Vec<String>, String)>>, name: &str) -> Vec<Vec<String>> {
+pub(super) fn expand(
+    macros: &BTreeMap<String, Vec<(Vec<String>, String)>>,
+    name: &str,
+) -> Vec<Vec<String>> {
     let definitions = macros
         .get(name)
         .unwrap_or_else(|| panic!("no definition of {name}"));
@@ -84,7 +87,9 @@ fn expand(macros: &BTreeMap<String, Vec<(Vec<String>, String)>>, name: &str) -> 
                     entries.push(arguments);
                 } else if macros.contains_key(&callee) {
                     assert!(
-                        arguments.iter().all(|argument| parameters.contains(argument)),
+                        arguments
+                            .iter()
+                            .all(|argument| parameters.contains(argument)),
                         "{name} calls {callee} with {arguments:?}"
                     );
                     entries.extend(expand(macros, &callee));

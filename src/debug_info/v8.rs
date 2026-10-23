@@ -313,6 +313,38 @@ const CHECKED_FIELDS: &[(Field, &str)] = &[
     (Field::CodeFlags, "Code__flags"),
     (Field::CodeInstructionStream, "Code__instruction_stream"),
     (Field::CodeWrapper, "Code__wrapper"),
+    (Field::HeapNumberValue, "HeapNumber__value"),
+    (Field::OddballKind, "Oddball__kind"),
+    (Field::JSDateValue, "JSDate__value"),
+    (Field::JSRegExpSource, "JSRegExp__source"),
+    (Field::JSTypedArrayRawLength, "JSTypedArray__length"),
+    (Field::JSTypedArrayBasePointer, "JSTypedArray__base_pointer"),
+    (
+        Field::JSTypedArrayExternalPointer,
+        "JSTypedArray__external_pointer",
+    ),
+    (
+        Field::JSArrayBufferViewRawByteLength,
+        "JSArrayBufferView__byte_length",
+    ),
+    (
+        Field::JSArrayBufferViewRawByteOffset,
+        "JSArrayBufferView__byte_offset",
+    ),
+    (
+        Field::JSArrayBufferBackingStore,
+        "JSArrayBuffer__backing_store",
+    ),
+    (
+        Field::JSArrayBufferRawByteLength,
+        "JSArrayBuffer__byte_length",
+    ),
+    (
+        Field::JSFunctionPrototypeOrInitialMap,
+        "JSFunction__prototype_or_initial_map",
+    ),
+    (Field::AccessorPairGetter, "AccessorPair__getter"),
+    (Field::AccessorPairSetter, "AccessorPair__setter"),
 ];
 
 /// What a module exports of V8's constants and version.
@@ -673,6 +705,8 @@ fn requires_field(field: Field, version: (u32, u32)) -> bool {
         | Field::CodeParameterCount
         | Field::TrustedWeakFixedArrayLength
         | Field::TrustedWeakFixedArrayObjects => version >= LEAPTIERING,
+        Field::ErrorStackDataCallSiteInfosOrFormattedStack => version < (14, 6),
+        Field::ErrorStackDataRawDataForCallSiteInfosOrFormattedStack => version >= (14, 6),
         _ => true,
     }
 }
@@ -722,7 +756,9 @@ fn requires_constant(constant: Constant, version: (u32, u32)) -> bool {
         | C::ScopeIsHiddenShift
         | C::ScopeIsHiddenMask
         | C::ScopeIsWrappedFunctionShift
-        | C::ScopeIsWrappedFunctionMask => since_13_6,
+        | C::ScopeIsWrappedFunctionMask
+        | C::VariableModeAwaitUsing
+        | C::FunctionKindModuleWithTopLevelAwait => since_13_6,
         C::ScopeIsReplModeScopeShift
         | C::ScopeIsReplModeScopeMask
         | C::ScopeHasLocalsBlockListShift
@@ -730,12 +766,37 @@ fn requires_constant(constant: Constant, version: (u32, u32)) -> bool {
         | C::FeedbackMaybeHasMaglevCodeShift
         | C::FeedbackMaybeHasMaglevCodeMask
         | C::FeedbackMaybeHasTurbofanCodeShift
-        | C::FeedbackMaybeHasTurbofanCodeMask => !since_13_6,
-        C::ScopeHasNewTargetShift | C::ScopeHasNewTargetMask => !since_14_6,
+        | C::FeedbackMaybeHasTurbofanCodeMask
+        | C::FunctionKindAsyncModule => !since_13_6,
+        C::ScopeHasNewTargetShift
+        | C::ScopeHasNewTargetMask
+        | C::SymbolIsPrivateShift
+        | C::SymbolIsPrivateMask
+        | C::SymbolIsPrivateNameShift
+        | C::SymbolIsPrivateNameMask
+        | C::SymbolIsPrivateBrandShift
+        | C::SymbolIsPrivateBrandMask => !since_14_6,
         C::ScopeAllocatesArgumentsShift
         | C::ScopeAllocatesArgumentsMask
         | C::ScopeHasContextCellsShift
-        | C::ScopeHasContextCellsMask => since_14_6,
+        | C::ScopeHasContextCellsMask
+        | C::SymbolPrivateSymbolKindShift
+        | C::SymbolPrivateSymbolKindMask
+        | C::PrivateSymbolKindPublic
+        | C::PrivateSymbolKindInternal
+        | C::PrivateSymbolKindFieldName
+        | C::PrivateSymbolKindBrand
+        | C::CallSiteInfoIsDeferredBaselineFrameShift
+        | C::CallSiteInfoIsDeferredBaselineFrameMask
+        | C::CallSiteInfoRawCode
+        | C::CallSiteInfoRawReceiver
+        | C::CallSiteInfoRawFunction
+        | C::CallSiteInfoRawOffset
+        | C::CallSiteInfoRawParameters
+        | C::CallSiteInfoRawFlags
+        | C::CallSiteInfoRawCount
+        | C::FunctionKindClassMembersInitializerFunctionPrecededByStatic
+        | C::FunctionKindClassStaticInitializerFunctionPrecededByMember => since_14_6,
         _ => true,
     }
 }

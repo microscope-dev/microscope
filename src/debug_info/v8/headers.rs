@@ -59,7 +59,7 @@ pub(super) struct Headers {
     config: BTreeMap<&'static str, bool>,
 }
 
-const FILES: [&str; 23] = [
+const FILES: [&str; 38] = [
     "src/common/globals.h",
     "include/v8-internal.h",
     "src/objects/trusted-object.h",
@@ -83,6 +83,21 @@ const FILES: [&str; 23] = [
     "src/base/vlq.h",
     "src/flags/flag-definitions.h",
     "src/utils/utils.h",
+    "src/objects/heap-object.h",
+    "src/objects/primitive-heap-object.h",
+    "src/objects/bigint.h",
+    "src/objects/struct.h",
+    "src/objects/oddball.h",
+    "src/objects/name.h",
+    "src/objects/elements-kind.h",
+    "src/objects/function-kind.h",
+    "src/objects/ordered-hash-table.h",
+    "src/objects/dictionary-inl.h",
+    "src/objects/contexts.h",
+    "src/objects/contexts-inl.h",
+    "src/objects/map-inl.h",
+    "src/objects/call-site-info.h",
+    "include/v8-promise.h",
 ];
 
 /// The headers of 12.4, which has no JS dispatch table.
@@ -400,13 +415,32 @@ impl Headers {
     /// The enumerators of the enum whose declaration is `head`, in `file`,
     /// with their values.
     pub(super) fn enumerators(&self, file: &str, head: &str) -> BTreeMap<String, i64> {
+        self.enumerator_values(file, &self.enum_body(file, head))
+    }
+
+    /// The body of the enum whose declaration is `head`, in `file`, between
+    /// its braces: the first `head` the file defines, not declares.
+    fn enum_body(&self, file: &str, head: &str) -> String {
         let text = self.file(file);
-        let body = text
+        let (before, body) = text
             .split_once(head)
             .and_then(|(_, rest)| rest.split_once('{'))
-            .and_then(|(_, rest)| rest.split_once('}'))
-            .unwrap_or_else(|| panic!("{file} declares no {head}"))
-            .0;
+            .and_then(|(before, rest)| Some((before, rest.split_once('}')?.0)))
+            .unwrap_or_else(|| panic!("{file} declares no {head}"));
+        assert!(
+            !before.contains(';'),
+            "{file}'s first {head} is a declaration"
+        );
+        body.to_owned()
+    }
+
+    /// The values of the enumerators of an enum's `body`, which may name
+    /// those before them.
+    fn enumerator_values(&self, file: &str, body: &str) -> BTreeMap<String, i64> {
+        assert!(
+            !body.contains('#'),
+            "{file}'s enum has a preprocessor directive: {body:?}"
+        );
         let mut values = BTreeMap::new();
         let mut next = 0;
         for enumerator in body
@@ -415,13 +449,351 @@ impl Headers {
             .filter(|item| !item.is_empty())
         {
             let (name, value) = match enumerator.split_once('=') {
-                Some((name, value)) => (name.trim(), self.eval(file, &[], value)),
+                Some((name, value)) => {
+                    let lookup = |name: &str| {
+                        values
+                            .get(name)
+                            .copied()
+                            .or_else(|| self.lookup(file, &[], name))
+                    };
+                    let value = eval(value, &lookup)
+                        .unwrap_or_else(|| panic!("{file}: cannot evaluate {value:?}"));
+                    (name.trim(), value)
+                }
                 None => (enumerator, next),
             };
-            values.insert(name.to_owned(), value);
+            let previous = values.insert(name.to_owned(), value);
+            assert!(previous.is_none(), "{file} enumerates {name} twice");
             next = value + 1;
         }
         values
+    }
+
+    /// The size of a heap object's header, `HeapObjectLayout`, whose one
+    /// member is its map, a tagged value.
+    fn heap_object_header_size(&self) -> i64 {
+        let file = "src/objects/heap-object.h";
+        assert!(
+            self.contains(
+                file,
+                "static_assert(sizeof(HeapObjectLayout) == kTaggedSize);"
+            ),
+            "HeapObjectLayout is no longer a tagged value"
+        );
+        let members = data_members(self.class_text(file, "HeapObjectLayout"));
+        assert_eq!(
+            members,
+            ["TaggedMember<Map> map_;"],
+            "HeapObjectLayout's members"
+        );
+        self.size("kTaggedSize")
+    }
+
+    /// The fields of `BigIntBase`, which Torque has no readers of
+    /// (`bigint.h`): after `PrimitiveHeapObject`'s header, `HeapObject`'s,
+    /// its 32-bit bit field; then, where `BIGINT_NEEDS_PADDING`, which a
+    /// 64-bit build without pointer compression defines, 4 bytes of
+    /// padding; then its digits.
+    pub(super) fn bigint_fields(&self) -> Vec<(String, i64)> {
+        let file = "src/objects/bigint.h";
+        let padding = Regex::new(
+            r"#if V8_HOST_ARCH_64_BIT && !V8_COMPRESS_POINTERS\s*\n#define BIGINT_NEEDS_PADDING 1\s*\n#endif",
+        )
+        .expect("a pattern");
+        assert!(
+            padding.is_match(self.file(file)),
+            "bigint.h no longer pads a 64-bit uncompressed BigInt"
+        );
+        assert!(
+            self.contains(
+                file,
+                "V8_OBJECT class BigIntBase : public PrimitiveHeapObject {"
+            ) && self.contains(
+                "src/objects/primitive-heap-object.h",
+                "static_assert(sizeof(PrimitiveHeapObject) == sizeof(HeapObjectLayout));"
+            ),
+            "BigIntBase does not follow HeapObject's header"
+        );
+        let body = normalized(self.class_text(file, "BigIntBase"));
+        let tail = "std::atomic_uint32_t bitfield_; #ifdef BIGINT_NEEDS_PADDING \
+                    char padding_[4]; #endif \
+                    FLEXIBLE_ARRAY_MEMBER(UnalignedValueMember<digit_t>, raw_digits);";
+        assert!(
+            body.ends_with(tail)
+                && data_members(self.class_text(file, "BigIntBase"))
+                    == ["std::atomic_uint32_t bitfield_;", "char padding_[4];"],
+            "BigIntBase's members are not its bit field, padding, and digits"
+        );
+        assert!(
+            self.contains(file, "using digit_t = uintptr_t;"),
+            "a BigInt's digit is no longer a uintptr_t"
+        );
+
+        let bitfield = self.heap_object_header_size();
+        let digits = bitfield + 4 + 4;
+        assert_eq!(digits % 8, 0, "a BigInt's digits are not 8-byte aligned");
+        vec![
+            ("BigIntBase::Bitfield".to_owned(), bitfield),
+            ("BigIntBase::Digits".to_owned(), digits),
+        ]
+    }
+
+    /// The fields of an `AccessorPair` that `struct.h` lays out in C++, as
+    /// from 14.6, which Torque has no readers of: its getter and setter,
+    /// tagged, after `StructLayout`'s header, `HeapObject`'s. `None` where
+    /// Torque defines the class, as before 14.6.
+    pub(super) fn accessor_pair_fields(&self) -> Option<Vec<(String, i64)>> {
+        let file = "src/objects/struct.h";
+        if self.contains(
+            file,
+            "class AccessorPair : public TorqueGeneratedAccessorPair<AccessorPair, Struct> {",
+        ) {
+            return None;
+        }
+
+        assert!(
+            self.contains(file, "V8_OBJECT class AccessorPair : public StructLayout {")
+                && self.contains(
+                    file,
+                    "V8_OBJECT class StructLayout : public HeapObjectLayout {"
+                )
+                && self.contains(
+                    file,
+                    "static_assert(sizeof(StructLayout) == sizeof(HeapObjectLayout));"
+                )
+                && data_members(self.class_text(file, "StructLayout")).is_empty(),
+            "AccessorPair does not follow HeapObject's header"
+        );
+        let members = data_members(self.class_text(file, "AccessorPair"));
+        assert_eq!(
+            members,
+            [
+                "TaggedMember<Object> getter_;",
+                "TaggedMember<Object> setter_;"
+            ],
+            "AccessorPair's members"
+        );
+        let header = self.heap_object_header_size();
+        Some(vec![
+            ("AccessorPair::Getter".to_owned(), header),
+            (
+                "AccessorPair::Setter".to_owned(),
+                header + self.size("kTaggedSize"),
+            ),
+        ])
+    }
+
+    /// The layout of `class`, an `OrderedHashTable<class, entrysize>`, as
+    /// `ordered-hash-table.h` gives it, in elements of its `FixedArray`, by
+    /// each constant's or function's name.
+    pub(super) fn ordered_hash_table(&self, class: &str) -> Vec<(String, i64)> {
+        let file = "src/objects/ordered-hash-table.h";
+        let pattern = format!(
+            r"class\s+V8_EXPORT_PRIVATE\s+{class}\s*:\s*public\s+OrderedHashTable<{class},\s*(\d+)>\s*\{{"
+        );
+        let entry_size: i64 = Regex::new(&pattern)
+            .expect("a pattern")
+            .captures(self.file(file))
+            .unwrap_or_else(|| panic!("{file} declares no {class}"))[1]
+            .parse()
+            .expect("an entry size");
+        let base = normalized(self.class_text(file, "OrderedHashTable"));
+        for expected in [
+            "static const int kEntrySize = entrysize + 1;",
+            "static const int kChainOffset = entrysize;",
+            "static constexpr int NumberOfElementsIndex() { return Derived::kPrefixSize; }",
+            "static constexpr int NumberOfDeletedElementsIndex() { \
+             return NumberOfElementsIndex() + 1; }",
+            "static constexpr int NumberOfBucketsIndex() { \
+             return NumberOfDeletedElementsIndex() + 1; }",
+            "static constexpr int HashTableStartIndex() { return NumberOfBucketsIndex() + 1; }",
+            "int EntryToIndexRaw(int entry) { \
+             return HashTableStartIndex() + NumberOfBuckets() + (entry * kEntrySize); }",
+        ] {
+            assert!(
+                base.contains(expected),
+                "OrderedHashTable no longer says {expected:?}"
+            );
+        }
+
+        let constant = |classes: &[&str], name: &str| {
+            self.class_constant(file, classes, name)
+                .unwrap_or_else(|| panic!("{classes:?} has no {name}"))
+        };
+        let prefix = constant(&[class], "kPrefixSize");
+        let mut layout = vec![
+            ("kEntrySize", entry_size + 1),
+            ("kChainOffset", entry_size),
+            ("NumberOfElementsIndex()", prefix),
+            ("NumberOfDeletedElementsIndex()", prefix + 1),
+            ("NumberOfBucketsIndex()", prefix + 2),
+            ("HashTableStartIndex()", prefix + 3),
+            (
+                "kClearedTableSentinel",
+                constant(&["OrderedHashTable"], "kClearedTableSentinel"),
+            ),
+            ("kNotFound", constant(&["OrderedHashTable"], "kNotFound")),
+        ];
+        if class == "OrderedHashMap" {
+            layout.push(("kValueOffset", constant(&[class], "kValueOffset")));
+        }
+        layout
+            .into_iter()
+            .map(|(name, value)| (format!("{class}::{name}"), value))
+            .collect()
+    }
+
+    /// Each elements kind of `enum ElementsKind` (`elements-kind.h`), with
+    /// the typed arrays' kinds it expands from `TYPED_ARRAYS` and
+    /// `RAB_GSAB_TYPED_ARRAYS`, as a build without pointer compression
+    /// numbers them.
+    pub(super) fn elements_kinds(&self) -> BTreeMap<String, i64> {
+        let file = "src/objects/elements-kind.h";
+        let body = normalized(&self.enum_body(file, "enum ElementsKind : uint8_t"));
+        let typed = "#define TYPED_ARRAY_ELEMENTS_KIND(Type, type, TYPE, ctype) TYPE##_ELEMENTS, \
+                     TYPED_ARRAYS(TYPED_ARRAY_ELEMENTS_KIND) \
+                     RAB_GSAB_TYPED_ARRAYS(TYPED_ARRAY_ELEMENTS_KIND) \
+                     #undef TYPED_ARRAY_ELEMENTS_KIND";
+        let pointer = "#ifdef V8_COMPRESS_POINTERS \
+                       SYSTEM_POINTER_ELEMENTS = PACKED_DOUBLE_ELEMENTS, #else \
+                       SYSTEM_POINTER_ELEMENTS = PACKED_ELEMENTS, #endif";
+        assert!(
+            body.matches(typed).count() == 1 && body.matches(pointer).count() == 1,
+            "ElementsKind no longer expands its typed arrays as microscope does: {body:?}"
+        );
+
+        let macros = super::bytecodes::defines(self.file(file));
+        let kinds: Vec<String> = ["TYPED_ARRAYS", "RAB_GSAB_TYPED_ARRAYS"]
+            .into_iter()
+            .flat_map(|list| super::bytecodes::expand(&macros, list))
+            .map(|entry| {
+                let [_, _, name, _] = entry.as_slice() else {
+                    panic!("a typed array {entry:?}");
+                };
+                format!("{name}_ELEMENTS")
+            })
+            .collect();
+        let body = body
+            .replace(typed, &(kinds.join(", ") + ","))
+            .replace(pointer, "SYSTEM_POINTER_ELEMENTS = PACKED_ELEMENTS,");
+        self.enumerator_values(file, &body)
+    }
+
+    /// The slots of a context, `Context::Field` (`contexts.h`), with the
+    /// native context's it expands from `NATIVE_CONTEXT_FIELDS`, and how a
+    /// context reaches its native context: through its map's
+    /// `ConstructorOrBackPointerOrNativeContext`.
+    pub(super) fn context_slots(&self) -> BTreeMap<String, i64> {
+        let file = "src/objects/contexts.h";
+        assert_eq!(
+            self.file(file).matches("enum Field {").count(),
+            1,
+            "{file} has one enum Field"
+        );
+        let body = normalized(&self.enum_body(file, "enum Field"));
+        let native = "#define NATIVE_CONTEXT_SLOT(index, type, name) index, \
+                      NATIVE_CONTEXT_FIELDS(NATIVE_CONTEXT_SLOT) #undef NATIVE_CONTEXT_SLOT";
+        assert!(
+            body.starts_with(&format!(
+                "SCOPE_INFO_INDEX, PREVIOUS_INDEX, EXTENSION_INDEX, {native}"
+            )),
+            "a context's slots no longer begin as microscope reads them: {body:?}"
+        );
+        let macros = super::bytecodes::defines(self.file(file));
+        let slots: Vec<String> = super::bytecodes::expand(&macros, "NATIVE_CONTEXT_FIELDS")
+            .into_iter()
+            .map(|entry| {
+                // The type, a later argument, may hold commas the expander
+                // splits at; the index, the first, is a name.
+                let index = entry
+                    .first()
+                    .filter(|index| {
+                        entry.len() >= 3
+                            && index
+                                .chars()
+                                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                    })
+                    .unwrap_or_else(|| panic!("a native context's slot {entry:?}"));
+                index.clone()
+            })
+            .collect();
+
+        for (file, expected) in [
+            (
+                "src/objects/contexts-inl.h",
+                "Tagged<NativeContext> Context::native_context() const { \
+                 return this->map()->native_context(); }",
+            ),
+            (
+                "src/objects/map-inl.h",
+                "ACCESSORS_CHECKED(Map, native_context, Tagged<NativeContext>, \
+                 kConstructorOrBackPointerOrNativeContextOffset,",
+            ),
+        ] {
+            assert!(
+                normalized(self.file(file)).contains(expected),
+                "{file} no longer says {expected:?}"
+            );
+        }
+        // From 14.6 the header defines what 12.4's and 13.6's contexts.cc
+        // does: a native context's extension is its global object.
+        let inline = normalized(self.file("src/objects/contexts-inl.h"));
+        let global = "Tagged<JSGlobalObject> NativeContext::global_object() const {";
+        if inline.contains(global) {
+            assert!(
+                inline.contains(&format!(
+                    "{global} return Cast<JSGlobalObject>(extension()); }}"
+                )),
+                "a native context's global object is not its extension"
+            );
+        }
+
+        self.enumerator_values(file, &body.replace(native, &(slots.join(", ") + ",")))
+    }
+
+    /// The bits of the hole in a double array, `kHoleNanInt64`, as
+    /// `globals.h` defines them on x64: its first definitions of the hole's
+    /// halves are MIPS's, the `#else` branch everyone else's.
+    pub(super) fn hole_nan_int64(&self) -> i64 {
+        let globals = self.file("src/common/globals.h");
+        let halves = "constexpr uint32_t kHoleNanUpper32 = ";
+        let (before, after) = globals
+            .split_once(&format!("#else\n{halves}"))
+            .expect("globals.h defines the hole's halves under #else");
+        let guard = before[..before.find(halves).expect("MIPS's halves")]
+            .lines()
+            .rev()
+            .find(|line| line.starts_with("#if"))
+            .expect("a condition");
+        assert!(
+            guard.starts_with("#if (V8_TARGET_ARCH_MIPS64 &&"),
+            "the hole's first halves are under {guard:?}"
+        );
+        let half = |name: &str| {
+            let text = format!("{halves}{after}");
+            let expression = namespace_constant(&text, name)
+                .unwrap_or_else(|| panic!("globals.h's #else defines no {name}"));
+            u32::try_from(self.eval("src/common/globals.h", &[], &expression))
+                .expect("a 32-bit half")
+        };
+        let expression = namespace_constant(globals, "kHoleNanInt64").expect("kHoleNanInt64");
+        assert_eq!(
+            normalized(&expression),
+            "(static_cast<uint64_t>(kHoleNanUpper32) << 32) | kHoleNanLower32",
+            "kHoleNanInt64 is no longer its halves"
+        );
+        let bits = (u64::from(half("kHoleNanUpper32")) << 32) | u64::from(half("kHoleNanLower32"));
+        i64::from_ne_bytes(bits.to_ne_bytes())
+    }
+
+    /// Whether `GlobalDictionary::CellAt` reads an entry's property cell
+    /// from its key (`dictionary-inl.h`).
+    pub(super) fn global_dictionary_cell_is_key(&self) -> bool {
+        let pattern = Regex::new(
+            r"Tagged<PropertyCell> GlobalDictionary::CellAt\(PtrComprCageBase cage_base,\s*InternalIndex entry\) \{\s*DCHECK\(IsPropertyCell\(KeyAt\(cage_base, entry\), cage_base\)\);\s*return (?:PropertyCell::cast|Cast<PropertyCell>)\(KeyAt\(cage_base, entry\)\);\s*\}",
+        )
+        .expect("a pattern");
+        pattern.is_match(self.file("src/objects/dictionary-inl.h"))
     }
 
     /// `struct InliningPosition`'s size and its members' offsets, laid out
@@ -650,6 +1022,37 @@ fn members(body: &str) -> Vec<(String, String)> {
             )
         })
         .map(|captures| (captures[1].to_owned(), captures[2].to_owned()))
+        .collect()
+}
+
+/// The text with each run of whitespace one space, as a source shape is
+/// compared.
+fn normalized(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The data members of a class's body outside its functions' bodies, as
+/// V8 names them, `Type name_;` or `Type name_[N];`, each as written with
+/// its whitespace normalized.
+fn data_members(body: &str) -> Vec<String> {
+    let mut depth = 0;
+    let outside: String = body
+        .chars()
+        .filter(|&c| {
+            let outside = depth == 0;
+            match c {
+                '{' => depth += 1,
+                '}' => depth -= 1,
+                _ => {}
+            }
+            outside && depth == 0 && c != '}'
+        })
+        .collect();
+    let pattern =
+        Regex::new(r"(?m)^\s*([\w:]+(?:<[^;()=]*>)?\s+\w+_(?:\[\d+\])?;)\s*$").expect("a pattern");
+    pattern
+        .captures_iter(&outside)
+        .map(|captures| normalized(&captures[1]))
         .collect()
 }
 

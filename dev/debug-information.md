@@ -425,8 +425,10 @@ Those come from `v8/layouts.gen.rs`, generated for each V8 major.minor
 version from the Torque output in `MICROSCOPE_V8_TORQUE`:
 `class-debug-readers.cc` gives each field's offset, `instance-types.h` every
 instance type Torque assigns, and `bit-fields.h` the shift and mask of each
-bit field of the flags of `SharedFunctionInfo`, `ScopeInfo`, `Script`,
-`FeedbackVector` (its flags and OSR state), and `Map`'s third bit field. A
+bit field of the flags of `SharedFunctionInfo`, `ScopeInfo` (its flags and
+a context local's variable properties), `Script`, `FeedbackVector` (its
+flags and OSR state), `Map`'s three bit fields, `Symbol`, `JSPromise`,
+`JSArrayBuffer`, `JSArrayBufferView`, `JSRegExp`, and `CallSiteInfo`. A
 field Torque renamed has one `Field`, named by its newest name, such as
 `ByteArray::Values`, which 12.4 calls `ByteArray::Bytes`.
 
@@ -445,6 +447,16 @@ The rest comes from the V8 headers beside the Torque output, parsed by
   `InliningPosition`'s C layout and `SourcePosition`'s bit fields, the slots
   of `hash-table.h` and `dictionary.h`, the weak-reference encoding, and,
   from 13.6, the JS dispatch table's entry layout;
+- what reading JavaScript's values needs: `BigIntBase`'s fields and bits
+  (`bigint.h`) and, from 14.6, `AccessorPair`'s (`struct.h`), each laid out
+  from `HeapObjectLayout`'s header with its exact members asserted; the
+  enumerators of `ElementsKind` (its typed arrays expanded from their macro
+  lists), `FunctionKind`, `PromiseState`, `VariableMode`,
+  `InitializationFlag`, and, from 14.6, `PrivateSymbolKind` and the raw
+  `CallSiteInfo::Fields`; the oddball kinds; `kHoleNanInt64` from
+  `globals.h`'s non-MIPS branch; the ordered hash tables' layout; the
+  number and global dictionaries' entries; and the context slots, with the
+  native context's expanded from `NATIVE_CONTEXT_FIELDS`;
 - what reading an optimized frame's deoptimization translation needs, by
   `v8/deoptimization.rs`: both safepoint tables' headers and entry
   configuration bits (`safepoint-table.h`, `maglev-safepoint-table.h`; 12.4's
@@ -460,8 +472,10 @@ The rest comes from the V8 headers beside the Torque output, parsed by
   `src/flags/flag-definitions.h`, and `src/utils/utils.h` for it;
 - the values of `v8dbg_` constants the headers define too, kept in each
   generated layout's `checked` list: the descriptor and property-details
-  `prop_` constants, the dictionary shapes, the code kinds, and the
-  deoptimization data slots.
+  `prop_` constants, the dictionary shapes, the code kinds, the
+  deoptimization data slots, the oddball kinds, three elements kinds, a
+  context's first slots, and the bits of a map's elements kind and a
+  detached array buffer.
 
 Two things only the module's machine code says are decoded from it by
 `v8/accessors.rs`, each into its own `Result` on the runtime, so that a

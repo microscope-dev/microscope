@@ -278,6 +278,100 @@ entries! {
         /// The code a wrapper points to, as an OSR slot's weak reference
         /// does: from `CodeWrapper`'s `FIELD_LIST` in `code.h`.
         CodeWrapperCode = "CodeWrapper::Code",
+
+        /// The fields of JavaScript's values. A heap number's double.
+        HeapNumberValue = "HeapNumber::Value",
+
+        /// An oddball's kind, one of the `Oddball::k` constants.
+        OddballKind = "Oddball::Kind",
+
+        /// A symbol's flags, its `Symbol::` bit fields.
+        SymbolFlags = "Symbol::Flags",
+
+        /// A `BigInt`'s 32-bit bit field, its sign and its length in digits
+        /// (`BigIntBase::SignBits` and `LengthBits`), and its 64-bit
+        /// digits, least significant first; from `bigint.h`, which Torque
+        /// has no readers of.
+        BigIntBaseBitfield = "BigIntBase::Bitfield",
+        BigIntBaseDigits = "BigIntBase::Digits",
+
+        JSArrayLength = "JSArray::Length",
+
+        /// A double array's doubles: `FixedDoubleArray::Floats` in 12.4.
+        FixedDoubleArrayValues = "FixedDoubleArray::Values",
+
+        JSDateValue = "JSDate::Value",
+        JSRegExpSource = "JSRegExp::Source",
+        JSRegExpFlags = "JSRegExp::Flags",
+        JSPromiseReactionsOrResult = "JSPromise::ReactionsOrResult",
+        JSPromiseFlags = "JSPromise::Flags",
+        JSTypedArrayRawLength = "JSTypedArray::RawLength",
+        JSTypedArrayExternalPointer = "JSTypedArray::ExternalPointer",
+        JSTypedArrayBasePointer = "JSTypedArray::BasePointer",
+        JSArrayBufferViewBuffer = "JSArrayBufferView::Buffer",
+        JSArrayBufferViewBitField = "JSArrayBufferView::BitField",
+        JSArrayBufferViewRawByteLength = "JSArrayBufferView::RawByteLength",
+        JSArrayBufferViewRawByteOffset = "JSArrayBufferView::RawByteOffset",
+        JSArrayBufferBackingStore = "JSArrayBuffer::BackingStore",
+        JSArrayBufferBitField = "JSArrayBuffer::BitField",
+        JSArrayBufferRawByteLength = "JSArrayBuffer::RawByteLength",
+        JSArrayBufferRawMaxByteLength = "JSArrayBuffer::RawMaxByteLength",
+        JSPrimitiveWrapperValue = "JSPrimitiveWrapper::Value",
+        JSProxyTarget = "JSProxy::Target",
+        JSProxyHandler = "JSProxy::Handler",
+        JSBoundFunctionBoundTargetFunction = "JSBoundFunction::BoundTargetFunction",
+        JSBoundFunctionBoundThis = "JSBoundFunction::BoundThis",
+        JSBoundFunctionBoundArguments = "JSBoundFunction::BoundArguments",
+        JSCollectionTable = "JSCollection::Table",
+        JSWeakCollectionTable = "JSWeakCollection::Table",
+        JSFunctionPrototypeOrInitialMap = "JSFunction::PrototypeOrInitialMap",
+        JSGlobalObjectGlobalProxy = "JSGlobalObject::GlobalProxy",
+
+        /// Through 13.6: a `FixedArray` of `CallSiteInfo`s, or the
+        /// formatted stack once `error.stack` was read.
+        ErrorStackDataCallSiteInfosOrFormattedStack =
+            "ErrorStackData::CallSiteInfosOrFormattedStack",
+
+        /// From 14.6, in its place: the formatted stack, any value but a
+        /// `FixedArray`, or a `FixedArray` of the raw data `CallSiteInfo`s
+        /// are made from (`debug-objects.tq`), a change Node makes to V8.
+        /// Frame `i` is the [`Constant::CallSiteInfoRawCount`] elements from
+        /// `i * CallSiteInfoRawCount`, the array no longer than its frames,
+        /// each at its `CallSiteInfo::Fields` index: its code, as a
+        /// `CodeWrapper` or `BytecodeWrapper`, or undefined; its receiver;
+        /// its function; its offset, a Smi; its parameters; and its
+        /// `CallSiteInfo` flags, a Smi, last. A frame whose flags have
+        /// `IsDeferredBaselineFrameBit` holds baseline code's wrapper and a
+        /// pc offset into its instructions, not yet a bytecode offset.
+        ErrorStackDataRawDataForCallSiteInfosOrFormattedStack =
+            "ErrorStackData::RawDataForCallSiteInfosOrFormattedStack",
+
+        CallSiteInfoReceiverOrInstance = "CallSiteInfo::ReceiverOrInstance",
+        CallSiteInfoFunction = "CallSiteInfo::Function",
+        CallSiteInfoCodeObject = "CallSiteInfo::CodeObject",
+        CallSiteInfoCodeOffsetOrSourcePosition = "CallSiteInfo::CodeOffsetOrSourcePosition",
+        CallSiteInfoFlags = "CallSiteInfo::Flags",
+        CallSiteInfoParameters = "CallSiteInfo::Parameters",
+        ScriptContextTableLength = "ScriptContextTable::Length",
+        ScriptContextTableCapacity = "ScriptContextTable::Capacity",
+        ScriptContextTableNamesToContextIndex = "ScriptContextTable::NamesToContextIndex",
+        ScriptContextTableObjects = "ScriptContextTable::Objects",
+        PropertyCellName = "PropertyCell::Name",
+        PropertyCellValue = "PropertyCell::Value",
+        PropertyCellPropertyDetailsRaw = "PropertyCell::PropertyDetailsRaw",
+
+        /// An accessor pair's getter and setter; 14.6's from `struct.h`,
+        /// which Torque has no readers of.
+        AccessorPairGetter = "AccessorPair::Getter",
+        AccessorPairSetter = "AccessorPair::Setter",
+
+        JSGeneratorObjectFunction = "JSGeneratorObject::Function",
+        JSGeneratorObjectContext = "JSGeneratorObject::Context",
+        JSGeneratorObjectReceiver = "JSGeneratorObject::Receiver",
+        JSGeneratorObjectContinuation = "JSGeneratorObject::Continuation",
+        JSGeneratorObjectParametersAndRegisters = "JSGeneratorObject::ParametersAndRegisters",
+        JSAsyncFunctionObjectPromise = "JSAsyncFunctionObject::Promise",
+        JSExternalObjectValue = "JSExternalObject::Value",
     }
 }
 
@@ -802,6 +896,394 @@ entries! {
         FeedbackTieringInProgressMask = "FeedbackVector::TieringInProgressBit::kMask",
         FeedbackOsrTieringInProgressShift = "FeedbackVector::OsrTieringInProgressBit::kShift",
         FeedbackOsrTieringInProgressMask = "FeedbackVector::OsrTieringInProgressBit::kMask",
+
+        /// The instance types of JavaScript's values.
+        HoleType = "HOLE_TYPE",
+        BigIntBaseType = "BIG_INT_BASE_TYPE",
+        JSArrayType = "JS_ARRAY_TYPE",
+        FixedDoubleArrayType = "FIXED_DOUBLE_ARRAY_TYPE",
+        NumberDictionaryType = "NUMBER_DICTIONARY_TYPE",
+        JSDateType = "JS_DATE_TYPE",
+        JSRegExpType = "JS_REG_EXP_TYPE",
+        JSPromiseType = "JS_PROMISE_TYPE",
+        JSTypedArrayType = "JS_TYPED_ARRAY_TYPE",
+        JSArrayBufferType = "JS_ARRAY_BUFFER_TYPE",
+        JSDataViewType = "JS_DATA_VIEW_TYPE",
+        JSRabGsabDataViewType = "JS_RAB_GSAB_DATA_VIEW_TYPE",
+        JSPrimitiveWrapperType = "JS_PRIMITIVE_WRAPPER_TYPE",
+        JSProxyType = "JS_PROXY_TYPE",
+        JSBoundFunctionType = "JS_BOUND_FUNCTION_TYPE",
+        JSFunctionType = "JS_FUNCTION_TYPE",
+        JSClassConstructorType = "JS_CLASS_CONSTRUCTOR_TYPE",
+        JSMapType = "JS_MAP_TYPE",
+        JSSetType = "JS_SET_TYPE",
+        JSWeakMapType = "JS_WEAK_MAP_TYPE",
+        JSWeakSetType = "JS_WEAK_SET_TYPE",
+        JSErrorType = "JS_ERROR_TYPE",
+        OrderedHashMapType = "ORDERED_HASH_MAP_TYPE",
+        OrderedHashSetType = "ORDERED_HASH_SET_TYPE",
+        ErrorStackDataType = "ERROR_STACK_DATA_TYPE",
+        CallSiteInfoType = "CALL_SITE_INFO_TYPE",
+        JSGlobalObjectType = "JS_GLOBAL_OBJECT_TYPE",
+        JSGlobalProxyType = "JS_GLOBAL_PROXY_TYPE",
+        JSApiObjectType = "JS_API_OBJECT_TYPE",
+        JSSpecialApiObjectType = "JS_SPECIAL_API_OBJECT_TYPE",
+        JSArgumentsObjectType = "JS_ARGUMENTS_OBJECT_TYPE",
+        JSContextExtensionObjectType = "JS_CONTEXT_EXTENSION_OBJECT_TYPE",
+        JSAsyncFunctionObjectType = "JS_ASYNC_FUNCTION_OBJECT_TYPE",
+        JSGeneratorObjectType = "JS_GENERATOR_OBJECT_TYPE",
+        JSAsyncGeneratorObjectType = "JS_ASYNC_GENERATOR_OBJECT_TYPE",
+        JSExternalObjectType = "JS_EXTERNAL_OBJECT_TYPE",
+        PropertyCellType = "PROPERTY_CELL_TYPE",
+        ScriptContextTableType = "SCRIPT_CONTEXT_TABLE_TYPE",
+        FunctionContextType = "FUNCTION_CONTEXT_TYPE",
+        BlockContextType = "BLOCK_CONTEXT_TYPE",
+        ScriptContextType = "SCRIPT_CONTEXT_TYPE",
+        ModuleContextType = "MODULE_CONTEXT_TYPE",
+        CatchContextType = "CATCH_CONTEXT_TYPE",
+        WithContextType = "WITH_CONTEXT_TYPE",
+        EvalContextType = "EVAL_CONTEXT_TYPE",
+        AwaitContextType = "AWAIT_CONTEXT_TYPE",
+
+        /// The first and last instance types of a range, inclusive.
+        FirstJSReceiverType = "FIRST_JS_RECEIVER_TYPE",
+        LastJSReceiverType = "LAST_JS_RECEIVER_TYPE",
+        FirstJSObjectType = "FIRST_JS_OBJECT_TYPE",
+        LastJSObjectType = "LAST_JS_OBJECT_TYPE",
+        FirstJSArrayBufferViewType = "FIRST_JS_ARRAY_BUFFER_VIEW_TYPE",
+        LastJSArrayBufferViewType = "LAST_JS_ARRAY_BUFFER_VIEW_TYPE",
+
+        /// The bits of [`Field::MapBitField`] and [`Field::MapBitField2`]:
+        /// an object's elements kind is one of the `ElementsKind::` ones.
+        MapIsCallableShift = "Map::IsCallableBit::kShift",
+        MapIsCallableMask = "Map::IsCallableBit::kMask",
+        MapIsConstructorShift = "Map::IsConstructorBit::kShift",
+        MapIsConstructorMask = "Map::IsConstructorBit::kMask",
+        MapIsUndetectableShift = "Map::IsUndetectableBit::kShift",
+        MapIsUndetectableMask = "Map::IsUndetectableBit::kMask",
+        MapHasNamedInterceptorShift = "Map::HasNamedInterceptorBit::kShift",
+        MapHasNamedInterceptorMask = "Map::HasNamedInterceptorBit::kMask",
+        MapHasIndexedInterceptorShift = "Map::HasIndexedInterceptorBit::kShift",
+        MapHasIndexedInterceptorMask = "Map::HasIndexedInterceptorBit::kMask",
+        MapIsAccessCheckNeededShift = "Map::IsAccessCheckNeededBit::kShift",
+        MapIsAccessCheckNeededMask = "Map::IsAccessCheckNeededBit::kMask",
+        MapElementsKindShift = "Map::ElementsKindBits::kShift",
+        MapElementsKindMask = "Map::ElementsKindBits::kMask",
+
+        /// The bits of [`Field::SymbolFlags`]. Through 13.6 a private
+        /// symbol has `IsPrivateBit`, and a private name or brand its own
+        /// bit too.
+        SymbolIsPrivateShift = "Symbol::IsPrivateBit::kShift",
+        SymbolIsPrivateMask = "Symbol::IsPrivateBit::kMask",
+        SymbolIsPrivateNameShift = "Symbol::IsPrivateNameBit::kShift",
+        SymbolIsPrivateNameMask = "Symbol::IsPrivateNameBit::kMask",
+        SymbolIsPrivateBrandShift = "Symbol::IsPrivateBrandBit::kShift",
+        SymbolIsPrivateBrandMask = "Symbol::IsPrivateBrandBit::kMask",
+
+        /// From 14.6, the three are one `PrivateSymbolKind` (`name.h`):
+        /// public; private and internal to V8; a private name, `#field`;
+        /// or a class's private brand.
+        SymbolPrivateSymbolKindShift = "Symbol::PrivateSymbolKindBits::kShift",
+        SymbolPrivateSymbolKindMask = "Symbol::PrivateSymbolKindBits::kMask",
+        PrivateSymbolKindPublic = "PrivateSymbolKind::kPublic",
+        PrivateSymbolKindInternal = "PrivateSymbolKind::kInternal",
+        PrivateSymbolKindFieldName = "PrivateSymbolKind::kFieldName",
+        PrivateSymbolKindBrand = "PrivateSymbolKind::kBrand",
+        SymbolIsWellKnownSymbolShift = "Symbol::IsWellKnownSymbolBit::kShift",
+        SymbolIsWellKnownSymbolMask = "Symbol::IsWellKnownSymbolBit::kMask",
+        SymbolIsInPublicSymbolTableShift = "Symbol::IsInPublicSymbolTableBit::kShift",
+        SymbolIsInPublicSymbolTableMask = "Symbol::IsInPublicSymbolTableBit::kMask",
+        SymbolIsInterestingSymbolShift = "Symbol::IsInterestingSymbolBit::kShift",
+        SymbolIsInterestingSymbolMask = "Symbol::IsInterestingSymbolBit::kMask",
+
+        /// The bits of [`Field::BigIntBaseBitfield`] (`bigint.h`): the
+        /// sign, set for a negative `BigInt`, and the number of digits.
+        BigIntSignShift = "BigIntBase::SignBits::kShift",
+        BigIntSignMask = "BigIntBase::SignBits::kMask",
+        BigIntLengthShift = "BigIntBase::LengthBits::kShift",
+        BigIntLengthMask = "BigIntBase::LengthBits::kMask",
+
+        /// The bits of [`Field::JSPromiseFlags`]: its status is one of the
+        /// `Promise::` states.
+        JSPromiseStatusShift = "JSPromise::StatusBits::kShift",
+        JSPromiseStatusMask = "JSPromise::StatusBits::kMask",
+        JSPromiseHasHandlerShift = "JSPromise::HasHandlerBit::kShift",
+        JSPromiseHasHandlerMask = "JSPromise::HasHandlerBit::kMask",
+
+        /// The bits of [`Field::JSArrayBufferBitField`].
+        JSArrayBufferWasDetachedShift = "JSArrayBuffer::WasDetachedBit::kShift",
+        JSArrayBufferWasDetachedMask = "JSArrayBuffer::WasDetachedBit::kMask",
+        JSArrayBufferIsSharedShift = "JSArrayBuffer::IsSharedBit::kShift",
+        JSArrayBufferIsSharedMask = "JSArrayBuffer::IsSharedBit::kMask",
+        JSArrayBufferIsResizableByJsShift = "JSArrayBuffer::IsResizableByJsBit::kShift",
+        JSArrayBufferIsResizableByJsMask = "JSArrayBuffer::IsResizableByJsBit::kMask",
+
+        /// The bits of [`Field::JSArrayBufferViewBitField`].
+        JSArrayBufferViewIsLengthTrackingShift = "JSArrayBufferView::IsLengthTrackingBit::kShift",
+        JSArrayBufferViewIsLengthTrackingMask = "JSArrayBufferView::IsLengthTrackingBit::kMask",
+        JSArrayBufferViewIsBackedByRabShift = "JSArrayBufferView::IsBackedByRabBit::kShift",
+        JSArrayBufferViewIsBackedByRabMask = "JSArrayBufferView::IsBackedByRabBit::kMask",
+
+        /// The bits of [`Field::JSRegExpFlags`], a Smi.
+        JSRegExpGlobalShift = "JSRegExp::GlobalBit::kShift",
+        JSRegExpGlobalMask = "JSRegExp::GlobalBit::kMask",
+        JSRegExpIgnoreCaseShift = "JSRegExp::IgnoreCaseBit::kShift",
+        JSRegExpIgnoreCaseMask = "JSRegExp::IgnoreCaseBit::kMask",
+        JSRegExpMultilineShift = "JSRegExp::MultilineBit::kShift",
+        JSRegExpMultilineMask = "JSRegExp::MultilineBit::kMask",
+        JSRegExpStickyShift = "JSRegExp::StickyBit::kShift",
+        JSRegExpStickyMask = "JSRegExp::StickyBit::kMask",
+        JSRegExpUnicodeShift = "JSRegExp::UnicodeBit::kShift",
+        JSRegExpUnicodeMask = "JSRegExp::UnicodeBit::kMask",
+        JSRegExpDotAllShift = "JSRegExp::DotAllBit::kShift",
+        JSRegExpDotAllMask = "JSRegExp::DotAllBit::kMask",
+        JSRegExpLinearShift = "JSRegExp::LinearBit::kShift",
+        JSRegExpLinearMask = "JSRegExp::LinearBit::kMask",
+        JSRegExpHasIndicesShift = "JSRegExp::HasIndicesBit::kShift",
+        JSRegExpHasIndicesMask = "JSRegExp::HasIndicesBit::kMask",
+        JSRegExpUnicodeSetsShift = "JSRegExp::UnicodeSetsBit::kShift",
+        JSRegExpUnicodeSetsMask = "JSRegExp::UnicodeSetsBit::kMask",
+
+        /// The bits of [`Field::CallSiteInfoFlags`], a Smi.
+        CallSiteInfoIsWasmShift = "CallSiteInfo::IsWasmBit::kShift",
+        CallSiteInfoIsWasmMask = "CallSiteInfo::IsWasmBit::kMask",
+        CallSiteInfoIsAsmJsWasmShift = "CallSiteInfo::IsAsmJsWasmBit::kShift",
+        CallSiteInfoIsAsmJsWasmMask = "CallSiteInfo::IsAsmJsWasmBit::kMask",
+        CallSiteInfoIsStrictShift = "CallSiteInfo::IsStrictBit::kShift",
+        CallSiteInfoIsStrictMask = "CallSiteInfo::IsStrictBit::kMask",
+        CallSiteInfoIsConstructorShift = "CallSiteInfo::IsConstructorBit::kShift",
+        CallSiteInfoIsConstructorMask = "CallSiteInfo::IsConstructorBit::kMask",
+        CallSiteInfoIsAsmJsAtNumberConversionShift =
+            "CallSiteInfo::IsAsmJsAtNumberConversionBit::kShift",
+        CallSiteInfoIsAsmJsAtNumberConversionMask =
+            "CallSiteInfo::IsAsmJsAtNumberConversionBit::kMask",
+        CallSiteInfoIsAsyncShift = "CallSiteInfo::IsAsyncBit::kShift",
+        CallSiteInfoIsAsyncMask = "CallSiteInfo::IsAsyncBit::kMask",
+        CallSiteInfoIsBuiltinShift = "CallSiteInfo::IsBuiltinBit::kShift",
+        CallSiteInfoIsBuiltinMask = "CallSiteInfo::IsBuiltinBit::kMask",
+        CallSiteInfoIsSourcePositionComputedShift =
+            "CallSiteInfo::IsSourcePositionComputedBit::kShift",
+        CallSiteInfoIsSourcePositionComputedMask =
+            "CallSiteInfo::IsSourcePositionComputedBit::kMask",
+
+        /// From 14.6, set only in the raw data of
+        /// [`Field::ErrorStackDataRawDataForCallSiteInfosOrFormattedStack`].
+        CallSiteInfoIsDeferredBaselineFrameShift =
+            "CallSiteInfo::IsDeferredBaselineFrameBit::kShift",
+        CallSiteInfoIsDeferredBaselineFrameMask =
+            "CallSiteInfo::IsDeferredBaselineFrameBit::kMask",
+
+        /// From 14.6, where each of a raw frame's elements is
+        /// (`CallSiteInfo::Fields`), and how many it has.
+        CallSiteInfoRawCode = "CallSiteInfo::kCode",
+        CallSiteInfoRawReceiver = "CallSiteInfo::kReceiver",
+        CallSiteInfoRawFunction = "CallSiteInfo::kFunction",
+        CallSiteInfoRawOffset = "CallSiteInfo::kOffset",
+        CallSiteInfoRawParameters = "CallSiteInfo::kParameters",
+        CallSiteInfoRawFlags = "CallSiteInfo::kFlags",
+        CallSiteInfoRawCount = "CallSiteInfo::kCount",
+
+        /// The bits of a context local's info, a Smi of the `ScopeInfo`'s
+        /// `ContextLocalInfos` slice, beside its name in
+        /// `ContextLocalNames`: its mode, one of the `VariableMode::` ones,
+        /// and whether it must be initialized before use, one of the
+        /// `InitializationFlag::` ones.
+        ContextLocalVariableModeShift = "ScopeInfo::VariableModeBits::kShift",
+        ContextLocalVariableModeMask = "ScopeInfo::VariableModeBits::kMask",
+        ContextLocalInitFlagShift = "ScopeInfo::InitFlagBit::kShift",
+        ContextLocalInitFlagMask = "ScopeInfo::InitFlagBit::kMask",
+        ContextLocalMaybeAssignedFlagShift = "ScopeInfo::MaybeAssignedFlagBit::kShift",
+        ContextLocalMaybeAssignedFlagMask = "ScopeInfo::MaybeAssignedFlagBit::kMask",
+        ContextLocalParameterNumberShift = "ScopeInfo::ParameterNumberBits::kShift",
+        ContextLocalParameterNumberMask = "ScopeInfo::ParameterNumberBits::kMask",
+        ContextLocalIsStaticFlagShift = "ScopeInfo::IsStaticFlagBit::kShift",
+        ContextLocalIsStaticFlagMask = "ScopeInfo::IsStaticFlagBit::kMask",
+
+        /// A variable's modes (`globals.h`).
+        VariableModeLet = "VariableMode::kLet",
+        VariableModeConst = "VariableMode::kConst",
+        VariableModeUsing = "VariableMode::kUsing",
+
+        /// From 13.6.
+        VariableModeAwaitUsing = "VariableMode::kAwaitUsing",
+        VariableModeVar = "VariableMode::kVar",
+        VariableModeTemporary = "VariableMode::kTemporary",
+        VariableModeDynamic = "VariableMode::kDynamic",
+        VariableModeDynamicGlobal = "VariableMode::kDynamicGlobal",
+        VariableModeDynamicLocal = "VariableMode::kDynamicLocal",
+        VariableModePrivateMethod = "VariableMode::kPrivateMethod",
+        VariableModePrivateSetterOnly = "VariableMode::kPrivateSetterOnly",
+        VariableModePrivateGetterOnly = "VariableMode::kPrivateGetterOnly",
+        VariableModePrivateGetterAndSetter = "VariableMode::kPrivateGetterAndSetter",
+        InitializationFlagNeedsInitialization = "InitializationFlag::kNeedsInitialization",
+        InitializationFlagCreatedInitialized = "InitializationFlag::kCreatedInitialized",
+
+        /// The elements kinds (`elements-kind.h`), as
+        /// [`Constant::MapElementsKindMask`] of a map's second bit field
+        /// holds them; the typed arrays' are numbered in each version's
+        /// `TYPED_ARRAYS` order.
+        ElementsKindPackedSmi = "ElementsKind::PACKED_SMI_ELEMENTS",
+        ElementsKindHoleySmi = "ElementsKind::HOLEY_SMI_ELEMENTS",
+        ElementsKindPacked = "ElementsKind::PACKED_ELEMENTS",
+        ElementsKindHoley = "ElementsKind::HOLEY_ELEMENTS",
+        ElementsKindPackedDouble = "ElementsKind::PACKED_DOUBLE_ELEMENTS",
+        ElementsKindHoleyDouble = "ElementsKind::HOLEY_DOUBLE_ELEMENTS",
+        ElementsKindPackedNonextensible = "ElementsKind::PACKED_NONEXTENSIBLE_ELEMENTS",
+        ElementsKindHoleyNonextensible = "ElementsKind::HOLEY_NONEXTENSIBLE_ELEMENTS",
+        ElementsKindPackedSealed = "ElementsKind::PACKED_SEALED_ELEMENTS",
+        ElementsKindHoleySealed = "ElementsKind::HOLEY_SEALED_ELEMENTS",
+        ElementsKindPackedFrozen = "ElementsKind::PACKED_FROZEN_ELEMENTS",
+        ElementsKindHoleyFrozen = "ElementsKind::HOLEY_FROZEN_ELEMENTS",
+        ElementsKindSharedArray = "ElementsKind::SHARED_ARRAY_ELEMENTS",
+        ElementsKindDictionary = "ElementsKind::DICTIONARY_ELEMENTS",
+        ElementsKindFastSloppyArguments = "ElementsKind::FAST_SLOPPY_ARGUMENTS_ELEMENTS",
+        ElementsKindSlowSloppyArguments = "ElementsKind::SLOW_SLOPPY_ARGUMENTS_ELEMENTS",
+        ElementsKindFastStringWrapper = "ElementsKind::FAST_STRING_WRAPPER_ELEMENTS",
+        ElementsKindSlowStringWrapper = "ElementsKind::SLOW_STRING_WRAPPER_ELEMENTS",
+        ElementsKindUint8 = "ElementsKind::UINT8_ELEMENTS",
+        ElementsKindInt8 = "ElementsKind::INT8_ELEMENTS",
+        ElementsKindUint16 = "ElementsKind::UINT16_ELEMENTS",
+        ElementsKindInt16 = "ElementsKind::INT16_ELEMENTS",
+        ElementsKindUint32 = "ElementsKind::UINT32_ELEMENTS",
+        ElementsKindInt32 = "ElementsKind::INT32_ELEMENTS",
+        ElementsKindFloat32 = "ElementsKind::FLOAT32_ELEMENTS",
+        ElementsKindFloat64 = "ElementsKind::FLOAT64_ELEMENTS",
+        ElementsKindUint8Clamped = "ElementsKind::UINT8_CLAMPED_ELEMENTS",
+        ElementsKindBigUint64 = "ElementsKind::BIGUINT64_ELEMENTS",
+        ElementsKindBigInt64 = "ElementsKind::BIGINT64_ELEMENTS",
+        ElementsKindFloat16 = "ElementsKind::FLOAT16_ELEMENTS",
+        ElementsKindRabGsabUint8 = "ElementsKind::RAB_GSAB_UINT8_ELEMENTS",
+        ElementsKindRabGsabInt8 = "ElementsKind::RAB_GSAB_INT8_ELEMENTS",
+        ElementsKindRabGsabUint16 = "ElementsKind::RAB_GSAB_UINT16_ELEMENTS",
+        ElementsKindRabGsabInt16 = "ElementsKind::RAB_GSAB_INT16_ELEMENTS",
+        ElementsKindRabGsabUint32 = "ElementsKind::RAB_GSAB_UINT32_ELEMENTS",
+        ElementsKindRabGsabInt32 = "ElementsKind::RAB_GSAB_INT32_ELEMENTS",
+        ElementsKindRabGsabFloat32 = "ElementsKind::RAB_GSAB_FLOAT32_ELEMENTS",
+        ElementsKindRabGsabFloat64 = "ElementsKind::RAB_GSAB_FLOAT64_ELEMENTS",
+        ElementsKindRabGsabUint8Clamped = "ElementsKind::RAB_GSAB_UINT8_CLAMPED_ELEMENTS",
+        ElementsKindRabGsabBigUint64 = "ElementsKind::RAB_GSAB_BIGUINT64_ELEMENTS",
+        ElementsKindRabGsabBigInt64 = "ElementsKind::RAB_GSAB_BIGINT64_ELEMENTS",
+        ElementsKindRabGsabFloat16 = "ElementsKind::RAB_GSAB_FLOAT16_ELEMENTS",
+
+        /// The kinds of function (`function-kind.h`), as
+        /// [`Constant::SfiFunctionKindMask`] holds them.
+        FunctionKindNormalFunction = "FunctionKind::kNormalFunction",
+        FunctionKindModule = "FunctionKind::kModule",
+
+        /// 12.4 only; from 13.6 `kModuleWithTopLevelAwait`.
+        FunctionKindAsyncModule = "FunctionKind::kAsyncModule",
+        FunctionKindModuleWithTopLevelAwait = "FunctionKind::kModuleWithTopLevelAwait",
+        FunctionKindBaseConstructor = "FunctionKind::kBaseConstructor",
+        FunctionKindDefaultBaseConstructor = "FunctionKind::kDefaultBaseConstructor",
+        FunctionKindDefaultDerivedConstructor = "FunctionKind::kDefaultDerivedConstructor",
+        FunctionKindDerivedConstructor = "FunctionKind::kDerivedConstructor",
+        FunctionKindGetterFunction = "FunctionKind::kGetterFunction",
+        FunctionKindStaticGetterFunction = "FunctionKind::kStaticGetterFunction",
+        FunctionKindSetterFunction = "FunctionKind::kSetterFunction",
+        FunctionKindStaticSetterFunction = "FunctionKind::kStaticSetterFunction",
+        FunctionKindArrowFunction = "FunctionKind::kArrowFunction",
+        FunctionKindAsyncArrowFunction = "FunctionKind::kAsyncArrowFunction",
+        FunctionKindAsyncFunction = "FunctionKind::kAsyncFunction",
+        FunctionKindAsyncConciseMethod = "FunctionKind::kAsyncConciseMethod",
+        FunctionKindStaticAsyncConciseMethod = "FunctionKind::kStaticAsyncConciseMethod",
+        FunctionKindAsyncConciseGeneratorMethod = "FunctionKind::kAsyncConciseGeneratorMethod",
+        FunctionKindStaticAsyncConciseGeneratorMethod =
+            "FunctionKind::kStaticAsyncConciseGeneratorMethod",
+        FunctionKindAsyncGeneratorFunction = "FunctionKind::kAsyncGeneratorFunction",
+        FunctionKindGeneratorFunction = "FunctionKind::kGeneratorFunction",
+        FunctionKindConciseGeneratorMethod = "FunctionKind::kConciseGeneratorMethod",
+        FunctionKindStaticConciseGeneratorMethod = "FunctionKind::kStaticConciseGeneratorMethod",
+        FunctionKindConciseMethod = "FunctionKind::kConciseMethod",
+        FunctionKindStaticConciseMethod = "FunctionKind::kStaticConciseMethod",
+        FunctionKindClassMembersInitializerFunction =
+            "FunctionKind::kClassMembersInitializerFunction",
+
+        /// From 14.6.
+        FunctionKindClassMembersInitializerFunctionPrecededByStatic =
+            "FunctionKind::kClassMembersInitializerFunctionPrecededByStatic",
+        FunctionKindClassStaticInitializerFunction =
+            "FunctionKind::kClassStaticInitializerFunction",
+
+        /// From 14.6.
+        FunctionKindClassStaticInitializerFunctionPrecededByMember =
+            "FunctionKind::kClassStaticInitializerFunctionPrecededByMember",
+        FunctionKindInvalid = "FunctionKind::kInvalid",
+
+        /// A promise's states (`v8-promise.h`).
+        PromisePending = "Promise::kPending",
+        PromiseFulfilled = "Promise::kFulfilled",
+        PromiseRejected = "Promise::kRejected",
+
+        /// The kinds of an oddball (`oddball.h`), as [`Field::OddballKind`]
+        /// holds them; the hole is a `Hole`, with no kind.
+        OddballKindUndefined = "Oddball::kUndefined",
+        OddballKindNull = "Oddball::kNull",
+        OddballKindTrue = "Oddball::kTrue",
+        OddballKindFalse = "Oddball::kFalse",
+
+        /// The bits of the hole in a holey double array (`globals.h`): a
+        /// NaN, as a 64-bit pattern.
+        HoleNanInt64 = "internal::kHoleNanInt64",
+
+        /// An ordered hash table's slots (`ordered-hash-table.h`), in
+        /// elements from its `FixedArray::Objects`: its counts, then its
+        /// buckets from `HashTableStartIndex()`, each the first entry of its
+        /// chain or `kNotFound`, then its entries of `kEntrySize`, each its
+        /// key, a map's value at `kValueOffset`, and the next entry of its
+        /// chain at `kChainOffset`. An obsolete table's deleted count is
+        /// `kClearedTableSentinel` when it was cleared.
+        OrderedHashMapEntrySize = "OrderedHashMap::kEntrySize",
+        OrderedHashMapChainOffset = "OrderedHashMap::kChainOffset",
+        OrderedHashMapValueOffset = "OrderedHashMap::kValueOffset",
+        OrderedHashMapNumberOfElementsIndex = "OrderedHashMap::NumberOfElementsIndex()",
+        OrderedHashMapNumberOfDeletedElementsIndex =
+            "OrderedHashMap::NumberOfDeletedElementsIndex()",
+        OrderedHashMapNumberOfBucketsIndex = "OrderedHashMap::NumberOfBucketsIndex()",
+        OrderedHashMapHashTableStartIndex = "OrderedHashMap::HashTableStartIndex()",
+        OrderedHashMapClearedTableSentinel = "OrderedHashMap::kClearedTableSentinel",
+        OrderedHashMapNotFound = "OrderedHashMap::kNotFound",
+        OrderedHashSetEntrySize = "OrderedHashSet::kEntrySize",
+        OrderedHashSetChainOffset = "OrderedHashSet::kChainOffset",
+        OrderedHashSetNumberOfElementsIndex = "OrderedHashSet::NumberOfElementsIndex()",
+        OrderedHashSetNumberOfDeletedElementsIndex =
+            "OrderedHashSet::NumberOfDeletedElementsIndex()",
+        OrderedHashSetNumberOfBucketsIndex = "OrderedHashSet::NumberOfBucketsIndex()",
+        OrderedHashSetHashTableStartIndex = "OrderedHashSet::HashTableStartIndex()",
+        OrderedHashSetClearedTableSentinel = "OrderedHashSet::kClearedTableSentinel",
+        OrderedHashSetNotFound = "OrderedHashSet::kNotFound",
+
+        /// A number dictionary's entry's value and details, from its key
+        /// at [`Constant::HashTableEntryKeyIndex`] (`dictionary.h`).
+        NumberDictionaryEntryValueIndex = "NumberDictionary::kEntryValueIndex",
+        NumberDictionaryEntryDetailsIndex = "NumberDictionary::kEntryDetailsIndex",
+
+        /// A global dictionary's prefix: each of its entries,
+        /// [`Constant::GlobalDictionaryShapeEntrySize`] long, is the
+        /// `PropertyCell` at its key's index, which holds the property's
+        /// name, value, and details.
+        GlobalDictionaryShapePrefixSize = "GlobalDictionaryShape::kPrefixSize",
+
+        /// Where a dictionary property's details keep its enumeration
+        /// index (`property-details.h`).
+        PropertyDetailsDictionaryStorageShift = "PropertyDetails::DictionaryStorageField::kShift",
+        PropertyDetailsDictionaryStorageMask = "PropertyDetails::DictionaryStorageField::kMask",
+
+        /// A context's slots, in elements from [`Field::ContextElements`]
+        /// (`contexts.h`): its scope info, its previous context, and its
+        /// extension, which only a context whose scope info has
+        /// `HasContextExtensionSlotBit` has, and which a native context's
+        /// global object is; how many slots a context has before its
+        /// locals, without and with an extension. A context's native context
+        /// is its map's [`Field::MapConstructorOrBackPointerOrNativeContext`].
+        ContextScopeInfoIndex = "Context::SCOPE_INFO_INDEX",
+        ContextPreviousIndex = "Context::PREVIOUS_INDEX",
+        ContextExtensionIndex = "Context::EXTENSION_INDEX",
+        ContextMinContextSlots = "Context::MIN_CONTEXT_SLOTS",
+        ContextMinContextExtendedSlots = "Context::MIN_CONTEXT_EXTENDED_SLOTS",
+
+        /// A native context's script context table and global proxy.
+        ContextScriptContextTableIndex = "Context::SCRIPT_CONTEXT_TABLE_INDEX",
+        ContextGlobalProxyIndex = "Context::GLOBAL_PROXY_INDEX",
     }
 }
 
