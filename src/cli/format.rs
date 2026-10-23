@@ -2558,13 +2558,27 @@ pub fn awaited_frame(image: Option<&ModuleImage>, frame: &StackFrame) -> Option<
 pub fn interpreted_location(frame: &StackFrame, renderer: Renderer) -> String {
     let name = renderer.paint(Role::Name, frames::code(frame));
 
-    match frames::place(frame, None) {
-        Some(place) => format!(
-            "{name} at {}",
-            renderer.paint(Role::Metadata, renderer.location(&place.path, place.line))
-        ),
-        None => name.to_string(),
-    }
+    frames::place(frame, None).map_or_else(
+        || name.to_string(),
+        |place| {
+            format!(
+                "{name} at {}",
+                renderer.paint(Role::Metadata, place_location(frame, &place, renderer))
+            )
+        },
+    )
+}
+
+/// `path:line`, and `:column` after it where the frame's runtime recorded
+/// one, as V8 does each JavaScript frame's.
+fn place_location(frame: &StackFrame, place: &frames::FramePlace, renderer: Renderer) -> String {
+    place
+        .column
+        .filter(|_| frame.recorded.is_some())
+        .map_or_else(
+            || renderer.location(&place.path, place.line),
+            |column| renderer.location(&place.path, format_args!("{}:{column}", place.line)),
+        )
 }
 
 /// A frame's source file and line, as its runtime recorded them or from
@@ -2576,7 +2590,7 @@ fn frame_source(
 ) -> Option<String> {
     let image = frame.module.and_then(|module| images.get(&module));
     frames::place(frame, image.map(AsRef::as_ref))
-        .map(|place| renderer.location(&place.path, place.line))
+        .map(|place| place_location(frame, &place, renderer))
 }
 
 pub fn globals(page: &GlobalVariablePage, renderer: Renderer) -> String {

@@ -119,10 +119,14 @@ export function Stack() {
   );
 }
 
-/** Where a frame's code is: its file and line, or its module or address. */
+/**
+ * Where a frame's code is: its file, line, and column where that is known,
+ * or its module or address.
+ */
 export function where(frame: Frame): string {
   if (frame.source) {
-    return `${fileName(frame.source.path)}:${frame.source.line}`;
+    const column = frame.source.column === null ? "" : `:${frame.source.column}`;
+    return `${fileName(frame.source.path)}:${frame.source.line}${column}`;
   }
   return frame.module ?? frame.address ?? "";
 }

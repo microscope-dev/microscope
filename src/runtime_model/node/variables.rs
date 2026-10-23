@@ -68,10 +68,28 @@ pub(super) fn variables(reader: &Reader<'_>, fp: u64) -> Result<Vec<Variable>, P
         return Err(format!("the frame's argument count is {argc}").into());
     }
     let first = at(Constant::UnoptimizedFrameFirstParamFromFp)?;
+    let context = reader.word(at(Constant::OffFpContext)?)?;
+    let context = reader
+        .object(context)?
+        .ok_or("the frame's context is no object")?;
+    // An arrow function's `this` is the one where it was defined, which V8
+    // keeps in a context as the local `this` where the arrow uses it; the
+    // receiver its caller passed is not it.
+    let this = if is_arrow(reader, function)? {
+        lexical_this(reader, context)?.unwrap_or_else(|| {
+            Err(
+                "an arrow function's `this` is its definer's, which no context kept: \
+                 the arrow does not use it"
+                    .into(),
+            )
+        })
+    } else {
+        reader.word(first)
+    };
     found.push(Variable {
         name: "this".to_owned(),
         kind: Kind::Receiver,
-        word: reader.word(first),
+        word: this,
     });
     for index in 0..u32::try_from(argc).unwrap_or(0) {
         found.push(Variable {
@@ -81,10 +99,6 @@ pub(super) fn variables(reader: &Reader<'_>, fp: u64) -> Result<Vec<Variable>, P
         });
     }
 
-    let context = reader.word(at(Constant::OffFpContext)?)?;
-    let context = reader
-        .object(context)?
-        .ok_or("the frame's context is no object")?;
     let mut seen = BTreeSet::new();
     found.extend(context_variables(reader, context, &mut seen)?);
 
@@ -168,6 +182,47 @@ fn context_variables(
     Err("the frame's contexts are too many".into())
 }
 
+/// Whether `function` is an arrow function, as V8's `IsArrowFunction`
+/// says of its kind.
+fn is_arrow(reader: &Reader<'_>, function: Object) -> Result<bool, Problem> {
+    let shared = reader.typed_field(
+        function,
+        Field::JSFunctionSharedFunctionInfo,
+        Constant::SharedFunctionInfoType,
+    )?;
+    let flags = i64::from(reader.int32_field(shared, Field::SharedFunctionInfoFlags)?);
+    let kind = (flags & reader.constant(Constant::SfiFunctionKindMask)?)
+        >> reader.constant(Constant::SfiFunctionKindShift)?;
+    Ok((reader.constant(Constant::FunctionKindArrowFunction)?
+        ..=reader.constant(Constant::FunctionKindAsyncArrowFunction)?)
+        .contains(&kind))
+}
+
+/// The `this` the innermost context around `context`, or `context`
+/// itself, keeps as a local, if any does.
+fn lexical_this(
+    reader: &Reader<'_>,
+    mut context: Object,
+) -> Result<Option<Result<u64, Problem>>, Problem> {
+    for _ in 0..MAX_CONTEXTS {
+        let ty = reader.instance_type(context)?;
+        if ty == reader.constant(Constant::NativeContextType)? {
+            return Ok(None);
+        }
+        if let Some((_, word)) = all_locals(reader, context)?
+            .into_iter()
+            .find(|(name, _)| name == "this")
+        {
+            return Ok(Some(word));
+        }
+        let previous = slot(reader, context, Constant::ContextPreviousIndex)?;
+        context = reader
+            .object(previous)?
+            .ok_or("a context's previous context is no object")?;
+    }
+    Err("the frame's contexts are too many".into())
+}
+
 /// The tagged word in the slot `index` of `context`.
 fn slot(reader: &Reader<'_>, context: Object, index: Constant) -> Result<u64, Problem> {
     let index = u64::try_from(reader.constant(index)?).map_err(|_| "a negative context slot")?;
@@ -179,8 +234,16 @@ pub(super) type Local = (String, Result<u64, Problem>);
 
 /// Each local `context` keeps, as its scope info names it, with its word;
 /// those V8 makes for itself, whose names begin with `.`, are left out, as
-/// V8's own debugger leaves them out.
+/// V8's own debugger leaves them out, and so is `this`, which is no
+/// variable a name binds.
 pub(super) fn locals(reader: &Reader<'_>, context: Object) -> Result<Vec<Local>, Problem> {
+    let mut found = all_locals(reader, context)?;
+    found.retain(|(name, _)| name != "this");
+    Ok(found)
+}
+
+/// As [`locals`], with `this` where the context keeps it.
+fn all_locals(reader: &Reader<'_>, context: Object) -> Result<Vec<Local>, Problem> {
     let scope = slot(reader, context, Constant::ContextScopeInfoIndex)?;
     let scope = reader
         .object(scope)?
@@ -220,7 +283,7 @@ pub(super) fn locals(reader: &Reader<'_>, context: Object) -> Result<Vec<Local>,
             .object(reader.word(start + names.offset + 8 * index)?)?
             .ok_or("a context local's name is no string")?;
         let name = reader.string(name)?;
-        if name.is_empty() || name.starts_with('.') || name == "this" {
+        if name.is_empty() || name.starts_with('.') {
             continue;
         }
         found.push((name, reader.word(elements + 8 * (first + index))));
