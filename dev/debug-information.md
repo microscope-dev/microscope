@@ -471,7 +471,15 @@ failure refuses only what needs it:
   `ExternalReference::js_dispatch_table_address`: a word of each isolate in
   14.6, or of the isolate group a global points to in 13.6; `None` before
   13.6. That function is local, so a module stripped of its symbols, as
-  Debian's libnode, has an error here;
+  Debian's libnode, does not name it. For 13.6 the same two facts are then
+  read from code V8's API exports: the global, from the load
+  `v8::IsolateGroup::GetDefault()` makes before incrementing the group's
+  reference count; the table's offset in the group, from
+  `v8::IsolateGroup::~IsolateGroup()`, followed through the group's
+  `Release` and `delete` into its destructor, as the word the table's
+  `TearDown` clears after freeing its first segment and before deleting
+  the address space held in the next word. A 14.6 module without the
+  symbol has an error here;
 - `embedded_blob`, the variables that hold the embedded builtins' bounds,
   from the exported `v8::Isolate::GetEmbeddedCodeRange`, by following which
   call's result it stores through each argument, then the one rip-relative

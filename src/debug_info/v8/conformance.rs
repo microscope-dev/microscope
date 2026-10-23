@@ -997,13 +997,31 @@ fn check_accessors(
                 &Ok(Some(DispatchTable::Group { group, offset })),
                 "{entry}"
             );
+            // Where the symbol is named, the exported code says the same.
+            assert_eq!(
+                super::accessors::exported_dispatch_table(object).map(Some),
+                *dispatch,
+                "{entry}: from exported code"
+            );
         }
-        _ => assert!(
-            dispatch
-                .as_ref()
-                .is_err_and(|problem| problem.contains("names no ExternalReference")),
-            "{entry}: {dispatch:?}"
-        ),
+        _ => {
+            // No symbol names js_dispatch_table_address, read from exported
+            // code; its unnamed code at 0xdb5140 says the same.
+            let what = "Debian's js_dispatch_table_address";
+            let accessor = super::accessors::instructions(object, 0xdb_5140)
+                .and_then(|code| super::accessors::decode_dispatch_table(&code, what))
+                .map(Some);
+            let group = ImageAddress::new(0x465_e7e0);
+            assert_eq!(
+                accessor,
+                Ok(Some(DispatchTable::Group {
+                    group,
+                    offset: 0x3270
+                })),
+                "{entry}"
+            );
+            assert_eq!(dispatch, &accessor, "{entry}");
+        }
     }
 
     let blob = blob

@@ -14,11 +14,11 @@ use std::time::{Duration, Instant};
 
 use microscope::ThreadId;
 
-use crate::frames::{javascript_recorded, observed};
+use crate::frames::observed;
 use crate::native::check_thread;
 use crate::session::NodeSession;
 use crate::stacks::check_isolates;
-use crate::truth::{Frame, check_threads, threads};
+use crate::truth::{check_threads, threads};
 
 /// The build, as the flake names it.
 const DEBIAN: &str = "debian-24";
@@ -131,47 +131,24 @@ async fn debian_parked_threads_are_the_ones_v8_reported_and_unwind_to_where_they
     assert!(lie.is_none(), "{context}: {lie:?}");
 }
 
-/// What Debian's build lacks that reading a compiled frame needs, each as
-/// the function whose frame says so, the text its problem contains, and
-/// why. Such a frame names its function and no place.
-const TIER_GAPS: &[(&str, &str, &str)] = &[
-    (
-        "maglev",
-        "the dispatch table cannot be found",
-        "no symbol names js_dispatch_table_address, so the function's current code is unknown",
-    ),
-    (
-        "turbofan",
-        "the dispatch table cannot be found",
-        "as for maglev; the functions its code inlined are unknown too",
-    ),
-];
-
-/// The functions V8 reported that Debian's build does not list, each with
-/// why: a compiled frame whose code is not found lists none it inlined.
-const HIDDEN: &[(&str, &str)] = &[(
-    "inlined",
-    "inlined into turbofan's frame, whose code is not found",
-)];
-
 /// The stack of `tiers.js` unwinds through the builtins and the code each
-/// compiler made to `_start`, and each of its frames is the function V8
-/// reported, at its place, or, where the build lacks what reading a
-/// compiled frame needs, says why by the problem `TIER_GAPS` names, never
-/// another place.
+/// compiler made to `_start`, and its frames of every tier are the ones V8
+/// reported, the inlined ones included, at their places: the JS dispatch
+/// table, which no symbol locates in Debian's build, is found from V8's
+/// exported code.
 #[tokio::test]
-async fn debian_frames_of_every_tier_are_the_ones_v8_reported_or_name_their_problem() {
-    if !inside("debian::debian_frames_of_every_tier_are_the_ones_v8_reported_or_name_their_problem")
-    {
+async fn debian_frames_of_every_tier_are_the_ones_v8_reported() {
+    if !inside("debian::debian_frames_of_every_tier_are_the_ones_v8_reported") {
         return;
     }
     let mut session =
         NodeSession::launch(DEBIAN, "tiers.js", &["--allow-natives-syntax"], &[]).await;
-    let reported = threads(&session.stop_at("tiers").await);
+    let mut reported = threads(&session.stop_at("tiers").await);
     let context = session.context();
     let [thread] = &reported[..] else {
         panic!("{context}: one thread: {reported:#?}");
     };
+    let native = thread.native;
     let scenario = &session.scenario;
     let modules = scenario
         .operation("modules", scenario.handle().loaded_modules())
@@ -179,66 +156,21 @@ async fn debian_frames_of_every_tier_are_the_ones_v8_reported_or_name_their_prob
     scenario
         .operation(
             "select",
-            scenario
-                .handle()
-                .select_context(ThreadId::new(thread.native)),
+            scenario.handle().select_context(ThreadId::new(native)),
         )
         .await;
     let trace = scenario
         .operation("backtrace", scenario.handle().backtrace())
         .await;
     let (compiled, _) = check_thread(&context, true, &trace, &modules);
-    let seen = javascript_recorded(&trace);
+    // The tier is what makes each frame's reading differ, not a fact a
+    // backtrace reports.
+    for frame in reported.iter_mut().flat_map(|thread| &mut thread.frames) {
+        frame.tier = None;
+    }
+    let seen = observed(&session.scenario, &reported).await;
+    let lie = check_threads(&seen, &reported).err();
     session.shutdown().await;
     assert!(compiled >= 2, "{context}: {compiled} compiled frames");
-
-    let truth: Vec<&Frame> = thread
-        .frames
-        .iter()
-        .filter(|frame| {
-            !HIDDEN
-                .iter()
-                .any(|(function, _)| frame.function == *function)
-        })
-        .collect();
-    let place = |frame: &Frame| {
-        (
-            frame.function.clone(),
-            frame.file.clone(),
-            frame.line,
-            frame.column,
-        )
-    };
-    let mut gaps = Vec::new();
-    let mut lies = Vec::new();
-    for (depth, (real, (frame, problem))) in truth.iter().zip(&seen).enumerate() {
-        match problem {
-            None if place(frame) == place(real) => {}
-            Some(problem) if frame.function == real.function && frame.file == "-" => {
-                let gap = TIER_GAPS.iter().find(|(function, text, _)| {
-                    frame.function == *function && problem.contains(text)
-                });
-                match gap {
-                    Some((function, _, why)) => {
-                        eprintln!("known gap ({why}): {function}: {problem}");
-                        gaps.push(*function);
-                    }
-                    None => lies.push(format!("frame {depth}, {}: {problem}", frame.function)),
-                }
-            }
-            _ => lies.push(format!(
-                "frame {depth} is {frame:?} ({problem:?}), not {real:?}"
-            )),
-        }
-    }
-    if seen.len() != truth.len() {
-        lies.push(format!(
-            "{} frames, not {}: {seen:#?}",
-            seen.len(),
-            truth.len()
-        ));
-    }
-    assert!(lies.is_empty(), "{context}: {lies:#?}");
-    let expected: Vec<&str> = TIER_GAPS.iter().map(|(function, ..)| *function).collect();
-    assert_eq!(gaps, expected, "{context}: the frames without a place");
+    assert!(lie.is_none(), "{context}: {lie:?}");
 }
