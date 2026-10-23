@@ -148,6 +148,11 @@ fn native(reader: &Reader<'_>, receiver: Object, accessor: Object) -> Result<Val
         if functions.contains(&ty) || ty == reader.constant(Constant::JSBoundFunctionType)? {
             return function_name(reader, receiver).map(Value::Text);
         }
+    } else if super::properties::is_named(reader, name, "length")?
+        && ty == reader.constant(Constant::JSArrayType)?
+    {
+        // `ArrayLengthGetter` returns the array's length field.
+        return Ok(Value::Word(reader.field(receiver, Field::JSArrayLength)?));
     } else if super::properties::is_named(reader, name, "prototype")? && functions.contains(&ty) {
         return function_prototype(reader, receiver)?
             .map(|prototype| Value::Word(prototype.0))

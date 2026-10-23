@@ -111,6 +111,19 @@ impl Reader<'_> {
         Ok((word & mask == tag).then(|| word.cast_signed().checked_shr(shift).unwrap_or(0)))
     }
 
+    /// The Smi word that holds `value`, or `None` if a Smi can't hold it.
+    pub(super) fn smi_word(&self, value: i64) -> Result<Option<u64>, Problem> {
+        let mask = self.constant(Constant::SmiTagMask)?.cast_unsigned();
+        let tag = self.constant(Constant::SmiTag)?.cast_unsigned();
+        let shift = u32::try_from(self.constant(Constant::SmiShiftSize)?)
+            .map_err(|_| "the Smi shift is out of range")?
+            + mask.count_ones();
+        let word = value
+            .checked_shl(shift)
+            .map(|shifted| shifted.cast_unsigned() | tag);
+        Ok(word.filter(|word| self.smi(*word).ok().flatten() == Some(value)))
+    }
+
     /// The object a word points to, or `None` for a word that is no pointer.
     pub(super) fn object(&self, word: u64) -> Result<Option<Object>, Problem> {
         let mask = self.constant(Constant::HeapObjectTagMask)?.cast_unsigned();

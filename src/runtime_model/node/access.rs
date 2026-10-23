@@ -140,6 +140,13 @@ pub(super) fn member(
     let first = reader.constant(Constant::FirstJSReceiverType)?;
     let ty = reader.instance_type(object)?;
     if ty < first {
+        if name == "length" && is_string(reader, object)? {
+            return number(
+                reader,
+                i64::try_from(length(reader, handle)?).unwrap_or(i64::MAX),
+            )
+            .map(Some);
+        }
         return Err("microscope does not read members of primitives".into());
     }
     if reader.is(object, Constant::JSProxyType)? {
@@ -149,6 +156,9 @@ pub(super) fn member(
         && index.to_string() == name
     {
         return element(reader, object, index);
+    }
+    if let Some(found) = built_in_getter(reader, handle, object, name)? {
+        return Ok(Some(found));
     }
     match lookup::get(reader, object, Key::Name(name))? {
         Some(lookup::Value::Word(word)) => Ok(Some(Handle::Tagged(word).handle())),
@@ -165,6 +175,9 @@ fn element(
     object: Object,
     index: u32,
 ) -> Result<Option<InterpretedHandle>, Problem> {
+    if reader.is(object, Constant::JSTypedArrayType)? {
+        return typed_element(reader, object, index);
+    }
     let below = index
         .checked_add(1)
         .ok_or("the index is past the end of the array")?;
@@ -184,6 +197,93 @@ fn element(
         }
     }
     Err("the prototype chain is too long".into())
+}
+
+/// `.size` of a Map or Set and `.length` of a typed array, where the
+/// getter that would run is V8's own, read from the fields it reads.
+fn built_in_getter(
+    reader: &Reader<'_>,
+    handle: InterpretedHandle,
+    object: Object,
+    name: &str,
+) -> Result<Option<InterpretedHandle>, Problem> {
+    let (getter_name, kinds): (&str, &[Constant]) = match name {
+        "size" => ("get size", &[Constant::JSMapType, Constant::JSSetType]),
+        "length" => ("get length", &[Constant::JSTypedArrayType]),
+        _ => return Ok(None),
+    };
+    let lookup::Found::Accessor { accessor, .. } = lookup::find(reader, object, Key::Name(name))?
+    else {
+        return Ok(None);
+    };
+    if !reader.is(accessor, Constant::AccessorPairType)? {
+        return Ok(None);
+    }
+    let Some(getter) = reader.object(reader.field(accessor, Field::AccessorPairGetter)?)? else {
+        return Ok(None);
+    };
+    if !lookup::is_builtin(reader, getter, getter_name)? {
+        return Ok(None);
+    }
+    for kind in kinds {
+        if reader.is(object, *kind)? {
+            return number(
+                reader,
+                i64::try_from(length(reader, handle)?).unwrap_or(i64::MAX),
+            )
+            .map(Some);
+        }
+    }
+    Err(format!("V8's `{getter_name}` would throw for this object").into())
+}
+
+/// A number as a Smi handle.
+fn number(reader: &Reader<'_>, value: i64) -> Result<InterpretedHandle, Problem> {
+    reader
+        .smi_word(value)?
+        .map(|word| Handle::Tagged(word).handle())
+        .ok_or_else(|| {
+            format!("{value} is too large for a Smi, and microscope does not make heap numbers")
+                .into()
+        })
+}
+
+/// The element `index` of a typed array, or `None` past its length, as an
+/// integer-indexed object answers without looking at its prototypes.
+fn typed_element(
+    reader: &Reader<'_>,
+    object: Object,
+    index: u32,
+) -> Result<Option<InterpretedHandle>, Problem> {
+    use super::inspect::ElementType as E;
+    let (element, length, data) = super::typed::extent(reader, object)?;
+    if u64::from(index) >= length {
+        return Ok(None);
+    }
+    let size = super::typed::size(element);
+    let address = data + u64::from(index) * size;
+    if element == E::Float64 {
+        return Ok(Some(Handle::Double(address).handle()));
+    }
+    let mut bytes = [0u8; 8];
+    reader.bytes_into(address, &mut bytes[..usize::try_from(size).unwrap_or(8)])?;
+    let [b0, b1, b2, b3, ..] = bytes;
+    let integer = match element {
+        E::Int8 => i64::from(i8::from_le_bytes([b0])),
+        E::Uint8 | E::Uint8Clamped => i64::from(b0),
+        E::Int16 => i64::from(i16::from_le_bytes([b0, b1])),
+        E::Uint16 => i64::from(u16::from_le_bytes([b0, b1])),
+        E::Int32 => i64::from(i32::from_le_bytes([b0, b1, b2, b3])),
+        E::Uint32 => i64::from(u32::from_le_bytes([b0, b1, b2, b3])),
+        _ => {
+            return Err(format!(
+                "microscope can't use an element of a {} as a value yet",
+                element.name()
+            )
+            .into());
+        }
+    };
+    number(reader, integer).map(Some)
 }
 
 /// The item `key` of the value `handle` names, by name or index.

@@ -218,3 +218,55 @@ async fn frame_variables_are_in_the_scopes_javascript_gives_them() {
     }
     assert!(lies.is_empty(), "{} lies:\n{}", lies.len(), lies.join("\n"));
 }
+
+/// On every build, `.length`, `.size`, and typed array elements read what
+/// JavaScript would give for the gallery's values, as the fixture writes
+/// them, and an element past a typed array's end is absent.
+#[tokio::test]
+async fn lengths_sizes_and_typed_elements_are_javascripts() {
+    let cases = [
+        ("values.arrays.packedSmi.length", "3"),
+        ("values.arrays.long.length", "150"),
+        ("values.arrays.dictionary.length", "100001"),
+        ("values.strings.oneByte.length", "5"),
+        // 'h\u00e9llo \u2603 \u{1f600}': the emoji is two UTF-16 units.
+        ("values.strings.twoByte.length", "10"),
+        ("values.collections.map.size", "2"),
+        ("values.collections.set.size", "3"),
+        ("values.collections.emptyMap.size", "0"),
+        ("values.binary.uint8.length", "3"),
+        ("values.binary.uint8[2]", "255"),
+        ("values.binary.int32[0]", "-1"),
+        ("values.binary.int32[2]", "2147483647"),
+        ("values.binary.float64[0]", "0.1"),
+        ("values.binary.view.length", "3"),
+        ("values.binary.buffer.length", "12"),
+        // 'buffer bytes' starts with b, 98.
+        ("values.binary.buffer[0]", "98"),
+    ];
+    let mut lies = Vec::new();
+    for entry in MATRIX {
+        let mut session = NodeSession::launch(entry, "values.js", &[], &[]).await;
+        let reported = threads(&session.stop_at("gallery").await);
+        let printer = reported
+            .iter()
+            .find(|thread| thread.printer)
+            .expect("the printer's thread");
+        select_function(&session, printer.native, "gallery").await;
+        for (text, expected) in cases {
+            let (summary, _) = presented(&session, text).await;
+            if summary != expected {
+                lies.push(format!(
+                    "{}: {text} is {summary}, not {expected}",
+                    session.context()
+                ));
+            }
+        }
+        let (past, _) = presented(&session, "values.binary.uint8[3]").await;
+        if !past.starts_with("<error") {
+            lies.push(format!("{}: uint8[3] is {past}", session.context()));
+        }
+        session.shutdown().await;
+    }
+    assert!(lies.is_empty(), "{} lies:\n{}", lies.len(), lies.join("\n"));
+}
