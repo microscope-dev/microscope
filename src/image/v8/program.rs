@@ -123,6 +123,37 @@ pub(super) struct Translated {
 /// object's untagged start, which is a multiple of 8.
 pub(super) type Read<'a> = dyn FnMut(u64) -> Option<u64> + 'a;
 
+/// The most values a call passes or a function returns.
+const MAX_VALUES: usize = 8;
+
+/// The values a call passes or a function returns, without allocating.
+#[derive(Clone, Copy)]
+struct Values {
+    values: [i64; MAX_VALUES],
+    length: usize,
+}
+
+impl Values {
+    fn of(registers: &[i64], operands: &[Operand]) -> Result<Self, String> {
+        let mut values = Self {
+            values: [0; MAX_VALUES],
+            length: operands.len(),
+        };
+        let slots = values
+            .values
+            .get_mut(..operands.len())
+            .ok_or_else(|| format!("{} values at once", operands.len()))?;
+        for (slot, &operand) in slots.iter_mut().zip(operands) {
+            *slot = get(registers, operand)?;
+        }
+        Ok(values)
+    }
+
+    fn as_slice(&self) -> &[i64] {
+        &self.values[..self.length]
+    }
+}
+
 /// Runs `functions[function]` on `arguments`, giving what it returns.
 pub(super) fn run(
     functions: &[Function],
@@ -130,16 +161,33 @@ pub(super) fn run(
     arguments: &[i64],
     read: &mut Read<'_>,
 ) -> Result<Vec<i64>, String> {
-    Interpreter { functions, read }.call(function, arguments, 0)
+    let mut passed = Values {
+        values: [0; MAX_VALUES],
+        length: arguments.len(),
+    };
+    passed
+        .values
+        .get_mut(..arguments.len())
+        .ok_or_else(|| format!("{} arguments", arguments.len()))?
+        .copy_from_slice(arguments);
+    let mut interpreter = Interpreter {
+        functions,
+        read,
+        stack: Vec::with_capacity(64),
+    };
+    Ok(interpreter.call(function, passed, 0)?.as_slice().to_vec())
 }
 
 struct Interpreter<'a, 'r> {
     functions: &'a [Function],
     read: &'a mut Read<'r>,
+
+    /// Every running function's registers, the innermost last.
+    stack: Vec<i64>,
 }
 
 impl Interpreter<'_, '_> {
-    fn call(&mut self, index: u16, arguments: &[i64], depth: usize) -> Result<Vec<i64>, String> {
+    fn call(&mut self, index: u16, arguments: Values, depth: usize) -> Result<Values, String> {
         let function = self
             .functions
             .get(usize::from(index))
@@ -148,6 +196,7 @@ impl Interpreter<'_, '_> {
             return Err(format!("{} nests too deeply", function.name));
         }
 
+        let arguments = arguments.as_slice();
         if arguments.len() != usize::from(function.parameters) {
             return Err(format!(
                 "{} takes {} arguments, given {}",
@@ -157,8 +206,9 @@ impl Interpreter<'_, '_> {
             ));
         }
 
-        let mut registers = vec![0; usize::from(function.registers)];
-        registers
+        let base = self.stack.len();
+        self.stack.resize(base + usize::from(function.registers), 0);
+        self.stack[base..]
             .get_mut(..arguments.len())
             .ok_or_else(|| format!("{} has too few registers", function.name))?
             .copy_from_slice(arguments);
@@ -184,14 +234,16 @@ impl Interpreter<'_, '_> {
                     condition,
                     then,
                     otherwise,
-                } => jump(if get(&registers, condition)? != 0 {
+                } => jump(if get(&self.stack[base..], condition)? != 0 {
                     then
                 } else {
                     otherwise
                 })?,
                 Op::Goto(target) => jump(target)?,
                 Op::Return(values) => {
-                    return values.iter().map(|&value| get(&registers, value)).collect();
+                    let returned = Values::of(&self.stack[base..], values)?;
+                    self.stack.truncate(base);
+                    return Ok(returned);
                 }
                 Op::Unreachable => {
                     return Err(format!("{} reached UNREACHABLE", function.name));
@@ -201,22 +253,19 @@ impl Interpreter<'_, '_> {
                     arguments,
                     results,
                 } => {
-                    let values = arguments
-                        .iter()
-                        .map(|&argument| get(&registers, argument))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    let returned = self.call(callee, &values, depth + 1)?;
-                    if returned.len() != results.len() {
+                    let values = Values::of(&self.stack[base..], arguments)?;
+                    let returned = self.call(callee, values, depth + 1)?;
+                    if returned.length != results.len() {
                         return Err(format!("{} misreads a call's results", function.name));
                     }
 
-                    for (&register, value) in results.iter().zip(returned) {
-                        set(&mut registers, register, value)?;
+                    for (&register, &value) in results.iter().zip(returned.as_slice()) {
+                        set(&mut self.stack[base..], register, value)?;
                     }
                     next
                 }
                 op => {
-                    self.step(op, &mut registers)
+                    self.step(op, base)
                         .map_err(|error| format!("{}: {error}", function.name))?;
                     next
                 }
@@ -224,8 +273,9 @@ impl Interpreter<'_, '_> {
         }
     }
 
-    /// Runs an op that computes one register.
-    fn step(&mut self, op: Op, registers: &mut [i64]) -> Result<(), String> {
+    /// Runs an op that computes one register of the frame at `base`.
+    fn step(&mut self, op: Op, base: usize) -> Result<(), String> {
+        let registers = &self.stack[base..];
         let (to, value) = match op {
             Op::Set(to, from) => (to, get(registers, from)?),
             Op::Binary(binary, to, left, right) => (
@@ -276,7 +326,7 @@ impl Interpreter<'_, '_> {
             }
         };
 
-        set(registers, to, value)
+        set(&mut self.stack[base..], to, value)
     }
 
     fn word(&mut self, offset: u64) -> Result<u64, String> {
