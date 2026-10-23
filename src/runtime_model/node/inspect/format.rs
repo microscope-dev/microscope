@@ -7,7 +7,8 @@ use super::text::{
 };
 use super::{
     Array, BigInt, Constructor, ElementType, Function, FunctionKind, Inspected, JsString, Key,
-    Kind, Object, ObjectId, PromiseState, Property, Slot, Symbol, Value, ValueGraph,
+    Kind, Layout, NodeRelease, Object, ObjectId, PromiseState, Property, Slot, Symbol, Value,
+    ValueGraph,
 };
 use std::fmt::Write as _;
 
@@ -26,10 +27,12 @@ const MAX_STRING_LENGTH: usize = 10_000;
 /// `kMinLineLength`: strings this long or shorter are never split.
 const MIN_LINE_LENGTH: usize = 16;
 
-pub fn inspect(graph: &ValueGraph, value: &Value, major: u32) -> Inspected {
+pub fn inspect(graph: &ValueGraph, value: &Value, node: NodeRelease, layout: Layout) -> Inspected {
     let mut ctx = Ctx {
         graph,
-        major,
+        major: node.major,
+        node,
+        line: layout == Layout::Line,
         indentation: 0,
         seen: Vec::new(),
         circular: Vec::new(),
@@ -83,10 +86,32 @@ enum Contents<'g> {
     Weak,
 }
 
-/// inspect's `ctx`, with the options fixed at their defaults.
+/// A change to `inspect.js` within a release line, which the releases of
+/// 24 and of 26 named in [`Ctx::has`] and later make.
+#[derive(Clone, Copy)]
+pub enum Change {
+    /// `isBelowBreakLength` returns early for an infinite `breakLength`,
+    /// refusing only entries with line breaks.
+    InfiniteBreakLength,
+    /// `getPrefix` leaves out a `Symbol.toStringTag` equal to the
+    /// constructor's name, or to the tag's last dotted part.
+    TagByName,
+    /// `formatError` lists a `SuppressedError`'s own `error` and
+    /// `suppressed`.
+    SuppressedKeys,
+    /// `formatExtraProperties` reads a getter before moving two columns in,
+    /// so a detached `DataView`'s throw leaves the indentation as it was.
+    ExtraBeforeIndent,
+}
+
+/// inspect's `ctx`, with the options fixed at their defaults or at
+/// [`Layout::Line`]'s.
 pub struct Ctx<'g> {
     pub graph: &'g ValueGraph,
     pub major: u32,
+    node: NodeRelease,
+    /// `compact: true` and `breakLength: Infinity`.
+    line: bool,
     pub indentation: usize,
     /// The objects being formatted, innermost last, by address.
     seen: Vec<VirtualAddress>,
@@ -99,6 +124,23 @@ pub struct Ctx<'g> {
 }
 
 impl<'g> Ctx<'g> {
+    /// Whether the Node release writing the value has made `change`: each
+    /// landed in a 26 release, some in a 24 release too, and none in 22.
+    /// No V8 layout covers 25 or 23, whose modules are refused before any
+    /// value is read.
+    pub const fn has(&self, change: Change) -> bool {
+        let (on_24, on_26) = match change {
+            Change::InfiniteBreakLength => (Some(21), 8),
+            Change::TagByName => (Some(22), 9),
+            Change::SuppressedKeys | Change::ExtraBeforeIndent => (None, 11),
+        };
+        match (self.node.major, on_24) {
+            (24, Some(minor)) => self.node.minor >= minor,
+            (26, _) => self.node.minor >= on_26,
+            (major, _) => major > 26,
+        }
+    }
+
     /// `formatValue`.
     pub fn format_value(&mut self, value: &Value, level: usize) -> String {
         match value {
@@ -377,7 +419,7 @@ impl<'g> Ctx<'g> {
             output.push(entry);
         }
         for (property, enumerable) in &keys {
-            let entry = self.format_property(property, *enumerable, level);
+            let entry = self.format_property(property, *enumerable, entries, level);
             output.push(entry);
         }
         if let Some(index) = self
@@ -386,11 +428,13 @@ impl<'g> Ctx<'g> {
             .position(|seen| *seen == object.address)
         {
             let reference = format!("<ref *{}>", index + 1);
-            base = if base.is_empty() {
-                reference
+            if self.line {
+                open = format!("{reference} {open}");
+            } else if base.is_empty() {
+                base = reference;
             } else {
-                format!("{reference} {base}")
-            };
+                base = format!("{reference} {base}");
+            }
         }
         self.seen.pop();
 
@@ -442,7 +486,7 @@ impl<'g> Ctx<'g> {
             }
             return format!("[{fallback}{size}: null prototype] ");
         };
-        if self.major < 24 {
+        if !self.has(Change::TagByName) {
             let mut result = format!("{constructor}{size} ");
             if !tag.is_empty() {
                 match constructor.find(tag) {
@@ -607,7 +651,10 @@ impl<'g> Ctx<'g> {
         let room = i64::try_from(BREAK_LENGTH).unwrap_or(i64::MAX)
             - i64::try_from(self.indentation).unwrap_or(i64::MAX)
             - 4;
-        if units.len() > MIN_LINE_LENGTH && i64::try_from(units.len()).unwrap_or(i64::MAX) > room {
+        if !self.line
+            && units.len() > MIN_LINE_LENGTH
+            && i64::try_from(units.len()).unwrap_or(i64::MAX) > room
+        {
             let separator = format!(" +\n{}", " ".repeat(self.indentation + 2));
             let lines: Vec<String> = split_after_newlines(units).map(str_escape).collect();
             return lines.join(&separator) + &trailer;
@@ -616,8 +663,20 @@ impl<'g> Ctx<'g> {
     }
 
     /// `formatProperty` of an object's own property.
-    fn format_property(&mut self, property: &Property, enumerable: bool, level: usize) -> String {
+    fn format_property(
+        &mut self,
+        property: &Property,
+        enumerable: bool,
+        entries: Entries,
+        level: usize,
+    ) -> String {
+        // `compact: true` moves an object's values three columns in. With an
+        // infinite `breakLength`, no value is wide enough to start on its
+        // own line.
+        let extra = usize::from(self.line && entries == Entries::Object);
+        self.indentation += extra;
         let text = self.format_slot(&property.slot, level);
+        self.indentation -= extra;
         let name = self.property_name(&property.key, enumerable);
         format!("{name}: {text}")
     }
@@ -707,7 +766,7 @@ impl<'g> Ctx<'g> {
             (Kind::DataView { view: None, buffer }, key) => {
                 // The getter throws. Node before 26 has already moved two
                 // columns in by then and never moves back.
-                if self.major < 26 {
+                if !self.has(Change::ExtraBeforeIndent) {
                     self.indentation += 2;
                 }
                 if key == "byteLength" {
@@ -874,7 +933,7 @@ impl<'g> Ctx<'g> {
         }]
     }
 
-    /// `reduceToSingleString` with `compact` 3.
+    /// `reduceToSingleString`.
     fn reduce_to_single_string(
         &mut self,
         output: Vec<String>,
@@ -884,6 +943,9 @@ impl<'g> Ctx<'g> {
         level: usize,
         value: Option<&Object>,
     ) -> String {
+        if self.line {
+            return self.reduce_to_line(&output, base, (open, close));
+        }
         let count = output.len();
         let output = if entries == Entries::ArrayExtras && count > 6 {
             self.group_array_elements(output, value)
@@ -907,6 +969,33 @@ impl<'g> Ctx<'g> {
         let indentation = format!("\n{}", " ".repeat(self.indentation));
         let joined = output.join(&format!(",{indentation}  "));
         format!("{base_space}{open}{indentation}  {joined}{indentation}{close}")
+    }
+
+    /// `reduceToSingleString` with `compact: true` and an infinite
+    /// `breakLength`.
+    fn reduce_to_line(&self, output: &[String], base: &str, (open, close): (&str, &str)) -> String {
+        let space_base = if base.is_empty() {
+            String::new()
+        } else {
+            format!(" {base}")
+        };
+        // `isBelowBreakLength`. Since its early return for an infinite
+        // `breakLength`, an entry with a line break is refused too; before,
+        // the arithmetic only looked at `base`.
+        let below = !base.contains('\n')
+            && (!self.has(Change::InfiniteBreakLength)
+                || !output.iter().any(|entry| entry.contains('\n')));
+        if below {
+            return format!("{open}{space_base} {} {close}", output.join(", "));
+        }
+        let indentation = " ".repeat(self.indentation);
+        let first = if base.is_empty() && js_len(open) == 1 {
+            " ".to_owned()
+        } else {
+            format!("{space_base}\n{indentation}  ")
+        };
+        let joined = output.join(&format!(",\n{indentation}  "));
+        format!("{open}{first}{joined} {close}")
     }
 
     /// `groupArrayElements`: an array's entries in aligned columns.

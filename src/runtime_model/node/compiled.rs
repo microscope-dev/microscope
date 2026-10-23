@@ -36,11 +36,11 @@ pub(super) type Place = (Object, Result<u64, Problem>);
 
 /// A `Code` object, with the facts of it every reading needs.
 #[derive(Debug, Clone, Copy)]
-struct Code {
+pub(super) struct Code {
     object: Object,
     start: u64,
     size: u64,
-    kind: i64,
+    pub(super) kind: i64,
 }
 
 impl Code {
@@ -277,7 +277,7 @@ fn weak(reader: &Reader<'_>, word: u64) -> Result<Option<Object>, Problem> {
 }
 
 /// The facts of the `Code` object `object`, proven one.
-fn code(reader: &Reader<'_>, object: Object) -> Result<Code, Problem> {
+pub(super) fn code(reader: &Reader<'_>, object: Object) -> Result<Code, Problem> {
     if !reader.is(object, Constant::CodeType)? {
         return Err(format!("{:#x} is no Code", object.0).into());
     }
@@ -341,7 +341,7 @@ fn optimized_places(
 
 /// The bytecode baseline `code` compiled, and the offset in it of the
 /// bytecode whose code holds the instruction `offset` bytes into `code`.
-fn baseline_offset(
+pub(super) fn baseline_offset(
     reader: &Reader<'_>,
     code: &Code,
     offset: u64,

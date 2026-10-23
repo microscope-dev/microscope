@@ -426,6 +426,8 @@ fn add_value_constants(headers: &Headers, constants: &mut BTreeMap<String, i64>)
         }
     }
 
+    add_call_site_constants(headers, &mut add);
+
     for class in ["OrderedHashMap", "OrderedHashSet"] {
         for (name, value) in headers.ordered_hash_table(class) {
             add(name, value);
@@ -543,10 +545,34 @@ const DEOPTIMIZATION_INDICES: [&str; 12] = [
     "FirstDeoptEntry",
 ];
 
+/// The constants an error's call sites are written with: the kinds of a
+/// script's compilation, and the bits of a name's hash field, its type in
+/// the lowest two, 0b10 for a hash, and the hash above them. The headers
+/// write the type in binary, which their evaluator does not read, so their
+/// text is checked instead.
+fn add_call_site_constants(headers: &Headers, add: &mut impl FnMut(String, i64)) {
+    let script = "src/objects/script.h";
+    for (name, value) in headers.enumerators(script, "enum class CompilationType") {
+        add(format!("Script::CompilationType::{name}"), value);
+    }
+
+    let name = "src/objects/name.h";
+    for text in [
+        "using HashFieldTypeBits = base::BitField<HashFieldType, 0, 2>;",
+        "kHash = 0b10,",
+        "HashFieldTypeBits::Next<uint32_t, kBitsPerInt - HashFieldTypeBits::kSize>;",
+    ] {
+        assert!(headers.contains(name, text), "{name} no longer has {text}");
+    }
+    add("Name::HashFieldTypeBits::kMask".to_owned(), 0b11);
+    add("Name::HashFieldType::kHash".to_owned(), 0b10);
+    add("Name::HashBits::kShift".to_owned(), 2);
+}
+
 /// Class constants the generated layouts take from the headers: the name
 /// [`Constant`] gives the class, the classes searched for each, in order
 /// from the class to those it derives from, its header, and the names.
-const HEADER_CLASS_CONSTANTS: [(&str, &[&str], &str, &[&str]); 9] = [
+const HEADER_CLASS_CONSTANTS: [(&str, &[&str], &str, &[&str]); 10] = [
     (
         "Oddball",
         &["Oddball"],
@@ -581,6 +607,12 @@ const HEADER_CLASS_CONSTANTS: [(&str, &[&str], &str, &[&str]); 9] = [
         &["HashTable"],
         "src/objects/hash-table.h",
         &["kEntryKeyIndex"],
+    ),
+    (
+        "NameToIndexShape",
+        &["NameToIndexShape"],
+        "src/objects/hash-table.h",
+        &["kPrefixSize", "kEntrySize", "kEntryValueIndex"],
     ),
     (
         "BaseNameDictionary",
@@ -1223,6 +1255,21 @@ fn every_build_in_the_matrix_binds_to_its_layout() {
 
         check_code_fields(entry, &object, &layout, (major, minor));
 
+        // The release `napi_get_node_version` gives is the one whose
+        // `process.version`, `v` and the release, the binary keeps as text.
+        let node = runtime
+            .node
+            .as_ref()
+            .unwrap_or_else(|problem| panic!("{entry}: {problem}"));
+        let line = entry.rsplit('-').next().expect("an entry");
+        assert_eq!(node.major.to_string(), line, "{entry}: Node {node}");
+        let text = format!("v{node}\0");
+        assert!(
+            data.windows(text.len())
+                .any(|window| window == text.as_bytes()),
+            "{entry}: Node {node}, which the binary does not name"
+        );
+
         check_accessors(
             entry,
             &object,
@@ -1241,7 +1288,8 @@ fn every_build_in_the_matrix_binds_to_its_layout() {
         );
         eprintln!(
             "{entry}: V8 {}, {checked} field constants, {types} instance types, and \
-             {constants} header constants agree; dispatch table {:?}; embedded blob {:?}",
+             {constants} header constants agree; dispatch table {:?}; embedded blob {:?}; \
+             Node {node}",
             runtime.version, runtime.dispatch_table, runtime.embedded_blob
         );
     }

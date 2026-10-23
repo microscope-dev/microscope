@@ -13,7 +13,7 @@ use iced_x86::{Decoder, DecoderOptions, Instruction, MemorySize, Mnemonic, OpKin
 use object::{Object, ObjectSection, ObjectSymbol, SectionKind, SymbolKind};
 
 use crate::ImageAddress;
-use crate::image::v8::{DispatchTable, EmbeddedBlob, V8Version};
+use crate::image::v8::{DispatchTable, EmbeddedBlob, NodeRelease, V8Version};
 
 /// What the name of `ExternalReference::js_dispatch_table_address` begins
 /// with: 13.6's takes no argument and 14.6's an isolate.
@@ -909,6 +909,129 @@ fn assign_blob(
     })
 }
 
+/// The exported `napi_get_node_version`, which gives its caller the
+/// address of the `napi_node_version` that holds Node's version.
+const GET_NODE_VERSION: &str = "napi_get_node_version";
+
+/// That `napi_node_version`, a static local of the function, by its name
+/// where the module keeps local symbols.
+const NODE_VERSION: &str = "_ZZ21napi_get_node_versionE7version";
+
+/// The Node release that built `object`: the major, minor, and patch
+/// numbers that begin the `napi_node_version` the exported
+/// `napi_get_node_version` returns (`src/js_native_api_v8.cc`):
+///
+/// ```c++
+/// static const napi_node_version version = {
+///     NODE_MAJOR_VERSION, NODE_MINOR_VERSION, NODE_PATCH_VERSION,
+///     NODE_RELEASE};
+/// ```
+///
+/// The static is found by its symbol, else, in a module stripped of its
+/// local symbols as Debian's libnode is, from the function's code.
+pub(super) fn node_release(object: &object::File<'_>) -> Result<NodeRelease, Arc<str>> {
+    let named = object
+        .symbols()
+        .find(|symbol| symbol.is_definition() && symbol.name() == Ok(NODE_VERSION))
+        .map(|symbol| symbol.address());
+    let address = if let Some(address) = named {
+        address
+    } else {
+        let function = function(object, GET_NODE_VERSION, false).ok_or_else(|| -> Arc<str> {
+            format!("the module names no {GET_NODE_VERSION}").into()
+        })?;
+        decode_node_version(&instructions(object, function)?, GET_NODE_VERSION)?
+    };
+    let bytes = object
+        .sections()
+        .find_map(|section| section.data_range(address, 12).ok().flatten())
+        .ok_or_else(|| -> Arc<str> {
+            format!("the module keeps no napi_node_version at {address:#x}").into()
+        })?;
+    let word = |at: usize| {
+        bytes
+            .get(at..at + 4)
+            .and_then(|word| word.try_into().ok())
+            .map_or(0, u32::from_le_bytes)
+    };
+    Ok(NodeRelease {
+        major: word(0),
+        minor: word(4),
+        patch: word(8),
+    })
+}
+
+/// The address of the `napi_node_version` that `napi_get_node_version`'s
+/// `instructions` store through its `result`, rsi: after an optional
+/// `mov eax, imm`, `test rdi, rdi; je` and `test rsi, rsi; je`, then
+/// either `mov qword [rsi], imm` or `lea r, [rip + version]` and `mov
+/// [rsi], r`. Instructions that zero a vector register, which clear the
+/// environment's last error, may come anywhere.
+fn decode_node_version(instructions: &[Instruction], what: &str) -> Result<u64, Arc<str>> {
+    let zeroes_vector = |instruction: &&Instruction| {
+        matches!(instruction.mnemonic(), Mnemonic::Pxor | Mnemonic::Xorps)
+            && instruction.op0_kind() == OpKind::Register
+            && instruction.op1_kind() == OpKind::Register
+            && instruction.op0_register().is_xmm()
+            && instruction.op0_register() == instruction.op1_register()
+    };
+    let mut code = instructions
+        .iter()
+        .filter(|instruction| !zeroes_vector(instruction))
+        .peekable();
+    if code
+        .peek()
+        .is_some_and(|instruction| moves_immediate(instruction, Register::EAX).is_some())
+    {
+        code.next();
+    }
+    for register in [Register::RDI, Register::RSI] {
+        next_as(&mut code, what, |instruction| {
+            tests(instruction, register).then_some(())
+        })?;
+        next_as(&mut code, what, |instruction| {
+            branch(instruction, Mnemonic::Je)
+        })?;
+    }
+
+    let stores = |instruction: &Instruction| {
+        instruction.mnemonic() == Mnemonic::Mov
+            && instruction.op0_kind() == OpKind::Memory
+            && instruction.memory_base() == Register::RSI
+            && instruction.memory_index() == Register::None
+            && instruction.memory_displacement64() == 0
+            && instruction.segment_prefix() == Register::None
+            && instruction.memory_size() == MemorySize::UInt64
+    };
+    let first = code.next();
+    if let Some(instruction) = first
+        && stores(instruction)
+        && instruction.op1_kind() == OpKind::Immediate32to64
+    {
+        return Ok(instruction.immediate(1));
+    }
+    let (register, address) = first
+        .filter(|instruction| {
+            instruction.mnemonic() == Mnemonic::Lea
+                && instruction.op0_kind() == OpKind::Register
+                && instruction.op0_register().is_gpr64()
+                && instruction.is_ip_rel_memory_operand()
+        })
+        .map(|instruction| {
+            (
+                instruction.op0_register(),
+                instruction.ip_rel_memory_address(),
+            )
+        })
+        .ok_or_else(|| unexpected(what, first))?;
+    next_as(&mut code, what, |instruction| {
+        (stores(instruction)
+            && instruction.op1_kind() == OpKind::Register
+            && instruction.op1_register() == register)
+            .then_some(address)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -919,6 +1042,79 @@ mod tests {
     }
 
     const RET: u8 = 0xc3;
+
+    #[test]
+    fn each_shape_of_napi_get_node_version_gives_its_static() {
+        // test rdi, rdi; je; test rsi, rsi; je
+        const CHECKS: [u8; 10] = [0x48, 0x85, 0xff, 0x74, 0x10, 0x48, 0x85, 0xf6, 0x74, 0x10];
+
+        // Node 22 and 24: pxor xmm0, xmm0; mov qword [rsi], 0x3437480;
+        // xor eax, eax; ret
+        let official = decode(
+            &[
+                &CHECKS[..],
+                &[0x66, 0x0f, 0xef, 0xc0],
+                &[0x48, 0xc7, 0x06, 0x80, 0x74, 0x43, 0x03],
+                &[0x31, 0xc0, RET],
+            ]
+            .concat(),
+        );
+        assert_eq!(decode_node_version(&official, "22"), Ok(0x343_7480));
+
+        // Node 26: mov eax, 1; the checks; mov qword [rsi], 0x41434c8;
+        // xorps xmm0, xmm0; ret
+        let returns_first = decode(
+            &[
+                &[0xb8, 1, 0, 0, 0][..],
+                &CHECKS,
+                &[0x48, 0xc7, 0x06, 0xc8, 0x34, 0x14, 0x04],
+                &[0x0f, 0x57, 0xc0, RET],
+            ]
+            .concat(),
+        );
+        assert_eq!(decode_node_version(&returns_first, "26"), Ok(0x414_34c8));
+
+        // nixpkgs and Debian: lea rax, [rip + 0x100]; pxor xmm0, xmm0;
+        // mov [rsi], rax; ret
+        let addressed = decode(
+            &[
+                &CHECKS[..],
+                &[0x48, 0x8d, 0x05, 0, 1, 0, 0],
+                &[0x66, 0x0f, 0xef, 0xc0],
+                &[0x48, 0x89, 0x06, RET],
+            ]
+            .concat(),
+        );
+        assert_eq!(decode_node_version(&addressed, "nixpkgs"), Ok(0x1111));
+    }
+
+    #[test]
+    fn napi_get_node_version_of_another_shape_is_refused() {
+        const CHECKS: [u8; 10] = [0x48, 0x85, 0xff, 0x74, 0x10, 0x48, 0x85, 0xf6, 0x74, 0x10];
+
+        // Another register stored: lea rax, [rip + 0x100]; mov [rsi], rcx
+        let other = decode(
+            &[
+                &CHECKS[..],
+                &[0x48, 0x8d, 0x05, 0, 1, 0, 0, 0x48, 0x89, 0x0e, RET],
+            ]
+            .concat(),
+        );
+        let refused = decode_node_version(&other, "napi_get_node_version").unwrap_err();
+        assert!(refused.contains("is `mov [rsi],rcx`"), "{refused}");
+
+        // A store through rdi: mov qword [rdi], 0x1000
+        let elsewhere = decode(&[&CHECKS[..], &[0x48, 0xc7, 0x07, 0, 0x10, 0, 0, RET]].concat());
+        assert!(decode_node_version(&elsewhere, "napi_get_node_version").is_err());
+
+        // No check of the result pointer: test rdi, rdi; je; mov qword
+        // [rsi], 0x1000
+        let unchecked = decode(&[
+            0x48, 0x85, 0xff, 0x74, 0x10, 0x48, 0xc7, 0x06, 0, 0x10, 0, 0, RET,
+        ]);
+        assert!(decode_node_version(&unchecked, "napi_get_node_version").is_err());
+        assert!(decode_node_version(&[], "napi_get_node_version").is_err());
+    }
 
     #[test]
     fn each_shape_of_dispatch_table_accessor_decodes() {

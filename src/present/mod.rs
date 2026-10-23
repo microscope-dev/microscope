@@ -115,6 +115,10 @@ pub struct Details {
     /// The renderers of the drawings its view offers, each once, which only
     /// the web page draws.
     pub drawings: Vec<Arc<str>>,
+
+    /// The value's text over as many lines as its runtime writes it, where
+    /// the row's one line shows less.
+    pub detail: Option<Arc<str>>,
 }
 
 /// How a row expands.
@@ -327,6 +331,7 @@ impl Presenter<'_> {
                             | VariableValue::Variant { .. }
                     ),
                     drawings: presented.map_or_else(Vec::new, drawings),
+                    detail: presented.and_then(|presentation| presentation.detail.clone()),
                 })
             }
             _ => None,
@@ -1013,6 +1018,7 @@ mod tests {
             shape: PresentedShape::Empty,
             count: None,
             summary: Arc::from("ok"),
+            detail: None,
             children: ValueChildren::NotApplicable,
             problem: None,
             number: None,

@@ -5,8 +5,8 @@ mod expected;
 
 use super::{
     Array, BigInt, Constructor, Element, ElementType, ErrorDetails, Function, FunctionKind,
-    Inspected, JsString, Key, Kind, Object, ObjectId, PromiseState, Property, Slot, Symbol, Value,
-    ValueGraph, ViewRange, inspect,
+    Inspected, JsString, Key, Kind, Layout, NodeRelease, Object, ObjectId, PromiseState, Property,
+    Slot, Symbol, Value, ValueGraph, ViewRange, inspect,
 };
 use crate::VirtualAddress;
 use expected::{GALLERY, NODE};
@@ -90,6 +90,21 @@ fn frames(count: usize) -> String {
         .map(|i| format!("    at g{i} (/a.js:{i}:1)"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The release of each line whose text `tests/expected.rs` holds.
+fn release(major: u32) -> NodeRelease {
+    let (minor, patch) = match major {
+        22 => (23, 4),
+        24 => (22, 1),
+        26 => (12, 1),
+        _ => panic!("no expected text of Node {major}"),
+    };
+    NodeRelease {
+        major,
+        minor,
+        patch,
+    }
 }
 
 /// Builds a graph, handing out addresses.
@@ -323,7 +338,11 @@ impl Graph {
     }
 
     fn inspect(&self, value: &Value, major: u32) -> Inspected {
-        inspect(&self.graph, value, major)
+        inspect(&self.graph, value, release(major), Layout::Default)
+    }
+
+    fn line(&self, value: &Value, node: NodeRelease) -> String {
+        inspect(&self.graph, value, node, Layout::Line).text
     }
 }
 
@@ -1730,4 +1749,176 @@ fn what_the_reader_could_not_read_prints_visibly() {
         graph.inspect(&unlisted, 26).text,
         "[ 1, <1 empty item>, <unreadable: the elements from index 2 on> ]"
     );
+}
+
+/// What `util.inspect(value, { customInspect: false, compact: true,
+/// breakLength: Infinity })` printed under each Node, for values where that
+/// layout departs from the default's.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one value per way the layout departs"
+)]
+fn values_print_on_one_line_as_node_prints_them() {
+    const STACK: &str = "RangeError: inner\n    at f (x.js:1:2)\n    at g (x.js:3:4)";
+    fn mk(g: &mut Graph) -> Value {
+        g.error_with(
+            named("RangeError"),
+            s(STACK),
+            s("RangeError"),
+            s("inner"),
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+    let indented = |columns: usize| STACK.replace('\n', &format!("\n{}", " ".repeat(columns)));
+    let mut g = Graph::new();
+    let mut cases: Vec<(Value, String, Option<String>)> = Vec::new();
+
+    let error = mk(&mut g);
+    let value = g.plain(vec![("a", error), ("b", n(2.0))]);
+    let stack = indented(3);
+    cases.push((
+        value,
+        format!("{{ a: {stack},\n  b: 2 }}"),
+        Some(format!("{{ a: {stack}, b: 2 }}")),
+    ));
+
+    let error = mk(&mut g);
+    let inner = g.plain(vec![("y", error), ("z", n(1.0))]);
+    let value = g.plain(vec![("x", inner)]);
+    let stack = indented(6);
+    cases.push((
+        value,
+        format!("{{ x: {{ y: {stack},\n     z: 1 }} }}"),
+        Some(format!("{{ x: {{ y: {stack}, z: 1 }} }}")),
+    ));
+
+    let error = mk(&mut g);
+    let value = g.array(vec![error, n(1.0)]);
+    let stack = indented(2);
+    cases.push((
+        value,
+        format!("[ {stack},\n  1 ]"),
+        Some(format!("[ {stack}, 1 ]")),
+    ));
+
+    let error = mk(&mut g);
+    let value = g.map(vec![(s("k"), error)]);
+    cases.push((
+        value,
+        format!("Map(1) {{\n  'k' => {stack} }}"),
+        Some(format!("Map(1) {{ 'k' => {stack} }}")),
+    ));
+
+    let error = mk(&mut g);
+    let value = g.array_with(named("Array"), vec![n(1.0)], vec![prop("e", error)]);
+    cases.push((
+        value,
+        format!("[ 1,\n  e: {stack} ]"),
+        Some(format!("[ 1, e: {stack} ]")),
+    ));
+
+    let value = g.error_with(
+        named("RangeError"),
+        s(STACK),
+        s("RangeError"),
+        s("inner"),
+        vec![prop("code", s("E"))],
+        Vec::new(),
+    );
+    cases.push((value, format!("{{ {STACK}\n  code: 'E' }}"), None));
+
+    let id = g.reserve();
+    g.fill(
+        id,
+        named("Object"),
+        Kind::Ordinary,
+        props(vec![("n", n(1.0)), ("self", Value::Object(id))]),
+    );
+    cases.push((
+        Value::Object(id),
+        "<ref *1> { n: 1, self: [Circular *1] }".to_owned(),
+        None,
+    ));
+
+    let id = g.reserve();
+    g.fill(
+        id,
+        named("Map"),
+        Kind::Map {
+            size: 1,
+            entries: vec![(s("a"), n(1.0))],
+        },
+        props(vec![("self", Value::Object(id))]),
+    );
+    cases.push((
+        Value::Object(id),
+        "<ref *1> Map(1) { 'a' => 1, self: [Circular *1] }".to_owned(),
+        None,
+    ));
+
+    let value = g.add(
+        named("Function"),
+        Kind::Function(Function {
+            kind: FunctionKind::Plain,
+            name: s("f"),
+        }),
+        props(vec![("a", n(1.0))]),
+    );
+    cases.push((value, "{ [Function: f] a: 1 }".to_owned(), None));
+
+    let long = format!("{}\n{}", "x".repeat(100), "y".repeat(20));
+    let value = s(&long);
+    cases.push((
+        value,
+        format!("'{}\\n{}'", "x".repeat(100), "y".repeat(20)),
+        None,
+    ));
+
+    let items: Vec<f64> = (0..120).map(f64::from).collect();
+    let value = g.numbers(&items);
+    let shown: Vec<String> = (0..100).map(|i| i.to_string()).collect();
+    cases.push((
+        value,
+        format!("[ {}, ... 20 more items ]", shown.join(", ")),
+        None,
+    ));
+
+    // The releases before `isBelowBreakLength`'s early return for an
+    // infinite `breakLength` write as 22 does: 24.20.0 and 26.7.0, the
+    // last without it, and 24.16.0 and 26.5.0, which nixpkgs builds.
+    let before = |major, minor| NodeRelease {
+        major,
+        minor,
+        patch: 0,
+    };
+    let releases = [
+        (release(22), true),
+        (before(24, 16), true),
+        (before(24, 20), true),
+        (before(24, 21), false),
+        (release(24), false),
+        (before(26, 5), true),
+        (before(26, 7), true),
+        (before(26, 8), false),
+        (release(26), false),
+    ];
+    let mut failures = Vec::new();
+    for (value, newer, older) in &cases {
+        for (node, old) in releases {
+            let expected = if old {
+                older.as_ref().unwrap_or(newer)
+            } else {
+                newer
+            };
+            let printed = g.line(value, node);
+            if printed != *expected {
+                failures.push(format!(
+                    "Node {node}:\n  expected {expected:?}\n  printed  {printed:?}"
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

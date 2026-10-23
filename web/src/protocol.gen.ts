@@ -543,7 +543,12 @@ export type Row = { name: string,
 /**
  * The value's summary, or why there is none.
  */
-text: string, type: string | null, 
+text: string, 
+/**
+ * The value's text over as many lines as its runtime writes it, where
+ * the summary shows less.
+ */
+detail: string | null, type: string | null, 
 /**
  * An expression that evaluates the value again.
  */

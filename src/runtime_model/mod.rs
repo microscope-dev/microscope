@@ -1708,6 +1708,10 @@ pub struct InterpretedValue {
     /// container holds past the summary's bounds left out as `...`.
     pub summary: Arc<str>,
 
+    /// The object written over several lines, as the runtime prints it,
+    /// where that differs from the summary.
+    pub detail: Option<Arc<str>>,
+
     /// Why the summary or the children are shown in part, if they are.
     pub problem: Option<Arc<str>>,
 

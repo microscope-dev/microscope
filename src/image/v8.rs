@@ -711,6 +711,20 @@ entries! {
         NameDictionaryEntryValueIndex = "NameDictionary::kEntryValueIndex",
         NameDictionaryEntryDetailsIndex = "NameDictionary::kEntryDetailsIndex",
 
+        /// The table a scope of many context locals keeps their names in,
+        /// each name's value the Smi index of its local (`hash-table.h`).
+        NameToIndexHashTableType = "NAME_TO_INDEX_HASH_TABLE_TYPE",
+        NameToIndexPrefixSize = "NameToIndexShape::kPrefixSize",
+        NameToIndexEntrySize = "NameToIndexShape::kEntrySize",
+        NameToIndexEntryValueIndex = "NameToIndexShape::kEntryValueIndex",
+
+        /// A name's raw hash field: the bits of its type, the type of a
+        /// field that holds a hash, and where the hash begins above them
+        /// (`name.h`).
+        NameHashFieldTypeMask = "Name::HashFieldTypeBits::kMask",
+        NameHashFieldTypeHash = "Name::HashFieldType::kHash",
+        NameHashShift = "Name::HashBits::kShift",
+
         /// The bits of a `PropertyArray`'s `LengthAndHash` its length takes,
         /// the lowest.
         PropertyArrayLengthFieldSize = "PropertyArray::kLengthFieldSize",
@@ -864,6 +878,10 @@ entries! {
         /// The bit fields of [`Field::ScriptFlags`].
         ScriptCompilationTypeShift = "Script::CompilationTypeBit::kShift",
         ScriptCompilationTypeMask = "Script::CompilationTypeBit::kMask",
+
+        /// The compilation type of an `eval`'s script
+        /// (`Script::CompilationType`, `script.h`).
+        ScriptCompilationTypeEval = "Script::CompilationType::kEval",
         ScriptCompilationStateShift = "Script::CompilationStateBit::kShift",
         ScriptCompilationStateMask = "Script::CompilationStateBit::kMask",
         ScriptIsReplModeShift = "Script::IsReplModeBit::kShift",
@@ -927,6 +945,9 @@ entries! {
         OrderedHashSetType = "ORDERED_HASH_SET_TYPE",
         ErrorStackDataType = "ERROR_STACK_DATA_TYPE",
         CallSiteInfoType = "CALL_SITE_INFO_TYPE",
+
+        /// A `WeakMap`'s table, as Node's `overrideStackTrace` keeps one.
+        EphemeronHashTableType = "EPHEMERON_HASH_TABLE_TYPE",
         JSGlobalObjectType = "JS_GLOBAL_OBJECT_TYPE",
         JSGlobalProxyType = "JS_GLOBAL_PROXY_TYPE",
         JSApiObjectType = "JS_API_OBJECT_TYPE",
@@ -1325,6 +1346,19 @@ entries! {
         /// stack under (`InstallError` in `bootstrapper.cc`).
         ContextErrorFunctionIndex = "Context::ERROR_FUNCTION_INDEX",
 
+        /// What formatting an error's call sites compares with: a native
+        /// context's `Promise.all`, `Promise.allSettled`, and `Promise.any`,
+        /// which name an async frame by its promise's index; the `CallSite`
+        /// constructor, whose prototype's `toString` writes a call site;
+        /// and `%DataView%` and the initial `String.prototype`, whose
+        /// builtins `Builtins::NameForStackTrace` names.
+        ContextPromiseAllIndex = "Context::PROMISE_ALL_INDEX",
+        ContextPromiseAllSettledIndex = "Context::PROMISE_ALL_SETTLED_INDEX",
+        ContextPromiseAnyIndex = "Context::PROMISE_ANY_INDEX",
+        ContextCallSiteFunctionIndex = "Context::CALLSITE_FUNCTION_INDEX",
+        ContextDataViewFunctionIndex = "Context::DATA_VIEW_FUN_INDEX",
+        ContextInitialStringPrototypeIndex = "Context::INITIAL_STRING_PROTOTYPE_INDEX",
+
         /// Where a JavaScript frame keeps its argument count, from its
         /// frame pointer (`frame-constants.h`): with its receiver, which
         /// [`Constant::JSArgcReceiverSlots`] counts.
@@ -1399,6 +1433,12 @@ pub struct V8RuntimeRecord {
     /// not say, a string, or [`NONE`].
     pub blob_problem: U32,
     pub blob: [U64; 4],
+
+    /// The Node release that built the module: its major, minor, and
+    /// patch numbers; or why the module does not say, a string, or
+    /// [`NONE`].
+    pub node_problem: U32,
+    pub node: [U32; 3],
     pub offsets: [U32; Field::COUNT],
     pub constants: [I64; Constant::COUNT],
 }
@@ -1423,6 +1463,20 @@ pub struct V8Version {
     pub minor: u32,
     pub build: u32,
     pub patch: u32,
+}
+
+/// A Node release, as `napi_node_version` holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct NodeRelease {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+}
+
+impl std::fmt::Display for NodeRelease {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
 }
 
 impl std::fmt::Display for V8Version {
@@ -1542,6 +1596,10 @@ pub struct V8Runtime {
     /// Where the embedded blob's bounds are, or why the module's code does
     /// not say, which leaves the rest of the runtime readable.
     pub embedded_blob: Result<EmbeddedBlob, std::sync::Arc<str>>,
+
+    /// The Node release that built the module, or why its code does not
+    /// say, as for a V8 that Node did not build.
+    pub node: Result<NodeRelease, std::sync::Arc<str>>,
 }
 
 /// Why a runtime could not be encoded.
@@ -1585,6 +1643,13 @@ fn encode(strings: &mut StringsBuilder, runtime: &V8Runtime) -> Result<V8Runtime
         ),
         Err(error) => ([U64::new(0); 4], problem(error)?),
     };
+    let (node, node_problem) = match &runtime.node {
+        Ok(release) => (
+            [release.major, release.minor, release.patch].map(U32::new),
+            NONE,
+        ),
+        Err(error) => ([U32::new(0); 3], problem(error)?),
+    };
 
     Ok(V8RuntimeRecord {
         major: runtime.version.major.into(),
@@ -1601,6 +1666,8 @@ fn encode(strings: &mut StringsBuilder, runtime: &V8Runtime) -> Result<V8Runtime
         dispatch_offset: dispatch_offset.into(),
         blob_problem: blob_problem.into(),
         blob,
+        node_problem: node_problem.into(),
+        node,
         offsets: layout.offsets.map(U32::new),
         constants: layout.constants.map(I64::new),
     })
@@ -1638,6 +1705,15 @@ pub fn runtime(image: &Image) -> Option<V8Runtime> {
         }),
         id => Err(problem(id)),
     };
+    let [major, minor, patch] = record.node.map(U32::get);
+    let node = match record.node_problem.get() {
+        NONE => Ok(NodeRelease {
+            major,
+            minor,
+            patch,
+        }),
+        id => Err(problem(id)),
+    };
 
     Some(V8Runtime {
         version: V8Version {
@@ -1650,6 +1726,7 @@ pub fn runtime(image: &Image) -> Option<V8Runtime> {
         layout,
         dispatch_table,
         embedded_blob,
+        node,
     })
 }
 
@@ -1678,6 +1755,7 @@ pub(super) fn validate(image: &Image) -> Result<(), String> {
         record.problem.get(),
         record.dispatch_problem.get(),
         record.blob_problem.get(),
+        record.node_problem.get(),
     ] {
         if problem != NONE && !image.strings().contains(StrId(problem)) {
             return Err(format!("the V8 runtime's problem {problem} is no string"));
@@ -1702,6 +1780,10 @@ pub(super) fn validate(image: &Image) -> Result<(), String> {
 
     if record.blob_problem.get() != NONE && record.blob.iter().any(|at| at.get() != 0) {
         return Err("the V8 runtime places its embedded blob and says it cannot".to_owned());
+    }
+
+    if record.node_problem.get() != NONE && record.node.iter().any(|number| number.get() != 0) {
+        return Err("the V8 runtime gives a Node release and says it cannot".to_owned());
     }
 
     Ok(())

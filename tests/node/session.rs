@@ -189,6 +189,19 @@ impl NodeSession {
         self.running = Some(self.scenario.start_resuming().await);
     }
 
+    /// Lets the stopped fixture go on from the checkpoint it parks at: the
+    /// line it waits for is written, and it runs to its next checkpoint.
+    pub async fn proceed(&mut self) {
+        use std::io::Write;
+
+        self.input
+            .as_mut()
+            .expect("the fixture's input")
+            .write_all(b"\n")
+            .expect("write the fixture's input");
+        self.resume().await;
+    }
+
     /// The stop the fixture is held at, with every thread it lists.
     pub async fn stopped(&mut self) -> StateSnapshot {
         let snapshot = self.scenario.snapshot().await;

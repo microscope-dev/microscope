@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use super::format::{Ctx, Fault, Listed, to_js_string, truthy, unreadable, unsupported};
+use super::format::{Change, Ctx, Fault, Listed, to_js_string, truthy, unreadable, unsupported};
 use super::{ErrorDetails, Key, Kind, Object, Slot, Value};
 
 impl<'g> Ctx<'g> {
@@ -54,7 +54,7 @@ impl<'g> Ctx<'g> {
         };
 
         let mut hidden = vec!["cause", "errors"];
-        if self.major >= 26 {
+        if self.has(Change::SuppressedKeys) {
             hidden.extend(["error", "suppressed"]);
         }
         for wanted in hidden {

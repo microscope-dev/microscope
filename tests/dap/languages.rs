@@ -345,6 +345,28 @@ fn javascript_frames_show_their_recorded_source() {
     let parks = line_of(&source("node/stacks.js"), "truth.park({label})");
     assert_eq!(inner["line"], parks, "{inner}");
 
+    // A watch shows a value on one line; a hover shows it over the lines
+    // `console.log` writes it on.
+    let evaluate = |dap: &mut Dap, context: &str| {
+        let body = dap.request(
+            "evaluate",
+            json!({"expression": "betaInner", "frameId": inner["id"], "context": context}),
+        );
+        body["result"].as_str().expect("a result").to_owned()
+    };
+    let properties: Vec<String> = (1..=31).map(|i| format!("property{i}: {i}")).collect();
+    assert_eq!(
+        evaluate(&mut dap, "watch"),
+        format!("{{ [Function: betaInnermost] {} }}", properties.join(", "))
+    );
+    assert_eq!(
+        evaluate(&mut dap, "hover"),
+        format!(
+            "[Function: betaInnermost] {{\n  {}\n}}",
+            properties.join(",\n  ")
+        )
+    );
+
     let internal = frames
         .iter()
         .find(|frame| {

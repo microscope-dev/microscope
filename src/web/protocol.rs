@@ -2242,6 +2242,10 @@ pub struct Row {
     /// The value's summary, or why there is none.
     pub text: String,
 
+    /// The value's text over as many lines as its runtime writes it, where
+    /// the summary shows less.
+    pub detail: Option<String>,
+
     #[serde(rename = "type")]
     pub type_name: Option<String>,
 

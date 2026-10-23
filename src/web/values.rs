@@ -159,7 +159,9 @@ impl Reader<'_> {
         let mut memory = None;
         let mut memory_bytes = None;
         let mut drawings = Vec::new();
+        let mut detail = None;
         if let Some(details) = row.details {
+            detail = details.detail.as_deref().map(str::to_owned);
             editable = details.editable;
             drawings = details.drawings.iter().map(ToString::to_string).collect();
             memory = details.memory.map(|address| format!("{address:#x}"));
@@ -204,6 +206,7 @@ impl Reader<'_> {
         Ok(Row {
             name: row.name,
             text: row.text,
+            detail,
             type_name: row.type_name.map(|name| name.to_string()),
             path,
             children,
@@ -223,6 +226,7 @@ impl Reader<'_> {
                 Listed::Truncated(text) => Ok(Row {
                     name: "<truncated>".to_owned(),
                     text,
+                    detail: None,
                     type_name: None,
                     path: None,
                     children: None,
@@ -461,6 +465,7 @@ impl Reader<'_> {
                 Ok(Row {
                     name: text.to_owned(),
                     text: format!("[<{length} elements>]"),
+                    detail: None,
                     type_name: None,
                     path: None,
                     children: Some(protocol::Children {

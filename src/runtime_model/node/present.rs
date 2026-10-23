@@ -8,15 +8,25 @@
 
 use std::sync::Arc;
 
-use super::inspect::{self, Kind as Shape, Value};
+use super::inspect::{self, Kind as Shape, Layout, Value};
 use super::objects::{Object, Problem, Reader};
 use super::own::{self, Held};
 use super::values::Builder;
+use crate::image::v8::NodeRelease;
 use crate::runtime_model::{
     ArrayElement, InterpretedArray, InterpretedChild, InterpretedHandle, InterpretedKind,
     InterpretedNumber, InterpretedSlot, InterpretedValue,
 };
 use crate::{FloatValue, NumberKind, ScalarValue, VirtualAddress};
+
+/// The Node release whose `util.inspect` writes values, and, where the
+/// module does not say which release built it, why the text follows the
+/// first release of its V8's line instead.
+#[derive(Debug, Clone)]
+pub(super) struct Writer {
+    pub release: NodeRelease,
+    pub assumed: Option<Arc<str>>,
+}
 
 /// The low bits of a handle that names a double array's element.
 const DOUBLE_TAG: u64 = 0b10;
@@ -64,9 +74,13 @@ pub(super) fn address(reader: &Reader<'_>, handle: InterpretedHandle) -> Option<
     }
 }
 
-/// The value `handle` names, presented, as Node `major` writes it.
-pub(super) fn value(reader: &Reader<'_>, handle: InterpretedHandle, major: u32) -> InterpretedSlot {
-    match presented(reader, handle, major) {
+/// The value `handle` names, presented, as `writer` writes it.
+pub(super) fn value(
+    reader: &Reader<'_>,
+    handle: InterpretedHandle,
+    writer: &Writer,
+) -> InterpretedSlot {
+    match presented(reader, handle, writer) {
         Ok(Some(value)) => InterpretedSlot::Value(value),
         Ok(None) => InterpretedSlot::Unbound,
         Err(problem) => InterpretedSlot::Unreadable(problem),
@@ -78,12 +92,12 @@ pub(super) fn value(reader: &Reader<'_>, handle: InterpretedHandle, major: u32) 
 fn presented(
     reader: &Reader<'_>,
     handle: InterpretedHandle,
-    major: u32,
+    writer: &Writer,
 ) -> Result<Option<InterpretedValue>, Problem> {
     let word = match Handle::of(handle) {
         Handle::Double(address) => {
             let number = f64::from_bits(reader.word(address)?);
-            return Ok(Some(number_value(handle, Some(address), number, major)));
+            return Ok(Some(number_value(handle, Some(address), number, writer)));
         }
         Handle::Tagged(word) => word,
     };
@@ -92,11 +106,7 @@ fn presented(
     }
     let mut builder = Builder::new(*reader);
     let root = builder.value(word, 0);
-    let text = inspect::inspect(&builder.graph, &root, major);
-    let summary: Arc<str> = text.text.into();
-    let problem = text
-        .approximate
-        .then(|| Arc::from("the layout of this text may differ from Node's in its spacing"));
+    let (summary, detail, problem) = texts(&builder.graph, &root, writer);
     let at = address(reader, handle);
 
     let (type_name, kind, attributes) = match &root {
@@ -175,10 +185,53 @@ fn presented(
         kind,
         attributes,
         summary,
+        detail,
         problem,
         part: Arc::from([]),
         array,
     }))
+}
+
+/// The summary of `root`, its text where that shows more, and why the
+/// layout may differ from Node's.
+fn texts(
+    graph: &inspect::ValueGraph,
+    root: &Value,
+    writer: &Writer,
+) -> (Arc<str>, Option<Arc<str>>, Option<Arc<str>>) {
+    let text = inspect::inspect(graph, root, writer.release, Layout::Default);
+    let line = inspect::inspect(graph, root, writer.release, Layout::Line).text;
+    let summary: Arc<str> = summary_line(graph, root, &line, &text.text).into();
+    let detail = (*summary != text.text).then(|| text.text.into());
+    let problem = match (&writer.assumed, text.approximate) {
+        (Some(assumed), _) => Some(Arc::clone(assumed)),
+        (None, true) => Some(Arc::from(
+            "the layout of this text may differ from Node's in its spacing",
+        )),
+        (None, false) => None,
+    };
+    (summary, detail, problem)
+}
+
+/// The one line a summary shows of `line`, the value's text with every
+/// entry on one line: for an error, the first line of `text`, its stack,
+/// which names it and gives its message; otherwise `line` up to an error
+/// stack it holds, marked as cut.
+fn summary_line(graph: &inspect::ValueGraph, root: &Value, line: &str, text: &str) -> String {
+    let Some((first, _)) = line.split_once('\n') else {
+        return line.to_owned();
+    };
+    let error = match root {
+        Value::Object(id) => graph
+            .row(*id)
+            .is_some_and(|object| matches!(object.kind, Shape::Error(_))),
+        _ => false,
+    };
+    if error {
+        text.lines().next().unwrap_or_default().to_owned()
+    } else {
+        format!("{first} …")
+    }
 }
 
 /// A number's value as a double element holds it.
@@ -186,10 +239,16 @@ fn number_value(
     handle: InterpretedHandle,
     address: Option<u64>,
     number: f64,
-    major: u32,
+    writer: &Writer,
 ) -> InterpretedValue {
     let graph = inspect::ValueGraph::new();
-    let text = inspect::inspect(&graph, &Value::Number(number), major).text;
+    let text = inspect::inspect(
+        &graph,
+        &Value::Number(number),
+        writer.release,
+        Layout::Default,
+    )
+    .text;
     InterpretedValue {
         object: handle,
         address: address.map(VirtualAddress::new),
@@ -199,6 +258,7 @@ fn number_value(
         kind: InterpretedKind::Float(number),
         attributes: 0,
         summary: text.into(),
+        detail: None,
         problem: None,
         part: Arc::from([]),
         array: None,
@@ -276,17 +336,17 @@ pub(super) fn children(
     reader: &Reader<'_>,
     handle: InterpretedHandle,
     range: std::ops::Range<u64>,
-    major: u32,
+    writer: &Writer,
 ) -> Result<Vec<InterpretedChild>, Problem> {
     let Handle::Tagged(word) = Handle::of(handle) else {
         return Ok(Vec::new());
     };
     let object = reader.object(word)?.ok_or("a number has no children")?;
-    let InterpretedSlot::Value(value) = self::value(reader, handle, major) else {
+    let InterpretedSlot::Value(value) = self::value(reader, handle, writer) else {
         return Err("the value cannot be read".into());
     };
     let elements = value.elements();
-    let slot = |held: Held| -> InterpretedSlot { held_slot(reader, held, major) };
+    let slot = |held: Held| -> InterpretedSlot { held_slot(reader, held, writer) };
     let mut found = Vec::new();
 
     if range.start < elements {
@@ -296,7 +356,7 @@ pub(super) fn children(
             object,
             &value,
             range.start..end,
-            major,
+            writer,
         )?);
     }
     if range.end > elements {
@@ -325,7 +385,7 @@ fn element_children(
     object: Object,
     value: &InterpretedValue,
     range: std::ops::Range<u64>,
-    major: u32,
+    writer: &Writer,
 ) -> Result<Vec<InterpretedChild>, Problem> {
     use crate::image::v8::Constant;
     if let Some(array) = &value.array {
@@ -340,7 +400,7 @@ fn element_children(
                     at,
                     kind,
                     &array.element_name,
-                    major,
+                    writer,
                 )))
             })
             .collect();
@@ -353,11 +413,11 @@ fn element_children(
             .into_iter()
             .skip(usize::try_from(range.start).unwrap_or(usize::MAX))
             .map(|(key, entry)| {
-                let key = word_slot(reader, key, major);
+                let key = word_slot(reader, key, writer);
                 match entry {
                     Some(entry) => InterpretedChild::Entry {
                         key,
-                        value: word_slot(reader, entry, major),
+                        value: word_slot(reader, entry, writer),
                     },
                     None => InterpretedChild::Element(key),
                 }
@@ -379,7 +439,7 @@ fn element_children(
                     .iter()
                     .find(|element| element.index == index)
                     .map_or(InterpretedSlot::Unbound, |element| {
-                        held_slot(reader, element.held, major)
+                        held_slot(reader, element.held, writer)
                     }),
             )
         })
@@ -392,7 +452,7 @@ fn typed_number(
     at: u64,
     kind: NumberKind,
     name: &str,
-    major: u32,
+    writer: &Writer,
 ) -> InterpretedSlot {
     let size = usize::try_from(kind.size()).unwrap_or(8);
     let mut bytes = [0; 8];
@@ -421,12 +481,12 @@ fn typed_number(
             let float = f32::from_bits(bits as u32);
             (
                 ScalarValue::Floating(FloatValue::Binary32(float.to_bits())),
-                number_text(f64::from(float), major),
+                number_text(f64::from(float), writer),
             )
         }
         NumberKind::F64 => (
             ScalarValue::Floating(FloatValue::Binary64(bits)),
-            number_text(f64::from_bits(bits), major),
+            number_text(f64::from_bits(bits), writer),
         ),
     };
     InterpretedSlot::Number(InterpretedNumber {
@@ -440,23 +500,29 @@ fn typed_number(
 }
 
 /// A number as JavaScript writes it.
-fn number_text(number: f64, major: u32) -> String {
-    inspect::inspect(&inspect::ValueGraph::new(), &Value::Number(number), major).text
+fn number_text(number: f64, writer: &Writer) -> String {
+    inspect::inspect(
+        &inspect::ValueGraph::new(),
+        &Value::Number(number),
+        writer.release,
+        Layout::Default,
+    )
+    .text
 }
 
 /// What a property or element holding `held` presents.
-fn held_slot(reader: &Reader<'_>, held: Held, major: u32) -> InterpretedSlot {
+fn held_slot(reader: &Reader<'_>, held: Held, writer: &Writer) -> InterpretedSlot {
     match held {
-        Held::Data(word) => word_slot(reader, word, major),
-        Held::Double { address, .. } => value(reader, Handle::Double(address).handle(), major),
+        Held::Data(word) => word_slot(reader, word, writer),
+        Held::Double { address, .. } => value(reader, Handle::Double(address).handle(), writer),
         Held::Accessor(_) => InterpretedSlot::Unreadable(
             "the property is an accessor, which microscope does not call".into(),
         ),
     }
 }
 
-fn word_slot(reader: &Reader<'_>, word: u64, major: u32) -> InterpretedSlot {
-    value(reader, Handle::Tagged(word).handle(), major)
+fn word_slot(reader: &Reader<'_>, word: u64, writer: &Writer) -> InterpretedSlot {
+    value(reader, Handle::Tagged(word).handle(), writer)
 }
 
 /// A property's key as text: a string, or a symbol as `[Symbol(tag)]`.

@@ -258,6 +258,8 @@ fn the_schema_is_the_records_layout() {
             dispatch_offset,
             blob_problem,
             blob,
+            node_problem,
+            node,
             offsets,
             constants
         ]
@@ -622,7 +624,7 @@ fn the_schema_is_the_records_layout() {
     // layouts before reading tables; the container format is independent.
     assert_eq!(
         schema::layout_fingerprint(),
-        0xb031_89c1_0d09_9677,
+        0x57f8_a551_123e_04dc,
         "the layout changed:\n{}",
         schema::schema_text()
     );
@@ -3792,8 +3794,8 @@ fn validation_rejects_a_python_runtime_that_names_nothing() {
 #[test]
 fn a_v8_runtime_reads_back_with_its_layout_or_its_problem() {
     use super::v8::{
-        self, Constant, DYNAMIC_SYMBOLS, DispatchTable, EmbeddedBlob, Field, V8Layout, V8Runtime,
-        V8Version,
+        self, Constant, DYNAMIC_SYMBOLS, DispatchTable, EmbeddedBlob, Field, NodeRelease, V8Layout,
+        V8Runtime, V8Version,
     };
     use crate::ImageAddress;
 
@@ -3829,6 +3831,11 @@ fn a_v8_runtime_reads_back_with_its_layout_or_its_problem() {
             data: ImageAddress::new(0x20),
             data_size: ImageAddress::new(0x28),
         }),
+        node: Ok(NodeRelease {
+            major: 26,
+            minor: 12,
+            patch: 1,
+        }),
     };
     let read = sealed(Some(&runtime)).unwrap();
     assert_eq!(read, runtime);
@@ -3845,6 +3852,7 @@ fn a_v8_runtime_reads_back_with_its_layout_or_its_problem() {
         layout: Err("V8 12.3 has no layout in this build of microscope".into()),
         dispatch_table: Err("names no js_dispatch_table_address".into()),
         embedded_blob: Err("names no GetEmbeddedCodeRange".into()),
+        node: Err("names no napi_get_node_version".into()),
         ..runtime
     };
     assert_eq!(sealed(Some(&refused)), Some(refused));
@@ -3875,6 +3883,8 @@ fn validation_rejects_a_v8_runtime_that_names_nothing() {
         dispatch_offset: 0.into(),
         blob_problem: u32::MAX.into(),
         blob: [0.into(); 4],
+        node_problem: u32::MAX.into(),
+        node: [0.into(); 3],
         offsets: [u32::MAX.into(); super::v8::Field::COUNT],
         constants: [i64::MIN.into(); super::v8::Constant::COUNT],
     };
@@ -3928,6 +3938,21 @@ fn validation_rejects_a_v8_runtime_that_names_nothing() {
     let refused = builder.seal(Limits::default()).unwrap_err().to_string();
     assert!(
         refused.contains("places its embedded blob and says it cannot"),
+        "{refused}"
+    );
+
+    // A Node release given beside the reason it cannot be.
+    let mut strings = StringsBuilder::default();
+    let problem = strings.push("no napi_get_node_version").unwrap().0;
+    let mut both = record(u32::MAX);
+    both.node = [24.into(), 16.into(), 0.into()];
+    both.node_problem = problem.into();
+    let mut builder = Builder::new(TARGET);
+    builder.owned_table(vec![both]);
+    builder.bytes(TableKind::Strings, strings.into_bytes());
+    let refused = builder.seal(Limits::default()).unwrap_err().to_string();
+    assert!(
+        refused.contains("gives a Node release and says it cannot"),
         "{refused}"
     );
 }

@@ -442,6 +442,7 @@ impl Values<'_, '_> {
             kind,
             attributes,
             summary: text.into(),
+            detail: None,
             problem: summary.problem,
             part: Arc::from([]),
             array,

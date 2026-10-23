@@ -117,6 +117,7 @@ describe("inline values", () => {
     const row = (text: string): Row => ({
       name: "item",
       text,
+      detail: null,
       type: null,
       path: "item",
       children: null,

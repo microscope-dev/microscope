@@ -254,18 +254,7 @@ fn all_locals(reader: &Reader<'_>, context: Object) -> Result<Vec<Local>, Proble
         return Ok(Vec::new());
     }
     let start = scope.0 - reader.constant(Constant::HeapObjectTag)?.cast_unsigned();
-    let names = scope_info_slice(
-        reader.version,
-        ScopeInfoSlice::ContextLocalNames,
-        &mut |offset| reader.word(start + offset).ok(),
-    )?
-    .filter(|names| i64::try_from(names.length).is_ok_and(|length| length == count))
-    .ok_or_else(|| {
-        format!(
-            "the scope of {count} context locals keeps their names in a hash table, which \
-             microscope does not yet read"
-        )
-    })?;
+    let names = local_names(reader, scope, start, count)?;
 
     let flags = super::names::scope_flags(reader, scope)?;
     let extension = flags & reader.constant(Constant::ScopeHasContextExtensionSlotMask)? != 0;
@@ -278,9 +267,9 @@ fn all_locals(reader: &Reader<'_>, context: Object) -> Result<Vec<Local>, Proble
     let elements = reader.field_address(context, Field::ContextElements)?;
 
     let mut found = Vec::new();
-    for index in 0..names.length {
+    for (index, name) in names {
         let name = reader
-            .object(reader.word(start + names.offset + 8 * index)?)?
+            .object(name)?
             .ok_or("a context local's name is no string")?;
         let name = reader.string(name)?;
         if name.is_empty() || name.starts_with('.') {
@@ -289,4 +278,93 @@ fn all_locals(reader: &Reader<'_>, context: Object) -> Result<Vec<Local>, Proble
         found.push((name, reader.word(elements + 8 * (first + index))));
     }
     Ok(found)
+}
+
+/// The tagged name of each of the `count` context locals of `scope`,
+/// whose untagged start is `start`, with its index, in index order: from
+/// the scope's own slots, or, past V8's
+/// `kScopeInfoMaxInlinedLocalNamesSize`, from the `NameToIndexHashTable`
+/// it keeps instead, each name's value there being its index.
+fn local_names(
+    reader: &Reader<'_>,
+    scope: Object,
+    start: u64,
+    count: i64,
+) -> Result<Vec<(u64, u64)>, Problem> {
+    let mut read = |offset| reader.word(start + offset).ok();
+    if let Some(names) =
+        scope_info_slice(reader.version, ScopeInfoSlice::ContextLocalNames, &mut read)?
+            .filter(|names| i64::try_from(names.length).is_ok_and(|length| length == count))
+    {
+        return (0..names.length)
+            .map(|index| Ok((index, reader.word(start + names.offset + 8 * index)?)))
+            .collect();
+    }
+
+    let missing = || {
+        format!(
+            "the scope {:#x} of {count} context locals keeps no names",
+            scope.0
+        )
+    };
+    let table = scope_info_slice(
+        reader.version,
+        ScopeInfoSlice::ContextLocalNamesHashtable,
+        &mut read,
+    )?
+    .filter(|table| table.length == 1)
+    .ok_or_else(missing)?;
+    let table = reader
+        .object(reader.word(start + table.offset)?)?
+        .filter(|table| {
+            reader
+                .is(*table, Constant::NameToIndexHashTableType)
+                .unwrap_or(false)
+        })
+        .ok_or_else(missing)?;
+    let length = reader.smi_field(table, Field::FixedArrayBaseLength)?;
+    let objects = reader.field_address(table, Field::FixedArrayObjects)?;
+    let word = |index: i64| -> Result<u64, Problem> {
+        if !(0..length).contains(&index) {
+            return Err(format!("an entry past the hash table {:#x}", table.0).into());
+        }
+        reader.word(objects + 8 * index.cast_unsigned())
+    };
+    let capacity = reader
+        .smi(word(reader.constant(Constant::HashTableCapacityIndex)?)?)?
+        .filter(|capacity| (0..=MAX_SLOTS).contains(capacity))
+        .ok_or_else(|| format!("the hash table {:#x} has no capacity", table.0))?;
+    let first = reader.constant(Constant::HashTablePrefixStartIndex)?
+        + reader.constant(Constant::NameToIndexPrefixSize)?;
+    let size = reader.constant(Constant::NameToIndexEntrySize)?;
+    let key = reader.constant(Constant::HashTableEntryKeyIndex)?;
+    let value = reader.constant(Constant::NameToIndexEntryValueIndex)?;
+
+    let mut names = Vec::new();
+    for entry in 0..capacity {
+        let at = first + entry * size;
+        let name = word(at + key)?;
+        // An empty or deleted entry's key is an oddball, no name.
+        let Some(object) = reader.object(name)? else {
+            continue;
+        };
+        if reader.instance_type(object)? >= reader.constant(Constant::FirstNonstringType)? {
+            continue;
+        }
+        let index = reader
+            .smi(word(at + value)?)?
+            .filter(|index| (0..count).contains(index))
+            .ok_or_else(|| format!("a local of the hash table {:#x} has no index", table.0))?;
+        names.push((index.cast_unsigned(), name));
+    }
+    names.sort_unstable();
+    if i64::try_from(names.len()).ok() != Some(count) {
+        return Err(format!(
+            "the hash table {:#x} names {} of {count} context locals",
+            table.0,
+            names.len()
+        )
+        .into());
+    }
+    Ok(names)
 }

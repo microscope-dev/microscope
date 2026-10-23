@@ -918,6 +918,21 @@ impl Session {
             self.invalidate_values().await;
         }
 
+        // A hover, the clipboard, and the console show a value whole, over
+        // the lines its runtime writes it on, as a watch's one line cannot.
+        let whole = match (&evaluation, arguments.context.as_deref()) {
+            (microscope::Evaluation::Value { value, .. }, Some("hover" | "clipboard" | "repl")) => {
+                match &value.state {
+                    microscope::VariableState::Available {
+                        presentation: Some(presentation),
+                        ..
+                    } => presentation.detail.clone(),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+
         let mut body = match evaluation {
             microscope::Evaluation::Value { value, .. } => self.present(
                 Item {
@@ -954,6 +969,7 @@ impl Session {
         body.remove("name");
         body.remove("evaluateName");
         let value = body.remove("value").unwrap_or_default();
+        let value = whole.map_or(value, |whole| whole.to_string().into());
         body.insert("result".to_owned(), value);
 
         Ok(Value::Object(body))

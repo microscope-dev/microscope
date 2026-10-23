@@ -37,7 +37,7 @@ use super::{
     TaskContext, TaskPage, TaskRef, TaskStarter, ThreadActivity, ThreadHolding, Unbound,
 };
 use crate::ThreadLocal;
-use crate::image::v8::{DispatchTable, EmbeddedBlob, V8Layout, V8Version};
+use crate::image::v8::{DispatchTable, EmbeddedBlob, NodeRelease, V8Layout, V8Version};
 use crate::inspection::InspectionBudget;
 use crate::runtime_model::{
     InterpretedChild, InterpretedFailure, InterpretedHandle, InterpretedLocal, InterpretedName,
@@ -67,8 +67,42 @@ pub fn detect(
         reading,
         builtins: builtins(image.as_ref()),
         blob: runtime.embedded_blob.ok(),
+        writer: writer(runtime.version, runtime.node),
         statics,
     })))
+}
+
+/// Who writes the module's values: the Node release that built it, or,
+/// where it does not say, the first release of its V8's line: V8 12 is
+/// Node 22's, 13 Node 24's, and 14 Node 26's.
+fn writer(version: V8Version, node: Result<NodeRelease, Arc<str>>) -> present::Writer {
+    node.map_or_else(
+        |reason| {
+            let major = match version.major {
+                ..=12 => 22,
+                13 => 24,
+                _ => 26,
+            };
+            present::Writer {
+                release: NodeRelease {
+                    major,
+                    minor: 0,
+                    patch: 0,
+                },
+                assumed: Some(
+                    format!(
+                        "the module does not say which Node release built it ({reason}), so \
+                         this text is as Node {major}.0.0 writes it"
+                    )
+                    .into(),
+                ),
+            }
+        },
+        |release| present::Writer {
+            release,
+            assumed: None,
+        },
+    )
 }
 
 /// What reading V8's compiled code needs of the module that carries it.
@@ -117,6 +151,9 @@ struct NodeRuntime {
     /// Where the process keeps the bounds of the embedded builtins, which
     /// bound them where no symbol does.
     blob: Option<EmbeddedBlob>,
+
+    /// The release whose `util.inspect` writes its values.
+    writer: present::Writer,
     statics: Statics,
 }
 
@@ -152,16 +189,6 @@ impl NodeRuntime {
             blocks: Some(stop.memory().unwrap_or(&read_now)),
         };
         read(&reader)
-    }
-
-    /// The Node major version whose `util.inspect` values are written as:
-    /// V8 12 is Node 22's, 13 Node 24's, and 14 Node 26's.
-    const fn node_major(&self) -> u32 {
-        match self.version.major {
-            ..=12 => 22,
-            13 => 24,
-            _ => 26,
-        }
     }
 
     /// As [`Self::reading`], for an expression, whose failure is the value
@@ -389,7 +416,7 @@ impl RuntimeModel for NodeRuntime {
         frame: VirtualAddress,
         budget: &mut InspectionBudget,
     ) -> Result<Vec<InterpretedLocal>, Arc<str>> {
-        let major = self.node_major();
+        let writer = &self.writer;
         self.reading(stop, budget, |reader| {
             Ok(variables::variables(reader, frame.get())?
                 .into_iter()
@@ -401,7 +428,7 @@ impl RuntimeModel for NodeRuntime {
                     ),
                     slot: match variable.word {
                         Ok(word) => {
-                            present::value(reader, present::Handle::Tagged(word).handle(), major)
+                            present::value(reader, present::Handle::Tagged(word).handle(), writer)
                         }
                         Err(problem) => InterpretedSlot::Unreadable(problem),
                     },
@@ -417,9 +444,9 @@ impl RuntimeModel for NodeRuntime {
         range: std::ops::Range<u64>,
         budget: &mut InspectionBudget,
     ) -> Result<Vec<InterpretedChild>, Arc<str>> {
-        let major = self.node_major();
+        let writer = &self.writer;
         self.reading(stop, budget, |reader| {
-            present::children(reader, object, range, major)
+            present::children(reader, object, range, writer)
         })
     }
 
@@ -479,9 +506,9 @@ impl RuntimeModel for NodeRuntime {
         object: InterpretedHandle,
         budget: &mut InspectionBudget,
     ) -> Result<InterpretedOperand, InterpretedFailure> {
-        let major = self.node_major();
+        let writer = &self.writer;
         self.expression(stop, budget, |reader| {
-            access::operand(reader, object, major)
+            access::operand(reader, object, writer)
         })
     }
 
@@ -537,9 +564,9 @@ impl RuntimeModel for NodeRuntime {
         object: InterpretedHandle,
         budget: &mut InspectionBudget,
     ) -> InterpretedSlot {
-        let major = self.node_major();
+        let writer = &self.writer;
         self.reading(stop, budget, |reader| {
-            Ok(present::value(reader, object, major))
+            Ok(present::value(reader, object, writer))
         })
         .unwrap_or_else(InterpretedSlot::Unreadable)
     }

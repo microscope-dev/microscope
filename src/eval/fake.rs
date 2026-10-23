@@ -2140,6 +2140,7 @@ impl World {
             shape: crate::PresentedShape::Value,
             count: None,
             summary: self.repr(index).into(),
+            detail: None,
             children: ValueChildren::NotApplicable,
             problem: None,
             number: None,

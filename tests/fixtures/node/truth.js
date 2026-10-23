@@ -216,7 +216,9 @@ function describe(role, name, above, locals) {
       site.getColumnNumber() ?? '-', tierAt(sites.length - 1 - depth, fn)]));
   });
   for (const [local, value] of Object.entries(locals ?? {})) {
-    lines.push(line(['value', id, 0, local, util.inspect(value, {customInspect: false})]));
+    lines.push(line(['value', id, 0, local, util.inspect(value, {customInspect: false}),
+      util.inspect(value, {customInspect: false, compact: true, breakLength: Infinity}),
+      util.types.isNativeError(value) ? 'error' : '-']));
   }
   recorded.clear();
   return {id, text: lines.join('')};

@@ -582,6 +582,7 @@ fn formatted<M: Machine>(
             shape: PresentedShape::Formatted,
             count: None,
             summary: summary.into(),
+            detail: None,
             children: children.clone(),
             problem: None,
             number: None,

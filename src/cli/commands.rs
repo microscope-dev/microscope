@@ -2060,8 +2060,13 @@ impl Cli {
         };
 
         Ok(value::Layout {
-            pretty: !has('l')
-                && (has('p') || command == Command::Pp || print.style == PrintStyle::Pretty),
+            lines: if has('l') {
+                value::Lines::One
+            } else if has('p') || command == Command::Pp || print.style == PrintStyle::Pretty {
+                value::Lines::Pretty
+            } else {
+                value::Lines::Runtime
+            },
             width,
             indent: usize::from(print.indent),
             hexadecimal: !has('d') && (has('x') || print.radix == Radix::Hexadecimal),
@@ -2083,7 +2088,7 @@ impl Cli {
             return Ok("no variables in scope".to_owned());
         }
 
-        if !layout.pretty {
+        if layout.lines != value::Lines::Pretty {
             return Ok(value::variables(&snapshot, renderer));
         }
 

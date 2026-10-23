@@ -450,8 +450,8 @@ const fn is_leaf(value: &VariableValue) -> bool {
 /// How `print` lays a value out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Layout {
-    /// Whether groups that do not fit the width break across lines.
-    pub pretty: bool,
+    /// How the value breaks across lines.
+    pub lines: Lines,
 
     /// The columns a pretty value fits in.
     pub width: usize,
@@ -470,6 +470,18 @@ pub struct Layout {
 
     /// The most children shown per aggregate.
     pub max_elements: u64,
+}
+
+/// How a printed value breaks across lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lines {
+    /// `/l`: on one line, which a value its runtime writes over several
+    /// keeps to as its summary.
+    One,
+    /// On the lines the value's runtime writes it on, and else one.
+    Runtime,
+    /// With groups that do not fit the width broken across lines.
+    Pretty,
 }
 
 /// A value laid out as text, and groups of items in brackets that a
@@ -780,7 +792,14 @@ pub async fn expanded(
                     .as_deref()
                     .filter(|_| layout.hexadecimal)
                     .and_then(|number| hexadecimal_text(number.type_info.as_ref()?, &number.state));
-                output.text(number.unwrap_or_else(|| presentation.summary.to_string()));
+                // The value itself shows whole, over the lines its runtime
+                // writes it on; what it holds shows as one line each.
+                let text = if depth == 0 && layout.lines != Lines::One {
+                    presentation.text()
+                } else {
+                    &presentation.summary
+                };
+                output.text(number.unwrap_or_else(|| text.to_string()));
                 continue;
             };
 
@@ -895,7 +914,7 @@ pub async fn expanded(
 
     let docs = output.finish();
     let mut text = BoundedOutput::new(OUTPUT_LIMIT);
-    if layout.pretty {
+    if layout.lines == Lines::Pretty {
         let prefix = format!("({}) {name} = ", type_info.name);
         let mut column = prefix.chars().count();
         pretty(&docs, layout, 0, 0, &mut column, &mut text);

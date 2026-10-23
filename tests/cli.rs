@@ -6453,3 +6453,28 @@ fn a_program_that_executes_another_is_followed_into_it() {
         ],
     );
 }
+
+/// `print` shows a JavaScript value as `console.log` writes it, over as
+/// many lines as that takes, and `print/l` keeps it to one line.
+#[test]
+fn print_shows_a_javascript_value_as_node_writes_it() {
+    let stdout = batch(
+        &["--core", "build/test-programs/node-stacks-26.core"],
+        &["frame 7", "print betaInner", "print/l betaInner"],
+    );
+    let properties: Vec<String> = (1..=31).map(|i| format!("property{i}: {i}")).collect();
+    assert_in_order(
+        &stdout,
+        &[
+            "in tally at tests/fixtures/node/stacks.js",
+            &format!(
+                "(Function) betaInner = [Function: betaInnermost] {{\n  {}\n}}\n",
+                properties.join(",\n  ")
+            ),
+            &format!(
+                "(Function) betaInner = {{ [Function: betaInnermost] {} }}\n",
+                properties.join(", ")
+            ),
+        ],
+    );
+}

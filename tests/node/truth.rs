@@ -29,8 +29,20 @@ pub struct Thread {
     pub printer: bool,
     pub frames: Vec<Frame>,
 
-    /// Each value the fixture named, and its canonical text.
-    pub values: Vec<(String, String)>,
+    pub values: Vec<Named>,
+}
+
+/// A value the fixture named.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Named {
+    pub name: String,
+    /// `util.inspect`'s text with the default options.
+    pub text: String,
+    /// The text with every entry on one line (`compact: true,
+    /// breakLength: Infinity`).
+    pub line: String,
+    /// Whether the value is an error V8 made.
+    pub error: bool,
 }
 
 fn optional(field: &str) -> Option<String> {
@@ -75,7 +87,12 @@ pub fn threads(lines: &[Vec<String>]) -> Vec<Thread> {
             Some("value") => {
                 let thread = threads.last_mut().expect("a value of a reported thread");
                 assert_eq!(thread.native, number::<u64>(&fields[1]), "{fields:?}");
-                thread.values.push((fields[3].clone(), fields[4].clone()));
+                thread.values.push(Named {
+                    name: fields[3].clone(),
+                    text: fields[4].clone(),
+                    line: fields[5].clone(),
+                    error: fields[6] == "error",
+                });
             }
             _ => {}
         }

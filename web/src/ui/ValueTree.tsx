@@ -296,7 +296,7 @@ function ValueText({
   const className = `value-text ${missing === "failed" ? "error" : (missing ?? "")} ${changed ? "changed" : ""}`;
   if (!editable) {
     return (
-      <span className={className} title={changed ? `was ${was}` : row.text}>
+      <span className={className} title={changed ? `was ${was}` : (row.detail ?? row.text)}>
         {row.text}
         {changed && <span className="was"> was {was}</span>}
       </span>
@@ -306,7 +306,7 @@ function ValueText({
     <button
       type="button"
       className={`${className} editable`}
-      title={`${changed ? `was ${was}; ` : ""}double-click to change`}
+      title={`${row.detail ? `${row.detail}\n\n` : ""}${changed ? `was ${was}; ` : ""}double-click to change`}
       onDoubleClick={() => setEditing(true)}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === "F2") {
@@ -391,6 +391,7 @@ export function messageRow(name: string, text: string): Row {
   return {
     name,
     text,
+    detail: null,
     type: null,
     path: null,
     children: null,

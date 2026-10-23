@@ -147,7 +147,7 @@ fn scope_word(
 /// The name V8 inferred for an anonymous function: kept by its scope,
 /// `scope` with its flags, once it is compiled, or else by its uncompiled
 /// data.
-fn inferred_name(
+pub(super) fn inferred_name(
     reader: &Reader<'_>,
     shared: Object,
     scope: Option<(Object, i64)>,

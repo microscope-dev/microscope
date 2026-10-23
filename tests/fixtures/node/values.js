@@ -394,9 +394,21 @@ function tieredErrors() {
   };
 }
 
+// Each error but topLevel keeps only the frames its own case makes, so that
+// inspecting them all fits in one evaluation's reads.
 async function unreadErrors(topLevel) {
   const widget = new Widget();
   widget.describe = describeWidget;
+  const limit = Error.stackTraceLimit;
+  Error.stackTraceLimit = 4;
+  try {
+    return await errorsOfEachCase(topLevel, widget);
+  } finally {
+    Error.stackTraceLimit = limit;
+  }
+}
+
+async function errorsOfEachCase(topLevel, widget) {
   return {
     topLevel,
     method: widget.describe(),

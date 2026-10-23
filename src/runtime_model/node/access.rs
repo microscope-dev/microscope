@@ -6,7 +6,7 @@
 use super::lookup::{self, Key};
 use super::objects::{Object, Problem, Reader};
 use super::own;
-use super::present::Handle;
+use super::present::{Handle, Writer};
 use super::variables::{self, Variable};
 use crate::image::v8::{Constant, Field};
 use crate::runtime_model::{
@@ -263,10 +263,10 @@ pub(super) fn length(reader: &Reader<'_>, handle: InterpretedHandle) -> Result<u
 pub(super) fn operand(
     reader: &Reader<'_>,
     handle: InterpretedHandle,
-    major: u32,
+    writer: &Writer,
 ) -> Result<InterpretedOperand, Problem> {
     let crate::runtime_model::InterpretedSlot::Value(value) =
-        super::present::value(reader, handle, major)
+        super::present::value(reader, handle, writer)
     else {
         return Err("the value cannot be read".into());
     };

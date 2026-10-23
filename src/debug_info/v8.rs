@@ -369,6 +369,7 @@ pub(super) fn runtime(object: &object::File<'_>) -> Option<V8Runtime> {
         runtime.dispatch_table = accessors::dispatch_table(object, runtime.version);
         runtime.embedded_blob = accessors::embedded_blob(object);
     }
+    runtime.node = accessors::node_release(object);
     Some(runtime)
 }
 
@@ -394,6 +395,7 @@ fn describe(exports: &Exports) -> Option<V8Runtime> {
             layout: Err(UNKNOWN_VERSION.into()),
             dispatch_table: Err(UNKNOWN_VERSION.into()),
             embedded_blob: Err(UNKNOWN_VERSION.into()),
+            node: Err(UNKNOWN_VERSION.into()),
         });
     };
 
@@ -409,7 +411,8 @@ fn describe(exports: &Exports) -> Option<V8Runtime> {
         flags,
         layout: bind(version, &exports.values, exports.sandbox),
         dispatch_table: Err(unread.clone()),
-        embedded_blob: Err(unread),
+        embedded_blob: Err(unread.clone()),
+        node: Err(unread),
     })
 }
 

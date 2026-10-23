@@ -42,11 +42,12 @@ fn check_stacks(context: &str, reported: &[Thread]) {
         assert_eq!(thread.printer, name == "main", "{context}");
         assert_eq!(functions_in(thread, "stacks.js"), functions, "{context}");
         assert_eq!(thread.frames[0].function, functions[0], "{context}");
-        assert_eq!(
-            thread.values,
-            [(value.to_owned(), text.to_owned())],
-            "{context}"
-        );
+        let values: Vec<(&str, &str)> = thread
+            .values
+            .iter()
+            .map(|value| (value.name.as_str(), value.text.as_str()))
+            .collect();
+        assert_eq!(values, [(value, text)], "{context}");
     }
 }
 

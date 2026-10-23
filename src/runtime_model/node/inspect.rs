@@ -6,8 +6,9 @@
 //!
 //! The reader of a stopped process builds a [`ValueGraph`] from V8's heap;
 //! [`inspect`] is a port of Node's `lib/internal/util/inspect.js` over it.
-//! The port follows Node 26's file and takes the Node major version for the
-//! few places where 22 and 24 write something else.
+//! The port follows Node 26's file and takes the Node release for the few
+//! places where 22, 24, or an earlier release of a line write something
+//! else.
 //!
 //! # What the reader provides
 //!
@@ -42,6 +43,7 @@ mod text;
 mod tests;
 
 use crate::VirtualAddress;
+pub use crate::image::v8::NodeRelease;
 
 crate::model::id_type!(ObjectId, "An object's row in one [`ValueGraph`].");
 
@@ -420,8 +422,19 @@ pub struct Inspected {
     pub approximate: bool,
 }
 
-/// `util.inspect(value, { customInspect: false })` as Node `major` writes it.
+/// The options besides `customInspect: false` that inspect runs with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layout {
+    /// The defaults, as `console.log` writes a value.
+    Default,
+    /// `compact: true` and `breakLength: Infinity`: every entry on one line.
+    /// Only an error's stack still breaks the text.
+    Line,
+}
+
+/// `util.inspect(value, { customInspect: false })`, with `layout`'s
+/// options, as Node release `node` writes it.
 #[must_use]
-pub fn inspect(graph: &ValueGraph, value: &Value, major: u32) -> Inspected {
-    format::inspect(graph, value, major)
+pub fn inspect(graph: &ValueGraph, value: &Value, node: NodeRelease, layout: Layout) -> Inspected {
+    format::inspect(graph, value, node, layout)
 }

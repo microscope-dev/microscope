@@ -457,6 +457,7 @@ impl Values<'_, '_> {
                     kind: row.kind(),
                     attributes: 0,
                     summary: text.into(),
+                    detail: None,
                     problem: summary.problem,
                     part: part.iter().copied().chain([index]).collect(),
                     array: row.interpreted(),

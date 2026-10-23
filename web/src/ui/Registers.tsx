@@ -16,6 +16,7 @@ function row(register: Register, innermost: boolean): Row {
   return {
     name: register.name,
     text: register.value ?? "not saved",
+    detail: null,
     type: register.role,
     path: `$${register.name}`,
     children: null,

@@ -707,6 +707,7 @@ impl Origin {
             )
             .then_some(PresentedCount::Exact(value.elements())),
             summary: Arc::clone(&value.summary),
+            detail: value.detail.clone(),
             children,
             problem: value.problem.clone().map(|problem| {
                 ViewProblem::Unavailable(VariableUnavailableReason::Interpreted(problem))
@@ -791,6 +792,7 @@ impl Origin {
             shape: PresentedShape::Formatted,
             count: None,
             summary: Arc::clone(&number.summary),
+            detail: None,
             children: ValueChildren::NotApplicable,
             problem: None,
             number: None,

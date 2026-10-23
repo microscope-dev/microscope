@@ -3126,6 +3126,10 @@ pub struct Presentation {
     /// A bounded one-line rendering, in one style for every language.
     pub summary: Arc<str>,
 
+    /// The value written over as many lines as its runtime writes it, as
+    /// Node's `console.log` does, where that is not the summary.
+    pub detail: Option<Arc<str>>,
+
     /// The elements, the view's fields, and a `[raw]` child.
     pub children: ValueChildren,
 
@@ -3150,6 +3154,12 @@ pub struct Presentation {
 pub const RUST_TUPLES: &str = "Rust tuples";
 
 impl Presentation {
+    /// The value's full text: the detail, else the summary.
+    #[must_use]
+    pub fn text(&self) -> &Arc<str> {
+        self.detail.as_ref().unwrap_or(&self.summary)
+    }
+
     /// Whether this is the debugger's own presentation of a Rust tuple,
     /// which shows its positional fields.
     #[must_use]
