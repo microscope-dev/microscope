@@ -21,6 +21,8 @@ mod elf;
 pub mod gdb_jit;
 #[cfg(target_os = "linux")]
 pub mod gopclntab;
+#[allow(dead_code, reason = "until frames and breakpoints read source maps")]
+pub mod js_source_map;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub mod perf_map;
 mod roles;
@@ -49,6 +51,11 @@ pub fn fuzz_dispatch(data: &[u8]) {
 #[cfg(feature = "fuzzing")]
 pub fn fuzz_gopclntab(data: &[u8]) {
     gopclntab::fuzz(data);
+}
+
+#[cfg(feature = "fuzzing")]
+pub fn fuzz_js_source_map(data: &[u8]) {
+    js_source_map::fuzz(data);
 }
 
 use std::path::Path;

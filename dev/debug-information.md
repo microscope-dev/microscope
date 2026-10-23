@@ -25,6 +25,7 @@ layouts, and ABI rules stay behind this boundary.
 | `src/cache.rs` | Persistent image cache and cache-key construction |
 | `src/unwind/` | Generic caller iteration and sampled-stack unwinding |
 | `src/source_map.rs` | Source path resolution and remapping |
+| `src/debug_info/js_source_map.rs`, `src/debug_info/js_source_map/` | Source Map v3 (ECMA-426): decoding, generated-to-original lookups and back, and finding a script's map; tested against Node's own decoder |
 | `src/image/tests.rs`, `src/cache/tests.rs`, `tests/debugger/debug_files.rs` | Image, cache, and external debug-file coverage |
 
 ## Images and bindings

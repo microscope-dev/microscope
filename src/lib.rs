@@ -359,6 +359,14 @@ pub fn fuzz_gopclntab(data: &[u8]) {
     debug_info::fuzz_gopclntab(data);
 }
 
+/// Exercises source map decoding and lookups on hostile bytes for the fuzz
+/// harness.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub fn fuzz_js_source_map(data: &[u8]) {
+    debug_info::fuzz_js_source_map(data);
+}
+
 /// Exercises disassembly boundary and decoding invariants for the fuzz
 /// harness.
 #[cfg(feature = "fuzzing")]

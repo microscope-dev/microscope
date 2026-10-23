@@ -143,3 +143,10 @@ path = "fuzz_targets/glibc_tls.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "js-source-map"
+path = "fuzz_targets/js_source_map.rs"
+test = false
+doc = false
+bench = false

@@ -1,0 +1,1 @@
+{"version":3,"sections":[{"offset":{"line":0,"column":0},"map":{"version":3,"sources":["one.ts"],"names":["u"],"mappings":"AAAA,EAAE;AACA"}},{"offset":{"line":1,"column":10},"map":{"version":3,"sources":["two.ts","one.ts"],"names":["x"],"mappings":"AAAAA,EAAE;CAAC,CCAA"}}]}
