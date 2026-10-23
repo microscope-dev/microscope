@@ -1,6 +1,6 @@
 //! Expressions over JavaScript values: names bound as JavaScript binds them
-//! (the frame's variables, then the script contexts' top-level bindings,
-//! then the global object's properties), and members, elements, lengths,
+//! (the frame's variables, which end with every script's top-level
+//! bindings, then the global object's properties), and members, elements, lengths,
 //! and operands, with no getter or proxy trap called.
 
 use super::lookup::{self, Key};
@@ -38,9 +38,6 @@ pub(super) fn bind(reader: &Reader<'_>, fp: u64, name: &str) -> Result<Option<Bo
         .object(context)?
         .ok_or("the frame's context is no object")?;
     let native = native_context(reader, context)?;
-    if let Some(word) = script_binding(reader, native, name)? {
-        return Ok(Some(Bound::Value(Handle::Tagged(word).handle())));
-    }
     let global = reader
         .object(slot(reader, native, Constant::ContextExtensionIndex)?)?
         .filter(|global| {
@@ -92,9 +89,10 @@ pub(super) fn slot(reader: &Reader<'_>, context: Object, index: Constant) -> Res
     reader.word(reader.field_address(context, Field::ContextElements)? + 8 * index)
 }
 
-/// The top-level `let`, `const`, or `class` binding `name` of any script,
-/// from the native context's script context table.
-fn script_binding(reader: &Reader<'_>, native: Object, name: &str) -> Result<Option<u64>, Problem> {
+/// The script context of each script the realm whose native context is
+/// `native` has run, from its script context table, in the order it ran
+/// them.
+pub(super) fn script_contexts(reader: &Reader<'_>, native: Object) -> Result<Vec<Object>, Problem> {
     let table = reader
         .object(slot(
             reader,
@@ -112,21 +110,13 @@ fn script_binding(reader: &Reader<'_>, native: Object, name: &str) -> Result<Opt
         return Err(format!("the script context table holds {length} contexts").into());
     }
     let first = reader.field_address(table, Field::ScriptContextTableObjects)?;
-    for index in 0..length.cast_unsigned() {
-        let context = reader
-            .object(reader.word(first + 8 * index)?)?
-            .ok_or("a script context is no object")?;
-        for (own, word) in variables::locals(reader, context)? {
-            if own == name {
-                let word = word?;
-                if own::is_hole(reader, word)? {
-                    return Err(format!("{name} is not yet initialized").into());
-                }
-                return Ok(Some(word));
-            }
-        }
-    }
-    Ok(None)
+    (0..length.cast_unsigned())
+        .map(|index| {
+            reader
+                .object(reader.word(first + 8 * index)?)?
+                .ok_or_else(|| "a script context is no object".into())
+        })
+        .collect()
 }
 
 /// The object a handle names, refusing a number, which has no members.

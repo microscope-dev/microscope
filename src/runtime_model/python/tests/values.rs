@@ -1111,7 +1111,7 @@ fn a_frame_shows_its_parameters_values_cells_and_unbound_locals_but_not_hidden_o
         .map(|local| {
             (
                 local.name.to_string(),
-                local.parameter,
+                local.kind == crate::VariableKind::Parameter,
                 describe(&local.slot),
             )
         })

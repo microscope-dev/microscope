@@ -1598,8 +1598,13 @@ impl InterpretedStacks {
 pub struct InterpretedLocal {
     pub name: Arc<str>,
 
-    /// Whether the code's caller passes it, as a parameter.
-    pub parameter: bool,
+    /// Which of the frame's scopes it is in: a parameter, a local, a
+    /// captured variable, a module's binding, the global object, or a value
+    /// no name binds.
+    pub kind: crate::VariableKind,
+
+    /// For an unnamed value, why it has no name.
+    pub unnamed: Option<Arc<str>>,
     pub slot: InterpretedSlot,
 }
 

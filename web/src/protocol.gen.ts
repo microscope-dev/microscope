@@ -535,9 +535,13 @@ export type Scope = { key: ScopeKey, name: string, rows: Array<Row>,
 /**
  * Why the scope's rows could not be read, when they could not.
  */
-problem: string | null, };
+problem: string | null, 
+/**
+ * What the scope's rows lack and why, such as names.
+ */
+note: string | null, };
 
-export type ScopeKey = "args" | "locals" | "statics";
+export type ScopeKey = "args" | "locals" | "closure" | "module" | "global" | "unnamed" | "statics";
 
 export type Row = { name: string, 
 /**

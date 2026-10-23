@@ -27,14 +27,38 @@ pub(super) enum Kind {
     Receiver,
     /// The argument at this position.
     Argument(u32),
-    /// A variable of a context, by its name: a function's, a block's, or a
-    /// catch clause's that a closure captures.
-    Closure,
-    /// A top-level `let`, `const`, or `class` of a script.
-    Script,
+    /// A variable of a context the frame's function made, by its name: its
+    /// function's, a block's, or a catch clause's, that a closure captures.
+    Local,
+    /// A variable of a context around the function, which its closure
+    /// captured where it was made.
+    Captured,
+    /// A top-level binding of a module, or a top-level `let`, `const`, or
+    /// `class` of any script.
+    Module,
     /// An interpreter register, by number.
     Register(u32),
+    /// `globalThis`, the realm's global proxy.
+    Global,
 }
+
+impl Kind {
+    /// The kind the debugger shows the variable as.
+    pub(super) const fn shown(&self) -> crate::VariableKind {
+        match self {
+            Self::Receiver | Self::Argument(_) => crate::VariableKind::Parameter,
+            Self::Local => crate::VariableKind::Local,
+            Self::Captured => crate::VariableKind::Captured,
+            Self::Module => crate::VariableKind::Module,
+            Self::Register(_) => crate::VariableKind::Unnamed,
+            Self::Global => crate::VariableKind::Global,
+        }
+    }
+}
+
+/// Why an interpreter register has no name.
+pub(super) const UNNAMED: &str = "V8 names only the locals a closure captures; the \
+    rest are interpreter registers, which only the function's source names";
 
 /// One variable of a frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,7 +124,8 @@ pub(super) fn variables(reader: &Reader<'_>, fp: u64) -> Result<Vec<Variable>, P
     }
 
     let mut seen = BTreeSet::new();
-    found.extend(context_variables(reader, context, &mut seen)?);
+    let closure = reader.field(function, Field::JSFunctionContext)?;
+    found.extend(context_variables(reader, context, closure, &mut seen)?);
 
     if let Some(count) = registers(reader, fp, function)? {
         let file = at(Constant::UnoptimizedFrameRegisterFileFromFp)?;
@@ -112,6 +137,24 @@ pub(super) fn variables(reader: &Reader<'_>, fp: u64) -> Result<Vec<Variable>, P
             });
         }
     }
+
+    let native = super::access::native_context(reader, context)?;
+    for context in super::access::script_contexts(reader, native)? {
+        for (name, word) in locals(reader, context)? {
+            if seen.insert(name.clone()) {
+                found.push(Variable {
+                    name,
+                    kind: Kind::Module,
+                    word,
+                });
+            }
+        }
+    }
+    found.push(Variable {
+        name: "globalThis".to_owned(),
+        kind: Kind::Global,
+        word: super::access::slot(reader, native, Constant::ContextGlobalProxyIndex),
+    });
     Ok(found)
 }
 
@@ -143,14 +186,19 @@ fn registers(reader: &Reader<'_>, fp: u64, function: Object) -> Result<Option<u3
 }
 
 /// The variables of `context` and the contexts around it, up to the
-/// native context, each name shown once, as the innermost scope binds it.
+/// native context, each name shown once, as the innermost scope binds it:
+/// the frame's own up to `closure`, the context its function was made in,
+/// and captured from there out.
 fn context_variables(
     reader: &Reader<'_>,
     mut context: Object,
+    closure: u64,
     seen: &mut BTreeSet<String>,
 ) -> Result<Vec<Variable>, Problem> {
     let mut found = Vec::new();
+    let mut own = true;
     for _ in 0..MAX_CONTEXTS {
+        own &= context.0 != closure;
         let ty = reader.instance_type(context)?;
         if ty == reader.constant(Constant::NativeContextType)? {
             return Ok(found);
@@ -160,10 +208,14 @@ fn context_variables(
         if !(first..=last).contains(&ty) {
             return Err(format!("{:#x}, of instance type {ty}, is no context", context.0).into());
         }
-        let kind = if ty == reader.constant(Constant::ScriptContextType)? {
-            Kind::Script
+        let kind = if ty == reader.constant(Constant::ScriptContextType)?
+            || ty == reader.constant(Constant::ModuleContextType)?
+        {
+            Kind::Module
+        } else if own {
+            Kind::Local
         } else {
-            Kind::Closure
+            Kind::Captured
         };
         for (name, word) in locals(reader, context)? {
             if seen.insert(name.clone()) {

@@ -62,6 +62,7 @@ export function Variables() {
                 {open && (
                   <ul className="value-list">
                     {scope.problem && <li className="empty error">{scope.problem}</li>}
+                    {scope.note && <li className="empty">{scope.note}</li>}
                     {scope.rows.length === 0 && !scope.problem && <li className="empty">none</li>}
                     <RowList rows={scope.rows} parent={scope.key} depth={0} />
                   </ul>

@@ -253,10 +253,24 @@ impl Reader<'_> {
         let mut scopes = Vec::new();
         match self.handle.at(context).variables().await {
             Ok(snapshot) => {
-                for (key, name, kind) in [
-                    (ScopeKey::Args, "Arguments", VariableKind::Parameter),
-                    (ScopeKey::Locals, "Locals", VariableKind::Local),
-                ] {
+                for (kind, name) in present::SCOPES {
+                    let key = match kind {
+                        VariableKind::Parameter => ScopeKey::Args,
+                        VariableKind::Captured => ScopeKey::Closure,
+                        VariableKind::Module => ScopeKey::Module,
+                        VariableKind::Global => ScopeKey::Global,
+                        VariableKind::Unnamed => ScopeKey::Unnamed,
+                        _ => ScopeKey::Locals,
+                    };
+                    // Arguments and locals show even when there are none.
+                    if !matches!(key, ScopeKey::Args | ScopeKey::Locals)
+                        && !snapshot
+                            .variables
+                            .iter()
+                            .any(|variable| present::in_scope(kind, variable.kind))
+                    {
+                        continue;
+                    }
                     let mut listed = self
                         .presenter()
                         .scope(context, &snapshot, kind, module, Window::ALL)
@@ -272,6 +286,7 @@ impl Reader<'_> {
                         name: name.to_owned(),
                         rows: self.rows(context, listed)?,
                         problem: None,
+                        note: present::unnamed_reason(&snapshot, kind).map(str::to_owned),
                     });
                 }
             }
@@ -281,6 +296,7 @@ impl Reader<'_> {
                 name: "Locals".to_owned(),
                 rows: Vec::new(),
                 problem: Some(error.to_string()),
+                note: None,
             }),
         }
 
@@ -306,6 +322,7 @@ impl Reader<'_> {
                 name: "Statics".to_owned(),
                 rows,
                 problem,
+                note: None,
             });
         }
 

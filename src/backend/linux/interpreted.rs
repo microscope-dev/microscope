@@ -34,9 +34,9 @@ use crate::{
     NumberKind, Presentation, PresentedCount, PresentedShape, RecordedFrame, Result, RuntimeId,
     ScalarValue, SourceLanguage, StackFrame, StackFrameId, StackSegment, StopId, TypeInfo,
     TypeKind, UnwindTermination, ValueChild, ValueChildPage, ValueChildQuery,
-    ValueChildRelationship, ValueChildren, ValueChildrenReference, Variable, VariableKind,
-    VariableQuery, VariableState, VariableUnavailableReason, VariableValue, VariableValueSource,
-    ViewName, ViewProblem, VirtualAddress,
+    ValueChildRelationship, ValueChildren, ValueChildrenReference, Variable, VariableQuery,
+    VariableState, VariableUnavailableReason, VariableValue, VariableValueSource, ViewName,
+    ViewProblem, VirtualAddress,
 };
 
 /// An interpreted frame of a trace, and the runtime that interprets it.
@@ -473,11 +473,8 @@ impl<P: InspectionOps> Controller<P> {
 
             let (type_info, state) = machine.interpreted_state(&bound, local.slot)?;
             variables.push(Variable {
-                kind: if local.parameter {
-                    VariableKind::Parameter
-                } else {
-                    VariableKind::Local
-                },
+                kind: local.kind,
+                unnamed: local.unnamed,
                 global: None,
                 name: local.name,
                 declaration: None,

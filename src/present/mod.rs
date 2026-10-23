@@ -770,6 +770,28 @@ const fn counts(
 /// Whether a scope of variables of one kind lists a variable: the
 /// arguments scope lists results too, as part of the signature, and the
 /// locals scope what a finished function returned.
+/// A frame's scopes, in the order clients show them, each by the kind of
+/// variable it holds and its name. Arguments and locals are every frame's;
+/// the rest are a runtime's, as JavaScript's, and show only when a frame
+/// has variables of them.
+pub const SCOPES: [(VariableKind, &str); 6] = [
+    (VariableKind::Parameter, "Arguments"),
+    (VariableKind::Local, "Locals"),
+    (VariableKind::Captured, "Closure"),
+    (VariableKind::Module, "Module"),
+    (VariableKind::Global, "Global"),
+    (VariableKind::Unnamed, "Unnamed locals"),
+];
+
+/// Why the frame's variables of `kind` have no names, when they say.
+pub fn unnamed_reason(snapshot: &VariableSnapshot, kind: VariableKind) -> Option<&str> {
+    snapshot
+        .variables
+        .iter()
+        .filter(|variable| in_scope(kind, variable.kind))
+        .find_map(|variable| variable.unnamed.as_deref())
+}
+
 pub fn in_scope(scope: VariableKind, kind: VariableKind) -> bool {
     kind == scope
         || (scope == VariableKind::Parameter && kind == VariableKind::Result)

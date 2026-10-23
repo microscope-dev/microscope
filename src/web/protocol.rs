@@ -2221,6 +2221,9 @@ pub struct Scope {
 
     /// Why the scope's rows could not be read, when they could not.
     pub problem: Option<String>,
+
+    /// What the scope's rows lack and why, such as names.
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -2229,6 +2232,10 @@ pub struct Scope {
 pub enum ScopeKey {
     Args,
     Locals,
+    Closure,
+    Module,
+    Global,
+    Unnamed,
     Statics,
 }
 

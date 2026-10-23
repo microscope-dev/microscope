@@ -172,19 +172,32 @@ pub fn variables_marked(
     changed: &mut dyn FnMut(&str, &str) -> bool,
 ) -> String {
     let mut output = BoundedOutput::new(OUTPUT_LIMIT);
+    let mut reason: Option<&str> = None;
     let mut lines = snapshot
         .variables
         .iter()
-        .map(|variable| {
+        .flat_map(|variable| {
+            // Say once, before the first of them, why values have no names.
+            let note = variable
+                .unnamed
+                .as_deref()
+                .filter(|unnamed| reason != Some(*unnamed))
+                .map(|unnamed| {
+                    reason = Some(unnamed);
+                    renderer
+                        .paint(Role::Metadata, format!("(unnamed: {unnamed})"))
+                        .to_string()
+                });
             let line = variable_summary(variable, renderer);
             let available = matches!(variable.state, VariableState::Available { .. });
-            if !available || !changed(&variable.name, &super::terminal::plain(&line)) {
+            let line = if !available || !changed(&variable.name, &super::terminal::plain(&line)) {
                 line
             } else if renderer.is_colored() {
                 variable_summary(variable, renderer.changed())
             } else {
                 format!("{line}*")
-            }
+            };
+            note.into_iter().chain(std::iter::once(line))
         })
         .chain(snapshot.completion.exhaustion().map(exhaustion));
     if let Some(first) = lines.next() {

@@ -98,6 +98,7 @@ impl<'r> Builder<'r> {
 
     /// The row of the object `object`, read at `level`.
     fn object(&mut self, object: Object, level: u32) -> Result<ObjectId, Problem> {
+        let object = global_object(&self.reader, object)?;
         let full = level <= FULL_LEVEL;
         if let Some(&(row, read)) = self.rows.get(&object.0)
             && (read || !full)
@@ -219,6 +220,7 @@ impl<'r> Builder<'r> {
         } else if is(Constant::JSErrorType) {
             Kind::Error(super::errors::details(self, object, next)?)
         } else if is(Constant::JSObjectType)
+            || is(Constant::JSGlobalObjectType)
             || is(Constant::JSObjectPrototypeType)
             || is(Constant::JSApiObjectType)
             || is(Constant::JSSpecialApiObjectType)
@@ -805,4 +807,23 @@ pub(super) fn is_private(reader: &Reader<'_>, symbol: Object) -> Result<bool, Pr
 pub(super) fn is_well_known(reader: &Reader<'_>, symbol: Object) -> Result<bool, Problem> {
     let flags = symbol_flags(reader, symbol)?;
     Ok(flags & reader.constant(Constant::SymbolIsWellKnownSymbolMask)? != 0)
+}
+
+/// The object JavaScript sees as `object`: for a global proxy,
+/// `globalThis`, the global object behind it, its map's prototype, whose
+/// properties every access through the proxy reads, as V8's
+/// `LookupIterator` does; any other object itself.
+fn global_object(reader: &Reader<'_>, object: Object) -> Result<Object, Problem> {
+    if !reader.is(object, Constant::JSGlobalProxyType)? {
+        return Ok(object);
+    }
+    let map = reader.map(object)?;
+    reader
+        .object(reader.field(map, Field::MapPrototype)?)?
+        .filter(|global| {
+            reader
+                .is(*global, Constant::JSGlobalObjectType)
+                .unwrap_or(false)
+        })
+        .ok_or_else(|| "a global proxy detached from its global object".into())
 }

@@ -1673,6 +1673,7 @@ mod tests {
             declaration: None,
             type_info: None,
             unresolved_shape: None,
+            unnamed: None,
             state: VariableState::Unavailable(crate::UnsupportedVariableFeature::Tls.into()),
         };
 

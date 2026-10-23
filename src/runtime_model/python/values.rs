@@ -333,7 +333,12 @@ impl Values<'_, '_> {
 
             variables.push(InterpretedLocal {
                 name: Arc::clone(table.name(local.name)),
-                parameter: index < parameters,
+                kind: if index < parameters {
+                    crate::VariableKind::Parameter
+                } else {
+                    crate::VariableKind::Local
+                },
+                unnamed: None,
                 slot,
             });
         }

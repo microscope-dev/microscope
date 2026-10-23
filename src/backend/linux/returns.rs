@@ -221,6 +221,7 @@ impl<P: InspectionOps> Controller<P> {
                 declaration: None,
                 type_info,
                 unresolved_shape: value.unresolved_shape.clone(),
+                unnamed: None,
                 state,
             });
         }

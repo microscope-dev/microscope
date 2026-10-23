@@ -1221,7 +1221,10 @@ fn walk_unit<'data>(
                 let object_name = match kind {
                     VariableKind::Parameter => "parameter",
                     VariableKind::Result | VariableKind::Returned => "result",
-                    VariableKind::Local => "variable",
+                    VariableKind::Local
+                    | VariableKind::Captured
+                    | VariableKind::Module
+                    | VariableKind::Unnamed => "variable",
                     VariableKind::Global => "global",
                 };
 

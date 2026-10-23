@@ -569,32 +569,32 @@ impl Session {
                         .count()
                 };
 
-                let parameters = count(VariableKind::Parameter);
-                if parameters != 0 {
-                    let reference = self.references.variables(Variables::Scope {
-                        context,
-                        kind: VariableKind::Parameter,
-                    })?;
-                    scopes.push(json!({
-                        "name": "Arguments",
-                        "presentationHint": "arguments",
+                // Locals show even when there are none; another scope only
+                // when it has variables.
+                for (kind, name) in present::SCOPES {
+                    let variables = count(kind);
+                    if variables == 0 && kind != VariableKind::Local {
+                        continue;
+                    }
+                    let reference = self
+                        .references
+                        .variables(Variables::Scope { context, kind })?;
+                    let mut scope = json!({
+                        "name": name,
                         "variablesReference": reference,
-                        "namedVariables": parameters,
+                        "namedVariables": variables,
                         "expensive": false,
-                    }));
+                    });
+                    let hint = match kind {
+                        VariableKind::Parameter => Some("arguments"),
+                        VariableKind::Local => Some("locals"),
+                        _ => None,
+                    };
+                    if let Some(hint) = hint {
+                        scope["presentationHint"] = hint.into();
+                    }
+                    scopes.push(scope);
                 }
-
-                let reference = self.references.variables(Variables::Scope {
-                    context,
-                    kind: VariableKind::Local,
-                })?;
-                scopes.push(json!({
-                    "name": "Locals",
-                    "presentationHint": "locals",
-                    "variablesReference": reference,
-                    "namedVariables": count(VariableKind::Local),
-                    "expensive": false,
-                }));
             }
             Err(error) => scopes.push(json!({
                 "name": format!("No variables: {}", error.format),

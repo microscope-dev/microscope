@@ -570,6 +570,7 @@ impl<P: InspectionOps> Controller<P> {
                 declaration: variable.member.declaration.clone(),
                 type_info: inspected.type_info,
                 unresolved_shape: None,
+                unnamed: None,
                 state: inspected.state,
             });
         }

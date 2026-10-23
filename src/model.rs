@@ -3276,12 +3276,25 @@ pub enum VariableKind {
     /// A local variable declared within the selected function.
     Local,
 
-    /// A data object with static storage described by a module image.
+    /// A data object with static storage described by a module image, or
+    /// a runtime's global object, as JavaScript's `globalThis`.
     Global,
 
     /// A value the function a step out finished returned, shown in the
     /// frame it returned to at the stop that step made.
     Returned,
+
+    /// A variable of a function around the selected one that its closure
+    /// captured, as JavaScript keeps in an outer function's context.
+    Captured,
+
+    /// A top-level binding of the module or script the selected function
+    /// belongs to, as a JavaScript module's or script's `let` and `const`.
+    Module,
+
+    /// A value the frame keeps that no name binds, as a JavaScript
+    /// interpreter register, with [`Variable::unnamed`] saying why.
+    Unnamed,
 }
 
 /// The source visibility of a global data object.
@@ -3416,6 +3429,9 @@ pub struct Variable {
 
     /// Its current availability and value.
     pub state: VariableState,
+
+    /// For [`VariableKind::Unnamed`], why it has no name.
+    pub unnamed: Option<Arc<str>>,
 }
 
 /// Why the type argument a generic value has could not be found, so the

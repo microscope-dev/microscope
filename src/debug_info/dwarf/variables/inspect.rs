@@ -3437,6 +3437,7 @@ pub(super) fn data_object(
         declaration: variable.declaration(),
         type_info,
         unresolved_shape: None,
+        unnamed: None,
         state,
     }
 }

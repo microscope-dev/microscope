@@ -668,15 +668,21 @@ const fn variable_kind(kind: VariableKind) -> u8 {
         VariableKind::Local => 2,
         VariableKind::Global => 3,
         VariableKind::Returned => 4,
+        VariableKind::Captured => 5,
+        VariableKind::Module => 6,
+        VariableKind::Unnamed => 7,
     }
 }
 
-const VARIABLE_KINDS: [VariableKind; 5] = [
+const VARIABLE_KINDS: [VariableKind; 8] = [
     VariableKind::Parameter,
     VariableKind::Result,
     VariableKind::Local,
     VariableKind::Global,
     VariableKind::Returned,
+    VariableKind::Captured,
+    VariableKind::Module,
+    VariableKind::Unnamed,
 ];
 
 /// Adds the data objects, their functions, and their indexes to

@@ -423,10 +423,9 @@ impl RuntimeModel for NodeRuntime {
                 .into_iter()
                 .map(|variable| InterpretedLocal {
                     name: variable.name.into(),
-                    parameter: matches!(
-                        variable.kind,
-                        variables::Kind::Receiver | variables::Kind::Argument(_)
-                    ),
+                    kind: variable.kind.shown(),
+                    unnamed: matches!(variable.kind, variables::Kind::Register(_))
+                        .then(|| variables::UNNAMED.into()),
                     slot: match variable.word {
                         Ok(word) => {
                             present::value(reader, present::Handle::Tagged(word).handle(), writer)

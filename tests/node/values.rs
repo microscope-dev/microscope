@@ -1,7 +1,7 @@
 //! JavaScript values as microscope presents them, held to the text
 //! `util.inspect` gave the same values at the same checkpoint.
 
-use microscope::{Evaluation, Expression, SourceLanguage, ThreadId, VariableState};
+use microscope::{Evaluation, Expression, SourceLanguage, ThreadId, VariableKind, VariableState};
 
 use crate::session::{MATRIX, NodeSession};
 use crate::truth::{Named, threads};
@@ -129,6 +129,93 @@ async fn gallery_values_are_the_text_node_gave_them() {
         for value in printer.values.iter().filter(|value| value.name == "unread") {
             let context = format!("{}, formatted from its call sites", session.context());
             lies.extend(lies_about(&context, value, &unformatted));
+        }
+        session.shutdown().await;
+    }
+    assert!(lies.is_empty(), "{} lies:\n{}", lies.len(), lies.join("\n"));
+}
+
+/// The kind of each variable of the selected frame named in `names`, in
+/// the order asked, `None` for one the frame does not list.
+async fn kinds(session: &NodeSession, names: &[&str]) -> Vec<Option<VariableKind>> {
+    let snapshot = session
+        .scenario
+        .operation("variables", session.scenario.handle().variables())
+        .await;
+    names
+        .iter()
+        .map(|name| {
+            snapshot
+                .variables
+                .iter()
+                .find(|variable| &*variable.name == *name)
+                .map(|variable| variable.kind)
+        })
+        .collect()
+}
+
+/// On every build, a JavaScript frame's variables are in the scopes
+/// JavaScript gives them: its receiver and arguments; what its own
+/// contexts keep; what its closure captured from the functions around it;
+/// a module's bindings; `globalThis`; and the interpreter's registers,
+/// which say why they have no names.
+#[tokio::test]
+async fn frame_variables_are_in_the_scopes_javascript_gives_them() {
+    use VariableKind::{Captured, Global, Local, Module, Parameter, Unnamed};
+    let mut lies = Vec::new();
+    for entry in MATRIX {
+        let mut session = NodeSession::launch(entry, "values.js", &[], &[]).await;
+        let reported = threads(&session.stop_at("gallery").await);
+        let printer = reported.iter().find(|t| t.printer).expect("the printer");
+        select_function(&session, printer.native, "gallery").await;
+        // `values` is gallery's own, which its arrow captures; `truth` is
+        // the CommonJS wrapper's, around it.
+        let names = [
+            "this",
+            "arguments[0]",
+            "values",
+            "truth",
+            "globalThis",
+            "r0",
+        ];
+        let expected = [Parameter, Parameter, Local, Captured, Global, Unnamed].map(Some);
+        let seen = kinds(&session, &names).await;
+        if seen != expected {
+            lies.push(format!(
+                "{}: gallery's {names:?} are {seen:?}",
+                session.context()
+            ));
+        }
+        let snapshot = session
+            .scenario
+            .operation("variables", session.scenario.handle().variables())
+            .await;
+        let unnamed = snapshot
+            .variables
+            .iter()
+            .filter(|variable| variable.kind == Unnamed)
+            .all(|variable| variable.unnamed.is_some());
+        if !unnamed {
+            lies.push(format!(
+                "{}: a register does not say why it has no name",
+                session.context()
+            ));
+        }
+        session.proceed().await;
+        session.stop_at("unread").await;
+        session.shutdown().await;
+
+        let mut session = NodeSession::launch(entry, "modules é/entry.mjs", &[], &[]).await;
+        let reported = threads(&session.stop_at("modules").await);
+        let printer = reported.iter().find(|t| t.printer).expect("the printer");
+        select_function(&session, printer.native, "settle").await;
+        let names = ["entries", "label"];
+        let seen = kinds(&session, &names).await;
+        if seen != [Some(Local), Some(Module)] {
+            lies.push(format!(
+                "{}: settle's {names:?} are {seen:?}",
+                session.context()
+            ));
         }
         session.shutdown().await;
     }
