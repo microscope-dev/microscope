@@ -4783,6 +4783,11 @@ pub enum UnwindTermination {
     /// Inferior memory required by an unwind rule could not be read.
     MemoryReadFailed { address: VirtualAddress },
 
+    /// The core dump holds none of the thread's stack where its stack
+    /// pointer is: its producer saved the memory but never wrote it, so it
+    /// reads as zeros the thread never held.
+    StackNotSaved { address: VirtualAddress },
+
     /// The reconstructed caller did not make valid progress.
     InvalidCaller { description: Arc<str> },
 
@@ -4823,6 +4828,10 @@ impl fmt::Display for UnwindTermination {
             Self::MemoryReadFailed { address } => {
                 write!(formatter, "unwind memory is unreadable at {address}")
             }
+            Self::StackNotSaved { address } => write!(
+                formatter,
+                "the core dump did not save the thread's stack at {address}, so its callers are missing"
+            ),
             Self::InvalidCaller { description } => {
                 write!(formatter, "invalid unwind caller: {description}")
             }

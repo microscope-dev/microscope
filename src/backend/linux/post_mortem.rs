@@ -157,6 +157,10 @@ impl InspectionOps for CoreTarget {
             })
     }
 
+    fn memory_written(&self, address: u64) -> bool {
+        self.memory.core().written(address)
+    }
+
     fn read_block(&self, _pid: Pid, address: u64, size: usize) -> Option<Vec<u8>> {
         let mut bytes = vec![0; size];
         self.memory

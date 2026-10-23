@@ -109,6 +109,36 @@ impl CoreBytes {
     }
 }
 
+/// The holes of `file`, `len` bytes long, by offset: none where the file
+/// system cannot say.
+fn holes(file: &File, len: u64) -> Vec<Range<u64>> {
+    use std::os::fd::AsFd as _;
+
+    use nix::unistd::{Whence, lseek};
+
+    let seek = |offset: u64, whence| {
+        let offset = i64::try_from(offset).ok()?;
+        lseek(file.as_fd(), offset, whence)
+            .ok()
+            .and_then(|found| u64::try_from(found).ok())
+    };
+    let mut holes = Vec::new();
+    let mut offset = 0;
+    while offset < len {
+        let Some(hole) = seek(offset, Whence::SeekHole).filter(|hole| *hole < len) else {
+            break;
+        };
+        // No data past a hole means it runs to the end.
+        let data = seek(hole, Whence::SeekData).unwrap_or(len).min(len);
+        if data <= hole {
+            break;
+        }
+        holes.push(hole..data);
+        offset = data;
+    }
+    holes
+}
+
 /// Process-wide identity recorded by `NT_PRPSINFO`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct CoreProcess {
@@ -177,6 +207,10 @@ pub(super) struct CoreDump {
     pub(super) auxv: Vec<(u64, u64)>,
     pub(super) files: Vec<CoreFileMapping>,
     segments: Vec<CoreSegment>,
+
+    /// The ranges of the core file, by offset and in order, that its
+    /// producer never wrote, where the file system says so.
+    holes: Vec<Range<u64>>,
 }
 
 struct Metadata {
@@ -193,7 +227,12 @@ impl CoreDump {
         let len = file.metadata()?.len();
         let cache = ReadCache::new(file);
         let metadata = parse(&cache, len)?;
-        Ok(Self::new(CoreBytes::File(cache.into_inner()), metadata))
+        let file = cache.into_inner();
+        let holes = holes(&file, len);
+        Ok(Self {
+            holes,
+            ..Self::new(CoreBytes::File(file), metadata)
+        })
     }
 
     #[cfg(any(test, feature = "fuzzing"))]
@@ -210,7 +249,23 @@ impl CoreDump {
             auxv: metadata.auxv,
             files: metadata.files,
             segments: metadata.segments,
+            holes: Vec::new(),
         }
+    }
+
+    /// Whether the dump holds the byte at `address` as its producer read
+    /// it: one the producer saved and wrote. gcore leaves a hole in the
+    /// file for the memory it failed to read, which reads back as zeros,
+    /// as glibc's guard regions inside a thread's stack make it fail for
+    /// the rest of the stack (F9 in plans/node.html).
+    ///
+    /// A byte the dump did not save at all is unreadable instead, which
+    /// already says the memory is missing.
+    pub(super) fn written(&self, address: u64) -> bool {
+        self.saved_run(address).is_none_or(|(offset, _)| {
+            let hole = self.holes.partition_point(|hole| hole.end <= offset);
+            self.holes.get(hole).is_none_or(|hole| offset < hole.start)
+        })
     }
 
     pub(super) fn auxv_value(&self, key: u64) -> Option<u64> {

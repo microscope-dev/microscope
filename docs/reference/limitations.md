@@ -52,6 +52,8 @@ narrower limits and report them when used.
   breakpoints in JavaScript.
 - An attach does not take in the processes the program started before it.
 - Core dumps are read-only.
+- A core dump that left out a thread's stack, as `gcore` can, shows that
+  thread's backtrace as stopped where the stack is missing.
 
 ## System calls
 

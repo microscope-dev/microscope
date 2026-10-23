@@ -975,6 +975,87 @@ async fn unsaved_and_truncated_memory_stays_unavailable_rather_than_guessed() {
     }
 }
 
+/// A stack the dump's producer saved but never wrote is missing, not
+/// empty. gcore does this to a thread whose stack holds one of glibc's
+/// guard regions, which it cannot read: it writes nothing more of the
+/// mapping and leaves a hole in the core file, which reads as zeros. Those
+/// zeros would end the walk at the first frame as if it had no caller.
+#[tokio::test]
+async fn a_stack_the_dump_never_wrote_is_missing_rather_than_empty() {
+    use std::io::{Seek as _, SeekFrom, Write as _};
+    use std::os::fd::AsFd as _;
+
+    let reference = open_core("crash-gcc-o0-segv.core");
+    let stack = register_u64(
+        &reference
+            .operation("registers", reference.handle().registers())
+            .await,
+        RegisterRole::StackPointer,
+    );
+    let (intact, _) = named_frames(&reference).await;
+    assert!(intact.frames.len() > 1, "{intact:?}");
+    reference.shutdown().await;
+
+    // The stack's segment, written with a hole over every whole block of
+    // it, as gcore leaves one.
+    let bytes = fs::read(core("crash-gcc-o0-segv.core")).expect("read fixture");
+    let header = elf::FileHeader64::<Endianness>::parse(bytes.as_slice()).expect("core header");
+    let endian = header.endian().expect("core endianness");
+    let segment = header
+        .program_headers(endian, bytes.as_slice())
+        .expect("program headers")
+        .iter()
+        .find(|program| {
+            program.p_type(endian) == elf::PT_LOAD
+                && (program.p_vaddr(endian)..program.p_vaddr(endian) + program.p_memsz(endian))
+                    .contains(&stack)
+        })
+        .expect("a load segment holds the stack");
+    let start = segment.p_offset(endian).next_multiple_of(4096);
+    let end = (segment.p_offset(endian) + segment.p_filesz(endian)) / 4096 * 4096;
+    let at_stack = segment.p_offset(endian) + (stack - segment.p_vaddr(endian));
+    assert!((start..end).contains(&at_stack), "{start:#x}..{end:#x}");
+
+    let directory = ScratchDir::new("post-mortem-unwritten-stack");
+    let path = directory.path().join("unwritten.core");
+    let mut file = fs::File::create(&path).expect("create the core");
+    let (start, end) = (
+        usize::try_from(start).unwrap(),
+        usize::try_from(end).unwrap(),
+    );
+    file.write_all(&bytes[..start]).expect("write the core");
+    file.seek(SeekFrom::Start(end as u64))
+        .expect("seek past the hole");
+    file.write_all(&bytes[end..]).expect("write the core");
+    drop(file);
+    let file = fs::File::open(&path).expect("open the core");
+    let hole = nix::unistd::lseek(
+        file.as_fd(),
+        i64::try_from(at_stack).unwrap(),
+        nix::unistd::Whence::SeekHole,
+    )
+    .expect("the file system says where holes are");
+    assert_eq!(
+        u64::try_from(hole).unwrap(),
+        at_stack,
+        "the scratch file system keeps no hole at the stack"
+    );
+
+    let scenario = Scenario::open_core("unwritten stack", &CoreDumpOptions::new(path));
+    let (trace, _) = named_frames(&scenario).await;
+    assert_eq!(trace.frames.len(), 1, "{trace:?}");
+    assert_eq!(
+        trace.termination,
+        UnwindTermination::StackNotSaved {
+            address: VirtualAddress::new(stack)
+        }
+    );
+
+    // Memory outside the hole is as the program held it.
+    assert_eq!(signed(&variable(&scenario, "crash_counter").await), 8);
+    scenario.shutdown().await;
+}
+
 /// Reads `length` bytes and returns them only when the read completed.
 async fn complete_read(
     scenario: &Scenario,

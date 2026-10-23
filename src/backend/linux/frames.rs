@@ -1822,6 +1822,17 @@ impl DwarfCallerProvider<'_> {
 
 impl CallerProvider for DwarfCallerProvider<'_> {
     fn caller(&mut self, current: &FrameContext) -> CallerResult {
+        // A stopped thread's stack pointer is on a page it has used, which
+        // a core's producer writes unless it failed to read it.
+        if self.first
+            && let Some(stack) = self.registers.get(crate::unwind::RSP)
+            && !self.memory.ptrace.memory_written(stack)
+        {
+            return CallerResult::Finished(UnwindTermination::StackNotSaved {
+                address: VirtualAddress::new(stack),
+            });
+        }
+
         let Some(lookup) = self.lookup_address(current) else {
             return CallerResult::Finished(UnwindTermination::Complete);
         };

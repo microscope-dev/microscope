@@ -551,7 +551,8 @@ const fn truncation(termination: &UnwindTermination) -> Option<Truncation> {
         UnwindTermination::UnsupportedUnwindInfo { .. }
         | UnwindTermination::CorruptUnwindInfo { .. }
         | UnwindTermination::RegisterUnavailable { .. }
-        | UnwindTermination::MemoryReadFailed { .. } => Truncation::Unreadable,
+        | UnwindTermination::MemoryReadFailed { .. }
+        | UnwindTermination::StackNotSaved { .. } => Truncation::Unreadable,
     })
 }
 

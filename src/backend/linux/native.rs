@@ -119,6 +119,12 @@ pub(super) trait InspectionOps {
 
     fn registers(&self, pid: Pid) -> Result<libc::user_regs_struct>;
 
+    /// Whether the byte at `address` is the one the process held, rather
+    /// than one a core dump's producer saved but never wrote.
+    fn memory_written(&self, _address: u64) -> bool {
+        true
+    }
+
     fn floating_registers(&self, _pid: Pid) -> Result<Fxsave> {
         Err(backend_error(LinuxError::UnsupportedFloatingRegisters))
     }

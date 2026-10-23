@@ -322,6 +322,13 @@ stack ends as well as missing memory, missing registers, unsupported rules,
 cycles, and bounds. Keep the frames already established when the next one
 cannot be proven.
 
+A core dump can leave out a thread's stack while still listing it as saved.
+`gcore`, and a kernel that skips pages it cannot read, write such a range as
+a hole in a sparse file, which reads back as zeros, and a walk over zeros ends
+at once and looks complete. `CoreDump::open` records the file's holes with
+`SEEK_HOLE`/`SEEK_DATA`. A stack pointer whose byte lies in one ends the walk
+with `StackNotSaved`, so the missing callers show as missing.
+
 Frame-pointer fallback is a named policy with target rules. It is not a silent
 replacement for arbitrary failed CFI. Profile unwinding has different
 available memory from a stopped debugger and uses the same generic loop with a
