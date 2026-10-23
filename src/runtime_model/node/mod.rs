@@ -21,9 +21,9 @@ use std::sync::Arc;
 
 use super::ImageSymbol;
 use super::{
-    CodeFrame, Crossing, DescribedFrame, Partial, RuntimeException, RuntimeHook, RuntimeImage,
-    RuntimeModel, RuntimeSignals, RuntimeStop, StartedTask, StoredValue, TaskContext, TaskPage,
-    TaskRef, TaskStarter, ThreadActivity, Unbound,
+    CodeFrame, Crossing, DescribedFrame, HeldIdentity, Partial, RuntimeException, RuntimeHook,
+    RuntimeImage, RuntimeModel, RuntimeSignals, RuntimeStop, StartedTask, StoredValue, TaskContext,
+    TaskPage, TaskRef, TaskStarter, ThreadActivity, ThreadHolding, Unbound,
 };
 use crate::ThreadLocal;
 use crate::image::v8::{DispatchTable, EmbeddedBlob, V8Layout, V8Version};
@@ -79,6 +79,21 @@ fn builtins(image: &(dyn RuntimeImage + Send + Sync)) -> Option<AddressRange<Ima
         .filter_map(|symbol| symbol.address.checked_add(symbol.size?))
         .max()?;
     Some(AddressRange { start, end })
+}
+
+/// The address of the isolate `thread` has entered, from its copy of the
+/// variable at `place`: 0 for none.
+fn current_isolate(
+    stop: &dyn RuntimeStop,
+    thread: ThreadId,
+    place: ThreadLocal,
+) -> Result<u64, Arc<str>> {
+    let slot = stop.thread_local_address(thread, place)?;
+    let mut word = [0; 8];
+    if !stop.read(slot, &mut word) {
+        return Err("the thread's current isolate is unreadable".into());
+    }
+    Ok(u64::from_le_bytes(word))
 }
 
 #[derive(Debug)]
@@ -173,6 +188,26 @@ impl RuntimeModel for NodeRuntime {
 
     fn thread_activity(&self, _stop: &dyn RuntimeStop, _thread: ThreadId) -> ThreadActivity {
         ThreadActivity::Outside
+    }
+
+    /// The isolate the thread has entered, by its address: Node enters the
+    /// main thread's, and each worker's, for the whole of its event loop.
+    /// A thread that runs no JavaScript, as libuv's and V8's own workers,
+    /// has none.
+    fn thread_holding(&self, stop: &dyn RuntimeStop, thread: ThreadId) -> Option<ThreadHolding> {
+        let identity = match &self.statics.isolate {
+            Some(Ok(place)) => match current_isolate(stop, thread, *place) {
+                Ok(0) => return None,
+                Ok(isolate) => Ok(HeldIdentity::new(isolate)),
+                Err(reason) => Err(reason),
+            },
+            Some(Err(reason)) => Err(format!("its variable cannot be found: {reason}").into()),
+            None => Err("the module names no current isolate".into()),
+        };
+        Some(ThreadHolding {
+            kind: "isolate",
+            identity,
+        })
     }
 
     fn task_context(

@@ -17,6 +17,7 @@ use microscope::ThreadId;
 use crate::frames::{javascript_recorded, observed};
 use crate::native::check_thread;
 use crate::session::NodeSession;
+use crate::stacks::check_isolates;
 use crate::truth::{Frame, check_threads, threads};
 
 /// The build, as the flake names it.
@@ -86,8 +87,10 @@ fn inside(name: &str) -> bool {
     false
 }
 
-/// Each thread `stacks.js` parks has the interpreted frames V8 reported,
-/// though no symbol names the builtin that runs them, and unwinds natively
+/// Each thread `stacks.js` parks is labelled with its isolate, which a
+/// symbol Debian strips names the variable of, and has the interpreted
+/// frames V8 reported, though no symbol names the builtin that runs them,
+/// and unwinds natively
 /// through V8's builtins, and their copies, to where it began.
 #[tokio::test]
 async fn debian_parked_threads_are_the_ones_v8_reported_and_unwind_to_where_they_began() {
@@ -99,6 +102,8 @@ async fn debian_parked_threads_are_the_ones_v8_reported_and_unwind_to_where_they
     let mut session = NodeSession::launch(DEBIAN, "stacks.js", &[], &[]).await;
     let reported = threads(&session.stop_at("parked").await);
     let context = session.context();
+    let snapshot = session.stopped().await;
+    check_isolates(&context, &reported, &snapshot);
     let seen = observed(&session.scenario, &reported).await;
     let lie = check_threads(&seen, &reported).err();
 

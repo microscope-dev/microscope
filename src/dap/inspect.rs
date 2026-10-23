@@ -45,14 +45,25 @@ fn thread_name(
         .map(|detail| format!(" — {detail}"))
         .unwrap_or_default();
 
-    Ok(snapshot
-        .threads
-        .iter()
-        .find(|listed| listed.id == thread)
+    // A runtime's labels follow the thread's id, as `main (7, isolate 1)`.
+    let listed = snapshot.threads.iter().find(|listed| listed.id == thread);
+    let mut within = vec![thread.to_string()];
+    within.extend(
+        listed
+            .into_iter()
+            .flat_map(|listed| listed.labels.iter())
+            .map(ToString::to_string),
+    );
+    let within = within.join(", ");
+
+    Ok(listed
         .and_then(|listed| listed.name.as_deref())
         .map_or_else(
-            || format!("Thread {thread}{detail}"),
-            |name| format!("{name} ({thread}){detail}"),
+            || match within.split_once(", ") {
+                Some((_, labels)) => format!("Thread {thread} ({labels}){detail}"),
+                None => format!("Thread {thread}{detail}"),
+            },
+            |name| format!("{name} ({within}){detail}"),
         ))
 }
 

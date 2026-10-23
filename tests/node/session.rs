@@ -179,6 +179,16 @@ impl NodeSession {
         assert_eq!(ended, StopReason::Pause, "{}", self.context());
     }
 
+    /// Lets the stopped fixture run on, to be paused again.
+    pub async fn resume(&mut self) {
+        assert!(
+            self.running.is_none(),
+            "{}: already running",
+            self.context()
+        );
+        self.running = Some(self.scenario.start_resuming().await);
+    }
+
     /// The stop the fixture is held at, with every thread it lists.
     pub async fn stopped(&mut self) -> StateSnapshot {
         let snapshot = self.scenario.snapshot().await;

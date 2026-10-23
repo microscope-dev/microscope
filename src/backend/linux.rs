@@ -81,6 +81,7 @@ mod disassembly;
 mod evaluation;
 mod follow;
 mod frames;
+mod holdings;
 mod indirect;
 mod inspection;
 mod internal_stops;
@@ -883,6 +884,10 @@ struct PublicStop {
     /// What each thread runs for a language runtime, read once asked for.
     activities: RefCell<BTreeMap<Pid, Option<crate::ThreadActivity>>>,
 
+    /// What the runtimes say of each thread, read for every thread at once
+    /// when first asked, since each read numbers what threads run in.
+    labels: RefCell<Option<BTreeMap<Pid, Arc<[crate::ThreadLabel]>>>>,
+
     /// Where each runtime said it keeps the tasks it listed at this stop,
     /// forgotten once the debugger writes memory.
     task_locators: RefCell<BTreeMap<crate::TaskId, u64>>,
@@ -1035,6 +1040,10 @@ struct Inferior {
     /// The signal the debugger sent to end the inferior, which never stops
     /// it whatever its policy.
     terminating: Option<Terminating>,
+
+    /// The numbers thread labels give what threads run in, such as V8's
+    /// isolates, kept for the life of the process.
+    holdings: RefCell<holdings::HoldingNumbers>,
 }
 
 /// The debugger asked the inferior to end with `signal`. Programs often
@@ -1095,6 +1104,7 @@ impl Inferior {
             indirect: indirect::IndirectFunctions::default(),
             watch: WatchState::default(),
             terminating: None,
+            holdings: RefCell::default(),
         }
     }
 
@@ -3008,6 +3018,11 @@ impl<P: InspectionOps> Controller<P> {
                 activity: matches!(thread.state, NativeThreadState::Stopped)
                     .then(|| self.thread_activity(inferior, pid))
                     .flatten(),
+                labels: if matches!(thread.state, NativeThreadState::Stopped) {
+                    self.thread_labels(inferior, pid)
+                } else {
+                    Arc::from([])
+                },
                 state: if matches!(thread.state, NativeThreadState::Stopped) {
                     ObservableThreadState::Stopped {
                         reason: thread.reason.clone(),
@@ -3083,6 +3098,7 @@ impl PublicStop {
             selected_thread: Some(triggering_thread),
             selected_frames: BTreeMap::new(),
             activities: RefCell::default(),
+            labels: RefCell::default(),
             task_locators: RefCell::default(),
             task_sets: RefCell::default(),
             interpreted: RefCell::default(),

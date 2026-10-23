@@ -5,6 +5,7 @@
 //! and threads, read as every other inspection reads them.
 
 use std::cell::{Cell, OnceCell};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use nix::unistd::Pid;
@@ -19,7 +20,7 @@ use crate::{
     AddressRange, ColumnNumber, Error, ExecutionContext, ImageAddress, InspectionUsage, LineNumber,
     LoadedModule, ModuleImage, RecordedPlace, Result, RuntimeId, SourceLocation, StackSegment,
     TaskCursor, TaskId, TaskLocation, TaskPage, TaskSnapshot, TaskState, ThreadActivity, ThreadId,
-    VirtualAddress,
+    ThreadLabel, VirtualAddress,
 };
 
 use super::activation::TaskStack;
@@ -28,8 +29,8 @@ use super::memory::read_logical_block;
 use super::native::InspectionOps;
 use super::signals::Signal;
 use super::{
-    BreakpointSite, Controller, Inferior, TlsModule, debug_pid, debug_thread_id,
-    validate_public_stop,
+    BreakpointSite, Controller, Inferior, NativeThreadState, TlsModule, debug_pid, debug_thread_id,
+    holdings, validate_public_stop,
 };
 
 /// The sets of tasks the futures threads drive at a stop run, by where
@@ -838,6 +839,104 @@ impl<P: InspectionOps> Controller<P> {
         }
 
         found
+    }
+
+    /// What the process's runtimes say of a stopped thread at the published
+    /// stop, such as the isolate it runs: none without a published stop.
+    /// Every thread's are read at once, when the stop is first asked,
+    /// since reading them numbers what each thread runs in.
+    pub(super) fn thread_labels(&self, inferior: &Inferior, pid: Pid) -> Arc<[ThreadLabel]> {
+        let Some(stop) = inferior.public_stop.as_ref() else {
+            return Arc::from([]);
+        };
+        if stop.labels.borrow().is_none() {
+            let labels = self.read_thread_labels(inferior);
+            *stop.labels.borrow_mut() = Some(labels);
+        }
+        stop.labels
+            .borrow()
+            .as_ref()
+            .and_then(|labels| labels.get(&pid).cloned())
+            .unwrap_or_else(|| Arc::from([]))
+    }
+
+    fn read_thread_labels(&self, inferior: &Inferior) -> BTreeMap<Pid, Arc<[ThreadLabel]>> {
+        let live: BTreeSet<Pid> = inferior
+            .threads
+            .iter()
+            .filter(|(_, thread)| !matches!(thread.state, NativeThreadState::Exiting))
+            .map(|(&pid, _)| pid)
+            .collect();
+        let stopped: Vec<Pid> = inferior
+            .threads
+            .iter()
+            .filter(|(_, thread)| matches!(thread.state, NativeThreadState::Stopped))
+            .map(|(&pid, _)| pid)
+            .collect();
+
+        // A copy V8 made of its builtins binds the runtime of the module
+        // it copies again, which labels each thread once.
+        let copies = self.copy_modules();
+        let runtimes = self.runtimes(inferior);
+        let mut seen = Vec::new();
+        let mut labels: BTreeMap<Pid, Vec<ThreadLabel>> = BTreeMap::new();
+        for runtime in runtimes
+            .iter()
+            .filter(|runtime| !copies.contains(&runtime.module.id))
+        {
+            for &pid in &stopped {
+                let holding = self.with_runtime_stop(inferior, runtime, pid, |stop| {
+                    runtime.model.thread_holding(stop, debug_thread_id(pid))
+                });
+                let holding = match holding {
+                    None => None,
+                    Some(runtime_model::ThreadHolding {
+                        kind,
+                        identity: Ok(identity),
+                    }) => Some((kind, identity)),
+                    Some(runtime_model::ThreadHolding {
+                        kind,
+                        identity: Err(reason),
+                    }) => {
+                        labels.entry(pid).or_default().push(ThreadLabel {
+                            runtime: runtime.id,
+                            kind: kind.into(),
+                            value: Err(reason),
+                        });
+                        continue;
+                    }
+                };
+                seen.push(holdings::Sighting {
+                    thread: pid,
+                    runtime: runtime.id,
+                    holding,
+                });
+            }
+        }
+
+        let numbers = inferior.holdings.borrow_mut().number(&live, &seen);
+        for (sighting, number) in seen.iter().zip(numbers) {
+            let Some((kind, _)) = sighting.holding else {
+                continue;
+            };
+            labels
+                .entry(sighting.thread)
+                .or_default()
+                .push(ThreadLabel {
+                    runtime: sighting.runtime,
+                    kind: kind.into(),
+                    value: number
+                        .map(|number| number.to_string().into())
+                        .ok_or_else(|| "the debugger has no number left to give it".into()),
+                });
+        }
+        labels
+            .into_iter()
+            .map(|(pid, mut labels)| {
+                labels.sort_by(|a, b| (a.runtime, &a.kind).cmp(&(b.runtime, &b.kind)));
+                (pid, labels.into())
+            })
+            .collect()
     }
 
     fn read_thread_activity(&self, inferior: &Inferior, pid: Pid) -> Option<ThreadActivity> {

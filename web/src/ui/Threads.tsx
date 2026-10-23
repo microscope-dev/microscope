@@ -49,6 +49,11 @@ export function Threads() {
                   }
                 >
                   <span>{threadLabel(thread.id, thread.name)}</span>
+                  {thread.labels.map((label) => (
+                    <span key={label} className="dim">
+                      {label}
+                    </span>
+                  ))}
                   <span className="end">
                     {thread.id === stopping
                       ? "◂ stopped here"

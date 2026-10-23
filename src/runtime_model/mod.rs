@@ -1059,6 +1059,18 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         }
     }
 
+    /// What the stopped thread `thread` runs in, of the things of a kind
+    /// the runtime keeps several of, such as the V8 isolate a Node thread
+    /// runs JavaScript in; `None` when it runs in none, as a thread that
+    /// runs no JavaScript. The debugger numbers each identity of a kind in
+    /// the order it first sees it, and keeps the number while a thread it
+    /// saw holding it lives, so the thread list shows `isolate 1` rather
+    /// than an address.
+    fn thread_holding(&self, stop: &dyn RuntimeStop, thread: ThreadId) -> Option<ThreadHolding> {
+        let _ = (stop, thread);
+        None
+    }
+
     /// Where a walker in the kernel begins each of the interpreter's
     /// threads, read through `stop`, and why some may be missing; `None`
     /// for a runtime no such walker reads (see `backend::bpf::sampler`).
@@ -1442,6 +1454,27 @@ pub struct DescribedFrame {
 pub struct ThreadLabels {
     pub thread: ThreadId,
     pub labels: Vec<(Arc<str>, Arc<str>)>,
+}
+
+/// One of several things of a kind a runtime keeps, such as V8's isolates,
+/// that a thread runs in at a stop: what the runtime calls one, and which
+/// it is, or why that could not be read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadHolding {
+    pub kind: &'static str,
+    pub identity: Result<HeldIdentity, Arc<str>>,
+}
+
+/// Which one of its kind a thread runs in: an opaque value, such as an
+/// isolate's address, that no two of the kind share while either lives.
+/// Another may have it once the one that did is gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct HeldIdentity(u64);
+
+impl HeldIdentity {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
 }
 
 /// One thread's interpreted frames, in one interpreter.

@@ -578,6 +578,32 @@ pub enum ThreadActivity {
     Unknown(Arc<str>),
 }
 
+/// What a language runtime says of a stopped thread, shown beside it
+/// wherever threads are listed, such as `isolate 1` for the V8 isolate a
+/// Node thread runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadLabel {
+    /// The runtime instance that gives the label.
+    pub runtime: RuntimeId,
+
+    /// What the label names, such as `isolate`.
+    pub kind: Arc<str>,
+
+    /// The thread's value, such as `1`, or why it could not be read. A
+    /// number keeps its meaning for the life of the process: the same
+    /// isolate has it at every stop, and no other isolate is given it.
+    pub value: std::result::Result<Arc<str>, Arc<str>>,
+}
+
+impl fmt::Display for ThreadLabel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.value {
+            Ok(value) => write!(f, "{} {value}", self.kind),
+            Err(reason) => write!(f, "{} unknown: {reason}", self.kind),
+        }
+    }
+}
+
 /// Where a page of tasks continues.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TaskCursor {

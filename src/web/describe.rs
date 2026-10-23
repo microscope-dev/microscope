@@ -308,6 +308,7 @@ impl Describer {
                     id: thread.id.get(),
                     name: thread.name.as_deref().map(str::to_owned),
                     stopped: matches!(thread.state, microscope::ThreadState::Stopped { .. }),
+                    labels: thread.labels.iter().map(ToString::to_string).collect(),
                 })
                 .collect(),
             breakpoints,

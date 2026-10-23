@@ -1923,6 +1923,10 @@ pub struct Thread {
     pub id: u64,
     pub name: Option<String>,
     pub stopped: bool,
+
+    /// What the program's runtimes say of the stopped thread, such as
+    /// `isolate 1`.
+    pub labels: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

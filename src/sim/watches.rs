@@ -354,6 +354,7 @@ mod tests {
                 },
                 name: None,
                 activity: None,
+                labels: Arc::from([]),
             }]),
             presentation: None,
             breakpoints: Arc::from([]),

@@ -1827,6 +1827,11 @@ pub struct ThreadSnapshot {
     /// goroutine; `None` for a running thread, or a program with no runtime
     /// a model knows.
     pub activity: Option<crate::ThreadActivity>,
+
+    /// What the program's runtimes say of a stopped thread, such as the V8
+    /// isolate it runs; empty for a running thread, or one no runtime
+    /// labels.
+    pub labels: Arc<[crate::ThreadLabel]>,
 }
 
 /// The externally observable state of the inferior.

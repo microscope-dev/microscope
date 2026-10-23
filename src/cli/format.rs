@@ -1131,9 +1131,22 @@ pub fn threads(snapshot: &StateSnapshot, renderer: Renderer) -> String {
                 ),
                 Some(ThreadActivity::Outside) | None => String::new(),
             };
+            let mut labels = String::new();
+            for label in thread.labels.iter() {
+                let role = if label.value.is_ok() {
+                    Role::Metadata
+                } else {
+                    Role::Warning
+                };
+                let _ = write!(
+                    labels,
+                    " {}",
+                    renderer.paint(role, format_args!("[{label}]"))
+                );
+            }
 
             format!(
-                "{marker} {}{name} {state}{activity}",
+                "{marker} {}{name} {state}{labels}{activity}",
                 renderer.paint(Role::Metadata, thread.id)
             )
         })

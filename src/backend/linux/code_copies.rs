@@ -237,6 +237,18 @@ impl<P: InspectionOps> Controller<P> {
             .collect()
     }
 
+    /// The modules that bind copies of another module's code, whose
+    /// runtimes are the source module's again.
+    pub(super) fn copy_modules(&self) -> BTreeSet<ModuleId> {
+        self.code_copies
+            .values()
+            .filter_map(|copy| match *copy {
+                Copy::Of { module, .. } => Some(module),
+                Copy::Runtime { .. } | Copy::None => None,
+            })
+            .collect()
+    }
+
     /// The modules that hold code a runtime generated, which no image
     /// describes.
     pub(super) fn generated_code_modules(&self) -> BTreeSet<ModuleId> {

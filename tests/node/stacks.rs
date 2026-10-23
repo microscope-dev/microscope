@@ -3,7 +3,9 @@
 //! hold the fixtures and the harness to their contract, and the debugger to
 //! the threads the fixtures name.
 
-use microscope::{CoreDumpOptions, InferiorState};
+use std::collections::BTreeMap;
+
+use microscope::{CoreDumpOptions, InferiorState, StateSnapshot};
 
 use crate::session::{CORES, MATRIX, NodeSession, major};
 use crate::support::Scenario;
@@ -100,9 +102,52 @@ fn check_listed(context: &str, reported: &[Thread], listed: &[u64]) {
     }
 }
 
+/// The isolate each thread `reported`, which runs JavaScript, is labelled
+/// with at the stop `snapshot` lists, by thread id: each its own number,
+/// the main thread's 1. Every other thread has no label.
+pub fn check_isolates(
+    context: &str,
+    reported: &[Thread],
+    snapshot: &StateSnapshot,
+) -> BTreeMap<u64, u64> {
+    let mut isolates = BTreeMap::new();
+    for thread in snapshot.threads.iter() {
+        let id = thread.id.get();
+        let labels: Vec<String> = thread.labels.iter().map(ToString::to_string).collect();
+        let Some(javascript) = reported.iter().find(|r| r.native == id) else {
+            assert!(
+                labels.is_empty(),
+                "{context}: thread {id} runs no JavaScript: {labels:?}"
+            );
+            continue;
+        };
+        let [label] = &thread.labels[..] else {
+            panic!(
+                "{context}: {} has one label: {:?}",
+                javascript.name, thread.labels
+            );
+        };
+        let number = match &label.value {
+            Ok(number) if &*label.kind == "isolate" => number.parse().expect("a number"),
+            _ => panic!("{context}: {} has the label {label}", javascript.name),
+        };
+        isolates.insert(id, number);
+    }
+
+    let numbers: std::collections::BTreeSet<u64> = isolates.values().copied().collect();
+    assert_eq!(numbers.len(), reported.len(), "{context}: {isolates:?}");
+    assert_eq!(
+        isolates.get(&reported[0].native),
+        Some(&1),
+        "{context}: main"
+    );
+    isolates
+}
+
 /// On every build, `stacks.js` parks its main thread and two workers in
-/// the functions it names, each thread one the stop lists, and the process
-/// ends with the debugger.
+/// the functions it names, each thread one the stop lists and labelled with
+/// its isolate, the same at a second stop, and the process ends with the
+/// debugger.
 #[tokio::test]
 async fn each_builds_threads_park_where_the_fixture_says() {
     for entry in MATRIX {
@@ -118,6 +163,16 @@ async fn each_builds_threads_park_where_the_fixture_says() {
         assert_eq!(reported[0].native, process_id.get(), "{context}");
         let listed: Vec<u64> = snapshot.threads.iter().map(|t| t.id.get()).collect();
         check_listed(&context, &reported, &listed);
+        let isolates = check_isolates(&context, &reported, &snapshot);
+
+        session.resume().await;
+        session.pause().await;
+        let again = session.stopped().await;
+        assert_eq!(
+            check_isolates(&context, &reported, &again),
+            isolates,
+            "{context}: the second stop's isolates"
+        );
 
         let report = session.report();
         let process = report
@@ -149,7 +204,8 @@ async fn each_build_reports_each_tier_from_inside_its_frame() {
 }
 
 /// Each core dump holds every thread its fixture reported just before it
-/// aborted, and the report beside it says what the live one does.
+/// aborted, each labelled with its isolate, and the report beside it says
+/// what the live one does.
 #[tokio::test]
 async fn a_cores_threads_are_the_ones_node_reported() {
     for entry in CORES {
@@ -178,6 +234,7 @@ async fn a_cores_threads_are_the_ones_node_reported() {
             assert_eq!(reported[0].native, process_id.get(), "{name}");
             let listed: Vec<u64> = snapshot.threads.iter().map(|t| t.id.get()).collect();
             check_listed(&name, &reported, &listed);
+            check_isolates(&name, &reported, &snapshot);
             assert!(
                 listed.len() > reported.len(),
                 "{name}: Node's own threads: {listed:?}"

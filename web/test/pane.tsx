@@ -32,7 +32,7 @@ export function stoppedState(changes: Partial<State> = {}): State {
       frame: 0,
       place: { address: "0x401000", function: "main", path: "/work/basic.c", line: 3 },
     },
-    threads: [{ id: 1, name: "basic", stopped: true }],
+    threads: [{ id: 1, name: "basic", stopped: true, labels: [] }],
     breakpoints: [],
     stops: [],
     writes: 0,

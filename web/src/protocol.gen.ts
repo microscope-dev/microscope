@@ -339,7 +339,12 @@ export type PendingBreakpoint = { message: string, places: Array<PendingBreakpoi
 
 export type PendingBreakpointPlace = { place: Place, reason: string, };
 
-export type Thread = { id: number, name: string | null, stopped: boolean, };
+export type Thread = { id: number, name: string | null, stopped: boolean, 
+/**
+ * What the program's runtimes say of the stopped thread, such as
+ * `isolate 1`.
+ */
+labels: Array<string>, };
 
 export type ErrorBody = { kind: ErrorKind, message: string, };
 

@@ -24,6 +24,7 @@ their own, join native backtraces as interpreted frames.
 | `src/debug_info/coroutines.rs`, `src/debug_info/roles.rs` | Static coroutine and code-role metadata |
 | `src/image/resumes.rs` | Validated resume-point tables |
 | `src/backend/linux/runtimes.rs`, `src/backend/linux/async_frames.rs`, `src/backend/linux/frames.rs` | Stop-scoped runtime snapshots and logical stacks |
+| `src/backend/linux/holdings.rs` | Process-lifetime numbers for the thread labels, such as `isolate 1` |
 | `tests/go/`, `tests/tokio/`, `tests/python/` | Runtime integration suites |
 | `tests/fixtures/go/`, `tests/fixtures/rust/tokio/`, `tests/fixtures/python/` | Programs that expose scheduler, task, and frame states |
 | `views/` | Built-in Go, Rust, Tokio, and Python value views |
@@ -84,6 +85,47 @@ runtime instances.
 An active task is linked to the native thread that currently runs it. That
 relationship can be unknown. Idle scheduler threads have no current task.
 Parked tasks have no active native thread.
+
+## Thread labels
+
+`ThreadSnapshot::labels` holds what runtimes say of each stopped thread,
+such as `isolate 1` for the V8 isolate a Node thread runs. The CLI's
+`threads`, the debug adapter's thread names, and the browser's Threads pane
+show them. Any runtime model can fill them.
+
+A model fills them with `RuntimeModel::thread_holding`. It returns what the
+thread runs in, out of a kind of thing the runtime has several of: the kind
+(`"isolate"`) and an opaque `HeldIdentity`, such as the isolate's address.
+It returns `None` when the thread runs in nothing, and an error when the
+identity can't be read; the label then says why. An identity must differ
+between any two things that are live at the same time. The runtime may reuse
+it once the thing that had it is gone.
+
+The backend turns identities into numbers, per runtime and kind, in the
+table `Inferior::holdings`. The table lasts for the life of the process, so
+a restart or a new process starts again at 1. All threads are numbered at
+once, the first time a stop is asked for labels, and the result is cached in
+`PublicStop::labels`. At each numbering:
+
+- The table forgets an identity once no live thread was last seen holding
+  it. A thread whose runtime could not be read keeps what it held. If the
+  same address appears later, it gets a new number. A number is never
+  given out twice.
+- New identities are numbered in the order of their threads' ids, so Node's
+  main thread, which has the lowest id, is `isolate 1`.
+- A copy V8 made of its builtins binds the runtime of the module it copies
+  a second time. Labels skip that binding, so each thread gets each label
+  once.
+
+`RuntimeModel::thread_labels` is a separate method. It gives the profiler
+key/value text per sample, such as `gil=held`, and needs no identity across
+stops.
+
+Node reads the thread-local `g_current_isolate_`. Node enters the main
+thread's isolate, and each worker's, for the whole of its event loop. The
+value is 0 on threads that run no JavaScript: libuv's pool, V8's platform
+workers, and the inspector. The variable is a thread-local, so cores
+show labels too.
 
 ## Logical stacks
 

@@ -252,6 +252,23 @@ Use `threads` to list native threads and `thread ID` to select one. Programs
 with a supported runtime can also expose logical tasks such as goroutines,
 async Rust tasks, and asyncio tasks. See [Languages](languages.md).
 
+A runtime can label the threads it runs. In Node, each thread that runs
+JavaScript (the main thread and each `worker_threads` worker) shows the V8
+isolate it runs. An isolate keeps its number for the life of the process,
+and no other isolate gets that number:
+
+```text
+* 353561 "node-MainThread" stopped [isolate 1]
+  353565 "node-V8Worker" stopped
+  353571 "alpha" stopped [isolate 2]
+  353572 "beta" stopped [isolate 3]
+```
+
+A thread that runs no JavaScript, such as one of V8's workers, has no
+label. The debug adapter adds labels to the thread's name, as
+`node-MainThread (353561, isolate 1)`. The browser shows them in the
+Threads pane.
+
 ## Inspect values
 
 `print EXPRESSION` evaluates an expression. `pp` expands it in a multiline
