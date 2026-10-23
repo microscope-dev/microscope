@@ -195,6 +195,7 @@ figcaption { font-size: 13px; color: var(--ink-3); max-width: 90ch; }
 .phase header { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; }
 .phase .pid { font: 600 13px/1 var(--mono); color: var(--accent); }
 .phase p { margin: 0; font-size: 14px; color: var(--ink-2); max-width: 90ch; }
+.phase .progress { font-size: 13.5px; color: var(--ink-2); border-left: 3px solid var(--accent); padding-left: 10px; }
 .phase .exit { font-size: 13.5px; color: var(--ink-2); border-left: 3px solid var(--good); padding-left: 10px; }
 .phase table.data { font-size: 13px; table-layout: fixed; min-width: 640px; }
 .phase table.data th:nth-child(1) { width: 64px; }
@@ -977,9 +978,10 @@ resume
       <h2>Phases</h2>
       <div class="prose"><p>Each phase ships something a user can see. Groundwork lands first in its own commits. Documentation moves with the code: <code>dev/runtime-models.md</code> gains a Node section, <code>dev/index.md</code> its rows, and the user docs pages whose examples run against the fixtures. This plan stays the decision record.</p></div>
       <div class="phase">
-        <header><span class="pid">N0</span><h3>Foundations</h3><span class="st todo">todo</span></header>
+        <header><span class="pid">N0</span><h3>Foundations</h3><span class="st done">done, one gap moved to N1</span></header>
         <p>The flake's <code>MICROSCOPE_NODE</code> (22, 24, 26, their nixpkgs builds, and <code>debian-24</code>) and <code>MICROSCOPE_V8_TORQUE</code> (12.4, 13.6, 14.6), with the recipes F21 and F28 tested; the <code>node-debian</code> namespace test group; <code>truth.js</code> and the tier fixture; Node cores through the existing <code>make_core</code> (F9) and reporting missing thread stacks in cores; G1 alias modules; G3 thread-local reads; G7 prologue-aware unwinding.</p>
         <p class="exit">Exit: a native backtrace of a Node process continues through V8 frames to <code>_start</code> on every entry, with builtins named.</p>
+        <p class="progress"><strong>Progress, 23 October 2026.</strong> Delivered in <code>0ecdd0fd</code> (matrix, <code>truth.js</code>, fixtures, cores), <code>dfcb6ca7</code> (G1), <code>60bc2cfe</code> (G7, builtins by their <code>Builtins_</code> symbols and the <code>ProvedFrames</code> table), <code>d350c6bf</code> (G3, <code>ThreadLocal::Dynamic</code>), and <code>eb3c06c8</code> (missing stacks in cores reported as <code>StackNotSaved</code>). The exit holds live and in cores on the three official and three nixpkgs builds, through every tier. <strong>Gap moved to N1:</strong> Debian's <code>libnode.so.137</code> names no builtin and has no <code>v8_Default_embedded_blob_code_</code>, and its builtins (about 2.1 MB of <code>.text</code>) have no CFI, so its backtraces stop at the first builtin until G2 reads the blob's bounds from the isolate. Findings that change the tests, not the design: V8 has no <code>%ActiveTierIsTurbofanJS</code>, and <code>%ActiveTierIs*</code> reports the function's code, not the frame's, so <code>truth.js</code> reads the frame-running bits of <code>%GetOptimizationStatus</code>, whose layout moved one bit down in 14.x and is checked at load. Node 22 runs no Maglev by default, and its OSR goes to Turbofan, not Maglev; the tier test asserts each per version. The suite runs with <code>just node</code> (the positional filter of <code>just test</code> matches test names, not binaries) and the Debian group with <code>just test-node-debian</code>, which <code>just all</code> includes.</p>
       </div>
       <div class="phase">
         <header><span class="pid">N1</span><h3>See JavaScript</h3><span class="st todo">todo</span></header>
