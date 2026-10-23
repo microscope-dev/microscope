@@ -35,6 +35,10 @@ impl<P: InspectionOps> Controller<P> {
         }
 
         let runtimes = self.runtimes(inferior);
+        if runtimes.is_empty() {
+            return Ok(());
+        }
+        let _span = crate::span!("code_frames");
         let generated = self.generated_code_modules();
         let mut described = Vec::new();
         for (activation, physical) in stack.frames.iter().enumerate() {
@@ -56,6 +60,7 @@ impl<P: InspectionOps> Controller<P> {
             }
         }
 
+        crate::count!("code_frames_described", described.len());
         if described.is_empty() {
             return Ok(());
         }
