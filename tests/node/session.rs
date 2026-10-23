@@ -65,7 +65,13 @@ async fn reported(
         let ready = text
             .rsplit_once("TRUTH\tcheckpoint\t")
             .is_some_and(|(_, last)| last.contains("\nREADY\n"));
-        if ready && let Some(lines) = Report::parse(&text).checkpoint(name) {
+        // READY is printed before the printer reaches its read, so a pause
+        // at once may find it still running JavaScript, whose frames are
+        // no checkpoint's.
+        if ready
+            && let Some(lines) = Report::parse(&text).checkpoint(name)
+            && printer_reads_input(&text)
+        {
             return lines.to_vec();
         }
 
@@ -79,6 +85,22 @@ async fn reported(
         );
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
+}
+
+/// Whether the printer, the process `TRUTH process` names in `text`, is
+/// blocked in a system call that reads its standard input, where it parks.
+fn printer_reads_input(text: &str) -> bool {
+    let Some(pid) = text
+        .lines()
+        .find_map(|line| line.strip_prefix("TRUTH\tprocess\t"))
+        .and_then(|rest| rest.split('\t').next())
+    else {
+        return false;
+    };
+    let call = std::fs::read_to_string(format!("/proc/{pid}/syscall")).unwrap_or_default();
+    let mut fields = call.split_whitespace();
+    // read, pread64, readv, and preadv, each on file descriptor 0.
+    matches!(fields.next(), Some("0" | "17" | "19" | "295")) && fields.next() == Some("0x0")
 }
 
 impl NodeSession {
