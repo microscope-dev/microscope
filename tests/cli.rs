@@ -4675,7 +4675,7 @@ fn python_frames_show_their_source_and_fold_the_interpreters_frames() {
         shown == "(str) by_name[\"b\"] = 'two'"
     });
     let sum = line_index(&lines, found, |shown| {
-        shown == "(integer) numbers[0] + len(by_name) * 10 = 31"
+        shown == "(int) numbers[0] + len(by_name) * 10 = 31"
     });
     line_index(&lines, sum, |shown| shown == "type = list");
 }
