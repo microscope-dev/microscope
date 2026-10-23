@@ -30,6 +30,10 @@ mod layouts;
 #[path = "v8/conformance.rs"]
 mod conformance;
 
+#[cfg(test)]
+#[path = "v8/translate.rs"]
+mod translate;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -181,6 +185,7 @@ const CHECKED_FIELDS: &[(Field, &str)] = &[
     (Field::SlicedStringParent, "SlicedString__parent"),
     (Field::SlicedStringOffset, "SlicedString__offset"),
     (Field::ThinStringActual, "ThinString__actual"),
+    (Field::SymbolDescription, "Symbol__name"),
     (Field::ExternalStringResource, "ExternalString__resource"),
     (Field::SeqOneByteStringChars, "SeqOneByteString__chars"),
     (Field::SeqTwoByteStringChars, "SeqTwoByteString__chars"),

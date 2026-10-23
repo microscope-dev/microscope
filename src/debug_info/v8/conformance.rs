@@ -318,6 +318,27 @@ fn layouts_match_torque() {
     );
 }
 
+const SLICES_FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/image/v8/slices.gen.rs");
+
+/// Fails when `src/image/v8/slices.gen.rs` no longer matches the
+/// translation of `debug-macros.cc` and the headers in
+/// `MICROSCOPE_V8_TORQUE`, or when the translator meets a construct or a
+/// name it does not know. Set `MICROSCOPE_UPDATE_V8=1` to rewrite it.
+#[test]
+fn slices_match_torque() {
+    let expected = super::translate::generate(&torque_versions(), V8_NOTICE);
+    if std::env::var_os("MICROSCOPE_UPDATE_V8").is_some() {
+        std::fs::write(SLICES_FILE, &expected).expect("write the generated slices");
+        return;
+    }
+
+    let actual = std::fs::read_to_string(SLICES_FILE).unwrap_or_default();
+    assert!(
+        actual == expected,
+        "src/image/v8/slices.gen.rs is stale; rerun with MICROSCOPE_UPDATE_V8=1"
+    );
+}
+
 /// Each build of the dev shell's Node matrix, the file that holds its V8,
 /// and V8's major.minor version: Node 26 has 14.6, 24 has 13.6, and 22
 /// has 12.4.

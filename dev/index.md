@@ -250,6 +250,7 @@ path:
 | Web replay transcripts | `just web-transcripts` |
 | `src/debug_info/cpython/layouts.gen.rs` | `scripts/cpython-layouts.sh`, in the dev shell |
 | `src/debug_info/v8/layouts.gen.rs` | `MICROSCOPE_UPDATE_V8=1 just test layouts_match_torque` |
+| `src/image/v8/slices.gen.rs` | `MICROSCOPE_UPDATE_V8=1 just test slices_match_torque` |
 | `src/runtime_model/python/printable.gen.rs` | `scripts/python-printable.sh`, in the dev shell |
 | Golden manifests | `just golden-record NAME` |
 | Benchmark baselines | The owning benchmark's explicit record option, only after review |

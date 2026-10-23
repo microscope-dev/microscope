@@ -14,6 +14,16 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 use super::strings::{StrId, StringsBuilder};
 use super::{Builder, Image, NONE, Record, TableKind};
 
+mod program;
+
+#[rustfmt::skip]
+#[path = "v8/slices.gen.rs"]
+mod slices;
+
+#[cfg(test)]
+#[path = "v8/scope_info_tests.rs"]
+mod scope_info_tests;
+
 /// Defines an enum of a layout's entries, each with the name V8 gives it.
 macro_rules! entries {
     ($(#[$meta:meta])* $kind:ident { $($(#[$doc:meta])* $variant:ident = $name:literal,)* }) => {
@@ -65,6 +75,7 @@ entries! {
         SlicedStringParent = "SlicedString::Parent",
         SlicedStringOffset = "SlicedString::Offset",
         ThinStringActual = "ThinString::Actual",
+        SymbolDescription = "Symbol::Description",
         ExternalStringResource = "ExternalString::Resource",
         ExternalStringResourceData = "ExternalString::ResourceData",
         SeqOneByteStringChars = "SeqOneByteString::Chars",
@@ -686,4 +697,117 @@ pub(super) fn validate(image: &Image) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// A part of a `ScopeInfo` whose place and length depend on the scope's
+/// flags and counts, by the name Torque gives its field. A version that
+/// does not have the part gives no [`Slice`] of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ScopeInfoSlice {
+    ModuleVariableCount,
+    ContextLocalNames,
+    ContextLocalNamesHashtable,
+    ContextLocalInfos,
+    SavedClassVariableInfo,
+    FunctionVariableInfo,
+    InferredFunctionName,
+
+    /// 12.4 only: from 13.6 a scope's positions are a fixed field.
+    PositionInfo,
+    OuterScopeInfo,
+
+    /// 12.4 only.
+    LocalsBlockList,
+    ModuleInfo,
+    ModuleVariables,
+
+    /// From 13.6.
+    DependentCode,
+
+    /// From 14.6.
+    UnusedParameterBits,
+}
+
+impl ScopeInfoSlice {
+    /// Every slice, in the order a `ScopeInfo` holds those its version has.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the translator's tests name slices by it")
+    )]
+    pub const ALL: &[Self] = &[
+        Self::ModuleVariableCount,
+        Self::ContextLocalNames,
+        Self::ContextLocalNamesHashtable,
+        Self::ContextLocalInfos,
+        Self::SavedClassVariableInfo,
+        Self::FunctionVariableInfo,
+        Self::InferredFunctionName,
+        Self::PositionInfo,
+        Self::OuterScopeInfo,
+        Self::LocalsBlockList,
+        Self::ModuleInfo,
+        Self::ModuleVariables,
+        Self::DependentCode,
+        Self::UnusedParameterBits,
+    ];
+}
+
+/// Where one object's slice is: its offset in bytes from the object's
+/// untagged start, and how many items it holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Slice {
+    pub offset: u64,
+    pub length: u64,
+}
+
+/// Where `slice` is in one `ScopeInfo` of V8 `version`, which has 8-byte
+/// tagged words and 64-bit Smis, as the layouts require: by V8's own
+/// `debug-macros.cc`, translated for each version. `read` gives the
+/// object's little-endian word at a byte offset from its untagged start,
+/// a multiple of 8, or `None` when it cannot be read.
+///
+/// `Ok(None)` when the version has no such slice. An error when the
+/// version has no translation, a word cannot be read, or one is not what
+/// V8 would have written there, such as a count that is no Smi.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "until the Node runtime model reads scopes")
+)]
+pub fn scope_info_slice(
+    version: V8Version,
+    slice: ScopeInfoSlice,
+    read: &mut dyn FnMut(u64) -> Option<u64>,
+) -> Result<Option<Slice>, std::sync::Arc<str>> {
+    let translated = slices::TRANSLATED
+        .iter()
+        .find(|translated| (translated.major, translated.minor) == (version.major, version.minor))
+        .ok_or_else(|| -> std::sync::Arc<str> {
+            format!(
+                "V8 {}.{} has no ScopeInfo slices in this build of microscope",
+                version.major, version.minor
+            )
+            .into()
+        })?;
+    let Some(&(_, function)) = translated.scope_info.iter().find(|(own, _)| *own == slice) else {
+        return Ok(None);
+    };
+
+    let fail = |error: String| -> std::sync::Arc<str> {
+        format!("V8 {version}'s ScopeInfo {slice:?}: {error}").into()
+    };
+    let values =
+        program::run(translated.functions, function, &[program::OBJECT], read).map_err(fail)?;
+    let &[object, offset, length] = values.as_slice() else {
+        return Err(fail(format!("{} values for a slice", values.len())));
+    };
+
+    if object != program::OBJECT {
+        return Err(fail("a slice of another object".to_owned()));
+    }
+
+    let unsigned = |value: i64| u64::try_from(value).map_err(|_| fail(format!("{value}")));
+    Ok(Some(Slice {
+        offset: unsigned(offset)?,
+        length: unsigned(length)?,
+    }))
 }
