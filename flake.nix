@@ -510,6 +510,428 @@
         { name = "ubuntu-3.12"; path = cpythonDistribution { version = "3.12"; debs = ubuntuDebs; }; }
       ];
 
+      # Node.js builds, one directory each, so that Node support is tested
+      # against the builds people run. Each directory holds `node`, the
+      # executable, and `include`, Node's headers for Node-API fixtures;
+      # nixpkgs' builds also hold `bin`, with npm and npx beside node. They are
+      # reached only through MICROSCOPE_NODE, never through the shell's
+      # packages, whose node serves the web tooling.
+      nodeNixpkgs = line: package: pkgs.linkFarm "node-nixpkgs-${line}" [
+        { name = "node"; path = "${package}/bin/node"; }
+        { name = "include"; path = "${package}/include/node"; }
+        { name = "bin"; path = "${package}/bin"; }
+      ];
+      # nodejs.org's release binaries, what nvm, Docker images, and CI's setup
+      # actions install. Their interpreter names /lib64/ld-linux-x86-64.so.2,
+      # which the pure shell lacks, so the executable names the flake's glibc
+      # and finds libstdc++, libgcc_s, and Node 26's libatomic through its
+      # rpath. Nothing else changes, and every symbol stays in place.
+      nodeOfficial = { version, hash }: pkgs.runCommand "node-official-${version}" {
+        src = pkgs.fetchurl {
+          url = "https://nodejs.org/dist/v${version}/node-v${version}-linux-x64.tar.xz";
+          inherit hash;
+        };
+        nativeBuildInputs = [ pkgs.gnutar pkgs.xz pkgs.patchelf ];
+        dontStrip = true;
+        dontPatchELF = true;
+        dontFixup = true;
+      } ''
+        mkdir -p $out/release
+        tar xJf $src -C $out/release --strip-components=1 node-v${version}-linux-x64/bin/node node-v${version}-linux-x64/include
+        patchelf --set-interpreter ${pkgs.glibc}/lib/ld-linux-x86-64.so.2 \
+          --set-rpath ${pkgs.glibc}/lib:${pkgs.stdenv.cc.cc.lib}/lib $out/release/bin/node
+        ln -s release/bin/node $out/node
+        ln -s release/include/node $out/include
+      '';
+      # Debian's own Node, which links V8 from a shared libnode.so.137, run
+      # unmodified: its packages are unpacked into one root, nothing patched,
+      # since it needs a newer glibc than the flake's. It still names
+      # /lib64/ld-linux-x86-64.so.2 and reads Debian's JavaScript from
+      # /usr/share/nodejs, so it runs only under `enter`, which starts a
+      # command in a rootless user and mount namespace with Debian's loader
+      # bound at that path, a cache naming the root's libraries bound at
+      # /etc/ld.so.cache, the root's /usr/share bound in place, and a /tmp of
+      # its own: the host's root is no user in there, so microscope would not
+      # trust the host's /tmp with its agent files. `node` is then Debian's
+      # executable itself, never a wrapper or the loader, so a debugger
+      # launching it traces that executable. The flake's programs keep running
+      # inside: nixpkgs' loader reads neither path, and microscope and its
+      # tests share the one namespace. The packages are the closure
+      # scripts/debian-node-debs.sh prints.
+      nodeDebian = { version, debs }: pkgs.runCommand "node-debian-${version}" {
+        debs = map pkgs.fetchurl debs;
+        nativeBuildInputs = [ pkgs.binutils pkgs.gnutar pkgs.xz pkgs.zstd ];
+        dontStrip = true;
+        dontPatchELF = true;
+        dontFixup = true;
+      } ''
+        mkdir -p $out/root
+        for deb in $debs; do
+          unpack=$(mktemp -d)
+          (cd "$unpack" && ar x "$deb" && tar xf data.tar.*)
+          rm "$unpack"/data.tar.* "$unpack"/control.tar.* "$unpack"/debian-binary
+          cp -a "$unpack"/. $out/root/
+          rm -rf "$unpack"
+        done
+        # Debian's loader finds libraries through the cache before its own
+        # directories, which the host need not have, so the cache names the
+        # root's files by their store paths. ldconfig always adds its own
+        # glibc's directory, which would list the flake's libc beside
+        # Debian's, unless it runs chrooted, here in a copy of the directory
+        # at the same path.
+        lib=$out/root/usr/lib/x86_64-linux-gnu
+        chroot=$(mktemp -d)
+        mkdir -p $chroot/etc $chroot$(dirname $lib)
+        touch $chroot/etc/ld.so.conf
+        cp -a $lib $chroot$lib
+        ${pkgs.glibc.bin}/bin/ldconfig -X -r $chroot -C /ld.so.cache $lib
+        mv $chroot/ld.so.cache $out/ld.so.cache
+        rm -rf $chroot
+        ln -s root/usr/bin/node $out/node
+        ln -s root/usr/include/node $out/include
+        substitute ${pkgs.writeShellScript "enter" ''
+          set -euo pipefail
+          for target in /lib64/ld-linux-x86-64.so.2 /etc/ld.so.cache /usr/share; do
+            if [[ ! -e "$target" ]]; then
+              echo "error: $target is missing, so Debian's node has nowhere to be bound" >&2
+              exit 1
+            fi
+          done
+          exec ${pkgs.util-linux}/bin/unshare -rm ${pkgs.bash}/bin/bash -euo pipefail -c '
+            ${pkgs.util-linux}/bin/mount --bind "$1/root/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" /lib64/ld-linux-x86-64.so.2
+            ${pkgs.util-linux}/bin/mount --bind "$1/ld.so.cache" /etc/ld.so.cache
+            ${pkgs.util-linux}/bin/mount --bind "$1/root/usr/share" /usr/share
+            ${pkgs.util-linux}/bin/mount -t tmpfs -o mode=1777 tmpfs /tmp
+            shift
+            exec "$@"
+          ' enter "@out@" "$@"
+        ''} $out/enter --subst-var out
+        chmod +x $out/enter
+      '';
+      # nodejs, libnode137, and libnode-dev 24.22.0 from sid's snapshot of
+      # 20261022T203737Z, with everything they depend on:
+      # `scripts/debian-node-debs.sh 20261022T203737Z` prints the list.
+      debianNodeDebs = [
+        {
+          hash = "sha256-TALvw5m782oLUQJOfRAkpSYPXtyPhVOj7TObzEPTsrM=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/a/acorn/node-acorn_8.17.0+ds+~cs28.27.25-1_all.deb"
+            "https://deb.debian.org/debian/pool/main/a/acorn/node-acorn_8.17.0+ds+~cs28.27.25-1_all.deb"
+          ];
+        }
+        {
+          hash = "sha256-xTdqUhSn3AXnBHp34ydtYjrrjMSV/HsSVaAKGdkTY+k=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/a/ada-url/libada-url0-3_3.4.4-1+b1_amd64.deb"
+            "https://deb.debian.org/debian/pool/main/a/ada-url/libada-url0-3_3.4.4-1+b1_amd64.deb"
+          ];
+        }
+        {
+          hash = "sha256-BEmGxL9wtilx+IhoXxFoMSOjJv6wKVv1VeU0bt5/hho=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/b/brotli/libbrotli1_1.2.0-4+b1_amd64.deb"
+            "https://deb.debian.org/debian/pool/main/b/brotli/libbrotli1_1.2.0-4+b1_amd64.deb"
+          ];
+        }
+        {
+          hash = "sha256-wMEvHpML0R8xF9S0Bv5GLa2t6nq/MLp3sYPd9qVm4xo=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/c/c-ares/libcares2_1.34.8-1_amd64.deb"
+            "https://deb.debian.org/debian/pool/main/c/c-ares/libcares2_1.34.8-1_amd64.deb"
+          ];
+        }
+        {
+          hash = "sha256-fcxkBLRK2KnVjoPB6Yfuy01qJGI6kkOO6xGCntESljU=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/g/gcc-16/gcc-16-base_16.2.0-3_amd64.deb"
+            "https://deb.debian.org/debian/pool/main/g/gcc-16/gcc-16-base_16.2.0-3_amd64.deb"
+          ];
+        }
+        {
+          hash = "sha256-5xbci6rSfohMRf+Dp2lVBHp6njOoDpT5RZ7pluu4ALA=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/g/gcc-16/libgcc-s1_16.2.0-3_amd64.deb"
+            "https://deb.debian.org/debian/pool/main/g/gcc-16/libgcc-s1_16.2.0-3_amd64.deb"
+          ];
+        }
+        {
+          hash = "sha256-fJ4aiebAuSAmmZV7RpwG0LhvXJfobB/5ErZQLd2Hk7Y=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/g/gcc-16/libstdc++6_16.2.0-3_amd64.deb"
+            "https://deb.debian.org/debian/pool/main/g/gcc-16/libstdc++6_16.2.0-3_amd64.deb"
+          ];
+        }
+        {
+          hash = "sha256-XHFxXFEQO+tPu6n+n43/YEr2YQ36cccL/zQvVKeGCAM=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/g/glibc/libc6_2.43-7_amd64.deb"
+            "https://deb.debian.org/debian/pool/main/g/glibc/libc6_2.43-7_amd64.deb"
+          ];
+        }
+        {
+          hash = "sha256-irrkC14r/KWPvIODKbSPUlyYRj6TC40+0HXQyelgpXo=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/g/glibc/libc-gconv-modules-extra_2.43-7_amd64.deb"
+            "https://deb.debian.org/debian/pool/main/g/glibc/libc-gconv-modules-extra_2.43-7_amd64.deb"
+          ];
+        }
+        {
+          hash = "sha256-3JGOpsvnu2/upDqsOSCoaincxfr0xW2PCUhAj5B22GY=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/i/icu/libicu78_78.3-2_amd64.deb"
+            "https://deb.debian.org/debian/pool/main/i/icu/libicu78_78.3-2_amd64.deb"
+          ];
+        }
+        {
+          hash = "sha256-e4VIBWBRa03+QdKWK0u6nEpi3nepD/MRx7kIfPElMjk=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/libh/libhdr-histogram/libhdr-histogram6_0.11.8-4+b2_amd64.deb"
+            "https://deb.debian.org/debian/pool/main/libh/libhdr-histogram/libhdr-histogram6_0.11.8-4+b2_amd64.deb"
+          ];
+        }
+        {
+          hash = "sha256-1G3p+klPA+WsaXTjTO4HFZ1gCULlDQNqGXYxWO0G6MU=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/libu/libuv1/libuv1-dev_1.53.0-1_amd64.deb"
+            "https://deb.debian.org/debian/pool/main/libu/libuv1/libuv1-dev_1.53.0-1_amd64.deb"
+          ];
+        }
+        {
+          hash = "sha256-NkaqW4UT3Fes4k3+ZYK6VmbhQeuHa3SU6QCHdsnUGZk=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/libu/libuv1/libuv1t64_1.53.0-1_amd64.deb"
+            "https://deb.debian.org/debian/pool/main/libu/libuv1/libuv1t64_1.53.0-1_amd64.deb"
+          ];
+        }
+        {
+          hash = "sha256-k+eTDkwluRjx3ZgMwcbUSHZUokj1+nHqy5du17vpVL0=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/libz/libzstd/libzstd1_1.5.7+dfsg-4_amd64.deb"
+            "https://deb.debian.org/debian/pool/main/libz/libzstd/libzstd1_1.5.7+dfsg-4_amd64.deb"
+          ];
+        }
+        {
+          hash = "sha256-BRn0mPp71M62DVQGZ53G5E80jQwKysi811o0pbUVVog=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/l/llhttp/libllhttp9.4_9.4.3+~cs12.11.9-2_amd64.deb"
+            "https://deb.debian.org/debian/pool/main/l/llhttp/libllhttp9.4_9.4.3+~cs12.11.9-2_amd64.deb"
+          ];
+        }
+        {
+          hash = "sha256-GeUg5NRbANtOM/TkhxqzEZkvk6ccTU2LeFlKcYZyjg4=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/l/llhttp/node-llhttp_9.4.3+~cs12.11.9-2_all.deb"
+            "https://deb.debian.org/debian/pool/main/l/llhttp/node-llhttp_9.4.3+~cs12.11.9-2_all.deb"
+          ];
+        }
+        {
+          hash = "sha256-z3awqqca+v0bPNnk0j3eE/xDbWt+amodldj8bHNe+tI=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/n/nghttp2/libnghttp2-14_1.70.0-1_amd64.deb"
+            "https://deb.debian.org/debian/pool/main/n/nghttp2/libnghttp2-14_1.70.0-1_amd64.deb"
+          ];
+        }
+        {
+          hash = "sha256-mKHEZr/2uvZ4DEt2XsZl5oRCS/eQdDmTm1+xFg7eA5w=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/n/node-balanced-match/node-balanced-match_2.0.0-1_all.deb"
+            "https://deb.debian.org/debian/pool/main/n/node-balanced-match/node-balanced-match_2.0.0-1_all.deb"
+          ];
+        }
+        {
+          hash = "sha256-cP8TIuE0GNKkaey96ZjSd6XsufQs5QcStebnEu19Yzw=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/n/node-brace-expansion/node-brace-expansion_2.1.7+~1.1.2-1_all.deb"
+            "https://deb.debian.org/debian/pool/main/n/node-brace-expansion/node-brace-expansion_2.1.7+~1.1.2-1_all.deb"
+          ];
+        }
+        {
+          hash = "sha256-NDioz39olotc/MD6WoUHNqc83MTn8Y5V8mIf0rkJYaU=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/n/node-corepack/node-corepack_0.35.0-2_all.deb"
+            "https://deb.debian.org/debian/pool/main/n/node-corepack/node-corepack_0.35.0-2_all.deb"
+          ];
+        }
+        {
+          hash = "sha256-r7+HAE9VjGCojkQi4KbYfiKeBtfkVhSwCg45EIKvD1A=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/n/node-debug/node-debug_4.4.3+~4.1.13-1_all.deb"
+            "https://deb.debian.org/debian/pool/main/n/node-debug/node-debug_4.4.3+~4.1.13-1_all.deb"
+          ];
+        }
+        {
+          hash = "sha256-6v7P8Xu1PHUB+iNG4keOnE/9KS5mUfJpGXLkZDx+B78=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/n/nodejs/libnode137_24.22.0+dfsg+~cs24.19.2-2_amd64.deb"
+            "https://deb.debian.org/debian/pool/main/n/nodejs/libnode137_24.22.0+dfsg+~cs24.19.2-2_amd64.deb"
+          ];
+        }
+        {
+          hash = "sha256-e/LK9IS4iu3M1K6NtsWEFtLjWs/eiYcVGdJNOAalD8g=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/n/nodejs/libnode-dev_24.22.0+dfsg+~cs24.19.2-2_amd64.deb"
+            "https://deb.debian.org/debian/pool/main/n/nodejs/libnode-dev_24.22.0+dfsg+~cs24.19.2-2_amd64.deb"
+          ];
+        }
+        {
+          hash = "sha256-IGZztI0JWGqX0WrQWYR0snGaWqufZJN8dSGJkLlNGW4=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/n/nodejs/nodejs_24.22.0+dfsg+~cs24.19.2-2_amd64.deb"
+            "https://deb.debian.org/debian/pool/main/n/nodejs/nodejs_24.22.0+dfsg+~cs24.19.2-2_amd64.deb"
+          ];
+        }
+        {
+          hash = "sha256-lMmbXCDdMT75F+dKnBAKao2szVsmHYunh+QXEwobCvE=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/n/node-lru-cache/node-lru-cache_11.2.7-7_all.deb"
+            "https://deb.debian.org/debian/pool/main/n/node-lru-cache/node-lru-cache_11.2.7-7_all.deb"
+          ];
+        }
+        {
+          hash = "sha256-dwEmEC4k2Obwn8+9ZlZbA6dwN5GDN7IS4Tc2e8pTHGo=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/n/node-minimatch/node-minimatch_9.0.7-2_all.deb"
+            "https://deb.debian.org/debian/pool/main/n/node-minimatch/node-minimatch_9.0.7-2_all.deb"
+          ];
+        }
+        {
+          hash = "sha256-ccmp+LU8wVRbiHNdxPSH8t6ytaQjy9lRROoY0cMYfec=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/n/node-ms/node-ms_2.1.3+~cs0.7.31-3_all.deb"
+            "https://deb.debian.org/debian/pool/main/n/node-ms/node-ms_2.1.3+~cs0.7.31-3_all.deb"
+          ];
+        }
+        {
+          hash = "sha256-SpeORpddSNE+ZviCo77t0GTXUHPSSaojAk2CwwOkd4E=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/n/node-semver/node-semver_7.7.4+~cs9.7.4-2_all.deb"
+            "https://deb.debian.org/debian/pool/main/n/node-semver/node-semver_7.7.4+~cs9.7.4-2_all.deb"
+          ];
+        }
+        {
+          hash = "sha256-fV9sTDUh2o3lJAaG+O6apctUT31cXLWpgWByXcXIRi4=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/n/node-undici/node-undici_8.12.2+dfsg+~cs3.2.3-2_all.deb"
+            "https://deb.debian.org/debian/pool/main/n/node-undici/node-undici_8.12.2+dfsg+~cs3.2.3-2_all.deb"
+          ];
+        }
+        {
+          hash = "sha256-xk43++pA3gErWa2/ph5wO1LBJxPzTL/S1ASevMVJ8nA=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/n/node-xtend/node-xtend_4.0.2-3_all.deb"
+            "https://deb.debian.org/debian/pool/main/n/node-xtend/node-xtend_4.0.2-3_all.deb"
+          ];
+        }
+        {
+          hash = "sha256-Cg7IT+hgxck8dNU8uwca6geTMno3YbSDCA6de3PCGzc=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/o/openssl/libssl3t64_3.6.5-1_amd64.deb"
+            "https://deb.debian.org/debian/pool/main/o/openssl/libssl3t64_3.6.5-1_amd64.deb"
+          ];
+        }
+        {
+          hash = "sha256-g8VnsG+hNEB16A9+JDIKxS2RA5huq5CNOICehMewAjY=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/o/openssl/libssl-dev_3.6.5-1_amd64.deb"
+            "https://deb.debian.org/debian/pool/main/o/openssl/libssl-dev_3.6.5-1_amd64.deb"
+          ];
+        }
+        {
+          hash = "sha256-grfAVvff2R5O7bGgc41lWGe24TvSXOA0BunPRk6TRa0=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/o/openssl/openssl-provider-legacy_3.6.5-1_amd64.deb"
+            "https://deb.debian.org/debian/pool/main/o/openssl/openssl-provider-legacy_3.6.5-1_amd64.deb"
+          ];
+        }
+        {
+          hash = "sha256-a/6rvWHKfNM89MReTj0vzHMWO9Q4fUkuvMo3tjOsqTg=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/s/simdjson/libsimdjson33_4.6.11-1_amd64.deb"
+            "https://deb.debian.org/debian/pool/main/s/simdjson/libsimdjson33_4.6.11-1_amd64.deb"
+          ];
+        }
+        {
+          hash = "sha256-vdKWSJWe2eniMcLw1Son9RGKaWYUnV1A8CwGrGiR2O0=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/s/simdutf/libsimdutf35_9.3.0+really9.1.2-1_amd64.deb"
+            "https://deb.debian.org/debian/pool/main/s/simdutf/libsimdutf35_9.3.0+really9.1.2-1_amd64.deb"
+          ];
+        }
+        {
+          hash = "sha256-u/E8kyZ2TQXjfmWQ3r2qbzOva9gi48oSBHidnR3COxE=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/s/sqlite3/libsqlite3-0_3.53.4-2_amd64.deb"
+            "https://deb.debian.org/debian/pool/main/s/sqlite3/libsqlite3-0_3.53.4-2_amd64.deb"
+          ];
+        }
+        {
+          hash = "sha256-UsWFsHvqcu82353dXRk39HOdPK7AV9gnlUuuwlYpJlE=";
+          urls = [
+            "https://snapshot.debian.org/archive/debian/20261022T203737Z/pool/main/z/zlib/zlib1g_1.3.dfsg+really1.3.2-3_amd64.deb"
+            "https://deb.debian.org/debian/pool/main/z/zlib/zlib1g_1.3.dfsg+really1.3.2-3_amd64.deb"
+          ];
+        }
+      ];
+      nodes = pkgs.linkFarm "node" [
+        { name = "26"; path = nodeOfficial { version = "26.12.1"; hash = "sha256-YXCy1HThxib0PP863BGN+f47VzJYpPw9hQyNvGsHm70="; }; }
+        { name = "24"; path = nodeOfficial { version = "24.22.1"; hash = "sha256-bBcqmrZxj3uAH7WnvUhq8u5eMnWAhqBLhPzOKqdwleY="; }; }
+        # Node 22 leaves at its end of life, on 30 April 2027.
+        { name = "22"; path = nodeOfficial { version = "22.23.4"; hash = "sha256-GAW8015oFVWb0uuX20ONP9sOs6XmqXe3wbrcp2M36c4="; }; }
+        { name = "nixpkgs-26"; path = nodeNixpkgs "26" pkgs.nodejs_26; }
+        { name = "nixpkgs-24"; path = nodeNixpkgs "24" pkgs.nodejs_24; }
+        { name = "nixpkgs-22"; path = nodeNixpkgs "22" pkgs.nodejs_22; }
+        { name = "debian-24"; path = nodeDebian { version = "24"; debs = debianNodeDebs; }; }
+      ];
+
+      # V8's Torque output for each supported V8 version, which completes the
+      # layout its v8dbg_ symbols leave out: class-debug-readers.cc's field
+      # offsets, debug-macros.cc's slice functions, bit-fields.h, and
+      # instance-types.h, with the V8 headers that hold the few constants
+      # Torque does not. scripts/v8-layouts.py turns them into
+      # src/debug_info/v8/layouts.gen.rs. Node is configured as its release
+      # is, with full ICU, Rust present for Temporal, and clang, because any
+      # other configuration shifts instance types; configure's warnings that
+      # it turned a feature off fail the build. Only the run_torque target is
+      # built, not V8.
+      v8Torque = { version, hash }: pkgs.clangStdenv.mkDerivation {
+        pname = "v8-torque";
+        inherit version;
+        src = pkgs.fetchurl {
+          url = "https://nodejs.org/dist/v${version}/node-v${version}.tar.xz";
+          inherit hash;
+        };
+        nativeBuildInputs = [ pkgs.python3 pkgs.gnumake pkgs.which pkgs.cargo pkgs.rustc ];
+        dontConfigure = true;
+        dontFixup = true;
+        buildPhase = ''
+          runHook preBuild
+          patchShebangs configure tools deps/v8/tools
+          ./configure --without-npm 2>&1 | tee configure.log
+          if grep -iE 'warning|disabl' configure.log; then
+            echo "configure did not configure Node as its release" >&2
+            exit 1
+          fi
+          make -C out BUILDTYPE=Release -j$NIX_BUILD_CORES run_torque
+          runHook postBuild
+        '';
+        installPhase = ''
+          runHook preInstall
+          mkdir -p $out/torque-generated $out/v8
+          for file in class-debug-readers.cc debug-macros.cc bit-fields.h instance-types.h; do
+            cp out/Release/obj/gen/torque-generated/$file $out/torque-generated/
+          done
+          (cd deps/v8 && find include src/objects src/common src/execution src/codegen src/sandbox src/builtins src/debug \
+            -maxdepth 1 \( -name '*.h' -o -name '*.tq' \) -exec cp --parents {} $out/v8/ \;)
+          cp deps/v8/include/v8-version.h $out/v8/
+          runHook postInstall
+        '';
+      };
+      v8Torques = pkgs.linkFarm "v8-torque" [
+        { name = "14.6"; path = v8Torque { version = "26.12.1"; hash = "sha256-BT47KWhZttjZP5nvl/qc7BxO4XHHKWgQDGSZeMHb04w="; }; }
+        { name = "13.6"; path = v8Torque { version = "24.22.1"; hash = "sha256-T1N5eWKAza6wwvNY/QS2oWzE+336g7WoyRqdljtDUjE="; }; }
+        { name = "12.4"; path = v8Torque { version = "22.23.4"; hash = "sha256-e5rcgtYS0KKoY9lsRt4iklUuJQzuUZVuu+AUbEKqyuk="; }; }
+      ];
+
       # GNU Fortran, alone: its wrapper's own gcc and binutils would shadow
       # the shell's.
       gfortran = pkgs.writeShellScriptBin "gfortran" ''
@@ -554,6 +976,12 @@
         # The CPython interpreters Python support is tested against, one
         # directory each, out of the shell's packages.
         MICROSCOPE_CPYTHON = "${cpython}";
+        # The Node.js builds Node support is tested against, one directory
+        # each, out of the shell's packages.
+        MICROSCOPE_NODE = "${nodes}";
+        # V8's Torque output for each supported V8 version, which
+        # scripts/v8-layouts.py reads.
+        MICROSCOPE_V8_TORQUE = "${v8Torques}";
         # The vendored crates scripts/build-test-programs.sh builds the tokio
         # fixtures against, offline.
         MICROSCOPE_FIXTURE_CRATES = "${tokioFixtureCrates}";

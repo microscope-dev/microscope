@@ -12,8 +12,8 @@ high-value scenarios over assertions that restate implementation details.
 | `tests/support/flight_recordings.rs`, `memory_cap.rs` | Failure artifacts and per-process memory limits |
 | `tests/debugger/` | Public debugger workflows |
 | `tests/dap/`, `tests/web/` | Client protocol and server behavior |
-| `tests/go/`, `tests/tokio/`, `tests/python/` | Runtime-specific integration suites |
-| `tests/support/truth.rs`, `tests/fixtures/python/truth.py` | Fixtures' reports of themselves, and their reader |
+| `tests/go/`, `tests/tokio/`, `tests/python/`, `tests/node/` | Runtime-specific integration suites |
+| `tests/support/truth.rs`, `tests/fixtures/python/truth.py`, `tests/fixtures/node/truth.js` | Fixtures' reports of themselves, and their reader |
 | `tests/fixtures/` | Native source programs, view files, and fixture packages |
 | `tests/golden/` | Deterministic simulator programs and manifests |
 | `scripts/build-test-programs.sh`, `scripts/golden.sh` | Fixture and golden-program builds |
@@ -245,12 +245,15 @@ canonical text, and its code objects' lines. A test stops the fixture there and
 compares the debugger's public results against the report. Expected values come
 from the program as it runs, never from an earlier run of microscope, so they
 stay right when a line moves or an interpreter changes.
-`tests/support/truth.rs` reads the lines for the Go, tokio, and Python suites.
+`tests/support/truth.rs` reads the lines for the Go, tokio, Python, and Node
+suites.
 
 Each comparison returns what disagrees rather than asserting, and each suite
 proves its comparisons fail on the lies they look for. The Python suite feeds
 its checks a dropped frame, a wrong line, a swapped thread, a wrong value, and
-a missing local in `tests/python/oracles.rs`.
+a missing local in `tests/python/oracles.rs`. The Node suite feeds its checks
+a dropped frame, a wrong line, a swapped thread, and a wrong tier in
+`tests/node/truth.rs`.
 
 ### Python
 
@@ -291,6 +294,60 @@ records through the `microscope-bpf` wrapper and runs only under
 refuses and names the one it lacks. The BPF records' layouts, their
 decoding, and their pairing with samples are unit tests that need no
 privilege (`backend::bpf::sampler`, `profiler::record`).
+
+### Node
+
+The Node builds come from the flake and are gathered in `MICROSCOPE_NODE`:
+nodejs.org's 22, 24, and 26, nixpkgs' builds of the same lines, and Debian's
+24 as `debian-24`. Each directory holds `node` and `include`, Node's headers.
+
+`debian-24` is Debian's `nodejs` and `libnode137`, V8 in a shared library,
+unpacked unmodified into `root/` with every package they depend on. It needs
+Debian's loader at `/lib64/ld-linux-x86-64.so.2` and Debian's JavaScript at
+`/usr/share/nodejs`, so it runs only under the entry's `enter`, which runs a
+command in a rootless user and mount namespace (`unshare -rm`) with those
+bound in place and a `/tmp` of its own. Outside it, `node` fails to find
+`libnode.so.137`.
+
+```sh
+just dev --command bash -c '$MICROSCOPE_NODE/debian-24/enter $MICROSCOPE_NODE/debian-24/node -p process.version'
+```
+
+Its tests are the Node suite's tests named `debian`, and they run only under
+`just test-node-debian`, which runs the suite inside `enter`. The tests,
+microscope, and node share the namespace, so tracing and `/proc` work as
+outside it, with the user as uid 0. `just all` runs the group. To move the
+entry to a newer Debian, run `scripts/debian-node-debs.sh TIMESTAMP` on the
+host with a snapshot.debian.org timestamp and replace `debianNodeDebs` in
+`flake.nix` with what it prints.
+
+`tests/fixtures/node/truth.js` prints a checkpoint's report from V8's own
+account of the process and parks the main thread until the test lets it go,
+or aborts for a core dump with `--abort`. Worker threads start through its
+`spawn()` and park in `Atomics.wait` through `park()`. Each sends the main
+thread its frames before it parks, and the checkpoint waits until each one is
+blocked in the futex. A thread's frames are those below the call into
+`truth.js`, innermost first, from V8's CallSite API. The file's opening
+comment gives every line's format.
+
+A frame's tier comes from inside the process, at the checkpoint, for a
+function that called `truth.tier()` in that frame. It is read from
+`%GetOptimizationStatus()`'s bits for the topmost frame that runs the
+function, not from `%ActiveTierIs*()`, which report the code the function
+holds. A frame whose tier changed after `tier()` shows both, as
+`turbofan>ignition` for a deoptimization. Natives need `--allow-natives-syntax`.
+Without it, every tier is `-`. `tests/fixtures/node/tiers.js` puts Ignition,
+Sparkplug, Maglev, Turbofan, inlined, deoptimized, and OSR frames on one
+stack. It reports a tier the build cannot run as `unavailable`: Maglev on
+Node 22, whose V8 does not enable it by default. `values.js` is the values
+gallery, which names each value by its path from a local.
+
+The suite's matrix is every other build, the official and nixpkgs builds of
+each line, and a missing build fails the test. `tests/node/session.rs`
+launches a fixture with an empty environment, so `NODE_OPTIONS` cannot change
+it. The build saves a core of `stacks.js` and `tiers.js` for 26, 24, and 22
+with its report beside it, as `build/test-programs/node-*.core` and
+`.core.log`. `just node` runs the suite alone; arguments go to nextest.
 
 ## Unit tests
 

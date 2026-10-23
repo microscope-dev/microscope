@@ -20,7 +20,7 @@ check: lint test miri loom web-test docs proto
 # Runs everything to check before committing. The concurrent Miri tests try
 # more seeds than `check` does: ordering bugs planted in the probe SDK showed
 # only between seeds 48 and 61.
-all: check (miri-seeds "0..64") (loom "4") loom-mutants web-e2e stress sim bench-smoke build-static
+all: check test-node-debian (miri-seeds "0..64") (loom "4") loom-mutants web-e2e stress sim bench-smoke build-static
 
 # Enters the pinned Nix development shell, or runs a command in it, with
 # nothing of the host's environment but the user and their terminal.
@@ -120,6 +120,26 @@ test-bpf LAUNCHER="/run/wrappers/bin/microscope-bpf" *ARGS: build-test-programs
     fi
     ulimit -c 0
     MICROSCOPE_BPF_LAUNCHER="$1" MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features tools --run-ignored only --test syscalls --test python -E 'test(/(^|::)bpf::/)' "${@:2}"
+
+# Runs the Node suite's tests of Debian's node, MICROSCOPE_NODE's debian-24,
+# which runs only inside the namespace its `enter` makes (flake.nix): the
+# tests, microscope, and node all run in it, as uid 0 of a user namespace.
+# The memory cap's scope is asked for outside, where the user's systemd
+# knows the caller. Until the Node suite has tests of debian-24 this warns
+# that none ran and passes.
+# Arguments go to nextest.
+[doc("Runs the Node tests of Debian's libnode build inside its namespace.")]
+[script]
+test-node-debian *ARGS: cache-warm
+    if [[ ! -e tests/node/main.rs && ! -e tests/node.rs ]]; then
+        echo "warning: there is no Node test suite yet; no test of debian-24 ran" >&2
+        exit 0
+    fi
+    cargo nextest run --features tools --no-run --test node
+    ulimit -c 0
+    test_threads="$(nproc)"; if (( test_threads > {{max_test_threads}} )); then test_threads={{max_test_threads}}; fi
+    MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" \
+        "$MICROSCOPE_NODE/debian-24/enter" cargo nextest run --features tools --test-threads "$test_threads" --run-ignored all --no-tests=warn --test node -E 'test(/debian/)' "$@"
 
 # How many seeds `just miri` tries its concurrent tests under: about as many
 # as run at once. Try more with `just miri_seeds=0..256 miri`, or
@@ -233,6 +253,12 @@ cache-warm: build-test-programs
 tokio *ARGS:
     ./scripts/build-test-programs.sh tokio
     ulimit -c 0; test_threads="$(nproc)"; if (( test_threads > {{max_test_threads}} )); then test_threads={{max_test_threads}}; fi; MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features tools --test-threads "$test_threads" --test tokio "$@"
+
+# Runs the Node suite alone, after the fixtures and Node cores it reads are
+# built: the quick loop for work on Node support. Arguments go to nextest,
+# e.g. `just node stacks::`.
+node *ARGS: cache-warm
+    ulimit -c 0; test_threads="$(nproc)"; if (( test_threads > {{max_test_threads}} )); then test_threads={{max_test_threads}}; fi; MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features tools --test-threads "$test_threads" --test node "$@"
 
 # Races in process control fail far more often when the debugger competes for
 # the CPUs, so this oversubscribes the test threads and keeps busy loops

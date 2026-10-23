@@ -1216,9 +1216,11 @@ suite_signature() {
             paths+=("$path")
         fi
     done
-    # Statically linked glibc fixtures link from a store path of their own.
-    printf '%s\nsuite-v1\nGOOS=%s GOARCH=%s\nGLIBC_STATIC_LIBRARIES=%s\nMICROSCOPE_FIXTURE_CRATES=%s\n' \
-        "$checkout" "${GOOS-}" "${GOARCH-}" "$GLIBC_STATIC_LIBRARIES" "${MICROSCOPE_FIXTURE_CRATES-}"
+    # Statically linked glibc fixtures link from a store path of their own,
+    # and the Node cores run the builds in another.
+    printf '%s\nsuite-v1\nGOOS=%s GOARCH=%s\nGLIBC_STATIC_LIBRARIES=%s\nMICROSCOPE_FIXTURE_CRATES=%s\nMICROSCOPE_NODE=%s\n' \
+        "$checkout" "${GOOS-}" "${GOARCH-}" "$GLIBC_STATIC_LIBRARIES" "${MICROSCOPE_FIXTURE_CRATES-}" \
+        "${MICROSCOPE_NODE-}"
     stat -L --format='%n %Y' "${paths[@]}"
 }
 
@@ -2621,6 +2623,26 @@ for interpreter in 3.13 3.14t 3.15 debian-3.13; do
         generate_core "$output_dir/python-${fixture}-${interpreter}.core" 6 "$default_core_filter" \
             "$fixtures_dir/python/${fixture}.py $fixtures_dir/python/truth.py $python" \
             "$python" -I -B "$fixtures_dir/python/${fixture}.py" --abort
+    done
+done
+# A Node program's threads at a checkpoint, which aborts there, under one
+# official build of each V8 line, which lay out their frames each their own
+# way. The program runs with no environment, as the suite runs it; each
+# core's log keeps what it reported.
+if [[ -z "${MICROSCOPE_NODE-}" ]]; then
+    printf 'error: MICROSCOPE_NODE is unset; build inside the Nix shell\n' >&2
+    exit 1
+fi
+for entry in 26 24 22; do
+    node="$MICROSCOPE_NODE/$entry/node"
+    for fixture in stacks tiers; do
+        flags=()
+        if [[ "$fixture" == tiers ]]; then
+            flags=(--allow-natives-syntax)
+        fi
+        generate_core "$output_dir/node-${fixture}-${entry}.core" 6 "$default_core_filter" \
+            "$fixtures_dir/node/${fixture}.js $fixtures_dir/node/truth.js $node" \
+            env -i "$node" "${flags[@]}" "$fixtures_dir/node/${fixture}.js" --abort
     done
 done
 generate_core "$output_dir/crash-gcc-o0-headerless.core" 11 "$headerless_core_filter" \
