@@ -73,6 +73,7 @@ mod callers;
 mod catchpoints;
 mod classify;
 mod code_copies;
+mod code_frames;
 mod core_dump;
 mod core_files;
 mod debug_registers;

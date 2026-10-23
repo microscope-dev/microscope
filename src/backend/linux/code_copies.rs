@@ -234,6 +234,18 @@ impl<P: InspectionOps> Controller<P> {
             .collect()
     }
 
+    /// The modules that hold code a runtime generated, which no image
+    /// describes.
+    pub(super) fn generated_code_modules(&self) -> BTreeSet<ModuleId> {
+        self.code_copies
+            .values()
+            .filter_map(|copy| match *copy {
+                Copy::Runtime { module } => Some(module),
+                Copy::Of { .. } | Copy::None => None,
+            })
+            .collect()
+    }
+
     /// Makes the module that holds V8's code in `mapping`.
     fn register_runtime_code(&mut self, mapping: &Range<u64>) -> Option<ModuleId> {
         let id = ModuleId::new(self.next_module_id);

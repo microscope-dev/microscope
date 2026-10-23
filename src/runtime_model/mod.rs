@@ -1226,6 +1226,31 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         None
     }
 
+    /// Whether the code at `address` of the image the runtime was bound to
+    /// is the runtime's own, which it compiled rather than the image's
+    /// compiler, as V8's builtins: [`Self::code_frame`] describes its
+    /// frames. A copy of the image's code binds the same image.
+    fn owns_code(&self, address: ImageAddress) -> bool {
+        let _ = address;
+        false
+    }
+
+    /// Whether the code no image holds that the runtime generated, which
+    /// the debugger keeps as modules of their own, is the runtime's to
+    /// describe.
+    fn owns_generated_code(&self) -> bool {
+        false
+    }
+
+    /// What the runtime recorded of a physical frame whose code is its own
+    /// ([`Self::owns_code`], [`Self::owns_generated_code`]): the functions
+    /// it runs, and its role; `None` where the frame is none the runtime
+    /// describes, which keeps the name its code's symbol gives it.
+    fn code_frame(&self, stop: &dyn RuntimeStop, frame: &CodeFrame<'_>) -> Option<DescribedFrame> {
+        let _ = (stop, frame);
+        None
+    }
+
     /// The identities of the class at `class` and of each class it derives
     /// from, in the order the language looks attributes up in, which
     /// choose the view that presents its objects.
@@ -1360,6 +1385,35 @@ pub struct SampledCode {
     pub qualname: u64,
     pub linetable: u64,
     pub first_line: i32,
+}
+
+/// A physical frame whose code a runtime owns, as the unwinder found it.
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code, reason = "until the Node runtime model reads frames")]
+pub struct CodeFrame<'a> {
+    /// Whether its instruction is the return address of a call it made,
+    /// as every caller's is.
+    pub after_call: bool,
+
+    /// Whether the frame's code is code the runtime generated, which no
+    /// image holds, rather than the image's.
+    pub generated: bool,
+
+    /// The registers the unwinder recovered for the frame, as its frame
+    /// pointer.
+    pub registers: &'a RegisterFile,
+}
+
+/// What a runtime recorded of a physical frame whose code is its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescribedFrame {
+    /// The functions the frame runs, innermost first: those its code
+    /// inlined, then its own. None where the frame is the runtime's
+    /// machinery, which its code's symbol names.
+    pub functions: Vec<crate::RecordedFrame>,
+
+    /// What the frame's code is to stepping and backtraces.
+    pub role: CodeRole,
 }
 
 /// The labels a runtime gives one thread.

@@ -285,13 +285,14 @@ impl<P: InspectionOps> Controller<P> {
         presentation: Option<&FramePresentation>,
     ) -> Result<Expanded> {
         let callers = Callers::with_stack(self, inferior, root.clone(), stack.clone(), unwound);
-        let expanded = expand_inline_backtrace(
+        let mut expanded = expand_inline_backtrace(
             stack,
             root.context,
             modules,
             presentation,
             &mut |activation, code| callers.tail_jumps(activation, code),
         )?;
+        self.describe_code_frames(inferior, root, stack, modules, &mut expanded)?;
         self.splice_driven(inferior, root, stack, modules, expanded)
     }
 
@@ -1071,7 +1072,7 @@ pub(super) fn source_line_changed(
 }
 
 /// Where a logical frame of a backtrace comes from.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct FrameOrigin {
     /// The physical activation whose state the frame has, or, for a frame
     /// whose function left by a tail call, the one whose state replaced it;

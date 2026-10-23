@@ -4647,6 +4647,11 @@ pub struct RecordedFrame {
     /// its runtime knows: two functions of one name in one file differ in
     /// it.
     pub first_line: Option<u32>,
+
+    /// Why the runtime could not record the frame's place, as for code it
+    /// optimized whose positions it no longer keeps; `None` where the
+    /// place is known or the runtime gives no reason.
+    pub problem: Option<Arc<str>>,
 }
 
 /// A platform-independent stack frame.

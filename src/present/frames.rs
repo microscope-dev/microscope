@@ -249,6 +249,7 @@ mod tests {
                 language: microscope::SourceLanguage::Python,
                 place,
                 first_line: Some(1),
+                problem: None,
             }),
         }
     }
