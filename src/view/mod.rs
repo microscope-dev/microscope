@@ -35,7 +35,7 @@ use bind::{BoundView, Rejection, SelfType};
 use syntax::View;
 
 /// The view files built into microscope, in the order they are tried.
-const BUILT_IN: [(&str, &str); 17] = [
+const BUILT_IN: [(&str, &str); 18] = [
     (
         "libstdc++.views",
         include_str!("../../views/libstdc++.views"),
@@ -73,6 +73,10 @@ const BUILT_IN: [(&str, &str); 17] = [
     (
         "python-std.views",
         include_str!("../../views/python-std.views"),
+    ),
+    (
+        "javascript-std.views",
+        include_str!("../../views/javascript-std.views"),
     ),
 ];
 

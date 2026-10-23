@@ -98,7 +98,8 @@ A value expands to its elements, then the view's fields, then `[raw]`, the
 value as stored, whose children are its members.
 
 The language is `c`, `c++`, `rust`, `go`, `zig`, `odin`, `d`, `nim`, `ada`, `python`
-(see [Python objects](#python-objects)), or `any`. A file that does
+(see [Python objects](#python-objects)), `javascript` (see
+[JavaScript objects](#javascript-objects)), or `any`. A file that does
 not begin with its version is refused, and a view with an error is skipped
 while the rest of its file is read:
 
@@ -713,6 +714,42 @@ view python app::Point {
 point => unbound: `x` is neither
 ```
 
+## JavaScript objects
+
+A `javascript` view presents the objects of a JavaScript class in a Node
+process, those of classes a TypeScript file defines included. A class is
+named by its constructor's name, in a path made from the script that
+defines the constructor:
+
+- a script of Node's own, `node:ID`, gives `node` and the parts of `ID`:
+  Node's `Buffer` is `node::buffer::Buffer`, and its `URL`, defined in
+  `node:internal/url`, is `node::internal::url::URL`;
+- a file gives its directories and its name without its extension: a
+  `Point` that `/srv/app/models.js` defines is `srv::app::models::Point`,
+  which `**::models::Point` names too;
+- a class of V8's own, which no script defines, is its name alone:
+  `Uint8Array`, `TypedArray`, `Map`.
+
+The view is chosen as each object is presented, once for each class at each
+stop. Its object's prototype is tried first, then each prototype after it:
+each names the class whose constructor is its own `constructor` data
+property, and one without such a function names none. So a view of
+`node::events::EventEmitter` presents the objects of every class that
+extends it, and one of `TypedArray` every typed array. A Buffer's prototype
+names `node::buffer::Buffer`, and the next one `Uint8Array`. A view of `any`
+language never presents a JavaScript object.
+
+`self` is the object, and a property is written `self.name`. Properties are
+read as `print` reads them ([Expressions](expressions.md)): a data property
+on the object or its prototypes, never a getter's result or a proxy's.
+
+```text
+microscope-views 1
+view javascript **::models::Point {
+    show record { x = self.x, y = self.y }
+}
+```
+
 ## Choosing a view
 
 Each view whose pattern names a value's type is bound against the type, in
@@ -979,6 +1016,11 @@ The built-in views cover:
   numpy's arrays need no view ([Python](languages.md#python)). A view of a
   Python class may still `visualize` its objects; a numpy array handed to a
   drawing as `values = self` is read at once.
+- JavaScript, in Node: every typed array, a `Buffer` too, draws its
+  elements as a `line-plot`, read at once; an `EventEmitter`, and an object
+  of any class that extends it, has its listeners by event name as the
+  field `listeners`. A `URL` keeps its text in private fields that only its
+  own code reads, so no view presents it.
 
 Some values need no view, because their debug information says what they
 are:

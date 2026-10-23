@@ -1,0 +1,23 @@
+microscope-views 1
+
+# Node's library types, of the classes it writes in JavaScript. Verified
+# against Node 22, 24, and 26 by tests/node/views.rs. A class is named by
+# the script that defines its constructor: node:buffer's Buffer is
+# node::buffer::Buffer, and V8's own classes, which no script defines, by
+# their names alone.
+
+# Every typed array draws its elements as a line, read at once. A Buffer is
+# one too: its prototype's constructor is Buffer, whose own prototype's is
+# Uint8Array.
+view javascript TypedArray {
+    visualize "line-plot"
+}
+
+# An emitter's listeners, by event name: one function, or an array of them
+# in the order they run. Node keeps them in `_events`, which an emitter
+# whose constructor never ran inherits as undefined. Its limit on listeners
+# is left out: an emitter without its own has Node's default, which only a
+# getter reads.
+view javascript node::events::EventEmitter {
+    field listeners = self._events
+}

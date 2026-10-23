@@ -97,7 +97,12 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
                     children,
                 );
                 let shown = presented.text.clone();
-                let presentation = view_presentation(name, &bound, &raw, presented);
+                // A view that keeps the object's summary keeps its full text.
+                let detail = (presented.summary == *stored.summary)
+                    .then(|| stored.detail.clone())
+                    .flatten();
+                let mut presentation = view_presentation(name, &bound, &raw, presented);
+                presentation.detail = detail;
                 *stored = Arc::new(through_runtime(presentation, (runtime.id, object), &bound));
                 *text = shown.map(Arc::new);
             }

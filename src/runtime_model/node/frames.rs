@@ -218,7 +218,7 @@ fn recorded(
 
 /// The name of `script`, or its source URL where it has no name, as V8's
 /// call sites give it; `None` where it has neither.
-fn script_name(reader: &Reader<'_>, script: Object) -> Result<Option<String>, Problem> {
+pub(super) fn script_name(reader: &Reader<'_>, script: Object) -> Result<Option<String>, Problem> {
     for field in [Field::ScriptName, Field::ScriptSourceUrl] {
         let word = reader.field(script, field)?;
         if let Some(name) = reader.object(word)?
@@ -235,7 +235,7 @@ fn script_name(reader: &Reader<'_>, script: Object) -> Result<Option<String>, Pr
 
 /// The path a `file:` URL names, as Node names an ES module's script, or
 /// `None` for any other name or a URL that does not name a local path.
-fn file_url_path(name: &str) -> Option<String> {
+pub(super) fn file_url_path(name: &str) -> Option<String> {
     let rest = name.strip_prefix("file://")?;
     let path = rest.strip_prefix("localhost").unwrap_or(rest);
     if !path.starts_with('/') {

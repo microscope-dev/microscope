@@ -26,7 +26,8 @@ pub type Captures = Vec<(String, Captured)>;
 
 /// Whether a view of `language` applies to a type of `actual`. A view of
 /// any language presents values of compiled languages' types, whose
-/// members it names, never Python objects.
+/// members it names, never Python or JavaScript objects. A `javascript`
+/// view presents the objects of classes a TypeScript file defines too.
 #[must_use]
 pub const fn language_matches(language: Language, actual: SourceLanguage) -> bool {
     matches!(
@@ -38,6 +39,10 @@ pub const fn language_matches(language: Language, actual: SourceLanguage) -> boo
     ) || matches!(
         (language, actual),
         (Language::Python, SourceLanguage::Python)
+            | (
+                Language::JavaScript,
+                SourceLanguage::JavaScript | SourceLanguage::TypeScript
+            )
             | (Language::C, SourceLanguage::C)
             | (Language::Cpp, SourceLanguage::Cpp)
             | (Language::Rust, SourceLanguage::Rust)

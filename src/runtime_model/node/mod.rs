@@ -16,6 +16,7 @@ mod constructors;
 mod errors;
 mod frames;
 mod inspect;
+mod lineage;
 mod lookup;
 mod names;
 mod objects;
@@ -517,6 +518,15 @@ impl RuntimeModel for NodeRuntime {
         budget: &mut InspectionBudget,
     ) -> Result<u64, InterpretedFailure> {
         self.expression(stop, budget, |reader| access::length(reader, object))
+    }
+
+    fn interpreted_lineage(
+        &self,
+        stop: &dyn RuntimeStop,
+        class: InterpretedHandle,
+        budget: &mut InspectionBudget,
+    ) -> Result<Vec<crate::TypeIdentity>, InterpretedFailure> {
+        self.expression(stop, budget, |reader| lineage::lineage(reader, class))
     }
 
     fn interpreted_address(&self, handle: InterpretedHandle) -> Option<VirtualAddress> {

@@ -104,6 +104,10 @@ pub enum Language {
     /// Python, whose objects' types only their values know.
     Python,
 
+    /// JavaScript, whose objects' classes only their values know, as
+    /// TypeScript's are too.
+    JavaScript,
+
     /// Every compiled language.
     Any,
 }
@@ -121,6 +125,7 @@ impl Language {
             "nim" => Self::Nim,
             "ada" => Self::Ada,
             "python" => Self::Python,
+            "javascript" => Self::JavaScript,
             "any" => Self::Any,
             _ => return None,
         })
@@ -895,7 +900,7 @@ impl<'a> Parser<'a> {
         let language = Language::parse(language_word).ok_or_else(|| {
             self.error(
                 "expected a language: `c`, `c++`, `rust`, `go`, `zig`, `odin`, `d`, `nim`, `ada`, \
-                 `python`, or `any`",
+                 `python`, `javascript`, or `any`",
             )
         })?;
         self.position += language_word.len();
