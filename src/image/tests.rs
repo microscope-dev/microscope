@@ -3941,7 +3941,7 @@ fn validation_rejects_a_v8_runtime_that_names_nothing() {
         "{refused}"
     );
 
-    // A Node release given beside the reason it cannot be.
+    // A Node release together with a reason it is missing.
     let mut strings = StringsBuilder::default();
     let problem = strings.push("no napi_get_node_version").unwrap().0;
     let mut both = record(u32::MAX);

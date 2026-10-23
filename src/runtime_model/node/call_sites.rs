@@ -1,16 +1,17 @@
-//! An error's stack formatted from the raw call sites V8 captured, as Node
-//! formats them when `stack` is first read (Q8).
+//! Formats an error's stack from the raw call sites V8 captured, the way
+//! Node does the first time `stack` is read (Q8).
 //!
-//! V8's getter hands the call sites to Node's `prepareStackTraceCallback`
+//! V8's getter passes the call sites to Node's `prepareStackTraceCallback`
 //! (`lib/internal/errors.js`), which calls the realm's
-//! `Error.prepareStackTrace`, by default Node's `ErrorPrepareStackTrace`,
-//! which calls the module's `internalPrepareStackTrace`, by default
-//! `defaultPrepareStackTrace`: the error's own line, then each call site
-//! as V8's `CallSite.prototype.toString` writes it (`SerializeCallSiteInfo`
-//! in `objects/call-site-info.cc`), each after `\n    at `. Every step is
-//! proven to be the default one before its text is written; any other is
-//! refused by name, as are call sites of WebAssembly and of V8's builtins.
-//! A call site that cannot be read says so in its own line.
+//! `Error.prepareStackTrace` (Node's `ErrorPrepareStackTrace` by default),
+//! which calls the module's `internalPrepareStackTrace`
+//! (`defaultPrepareStackTrace` by default). That writes the error's own
+//! line, then `\n    at ` and each call site as
+//! `CallSite.prototype.toString` writes it (`SerializeCallSiteInfo` in
+//! `objects/call-site-info.cc`). microscope checks that each step is the
+//! default and names the one that is not. It also refuses WebAssembly
+//! call sites and those in V8's builtins. A call site it can't read gets
+//! an error on its own line.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -31,26 +32,26 @@ use super::variables;
 use crate::image::v8::{Constant, Field};
 use crate::runtime_model::StopMemory;
 
-/// The most prototypes followed: chains are a few objects long.
+/// Prototype chains are a few objects long; stop after this many.
 const MAX_PROTOTYPES: usize = 64;
 
-/// The most contexts a closure's chain is followed through.
+/// The most contexts followed up a closure's chain.
 const MAX_CONTEXTS: usize = 256;
 
-/// The most scripts an `eval` origin names, each an `eval` of the next.
+/// The most nested `eval` scripts followed in one eval origin.
 const MAX_EVALS: usize = 64;
 
-/// The most call sites read of one error; `Error.stackTraceLimit` keeps
-/// ten by default.
+/// The most call sites read from one error. `Error.stackTraceLimit` is 10
+/// by default.
 const MAX_SITES: i64 = 1 << 16;
 
-/// The script Node's own error formatting is compiled from.
+/// The script that holds Node's error formatting.
 const NODE_ERRORS: &str = "node:internal/errors";
 
-/// The UTF-16 units of a string.
+/// A string as UTF-16 code units.
 type Units = Vec<u16>;
 
-/// The text Node would give `error.stack`, from its call sites `sites`.
+/// Formats `error.stack` from the call sites in `sites`, as Node would.
 pub(super) fn format(
     builder: &Builder<'_>,
     error: Object,
@@ -70,7 +71,7 @@ pub(super) fn format(
             Ok(line) => text.extend(line),
             Err(problem) => push(
                 &mut text,
-                &format!("<microscope cannot write this call site: {problem}>"),
+                &format!("<microscope could not format this call site: {problem}>"),
             ),
         }
     }
@@ -81,15 +82,15 @@ fn push(text: &mut Units, more: &str) {
     text.extend(more.encode_utf16());
 }
 
-/// The realm an error was made in: its native context and global object.
+/// The realm an error was created in: its native context and global object.
 struct Realm {
     native: Object,
     global: Object,
 }
 
 impl Realm {
-    /// The realm of `error`, whose map's meta map keeps its native context,
-    /// as V8's `GetCreationContext` finds it for an error.
+    /// Finds `error`'s realm through the meta map of its map, which holds
+    /// the native context, as V8's `GetCreationContext` does.
     fn of(reader: &Reader<'_>, error: Object) -> Result<Self, Problem> {
         let native = access::native_context(reader, reader.map(error)?)?;
         let global = reader
@@ -107,8 +108,8 @@ impl Realm {
         Ok(Self { native, global })
     }
 
-    /// Refuses a realm whose `CallSite.prototype.toString`, which Node's
-    /// `ArrayPrototypeJoin` calls on each call site, is not V8's builtin.
+    /// Errors unless `CallSite.prototype.toString` is V8's builtin. Node's
+    /// `ArrayPrototypeJoin` calls it on each call site.
     fn check_call_site_to_string(&self, reader: &Reader<'_>) -> Result<(), Problem> {
         let constructor = reader
             .object(access::slot(
@@ -128,17 +129,14 @@ impl Realm {
         {
             return Ok(());
         }
-        Err(
-            "the realm's CallSite.prototype.toString is not V8's, and microscope does not call it"
-                .into(),
-        )
+        Err("CallSite.prototype.toString is not V8's builtin, and microscope cannot run it".into())
     }
 }
 
-/// `globalThis.Error`: found as V8's `HashTable::FindEntry` finds it in
-/// the global object's dictionary, by the hash of the name `%Error%` keeps,
-/// which is the internalized "Error"; and else by [`lookup::find`], which
-/// reads every property the global object keeps on the way.
+/// Looks up `globalThis.Error`. First probes the global dictionary as V8's
+/// `HashTable::FindEntry` does, with the hash of `%Error%`'s name (the
+/// internalized "Error"), then falls back to [`lookup::find`], which reads
+/// every global property.
 fn global_error(reader: &Reader<'_>, realm: &Realm) -> Result<Found, Problem> {
     if let Some(found) = probe_global(reader, realm)? {
         return Ok(found);
@@ -146,9 +144,9 @@ fn global_error(reader: &Reader<'_>, realm: &Realm) -> Result<Found, Problem> {
     lookup::find(reader, realm.global, Key::Name("Error"))
 }
 
-/// The global object's own `Error`, where a probe of its dictionary by
-/// the name's hash finds it; `None` where it does not, which proves no
-/// absence, as no probe of a table read without its hash function does.
+/// The global object's own `Error`, found by probing its dictionary with
+/// the name's hash. `None` on a miss, which does not prove it is absent:
+/// microscope probes without the table's hash function.
 fn probe_global(reader: &Reader<'_>, realm: &Realm) -> Result<Option<Found>, Problem> {
     let Some(function) = reader
         .object(access::slot(
@@ -204,7 +202,8 @@ fn probe_global(reader: &Reader<'_>, realm: &Realm) -> Result<Option<Found>, Pro
         + reader.constant(Constant::GlobalDictionaryShapePrefixSize)?;
     let size = reader.constant(Constant::GlobalDictionaryShapeEntrySize)?;
     let key = reader.constant(Constant::HashTableEntryKeyIndex)?;
-    // `FirstProbe` and `NextProbe`; a global dictionary spreads no hash.
+    // `FirstProbe` and `NextProbe`. A global dictionary does not spread
+    // the hash.
     let mut entry = hash & (capacity - 1);
     for count in 1..=capacity {
         let word = reader.element(table, first + entry * size + key)?;
@@ -221,12 +220,13 @@ fn probe_global(reader: &Reader<'_>, realm: &Realm) -> Result<Option<Found>, Pro
             }
             let details = reader
                 .smi(reader.field(cell, Field::PropertyCellPropertyDetailsRaw)?)?
-                .ok_or("a property cell's details are no Smi")?;
+                .ok_or("a property cell's details are not a Smi")?;
             if properties::part(reader, details, Constant::PropKindMask, None)?
                 == reader.constant(Constant::PropKindAccessor)?
             {
                 return Err(
-                    "the realm's global Error is a getter, which microscope does not call".into(),
+                    "the realm's global Error is a getter, and microscope does not call getters"
+                        .into(),
                 );
             }
             return Ok(Some(Found::Data(value)));
@@ -236,20 +236,20 @@ fn probe_global(reader: &Reader<'_>, realm: &Realm) -> Result<Option<Found>, Pro
     Ok(None)
 }
 
-/// The most entries a global dictionary is probed through.
+/// The largest global dictionary capacity microscope probes.
 const MAX_PROBES: i64 = 1 << 20;
 
-/// What Node's default formatting needs of its `internal/errors` module.
+/// What default formatting uses from Node's `internal/errors` module.
 struct Node {
-    /// The module's `kIsNodeError`, the symbol a Node error has.
+    /// `kIsNodeError`, the symbol that marks a Node error.
     is_node_error: Object,
 }
 
 impl Node {
-    /// Node's formatting of the errors of `realm`, proven to be its
-    /// default: `globalThis.Error.prepareStackTrace` is Node's own
-    /// `ErrorPrepareStackTrace`, whose module formats with
-    /// `defaultPrepareStackTrace` and overrides no error's stack.
+    /// Checks that `realm` formats errors with Node's defaults:
+    /// `globalThis.Error.prepareStackTrace` is Node's
+    /// `ErrorPrepareStackTrace`, its module uses `defaultPrepareStackTrace`,
+    /// and no error's stack is overridden.
     fn find(reader: &Reader<'_>, realm: &Realm) -> Result<Self, Problem> {
         // `globalThis.Error?.prepareStackTrace`, in `prepareStackTraceCallback`.
         let constructor = match global_error(reader, realm)? {
@@ -258,33 +258,34 @@ impl Node {
                 .filter(|object| is_receiver(reader, *object).unwrap_or(false)),
             Found::Accessor { .. } => {
                 return Err(
-                    "the realm's global Error is a getter, which microscope does not call".into(),
+                    "the realm's global Error is a getter, and microscope does not call getters"
+                        .into(),
                 );
             }
             Found::Absent => None,
         }
         .ok_or(
-            "the realm's global Error is no object, so Node formats the stack with the main \
-             realm's Error.prepareStackTrace, which microscope does not follow",
+            "the realm's global Error is not an object, so Node would use the main realm's \
+             Error.prepareStackTrace, which microscope does not support",
         )?;
         let prepare = match lookup::find(reader, constructor, Key::Name("prepareStackTrace"))? {
             Found::Data(word) => reader.object(word)?,
             Found::Accessor { .. } => {
                 return Err(
-                    "Error.prepareStackTrace is a getter, which microscope does not call".into(),
+                    "Error.prepareStackTrace is a getter, and microscope does not call getters"
+                        .into(),
                 );
             }
             Found::Absent => None,
         }
         .filter(|function| lookup::is_callable(reader, *function).unwrap_or(false))
         .ok_or(
-            "the realm's Error.prepareStackTrace is no function, so Node formats the stack with \
-             the main realm's, which microscope does not follow",
+            "the realm's Error.prepareStackTrace is not a function, so Node would use the main \
+             realm's, which microscope does not support",
         )?;
         if !is_node_function(reader, prepare, "ErrorPrepareStackTrace")? {
             return Err(
-                "a custom Error.prepareStackTrace formats the stack, which microscope does not run"
-                    .into(),
+                "Error.prepareStackTrace is a custom function, and microscope cannot run it".into(),
             );
         }
 
@@ -304,28 +305,28 @@ impl Node {
                 .map(|word| reader.object(word))
                 .transpose()?
                 .flatten()
-                .ok_or_else(|| format!("Node's {name} is no object").into())
+                .ok_or_else(|| format!("Node's {name} is not an object").into())
         };
 
         let internal = local("internalPrepareStackTrace")?;
         if !is_node_function(reader, internal, "defaultPrepareStackTrace")? {
             return Err(
                 if is_node_function(reader, internal, "prepareStackTraceWithSourceMaps")? {
-                    "source maps are enabled, and microscope does not map a stack's positions \
-                     through them"
+                    "source maps are enabled, and microscope does not apply them to stack \
+                     positions"
                 } else {
-                    "Node formats stacks with an internal prepareStackTrace other than its \
-                     default, which microscope does not run"
+                    "Node uses an internal prepareStackTrace other than its default, and \
+                     microscope cannot run it"
                 }
                 .into(),
             );
         }
 
-        // `prepareStackTraceCallback` first asks whether Node overrides
-        // this error's stack; one that overrides any is refused.
+        // `prepareStackTraceCallback` first checks whether Node overrides
+        // this error's stack. Refuse if Node overrides any stack.
         let overrides = local("overrideStackTrace")?;
         if !reader.is(overrides, Constant::JSWeakMapType)? {
-            return Err("Node's overrideStackTrace is no WeakMap".into());
+            return Err("Node's overrideStackTrace is not a WeakMap".into());
         }
         let table = reader.typed_field(
             overrides,
@@ -335,27 +336,28 @@ impl Node {
         let length = reader.smi_field(table, Field::FixedArrayBaseLength)?;
         let index = reader.constant(Constant::HashTableNumberOfElementsIndex)?;
         if !(0..length).contains(&index) {
-            return Err("Node's overrideStackTrace has no count of its entries".into());
+            return Err("Node's overrideStackTrace has no entry count".into());
         }
         let count = reader.word(
             reader.field_address(table, Field::FixedArrayObjects)? + index.cast_unsigned() * 8,
         )?;
         if reader.smi(count)? != Some(0) {
             return Err(
-                "Node overrides the stack of some error, which microscope does not follow".into(),
+                "Node overrides the stack of some error, and microscope does not support that"
+                    .into(),
             );
         }
 
         let is_node_error = local("kIsNodeError")?;
         if !reader.is(is_node_error, Constant::SymbolType)? {
-            return Err("Node's kIsNodeError is no symbol".into());
+            return Err("Node's kIsNodeError is not a symbol".into());
         }
         Ok(Self { is_node_error })
     }
 
-    /// The first line `defaultPrepareStackTrace` writes of `error`:
-    /// ``${name} [${code}]: ${message}`` for a Node error, otherwise
-    /// `Error.prototype.toString`'s.
+    /// The first line `defaultPrepareStackTrace` writes for `error`:
+    /// ``${name} [${code}]: ${message}`` for a Node error, else what
+    /// `Error.prototype.toString` gives.
     fn header(&self, reader: &Reader<'_>, error: Object) -> Result<Units, Problem> {
         if has_symbol(reader, error, self.is_node_error)? {
             let mut text = Units::new();
@@ -387,7 +389,7 @@ impl Node {
     }
 }
 
-/// `ToString(object[name])`, with no getter called; `None` for undefined.
+/// `ToString(object[name])` without calling getters; `None` for undefined.
 fn get(reader: &Reader<'_>, object: Object, name: &str) -> Result<Option<Units>, Problem> {
     match lookup::get(reader, object, Key::Name(name))? {
         None => Ok(None),
@@ -396,8 +398,8 @@ fn get(reader: &Reader<'_>, object: Object, name: &str) -> Result<Option<Units>,
     }
 }
 
-/// `ToString` of the value `word`, where no program code runs for it;
-/// `None` for undefined.
+/// `ToString(word)` for values where it runs no program code; `None` for
+/// undefined.
 fn to_string(reader: &Reader<'_>, word: u64) -> Result<Option<Units>, Problem> {
     if let Some(integer) = reader.smi(word)? {
         return Ok(Some(integer.to_string().encode_utf16().collect()));
@@ -421,7 +423,7 @@ fn to_string(reader: &Reader<'_>, word: u64) -> Result<Option<Units>, Problem> {
         } else if is(Constant::OddballFalse) {
             "false"
         } else {
-            return Err(format!("an oddball of kind {kind}, which is no value").into());
+            return Err(format!("an oddball of unexpected kind {kind}").into());
         }
         .to_owned()
     } else if reader.is(object, Constant::HeapNumberType)? {
@@ -429,18 +431,18 @@ fn to_string(reader: &Reader<'_>, word: u64) -> Result<Option<Units>, Problem> {
             f64::from_bits(reader.word(reader.field_address(object, Field::HeapNumberValue)?)?);
         number_to_string(value)?
     } else if reader.is(object, Constant::SymbolType)? {
-        return Err("a symbol, which ToString throws on".into());
+        return Err("ToString throws on a symbol".into());
     } else {
         return Err(
-            "a value whose string V8 computes by calling its methods, which microscope does not"
+            "converting the value to a string calls its methods, and microscope cannot run them"
                 .into(),
         );
     };
     Ok(Some(text.encode_utf16().collect()))
 }
 
-/// `Number::toString` of `value` where it is a whole number below 10^21, or
-/// NaN or an infinity; any other is refused.
+/// `Number::toString` for NaN, the infinities, and whole numbers below
+/// 10^21. Refuses the rest.
 fn number_to_string(value: f64) -> Result<String, Problem> {
     if value.is_nan() {
         return Ok("NaN".to_owned());
@@ -455,16 +457,15 @@ fn number_to_string(value: f64) -> Result<String, Problem> {
         )]
         return Ok((value as i128).to_string());
     }
-    Err("a fractional number, whose shortest form microscope does not write".into())
+    Err("microscope does not format fractional numbers".into())
 }
 
-/// Whether `symbol` is a property of `object` or its prototypes, as `in`
-/// asks; a proxy's `has` trap is refused.
+/// Whether `symbol in object`. Refuses proxies, whose `has` trap would run.
 fn has_symbol(reader: &Reader<'_>, object: Object, symbol: Object) -> Result<bool, Problem> {
     let mut holder = object;
     for _ in 0..MAX_PROTOTYPES {
         if reader.is(holder, Constant::JSProxyType)? {
-            return Err("a proxy, whose has trap microscope does not call".into());
+            return Err("the object is a proxy, and microscope does not call its has trap".into());
         }
         if own::all_named(reader, holder)?
             .iter()
@@ -501,8 +502,8 @@ fn is_node_function(reader: &Reader<'_>, function: Object, name: &str) -> Result
         )?)
 }
 
-/// The words of the variables `wanted` that `function`'s closure sees, each
-/// as the innermost context that binds it holds it.
+/// The values of the variables `wanted` as `function`'s closure sees them,
+/// each from the innermost context that binds it.
 fn closure_locals(
     reader: &Reader<'_>,
     function: Object,
@@ -510,7 +511,7 @@ fn closure_locals(
 ) -> Result<BTreeMap<String, u64>, Problem> {
     let mut context = reader
         .object(reader.field(function, Field::JSFunctionContext)?)?
-        .ok_or("a function's context is no object")?;
+        .ok_or("a function's context is not an object")?;
     let mut found = BTreeMap::new();
     for _ in 0..MAX_CONTEXTS {
         if reader.is(context, Constant::NativeContextType)? {
@@ -527,7 +528,7 @@ fn closure_locals(
                 context,
                 Constant::ContextPreviousIndex,
             )?)?
-            .ok_or("a context's previous context is no object")?;
+            .ok_or("a context's previous context is not an object")?;
     }
     if let Some(missing) = wanted.iter().find(|name| !found.contains_key(**name)) {
         return Err(format!("Node's {NODE_ERRORS} has no {missing}").into());
@@ -549,17 +550,17 @@ struct Site {
     flags: i64,
 }
 
-/// The call sites `sites` holds, each read or with why it cannot be: from
-/// 14.6 the raw data `CallSiteInfo::ConstructFromRawData` reads, with its
-/// baseline frames resolved as `ExpandDeferredFrames` resolves them;
-/// before, `CallSiteInfo` objects.
+/// Reads each call site in `sites`, or why it can't be read. From V8 14.6
+/// they are raw data, as `CallSiteInfo::ConstructFromRawData` reads it,
+/// with baseline frames resolved as `ExpandDeferredFrames` does; before
+/// that they are `CallSiteInfo` objects.
 fn read_sites(reader: &Reader<'_>, sites: Object) -> Result<Vec<Result<Site, Problem>>, Problem> {
     let length = reader.smi_field(sites, Field::FixedArrayBaseLength)?;
     if !(0..=MAX_SITES).contains(&length) {
-        return Err(format!("an error keeps {length} call sites").into());
+        return Err(format!("an error claims {length} call sites").into());
     }
-    // Node's patch that keeps raw data came after V8 14.6 did: Node 26.5,
-    // of the same V8, keeps `CallSiteInfo` objects, as V8 does before.
+    // Node took V8's raw-data patch later than V8 14.6, so Node 26.5 on
+    // V8 14.6 still keeps `CallSiteInfo` objects.
     let objects = length == 0
         || reader
             .object(reader.element(sites, 0)?)?
@@ -584,7 +585,7 @@ fn read_sites(reader: &Reader<'_>, sites: Object) -> Result<Vec<Result<Site, Pro
         .collect())
 }
 
-/// The call site the `CallSiteInfo` `word` holds.
+/// The call site in the `CallSiteInfo` at `word`.
 fn call_site_info(reader: &Reader<'_>, word: u64) -> Result<Site, Problem> {
     let info = reader
         .object(word)?
@@ -593,7 +594,7 @@ fn call_site_info(reader: &Reader<'_>, word: u64) -> Result<Site, Problem> {
                 .is(*info, Constant::CallSiteInfoType)
                 .unwrap_or(false)
         })
-        .ok_or("a call site is no CallSiteInfo")?;
+        .ok_or("a call site is not a CallSiteInfo")?;
     let code = reader.field(info, Field::CallSiteInfoCodeObject)?;
     Ok(Site {
         receiver: reader.field(info, Field::CallSiteInfoReceiverOrInstance)?,
@@ -613,11 +614,11 @@ fn raw_site(reader: &Reader<'_>, sites: Object, base: i64) -> Result<Site, Probl
     let smi = |slot| -> Result<i64, Problem> {
         reader
             .smi(at(slot)?)?
-            .ok_or_else(|| format!("a call site's {} is no Smi", Constant::name(slot)).into())
+            .ok_or_else(|| format!("a call site's {} is not a Smi", Constant::name(slot)).into())
     };
     let wrapper = reader
         .object(at(Constant::CallSiteInfoRawCode)?)?
-        .ok_or("a call site's code is no object")?;
+        .ok_or("a call site's code is not an object")?;
     let code = if reader.is(wrapper, Constant::CodeWrapperType)? {
         Some(reader.typed_field(wrapper, Field::CodeWrapperCode, Constant::CodeType)?)
     } else if reader.is(wrapper, Constant::BytecodeWrapperType)? {
@@ -630,7 +631,7 @@ fn raw_site(reader: &Reader<'_>, sites: Object, base: i64) -> Result<Site, Probl
         None
     } else {
         return Err(format!(
-            "a call site's code is no code but of instance type {}",
+            "a call site's code has instance type {}, which is not code",
             reader.instance_type(wrapper)?
         )
         .into());
@@ -645,8 +646,8 @@ fn raw_site(reader: &Reader<'_>, sites: Object, base: i64) -> Result<Site, Probl
 
     let deferred = reader.constant(Constant::CallSiteInfoIsDeferredBaselineFrameMask)?;
     if site.flags & deferred != 0 {
-        // `ExpandDeferredFrames`: the baseline code's pc offset becomes the
-        // offset of its bytecode, and the code that bytecode.
+        // `ExpandDeferredFrames`: replace the baseline pc offset and code
+        // with the matching bytecode offset and bytecode.
         let code = compiled::code(reader, code.ok_or("a deferred call site has no code")?)?;
         if code.kind != reader.constant(Constant::CodeKindBaseline)? {
             return Err("a deferred call site's code is not baseline code".into());
@@ -656,7 +657,7 @@ fn raw_site(reader: &Reader<'_>, sites: Object, base: i64) -> Result<Site, Probl
         let pc = u64::try_from(site.offset).map_err(|_| "a negative pc offset")?;
         let (bytecode, offset) = compiled::baseline_offset(reader, &code, pc)?;
         if own != Some(bytecode) {
-            return Err("a baseline call site's bytecode is not its function's".into());
+            return Err("a baseline call site's bytecode does not belong to its function".into());
         }
         site.code = Some(bytecode);
         site.offset = offset;
@@ -665,15 +666,15 @@ fn raw_site(reader: &Reader<'_>, sites: Object, base: i64) -> Result<Site, Probl
     Ok(site)
 }
 
-/// The `JSFunction` the word `word` points to.
+/// The `JSFunction` at `word`.
 fn function_of(reader: &Reader<'_>, word: u64) -> Result<Object, Problem> {
     reader
         .object(word)?
         .filter(|function| is_function(reader, *function).unwrap_or(false))
-        .ok_or_else(|| "a call site's function is no JSFunction".into())
+        .ok_or_else(|| "a call site's function is not a JSFunction".into())
 }
 
-/// The flags of a call site that serializing it reads.
+/// The call site flags that serialization reads.
 #[derive(Debug, Clone, Copy)]
 struct Flags {
     constructor: bool,
@@ -686,10 +687,10 @@ impl Flags {
         let bit =
             |mask: Constant| -> Result<bool, Problem> { Ok(flags & reader.constant(mask)? != 0) };
         if bit(Constant::CallSiteInfoIsWasmMask)? || bit(Constant::CallSiteInfoIsAsmJsWasmMask)? {
-            return Err("a WebAssembly call site, which microscope does not write".into());
+            return Err("microscope does not format WebAssembly call sites".into());
         }
         if bit(Constant::CallSiteInfoIsBuiltinMask)? {
-            return Err("a call site in V8's own builtins, which microscope does not write".into());
+            return Err("microscope does not format call sites in V8's builtins".into());
         }
         Ok(Self {
             constructor: bit(Constant::CallSiteInfoIsConstructorMask)?,
@@ -746,7 +747,7 @@ impl<'r> Frame<'r> {
                 } else if self.reader.version.major >= 14 {
                     push(&mut text, "<anonymous>");
                 } else {
-                    return Err("a promise combinator with no name, which V8 cannot write".into());
+                    return Err("V8 before 14 cannot format an unnamed promise combinator".into());
                 }
                 push(&mut text, &format!(" (index {})", self.source_position()?));
                 return Ok(text);
@@ -909,19 +910,20 @@ impl<'r> Frame<'r> {
         infer_method_name(reader, receiver, self.function)
     }
 
-    /// Whether `receiver[name]`, found as a `LookupIterator` that skips
-    /// interceptors finds it, is the function, or an accessor pair whose
-    /// getter or setter is.
+    /// Whether `receiver[name]` is this function, or an accessor pair with
+    /// it as getter or setter. Looks it up as a `LookupIterator` that skips
+    /// interceptors does.
     fn holds_function(&self, receiver: Object, name: &[u16]) -> Result<bool, Problem> {
         let reader = self.reader;
-        let text = String::from_utf16(name).map_err(|_| "a method name that is no text")?;
+        let text =
+            String::from_utf16(name).map_err(|_| "a method name that is not valid UTF-16")?;
         if text
             .chars()
             .next()
             .is_some_and(|first| first.is_ascii_digit() || first == '-')
             || ["NaN", "Infinity"].contains(&text.as_str())
         {
-            return Err("a method name that is a number, which V8 looks up as an index".into());
+            return Err("a numeric method name, which V8 looks up as an index".into());
         }
         let mut holder = receiver;
         for _ in 0..MAX_PROTOTYPES {
@@ -942,7 +944,7 @@ impl<'r> Frame<'r> {
                 None => return Ok(false),
             }
         }
-        Err("the receiver's prototypes are too many".into())
+        Err("the receiver has too many prototypes".into())
     }
 
     /// `GetTypeName`, for a method call.
@@ -952,8 +954,8 @@ impl<'r> Frame<'r> {
         if reader.is(receiver, Constant::JSProxyType)? {
             return Ok("Proxy".encode_utf16().collect());
         }
-        // From 13.6 `GetTypeName` names a function receiver by its debug
-        // name; 12.4's `AppendMethodCall` names a class constructor so.
+        // From 13.6 `GetTypeName` uses a function receiver's debug name; in
+        // 12.4 `AppendMethodCall` does that only for class constructors.
         let named = if (reader.version.major, reader.version.minor) >= (13, 6) {
             is_function(reader, receiver)?
         } else {
@@ -968,19 +970,22 @@ impl<'r> Frame<'r> {
         constructors::constructor_name(reader, receiver)
     }
 
-    /// The receiver, which `Object::ToObject` would wrap were it a
-    /// primitive; a primitive is refused.
+    /// The receiver as an object. Refuses a primitive, which
+    /// `Object::ToObject` would wrap.
     fn receiver_object(&self) -> Result<Object, Problem> {
         let reader = self.reader;
         reader
             .object(self.site.receiver)?
             .filter(|receiver| is_receiver(reader, *receiver).unwrap_or(false))
             .ok_or_else(|| {
-                "a method called on a primitive, whose wrapper microscope does not make".into()
+                "the method was called on a primitive, and microscope does not create its \
+                 wrapper object"
+                    .into()
             })
     }
 
-    /// `IsMethodCall`: a call neither at the top level nor a constructor's.
+    /// `IsMethodCall`: a call that is neither top-level nor a constructor
+    /// call.
     fn is_method_call(&self) -> Result<bool, Problem> {
         let receiver = self.site.receiver;
         let top_level = is_null_or_undefined(self.reader, receiver)?
@@ -1007,8 +1012,8 @@ impl<'r> Frame<'r> {
         Ok(false)
     }
 
-    /// `GetSourcePosition`: the position V8 computed, or else the one the
-    /// code's position table gives its offset.
+    /// `GetSourcePosition`: the position V8 already computed, or else the
+    /// one the code's position table maps the offset to.
     fn source_position(&self) -> Result<i64, Problem> {
         if self.flags.position_computed {
             return Ok(self.site.offset);
@@ -1017,12 +1022,12 @@ impl<'r> Frame<'r> {
         if self.reader.is(code, Constant::BytecodeArrayType)? {
             return bytecode_position(self.reader, code, self.site.offset);
         }
-        Err("a call site in compiled code, whose positions microscope does not read".into())
+        Err("the call site is in machine code, and microscope does not read its positions".into())
     }
 }
 
-/// `SourcePosition` of the bytecode `bytecode` at `offset`: the script
-/// offset of the last position at or before it, 0 for none.
+/// `SourcePosition` of `bytecode` at `offset`: the script offset of the
+/// last position at or before it, or 0 if there is none.
 fn bytecode_position(reader: &Reader<'_>, bytecode: Object, offset: i64) -> Result<i64, Problem> {
     let table = reader
         .object(reader.field(bytecode, Field::BytecodeArraySourcePositionTable)?)?
@@ -1032,8 +1037,8 @@ fn bytecode_position(reader: &Reader<'_>, bytecode: Object, offset: i64) -> Resu
                 .any(|kind| reader.is(*table, *kind).unwrap_or(false))
         })
         .ok_or(
-            "V8 has not collected the function's source positions, which it would by parsing it \
-             again",
+            "V8 has not collected the function's source positions yet; that needs a fresh parse \
+             of the function",
         )?;
     let entries = positions::decode(
         &positions::byte_array(reader, table)?,
@@ -1056,8 +1061,8 @@ fn bytecode_position(reader: &Reader<'_>, bytecode: Object, offset: i64) -> Resu
     Ok(position)
 }
 
-/// `Script::GetPositionInfo` of `position` in `script`, with its line and
-/// column offsets where `with_offset`; a line and column of -1 where the
+/// `Script::GetPositionInfo` of `position` in `script`, plus the script's
+/// line and column offsets if `with_offset`. Line and column are -1 if the
 /// script has no such position.
 fn position_info(
     reader: &Reader<'_>,
@@ -1086,11 +1091,11 @@ fn position_info(
     Ok(info)
 }
 
-/// The line, from 0, that `position` of `script` is on, and the offset its
-/// line starts at, by the line ends V8's `String::CalculateLineEnds`
-/// gives: those the script keeps, or else those of its source, the last
-/// one past its end. `None` for a position past the last line's end, or a
-/// script with no source.
+/// The 0-based line `position` is on in `script`, and the offset where that
+/// line starts. Uses the line ends `String::CalculateLineEnds` gives: the
+/// script's cached ones, or else ones computed from its source, the last
+/// one past its end. `None` if the position is past the last line or the
+/// script has no source.
 fn line_start(
     reader: &Reader<'_>,
     sources: &Sources,
@@ -1104,7 +1109,7 @@ fn line_start(
         let end = |index| -> Result<i64, Problem> {
             reader
                 .smi(reader.element(ends, index)?)?
-                .ok_or_else(|| "a script's line end is no Smi".into())
+                .ok_or_else(|| "a script's line end is not a Smi".into())
         };
         let count = reader.smi_field(ends, Field::FixedArrayBaseLength)?;
         if count == 0 || end(count - 1)? < position {
@@ -1134,8 +1139,7 @@ fn line_start(
     if position > length {
         return Ok(None);
     }
-    // The units before the position and the one at it, which tells a "\r"
-    // that ends a line from one that begins "\r\n".
+    // Read one unit past the position to tell a lone "\r" from "\r\n".
     let wanted = (position + 1).min(length);
     let units = sources.prefix(reader, source, wanted.cast_unsigned())?;
     let (mut line, mut start) = (0, 0);
@@ -1159,16 +1163,15 @@ fn line_start(
     Ok(Some((line, start)))
 }
 
-/// The units of each script source read while writing one stack, from
-/// its start, so that its call sites in one script read the source once.
+/// Prefixes of the script sources read while formatting one stack, so call
+/// sites in the same script read its source once.
 #[derive(Default)]
 struct Sources(RefCell<BTreeMap<u64, Units>>);
 
 impl Sources {
-    /// At most the units read past this many in one read: a source's
-    /// longer prefix is read whole, so as not to take a read of each of
-    /// its blocks; a shorter one by blocks, which the stop keeps for the
-    /// stacks of the other errors read with it.
+    /// More new units than this are read in one piece rather than one read
+    /// per block. Fewer are read by block, and the stop keeps those blocks
+    /// for the other errors' stacks.
     const BY_BLOCKS: u64 = 16 * 1024;
 
     /// The first `wanted` units of the string `source`, or all it has.
@@ -1186,7 +1189,7 @@ impl Sources {
                 let piece = if wanted - have > Self::BY_BLOCKS {
                     wanted - have
                 } else {
-                    // Two-byte units fill a block at half as many.
+                    // A block holds half as many two-byte units as bytes.
                     (StopMemory::BLOCK / 2) as u64
                 };
                 let mut at = have;
@@ -1219,8 +1222,8 @@ const fn is_line_terminator_sequence(unit: u16, next: u16) -> bool {
     }
 }
 
-/// `Script::GetNameOrSourceURL`: its source URL where it has one, else its
-/// name; `None` where that is no string.
+/// `Script::GetNameOrSourceURL`: its source URL if it has one, else its
+/// name; `None` if that is not a string.
 fn name_or_source_url(reader: &Reader<'_>, script: Object) -> Result<Option<Units>, Problem> {
     let url = reader.field(script, Field::ScriptSourceUrl)?;
     let word = if is_undefined(reader, url)? {
@@ -1234,7 +1237,7 @@ fn name_or_source_url(reader: &Reader<'_>, script: Object) -> Result<Option<Unit
     }
 }
 
-/// `Script::HasSourceURLComment`: its source URL is a string, not empty.
+/// `Script::HasSourceURLComment`: its source URL is a non-empty string.
 fn has_source_url_comment(reader: &Reader<'_>, script: Object) -> Result<bool, Problem> {
     match reader.object(reader.field(script, Field::ScriptSourceUrl)?)? {
         Some(url) if is_string(reader, url)? => {
@@ -1256,7 +1259,7 @@ fn is_eval(reader: &Reader<'_>, script: Object) -> Result<bool, Problem> {
     Ok(kind == reader.constant(Constant::ScriptCompilationTypeEval)?)
 }
 
-/// `FormatEvalOrigin` of the eval's script `script`, `depth` evals deep.
+/// `FormatEvalOrigin` of the eval script `script`, nested `depth` deep.
 fn eval_origin(
     reader: &Reader<'_>,
     sources: &Sources,
@@ -1309,7 +1312,7 @@ fn eval_origin(
     Ok(text)
 }
 
-/// The function whose code made the eval's script `script`, if known.
+/// The function whose code created the eval script `script`, if known.
 fn eval_from_shared(reader: &Reader<'_>, script: Object) -> Result<Option<Object>, Problem> {
     let word = reader.field(script, Field::ScriptEvalFromSharedOrWrappedArguments)?;
     Ok(reader.object(word)?.filter(|shared| {
@@ -1319,8 +1322,8 @@ fn eval_from_shared(reader: &Reader<'_>, script: Object) -> Result<Option<Object
     }))
 }
 
-/// `Script::GetEvalPosition`: where in its caller's script the eval was
-/// made; a negative position is the caller's bytecode offset, not yet
+/// `Script::GetEvalPosition`: where in the caller's script the eval
+/// happened. A negative position is a caller bytecode offset not yet
 /// translated.
 fn eval_position(reader: &Reader<'_>, script: Object) -> Result<i64, Problem> {
     let position = reader.smi_field(script, Field::ScriptEvalFromPosition)?;
@@ -1339,8 +1342,8 @@ fn eval_position(reader: &Reader<'_>, script: Object) -> Result<i64, Problem> {
 fn debug_name(reader: &Reader<'_>, function: Object) -> Result<Units, Problem> {
     let shared = shared(reader, function)?;
     if let Some(name) = initializer_name(reader, shared)? {
-        // No program reaches an initializer, so its map keeps the `name`
-        // accessor, and V8 names it by its shared information.
+        // Programs can't reach an initializer, so its `name` accessor is
+        // never replaced and V8 names it from its shared info.
         return Ok(name.encode_utf16().collect());
     }
     whole(&names::debug_name(reader, function, shared)?)
@@ -1354,21 +1357,22 @@ fn shared_debug_name(reader: &Reader<'_>, shared: Object) -> Result<Units, Probl
     whole(&names::function_name(reader, shared)?)
 }
 
-/// `name`, refused where it may be cut short: names are read to at most
-/// [`MAX_STRING`] characters.
+/// `name` as units. Refused if it may have been cut off: names are read to
+/// at most [`MAX_STRING`] characters.
 fn whole(name: &str) -> Result<Units, Problem> {
     let units: Units = name.encode_utf16().collect();
     if u64::try_from(units.len()).is_ok_and(|length| length < MAX_STRING) {
         return Ok(units);
     }
-    Err("a function name too long to read whole".into())
+    Err("a function name too long to read in full".into())
 }
 
-/// What `DebugName` names a class's field initializer.
+/// The name `DebugName` gives a class field initializer.
 fn initializer_name(reader: &Reader<'_>, shared: Object) -> Result<Option<&'static str>, Problem> {
     let kind = function_kind(reader, shared)?;
     let first = reader.constant(Constant::FunctionKindClassMembersInitializerFunction)?;
-    // From 14.6 each initializer has a kind preceded by the other's.
+    // 14.6 adds a second kind of each initializer, for when the other kind
+    // precedes it.
     let instance = reader
         .constant(Constant::FunctionKindClassMembersInitializerFunctionPrecededByStatic)
         .unwrap_or(first);
@@ -1382,8 +1386,9 @@ fn initializer_name(reader: &Reader<'_>, shared: Object) -> Result<Option<&'stat
     }))
 }
 
-/// `IsClassMembersInitializerFunction` through 13.6, and from 14.6
-/// `IsClassInitializerFunction`: a class's field initializer.
+/// Whether `shared` is a class field initializer:
+/// `IsClassMembersInitializerFunction` through 13.6,
+/// `IsClassInitializerFunction` from 14.6.
 fn is_class_initializer(reader: &Reader<'_>, shared: Object) -> Result<bool, Problem> {
     let kind = function_kind(reader, shared)?;
     let first = reader.constant(Constant::FunctionKindClassMembersInitializerFunction)?;
@@ -1403,8 +1408,8 @@ fn function_kind(reader: &Reader<'_>, shared: Object) -> Result<i64, Problem> {
     )
 }
 
-/// The builtin `shared` runs, by its number, if it is one of V8's
-/// builtins (`HasBuiltinId`): its function data is that number, a Smi.
+/// The number of the V8 builtin `shared` runs, if any (`HasBuiltinId`): a
+/// builtin's function data is its number as a Smi.
 fn builtin_id(reader: &Reader<'_>, shared: Object) -> Result<Option<i64>, Problem> {
     let field = if reader
         .layout
@@ -1419,8 +1424,8 @@ fn builtin_id(reader: &Reader<'_>, shared: Object) -> Result<Option<i64>, Proble
         .filter(|id| *id >= 0))
 }
 
-/// The `DataView.prototype` methods `Builtins::NameForStackTrace` names,
-/// the same in 12.4, 13.6, and 14.6.
+/// The `DataView.prototype` methods `Builtins::NameForStackTrace` names.
+/// The list is the same in 12.4, 13.6, and 14.6.
 const DATA_VIEW_METHODS: [&str; 22] = [
     "getBigInt64",
     "getBigUint64",
@@ -1446,12 +1451,11 @@ const DATA_VIEW_METHODS: [&str; 22] = [
     "setUint32",
 ];
 
-/// `Builtins::NameForStackTrace` of the builtin numbered `id` that
-/// `function` runs, `None` for one it does not name. The builtins it names
-/// are each installed once, on `DataView.prototype` or
-/// `String.prototype`, under the name their shared information keeps, so
-/// the builtin of that property of `function`'s realm tells whether `id`
-/// is the one named.
+/// `Builtins::NameForStackTrace` of builtin `id`, which `function` runs;
+/// `None` if it has no such name. Each builtin it names is installed once,
+/// on `DataView.prototype` or `String.prototype` under its shared name, so
+/// comparing `id` with that property's builtin in `function`'s realm tells
+/// whether this is the named one.
 fn name_for_stack_trace(
     reader: &Reader<'_>,
     function: Object,
@@ -1466,7 +1470,7 @@ fn name_for_stack_trace(
     let slot = |index| -> Result<Object, Problem> {
         reader
             .object(access::slot(reader, native, index)?)?
-            .ok_or_else(|| format!("the realm's {} is no object", Constant::name(index)).into())
+            .ok_or_else(|| format!("the realm's {} is not an object", Constant::name(index)).into())
     };
     let data_view = || -> Result<Object, Problem> {
         match lookup::get(
@@ -1476,7 +1480,7 @@ fn name_for_stack_trace(
         )? {
             Some(lookup::Value::Word(word)) => reader
                 .object(word)?
-                .ok_or_else(|| "DataView.prototype is no object".into()),
+                .ok_or_else(|| "DataView.prototype is not an object".into()),
             _ => Err("DataView has no prototype".into()),
         }
     };
@@ -1517,17 +1521,17 @@ fn name_for_stack_trace(
     match installed {
         Some(installed) => Ok((installed == id).then_some(name)),
         None => Err(format!(
-            "the realm's {} is not V8's, so microscope cannot tell whether V8 names this builtin \
-             {name}",
+            "the realm's {} is not V8's builtin, so microscope cannot tell whether V8 names \
+             this builtin {name}",
             name.trim_start_matches("get ")
         )
         .into()),
     }
 }
 
-/// `InferMethodName`: the one enumerable string key of the receiver or its
-/// prototypes whose value, or accessor, is `function`; `None` for none or
-/// more than one.
+/// `InferMethodName`: the one enumerable string key on the receiver or its
+/// prototypes whose value or accessor is `function`; `None` if there are
+/// none or several.
 fn infer_method_name(
     reader: &Reader<'_>,
     receiver: Object,
@@ -1549,8 +1553,8 @@ fn infer_method_name(
         }
         if reader.is(current, Constant::JSGlobalProxyType)? {
             return Err(
-                "a global proxy among the receiver's prototypes, whose access check microscope \
-                 does not make"
+                "the receiver's prototypes include a global proxy, and microscope does not do \
+                 access checks"
                     .into(),
             );
         }
@@ -1562,7 +1566,7 @@ fn infer_method_name(
             && reader.is(table, Constant::SwissNameDictionaryType)?
         {
             return Err(
-                "an object kept in a Swiss name dictionary, which microscope does not read".into(),
+                "microscope does not read objects stored in a Swiss name dictionary".into(),
             );
         }
         for property in own::all_named(reader, current)? {
@@ -1584,7 +1588,7 @@ fn infer_method_name(
                 Inferred::Key(_) | Inferred::Null => Inferred::Null,
             };
         }
-        // `PrototypeIterator::Advance`: the map's prototype, to null.
+        // `PrototypeIterator::Advance`: follow map prototypes until null.
         match reader.object(reader.field(reader.map(current)?, Field::MapPrototype)?)? {
             Some(next) if !reader.is(next, Constant::OddballType)? => current = next,
             _ => break,
@@ -1619,10 +1623,10 @@ fn access_check_needed(reader: &Reader<'_>, object: Object) -> Result<bool, Prob
     )? != 0)
 }
 
-/// Refuses an object a lookup would stop at for an access check.
+/// Errors if a lookup would stop at `object` for an access check.
 fn refuse_access_checks(reader: &Reader<'_>, object: Object) -> Result<(), Problem> {
     if reader.is(object, Constant::JSGlobalProxyType)? || access_check_needed(reader, object)? {
-        return Err("an object behind an access check, which microscope does not make".into());
+        return Err("the object needs an access check, and microscope does not do those".into());
     }
     Ok(())
 }
@@ -1638,16 +1642,16 @@ fn ends_with_method_name(subject: &[u16], pattern: &[u16]) -> bool {
         && [u16::from(b'.'), u16::from(b' ')].contains(&subject[subject.len() - pattern.len() - 1])
 }
 
-/// `String::IsIdentifier`, unit by unit: an identifier's start, then its
-/// parts, with `$`, `_`, and `\` among both. Past Latin-1 V8 asks ICU's
-/// tables, which microscope does not have, so such a name is refused.
+/// `String::IsIdentifier` for Latin-1 names, with `$`, `_`, and `\` allowed
+/// in any position. Beyond Latin-1 V8 uses ICU's tables, which microscope
+/// lacks, so such names are refused.
 fn is_identifier(name: &[u16]) -> Result<bool, Problem> {
     let Some((first, rest)) = name.split_first() else {
         return Ok(false);
     };
     if name.iter().any(|unit| *unit > 0xff) {
         return Err(
-            "a function name past Latin-1, whose identifier test needs ICU's tables".into(),
+            "the function name goes beyond Latin-1, and checking it needs ICU's tables".into(),
         );
     }
     let start = |unit: u16| {
@@ -1691,7 +1695,7 @@ fn is_string(reader: &Reader<'_>, object: Object) -> Result<bool, Problem> {
     Ok(reader.instance_type(object)? < reader.constant(Constant::FirstNonstringType)?)
 }
 
-/// Whether `object` is a `JSReceiver`, an object as JavaScript has them.
+/// Whether `object` is a `JSReceiver`, an object in the JavaScript sense.
 fn is_receiver(reader: &Reader<'_>, object: Object) -> Result<bool, Problem> {
     let ty = reader.instance_type(object)?;
     Ok((reader.constant(Constant::FirstJSReceiverType)?

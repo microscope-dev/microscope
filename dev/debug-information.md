@@ -488,15 +488,15 @@ failure refuses only what needs it:
   `ExternalReference::js_dispatch_table_address`: a word of each isolate in
   14.6, or of the isolate group a global points to in 13.6; `None` before
   13.6. That function is local, so a module stripped of its symbols, as
-  Debian's libnode, does not name it. For 13.6 the same two facts are then
-  read from code V8's API exports: the global, from the load
-  `v8::IsolateGroup::GetDefault()` makes before incrementing the group's
-  reference count; the table's offset in the group, from
-  `v8::IsolateGroup::~IsolateGroup()`, followed through the group's
-  `Release` and `delete` into its destructor, as the word the table's
-  `TearDown` clears after freeing its first segment and before deleting
-  the address space held in the next word. A 14.6 module without the
-  symbol has an error here;
+  Debian's libnode, does not name it. For 13.6 both facts then come from
+  functions V8's API exports. The global is the one
+  `v8::IsolateGroup::GetDefault()` loads before it increments the group's
+  reference count. The table's offset in the group comes from
+  `v8::IsolateGroup::~IsolateGroup()`, followed through `Release` and
+  `delete` into the destructor: it is the word the table's `TearDown`
+  clears after freeing its first segment and before deleting the address
+  space in the next word. A 14.6 module without the symbol has an error
+  here;
 - `embedded_blob`, the variables that hold the embedded builtins' bounds,
   from the exported `v8::Isolate::GetEmbeddedCodeRange`, by following which
   call's result it stores through each argument, then the one rip-relative
@@ -533,13 +533,13 @@ does the same for `src/image/v8/translation.gen.rs`, each version's
 translation opcodes with their operand counts, from `translation-opcode.h`,
 which `image::v8::Translations` serves to the runtime model by version and
 refuses by name for any other. `bytecode_sizes_match_torque` does the
-same for `src/image/v8/bytecodes.gen.rs`, each version's
-`Bytecodes::kBytecodeSizes` computed from `src/interpreter/bytecodes.h` and
-`bytecode-operands.h` (`v8/bytecodes.rs`), by which a Sparkplug frame's
-instruction maps to its bytecode. The table is a local symbol, which
-Debian's libnode strips. `each_builds_bytecode_sizes_are_the_generated_ones`
-holds it to each build's own table byte for byte, and to the one copy in
-Debian's read-only data.
+same for `src/image/v8/bytecodes.gen.rs`: `v8/bytecodes.rs` computes each
+version's `Bytecodes::kBytecodeSizes` from `src/interpreter/bytecodes.h`
+and `bytecode-operands.h`. The sizes map a Sparkplug frame's instruction
+to its bytecode. V8's own table is a local symbol, which Debian's libnode
+strips. `each_builds_bytecode_sizes_are_the_generated_ones` checks the
+generated table byte for byte against each build's own table and against
+the one copy in Debian's read-only data.
 `every_build_in_the_matrix_binds_to_its_layout` binds every build in
 `MICROSCOPE_NODE`, Debian's libnode included, and checks its version, the
 counts of agreeing fields, instance types, and header constants, the code

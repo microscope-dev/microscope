@@ -568,10 +568,8 @@ impl<P: InspectionOps> Controller<P> {
             | FrameKind::Interpreted { .. } => PresentedFrame::Physical,
         };
 
-        // Only code a function describes has a source scope. A function a
-        // runtime recorded is in its runtime's, which reads it from the
-        // frame its frame pointer locates; one its code inlined has none
-        // the frame keeps.
+        // Only code a function describes has a source scope. A described
+        // activation's runtime reads it from the frame at rbp; an inlined one has none.
         let scope = match (selected.kind, selected.code_instance, source) {
             (
                 _,
@@ -1121,8 +1119,8 @@ pub(super) enum FrameSource {
     /// where its place is unknown, in [`Expanded::interpreted`].
     Interpreted(usize),
 
-    /// A function its activation runs as `runtime` recorded it, as V8
-    /// records its frames: the activation's own, or one its code inlined.
+    /// A function `runtime` recorded for the activation, as V8 does: the
+    /// activation's own, or one its code inlined.
     Described {
         runtime: crate::RuntimeId,
         inlined: bool,

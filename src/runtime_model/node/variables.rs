@@ -1,13 +1,11 @@
-//! The variables of a JavaScript frame, as V8 keeps them at any stop: its
-//! receiver and the arguments its caller passed, by position, on the
-//! stack above its frame pointer; the variables its closures capture, by
-//! name, in its context chain, each context named by its `ScopeInfo`; and
-//! the interpreter's registers, which hold its other locals, by number.
+//! The variables of a JavaScript frame: the receiver and arguments on the
+//! stack above the frame pointer, captured variables by name from the
+//! context chain (named by each context's `ScopeInfo`), and the other locals
+//! as numbered interpreter registers.
 //!
-//! V8 names a variable no closure captures only in its source, which only
-//! its parser reads (F11), so a register is `r0`, `r1`, and so on. An
-//! optimized frame keeps its locals where its translation says, which is
-//! not read here, so it has no registers.
+//! V8 keeps no names for locals that no closure captures (F11), so registers
+//! are shown as `r0`, `r1`, and so on. Optimized frames show no registers
+//! because their deoptimization translation is not read.
 
 use std::collections::BTreeSet;
 
@@ -27,11 +25,11 @@ pub(super) enum Kind {
     Receiver,
     /// The argument at this position.
     Argument(u32),
-    /// A variable of a context the frame's function made, by its name: its
-    /// function's, a block's, or a catch clause's, that a closure captures.
+    /// A captured variable in a context the frame's function created: a
+    /// function, block, or catch scope.
     Local,
-    /// A variable of a context around the function, which its closure
-    /// captured where it was made.
+    /// A variable from a context outside the function, captured when the
+    /// closure was created.
     Captured,
     /// A top-level binding of a module, or a top-level `let`, `const`, or
     /// `class` of any script.
@@ -57,8 +55,8 @@ impl Kind {
 }
 
 /// Why an interpreter register has no name.
-pub(super) const UNNAMED: &str = "V8 names only the locals a closure captures; the \
-    rest are interpreter registers, which only the function's source names";
+pub(super) const UNNAMED: &str =
+    "V8 only records names for variables that a closure uses, so these have none";
 
 /// One variable of a frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,15 +64,14 @@ pub(super) struct Variable {
     pub(super) name: String,
     pub(super) kind: Kind,
 
-    /// Its tagged word, or why it cannot be read. The hole is a `let` or
-    /// `const` not yet initialized.
+    /// Its tagged word, or why it can't be read. The hole means a `let` or
+    /// `const` that is not initialized yet.
     pub(super) word: Result<u64, Problem>,
 }
 
-/// The variables of the JavaScript frame whose frame pointer is `fp`, in
-/// the order a debugger shows them: the receiver, the arguments, the
-/// context's variables from the innermost scope out, each name shown once
-/// as the innermost scope binds it, and the registers.
+/// The variables of the JavaScript frame at `fp`, in display order: `this`,
+/// arguments, context variables from the innermost scope out (each name
+/// once), registers, script and module bindings, then `globalThis`.
 pub(super) fn variables(reader: &Reader<'_>, fp: u64) -> Result<Vec<Variable>, Problem> {
     let function = super::frames::javascript_function(reader, fp)?
         .ok_or("the frame runs no JavaScript function")?;
@@ -95,17 +92,12 @@ pub(super) fn variables(reader: &Reader<'_>, fp: u64) -> Result<Vec<Variable>, P
     let context = reader.word(at(Constant::OffFpContext)?)?;
     let context = reader
         .object(context)?
-        .ok_or("the frame's context is no object")?;
-    // An arrow function's `this` is the one where it was defined, which V8
-    // keeps in a context as the local `this` where the arrow uses it; the
-    // receiver its caller passed is not it.
+        .ok_or("the frame's context is not an object")?;
+    // An arrow's `this` comes from where it was defined, not from the
+    // caller. V8 keeps it as a context local only if the arrow uses it.
     let this = if is_arrow(reader, function)? {
         lexical_this(reader, context)?.unwrap_or_else(|| {
-            Err(
-                "an arrow function's `this` is its definer's, which no context kept: \
-                 the arrow does not use it"
-                    .into(),
-            )
+            Err("V8 did not keep `this` because the arrow function does not use it".into())
         })
     } else {
         reader.word(first)
@@ -158,9 +150,8 @@ pub(super) fn variables(reader: &Reader<'_>, fp: u64) -> Result<Vec<Variable>, P
     Ok(found)
 }
 
-/// How many registers the frame at `fp`, which runs `function`, keeps:
-/// `None` for a frame that keeps no register file, an optimized one,
-/// whose bytecode slot holds no bytecode of its function.
+/// How many registers the frame at `fp` has, or `None` for an optimized
+/// frame, whose bytecode slot does not hold `function`'s bytecode.
 fn registers(reader: &Reader<'_>, fp: u64, function: Object) -> Result<Option<u32>, Problem> {
     let slot = fp.wrapping_add_signed(reader.constant(Constant::OffFpBytecodeArray)?);
     let Some(bytecode) = reader.object(reader.word(slot)?)? else {
@@ -185,10 +176,8 @@ fn registers(reader: &Reader<'_>, fp: u64, function: Object) -> Result<Option<u3
     Ok(u32::try_from(count).ok())
 }
 
-/// The variables of `context` and the contexts around it, up to the
-/// native context, each name shown once, as the innermost scope binds it:
-/// the frame's own up to `closure`, the context its function was made in,
-/// and captured from there out.
+/// The variables of `context` and its outer contexts up to the native
+/// context, each name once. Contexts before `closure` are the frame's own.
 fn context_variables(
     reader: &Reader<'_>,
     mut context: Object,
@@ -206,7 +195,9 @@ fn context_variables(
         let first = reader.constant(Constant::FirstContextType)?;
         let last = reader.constant(Constant::LastContextType)?;
         if !(first..=last).contains(&ty) {
-            return Err(format!("{:#x}, of instance type {ty}, is no context", context.0).into());
+            return Err(
+                format!("{:#x}, of instance type {ty}, is not a context", context.0).into(),
+            );
         }
         let kind = if ty == reader.constant(Constant::ScriptContextType)?
             || ty == reader.constant(Constant::ModuleContextType)?
@@ -229,13 +220,13 @@ fn context_variables(
         let previous = slot(reader, context, Constant::ContextPreviousIndex)?;
         context = reader
             .object(previous)?
-            .ok_or("a context's previous context is no object")?;
+            .ok_or("a context's previous context is not an object")?;
     }
-    Err("the frame's contexts are too many".into())
+    Err("the frame has too many contexts".into())
 }
 
 /// Whether `function` is an arrow function, as V8's `IsArrowFunction`
-/// says of its kind.
+/// decides from its kind.
 fn is_arrow(reader: &Reader<'_>, function: Object) -> Result<bool, Problem> {
     let shared = reader.typed_field(
         function,
@@ -250,8 +241,7 @@ fn is_arrow(reader: &Reader<'_>, function: Object) -> Result<bool, Problem> {
         .contains(&kind))
 }
 
-/// The `this` the innermost context around `context`, or `context`
-/// itself, keeps as a local, if any does.
+/// The `this` local of `context` or the nearest outer context that has one.
 fn lexical_this(
     reader: &Reader<'_>,
     mut context: Object,
@@ -270,9 +260,9 @@ fn lexical_this(
         let previous = slot(reader, context, Constant::ContextPreviousIndex)?;
         context = reader
             .object(previous)?
-            .ok_or("a context's previous context is no object")?;
+            .ok_or("a context's previous context is not an object")?;
     }
-    Err("the frame's contexts are too many".into())
+    Err("the frame has too many contexts".into())
 }
 
 /// The tagged word in the slot `index` of `context`.
@@ -284,10 +274,8 @@ fn slot(reader: &Reader<'_>, context: Object, index: Constant) -> Result<u64, Pr
 /// A context local's name and its tagged word, or why it cannot be read.
 pub(super) type Local = (String, Result<u64, Problem>);
 
-/// Each local `context` keeps, as its scope info names it, with its word;
-/// those V8 makes for itself, whose names begin with `.`, are left out, as
-/// V8's own debugger leaves them out, and so is `this`, which is no
-/// variable a name binds.
+/// Each named local of `context` with its word. Like V8's debugger, this
+/// skips V8's internal locals (names starting with `.`) and `this`.
 pub(super) fn locals(reader: &Reader<'_>, context: Object) -> Result<Vec<Local>, Problem> {
     let mut found = all_locals(reader, context)?;
     found.retain(|(name, _)| name != "this");
@@ -300,7 +288,7 @@ fn all_locals(reader: &Reader<'_>, context: Object) -> Result<Vec<Local>, Proble
     let scope = reader
         .object(scope)?
         .filter(|scope| reader.is(*scope, Constant::ScopeInfoType).unwrap_or(false))
-        .ok_or("a context's scope info is no ScopeInfo")?;
+        .ok_or("a context's scope info is not a ScopeInfo")?;
     let count = reader.smi_field(scope, Field::ScopeInfoContextLocalCount)?;
     if count == 0 {
         return Ok(Vec::new());
@@ -322,7 +310,7 @@ fn all_locals(reader: &Reader<'_>, context: Object) -> Result<Vec<Local>, Proble
     for (index, name) in names {
         let name = reader
             .object(name)?
-            .ok_or("a context local's name is no string")?;
+            .ok_or("a context local's name is not a string")?;
         let name = reader.string(name)?;
         if name.is_empty() || name.starts_with('.') {
             continue;
@@ -332,11 +320,10 @@ fn all_locals(reader: &Reader<'_>, context: Object) -> Result<Vec<Local>, Proble
     Ok(found)
 }
 
-/// The tagged name of each of the `count` context locals of `scope`,
-/// whose untagged start is `start`, with its index, in index order: from
-/// the scope's own slots, or, past V8's
-/// `kScopeInfoMaxInlinedLocalNamesSize`, from the `NameToIndexHashTable`
-/// it keeps instead, each name's value there being its index.
+/// The index and tagged name of each of the `count` context locals of
+/// `scope` (untagged start `start`), in index order. Past V8's
+/// `kScopeInfoMaxInlinedLocalNamesSize`, names are in a
+/// `NameToIndexHashTable` that maps each name to its index.
 fn local_names(
     reader: &Reader<'_>,
     scope: Object,
@@ -355,7 +342,7 @@ fn local_names(
 
     let missing = || {
         format!(
-            "the scope {:#x} of {count} context locals keeps no names",
+            "the scope {:#x} has {count} context locals but no names",
             scope.0
         )
     };

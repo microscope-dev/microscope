@@ -7,8 +7,8 @@
 import truth from '../truth.js';
 import {total} from './helper.mts';
 
-// The callback captures a binding of the module's own scope and one of
-// settle's, each of a scope a debugger names apart.
+// The callback captures a module binding and one of settle's locals, which
+// a debugger shows in separate scopes.
 const label = 'modules';
 
 function settle(entries) {

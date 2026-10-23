@@ -245,9 +245,9 @@ function paths(root, values) {
     Object.entries(members).map(([name, value]) => [`${root}.${group}.${name}`, value])));
 }
 
-// The errors of unread, none of whose stacks anything reads: each is made
-// where V8 writes a call site its own way, so that inspecting unread at
-// "unread" formats every one.
+// The errors in unread, whose stacks nothing reads. Each is made where V8
+// writes a call site in its own way, so inspecting unread at "unread"
+// formats every kind.
 
 class Widget {}
 
@@ -336,8 +336,8 @@ function nodeError() {
   throw new Error('Buffer.alloc(-1) did not throw');
 }
 
-// Functions each run in one tier when they make their error, forced with
-// V8's natives, which code compiled after the flag may call.
+// Each function makes its error in one tier, forced with V8's natives,
+// which only code compiled after the flag can call.
 function inTurbofan() {
   return new Error('in Turbofan code');
 }
@@ -394,8 +394,8 @@ function tieredErrors() {
   };
 }
 
-// Each error but topLevel keeps only the frames its own case makes, so that
-// inspecting them all fits in one evaluation's reads.
+// Each error but topLevel keeps only its own case's frames, so inspecting
+// them all fits in one evaluation's reads.
 async function unreadErrors(topLevel) {
   const widget = new Widget();
   widget.describe = describeWidget;

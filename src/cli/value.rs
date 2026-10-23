@@ -488,10 +488,10 @@ pub struct Layout {
 /// How a printed value breaks across lines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lines {
-    /// `/l`: on one line, which a value its runtime writes over several
-    /// keeps to as its summary.
+    /// `/l`: one line. A value its runtime writes over several lines shows
+    /// its summary.
     One,
-    /// On the lines the value's runtime writes it on, and else one.
+    /// As the value's runtime writes it, else on one line.
     Runtime,
     /// With groups that do not fit the width broken across lines.
     Pretty,
@@ -805,8 +805,7 @@ pub async fn expanded(
                     .as_deref()
                     .filter(|_| layout.hexadecimal)
                     .and_then(|number| hexadecimal_text(number.type_info.as_ref()?, &number.state));
-                // The value itself shows whole, over the lines its runtime
-                // writes it on; what it holds shows as one line each.
+                // The value shows as its runtime writes it; each child gets one line.
                 let text = if depth == 0 && layout.lines != Lines::One {
                     presentation.text()
                 } else {

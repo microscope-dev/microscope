@@ -189,8 +189,8 @@ impl NodeSession {
         self.running = Some(self.scenario.start_resuming().await);
     }
 
-    /// Lets the stopped fixture go on from the checkpoint it parks at: the
-    /// line it waits for is written, and it runs to its next checkpoint.
+    /// Writes the line the parked fixture waits for and runs it to its next
+    /// checkpoint.
     pub async fn proceed(&mut self) {
         use std::io::Write;
 

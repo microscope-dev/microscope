@@ -30,13 +30,12 @@ pub(super) struct Reader<'a> {
     pub(super) layout: &'a V8Layout,
     pub(super) version: V8Version,
 
-    /// What pays for each read of this many bytes, if anything does: an
-    /// inspection's budget, which refuses a read once it is spent.
+    /// Charges the size of each read to an inspection's budget, if there is
+    /// one. Fails the read once the budget is spent.
     pub(super) charge: Option<&'a dyn Fn(usize) -> Result<(), Problem>>,
 
-    /// Where the blocks read are kept, if they are: a read of at most a
-    /// block is then read by the block, from those kept where it can be,
-    /// and only a block read anew is paid for.
+    /// The block cache, if any. Reads of up to one block go through it,
+    /// and only blocks not already cached are charged.
     pub(super) blocks: Option<&'a StopMemory>,
 }
 
@@ -51,9 +50,9 @@ impl Reader<'_> {
             && bytes.len() <= StopMemory::BLOCK
             && address.checked_add(bytes.len() as u64).is_some()
         {
-            // At most two blocks hold the bytes. Where one cannot be read,
-            // the bytes themselves may yet be, as at the end of a mapping
-            // that ends inside a block, so they are read as without blocks.
+            // The bytes span at most two blocks. If a block can't be read,
+            // the bytes alone may still be (a mapping can end inside a
+            // block), so fall back to a direct read.
             let mut done = 0;
             while let Some(rest) = bytes.get_mut(done..)
                 && !rest.is_empty()

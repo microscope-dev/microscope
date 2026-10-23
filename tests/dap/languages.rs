@@ -345,8 +345,7 @@ fn javascript_frames_show_their_recorded_source() {
     let parks = line_of(&source("node/stacks.js"), "truth.park({label})");
     assert_eq!(inner["line"], parks, "{inner}");
 
-    // Each of the frame's scopes that has variables is listed, then the
-    // machine's registers of the activation that runs it.
+    // Every scope with variables is listed, then the activation's registers.
     let scopes = dap.request("scopes", json!({"frameId": inner["id"]}));
     let names: Vec<&str> = scopes["scopes"]
         .as_array()
@@ -367,8 +366,7 @@ fn javascript_frames_show_their_recorded_source() {
         "{scopes}"
     );
 
-    // A watch shows a value on one line; a hover shows it over the lines
-    // `console.log` writes it on.
+    // A watch shows one line; a hover shows the lines `console.log` writes.
     let evaluate = |dap: &mut Dap, context: &str| {
         let body = dap.request(
             "evaluate",

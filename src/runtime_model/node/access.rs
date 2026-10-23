@@ -1,7 +1,7 @@
-//! Expressions over JavaScript values: names bound as JavaScript binds them
-//! (the frame's variables, which end with every script's top-level
-//! bindings, then the global object's properties), and members, elements, lengths,
-//! and operands, with no getter or proxy trap called.
+//! Expressions over JavaScript values: name lookup in JavaScript's order
+//! (frame variables, script top-level bindings, then global properties),
+//! members, elements, lengths, and operands. Getters and proxy traps are
+//! never called.
 
 use super::lookup::{self, Key};
 use super::objects::{Object, Problem, Reader};
@@ -17,15 +17,13 @@ use crate::{TextCompletion, TextSummary};
 /// The most script contexts searched.
 const MAX_SCRIPTS: i64 = 1 << 16;
 
-/// What a name means in the frame at `fp`: one of its variables, by its
-/// index among them, or a top-level binding or a global's value.
+/// What a name resolves to: a frame variable by index, or a global's value.
 pub(super) enum Bound {
     Variable(u32),
     Value(InterpretedHandle),
 }
 
-/// What `name` means in the frame at `fp`, or `None` where it means
-/// nothing there.
+/// What `name` resolves to in the frame at `fp`, or `None` if unbound.
 pub(super) fn bind(reader: &Reader<'_>, fp: u64, name: &str) -> Result<Option<Bound>, Problem> {
     let found = variables::variables(reader, fp)?;
     if let Some(index) = found.iter().position(|variable| variable.name == name) {
@@ -36,7 +34,7 @@ pub(super) fn bind(reader: &Reader<'_>, fp: u64, name: &str) -> Result<Option<Bo
     let context = reader.word(fp.wrapping_add_signed(reader.constant(Constant::OffFpContext)?))?;
     let context = reader
         .object(context)?
-        .ok_or("the frame's context is no object")?;
+        .ok_or("the frame's context is not an object")?;
     let native = native_context(reader, context)?;
     let global = reader
         .object(slot(reader, native, Constant::ContextExtensionIndex)?)?
@@ -45,7 +43,7 @@ pub(super) fn bind(reader: &Reader<'_>, fp: u64, name: &str) -> Result<Option<Bo
                 .is(*global, Constant::JSGlobalObjectType)
                 .unwrap_or(false)
         })
-        .ok_or("the native context's extension is no global object")?;
+        .ok_or("the native context's extension is not a global object")?;
     match lookup::find(reader, global, Key::Name(name))? {
         lookup::Found::Data(word) => Ok(Some(Bound::Value(Handle::Tagged(word).handle()))),
         lookup::Found::Absent => Ok(None),
@@ -73,8 +71,8 @@ pub(super) fn variable(
     Ok(Handle::Tagged(word).handle())
 }
 
-/// The native context of `object`, a context or an object's map, which its
-/// own map, a context's map or its realm's meta map, keeps.
+/// The native context of `object` (a context or a map), read from the
+/// native context field of `object`'s map.
 pub(super) fn native_context(reader: &Reader<'_>, object: Object) -> Result<Object, Problem> {
     let map = reader.map(object)?;
     reader.typed_field(
@@ -89,9 +87,8 @@ pub(super) fn slot(reader: &Reader<'_>, context: Object, index: Constant) -> Res
     reader.word(reader.field_address(context, Field::ContextElements)? + 8 * index)
 }
 
-/// The script context of each script the realm whose native context is
-/// `native` has run, from its script context table, in the order it ran
-/// them.
+/// The script contexts in `native`'s script context table, in the order
+/// the scripts ran.
 pub(super) fn script_contexts(reader: &Reader<'_>, native: Object) -> Result<Vec<Object>, Problem> {
     let table = reader
         .object(slot(
@@ -114,12 +111,12 @@ pub(super) fn script_contexts(reader: &Reader<'_>, native: Object) -> Result<Vec
         .map(|index| {
             reader
                 .object(reader.word(first + 8 * index)?)?
-                .ok_or_else(|| "a script context is no object".into())
+                .ok_or_else(|| "a script context is not an object".into())
         })
         .collect()
 }
 
-/// The object a handle names, refusing a number, which has no members.
+/// The object a handle names, or `None` for a double element.
 fn object_of(reader: &Reader<'_>, handle: InterpretedHandle) -> Result<Option<Object>, Problem> {
     match Handle::of(handle) {
         Handle::Double(_) => Ok(None),
@@ -127,7 +124,6 @@ fn object_of(reader: &Reader<'_>, handle: InterpretedHandle) -> Result<Option<Ob
     }
 }
 
-/// Whether `object` is a string.
 fn is_string(reader: &Reader<'_>, object: Object) -> Result<bool, Problem> {
     Ok(reader.instance_type(object)? < reader.constant(Constant::FirstNonstringType)?)
 }
@@ -139,19 +135,15 @@ pub(super) fn member(
     name: &str,
 ) -> Result<Option<InterpretedHandle>, Problem> {
     let Some(object) = object_of(reader, handle)? else {
-        return Err(
-            "a number's members are its prototype's, which microscope does not read".into(),
-        );
+        return Err("microscope does not read members of numbers".into());
     };
     let first = reader.constant(Constant::FirstJSReceiverType)?;
     let ty = reader.instance_type(object)?;
     if ty < first {
-        return Err(
-            "a primitive's members are its prototype's, which microscope does not read".into(),
-        );
+        return Err("microscope does not read members of primitives".into());
     }
     if reader.is(object, Constant::JSProxyType)? {
-        return Err("the object is a proxy, whose traps microscope does not call".into());
+        return Err("the object is a proxy, and microscope does not call proxy traps".into());
     }
     if let Ok(index) = name.parse::<u32>()
         && index.to_string() == name
@@ -161,19 +153,21 @@ pub(super) fn member(
     match lookup::get(reader, object, Key::Name(name))? {
         Some(lookup::Value::Word(word)) => Ok(Some(Handle::Tagged(word).handle())),
         Some(lookup::Value::Text(_)) => {
-            Err("the member is a string V8 computes, which no object holds".into())
+            Err("V8 computes this member on demand, so no object holds it".into())
         }
         None => Ok(None),
     }
 }
 
-/// The element `index` of `object`, an own one or a prototype's.
+/// The element `index` of `object` or of its prototype chain.
 fn element(
     reader: &Reader<'_>,
     object: Object,
     index: u32,
 ) -> Result<Option<InterpretedHandle>, Problem> {
-    let below = index.checked_add(1).ok_or("an index past an array's")?;
+    let below = index
+        .checked_add(1)
+        .ok_or("the index is past the end of the array")?;
     let mut holder = object;
     for _ in 0..64 {
         let found = own::elements(reader, holder, None, below)?;
@@ -181,9 +175,7 @@ fn element(
             return match element.held {
                 own::Held::Data(word) => Ok(Some(Handle::Tagged(word).handle())),
                 own::Held::Double { address, .. } => Ok(Some(Handle::Double(address).handle())),
-                own::Held::Accessor(_) => {
-                    Err("the element is an accessor, which microscope does not call".into())
-                }
+                own::Held::Accessor(_) => Err("microscope does not call accessor elements".into()),
             };
         }
         match lookup::prototype(reader, holder)? {
@@ -191,11 +183,10 @@ fn element(
             None => return Ok(None),
         }
     }
-    Err("the prototypes are too many".into())
+    Err("the prototype chain is too long".into())
 }
 
-/// The item `key` of the value `handle` names: a member by its name or
-/// an element by its index.
+/// The item `key` of the value `handle` names, by name or index.
 pub(super) fn item(
     reader: &Reader<'_>,
     handle: InterpretedHandle,
@@ -204,15 +195,15 @@ pub(super) fn item(
     match key {
         InterpretedKey::Int(index) => member(reader, handle, &index.to_string()),
         InterpretedKey::Text(text) => {
-            let name = std::str::from_utf8(text).map_err(|_| "a key that is no UTF-8")?;
+            let name = std::str::from_utf8(text).map_err(|_| "the key is not UTF-8")?;
             member(reader, handle, name)
         }
-        _ => Err("JavaScript keys are strings and indices".into()),
+        _ => Err("JavaScript keys must be strings or indices".into()),
     }
 }
 
-/// The length of the value `handle` names: a string's, an array's, a typed
-/// array's, or a Map's or Set's size.
+/// The length of a string, array, or typed array, or the size of a Map or
+/// Set.
 pub(super) fn length(reader: &Reader<'_>, handle: InterpretedHandle) -> Result<u64, Problem> {
     let object = object_of(reader, handle)?.ok_or("a number has no length")?;
     if is_string(reader, object)? {
@@ -228,7 +219,7 @@ pub(super) fn length(reader: &Reader<'_>, handle: InterpretedHandle) -> Result<u
         }
         let number = reader
             .object(word)?
-            .ok_or("an array's length is no number")?;
+            .ok_or("an array's length is not a number")?;
         let value =
             f64::from_bits(reader.word(reader.field_address(number, Field::HeapNumberValue)?)?);
         #[allow(
@@ -246,10 +237,10 @@ pub(super) fn length(reader: &Reader<'_>, handle: InterpretedHandle) -> Result<u
             super::collections::all_entries(reader, object, is(Constant::JSMapType), 0)?;
         return u64::try_from(size).map_err(|_| "a negative size".into());
     }
-    Err("the value has no length microscope reads".into())
+    Err("microscope can't read a length for this value".into())
 }
 
-/// The value `handle` names, as an operation computes with it.
+/// The value `handle` names, as an operator uses it.
 pub(super) fn operand(
     reader: &Reader<'_>,
     handle: InterpretedHandle,
@@ -262,7 +253,7 @@ pub(super) fn operand(
     };
     let text = match (value.kind, Handle::of(handle)) {
         (InterpretedKind::Text, Handle::Tagged(word)) => {
-            let object = reader.object(word)?.ok_or("a string is no object")?;
+            let object = reader.object(word)?.ok_or("a string is not an object")?;
             let length = u64::try_from(reader.int32_field(object, Field::StringLength)?)
                 .map_err(|_| "a negative length")?;
             let mut units = Vec::new();

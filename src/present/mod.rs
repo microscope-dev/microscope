@@ -116,8 +116,8 @@ pub struct Details {
     /// the web page draws.
     pub drawings: Vec<Arc<str>>,
 
-    /// The value's text over as many lines as its runtime writes it, where
-    /// the row's one line shows less.
+    /// The value's multiline text as its runtime writes it, when the row's
+    /// one line shows less.
     pub detail: Option<Arc<str>>,
 }
 
@@ -770,10 +770,9 @@ const fn counts(
 /// Whether a scope of variables of one kind lists a variable: the
 /// arguments scope lists results too, as part of the signature, and the
 /// locals scope what a finished function returned.
-/// A frame's scopes, in the order clients show them, each by the kind of
-/// variable it holds and its name. Arguments and locals are every frame's;
-/// the rest are a runtime's, as JavaScript's, and show only when a frame
-/// has variables of them.
+/// A frame's scopes in display order, by variable kind and name. Every frame
+/// has arguments and locals; the others come from a runtime such as
+/// JavaScript's and show only when the frame has variables of that kind.
 pub const SCOPES: [(VariableKind, &str); 6] = [
     (VariableKind::Parameter, "Arguments"),
     (VariableKind::Local, "Locals"),
@@ -783,7 +782,7 @@ pub const SCOPES: [(VariableKind, &str); 6] = [
     (VariableKind::Unnamed, "Unnamed locals"),
 ];
 
-/// Why the frame's variables of `kind` have no names, when they say.
+/// Why the frame's variables of `kind` have no names, if a variable says.
 pub fn unnamed_reason(snapshot: &VariableSnapshot, kind: VariableKind) -> Option<&str> {
     snapshot
         .variables

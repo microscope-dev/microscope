@@ -1364,8 +1364,8 @@ fn build(g: &mut Graph, label: &str) -> Value {
     }
 }
 
-/// The labels whose text in some version is not Node formatting the value:
-/// a type that version lacks, or an exception.
+/// Labels whose text in some version is not a formatted value, because that
+/// version lacks the type or threw.
 fn node_lacks(label: &str, major: u32) -> bool {
     matches!(
         (label, major),
@@ -1418,8 +1418,8 @@ fn a_proxy_of_a_proxy_is_unsupported_before_node_26() {
     assert_eq!(graph.inspect(&outer, 26).text, "Proxy(Proxy({ a: 1 }))");
 }
 
-/// The gallery's errors were thrown in the fixture; this is the stack of
-/// one thrown at `line:column` in `errors()` or `promises()`.
+/// The stack of a gallery error thrown at `line:column` in the fixture's
+/// `errors()` or `promises()`.
 fn fixture_stack(head: &str, function: &str, line: u32, column: u32, caller_column: u32) -> String {
     format!(
         "{head}\n    at {function} ({FIXTURE}:{line}:{column})\n    at gallery ({FIXTURE}:{}:{caller_column})\n    at Object.<anonymous> ({FIXTURE}:211:1)\n{LOADER}",
@@ -1752,8 +1752,7 @@ fn what_the_reader_could_not_read_prints_visibly() {
 }
 
 /// What `util.inspect(value, { customInspect: false, compact: true,
-/// breakLength: Infinity })` printed under each Node, for values where that
-/// layout departs from the default's.
+/// breakLength: Infinity })` printed under each Node, where it differs.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -1885,9 +1884,9 @@ fn values_print_on_one_line_as_node_prints_them() {
         None,
     ));
 
-    // The releases before `isBelowBreakLength`'s early return for an
-    // infinite `breakLength` write as 22 does: 24.20.0 and 26.7.0, the
-    // last without it, and 24.16.0 and 26.5.0, which nixpkgs builds.
+    // Releases before `isBelowBreakLength`'s infinite `breakLength` early
+    // return print as 22 does: 24.20.0 and 26.7.0 (the last without it),
+    // and 24.16.0 and 26.5.0 (nixpkgs builds).
     let before = |major, minor| NodeRelease {
         major,
         minor,

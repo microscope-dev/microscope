@@ -253,7 +253,7 @@ with a supported runtime can also expose logical tasks such as goroutines,
 async Rust tasks, and asyncio tasks. See [Languages](languages.md).
 
 A runtime can label the threads it runs. In Node, a thread shows the V8
-isolate it is working for. An isolate keeps its number for the life of the
+isolate it works for. An isolate keeps its number for the life of the
 process, and no other isolate gets that number:
 
 ```text
@@ -263,15 +263,11 @@ process, and no other isolate gets that number:
   353572 "beta" stopped [isolate 3]
 ```
 
-What the label promises:
-
-* A thread that runs JavaScript (the main thread and each `worker_threads`
-  worker) always shows the isolate it runs.
-* A thread with no label runs no JavaScript.
-* One of V8's own helper threads, such as a `node-V8Worker` compiling code
-  in the background or marking the heap, shows an isolate's label while it
-  works for that isolate, and none otherwise. A label alone does not mean
-  the thread runs JavaScript.
+A thread that runs JavaScript (the main thread and each `worker_threads`
+worker) always has a label, so a thread without one runs no JavaScript. A
+label does not mean the thread runs JavaScript: a V8 helper thread, such as
+a `node-V8Worker` compiling code in the background or marking the heap,
+shows an isolate's label only while it works for that isolate.
 
 The debug adapter adds labels to the thread's name, as
 `node-MainThread (353561, isolate 1)`. The browser shows them in the

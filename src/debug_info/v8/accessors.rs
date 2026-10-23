@@ -4,8 +4,8 @@
 //! or, where no symbol names it, from the exported `v8::IsolateGroup`'s
 //! `GetDefault` and destructor; and the embedded blob's bounds, from
 //! `v8::Isolate::GetEmbeddedCodeRange`.
-//! Each decoder accepts only the instruction shapes it names and says which
-//! instruction it did not expect otherwise, never guessing at a variant.
+//! Each decoder accepts only the instruction shapes it names, and otherwise
+//! reports the first instruction it did not expect.
 
 use std::sync::Arc;
 
@@ -28,20 +28,20 @@ pub(super) const GET_EMBEDDED_CODE_RANGE: &str = "_ZN2v87Isolate20GetEmbeddedCod
 /// group's pointer from its variable.
 const GET_DEFAULT_GROUP: &str = "_ZN2v812IsolateGroup10GetDefaultEv";
 
-/// The exported `v8::IsolateGroup::~IsolateGroup()`, by either of the
-/// names of its one body, which releases the group it holds.
+/// The exported `v8::IsolateGroup::~IsolateGroup()`, which releases the
+/// group it holds, under either of its two names for the same body.
 const GROUP_HANDLE_DESTRUCTORS: [&str; 2] =
     ["_ZN2v812IsolateGroupD1Ev", "_ZN2v812IsolateGroupD2Ev"];
 
 /// The most bytes of an accessor's code decoded.
 const ACCESSOR_BYTES: usize = 96;
 
-/// The most bytes of the internal `IsolateGroup`'s destructor decoded:
-/// the table's teardown is its second, within its first hundred bytes.
+/// The most bytes of the internal `IsolateGroup`'s destructor decoded. The
+/// table's teardown comes second, within the first 100 bytes.
 const DESTRUCTOR_BYTES: usize = 192;
 
-/// `ExternalEntityTable::kSegmentSize`, 64 KiB, the size of the table's
-/// first segment its teardown frees.
+/// `ExternalEntityTable::kSegmentSize`: the 64 KiB first segment the
+/// table's teardown frees.
 const SEGMENT_SIZE: u64 = 0x1_0000;
 
 /// The address of the function symbol named `name`, or of the first whose
@@ -146,11 +146,10 @@ fn load(instruction: &Instruction, to: Register, base: Register) -> Option<u64> 
 }
 
 /// Where the JS dispatch table of `version`'s module `object` is: none
-/// before 13.6, whose functions hold their code. From 13.6 its
-/// `ExternalReference::js_dispatch_table_address` says, a local function
-/// that a library stripped of its local symbols, as Debian's libnode,
-/// does not name; in 13.6, `exported_dispatch_table` then reads it from
-/// exported code.
+/// before 13.6, whose functions hold their code. From 13.6 the local
+/// function `ExternalReference::js_dispatch_table_address` says. A library
+/// without local symbols, such as Debian's libnode, does not name it; for
+/// 13.6, `exported_dispatch_table` then reads the table from exported code.
 pub(super) fn dispatch_table(
     object: &object::File<'_>,
     version: V8Version,
@@ -177,13 +176,13 @@ pub(super) fn dispatch_table(
 
 /// Where 13.6's JS dispatch table is, from code V8's API exports, for a
 /// module that does not name `js_dispatch_table_address`. In 13.6 the
-/// table is the `js_dispatch_table_` member of the one internal
-/// `IsolateGroup` that `IsolateGroup::default_isolate_group_` points to,
-/// and its base is the table's first word.
+/// table is the `js_dispatch_table_` member of the internal `IsolateGroup`
+/// that `IsolateGroup::default_isolate_group_` points to, and its base is
+/// the table's first word.
 ///
-/// The variable is what `v8::IsolateGroup::GetDefault()` loads, as
-/// `deps/v8/src/api/api.cc` and `src/init/isolate-group.h` of Node 24.22.1
-/// say, by `decode_group_variable`:
+/// `decode_group_variable` finds the variable in
+/// `v8::IsolateGroup::GetDefault()` (`deps/v8/src/api/api.cc` and
+/// `src/init/isolate-group.h` of Node 24.22.1):
 ///
 /// ```c++
 /// IsolateGroup IsolateGroup::GetDefault() {
@@ -194,10 +193,11 @@ pub(super) fn dispatch_table(
 /// ```
 ///
 /// The base's offset in the group is the first word the group's destructor
-/// clears, reached from `v8::IsolateGroup::~IsolateGroup()` through
-/// `i::IsolateGroup::Release()`'s `delete this` (`decode_handle_release`,
-/// `decode_release`, `decode_deletion`). The destructor tears the table down
-/// right after its page pool (`src/init/isolate-group.cc`):
+/// clears. `decode_handle_release`, `decode_release`, and `decode_deletion`
+/// follow `v8::IsolateGroup::~IsolateGroup()` through
+/// `i::IsolateGroup::Release()`'s `delete this` to that destructor, which
+/// tears the table down right after its page pool
+/// (`src/init/isolate-group.cc`):
 ///
 /// ```c++
 /// IsolateGroup::~IsolateGroup() {
@@ -209,7 +209,7 @@ pub(super) fn dispatch_table(
 /// #endif  // V8_ENABLE_LEAPTIERING
 /// ```
 ///
-/// which frees the table's first segment through `vas_`'s vtable
+/// The table's `TearDown` frees its first segment through `vas_`'s vtable
 /// (`src/sandbox/external-entity-table-inl.h`), then clears `base_` before
 /// deleting and clearing `vas_` (`src/common/segmented-table-inl.h`):
 ///
@@ -225,12 +225,7 @@ pub(super) fn dispatch_table(
 /// }
 /// ```
 ///
-/// and `base_` is the word just before `vas_` (`src/common/segmented-table.h`):
-///
-/// ```c++
-///   Entry* base_ = nullptr;
-///   VirtualAddressSpace* vas_ = nullptr;
-/// ```
+/// `base_` is the word just before `vas_` (`src/common/segmented-table.h`).
 pub(super) fn exported_dispatch_table(
     object: &object::File<'_>,
 ) -> Result<DispatchTable, Arc<str>> {
@@ -464,8 +459,8 @@ fn decode_release(instructions: &[Instruction], what: &str) -> Result<u64, Arc<s
     next_as(&mut code, what, |next| branch(next, Mnemonic::Je))
 }
 
-/// The destructor `delete this`'s `instructions` call and the size they
-/// free: `call destructor`, then `mov esi, size` and `jmp` to `operator
+/// The destructor that `delete this`'s `instructions` call, and the size
+/// they free: `call destructor`, then `mov esi, size` and `jmp` to `operator
 /// delete`. Only what `keeps` accepts may come before the call, and after
 /// it only moves of registers, loads from the frame, and `leave`.
 fn decode_deletion(instructions: &[Instruction], what: &str) -> Result<(u64, u64), Arc<str>> {
@@ -927,8 +922,8 @@ const NODE_VERSION: &str = "_ZZ21napi_get_node_versionE7version";
 ///     NODE_RELEASE};
 /// ```
 ///
-/// The static is found by its symbol, else, in a module stripped of its
-/// local symbols as Debian's libnode is, from the function's code.
+/// The static is found by its symbol, or from the function's code in a
+/// module without local symbols, such as Debian's libnode.
 pub(super) fn node_release(object: &object::File<'_>) -> Result<NodeRelease, Arc<str>> {
     let named = object
         .symbols()

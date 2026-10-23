@@ -5,10 +5,10 @@
 //! bytecode is one byte, and each operand adds its type's unscaled size,
 //! times the scale where the type is scalable (`bytecode-traits.h`).
 //!
-//! The lists are macros that call one another; each is expanded only as
-//! far as its own callbacks and the lists it names, and any other call, an
+//! The lists are macros that call one another. Each is expanded only
+//! through its own callbacks and the lists it names. Any other call, an
 //! unknown operand type or size, or two `#ifdef` definitions of a list
-//! that disagree fails, rather than being guessed.
+//! that disagree fails.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;

@@ -161,8 +161,8 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
         })
     }
 
-    /// The address of an interpreter's object, refused where its value
-    /// lives in no memory.
+    /// The address of an interpreter's object, refused when its value is not
+    /// in memory.
     pub(super) fn interpreted_address(
         &self,
         runtime: RuntimeId,
@@ -176,13 +176,13 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
             .ok_or_else(|| {
                 Stop::Refused(Refusal::new(
                     ErrorKind::NotAnLvalue,
-                    "the interpreter's value lives in no memory, which has no address",
+                    "the interpreter's value is not in memory, so it has no address",
                 ))
             })
     }
 
-    /// The place of the object of `runtime` that a native pointer to its
-    /// objects, whose value is `address`, points to.
+    /// The place of the `runtime` object that a native pointer with value
+    /// `address` points to.
     pub(super) fn interpreted_cast(
         &mut self,
         runtime: RuntimeId,
@@ -277,8 +277,8 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
             return Ok(None);
         };
 
-        // A pointer that names none of the runtime's objects is presented
-        // as the pointer it is.
+        // A pointer to none of the runtime's objects is presented as a plain
+        // pointer.
         let budget = &mut *self.budget;
         let slot = frame.with_stop(&bound, |stop| {
             match bound.model.interpreted_handle(stop, object, budget) {

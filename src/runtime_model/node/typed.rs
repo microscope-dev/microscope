@@ -1,7 +1,7 @@
-//! Typed arrays, `ArrayBuffer`s, and `DataView`s, as their getters see them:
-//! a typed array's elements kind gives its element type, its data is where
-//! `JSTypedArray::DataPtr` says, and a view of a detached buffer, or one
-//! past the end of a resizable buffer, has no bytes.
+//! Typed arrays, `ArrayBuffer`s, and `DataView`s as their getters see them.
+//! A typed array's elements kind gives its element type and
+//! `JSTypedArray::DataPtr` gives its data. A view of a detached buffer, or
+//! one past the end of a resizable buffer, has no bytes.
 
 use super::inspect::{ElementType, Kind, Value, ViewRange};
 use super::objects::{Object, Problem, Reader};
@@ -11,8 +11,8 @@ use crate::image::v8::{Constant, Field};
 /// The most elements or bytes inspect shows of one object.
 pub(super) const SHOWN: u64 = 100;
 
-/// The element type of a typed array of elements kind `kind`, or `None`
-/// for a kind no typed array has.
+/// The element type for elements kind `kind`, or `None` if no typed array
+/// uses that kind.
 pub(super) fn element_type(reader: &Reader<'_>, kind: i64) -> Option<ElementType> {
     use Constant as C;
     use ElementType as E;
@@ -56,7 +56,7 @@ pub(super) fn element_type(reader: &Reader<'_>, kind: i64) -> Option<ElementType
             C::ElementsKindRabGsabFloat64,
             E::Float64,
         ),
-        // A version without Float16Array has neither constant.
+        // Versions without Float16Array have neither constant.
         (
             C::ElementsKindFloat16,
             C::ElementsKindRabGsabFloat16,
@@ -71,7 +71,7 @@ pub(super) fn element_type(reader: &Reader<'_>, kind: i64) -> Option<ElementType
     })
 }
 
-/// The bytes of one element of type `element`.
+/// The size in bytes of one `element`.
 pub(super) const fn size(element: ElementType) -> u64 {
     match element {
         ElementType::Int8 | ElementType::Uint8 | ElementType::Uint8Clamped => 1,
@@ -81,8 +81,8 @@ pub(super) const fn size(element: ElementType) -> u64 {
     }
 }
 
-/// The name of the constructor of typed arrays of `element`, as the
-/// `Symbol.toStringTag` getter of `%TypedArray%.prototype` gives it.
+/// The constructor name for typed arrays of `element`, as the
+/// `Symbol.toStringTag` getter of `%TypedArray%.prototype` returns it.
 pub(super) const fn constructor_name(element: ElementType) -> &'static str {
     match element {
         ElementType::Int8 => "Int8Array",
@@ -125,7 +125,7 @@ fn u32_field(reader: &Reader<'_>, object: Object, field: Field) -> Result<u32, P
 /// The `ArrayBuffer` or `SharedArrayBuffer` `buffer`.
 fn buffer(reader: &Reader<'_>, buffer: Object) -> Result<Buffer, Problem> {
     if !reader.is(buffer, Constant::JSArrayBufferType)? {
-        return Err(format!("{:#x} is no ArrayBuffer", buffer.0).into());
+        return Err(format!("{:#x} is not an ArrayBuffer", buffer.0).into());
     }
     let flags = u32_field(reader, buffer, Field::JSArrayBufferBitField)?;
     let shared = bits(
@@ -141,9 +141,9 @@ fn buffer(reader: &Reader<'_>, buffer: Object) -> Result<Buffer, Problem> {
         Constant::JSArrayBufferIsResizableByJsMask,
     )? != 0;
     if shared && resizable {
-        // A growable SharedArrayBuffer keeps its length in its backing
+        // A growable SharedArrayBuffer stores its length in its backing
         // store, which other threads may grow.
-        return Err("a growable SharedArrayBuffer's length is kept outside the heap".into());
+        return Err("a growable SharedArrayBuffer stores its length outside the heap".into());
     }
     Ok(Buffer {
         byte_length: word_field(reader, buffer, Field::JSArrayBufferRawByteLength)?,
@@ -158,8 +158,8 @@ fn buffer(reader: &Reader<'_>, buffer: Object) -> Result<Buffer, Problem> {
     })
 }
 
-/// The first `min(count, SHOWN)` bytes at `data`, or none where `full` is
-/// false, at a level inspect shows no contents of.
+/// The first `min(count, SHOWN)` bytes at `data`. None if `full` is false,
+/// at a depth where inspect shows no contents.
 fn shown(reader: &Reader<'_>, data: u64, count: u64, full: bool) -> Result<Vec<u8>, Problem> {
     if !full {
         return Ok(Vec::new());
@@ -194,9 +194,9 @@ pub(super) fn array_buffer(
     })
 }
 
-/// The bytes a view of `buffer` covers from its offset as its getters see
-/// them, or `None` where they throw: the buffer is detached, or the view
-/// lies past the end of a resizable buffer.
+/// The byte range of `buffer` that the view covers, as its getters see it.
+/// `None` where they throw: the buffer is detached, or the view lies past
+/// the end of a resizable buffer.
 fn view_range(
     reader: &Reader<'_>,
     view: Object,
@@ -242,12 +242,12 @@ fn view_range(
     })
 }
 
-/// The buffer a view views.
+/// The buffer behind `view`.
 fn viewed(reader: &Reader<'_>, view: Object) -> Result<(u64, Buffer), Problem> {
     let word = reader.field(view, Field::JSArrayBufferViewBuffer)?;
     let object = reader
         .object(word)?
-        .ok_or_else(|| format!("the buffer of {:#x} is no object", view.0))?;
+        .ok_or_else(|| format!("the buffer of {:#x} is not an object", view.0))?;
     Ok((word, buffer(reader, object)?))
 }
 
@@ -271,8 +271,8 @@ pub(super) fn typed_array(
     })
 }
 
-/// A typed array's element type, its length as its getter gives it, and
-/// where its data is.
+/// A typed array's element type, its length as the getter returns it, and
+/// the address of its data.
 pub(super) fn extent(
     reader: &Reader<'_>,
     object: Object,
@@ -283,20 +283,20 @@ pub(super) fn extent(
         .ok_or_else(|| format!("a typed array has elements kind {kind}"))?;
     let (_, buffer) = viewed(reader, object)?;
     let width = size(element);
-    // The length getter gives 0 where the byte length's getter throws, and
-    // the byte length over the element's size otherwise, as 14.6's
-    // `GetLengthOrOutOfBounds` computes it; 12.4 and 13.6 keep a fixed
-    // length's array's length too, set with its byte length.
+    // The length getter returns 0 where the byte length getter throws, else
+    // the byte length divided by the element size, as 14.6's
+    // `GetLengthOrOutOfBounds` does. 12.4 and 13.6 also store a fixed-length
+    // array's length, set together with its byte length.
     let length = view_range(reader, object, &buffer)?.map_or(0, |range| range.byte_length / width);
     let base = word_field(reader, object, Field::JSTypedArrayBasePointer)?;
     let external = word_field(reader, object, Field::JSTypedArrayExternalPointer)?;
-    // `DataPtr`: the base pointer's tagged address, where the data is on
-    // the heap, plus the external pointer, compensated for it.
+    // `DataPtr`: the base pointer (a tagged address when the data is on the
+    // heap) plus the external pointer, which is offset to compensate.
     Ok((element, length, base.wrapping_add(external)))
 }
 
-/// A `DataView`, as inspect reads it, with its buffer as `buffer` reads
-/// the buffer's word.
+/// A `DataView` as inspect reads it, with its buffer converted by
+/// `buffer_value`.
 pub(super) fn data_view(
     reader: &Reader<'_>,
     object: Object,

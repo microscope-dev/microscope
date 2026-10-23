@@ -86,8 +86,8 @@ enum Contents<'g> {
     Weak,
 }
 
-/// A change to `inspect.js` within a release line, which the releases of
-/// 24 and of 26 named in [`Ctx::has`] and later make.
+/// A change to `inspect.js` within a release line, made in the 24 and 26
+/// releases listed in [`Ctx::has`] and later.
 #[derive(Clone, Copy)]
 pub enum Change {
     /// `isBelowBreakLength` returns early for an infinite `breakLength`,
@@ -99,8 +99,8 @@ pub enum Change {
     /// `formatError` lists a `SuppressedError`'s own `error` and
     /// `suppressed`.
     SuppressedKeys,
-    /// `formatExtraProperties` reads a getter before moving two columns in,
-    /// so a detached `DataView`'s throw leaves the indentation as it was.
+    /// `formatExtraProperties` reads a getter before indenting two columns,
+    /// so a detached `DataView`'s throw leaves the indentation unchanged.
     ExtraBeforeIndent,
 }
 
@@ -115,8 +115,8 @@ pub struct Ctx<'g> {
     pub indentation: usize,
     /// The objects being formatted, innermost last, by address.
     seen: Vec<VirtualAddress>,
-    /// `ctx.circular`: the objects found to be referenced from inside
-    /// themselves, numbered from 1 in the order found.
+    /// `ctx.circular`: objects that refer back to themselves, numbered from
+    /// 1 in the order found.
     circular: Vec<VirtualAddress>,
     /// `ctx.currentDepth`: the level of the object last entered.
     current_depth: usize,
@@ -124,10 +124,8 @@ pub struct Ctx<'g> {
 }
 
 impl<'g> Ctx<'g> {
-    /// Whether the Node release writing the value has made `change`: each
-    /// landed in a 26 release, some in a 24 release too, and none in 22.
-    /// No V8 layout covers 25 or 23, whose modules are refused before any
-    /// value is read.
+    /// Whether the target Node release has `change`. Each landed in 26, some
+    /// also in 24, none in 22. Modules for 23 and 25 are refused earlier.
     pub const fn has(&self, change: Change) -> bool {
         let (on_24, on_26) = match change {
             Change::InfiniteBreakLength => (Some(21), 8),
@@ -178,8 +176,8 @@ impl<'g> Ctx<'g> {
                     return unreadable("a proxy's target");
                 };
                 if self.major < 26 {
-                    // Node 22 and 24 format the target itself, so a target
-                    // that is a proxy runs its traps.
+                    // Node 22 and 24 format the target directly, running
+                    // its traps if it is a proxy.
                     if matches!(next.kind, Kind::Proxy { .. }) {
                         return unsupported(&format!(
                             "a proxy of a proxy, whose traps Node {} runs",
@@ -670,9 +668,8 @@ impl<'g> Ctx<'g> {
         entries: Entries,
         level: usize,
     ) -> String {
-        // `compact: true` moves an object's values three columns in. With an
-        // infinite `breakLength`, no value is wide enough to start on its
-        // own line.
+        // `compact: true` indents an object's values three columns. With an
+        // infinite `breakLength`, no value starts on its own line.
         let extra = usize::from(self.line && entries == Entries::Object);
         self.indentation += extra;
         let text = self.format_slot(&property.slot, level);
@@ -764,8 +761,8 @@ impl<'g> Ctx<'g> {
                 "byteOffset",
             ) => number(view.byte_offset),
             (Kind::DataView { view: None, buffer }, key) => {
-                // The getter throws. Node before 26 has already moved two
-                // columns in by then and never moves back.
+                // The getter throws. Before 26, Node has already indented two
+                // columns and never undoes it.
                 if !self.has(Change::ExtraBeforeIndent) {
                     self.indentation += 2;
                 }
@@ -979,9 +976,8 @@ impl<'g> Ctx<'g> {
         } else {
             format!(" {base}")
         };
-        // `isBelowBreakLength`. Since its early return for an infinite
-        // `breakLength`, an entry with a line break is refused too; before,
-        // the arithmetic only looked at `base`.
+        // `isBelowBreakLength`. With the infinite `breakLength` early return,
+        // entries with line breaks are refused too; before, only `base` was.
         let below = !base.contains('\n')
             && (!self.has(Change::InfiniteBreakLength)
                 || !output.iter().any(|entry| entry.contains('\n')));
@@ -1131,7 +1127,7 @@ fn unnamed_constructor(names: &[String], end: &str, level: usize) -> Option<Stri
     Some(format!("{first} <{inner}>"))
 }
 
-/// Node 26 writes each proxy it looked through around the target's text.
+/// Node 26 wraps the target's text in `Proxy(...)` once per proxy.
 fn wrap_proxies(mut text: String, proxies: usize) -> String {
     for _ in 0..proxies {
         text = format!("Proxy({text})");
@@ -1295,8 +1291,8 @@ fn split_after_newlines(units: &[u16]) -> impl Iterator<Item = &[u16]> {
     })
 }
 
-/// A value as a template literal converts it, with the text to print in its
-/// place when that conversion throws or needs a call.
+/// A value as a template literal converts it, or the text to print when the
+/// conversion throws or would call into the program.
 fn template_text(value: &Value) -> String {
     to_js_string(value).unwrap_or_else(|fault| match fault {
         Fault::Throws => unsupported("a conversion that throws in Node's inspect"),

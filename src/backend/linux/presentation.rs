@@ -99,8 +99,8 @@ enum Scanned {
     /// A native value, where it is stored.
     Stored(ValueStorage),
 
-    /// An interpreter's object, by the runtime that names it and its
-    /// handle, which may name no memory.
+    /// An interpreter's object, by its runtime and its handle, which need
+    /// not point to memory.
     Interpreted(crate::RuntimeId, crate::runtime_model::InterpretedHandle),
 }
 

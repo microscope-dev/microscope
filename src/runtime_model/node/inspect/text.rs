@@ -1,6 +1,6 @@
-//! The text conversions inspect leans on: its string escaping, JavaScript's
-//! `Number::toString` and `BigInt::toString`, `Date`'s `toISOString`, and the
-//! display width of an entry.
+//! Text conversions inspect needs: string escaping, JavaScript's
+//! `Number::toString` and `BigInt::toString`, `Date`'s `toISOString`, and
+//! entry display width.
 
 use std::fmt::Write as _;
 
@@ -29,9 +29,9 @@ fn meta(unit: u16) -> Option<&'static str> {
     }
 }
 
-/// The units with control characters, the backslash, lone surrogates, and,
-/// when `single` is set, the single quote escaped: `strEscapeSequencesReplacer`
-/// and its `Single` variant with `escapeFn`.
+/// Escapes control characters, backslashes, lone surrogates, and (if
+/// `single`) single quotes: `strEscapeSequencesReplacer`, its `Single`
+/// variant, and `escapeFn`.
 pub fn escape(units: &[u16], single: bool) -> String {
     let mut kept: Vec<u16> = Vec::with_capacity(units.len());
     let mut out = String::with_capacity(units.len());
@@ -68,8 +68,8 @@ pub fn escape(units: &[u16], single: bool) -> String {
     out
 }
 
-/// `strEscape`: the units quoted and escaped, choosing the quote that needs
-/// no escaping when there is one.
+/// `strEscape`: quotes and escapes the units, picking a quote that needs no
+/// escaping if one exists.
 pub fn str_escape(units: &[u16]) -> String {
     const SINGLE: u16 = 0x27;
     const DOUBLE: u16 = 0x22;
@@ -114,12 +114,10 @@ pub fn pad_end(text: &str, width: usize) -> String {
     format!("{text}{}", " ".repeat(fill))
 }
 
-/// `getStringWidth(text, false)`: the columns an entry takes. Node measures
-/// a string from its first unit at or past 0x7F with ICU. ICU's widths are
-/// reproduced below U+0300, where they are one column for each printable
-/// character and none for each control character. Past that the second
-/// value is false, and the width is the estimate of Node's build without
-/// ICU.
+/// `getStringWidth(text, false)`: an entry's width in columns. Node uses ICU
+/// once a string has a unit at or past 0x7F. Below U+0300 ICU's widths are
+/// reproduced (1 per printable character, 0 per control character); past
+/// that the second value is false and the width is Node's no-ICU estimate.
 pub fn string_width(text: &str) -> (usize, bool) {
     let mut width = 0;
     let mut exact = true;
@@ -175,8 +173,8 @@ const fn is_zero_width(code: u32) -> bool {
         || (code >= 0xe0100 && code <= 0xe01ef)
 }
 
-/// ECMA-262 `Number::toString(x)` in radix 10, from the shortest digits that
-/// round-trip, which Rust's exponent formatting gives.
+/// ECMA-262 `Number::toString(x)` in radix 10, built from the shortest
+/// round-trip digits that Rust's exponent formatting produces.
 pub fn number_to_string(x: f64) -> String {
     if x.is_nan() {
         return "NaN".to_owned();
@@ -263,8 +261,8 @@ pub fn bigint_to_string(value: &BigInt) -> String {
     text
 }
 
-/// Date.prototype.toISOString of a valid time value, or `None` past the
-/// range a Date holds.
+/// `Date.prototype.toISOString` of a valid time value, or `None` outside a
+/// Date's range.
 pub fn iso_date(time: f64) -> Option<String> {
     const DAY: i64 = 86_400_000;
     if !time.is_finite() || time.abs() > 8.64e15 || time.fract() != 0.0 {

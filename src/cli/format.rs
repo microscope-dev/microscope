@@ -2569,8 +2569,8 @@ pub fn interpreted_location(frame: &StackFrame, renderer: Renderer) -> String {
     )
 }
 
-/// `path:line`, and `:column` after it where the frame's runtime recorded
-/// one, as V8 does each JavaScript frame's.
+/// `path:line`, plus `:column` when the frame's runtime recorded one, as V8
+/// does for JavaScript frames.
 fn place_location(frame: &StackFrame, place: &frames::FramePlace, renderer: Renderer) -> String {
     place
         .column

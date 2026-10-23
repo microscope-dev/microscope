@@ -549,8 +549,8 @@ export type Row = { name: string,
  */
 text: string, 
 /**
- * The value's text over as many lines as its runtime writes it, where
- * the summary shows less.
+ * The value's multiline text as its runtime writes it, when the summary
+ * shows less.
  */
 detail: string | null, type: string | null, 
 /**

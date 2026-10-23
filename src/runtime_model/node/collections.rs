@@ -1,18 +1,17 @@
-//! Map and Set, as their ordered hash tables keep them (`ordered-hash-table.h`):
-//! a fixed array whose first elements count its live and deleted entries
-//! and its buckets, then the buckets, then the entries in insertion order,
-//! each its key, its value for a map, and its chain. A deleted entry's key
-//! is the hole.
+//! Map and Set, read from their ordered hash tables (`ordered-hash-table.h`).
+//! The table is a fixed array: counts of live entries, deleted entries and
+//! buckets, then the buckets, then the entries in insertion order. Each
+//! entry is its key, its value for a map, and its chain. A deleted entry's
+//! key is the hole.
 
 use super::objects::{Object, Problem, Reader};
 use super::own::{MAX_ENTRIES, is_hole};
 use super::typed::SHOWN;
 use crate::image::v8::{Constant, Field};
 
-/// The size of the collection `object`, a `JSMap` when `map` and a `JSSet`
-/// otherwise, and its first entries in insertion order, up to inspect's
-/// limit: each key, with its value for a map. With `full` false, its size
-/// alone.
+/// The size of `object` (a `JSMap` if `map`, else a `JSSet`) and its first
+/// entries in insertion order, up to inspect's limit: each key, plus its
+/// value for a map. If `full` is false, only the size.
 #[allow(
     clippy::type_complexity,
     reason = "a key and a map's value, as tagged words"
@@ -26,7 +25,7 @@ pub(super) fn entries(
     all_entries(reader, object, map, if full { SHOWN } else { 0 })
 }
 
-/// As [`entries`], the first `limit` of them.
+/// Like [`entries`], but reads up to `limit` entries.
 #[allow(
     clippy::type_complexity,
     reason = "a key and a map's value, as tagged words"
@@ -69,7 +68,7 @@ pub(super) fn all_entries(
         reader
             .smi(reader.element(table, index)?)?
             .filter(|count| (0..=MAX_ENTRIES).contains(count))
-            .ok_or_else(|| format!("the table {:#x} keeps no count at {index}", table.0).into())
+            .ok_or_else(|| format!("the table {:#x} has no valid count at {index}", table.0).into())
     };
     let live = count(elements)?;
     if limit == 0 {
@@ -101,7 +100,7 @@ pub(super) fn all_entries(
     let expected = live.min(shown);
     if i64::try_from(found.len()).unwrap_or(i64::MAX) != expected {
         return Err(format!(
-            "the table {:#x} holds {} live entries, not {live}",
+            "the table {:#x} has {} live entries, but its count says {live}",
             table.0,
             found.len()
         )

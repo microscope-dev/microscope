@@ -1,9 +1,8 @@
-//! JavaScript values as the debugger presents them: each summarized as
-//! `util.inspect` writes it, with its children read on demand.
+//! JavaScript values for the debugger: summaries as `util.inspect` prints
+//! them, with children read on demand.
 //!
-//! A value is named by its handle ([`InterpretedHandle`]): its tagged word,
-//! a Smi or a pointer to a heap object, or, for an element of a double
-//! array, which no object holds, the element's address with the low bits
+//! A handle ([`InterpretedHandle`]) is a tagged word (a Smi or heap object
+//! pointer), or for a double array element, its address with low bits
 //! `0b10`, which no tagged word has.
 
 use std::sync::Arc;
@@ -19,9 +18,8 @@ use crate::runtime_model::{
 };
 use crate::{FloatValue, NumberKind, ScalarValue, VirtualAddress};
 
-/// The Node release whose `util.inspect` writes values, and, where the
-/// module does not say which release built it, why the text follows the
-/// first release of its V8's line instead.
+/// The Node release whose `util.inspect` output to match. If the module
+/// doesn't name it, this is its V8 line's first release and `assumed` says so.
 #[derive(Debug, Clone)]
 pub(super) struct Writer {
     pub release: NodeRelease,
@@ -59,8 +57,7 @@ impl Handle {
     }
 }
 
-/// The memory the value `handle` names lives at: a heap object's, or a
-/// double element's; none for a Smi.
+/// The address of a heap object or double element, or `None` for a Smi.
 pub(super) fn address(reader: &Reader<'_>, handle: InterpretedHandle) -> Option<VirtualAddress> {
     match Handle::of(handle) {
         Handle::Double(address) => Some(VirtualAddress::new(address)),
@@ -74,7 +71,7 @@ pub(super) fn address(reader: &Reader<'_>, handle: InterpretedHandle) -> Option<
     }
 }
 
-/// The value `handle` names, presented, as `writer` writes it.
+/// The value `handle` names, formatted for `writer`.
 pub(super) fn value(
     reader: &Reader<'_>,
     handle: InterpretedHandle,
@@ -87,8 +84,8 @@ pub(super) fn value(
     }
 }
 
-/// The value `handle` names, or `None` for the hole, a variable not yet
-/// initialized.
+/// The value `handle` names, or `None` for the hole (an uninitialized
+/// variable).
 fn presented(
     reader: &Reader<'_>,
     handle: InterpretedHandle,
@@ -192,8 +189,8 @@ fn presented(
     }))
 }
 
-/// The summary of `root`, its text where that shows more, and why the
-/// layout may differ from Node's.
+/// The summary of `root`, its full text if longer, and any reason the
+/// text may not match Node's.
 fn texts(
     graph: &inspect::ValueGraph,
     root: &Value,
@@ -205,18 +202,15 @@ fn texts(
     let detail = (*summary != text.text).then(|| text.text.into());
     let problem = match (&writer.assumed, text.approximate) {
         (Some(assumed), _) => Some(Arc::clone(assumed)),
-        (None, true) => Some(Arc::from(
-            "the layout of this text may differ from Node's in its spacing",
-        )),
+        (None, true) => Some(Arc::from("spacing may differ from Node's output")),
         (None, false) => None,
     };
     (summary, detail, problem)
 }
 
-/// The one line a summary shows of `line`, the value's text with every
-/// entry on one line: for an error, the first line of `text`, its stack,
-/// which names it and gives its message; otherwise `line` up to an error
-/// stack it holds, marked as cut.
+/// The summary line. For an error, the first line of its stack in `text`
+/// (name and message); otherwise the single-line `line`, cut with `…`
+/// before any error stack it holds.
 fn summary_line(graph: &inspect::ValueGraph, root: &Value, line: &str, text: &str) -> String {
     let Some((first, _)) = line.split_once('\n') else {
         return line.to_owned();
@@ -234,7 +228,7 @@ fn summary_line(graph: &inspect::ValueGraph, root: &Value, line: &str, text: &st
     }
 }
 
-/// A number's value as a double element holds it.
+/// The value of a number stored in a double array element.
 fn number_value(
     handle: InterpretedHandle,
     address: Option<u64>,
@@ -270,7 +264,7 @@ fn bigint_value(summary: &str) -> Option<i128> {
     summary.strip_suffix('n')?.parse().ok()
 }
 
-/// The name a constructor gives its type.
+/// The type name for `constructor`.
 fn constructor_text(constructor: &inspect::Constructor) -> String {
     match constructor {
         inspect::Constructor::Named(name) => String::from_utf16_lossy(name.units()),
@@ -279,8 +273,8 @@ fn constructor_text(constructor: &inspect::Constructor) -> String {
     }
 }
 
-/// The class of the object `word` points to: its prototype, whose chain
-/// chooses the view that presents it. `None` for a primitive.
+/// The prototype of the object `word` points to, used to pick its view.
+/// `None` for a primitive.
 fn class(reader: &Reader<'_>, word: u64) -> Option<u64> {
     let object = reader.object(word).ok()??;
     super::lookup::prototype(reader, object)
@@ -288,7 +282,7 @@ fn class(reader: &Reader<'_>, word: u64) -> Option<u64> {
         .map(|prototype| prototype.0)
 }
 
-/// The numbers a typed array keeps, which its elements are.
+/// The numeric elements of a typed array.
 fn typed_array(reader: &Reader<'_>, word: u64) -> Result<Option<Arc<InterpretedArray>>, Problem> {
     let Some(object) = reader.object(word)? else {
         return Ok(None);
@@ -310,8 +304,8 @@ fn typed_array(reader: &Reader<'_>, word: u64) -> Result<Option<Arc<InterpretedA
     })))
 }
 
-/// The number kind of a typed array's element, `None` for a 16-bit float,
-/// which the debugger has no kind for.
+/// The number kind of a typed array's element, or `None` for 16-bit floats,
+/// which `NumberKind` lacks.
 const fn number_kind(element: inspect::ElementType) -> Option<NumberKind> {
     use inspect::ElementType as E;
     Some(match element {
@@ -329,9 +323,8 @@ const fn number_kind(element: inspect::ElementType) -> Option<NumberKind> {
     })
 }
 
-/// The children `range` of the value `handle` names: an array's elements
-/// by index, a typed array's numbers, a Set's members, or a Map's entries;
-/// then its own enumerable named properties.
+/// The children in `range`: array or typed array elements, Set members, or
+/// Map entries, then own enumerable named properties.
 pub(super) fn children(
     reader: &Reader<'_>,
     handle: InterpretedHandle,
@@ -379,7 +372,7 @@ pub(super) fn children(
     Ok(found)
 }
 
-/// The elements or entries `range` of `object`, presented as `value`.
+/// The elements or entries of `object` in `range`.
 fn element_children(
     reader: &Reader<'_>,
     object: Object,
@@ -391,7 +384,7 @@ fn element_children(
     if let Some(array) = &value.array {
         let (_, _, kind) = array
             .contiguous()
-            .ok_or("a typed array is no row of numbers")?;
+            .ok_or("the typed array is not a contiguous row of numbers")?;
         return range
             .map(|index| {
                 let at = array.data.get() + index * kind.size();
@@ -425,12 +418,10 @@ fn element_children(
             .collect());
     }
     if value.array.is_none() && reader.is(object, Constant::JSTypedArrayType)? {
-        return Err(
-            "the typed array's elements are 16-bit floats, which microscope has no kind for".into(),
-        );
+        return Err("microscope can't show 16-bit float typed array elements".into());
     }
-    let start = u32::try_from(range.start).map_err(|_| "an index past an array's")?;
-    let end = u32::try_from(range.end).map_err(|_| "an index past an array's")?;
+    let start = u32::try_from(range.start).map_err(|_| "the index is past the end of the array")?;
+    let end = u32::try_from(range.end).map_err(|_| "the index is past the end of the array")?;
     let present = own::elements(reader, object, None, end)?;
     Ok((start..end)
         .map(|index| {
@@ -510,14 +501,14 @@ fn number_text(number: f64, writer: &Writer) -> String {
     .text
 }
 
-/// What a property or element holding `held` presents.
+/// The slot shown for a property or element holding `held`.
 fn held_slot(reader: &Reader<'_>, held: Held, writer: &Writer) -> InterpretedSlot {
     match held {
         Held::Data(word) => word_slot(reader, word, writer),
         Held::Double { address, .. } => value(reader, Handle::Double(address).handle(), writer),
-        Held::Accessor(_) => InterpretedSlot::Unreadable(
-            "the property is an accessor, which microscope does not call".into(),
-        ),
+        Held::Accessor(_) => {
+            InterpretedSlot::Unreadable("microscope does not call accessor properties".into())
+        }
     }
 }
 

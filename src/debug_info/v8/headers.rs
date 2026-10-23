@@ -421,7 +421,7 @@ impl Headers {
     }
 
     /// The body of the enum whose declaration is `head`, in `file`, between
-    /// its braces: the first `head` the file defines, not declares.
+    /// its braces. The file's first `head` must be a definition.
     fn enum_body(&self, file: &str, head: &str) -> String {
         let text = self.file(file);
         let (before, body) = text
@@ -491,11 +491,10 @@ impl Headers {
         self.size("kTaggedSize")
     }
 
-    /// The fields of `BigIntBase`, which Torque has no readers of
-    /// (`bigint.h`): after `PrimitiveHeapObject`'s header, `HeapObject`'s,
-    /// its 32-bit bit field; then, where `BIGINT_NEEDS_PADDING`, which a
-    /// 64-bit build without pointer compression defines, 4 bytes of
-    /// padding; then its digits.
+    /// The fields of `BigIntBase` (`bigint.h`), which Torque has no readers
+    /// of: after the `HeapObject` header, a 32-bit bit field, 4 bytes of
+    /// padding where `BIGINT_NEEDS_PADDING` (a 64-bit build without pointer
+    /// compression), then the digits.
     pub(super) fn bigint_fields(&self) -> Vec<(String, i64)> {
         let file = "src/objects/bigint.h";
         let padding = Regex::new(
@@ -540,10 +539,9 @@ impl Headers {
         ]
     }
 
-    /// The fields of an `AccessorPair` that `struct.h` lays out in C++, as
-    /// from 14.6, which Torque has no readers of: its getter and setter,
-    /// tagged, after `StructLayout`'s header, `HeapObject`'s. `None` where
-    /// Torque defines the class, as before 14.6.
+    /// An `AccessorPair`'s tagged getter and setter after the `HeapObject`
+    /// header. From 14.6 `struct.h` lays them out in C++ and Torque has no
+    /// readers of them. `None` where Torque defines the class, as before 14.6.
     pub(super) fn accessor_pair_fields(&self) -> Option<Vec<(String, i64)>> {
         let file = "src/objects/struct.h";
         if self.contains(
@@ -705,8 +703,8 @@ impl Headers {
         let slots: Vec<String> = super::bytecodes::expand(&macros, "NATIVE_CONTEXT_FIELDS")
             .into_iter()
             .map(|entry| {
-                // The type, a later argument, may hold commas the expander
-                // splits at; the index, the first, is a name.
+                // The type may hold commas the expander splits on, but the
+                // index, the first argument, is a plain name.
                 let index = entry
                     .first()
                     .filter(|index| {
@@ -754,8 +752,8 @@ impl Headers {
     }
 
     /// The bits of the hole in a double array, `kHoleNanInt64`, as
-    /// `globals.h` defines them on x64: its first definitions of the hole's
-    /// halves are MIPS's, the `#else` branch everyone else's.
+    /// `globals.h` defines them on x64. The first definitions of the hole's
+    /// halves are for MIPS; the `#else` branch covers every other target.
     pub(super) fn hole_nan_int64(&self) -> i64 {
         let globals = self.file("src/common/globals.h");
         let halves = "constexpr uint32_t kHoleNanUpper32 = ";
@@ -798,13 +796,12 @@ impl Headers {
         pattern.is_match(self.file("src/objects/dictionary-inl.h"))
     }
 
-    /// Each `class::name` of `names`, a constant of `frame-constants.h`'s
-    /// classes of frames: its classes' bodies with the header's own frame
-    /// macros, `DEFINE_STANDARD_FRAME_SIZES` and the like, expanded from
-    /// their definitions, each name looked up as C++ does, in the class
-    /// that uses it and then the classes it derives from, and then among
-    /// `globals.h`'s constants and the configuration, which gives
-    /// `kCPSlotSize` no constant pool.
+    /// Each `class::name` of `names`, a constant of a frame class in
+    /// `frame-constants.h`, with the header's frame macros such as
+    /// `DEFINE_STANDARD_FRAME_SIZES` expanded. A name is looked up as C++
+    /// does: in its class, then the classes it derives from, then
+    /// `globals.h`'s constants and the configuration, which has no constant
+    /// pool for `kCPSlotSize`.
     pub(super) fn frame_constants(&self, names: &[(&str, &str)]) -> Vec<(String, i64)> {
         let file = "src/execution/frame-constants.h";
         let text = self.file(file);
@@ -841,9 +838,9 @@ impl Headers {
             .collect()
     }
 
-    /// The value of `name` in `class` of `frame_constants`' expanded
-    /// `bodies`: the first of the class and those it derives from that
-    /// defines it, its expression evaluated in that class.
+    /// The value of `name` in `class`, from `frame_constants`' expanded
+    /// `bodies`: its definition in the class or the nearest class it derives
+    /// from, evaluated in that class.
     fn frame_constant(
         &self,
         bodies: &BTreeMap<&str, String>,
@@ -1122,11 +1119,10 @@ const FRAME_CLASSES: [(&str, &str); 4] = [
     ("CommonFrameConstants", "AllStatic"),
 ];
 
-/// `text` with each call of a function-like macro of `macros` replaced by
-/// its body, its parameters by the call's arguments, and the result
-/// expanded again, as the preprocessor does for these macros, which
-/// neither stringize nor paste. A macro with more than one definition, or
-/// a call with the wrong number of arguments, fails.
+/// `text` with each call of a function-like macro of `macros` expanded, and
+/// the result expanded again. These macros neither stringize nor paste. A
+/// macro with more than one definition, or a call with the wrong number of
+/// arguments, fails.
 fn expand_macros(text: &str, macros: &BTreeMap<String, Vec<(Vec<String>, String)>>) -> String {
     let call = Regex::new(r"\b(\w+)\s*\(").expect("a pattern");
     let identifier = Regex::new(r"\w+").expect("a pattern");
@@ -1185,8 +1181,8 @@ fn expand_macros(text: &str, macros: &BTreeMap<String, Vec<(Vec<String>, String)
     panic!("the macros do not finish expanding")
 }
 
-/// The text with each run of whitespace one space, as a source shape is
-/// compared.
+/// `text` with each run of whitespace collapsed to one space, for comparing
+/// source shapes.
 fn normalized(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }

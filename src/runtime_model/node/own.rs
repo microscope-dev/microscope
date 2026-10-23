@@ -1,30 +1,30 @@
-//! An object's own properties, all of them, as V8 keeps them: its elements
-//! by index, and its named properties in the order JavaScript enumerates
-//! them (`OrdinaryOwnPropertyKeys`): strings, then symbols, each in the
-//! order they were added. A fast map keeps that order in its descriptors; a
-//! dictionary keeps each property's enumeration index in its details.
-//! Private symbols, which no program can enumerate, are left out.
+//! All of an object's own properties as V8 stores them: elements by index,
+//! and named properties in JavaScript enumeration order
+//! (`OrdinaryOwnPropertyKeys`): strings, then symbols, each in insertion
+//! order. A fast map keeps that order in its descriptors; a dictionary
+//! stores each property's enumeration index in its details. Private
+//! symbols, which no program can enumerate, are left out.
 
 use super::objects::{Object, Problem, Reader};
 use super::properties::{descriptor, field_value, part};
 use crate::image::v8::{Constant, Field};
 
-/// The most entries of a dictionary, or elements of a backing store, read
-/// of one object.
+/// The most dictionary entries or backing store elements read from one
+/// object.
 pub(super) const MAX_ENTRIES: i64 = 1 << 20;
 
-/// What an own property holds, as its holder keeps it.
+/// What an own property holds, as stored on its holder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Held {
     /// A tagged value.
     Data(u64),
 
-    /// An element of a double array, by its bits and its address; never
-    /// the hole.
+    /// An element of a double array, by its bits and address; never the
+    /// hole.
     Double { bits: u64, address: u64 },
 
-    /// An accessor: an `AccessorPair` of the program's getter and setter,
-    /// or an `AccessorInfo`, a native accessor of V8's own, as a function's
+    /// An accessor: an `AccessorPair` with the program's getter and setter,
+    /// or an `AccessorInfo`, a V8 native accessor such as a function's
     /// `name`, which JavaScript sees as a data property.
     Accessor(Object),
 }
@@ -36,7 +36,7 @@ pub(super) struct Named {
     pub(super) key: Object,
     pub(super) symbol: bool,
 
-    /// A private symbol, which no program enumerates, as V8's own
+    /// A private symbol, which no program can enumerate, such as V8's
     /// `error_stack_symbol`.
     pub(super) private: bool,
     pub(super) enumerable: bool,
@@ -51,25 +51,25 @@ pub(super) struct Element {
     pub(super) held: Held,
 }
 
-/// How an object's map says it keeps its elements.
+/// How an object's map says its elements are stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Store {
-    /// Tagged values in a fixed array, the hole where none is.
+    /// Tagged values in a fixed array, with the hole for missing ones.
     Tagged,
-    /// Doubles in a fixed double array, the hole NaN where none is.
+    /// Doubles in a fixed double array, with the hole NaN for missing ones.
     Doubles,
     /// A number dictionary, keyed by index.
     Dictionary,
-    /// A `String` wrapper's: its characters, then tagged values in a fixed
-    /// array or a dictionary past them.
+    /// A `String` wrapper: its characters, then tagged values after them in
+    /// a fixed array or a dictionary.
     StringWrapper { dictionary: bool },
-    /// A typed array's, read as its kind's numbers.
+    /// A typed array, read as numbers of its element kind.
     Typed,
     /// Sloppy-mode `arguments`, whose elements alias the frame's.
     SloppyArguments,
 }
 
-/// The elements kind of an object whose map is `map`, from its bit field 2.
+/// The elements kind in `map`'s bit field 2.
 pub(super) fn elements_kind(reader: &Reader<'_>, map: Object) -> Result<i64, Problem> {
     let bits = i64::from(reader.byte_field(map, Field::MapBitField2)?);
     part(
@@ -121,15 +121,15 @@ pub(super) fn store(reader: &Reader<'_>, kind: i64) -> Result<Store, Problem> {
         } else if super::typed::element_type(reader, kind).is_some() {
             Store::Typed
         } else {
-            return Err(format!("elements kind {kind} is none microscope reads").into());
+            return Err(format!("microscope does not read elements kind {kind}").into());
         },
     )
 }
 
-/// The elements of `holder` below index `below`, in index order: of its
-/// backing store, which for an array holds them below its `length` only.
-/// A typed array's, sloppy `arguments`', and none are refused; a `String`
-/// wrapper's are those past its characters.
+/// The elements of `holder` below index `below`, in index order, from its
+/// backing store (for an array, only those below `length`). Refuses typed
+/// arrays, sloppy `arguments`, and unknown kinds. For a `String` wrapper,
+/// returns the elements after its characters.
 pub(super) fn elements(
     reader: &Reader<'_>,
     holder: Object,
@@ -142,7 +142,7 @@ pub(super) fn elements(
         let word = reader.field(holder, Field::JSObjectElements)?;
         reader
             .object(word)?
-            .ok_or_else(|| format!("the elements of {:#x} are no object", holder.0).into())
+            .ok_or_else(|| format!("the elements of {:#x} are not an object", holder.0).into())
     };
     let below = length.map_or(below, |length| length.min(below));
     match store {
@@ -157,7 +157,7 @@ pub(super) fn elements(
         }
         Store::Typed => Err("a typed array's elements are its numbers".into()),
         Store::SloppyArguments => {
-            Err("the elements of sloppy-mode arguments alias the frame's, which microscope does not follow".into())
+            Err("sloppy-mode arguments alias the frame's variables, and microscope does not follow them".into())
         }
     }
 }
@@ -166,9 +166,9 @@ pub(super) fn elements(
 fn fast_elements(reader: &Reader<'_>, array: Object, below: u32) -> Result<Vec<Element>, Problem> {
     let ty = reader.instance_type(array)?;
     if ty != reader.constant(Constant::FixedArrayType)? {
-        // An object with no elements keeps the empty fixed array, or the
-        // empty fixed double array where its kind is double.
-        return Err(format!("the elements {:#x} are no fixed array", array.0).into());
+        // An object with no elements has the empty fixed array, or the
+        // empty fixed double array if its kind is double.
+        return Err(format!("the elements {:#x} are not a fixed array", array.0).into());
     }
     let capacity = reader.smi_field(array, Field::FixedArrayBaseLength)?;
     let count = capacity.min(i64::from(below)).clamp(0, MAX_ENTRIES);
@@ -204,7 +204,7 @@ fn double_elements(
         return Ok(Vec::new());
     }
     if !reader.is(array, Constant::FixedDoubleArrayType)? {
-        return Err(format!("the elements {:#x} are no fixed double array", array.0).into());
+        return Err(format!("the elements {:#x} are not a fixed double array", array.0).into());
     }
     let capacity = reader.smi_field(array, Field::FixedArrayBaseLength)?;
     let count = capacity.min(i64::from(below)).clamp(0, MAX_ENTRIES);
@@ -225,10 +225,10 @@ fn double_elements(
         .collect())
 }
 
-/// The elements a number dictionary keeps, in index order.
+/// The elements in a number dictionary, in index order.
 fn dictionary_elements(reader: &Reader<'_>, table: Object) -> Result<Vec<Element>, Problem> {
     if !reader.is(table, Constant::NumberDictionaryType)? {
-        return Err(format!("the elements {:#x} are no number dictionary", table.0).into());
+        return Err(format!("the elements {:#x} are not a number dictionary", table.0).into());
     }
     let mut found = Vec::new();
     for entry in entries(
@@ -265,25 +265,25 @@ fn dictionary_elements(reader: &Reader<'_>, table: Object) -> Result<Vec<Element
     Ok(found)
 }
 
-/// The index a number dictionary's key holds, or `None` for an empty or
-/// deleted entry's.
+/// The index in a number dictionary key, or `None` for an empty or deleted
+/// entry.
 fn index_of(reader: &Reader<'_>, key: u64) -> Result<Option<u32>, Problem> {
     if let Some(index) = reader.smi(key)? {
         return u32::try_from(index)
             .map(Some)
-            .map_err(|_| format!("a dictionary holds the index {index}").into());
+            .map_err(|_| format!("a dictionary has the invalid index {index}").into());
     }
     let Some(key) = reader.object(key)? else {
         return Ok(None);
     };
     if !reader.is(key, Constant::HeapNumberType)? {
-        // The empty entry's undefined, or a deleted one's hole.
+        // Undefined for an empty entry, or the hole for a deleted one.
         return Ok(None);
     }
     let number = f64::from_bits(reader.word(reader.field_address(key, Field::HeapNumberValue)?)?);
-    // An index past a Smi's is kept as a number, below 2^32 - 1.
+    // An index too large for a Smi is stored as a number below 2^32 - 1.
     if number.fract() != 0.0 || !(0.0..4_294_967_295.0).contains(&number) {
-        return Err(format!("a dictionary holds the index {number}").into());
+        return Err(format!("a dictionary has the invalid index {number}").into());
     }
     #[allow(
         clippy::cast_possible_truncation,
@@ -293,16 +293,15 @@ fn index_of(reader: &Reader<'_>, key: u64) -> Result<Option<u32>, Problem> {
     Ok(Some(number as u32))
 }
 
-/// The named own properties of `holder`, strings first, then symbols, each
-/// in the order they were added.
+/// The named own properties of `holder`: strings first, then symbols, each
+/// in insertion order.
 pub(super) fn named(reader: &Reader<'_>, holder: Object) -> Result<Vec<Named>, Problem> {
     let mut found = all_named(reader, holder)?;
     found.retain(|property| !property.private);
     Ok(found)
 }
 
-/// The named own properties of `holder`, as [`named`] gives them, with
-/// those keyed by private symbols among them.
+/// Like [`named`], but includes properties keyed by private symbols.
 pub(super) fn all_named(reader: &Reader<'_>, holder: Object) -> Result<Vec<Named>, Problem> {
     let map = reader.map(holder)?;
     let bits = i64::from(
@@ -323,7 +322,7 @@ pub(super) fn all_named(reader: &Reader<'_>, holder: Object) -> Result<Vec<Named
     Ok(found)
 }
 
-/// The properties a fast map's own descriptors describe, in their order.
+/// The properties in a fast map's own descriptors, in descriptor order.
 fn fast(reader: &Reader<'_>, holder: Object, map: Object, own: i64) -> Result<Vec<Named>, Problem> {
     let mut found = Vec::new();
     for index in 0..own {
@@ -363,19 +362,19 @@ fn fast(reader: &Reader<'_>, holder: Object, map: Object, own: i64) -> Result<Ve
     Ok(found)
 }
 
-/// The properties a dictionary-mode object keeps in its name dictionary,
-/// in the order of their enumeration indices.
+/// The properties in a dictionary-mode object's name dictionary, in
+/// enumeration index order.
 fn dictionary(reader: &Reader<'_>, holder: Object) -> Result<Vec<Named>, Problem> {
     let word = reader.field(holder, Field::JSReceiverPropertiesOrHash)?;
     let table = reader
         .object(word)?
-        .ok_or_else(|| format!("the properties of {:#x} are no object", holder.0))?;
+        .ok_or_else(|| format!("the properties of {:#x} are not an object", holder.0))?;
     if reader.is(table, Constant::GlobalDictionaryType)? {
         return global_dictionary(reader, table);
     }
     if !reader.is(table, Constant::NameDictionaryType)? {
         return Err(format!(
-            "the properties of {:#x} are kept in a dictionary of instance type {}",
+            "the properties of {:#x} are in a dictionary of unexpected instance type {}",
             holder.0,
             reader.instance_type(table)?
         )
@@ -428,8 +427,8 @@ fn dictionary(reader: &Reader<'_>, holder: Object) -> Result<Vec<Named>, Problem
     Ok(found.into_iter().map(|(_, property)| property).collect())
 }
 
-/// The first element of each entry of the hash table `table`, whose prefix
-/// is `prefix` words and each entry `size`.
+/// The index of the first element of each entry in the hash table `table`,
+/// whose prefix is `prefix` words and whose entries are `size` words.
 fn entries(
     reader: &Reader<'_>,
     table: Object,
@@ -445,8 +444,8 @@ fn entries(
     Ok((0..capacity).map(move |entry| first + entry * size))
 }
 
-/// A key that names a property, whether it is a symbol, and whether a
-/// private one; `None` for an empty or deleted entry's.
+/// A property key, whether it is a symbol, and whether it is a private
+/// one; `None` for an empty or deleted entry.
 fn key_of(reader: &Reader<'_>, key: u64) -> Result<Option<(Object, bool, bool)>, Problem> {
     let Some(key) = reader.object(key)? else {
         return Ok(None);
@@ -476,7 +475,7 @@ fn held(reader: &Reader<'_>, details: i64, value: u64) -> Result<Held, Problem> 
                 .iter()
                 .any(|kind| reader.is(*accessor, *kind).unwrap_or(false))
         })
-        .ok_or("an accessor property holds no accessor")?;
+        .ok_or("an accessor property does not hold an accessor")?;
     Ok(Held::Accessor(accessor))
 }
 
@@ -494,17 +493,17 @@ fn enumerable(reader: &Reader<'_>, details: i64) -> Result<bool, Problem> {
 fn smi(reader: &Reader<'_>, word: u64) -> Result<i64, Problem> {
     reader
         .smi(word)?
-        .ok_or_else(|| "a property's details are no Smi".into())
+        .ok_or_else(|| "a property's details are not a Smi".into())
 }
 
-/// Whether `word` is one of V8's holes, which stand for no value.
+/// Whether `word` is one of V8's holes, which mark a missing value.
 pub(super) fn is_hole(reader: &Reader<'_>, word: u64) -> Result<bool, Problem> {
     reader
         .object(word)?
         .map_or(Ok(false), |object| reader.is(object, Constant::HoleType))
 }
 
-/// The `count` words at `address`, read at once.
+/// The `count` words at `address`, in one read.
 pub(super) fn words(reader: &Reader<'_>, address: u64, count: i64) -> Result<Vec<u64>, Problem> {
     let count = usize::try_from(count).map_err(|_| "a negative count of words")?;
     let mut bytes = vec![0; count * 8];
@@ -517,9 +516,9 @@ pub(super) fn words(reader: &Reader<'_>, address: u64, count: i64) -> Result<Vec
         .collect())
 }
 
-/// The properties a global object keeps in its global dictionary, each in
-/// a `PropertyCell` of its name, value, and details, in the order of their
-/// enumeration indices. A deleted property's cell holds the hole.
+/// The properties in a global object's global dictionary, in enumeration
+/// index order. Each is a `PropertyCell` with its name, value, and details;
+/// a deleted property's cell holds the hole.
 fn global_dictionary(reader: &Reader<'_>, table: Object) -> Result<Vec<Named>, Problem> {
     let mut found = Vec::new();
     for entry in entries(

@@ -599,8 +599,9 @@ pub(super) fn present_slot(
 }
 
 /// The capability of the children of the object `object`, at its address
-/// if it has one, which `runtime` read at the frame `frame` of `context` at the stop `stop`: its
-/// `elements` elements or entries, then its `fields` attributes.
+/// if it has one, which `runtime` read at the frame `frame` of `context` at
+/// the stop `stop`: its `elements` elements or entries, then its `fields`
+/// attributes.
 pub(super) fn children_reference(
     (stop, context, frame): (StopId, ExecutionContext, StackFrameId),
     runtime: &BoundRuntime,
@@ -618,9 +619,8 @@ pub(super) fn children_reference(
     .children(object, (Arc::from([]), None), (elements, fields))
 }
 
-/// The storage a children capability names an interpreter's object by:
-/// its memory, or, for one that lives in none, a value computed with no
-/// bytes. The capability reads the object through its handle, not this.
+/// A children capability's storage: the object's memory, or empty computed
+/// bytes when it has none. Reads go through the object's handle instead.
 fn interpreted_storage(address: Option<VirtualAddress>) -> ValueStorage {
     address.map_or_else(
         || ValueStorage::Bytes {
@@ -714,8 +714,8 @@ impl Origin {
             visualizers: Arc::from([]),
         };
 
-        // A value that lives in no memory, as a V8 small integer, is
-        // computed from the handle its runtime gave.
+        // A value with no memory, such as a V8 small integer, is computed
+        // from its handle.
         let unaddressed = || {
             value
                 .address
@@ -894,8 +894,7 @@ const fn language_name(language: SourceLanguage) -> &'static str {
     }
 }
 
-/// The view an interpreter's values are presented through when no view of
-/// the program's presents them.
+/// The view name for an interpreter's values that no program view presents.
 fn header(language: SourceLanguage) -> String {
     match language {
         SourceLanguage::Python => "Python objects".to_owned(),

@@ -71,9 +71,8 @@ pub(super) fn function_name(reader: &Reader<'_>, shared: Object) -> Result<Strin
 /// A function's own name, if any, and its scope with its flags, if any.
 type SharedName = (Option<Object>, Option<(Object, i64)>);
 
-/// The string `SharedFunctionInfo::Name` gives, its own name with none
-/// inferred, or `None` for none; and the function's scope with its flags,
-/// where it keeps one.
+/// `SharedFunctionInfo::Name`: the function's own name, never an inferred
+/// one, or `None`; plus its scope and scope flags, if it has a scope.
 pub(super) fn shared_name(reader: &Reader<'_>, shared: Object) -> Result<SharedName, Problem> {
     let word = reader.field(shared, Field::SharedFunctionInfoNameOrScopeInfo)?;
     // V8 keeps the Smi 0 for a function with no name and no scope.
@@ -82,7 +81,7 @@ pub(super) fn shared_name(reader: &Reader<'_>, shared: Object) -> Result<SharedN
     };
     if !reader.is(held, Constant::ScopeInfoType)? {
         if reader.instance_type(held)? >= reader.constant(Constant::FirstNonstringType)? {
-            return Err(format!("the name of {:#x} is no string", shared.0).into());
+            return Err(format!("the name of {:#x} is not a string", shared.0).into());
         }
         return Ok((Some(held), None));
     }

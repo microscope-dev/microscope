@@ -1,21 +1,21 @@
-//! V8's `JSReceiver::GetConstructorName`, which inspect calls as
-//! `internalGetConstructorName` and V8's call sites as their type name:
-//! `GetConstructorHelper` and `JSReceiver::class_name` in
-//! `objects/js-objects.cc`, as each supported version has them.
+//! V8's `JSReceiver::GetConstructorName`, which inspect uses as
+//! `internalGetConstructorName` and call sites use for their type name.
+//! Ports `GetConstructorHelper` and `JSReceiver::class_name` from
+//! `objects/js-objects.cc` for each supported version.
 //!
-//! First, for an object a constructor made with itself as `new.target`,
-//! the function or template its map keeps names it; then, from the object
-//! along its prototypes, an own `Symbol.toStringTag` string, or a
-//! prototype's own `constructor` function; and last its kind. A name that
-//! is empty or `Object` is passed over. What V8 would compute by calling a
-//! native accessor, or read through an access check, is refused.
+//! The name comes from the first of: the constructor function or template
+//! in the map, for an object built with its constructor as `new.target`;
+//! an own `Symbol.toStringTag` string on the object or a prototype; a
+//! prototype's own `constructor` function; the object's kind. Empty names
+//! and `Object` are skipped. Native accessors V8 would call and access
+//! checks are refused.
 
 use super::lookup::{self, Key};
 use super::objects::{MAX_STRING, Object, Problem, Reader};
 use super::own::Held;
 use crate::image::v8::{Constant, Field};
 
-/// The most prototypes followed: chains are a few objects long.
+/// Prototype chains are a few objects long; stop after this many.
 const MAX_PROTOTYPES: usize = 64;
 
 /// The most back pointers followed from a map to its root map.
@@ -27,8 +27,8 @@ pub(super) fn constructor_name(reader: &Reader<'_>, receiver: Object) -> Result<
         return Ok(name);
     }
 
-    // `PrototypeIterator` from the receiver, `AdvanceIgnoringProxies`:
-    // each object's map's prototype, a proxy's too, until null.
+    // `PrototypeIterator` with `AdvanceIgnoringProxies`: follow map
+    // prototypes, through proxies too, until null.
     let mut current = receiver;
     for _ in 0..MAX_PROTOTYPES {
         if let Some(word) = own_data(reader, current, Key::WellKnown("Symbol.toStringTag"))?
@@ -37,9 +37,9 @@ pub(super) fn constructor_name(reader: &Reader<'_>, receiver: Object) -> Result<
         {
             return units(reader, tag);
         }
-        // From 14.6 V8 names a hidden prototype, the global object behind
-        // a global proxy, by its template; `own_data` refuses the proxy, so
-        // no walk reaches one.
+        // From 14.6 V8 names a hidden prototype (the global object behind a
+        // global proxy) by its template. `own_data` refuses the proxy, so
+        // this walk never reaches one.
         if current != receiver
             && let Some(word) = own_data(reader, current, Key::Name("constructor"))?
             && let Some(function) = reader.object(word)?
@@ -57,12 +57,12 @@ pub(super) fn constructor_name(reader: &Reader<'_>, receiver: Object) -> Result<
             _ => return class_name(reader, receiver).map(|name| name.encode_utf16().collect()),
         }
     }
-    Err(format!("the prototypes of {:#x} are too many", receiver.0).into())
+    Err(format!("{:#x} has too many prototypes", receiver.0).into())
 }
 
-/// The name the constructor `receiver`'s map keeps gives, where the map is
-/// no prototype's and `new.target` was the constructor itself: a
-/// function's debug name, or from 13.6 an API template's class name.
+/// The name of the constructor in `receiver`'s map, if the map is not a
+/// prototype map and `new.target` was the constructor itself: a function's
+/// debug name, or from 13.6 an API template's class name.
 fn from_map(reader: &Reader<'_>, receiver: Object) -> Result<Option<Vec<u16>>, Problem> {
     if reader.is(receiver, Constant::JSProxyType)? {
         return Ok(None);
@@ -92,8 +92,8 @@ fn from_map(reader: &Reader<'_>, receiver: Object) -> Result<Option<Vec<u16>>, P
         return Ok(None);
     };
     if is_function(reader, constructor)? {
-        // 14.6 names it by `JSFunction::GetDebugName`, before by its
-        // shared information's `DebugName`.
+        // 14.6 uses `JSFunction::GetDebugName`; earlier versions use
+        // `SharedFunctionInfo::DebugName`.
         let shared = shared(reader, constructor)?;
         let name = if reader.version.major >= 14 {
             refuse_unnamed_kinds(reader, shared)?;
@@ -118,8 +118,9 @@ fn from_map(reader: &Reader<'_>, receiver: Object) -> Result<Option<Vec<u16>>, P
     Ok(None)
 }
 
-/// `Map::GetConstructor`: what the root of `map`'s transition tree keeps,
-/// past each back pointer, a map of the same meta map. `None` for a Smi.
+/// `Map::GetConstructor`: follows back pointers (maps with the same meta
+/// map) to the root of `map`'s transition tree and returns what it holds.
+/// `None` for a Smi.
 fn map_constructor(reader: &Reader<'_>, map: Object) -> Result<Option<Object>, Problem> {
     let meta = reader.map(map)?;
     let mut word = reader.field(map, Field::MapConstructorOrBackPointerOrNativeContext)?;
@@ -130,8 +131,8 @@ fn map_constructor(reader: &Reader<'_>, map: Object) -> Result<Option<Object>, P
         if reader.map(held)? != meta {
             if reader.is(held, Constant::Tuple2Type)? {
                 return Err(
-                    "the map keeps its constructor with a non-object prototype, \
-                     which microscope does not read"
+                    "the map stores its constructor with a non-object prototype, \
+                     and microscope does not read that layout"
                         .into(),
                 );
             }
@@ -143,17 +144,19 @@ fn map_constructor(reader: &Reader<'_>, map: Object) -> Result<Option<Object>, P
 }
 
 /// The tagged value of `holder`'s own data property `key`, as
-/// `JSReceiver::GetDataProperty` gives it to an own lookup that skips
-/// interceptors; `None` for none, a proxy, or an accessor V8 calls no
-/// getter of.
+/// `JSReceiver::GetDataProperty` returns it for an own lookup that skips
+/// interceptors. `None` if absent, for a proxy, or for an accessor whose
+/// getter V8 does not call.
 fn own_data(reader: &Reader<'_>, holder: Object, key: Key<'_>) -> Result<Option<u64>, Problem> {
     if reader.is(holder, Constant::JSProxyType)? {
         return Ok(None);
     }
     if reader.is(holder, Constant::JSGlobalProxyType)? {
-        return Err("a global proxy's own properties are its global object's, \
-             which microscope does not look up"
-            .into());
+        return Err(
+            "a global proxy's own properties belong to its global object, \
+             and microscope does not look them up there"
+                .into(),
+        );
     }
     let bits = i64::from(reader.byte_field(reader.map(holder)?, Field::MapBitField)?);
     if super::properties::part(
@@ -167,13 +170,14 @@ fn own_data(reader: &Reader<'_>, holder: Object, key: Key<'_>) -> Result<Option<
     }
     match lookup::own(reader, holder, key)? {
         Some((Held::Data(word), _)) => Ok(Some(word)),
-        // A double is no string and no function.
+        // A double is neither a string nor a function.
         Some((Held::Double { .. }, _)) | None => Ok(None),
         Some((Held::Accessor(accessor), _)) => {
             // From 14.6 V8 calls a side-effect-free native accessor.
             if reader.version.major >= 14 && reader.is(accessor, Constant::AccessorInfoType)? {
                 return Err(
-                    "the property is V8's native accessor, which V8 calls and microscope does not"
+                    "the property is a V8 native accessor, which V8 would call and microscope \
+                     cannot"
                         .into(),
                 );
             }
@@ -182,8 +186,7 @@ fn own_data(reader: &Reader<'_>, holder: Object, key: Key<'_>) -> Result<Option<
     }
 }
 
-/// `SharedFunctionInfo::DebugName`: its own name, or else the one V8
-/// inferred.
+/// `SharedFunctionInfo::DebugName`: its own name, else the one V8 inferred.
 fn debug_name(reader: &Reader<'_>, shared: Object) -> Result<Vec<u16>, Problem> {
     refuse_unnamed_kinds(reader, shared)?;
     if let (Some(name), _) = super::names::shared_name(reader, shared)? {
@@ -199,15 +202,15 @@ fn debug_name(reader: &Reader<'_>, shared: Object) -> Result<Vec<u16>, Problem> 
     )
 }
 
-/// Refuses the functions `DebugName` names otherwise: a class's field
-/// initializer, `<instance_members_initializer>` or
-/// `<static_initializer>`, which no program reaches as a constructor, and
-/// a WebAssembly export, by its signature.
+/// Refuses functions `DebugName` names some other way: class field
+/// initializers (`<instance_members_initializer>` or
+/// `<static_initializer>`, never reachable as constructors) and
+/// WebAssembly exports, named by their signature.
 fn refuse_unnamed_kinds(reader: &Reader<'_>, shared: Object) -> Result<(), Problem> {
     if let Some(data) = super::names::function_data(reader, shared)?
         && reader.is(data, Constant::WasmExportedFunctionDataType)?
     {
-        return Err("a WebAssembly function, which microscope does not name".into());
+        return Err("microscope does not name WebAssembly functions".into());
     }
     let flags = i64::from(reader.int32_field(shared, Field::SharedFunctionInfoFlags)?);
     let kind = super::properties::part(
@@ -216,19 +219,19 @@ fn refuse_unnamed_kinds(reader: &Reader<'_>, shared: Object) -> Result<(), Probl
         Constant::SfiFunctionKindMask,
         Some(Constant::SfiFunctionKindShift),
     )?;
-    // From 14.6 the initializers run to the static one preceded by a
-    // member; before, to the static one.
+    // The last initializer kind is the static one preceded by a member from
+    // 14.6, and the plain static one before.
     let first = reader.constant(Constant::FunctionKindClassMembersInitializerFunction)?;
     let last = reader
         .constant(Constant::FunctionKindClassStaticInitializerFunctionPrecededByMember)
         .or_else(|_| reader.constant(Constant::FunctionKindClassStaticInitializerFunction))?;
     if (first..=last).contains(&kind) {
-        return Err("a class's field initializer, which microscope does not name".into());
+        return Err("microscope does not name class field initializers".into());
     }
     Ok(())
 }
 
-/// `JSReceiver::class_name`: the name of `receiver`'s kind.
+/// `JSReceiver::class_name`: the name of the kind of object `receiver` is.
 fn class_name(reader: &Reader<'_>, receiver: Object) -> Result<&'static str, Problem> {
     use Constant as C;
     let ty = reader.instance_type(receiver)?;
@@ -296,8 +299,8 @@ fn class_name(reader: &Reader<'_>, receiver: Object) -> Result<&'static str, Pro
         });
     }
     if is(C::JSTypedArrayType) {
-        // `TYPED_ARRAYS`, which leaves out the kinds of a view of a
-        // resizable buffer: such an array is named `Object`.
+        // `TYPED_ARRAYS` leaves out the kinds for views of resizable
+        // buffers, so such an array is named `Object`.
         let kind = super::own::elements_kind(reader, reader.map(receiver)?)?;
         let kinds = [
             (C::ElementsKindUint8, "Uint8Array"),
@@ -331,7 +334,7 @@ fn class_name(reader: &Reader<'_>, receiver: Object) -> Result<&'static str, Pro
     Ok("Object")
 }
 
-/// The name of the kind of primitive the wrapper `wrapper` holds.
+/// The name of the primitive type that `wrapper` holds.
 fn wrapped(reader: &Reader<'_>, wrapper: Object) -> Result<&'static str, Problem> {
     use Constant as C;
     let value = reader.field(wrapper, Field::JSPrimitiveWrapperValue)?;
@@ -361,16 +364,16 @@ fn wrapped(reader: &Reader<'_>, wrapper: Object) -> Result<&'static str, Problem
             return Ok(name);
         }
     }
-    Err(format!("a primitive wrapper holds {:#x}, no primitive", value.0).into())
+    Err(format!("a primitive wrapper holds a non-primitive {:#x}", value.0).into())
 }
 
-/// Whether V8 takes `name` as a constructor's name: it is neither empty
-/// nor `Object`.
+/// Whether V8 accepts `name` as a constructor name: neither empty nor
+/// `Object`.
 fn is_useful(name: &[u16]) -> bool {
     !name.is_empty() && !name.iter().copied().eq("Object".encode_utf16())
 }
 
-/// Whether `object` is a `JSFunction`, which no bound function is.
+/// Whether `object` is a `JSFunction`. Bound functions are not.
 fn is_function(reader: &Reader<'_>, object: Object) -> Result<bool, Problem> {
     let ty = reader.instance_type(object)?;
     Ok((reader.constant(Constant::FirstJSFunctionType)?
@@ -397,11 +400,11 @@ fn units(reader: &Reader<'_>, string: Object) -> Result<Vec<u16>, Problem> {
     Ok(text)
 }
 
-/// `name`, refused where it may be cut short: [`Reader::string`] reads at
-/// most [`MAX_STRING`] characters.
+/// `name`, refused if it may have been cut off: [`Reader::string`] reads
+/// at most [`MAX_STRING`] characters.
 fn whole(name: Vec<u16>) -> Result<Vec<u16>, Problem> {
     if u64::try_from(name.len()).is_ok_and(|length| length < MAX_STRING) {
         return Ok(name);
     }
-    Err("a function name too long to read whole".into())
+    Err("a function name too long to read in full".into())
 }

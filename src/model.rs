@@ -3126,8 +3126,8 @@ pub struct Presentation {
     /// A bounded one-line rendering, in one style for every language.
     pub summary: Arc<str>,
 
-    /// The value written over as many lines as its runtime writes it, as
-    /// Node's `console.log` does, where that is not the summary.
+    /// The value's multiline text as its runtime writes it, as Node's
+    /// `console.log` does, when that differs from the summary.
     pub detail: Option<Arc<str>>,
 
     /// The elements, the view's fields, and a `[raw]` child.
@@ -3284,16 +3284,16 @@ pub enum VariableKind {
     /// frame it returned to at the stop that step made.
     Returned,
 
-    /// A variable of a function around the selected one that its closure
-    /// captured, as JavaScript keeps in an outer function's context.
+    /// An enclosing function's variable that the selected function's closure
+    /// captured, such as one in a JavaScript outer function's context.
     Captured,
 
-    /// A top-level binding of the module or script the selected function
-    /// belongs to, as a JavaScript module's or script's `let` and `const`.
+    /// A top-level binding of the selected function's module or script, such
+    /// as a JavaScript module's or script's `let` and `const`.
     Module,
 
-    /// A value the frame keeps that no name binds, as a JavaScript
-    /// interpreter register, with [`Variable::unnamed`] saying why.
+    /// An unnamed value the frame keeps, such as a JavaScript interpreter
+    /// register. [`Variable::unnamed`] says why it has no name.
     Unnamed,
 }
 

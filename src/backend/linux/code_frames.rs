@@ -130,9 +130,9 @@ fn owner<'a>(
 
 /// Replaces each described activation's frames with the functions its
 /// runtime recorded: those inlined as inline frames, then its own as the
-/// physical frame, which keeps its instruction, module, and symbol, each
-/// with its runtime as its source. A description with no function only
-/// sets the role.
+/// physical frame, which keeps its instruction, module, and symbol. Each
+/// described frame's source is its runtime. A description with no function
+/// only sets the role.
 fn rewrite(
     expanded: &mut Expanded,
     described: &[(usize, RuntimeId, DescribedFrame)],
@@ -330,8 +330,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(activations, [0, 1, 1, 1, 2]);
 
-        // The runtime reads the described functions' state: only the
-        // activation's own from its frame.
+        // Each described frame names its runtime; only the last is not inlined.
         let runtime = RuntimeId::new(7);
         let sources = expanded
             .origins

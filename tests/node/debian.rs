@@ -132,10 +132,9 @@ async fn debian_parked_threads_are_the_ones_v8_reported_and_unwind_to_where_they
 }
 
 /// The stack of `tiers.js` unwinds through the builtins and the code each
-/// compiler made to `_start`, and its frames of every tier are the ones V8
-/// reported, the inlined ones included, at their places: the JS dispatch
-/// table, which no symbol locates in Debian's build, is found from V8's
-/// exported code.
+/// compiler made to `_start`, and its frames of every tier, inlined ones
+/// included, are the ones V8 reported. Debian's build has no symbol for the
+/// JS dispatch table, so it is found from V8's exported code.
 #[tokio::test]
 async fn debian_frames_of_every_tier_are_the_ones_v8_reported() {
     if !inside("debian::debian_frames_of_every_tier_are_the_ones_v8_reported") {
@@ -163,8 +162,7 @@ async fn debian_frames_of_every_tier_are_the_ones_v8_reported() {
         .operation("backtrace", scenario.handle().backtrace())
         .await;
     let (compiled, _) = check_thread(&context, true, &trace, &modules);
-    // The tier is what makes each frame's reading differ, not a fact a
-    // backtrace reports.
+    // A backtrace does not report tiers, so compare frames without them.
     for frame in reported.iter_mut().flat_map(|thread| &mut thread.frames) {
         frame.tier = None;
     }

@@ -105,8 +105,8 @@ fn check_listed(context: &str, reported: &[Thread], listed: &[u64]) {
 
 /// The isolate each thread `reported`, which runs JavaScript, is labelled
 /// with at the stop `snapshot` lists, by thread id: each its own number,
-/// the main thread's 1. Any other thread has no label, or, as a V8 helper
-/// working for an isolate, that isolate's.
+/// the main thread's 1. Any other thread has no label, or the label of the
+/// isolate it works for as a V8 helper.
 pub fn check_isolates(
     context: &str,
     reported: &[Thread],

@@ -2,8 +2,8 @@
 //! running `util.inspect(value, { customInspect: false })` under Node 22,
 //! 24, and 26.
 
-/// A value's label, Node 26's text, and Node 24's and 22's where each
-/// differs from the next newer version's.
+/// A value's label, Node 26's text, and Node 24's and 22's where they
+/// differ from the next newer version.
 pub const NODE: &[(&str, &str, Option<&str>, Option<&str>)] = &[
     (
         "mixedNumbers",
@@ -564,8 +564,8 @@ pub const NODE: &[(&str, &str, Option<&str>, Option<&str>)] = &[
     ),
 ];
 
-/// The gallery of `tests/fixtures/node/values.js` as Node 26 prints it, but
-/// for `values.strings.external`, whose ten thousand units the test builds.
+/// The gallery of `tests/fixtures/node/values.js` as Node 26 prints it,
+/// except `values.strings.external`, whose 10000 units the test builds.
 pub const GALLERY: &[(&str, &str)] = &[
     ("values.numbers.smi", "42"),
     ("values.numbers.negative", "-7"),

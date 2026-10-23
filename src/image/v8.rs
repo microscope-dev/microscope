@@ -283,7 +283,7 @@ entries! {
         /// does: from `CodeWrapper`'s `FIELD_LIST` in `code.h`.
         CodeWrapperCode = "CodeWrapper::Code",
 
-        /// The fields of JavaScript's values. A heap number's double.
+        /// A heap number's double.
         HeapNumberValue = "HeapNumber::Value",
 
         /// An oddball's kind, one of the `Oddball::k` constants.
@@ -335,17 +335,18 @@ entries! {
         ErrorStackDataCallSiteInfosOrFormattedStack =
             "ErrorStackData::CallSiteInfosOrFormattedStack",
 
-        /// From 14.6, in its place: the formatted stack, any value but a
-        /// `FixedArray`, or a `FixedArray` of the raw data `CallSiteInfo`s
-        /// are made from (`debug-objects.tq`), a change Node makes to V8.
-        /// Frame `i` is the [`Constant::CallSiteInfoRawCount`] elements from
-        /// `i * CallSiteInfoRawCount`, the array no longer than its frames,
-        /// each at its `CallSiteInfo::Fields` index: its code, as a
-        /// `CodeWrapper` or `BytecodeWrapper`, or undefined; its receiver;
-        /// its function; its offset, a Smi; its parameters; and its
-        /// `CallSiteInfo` flags, a Smi, last. A frame whose flags have
-        /// `IsDeferredBaselineFrameBit` holds baseline code's wrapper and a
-        /// pc offset into its instructions, not yet a bytecode offset.
+        /// From 14.6, in its place (a change Node makes to V8): the
+        /// formatted stack, any value but a `FixedArray`, or a `FixedArray`
+        /// of the raw data `CallSiteInfo`s are made from
+        /// (`debug-objects.tq`). Frame `i` is the
+        /// [`Constant::CallSiteInfoRawCount`] elements from
+        /// `i * CallSiteInfoRawCount`, and the array ends with the last
+        /// frame. By `CallSiteInfo::Fields` index, a frame holds its code (a
+        /// `CodeWrapper`, a `BytecodeWrapper`, or undefined), receiver,
+        /// function, offset (a Smi), parameters, and last its `CallSiteInfo`
+        /// flags (a Smi). With `IsDeferredBaselineFrameBit` set, the code is
+        /// baseline code's wrapper and the offset is a pc offset into its
+        /// instructions rather than a bytecode offset.
         ErrorStackDataRawDataForCallSiteInfosOrFormattedStack =
             "ErrorStackData::RawDataForCallSiteInfosOrFormattedStack",
 
@@ -1326,11 +1327,11 @@ entries! {
 
         /// A context's slots, in elements from [`Field::ContextElements`]
         /// (`contexts.h`): its scope info, its previous context, and its
-        /// extension, which only a context whose scope info has
-        /// `HasContextExtensionSlotBit` has, and which a native context's
-        /// global object is; how many slots a context has before its
-        /// locals, without and with an extension. A context's native context
-        /// is its map's [`Field::MapConstructorOrBackPointerOrNativeContext`].
+        /// extension, and how many slots come before its locals without and
+        /// with an extension. Only a context whose scope info has
+        /// `HasContextExtensionSlotBit` has an extension; a native context's
+        /// extension is its global object. A context's native context is its
+        /// map's [`Field::MapConstructorOrBackPointerOrNativeContext`].
         ContextScopeInfoIndex = "Context::SCOPE_INFO_INDEX",
         ContextPreviousIndex = "Context::PREVIOUS_INDEX",
         ContextExtensionIndex = "Context::EXTENSION_INDEX",

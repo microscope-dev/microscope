@@ -1,12 +1,9 @@
-//! JavaScript values read from V8's heap into the graph [`super::inspect`]
-//! writes, read as deep as inspect shows them: an object at level 2 or
-//! less with its contents, one at level 3 by its header alone.
+//! Reads JavaScript values from V8's heap into the graph [`super::inspect`]
+//! formats, as deep as inspect shows: objects to level 2 with contents,
+//! level 3 by header only.
 //!
-//! Each word is a Smi, a number, or a pointer to a heap object, which is
-//! what its map's instance type says. A value whose read fails is
-//! unreadable, with why, and the rest of the graph is read on; an object
-//! of a kind this reader does not follow is unsupported, by its instance
-//! type. Nothing is ever guessed.
+//! A failed read becomes an unreadable value with its reason, and reading
+//! continues. Unsupported instance types are reported, never guessed.
 
 use std::collections::BTreeMap;
 
@@ -20,22 +17,22 @@ use super::own::{self, Held};
 use crate::VirtualAddress;
 use crate::image::v8::{Constant, Field};
 
-/// The deepest level whose objects inspect shows the contents of.
+/// The deepest level at which inspect shows an object's contents.
 const FULL_LEVEL: u32 = 2;
 
-/// The units of a string value inspect shows, its `maxStringLength`.
+/// inspect's `maxStringLength`, in UTF-16 units.
 const SHOWN_UNITS: u64 = 10_000;
 
-/// The most units of a string read whole, as a key or a name.
+/// The most units read of a string needed whole, such as a key or name.
 const WHOLE_UNITS: u64 = 1 << 20;
 
-/// The values a root value reaches, read into a graph.
+/// Reads the values reachable from a root value into a graph.
 pub(super) struct Builder<'r> {
     pub(super) reader: Reader<'r>,
     pub(super) graph: ValueGraph,
 
-    /// Each object read, by its tagged address, with whether its contents
-    /// were.
+    /// Each object read, by tagged address, and whether its contents were
+    /// read too.
     rows: BTreeMap<u64, (ObjectId, bool)>,
 }
 
@@ -48,7 +45,7 @@ impl<'r> Builder<'r> {
         }
     }
 
-    /// The value the tagged word `word` holds, at `level` below the root.
+    /// The value of the tagged word `word`, at `level` below the root.
     pub(super) fn value(&mut self, word: u64, level: u32) -> Value {
         self.read(word, level)
             .unwrap_or_else(|problem| Value::Unreadable(problem.to_string()))
@@ -81,7 +78,7 @@ impl<'r> Builder<'r> {
             return symbol(&reader, object).map(Value::Symbol);
         }
         if is(Constant::HoleType) {
-            return Err("the hole, which stands for no value".into());
+            return Err("the value is V8's hole marker".into());
         }
         if (reader.constant(Constant::FirstJSReceiverType)?
             ..=reader.constant(Constant::LastJSReceiverType)?)
@@ -90,13 +87,13 @@ impl<'r> Builder<'r> {
             return self.object(object, level).map(Value::Object);
         }
         Err(format!(
-            "{:#x}, of instance type {ty}, is no JavaScript value",
+            "{:#x} has instance type {ty}, which is not a JavaScript value",
             object.0
         )
         .into())
     }
 
-    /// The row of the object `object`, read at `level`.
+    /// The graph row for `object`, read at `level`.
     fn object(&mut self, object: Object, level: u32) -> Result<ObjectId, Problem> {
         let object = global_object(&self.reader, object)?;
         let full = level <= FULL_LEVEL;
@@ -110,8 +107,7 @@ impl<'r> Builder<'r> {
             .constant(Constant::HeapObjectTag)?
             .cast_unsigned();
         let address = VirtualAddress::new(object.0 - tag);
-        // The row is handed out before its contents are read, so that a
-        // value that refers back to the object names it.
+        // Register the row before reading contents so cycles find it.
         let row = self
             .graph
             .push(Row {
@@ -121,7 +117,7 @@ impl<'r> Builder<'r> {
                 kind: Kind::Ordinary,
                 properties: Vec::new(),
             })
-            .ok_or("the value reaches too many objects")?;
+            .ok_or("the value refers to too many objects")?;
         self.rows.insert(object.0, (row, full));
         let read = self
             .contents(object, level, full)
@@ -206,7 +202,7 @@ impl<'r> Builder<'r> {
             super::typed::data_view(&reader, object, |word| self.value(word, next))?
         } else if is(Constant::JSPrimitiveWrapperType) {
             let value = reader.field(object, Field::JSPrimitiveWrapperValue)?;
-            // A String wrapper's characters are its indices.
+            // A String wrapper's characters are its indexed properties.
             indexed = reader
                 .object(value)?
                 .map(|value| reader.instance_type(value))
@@ -227,9 +223,7 @@ impl<'r> Builder<'r> {
         {
             Kind::Ordinary
         } else {
-            return Err(
-                format!("objects of instance type {ty} are not yet read by microscope").into(),
-            );
+            return Err(format!("microscope can't read objects of instance type {ty} yet").into());
         };
 
         let properties = self.properties(object, next, indexed)?;
@@ -242,9 +236,8 @@ impl<'r> Builder<'r> {
         })
     }
 
-    /// The own enumerable properties of `object`, with their values at
-    /// `level`: its elements' first, by index, unless `indexed`, where its
-    /// kind lists them; then its named properties'.
+    /// The own enumerable properties of `object`, values at `level`: elements
+    /// by index (skipped if `indexed`, as the kind lists them), then named.
     fn properties(
         &mut self,
         object: Object,
@@ -282,7 +275,7 @@ impl<'r> Builder<'r> {
         Ok(properties)
     }
 
-    /// What a property holding `held` shows, its value at `level`.
+    /// The slot for a property holding `held`, its value read at `level`.
     pub(super) fn slot(&mut self, held: Held, level: u32) -> Slot {
         let reader = self.reader;
         match held {
@@ -292,8 +285,8 @@ impl<'r> Builder<'r> {
                 Ok(true) => {
                     let present = |field| -> bool {
                         reader.field(accessor, field).is_ok_and(|word| {
-                            // An unset part holds null, and undefined is
-                            // no function either.
+                            // An unset getter or setter holds null or
+                            // undefined.
                             reader.object(word).ok().flatten().is_some_and(|part| {
                                 !reader.is(part, Constant::OddballType).unwrap_or(true)
                             })
@@ -305,15 +298,14 @@ impl<'r> Builder<'r> {
                     }
                 }
                 Ok(false) => Slot::Data(Value::Unreadable(
-                    "the value of a native accessor of V8's, which microscope does not compute"
-                        .to_owned(),
+                    "microscope does not compute V8's native accessors".to_owned(),
                 )),
                 Err(problem) => Slot::Data(Value::Unreadable(problem.to_string())),
             },
         }
     }
 
-    /// The number a Smi or a `HeapNumber` holds.
+    /// The number in a Smi or a `HeapNumber`.
     fn number_word(&self, word: u64) -> Result<f64, Problem> {
         let reader = self.reader;
         if let Some(integer) = reader.smi(word)? {
@@ -327,11 +319,11 @@ impl<'r> Builder<'r> {
                     .is(*object, Constant::HeapNumberType)
                     .unwrap_or(false)
             })
-            .ok_or_else(|| format!("{word:#x} is no number"))?;
+            .ok_or_else(|| format!("{word:#x} is not a number"))?;
         number(&reader, object)
     }
 
-    /// An array's length and elements, read as inspect lists them.
+    /// An array's length and elements, as inspect lists them.
     fn array(&mut self, object: Object, level: u32, full: bool) -> Result<Array, Problem> {
         let reader = self.reader;
         let length_word = reader.field(object, Field::JSArrayLength)?;
@@ -352,8 +344,8 @@ impl<'r> Builder<'r> {
                 listed_below: 0,
             });
         }
-        // Every present element is read, so the list is whole up to the
-        // length, however far apart its holes leave them.
+        // Read every present element, however sparse, so the list is
+        // complete up to the length.
         let present = own::elements(&reader, object, Some(length), u32::MAX)?;
         let elements = present
             .into_iter()
@@ -363,7 +355,8 @@ impl<'r> Builder<'r> {
                     self.slot(element.held, level)
                 } else {
                     Slot::Data(Value::Unreadable(
-                        "a non-enumerable element, which inspect lists by its value".to_owned(),
+                        "the element is not enumerable; inspect would still show its value"
+                            .to_owned(),
                     ))
                 },
             })
@@ -397,7 +390,7 @@ impl<'r> Builder<'r> {
         let flags = i64::from(reader.int32_field(shared, Field::SharedFunctionInfoFlags)?);
         let class = flags & reader.constant(Constant::SfiIsClassConstructorMask)? != 0;
         if class {
-            // A class's name is its own property, where it has one.
+            // Prefer the class's own `name` property if it has one.
             let own_name = match lookup::own(&reader, object, lookup::Key::Name("name"))? {
                 Some((Held::Data(word), _)) => self.value(word, FULL_LEVEL + 1),
                 Some((Held::Accessor(_), _)) => {
@@ -496,11 +489,11 @@ impl<'r> Builder<'r> {
         let reader = self.reader;
         let source = reader
             .object(reader.field(object, Field::JSRegExpSource)?)?
-            .ok_or("a RegExp's source is no string")?;
+            .ok_or("a RegExp's source is not a string")?;
         let bits = reader
             .smi(reader.field(object, Field::JSRegExpFlags)?)?
-            .ok_or("a RegExp's flags are no Smi")?;
-        // The `flags` getter's order.
+            .ok_or("a RegExp's flags are not a Smi")?;
+        // In the order the `flags` getter uses.
         let order = [
             ('d', Constant::JSRegExpHasIndicesShift),
             ('g', Constant::JSRegExpGlobalShift),
@@ -529,7 +522,7 @@ impl<'r> Builder<'r> {
         let reader = self.reader;
         let flags = reader
             .smi(reader.field(object, Field::JSPromiseFlags)?)?
-            .ok_or("a promise's flags are no Smi")?;
+            .ok_or("a promise's flags are not a Smi")?;
         let status = super::properties::part(
             &reader,
             flags,
@@ -548,10 +541,9 @@ impl<'r> Builder<'r> {
         })
     }
 
-    /// What inspect's `getConstructorName` finds for `object`: walking its
-    /// prototype chain, the first own `constructor` data property that
-    /// holds a function with a nonempty name that `object` is an instance
-    /// of.
+    /// inspect's `getConstructorName`: the first own `constructor` data
+    /// property on the prototype chain that is a named function `object` is
+    /// an instance of.
     fn constructor(&self, object: Object) -> Result<Constructor, Problem> {
         let reader = self.reader;
         let mut holder = object;
@@ -579,21 +571,19 @@ impl<'r> Builder<'r> {
         match first {
             Some(Some(first)) => self.unnamed(object, first),
             Some(None) if reader.is(object, Constant::JSObjectType)? => {
-                // V8's `GetConstructorName` for an ordinary object made with
-                // no prototype, as `Object.create(null)` makes it.
+                // V8's `GetConstructorName` for `Object.create(null)`.
                 Ok(Constructor::NullPrototype {
                     internal: JsString::from("Object"),
                 })
             }
-            _ => Err("no prototype of the object names its constructor".into()),
+            _ => Err("no prototype names the object's constructor".into()),
         }
     }
 
-    /// What `getConstructorName` gives for `object`, whose first prototype
-    /// is `first`, where no prototype names a constructor: V8's name for
-    /// the object and each prototype before the last, then the last as
-    /// `inspect` writes it at depth -1. Only a last prototype that is an
-    /// ordinary object with no tag, which inspect writes as one, is read.
+    /// `getConstructorName` when no prototype names a constructor: V8's
+    /// name for `object` and each prototype from `first` but the last, then
+    /// the last as `inspect` prints it at depth -1. The last must be an
+    /// ordinary untagged object.
     fn unnamed(&self, object: Object, first: Object) -> Result<Constructor, Problem> {
         let reader = self.reader;
         let name =
@@ -603,7 +593,7 @@ impl<'r> Builder<'r> {
         for _ in 0..64 {
             let Some(next) = lookup::prototype(&reader, end)? else {
                 if !reader.is(end, Constant::JSObjectType)? {
-                    return Err("the last prototype is no ordinary object".into());
+                    return Err("the last prototype is not an ordinary object".into());
                 }
                 let own = |key| lookup::own(&reader, end, key).map(|found| found.is_some());
                 if own(lookup::Key::WellKnown("Symbol.toStringTag"))? {
@@ -628,10 +618,10 @@ impl<'r> Builder<'r> {
             names.push(name(end)?);
             end = next;
         }
-        Err(format!("the prototypes of {:#x} are too many", object.0).into())
+        Err(format!("the prototype chain of {:#x} is too long", object.0).into())
     }
 
-    /// `function.name` as a string, or `None` where it is no string.
+    /// `function.name`, or `None` if it is not a string.
     fn name_of(&self, function: Object) -> Result<Option<JsString>, Problem> {
         let reader = self.reader;
         Ok(
@@ -651,8 +641,8 @@ impl<'r> Builder<'r> {
         )
     }
 
-    /// `object[Symbol.toStringTag]` where it is a string and no own
-    /// enumerable property; a getter is refused, but for
+    /// `object[Symbol.toStringTag]` if it is a string and not an own
+    /// enumerable property. Getters are refused except
     /// `%TypedArray%.prototype`'s.
     fn tag(&self, object: Object, ty: i64) -> Result<Option<JsString>, Problem> {
         let reader = self.reader;
@@ -677,9 +667,8 @@ impl<'r> Builder<'r> {
                     if let Some(getter) = reader.object(getter)?
                         && lookup::is_builtin(&reader, getter, "get [Symbol.toStringTag]")?
                     {
-                        // `%TypedArray%.prototype`'s, which gives a typed
-                        // array's constructor's name and undefined for any
-                        // other receiver.
+                        // This getter returns the constructor name for a
+                        // typed array and undefined for anything else.
                         if ty != reader.constant(Constant::JSTypedArrayType)? {
                             return Ok(None);
                         }
@@ -727,7 +716,7 @@ fn oddball(reader: &Reader<'_>, object: Object) -> Result<Value, Problem> {
     } else if is(Constant::OddballFalse) {
         Value::Boolean(false)
     } else {
-        return Err(format!("an oddball of kind {kind}, which stands for no value").into());
+        return Err(format!("an internal V8 oddball of kind {kind}").into());
     })
 }
 
@@ -750,10 +739,9 @@ fn bigint(reader: &Reader<'_>, object: Object) -> Result<BigInt, Problem> {
         Constant::BigIntLengthMask,
         Some(Constant::BigIntLengthShift),
     )?;
-    // inspect shows a BigInt whole; past a million bits it is no value a
-    // program shows.
+    // inspect prints a BigInt in full; refuse ones past about a million bits.
     if length > 1 << 14 {
-        return Err(format!("a BigInt of {length} digits").into());
+        return Err(format!("the BigInt is too large to show ({length} digits)").into());
     }
     let digits = own::words(
         reader,
@@ -786,11 +774,11 @@ fn symbol_flags(reader: &Reader<'_>, symbol: Object) -> Result<i64, Problem> {
     ))
 }
 
-/// Whether `symbol` is private, which no program can enumerate: V8's own
-/// private symbols, and a class's private names and brands.
+/// Whether `symbol` is private and so never enumerated: V8's internal
+/// private symbols, and class private names and brands.
 pub(super) fn is_private(reader: &Reader<'_>, symbol: Object) -> Result<bool, Problem> {
     let flags = symbol_flags(reader, symbol)?;
-    // Through 13.6 a bit says so; from 14.6 a kind other than public.
+    // Through V8 13.6 a flag bit; from 14.6 any kind but public.
     if let Ok(mask) = reader.constant(Constant::SymbolIsPrivateMask) {
         return Ok(flags & mask != 0);
     }
@@ -803,16 +791,14 @@ pub(super) fn is_private(reader: &Reader<'_>, symbol: Object) -> Result<bool, Pr
     Ok(kind != reader.constant(Constant::PrivateSymbolKindPublic)?)
 }
 
-/// Whether `symbol` is one of the well-known symbols, as `Symbol.iterator`.
+/// Whether `symbol` is a well-known symbol such as `Symbol.iterator`.
 pub(super) fn is_well_known(reader: &Reader<'_>, symbol: Object) -> Result<bool, Problem> {
     let flags = symbol_flags(reader, symbol)?;
     Ok(flags & reader.constant(Constant::SymbolIsWellKnownSymbolMask)? != 0)
 }
 
-/// The object JavaScript sees as `object`: for a global proxy,
-/// `globalThis`, the global object behind it, its map's prototype, whose
-/// properties every access through the proxy reads, as V8's
-/// `LookupIterator` does; any other object itself.
+/// For a global proxy (`globalThis`), the global object behind it (its map's
+/// prototype), as V8's `LookupIterator` does; any other object unchanged.
 fn global_object(reader: &Reader<'_>, object: Object) -> Result<Object, Problem> {
     if !reader.is(object, Constant::JSGlobalProxyType)? {
         return Ok(object);
@@ -825,5 +811,5 @@ fn global_object(reader: &Reader<'_>, object: Object) -> Result<Object, Problem>
                 .is(*global, Constant::JSGlobalObjectType)
                 .unwrap_or(false)
         })
-        .ok_or_else(|| "a global proxy detached from its global object".into())
+        .ok_or_else(|| "the global proxy is detached from its global object".into())
 }

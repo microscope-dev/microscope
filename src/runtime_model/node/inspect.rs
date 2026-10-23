@@ -1,39 +1,32 @@
-//! A JavaScript value as Node's `util.inspect(value, { customInspect: false })`
-//! writes it, with every other option at its default: depth 2, colors off,
-//! `showHidden` false, `breakLength` 80, `compact` 3, `maxArrayLength` 100,
-//! `maxStringLength` 10000, unsorted, no getters, no numeric separators, and
-//! `showProxy` false.
+//! A port of Node's `lib/internal/util/inspect.js`, printing a value as
+//! `util.inspect(value, { customInspect: false })` does with the other
+//! options at their defaults: depth 2, colors off, `showHidden` false,
+//! `breakLength` 80, `compact` 3, `maxArrayLength` 100, `maxStringLength`
+//! 10000, unsorted, no getters, no numeric separators, `showProxy` false.
 //!
-//! The reader of a stopped process builds a [`ValueGraph`] from V8's heap;
-//! [`inspect`] is a port of Node's `lib/internal/util/inspect.js` over it.
-//! The port follows Node 26's file and takes the Node release for the few
-//! places where 22, 24, or an earlier release of a line write something
-//! else.
+//! It runs over a [`ValueGraph`] read from V8's heap. It follows Node 26's
+//! source and checks the Node release where 22, 24, or older releases of a
+//! line print something different.
 //!
 //! # What the reader provides
 //!
-//! Every object is a row in the graph, and a value refers to it by
-//! [`ObjectId`]. Identity is the object's address: two rows with one address
-//! are one object, so a reference back to an ancestor (a cycle) is a value
-//! naming that ancestor's row, or any row with its address.
+//! Each object is a graph row, referenced by [`ObjectId`]. Rows with the same
+//! address are the same object, which is how cycles are detected.
 //!
-//! inspect counts levels from the root, which is level 0. Each step from an
-//! object to a value it holds (a property, an element, a Map key or value, a
-//! Set member, a promise's result, a `DataView`'s buffer, an error's cause) adds
-//! one. An object at level 2 or less is printed from its contents. An object
-//! at level 3 is printed from its header alone: its constructor, tag, kind
-//! with the kind's sizes, function or error details, and its property keys.
-//! There the reader may leave out elements, entries, and bytes, and may give
-//! property values as [`Value::Unreadable`]. Nothing at level 4 is printed,
-//! except a reference to an ancestor.
+//! The root is level 0, and each step into a held value (a property, element,
+//! Map key or value, Set member, promise result, `DataView` buffer, or error
+//! cause) adds one. Objects at level 2 or less print from their contents.
+//! Level 3 objects print from their header only: constructor, tag, kind and
+//! its sizes, function or error details, and property keys; the reader may
+//! omit elements, entries, and bytes there and give property values as
+//! [`Value::Unreadable`]. Nothing at level 4 prints except a cycle reference.
 //!
-//! Strings carry their UTF-16 units. A string value needs its first 10000
-//! units; a string used whole needs all of them: property keys, symbol
-//! descriptions, constructor names and tags, a `RegExp`'s source and flags, and
-//! an error's stack, name, and message. A part the reader could not read, or
-//! a string short of the units the formatter needs, prints as
-//! `<unreadable: REASON>`. A state this port does not reproduce prints as
-//! `<unsupported: REASON>`. Neither text is ever Node's.
+//! Strings carry UTF-16 units. A string value needs its first 10000 units.
+//! Strings used whole need all of them: property keys, symbol descriptions,
+//! constructor names and tags, a `RegExp`'s source and flags, and an error's
+//! stack, name, and message. Anything unread or short of units prints as
+//! `<unreadable: REASON>`, and a state this port does not reproduce prints as
+//! `<unsupported: REASON>`. Node never prints either.
 
 mod error;
 mod format;
@@ -47,7 +40,7 @@ pub use crate::image::v8::NodeRelease;
 
 crate::model::id_type!(ObjectId, "An object's row in one [`ValueGraph`].");
 
-/// The objects a value reaches, as the reader read them from the heap.
+/// The objects reachable from a value, as read from the heap.
 #[derive(Debug, Default)]
 pub struct ValueGraph {
     objects: Vec<Object>,
@@ -69,8 +62,8 @@ impl ValueGraph {
         Some(id)
     }
 
-    /// The object in a row, to fill in after its row was handed out, as when
-    /// its contents refer back to it.
+    /// The object in a row, to fill in after pushing it, so its contents
+    /// can refer back to it.
     pub fn object_mut(&mut self, id: ObjectId) -> Option<&mut Object> {
         self.objects.get_mut(id.index())
     }
@@ -126,7 +119,7 @@ impl JsString {
         Self::new(units, 0)
     }
 
-    /// The units read, the first of the string's.
+    /// The units read, from the start of the string.
     #[must_use]
     pub fn units(&self) -> &[u16] {
         &self.units
@@ -198,12 +191,12 @@ pub struct Symbol {
 /// An object as inspect sees it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Object {
-    /// Where the object lives, which is its identity.
+    /// The object's address, which is also its identity.
     pub address: VirtualAddress,
     pub constructor: Constructor,
-    /// `value[Symbol.toStringTag]` when it is a string that is not an own
-    /// enumerable property. `None` when there is none, or when it equals the
-    /// constructor's name exactly; then inspect writes the same text.
+    /// `value[Symbol.toStringTag]` if it is a string and not an own
+    /// enumerable property. `None` also when it equals the constructor name,
+    /// since inspect prints the same text either way.
     pub tag: Option<JsString>,
     pub kind: Kind,
     /// The own enumerable properties: string keys in V8's order, then symbol
@@ -212,24 +205,22 @@ pub struct Object {
     pub properties: Vec<Property>,
 }
 
-/// The constructor name inspect's `getConstructorName` finds: walking the
-/// prototype chain from the object itself, the first object that is one of
-/// V8's builtin prototypes (`Object.prototype`, `Array.prototype`, ...) gives
-/// that builtin's name, and otherwise the first that has an own `constructor`
-/// data property holding a function with a nonempty name gives that name.
+/// The name inspect's `getConstructorName` finds on the prototype chain,
+/// starting at the object: a builtin prototype (`Object.prototype`,
+/// `Array.prototype`, ...) gives its builtin's name, otherwise the first own
+/// `constructor` data property holding a named function gives that name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Constructor {
     Named(JsString),
-    /// The object's own prototype is null. `internal` is what V8's
-    /// `GetConstructorName` gives for it, `Object` for an ordinary object.
+    /// The object's prototype is null. `internal` is V8's
+    /// `GetConstructorName` for it (`Object` for an ordinary object).
     NullPrototype {
         internal: JsString,
     },
-    /// No object on a chain longer than one has a constructor. `names` holds
-    /// V8's `GetConstructorName` for the object and each prototype up to the
-    /// last before the one whose prototype is null; that one, the end, is
-    /// taken as an ordinary object, with V8's name `end` and with or without
-    /// own enumerable properties.
+    /// No object on a chain longer than one has a constructor. `names` is
+    /// V8's `GetConstructorName` for the object and each prototype before the
+    /// last; the last is an ordinary object named `end`, and `end_has_keys`
+    /// says whether it has own enumerable properties.
     Unnamed {
         names: Vec<JsString>,
         end: JsString,
@@ -312,10 +303,10 @@ pub enum Kind {
         /// The `ArrayBuffer` or `SharedArrayBuffer` it views.
         buffer: Value,
     },
-    /// A `Number`, `String`, `Boolean`, `BigInt`, or `Symbol` wrapper and the primitive
-    /// it holds.
+    /// A `Number`, `String`, `Boolean`, `BigInt`, or `Symbol` wrapper and
+    /// the primitive it holds.
     Boxed(Value),
-    /// A proxy, whose own fields other than the address inspect never reads.
+    /// A proxy. inspect reads nothing of it but its address and target.
     Proxy {
         /// Its target object, or null once revoked.
         target: Value,
@@ -326,11 +317,10 @@ pub enum Kind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Array {
     pub length: u32,
-    /// Present elements in ascending index order: every one whose index is
-    /// below `listed_below`, and none at or above it.
+    /// All present elements with index below `listed_below`, ascending.
     pub elements: Vec<Element>,
-    /// To print exactly it is the length, or covers both the first 101 plus
-    /// `properties.len()` indices and the first 100 present elements.
+    /// For exact output, the length, or enough to cover both the first 101
+    /// plus `properties.len()` indices and the first 100 present elements.
     pub listed_below: u32,
 }
 
@@ -415,25 +405,23 @@ pub struct ViewRange {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Inspected {
     pub text: String,
-    /// Some line layout rested on what the graph does not say exactly: the
-    /// display width of a character from U+0300 on, which Node takes from
-    /// ICU, or the type of an array element the reader did not list. The
-    /// spacing may then differ from Node's.
+    /// Spacing may differ from Node's: a layout used the display width of a
+    /// character from U+0300 on (Node asks ICU), or an unlisted element's type.
     pub approximate: bool,
 }
 
 /// The options besides `customInspect: false` that inspect runs with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layout {
-    /// The defaults, as `console.log` writes a value.
+    /// The defaults, as `console.log` uses.
     Default,
     /// `compact: true` and `breakLength: Infinity`: every entry on one line.
     /// Only an error's stack still breaks the text.
     Line,
 }
 
-/// `util.inspect(value, { customInspect: false })`, with `layout`'s
-/// options, as Node release `node` writes it.
+/// `util.inspect(value, { customInspect: false })` with `layout`'s options,
+/// as Node release `node` prints it.
 #[must_use]
 pub fn inspect(graph: &ValueGraph, value: &Value, node: NodeRelease, layout: Layout) -> Inspected {
     format::inspect(graph, value, node, layout)

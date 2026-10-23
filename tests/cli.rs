@@ -6454,8 +6454,8 @@ fn a_program_that_executes_another_is_followed_into_it() {
     );
 }
 
-/// `print` shows a JavaScript value as `console.log` writes it, over as
-/// many lines as that takes, and `print/l` keeps it to one line.
+/// `print` shows a JavaScript value across lines as `console.log` writes
+/// it, and `print/l` keeps it to one line.
 #[test]
 fn print_shows_a_javascript_value_as_node_writes_it() {
     let stdout = batch(

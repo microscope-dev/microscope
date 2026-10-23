@@ -1,5 +1,5 @@
-//! JavaScript values as microscope presents them, held to the text
-//! `util.inspect` gave the same values at the same checkpoint.
+//! Checks the JavaScript values microscope presents against the text
+//! `util.inspect` gave them at the same checkpoint.
 
 use microscope::{Evaluation, Expression, SourceLanguage, ThreadId, VariableKind, VariableState};
 
@@ -33,8 +33,8 @@ async fn select_function(session: &NodeSession, native: u64, function: &str) {
         .await;
 }
 
-/// The summary and the full text microscope presents `text` with, or what
-/// kept it from them.
+/// The summary and full text microscope presents for `text`, or why it
+/// could not.
 async fn presented(session: &NodeSession, text: &str) -> (String, String) {
     let expression = Expression::parse(text).unwrap_or_else(|error| panic!("{text}: {error}"));
     match session.scenario.handle().evaluate(&expression).await {
@@ -57,8 +57,8 @@ fn twice(text: String) -> (String, String) {
     (text.clone(), text)
 }
 
-/// The one line a summary shows of `value`: an error's first line, else
-/// its text with every entry on one line, cut at an error stack it holds.
+/// The summary expected for `value`: an error's first line, else its
+/// one-line text cut at any error stack inside it.
 fn summary_of(value: &Named) -> String {
     match value.line.split_once('\n') {
         None => value.line.clone(),
@@ -67,7 +67,7 @@ fn summary_of(value: &Named) -> String {
     }
 }
 
-/// The lies in presenting `value` as `shown`, the summary and the text.
+/// Each way the shown summary and text differ from what Node gave `value`.
 fn lies_about(context: &str, value: &Named, (summary, text): &(String, String)) -> Vec<String> {
     let mut lies = Vec::new();
     let name = &value.name;
@@ -97,10 +97,9 @@ fn clipped(text: &str) -> String {
     }
 }
 
-/// On every build, each value of the gallery is presented as the text
-/// `util.inspect` gave it, and the errors whose stacks nothing read are
-/// presented with the stacks Node formats from their call sites once
-/// something does.
+/// On every build, each gallery value shows the text `util.inspect` gave
+/// it. Errors whose stacks were never read show the stacks Node formats
+/// from their call sites once something reads them.
 #[tokio::test]
 async fn gallery_values_are_the_text_node_gave_them() {
     let mut lies = Vec::new();
@@ -116,9 +115,8 @@ async fn gallery_values_are_the_text_node_gave_them() {
             let shown = presented(&session, &value.name).await;
             lies.extend(lies_about(&session.context(), value, &shown));
         }
-        // What the program holds in `unread` at "gallery" is raw call
-        // sites, which no one has formatted; Node formats them when the
-        // fixture inspects `unread` at the next checkpoint.
+        // At "gallery", `unread` holds raw call sites. Node formats them
+        // when the fixture inspects `unread` at the next checkpoint.
         let unformatted = presented(&session, "unread").await;
         session.proceed().await;
         let reported = threads(&session.stop_at("unread").await);
@@ -154,10 +152,9 @@ async fn kinds(session: &NodeSession, names: &[&str]) -> Vec<Option<VariableKind
         .collect()
 }
 
-/// On every build, a JavaScript frame's variables are in the scopes
-/// JavaScript gives them: its receiver and arguments; what its own
-/// contexts keep; what its closure captured from the functions around it;
-/// a module's bindings; `globalThis`; and the interpreter's registers,
+/// On every build, a JavaScript frame's variables are in JavaScript's
+/// scopes: receiver and arguments, its own contexts, what its closure
+/// captured, a module's bindings, `globalThis`, and interpreter registers,
 /// which say why they have no names.
 #[tokio::test]
 async fn frame_variables_are_in_the_scopes_javascript_gives_them() {

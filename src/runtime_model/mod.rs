@@ -1245,15 +1245,14 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         None
     }
 
-    /// The memory the value of `handle` lives at, if it lives in memory.
+    /// Where the value of `handle` lives in memory, if it does.
     fn interpreted_address(&self, handle: InterpretedHandle) -> Option<VirtualAddress> {
         let _ = handle;
         None
     }
 
-    /// The object a native pointer to [`ObjectTypes::native`] whose value
-    /// is `address` points to, as a cast to [`ObjectTypes::cast`] reaches
-    /// it.
+    /// The object that a native pointer to [`ObjectTypes::native`] with value
+    /// `address` points to, as a cast to [`ObjectTypes::cast`] reaches it.
     fn interpreted_handle(
         &self,
         stop: &dyn RuntimeStop,
@@ -1599,8 +1598,8 @@ pub struct InterpretedLocal {
     pub name: Arc<str>,
 
     /// Which of the frame's scopes it is in: a parameter, a local, a
-    /// captured variable, a module's binding, the global object, or a value
-    /// no name binds.
+    /// captured variable, a module's binding, the global object, or an
+    /// unnamed value.
     pub kind: crate::VariableKind,
 
     /// For an unnamed value, why it has no name.
@@ -1668,10 +1667,10 @@ pub fn interpreted_identity(
     }
 }
 
-/// A value of the runtime's own, in an encoding only the runtime that gave
-/// it decodes, valid for the stop it was read at: CPython's is a
-/// `PyObject` address, V8's a tagged word. It is no address; only
-/// [`RuntimeModel::interpreted_address`] says where its value lives.
+/// A runtime's opaque name for a value, which only that runtime decodes and
+/// which is valid for the stop it was read at: CPython's is a `PyObject`
+/// address, V8's a tagged word. Do not use it as an address;
+/// [`RuntimeModel::interpreted_address`] gives where the value lives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct InterpretedHandle(u64);
 
@@ -1713,8 +1712,8 @@ pub struct InterpretedValue {
     /// container holds past the summary's bounds left out as `...`.
     pub summary: Arc<str>,
 
-    /// The object written over several lines, as the runtime prints it,
-    /// where that differs from the summary.
+    /// The object's multiline text as the runtime prints it, when that
+    /// differs from the summary.
     pub detail: Option<Arc<str>>,
 
     /// Why the summary or the children are shown in part, if they are.

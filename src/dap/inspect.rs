@@ -569,8 +569,7 @@ impl Session {
                         .count()
                 };
 
-                // Locals show even when there are none; another scope only
-                // when it has variables.
+                // Locals always show; other scopes only when they have variables.
                 for (kind, name) in present::SCOPES {
                     let variables = count(kind);
                     if variables == 0 && kind != VariableKind::Local {
@@ -918,8 +917,8 @@ impl Session {
             self.invalidate_values().await;
         }
 
-        // A hover, the clipboard, and the console show a value whole, over
-        // the lines its runtime writes it on, as a watch's one line cannot.
+        // Hover, clipboard, and console show the runtime's multiline text; a
+        // watch shows one line.
         let whole = match (&evaluation, arguments.context.as_deref()) {
             (microscope::Evaluation::Value { value, .. }, Some("hover" | "clipboard" | "repl")) => {
                 match &value.state {

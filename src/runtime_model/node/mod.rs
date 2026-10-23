@@ -72,9 +72,8 @@ pub fn detect(
     })))
 }
 
-/// Who writes the module's values: the Node release that built it, or,
-/// where it does not say, the first release of its V8's line: V8 12 is
-/// Node 22's, 13 Node 24's, and 14 Node 26's.
+/// The Node release whose output to match: the one that built the module,
+/// or else the first on its V8 line (V8 12 is Node 22, 13 is 24, 14 is 26).
 fn writer(version: V8Version, node: Result<NodeRelease, Arc<str>>) -> present::Writer {
     node.map_or_else(
         |reason| {
@@ -91,8 +90,8 @@ fn writer(version: V8Version, node: Result<NodeRelease, Arc<str>>) -> present::W
                 },
                 assumed: Some(
                     format!(
-                        "the module does not say which Node release built it ({reason}), so \
-                         this text is as Node {major}.0.0 writes it"
+                        "could not tell which Node release built the module ({reason}); \
+                         showing the value as Node {major}.0.0 prints it"
                     )
                     .into(),
                 ),
@@ -152,14 +151,14 @@ struct NodeRuntime {
     /// bound them where no symbol does.
     blob: Option<EmbeddedBlob>,
 
-    /// The release whose `util.inspect` writes its values.
+    /// The release whose `util.inspect` output values should match.
     writer: present::Writer,
     statics: Statics,
 }
 
 impl NodeRuntime {
-    /// What `read` gives of the process at `stop`, read through the layout,
-    /// each read charged to `budget`; or why nothing can be read.
+    /// Runs `read` against the process at `stop`, charging each read to
+    /// `budget`.
     fn reading<T>(
         &self,
         stop: &dyn RuntimeStop,
@@ -184,15 +183,15 @@ impl NodeRuntime {
             layout,
             version: self.version,
             charge: Some(&charge),
-            // Blocks read at the stop are kept while it lasts, where the
-            // debugger keeps them, and while this read lasts otherwise.
+            // Cache blocks for the whole stop when the debugger provides a
+            // cache, or just for this read otherwise.
             blocks: Some(stop.memory().unwrap_or(&read_now)),
         };
         read(&reader)
     }
 
-    /// As [`Self::reading`], for an expression, whose failure is the value
-    /// being unavailable.
+    /// [`Self::reading`] for expressions, where a failure means the value is
+    /// unavailable.
     fn expression<T>(
         &self,
         stop: &dyn RuntimeStop,
@@ -285,11 +284,10 @@ impl RuntimeModel for NodeRuntime {
         ThreadActivity::Outside
     }
 
-    /// The isolate the thread is working for, by its address: Node enters
-    /// the main thread's, and each worker's, for the whole of its event
-    /// loop. From 13.6 a V8 helper thread holds it too while its `LocalHeap`
-    /// does work for the isolate, as a background compile does. libuv's
-    /// workers hold none.
+    /// The address of the isolate the thread works for. Main and worker
+    /// threads hold theirs for their whole event loop; from V8 13.6 a helper
+    /// thread holds it while its `LocalHeap` works for the isolate (e.g. a
+    /// background compile). libuv's workers hold none.
     fn thread_holding(&self, stop: &dyn RuntimeStop, thread: ThreadId) -> Option<ThreadHolding> {
         let identity = match &self.statics.isolate {
             Some(Ok(place)) => match current_isolate(stop, thread, *place) {
@@ -490,8 +488,8 @@ impl RuntimeModel for NodeRuntime {
             InterpretedStep::Attribute(name) => access::member(reader, object, name),
             InterpretedStep::Item(key) => access::item(reader, object, key),
         })?;
-        // A property no object along the chain has is undefined, which no
-        // handle names apart from its oddball, as a lookup of it reads.
+        // JavaScript reads a property missing from the whole prototype chain
+        // as undefined; the debugger reports it as a missing key.
         found.ok_or_else(|| {
             InterpretedFailure::Refused(
                 crate::eval::error::ErrorKind::MissingKey,

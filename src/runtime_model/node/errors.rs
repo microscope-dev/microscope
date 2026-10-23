@@ -1,9 +1,9 @@
-//! Errors, as inspect reads them: the `stack` its builtin getter gives, and
+//! Errors as inspect reads them: `stack` from its builtin getter, and
 //! `name` and `message` through the prototype chain.
 //!
-//! V8 keeps an error's stack under its private `error_stack_symbol`: the
-//! text once something read `stack`; before that the raw call sites it
-//! captured, a fixed array, or an `ErrorStackData` that holds either.
+//! V8 stores an error's stack under the private `error_stack_symbol`. Once
+//! something has read `stack` it is the text; before that it is the raw
+//! call sites, as a fixed array or inside an `ErrorStackData`.
 
 use super::access;
 use super::inspect::{ErrorDetails, JsString, Key, Property, Value};
@@ -15,10 +15,10 @@ use super::values;
 use super::values::Builder;
 use crate::image::v8::{Constant, Field};
 
-/// The own non-enumerable properties inspect shows of an error.
+/// The own non-enumerable properties inspect shows on an error.
 const HIDDEN: [&str; 4] = ["cause", "errors", "error", "suppressed"];
 
-/// What inspect reads of the error `object`, its values at `level`.
+/// What inspect reads from the error `object`, with values at `level`.
 pub(super) fn details(
     builder: &mut Builder<'_>,
     object: Object,
@@ -60,7 +60,7 @@ pub(super) fn details(
     })
 }
 
-/// What `error.stack` gives, where V8's own getter computes it.
+/// The value of `error.stack` when V8's own getter computes it.
 fn stack(builder: &mut Builder<'_>, error: Object) -> Result<Value, Problem> {
     let reader = builder.reader;
     match lookup::find(&reader, error, lookup::Key::Name("stack"))? {
@@ -69,7 +69,8 @@ fn stack(builder: &mut Builder<'_>, error: Object) -> Result<Value, Problem> {
         lookup::Found::Accessor { holder, .. } if holder == error => {}
         lookup::Found::Accessor { .. } => {
             return Err(
-                "the error's stack is a getter it inherits, which microscope does not call".into(),
+                "the error's stack is an inherited getter, and microscope does not call getters"
+                    .into(),
             );
         }
     }
@@ -79,7 +80,7 @@ fn stack(builder: &mut Builder<'_>, error: Object) -> Result<Value, Problem> {
         .find(|property| property.key == symbol)
         .map(|property| property.held);
     let Some(Held::Data(word)) = kept else {
-        // V8's getter gives undefined for an object it captured no stack for.
+        // V8's getter returns undefined if no stack was captured.
         return Ok(Value::Undefined);
     };
     let held = if let Some(data) = reader.object(word)?
@@ -105,11 +106,11 @@ fn stack(builder: &mut Builder<'_>, error: Object) -> Result<Value, Problem> {
     Ok(builder.value(held, 0))
 }
 
-/// V8's private `error_stack_symbol`, which an error keeps its stack under:
-/// the key of the first descriptor of the initial map of `%Error%` in the
-/// error's realm, where `InstallError` (`bootstrapper.cc`) puts it, as
-/// `kJSErrorErrorStackSymbolIndex`, in every supported version. A private
-/// symbol of V8's roots has no description to find it by.
+/// V8's private `error_stack_symbol`, the key an error's stack is stored
+/// under. In every supported version `InstallError` (`bootstrapper.cc`)
+/// puts it in the first descriptor of `%Error%`'s initial map, at
+/// `kJSErrorErrorStackSymbolIndex`. Private root symbols have no
+/// description to search for, so it is found by position.
 fn stack_symbol(reader: &Reader<'_>, error: Object) -> Result<Object, Problem> {
     let native = access::native_context(reader, reader.map(error)?)?;
     let function = reader
@@ -123,7 +124,7 @@ fn stack_symbol(reader: &Reader<'_>, error: Object) -> Result<Object, Problem> {
                 .is(*function, Constant::JSFunctionType)
                 .unwrap_or(false)
         })
-        .ok_or("the realm's %Error% is no function")?;
+        .ok_or("the realm's %Error% is not a function")?;
     let initial = reader
         .object(reader.field(function, Field::JSFunctionPrototypeOrInitialMap)?)?
         .filter(|map| {
@@ -139,5 +140,5 @@ fn stack_symbol(reader: &Reader<'_>, error: Object) -> Result<Object, Problem> {
             reader.is(*symbol, Constant::SymbolType).unwrap_or(false)
                 && values::is_private(reader, *symbol).unwrap_or(false)
         })
-        .ok_or_else(|| "the first property of %Error%'s instances is no private symbol".into())
+        .ok_or_else(|| "the first property of %Error%'s instances is not a private symbol".into())
 }

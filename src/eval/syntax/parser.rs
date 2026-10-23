@@ -885,9 +885,8 @@ impl<'tokens> Parser<'tokens> {
                     self.advance();
                     let field_span = self.peek_span();
                     let field = match self.peek().clone() {
-                        // A member name stands where no literal can, so a
-                        // reserved word there is the name, as JavaScript's
-                        // `values.null` is.
+                        // No literal can follow `.` or `->`, so a reserved word
+                        // there is a member name, as in JavaScript's `values.null`.
                         TokenKind::Ident(word) | TokenKind::Quoted(word) => Field::Named(word),
                         TokenKind::Integer {
                             value,

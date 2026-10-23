@@ -6,9 +6,8 @@ use super::format::{Change, Ctx, Fault, Listed, to_js_string, truthy, unreadable
 use super::{ErrorDetails, Key, Kind, Object, Slot, Value};
 
 impl<'g> Ctx<'g> {
-    /// `formatError`: the error's stack as inspect shows it, and its keys
-    /// with the ones the stack shows taken out and the hidden ones it prints
-    /// put in.
+    /// `formatError`: the stack as inspect shows it, and the keys minus
+    /// those the stack already shows, plus the hidden ones it prints.
     pub fn format_error(
         &mut self,
         object: &'g Object,
@@ -68,8 +67,7 @@ impl<'g> Ctx<'g> {
                 match &property.slot {
                     Slot::Data(value) if self.is_array(value) => {}
                     Slot::Accessor { getter: true, .. } => {
-                        // Node calls the getter to see whether it gives an
-                        // array.
+                        // Node calls the getter to check for an array.
                         self.approximate = true;
                         continue;
                     }
@@ -142,8 +140,8 @@ impl<'g> Ctx<'g> {
         }
     }
 
-    /// `getStackFrames`: the frame lines, less those its cause shares and
-    /// those that repeat.
+    /// `getStackFrames`: the frame lines, minus those shared with the cause
+    /// and repeats.
     fn stack_frames(
         &mut self,
         object: &Object,
@@ -207,8 +205,8 @@ impl<'g> Ctx<'g> {
         Ok(frames)
     }
 
-    /// `improveStack`: the stack's first line named as inspect names the
-    /// error, when the stack names it otherwise.
+    /// `improveStack`: renames the stack's first line to inspect's name for
+    /// the error when they differ.
     fn improve_stack(
         &self,
         mut stack: String,
@@ -288,7 +286,7 @@ fn key_is(key: &Key, name: &str) -> bool {
     matches!(key, Key::String(key) if key.units().iter().copied().eq(name.encode_utf16()))
 }
 
-/// Takes the first listed key named `name` out.
+/// Removes the first key named `name`.
 fn remove_key(keys: &mut Vec<Listed<'_>>, name: &str) {
     if let Some(at) = keys
         .iter()
@@ -325,8 +323,8 @@ fn whole_error_name(stack: &str) -> Option<&str> {
     .then_some(stack)
 }
 
-/// `identicalSequenceRange`: the first run of more than three lines of `a`
-/// that `b` holds too, as its length and where it starts in `a`.
+/// `identicalSequenceRange`: the length and start in `a` of the first run
+/// of more than three lines of `a` that also appears in `b`.
 #[allow(
     clippy::suspicious_operation_groupings,
     reason = "the run in `b` starts at `position`, the run in `a` at `i`"
@@ -393,8 +391,8 @@ fn duplicate_frame_ranges(frames: &[String]) -> Vec<Repeat> {
             continue;
         }
         let mut extra_steps = if current + 1 < at.len() {
-            // The greatest common divisor of the distances to the same line,
-            // with the divisors met on the way as fallbacks.
+            // The GCD of the distances to the same line, keeping the divisors
+            // found along the way as fallbacks.
             let mut steps: Vec<usize> = Vec::new();
             let mut gcd = 0;
             for p in &at[current..] {
