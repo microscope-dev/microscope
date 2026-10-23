@@ -92,6 +92,15 @@ impl Exact {
         self.magnitude == 0
     }
 
+    pub const fn is_negative(self) -> bool {
+        self.negative
+    }
+
+    /// The absolute value.
+    pub const fn magnitude(self) -> u128 {
+        self.magnitude
+    }
+
     pub const fn to_i128(self) -> Option<i128> {
         if self.negative {
             // The magnitude is at most 2^127, whose negation is i128::MIN.
@@ -727,6 +736,14 @@ impl Float {
 
     pub fn from_f64(value: f64) -> Self {
         Self::Binary64(Double::from_bits(u128::from(value.to_bits())))
+    }
+
+    /// The value as a double, rounded to nearest, ties to even.
+    pub fn to_f64(self) -> f64 {
+        let value: Double = self.to();
+
+        #[allow(clippy::cast_possible_truncation, reason = "binary64 has 64 bits")]
+        f64::from_bits(value.to_bits() as u64)
     }
 
     pub const fn format(self) -> FloatFormat {

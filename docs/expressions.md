@@ -128,7 +128,9 @@ $arg0                  => error unsupported at `$arg0`
 
 Integers are decimal, or `0x`, `0o`, or `0b` prefixed, and may contain `_`.
 A suffix naming a built-in type gives a literal that type: `255u8`, `1_i64`,
-`3usize`. A literal without a suffix is an exact integer.
+`3usize`. A literal without a suffix is an exact integer. The suffix `n`
+writes a JavaScript BigInt, `12n`, which computes only with JavaScript
+values (see JavaScript values).
 
 A leading zero is refused, because C reads `017` as octal and other languages
 read it as decimal. C suffixes such as `UL` are refused too; cast instead.
@@ -154,6 +156,8 @@ with, and a view's expressions write none.
 0x2a + 0b1010_1010 + 0o17 => reads as `42 + 170 + 15`
 0xffu8                    => reads as `255u8`
 1_000_i64                 => reads as `1000i64`
+-12n                      => reads as `-12n`
+1.5n                      => error syntax at `1.5n`
 2.5f32 + 1e3              => reads as `2.5f32 + 1000.0`
 '\x41' == 'A'             => reads as `'A' == 'A'`
 "tab\tquote\""            => reads as `"tab\tquote\""`
@@ -752,18 +756,22 @@ that defines its own, a dict whose class defines `__missing__` and lacks the
 key, and any other object whose type defines them are refused; an object
 whose type defines neither is a type error, as in Python.
 
-Numbers follow microscope's exact rules, and `True` and `False` count as 1
-and 0, as Python's do. Python divides integers into a fraction and floors a
-remainder, so an integer `/`, and `%` of a negative number or a float, are
-refused rather than truncated; multiply by `1.0` for a fraction. An `int`
-too large for 128 bits is shown whole but not computed with. Values of
-different types are unequal, and only numbers, `str`, and `bytes` are
-ordered. Lists, dicts, and objects are neither compared nor computed with,
-since only running their types' code could say what those mean, and
-microscope never runs code in the program: not `__eq__`, properties, or
-calls. Such an operation is a type error only where Python's would be one,
-as `None + 1` is; where a type's code could give a value, as `"a" + "b"`
-does, it is refused as unsupported.
+Numbers follow CPython's rules. `True` and `False` are the `int`s 1 and 0,
+and `&`, `|`, and `^` of two `bool`s give a `bool`. An `int` is exact, and one
+too large for 128 bits is shown whole but not computed with. `/` of two
+`int`s is the `float` nearest their exact quotient, as CPython rounds it.
+`%` floors, so its result has the divisor's sign, for `float`s too. Dividing
+or taking `%` by zero is an arithmetic error, as Python's
+`ZeroDivisionError` is, and so is a negative shift count, Python's
+`ValueError`. The expressions have no `//`. A computed result is shown
+as Python's `repr` writes it, with the type `int`, `float`, or `bool`: `7.0`,
+`7e+16`, `inf`, `False`. Values of different types are unequal, and only
+numbers, `str`, and `bytes` are ordered. Lists, dicts, and objects are
+neither compared nor computed with, since only running their types' code
+could say what those mean, and microscope never runs code in the program:
+not `__eq__`, properties, or calls. Such an operation is a type error only
+where Python's would be one, as `None + 1` is; where a type's code could give
+a value, as `"a" + "b"` does, it is refused as unsupported.
 
 In any frame of a CPython process, `(py)x` casts an address to the Python
 object there, so that a C extension's native frame reaches into the objects
@@ -776,15 +784,24 @@ pointer itself already shows the object it points to.
 ```microscope-example
 world: python
 count                  => 7 : int
-count + 1              => 8 : integer
-count * ratio          => 3.5 : f64
--count                 => -7 : integer
-count & 3              => 3 : integer
-True + 1               => 2 : integer
-count / 2              => error arithmetic at `count / 2`
-count * 1.0 / 2        => 3.5 : f64
-count % 4              => 3 : integer
+count + 1              => 8 : int
+count * ratio          => 3.5 : float
+-count                 => -7 : int
+count & 3              => 3 : int
+True + 1               => 2 : int
+count / 2              => 3.5 : float
+count % 4              => 3 : int
+-count % 3             => 2 : int
+count % -2             => -1 : int
+-ratio % 2             => 1.5 : float
+True & False           => False : bool
+count / 2 * 2          => 7.0 : float
+count * 1e15           => 7000000000000000.0 : float
+count * 1e16           => 7e+16 : float
+ratio * 1e308 * 10     => inf : float
+count / 0              => error arithmetic at `count / 0`
 ratio / 0              => error arithmetic at `ratio / 0`
+count << -1            => error arithmetic at `count << -1`
 count == 7             => true : bool
 count > 6.5            => true : bool
 count == name          => false : bool
@@ -796,10 +813,10 @@ count != None          => true : bool
 numbers[0]             => 10 : int
 numbers[-1]            => 30 : int
 numbers[3]             => error bounds at `numbers[3]`
-numbers[0] + numbers[1] => 30 : integer
+numbers[0] + numbers[1] => 30 : int
 pair[1]                => 'two' : str
 point.x                => 3 : int
-point.x * point.y      => 12 : integer
+point.x * point.y      => 12 : int
 point.z                => error missing-key at `point.z`
 ((py)&point).y         => 4 : int
 (py)count              => 7 : int
@@ -843,6 +860,38 @@ big + 1                => error arithmetic at `big`
 *count                 => error type at `count`
 count->real            => error type at `count`
 ```
+
+## JavaScript values
+
+In a Node.js process, a JavaScript value follows ECMAScript's operators, and
+a literal the expression writes is a JavaScript value: `1` is a Number and
+`1n` a BigInt. A Python value and a JavaScript value are never combined.
+
+Every Number is a double. `/` by zero gives an infinity or NaN, `%` has the
+dividend's sign, and `&`, `|`, `^`, `~`, `<<`, and `>>` work on the Number's
+32-bit integer, with a shift count's low five bits. A BigInt is exact: `/`
+and `%` truncate toward zero, dividing by `0n` is an arithmetic error, as
+JavaScript's `RangeError` is, and a BigInt with a Number in arithmetic is a
+type error, as JavaScript's `TypeError` is. A BigInt beyond 128 bits is
+shown whole but not computed with. `true` and `false` count as 1 and 0,
+`null` as 0, and `undefined` as NaN.
+
+`==` is JavaScript's loose equality: `null == undefined`, a truth value
+equals the number it counts as, `1n == 1`, and NaN equals nothing.
+Comparing a BigInt with a Number is exact. Strings are ordered by their
+UTF-16 code units, as JavaScript orders them, so `"\u{1F600}" < "\u{FFFF}"`.
+`0`, `-0`, NaN, `0n`, `""`, `null`, `undefined`, and `false` are false, and
+every object is true, an empty array or Map too.
+
+microscope refuses, as unsupported, what would run the program's code or
+make a new string: `+` with a string, arithmetic on an object, which calls
+its `valueOf`, a string compared with a number, and `==` of two objects,
+which compares their identities. `x[i]` takes a string, a BigInt, or a
+Number that is an integer below 2^53 in magnitude.
+
+A computed value is shown as Node's `util.inspect` writes it, with the type
+`number`, `bigint`, or `boolean`: `1.764e+23`, `Infinity`, `NaN`, `-0`, and a
+BigInt with its `n`, `-24691357802469135780n`.
 
 ## Assignment
 

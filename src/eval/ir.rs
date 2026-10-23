@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use super::number::{BitOperator, Float, FloatFormat, FloatOperator, IntType, Integer};
+use super::number::{BitOperator, Exact, Float, FloatFormat, FloatOperator, IntType, Integer};
 use super::syntax::Span;
 use super::syntax::ast::{BinaryOp, UnaryOp};
 use super::target::Register;
@@ -212,6 +212,9 @@ pub enum Constant {
     /// A pointer's address, `0` for `null`.
     Pointer(u64),
     Text(Vec<u8>),
+
+    /// A JavaScript `BigInt`, written `1n`.
+    BigInt(Exact),
 }
 
 /// How a comparison compares.

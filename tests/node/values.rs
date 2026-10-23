@@ -271,6 +271,100 @@ async fn lengths_sizes_and_typed_elements_are_javascripts() {
     assert!(lies.is_empty(), "{} lies:\n{}", lies.len(), lies.join("\n"));
 }
 
+/// What the user sees for `text`: a computed value's one-line summary and
+/// its type's name, or the error.
+async fn shown(session: &NodeSession, text: &str) -> String {
+    let expression = Expression::parse(text).unwrap_or_else(|error| panic!("{text}: {error}"));
+    match session.scenario.handle().evaluate(&expression).await {
+        Ok(Evaluation::Value { value, .. }) => {
+            let summary = microscope::value_summary(value.type_info.as_ref(), &value.state);
+            let ty = value
+                .type_info
+                .map_or_else(String::new, |info| info.name.to_string());
+            format!("{summary} : {ty}")
+        }
+        Ok(other) => format!("<{other:?}>"),
+        Err(microscope::Error::Expression(error)) => {
+            format!("<{} error: {}>", error.kind.name(), error.message)
+        }
+        Err(error) => format!("<error: {error}>"),
+    }
+}
+
+/// On every build, operators on JavaScript values give what JavaScript
+/// gives: every Number is a double, a `BigInt` mixes with no Number, and
+/// what microscope cannot compute is refused.
+#[tokio::test]
+async fn operators_compute_as_javascript_does() {
+    let cases = [
+        ("values.numbers.smi / 5", "8.4 : number"),
+        ("values.numbers.smi % -5", "2 : number"),
+        ("values.numbers.negative % 3", "-1 : number"),
+        // 2^53 + 3 rounds to even, 2^53 + 4.
+        ("values.numbers.unsafe + 1", "9007199254740996 : number"),
+        (
+            "values.numbers.smi * values.numbers.smi * 1e20",
+            "1.764e+23 : number",
+        ),
+        ("values.numbers.smi / 0", "Infinity : number"),
+        ("-values.numbers.smi / 0", "-Infinity : number"),
+        ("values.numbers.negativeZero * 1", "-0 : number"),
+        ("values.numbers.large * 1", "1e+21 : number"),
+        ("values.numbers.smi | 0x80000000", "-2147483606 : number"),
+        ("1 << values.numbers.smi", "1024 : number"),
+        (
+            "values.bigints.negative * 2n",
+            "-24691357802469135780n : bigint",
+        ),
+        ("-values.bigints.small", "-1n : bigint"),
+        (
+            "values.bigints.negative / 7n",
+            "-1763668414462081127n : bigint",
+        ),
+        (
+            "values.bigints.small + 1",
+            "<type error: TypeError: Cannot mix BigInt and other types, use explicit conversions>",
+        ),
+        ("values.bigints.small == 1", "true : bool"),
+        (
+            "values.primitives.null == values.primitives.undefined",
+            "true : bool",
+        ),
+        ("values.primitives.undefined + 1", "NaN : number"),
+        ("!values.collections.emptyMap", "false : bool"),
+        (
+            "values.arrays.packedSmi[values.numbers.smi - 40]",
+            "3 : number",
+        ),
+        (
+            "values.strings.oneByte + 1",
+            "<unsupported error: `+` with a string joins text into a new string, which microscope \
+             does not make>",
+        ),
+    ];
+    let mut lies = Vec::new();
+    for entry in MATRIX {
+        let mut session = NodeSession::launch(entry, "values.js", &[], &[]).await;
+        let reported = threads(&session.stop_at("gallery").await);
+        let printer = reported
+            .iter()
+            .find(|thread| thread.printer)
+            .expect("the printer's thread");
+        select_function(&session, printer.native, "gallery").await;
+        for (text, expected) in cases {
+            let actual = shown(&session, text).await;
+            if actual != expected {
+                lies.push(format!(
+                    "{}: {text} is {actual}, not {expected}",
+                    session.context()
+                ));
+            }
+        }
+        session.shutdown().await;
+    }
+    assert!(lies.is_empty(), "{} lies:\n{}", lies.len(), lies.join("\n"));
+}
+
 /// On every build, `process.env`, whose variables an interceptor gives, is
 /// refused with that reason rather than shown as `{}`, and so is a member
 /// of it rather than reported absent.

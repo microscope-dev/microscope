@@ -663,7 +663,7 @@ impl Origin {
         };
 
         let (scalar, shape) = match value.kind {
-            InterpretedKind::Nothing => (None, PresentedShape::Empty),
+            InterpretedKind::Nothing | InterpretedKind::Undefined => (None, PresentedShape::Empty),
             InterpretedKind::Bool(value) => {
                 (Some(ScalarValue::Boolean(value)), PresentedShape::Value)
             }

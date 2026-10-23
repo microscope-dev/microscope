@@ -257,6 +257,111 @@ fn shortest<F: std::fmt::Display + std::fmt::LowerExp>(value: F) -> String {
     }
 }
 
+/// ECMA-262 `Number::toString(x)` in radix 10, built from the shortest
+/// round-trip digits that Rust's exponent formatting produces.
+#[must_use]
+pub fn number_to_string(x: f64) -> String {
+    if x.is_nan() {
+        return "NaN".to_owned();
+    }
+    if x == 0.0 {
+        return "0".to_owned();
+    }
+    if x < 0.0 {
+        return format!("-{}", number_to_string(-x));
+    }
+    if x.is_infinite() {
+        return "Infinity".to_owned();
+    }
+    let scientific = format!("{x:e}");
+    let (mantissa, exponent) = scientific.split_once('e').unwrap_or((&scientific, "0"));
+    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
+    let Ok(exponent) = exponent.parse::<i64>() else {
+        return scientific;
+    };
+    let k = i64::try_from(digits.len()).unwrap_or(i64::MAX);
+    let n = exponent + 1;
+    if k <= n && n <= 21 {
+        let zeros = usize::try_from(n - k).unwrap_or(0);
+        return format!("{digits}{}", "0".repeat(zeros));
+    }
+    if 0 < n && n <= 21 {
+        let point = usize::try_from(n).unwrap_or(0);
+        return format!("{}.{}", &digits[..point], &digits[point..]);
+    }
+    if -6 < n && n <= 0 {
+        let zeros = usize::try_from(-n).unwrap_or(0);
+        return format!("0.{}{digits}", "0".repeat(zeros));
+    }
+    let sign = if n - 1 < 0 { '-' } else { '+' };
+    let magnitude = (n - 1).unsigned_abs();
+    let (first, rest) = digits.split_at(1);
+    if rest.is_empty() {
+        format!("{first}e{sign}{magnitude}")
+    } else {
+        format!("{first}.{rest}e{sign}{magnitude}")
+    }
+}
+
+/// util.inspect's `formatNumber`: `Number::toString`, but `-0` for
+/// negative zero.
+#[must_use]
+pub fn javascript_number(x: f64) -> String {
+    if x == 0.0 && x.is_sign_negative() {
+        return "-0".to_owned();
+    }
+
+    number_to_string(x)
+}
+
+/// Python's `repr` of a float: its shortest round-trip digits, in
+/// exponent notation when the exponent is below -4 or at least 16.
+#[must_use]
+pub fn python_float(x: f64) -> String {
+    if x.is_nan() {
+        return "nan".to_owned();
+    }
+
+    let sign = if x.is_sign_negative() { "-" } else { "" };
+    if x.is_infinite() {
+        return format!("{sign}inf");
+    }
+
+    if x == 0.0 {
+        return format!("{sign}0.0");
+    }
+
+    let scientific = format!("{:e}", x.abs());
+    let (mantissa, exponent) = scientific.split_once('e').unwrap_or((&scientific, "0"));
+    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
+    let Ok(exponent) = exponent.parse::<i64>() else {
+        return format!("{sign}{scientific}");
+    };
+
+    let length = i64::try_from(digits.len()).unwrap_or(i64::MAX);
+    let zeros = |count: i64| "0".repeat(usize::try_from(count).unwrap_or(0));
+    if (-4..16).contains(&exponent) {
+        // How many digits come before the point.
+        let point = exponent + 1;
+        return if point <= 0 {
+            format!("{sign}0.{}{digits}", zeros(-point))
+        } else if point >= length {
+            format!("{sign}{digits}{}.0", zeros(point - length))
+        } else {
+            let (whole, fraction) = digits.split_at(usize::try_from(point).unwrap_or(0));
+            format!("{sign}{whole}.{fraction}")
+        };
+    }
+
+    let (first, rest) = digits.split_at(1);
+    let point = if rest.is_empty() { "" } else { "." };
+    let exponent_sign = if exponent < 0 { '-' } else { '+' };
+    format!(
+        "{sign}{first}{point}{rest}e{exponent_sign}{:02}",
+        exponent.unsigned_abs()
+    )
+}
+
 /// Which characters a type's integers stand for: a one-byte character
 /// type's are bytes, and a wider one's Unicode code points.
 #[must_use]

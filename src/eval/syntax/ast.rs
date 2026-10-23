@@ -227,6 +227,9 @@ pub enum Suffix {
     },
     F32,
     F64,
+
+    /// `n`, a JavaScript `BigInt`.
+    BigInt,
 }
 
 /// What a postfix `.` or `->` selects.

@@ -403,7 +403,10 @@ impl Lexer<'_> {
         }
 
         if fraction || exponent || matches!(suffix, Some(Suffix::F32 | Suffix::F64)) {
-            if matches!(suffix, Some(Suffix::Int { .. } | Suffix::Size { .. })) {
+            if matches!(
+                suffix,
+                Some(Suffix::Int { .. } | Suffix::Size { .. } | Suffix::BigInt)
+            ) {
                 return Err(self.error(start, "a float literal cannot have an integer suffix"));
             }
 
@@ -465,6 +468,7 @@ impl Lexer<'_> {
             "" => return Ok(None),
             "f32" => Suffix::F32,
             "f64" => Suffix::F64,
+            "n" => Suffix::BigInt,
             "isize" => Suffix::Size { signed: true },
             "usize" => Suffix::Size { signed: false },
             _ => {

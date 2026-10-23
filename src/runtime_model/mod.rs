@@ -1805,8 +1805,13 @@ impl InterpretedValue {
 /// What kind of value an object is.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InterpretedKind {
-    /// The runtime's value that stands for no value, as Python's `None`.
+    /// The runtime's value that stands for no value, as Python's `None`
+    /// and JavaScript's `null`.
     Nothing,
+
+    /// JavaScript's `undefined`, which converts to a number differently
+    /// from `null`.
+    Undefined,
     Bool(bool),
 
     /// An integer, its value where it fits in 128 bits; the summary holds

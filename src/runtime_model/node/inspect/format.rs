@@ -1161,10 +1161,7 @@ const fn plural(count: usize) -> &'static str {
 
 /// `formatNumber`.
 pub fn format_number(value: f64) -> String {
-    if value == 0.0 && value.is_sign_negative() {
-        return "-0".to_owned();
-    }
-    number_to_string(value)
+    crate::view::summary::javascript_number(value)
 }
 
 /// `formatBigInt`.

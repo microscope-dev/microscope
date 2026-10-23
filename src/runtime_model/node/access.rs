@@ -365,6 +365,17 @@ pub(super) fn operand(
             } else {
                 TextCompletion::Truncated { length: None }
             };
+            // UTF-8 cannot hold a lone surrogate, so comparing it would be
+            // wrong. A cut may split a pair at the end.
+            let whole = match completion {
+                TextCompletion::Complete => units.as_slice(),
+                _ => &units[..units.len().saturating_sub(1)],
+            };
+            if char::decode_utf16(whole.iter().copied()).any(|unit| unit.is_err()) {
+                return Err(
+                    "microscope can't compute with a string that holds a lone surrogate".into(),
+                );
+            }
             Some(TextSummary::from_units(
                 &raw,
                 2,

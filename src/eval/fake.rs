@@ -19,8 +19,8 @@ use super::error::ErrorKind;
 use super::number::Exact;
 use super::number::Float;
 use super::target::{
-    Key, Loaded, LoadedValue, Lookup, Machine, Planned, Refusal, Register, Scope, StepKind, Stop,
-    TextSpan, TypeLookup, TypeQuery,
+    Key, Loaded, LoadedValue, Lookup, Machine, Planned, Refusal, Register, Rules, Scope, StepKind,
+    Stop, TextSpan, TypeLookup, TypeQuery,
 };
 
 use super::types::{TypeSource, c_type_key_of_name};
@@ -1834,6 +1834,7 @@ impl Machine for World {
 
         Ok(Loaded {
             type_name: value.type_name().into(),
+            language: Some(Rules::Python),
             value: loaded,
         })
     }

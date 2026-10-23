@@ -457,20 +457,47 @@ fn tuple_matches_in<M: Machine>(
 }
 
 /// A value of a dynamic type, loaded where an operation needs its value:
-/// its type's name, which messages show, and what it holds.
+/// its type's name, which messages show, its language, and what it holds.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Loaded {
     pub type_name: Arc<str>,
+
+    /// The language whose rules operations on the value follow; `None` for
+    /// a value the expression writes, which takes the language of the
+    /// program's value it meets.
+    pub language: Option<Rules>,
     pub value: LoadedValue,
+}
+
+/// A language whose rules operations on values of a dynamic type follow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rules {
+    Python,
+
+    /// JavaScript, where an integer is a `Float` Number unless it is a
+    /// `BigInt`, which loads as `Int`.
+    JavaScript,
+}
+
+impl Rules {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Python => "Python",
+            Self::JavaScript => "JavaScript",
+        }
+    }
 }
 
 /// What a value of a dynamic type holds, as far as the evaluator computes
 /// with it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoadedValue {
-    /// The value its language has for no value, as Python's `None`, which
-    /// equals only itself.
+    /// The value its language has for no value, as Python's `None` and
+    /// JavaScript's `null`.
     Nothing,
+
+    /// JavaScript's `undefined`, its second value for no value.
+    Undefined,
     Bool(bool),
     Int(Exact),
     Float(Float),

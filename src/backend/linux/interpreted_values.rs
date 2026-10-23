@@ -12,7 +12,7 @@ use super::runtimes::BoundRuntime;
 use crate::InspectionLimits;
 use crate::eval::error::ErrorKind;
 use crate::eval::number::{Exact, Float, FloatFormat};
-use crate::eval::target::{Key, Loaded, LoadedValue, Lookup, Refusal, Stop};
+use crate::eval::target::{Key, Loaded, LoadedValue, Lookup, Refusal, Rules, Stop};
 use crate::inspection::InspectionBudget;
 use crate::runtime_model::{
     InterpretedFailure, InterpretedHandle, InterpretedKey, InterpretedKind, InterpretedName,
@@ -214,11 +214,23 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
         runtime: RuntimeId,
         object: InterpretedHandle,
     ) -> Result<Loaded, Stop> {
-        let operand = self
-            .interpreted(runtime, |bound, stop, budget| {
-                bound.model.interpreted_operand(stop, object, budget)
-            })?
-            .map_err(stop)?;
+        let (operand, language) = self.interpreted(runtime, |bound, stop, budget| {
+            (
+                bound.model.interpreted_operand(stop, object, budget),
+                bound.model.interpreted_language(),
+            )
+        })?;
+        let operand = operand.map_err(stop)?;
+        let language = match language {
+            crate::SourceLanguage::Python => Rules::Python,
+            crate::SourceLanguage::JavaScript => Rules::JavaScript,
+            other => {
+                return Err(Stop::Refused(Refusal::new(
+                    ErrorKind::Unsupported,
+                    format!("microscope has no rules for operations on {other:?} values"),
+                )));
+            }
+        };
         let text = || {
             operand.text.clone().ok_or_else(|| {
                 Stop::Failed(Error::internal("the runtime reads text with its operand"))
@@ -227,6 +239,7 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
 
         let value = match operand.kind {
             InterpretedKind::Nothing => LoadedValue::Nothing,
+            InterpretedKind::Undefined => LoadedValue::Undefined,
             InterpretedKind::Bool(value) => LoadedValue::Bool(value),
             InterpretedKind::Int(Some(value)) => LoadedValue::Int(Exact::from(value)),
             InterpretedKind::Int(None) => {
@@ -249,6 +262,7 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
 
         Ok(Loaded {
             type_name: Arc::clone(&operand.type_name),
+            language: Some(language),
             value,
         })
     }

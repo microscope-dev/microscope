@@ -6,14 +6,15 @@
 
 use std::cmp::Ordering;
 
-use super::dynamic::{self, Number};
+use super::dynamic;
 use super::error::{ErrorKind, ExpressionError};
 use super::ir::{Capacity, Comparison, Constant, Conversion, KeyNode, Length, Node, Op, Program};
 use super::number::{Bits, Exact, Float, FloatFormat, IntType, Integer, NumberError};
 use super::syntax::Span;
 use super::syntax::ast::BinaryOp;
 use super::target::{
-    Key, Loaded, LoadedValue, MAX_TUPLE_DEPTH, MAX_TUPLE_KEYS, Machine, Refusal, Register, Stop,
+    Key, Loaded, LoadedValue, MAX_TUPLE_DEPTH, MAX_TUPLE_KEYS, Machine, Refusal, Register, Rules,
+    Stop,
 };
 use super::types::{Category, Ty, category, size_of, type_info};
 use crate::{
@@ -163,6 +164,26 @@ const fn unavailable(reason: VariableUnavailableReason) -> VariableState {
     VariableState::Unavailable(reason)
 }
 
+/// A number or truth value an operation on dynamic values computed, as a
+/// scalar; any other value as it is.
+pub fn scalar<P>(value: Value<P>) -> Value<P> {
+    match value {
+        Value::Loaded(Loaded {
+            value: LoadedValue::Int(value),
+            ..
+        }) => Value::Int(Integer::Exact(value)),
+        Value::Loaded(Loaded {
+            value: LoadedValue::Float(value),
+            ..
+        }) => Value::Float(value),
+        Value::Loaded(Loaded {
+            value: LoadedValue::Bool(value),
+            ..
+        }) => Value::Bool(value),
+        value => value,
+    }
+}
+
 fn malformed(description: &str) -> VariableState {
     VariableState::Malformed(VariableMalformedReason {
         kind: VariableMalformedKind::InvalidExpression,
@@ -246,15 +267,9 @@ impl<M: Machine> Interpreter<'_, M> {
 
         Ok(Loaded {
             type_name: super::types::type_name(self.machine, &ty).into(),
+            language: None,
             value,
         })
-    }
-
-    const fn number(number: Number) -> Value<M::Place> {
-        match number {
-            Number::Int(value) => Value::Int(Integer::Exact(value)),
-            Number::Float(value) => Value::Float(value),
-        }
     }
 
     fn place(&mut self, node: &Node<M::Object, M::Step>) -> Result<M::Place, Halt> {
@@ -394,6 +409,11 @@ impl<M: Machine> Interpreter<'_, M> {
                 Constant::Bool(value) => Value::Bool(*value),
                 Constant::Pointer(address) => Value::Pointer(*address),
                 Constant::Text(bytes) => Value::Text(bytes.clone()),
+                Constant::BigInt(value) => Value::Loaded(Loaded {
+                    type_name: "bigint".into(),
+                    language: Some(Rules::JavaScript),
+                    value: LoadedValue::Int(*value),
+                }),
             },
             Op::AddressOf(place) | Op::Decay(place) => match self.eval(place)? {
                 Value::Place(at) => {
@@ -438,11 +458,11 @@ impl<M: Machine> Interpreter<'_, M> {
             Op::DynamicArithmetic { op, left, right } => {
                 let left = self.dynamic(left)?;
                 let right = self.dynamic(right)?;
-                Self::number(Self::at(span, dynamic::binary(*op, &left, &right))?)
+                Value::Loaded(Self::at(span, dynamic::binary(*op, &left, &right))?)
             }
             Op::DynamicUnary { op, operand } => {
                 let operand = self.dynamic(operand)?;
-                Self::number(Self::at(span, dynamic::unary(*op, &operand))?)
+                Value::Loaded(Self::at(span, dynamic::unary(*op, &operand))?)
             }
             Op::Bitwise { op, left, right } => {
                 let left_value = self.integer(left)?;
@@ -996,6 +1016,10 @@ impl<M: Machine> Interpreter<'_, M> {
                 .map(Assigned::Text)
                 .map_err(|_| refuse("text that is not UTF-8")),
             Value::Place(place) => Ok(Assigned::Object(place)),
+            // Only a Python variable is given a value.
+            Value::Loaded(loaded) if loaded.language == Some(Rules::JavaScript) => {
+                Err(refuse("a JavaScript value"))
+            }
             Value::Loaded(loaded) => match loaded.value {
                 LoadedValue::Nothing => Ok(Assigned::Nothing),
                 LoadedValue::Bool(value) => Ok(Assigned::Bool(value)),
@@ -1010,7 +1034,7 @@ impl<M: Machine> Interpreter<'_, M> {
     /// A value converted to `ty` only if `ty` holds it exactly.
     fn fit(&mut self, ty: &Ty, operand: &Node<M::Object, M::Step>) -> Evaluated<M::Place> {
         let span = operand.span;
-        let value = self.eval(operand)?;
+        let value = scalar(self.eval(operand)?);
         let shown = match &value {
             Value::Int(integer) => integer.value().to_string(),
             Value::Float(float) => float.to_string(),
@@ -1316,7 +1340,10 @@ impl<M: Machine> Interpreter<'_, M> {
                 return self.present_computed(ty, &loaded, Some(address), span);
             }
             Value::Text(bytes) => return Ok(self.present_text(ty, bytes)),
-            value => value,
+            Value::Loaded(loaded) if loaded.language.is_some() => {
+                return self.present_loaded(ty, loaded, span);
+            }
+            value => scalar(value),
         };
 
         // A number computed from values of a dynamic type has the type it
@@ -1329,6 +1356,60 @@ impl<M: Machine> Interpreter<'_, M> {
         };
 
         self.present_computed(ty, &value, None, span)
+    }
+
+    /// A number or truth value an operation on dynamic values computed,
+    /// written and named as its language writes it, as a variable of the
+    /// language is presented.
+    fn present_loaded(
+        &mut self,
+        ty: &Ty,
+        loaded: Loaded,
+        span: Span,
+    ) -> Result<InspectedValue, Halt> {
+        let (Some(language), Some(summary)) = (loaded.language, dynamic::shown(&loaded)) else {
+            return Self::invariant("operations compute numbers and truth values");
+        };
+
+        let type_name = std::sync::Arc::clone(&loaded.type_name);
+        let value = scalar(Value::Loaded(loaded));
+        let ty = match (ty, &value) {
+            (Ty::Dynamic, Value::Int(_)) => &Ty::Exact,
+            (Ty::Dynamic, Value::Float(value)) => &Ty::Float(value.format()),
+            (Ty::Dynamic, Value::Bool(_)) => &Ty::Bool,
+            (ty, _) => ty,
+        };
+
+        let mut presented = self.present_computed(ty, &value, None, span)?;
+        if let Some(info) = &mut presented.type_info {
+            info.name = type_name;
+        }
+
+        if let VariableState::Available { presentation, .. } = &mut presented.state {
+            let header = match language {
+                Rules::Python => "Python objects",
+                Rules::JavaScript => "JavaScript values",
+            };
+            *presentation = Some(std::sync::Arc::new(crate::Presentation {
+                view: std::sync::Arc::new(crate::ViewName {
+                    source: "microscope".into(),
+                    line: 0,
+                    header: header.into(),
+                    extend: false,
+                }),
+                shape: crate::PresentedShape::Value,
+                count: None,
+                summary: summary.into(),
+                detail: None,
+                children: ValueChildren::NotApplicable,
+                problem: None,
+                number: None,
+                presented: None,
+                visualizers: std::sync::Arc::from([]),
+            }));
+        }
+
+        Ok(presented)
     }
 
     fn present_computed(

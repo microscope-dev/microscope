@@ -739,6 +739,9 @@ impl<'a, S: Scope> Binder<'a, S> {
         };
 
         let int = match suffix {
+            Some(Suffix::BigInt) => {
+                return self.node(Op::Constant(Constant::BigInt(exact)), Ty::Dynamic, span);
+            }
             None => {
                 return self.node(
                     Op::Constant(Constant::Integer(Integer::Exact(exact))),

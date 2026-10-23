@@ -107,25 +107,11 @@ fn presented(
     let at = address(reader, handle);
 
     let (type_name, kind, attributes) = match &root {
-        Value::Undefined | Value::Null => (
-            if root == Value::Null {
-                "null"
-            } else {
-                "undefined"
-            }
-            .into(),
-            InterpretedKind::Nothing,
-            0,
-        ),
+        Value::Undefined => ("undefined".into(), InterpretedKind::Undefined, 0),
+        Value::Null => ("null".into(), InterpretedKind::Nothing, 0),
         Value::Boolean(value) => ("boolean".into(), InterpretedKind::Bool(*value), 0),
-        Value::Number(number) => {
-            let kind = reader
-                .smi(word)?
-                .map_or(InterpretedKind::Float(*number), |integer| {
-                    InterpretedKind::Int(Some(i128::from(integer)))
-                });
-            ("number".into(), kind, 0)
-        }
+        // Every Number is a double, a small integer included.
+        Value::Number(number) => ("number".into(), InterpretedKind::Float(*number), 0),
         Value::BigInt(_) => (
             "bigint".into(),
             InterpretedKind::Int(bigint_value(&summary)),

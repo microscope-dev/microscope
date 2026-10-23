@@ -5,6 +5,8 @@
 use std::fmt::Write as _;
 
 use super::BigInt;
+// `Number::toString` lives with the summaries, which computed values use too.
+pub use crate::view::summary::number_to_string;
 
 /// `meta` in inspect.js: the escape of each code unit below 0xA0 that has one.
 fn meta(unit: u16) -> Option<&'static str> {
@@ -171,51 +173,6 @@ const fn is_zero_width(code: u32) -> bool {
         || (code >= 0xfe00 && code <= 0xfe0f)
         || (code >= 0xfe20 && code <= 0xfe2f)
         || (code >= 0xe0100 && code <= 0xe01ef)
-}
-
-/// ECMA-262 `Number::toString(x)` in radix 10, built from the shortest
-/// round-trip digits that Rust's exponent formatting produces.
-pub fn number_to_string(x: f64) -> String {
-    if x.is_nan() {
-        return "NaN".to_owned();
-    }
-    if x == 0.0 {
-        return "0".to_owned();
-    }
-    if x < 0.0 {
-        return format!("-{}", number_to_string(-x));
-    }
-    if x.is_infinite() {
-        return "Infinity".to_owned();
-    }
-    let scientific = format!("{x:e}");
-    let (mantissa, exponent) = scientific.split_once('e').unwrap_or((&scientific, "0"));
-    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
-    let Ok(exponent) = exponent.parse::<i64>() else {
-        return scientific;
-    };
-    let k = i64::try_from(digits.len()).unwrap_or(i64::MAX);
-    let n = exponent + 1;
-    if k <= n && n <= 21 {
-        let zeros = usize::try_from(n - k).unwrap_or(0);
-        return format!("{digits}{}", "0".repeat(zeros));
-    }
-    if 0 < n && n <= 21 {
-        let point = usize::try_from(n).unwrap_or(0);
-        return format!("{}.{}", &digits[..point], &digits[point..]);
-    }
-    if -6 < n && n <= 0 {
-        let zeros = usize::try_from(-n).unwrap_or(0);
-        return format!("0.{}{digits}", "0".repeat(zeros));
-    }
-    let sign = if n - 1 < 0 { '-' } else { '+' };
-    let magnitude = (n - 1).unsigned_abs();
-    let (first, rest) = digits.split_at(1);
-    if rest.is_empty() {
-        format!("{first}e{sign}{magnitude}")
-    } else {
-        format!("{first}.{rest}e{sign}{magnitude}")
-    }
 }
 
 /// A `BigInt`'s decimal digits with its sign.

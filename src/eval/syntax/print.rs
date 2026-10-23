@@ -301,6 +301,7 @@ impl Printer<'_> {
                     Some(Suffix::Size { signed }) => {
                         let _ = write!(self.out, "{}size", sign(signed));
                     }
+                    Some(Suffix::BigInt) => self.out.push('n'),
                     Some(Suffix::F32 | Suffix::F64) | None => {}
                 }
             }

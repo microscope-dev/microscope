@@ -75,12 +75,15 @@ every decision about it to the run:
 - A member or an item plans a step through `Scope::plan_dynamic`, which the
   machine takes from the object it reaches (`Machine::step` and `entry`).
 - An operand is loaded with `Machine::load_dynamic`, which gives the
-  object's type name and a neutral `LoadedValue`: nothing, a truth value, an
-  exact integer, a float, text, bytes, a collection's length, or an object.
-- Arithmetic, comparisons, truth, and keys follow `src/eval/dynamic.rs`.
-  Numbers keep microscope's exact rules, with truth values as 0 and 1. An
-  operation a language defines differently from microscope, such as Python's
-  integer `/` or floored `%`, is refused rather than computed the other way.
+  object's type name and a neutral `LoadedValue`: nothing, JavaScript's
+  `undefined`, a truth value, an exact integer, a float, text, bytes, a
+  collection's length, or an object.
+- Arithmetic, comparisons, truth, and keys follow `src/eval/dynamic.rs`,
+  by the language of the operands: `Loaded::language`, which the backend sets
+  from `RuntimeModel::interpreted_language`. A literal takes the language of
+  the program's value it meets, and values of two languages are refused.
+  Each language's rules live in their own module, `python.rs` or
+  `javascript.rs`, and give the language's own answer or a refusal.
 - A value that only its own type's code could compare or compute with, such
   as a list or an instance, is refused. The evaluator never asks the runtime
   to run code. A refusal is a type error only where the language's own

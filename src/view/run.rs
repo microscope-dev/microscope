@@ -397,7 +397,7 @@ pub(super) fn count<M: Machine>(
     machine: &mut ViewMachine<'_, M>,
     what: &str,
 ) -> Result<u64, Failure> {
-    let Value::Int(integer) = interp::value(program, machine)? else {
+    let Value::Int(integer) = interp::scalar(interp::value(program, machine)?) else {
         return Err(internal("a count is not an integer"));
     };
 
@@ -1792,7 +1792,7 @@ fn capacity_of<M: Machine>(
     program: &ViewProgram<M::Step>,
     machine: &mut ViewMachine<'_, M>,
 ) -> Result<u64, Failure> {
-    let Value::Int(integer) = interp::value(program, machine)? else {
+    let Value::Int(integer) = interp::scalar(interp::value(program, machine)?) else {
         return Err(refused("its `capacity` field is not an integer"));
     };
 
