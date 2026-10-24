@@ -263,7 +263,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         let reporting = self
             .runtimes(inferior)
             .into_iter()
-            .filter(|runtime| !runtime.model.internal_hooks().is_empty())
+            .filter(|runtime| {
+                !runtime.model.internal_hooks().is_empty()
+                    || runtime.model.inspector_hook().is_some()
+            })
             .map(|runtime| runtime.id)
             .collect::<Vec<_>>();
         if let Some(inferior) = self.inferior.as_mut() {

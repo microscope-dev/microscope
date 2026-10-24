@@ -1,6 +1,8 @@
 //! The methods of V8's inspector protocol that the debugger sends, and the
 //! events it reads, as Node's inspector names them.
 
+pub use super::exceptions::{filter as exception_filter, pause_state};
+
 /// Lets a node the launch preload holds in `waitForDebugger` run on.
 pub const RELEASE: &str = "Runtime.runIfWaitingForDebugger";
 
@@ -38,3 +40,6 @@ pub fn script_path(url: &str) -> std::borrow::Cow<'_, str> {
     super::frames::file_url_path(url)
         .map_or(std::borrow::Cow::Borrowed(url), std::borrow::Cow::Owned)
 }
+
+/// Chooses which exceptions V8 pauses at.
+pub const PAUSE_ON_EXCEPTIONS: &str = "Debugger.setPauseOnExceptions";

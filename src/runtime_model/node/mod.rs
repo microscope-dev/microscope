@@ -14,9 +14,12 @@ mod collections;
 mod compiled;
 mod constructors;
 mod errors;
+mod exceptions;
 mod frames;
 mod inspect;
 pub mod inspector;
+
+pub use exceptions::EXCEPTION_FILTERS;
 mod lineage;
 mod lookup;
 mod names;

@@ -49,11 +49,19 @@ pub struct Pause {
     pub function: String,
     pub line: u32,
     pub column: u32,
+
+    /// For a pause at an exception, whether nothing catches it.
+    pub uncaught: Option<bool>,
 }
 
 impl std::fmt::Display for Pause {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{} {}:{}", self.function, self.line, self.column)
+        write!(formatter, "{} {}:{}", self.function, self.line, self.column)?;
+        match self.uncaught {
+            Some(true) => write!(formatter, " uncaught"),
+            Some(false) => write!(formatter, " caught"),
+            None => Ok(()),
+        }
     }
 }
 
@@ -110,13 +118,14 @@ pub fn pauses(
         .filter_map(|line| line.strip_prefix("PAUSE "))
         .map(|line| {
             let fields: Vec<_> = line.split(' ').collect();
-            let [_reason, function, line, column] = fields[..] else {
+            let [_reason, function, line, column, ..] = fields[..] else {
                 panic!("a malformed pause: {line}");
             };
             Pause {
                 function: function.to_owned(),
                 line: line.parse().expect("a line"),
                 column: column.parse().expect("a column"),
+                uncaught: fields.get(4).map(|caught| *caught == "uncaught"),
             }
         })
         .collect();
@@ -143,7 +152,10 @@ pub async fn selected(scenario: &Scenario) -> Pause {
         .as_ref()
         .filter(|recorded| recorded.language == SourceLanguage::JavaScript)
         .unwrap_or_else(|| panic!("the selected frame is not JavaScript: {frame:?}"));
-    let place = recorded.place.as_ref().expect("the frame's place");
+    let place = recorded
+        .place
+        .as_ref()
+        .unwrap_or_else(|| panic!("the selected frame has no place: {frame:?}"));
     Pause {
         function: if recorded.function.is_empty() {
             "-".to_owned()
@@ -152,5 +164,6 @@ pub async fn selected(scenario: &Scenario) -> Pause {
         },
         line: place.line,
         column: place.column,
+        uncaught: None,
     }
 }

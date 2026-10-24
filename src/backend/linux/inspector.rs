@@ -117,6 +117,11 @@ struct Inspector {
     /// The step the runtime is armed with, which V8 runs.
     step: Option<Stepping>,
 
+    /// Which exceptions V8 is to pause at, as `setPauseOnExceptions`
+    /// names them, and which it was last told over the connection.
+    pausing: &'static str,
+    told: Option<&'static str>,
+
     /// The URL of each script V8 parsed, by its id: V8's pauses name
     /// scripts only by id (F19).
     scripts: BTreeMap<Arc<str>, Arc<str>>,
@@ -146,8 +151,8 @@ struct Stepping {
 impl Inspector {
     /// Whether anything needs the connection: a client that is connected
     /// when the program ends makes Node wait for it.
-    const fn wanted(&self) -> bool {
-        !self.desired.is_empty()
+    fn wanted(&self) -> bool {
+        !self.desired.is_empty() || self.step.is_some() || !matches!(self.pausing, "" | "none")
     }
 
     /// Whether the managed location `number` is set, or why it waits.
@@ -217,6 +222,41 @@ struct Paused {
     /// scope each lists. The pause is judged once all are answered: the
     /// paused thread answers only until every thread is stopped.
     listing: BTreeMap<RequestId, (usize, usize)>,
+
+    /// The exception V8 paused at, if it paused at one.
+    exception: Option<Thrown>,
+}
+
+/// An exception a pause reported.
+#[derive(Debug)]
+struct Thrown {
+    /// Whether V8 found nothing that catches it.
+    uncaught: bool,
+
+    /// V8's description of the value: an error's stack, or the value.
+    description: Arc<str>,
+}
+
+impl Thrown {
+    /// The exception a pause `params` describes, if it paused at one.
+    fn of(params: &serde_json::Value) -> Option<Self> {
+        if !matches!(
+            params["reason"].as_str(),
+            Some("exception" | "promiseRejection")
+        ) {
+            return None;
+        }
+        let data = &params["data"];
+        let description = data["description"]
+            .as_str()
+            .map(Arc::from)
+            .or_else(|| data.get("value").map(|value| value.to_string().into()))
+            .unwrap_or_else(|| "an exception V8 did not describe".into());
+        Some(Self {
+            uncaught: data["uncaught"].as_bool().unwrap_or(false),
+            description,
+        })
+    }
 }
 
 /// A frame of a pause, as V8 listed it.
@@ -382,7 +422,24 @@ impl<P: LinuxTraceOps> Controller<P> {
                 let inspector = inferior.inspectors.records.entry(call.runtime).or_default();
                 if inspector.target.is_none() {
                     inspector.target = Some(target);
-                    self.connect_inspector(call.runtime);
+                    // What the inspector is to do is decided by arming, as
+                    // for any runtime: which exceptions pause, as well as
+                    // the breakpoints. A node the preload holds waits for
+                    // the connection either way.
+                    inferior.managed.mark_stale(call.runtime);
+                    if self.sync_runtime_arming() {
+                        self.publish_breakpoints_changed();
+                    }
+                    let connected = self.inferior.as_ref().is_some_and(|inferior| {
+                        inferior
+                            .inspectors
+                            .records
+                            .get(&call.runtime)
+                            .is_some_and(|inspector| inspector.connection.is_some())
+                    });
+                    if !connected {
+                        self.connect_inspector(call.runtime);
+                    }
                 }
             }
             Ok(None) => {}
@@ -554,6 +611,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             (Some(step), _) => Some(stepping(inspector.paused.as_ref(), step)?),
         };
         inspector.desired = arming.breakpoints.to_vec();
+        inspector.pausing = inspector_protocol::pause_state(arming.exceptions);
         self.sync_inspector(runtime);
         Ok(())
     }
@@ -585,6 +643,15 @@ impl<P: LinuxTraceOps> Controller<P> {
             return;
         };
 
+        if inspector.told != Some(inspector.pausing) && !inspector.pausing.is_empty() {
+            let told = link.connection.send(
+                &Session::main(),
+                inspector_protocol::PAUSE_ON_EXCEPTIONS,
+                serde_json::json!({ "state": inspector.pausing }),
+            );
+            record!("V8 pauses at exceptions: {} {told:?}", inspector.pausing);
+            inspector.told = Some(inspector.pausing);
+        }
         let desired = inspector
             .desired
             .iter()
@@ -725,6 +792,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 inspector.connection = None;
                 inspector.sites.clear();
                 inspector.scripts.clear();
+                inspector.told = None;
                 inspector.paused = None;
                 inspector.problem =
                     Some(format!("the inspector connection closed: {reason}").into());
@@ -960,6 +1028,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             judged: false,
             frames,
             listing,
+            exception: Thrown::of(params),
         });
         if listed {
             self.judge_inspector_pause(runtime)?;
@@ -967,10 +1036,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Whether the step V8 runs in `runtime` goes on from the pause
-    /// `params` describes, which no breakpoint stopped: a pause in a
-    /// skipped script goes on into the program's next statement, with the
-    /// program left running.
+    /// Whether V8 goes on from the pause in `runtime` that `params`
+    /// describes, which no breakpoint stopped, with the program left
+    /// running: a step that pauses in a skipped script goes on into the
+    /// program's next statement, and an exception caught there is ignored.
     #[cfg_attr(
         not(debug_assertions),
         expect(unused_variables, reason = "only recorded")
@@ -991,24 +1060,31 @@ impl<P: LinuxTraceOps> Controller<P> {
         let top = params["callFrames"][0]["location"]["scriptId"]
             .as_str()
             .and_then(|id| inspector.scripts.get(id));
-        let (Some(step), Some(link)) = (inspector.step.as_mut(), inspector.connection.as_ref())
-        else {
+        let Some(link) = inspector.connection.as_ref() else {
             return false;
         };
-        if !step.sent
-            || params["reason"] != "step"
-            || !top.is_some_and(|url| skipped(url, &self.step_skips, self.step_into_runtime))
-            || step.skipped >= MAX_SKIPPED
-        {
+        if !top.is_some_and(|url| skipped(url, &self.step_skips, self.step_into_runtime)) {
             return false;
         }
-        step.skipped += 1;
-        let sent = link.connection.send(
-            session,
-            inspector_protocol::STEP_INTO,
-            serde_json::json!({}),
-        );
-        record!("the step goes on from {top:?}: {sent:?}");
+        let step = inspector.step.as_mut().filter(|step| step.sent);
+        let command = match (params["reason"].as_str(), step) {
+            (Some("step"), Some(step)) if step.skipped < MAX_SKIPPED => {
+                step.skipped += 1;
+                inspector_protocol::STEP_INTO
+            }
+            // An exception caught in code steps pass through is that
+            // code's own business, as Node's module loader's are.
+            (Some("exception" | "promiseRejection"), step)
+                if params["data"]["uncaught"] != true =>
+            {
+                step.map_or(inspector_protocol::RESUME, |step| step.command)
+            }
+            _ => return false,
+        };
+        let sent = link
+            .connection
+            .send(session, command, serde_json::json!({}));
+        record!("V8 goes on from {top:?} with {command}: {sent:?}");
         true
     }
 
@@ -1049,14 +1125,11 @@ impl<P: LinuxTraceOps> Controller<P> {
             &modules,
             Some(&presentation),
         )?;
-        let scripts = expanded.trace.frames.iter().filter(|frame| {
-            frame.recorded.as_ref().is_some_and(|recorded| {
-                matches!(
-                    recorded.language,
-                    crate::SourceLanguage::JavaScript | crate::SourceLanguage::TypeScript
-                )
-            })
-        });
+        let scripts = expanded
+            .trace
+            .frames
+            .iter()
+            .filter(|frame| is_script_frame(frame));
         let mut bound = BTreeMap::new();
         for (frame, listed) in scripts.zip(&paused.frames) {
             let place = frame
@@ -1133,12 +1206,23 @@ impl<P: LinuxTraceOps> Controller<P> {
             .flat_map(|(_, owners)| owners.iter().copied())
             .collect::<BTreeSet<_>>();
         let depth = paused.frames.len();
+        let exception = paused.exception.as_ref().and_then(|thrown| {
+            let filter =
+                inspector_protocol::exception_filter(self.exception_stops, thrown.uncaught)?;
+            Some(StopReason::LanguageException(crate::LanguageException {
+                kind: filter.kind,
+                message: Arc::clone(&thrown.description),
+                value: None,
+            }))
+        });
         let hits = if owners.is_empty() {
             Arc::from([])
         } else {
             self.judge_hits(pid, &owners, None)
         };
-        let reason = if hits.is_empty() {
+        let reason = if let Some(exception) = exception.filter(|_| hits.is_empty()) {
+            exception
+        } else if hits.is_empty() {
             let Some(reason) = self.inspector_step_end(runtime, pid, depth) else {
                 record!("V8's pause stops for none of microscope's breakpoints or steps");
                 return;
@@ -1340,6 +1424,19 @@ const fn ends_step(step: &Stepping, depth: usize) -> bool {
         crate::StepKind::Out => depth < step.depth,
         _ => true,
     }
+}
+
+/// Whether `frame` runs a script, as the frames of a V8 pause do: V8's
+/// builtins, such as `Promise.reject`, record a JavaScript function but no
+/// script, and V8 lists no frame for them.
+pub(super) fn is_script_frame(frame: &crate::StackFrame) -> bool {
+    frame.recorded.as_ref().is_some_and(|recorded| {
+        recorded.place.is_some()
+            && matches!(
+                recorded.language,
+                crate::SourceLanguage::JavaScript | crate::SourceLanguage::TypeScript
+            )
+    })
 }
 
 /// The variables a `Runtime.getProperties` reply lists for a scope, in

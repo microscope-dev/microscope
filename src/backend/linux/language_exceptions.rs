@@ -445,14 +445,7 @@ impl<P: InspectionOps> Controller<P> {
             return trace
                 .frames
                 .iter()
-                .find(|frame| {
-                    frame.recorded.as_ref().is_some_and(|recorded| {
-                        matches!(
-                            recorded.language,
-                            crate::SourceLanguage::JavaScript | crate::SourceLanguage::TypeScript
-                        )
-                    })
-                })
+                .find(|frame| super::inspector::is_script_frame(frame))
                 .map(|frame| frame.id);
         }
 

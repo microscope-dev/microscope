@@ -55,7 +55,9 @@ fn python_exception_filters_are_bits_the_agent_shares() {
             "raised",
             "rust-panic",
             "python-raised",
-            "python-uncaught"
+            "python-uncaught",
+            "javascript-thrown",
+            "javascript-uncaught"
         ]
     );
     assert!(!raised.default && !uncaught.default);

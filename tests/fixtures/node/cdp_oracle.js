@@ -67,7 +67,7 @@ function connect(url) {
   };
 }
 
-function paused({ reason, callFrames }) {
+function paused({ reason, callFrames, data }) {
   // --inspect-brk pauses before the first statement; the plan starts after.
   if (!started) {
     started = true;
@@ -85,7 +85,14 @@ function paused({ reason, callFrames }) {
     send('Debugger.stepInto');
     return;
   }
+  // An exception caught in code steps pass through is that code's own.
+  const exception = reason === 'exception' || reason === 'promiseRejection';
+  if (exception && skipped && !data?.uncaught) {
+    send('Debugger.resume');
+    return;
+  }
   const { lineNumber, columnNumber } = top.location;
-  console.log(`PAUSE ${reason} ${top.functionName || '-'} ${lineNumber + 1} ${columnNumber + 1}`);
+  const uncaught = exception ? ` ${data?.uncaught ? 'uncaught' : 'caught'}` : '';
+  console.log(`PAUSE ${reason} ${top.functionName || '-'} ${lineNumber + 1} ${columnNumber + 1}${uncaught}`);
   send(remaining.shift() ?? 'Debugger.resume');
 }

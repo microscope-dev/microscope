@@ -609,13 +609,15 @@ pub const TASK_NOUNS: [(&str, &str); 2] = [go::TASK_NOUN, self::tokio::TASK_NOUN
 
 /// The exceptions each runtime a model knows reports, which clients may
 /// choose to stop at before they know which runtimes a program has.
-pub const EXCEPTION_FILTERS: [ExceptionFilter; 6] = [
+pub const EXCEPTION_FILTERS: [ExceptionFilter; 8] = [
     go::EXCEPTION_FILTERS[0],
     go::EXCEPTION_FILTERS[1],
     go::EXCEPTION_FILTERS[2],
     rust::EXCEPTION_FILTERS[0],
     python::EXCEPTION_FILTERS[0],
     python::EXCEPTION_FILTERS[1],
+    node::EXCEPTION_FILTERS[0],
+    node::EXCEPTION_FILTERS[1],
 ];
 
 /// How a runtime uses the process's signals, by Linux signal number.
