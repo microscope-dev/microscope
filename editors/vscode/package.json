@@ -1,7 +1,7 @@
 {
   "name": "microscope",
   "displayName": "microscope",
-  "description": "Debug native Linux programs written in C, C++, Rust, Go, and Zig, and Python programs, with microscope",
+  "description": "Debug native Linux programs written in C, C++, Rust, Go, and Zig, and Python and Node.js programs, with microscope",
   "version": "0.1.0",
   "publisher": "microscope",
   "license": "MIT",
@@ -74,13 +74,17 @@
       { "language": "d" },
       { "language": "nim" },
       { "language": "ada" },
-      { "language": "python" }
+      { "language": "python" },
+      { "language": "javascript" },
+      { "language": "typescript" },
+      { "language": "javascriptreact" },
+      { "language": "typescriptreact" }
     ],
     "debuggers": [
       {
         "type": "microscope",
         "label": "microscope",
-        "languages": ["c", "cpp", "rust", "go", "zig", "odin", "FortranFreeForm", "FortranFixedForm", "d", "nim", "ada", "python"],
+        "languages": ["c", "cpp", "rust", "go", "zig", "odin", "FortranFreeForm", "FortranFixedForm", "d", "nim", "ada", "python", "javascript", "typescript", "javascriptreact", "typescriptreact"],
         "variables": {
           "pickProcess": "microscope.pickProcess"
         },
@@ -374,6 +378,18 @@
               "request": "launch",
               "name": "Launch Python script",
               "program": "${1:/usr/bin/python3}",
+              "args": ["^\"\\${file}\""],
+              "cwd": "^\"\\${workspaceFolder}\""
+            }
+          },
+          {
+            "label": "microscope: Launch a Node.js script",
+            "description": "Run the open JavaScript file with node, whose inspector microscope uses for breakpoints and steps.",
+            "body": {
+              "type": "microscope",
+              "request": "launch",
+              "name": "Launch Node.js script",
+              "program": "${1:/usr/bin/node}",
               "args": ["^\"\\${file}\""],
               "cwd": "^\"\\${workspaceFolder}\""
             }

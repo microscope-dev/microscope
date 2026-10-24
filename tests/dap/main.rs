@@ -20,6 +20,7 @@ mod goroutines;
 mod languages;
 mod lifecycle;
 mod memory;
+mod node;
 mod output;
 mod panics;
 mod python;

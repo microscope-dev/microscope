@@ -823,6 +823,64 @@ async function pythonBreakpointsStepsAndExceptions() {
     }
 }
 
+/**
+ * A Node.js program, launched as node with the script: a breakpoint in the
+ * `.js` file, a step by lines, the frame's locals by name, and an exception
+ * the program throws, each shown at the program's frame, on each Node line.
+ */
+async function nodeBreakpointsStepsAndExceptions() {
+    const script = path.join(root, 'tests/fixtures/node/uat.js');
+    // The frame VS Code focused at a stop, as the adapter described it.
+    const shown = async (session, threadId, item) => {
+        const { stackFrames } = await session.customRequest('stackTrace', { threadId });
+        return stackFrames.find((frame) => frame.id === item.frameId);
+    };
+    for (const build of ['26', '24', '22']) {
+        vscode.debug.addBreakpoints([sourceBreakpoint(script, '// AREA_LINE')]);
+        const { session, threadId, frame: focusedAtLaunch } = await launchToStop({
+            name: `vscode-node-${build}`,
+            program: path.join(process.env.MICROSCOPE_NODE, build, 'node'),
+            args: [script],
+        }, 'breakpoint');
+        let frame = await shown(session, threadId, focusedAtLaunch);
+        assert.strictEqual(frame?.name, 'area', build);
+        assert.strictEqual(frame.line, lineOf(script, '// AREA_LINE') + 1, build);
+        assert.ok(frame.column > 1, `${build}: ${JSON.stringify(frame)}`);
+
+        const stepped = event('stopped', (body) => body.reason === 'step');
+        await vscode.commands.executeCommand('workbench.action.debug.stepOver');
+        await stepped;
+        frame = await shown(session, threadId, await focus());
+        assert.strictEqual(frame?.name, 'area', build);
+        assert.strictEqual(frame.line, lineOf(script, '// RETURN_LINE') + 1, build);
+
+        // The variables view shows the frame's scopes, its locals named.
+        const { scopes } = await session.customRequest('scopes', { frameId: frame.id });
+        const value = async (scope, name) => {
+            const found = scopes.find((each) => each.name === scope);
+            assert.ok(found, `${build}: no ${scope} in ${JSON.stringify(scopes)}`);
+            const { variables } = await session.customRequest('variables', { variablesReference: found.variablesReference });
+            return variables.find((variable) => variable.name === name)?.value;
+        };
+        assert.strictEqual(await value('Locals', 'result'), '16', build);
+        assert.strictEqual(await value('Arguments', 'side'), '4', build);
+
+        // The filter is a checkbox in the breakpoints view, which has no
+        // command.
+        await session.customRequest('setExceptionBreakpoints', { filters: ['javascript-thrown'] });
+        const thrown = event('stopped', (body) => body.reason === 'exception');
+        await vscode.commands.executeCommand('workbench.action.debug.continue');
+        await thrown;
+        frame = await shown(session, threadId, await focus());
+        assert.strictEqual(frame?.name, 'fail', build);
+        assert.strictEqual(frame.line, lineOf(script, '// THROW_LINE') + 1, build);
+        const exception = await session.customRequest('exceptionInfo', { threadId });
+        assert.match(exception.description, /the shape is wrong/, build);
+        await session.customRequest('setExceptionBreakpoints', { filters: [] });
+        await finish(0);
+    }
+}
+
 /** Pausing stops every thread, which VS Code lists by name. */
 async function pauseAndThreads() {
     const breakpoint = new vscode.FunctionBreakpoint('worker_breakpoint');
@@ -1129,7 +1187,7 @@ exports.run = async function run() {
             stepIntoByInstructionAndRunToCursor, conditionsHitCountsLogpointsAndRefusals,
             consoleWatchHoverHexadecimalAndInlineValues, completionsAndLocations, dataBreakpointsAndTheirModes,
             dataBreakpointConditions, crashAtASignal, goroutinesStepsPanicsAndStacks,
-            pythonBreakpointsStepsAndExceptions,
+            pythonBreakpointsStepsAndExceptions, nodeBreakpointsStepsAndExceptions,
             pauseAndThreads, librariesAndTheirSources, runInTheIntegratedTerminal, attachToAProcess,
             pickAProcess, followAForkedChild, openACoreDump, refuseBadConfigurationsAndOfferPrograms,
         ]) {

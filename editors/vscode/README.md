@@ -1,7 +1,8 @@
 # microscope for VS Code
 
 Debug native Linux programs written in C, C++, Rust, Go, and Zig, and
-Python programs run by CPython, with microscope. The extension contributes the `microscope` debugger type and runs
+Python programs run by CPython and JavaScript and TypeScript programs run by
+Node.js, with microscope. The extension contributes the `microscope` debugger type and runs
 `microscope dap`; [the editor guide](../../docs/editors.md#vs-code) covers installing
 it, its settings and configurations, and what the adapter supports.
 

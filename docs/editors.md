@@ -49,6 +49,21 @@ need CPython 3.14 or later, or a launched 3.12 or 3.13 (see
 }
 ```
 
+To debug a Node.js program, launch `node` with the script as an argument.
+Breakpoints in `.js` files, and in TypeScript files that a source map maps the
+running code to, steps, and the JavaScript exception filters work through
+Node's inspector:
+
+```json
+{
+  "type": "microscope",
+  "request": "launch",
+  "name": "Debug Node.js script",
+  "program": "/usr/bin/node",
+  "args": ["${file}"]
+}
+```
+
 Use `"request": "attach"` with a process ID to attach. Core-dump sessions use
 the microscope-specific core setting described by the extension when installed.
 
