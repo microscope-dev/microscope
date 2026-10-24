@@ -1326,6 +1326,11 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// stop, or delivering or discarding the signal as the thread resumes
     /// what it was doing.
     pub(super) fn handle_signal_stop(&mut self, pid: Pid, pending: PendingSignal) -> Result<()> {
+        const QUIET: SignalPolicy = SignalPolicy {
+            stop: false,
+            print: false,
+            pass: true,
+        };
         let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
 
         // The debugger's own request to end the inferior never stops it.
@@ -1333,13 +1338,17 @@ impl<P: LinuxTraceOps> Controller<P> {
             .terminating
             .as_mut()
             .filter(|terminating| terminating.signal == pending.signal);
+        // Nor does the SIGUSR1 it sent to open an attached node's inspector.
+        let opening = pending.signal == Signal::SIGUSR1
+            && pending.code == 0
+            && pending.sender == i32::try_from(std::process::id()).ok()
+            && inferior.inspectors.opening > 0;
         let policy = if let Some(terminating) = terminating {
             terminating.delivered = true;
-            SignalPolicy {
-                stop: false,
-                print: false,
-                pass: true,
-            }
+            QUIET
+        } else if opening {
+            inferior.inspectors.opening -= 1;
+            QUIET
         } else {
             self.signals.get(pending.signal)
         };

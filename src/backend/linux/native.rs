@@ -179,6 +179,12 @@ pub(super) trait LinuxTraceOps: InspectionOps {
         Ok(None)
     }
 
+    /// Whether process `pid` has a handler for `signal`.
+    fn catches_signal(&self, pid: Pid, signal: Signal) -> std::result::Result<bool, Arc<str>> {
+        let _ = (pid, signal);
+        Err("this target has no signal handlers to read".into())
+    }
+
     /// The TCP sockets process `pid` listens on at 127.0.0.1.
     fn loopback_listeners(
         &self,
@@ -781,6 +787,10 @@ impl LinuxTraceOps for LinuxPtrace {
         pid: Pid,
     ) -> std::result::Result<Vec<std::net::SocketAddr>, Arc<str>> {
         super::inspector::loopback_listeners(pid)
+    }
+
+    fn catches_signal(&self, pid: Pid, signal: Signal) -> std::result::Result<bool, Arc<str>> {
+        super::inspector::catches_signal(pid, signal.number())
     }
 
     fn python_join(

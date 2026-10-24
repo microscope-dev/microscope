@@ -32,7 +32,7 @@ use crate::runtime_model::ManagedArm;
 use crate::runtime_model::inspector_protocol;
 use crate::{Error, Result, RuntimeId, VirtualAddress};
 
-pub(super) use protocol::{is_script_frame, loopback_listeners};
+pub(super) use protocol::{catches_signal, is_script_frame, loopback_listeners};
 
 /// The longest target id read: Node's are 36-character UUIDs.
 const MAX_TARGET_ID: u64 = 64;
@@ -74,6 +74,10 @@ pub(super) struct Inspectors {
     /// The stack locals V8 named for each interpreted frame of a thread it
     /// holds paused, by frame, valid until that thread runs (G5).
     pub(super) locals: BTreeMap<VirtualAddress, crate::runtime_model::ReportedLocals>,
+
+    /// How many `SIGUSR1`s microscope sent to open an attached node's
+    /// inspector that have not yet arrived; each passes quietly.
+    pub(super) opening: u32,
 }
 
 impl Inspectors {
@@ -129,6 +133,13 @@ struct Inspector {
     /// Whether the next listing is left whole, for microscope's own
     /// connection's upgrade.
     keep: bool,
+
+    /// The loopback sockets the process listened on before microscope
+    /// opened its inspector, none of which is the inspector's.
+    listening: BTreeSet<SocketAddr>,
+
+    /// Whether microscope opened the inspector of a node it attached to.
+    opened: bool,
     connection: Option<Link>,
 
     /// Why the inspector cannot be used, once that is known.
@@ -295,7 +306,67 @@ impl<P: LinuxTraceOps> Controller<P> {
         inferior.inspectors.entries = entries;
         inferior.inspectors.calls = calls;
         inferior.inspectors.returns = returns;
+        self.open_attached_inspectors();
         Ok(())
+    }
+
+    /// Opens the inspector of each runtime of an attached node that has
+    /// not listed its target, with the `SIGUSR1` Node handles by starting
+    /// it (F12). A launched node opens its own, through the preload.
+    fn open_attached_inspectors(&mut self) {
+        let Some(inferior) = self.inferior.as_mut() else {
+            return;
+        };
+        if inferior.origin != super::InferiorOrigin::Attached {
+            return;
+        }
+        let pid = inferior.tgid;
+        let runtimes = inferior
+            .inspectors
+            .entries
+            .values()
+            .copied()
+            .collect::<Vec<_>>();
+        for runtime in runtimes {
+            let caught = self.ptrace.catches_signal(pid, super::Signal::SIGUSR1);
+            let listening = self.ptrace.loopback_listeners(pid);
+            let Some(inferior) = self.inferior.as_mut() else {
+                return;
+            };
+            let inspector = inferior.inspectors.records.entry(runtime).or_default();
+            if inspector.opened || inspector.target.is_some() {
+                continue;
+            }
+            inspector.opened = true;
+            match caught {
+                Ok(true) => {}
+                Ok(false) => {
+                    inspector.problem = Some(
+                        "the node does not handle SIGUSR1, as with --disable-sigusr1, so \
+                         microscope cannot open its inspector; start it with \
+                         --inspect=127.0.0.1:0"
+                            .into(),
+                    );
+                    continue;
+                }
+                Err(reason) => {
+                    inspector.problem = Some(reason);
+                    continue;
+                }
+            }
+            inspector.listening = listening.unwrap_or_default().into_iter().collect();
+            match self.ptrace.kill(pid, super::Signal::SIGUSR1) {
+                Ok(()) => {
+                    record!("SIGUSR1 opens the attached node's inspector");
+                    inferior.inspectors.opening += 1;
+                }
+                Err(error) => {
+                    inspector.problem = Some(
+                        format!("cannot signal the node to open its inspector: {error}").into(),
+                    );
+                }
+            }
+        }
     }
 
     /// Notes a thread that reached `GetTargetIds`, or the return of a call
@@ -435,25 +506,58 @@ impl<P: LinuxTraceOps> Controller<P> {
             || self.ptrace.loopback_listeners(inferior.tgid),
             |address| Ok(vec![address]),
         ) {
-            Ok(listeners) if listeners.len() == 1 => listeners[0],
-            Ok(listeners) if listeners.is_empty() => {
-                self.inspector_problem(runtime, "the inspector's server has no listening socket");
-                return;
-            }
-            Ok(_) => {
-                self.inspector_problem(
-                    runtime,
-                    "the process listens on more than one loopback socket, so microscope cannot \
-                     tell which is the inspector's",
-                );
-                return;
+            Ok(listeners) => {
+                let listening = inferior
+                    .inspectors
+                    .records
+                    .get(&runtime)
+                    .map(|inspector| &inspector.listening);
+                let new = listeners
+                    .into_iter()
+                    .filter(|listener| {
+                        listening.is_none_or(|listening| !listening.contains(listener))
+                    })
+                    .collect::<Vec<_>>();
+                self.inspector_listener(runtime, &new)
             }
             Err(reason) => {
                 self.inspector_problem(runtime, &reason);
                 return;
             }
         };
+        let Some(address) = address else {
+            return;
+        };
+        self.open_connection(runtime, address);
+    }
 
+    /// The inspector's socket among `listeners`, the loopback sockets the
+    /// process opened since microscope looked, or `None` with the problem
+    /// noted.
+    fn inspector_listener(
+        &mut self,
+        runtime: RuntimeId,
+        listeners: &[SocketAddr],
+    ) -> Option<SocketAddr> {
+        match listeners {
+            [listener] => Some(*listener),
+            [] => {
+                self.inspector_problem(runtime, "the inspector's server has no listening socket");
+                None
+            }
+            _ => {
+                self.inspector_problem(
+                    runtime,
+                    "the process listens on more than one loopback socket, so microscope cannot \
+                     tell which is the inspector's",
+                );
+                None
+            }
+        }
+    }
+
+    /// Connects to the inspector of `runtime` listening at `address`.
+    fn open_connection(&mut self, runtime: RuntimeId, address: SocketAddr) {
         let Some(inspector) = self
             .inferior
             .as_mut()

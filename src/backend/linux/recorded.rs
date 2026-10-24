@@ -192,6 +192,16 @@ impl<P: LinuxTraceOps> LinuxTraceOps for Recorded<P> {
         listeners
     }
 
+    fn catches_signal(
+        &self,
+        pid: Pid,
+        signal: super::Signal,
+    ) -> std::result::Result<bool, Arc<str>> {
+        let caught = self.0.catches_signal(pid, signal);
+        record!("{pid} catches {signal:?}: {caught:?}");
+        caught
+    }
+
     fn python_join(
         &self,
         executable: &Path,

@@ -7,6 +7,7 @@
 mod support;
 
 mod addon;
+mod attach;
 mod breakpoints;
 mod debian;
 mod exceptions;

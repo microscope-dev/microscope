@@ -28,6 +28,8 @@ impl Signal {
 
     pub const SIGTERM: Self = Self(libc::SIGTERM);
 
+    pub const SIGUSR1: Self = Self(libc::SIGUSR1);
+
     pub const SIGSTOP: Self = Self(libc::SIGSTOP);
 
     pub const SIGTSTP: Self = Self(libc::SIGTSTP);
@@ -109,8 +111,6 @@ impl Signal {
     pub const SIGSEGV: Self = Self(libc::SIGSEGV);
 
     pub const SIGURG: Self = Self(libc::SIGURG);
-
-    pub const SIGUSR1: Self = Self(libc::SIGUSR1);
 }
 
 /// How every signal is handled: as the user chose, or else as the loaded
