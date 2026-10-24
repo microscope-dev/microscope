@@ -154,12 +154,43 @@ pub async fn lies(entry: &str) -> Vec<String> {
     lies
 }
 
-/// On every build, each step ends where V8's own step ends.
-#[tokio::test]
-async fn javascript_steps_end_where_v8_ends_them() {
-    let mut found = Vec::new();
-    for entry in MATRIX {
-        found.extend(lies(entry).await);
-    }
+/// Each step on the build `entry` ends where V8's own step ends.
+async fn steps_end_where_v8_ends_them(entry: &str) {
+    let found = lies(entry).await;
     assert!(found.is_empty(), "{}", found.join("\n"));
+}
+
+// Each build is a test of its own: each runs sixty nodes, oracle's and
+// microscope's, in turn, and all six in one test outlast its deadline
+// under `just stress`.
+const _: () = assert!(MATRIX.len() == 6, "a steps test for each build");
+
+#[tokio::test]
+async fn javascript_steps_end_where_v8_ends_them_on_build_0() {
+    steps_end_where_v8_ends_them(MATRIX[0]).await;
+}
+
+#[tokio::test]
+async fn javascript_steps_end_where_v8_ends_them_on_build_1() {
+    steps_end_where_v8_ends_them(MATRIX[1]).await;
+}
+
+#[tokio::test]
+async fn javascript_steps_end_where_v8_ends_them_on_build_2() {
+    steps_end_where_v8_ends_them(MATRIX[2]).await;
+}
+
+#[tokio::test]
+async fn javascript_steps_end_where_v8_ends_them_on_build_3() {
+    steps_end_where_v8_ends_them(MATRIX[3]).await;
+}
+
+#[tokio::test]
+async fn javascript_steps_end_where_v8_ends_them_on_build_4() {
+    steps_end_where_v8_ends_them(MATRIX[4]).await;
+}
+
+#[tokio::test]
+async fn javascript_steps_end_where_v8_ends_them_on_build_5() {
+    steps_end_where_v8_ends_them(MATRIX[5]).await;
 }
