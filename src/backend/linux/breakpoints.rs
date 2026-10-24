@@ -753,7 +753,8 @@ impl<P: LinuxTraceOps> Controller<P> {
                 | BreakpointOwner::Loader
                 | BreakpointOwner::Runtime
                 | BreakpointOwner::StackMove
-                | BreakpointOwner::Resolver => None,
+                | BreakpointOwner::Resolver
+                | BreakpointOwner::InspectorHook => None,
             })
             .collect::<BTreeSet<_>>();
         self.judge_hits(pid, &owners, Some(address))
@@ -1181,6 +1182,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     }
                     BreakpointOwner::StackMove => inferior.stack_moves.forget(address),
                     BreakpointOwner::Resolver => inferior.indirect.forget(address),
+                    BreakpointOwner::InspectorHook => inferior.inspectors.forget(address),
                 }
             }
         }

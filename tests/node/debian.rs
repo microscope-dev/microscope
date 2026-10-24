@@ -172,3 +172,13 @@ async fn debian_frames_of_every_tier_are_the_ones_v8_reported() {
     assert!(compiled >= 2, "{context}: {compiled} compiled frames");
     assert!(lie.is_none(), "{context}: {lie:?}");
 }
+
+/// Debian's libnode names `GetTargetIds` only in its dynamic table, where
+/// microscope finds it to read and hide the inspector's address.
+#[tokio::test]
+async fn debian_launched_nodes_inspector_is_shown_to_no_one() {
+    if !inside("debian::debian_launched_nodes_inspector_is_shown_to_no_one") {
+        return;
+    }
+    crate::inspector::check_hidden(DEBIAN).await;
+}

@@ -20,6 +20,8 @@ pub mod futures;
 mod go;
 mod node;
 mod python;
+pub use node::SCRIPT_EXTENSIONS as JAVASCRIPT_EXTENSIONS;
+pub use node::inspector as inspector_protocol;
 pub use python::BOOTSTRAP_DIRECTORY_PREFIX as PYTHON_BOOTSTRAP_PREFIX;
 pub use python::{
     SCRIPT_DIRECTORY_PREFIX as PYTHON_SCRIPT_PREFIX,
@@ -949,6 +951,12 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
     /// The runtime function that moves a task's stack to another, which
     /// the move has finished once it returns.
     fn stack_mover(&self) -> Option<ImageAddress>;
+
+    /// The function the runtime's inspector calls to list its targets,
+    /// where the debugger reads the inspector's address and hides it.
+    fn inspector_hook(&self) -> Option<ImageAddress> {
+        None
+    }
 
     /// The number of the task whose stack a stopped thread entering the
     /// stack mover, given its registers there, is moving.

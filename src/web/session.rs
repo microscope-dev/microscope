@@ -768,7 +768,8 @@ impl Session {
                         )
                     })?;
                 let options = BreakpointOptions {
-                    pending: crate::cli::commands::is_python(&spec),
+                    pending: crate::cli::commands::is_python(&spec)
+                        || crate::cli::commands::is_javascript(&spec),
                     ..options(add.condition, add.hit_condition, add.log_message)?
                 };
 

@@ -146,6 +146,20 @@ impl<P: LinuxTraceOps> Controller<P> {
             .ptrace
             .python_launch(&self.main.executable, &mut options.environment, follows)
             .transpose();
+        // Every ptrace call is on this thread, so it is the tracer each
+        // launched node sees in its status.
+        let node = self
+            .ptrace
+            .node_launch(
+                &self.main.executable,
+                &mut options.environment,
+                follows,
+                rustix::thread::gettid()
+                    .as_raw_nonzero()
+                    .get()
+                    .unsigned_abs(),
+            )
+            .transpose();
         let started = self
             .ptrace
             .spawn(&self.launch_path, options)
@@ -175,6 +189,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
                 if let Some(inferior) = self.inferior.as_mut() {
                     inferior.python_launch = python;
+                    inferior.node_launch = node;
                 }
             }
             Err(error) => {
@@ -1341,6 +1356,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         inferior.managed = super::managed::ManagedSites::default();
         inferior.stack_moves.clear();
         inferior.indirect = super::indirect::IndirectFunctions::default();
+        // The inspector ran in the image the exec replaced.
+        inferior.inspectors = super::inspector::Inspectors::default();
 
         // exec(2) flushes every debug register; the new image's addresses
         // have no relation to the old watchpoints.

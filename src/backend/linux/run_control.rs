@@ -1112,7 +1112,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         self.note_stack_move(pid, address)?;
-        self.note_resolver(pid, address)
+        self.note_resolver(pid, address)?;
+        self.note_inspector_hook(pid, address)
     }
 
     /// Ends an advance whose thread reached one of its targets, unless it

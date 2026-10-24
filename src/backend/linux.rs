@@ -28,6 +28,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 
+pub use inspector::InspectorMessage;
 use nix::errno::Errno;
 use nix::libc;
 use nix::unistd::Pid;
@@ -86,6 +87,7 @@ mod frames;
 mod holdings;
 mod indirect;
 mod inspection;
+mod inspector;
 mod internal_stops;
 mod interpreted;
 mod interpreted_values;
@@ -103,6 +105,7 @@ mod native;
 #[cfg(test)]
 pub mod native_tracee;
 mod new_task;
+mod node_launch;
 mod panic_release;
 pub mod perf;
 mod post_mortem;
@@ -318,6 +321,10 @@ enum BreakpointOwner {
     /// The entry of an indirect function's resolver, or the return of a
     /// call of one, that a breakpoint on the function waits for.
     Resolver,
+
+    /// The entry of Node's `GetTargetIds`, or the return of a call of it,
+    /// where the inspector's address is read and hidden.
+    InspectorHook,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1028,6 +1035,10 @@ struct Inferior {
     /// the agent's scripts, or why it could not.
     python_launch: Option<std::result::Result<python_launch::PythonLaunch, Arc<str>>>,
 
+    /// The launch's Node preload, which lives while the launch's nodes may
+    /// load it.
+    node_launch: Option<std::result::Result<node_launch::NodeLaunch, Arc<str>>>,
+
     /// The number the next step a runtime arms takes. A number is never
     /// reused in a process, so a stale step's end names none.
     next_runtime_step: u64,
@@ -1042,6 +1053,7 @@ struct Inferior {
     runtime_assignment: Option<(crate::RuntimeId, crate::runtime_model::RuntimeAssignment)>,
     assignment: Option<assignments::PendingAssignment>,
     indirect: indirect::IndirectFunctions,
+    inspectors: inspector::Inspectors,
     watch: WatchState,
 
     /// The signal the debugger sent to end the inferior, which never stops
@@ -1103,12 +1115,14 @@ impl Inferior {
             managed: managed::ManagedSites::default(),
             agents: BTreeMap::new(),
             python_launch: None,
+            node_launch: None,
             next_runtime_step: 0,
             runtime_step: None,
             next_runtime_assignment: 0,
             runtime_assignment: None,
             assignment: None,
             indirect: indirect::IndirectFunctions::default(),
+            inspectors: inspector::Inspectors::default(),
             watch: WatchState::default(),
             terminating: None,
             holdings: RefCell::default(),
@@ -2077,6 +2091,10 @@ impl<P: LinuxTraceOps> Controller<P> {
                 if let Err(error) = self.agent_timeout(std::time::Instant::now()) {
                     self.fail_inferior(error);
                 }
+                true
+            }
+            ControllerMessage::Inspector(message) => {
+                self.inspector_message(message);
                 true
             }
             ControllerMessage::Wait(status) => {

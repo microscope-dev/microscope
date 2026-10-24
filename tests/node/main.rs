@@ -9,6 +9,7 @@ mod support;
 mod addon;
 mod debian;
 mod frames;
+mod inspector;
 mod native;
 mod session;
 mod stacks;

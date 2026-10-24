@@ -930,6 +930,7 @@ impl SimController {
             ControllerMessage::AgentTimeout => {
                 ("runtime agent acknowledgement deadline".into(), None)
             }
+            ControllerMessage::Inspector(_) => ("inspector message".into(), None),
             ControllerMessage::Wait(event) => (
                 format!("wait {}", wait_status(event)),
                 match *event {
@@ -1036,7 +1037,8 @@ impl SimController {
                             super::BreakpointOwner::Loader
                             | super::BreakpointOwner::Runtime
                             | super::BreakpointOwner::StackMove
-                            | super::BreakpointOwner::Resolver => {}
+                            | super::BreakpointOwner::Resolver
+                            | super::BreakpointOwner::InspectorHook => {}
                         }
                     }
 

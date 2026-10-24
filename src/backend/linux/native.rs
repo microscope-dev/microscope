@@ -164,6 +164,30 @@ pub(super) trait LinuxTraceOps: InspectionOps {
         Ok(None)
     }
 
+    /// Prepares the preload through which a launched Node opens its
+    /// inspector, when `executable` is Node or the launch follows the
+    /// processes it starts, and sets the variables that lead each node the
+    /// thread `tracer` traces to it in `environment`.
+    fn node_launch(
+        &self,
+        executable: &Path,
+        environment: &mut Vec<(std::ffi::OsString, Option<std::ffi::OsString>)>,
+        follows: bool,
+        tracer: u32,
+    ) -> std::result::Result<Option<super::node_launch::NodeLaunch>, Arc<str>> {
+        let _ = (executable, environment, follows, tracer);
+        Ok(None)
+    }
+
+    /// The TCP sockets process `pid` listens on at 127.0.0.1.
+    fn loopback_listeners(
+        &self,
+        pid: Pid,
+    ) -> std::result::Result<Vec<std::net::SocketAddr>, Arc<str>> {
+        let _ = pid;
+        Err("this target has no sockets".into())
+    }
+
     /// The bootstrap through which `pid`, a process the launch's program
     /// started that runs `executable`, takes the Python agent, when it is
     /// CPython 3.12 or 3.13.
@@ -740,6 +764,23 @@ impl LinuxTraceOps for LinuxPtrace {
         follows: bool,
     ) -> std::result::Result<Option<super::python_launch::PythonLaunch>, Arc<str>> {
         super::python_launch::PythonLaunch::prepare(executable, environment, follows)
+    }
+
+    fn node_launch(
+        &self,
+        executable: &Path,
+        environment: &mut Vec<(std::ffi::OsString, Option<std::ffi::OsString>)>,
+        follows: bool,
+        tracer: u32,
+    ) -> std::result::Result<Option<super::node_launch::NodeLaunch>, Arc<str>> {
+        super::node_launch::NodeLaunch::prepare(executable, environment, follows, tracer)
+    }
+
+    fn loopback_listeners(
+        &self,
+        pid: Pid,
+    ) -> std::result::Result<Vec<std::net::SocketAddr>, Arc<str>> {
+        super::inspector::loopback_listeners(pid)
     }
 
     fn python_join(

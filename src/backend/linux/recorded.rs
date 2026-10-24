@@ -171,6 +171,27 @@ impl<P: LinuxTraceOps> LinuxTraceOps for Recorded<P> {
         launch
     }
 
+    fn node_launch(
+        &self,
+        executable: &Path,
+        environment: &mut Vec<(std::ffi::OsString, Option<std::ffi::OsString>)>,
+        follows: bool,
+        tracer: u32,
+    ) -> std::result::Result<Option<super::node_launch::NodeLaunch>, Arc<str>> {
+        let launch = self.0.node_launch(executable, environment, follows, tracer);
+        record!("node launch preload: {launch:?}");
+        launch
+    }
+
+    fn loopback_listeners(
+        &self,
+        pid: Pid,
+    ) -> std::result::Result<Vec<std::net::SocketAddr>, Arc<str>> {
+        let listeners = self.0.loopback_listeners(pid);
+        record!("loopback listeners of {pid}: {listeners:?}");
+        listeners
+    }
+
     fn python_join(
         &self,
         executable: &Path,

@@ -219,10 +219,12 @@ impl Inferior {
     fn check_sites(&self) {
         let stack_moves = self.stack_moves.planted();
         let resolvers = self.indirect.planted();
+        let inspector_hooks = self.inspectors.planted();
 
         for (owner, planted) in [
             (BreakpointOwner::StackMove, &stack_moves),
             (BreakpointOwner::Resolver, &resolvers),
+            (BreakpointOwner::InspectorHook, &inspector_hooks),
         ] {
             for address in planted {
                 debug_assert!(
@@ -270,6 +272,10 @@ impl Inferior {
                     BreakpointOwner::Resolver => debug_assert!(
                         resolvers.contains(&address),
                         "a resolver owns the site at {address}, but none is recorded"
+                    ),
+                    BreakpointOwner::InspectorHook => debug_assert!(
+                        inspector_hooks.contains(&address),
+                        "the inspector's hook owns the site at {address}, but none is recorded"
                     ),
                     BreakpointOwner::User(_) => {}
                 }

@@ -163,7 +163,8 @@ impl<P: InspectionOps> Controller<P> {
             | BreakpointOwner::Loader
             | BreakpointOwner::Runtime
             | BreakpointOwner::StackMove
-            | BreakpointOwner::Resolver => None,
+            | BreakpointOwner::Resolver
+            | BreakpointOwner::InspectorHook => None,
         }) {
             // A breakpoint removed while sites could not be edited, as SIGKILL
             // tears the process down, leaves its owner on the trap.

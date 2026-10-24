@@ -902,7 +902,9 @@ impl Watcher {
             served = true;
             match message {
                 ControllerMessage::Wait(status) => self.handle(status),
-                ControllerMessage::Request(_) | ControllerMessage::AgentTimeout => {}
+                ControllerMessage::Request(_)
+                | ControllerMessage::AgentTimeout
+                | ControllerMessage::Inspector(_) => {}
             }
         }
 

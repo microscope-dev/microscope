@@ -164,12 +164,12 @@ fn languages_stay_at_their_seams() {
 
         for (path, source) in found {
             // Documentation may name a runtime as an example; code may not.
-            let code = source
+            let written = source
                 .lines()
                 .filter(|line| !line.trim_start().starts_with("//"))
                 .collect::<Vec<_>>()
-                .join("\n")
-                .to_lowercase();
+                .join("\n");
+            let code = written.to_lowercase();
 
             for (home, names) in RUNTIMES {
                 if path.starts_with(root.join(home)) {
@@ -177,8 +177,15 @@ fn languages_stay_at_their_seams() {
                 }
 
                 for name in names {
+                    // Go's symbols are lowercase; V8's inspector protocol has
+                    // a `Runtime` domain, which names no Go function.
+                    let seen = if *name == "\"runtime." {
+                        written.contains(name)
+                    } else {
+                        code.contains(name)
+                    };
                     assert!(
-                        !code.contains(name),
+                        !seen,
                         "{} names a runtime with `{name}`; ask its model instead",
                         path.display()
                     );

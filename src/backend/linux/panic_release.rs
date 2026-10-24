@@ -194,7 +194,11 @@ impl<P: LinuxTraceOps> Controller<P> {
             match self.messages.borrow_mut().try_recv() {
                 Ok(ControllerMessage::Wait(status)) => seen.note(&status),
                 // A request dropped unanswered is cancelled for its client.
-                Ok(ControllerMessage::Request(_) | ControllerMessage::AgentTimeout) => {}
+                Ok(
+                    ControllerMessage::Request(_)
+                    | ControllerMessage::AgentTimeout
+                    | ControllerMessage::Inspector(_),
+                ) => {}
                 Err(TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(1)),
                 Err(TryRecvError::Disconnected) => break,
             }

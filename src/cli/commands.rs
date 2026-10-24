@@ -1054,7 +1054,7 @@ impl Cli {
                 .transpose()?,
             enabled: !parsed.disabled,
             temporary,
-            pending: is_python(&location),
+            pending: is_python(&location) || is_javascript(&location),
         };
 
         let address = matches!(location, BreakpointSpec::Address(_));
@@ -3444,6 +3444,14 @@ pub fn is_python(location: &BreakpointSpec) -> bool {
             .is_some_and(|name| !name.starts_with(':')),
         _ => false,
     }
+}
+
+/// Whether a breakpoint is in a script Node runs, which loads as the
+/// program requires it, so it is kept pending as a Python one is.
+pub fn is_javascript(location: &BreakpointSpec) -> bool {
+    matches!(location, BreakpointSpec::Source { path, .. }
+        if path.extension().and_then(|extension| extension.to_str())
+            .is_some_and(|extension| microscope::JAVASCRIPT_EXTENSIONS.contains(&extension)))
 }
 
 /// How to name a Python function, for a bare name no native function has

@@ -7934,6 +7934,7 @@ fn inspection_of_a_stop_waits_behind_run_control_queued_after_it() {
             ControllerMessage::Request(request) => request.describe(),
             ControllerMessage::Wait(_) => "wait".to_owned(),
             ControllerMessage::AgentTimeout => "agent timeout".to_owned(),
+            ControllerMessage::Inspector(_) => "inspector".to_owned(),
         })
         .collect::<Vec<_>>();
     let served = served.iter().map(String::as_str).collect::<Vec<_>>();
@@ -7980,6 +7981,7 @@ fn inspection_of_a_stop_waits_behind_run_control_queued_after_it() {
             ControllerMessage::Request(request) => request.describe(),
             ControllerMessage::Wait(_) => "wait".to_owned(),
             ControllerMessage::AgentTimeout => "agent timeout".to_owned(),
+            ControllerMessage::Inspector(_) => "inspector".to_owned(),
         })
         .collect::<Vec<_>>();
     assert_eq!(served, ["pause 5000", "evaluate `interrupted`"]);

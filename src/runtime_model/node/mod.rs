@@ -16,6 +16,7 @@ mod constructors;
 mod errors;
 mod frames;
 mod inspect;
+pub mod inspector;
 mod lineage;
 mod lookup;
 mod names;
@@ -48,6 +49,14 @@ use crate::runtime_model::{
 use crate::unwind::RegisterFile;
 use crate::{AddressRange, ImageAddress, StackSegment, ThreadId, VirtualAddress};
 
+/// The extensions of the scripts Node runs, whose breakpoints its
+/// inspector arms.
+pub const SCRIPT_EXTENSIONS: &[&str] = &["js", "mjs", "cjs", "ts", "mts", "cts"];
+
+/// `node::inspector::InspectorIoDelegate::GetTargetIds()`, which Node calls
+/// to list its inspector's targets (F29).
+const GET_TARGET_IDS: &str = "_ZN4node9inspector19InspectorIoDelegate12GetTargetIdsB5cxx11Ev";
+
 /// What V8 names each of its embedded builtins' code.
 const BUILTIN_PREFIX: &str = "Builtins_";
 
@@ -72,6 +81,7 @@ pub fn detect(
         writer: writer(runtime.version, runtime.node),
         statics,
         table: std::sync::Mutex::default(),
+        inspector_hook: image.symbol(GET_TARGET_IDS).map(|symbol| symbol.address),
     })))
 }
 
@@ -160,6 +170,9 @@ struct NodeRuntime {
 
     /// The scripts and functions frames name, for the life of the process.
     table: std::sync::Mutex<scripts::Table>,
+
+    /// Node's `GetTargetIds`, where the inspector's address is read.
+    inspector_hook: Option<ImageAddress>,
 }
 
 impl NodeRuntime {
@@ -371,6 +384,10 @@ impl RuntimeModel for NodeRuntime {
         None
     }
 
+    fn inspector_hook(&self) -> Option<ImageAddress> {
+        self.inspector_hook
+    }
+
     fn moving_task(
         &self,
         _stop: &dyn RuntimeStop,
@@ -410,6 +427,40 @@ impl RuntimeModel for NodeRuntime {
 
     fn task_noun(&self) -> &'static str {
         "handle"
+    }
+
+    fn resolve_breakpoint(
+        &self,
+        _stop: &dyn RuntimeStop,
+        spec: &crate::BreakpointSpec,
+    ) -> Option<Result<Vec<crate::ManagedPlace>, Arc<str>>> {
+        let crate::BreakpointSpec::Source { path, line } = spec else {
+            return None;
+        };
+        if !path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| SCRIPT_EXTENSIONS.contains(&extension))
+        {
+            return None;
+        }
+
+        // As a native breakpoint's path does, a relative path matches the
+        // scripts whose paths end with its components.
+        let path = path
+            .components()
+            .filter(|component| *component != std::path::Component::CurDir)
+            .collect::<std::path::PathBuf>();
+        let Some(path) = path.to_str() else {
+            return Some(Err("the script's path is not UTF-8".into()));
+        };
+        let Ok(line) = u32::try_from(line.get()) else {
+            return Some(Err("the script's line exceeds 32 bits".into()));
+        };
+        Some(Ok(vec![crate::ManagedPlace::Line {
+            path: path.into(),
+            line,
+        }]))
     }
 
     fn own_source(&self, path: &Path) -> bool {

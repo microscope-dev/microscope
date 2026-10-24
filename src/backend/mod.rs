@@ -256,6 +256,9 @@ pub enum ControllerMessage {
     Wait(linux::WaitEvent),
     /// The controller reached an outstanding agent request deadline.
     AgentTimeout,
+
+    /// A message from a runtime's inspector connection.
+    Inspector(linux::InspectorMessage),
 }
 
 impl ControllerMessage {

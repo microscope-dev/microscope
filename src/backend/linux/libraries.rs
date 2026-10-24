@@ -80,6 +80,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.sync_stack_movers()?;
         self.learn_from_got(None);
         self.sync_resolvers()?;
+        self.sync_inspector_hooks()?;
         let locations_changed = self.reresolve_breakpoints(lost_locations)?;
         self.arm_new_agents();
         let arming_changed = self.sync_runtime_arming();
