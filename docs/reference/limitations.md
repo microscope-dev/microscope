@@ -48,8 +48,6 @@ narrower limits and report them when used.
 - A started process that executes a program the policy would debug but
   microscope cannot load runs on without being debugged, with an error
   line, and fails a `--batch` run.
-- In a Node.js process, breakpoints are native only; microscope does not set
-  breakpoints in JavaScript.
 - An attach does not take in the processes the program started before it.
 - Core dumps are read-only.
 - A core dump that left out a thread's stack, as `gcore` can, shows that
@@ -113,6 +111,16 @@ narrower limits and report them when used.
   thread is the interpreter's only one. Only a variable of the frame takes
   one, not a global, attribute, or item, and an object only as another name
   of the frame holds it.
+- JavaScript frames are read from Node 22, 24, and 26: official, nixpkgs,
+  and Debian builds. JavaScript breakpoints, steps, and exceptions need
+  Node's inspector: they stay pending, with the reason, in a node started
+  with `--disable-sigusr1` (when attached), with `--permission` and without
+  `--allow-inspector`, or whose parent replaced `NODE_OPTIONS`. A function
+  breakpoint takes a function's own name, not a dotted one. A variable V8
+  records no name for is an unnamed register except at a stop made through
+  the inspector. JavaScript variables cannot be assigned or watched, and a
+  step does not enter a Node-API addon's native code. A core dump's
+  JavaScript is read-only.
 - A profile's Python stacks (`record --python`) come from the BPF engine,
   which needs `CAP_BPF` and `CAP_PERFMON`, or from snapshots that stop the
   program or read it as it runs. The BPF engine's first samples of a program

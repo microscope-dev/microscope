@@ -49,7 +49,7 @@ launch configuration, `-c` files, then `-e` commands.
 | `[stop]` | Sections printed at stops and their sizes |
 | `[print]` | Compact or pretty output, radix, width, depth, and element limits |
 | `[disassembly]` | Intel or AT&T syntax and instruction bytes |
-| `[step]` | Whether source steps enter supported runtime code |
+| `[step]` | Whether source steps enter supported runtime code, and the files they pass through |
 | `[backtrace]` | Whether backtraces fold runtime and interpreter frames |
 | `[breakpoints]` | Saved-breakpoint behavior |
 | `[debug-info]` | Separate debug-file directories and debuginfod |

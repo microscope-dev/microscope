@@ -529,6 +529,166 @@ line, but no instruction reference. Their scopes are Arguments and Locals.
 Native breakpoints, stepping, and everything else in the native code of a Python
 process work as usual.
 
+## Node.js
+
+microscope reads the memory of Node's V8 engine and shows its JavaScript
+frames in the native backtrace, with their functions, files, lines, and
+columns, and their values written as `util.inspect` writes them. Stacks and
+values run nothing inside the process. Breakpoints, stepping, and exceptions
+go through Node's own inspector, which microscope opens and connects to
+itself.
+
+microscope supports Node 22, 24, and 26: the official builds, nixpkgs's,
+and Debian's 24, whose shared `libnode` is stripped. A V8 microscope has
+not checked is refused by name, and its native frames still appear.
+
+Node works when you launch a program, attach to a process, or open a core
+dump:
+
+```sh
+microscope node -- app.js
+microscope -p PID
+microscope --core core node
+```
+
+A core dump shows stacks and values; breakpoints and steps need a live
+process.
+
+### Variables
+
+A JavaScript frame's variables are in JavaScript's scopes: Arguments, with
+`this`; Locals; Closure; Module; and Global. V8 records the names only of
+the variables that a closure uses or that live in a context. At a stop
+microscope made through the inspector, V8's debugger names the rest, and
+microscope keeps each name only where the value it reports is the one the
+frame holds. Elsewhere, as at a native breakpoint, those variables appear
+as unnamed registers with the reason. A `let` or `const` before its
+declaration runs says it is not initialized yet. See
+[JavaScript values](expressions.md#javascript-values) for expressions.
+
+### Breakpoints
+
+A breakpoint can be in JavaScript or TypeScript:
+
+```text
+(microscope) break app.js:12
+(microscope) break src/routes/users.ts:30 if user.id == 7
+(microscope) break js:handler
+```
+
+A path ending in `.js`, `.mjs`, `.cjs`, `.ts`, `.mts`, `.cts`, `.jsx`, or
+`.tsx` names a line, matched as a native breakpoint's path is: a relative
+path matches every script whose path ends with it, by whole directories.
+An ES module's `file:` URL is matched by its path. `js:` names a function:
+`js:handler` stops where each function V8 has compiled under that name
+begins, a function declaration, an arrow function held in a `const`, or a
+method alike. A dotted name such as `js:Shape.area` is refused; use
+`js:area`. V8 compiles a nested function only once its parent first runs,
+so microscope looks again as each script loads and each time the program
+resumes. `js::run` is still a native function in a `js` namespace.
+
+Conditions, hit counts, and log messages work as they do for native
+breakpoints, and read the JavaScript frame. A `debugger` statement stops
+too, unless its script is skipped (see [Stepping](#stepping-1)).
+
+A JavaScript breakpoint stays pending until V8 sets it, and its pending
+reason says what it waits for. A path that matches no loaded script names
+the loaded script nearest it:
+
+```text
+no script by that name has loaded yet; did you mean 'routes/users.js'?
+```
+
+When microscope launches `node`, it adds a file of its own to
+`NODE_OPTIONS` with `--require`. In a node microscope traces, that file
+opens the inspector and waits for microscope to connect; anywhere else it
+does nothing. It puts `NODE_OPTIONS` back before the program runs. With a
+follow mode other than `none`, it leaves the variables, so that the nodes
+the program starts open theirs too: `npm start`, `npx`, and `node --test`
+are followed into the `node` that runs your code (see
+[Debug the processes a program starts](debugging.md#debug-the-processes-a-program-starts)).
+When microscope attaches to a node, it opens the inspector with `SIGUSR1`,
+as `node inspect -p` does. JavaScript breakpoints stay pending, with the
+reason, when the inspector cannot open:
+
+- a node started with `--disable-sigusr1`, when attaching: start it with
+  `--inspect=127.0.0.1:0` instead;
+- a node started with `--permission` and without `--allow-inspector`;
+- a node whose parent replaced `NODE_OPTIONS`, so the file never loaded.
+
+The inspector listens on 127.0.0.1, on a port the system chooses, under a
+random id. microscope reads the id from the process, so Node neither prints
+it nor lists it at `/json/list`; another local user who finds the port
+cannot connect without it.
+
+### TypeScript and source maps
+
+A script that names a source map, as tsx and esbuild write them, shows its
+frames at their places in the original source, `.ts` frames as TypeScript.
+A breakpoint on a line of the original source stops at each place the map
+leads that line to, set before the script's first statement runs, and a
+step moves by the original's lines. Tested with tsx and with esbuild's
+CommonJS and ES module bundles.
+
+### Stepping
+
+From a JavaScript stop, `next`, `step`, and `finish` are V8's own steps:
+over a statement, into the first call, and out to the caller. A step that
+would stop in Node's own scripts (`node:` modules) goes on to the program's
+next statement, so `step` into `emitter.emit(...)` stops in the listener.
+`[step] skip` names more files to pass through, as globs:
+
+```toml
+[step]
+skip = ["**/node_modules/**"]
+```
+
+`[step] runtime = "enter"` stops in Node's own scripts too. In an editor,
+`skipFiles` in the launch configuration does what `[step] skip` does.
+
+From a native stop, such as Ctrl-C on an idle server, `next` runs to the
+next statement of JavaScript the program runs, as a timer's or a socket's
+callback.
+
+### Interrupts
+
+Ctrl-C, or an editor's Pause, first asks V8 to pause the JavaScript each
+thread is running. Running JavaScript pauses within about a millisecond, and
+the stop has named locals and can step. A thread that runs no JavaScript,
+as an idle event loop, a blocking system call, or a long call into C++,
+stops natively, as any program does.
+
+### Workers
+
+Each `worker_threads` worker is debugged on its own thread: its
+breakpoints stop that thread, its steps stay on it, and its exceptions stop
+there. A new worker waits to run until microscope has set its breakpoints
+in it.
+
+### Exceptions
+
+Two exception filters stop at JavaScript's exceptions. Both are off until
+you choose them:
+
+```text
+(microscope) catch javascript-uncaught on
+(microscope) catch javascript-thrown on
+```
+
+- `javascript-uncaught` stops where an exception nothing catches is thrown,
+  and at a promise rejection nothing handles.
+- `javascript-thrown` stops at every exception the program throws and
+  every promise it rejects, caught or not.
+
+The stop selects the throwing frame and names the exception as Node would
+print it. An exception thrown and caught in a skipped script does not stop.
+
+### Not supported yet
+
+Assigning to a JavaScript variable, watchpoints on JavaScript variables,
+and stepping into a Node-API addon's native code are not supported yet.
+[Known limits](reference/limitations.md) lists them all.
+
 ## Zig, Odin, D, Nim, Ada, and Fortran
 
 These languages use the shared native debugger and expression engine. microscope

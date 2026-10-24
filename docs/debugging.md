@@ -119,9 +119,9 @@ repeated:
 microscope --follow 'worker*' ./server
 ```
 
-Native breakpoints work in a Node.js member. microscope does not set
-breakpoints in JavaScript. Python breakpoints in members are described under
-[Python](languages.md#python).
+Native and JavaScript breakpoints work in a Node.js member, as described
+under [Node.js](languages.md#nodejs). Python breakpoints in members are
+described under [Python](languages.md#python).
 
 An attached group follows the processes the program starts from then on.
 Processes it started before the attach are not members.
