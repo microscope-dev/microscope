@@ -80,3 +80,52 @@ async fn a_launched_nodes_inspector_is_opened_and_shown_to_no_one() {
         check_hidden(entry).await;
     }
 }
+
+/// A node whose permission model refuses the inspector runs on, and its
+/// JavaScript breakpoints wait, saying which flag would let it open.
+#[tokio::test]
+async fn a_refused_inspector_names_the_flag_that_allows_it() {
+    use microscope::{BreakpointOptions, BreakpointSpec, LineNumber};
+
+    for entry in MATRIX {
+        let mut session = crate::session::NodeSession::launch(
+            entry,
+            "functions.js",
+            &["--permission", "--allow-fs-read=*"],
+            &[],
+        )
+        .await;
+        session.wrote("FIRST 2 5 2 6 4").await;
+        session.pause().await;
+        let added = session
+            .scenario
+            .handle()
+            .add_breakpoint_with(
+                BreakpointSpec::Source {
+                    path: node::fixture("functions.js"),
+                    line: LineNumber::new(10).expect("a line"),
+                },
+                BreakpointOptions {
+                    pending: true,
+                    ..BreakpointOptions::default()
+                },
+            )
+            .await
+            .expect("a pending breakpoint");
+        let reasons = added
+            .pending_locations
+            .iter()
+            .map(|pending| pending.reason.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            reasons,
+            [
+                "Node's inspector has not started; this node runs with --permission, under \
+                 which Node opens no inspector without --allow-inspector"
+            ],
+            "{}",
+            session.context()
+        );
+        session.shutdown().await;
+    }
+}

@@ -66,6 +66,7 @@ mod rust_names;
 pub mod sim;
 mod source_map;
 mod step_skip;
+pub mod suggest;
 mod sync;
 pub mod syscalls;
 

@@ -51,7 +51,7 @@ impl Inspector {
                 _ => None,
             });
             return Err(function.map_or_else(
-                || "no script by that name has loaded yet".into(),
+                || self.unloaded(number),
                 |name| {
                     format!(
                         "V8 has compiled no function named {name} yet; microscope looks again \
@@ -62,10 +62,45 @@ impl Inspector {
             ));
         }
         if self.target.is_none() {
-            Err("Node's inspector has not started yet".into())
+            Err(self.unstarted.map_or_else(
+                || "Node's inspector has not started yet".into(),
+                |why| format!("Node's inspector has not started; {why}").into(),
+            ))
         } else {
             Err("Node's inspector is not connected".into())
         }
+    }
+}
+
+impl Inspector {
+    /// Why the line location `number` waits for its script, with the
+    /// nearest names of the scripts loaded, as a mistyped path's likeliest
+    /// meaning.
+    fn unloaded(&self, number: u64) -> Arc<str> {
+        const UNLOADED: &str = "no script by that name has loaded yet";
+        let Some(path) = self.desired.iter().find_map(|arm| match &arm.place {
+            ManagedPlace::Line { path, .. } if arm.number == number => Some(path),
+            _ => None,
+        }) else {
+            return UNLOADED.into();
+        };
+        // A loaded script is named as the location names its own: by as
+        // many trailing components, or whole.
+        let depth = (!path.starts_with('/')).then(|| path.split('/').count());
+        let loaded = (self.isolates.values())
+            .flat_map(|isolate| isolate.scripts.values())
+            .filter(|url| !url.is_empty() && !url.starts_with("node:"))
+            .map(|url| {
+                let script = inspector_protocol::script_path(url);
+                let parts = script.split('/').collect::<Vec<_>>();
+                let start = depth.map_or(0, |depth| parts.len().saturating_sub(depth));
+                parts[start..].join("/")
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        crate::suggest::did_you_mean(path, loaded.iter().map(String::as_str)).map_or_else(
+            || UNLOADED.into(),
+            |hint| format!("{UNLOADED}; {hint}").into(),
+        )
     }
 }
 

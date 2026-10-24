@@ -192,8 +192,13 @@ struct Inspector {
     /// opened its inspector, none of which is the inspector's.
     listening: BTreeSet<SocketAddr>,
 
-    /// Whether microscope opened the inspector of a node it attached to.
-    opened: bool,
+    /// Whether microscope looked at how the inspector opens: by the
+    /// `SIGUSR1` it sends a node it attached to, or by the launch preload.
+    looked: bool,
+
+    /// Why the inspector of a launched node may never start, if its
+    /// command line and environment tell.
+    unstarted: Option<&'static str>,
     connection: Option<Link>,
 
     /// Why the inspector cannot be used, once that is known.
@@ -412,21 +417,30 @@ impl<P: LinuxTraceOps> Controller<P> {
         inferior.inspectors.entries = entries;
         inferior.inspectors.calls = calls;
         inferior.inspectors.returns = returns;
-        self.open_attached_inspectors();
+        self.open_inspectors();
         Ok(())
     }
 
     /// Opens the inspector of each runtime of an attached node that has
     /// not listed its target, with the `SIGUSR1` Node handles by starting
-    /// it (F12). A launched node opens its own, through the preload.
-    fn open_attached_inspectors(&mut self) {
+    /// it (F12). A launched node opens its own, through the preload, and
+    /// what may keep it from doing so is noted.
+    fn open_inspectors(&mut self) {
         let Some(inferior) = self.inferior.as_mut() else {
             return;
         };
+        let pid = inferior.tgid;
         if inferior.origin != super::InferiorOrigin::Attached {
+            let inspectors = &mut inferior.inspectors;
+            for &runtime in inspectors.entries.values() {
+                let inspector = inspectors.records.entry(runtime).or_default();
+                if !inspector.looked {
+                    inspector.looked = true;
+                    inspector.unstarted = super::node_launch::unstarted(pid.as_raw());
+                }
+            }
             return;
         }
-        let pid = inferior.tgid;
         let runtimes = inferior
             .inspectors
             .entries
@@ -440,10 +454,10 @@ impl<P: LinuxTraceOps> Controller<P> {
                 return;
             };
             let inspector = inferior.inspectors.records.entry(runtime).or_default();
-            if inspector.opened || inspector.target.is_some() {
+            if inspector.looked || inspector.target.is_some() {
                 continue;
             }
-            inspector.opened = true;
+            inspector.looked = true;
             match caught {
                 Ok(true) => {}
                 Ok(false) => {

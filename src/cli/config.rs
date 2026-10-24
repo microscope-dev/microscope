@@ -19,8 +19,8 @@ use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 
 use super::DisassemblySyntax;
-use super::suggest;
 use super::terminal::{ColorChoice, PathStyle, ThemeName, ThemeOverrides};
+use microscope::suggest;
 
 /// The defaults, as the file `microscope config init` writes commented out.
 pub const DEFAULTS: &str = include_str!("default-config.toml");

@@ -15,7 +15,6 @@ mod repl;
 mod saved;
 pub mod session;
 mod stops;
-mod suggest;
 pub mod syscalls;
 pub mod terminal;
 pub mod value;

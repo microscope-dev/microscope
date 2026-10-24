@@ -29,6 +29,48 @@ fn problem(error: impl std::fmt::Display) -> Arc<str> {
     format!("the Node launch preload failed: {error}").into()
 }
 
+/// Why the inspector of the node `pid`, which microscope launched or
+/// followed, may never start, as its command line and first environment
+/// tell, if they do.
+pub(super) fn unstarted(pid: i32) -> Option<&'static str> {
+    let read = |name| std::fs::read(format!("/proc/{pid}/{name}")).ok();
+    unstarted_by(&read("cmdline")?, &read("environ")?)
+}
+
+fn unstarted_by(command: &[u8], environment: &[u8]) -> Option<&'static str> {
+    let variables = environment.split(|&byte| byte == 0);
+    let value = |name: &str| {
+        variables
+            .clone()
+            .find_map(|variable| variable.strip_prefix(name.as_bytes())?.strip_prefix(b"="))
+    };
+    if value(TRACER).is_none() {
+        return Some(
+            "this node did not load microscope's launch preload, as when the program that \
+             started it sets its NODE_OPTIONS",
+        );
+    }
+
+    // Node's own options: NODE_OPTIONS, then the arguments before the
+    // script. One that takes the next argument as its value ends the
+    // search early, which can only miss a flag.
+    let arguments = command.split(|&byte| byte == 0).skip(1);
+    let options = value("NODE_OPTIONS")
+        .into_iter()
+        .flat_map(|options| options.split(u8::is_ascii_whitespace))
+        .chain(arguments.take_while(|argument| argument.starts_with(b"-") && *argument != b"--"));
+    let (mut permission, mut allowed) = (false, false);
+    for option in options {
+        let name = option.split(|&byte| byte == b'=').next().unwrap_or(option);
+        permission |= name == b"--permission" || name == b"--experimental-permission";
+        allowed |= name == b"--allow-inspector";
+    }
+    (permission && !allowed).then_some(
+        "this node runs with --permission, under which Node opens no inspector without \
+         --allow-inspector",
+    )
+}
+
 /// A launch's preload directory, removed when the launch ends.
 #[derive(Debug)]
 pub(super) struct NodeLaunch {
@@ -187,6 +229,41 @@ fn launches_node(executable: &Path) -> bool {
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    #[test]
+    fn an_inspector_that_may_never_start_is_explained() {
+        let environment = |options: &str| format!("A=1\0{TRACER}=7\0NODE_OPTIONS={options}\0");
+        let cases = [
+            ("node\0app.js\0", "", None),
+            ("node\0--permission\0app.js\0", "", Some("--permission")),
+            (
+                "node\0--experimental-permission\0app.js\0",
+                "",
+                Some("--permission"),
+            ),
+            (
+                "node\0app.js\0",
+                "--require x --permission",
+                Some("--permission"),
+            ),
+            ("node\0--permission\0--allow-inspector\0app.js\0", "", None),
+            ("node\0--allow-inspector\0app.js\0", "--permission", None),
+            // The script's own arguments are not Node's.
+            ("node\0app.js\0--permission\0", "", None),
+            ("node\0--\0--permission\0", "", None),
+            ("node\0--permission-audit\0app.js\0", "", None),
+        ];
+        for (command, options, expected) in cases {
+            let why = unstarted_by(command.as_bytes(), environment(options).as_bytes());
+            assert_eq!(
+                why.map(|why| why.contains(expected.unwrap_or_default())),
+                expected.map(|_| true),
+                "{command:?} {options:?}: {why:?}"
+            );
+        }
+        let why = unstarted_by(b"node\0app.js\0", b"NODE_OPTIONS=--permission\0");
+        assert!(why.is_some_and(|why| why.contains("preload")), "{why:?}");
+    }
 
     #[test]
     fn a_path_is_quoted_as_node_options_reads_it() {

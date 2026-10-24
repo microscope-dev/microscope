@@ -654,7 +654,7 @@ pub fn resolve_command(entered: &str) -> Result<&'static CommandSpec> {
     match matching.as_slice() {
         [spec] => Ok(spec),
         [] => {
-            let hint = super::suggest::did_you_mean(entered, names())
+            let hint = microscope::suggest::did_you_mean(entered, names())
                 .unwrap_or_else(|| "type `help` for a list".to_owned());
             bail!("unknown command '{entered}'; {hint}")
         }
@@ -1226,7 +1226,7 @@ impl Cli {
                     )
                 });
                 // A name meant for Python may be a native one misspelled.
-                let native = super::suggest::did_you_mean(name, names);
+                let native = microscope::suggest::did_you_mean(name, names);
                 let python = python_name_hint(name, &self.debugger().module_image());
 
                 match (native, python) {
@@ -1253,7 +1253,7 @@ impl Cli {
                     .filter_map(|file| file.path.file_name()?.to_str())
                     .collect::<Vec<_>>();
 
-                super::suggest::did_you_mean(&written, names)
+                microscope::suggest::did_you_mean(&written, names)
             }
             _ => None,
         }

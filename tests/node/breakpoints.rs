@@ -42,13 +42,16 @@ enum Planted {
     Condition,
     /// A line of a file the program never loads.
     Elsewhere,
+    /// A line of the fixture, with its path misspelled.
+    Misspelled,
 }
 
-const PLANTED: [Planted; 4] = [
+const PLANTED: [Planted; 5] = [
     Planted::Log,
     Planted::EverySecond,
     Planted::Condition,
     Planted::Elsewhere,
+    Planted::Misspelled,
 ];
 
 impl Planted {
@@ -89,6 +92,13 @@ impl Planted {
                 BreakpointSpec::Source {
                     path: "never_loaded.js".into(),
                     line: LineNumber::new(1).expect("a line"),
+                },
+                pending,
+            ),
+            Self::Misspelled => (
+                BreakpointSpec::Source {
+                    path: "node/breakpoint.js".into(),
+                    line: line_of("AREA_LINE"),
                 },
                 pending,
             ),
@@ -276,17 +286,29 @@ async fn every_kind_of_breakpoint(entry: &str) {
         )
     };
     assert_eq!(ready(Planted::EverySecond), (1, 0), "{context}");
-    let elsewhere = snapshot
-        .breakpoints
-        .iter()
-        .find(|breakpoint| breakpoint.id == run.id(Planted::Elsewhere))
-        .expect("a planted breakpoint");
-    assert!(
-        elsewhere
+    // Each waits for its script, and a misspelled path is told the loaded
+    // script nearest it, by as many components as it has.
+    let waiting = |planted: Planted| {
+        let breakpoint = snapshot
+            .breakpoints
+            .iter()
+            .find(|breakpoint| breakpoint.id == run.id(planted))
+            .expect("a planted breakpoint");
+        breakpoint
             .pending_locations
             .iter()
-            .any(|pending| pending.reason.contains("no script")),
-        "{context}: {elsewhere:?}"
+            .map(|pending| pending.reason.to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        waiting(Planted::Elsewhere),
+        ["no script by that name has loaded yet"],
+        "{context}"
+    );
+    assert_eq!(
+        waiting(Planted::Misspelled),
+        ["no script by that name has loaded yet; did you mean 'node/breakpoints.js'?"],
+        "{context}"
     );
 
     run.assert_stop(&reason, Planted::EverySecond, 2, ("area", "RETURN_LINE"))
