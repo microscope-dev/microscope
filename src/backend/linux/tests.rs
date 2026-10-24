@@ -1554,7 +1554,7 @@ impl LinuxTraceOps for FakeTrace {
 pub(super) struct WatchHarness {
     pub(super) controller: Controller<FakeTrace>,
     events: broadcast::Receiver<DebuggerEvent>,
-    threads: Vec<Pid>,
+    pub(super) threads: Vec<Pid>,
 }
 
 impl WatchHarness {
@@ -1587,7 +1587,7 @@ impl WatchHarness {
     }
 
     /// Adds a breakpoint by `spec` while every thread is stopped.
-    fn add_spec(&mut self, spec: BreakpointSpec) -> Result<Breakpoint> {
+    pub(super) fn add_spec(&mut self, spec: BreakpointSpec) -> Result<Breakpoint> {
         self.edit(|reply| Edit::AddBreakpoint {
             spec,
             options: Box::default(),
@@ -1598,7 +1598,7 @@ impl WatchHarness {
     }
 
     /// Adds a breakpoint at `address` while every thread is stopped.
-    fn add_breakpoint(&mut self, address: u64) -> Breakpoint {
+    pub(super) fn add_breakpoint(&mut self, address: u64) -> Breakpoint {
         self.edit(|reply| Edit::AddBreakpoint {
             spec: BreakpointSpec::Address(VirtualAddress::new(address)),
             options: Box::default(),
@@ -1610,7 +1610,7 @@ impl WatchHarness {
     }
 
     /// The thread and reason of the next stop published.
-    fn stopped(&mut self) -> Option<(DebugThreadId, StopReason)> {
+    pub(super) fn stopped(&mut self) -> Option<(DebugThreadId, StopReason)> {
         self.published().into_iter().find_map(|event| match event {
             DebuggerEvent::InferiorStopped {
                 thread_id, reason, ..
@@ -1650,7 +1650,7 @@ impl WatchHarness {
     }
 
     /// Stores `value` in the word at `address`, as the inferior would.
-    fn store(&self, address: u64, value: u64) {
+    pub(super) fn store(&self, address: u64, value: u64) {
         self.trace().memory.borrow_mut().insert(address, value);
     }
 
@@ -1750,13 +1750,13 @@ impl WatchHarness {
     }
 
     /// Reports an int3 at `address`, leaving the PC after it.
-    fn hit_at(&mut self, pid: Pid, address: u64) -> Result<()> {
+    pub(super) fn hit_at(&mut self, pid: Pid, address: u64) -> Result<()> {
         self.trace().set_pc(pid, address + 1);
         self.trap(pid, libc::SI_KERNEL, debug_registers::STATUS_IDLE)
     }
 
     /// Requests an edit and returns the receiver of its reply.
-    fn edit<T>(
+    pub(super) fn edit<T>(
         &mut self,
         make: impl FnOnce(Reply<T>) -> Edit,
     ) -> tokio::sync::oneshot::Receiver<Result<T>> {
@@ -1766,7 +1766,7 @@ impl WatchHarness {
     }
 
     /// Takes the published events other than revision changes.
-    fn published(&mut self) -> Vec<DebuggerEvent> {
+    pub(super) fn published(&mut self) -> Vec<DebuggerEvent> {
         std::iter::from_fn(|| self.events.try_recv().ok())
             .filter(|event| !matches!(event, DebuggerEvent::StateChanged { .. }))
             .collect()
@@ -4002,7 +4002,7 @@ impl WatchHarness {
     }
 
     /// Completes the single step a breakpoint repair began.
-    fn finish_step(&mut self, pid: Pid) -> Result<()> {
+    pub(super) fn finish_step(&mut self, pid: Pid) -> Result<()> {
         self.trap(pid, libc::TRAP_TRACE, debug_registers::STATUS_IDLE)
     }
 
@@ -4016,7 +4016,7 @@ impl WatchHarness {
             .count()
     }
 
-    fn resume(&mut self) -> Result<ExecutionId> {
+    pub(super) fn resume(&mut self) -> Result<ExecutionId> {
         let inferior = self.controller.inferior.as_ref().expect("inferior");
         let process = process_id(inferior.tgid);
         let stop = inferior.public_stop.as_ref().expect("public stop").id;
@@ -4835,9 +4835,21 @@ pub(super) struct ScriptedRuntime {
     events: std::sync::Mutex<
         std::collections::VecDeque<std::result::Result<crate::runtime_model::HookEvent, Arc<str>>>,
     >,
+
+    /// Where the runtime lists its inspector's targets, which makes the
+    /// controller arm it through its inspector.
+    inspector_hook: Option<ImageAddress>,
 }
 
 impl ScriptedRuntime {
+    /// A runtime armed through the inspector `GetTargetIds` at `hook` lists.
+    pub(super) fn inspected(hook: ImageAddress) -> Self {
+        Self {
+            inspector_hook: Some(hook),
+            ..Self::default()
+        }
+    }
+
     fn runs(&self, thread: Pid, task: u64) {
         self.running
             .lock()
@@ -4990,6 +5002,10 @@ impl crate::runtime_model::RuntimeModel for ScriptedRuntime {
         &self.internal
     }
 
+    fn inspector_hook(&self) -> Option<ImageAddress> {
+        self.inspector_hook
+    }
+
     fn hook_event(
         &self,
         _stop: &dyn crate::runtime_model::RuntimeStop,
@@ -5070,7 +5086,7 @@ impl crate::runtime_model::RuntimeModel for ScriptedRuntime {
 }
 
 /// A stack of one frame, whose CFA is 0x1000 wherever it is.
-struct FlatUnwindInfo;
+pub(super) struct FlatUnwindInfo;
 
 impl UnwindInfo for FlatUnwindInfo {
     fn cfa(
@@ -5268,7 +5284,10 @@ fn a_step_follows_its_task_to_another_thread_and_passes_the_others() {
 }
 
 /// Binds `runtime` to the harness's executable.
-fn scripted_runtime(harness: &WatchHarness, runtime: ScriptedRuntime) -> Arc<ScriptedRuntime> {
+pub(super) fn scripted_runtime(
+    harness: &WatchHarness,
+    runtime: ScriptedRuntime,
+) -> Arc<ScriptedRuntime> {
     let runtime = Arc::new(runtime);
     let image = Arc::clone(&harness.controller.main.image);
     harness

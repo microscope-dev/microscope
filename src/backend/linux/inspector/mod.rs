@@ -17,6 +17,8 @@ mod interrupts;
 mod maps;
 mod pauses;
 mod protocol;
+#[cfg(test)]
+mod scripted;
 mod steps;
 
 use std::collections::{BTreeMap, BTreeSet};
