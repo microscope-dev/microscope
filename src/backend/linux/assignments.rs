@@ -62,16 +62,16 @@ impl<P: LinuxTraceOps> Controller<P> {
         value: Assigned<Place>,
         span: Span,
     ) -> Result<()> {
-        let (runtime, address, slot) = target
+        let (runtime, frame, slot) = target
             .as_ref()
             .and_then(StopObject::interpreted_variable)
             .ok_or_else(|| {
-            refused(
-                span,
-                "only a variable of the frame can be given a value, not a global or a \
+                refused(
+                    span,
+                    "only a variable of the frame can be given a value, not a global or a \
                      built-in",
-            )
-        })?;
+                )
+            })?;
         let pid = root.thread().ok_or_else(|| {
             refused(
                 span,
@@ -89,7 +89,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             RuntimeAssignment {
                 number,
                 thread: debug_thread_id(pid),
-                frame: address,
+                frame: frame.address,
                 slot,
                 value,
             },
@@ -130,7 +130,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             inferior.assignment = Some(PendingAssignment {
                 reply: None,
                 thread: pid,
-                frame: address,
+                frame: frame.address,
                 expression: expression.clone(),
                 limits,
                 span,

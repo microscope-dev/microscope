@@ -67,7 +67,7 @@ enum ObjectRef {
     /// interpreter keeps at `frame`.
     Interpreted {
         runtime: crate::RuntimeId,
-        frame: VirtualAddress,
+        frame: crate::runtime_model::InterpretedFrameRef,
         name: crate::runtime_model::InterpretedName,
     },
 }
@@ -77,7 +77,11 @@ impl StopObject {
     /// this names, when it names one.
     pub(super) const fn interpreted_variable(
         &self,
-    ) -> Option<(crate::RuntimeId, VirtualAddress, u32)> {
+    ) -> Option<(
+        crate::RuntimeId,
+        crate::runtime_model::InterpretedFrameRef,
+        u32,
+    )> {
         match self.key {
             ObjectRef::Interpreted {
                 runtime,
@@ -102,7 +106,7 @@ impl StopObject {
     pub(super) const fn interpreted(
         module: ModuleId,
         runtime: crate::RuntimeId,
-        frame: VirtualAddress,
+        frame: crate::runtime_model::InterpretedFrameRef,
         name: crate::runtime_model::InterpretedName,
     ) -> Self {
         Self {
@@ -2255,7 +2259,7 @@ impl<P: InspectionOps> Controller<P> {
             scope: crate::WatchScope::Interpreted {
                 thread: debug_thread_id(pid),
                 runtime: *runtime,
-                frame: *frame,
+                frame: frame.address,
             },
             frame: None,
             code: Some(watch.code),

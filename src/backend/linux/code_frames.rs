@@ -176,6 +176,7 @@ fn rewrite(
                 FrameSource::Described {
                     runtime,
                     inlined: at + 1 < count,
+                    live_registers: description.live_registers,
                 }
             },
         }));
@@ -297,6 +298,7 @@ mod tests {
         let description = DescribedFrame {
             functions: vec![recorded("inner"), recorded("middle"), recorded("outer")],
             role: CodeRole::Ordinary,
+            live_registers: true,
         };
         rewrite(&mut expanded, &[(1, RuntimeId::new(7), description)]).unwrap();
 
@@ -344,15 +346,18 @@ mod tests {
                 FrameSource::Activation,
                 FrameSource::Described {
                     runtime,
-                    inlined: true
+                    inlined: true,
+                    live_registers: true,
                 },
                 FrameSource::Described {
                     runtime,
-                    inlined: true
+                    inlined: true,
+                    live_registers: true,
                 },
                 FrameSource::Described {
                     runtime,
-                    inlined: false
+                    inlined: false,
+                    live_registers: true,
                 },
                 FrameSource::Activation,
             ]
@@ -367,6 +372,7 @@ mod tests {
         let description = DescribedFrame {
             functions: Vec::new(),
             role: CodeRole::Interpreter,
+            live_registers: false,
         };
         rewrite(&mut expanded, &[(1, RuntimeId::new(7), description)]).unwrap();
 

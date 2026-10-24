@@ -604,7 +604,9 @@ impl<P: LinuxTraceOps> Controller<P> {
                 line: u64::from(place.line),
                 column: u64::from(place.column),
                 frame: match resolved.scope {
-                    super::super::frames::FrameScope::Interpreted { frame, .. } => Some(frame),
+                    super::super::frames::FrameScope::Interpreted { frame, .. } => {
+                        Some(frame.address)
+                    }
                     _ => None,
                 },
             });

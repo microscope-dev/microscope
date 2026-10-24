@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use super::objects::{Object, Problem, Reader};
 use crate::image::v8::{Constant, Field, ScopeInfoSlice, scope_info_slice};
-use crate::runtime_model::{ReportedLocal, ReportedValue};
+use crate::runtime_model::{InterpretedFrameRef, ReportedLocal, ReportedValue};
 
 /// The most contexts a chain is followed through.
 const MAX_CONTEXTS: usize = 256;
@@ -230,10 +230,14 @@ pub(super) struct Variable {
     pub(super) word: Result<u64, Problem>,
 }
 
-/// The variables of the JavaScript frame at `fp`, in display order: `this`,
+/// The variables of the JavaScript frame `frame`, in display order: `this`,
 /// arguments, context variables from the innermost scope out (each name
 /// once), registers, script and module bindings, then `globalThis`.
-pub(super) fn variables(reader: &Reader<'_>, fp: u64) -> Result<Vec<Variable>, Problem> {
+pub(super) fn variables(
+    reader: &Reader<'_>,
+    frame: InterpretedFrameRef,
+) -> Result<Vec<Variable>, Problem> {
+    let fp = frame.address.get();
     let function = super::frames::javascript_function(reader, fp)?
         .ok_or("the frame runs no JavaScript function")?;
     let at = |constant| -> Result<u64, Problem> {
@@ -272,7 +276,13 @@ pub(super) fn variables(reader: &Reader<'_>, fp: u64) -> Result<Vec<Variable>, P
     let closure = reader.field(function, Field::JSFunctionContext)?;
     let mut captured = context_variables(reader, context, closure, &mut seen)?;
     let file = at(Constant::UnoptimizedFrameRegisterFileFromFp)?;
-    let count = registers(reader, fp, function)?;
+    // Optimized code, even code entered on a loop that kept the
+    // interpreter's frame, leaves its registers stale.
+    let count = if frame.live_registers {
+        registers(reader, fp, function)?
+    } else {
+        None
+    };
     let read_register = |index: u32| reader.word(file - 8 * u64::from(index));
 
     let argument = |index: u32| reader.word(first + 8 * (u64::from(index) + 1));

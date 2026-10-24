@@ -123,7 +123,7 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
     pub(super) fn interpreted_name(
         &mut self,
         runtime: RuntimeId,
-        frame: VirtualAddress,
+        frame: crate::runtime_model::InterpretedFrameRef,
         name: InterpretedName,
     ) -> Result<Place, Stop> {
         let object = match name {

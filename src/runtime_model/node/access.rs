@@ -10,7 +10,7 @@ use super::present::{Handle, Writer};
 use super::variables::{self, Variable};
 use crate::image::v8::{Constant, Field};
 use crate::runtime_model::{
-    InterpretedHandle, InterpretedKey, InterpretedKind, InterpretedOperand,
+    InterpretedFrameRef, InterpretedHandle, InterpretedKey, InterpretedKind, InterpretedOperand,
 };
 use crate::{TextCompletion, TextSummary};
 
@@ -24,14 +24,23 @@ pub(super) enum Bound {
 }
 
 /// What `name` resolves to in the frame at `fp`, or `None` if unbound.
-pub(super) fn bind(reader: &Reader<'_>, fp: u64, name: &str) -> Result<Option<Bound>, Problem> {
-    let found = variables::variables(reader, fp)?;
+pub(super) fn bind(
+    reader: &Reader<'_>,
+    frame: InterpretedFrameRef,
+    name: &str,
+) -> Result<Option<Bound>, Problem> {
+    let found = variables::variables(reader, frame)?;
     if let Some(index) = found.iter().position(|variable| variable.name == name) {
         return Ok(Some(Bound::Variable(
             u32::try_from(index).map_err(|_| "too many variables")?,
         )));
     }
-    let context = reader.word(fp.wrapping_add_signed(reader.constant(Constant::OffFpContext)?))?;
+    let context = reader.word(
+        frame
+            .address
+            .get()
+            .wrapping_add_signed(reader.constant(Constant::OffFpContext)?),
+    )?;
     let context = reader
         .object(context)?
         .ok_or("the frame's context is not an object")?;
@@ -56,10 +65,10 @@ pub(super) fn bind(reader: &Reader<'_>, fp: u64, name: &str) -> Result<Option<Bo
 /// The handle of the frame's variable at `index`.
 pub(super) fn variable(
     reader: &Reader<'_>,
-    fp: u64,
+    frame: InterpretedFrameRef,
     index: u32,
 ) -> Result<InterpretedHandle, Problem> {
-    let found: Vec<Variable> = variables::variables(reader, fp)?;
+    let found: Vec<Variable> = variables::variables(reader, frame)?;
     let variable = found
         .into_iter()
         .nth(usize::try_from(index).unwrap_or(usize::MAX))

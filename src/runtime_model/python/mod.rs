@@ -40,11 +40,11 @@ use std::sync::{Arc, Mutex};
 
 use super::{
     Crossing, Driven, DynamicValue, InterpretedChild, InterpretedFailure, InterpretedFrame,
-    InterpretedHandle, InterpretedLocal, InterpretedName, InterpretedOperand, InterpretedSlot,
-    InterpretedStacks, InterpretedStep, InterpretedThread, InterpretedWatch, Partial,
-    RuntimeException, RuntimeHook, RuntimeImage, RuntimeModel, RuntimeSignals, RuntimeStop,
-    SampledFrame, StartedTask, StopMemory, StoredValue, TaskContext, TaskPage, TaskRef,
-    TaskStarter, ThreadActivity, ThreadLabels, Unbound, WalkedThread,
+    InterpretedFrameRef, InterpretedHandle, InterpretedLocal, InterpretedName, InterpretedOperand,
+    InterpretedSlot, InterpretedStacks, InterpretedStep, InterpretedThread, InterpretedWatch,
+    Partial, RuntimeException, RuntimeHook, RuntimeImage, RuntimeModel, RuntimeSignals,
+    RuntimeStop, SampledFrame, StartedTask, StopMemory, StoredValue, TaskContext, TaskPage,
+    TaskRef, TaskStarter, ThreadActivity, ThreadLabels, Unbound, WalkedThread,
 };
 use crate::demangle::split_from;
 use crate::image::python::{EVALUATION_LOOP, Field, PyVersion, PythonLayout, TAIL_CALL_PREFIX};
@@ -1128,7 +1128,7 @@ impl RuntimeModel for PythonRuntime {
     fn interpreted_locals(
         &self,
         stop: &dyn RuntimeStop,
-        frame: VirtualAddress,
+        frame: InterpretedFrameRef,
         budget: &mut InspectionBudget,
     ) -> Result<Vec<InterpretedLocal>, Arc<str>> {
         let reading = self.reading()?;
@@ -1138,7 +1138,7 @@ impl RuntimeModel for PythonRuntime {
             .ok_or_else(|| Arc::from("CPython's code type lies outside the process"))?;
 
         reading.values(stop, budget, |values, table| {
-            let record = values.reader.record(frame, Field::FrameSize)?;
+            let record = values.reader.record(frame.address, Field::FrameSize)?;
             let (_, code) = frames::Walk {
                 reader: values.reader,
                 code: table,
@@ -1164,13 +1164,13 @@ impl RuntimeModel for PythonRuntime {
     fn interpreted_name(
         &self,
         stop: &dyn RuntimeStop,
-        frame: VirtualAddress,
+        frame: InterpretedFrameRef,
         name: &str,
         budget: &mut InspectionBudget,
     ) -> Result<Option<InterpretedName>, InterpretedFailure> {
         self.expressions()?.interpreted_frame(
             stop,
-            frame,
+            frame.address,
             budget,
             |values, table, (_, code), record| values.name(table, code, record, name),
         )
@@ -1179,27 +1179,30 @@ impl RuntimeModel for PythonRuntime {
     fn interpreted_variable(
         &self,
         stop: &dyn RuntimeStop,
-        frame: VirtualAddress,
+        frame: InterpretedFrameRef,
         slot: u32,
         budget: &mut InspectionBudget,
     ) -> Result<InterpretedHandle, InterpretedFailure> {
         self.expressions()?
-            .interpreted_frame(stop, frame, budget, |values, table, (_, code), record| {
-                values.variable(table, code, record, slot)
-            })
+            .interpreted_frame(
+                stop,
+                frame.address,
+                budget,
+                |values, table, (_, code), record| values.variable(table, code, record, slot),
+            )
             .map(handle)
     }
 
     fn interpreted_watch(
         &self,
         stop: &dyn RuntimeStop,
-        frame: VirtualAddress,
+        frame: InterpretedFrameRef,
         slot: u32,
         budget: &mut InspectionBudget,
     ) -> Result<InterpretedWatch, InterpretedFailure> {
         self.expressions()?.interpreted_frame(
             stop,
-            frame,
+            frame.address,
             budget,
             |values, table, (address, code), record| {
                 Ok(InterpretedWatch {

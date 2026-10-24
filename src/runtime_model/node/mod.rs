@@ -46,8 +46,8 @@ use crate::ThreadLocal;
 use crate::image::v8::{DispatchTable, EmbeddedBlob, NodeRelease, V8Layout, V8Version};
 use crate::inspection::InspectionBudget;
 use crate::runtime_model::{
-    InterpretedChild, InterpretedFailure, InterpretedHandle, InterpretedLocal, InterpretedName,
-    InterpretedOperand, InterpretedSlot, InterpretedStep, ObjectTypes,
+    InterpretedChild, InterpretedFailure, InterpretedFrameRef, InterpretedHandle, InterpretedLocal,
+    InterpretedName, InterpretedOperand, InterpretedSlot, InterpretedStep, ObjectTypes,
 };
 use crate::unwind::RegisterFile;
 use crate::{AddressRange, ImageAddress, StackSegment, ThreadId, VirtualAddress};
@@ -502,12 +502,12 @@ impl RuntimeModel for NodeRuntime {
     fn interpreted_locals(
         &self,
         stop: &dyn RuntimeStop,
-        frame: VirtualAddress,
+        frame: InterpretedFrameRef,
         budget: &mut InspectionBudget,
     ) -> Result<Vec<InterpretedLocal>, Arc<str>> {
         let writer = &self.writer;
         self.reading(stop, budget, |reader| {
-            Ok(variables::variables(reader, frame.get())?
+            Ok(variables::variables(reader, frame)?
                 .into_iter()
                 .map(|variable| InterpretedLocal {
                     name: variable.name.into(),
@@ -548,30 +548,26 @@ impl RuntimeModel for NodeRuntime {
     fn interpreted_name(
         &self,
         stop: &dyn RuntimeStop,
-        frame: VirtualAddress,
+        frame: InterpretedFrameRef,
         name: &str,
         budget: &mut InspectionBudget,
     ) -> Result<Option<InterpretedName>, InterpretedFailure> {
         self.expression(stop, budget, |reader| {
-            Ok(
-                access::bind(reader, frame.get(), name)?.map(|bound| match bound {
-                    access::Bound::Variable(index) => InterpretedName::Variable(index),
-                    access::Bound::Value(handle) => InterpretedName::Object(handle),
-                }),
-            )
+            Ok(access::bind(reader, frame, name)?.map(|bound| match bound {
+                access::Bound::Variable(index) => InterpretedName::Variable(index),
+                access::Bound::Value(handle) => InterpretedName::Object(handle),
+            }))
         })
     }
 
     fn interpreted_variable(
         &self,
         stop: &dyn RuntimeStop,
-        frame: VirtualAddress,
+        frame: InterpretedFrameRef,
         slot: u32,
         budget: &mut InspectionBudget,
     ) -> Result<InterpretedHandle, InterpretedFailure> {
-        self.expression(stop, budget, |reader| {
-            access::variable(reader, frame.get(), slot)
-        })
+        self.expression(stop, budget, |reader| access::variable(reader, frame, slot))
     }
 
     fn interpreted_step(

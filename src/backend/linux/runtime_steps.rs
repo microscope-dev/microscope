@@ -50,7 +50,7 @@ impl<P: InspectionOps> Controller<P> {
         }
 
         match self.resolve_frame(inferior, &root, frame).ok()?.scope {
-            FrameScope::Interpreted { runtime, frame } => Some((runtime, frame)),
+            FrameScope::Interpreted { runtime, frame } => Some((runtime, frame.address)),
             _ => None,
         }
     }

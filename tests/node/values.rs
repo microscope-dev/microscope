@@ -389,3 +389,43 @@ async fn an_interceptors_object_is_refused_rather_than_shown_empty() {
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
+
+/// On every build, a frame running optimized code shows no interpreter
+/// registers, whose slots it leaves stale, not even one entered on a loop
+/// (OSR) that kept the interpreter's frame; a baseline or interpreted frame
+/// shows its registers.
+#[tokio::test]
+async fn optimized_frames_show_no_stale_registers() {
+    let mut lies = Vec::new();
+    for entry in MATRIX {
+        let mut session =
+            NodeSession::launch(entry, "tiers.js", &["--allow-natives-syntax"], &[]).await;
+        let reported = threads(&session.stop_at("tiers").await);
+        let printer = reported.iter().find(|t| t.printer).expect("the printer");
+        // `deoptimized` left its optimized code for the interpreter.
+        for (function, registers) in [
+            ("osr", false),
+            ("turbofan", false),
+            ("sparkplug", true),
+            ("deoptimized", true),
+        ] {
+            select_function(&session, printer.native, function).await;
+            let snapshot = session
+                .scenario
+                .operation("variables", session.scenario.handle().variables())
+                .await;
+            let shown = snapshot
+                .variables
+                .iter()
+                .any(|variable| variable.kind == VariableKind::Unnamed);
+            if shown != registers {
+                lies.push(format!(
+                    "{}: {function} shows registers: {shown}",
+                    session.context()
+                ));
+            }
+        }
+        session.shutdown().await;
+    }
+    assert!(lies.is_empty(), "{lies:#?}");
+}

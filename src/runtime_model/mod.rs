@@ -1193,7 +1193,7 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
     fn interpreted_locals(
         &self,
         stop: &dyn RuntimeStop,
-        frame: VirtualAddress,
+        frame: InterpretedFrameRef,
         budget: &mut InspectionBudget,
     ) -> Result<Vec<InterpretedLocal>, Arc<str>> {
         let _ = (stop, frame, budget);
@@ -1222,7 +1222,7 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
     fn interpreted_name(
         &self,
         stop: &dyn RuntimeStop,
-        frame: VirtualAddress,
+        frame: InterpretedFrameRef,
         name: &str,
         budget: &mut InspectionBudget,
     ) -> Result<Option<InterpretedName>, InterpretedFailure> {
@@ -1235,7 +1235,7 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
     fn interpreted_variable(
         &self,
         stop: &dyn RuntimeStop,
-        frame: VirtualAddress,
+        frame: InterpretedFrameRef,
         slot: u32,
         budget: &mut InspectionBudget,
     ) -> Result<InterpretedHandle, InterpretedFailure> {
@@ -1249,7 +1249,7 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
     fn interpreted_watch(
         &self,
         stop: &dyn RuntimeStop,
-        frame: VirtualAddress,
+        frame: InterpretedFrameRef,
         slot: u32,
         budget: &mut InspectionBudget,
     ) -> Result<InterpretedWatch, InterpretedFailure> {
@@ -1560,6 +1560,18 @@ pub struct DescribedFrame {
 
     /// What the frame's code is to stepping and backtraces.
     pub role: CodeRole,
+
+    /// Whether the interpreter's registers in the frame hold its variables.
+    /// V8's optimized code keeps the interpreter's frame but not its values.
+    pub live_registers: bool,
+}
+
+/// An interpreted frame: where the interpreter keeps it, and whether its
+/// registers there hold the frame's variables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct InterpretedFrameRef {
+    pub address: VirtualAddress,
+    pub live_registers: bool,
 }
 
 /// The labels a runtime gives one thread.

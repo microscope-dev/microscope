@@ -9,7 +9,7 @@ use nix::unistd::Pid;
 use crate::debug_info::{TailJump, VariableRuntimeError};
 use crate::model::FrameMetadata;
 use crate::protocol::{FramePresentation, PresentedFrame, StepKind, StopId, StopReason};
-use crate::runtime_model::{Crossing, InterpretedFrame, futures};
+use crate::runtime_model::{Crossing, InterpretedFrame, InterpretedFrameRef, futures};
 use crate::unwind::{
     CallerProvider, CallerResult, DEFAULT_MAX_FRAMES, FrameContext, MemoryReader, RETURN_ADDRESS,
     RSP, RegisterFile, collect_frames,
@@ -571,38 +571,11 @@ impl<P: InspectionOps> Controller<P> {
             | FrameKind::Interpreted { .. } => PresentedFrame::Physical,
         };
 
-        // Only code a function describes has a source scope. A described
-        // activation's runtime reads it from the frame at rbp; an inlined one has none.
-        let scope = match (selected.kind, selected.code_instance, source) {
-            (
-                _,
-                _,
-                FrameSource::Described {
-                    runtime,
-                    inlined: false,
-                },
-            ) => physical
-                .registers
-                .get(crate::unwind::RBP)
-                .map_or(FrameScope::Unavailable, |fp| FrameScope::Interpreted {
-                    runtime,
-                    frame: VirtualAddress::new(fp),
-                }),
-            (_, _, FrameSource::Described { inlined: true, .. }) | (_, None, _) => {
-                FrameScope::Unavailable
-            }
-            (FrameKind::Inline, Some(instance), _) => FrameScope::Inline(instance),
-            (
-                FrameKind::Physical
-                | FrameKind::Signal
-                | FrameKind::TailCall
-                | FrameKind::Async { .. }
-                | FrameKind::Awaited { .. }
-                | FrameKind::Interpreted { .. },
-                Some(_),
-                _,
-            ) => FrameScope::Function,
-        };
+        let scope = source_scope(
+            &selected,
+            source,
+            physical.registers.get(crate::unwind::RBP),
+        );
 
         // The jump discarded the frame's registers and its stack's place:
         // only entry values recover what was passed to it.
@@ -1123,10 +1096,12 @@ pub(super) enum FrameSource {
     Interpreted(usize),
 
     /// A function `runtime` recorded for the activation, as V8 does: the
-    /// activation's own, or one its code inlined.
+    /// activation's own, or one its code inlined; and whether the
+    /// interpreter's registers in its frame are live.
     Described {
         runtime: crate::RuntimeId,
         inlined: bool,
+        live_registers: bool,
     },
 }
 
@@ -1561,8 +1536,46 @@ pub(super) enum FrameScope {
     /// `frame`.
     Interpreted {
         runtime: crate::RuntimeId,
-        frame: VirtualAddress,
+        frame: InterpretedFrameRef,
     },
+}
+
+/// The source scope of `frame`, which comes from `source`, and whose
+/// frame pointer is `fp`. Only code a function describes has one; a
+/// described activation's runtime reads it from the frame at rbp, and an
+/// inlined one has none.
+fn source_scope(frame: &StackFrame, source: FrameSource, fp: Option<u64>) -> FrameScope {
+    match (frame.kind, frame.code_instance, source) {
+        (
+            _,
+            _,
+            FrameSource::Described {
+                runtime,
+                inlined: false,
+                live_registers,
+            },
+        ) => fp.map_or(FrameScope::Unavailable, |fp| FrameScope::Interpreted {
+            runtime,
+            frame: InterpretedFrameRef {
+                address: VirtualAddress::new(fp),
+                live_registers,
+            },
+        }),
+        (_, _, FrameSource::Described { inlined: true, .. }) | (_, None, _) => {
+            FrameScope::Unavailable
+        }
+        (FrameKind::Inline, Some(instance), _) => FrameScope::Inline(instance),
+        (
+            FrameKind::Physical
+            | FrameKind::Signal
+            | FrameKind::TailCall
+            | FrameKind::Async { .. }
+            | FrameKind::Awaited { .. }
+            | FrameKind::Interpreted { .. },
+            Some(_),
+            _,
+        ) => FrameScope::Function,
+    }
 }
 
 /// One logical frame of a stopped thread and the state that evaluates its

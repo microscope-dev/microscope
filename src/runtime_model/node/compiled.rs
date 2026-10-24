@@ -47,47 +47,58 @@ impl Code {
     const fn holds(&self, address: u64) -> bool {
         self.start <= address && address - self.start < self.size
     }
+
+    /// Whether the code is baseline (Sparkplug) code, whose frames keep
+    /// their variables in the interpreter's registers.
+    pub(super) fn is_baseline(&self, reader: &Reader<'_>) -> Result<bool, Problem> {
+        Ok(self.kind == reader.constant(Constant::CodeKindBaseline)?)
+    }
 }
 
-/// The functions the compiled frame `frame`, which runs `function`
-/// (`shared` its `SharedFunctionInfo`), runs at its instruction, innermost
-/// first, each with the offset in its script.
-pub(super) fn places(
+/// The code of `function` (`shared` its `SharedFunctionInfo`) whose
+/// instructions hold the compiled frame `frame`'s.
+pub(super) fn running(
     reader: &Reader<'_>,
-    encoding: Encoding,
     statics: &Statics,
     frame: &CodeFrame<'_>,
     (function, shared): (Object, Object),
-) -> Result<Vec<Place>, Problem> {
-    let pc = frame.instruction.get();
+) -> Result<Code, Problem> {
     // A caller's instruction is its return address, past its call.
-    let lookup = pc.checked_sub(1).ok_or("the frame's instruction is 0")?;
+    let lookup = frame
+        .instruction
+        .get()
+        .checked_sub(1)
+        .ok_or("the frame's instruction is 0")?;
     let mut problems = Vec::new();
-    let mut found = None;
     for candidate in candidates(reader, statics, frame, function, shared) {
         match candidate.and_then(|object| code(reader, object)) {
-            Ok(code) if code.holds(lookup) => {
-                found = Some(code);
-                break;
-            }
+            Ok(code) if code.holds(lookup) => return Ok(code),
             Ok(_) => {}
             Err(problem) => problems.push(problem),
         }
     }
-    let Some(code) = found else {
-        let mut reason = String::from(
-            "none of its function's code holds the frame's instruction, so neither its place \
-             nor the functions its code inlined are known",
-        );
-        for problem in problems {
-            reason.push_str("; ");
-            reason.push_str(&problem);
-        }
-        return Err(reason.into());
-    };
+    let mut reason = String::from(
+        "none of its function's code holds the frame's instruction, so neither its place \
+         nor the functions its code inlined are known",
+    );
+    for problem in problems {
+        reason.push_str("; ");
+        reason.push_str(&problem);
+    }
+    Err(reason.into())
+}
 
-    if code.kind == reader.constant(Constant::CodeKindBaseline)? {
-        let (bytecode, offset) = baseline_offset(reader, &code, pc - code.start)?;
+/// The functions a frame running `code` of `shared`'s function runs at its
+/// instruction `pc`, innermost first, each with the offset in its script.
+pub(super) fn places(
+    reader: &Reader<'_>,
+    encoding: Encoding,
+    code: &Code,
+    shared: Object,
+    pc: u64,
+) -> Result<Vec<Place>, Problem> {
+    if code.is_baseline(reader)? {
+        let (bytecode, offset) = baseline_offset(reader, code, pc - code.start)?;
         let table = positions::decode(&positions::table_bytes(reader, bytecode)?, encoding)?;
         let position = positions::position_at(&table, offset)
             .and_then(positions::script_offset)
@@ -97,7 +108,7 @@ pub(super) fn places(
     if code.kind == reader.constant(Constant::CodeKindMaglev)?
         || code.kind == reader.constant(Constant::CodeKindTurbofanJS)?
     {
-        return optimized_places(reader, encoding, &code, shared, pc - code.start);
+        return optimized_places(reader, encoding, code, shared, pc - code.start);
     }
     Err(format!(
         "the frame runs code of kind {}, which is no JavaScript's",

@@ -44,28 +44,34 @@ pub(super) fn describe(
         return Some(DescribedFrame {
             functions: Vec::new(),
             role: CodeRole::Interpreter,
+            live_registers: false,
         });
     }
 
     let function = javascript_function(reader, fp).ok()??;
-    let functions = match functions(reader, table, encoding, statics, frame, fp, function) {
-        // A function V8's own stack traces hide is its machinery.
-        Ok(None) => {
-            return Some(DescribedFrame {
-                functions: Vec::new(),
-                role: CodeRole::Interpreter,
-            });
-        }
-        Ok(Some(functions)) => functions,
-        Err(problem) => vec![RecordedFrame {
-            function: "<unknown>".into(),
-            language: SourceLanguage::JavaScript,
-            place: None,
-            first_line: None,
-            generated: None,
-            problem: Some(problem),
-        }],
-    };
+    let (functions, live_registers) =
+        match functions(reader, table, encoding, statics, frame, fp, function) {
+            // A function V8's own stack traces hide is its machinery.
+            Ok(None) => {
+                return Some(DescribedFrame {
+                    functions: Vec::new(),
+                    role: CodeRole::Interpreter,
+                    live_registers: false,
+                });
+            }
+            Ok(Some(found)) => found,
+            Err(problem) => (
+                vec![RecordedFrame {
+                    function: "<unknown>".into(),
+                    language: SourceLanguage::JavaScript,
+                    place: None,
+                    first_line: None,
+                    generated: None,
+                    problem: Some(problem),
+                }],
+                false,
+            ),
+        };
     // The frame's own function, outermost, decides whose code it is.
     let role = if functions
         .last()
@@ -76,14 +82,19 @@ pub(super) fn describe(
     } else {
         CodeRole::Ordinary
     };
-    Some(DescribedFrame { functions, role })
+    Some(DescribedFrame {
+        functions,
+        role,
+        live_registers,
+    })
 }
 
 /// The functions the frame at `fp`, which runs `function`, runs, innermost
-/// first: those its code inlined, then its own. `None` for a function
-/// V8's stack traces hide: one of no script that is not exposed to the
-/// program as a native function, such as the closures that resume an
-/// `await`.
+/// first: those its code inlined, then its own; and whether the frame's
+/// interpreter registers are live, as they are unless its code is
+/// optimized. `None` for a function V8's stack traces hide: one of no
+/// script that is not exposed to the program as a native function, such
+/// as the closures that resume an `await`.
 fn functions(
     reader: &Reader<'_>,
     table: &mut Table,
@@ -92,7 +103,7 @@ fn functions(
     frame: &CodeFrame<'_>,
     fp: u64,
     function: Object,
-) -> Result<Option<Vec<RecordedFrame>>, Problem> {
+) -> Result<Option<(Vec<RecordedFrame>, bool)>, Problem> {
     let shared = reader.typed_field(
         function,
         Field::JSFunctionSharedFunctionInfo,
@@ -101,10 +112,21 @@ fn functions(
     if script(reader, shared)?.is_none() && !super::names::is_native(reader, shared)? {
         return Ok(None);
     }
-    let places = if frame.generated {
-        compiled::places(reader, encoding, statics, frame, (function, shared))
+    // The interpreter's own code is the image's, and baseline code keeps
+    // its registers; optimized code, even entered on a loop, does not.
+    let (places, live_registers) = if frame.generated {
+        match compiled::running(reader, statics, frame, (function, shared)) {
+            Ok(code) => (
+                compiled::places(reader, encoding, &code, shared, frame.instruction.get()),
+                code.is_baseline(reader)?,
+            ),
+            Err(problem) => (Err(problem), false),
+        }
     } else {
-        offset_in_script(reader, encoding, fp, shared).map(|offset| vec![(shared, Ok(offset))])
+        (
+            offset_in_script(reader, encoding, fp, shared).map(|offset| vec![(shared, Ok(offset))]),
+            true,
+        )
     };
     // Only the frame's own function, outermost, is known as a function;
     // those its code inlined are known by their shared information.
@@ -128,7 +150,7 @@ fn functions(
         // The frame's function is known where its place is not.
         Err(problem) => vec![recorded(reader, table, Named::Function(own), Err(problem))?],
     };
-    Ok(Some(functions))
+    Ok(Some((functions, live_registers)))
 }
 
 /// The script `shared` was compiled from, if it was.

@@ -373,7 +373,10 @@ pub(super) fn resolved(
         code: None,
         scope: FrameScope::Interpreted {
             runtime: placed.runtime,
-            frame: placed.frame.frame,
+            frame: crate::runtime_model::InterpretedFrameRef {
+                address: placed.frame.frame,
+                live_registers: true,
+            },
         },
         registers: FrameRegisters::Discarded,
         cfa: Err(VariableUnavailableReason::CallFrameUnavailable(
@@ -442,7 +445,7 @@ impl<P: InspectionOps> Controller<P> {
         stop: StopId,
         root: &StackRoot,
         resolved: StackFrameId,
-        (runtime, frame): (RuntimeId, VirtualAddress),
+        (runtime, frame): (RuntimeId, crate::runtime_model::InterpretedFrameRef),
         query: &VariableQuery,
         budget: &mut InspectionBudget,
     ) -> Result<Vec<Variable>> {
