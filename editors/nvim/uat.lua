@@ -265,8 +265,56 @@ dap.clear_breakpoints()
 -- The runner exits with 0 only once each file's node has passed.
 expect(event('exited', nil, runner).exitCode == 0, 'the runner exited with 0')
 event('terminated', nil, runner)
+
+-- node --watch: the first app changes its own file and waits to be
+-- replaced; the restarted one, which finds the marker, ends. Each stops at
+-- the breakpoint in a session of its own under the watcher's.
+local watched = project({
+  ['app.js'] = table.concat({
+    "const fs = require('node:fs');",
+    "const marker = __dirname + '/restarted';",
+    'if (!fs.existsSync(marker)) {',
+    "  fs.writeFileSync(marker, '');",
+    "  setTimeout(() => fs.appendFileSync(__filename, '// changed\\n'), 200);",
+    '  setInterval(() => {}, 1000);',
+    '}',
+    '',
+  }, '\n'),
+})
+breakpoint(watched .. '/app.js', 'const marker =')
+dap.run({ type = 'microscope', request = 'launch', name = 'nvim-node-watch', program = node, args = { '--watch', 'app.js' }, cwd = watched })
+local stop, first = event('stopped', function(body) return body.reason == 'breakpoint' end)
+local watcher = first.parent
+expect(watcher and watcher.config.name == 'nvim-node-watch', 'the app\'s session is the watcher\'s member\'s')
+request('continue', { threadId = stop.threadId }, first)
+-- The watcher ends the app with SIGTERM, and the app's node raises it again
+-- at itself once its handler has run; each stops the group, and continuing
+-- passes it. The restarted app then stops at the breakpoint.
+local signals, restarted = 0, nil
+while restarted == nil do
+  local body, session = event('stopped')
+  if session == first then
+    expect(body.reason ~= 'breakpoint', 'the first app stopped at the breakpoint only once')
+    signals = signals + 1
+    request('continue', { threadId = body.threadId }, first)
+  elseif session ~= watcher then
+    expect(body.reason == 'breakpoint', 'the restarted app stopped at the breakpoint, not for ' .. body.reason)
+    expect(session.parent == watcher, 'the restarted app\'s session is the watcher\'s member\'s')
+    restarted = { body = body, session = session }
+  end
+end
+expect(signals == 2, 'the first app stopped twice for SIGTERM, not ' .. signals .. ' times')
+local trace = request('stackTrace', { threadId = restarted.body.threadId }, restarted.session)
+local top = vim.tbl_filter(function(each) return each.source ~= nil end, trace.stackFrames)[1] or {}
+expect(top.source and top.source.path == watched .. '/app.js', 'stopped in app.js, not ' .. vim.inspect(top.source))
+expect(top.line == 2, 'stopped at the breakpoint, not line ' .. tostring(top.line))
+dap.clear_breakpoints()
+-- The watcher waits for changes forever, so the user ends it.
+request('disconnect', { terminateDebuggee = true }, watcher)
+event('terminated', nil, watcher)
 vim.fn.delete(app, 'rf')
 vim.fn.delete(tests, 'rf')
+vim.fn.delete(watched, 'rf')
 
 print('uat: nvim-dap passed')
 os.exit(0)
