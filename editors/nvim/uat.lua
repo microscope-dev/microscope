@@ -66,10 +66,11 @@ local function frame()
   return current
 end
 
---- Sends a request and waits for its response.
-local function request(command, arguments)
+--- Sends a request, to `session` or the current one, and waits for its
+--- response.
+local function request(command, arguments, session)
   local done, failure, response = false, nil, nil
-  dap.session():request(command, arguments, function(err, result)
+  (session or dap.session()):request(command, arguments, function(err, result)
     done, failure, response = true, err, result
   end)
   expect(vim.wait(TIMEOUT, function() return done end, 10), 'timed out waiting for ' .. command)
@@ -185,6 +186,87 @@ for _, which in ipairs({ 'child', 'parent' }) do
   expect(event('exited', nil, session).exitCode == 0, 'the ' .. which .. ' exited with 0')
   event('terminated', nil, session)
 end
+
+-- Node programs that start other nodes: a breakpoint in a .js file stops
+-- the node that runs it, in the session nvim-dap starts for it through the
+-- adapter function above. The node and npm are the ones on PATH.
+local node, npm = vim.fn.exepath('node'), vim.fn.exepath('npm')
+expect(node ~= '' and npm ~= '', 'node and npm are on PATH')
+
+--- Writes `files` into a new directory and returns it.
+local function project(files)
+  local directory = vim.fn.tempname()
+  vim.fn.mkdir(directory, 'p')
+  for name, text in pairs(files) do
+    vim.fn.writefile(vim.split(text, '\n'), directory .. '/' .. name)
+  end
+  return directory
+end
+
+-- npm start: npm's node starts a shell, which executes the app's node.
+local app = project({
+  ['package.json'] = '{"name": "app", "version": "1.0.0", "scripts": {"start": "node server.js"}}',
+  ['server.js'] = "const port = 8080;\nconsole.log('listening', port);\n",
+})
+breakpoint(app .. '/server.js', "console.log('listening'")
+dap.run({
+  type = 'microscope', request = 'launch', name = 'nvim-npm-start', program = npm, args = { 'start' }, cwd = app,
+  env = { npm_config_cache = app .. '/npm-cache', npm_config_update_notifier = 'false' },
+})
+local _, served = event('stopped', function(body) return body.reason == 'breakpoint' end)
+local npm_session = served.parent
+expect(npm_session and npm_session.config.name == 'nvim-npm-start', 'the app\'s session is npm\'s member\'s')
+dap.set_session(served)
+local top = frame()
+local server = app .. '/server.js'
+expect(top.source and top.source.path == server, 'stopped in server.js, not ' .. vim.inspect(top.source))
+expect(top.line == line_of(server, "console.log('listening'"), 'stopped at the breakpoint, not line ' .. top.line)
+-- The app's stop stops the group, npm too. Continuing at once, while the
+-- group may still be pausing npm, resumes both.
+dap.clear_breakpoints()
+dap.continue()
+expect(event('exited', nil, served).exitCode == 0, 'the app exited with 0')
+expect(event('exited', nil, npm_session).exitCode == 0, 'npm exited with 0')
+event('terminated', nil, npm_session)
+
+-- node --test: each file runs in a node of its own, which stops at its
+-- file's breakpoint; the runner runs neither. With group stops one
+-- continue resumes both files' nodes, so process stops let each be
+-- inspected at its own stop.
+local test_body = "require('node:test')('runs', () => {\n  const answer = 42;\n  return answer;\n});\n"
+local tests = project({ ['package.json'] = '{"name": "tests", "version": "1.0.0"}', ['a.test.js'] = test_body, ['b.test.js'] = test_body })
+for _, name in ipairs({ 'a.test.js', 'b.test.js' }) do
+  breakpoint(tests .. '/' .. name, 'return answer;')
+end
+dap.run({
+  type = 'microscope', request = 'launch', name = 'nvim-node-test', program = node,
+  args = { '--test', 'a.test.js', 'b.test.js' }, cwd = tests, follow = { mode = 'all', stop = 'process' },
+})
+local files, runner = {}, nil
+for _ = 1, 2 do
+  local body, session = event('stopped', function(body) return body.reason == 'breakpoint' end)
+  runner = runner or session.parent
+  expect(runner and runner.config.name == 'nvim-node-test' and session.parent == runner,
+    'a file\'s node stopped, not ' .. session.config.name)
+  -- Both may stop at once, and nvim-dap fetches frames only for the
+  -- session it shows, and may show the other, so ask each for its stack:
+  -- the innermost frame with a source is the JavaScript one, inside the
+  -- runtime's native frames.
+  local trace = request('stackTrace', { threadId = body.threadId }, session)
+  local top = vim.tbl_filter(function(each) return each.source ~= nil end, trace.stackFrames)[1] or {}
+  local file = top.source and top.source.path or ''
+  expect(file:match('/[ab]%.test%.js$') ~= nil, 'stopped in a test file, not ' .. vim.inspect(top.source))
+  expect(files[file] == nil, 'each file stops once: ' .. file)
+  expect(top.line == line_of(file, 'return answer;'), 'stopped at the breakpoint, not line ' .. top.line)
+  files[file] = session
+  request('continue', { threadId = body.threadId }, session)
+end
+dap.clear_breakpoints()
+-- The runner exits with 0 only once each file's node has passed.
+expect(event('exited', nil, runner).exitCode == 0, 'the runner exited with 0')
+event('terminated', nil, runner)
+vim.fn.delete(app, 'rf')
+vim.fn.delete(tests, 'rf')
 
 print('uat: nvim-dap passed')
 os.exit(0)
