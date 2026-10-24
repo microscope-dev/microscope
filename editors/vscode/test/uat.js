@@ -823,6 +823,47 @@ async function pythonBreakpointsStepsAndExceptions() {
     }
 }
 
+/** The Node builds the Node scenarios run, as the flake names them. */
+const NODE_BUILDS = ['26', '24', '22', 'debian-24'];
+const nodeOf = (build) => path.join(process.env.MICROSCOPE_NODE, build, 'node');
+
+/**
+ * Runs `body` with the adapter for the Node build `build`. Debian's node
+ * runs only in the mount namespace its `enter` makes, so its adapter runs
+ * there too, started by a wrapper that `prefix`, if given, replaces.
+ */
+async function withNodeAdapter(build, body, prefix) {
+    if (!build.startsWith('debian-')) {
+        return body();
+    }
+    const wrapper = path.join(workspace().uri.fsPath, 'microscope-in-namespace');
+    const enter = path.join(path.dirname(nodeOf(build)), 'enter');
+    fs.writeFileSync(wrapper, `#!/bin/sh\nexec ${prefix ?? `'${enter}'`} microscope "$@"\n`, { mode: 0o755 });
+    const settings = vscode.workspace.getConfiguration('microscope');
+    try {
+        await settings.update('path', wrapper, vscode.ConfigurationTarget.Global);
+        return await body();
+    } finally {
+        await settings.update('path', undefined, vscode.ConfigurationTarget.Global);
+        fs.rmSync(wrapper, { force: true });
+    }
+}
+
+/** The frame VS Code focused at a stop, as the adapter described it. */
+async function shown(session, threadId, item) {
+    const { stackFrames } = await session.customRequest('stackTrace', { threadId });
+    return stackFrames.find((frame) => frame.id === item.frameId);
+}
+
+/** The value of the variable `name` in the scope `scope` of `frame`. */
+async function valueIn(session, frame, scope, name) {
+    const { scopes } = await session.customRequest('scopes', { frameId: frame.id });
+    const found = scopes.find((each) => each.name === scope);
+    assert.ok(found, `no ${scope} in ${JSON.stringify(scopes)}`);
+    const { variables } = await session.customRequest('variables', { variablesReference: found.variablesReference });
+    return variables.find((variable) => variable.name === name)?.value;
+}
+
 /**
  * A Node.js program, launched as node with the script: a breakpoint in the
  * `.js` file, a step by lines, the frame's locals by name, and an exception
@@ -830,16 +871,11 @@ async function pythonBreakpointsStepsAndExceptions() {
  */
 async function nodeBreakpointsStepsAndExceptions() {
     const script = path.join(root, 'tests/fixtures/node/uat.js');
-    // The frame VS Code focused at a stop, as the adapter described it.
-    const shown = async (session, threadId, item) => {
-        const { stackFrames } = await session.customRequest('stackTrace', { threadId });
-        return stackFrames.find((frame) => frame.id === item.frameId);
-    };
-    for (const build of ['26', '24', '22']) {
+    for (const build of NODE_BUILDS) await withNodeAdapter(build, async () => {
         vscode.debug.addBreakpoints([sourceBreakpoint(script, '// AREA_LINE')]);
         const { session, threadId, frame: focusedAtLaunch } = await launchToStop({
             name: `vscode-node-${build}`,
-            program: path.join(process.env.MICROSCOPE_NODE, build, 'node'),
+            program: nodeOf(build),
             args: [script],
         }, 'breakpoint');
         let frame = await shown(session, threadId, focusedAtLaunch);
@@ -855,15 +891,8 @@ async function nodeBreakpointsStepsAndExceptions() {
         assert.strictEqual(frame.line, lineOf(script, '// RETURN_LINE') + 1, build);
 
         // The variables view shows the frame's scopes, its locals named.
-        const { scopes } = await session.customRequest('scopes', { frameId: frame.id });
-        const value = async (scope, name) => {
-            const found = scopes.find((each) => each.name === scope);
-            assert.ok(found, `${build}: no ${scope} in ${JSON.stringify(scopes)}`);
-            const { variables } = await session.customRequest('variables', { variablesReference: found.variablesReference });
-            return variables.find((variable) => variable.name === name)?.value;
-        };
-        assert.strictEqual(await value('Locals', 'result'), '16', build);
-        assert.strictEqual(await value('Arguments', 'side'), '4', build);
+        assert.strictEqual(await valueIn(session, frame, 'Locals', 'result'), '16', build);
+        assert.strictEqual(await valueIn(session, frame, 'Arguments', 'side'), '4', build);
 
         // The filter is a checkbox in the breakpoints view, which has no
         // command.
@@ -878,6 +907,163 @@ async function nodeBreakpointsStepsAndExceptions() {
         assert.match(exception.description, /the shape is wrong/, build);
         await session.customRequest('setExceptionBreakpoints', { filters: [] });
         await finish(0);
+    });
+}
+
+/**
+ * TypeScript, run through tsx's loader and as an esbuild bundle with its
+ * map in a file: a breakpoint on a line of the `.ts` file stops there, a
+ * step goes to its next line, and an exception stops at the `.ts` line
+ * that throws it, on each Node line.
+ */
+async function nodeTypeScriptThroughSourceMaps() {
+    const script = path.join(root, 'tests/fixtures/node/maps/app.ts');
+    // Outside /tmp, which Debian's namespace replaces with its own.
+    const scratch = path.join(root, 'target/uat-node-maps');
+    fs.mkdirSync(scratch, { recursive: true });
+    const bundle = path.join(scratch, 'app.js');
+    childProcess.execFileSync(process.env.MICROSCOPE_ESBUILD, [
+        script, '--bundle', '--platform=node', '--sourcemap', '--log-level=warning', '--format=cjs',
+        `--outfile=${bundle}`,
+    ]);
+    const compilers = [
+        ['tsx', ['--import', path.join(process.env.MICROSCOPE_TSX, 'dist/loader.mjs'), script]],
+        ['esbuild', [bundle]],
+    ];
+    try {
+        for (const build of NODE_BUILDS) await withNodeAdapter(build, async () => {
+            for (const [compiler, args] of compilers) {
+                const context = `${build} ${compiler}`;
+                vscode.debug.addBreakpoints([sourceBreakpoint(script, '// NORM')]);
+                const { session, threadId, frame: focusedAtLaunch } = await launchToStop({
+                    name: `vscode-node-${compiler}-${build}`, program: nodeOf(build), args,
+                }, 'breakpoint');
+                let frame = await shown(session, threadId, focusedAtLaunch);
+                assert.strictEqual(frame?.name, 'norm', context);
+                assert.strictEqual(frame.source?.path, script, context);
+                assert.strictEqual(frame.line, lineOf(script, '// NORM') + 1, context);
+
+                const stepped = event('stopped', (body) => body.reason === 'step');
+                await vscode.commands.executeCommand('workbench.action.debug.stepOver');
+                await stepped;
+                frame = await shown(session, threadId, await focus());
+                assert.strictEqual(frame?.source?.path, script, context);
+                assert.strictEqual(frame.line, lineOf(script, '// RETURN') + 1, context);
+                assert.strictEqual(await valueIn(session, frame, 'Locals', 'squared'), '25', context);
+
+                await session.customRequest('setExceptionBreakpoints', { filters: ['javascript-thrown'] });
+                const thrown = event('stopped', (body) => body.reason === 'exception');
+                await vscode.commands.executeCommand('workbench.action.debug.continue');
+                await thrown;
+                frame = await shown(session, threadId, await focus());
+                assert.strictEqual(frame?.name, 'fail', context);
+                assert.strictEqual(frame.source?.path, script, context);
+                assert.strictEqual(frame.line, lineOf(script, '// THROW') + 1, context);
+                const exception = await session.customRequest('exceptionInfo', { threadId });
+                assert.match(exception.description, /mapped/, context);
+                await session.customRequest('setExceptionBreakpoints', { filters: [] });
+                await finish(0);
+            }
+        });
+    } finally {
+        fs.rmSync(scratch, { recursive: true, force: true });
+    }
+}
+
+/**
+ * A breakpoint in a worker's code stops the worker's thread, not the main
+ * one, and a step there stays on it, on each Node line.
+ */
+async function nodeWorkerStopsOnItsThread() {
+    const script = path.join(root, 'tests/fixtures/node/workers.js');
+    for (const build of NODE_BUILDS) await withNodeAdapter(build, async () => {
+        vscode.debug.addBreakpoints([sourceBreakpoint(script, '// CRUNCH')]);
+        const started = event('process');
+        const { session, threadId, frame: focusedAtLaunch } = await launchToStop({
+            name: `vscode-node-worker-${build}`, program: nodeOf(build), args: [script],
+        }, 'breakpoint');
+        // The main thread's id is the process's.
+        const main = (await started).message.body.systemProcessId;
+        assert.notStrictEqual(threadId, main, build);
+        const { threads } = await session.customRequest('threads');
+        const worker = threads.find((thread) => thread.id === threadId);
+        assert.ok(worker, `${build}: ${threadId} in ${JSON.stringify(threads)}`);
+        let frame = await shown(session, threadId, focusedAtLaunch);
+        assert.strictEqual(frame?.name, 'crunch', build);
+        assert.strictEqual(frame.line, lineOf(script, '// CRUNCH') + 1, build);
+        assert.strictEqual(await valueIn(session, frame, 'Arguments', 'n'), '6', build);
+
+        const stepped = event('stopped', (body) => body.reason === 'step');
+        await vscode.commands.executeCommand('workbench.action.debug.stepOver');
+        assert.strictEqual((await stepped).message.body.threadId, threadId, build);
+        frame = await shown(session, threadId, await focus());
+        assert.strictEqual(frame?.line, lineOf(script, '// AFTER') + 1, build);
+        assert.strictEqual(await valueIn(session, frame, 'Locals', 'squared'), '36', build);
+        await finish(0);
+    });
+}
+
+/**
+ * A node started without its inspector, attached by its process id: a
+ * breakpoint added then stops the main thread, and again a worker the
+ * program starts after the attach, on each Node line. Debian's adapter
+ * joins the namespace its node was started in.
+ */
+async function nodeAttachedByProcessId() {
+    const script = path.join(root, 'tests/fixtures/node/attach.js');
+    for (const build of NODE_BUILDS) {
+        const debian = build.startsWith('debian-');
+        const command = debian
+            ? [path.join(path.dirname(nodeOf(build)), 'enter'), nodeOf(build), script]
+            : [nodeOf(build), script];
+        // VS Code's own NODE_OPTIONS and the like do not reach the node.
+        const target = childProcess.spawn(command[0], command.slice(1), { stdio: ['pipe', 'pipe', 'inherit'], env: {} });
+        const exit = new Promise((resolve) => target.once('exit', resolve));
+        try {
+            await within(`node ${build} to be ready`, new Promise((resolve, reject) => {
+                target.stdout.once('data', (data) =>
+                    (String(data).startsWith('READY') ? resolve() : reject(new Error(`readiness ${data}`))));
+                target.once('error', reject);
+            }));
+            const prefix = debian ? `'${process.env.MICROSCOPE_UAT_NSENTER}' --target ${target.pid} --user --mount --preserve-credentials` : undefined;
+            await withNodeAdapter(build, async () => {
+                const breakpoint = sourceBreakpoint(script, '// SERVED');
+                const placed = answer('setBreakpoints', (arguments_) => arguments_.source.path === script);
+                const confirmed = event('breakpoint', (body) => body.breakpoint.verified);
+                confirmed.catch(() => {});
+                const attached = event('process');
+                assert.ok(await vscode.debug.startDebugging(undefined, {
+                    type: 'microscope', request: 'attach', name: `vscode-node-attach-${build}`, pid: String(target.pid),
+                }));
+                const { session, message: announced } = await attached;
+                assert.strictEqual(announced.body.systemProcessId, target.pid, build);
+                vscode.debug.addBreakpoints([breakpoint]);
+                // V8 confirms the breakpoint while the node runs.
+                if (!(await placed).body.breakpoints[0].verified) {
+                    await confirmed;
+                }
+                const line = lineOf(script, '// SERVED') + 1;
+                let stopped = event('stopped', (body) => body.reason === 'breakpoint');
+                target.stdin.write('x');
+                let { message: sent } = await stopped;
+                assert.strictEqual(sent.body.threadId, target.pid, build);
+                let frame = await shown(session, sent.body.threadId, await focus());
+                assert.deepStrictEqual([frame?.name, frame?.line], ['served', line], build);
+                assert.strictEqual(await valueIn(session, frame, 'Arguments', 'n'), '41', build);
+
+                stopped = event('stopped', (body) => body.reason === 'breakpoint');
+                await vscode.commands.executeCommand('workbench.action.debug.continue');
+                ({ message: sent } = await stopped);
+                assert.notStrictEqual(sent.body.threadId, target.pid, build);
+                frame = await shown(session, sent.body.threadId, await focus());
+                assert.deepStrictEqual([frame?.name, frame?.line], ['served', line], build);
+                assert.strictEqual(await valueIn(session, frame, 'Arguments', 'n'), '7', build);
+                await finish(0);
+            }, prefix);
+            assert.strictEqual(await within(`node ${build} to exit`, exit), 0, build);
+        } finally {
+            target.kill();
+        }
     }
 }
 
@@ -1188,6 +1374,7 @@ exports.run = async function run() {
             consoleWatchHoverHexadecimalAndInlineValues, completionsAndLocations, dataBreakpointsAndTheirModes,
             dataBreakpointConditions, crashAtASignal, goroutinesStepsPanicsAndStacks,
             pythonBreakpointsStepsAndExceptions, nodeBreakpointsStepsAndExceptions,
+            nodeTypeScriptThroughSourceMaps, nodeWorkerStopsOnItsThread, nodeAttachedByProcessId,
             pauseAndThreads, librariesAndTheirSources, runInTheIntegratedTerminal, attachToAProcess,
             pickAProcess, followAForkedChild, openACoreDump, refuseBadConfigurationsAndOfferPrograms,
         ]) {

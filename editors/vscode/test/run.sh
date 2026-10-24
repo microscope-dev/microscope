@@ -23,6 +23,17 @@ if [[ -z ${VSCODE_EXECUTABLE:-} ]]; then
     done
 fi
 
+# VS Code is the host's, but the programs the scenarios debug are the
+# flake's, named by the pinned shell.
+names='printf "export %q=%q\n" MICROSCOPE_NODE "$MICROSCOPE_NODE" MICROSCOPE_CPYTHON "$MICROSCOPE_CPYTHON" \
+    MICROSCOPE_TSX "$MICROSCOPE_TSX" MICROSCOPE_ESBUILD "$MICROSCOPE_ESBUILD" \
+    MICROSCOPE_UAT_NSENTER "$(command -v nsenter)"'
+if [[ ${MICROSCOPE_HERMETIC:-} == 1 ]]; then
+    eval "$(bash -c "$names")"
+else
+    eval "$("$root/scripts/dev.sh" --command bash -c "$names")"
+fi
+
 MICROSCOPE_UAT_ROOT=$root MICROSCOPE_UAT_RECORD=$(realpath -m "$record") "${VSCODE_EXECUTABLE:?set VSCODE_EXECUTABLE to the Electron executable of VS Code}" \
     --user-data-dir "$profile/data" \
     --extensions-dir "$profile/extensions" \
