@@ -87,18 +87,11 @@ async fn javascript_exceptions_stop_where_v8_pauses_at_them() {
         for (chosen, state) in CHOICES {
             let (seen, expected, messages) = run(entry, chosen, state).await;
             let expected = reported(expected, chosen);
-            if seen != expected {
-                let show = |pauses: &[Pause]| {
-                    pauses
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                };
+            let differences = oracle::differences(&seen, &expected);
+            if !differences.is_empty() {
                 lies.push(format!(
-                    "node {entry} {chosen:?}:\n  microscope {}\n  V8         {}",
-                    show(&seen),
-                    show(&expected)
+                    "node {entry} {chosen:?}:\n  {}",
+                    differences.join("\n  ")
                 ));
             }
             let last = messages.last().map_or("", String::as_str);

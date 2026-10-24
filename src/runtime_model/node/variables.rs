@@ -99,14 +99,15 @@ pub(super) const UNINITIALIZED: &str = "the variable is not initialized yet";
 
 /// Binds the locals `reported` names, in declaration order, to the frame:
 /// the first `parameter_count` to its parameters, and the rest that no
-/// context of the frame (`own`) holds to its registers from the first. The
-/// binding stands only if every value matches what the slot holds now
-/// (F17); a catch binding or a destructuring temporary breaks the order.
+/// context of the frame (`own`) holds to its registers from register
+/// `first`. The binding stands only if every value matches what the slot
+/// holds now (F17); a catch binding or a destructuring temporary breaks the
+/// order.
 fn bind(
     reader: &Reader<'_>,
     reported: &[ReportedLocal],
     own: &BTreeSet<&str>,
-    parameter_count: usize,
+    (parameter_count, first): (usize, u32),
     register_count: u32,
     argument: &dyn Fn(u32) -> Result<u64, Problem>,
     register: &dyn Fn(u32) -> Result<u64, Problem>,
@@ -135,11 +136,13 @@ fn bind(
         .iter()
         .filter(|local| !own.contains(&*local.name))
         .collect::<Vec<_>>();
-    if locals.len() > register_count as usize {
-        return Err(mismatch(&locals[register_count as usize].name));
+    let room = register_count.saturating_sub(first) as usize;
+    if locals.len() > room {
+        return Err(mismatch(&locals[room].name));
     }
+    binding.registers.resize(first as usize, None);
     for (index, local) in locals.iter().enumerate() {
-        let index = u32::try_from(index).map_err(|_| "too many locals")?;
+        let index = u32::try_from(index).map_err(|_| "too many locals")? + first;
         let word = register(index)?;
         if !holds(reader, word, &local.value)? {
             return Err(mismatch(&local.name));
@@ -427,16 +430,24 @@ fn stack_names(
         .filter(|variable| variable.kind == Kind::Local)
         .map(|variable| variable.name.as_str())
         .collect::<BTreeSet<_>>();
+    // A generator's or an async function's first register holds its
+    // generator object, an internal local V8's debugger does not report.
     let bound = parameters(reader, function).and_then(|parameter_count| {
-        bind(
-            reader,
-            &reported,
-            &own,
-            parameter_count,
-            count,
-            argument,
-            register,
-        )
+        let bind = |first| {
+            bind(
+                reader,
+                &reported,
+                &own,
+                (parameter_count, first),
+                count,
+                argument,
+                register,
+            )
+        };
+        bind(0).or_else(|problem| match is_resumable(reader, function) {
+            Ok(true) => bind(1).map_err(|_| problem),
+            _ => Err(problem),
+        })
     });
     match bound {
         Ok(binding) => Names {
@@ -571,6 +582,33 @@ fn is_arrow(reader: &Reader<'_>, function: Object) -> Result<bool, Problem> {
     Ok((reader.constant(Constant::FunctionKindArrowFunction)?
         ..=reader.constant(Constant::FunctionKindAsyncArrowFunction)?)
         .contains(&kind))
+}
+
+/// Whether `function` is a generator or an async function, whose frame
+/// can be suspended and resumed.
+fn is_resumable(reader: &Reader<'_>, function: Object) -> Result<bool, Problem> {
+    let shared = reader.typed_field(
+        function,
+        Field::JSFunctionSharedFunctionInfo,
+        Constant::SharedFunctionInfoType,
+    )?;
+    let flags = i64::from(reader.int32_field(shared, Field::SharedFunctionInfoFlags)?);
+    let kind = (flags & reader.constant(Constant::SfiFunctionKindMask)?)
+        >> reader.constant(Constant::SfiFunctionKindShift)?;
+    Ok([
+        Constant::FunctionKindAsyncArrowFunction,
+        Constant::FunctionKindAsyncFunction,
+        Constant::FunctionKindAsyncConciseMethod,
+        Constant::FunctionKindStaticAsyncConciseMethod,
+        Constant::FunctionKindAsyncConciseGeneratorMethod,
+        Constant::FunctionKindStaticAsyncConciseGeneratorMethod,
+        Constant::FunctionKindAsyncGeneratorFunction,
+        Constant::FunctionKindGeneratorFunction,
+        Constant::FunctionKindConciseGeneratorMethod,
+        Constant::FunctionKindStaticConciseGeneratorMethod,
+    ]
+    .iter()
+    .any(|constant| reader.constant(*constant).ok() == Some(kind)))
 }
 
 /// The `this` local of `context` or the nearest outer context that has one.

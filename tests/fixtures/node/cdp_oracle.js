@@ -5,10 +5,15 @@
 // "commands": ["Debugger.stepInto", ...], "skip": ["/vendor/", ...],
 // "enter": false,
 // "exceptions": "none" | "caught" | "uncaught" }. Each pause prints
-// `PAUSE <reason> <function> <line> <column>` (one-based), and the command
-// after it is the next of `commands`, then `Debugger.resume`.
+// `PAUSE <reason> <function> <line> <column>` (one-based), then `STACK`
+// and the JSON of every frame: its function, line, and column, whether it
+// is the program's own, and in the program's own frames every binding of
+// its local and block scopes and its `this`, each a primitive's value as
+// util.inspect writes it, or null for an object. The command after it is the next of `commands`,
+// then `Debugger.resume`.
 'use strict';
 const { spawn } = require('child_process');
+const { inspect } = require('util');
 const path = require('path');
 
 const [plan, fixture, ...rest] = process.argv.slice(2);
@@ -67,7 +72,56 @@ function connect(url) {
   };
 }
 
-function paused({ reason, callFrames, data }) {
+// A primitive as util.inspect writes it, or undefined for an object.
+function primitive(object) {
+  switch (object.type) {
+    case 'undefined':
+      return 'undefined';
+    case 'number':
+    case 'bigint':
+    case 'symbol':
+      return object.description;
+    case 'boolean':
+    case 'string':
+      return inspect(object.value);
+    case 'object':
+      return object.subtype === 'null' ? 'null' : undefined;
+    default:
+      return undefined;
+  }
+}
+
+async function stack(callFrames) {
+  const frames = [];
+  for (const frame of callFrames) {
+    const url = scripts.get(frame.location.scriptId) ?? '';
+    const locals = {};
+    const own = url !== '' && !url.startsWith('node:');
+    if (own) {
+      locals.this = primitive(frame.this) ?? null;
+      for (const scope of frame.scopeChain) {
+        if (scope.type !== 'local' && scope.type !== 'block') continue;
+        const { result } = await send('Runtime.getProperties', {
+          objectId: scope.object.objectId,
+          ownProperties: true,
+        });
+        for (const { name, value } of result ?? []) {
+          if (value && !(name in locals)) locals[name] = primitive(value) ?? null;
+        }
+      }
+    }
+    frames.push({
+      function: frame.functionName || '-',
+      line: frame.location.lineNumber + 1,
+      column: frame.location.columnNumber + 1,
+      own,
+      locals,
+    });
+  }
+  return frames;
+}
+
+async function paused({ reason, callFrames, data }) {
   // --inspect-brk pauses before the first statement; the plan starts after.
   if (!started) {
     started = true;
@@ -99,5 +153,6 @@ function paused({ reason, callFrames, data }) {
   const { lineNumber, columnNumber } = top.location;
   const uncaught = exception ? ` ${data?.uncaught ? 'uncaught' : 'caught'}` : '';
   console.log(`PAUSE ${reason} ${top.functionName || '-'} ${lineNumber + 1} ${columnNumber + 1}${uncaught}`);
+  console.log(`STACK ${JSON.stringify(await stack(callFrames))}`);
   send(remaining.shift() ?? 'Debugger.resume');
 }

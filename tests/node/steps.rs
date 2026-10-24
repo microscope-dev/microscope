@@ -143,19 +143,12 @@ async fn javascript_steps_end_where_v8_ends_them() {
     for entry in MATRIX {
         for case in &CASES {
             let (seen, expected) = run(entry, case).await;
-            if seen != expected {
-                let show = |pauses: &[Pause]| {
-                    pauses
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                };
+            let differences = oracle::differences(&seen, &expected);
+            if !differences.is_empty() {
                 let (marker, commands, skipping) = (case.marker, case.commands, case.skipping);
                 lies.push(format!(
-                    "node {entry} {marker} {commands:?} {skipping:?}:\n  microscope {}\n  V8         {}",
-                    show(&seen),
-                    show(&expected)
+                    "node {entry} {marker} {commands:?} {skipping:?}:\n  {}",
+                    differences.join("\n  ")
                 ));
             }
         }

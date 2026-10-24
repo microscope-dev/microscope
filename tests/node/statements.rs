@@ -82,18 +82,14 @@ async fn debugger_statements_stop_where_v8_pauses_at_them() {
             let (seen, expected, doubled) = run(entry, directories).await;
             // first, halt unless skipped, and the loop's two.
             let count = if directories.is_empty() { 4 } else { 3 };
-            if seen != expected || seen.len() != count {
-                let show = |pauses: &[Pause]| {
-                    pauses
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                };
+            let mut differences = oracle::differences(&seen, &expected);
+            if seen.len() != count {
+                differences.push(format!("{} stops, where {count} were expected", seen.len()));
+            }
+            if !differences.is_empty() {
                 lies.push(format!(
-                    "node {entry} {directories:?}:\n  microscope {}\n  V8         {}",
-                    show(&seen),
-                    show(&expected)
+                    "node {entry} {directories:?}:\n  {}",
+                    differences.join("\n  ")
                 ));
             }
             if doubled != "6" {
