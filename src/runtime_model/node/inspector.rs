@@ -6,6 +6,13 @@ pub use super::exceptions::{filter as exception_filter, pause_state};
 /// Lets a node the launch preload holds in `waitForDebugger` run on.
 pub const RELEASE: &str = "Runtime.runIfWaitingForDebugger";
 
+/// Asks Node to report when it waits for the debugger, which it does at
+/// once if it already waits.
+pub const ENABLE_RUNTIME: &str = "NodeRuntime.enable";
+
+/// Node waits for `RELEASE`, which it forgets if it came before the wait.
+pub const WAITING: &str = "NodeRuntime.waitingForDebugger";
+
 /// Asks Node to report the program's end, rather than wait silently for
 /// the debugger to leave.
 pub const NOTIFY_END: &str = "NodeRuntime.notifyWhenWaitingForDisconnect";

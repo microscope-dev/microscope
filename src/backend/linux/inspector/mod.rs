@@ -828,7 +828,21 @@ impl<P: LinuxTraceOps> Controller<P> {
         ready_isolate(&link.connection, &main);
         inspector.isolates.insert(main.clone(), Isolate::default());
         self.sync_inspector(runtime);
-        self.release_isolate(runtime, &main);
+        // A release Node takes before the preload's waitForDebugger begins
+        // is lost, so the release answers Node's report that it waits.
+        if let Some(link) = self
+            .inferior
+            .as_ref()
+            .and_then(|inferior| inferior.inspectors.records.get(&runtime))
+            .and_then(|inspector| inspector.connection.as_ref())
+        {
+            let _ = send(
+                &link.connection,
+                &main,
+                inspector_protocol::ENABLE_RUNTIME,
+                serde_json::json!({}),
+            );
+        }
         self.publish_breakpoints_changed();
     }
 
@@ -930,6 +944,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             inspector_protocol::PAUSED => {
                 return self.inspector_paused(runtime, session, params);
             }
+            inspector_protocol::WAITING => self.release_isolate(runtime, session),
             inspector_protocol::END if session.path().is_empty() => {
                 record!("the program ends; the debugger leaves its inspector");
                 if let Some(link) = inspector.connection.take() {
