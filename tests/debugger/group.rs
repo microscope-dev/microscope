@@ -598,6 +598,86 @@ async fn each_file_node_test_runs_joins_the_group() {
     group.shutdown().await;
 }
 
+/// A breakpoint in a JavaScript file a member runs stops that member
+/// through its own inspector: each file `node --test` runs in a node of
+/// its own stops once at its line, which only it loads.
+#[tokio::test]
+async fn each_file_node_test_runs_stops_at_its_javascript_breakpoint() {
+    support::flight_recordings::watch_scenarios();
+    let scratch = support::ScratchDir::new("group-node-test-js");
+    let names = ["a.test.js", "b.test.js"];
+    for name in names {
+        fs::write(
+            scratch.path().join(name),
+            "require('node:test')('runs', () => {\n  const answer = 42;\n  return answer;\n});\n",
+        )
+        .expect("write a test file");
+    }
+
+    let program =
+        Program::load(node(), &microscope::DebugFileOptions::default()).expect("load node");
+    let group = ProcessGroup::new(program, FollowPolicy::default()).expect("start the group");
+    let events = group.subscribe();
+    let mut group = Group {
+        inner: group,
+        events,
+        seen: Vec::new(),
+    };
+    for name in names {
+        group
+            .inner
+            .root()
+            .add_breakpoint_with(
+                BreakpointSpec::Source {
+                    path: scratch.path().join(name),
+                    line: microscope::LineNumber::new(3).expect("a line"),
+                },
+                microscope::BreakpointOptions {
+                    pending: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("add the breakpoint");
+    }
+    group
+        .inner
+        .root()
+        .launch_with(LaunchOptions {
+            arguments: ["--test", "a.test.js", "b.test.js"]
+                .map(std::ffi::OsString::from)
+                .to_vec(),
+            working_directory: Some(scratch.path().to_owned()),
+            ..LaunchOptions::default()
+        })
+        .await
+        .expect("launch node");
+
+    let stops = group.run_to_exit().await;
+    assert!(
+        stops
+            .iter()
+            .all(|(_, reason)| matches!(reason, StopReason::Breakpoint { address: None, .. })),
+        "only the JavaScript breakpoints stop the group: {stops:#?}"
+    );
+    let members = breakpoint_members(&stops);
+    assert_eq!(members.len(), 2, "one stop per file's node: {stops:#?}");
+    assert!(
+        !members.contains(&1),
+        "the runner runs neither file: {stops:#?}"
+    );
+    assert_eq!(
+        members.iter().collect::<BTreeSet<_>>().len(),
+        2,
+        "each stops once: {stops:#?}"
+    );
+    assert_eq!(
+        group.root_status(),
+        MemberState::Exited(ExitStatus::Code(0))
+    );
+    group.shutdown().await;
+}
+
 /// `npm start` runs npm's own node, which starts a shell, which executes
 /// the app's node. npm and the app are members; the shell is watched
 /// between them, and the app stops at a breakpoint set before the run.
@@ -611,7 +691,7 @@ async fn npm_start_is_followed_through_its_shell_into_the_app() {
     .expect("write package.json");
     fs::write(
         scratch.path().join("server.js"),
-        "console.log('listening');\n",
+        "const port = 8080;\nconsole.log('listening', port);\n",
     )
     .expect("write server.js");
     let npm = node().with_file_name("npm");
@@ -625,6 +705,21 @@ async fn npm_start_is_followed_through_its_shell_into_the_app() {
         seen: Vec::new(),
     };
     group.break_at("uv_setup_args").await;
+    group
+        .inner
+        .root()
+        .add_breakpoint_with(
+            BreakpointSpec::Source {
+                path: scratch.path().join("server.js"),
+                line: microscope::LineNumber::new(2).expect("a line"),
+            },
+            microscope::BreakpointOptions {
+                pending: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("add the JavaScript breakpoint");
     let cache = scratch.path().join("npm-cache");
     group
         .inner
@@ -655,6 +750,11 @@ async fn npm_start_is_followed_through_its_shell_into_the_app() {
     let stopped = breakpoint_members(&stops);
     assert!(stopped.contains(&1), "npm's own node stops: {stops:#?}");
     assert!(stopped.contains(&app.number), "the app stops: {stops:#?}");
+    assert!(
+        stops.iter().any(|(member, reason)| *member == app.number
+            && matches!(reason, StopReason::Breakpoint { address: None, .. })),
+        "the app stops at its JavaScript breakpoint, through its inspector: {stops:#?}"
+    );
     assert!(
         group.seen.iter().any(|event| matches!(event,
             GroupEvent::MemberWatched { program, .. }
