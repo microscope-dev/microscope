@@ -170,7 +170,12 @@ function useFollowing(session: string, at: At | null, look: Look) {
     }
     const where = stop === undefined ? null : { stop, thread: thread ?? 0, frame: frame ?? 0 };
     const move = follow(state, where, followed.current, pinned);
-    followed.current = latestStop(state);
+    // A running state shows no stop, so it leaves the one a following tab
+    // showed. Its stops can be another member's, once the member that
+    // stopped exits and the group selects another while it runs.
+    if (state.inferior.state !== "running") {
+      followed.current = latestStop(state);
+    }
     const search = followedLook(lookRef.current);
     if (move?.to === "stop") {
       void navigate({
