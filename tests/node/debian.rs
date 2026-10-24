@@ -182,3 +182,20 @@ async fn debian_launched_nodes_inspector_is_shown_to_no_one() {
     }
     crate::inspector::check_hidden(DEBIAN).await;
 }
+
+/// On Debian's node, every kind of breakpoint stops, logs, and waits as
+/// asked, each step ends where V8's ends, and each exception stops where V8
+/// pauses at it, with V8's frames and locals at every stop; a worker stops
+/// and steps on its own thread; and an attached node stops too.
+#[tokio::test]
+async fn debian_breakpoints_steps_and_exceptions_match_v8() {
+    if !inside("debian::debian_breakpoints_steps_and_exceptions_match_v8") {
+        return;
+    }
+    crate::breakpoints::every_kind_of_breakpoint(DEBIAN).await;
+    let mut lies = crate::steps::lies(DEBIAN).await;
+    lies.extend(crate::exceptions::lies(DEBIAN).await);
+    lies.extend(crate::workers::worker_lies(DEBIAN).await);
+    lies.extend(crate::attach::attach_lies(DEBIAN).await);
+    assert!(lies.is_empty(), "{}", lies.join("\n"));
+}

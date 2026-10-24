@@ -74,6 +74,45 @@ async fn main_thread(session: &NodeSession) -> ThreadId {
     }
 }
 
+/// What, on the build `entry`, a worker's breakpoint and step get wrong.
+pub async fn worker_lies(entry: &str) -> Vec<String> {
+    let mut lies = Vec::new();
+    let (mut session, reason, _events) =
+        NodeSession::launch_to_stop(entry, FIXTURE, vec![at_crunch()]).await;
+    let context = session.context();
+    let main = main_thread(&session).await;
+    let pause = oracle::selected(&session.scenario).await;
+    let (thread, n) = where_stopped(&session, "n").await;
+    if !matches!(reason, StopReason::Breakpoint { address: None, .. })
+        || pause.line != CRUNCH
+        || thread == main
+        || n != "6"
+    {
+        lies.push(format!(
+            "{context}: {reason:?} at {pause} on {thread:?} (main {main:?}), n = {n}"
+        ));
+    }
+    let reason = session.scenario.step_to_stop(StepKind::OverSource).await;
+    let pause = oracle::selected(&session.scenario).await;
+    let (stepped, squared) = where_stopped(&session, "squared").await;
+    if !matches!(reason, StopReason::Step { .. })
+        || pause.line != AFTER
+        || stepped != thread
+        || squared != "36"
+    {
+        lies.push(format!(
+            "{context}: the step ended {reason:?} at {pause} on {stepped:?}, squared = {squared}"
+        ));
+    }
+    let reason = session.scenario.resume_to_stop().await;
+    if reason != StopReason::Exited(ExitStatus::Code(0)) || !session.output().contains("RESULT 37")
+    {
+        lies.push(format!("{context}: ended {reason:?}\n{}", session.output()));
+    }
+    session.shutdown().await;
+    lies
+}
+
 /// On every build, a breakpoint in a worker stops the worker's thread at
 /// its line with its locals, and a step over there ends at the worker's
 /// next line, not in the main thread.
@@ -81,40 +120,7 @@ async fn main_thread(session: &NodeSession) -> ThreadId {
 async fn a_worker_stops_and_steps_on_its_own_thread() {
     let mut lies = Vec::new();
     for entry in MATRIX {
-        let (mut session, reason, _events) =
-            NodeSession::launch_to_stop(entry, FIXTURE, vec![at_crunch()]).await;
-        let context = session.context();
-        let main = main_thread(&session).await;
-        let pause = oracle::selected(&session.scenario).await;
-        let (thread, n) = where_stopped(&session, "n").await;
-        if !matches!(reason, StopReason::Breakpoint { address: None, .. })
-            || pause.line != CRUNCH
-            || thread == main
-            || n != "6"
-        {
-            lies.push(format!(
-                "{context}: {reason:?} at {pause} on {thread:?} (main {main:?}), n = {n}"
-            ));
-        }
-        let reason = session.scenario.step_to_stop(StepKind::OverSource).await;
-        let pause = oracle::selected(&session.scenario).await;
-        let (stepped, squared) = where_stopped(&session, "squared").await;
-        if !matches!(reason, StopReason::Step { .. })
-            || pause.line != AFTER
-            || stepped != thread
-            || squared != "36"
-        {
-            lies.push(format!(
-                "{context}: the step ended {reason:?} at {pause} on {stepped:?}, squared = {squared}"
-            ));
-        }
-        let reason = session.scenario.resume_to_stop().await;
-        if reason != StopReason::Exited(ExitStatus::Code(0))
-            || !session.output().contains("RESULT 37")
-        {
-            lies.push(format!("{context}: ended {reason:?}\n{}", session.output()));
-        }
-        session.shutdown().await;
+        lies.extend(worker_lies(entry).await);
     }
     assert!(lies.is_empty(), "{}", lies.join("\n"));
 }

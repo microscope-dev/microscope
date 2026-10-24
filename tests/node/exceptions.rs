@@ -78,29 +78,37 @@ fn reported(expected: Vec<Pause>, chosen: &[&str]) -> Vec<Pause> {
         .collect()
 }
 
+/// Where, on the build `entry`, for any choice, an exception does not
+/// stop where V8 pauses at it, as the kind it is, with V8's message.
+pub async fn lies(entry: &str) -> Vec<String> {
+    let mut lies = Vec::new();
+    for (chosen, state) in CHOICES {
+        let (seen, expected, messages) = run(entry, chosen, state).await;
+        let expected = reported(expected, chosen);
+        let differences = oracle::differences(&seen, &expected);
+        if !differences.is_empty() {
+            lies.push(format!(
+                "node {entry} {chosen:?}:\n  {}",
+                differences.join("\n  ")
+            ));
+        }
+        let last = messages.last().map_or("", String::as_str);
+        if !last.starts_with("RangeError: too big: 3\n    at check (") {
+            lies.push(format!(
+                "node {entry} {chosen:?}: the last message is {last:?}"
+            ));
+        }
+    }
+    lies
+}
+
 /// On every build and for every choice, each exception stops where V8
 /// pauses at it, as the kind it is, with V8's message.
 #[tokio::test]
 async fn javascript_exceptions_stop_where_v8_pauses_at_them() {
-    let mut lies = Vec::new();
+    let mut found = Vec::new();
     for entry in MATRIX {
-        for (chosen, state) in CHOICES {
-            let (seen, expected, messages) = run(entry, chosen, state).await;
-            let expected = reported(expected, chosen);
-            let differences = oracle::differences(&seen, &expected);
-            if !differences.is_empty() {
-                lies.push(format!(
-                    "node {entry} {chosen:?}:\n  {}",
-                    differences.join("\n  ")
-                ));
-            }
-            let last = messages.last().map_or("", String::as_str);
-            if !last.starts_with("RangeError: too big: 3\n    at check (") {
-                lies.push(format!(
-                    "node {entry} {chosen:?}: the last message is {last:?}"
-                ));
-            }
-        }
+        found.extend(lies(entry).await);
     }
-    assert!(lies.is_empty(), "{}", lies.join("\n"));
+    assert!(found.is_empty(), "{}", found.join("\n"));
 }

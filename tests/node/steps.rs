@@ -136,22 +136,30 @@ async fn run(entry: &str, case: &Case) -> (Vec<Pause>, Vec<Pause>) {
     (seen, expected)
 }
 
+/// Where, on the build `entry`, a step does not end where V8's own step
+/// ends.
+pub async fn lies(entry: &str) -> Vec<String> {
+    let mut lies = Vec::new();
+    for case in &CASES {
+        let (seen, expected) = run(entry, case).await;
+        let differences = oracle::differences(&seen, &expected);
+        if !differences.is_empty() {
+            let (marker, commands, skipping) = (case.marker, case.commands, case.skipping);
+            lies.push(format!(
+                "node {entry} {marker} {commands:?} {skipping:?}:\n  {}",
+                differences.join("\n  ")
+            ));
+        }
+    }
+    lies
+}
+
 /// On every build, each step ends where V8's own step ends.
 #[tokio::test]
 async fn javascript_steps_end_where_v8_ends_them() {
-    let mut lies = Vec::new();
+    let mut found = Vec::new();
     for entry in MATRIX {
-        for case in &CASES {
-            let (seen, expected) = run(entry, case).await;
-            let differences = oracle::differences(&seen, &expected);
-            if !differences.is_empty() {
-                let (marker, commands, skipping) = (case.marker, case.commands, case.skipping);
-                lies.push(format!(
-                    "node {entry} {marker} {commands:?} {skipping:?}:\n  {}",
-                    differences.join("\n  ")
-                ));
-            }
-        }
+        found.extend(lies(entry).await);
     }
-    assert!(lies.is_empty(), "{}", lies.join("\n"));
+    assert!(found.is_empty(), "{}", found.join("\n"));
 }

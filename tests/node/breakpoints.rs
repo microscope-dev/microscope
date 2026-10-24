@@ -269,7 +269,7 @@ fn text(parts: &Arc<[LogPart]>) -> String {
 /// - a condition over a block's `let` in the top-level function stops once,
 ///   where the block's and the function's locals read by name;
 /// - a file that never loads stays pending, saying why.
-async fn every_kind_of_breakpoint(entry: &str) {
+pub async fn every_kind_of_breakpoint(entry: &str) {
     let (mut run, reason) = Run::launch(entry).await;
     let context = run.context.clone();
 
