@@ -635,14 +635,28 @@ impl<P: LinuxTraceOps> Controller<P> {
             below_stack_pointer: self.below_stack_pointer(inferior, &root, innermost),
         };
 
-        let key = module
-            .variables
-            .visible_object(
-                address,
-                (instance != physical).then_some(instance),
-                "$future",
-            )
-            .ok()?;
+        let coroutine_type = TypeReference {
+            image: module.loaded.image,
+            id: coroutine,
+        };
+        let Ok(key) = module.variables.visible_object(
+            address,
+            (instance != physical).then_some(instance),
+            "$future",
+        ) else {
+            // No Rust before 1.93 describes the parameter that passes a
+            // body its future, so its out-of-line bodies have no `$future`;
+            // the future its runtime drives says which it is. An inlined
+            // body that names none uses the future it is inlined into's,
+            // as it does in any build.
+            return (instance == physical)
+                .then(|| self.polled_future(pid, coroutine_type, None))
+                .flatten()
+                .map(|object| RunningFuture {
+                    object,
+                    ty: coroutine_type,
+                });
+        };
         let mut runtime = self.frame_runtime(inferior, &root, &resolved, module);
         let mut budget =
             crate::inspection::InspectionBudget::new(crate::InspectionLimits::default());
@@ -1018,8 +1032,9 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     /// Where the code that drops every future of type `ty` begins, which
-    /// rustc names `drop_glue<T>` for the type's full name: each copy of
-    /// the function, and each copy inlined elsewhere.
+    /// rustc names for the type's full name, as
+    /// [`crate::rust_names::DROP_GLUE`] lists: each copy of the function,
+    /// and each copy inlined elsewhere.
     fn drop_glue(&self, ty: TypeReference) -> (BTreeSet<VirtualAddress>, BTreeSet<VirtualAddress>) {
         let mut named = BTreeSet::new();
         let mut inlined = BTreeSet::new();
@@ -1035,14 +1050,13 @@ impl<P: LinuxTraceOps> Controller<P> {
             return (named, inlined);
         };
 
-        let mut name = String::from("drop_glue<");
+        let mut ty_name = String::new();
         for segment in identity.0.iter() {
-            name.push_str(segment);
-            name.push_str("::");
+            ty_name.push_str(segment);
+            ty_name.push_str("::");
         }
 
-        name.push_str(&identity.1);
-        name.push('>');
+        ty_name.push_str(&identity.1);
         let entry = |instance: crate::CodeInstance<'_>| {
             instance
                 .breakpoint_entry()
@@ -1051,8 +1065,14 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .and_then(|address| module.loaded.virtual_address(address).ok())
         };
 
-        // Each codegen unit may have a copy of its own.
-        for function in module.image.functions_called(&name) {
+        // Each codegen unit may have a copy of its own. A program has its
+        // glue under the one name its compiler gives it; a step that looked
+        // for another would miss every drop of its future, and run on past
+        // a cancelled task without a word.
+        for function in crate::rust_names::drop_glue_of(&ty_name)
+            .iter()
+            .flat_map(|name| module.image.functions_called(name))
+        {
             for instance in module.image.instances_for_function(function.id()) {
                 let copies = if matches!(instance.kind(), crate::CodeInstanceKind::OutOfLine) {
                     &mut named
@@ -1097,7 +1117,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
 
         let dropper = (0..stack.frames.len())
-            .find(|&level| physical(level).is_none_or(|function| !is_drop_glue(function.name())))
+            .find(|&level| {
+                physical(level)
+                    .is_none_or(|function| !crate::rust_names::is_drop_glue(function.name()))
+            })
             .filter(|&level| {
                 physical(level).is_some_and(|function| function.role() == crate::CodeRole::Ordinary)
             });
@@ -1548,11 +1571,6 @@ const fn ending(end: TaskEnd) -> TaskEnding {
         TaskEnd::Finished => TaskEnding::Finished,
         TaskEnd::Cancelled => TaskEnding::Cancelled,
     }
-}
-
-/// Whether a function is one rustc makes to drop a value of some type.
-fn is_drop_glue(name: &str) -> bool {
-    name.starts_with("drop_glue<") || name.starts_with("drop_in_place<")
 }
 
 /// What a step does once the poll that ran its future's body returned.

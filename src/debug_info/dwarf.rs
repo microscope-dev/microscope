@@ -1475,6 +1475,13 @@ fn load_image(
         }
     }
 
+    link_bodies_by_name(
+        &mut function_metadata.functions,
+        &function_metadata.body_futures,
+        &variables.types,
+        &coroutines,
+    );
+
     #[cfg(target_arch = "x86_64")]
     let resume_points = if target.architecture == Architecture::X86_64 {
         decode_resume_points(
@@ -3066,6 +3073,12 @@ struct FunctionMetadata {
     /// Maps each concrete function DIE to its code instance so the variable
     /// catalog can attribute scopes to logical frames.
     instance_ids: DieMap<CodeInstanceId>,
+
+    /// Each Rust async body, with the full name of the coroutine type that
+    /// rustc's naming says it runs (see [`super::coroutines::body_future`]):
+    /// how a body is linked to its coroutine where its debug information
+    /// does not otherwise say.
+    body_futures: Vec<(FunctionId, Arc<str>)>,
 }
 
 fn load_function_metadata<'data>(
@@ -3119,6 +3132,7 @@ fn load_function_metadata<'data>(
         .collect::<Vec<_>>();
     let mut functions = Vec::new();
     let mut trampolines = Vec::new();
+    let mut body_futures = Vec::new();
     let mut function_ids = vec![None; raw.len()];
     for (definition, named) in order.into_iter().zip(named) {
         let Some((name, role)) = named else {
@@ -3134,6 +3148,16 @@ fn load_function_metadata<'data>(
             u32::try_from(functions.len()).map_err(|_| gimli::Error::UnsupportedOffset)?,
         );
         trampolines.push(origin.trampoline);
+        if origin.language == SourceLanguage::Rust
+            && let Some(future) = origin
+                .name
+                .as_deref()
+                .zip(origin.namespace.as_deref())
+                .and_then(|(name, namespace)| super::coroutines::body_future(name, namespace))
+        {
+            body_futures.push((id, Arc::from(future)));
+        }
+
         functions.push(FunctionInfo {
             id,
             name,
@@ -3166,6 +3190,7 @@ fn load_function_metadata<'data>(
         functions,
         code_instances,
         instance_ids,
+        body_futures,
     })
 }
 
@@ -3302,6 +3327,57 @@ fn function_name(function: &RawFunction) -> Option<Arc<str>> {
             super::coroutines::body_name(raw, namespace).or(name)
         }
         _ => name,
+    }
+}
+
+/// Links each async body whose parameters name no coroutine to the
+/// coroutine type rustc's naming says it runs, as `body_futures` lists
+/// them: what a Rust older than 1.93 leaves to its names alone.
+///
+/// A type is described once in every unit that uses it, as Rust 1.88's
+/// coroutines spawned through tokio are, so one name may answer several
+/// type ids. Those are one type to the image, which classes types by the
+/// same identity (see `ModuleImage::same_type`), and the body is linked to
+/// the first.
+fn link_bodies_by_name(
+    functions: &mut [FunctionInfo],
+    body_futures: &[(FunctionId, Arc<str>)],
+    types: &[crate::TypeNode],
+    coroutines: &BTreeMap<crate::TypeId, std::result::Result<crate::CoroutineInfo, Arc<str>>>,
+) {
+    if body_futures
+        .iter()
+        .all(|(function, _)| functions[function.index()].coroutine.is_some())
+    {
+        return;
+    }
+
+    let mut named: HashMap<String, Vec<crate::TypeId>> = HashMap::new();
+    for ty in coroutines
+        .iter()
+        .filter_map(|(ty, info)| info.is_ok().then_some(*ty))
+    {
+        let Some(crate::TypeNode::Resolved(info)) = types.get(ty.index()) else {
+            continue;
+        };
+
+        let Some(identity) = info.identity.as_deref() else {
+            continue;
+        };
+
+        let mut name = identity.path.join("::");
+        name.push_str("::");
+        name.push_str(&info.name);
+        named.entry(name).or_default().push(ty);
+    }
+
+    for (function, future) in body_futures {
+        let function = &mut functions[function.index()];
+        if function.coroutine.is_none()
+            && let Some(ty) = named.get(&**future).and_then(|types| types.first())
+        {
+            function.coroutine = Some(*ty);
+        }
     }
 }
 
@@ -5459,5 +5535,95 @@ mod tests {
             assert!(blocks <= debug * 7 / 10, "{work}");
             assert!(bytes <= debug * 150, "{work}");
         }
+    }
+
+    /// Before Rust 1.93 an async body names the coroutine it runs only by
+    /// rustc's naming. Each body is linked to the coroutine type of its
+    /// future's full name, the first of its copies when several units
+    /// describe it; a coroutine whose layout did not load, a name no type
+    /// answers, and a body already linked by its parameter are left as
+    /// they are.
+    #[test]
+    fn async_bodies_link_by_name_to_the_one_coroutine_they_run() {
+        let function = |id: u32, coroutine: Option<u32>| FunctionInfo {
+            id: FunctionId::new(id),
+            name: "body".into(),
+            linkage_name: None,
+            declaration: None,
+            language: SourceLanguage::Rust,
+            role: crate::CodeRole::Ordinary,
+            enclosing: None,
+            coroutine: coroutine.map(crate::TypeId::new),
+            generics: Arc::from([]),
+            main_subprogram: false,
+        };
+        let coroutine_type = |id: u32, path: &[&str], name: &str| {
+            crate::TypeNode::Resolved(crate::TypeInfo {
+                reference: crate::TypeReference {
+                    image: crate::ModuleImageId::new(0),
+                    id: crate::TypeId::new(id),
+                },
+                name: name.into(),
+                byte_size: Some(16),
+                kind: crate::TypeKind::Opaque {
+                    description: "a coroutine".into(),
+                },
+                identity: Some(Arc::new(crate::TypeIdentity {
+                    language: SourceLanguage::Rust,
+                    path: path.iter().map(|&part| part.into()).collect(),
+                    inline_namespaces: Arc::new([]),
+                    base: name.into(),
+                    arguments: Arc::new([]),
+                    pack: None,
+                    origin: crate::ArgumentOrigin::Dwarf,
+                    go: None,
+                })),
+            })
+        };
+        let info = || crate::CoroutineInfo {
+            kind: crate::CoroutineKind::AsyncFunction,
+            state: crate::StateMember { offset: 0, size: 1 },
+            states: Arc::new([]),
+            captures: Arc::new([]),
+        };
+
+        let types = vec![
+            coroutine_type(0, &["steps", "leaf"], "{async_fn_env#0}"),
+            coroutine_type(1, &["steps", "leaf"], "{async_fn_env#0}<u32>"),
+            // One type, described in two units.
+            coroutine_type(2, &["steps", "twice"], "{async_fn_env#0}"),
+            coroutine_type(3, &["steps", "twice"], "{async_fn_env#0}"),
+            coroutine_type(4, &["steps", "broken"], "{async_fn_env#0}"),
+            coroutine_type(5, &["steps", "linked"], "{async_fn_env#0}"),
+        ];
+        let coroutines = BTreeMap::from_iter([
+            (crate::TypeId::new(0), Ok(info())),
+            (crate::TypeId::new(1), Ok(info())),
+            (crate::TypeId::new(2), Ok(info())),
+            (crate::TypeId::new(3), Ok(info())),
+            (
+                crate::TypeId::new(4),
+                Err(Arc::from("its layout is damaged")),
+            ),
+            (crate::TypeId::new(5), Ok(info())),
+        ]);
+        let mut functions = (0..6).map(|id| function(id, None)).collect::<Vec<_>>();
+        functions[5].coroutine = Some(crate::TypeId::new(0));
+        let futures = [
+            (FunctionId::new(0), "steps::leaf::{async_fn_env#0}"),
+            (FunctionId::new(1), "steps::leaf::{async_fn_env#0}<u32>"),
+            (FunctionId::new(2), "steps::twice::{async_fn_env#0}"),
+            (FunctionId::new(3), "steps::broken::{async_fn_env#0}"),
+            (FunctionId::new(4), "steps::absent::{async_fn_env#0}"),
+            (FunctionId::new(5), "steps::linked::{async_fn_env#0}"),
+        ]
+        .map(|(function, name)| (function, Arc::<str>::from(name)));
+
+        link_bodies_by_name(&mut functions, &futures, &types, &coroutines);
+        let linked = functions
+            .iter()
+            .map(|function| function.coroutine.map(crate::TypeId::get))
+            .collect::<Vec<_>>();
+        assert_eq!(linked, [Some(0), Some(1), Some(2), None, None, Some(0)]);
     }
 }

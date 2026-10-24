@@ -1,9 +1,10 @@
 //! Rust's standard library, as the runtime that reports a program's
 //! panics.
 //!
-//! std calls `__rustc::rust_panic(&mut dyn PanicPayload)` once the panic
-//! hook has run and before unwinding begins, so a panic is reported there
-//! before anything catches it. std ships no debug information for its
+//! std calls `__rustc::rust_panic(&mut dyn PanicPayload)` (an unmangled
+//! `rust_panic` before Rust 1.87) once the panic hook has run and before
+//! unwinding begins, so a panic is reported there before anything catches
+//! it. std ships no debug information for its
 //! private types, so the payload's type is named by the symbol of its
 //! `Display::fmt` in the payload's vtable, and its layout is a convention
 //! of the pinned toolchain, checked by the tests against the program's own
@@ -21,6 +22,7 @@
 //! A `String` is its capacity, pointer, and length, and `None` of an
 //! `Option<String>` is the capacity no allocation can have.
 
+use std::collections::BTreeSet;
 use std::path::{Component, Path};
 use std::sync::Arc;
 
@@ -71,7 +73,12 @@ pub fn detect(image: &Arc<dyn RuntimeImage + Send + Sync>) -> Option<Arc<dyn Run
         return None;
     }
 
-    let panic = image.function_answering("__rustc::rust_panic")?;
+    // The function's name changed in Rust 1.87; a program has the one its
+    // compiler gave it, and with only the newer, no panic in a program an
+    // older Rust built would stop.
+    let panic = crate::rust_names::RUST_PANIC
+        .iter()
+        .find_map(|name| image.function_answering(name))?;
     Some(Arc::new(RustRuntime {
         image: Arc::clone(image),
         hooks: [RuntimeHook {
@@ -102,17 +109,36 @@ impl Payload<'_> {
             .ok_or_else(|| format!("the panic's memory at {address:#x} is unreadable").into())
     }
 
-    /// The demangled name of the method a vtable holds at `slot`.
-    fn method(&self, vtable: u64, slot: u64) -> Result<Arc<str>, Arc<str>> {
+    /// The type that the method a vtable holds at `slot` implements a
+    /// trait for, as `<T as Trait>::method` names it.
+    ///
+    /// A legacy-mangled symbol, the default for a program's own code
+    /// before Rust 1.97, names an impl's generic parameters rather than
+    /// their arguments: `<T as core::any::Any>::type_id`, or `Payload<A>`.
+    /// The method's debug information says what each parameter is, which
+    /// replaces it; a v0 symbol names the arguments, and nothing in it is
+    /// a parameter's bare name.
+    fn implementer(&self, vtable: u64, slot: u64) -> Result<String, Arc<str>> {
         let method = self.word(vtable + slot)?;
         let address = self
             .stop
             .load_bias()
             .unload(VirtualAddress::new(method))
             .ok_or("the panic's vtable points outside the program")?;
-        self.image
-            .symbol_at(address)
-            .ok_or_else(|| format!("no symbol names the method at {method:#x}").into())
+        let symbol = self.image.symbol_at(address).ok_or_else(|| {
+            Arc::<str>::from(format!("no symbol names the method at {method:#x}"))
+        })?;
+        let implementer = implementer(&symbol).ok_or_else(|| format!("the panic's `{symbol}`"))?;
+
+        // Rust 1.85's debug information leaves some instances' parameters
+        // out, as `type_id`'s for `String`, but still names the function
+        // with its arguments, `type_id<alloc::string::String>`.
+        let mut generics = self.image.function_generics(address);
+        if generics.is_empty() {
+            generics = named_generics(implementer, self.image.function_name(address).as_deref());
+        }
+
+        Ok(substituted(implementer, &generics))
     }
 
     fn text(&self, pointer: u64, length: u64) -> Result<String, Arc<str>> {
@@ -154,8 +180,8 @@ impl Payload<'_> {
 
     /// What `rust_panic` was given, at `data` with vtable `vtable`.
     fn report(&self, data: u64, vtable: u64) -> Result<RuntimeException, Arc<str>> {
-        let display = self.method(vtable, VTABLE_FIRST_METHOD)?;
-        let ty = implementer(&display).ok_or_else(|| format!("the payload's `{display}`"))?;
+        let ty = self.implementer(vtable, VTABLE_FIRST_METHOD)?;
+        let ty = ty.as_str();
         let message = |text: String| RuntimeException {
             message: format!("panicked: {text}").into(),
             value: None,
@@ -183,9 +209,8 @@ impl Payload<'_> {
             }
             Some("RewrapBox") => {
                 let (inner, any) = (self.word(data)?, self.word(data + 8)?);
-                let type_id = self.method(any, VTABLE_FIRST_METHOD)?;
-                let held = implementer(&type_id)
-                    .ok_or_else(|| format!("the resumed panic's `{type_id}`"))?;
+                let held = self.implementer(any, VTABLE_FIRST_METHOD)?;
+                let held = held.as_str();
                 Ok(RuntimeException {
                     message: self
                         .message(held, inner)?
@@ -216,6 +241,75 @@ fn implementer(method: &str) -> Option<&str> {
     }
 
     None
+}
+
+/// `ty` with each of its words that is the bare name of one of `generics`'
+/// parameters replaced by the parameter's argument. A word within a path,
+/// after `::`, names no parameter, which is never qualified.
+fn substituted(ty: &str, generics: &[(Arc<str>, String)]) -> String {
+    let mut out = String::with_capacity(ty.len());
+    let mut rest = ty;
+    while let Some(start) = rest.find(|c: char| c.is_alphanumeric() || c == '_') {
+        out.push_str(&rest[..start]);
+        let word = &rest[start..];
+        let end = word
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(word.len());
+        let (word, after) = word.split_at(end);
+        let qualified = out.ends_with("::") || after.starts_with("::");
+        match generics.iter().find(|(name, _)| **name == *word) {
+            Some((_, argument)) if !qualified => out.push_str(argument),
+            _ => out.push_str(word),
+        }
+
+        rest = after;
+    }
+
+    out.push_str(rest);
+    out
+}
+
+/// The one generic parameter that `ty`, a legacy symbol's implementer,
+/// names bare, with the one argument the function's debug-information
+/// `name` ends in; none unless there is exactly one of each, as which
+/// argument is which parameter's is otherwise unknown. A bare word
+/// beginning with a capital is a parameter, as a legacy symbol spells
+/// every other type by its path and Rust's primitive types in lowercase.
+fn named_generics(ty: &str, name: Option<&str>) -> Vec<(Arc<str>, String)> {
+    let mut parameters = BTreeSet::new();
+    let mut rest = ty;
+    while let Some(start) = rest.find(|c: char| c.is_alphanumeric() || c == '_') {
+        let before = &rest[..start];
+        let word = &rest[start..];
+        let end = word
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(word.len());
+        let (word, after) = word.split_at(end);
+        let qualified = before.ends_with("::") || after.starts_with("::");
+        if !qualified && word.starts_with(|c: char| c.is_ascii_uppercase()) {
+            parameters.insert(word);
+        }
+        rest = after;
+    }
+
+    let arguments = name.and_then(argument).filter(|arguments| {
+        let mut depth = 0_usize;
+        arguments.chars().all(|c| {
+            match c {
+                '<' | '(' | '[' => depth += 1,
+                '>' | ')' | ']' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            !(c == ',' && depth == 0)
+        })
+    });
+
+    match (parameters.len(), parameters.first(), arguments) {
+        (1, Some(parameter), Some(argument)) => {
+            vec![(Arc::from(*parameter), argument.to_owned())]
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// A type's name as an expression writes it, its generic last segment in
@@ -429,6 +523,73 @@ mod tests {
             quoted("std::panicking::begin_panic::Payload<alloc::string::String>"),
             "std::panicking::begin_panic::`Payload<alloc::string::String>`"
         );
+    }
+
+    /// A legacy symbol's parameters become the arguments the function's
+    /// debug information gives, wherever they stand bare, and nothing
+    /// within a path does, nor a word that only begins like a parameter.
+    /// Rust 1.85 leaves some generic instances' parameters out of their
+    /// debug information but names the function with its argument: the
+    /// one bare parameter a legacy implementer names takes the one
+    /// argument the name ends in, and nothing is guessed when either is
+    /// not exactly one.
+    #[test]
+    fn a_lone_parameter_takes_the_argument_its_function_is_named_with() {
+        let pairs = |found: Vec<(Arc<str>, String)>| {
+            found
+                .into_iter()
+                .map(|(name, argument)| (name.to_string(), argument))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            pairs(named_generics("T", Some("type_id<alloc::string::String>"))),
+            [("T".to_owned(), "alloc::string::String".to_owned())]
+        );
+        assert_eq!(
+            pairs(named_generics(
+                "std::panicking::begin_panic::Payload<A>",
+                Some("fmt<alloc::vec::Vec<(u8, u16)>>")
+            )),
+            [("A".to_owned(), "alloc::vec::Vec<(u8, u16)>".to_owned())]
+        );
+
+        // Two arguments, two parameters, none at all, or a concrete path.
+        assert!(named_generics("T", Some("f<u8, u16>")).is_empty());
+        assert!(named_generics("Pair<A, B>", Some("f<u8>")).is_empty());
+        assert!(named_generics("T", Some("type_id")).is_empty());
+        assert!(named_generics("T", None).is_empty());
+        assert!(named_generics("alloc::string::String", Some("f<u8>")).is_empty());
+    }
+
+    #[test]
+    fn a_legacy_symbols_parameters_are_their_arguments() {
+        let generics = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(name, argument)| (Arc::from(*name), (*argument).to_owned()))
+                .collect::<Vec<_>>()
+        };
+
+        let string = generics(&[("T", "alloc::string::String")]);
+        assert_eq!(substituted("T", &string), "alloc::string::String");
+        assert_eq!(
+            substituted(
+                "std::panicking::begin_panic::Payload<A>",
+                &generics(&[("A", "i32")])
+            ),
+            "std::panicking::begin_panic::Payload<i32>"
+        );
+
+        // A v0 symbol's concrete names are left alone, even where a part
+        // of a path or a longer word spells a parameter.
+        let concrete = "alloc::boxed::Box<T::A, Tail>";
+        assert_eq!(substituted(concrete, &string), concrete);
+        assert_eq!(substituted("a::T", &string), "a::T");
+        assert_eq!(
+            substituted("&[T; 2]", &string),
+            "&[alloc::string::String; 2]"
+        );
+        assert_eq!(substituted("T", &[]), "T");
     }
 
     #[test]

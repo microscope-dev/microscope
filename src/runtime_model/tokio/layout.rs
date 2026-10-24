@@ -11,10 +11,24 @@ use super::super::RuntimeImage;
 use super::super::records::{self, Field, Missing, Sum};
 use crate::{ThreadLocal, TypeReference};
 
-/// Where the thread-local `CONTEXT` is, by its scope and the name std's
-/// `thread_local!` gives its storage.
-const CONTEXT_SCOPE: &str = "tokio::runtime::context::CONTEXT";
-const CONTEXT_STORAGE: &str = "__RUST_STD_INTERNAL_VAL";
+/// Where the thread-local `CONTEXT` is, by its scope, within which std's
+/// `thread_local!` names its storage (see [`thread_local_storage`]).
+pub const CONTEXT_SCOPE: &str = "tokio::runtime::context::CONTEXT";
+
+/// Where each thread's copy is of the storage std's `thread_local!` makes
+/// for the variable `scope` names, or why that is unknown; `None` when the
+/// program has none. std renamed the storage's static in Rust 1.92, and a
+/// program has it under the name its compiler gave it, so each name
+/// [`crate::rust_names::THREAD_LOCAL_STORAGE`] lists is tried: with only
+/// the newer, tokio is not found at all in a program an older Rust built.
+pub fn thread_local_storage(
+    image: &dyn RuntimeImage,
+    scope: &str,
+) -> Option<Result<ThreadLocal, Arc<str>>> {
+    crate::rust_names::THREAD_LOCAL_STORAGE
+        .iter()
+        .find_map(|name| image.thread_local_within(scope, name))
+}
 
 /// Each runtime flavor, as `scheduler::Handle` names its variant, with
 /// the type its handle's `Arc` holds.
@@ -114,7 +128,7 @@ pub struct Locals {
 
 impl Locals {
     fn bind(image: &dyn RuntimeImage) -> Result<Option<Self>, Missing> {
-        let Some(tls) = image.thread_local_within(LOCAL_SCOPE, CONTEXT_STORAGE) else {
+        let Some(tls) = thread_local_storage(image, LOCAL_SCOPE) else {
             return Ok(None);
         };
 
@@ -328,8 +342,7 @@ fn mutex(
 
 impl Context {
     fn bind(image: &dyn RuntimeImage) -> Result<Self, Missing> {
-        let tls = image
-            .thread_local_within(CONTEXT_SCOPE, CONTEXT_STORAGE)
+        let tls = thread_local_storage(image, CONTEXT_SCOPE)
             .ok_or("the program has no tokio::runtime::context::CONTEXT")??;
         let storage = records::named(
             image,
@@ -483,13 +496,19 @@ impl Tasks {
     }
 }
 
-/// The blocking pool's queue: a `VecDeque<Task>` behind a mutex.
+/// The blocking pool's queues: each a `VecDeque<Task>` behind a mutex.
+///
+/// tokio 1.53 and before kept one queue, in `Inner.shared`. tokio 1.54
+/// put it behind `Inner.inner_impl`, an enum the runtime's builder
+/// chooses: `Locked` keeps the one queue as before, and `Sharded` keeps
+/// an array of them. Both shapes are bound here, so a program built
+/// with either release lists its queued blocking tasks.
 #[derive(Debug)]
 pub struct Pool {
-    /// The mutex's lock within the pool's `Inner`.
-    pub lock: Lock,
+    pub queues: Queues,
 
-    /// The queue's head index, length, buffer, and capacity.
+    /// Each queue's head index, length, buffer, and capacity, within its
+    /// `VecDeque`.
     pub head: u64,
     pub len: u64,
     pub buffer: u64,
@@ -503,36 +522,165 @@ pub struct Pool {
     pub data: u64,
 }
 
+/// One queue of blocking tasks: its mutex's lock and its `VecDeque`,
+/// each at an offset within the pool's `Inner`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Guarded {
+    pub lock: Lock,
+    pub queue: u64,
+}
+
+impl Guarded {
+    /// The same queue `by` bytes further into the pool's `Inner`.
+    pub(super) fn shifted(self, by: u64) -> Result<Self, Missing> {
+        Ok(Self {
+            lock: Lock {
+                offset: records::within(by, self.lock.offset)?,
+                ..self.lock
+            },
+            queue: records::within(by, self.queue)?,
+        })
+    }
+}
+
+/// How the pool's `Inner` holds its queues.
+#[derive(Debug)]
+pub enum Queues {
+    /// tokio 1.53 and before: the one queue in `Inner.shared`.
+    One(Guarded),
+
+    /// tokio 1.54 and after: `Inner.inner_impl`, at `at`, read by its
+    /// tag. `Locked` holds the one queue `locked`; `Sharded` holds
+    /// `shards` queues, the first `sharded` and each next `stride` bytes
+    /// after it.
+    Chosen {
+        choice: Sum,
+        at: u64,
+        locked: Guarded,
+        sharded: Guarded,
+        stride: u64,
+        shards: u64,
+    },
+}
+
+/// The most queues a sharded pool is read with. tokio 1.54 has 16; a
+/// count past this is damage in the debug information, not a pool.
+pub const MAX_SHARDS: u64 = 1024;
+
 impl Pool {
     fn bind(image: &dyn RuntimeImage) -> Result<Self, Missing> {
         let inner = records::named(image, "tokio::runtime::blocking::pool::Inner")?;
-        let (lock, shared) = mutex(image, inner, &["shared"], "the blocking pool")?;
-        let queue = records::field(image, shared.ty, &["queue"])?;
-        let queue_at = records::within(shared.offset, queue.offset)?;
-        let sized = |path: &[&str]| {
-            records::sized(image, queue.ty, path, 8)
-                .and_then(|offset| records::within(queue_at, offset))
+
+        // The member that names the shape decides which is bound, so a
+        // program of either release reports what its own shape lacks.
+        let (queues, deque) = if records::field(image, inner, &["inner_impl"]).is_ok() {
+            Self::chosen(image, inner)?
+        } else {
+            let (lock, shared) = mutex(image, inner, &["shared"], "the blocking pool")?;
+            let (one, deque) = guarded(image, lock, shared)?;
+            (Queues::One(one), deque)
         };
 
         let task = records::named(image, "tokio::runtime::blocking::pool::Task")?;
         let spawner = records::named(image, "tokio::runtime::blocking::pool::Spawner")?;
         let arc = records::field(image, spawner, &["inner", "ptr", "pointer"])?;
         let arc = records::target(image, arc.ty)?;
+        let (head, len, buffer, capacity) = deque_words(image, deque)?;
 
         Ok(Self {
-            lock,
-            head: sized(&["head"])?,
-            len: sized(&["len"])?,
-            // Each a word wrapped in single-member records whose names std
-            // changes: `Unique` and `Cap` once, `NonNull` and
-            // `UsizeNoHighBit` now. The word begins each wrapper.
-            buffer: sized(&["buf", "inner", "ptr"])?,
-            capacity: sized(&["buf", "inner", "cap"])?,
+            queues,
+            head,
+            len,
+            buffer,
+            capacity,
             task_size: records::size(image, task)?,
             task: records::sized(image, task, &["task", "raw", "ptr", "pointer"], 8)?,
             data: records::field(image, arc, &["data"])?.offset,
         })
     }
+
+    /// tokio 1.54's `Inner.inner_impl`: `Locked(LockedImpl { mutex, .. })`
+    /// or `Sharded(ShardedImpl { shards: [Mutex<Shard>; N], .. })`, each
+    /// mutex's data holding a `queue`. Both variants are bound, as which
+    /// one a program uses is the builder's choice at run time.
+    fn chosen(
+        image: &dyn RuntimeImage,
+        inner: TypeReference,
+    ) -> Result<(Queues, TypeReference), Missing> {
+        let field = records::field(image, inner, &["inner_impl"])?;
+        let choice = records::sum(image, field.ty)?;
+
+        let locked = choice.variant("Locked")?.payload;
+        let (lock, data) = mutex(image, locked.ty, &["__0", "mutex"], "the blocking pool")?;
+        let (one, deque) = guarded(image, lock, data)?;
+        let locked = one.shifted(records::within(field.offset, locked.offset)?)?;
+
+        let sharded = choice.variant("Sharded")?.payload;
+        let shards = records::field(image, sharded.ty, &["__0", "shards"])?;
+        let (shard, count) = records::array(image, shards.ty)?;
+        if count == 0 || count > MAX_SHARDS {
+            return Err(format!("the blocking pool has {count} shards").into());
+        }
+
+        let (lock, data) = mutex(image, shard, &[], "a blocking pool's shard")?;
+        let (first, shard_deque) = guarded(image, lock, data)?;
+        let first = first.shifted(records::within(
+            records::within(field.offset, sharded.offset)?,
+            shards.offset,
+        )?)?;
+
+        // Each queue is read with the one layout, so both must agree.
+        if deque_words(image, shard_deque)? != deque_words(image, deque)? {
+            return Err("the blocking pool's queues differ in layout".into());
+        }
+
+        let at = field.offset;
+        Ok((
+            Queues::Chosen {
+                choice,
+                at,
+                locked,
+                sharded: first,
+                stride: records::size(image, shard)?,
+                shards: count,
+            },
+            deque,
+        ))
+    }
+}
+
+/// A queue behind the mutex whose lock is `lock` and whose data, holding
+/// a `queue` member, is `data`; and the queue's type.
+fn guarded(
+    image: &dyn RuntimeImage,
+    lock: Lock,
+    data: Field,
+) -> Result<(Guarded, TypeReference), Missing> {
+    let queue = records::field(image, data.ty, &["queue"])?;
+    Ok((
+        Guarded {
+            lock,
+            queue: records::within(data.offset, queue.offset)?,
+        },
+        queue.ty,
+    ))
+}
+
+/// A `VecDeque`'s head index, length, buffer, and capacity, each a word.
+fn deque_words(
+    image: &dyn RuntimeImage,
+    deque: TypeReference,
+) -> Result<(u64, u64, u64, u64), Missing> {
+    let sized = |path: &[&str]| records::sized(image, deque, path, 8);
+    Ok((
+        sized(&["head"])?,
+        sized(&["len"])?,
+        // Each a word wrapped in single-member records whose names std
+        // changes: `Unique` and `Cap` once, `NonNull` and
+        // `UsizeNoHighBit` now. The word begins each wrapper.
+        sized(&["buf", "inner", "ptr"])?,
+        sized(&["buf", "inner", "cap"])?,
+    ))
 }
 
 fn pointer_sized(image: &dyn RuntimeImage, ty: TypeReference, what: &str) -> Result<(), Missing> {

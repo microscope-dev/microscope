@@ -140,8 +140,41 @@ pub fn walk(
     future: VirtualAddress,
     ty: TypeReference,
 ) -> AwaitChain {
+    walk_choosing(image, stop, future, ty, &mut |_, _| StateChoice::Stored)
+}
+
+/// Which state the walk reads a coroutine in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateChoice {
+    /// The state its future stores.
+    Stored,
+
+    /// The state of this value, as a caller knows the coroutine to be
+    /// running in it.
+    Chosen(u64),
+
+    /// One the caller cannot say, so the chain ends there.
+    Unknown,
+}
+
+/// The chain of awaits of the future at `future`, as [`walk`] reads it,
+/// with the state of the `n`th coroutine from the outermost read as
+/// `choose(n, coroutine)` says.
+///
+/// A coroutine that is running stores the state it last suspended in, not
+/// the await it has gone on to, until it suspends there; one whose frame
+/// is on the stack is in the await its frame's line is at. A chain read
+/// down from a task's future through coroutines that are running takes
+/// each one's state from its frame, as a caller that has the frames says.
+pub fn walk_choosing(
+    image: &dyn RuntimeImage,
+    stop: &dyn RuntimeStop,
+    future: VirtualAddress,
+    ty: TypeReference,
+    choose: &mut dyn FnMut(usize, &crate::CoroutineInfo) -> StateChoice,
+) -> AwaitChain {
     let mut frames = Vec::new();
-    let end = follow(image, stop, future, ty, &mut frames);
+    let end = follow(image, stop, future, ty, &mut frames, choose);
     frames.reverse();
     AwaitChain { frames, end }
 }
@@ -152,8 +185,10 @@ fn follow(
     mut object: VirtualAddress,
     mut ty: TypeReference,
     frames: &mut Vec<AsyncFrame>,
+    choose: &mut dyn FnMut(usize, &crate::CoroutineInfo) -> StateChoice,
 ) -> ChainEnd {
     let mut seen = BTreeSet::new();
+    let mut coroutines = 0;
 
     for _ in 0..MAX_DEPTH {
         if !seen.insert((object, ty)) {
@@ -170,14 +205,12 @@ fn follow(
                 Err(reason) => return ChainEnd::Broken(Arc::clone(reason)),
             };
 
-            let Ok(size) = usize::try_from(coroutine.state.size) else {
-                return ChainEnd::Broken("a coroutine's state is too large".into());
+            let number = match state_number(stop, object, coroutine, choose(coroutines, coroutine))
+            {
+                Ok(number) => number,
+                Err(end) => return end,
             };
-
-            let at = object.wrapping_add(coroutine.state.offset);
-            let Some(number) = records::read(stop, at, size) else {
-                return ChainEnd::Broken(format!("the future at {object:#x} is unreadable").into());
-            };
+            coroutines += 1;
 
             let Some(state) = coroutine.state(number) else {
                 return ChainEnd::Broken(
@@ -261,6 +294,29 @@ fn follow(
     }
 
     ChainEnd::TooDeep
+}
+
+/// The state the coroutine at `object` is read in, as `choice` says, or
+/// why it cannot be.
+fn state_number(
+    stop: &dyn RuntimeStop,
+    object: VirtualAddress,
+    coroutine: &crate::CoroutineInfo,
+    choice: StateChoice,
+) -> Result<u64, ChainEnd> {
+    match choice {
+        StateChoice::Chosen(number) => Ok(number),
+        StateChoice::Unknown => Err(ChainEnd::Broken(
+            format!("the await the future at {object:#x} runs is unknown").into(),
+        )),
+        StateChoice::Stored => {
+            let size = usize::try_from(coroutine.state.size)
+                .map_err(|_| ChainEnd::Broken("a coroutine's state is too large".into()))?;
+            records::read(stop, object.wrapping_add(coroutine.state.offset), size).ok_or_else(
+                || ChainEnd::Broken(format!("the future at {object:#x} is unreadable").into()),
+            )
+        }
+    }
 }
 
 /// The future the trait object at `object` holds, with its data pointer

@@ -36,6 +36,16 @@ Runtime internals and compiler output change across versions. When microscope
 cannot identify a task or continuation safely, it leaves that part unavailable
 instead of guessing.
 
+Programs built by Rust 1.85 or later and tokio 1.51 to 1.54 are supported.
+Another tokio release is read as tokio 1.54 is laid out, and the task list
+says that its version is unverified. Rust before 1.93 does not say in its
+debug information which future an async function's frame runs, so
+microscope finds it from the task's chain of awaits. Task lists, backtraces,
+and `$future` and steps in unoptimized tokio tasks work there; a future run
+by an executor other than tokio's, an async function inlined into its caller
+by an optimized build, and some steps whose future is cancelled stay
+unavailable.
+
 ## Go
 
 microscope reads Go runtime metadata and presents goroutines as tasks. A running

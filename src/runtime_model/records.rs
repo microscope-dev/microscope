@@ -176,6 +176,22 @@ pub fn slice_element(
     }
 }
 
+/// The element type and length of a one-dimensional array of fixed size,
+/// such as Rust's `[T; N]`.
+pub fn array(image: &dyn RuntimeImage, ty: TypeReference) -> Result<(TypeReference, u64), Missing> {
+    match representation(image, ty).map(|info| &info.kind) {
+        Some(TypeKind::Array {
+            element,
+            dimensions,
+            ..
+        }) => match dimensions.as_ref() {
+            [dimension] => Ok((*element, dimension.count)),
+            _ => Err(format!("{} is not one-dimensional", name_of(image, ty)).into()),
+        },
+        _ => Err(format!("{} is no array", name_of(image, ty)).into()),
+    }
+}
+
 /// The value an enumeration gives one of its names.
 pub fn enumerator(image: &dyn RuntimeImage, ty: TypeReference, name: &str) -> Result<u64, Missing> {
     let Some(TypeKind::Enumeration { enumerators, .. }) =

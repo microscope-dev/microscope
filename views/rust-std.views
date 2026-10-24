@@ -148,32 +148,22 @@ view rust alloc::**::Arc<T, _> {
 }
 
 # A Weak from Weak::new points nowhere, at usize::MAX; one whose owners are
-# gone holds a dropped value.
-view rust alloc::rc::Weak<T, _> {
+# gone holds a dropped value. Rc's and Arc's are one view: their shared
+# boxes differ only in the member that holds the value. `**` matches their
+# modules wherever std defines them: alloc::rc and alloc::sync through Rust
+# 1.97, and alloc::rcs::rc and alloc::rcs::arc in nightlies after, which is
+# where debug information names them.
+view rust alloc::**::Weak<T, _> {
     let shared = inner(ptr)
     let dangling = shared as usize == (usize)-1
     let strong = dangling ? 0 : inner(shared->strong)
+    let held = shared->value or shared->data
     show if dangling {
         empty("dangling")
     } else if strong == 0 {
         empty("dropped")
     } else {
-        value(shared->value)
-    }
-    field strong = strong
-    field weak = dangling ? 0 : inner(shared->weak) - (strong > 0 ? 1 : 0)
-}
-
-view rust alloc::sync::Weak<T, _> {
-    let shared = inner(ptr)
-    let dangling = shared as usize == (usize)-1
-    let strong = dangling ? 0 : inner(shared->strong)
-    show if dangling {
-        empty("dangling")
-    } else if strong == 0 {
-        empty("dropped")
-    } else {
-        value(shared->data)
+        value(held)
     }
     field strong = strong
     field weak = dangling ? 0 : inner(shared->weak) - (strong > 0 ? 1 : 0)

@@ -874,8 +874,8 @@ async fn a_build_without_types_refuses_tasks_and_says_why() {
 }
 
 /// tokio's sources moved out of the path its version is read from: the
-/// tasks are listed as tokio 1.53 lays them out, each page saying that
-/// the version is unknown rather than taking it for granted.
+/// tasks are listed as the newest verified tokio lays them out, each page
+/// saying that the version is unknown rather than taking it for granted.
 #[tokio::test]
 async fn an_unknown_version_is_read_as_the_supported_one_and_says_so() {
     let fixture = "tokio-workers-remapped";
@@ -889,7 +889,7 @@ async fn an_unknown_version_is_read_as_the_supported_one_and_says_so() {
     let pages = tasks.len().div_ceil(3);
     assert_eq!(
         gaps,
-        vec!["tokio's version is unknown; its runtime is read as tokio 1.53's".to_owned(); pages],
+        vec!["tokio's version is unknown; its runtime is read as tokio 1.54's".to_owned(); pages],
         "{fixture}"
     );
     check_threads(&mut workers.scenario, false, &truth, &tasks).await;

@@ -397,6 +397,45 @@ impl<P: InspectionOps> Frame<'_, P> {
         }
     }
 
+    /// `$future` in a running frame of an async body whose debug
+    /// information does not name its future, as no Rust before 1.93's
+    /// does: the future its runtime polls at the frame's place in the
+    /// task's chain of awaits. Only an out-of-line body has a place of its
+    /// own; an inlined one names its future as its caller does.
+    fn polled_future(
+        &self,
+        module: &RuntimeModule,
+        address: ImageAddress,
+        selected: Option<CodeInstanceId>,
+    ) -> Option<Lookup<StopObject>> {
+        if selected.is_some() {
+            return None;
+        }
+
+        let pid = self.root.thread()?;
+        let image = &module.image;
+        let instance = image.locate(address).physical_instance?;
+        let coroutine = image
+            .code_instance(instance)
+            .and_then(|instance| image.function(instance.function()))?
+            .coroutine()?;
+        let ty = TypeReference {
+            image: module.loaded.image,
+            id: coroutine,
+        };
+        let address = self
+            .controller
+            .polled_future(pid, ty, Some(self.resolved.id))?;
+        Some(Lookup::Object {
+            object: StopObject {
+                module: module.loaded.id,
+                key: ObjectRef::Saved { ty: ty.id, address },
+                local: true,
+            },
+            ty: Ok(ty),
+        })
+    }
+
     /// The global `name` names in exactly one loaded module.
     fn lookup_global(
         &self,
@@ -770,6 +809,11 @@ impl<P: InspectionOps> Scope for Frame<'_, P> {
         if !outermost && let Some((module, address, selected)) = self.code {
             match module.variables.visible_object(address, selected, name) {
                 Ok(key) => return Ok(object(module, key, true)),
+                Err(Error::VariableNotFound(_)) if name == "$future" => {
+                    if let Some(found) = self.polled_future(module, address, selected) {
+                        return Ok(found);
+                    }
+                }
                 Err(Error::VariableNotFound(_)) => {}
                 Err(Error::AmbiguousVariable(_)) => {
                     return Ok(Lookup::Ambiguous(vec![name.to_owned()]));

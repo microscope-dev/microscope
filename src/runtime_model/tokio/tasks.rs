@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use super::layout::{Flavor, Pool};
+use super::layout::{Flavor, Pool, Queues};
 use super::{
     CANCELLED, COMPLETE, Census, Cursor, Instance, List, MAX_TASKS, NOTIFIED, RUNNING, Tasks,
     TokioRuntime,
@@ -604,40 +604,72 @@ impl TokioRuntime {
             |address: VirtualAddress| records::pointer(stop, address).ok_or_else(unreadable);
         let inner = pointer(runtime.handle.wrapping_add(spawner))?.wrapping_add(pool.data);
 
-        let lock = records::read(stop, inner.wrapping_add(pool.lock.offset), pool.lock.size)
-            .ok_or_else(unreadable)?;
-        let head = word(inner.wrapping_add(pool.head))?;
-        let length = word(inner.wrapping_add(pool.len))?;
-        let buffer = pointer(inner.wrapping_add(pool.buffer))?;
-        let capacity = word(inner.wrapping_add(pool.capacity))?;
-        if length > capacity || capacity > MAX_TASKS || (capacity > 0 && head >= capacity) {
-            return Err(format!("its queue holds {length} of {capacity} from slot {head}").into());
-        }
+        let guards = match &pool.queues {
+            Queues::One(one) => vec![*one],
+            Queues::Chosen {
+                choice,
+                at,
+                locked,
+                sharded,
+                stride,
+                shards,
+            } => match &*choice.active(stop, inner.wrapping_add(*at))?.name {
+                "Locked" => vec![*locked],
+                // A sharded pool's workers take from every shard in turn,
+                // so the pool has no one order: its tasks are listed
+                // shard by shard, each shard in its own order.
+                "Sharded" => (0..*shards)
+                    .map(|index| sharded.shifted(index.wrapping_mul(*stride)))
+                    .collect::<Result<_, _>>()?,
+                other => return Err(format!("the blocking pool is {other}").into()),
+            },
+        };
 
-        let locked = pool.lock.is_held(lock);
         let mut queued = Vec::new();
+        let mut locked = false;
+        for guarded in guards {
+            let lock = records::read(
+                stop,
+                inner.wrapping_add(guarded.lock.offset),
+                guarded.lock.size,
+            )
+            .ok_or_else(unreadable)?;
+            let changing = guarded.lock.is_held(lock);
+            locked |= changing;
 
-        for index in 0..length {
-            let slot = (head + index) % capacity;
-            let at = buffer.wrapping_add(slot.wrapping_mul(pool.task_size));
-            let entry = pointer(at.wrapping_add(pool.task)).and_then(|header| {
-                let (vtable, _) = self.trailer(stop, tasks, header)?;
-                let id_offset = word(vtable.wrapping_add(tasks.id_offset))?;
-                Ok(RuntimeTask {
-                    state: TaskState::Runnable,
-                    detail: Some("queued in the blocking pool".into()),
-                    internal: self.is_launch(stop, vtable),
-                    ..task(word(header.wrapping_add(id_offset))?, header.get())
-                })
-            });
-            match entry {
-                Ok(entry) => queued.push(entry),
+            let deque = inner.wrapping_add(guarded.queue);
+            let head = word(deque.wrapping_add(pool.head))?;
+            let length = word(deque.wrapping_add(pool.len))?;
+            let buffer = pointer(deque.wrapping_add(pool.buffer))?;
+            let capacity = word(deque.wrapping_add(pool.capacity))?;
+            if length > capacity || capacity > MAX_TASKS || (capacity > 0 && head >= capacity) {
+                return Err(
+                    format!("its queue holds {length} of {capacity} from slot {head}").into(),
+                );
+            }
 
-                // A thread stopped inside a push may have counted a slot
-                // it has not yet written: the change the held lock's gap
-                // reports.
-                Err(_) if locked => break,
-                Err(reason) => return Err(reason),
+            for index in 0..length {
+                let slot = (head + index) % capacity;
+                let at = buffer.wrapping_add(slot.wrapping_mul(pool.task_size));
+                let entry = pointer(at.wrapping_add(pool.task)).and_then(|header| {
+                    let (vtable, _) = self.trailer(stop, tasks, header)?;
+                    let id_offset = word(vtable.wrapping_add(tasks.id_offset))?;
+                    Ok(RuntimeTask {
+                        state: TaskState::Runnable,
+                        detail: Some("queued in the blocking pool".into()),
+                        internal: self.is_launch(stop, vtable),
+                        ..task(word(header.wrapping_add(id_offset))?, header.get())
+                    })
+                });
+                match entry {
+                    Ok(entry) => queued.push(entry),
+
+                    // A thread stopped inside a push may have counted a
+                    // slot it has not yet written: the change the held
+                    // lock's gap reports.
+                    Err(_) if changing => break,
+                    Err(reason) => return Err(reason),
+                }
             }
         }
 

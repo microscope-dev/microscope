@@ -2514,3 +2514,87 @@ proptest::proptest! {
         proptest::prop_assert_eq!(bits_read, expected);
     }
 }
+
+/// A Rust typedef is the type it names, as Rust has no distinct typedef:
+/// a Rust newer than 1.97 describes `usize` and `isize` as typedefs of
+/// `u64` and `i64`, which must stay integers for expressions and views
+/// that compare a length. Go's typedefs, in contrast, are distinct types.
+#[test]
+fn a_rust_typedef_is_a_synonym_of_its_target() {
+    let relationship = |language| {
+        let encoding = Encoding {
+            format: Format::Dwarf32,
+            version: 5,
+            address_size: 8,
+        };
+
+        let mut written = WriteDwarf::new();
+        let unit_id = written.units.add(Unit::new(encoding, LineProgram::none()));
+        let unit = written.units.get_mut(unit_id);
+        let root = unit.root();
+        unit.get_mut(root).set(
+            gimli::DW_AT_language,
+            WriteAttributeValue::Language(language),
+        );
+        let word = unit.add(root, gimli::DW_TAG_base_type);
+        unit.get_mut(word).set(
+            gimli::DW_AT_name,
+            WriteAttributeValue::String(b"u64".to_vec()),
+        );
+        unit.get_mut(word)
+            .set(gimli::DW_AT_byte_size, WriteAttributeValue::Udata(8));
+        unit.get_mut(word).set(
+            gimli::DW_AT_encoding,
+            WriteAttributeValue::Encoding(gimli::DW_ATE_unsigned),
+        );
+        let usize = unit.add(root, gimli::DW_TAG_typedef);
+        unit.get_mut(usize).set(
+            gimli::DW_AT_name,
+            WriteAttributeValue::String(b"usize".to_vec()),
+        );
+        unit.get_mut(usize)
+            .set(gimli::DW_AT_type, WriteAttributeValue::UnitRef(word));
+        let global = unit.add(root, gimli::DW_TAG_variable);
+        unit.get_mut(global).set(
+            gimli::DW_AT_name,
+            WriteAttributeValue::String(b"length".to_vec()),
+        );
+        unit.get_mut(global)
+            .set(gimli::DW_AT_type, WriteAttributeValue::UnitRef(usize));
+        unit.get_mut(global)
+            .set(gimli::DW_AT_external, WriteAttributeValue::Flag(true));
+        let mut location = gimli::write::Expression::new();
+        location.op_addr(gimli::write::Address::Constant(0x10));
+        unit.get_mut(global).set(
+            gimli::DW_AT_location,
+            WriteAttributeValue::Exprloc(location),
+        );
+
+        let debug_info = load_test_object(&mut written);
+        let image = &debug_info.image;
+        let usize = image.types_named("usize");
+        let [usize] = usize.as_slice() else {
+            panic!("one usize: {usize:?}");
+        };
+        match &image.type_info(*usize).expect("usize's metadata").kind {
+            TypeKind::Named {
+                target: Some(target),
+                relationship,
+            } => {
+                let target = image.type_info(*target).expect("u64's metadata");
+                assert_eq!(&*target.name, "u64");
+                *relationship
+            }
+            other => panic!("usize is a typedef: {other:?}"),
+        }
+    };
+
+    assert_eq!(
+        relationship(gimli::DW_LANG_Rust),
+        NamedTypeRelationship::Synonym
+    );
+    assert_eq!(
+        relationship(gimli::DW_LANG_Go),
+        NamedTypeRelationship::Distinct
+    );
+}

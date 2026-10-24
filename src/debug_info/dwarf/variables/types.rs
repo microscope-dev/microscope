@@ -5355,6 +5355,11 @@ fn named_type_relationship(tag: gimli::DwTag, language: SourceLanguage) -> Named
             NamedTypeRelationship::Synonym
         }
 
+        // A Rust type alias is the type it names: Rust has no typedef of a
+        // distinct type. Releases after 1.97 describe `usize` and `isize`
+        // as typedefs of `u64` and `i64`, which must stay integers.
+        SourceLanguage::Rust => NamedTypeRelationship::Synonym,
+
         // Odin's typedefs are its `distinct` types, and wrappers that name
         // its own types, as `int`; GNAT's name Ada's types, as an access
         // type.

@@ -587,6 +587,64 @@ fn every_end_of_a_chain_is_said() {
     );
 }
 
+/// A running coroutine stores the state it last suspended in, not the
+/// await it has gone on to: a caller that knows each coroutine's state,
+/// outermost first, has the walk read it in that one, reads the rest as
+/// stored, and ends the chain where it cannot say.
+#[test]
+fn a_chain_reads_each_coroutine_in_the_state_its_caller_chooses() {
+    let outer = 0x1000;
+    let mut memory = Memory::default();
+
+    // The outer future has never suspended, so it stores `Unresumed`,
+    // though it now runs in its first await.
+    memory.byte(outer, 0);
+    memory.byte(outer + AWAITEE, 3);
+    assert_eq!(walk_from(&memory, outer, OUTER).end, ChainEnd::Unresumed);
+
+    let mut asked = Vec::new();
+    let chain = super::walk_choosing(
+        &Types::new(),
+        &memory,
+        VirtualAddress::new(outer),
+        reference(OUTER),
+        &mut |at, _| {
+            asked.push(at);
+            if at == 0 {
+                super::StateChoice::Chosen(3)
+            } else {
+                super::StateChoice::Stored
+            }
+        },
+    );
+    assert_eq!(
+        chain,
+        AwaitChain {
+            frames: vec![
+                leaf(outer + 2 * AWAITEE, SLEEP),
+                coroutine_frame(outer + AWAITEE, INNER, 3, suspended(0), 21),
+                coroutine_frame(outer, OUTER, 3, suspended(0), 12),
+            ],
+            end: ChainEnd::Leaf,
+        }
+    );
+    assert_eq!(asked, [0, 1]);
+
+    // A coroutine whose state is unknown ends the chain before it.
+    let chain = super::walk_choosing(
+        &Types::new(),
+        &memory,
+        VirtualAddress::new(outer),
+        reference(OUTER),
+        &mut |_, _| super::StateChoice::Unknown,
+    );
+    assert!(chain.frames.is_empty(), "{chain:?}");
+    assert!(
+        matches!(&chain.end, ChainEnd::Broken(reason) if reason.contains("unknown")),
+        "{chain:?}"
+    );
+}
+
 /// A chain that comes back to a future it passed ends there, as does one
 /// that goes on past the most futures followed.
 #[test]

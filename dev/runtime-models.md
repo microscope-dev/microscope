@@ -294,6 +294,50 @@ Pinned and boxed futures, trait-object erasure, combinators, and compiler
 layout changes are common sources of partial chains. Each traversal step needs
 a concrete type and storage relationship. Stop where proof ends.
 
+### Compiler and tokio versions
+
+A debugger built with one toolchain meets programs built by many, so neither
+rustc's output nor tokio's internals may be assumed to match the pinned ones.
+The rules that keep this working:
+
+- **Names rustc and std choose live in `src/rust_names.rs`.** Each lists every
+  spelling a supported release uses, with the release that changed it, and
+  callers try them all. Examples: `drop_in_place` became `drop_glue` in 1.97,
+  `rust_panic` became `__rustc::rust_panic` in 1.87, and the thread-local
+  `VAL` became `__RUST_STD_INTERNAL_VAL` in 1.92. When a release renames one,
+  add the new spelling and keep the old one.
+- **What DWARF does not say is recovered from rustc's naming, not guessed.**
+  Before 1.93 an async body's parameters do not name its coroutine. Loading
+  links `{async_fn#N}` to the one `{async_fn_env#N}` of the same namespace and
+  arguments; copies of that type in several units are one type. At a stop, the body's
+  future is found at its place in the await chain of the future that the
+  runtime frame polling it holds (`RuntimeModel::polling` for a task, or a
+  `block_on` driver), and only when every frame between that frame and the
+  body agrees. A future a hand-written executor polls has no such frame, so
+  `$future` and await steps stay unavailable there.
+- **Legacy mangling numbers no closure.** Function paths matched against a
+  linkage name take a trailing `{{closure}}`'s number from the debug
+  information's own name, as tokio's poller and `block_on` driver are
+  closures.
+- **Legacy-mangled symbols name generic parameters, not arguments.** Before
+  1.97 a vtable's method symbol reads `T`; the method's DWARF generics supply
+  the argument.
+- **A Rust typedef is a synonym.** Nightlies after 1.97 emit `usize` and
+  `isize` as typedefs of `u64` and `i64`.
+- **std views match paths with `**`** where std moves modules: `Rc` and `Arc`
+  moved under `alloc::rcs` after 1.97.
+- **tokio's layout binds by member name, per shape.** tokio 1.54 moved the
+  blocking queue from `Inner.shared` to the `Inner.inner_impl` enum (`Locked`
+  or `Sharded`), and the model binds whichever shape a program has. tokio 1.51
+  to 1.54 are in `VERIFIED` in `tokio/mod.rs`; another release is read as the
+  newest verified one and every page says so.
+
+CI builds the fixtures with the pinned toolchain and tokio 1.52 and 1.53 only.
+Other versions were checked by hand: build the tokio fixtures with another
+`RUSTC` (keeping the pinned cargo) or another tokio lockfile, then run the
+tokio suite with the pinned microscope. Rerun that check when a stable Rust
+or tokio release changes code generation or tokio's runtime internals.
+
 ## asyncio
 
 From 3.14, CPython links every `asyncio.Task` into a circular list in the

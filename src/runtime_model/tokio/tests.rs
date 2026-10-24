@@ -8,7 +8,7 @@ use std::sync::{Arc, OnceLock};
 
 use proptest::prelude::*;
 
-use super::layout::{Context, Flavor, Runtime};
+use super::layout::{Context, Flavor, Guarded, Queues, Runtime};
 use super::{CANCELLED, COMPLETE, NOTIFIED, POLL, RUNNING, TokioRuntime};
 use crate::runtime_model::{
     ImageSymbol, Member, RuntimeImage, RuntimeModel, RuntimeStop, RuntimeTask, TaskRef,
@@ -36,6 +36,14 @@ const JOIN_INTEREST: u64 = 0b1000;
 const JOIN_WAKER: u64 = 0b1_0000;
 const REF_ONE: u64 = 1 << 6;
 
+/// The pinned release's one blocking queue.
+fn one_queue(model: &TokioRuntime) -> Guarded {
+    match &model.layout.pool.as_ref().expect("the pool binds").queues {
+        Queues::One(one) => *one,
+        other @ Queues::Chosen { .. } => panic!("tokio 1.53 has one blocking queue: {other:?}"),
+    }
+}
+
 fn module() -> Arc<ModuleImage> {
     static MODULE: OnceLock<Arc<ModuleImage>> = OnceLock::new();
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -54,11 +62,14 @@ fn module() -> Arc<ModuleImage> {
 
 /// The fixture's image, with some of tokio's names hidden, as a program
 /// that lacks them would be, and tokio's sources where `source` says.
+/// The types in `overlay` stand in for the fixture's of the same name,
+/// as another release's would.
 #[derive(Debug)]
 struct Image {
     module: Arc<ModuleImage>,
     hidden: Vec<&'static str>,
     source: Option<&'static str>,
+    overlay: Vec<TypeInfo>,
 }
 
 /// Where a release the model was verified against keeps its sources.
@@ -118,11 +129,24 @@ impl RuntimeImage for Image {
             return Vec::new();
         }
 
+        let overlaid = self
+            .overlay
+            .iter()
+            .filter(|info| info.qualified_name() == name)
+            .map(|info| info.reference)
+            .collect::<Vec<_>>();
+        if !overlaid.is_empty() {
+            return overlaid;
+        }
+
         RuntimeImage::types_named(self.module.as_ref(), name)
     }
 
     fn type_info(&self, ty: TypeReference) -> Option<&TypeInfo> {
-        RuntimeImage::type_info(self.module.as_ref(), ty)
+        self.overlay
+            .iter()
+            .find(|info| info.reference == ty)
+            .or_else(|| RuntimeImage::type_info(self.module.as_ref(), ty))
     }
 
     fn same_type(&self, left: TypeReference, right: TypeReference) -> bool {
@@ -221,6 +245,16 @@ impl World {
 
     /// The model of an image whose tokio sources are at `source`.
     fn with_source(hidden: &[&'static str], source: Option<&'static str>) -> Self {
+        Self::with_image(hidden, source, Vec::new())
+    }
+
+    /// The model of an image whose tokio sources are at `source`, with
+    /// `overlay`'s types in place of the fixture's.
+    fn with_image(
+        hidden: &[&'static str],
+        source: Option<&'static str>,
+        overlay: Vec<TypeInfo>,
+    ) -> Self {
         let module = module();
         let polls = module
             .symbols()
@@ -245,6 +279,7 @@ impl World {
             module,
             hidden: hidden.to_vec(),
             source,
+            overlay,
         };
 
         Self {
@@ -370,10 +405,45 @@ impl World {
     /// pool's shared state is.
     fn pool(&mut self, flavor: Flavor, handle: u64, queued: &[(u64, bool)]) -> u64 {
         let spawner = self.runtime_layout(flavor).spawner;
+        let data = self
+            .model
+            .layout
+            .pool
+            .as_ref()
+            .expect("the pool binds")
+            .data;
+        let arc = self.allocate(1024);
+        self.memory.word(handle + spawner, arc);
+        let inner = arc + data;
+        // tokio 1.54's pool holds the queue its `Locked` variant does.
+        let one = match &self
+            .model
+            .layout
+            .pool
+            .as_ref()
+            .expect("the pool binds")
+            .queues
+        {
+            Queues::One(one) => *one,
+            Queues::Chosen {
+                choice, at, locked, ..
+            } => {
+                let (tag_at, size, tag) = choice.tag_for("Locked");
+                let (at, locked) = (*at, *locked);
+                self.memory.write(inner + at + tag_at, tag, size);
+                locked
+            }
+        };
+        self.queue(inner, one, queued);
+        inner
+    }
+
+    /// The queue `guarded` within the pool's `Inner` at `inner`, holding
+    /// these tasks in a ring buffer of twice their number, the first of
+    /// them at its end, its lock free.
+    fn queue(&mut self, inner: u64, guarded: Guarded, queued: &[(u64, bool)]) {
         let pool = self.model.layout.pool.as_ref().expect("the pool binds");
-        let (data, lock, head, len, buffer, capacity, size, task) = (
-            pool.data,
-            pool.lock,
+        let (head, len, buffer, capacity, size, task) = (
             pool.head,
             pool.len,
             pool.buffer,
@@ -382,27 +452,24 @@ impl World {
             pool.task,
         );
 
-        let arc = self.allocate(1024);
-        self.memory.word(handle + spawner, arc);
-        let inner = arc + data;
+        let deque = inner + guarded.queue;
         let room = u64::try_from(queued.len() * 2).expect("a few").max(1);
         let ring = self.allocate(room * size);
         let first = room - 1;
 
-        self.memory.write(inner + lock.offset, 0, lock.size);
-        self.memory.word(inner + head, first);
         self.memory
-            .word(inner + len, u64::try_from(queued.len()).expect("a few"));
-        self.memory.word(inner + buffer, ring);
-        self.memory.word(inner + capacity, room);
+            .write(inner + guarded.lock.offset, 0, guarded.lock.size);
+        self.memory.word(deque + head, first);
+        self.memory
+            .word(deque + len, u64::try_from(queued.len()).expect("a few"));
+        self.memory.word(deque + buffer, ring);
+        self.memory.word(deque + capacity, room);
         for (index, &(id, launch)) in (0..).zip(queued) {
             let vtable = self.vtable(if launch { self.launch } else { self.poll });
             let cell = self.cell(vtable, id, NOTIFIED, 0);
             let slot = (first + index) % room;
             self.memory.word(ring + slot * size + task, cell);
         }
-
-        inner
     }
 
     /// A thread whose `CONTEXT` names `runtime`, as a worker or not,
@@ -755,6 +822,284 @@ fn the_blocking_pool_lists_its_queue_in_order() {
     assert_eq!(numbers, [1, 21, 22]);
 }
 
+/// Where tokio 1.54's `Inner.inner_impl` is within the tests' `Inner`,
+/// each variant's `__0` within its variant, `LockedImpl.mutex` within
+/// its record, and `ShardedImpl.shards` within its: each nonzero and
+/// distinct, so an offset left out of a sum shows.
+const INNER_IMPL_AT: u64 = 16;
+const VARIANT_AT: u64 = 8;
+const MUTEX_AT: u64 = 24;
+const SHARDS_AT: u64 = 40;
+
+/// The shards of the tests' sharded pool. tokio's 16 would test nothing
+/// three do not.
+const SHARDS: u64 = 3;
+
+/// tokio 1.54's blocking pool, over the fixture's: an `Inner` holding
+/// `inner_impl: InnerImpl { Locked(LockedImpl { mutex }), Sharded(
+/// ShardedImpl { shards: [_; SHARDS] }) }`, its tag a word at its start,
+/// `Locked` 0 and `Sharded` 1. Each mutex is the fixture's
+/// `Mutex<Shared>`, whose data holds a `queue` as tokio 1.54's
+/// `LockedInner` and `Shard` do.
+#[expect(clippy::too_many_lines, reason = "one type graph, written out")]
+fn sharded_pool() -> Vec<TypeInfo> {
+    use crate::{
+        Accessibility, ArrayDimension, ArrayOrdering, ModuleImageId, RecordKind, RecordMember,
+        RecordMemberLayout, TypeId, TypeKind, Variant, VariantDiscriminant, VariantSelection,
+        VariantSelector, VariantStorageKind,
+    };
+
+    let module = module();
+    let inner = super::records::named(module.as_ref(), "tokio::runtime::blocking::pool::Inner")
+        .expect("the fixture's Inner");
+    let mutex = super::records::field(module.as_ref(), inner, &["shared"])
+        .expect("the fixture's pool mutex")
+        .ty;
+    let mutex_size = super::records::size(module.as_ref(), mutex).expect("a mutex's size");
+    let word = RuntimeImage::types_named(module.as_ref(), "u64")[0];
+
+    let id = |index: u32| TypeReference {
+        image: ModuleImageId::new(0),
+        id: TypeId::new(u32::MAX - index),
+    };
+    let (outer, choice, locked, locked_impl, sharded, sharded_impl, array) =
+        (id(0), id(1), id(2), id(3), id(4), id(5), id(6));
+    let member = |name: &str, ty: TypeReference, offset: u64| RecordMember {
+        name: Some(name.into()),
+        type_ref: ty,
+        layout: RecordMemberLayout::ByteOffset(offset),
+        accessibility: Accessibility::Public,
+        artificial: false,
+        embedded: false,
+        declaration: None,
+    };
+    let record = |reference, name: &str, size, members: Vec<RecordMember>| TypeInfo {
+        reference,
+        name: name.into(),
+        byte_size: Some(size),
+        kind: TypeKind::Record {
+            kind: RecordKind::Struct,
+            members: members.into(),
+            bases: Arc::new([]),
+            incomplete: false,
+        },
+        identity: None,
+    };
+    let variant = |tag: u64, name: &str, ty| Variant {
+        name: None,
+        selection: VariantSelection::Selectors(Arc::new([VariantSelector::Value(
+            IntegerValue::Unsigned(tag.into()),
+        )])),
+        members: Arc::new([member(name, ty, 0)]),
+    };
+
+    let shards_size = SHARDS * mutex_size;
+    let impl_size = VARIANT_AT + SHARDS_AT + shards_size;
+    vec![
+        record(
+            outer,
+            "tokio::runtime::blocking::pool::Inner",
+            INNER_IMPL_AT + impl_size,
+            vec![member("inner_impl", choice, INNER_IMPL_AT)],
+        ),
+        TypeInfo {
+            reference: choice,
+            name: "tokio::runtime::blocking::pool::InnerImpl".into(),
+            byte_size: Some(impl_size),
+            kind: TypeKind::Variant {
+                storage: VariantStorageKind::Struct,
+                common_members: Arc::new([]),
+                bases: Arc::new([]),
+                discriminant: Box::new(VariantDiscriminant::Stored(member("tag", word, 0))),
+                variants: Arc::new([variant(0, "Locked", locked), variant(1, "Sharded", sharded)]),
+                incomplete: false,
+            },
+            identity: None,
+        },
+        record(
+            locked,
+            "Locked",
+            impl_size,
+            vec![member("__0", locked_impl, VARIANT_AT)],
+        ),
+        record(
+            locked_impl,
+            "tokio::runtime::blocking::pool::LockedImpl",
+            MUTEX_AT + mutex_size,
+            vec![member("mutex", mutex, MUTEX_AT)],
+        ),
+        record(
+            sharded,
+            "Sharded",
+            impl_size,
+            vec![member("__0", sharded_impl, VARIANT_AT)],
+        ),
+        record(
+            sharded_impl,
+            "tokio::runtime::blocking::sharded::ShardedImpl",
+            SHARDS_AT + shards_size,
+            vec![member("shards", array, SHARDS_AT)],
+        ),
+        TypeInfo {
+            reference: array,
+            name: "[Mutex<Shard>; 3]".into(),
+            byte_size: Some(shards_size),
+            kind: TypeKind::Array {
+                element: mutex,
+                dimensions: Arc::new([ArrayDimension {
+                    lower_bound: 0,
+                    count: SHARDS,
+                }]),
+                ordering: ArrayOrdering::RowMajor,
+            },
+            identity: None,
+        },
+    ]
+}
+
+/// A pool laid out as tokio 1.54's, its `inner_impl` tagged `tag`: where
+/// its `Inner` is, and its `Locked` queue and first shard.
+fn chosen_pool(world: &mut World, runtime: &Written, tag: u64) -> (u64, Guarded, Guarded, u64) {
+    let pool = world.model.layout.pool.as_ref().expect("the pool binds");
+    let Queues::Chosen {
+        locked,
+        sharded,
+        stride,
+        shards,
+        ..
+    } = pool.queues
+    else {
+        panic!("tokio 1.54's pool is a choice: {:?}", pool.queues);
+    };
+    assert_eq!(shards, SHARDS);
+    let (data, spawner) = (pool.data, world.runtime_layout(runtime.flavor).spawner);
+
+    let arc = world.allocate(4096);
+    world.memory.word(runtime.handle + spawner, arc);
+    let inner = arc + data;
+    world.memory.word(inner + INNER_IMPL_AT, tag);
+    (inner, locked, sharded, stride)
+}
+
+/// tokio 1.54 holds its blocking queue behind a choice the runtime's
+/// builder makes: each queue is found where its own variant puts it,
+/// at the sum of every offset on the way, and read as the one queue
+/// before it was.
+#[test]
+fn tokio_1_54s_blocking_queues_are_found_within_their_variant() {
+    let world = World::with_image(&[], Some(VERIFIED_SOURCE), sharded_pool());
+    let pool = world.model.layout.pool.as_ref().expect("the pool binds");
+    let Queues::Chosen {
+        at,
+        locked,
+        sharded,
+        stride,
+        ..
+    } = pool.queues
+    else {
+        panic!("tokio 1.54's pool is a choice: {:?}", pool.queues);
+    };
+
+    // The fixture's mutex puts its lock and its data's `queue` at these
+    // offsets from the mutex's start; tokio 1.54's do the same from
+    // wherever its variant puts the mutex.
+    let one = one_queue(&World::new(&[]).model);
+    let shared = super::records::field(
+        module().as_ref(),
+        super::records::named(module().as_ref(), "tokio::runtime::blocking::pool::Inner")
+            .expect("the fixture's Inner"),
+        &["shared"],
+    )
+    .expect("the fixture's pool mutex");
+    let (lock_in_mutex, queue_in_mutex) =
+        (one.lock.offset - shared.offset, one.queue - shared.offset);
+    let mutex_size = super::records::size(module().as_ref(), shared.ty).expect("a size");
+
+    assert_eq!(at, INNER_IMPL_AT);
+    let locked_mutex = INNER_IMPL_AT + VARIANT_AT + MUTEX_AT;
+    assert_eq!(locked.lock.offset, locked_mutex + lock_in_mutex);
+    assert_eq!(locked.queue, locked_mutex + queue_in_mutex);
+    assert_eq!(
+        (locked.lock.size, locked.lock.held),
+        (one.lock.size, one.lock.held)
+    );
+
+    let first_shard = INNER_IMPL_AT + VARIANT_AT + SHARDS_AT;
+    assert_eq!(sharded.lock.offset, first_shard + lock_in_mutex);
+    assert_eq!(sharded.queue, first_shard + queue_in_mutex);
+    assert_eq!(stride, mutex_size);
+}
+
+/// A sharded pool lists every shard's tasks, shard by shard, each in its
+/// order, empty shards included; a locked one lists its one queue and
+/// ignores what the shards' bytes would hold, as the two overlap.
+#[test]
+fn tokio_1_54s_blocking_pool_lists_the_queues_its_variant_holds() {
+    for (tag, expected) in [(1, vec![1, 20, 21, 22]), (0, vec![1, 30, 31])] {
+        let mut world = World::with_image(&[], Some(VERIFIED_SOURCE), sharded_pool());
+        let runtime = world.runtime(Flavor::CurrentThread, 4, &[vec![(1, 0)]]);
+        let (inner, locked, sharded, stride) = chosen_pool(&mut world, &runtime, tag);
+        if tag == 0 {
+            world.queue(inner, locked, &[(30, false), (31, false)]);
+        } else {
+            let shard = |index: u64| sharded.shifted(index * stride).expect("a shard");
+            world.queue(inner, shard(0), &[(20, false)]);
+            world.queue(inner, shard(1), &[]);
+            world.queue(inner, shard(2), &[(21, true), (22, false)]);
+        }
+        world.thread(1, Some(&runtime), true, None);
+
+        let (all, gaps) = world.tasks(64, false);
+        assert!(gaps.is_empty(), "{tag}: {gaps:?}");
+        let numbers = all.iter().map(|task| task.number).collect::<Vec<_>>();
+        assert_eq!(numbers, expected, "{tag}");
+        assert!(
+            all[1..]
+                .iter()
+                .all(|task| task.detail.as_deref() == Some("queued in the blocking pool")),
+            "{all:#?}"
+        );
+    }
+}
+
+/// In a sharded pool, one shard's held lock is the change its gap
+/// reports, as the one queue's was; a tag no variant claims is reported,
+/// never read as either.
+#[test]
+fn a_sharded_pool_reports_its_held_shard_and_unknown_tags() {
+    let mut world = World::with_image(&[], Some(VERIFIED_SOURCE), sharded_pool());
+    let runtime = world.runtime(Flavor::CurrentThread, 4, &[vec![(1, 0)]]);
+    let (inner, _, sharded, stride) = chosen_pool(&mut world, &runtime, 1);
+    let shard = |index: u64| sharded.shifted(index * stride).expect("a shard");
+    for index in 0..SHARDS {
+        world.queue(inner, shard(index), &[(20 + index, false)]);
+    }
+    world.thread(1, Some(&runtime), true, None);
+
+    let last = shard(SHARDS - 1);
+    world
+        .memory
+        .write(inner + last.lock.offset, 1, last.lock.size);
+    let (all, gaps) = world.tasks(64, true);
+    let numbers = all.iter().map(|task| task.number).collect::<Vec<_>>();
+    assert_eq!(numbers, [1, 20, 21, 22]);
+    assert_eq!(gaps.len(), 1, "{gaps:?}");
+    assert!(
+        gaps[0].contains("was being changed at the stop"),
+        "{gaps:?}"
+    );
+
+    world.memory.word(inner + INNER_IMPL_AT, 7);
+    let (all, gaps) = world.tasks(64, true);
+    let numbers = all.iter().map(|task| task.number).collect::<Vec<_>>();
+    assert_eq!(numbers, [1]);
+    assert!(
+        gaps.iter()
+            .any(|gap| gap.starts_with("queued blocking tasks: ") && gap.contains("tag 0x7")),
+        "{gaps:?}"
+    );
+}
+
 /// A thread stopped inside a push may have counted a slot it has not yet
 /// written: with the pool's lock held, an entry that cannot be read is the
 /// change the pool's gap reports, and the entries before it are listed;
@@ -768,8 +1113,8 @@ fn a_queue_read_mid_push_is_the_change_its_lock_reports() {
         world.thread(1, Some(&runtime), true, None);
 
         let pool = world.model.layout.pool.as_ref().expect("the pool binds");
-        let (lock, len, buffer, head, capacity, size, task) = (
-            pool.lock,
+        let Guarded { lock, queue } = one_queue(&world.model);
+        let (len, buffer, head, capacity, size, task) = (
             pool.len,
             pool.buffer,
             pool.head,
@@ -783,14 +1128,15 @@ fn a_queue_read_mid_push_is_the_change_its_lock_reports() {
             u64::from_le_bytes(bytes)
         };
 
+        let deque = inner + queue;
         let (ring, first, room) = (
-            read(inner + buffer),
-            read(inner + head),
-            read(inner + capacity),
+            read(deque + buffer),
+            read(deque + head),
+            read(deque + capacity),
         );
         let slot = (first + 2) % room;
         world.memory.word(ring + slot * size + task, 0);
-        world.memory.word(inner + len, 3);
+        world.memory.word(deque + len, 3);
         world
             .memory
             .write(inner + lock.offset, u64::from(held), lock.size);
@@ -852,7 +1198,8 @@ fn addresses_at_the_end_of_memory_are_reported_not_followed() {
         .as_ref()
         .expect("the pool binds")
         .head;
-    world.memory.word(inner + head, u64::MAX);
+    let queue = one_queue(&world.model).queue;
+    world.memory.word(inner + queue + head, u64::MAX);
     let (tasks, gaps) = world.tasks(64, false);
     assert!(tasks.iter().all(|task| task.number < 20), "{tasks:#?}");
     assert!(gaps.iter().any(|gap| gap.contains("queue")), "{gaps:?}");
@@ -864,20 +1211,22 @@ fn addresses_at_the_end_of_memory_are_reported_not_followed() {
 /// taken for granted, and each verified release is.
 #[test]
 fn every_page_says_when_the_version_is_unverified_or_unknown() {
-    let unknown = "tokio's version is unknown; its runtime is read as tokio 1.53's";
+    let unknown = "tokio's version is unknown; its runtime is read as tokio 1.54's";
     for (source, gap) in [
         (
-            Some("/crates/tokio-1.54.0/src/runtime/task/raw.rs"),
-            Some("tokio 1.54.0 is unverified; its runtime is read as tokio 1.53's"),
+            Some("/crates/tokio-1.55.0/src/runtime/task/raw.rs"),
+            Some("tokio 1.55.0 is unverified; its runtime is read as tokio 1.54's"),
         ),
         (
-            Some("/crates/tokio-1.51.0/src/runtime/task/raw.rs"),
-            Some("tokio 1.51.0 is unverified; its runtime is read as tokio 1.53's"),
+            Some("/crates/tokio-1.47.5/src/runtime/task/raw.rs"),
+            Some("tokio 1.47.5 is unverified; its runtime is read as tokio 1.54's"),
         ),
         (Some("/vendor/tokio/src/runtime/task/raw.rs"), Some(unknown)),
         (None, Some(unknown)),
+        (Some("/crates/tokio-1.51.6/src/runtime/task/raw.rs"), None),
         (Some("/crates/tokio-1.52.3/src/runtime/task/raw.rs"), None),
         (Some("/crates/tokio-1.53.1/src/runtime/task/raw.rs"), None),
+        (Some("/crates/tokio-1.54.1/src/runtime/task/raw.rs"), None),
         (Some(VERIFIED_SOURCE), None),
     ] {
         let mut world = World::with_source(&[], source);
@@ -909,6 +1258,7 @@ fn a_missing_name_makes_only_what_needs_it_unavailable() {
         module: module(),
         hidden: vec![pool],
         source: Some(VERIFIED_SOURCE),
+        overlay: Vec::new(),
     }));
     let page = without_pool.tasks(&memory, 0, 64, true);
     let numbers = page
@@ -929,6 +1279,7 @@ fn a_missing_name_makes_only_what_needs_it_unavailable() {
         module: module(),
         hidden: vec![header],
         source: Some(VERIFIED_SOURCE),
+        overlay: Vec::new(),
     }));
     let page = without_header.tasks(&memory, 0, 64, true);
     assert!(page.value.tasks.is_empty());
@@ -950,6 +1301,7 @@ fn a_missing_name_makes_only_what_needs_it_unavailable() {
         module: module(),
         hidden: vec![storage],
         source: Some(VERIFIED_SOURCE),
+        overlay: Vec::new(),
     }));
     let page = without_context.tasks(&memory, 0, 64, true);
     assert!(
@@ -981,11 +1333,14 @@ fn locks_are_held_as_their_mutex_says() {
         let layout = super::layout::Layout::bind(image);
         let context = layout.context.expect("CONTEXT binds");
         let pool = layout.pool.expect("the pool binds");
+        let Queues::One(one) = pool.queues else {
+            panic!("tokio 1.53 has one blocking queue");
+        };
         context
             .runtimes
             .iter()
             .map(|(.., runtime)| runtime.owned.shard_lock)
-            .chain([pool.lock])
+            .chain([one.lock])
             .collect::<Vec<_>>()
     };
 
@@ -1266,4 +1621,73 @@ proptest! {
             ),
         }
     }
+}
+
+/// A frame of a function of this linkage name and debug-information name.
+fn named_frame(linkage: &str, name: &str) -> crate::StackFrame {
+    let mut frame =
+        crate::StackFrame::new(0, crate::FrameKind::Physical, None, VirtualAddress::new(1));
+    frame.function = Some(crate::FunctionInfo {
+        id: crate::FunctionId::new(0),
+        name: name.into(),
+        linkage_name: Some(linkage.into()),
+        declaration: None,
+        language: crate::SourceLanguage::Rust,
+        role: crate::CodeRole::RuntimeInternal,
+        enclosing: None,
+        coroutine: None,
+        generics: Arc::from([]),
+        main_subprogram: false,
+    });
+    frame
+}
+
+/// tokio's poller and drivers are known by their paths under either
+/// symbol mangling. Rust's legacy mangling, the default before 1.97,
+/// names every closure `{{closure}}`; the debug information's name still
+/// numbers it, so another closure of the same function is not the
+/// poller, and a closure the debug information does not number is not
+/// guessed at.
+#[test]
+fn the_poller_and_drivers_are_known_under_either_mangling() {
+    // `tokio::runtime::task::core::Core<T,S>::poll::{{closure}}`, as Rust
+    // 1.85 mangles it.
+    let legacy_poll = "_ZN5tokio7runtime4task4core17Core$LT$T$C$S$GT$4poll28_$u7b$$u7b$closure$u7d$$u7d$17h09458907f21dda2bE";
+    let poller = named_frame(
+        legacy_poll,
+        "{closure#0}<steps::task::{async_fn_env#0}, u8>",
+    );
+    assert_eq!(super::future::polled_future(&poller), Some("future"));
+    assert_eq!(super::future::driven_future(&poller), None);
+    assert_eq!(
+        super::future::polled_future(&named_frame(legacy_poll, "{closure#1}<u8>")),
+        None
+    );
+    assert_eq!(
+        super::future::polled_future(&named_frame(legacy_poll, "poll<u8>")),
+        None
+    );
+
+    // `CoreGuard::block_on::{{closure}}` drives the future it holds.
+    let legacy_block_on = "_ZN5tokio7runtime9scheduler14current_thread9CoreGuard8block_on28_$u7b$$u7b$closure$u7d$$u7d$17h0123456789abcdefE";
+    let driver = named_frame(legacy_block_on, "{closure#0}<u8>");
+    assert_eq!(super::future::driven_future(&driver), Some("future"));
+    assert_eq!(super::future::polled_future(&driver), None);
+
+    // The fixture's own poller, mangled as the pinned toolchain does.
+    let module = module();
+    let poller = module
+        .functions()
+        .find(|function| {
+            function.linkage_name().is_some_and(|linkage| {
+                crate::demangle::demangle(linkage).is_some_and(|name| {
+                    crate::demangle::rust_path(&name).as_deref()
+                        == Some("tokio::runtime::task::core::Core::poll::{closure#0}")
+                })
+            })
+        })
+        .expect("the fixture polls a task");
+    let mut frame = named_frame("", "");
+    frame.function = Some(poller.info());
+    assert_eq!(super::future::polled_future(&frame), Some("future"));
 }

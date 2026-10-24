@@ -140,7 +140,7 @@ pub fn rust_role(namespace: &str, name: &str) -> Option<CodeRole> {
         || within("core::pin")
         || within("core::panic::unwind_safe")
         || (within("alloc::boxed") && (named("poll") || named("deref_mut")))
-        || (within("core::ptr") && (named("drop_glue") || named("drop_in_place"))))
+        || (within("core::ptr") && crate::rust_names::DROP_GLUE.iter().any(|glue| named(glue))))
     .then_some(CodeRole::Wrapper)
 }
 

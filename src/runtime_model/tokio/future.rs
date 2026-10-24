@@ -72,17 +72,54 @@ const DRIVERS: [(&str, &str); 3] = [
     ),
 ];
 
+/// The function that polls a task's future, with the variable that holds
+/// it as the function polls it: `Core::poll` hands the future to this
+/// closure, which pins it and polls it, in every release from tokio 1.47
+/// through 1.54.
+const POLLER: (&str, &str) = (
+    "tokio::runtime::task::core::Core::poll::{closure#0}",
+    "future",
+);
+
 /// The variable that holds the future `frame` drives, if its function is
 /// one of tokio's functions that drive one. Only the function's debug
 /// information can read the variable.
 pub(super) fn driven_future(frame: &crate::StackFrame) -> Option<&'static str> {
-    let function = frame.function.as_ref()?;
-    let demangled = crate::demangle::demangle(function.linkage_name.as_deref()?)?;
-    let path = crate::demangle::rust_path(&demangled)?;
+    let path = frame_path(frame)?;
     DRIVERS
         .iter()
         .find(|(driver, _)| *driver == path)
         .map(|(_, variable)| *variable)
+}
+
+/// The variable that holds the task's future `frame` polls, if its
+/// function is the one that polls a task's.
+pub(super) fn polled_future(frame: &crate::StackFrame) -> Option<&'static str> {
+    let (poller, variable) = POLLER;
+    (frame_path(frame)? == poller).then_some(variable)
+}
+
+/// The path of the function a frame runs, without generic arguments, as
+/// its linkage name gives it: the one name that says which impl a method
+/// is of.
+///
+/// Rust's legacy symbol mangling, the default before Rust 1.97, names
+/// every closure `{{closure}}`, where the newer one numbers it
+/// `{closure#0}`. The debug information's own name for the function still
+/// numbers it, so a path that ends in a legacy closure takes its number
+/// from there; any other legacy closure in the path is left as it is,
+/// which none of tokio's driving functions has.
+pub(super) fn frame_path(frame: &crate::StackFrame) -> Option<String> {
+    let function = frame.function.as_ref()?;
+    let demangled = crate::demangle::demangle(function.linkage_name.as_deref()?)?;
+    let path = crate::demangle::rust_path(&demangled)?;
+    let Some(within) = path.strip_suffix("::{{closure}}") else {
+        return Some(path);
+    };
+
+    // The closure's own name, `{closure#N}`, before its generic arguments.
+    let own = function.name.split('<').next()?;
+    (own.starts_with("{closure#") && own.ends_with('}')).then(|| format!("{within}::{own}"))
 }
 
 impl TokioRuntime {

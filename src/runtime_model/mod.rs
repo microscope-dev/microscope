@@ -114,6 +114,15 @@ pub trait RuntimeImage: std::fmt::Debug {
     /// The name of the function whose code holds an image address.
     fn function_name(&self, address: ImageAddress) -> Option<Arc<str>>;
 
+    /// The generic arguments of the function whose code holds an image
+    /// address, each with its parameter's name, as the full names of their
+    /// types, which the debug information gives: what a legacy-mangled
+    /// symbol leaves out, naming its parameters only (`<T as Any>::type_id`).
+    fn function_generics(&self, address: ImageAddress) -> Vec<(Arc<str>, String)> {
+        let _ = address;
+        Vec::new()
+    }
+
     /// Where each thread's copy of the named thread-local variable is, or
     /// why that is unknown; `None` when the image defines none by the name.
     fn thread_local(&self, name: &str) -> Option<Result<ThreadLocal, Arc<str>>>;
@@ -1075,6 +1084,23 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
     /// to it that it called; `None` when it drives nothing.
     fn driven(&self, frame: &StackFrame, inner: Option<&StackFrame>) -> Option<Driven> {
         let _ = (frame, inner);
+        None
+    }
+
+    /// The variable of `frame`, one of the runtime's frames in its
+    /// [driver role](Self::driver_role), that holds the future of a task it
+    /// is polling at this moment, which the frames inner to it run; `None`
+    /// when it polls none.
+    ///
+    /// Unlike [`Self::driven`], the future runs on the stack, so the
+    /// backtrace shows it already. This lets a frame of a coroutine find
+    /// the future it runs when the debug information does not say, as no
+    /// Rust before 1.93's does: the chain of awaits from the task's future
+    /// down to it. It reads only the polling thread's stack, never the
+    /// runtime's shared state, so run control may ask it while other
+    /// threads run.
+    fn polling(&self, frame: &StackFrame) -> Option<&'static str> {
+        let _ = frame;
         None
     }
 
@@ -2213,6 +2239,28 @@ impl RuntimeImage for ModuleImage {
         let first = starts.next()?;
 
         starts.all(|start| start == first).then_some(first)
+    }
+
+    fn function_generics(&self, address: ImageAddress) -> Vec<(Arc<str>, String)> {
+        let Some(function) = self
+            .locate(address)
+            .physical_instance
+            .and_then(|instance| self.code_instance(instance))
+            .and_then(|instance| self.function(instance.function()))
+        else {
+            return Vec::new();
+        };
+
+        function
+            .generics()
+            .filter_map(|(name, id)| {
+                let ty = self.type_info(TypeReference {
+                    image: self.id(),
+                    id,
+                })?;
+                Some((Arc::from(name), ty.qualified_name()))
+            })
+            .collect()
     }
 
     fn function_name(&self, address: ImageAddress) -> Option<Arc<str>> {

@@ -52,6 +52,7 @@ pub mod pool;
 pub mod profiler;
 mod protocol;
 mod runtime_model;
+mod rust_names;
 
 // The simulator is a test harness, which may panic.
 #[cfg(any(test, feature = "sim"))]

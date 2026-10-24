@@ -367,6 +367,40 @@ pub fn without_arguments(name: &str) -> Option<&str> {
     None
 }
 
+/// The full name of the coroutine type whose future the body named `name`
+/// within `namespace` runs, by rustc's naming alone: the body
+/// `{async_fn#N}<A>` of a function runs `{async_fn_env#N}<A>`, which rustc
+/// declares in the same namespace, and likewise for a block's and a
+/// closure's. `None` for a function that is no async body.
+///
+/// The debug information of an async body says which coroutine it runs
+/// only through the type of the unnamed parameter that passes it its
+/// future, which rustc first describes in Rust 1.93. A program built by an
+/// older Rust has bodies that name no coroutine but by this name, without
+/// which none of their resume points, their awaits' steps, or their
+/// futures' frames can be found.
+pub fn body_future(name: &str, namespace: &str) -> Option<String> {
+    // Every Rust function is asked while loading, almost none of them a
+    // body, so a name that is none is turned away before any allocation.
+    if namespace.is_empty() || !name.starts_with("{async_") {
+        return None;
+    }
+
+    let base = without_arguments(name)?;
+    let arguments = &name[base.len()..];
+    let (env, number) = [
+        ("{async_fn#", "{async_fn_env#"),
+        ("{async_block#", "{async_block_env#"),
+        ("{async_closure#", "{async_closure_env#"),
+    ]
+    .into_iter()
+    .find_map(|(body, env)| {
+        let number = base.strip_prefix(body)?.strip_suffix('}')?;
+        (!number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())).then_some((env, number))
+    })?;
+    Some(format!("{namespace}::{env}{number}}}{arguments}"))
+}
+
 /// Whether rustc names a function as the body of an `async fn`.
 pub fn is_async_fn_body(name: &str) -> bool {
     without_arguments(name)
@@ -431,5 +465,52 @@ mod tests {
             Some(CoroutineKind::AsyncBlock)
         );
         assert_eq!(coroutine_kind("{async_fn_env#0}<u32"), None);
+    }
+
+    /// Before Rust 1.93 a body names its coroutine only by rustc's naming:
+    /// the same number, the same namespace, and the same arguments, with
+    /// `_env` added. A body of one kind never names a coroutine of
+    /// another, and a number never changes on the way.
+    #[test]
+    fn a_body_names_its_future_by_rustcs_naming() {
+        let namespace = "steps::leaf";
+        assert_eq!(
+            body_future("{async_fn#0}", namespace).as_deref(),
+            Some("steps::leaf::{async_fn_env#0}")
+        );
+        assert_eq!(
+            body_future("{async_block#12}", namespace).as_deref(),
+            Some("steps::leaf::{async_block_env#12}")
+        );
+        assert_eq!(
+            body_future("{async_closure#3}", namespace).as_deref(),
+            Some("steps::leaf::{async_closure_env#3}")
+        );
+
+        // A generic body's arguments are its coroutine's, nested ones too.
+        assert_eq!(
+            body_future("{async_fn#1}<alloc::sync::Arc<u32>, u8>", "a::b").as_deref(),
+            Some("a::b::{async_fn_env#1}<alloc::sync::Arc<u32>, u8>")
+        );
+
+        // A block within a body is declared within the body's namespace.
+        assert_eq!(
+            body_future("{async_block#0}", "steps::leaf::{async_fn#0}").as_deref(),
+            Some("steps::leaf::{async_fn#0}::{async_block_env#0}")
+        );
+
+        // Neither a closure, a coroutine's own type, a malformed number,
+        // unbalanced arguments, nor a body outside any namespace.
+        for name in [
+            "{closure#0}",
+            "{async_fn_env#0}",
+            "{async_fn#}",
+            "{async_fn#x}",
+            "{async_fn#0}<u32",
+            "leaf",
+        ] {
+            assert_eq!(body_future(name, namespace), None, "{name}");
+        }
+        assert_eq!(body_future("{async_fn#0}", ""), None);
     }
 }

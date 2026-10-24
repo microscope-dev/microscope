@@ -272,14 +272,16 @@ view rust tokio::sync::notify::Notified {
 # driver last read, its start and the milliseconds its wheel has turned
 # since. A runtime that has been idle reads late. tokio 1.53 keeps the
 # deadline and the runtime's handle in the sleep, and makes its timer only
-# when it is first polled; 1.52 kept both in its timer.
+# when it is first polled; 1.52 kept both in its timer; 1.47 kept them in a
+# timer that was a struct, not yet one of a choice of timers, and its timer
+# driver's state outside the choice of drivers that 1.51 added.
 view rust tokio::time::sleep::Sleep {
-    let at = deadline or entry.Traditional.0.deadline
-    let scheduler = driver or entry.Traditional.0.driver
+    let at = deadline or entry.Traditional.0.deadline or entry.deadline
+    let scheduler = driver or entry.Traditional.0.driver or entry.driver
     let handle = scheduler == MultiThread ? inner(scheduler.MultiThread.0.ptr)->data.driver : inner(scheduler.CurrentThread.0.ptr)->data.driver
     let time = handle.time.Some.0
     let start = inner(time.time_source.start_time)
-    let wheel = inner(time.inner.Traditional.state).data.value.wheel
+    let wheel = inner(time.inner.Traditional.state).data.value.wheel or inner(time.inner.state).data.value.wheel
     let clock = start.tv_sec * 1000000000 + inner(start.tv_nsec) + wheel.elapsed * 1000000
     let until = inner(at).tv_sec * 1000000000 + inner(inner(at).tv_nsec)
     show if until <= clock {

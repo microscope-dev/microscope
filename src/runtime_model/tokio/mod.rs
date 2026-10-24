@@ -37,7 +37,17 @@ pub(super) const TASK_NOUN: (&str, &str) = ("task", "tasks");
 /// The releases the contract was checked against, oldest first. Another is
 /// read as the newest of them wherever its debug information binds, and
 /// says it is unverified.
-const VERIFIED: [(u64, u64); 2] = [(1, 52), (1, 53)];
+///
+/// The test fixtures build with tokio 1.52 and 1.53 on every run. 1.51 and
+/// 1.54 were checked by hand, by building the fixtures against them and
+/// running the tokio suite (`dev/runtime-models.md` says how); 1.54 moved
+/// the blocking pool's queue, which the layout binds in either shape. (One
+/// 1.54 check fails by the fixture alone: its optimized build puts the
+/// breakpoint of the line before a spawn after the spawn's call, so the
+/// task exists before `step task` begins.)
+/// tokio 1.47 binds too, but its optimized steps over `yield_now` were not
+/// all found, so it stays unverified.
+const VERIFIED: [(u64, u64); 4] = [(1, 51), (1, 52), (1, 53), (1, 54)];
 
 /// A source file every build of tokio compiles, by which its version is
 /// read from the directory Cargo unpacked it in.
@@ -74,7 +84,10 @@ const LAUNCH: [&str; 2] = [
 /// `OwnedTasks::bind_inner`, the part of `bind` that is the same for every
 /// type of future; a `LocalSet` binds its tasks in a generic function, and
 /// schedules each one it spawns, as each it wakes, in `Shared::schedule`.
-/// Each takes the task as its second argument.
+/// Each takes the task as its second argument. The names spell `Arc` as
+/// Rust 1.97 does; [`crate::rust_names::with_each_arc`] spells them as
+/// every release does, since debug information names the type where std
+/// defines it, which later releases moved.
 const STARTERS: [(&str, &str, bool); 3] = [
     (
         "bind_inner<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, \
@@ -95,11 +108,30 @@ const STARTERS: [(&str, &str, bool); 3] = [
 pub fn detect(
     image: &Arc<dyn RuntimeImage + Send + Sync>,
 ) -> Option<Result<Arc<dyn RuntimeModel>, super::Unbound>> {
-    // A program stripped of its symbols shows no sign of tokio.
-    let tls = image.thread_local_within(
-        "tokio::runtime::context::CONTEXT",
-        "__RUST_STD_INTERNAL_VAL",
-    )?;
+    let Some(tls) = layout::thread_local_storage(image.as_ref(), layout::CONTEXT_SCOPE) else {
+        // A program stripped of its symbols shows no sign of tokio. One
+        // whose debug information describes tokio's context but whose
+        // storage has a name no release this model knows gives it, as a
+        // later Rust may, says so: finding no tasks there would look like
+        // a program that has none.
+        if image
+            .types_named("tokio::runtime::context::Context")
+            .is_empty()
+        {
+            return None;
+        }
+
+        return Some(Err(super::Unbound {
+            reason: format!(
+                "tokio's context is described, but its thread-local storage is not named \
+                 {} within {}",
+                crate::rust_names::THREAD_LOCAL_STORAGE.join(" or "),
+                layout::CONTEXT_SCOPE,
+            )
+            .into(),
+            deferrable: &[],
+        }));
+    };
     if let Err(reason) = tls {
         return Some(Err(super::Unbound {
             reason: format!("tokio's context cannot be found: {reason}").into(),
@@ -247,8 +279,10 @@ impl TokioRuntime {
         let starters = STARTERS
             .iter()
             .flat_map(|&(name, symbol, schedules)| {
-                image
-                    .function_entries(name)
+                crate::rust_names::with_each_arc(name)
+                    .iter()
+                    .flat_map(|name| image.function_entries(name))
+                    .collect::<Vec<_>>()
                     .into_iter()
                     .filter(|entry| {
                         image
@@ -820,16 +854,23 @@ impl RuntimeModel for TokioRuntime {
 
         // The task's cell is freed as the box that holds it is dropped,
         // which the glue for `Box<Cell<T, S>>` does for the task's `T` and
-        // `S`, as its poll function's name spells them.
+        // `S`, as its poll function's name spells them. The glue has the
+        // name its compiler gives it, which changed in Rust 1.97.
         let frees = self
             .image
             .function_name(stop.load_bias().wrapping_unload(poll))
             .and_then(|name| {
                 let arguments = name.strip_prefix("poll")?.to_owned();
-                Some(self.image.function_entries(&format!(
-                    "drop_glue<alloc::boxed::Box<tokio::runtime::task::core::Cell{arguments}, \
-                     alloc::alloc::Global>>"
-                )))
+                let boxed = format!(
+                    "alloc::boxed::Box<tokio::runtime::task::core::Cell{arguments}, \
+                     alloc::alloc::Global>"
+                );
+                Some(
+                    crate::rust_names::drop_glue_of(&boxed)
+                        .iter()
+                        .flat_map(|glue| self.image.function_entries(glue))
+                        .collect::<Vec<_>>(),
+                )
             })
             .unwrap_or_default();
 
@@ -910,6 +951,10 @@ impl RuntimeModel for TokioRuntime {
         _inner: Option<&crate::StackFrame>,
     ) -> Option<Driven> {
         future::driven_future(frame).map(|variable| Driven::Future { variable })
+    }
+
+    fn polling(&self, frame: &crate::StackFrame) -> Option<&'static str> {
+        future::polled_future(frame)
     }
 }
 
