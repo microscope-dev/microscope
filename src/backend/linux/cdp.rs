@@ -35,7 +35,7 @@ const FROM_WORKER: &str = "NodeWorker.receivedMessageFromWorker";
 
 /// The isolate a message goes to or comes from, as the `NodeWorker`
 /// session ids from the main isolate down. The empty path is the main isolate.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct Session(Arc<[Arc<str>]>);
 
 impl Session {

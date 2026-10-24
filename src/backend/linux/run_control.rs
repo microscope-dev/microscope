@@ -1923,6 +1923,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         // Last, so that a process ending while the stop forms keeps the
         // temporary breakpoints of a stop never published.
         let temporaries_removed = self.remove_stopped_temporaries()?;
+        self.mark_published_pause(triggering_thread);
         let stop_id = self.ptrace.allocate_stop_id()?;
         let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
         check_publishable(inferior, stop_id);

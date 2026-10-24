@@ -138,7 +138,13 @@ impl NodeSession {
     /// A session for `fixture` under `entry`, not yet launched, whose
     /// debugger can be set up before [`Self::run_to_stop`].
     pub fn unlaunched(entry: &str, fixture: &str) -> Pending {
-        let (session, options) = Self::prepare(entry, fixture, &[], &[]);
+        Self::unlaunched_with(entry, fixture, &[])
+    }
+
+    /// A session for `fixture` under `entry` given `fixture_arguments`,
+    /// not yet launched.
+    pub fn unlaunched_with(entry: &str, fixture: &str, fixture_arguments: &[&str]) -> Pending {
+        let (session, options) = Self::prepare(entry, fixture, &[], fixture_arguments);
         Pending { session, options }
     }
 

@@ -802,10 +802,8 @@ impl StopBarrier {
 
 /// A breakpoint or watchpoint change that needs every thread stopped.
 enum Edit {
-    /// Judges the pause a runtime's inspector reported.
-    InspectorPaused {
-        runtime: crate::RuntimeId,
-    },
+    /// Judges the pauses runtimes' inspectors reported.
+    InspectorPaused,
     AddBreakpoint {
         spec: crate::BreakpointSpec,
         options: Box<crate::BreakpointOptions>,

@@ -14,6 +14,12 @@ pub const NOTIFY_END: &str = "NodeRuntime.notifyWhenWaitingForDisconnect";
 pub const END: &str = "NodeRuntime.waitingForDisconnect";
 
 pub const ENABLE_DEBUGGER: &str = "Debugger.enable";
+
+/// Reports each worker as it starts, as a session inside the one that
+/// asked, holding it until its debugger releases it.
+pub const ENABLE_WORKERS: &str = "NodeWorker.enable";
+pub const WORKER_ATTACHED: &str = "NodeWorker.attachedToWorker";
+pub const WORKER_DETACHED: &str = "NodeWorker.detachedFromWorker";
 pub const SET_BREAKPOINT: &str = "Debugger.setBreakpointByUrl";
 pub const REMOVE_BREAKPOINT: &str = "Debugger.removeBreakpoint";
 
@@ -22,6 +28,9 @@ pub const RESOLVED: &str = "Debugger.breakpointResolved";
 
 /// V8 paused a thread, which it holds until resumed.
 pub const PAUSED: &str = "Debugger.paused";
+
+/// The reason a worker that waited for its debugger first pauses for.
+pub const BREAK_ON_START: &str = "Break on start";
 pub const RESUME: &str = "Debugger.resume";
 
 /// V8 left its pause. A pause asked for before this is dropped, as V8
