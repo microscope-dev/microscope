@@ -1275,6 +1275,10 @@ fn resolve_in_image(
 ) -> Result<Vec<(crate::ImageAddress, Arc<[crate::CodeInstanceId]>)>> {
     match spec {
         BreakpointSpec::Address(_) => Ok(Vec::new()),
+        // Searching every symbol for a runtime's function would find none.
+        BreakpointSpec::Function(name) if crate::names_runtime_function(name) => {
+            Err(Error::FunctionNotFound(name.clone()))
+        }
         BreakpointSpec::Function(name) => {
             // Like gdb, break at every function with the name that has
             // code: overloads and same-named static functions alike.

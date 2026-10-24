@@ -12,6 +12,7 @@ mod breakpoints;
 mod debian;
 mod exceptions;
 mod frames;
+mod functions;
 mod inspector;
 mod interrupts;
 mod maps;

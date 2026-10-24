@@ -52,6 +52,23 @@ use crate::runtime_model::{
 use crate::unwind::RegisterFile;
 use crate::{AddressRange, ImageAddress, StackSegment, ThreadId, VirtualAddress};
 
+/// The place of `js:NAME`: every function V8 names `name`, as its `name`
+/// property gives it. V8 names a method by its own name only, so a
+/// qualified one would match nothing, and is refused.
+fn function_place(name: &str) -> Result<Vec<crate::ManagedPlace>, Arc<str>> {
+    if name.is_empty() {
+        return Err("a JavaScript function breakpoint needs a function name".into());
+    }
+    if name.contains('.') {
+        return Err(format!(
+            "V8 names a function by its own name, so js:{name} matches nothing; use js:{}",
+            name.rsplit('.').next().unwrap_or(name)
+        )
+        .into());
+    }
+    Ok(vec![crate::ManagedPlace::Function { name: name.into() }])
+}
+
 /// The extensions of the scripts Node runs, whose breakpoints its
 /// inspector arms.
 pub const SCRIPT_EXTENSIONS: &[&str] = &["js", "mjs", "cjs", "jsx", "ts", "mts", "cts", "tsx"];
@@ -437,8 +454,16 @@ impl RuntimeModel for NodeRuntime {
         _stop: &dyn RuntimeStop,
         spec: &crate::BreakpointSpec,
     ) -> Option<Result<Vec<crate::ManagedPlace>, Arc<str>>> {
-        let crate::BreakpointSpec::Source { path, line } = spec else {
-            return None;
+        let (path, line) = match spec {
+            crate::BreakpointSpec::Source { path, line } => (path, line),
+            // `js::run` is a native function in a `js` namespace.
+            crate::BreakpointSpec::Function(name)
+                if let Some(name) = name.strip_prefix("js:")
+                    && !name.starts_with(':') =>
+            {
+                return Some(function_place(name));
+            }
+            _ => return None,
         };
         if !path
             .extension()

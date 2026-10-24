@@ -158,6 +158,10 @@ fn read_map(path: &Path) -> std::result::Result<Vec<u8>, Arc<str>> {
     std::fs::read(path).map_err(cannot)
 }
 
+/// The URL pattern of a sentinel for function breakpoints: every script
+/// with a path.
+pub(super) const EVERY_SCRIPT: &str = "^(?:file://)?/";
+
 /// The URL pattern of the sentinel breakpoints: every script of the
 /// program, which leaves out `node_modules` unless `breakpoints`, the
 /// paths of the line breakpoints, name a file there.
@@ -167,7 +171,7 @@ pub(super) fn sentinel_pattern<'a>(mut breakpoints: impl Iterator<Item = &'a Pat
             .any(|component| component.as_os_str() == "node_modules")
     });
     if modules {
-        "^(?:file://)?/".to_owned()
+        EVERY_SCRIPT.to_owned()
     } else {
         "^(?:file://)?/(?!.*/node_modules/)".to_owned()
     }

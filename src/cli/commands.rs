@@ -3398,7 +3398,7 @@ fn parse_watch_location(argument: &str, spec: &CommandSpec) -> Result<Option<Wat
     }))
 }
 
-/// Parses a breakpoint location: a function, `py:function`, `0xaddress`,
+/// Parses a breakpoint location: a function, `py:function`, `js:function`, `0xaddress`,
 /// `file:line`, or `file:function`, or `None` when a file or its location is
 /// missing. The `::` of a qualified name such as `ns::run` never separates a
 /// file.
@@ -3407,12 +3407,7 @@ pub fn parse_breakpoint_location(argument: &str) -> Result<Option<BreakpointSpec
         return Ok(Some(BreakpointSpec::Address(parse_address(argument)?)));
     }
 
-    // A Python function, such as `py:Shape.area`, but not a native function
-    // in a `py` namespace, such as `py::run`.
-    if argument
-        .strip_prefix("py:")
-        .is_some_and(|name| !name.starts_with(':'))
-    {
+    if microscope::names_runtime_function(argument) {
         return Ok(Some(BreakpointSpec::Function(argument.to_owned())));
     }
 
@@ -3463,9 +3458,16 @@ pub fn is_python(location: &BreakpointSpec) -> bool {
 /// Whether a breakpoint is in a script Node runs, which loads as the
 /// program requires it, so it is kept pending as a Python one is.
 pub fn is_javascript(location: &BreakpointSpec) -> bool {
-    matches!(location, BreakpointSpec::Source { path, .. }
-        if path.extension().and_then(|extension| extension.to_str())
-            .is_some_and(|extension| microscope::JAVASCRIPT_EXTENSIONS.contains(&extension)))
+    match location {
+        BreakpointSpec::Source { path, .. } => path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| microscope::JAVASCRIPT_EXTENSIONS.contains(&extension)),
+        BreakpointSpec::Function(name) => name
+            .strip_prefix("js:")
+            .is_some_and(|name| !name.starts_with(':')),
+        _ => false,
+    }
 }
 
 /// How to name a Python function, for a bare name no native function has
@@ -4005,8 +4007,25 @@ mod tests {
             assert_eq!(is_python(&spec), python, "{location}");
         }
 
+        // So are JavaScript ones, and `js::run` is a native function.
+        for (location, javascript) in [
+            ("app.ts:3", true),
+            ("js:handler", true),
+            ("js::run", false),
+            ("py:main", false),
+        ] {
+            let spec = parse(location).expect("a location");
+            assert_eq!(is_javascript(&spec), javascript, "{location}");
+        }
+
         // Python functions keep their prefix, which no file has.
-        for name in ["py:main", "py:Shape.area", "py:outer.<locals>.area", "py:"] {
+        for name in [
+            "py:main",
+            "py:Shape.area",
+            "py:outer.<locals>.area",
+            "py:",
+            "js:handler",
+        ] {
             assert_eq!(
                 parse(name).expect("Python function"),
                 BreakpointSpec::Function(name.to_owned())

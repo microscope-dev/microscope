@@ -12,6 +12,7 @@
 //! made for microscope's own connection keeps it.
 
 mod arming;
+mod functions;
 mod interrupts;
 mod maps;
 mod pauses;
@@ -234,6 +235,18 @@ struct Isolate {
     /// and does not count one at the pause's own place hit.
     deferred: Option<serde_json::Value>,
 
+    /// The search of its functions under way, for function breakpoints.
+    search: Option<functions::Search>,
+
+    /// The scripts whose start a search ran at.
+    searched: BTreeSet<Arc<str>>,
+
+    /// The text of each script a function breakpoint is placed in.
+    texts: BTreeMap<Arc<str>, Arc<functions::Text>>,
+
+    /// Whether its profiler, which lists its functions, is enabled.
+    profiling: bool,
+
     /// The pause V8 reported and holds its thread in, until resumed.
     paused: Option<pauses::Paused>,
 
@@ -281,6 +294,10 @@ struct Placement {
     /// The zero-based line and column V8 placed it at, once it answered:
     /// the breakable place at or after the one asked for.
     actual: Option<(u64, u64)>,
+
+    /// The script and offset of the function a function breakpoint was
+    /// placed in, as V8's coverage starts it.
+    function: Option<(Arc<str>, u32)>,
 }
 
 /// An isolate's sentinel breakpoint and the URL pattern it was set with.
@@ -743,6 +760,9 @@ impl<P: LinuxTraceOps> Controller<P> {
                         .is_some_and(|paused| paused.listing.contains_key(&id))
                 }) {
                     return self.scope_listed(runtime, id, result);
+                }
+                if self.searches(runtime, id) {
+                    return self.search_answered(runtime, id, result);
                 }
                 return self.breakpoint_set(runtime, id, result);
             }

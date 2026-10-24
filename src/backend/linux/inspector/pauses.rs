@@ -280,8 +280,16 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Some((false, Vec::new()));
         }
         hits.retain(|hit| Some(hit) != sentinel.as_ref());
+        // The script's functions are compiled, and its declarations bound,
+        // as it starts: a search finds them before any runs.
+        if let Some(script) = location["scriptId"].as_str()
+            && isolate.searched.insert(script.into())
+        {
+            self.search_functions(runtime, session);
+        }
+        let isolate = self.isolate_mut(runtime, session)?;
         let placements = isolate.sites.values().flat_map(|site| &site.placements);
-        if super::arming::awaits_mapped(placements, params) {
+        if isolate.search.is_some() || super::arming::awaits_mapped(placements, params) {
             record!("the sentinel's pause waits for V8 to set its script's breakpoints");
             isolate.deferred = Some(params.clone());
             return None;
@@ -666,6 +674,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 connection,
                 isolates,
                 step,
+                desired,
                 ..
             } = inspector;
             for (session, isolate) in isolates.iter_mut() {
@@ -682,6 +691,15 @@ impl<P: LinuxTraceOps> Controller<P> {
                     (connection.as_ref(), isolates.get_mut(&Session::main()))
             {
                 pause_for_step(&link.connection, isolate, step.as_mut());
+            }
+            // A function compiled while the program ran is found as it
+            // runs on.
+            if let Some(link) = connection.as_ref()
+                && super::functions::wanted(desired)
+            {
+                for (session, isolate) in isolates.iter_mut() {
+                    super::functions::search(&link.connection, session, isolate);
+                }
             }
         }
         // Names hold only while their thread stays where V8 paused it.

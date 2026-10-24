@@ -87,7 +87,9 @@ impl<P: LinuxTraceOps> Controller<P> {
             .map(|breakpoint| &breakpoint.spec)
             .chain(adding)
             .filter_map(|spec| match spec {
-                BreakpointSpec::Function(name) => Some(name.as_str()),
+                BreakpointSpec::Function(name) if !crate::names_runtime_function(name) => {
+                    Some(name.as_str())
+                }
                 _ => None,
             })
             .collect::<BTreeSet<_>>();

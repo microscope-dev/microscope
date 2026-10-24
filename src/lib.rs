@@ -175,7 +175,7 @@ pub use protocol::{
     WatchpointSpec,
 };
 
-pub use runtime_model::{JAVASCRIPT_EXTENSIONS, TASK_NOUNS};
+pub use runtime_model::{JAVASCRIPT_EXTENSIONS, TASK_NOUNS, names_runtime_function};
 pub use source_map::SourcePathMap;
 pub use view::summary::{
     Characters, characters as characters_of, float as float_text, function as function_text,

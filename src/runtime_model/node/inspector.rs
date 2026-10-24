@@ -26,6 +26,17 @@ pub const REMOVE_BREAKPOINT: &str = "Debugger.removeBreakpoint";
 /// Sets a breakpoint at one place in one script.
 pub const SET_BREAKPOINT_AT: &str = "Debugger.setBreakpoint";
 
+/// Lists the places a breakpoint can be set at.
+pub const POSSIBLE_BREAKPOINTS: &str = "Debugger.getPossibleBreakpoints";
+
+/// A script's text.
+pub const SCRIPT_SOURCE: &str = "Debugger.getScriptSource";
+
+pub const ENABLE_PROFILER: &str = "Profiler.enable";
+
+/// Every function V8 compiled, by script, with its range.
+pub const COVERAGE: &str = "Profiler.getBestEffortCoverage";
+
 /// A breakpoint set before its script loaded is placed in it.
 pub const RESOLVED: &str = "Debugger.breakpointResolved";
 

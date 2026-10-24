@@ -11,7 +11,9 @@ use std::sync::Arc;
 use super::super::Controller;
 use super::super::cdp::{Connection, RequestId, Session};
 use super::super::native::{InspectionOps, LinuxTraceOps};
-use super::{Inspector, Isolate, Placement, Sentinel, Site, SiteState, maps, protocol, send};
+use super::{
+    Inspector, Isolate, Placement, Sentinel, Site, SiteState, functions, maps, protocol, send,
+};
 use crate::runtime_model::{Arming, ManagedArm, inspector_protocol};
 use crate::{ManagedPlace, RuntimeId};
 
@@ -44,7 +46,20 @@ impl Inspector {
             .values()
             .any(|isolate| isolate.sites.contains_key(&number))
         {
-            return Err("no script by that name has loaded yet".into());
+            let function = self.desired.iter().find_map(|arm| match &arm.place {
+                ManagedPlace::Function { name } if arm.number == number => Some(name),
+                _ => None,
+            });
+            return Err(function.map_or_else(
+                || "no script by that name has loaded yet".into(),
+                |name| {
+                    format!(
+                        "V8 has compiled no function named {name} yet; microscope looks again \
+                         as each script loads and each time the program resumes"
+                    )
+                    .into()
+                },
+            ));
         }
         if self.target.is_none() {
             Err("Node's inspector has not started yet".into())
@@ -231,8 +246,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 record!("location {number} is {:?}", placement.state);
                 // A sentinel's pause waits for the last of its script's.
                 let deferred = isolate
-                    .deferred
-                    .take_if(|pause| !awaits_mapped(isolate_sites(&isolate.sites), pause))
+                    .ready_deferred()
                     .map(|pause| (session.clone(), pause));
                 self.publish_breakpoints_changed();
                 if let Some((session, pause)) = deferred {
@@ -305,6 +319,7 @@ fn sync_isolate(
         }
     }
 
+    let mut searching = false;
     for (&number, arm) in desired {
         if isolate.sites.contains_key(&number) {
             continue;
@@ -342,28 +357,30 @@ fn sync_isolate(
                         state,
                         mapped: None,
                         actual: None,
+                        function: None,
                     });
                 }
                 for script in &mapped {
                     place_mapped(target, &mut site, script, Path::new(&**path), *line);
                 }
             }
-            ManagedPlace::Function { .. } => site.placements.push(Placement {
-                id: None,
-                state: SiteState::Refused(
-                    "microscope cannot yet break at a JavaScript function".into(),
-                ),
-                mapped: None,
-                actual: None,
-            }),
+            ManagedPlace::Function { .. } => searching = true,
         }
         isolate.sites.insert(number, site);
     }
+    // A function breakpoint is placed in each function the search finds.
+    if searching {
+        functions::search(target.connection, target.session, isolate);
+    }
 }
 
-/// Holds the isolate's sentinel while `desired` has a line, with the
-/// pattern its paths call for, and removes it once none is.
+/// Holds the isolate's sentinel while `desired` has a line or a function,
+/// with the pattern they call for, and removes it once none is. A
+/// function may be in any script, `node_modules` too.
 fn sync_sentinel(target: &Target<'_>, isolate: &mut Isolate, desired: &BTreeMap<u64, &ManagedArm>) {
+    let functions = desired
+        .values()
+        .any(|arm| matches!(arm.place, ManagedPlace::Function { .. }));
     let mut lines = desired
         .values()
         .filter_map(|arm| match &arm.place {
@@ -371,10 +388,14 @@ fn sync_sentinel(target: &Target<'_>, isolate: &mut Isolate, desired: &BTreeMap<
             ManagedPlace::Function { .. } => None,
         })
         .peekable();
-    let pattern = lines
-        .peek()
-        .is_some()
-        .then(|| maps::sentinel_pattern(lines));
+    let pattern = if functions {
+        Some(maps::EVERY_SCRIPT.to_owned())
+    } else {
+        lines
+            .peek()
+            .is_some()
+            .then(|| maps::sentinel_pattern(lines))
+    };
     if isolate.sentinel.as_ref().map(|sentinel| &sentinel.pattern) == pattern.as_ref() {
         return;
     }
@@ -402,6 +423,7 @@ fn sync_sentinel(target: &Target<'_>, isolate: &mut Isolate, desired: &BTreeMap<
             state,
             mapped: None,
             actual: None,
+            function: None,
         },
     });
 }
@@ -444,6 +466,7 @@ fn place_mapped(
             state,
             mapped: at,
             actual: None,
+            function: None,
         });
     }
     record!("the source map of {path_of_script}: {:?}", map.map().err());
@@ -499,8 +522,16 @@ fn answer(
     }
 }
 
-fn isolate_sites(sites: &BTreeMap<u64, Site>) -> impl Iterator<Item = &Placement> {
-    sites.values().flat_map(|site| &site.placements)
+impl Isolate {
+    /// The sentinel's pause it holds, once nothing it waits for remains:
+    /// a search of its functions, or the breakpoints set in its script.
+    pub(super) fn ready_deferred(&mut self) -> Option<serde_json::Value> {
+        let waits = self.search.is_some()
+            || self.deferred.as_ref().is_some_and(|pause| {
+                awaits_mapped(self.sites.values().flat_map(|site| &site.placements), pause)
+            });
+        if waits { None } else { self.deferred.take() }
+    }
 }
 
 /// Whether a mapped breakpoint among `placements` in the script of the

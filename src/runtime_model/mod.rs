@@ -29,6 +29,17 @@ pub use python::{
 };
 mod records;
 mod rust;
+
+/// Whether a function breakpoint names a function a runtime runs itself,
+/// as `py:Shape.area` or `js:handler` do, which no native symbol answers
+/// to. `py::run` is a native function in a `py` namespace.
+#[must_use]
+pub fn names_runtime_function(name: &str) -> bool {
+    ["py:", "js:"].iter().any(|prefix| {
+        name.strip_prefix(prefix)
+            .is_some_and(|name| !name.starts_with(':'))
+    })
+}
 pub mod thread_ids;
 mod tokio;
 
