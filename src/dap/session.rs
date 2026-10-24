@@ -3184,7 +3184,14 @@ fn describe_stop(reason: &StopReason) -> (&'static str, Option<String>, Option<S
             )),
             Some("unreadable runtime event".to_owned()),
         ),
-        StopReason::ProgramBreakpoint { address } => (
+        StopReason::ProgramBreakpoint { address: None } => (
+            "breakpoint",
+            Some("Paused on debugger statement".to_owned()),
+            None,
+        ),
+        StopReason::ProgramBreakpoint {
+            address: Some(address),
+        } => (
             "exception",
             Some(format!(
                 "the program executed a breakpoint instruction at {address}"

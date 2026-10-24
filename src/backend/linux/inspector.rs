@@ -75,7 +75,9 @@ impl Inspectors {
             .values_mut()
             .filter_map(|inspector| inspector.connection.as_mut())
         {
-            link.deferred_pause = false;
+            if link.pause == PauseRequest::Deferred {
+                link.pause = PauseRequest::None;
+            }
         }
         self.interrupt.take().is_some()
     }
@@ -238,6 +240,9 @@ struct Paused {
 
     /// Whether the pause answers a client's interrupt.
     interrupted: bool,
+
+    /// Whether V8 paused at a `debugger` statement.
+    statement: bool,
 }
 
 /// An exception a pause reported.
@@ -310,8 +315,22 @@ struct Link {
     /// Whether V8 was told to resume and has not yet left its pause.
     resuming: bool,
 
-    /// Whether an interrupt's pause waits for V8 to leave its pause.
-    deferred_pause: bool,
+    pause: PauseRequest,
+}
+
+/// Where the client's request that V8 pause is.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum PauseRequest {
+    #[default]
+    None,
+
+    /// It waits for V8 to leave its pause, as V8 drops one asked for
+    /// before.
+    Deferred,
+
+    /// V8 was asked and has not paused since. It reports that pause as it
+    /// does a `debugger` statement.
+    Sent,
 }
 
 impl std::fmt::Debug for Link {
@@ -582,7 +601,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     connection,
                     connected: false,
                     resuming: false,
-                    deferred_pause: false,
+                    pause: PauseRequest::None,
                 });
             }
             Err(error) => {
@@ -890,10 +909,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.publish_breakpoints_changed();
     }
 
-    #[cfg_attr(
-        not(debug_assertions),
-        expect(unused_variables, reason = "only recorded")
-    )]
     fn inspector_event(
         &mut self,
         runtime: RuntimeId,
@@ -930,13 +945,18 @@ impl<P: LinuxTraceOps> Controller<P> {
             inspector_protocol::RESUMED if session.path().is_empty() => {
                 if let Some(link) = inspector.connection.as_mut() {
                     link.resuming = false;
-                    if std::mem::take(&mut link.deferred_pause) {
+                    if link.pause == PauseRequest::Deferred {
                         let sent = link.connection.send(
                             &session,
                             inspector_protocol::PAUSE,
                             serde_json::json!({}),
                         );
                         record!("V8 left its pause and is asked to pause: {sent:?}");
+                        link.pause = if sent.is_ok() {
+                            PauseRequest::Sent
+                        } else {
+                            PauseRequest::None
+                        };
                     }
                 }
             }
@@ -972,7 +992,16 @@ impl<P: LinuxTraceOps> Controller<P> {
             .filter_map(|hit| hit.as_str().map(Arc::from))
             .collect();
         record!("V8 paused: {} {hits:?}", params["reason"]);
-        if hits.is_empty() && self.step_goes_on(runtime, &session, params) {
+        // A pause for no reason V8 names, and not the one asked for, is
+        // at a `debugger` statement.
+        let asked = self
+            .inferior
+            .as_mut()
+            .and_then(|inferior| inferior.inspectors.records.get_mut(&runtime))
+            .and_then(|inspector| inspector.connection.as_mut())
+            .is_some_and(|link| std::mem::take(&mut link.pause) == PauseRequest::Sent);
+        let statement = !asked && hits.is_empty() && params["reason"] == "other";
+        if hits.is_empty() && self.step_goes_on(runtime, &session, params, statement) {
             return Ok(());
         }
         // Any pause answers an interrupt: once V8 holds a thread, the
@@ -999,55 +1028,13 @@ impl<P: LinuxTraceOps> Controller<P> {
             .flatten()
             .enumerate()
         {
-            let chain = frame["scopeChain"]
-                .as_array()
-                .map_or(&[][..], Vec::as_slice);
-            // The local scope, then the blocks inside it from the
-            // outermost; V8 lists the chain innermost first.
-            let local = chain
-                .iter()
-                .position(|scope| scope["type"] == "local")
-                .unwrap_or(chain.len());
-            let listed = chain[local..].iter().take(1).chain(
-                chain[..local]
-                    .iter()
-                    .rev()
-                    .filter(|scope| scope["type"] == "block"),
-            );
-            let mut scopes = Vec::new();
-            for scope in listed {
-                let sent = scope["object"]["objectId"]
-                    .as_str()
-                    .ok_or_else(|| Arc::<str>::from("V8 gave the scope no object"))
-                    .and_then(|object| {
-                        link.connection
-                            .send(
-                                &session,
-                                inspector_protocol::GET_PROPERTIES,
-                                serde_json::json!({
-                                    "objectId": object,
-                                    "ownProperties": true,
-                                    "accessorPropertiesOnly": false,
-                                    "generatePreview": false,
-                                }),
-                            )
-                            .map_err(|error| Arc::from(error.to_string()))
-                    });
-                match sent {
-                    Ok(request) => {
-                        listing.insert(request, (index, scopes.len()));
-                        scopes.push(None);
-                    }
-                    Err(reason) => scopes.push(Some(Err(reason))),
-                }
-            }
-            frames.push(PausedFrame {
-                line: frame["location"]["lineNumber"].as_u64().unwrap_or(u64::MAX),
-                column: frame["location"]["columnNumber"]
-                    .as_u64()
-                    .unwrap_or(u64::MAX),
-                scopes,
-            });
+            frames.push(list_frame(
+                &link.connection,
+                &session,
+                frame,
+                index,
+                &mut listing,
+            ));
         }
         let listed = listing.is_empty();
         inspector.paused = Some(Paused {
@@ -1059,6 +1046,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             listing,
             exception: Thrown::of(params),
             interrupted,
+            statement,
         });
         if listed {
             self.judge_inspector_pause(runtime)?;
@@ -1079,6 +1067,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         runtime: RuntimeId,
         session: &Session,
         params: &serde_json::Value,
+        statement: bool,
     ) -> bool {
         let Some(inspector) = self
             .inferior
@@ -1109,6 +1098,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             {
                 step.map_or(inspector_protocol::RESUME, |step| step.command)
             }
+            // So is a `debugger` statement there.
+            (Some("other"), None) if statement => inspector_protocol::RESUME,
             _ => return false,
         };
         let sent = link
@@ -1236,7 +1227,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .flat_map(|(_, owners)| owners.iter().copied())
             .collect::<BTreeSet<_>>();
         let depth = paused.frames.len();
-        let interrupted = paused.interrupted;
+        let (interrupted, statement) = (paused.interrupted, paused.statement);
         let exception = paused.exception.as_ref().and_then(|thrown| {
             let filter =
                 inspector_protocol::exception_filter(self.exception_stops, thrown.uncaught)?;
@@ -1256,6 +1247,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         } else if hits.is_empty() {
             match self.inspector_step_end(runtime, pid, depth) {
                 Some(reason) => reason,
+                None if statement => StopReason::ProgramBreakpoint { address: None },
                 None if interrupted => StopReason::Pause,
                 // An interrupt's pause that V8 took after the program
                 // stopped otherwise, or one that could not be withdrawn,
@@ -1307,7 +1299,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         for inspector in inferior.inspectors.records.values_mut() {
             if let Some(link) = inspector.connection.as_mut().filter(|link| link.connected) {
                 if link.resuming {
-                    link.deferred_pause = true;
+                    link.pause = PauseRequest::Deferred;
                     asked = true;
                     continue;
                 }
@@ -1318,6 +1310,9 @@ impl<P: LinuxTraceOps> Controller<P> {
                 );
                 record!("V8 is asked to pause: {sent:?}");
                 asked |= sent.is_ok();
+                if sent.is_ok() {
+                    link.pause = PauseRequest::Sent;
+                }
             }
         }
         if asked {
@@ -1510,6 +1505,66 @@ const MAX_SKIPPED: u32 = 1000;
 fn skipped(url: &str, skips: &crate::StepSkips, enter_runtime: bool) -> bool {
     (url.starts_with("node:") && !enter_runtime)
         || skips.matches(&inspector_protocol::script_path(url))
+}
+
+/// The frame `frame` of a pause, the `index`th, whose scopes' variables
+/// are asked for over `connection`, each request entered in `listing`.
+fn list_frame(
+    connection: &Connection,
+    session: &Session,
+    frame: &serde_json::Value,
+    index: usize,
+    listing: &mut BTreeMap<RequestId, (usize, usize)>,
+) -> PausedFrame {
+    let chain = frame["scopeChain"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice);
+    // The local scope, then the blocks inside it from the
+    // outermost; V8 lists the chain innermost first.
+    let local = chain
+        .iter()
+        .position(|scope| scope["type"] == "local")
+        .unwrap_or(chain.len());
+    let listed = chain[local..].iter().take(1).chain(
+        chain[..local]
+            .iter()
+            .rev()
+            .filter(|scope| scope["type"] == "block"),
+    );
+    let mut scopes = Vec::new();
+    for scope in listed {
+        let sent = scope["object"]["objectId"]
+            .as_str()
+            .ok_or_else(|| Arc::<str>::from("V8 gave the scope no object"))
+            .and_then(|object| {
+                connection
+                    .send(
+                        session,
+                        inspector_protocol::GET_PROPERTIES,
+                        serde_json::json!({
+                            "objectId": object,
+                            "ownProperties": true,
+                            "accessorPropertiesOnly": false,
+                            "generatePreview": false,
+                        }),
+                    )
+                    .map_err(|error| Arc::from(error.to_string()))
+            });
+        match sent {
+            Ok(request) => {
+                listing.insert(request, (index, scopes.len()));
+                scopes.push(None);
+            }
+            Err(reason) => scopes.push(Some(Err(reason))),
+        }
+    }
+    PausedFrame {
+        line: frame["location"]["lineNumber"].as_u64().unwrap_or(u64::MAX),
+        column: frame["location"]["columnNumber"]
+            .as_u64()
+            .unwrap_or(u64::MAX),
+        scopes,
+    }
 }
 
 /// Whether a pause with `depth` frames ends `step`, which no breakpoint

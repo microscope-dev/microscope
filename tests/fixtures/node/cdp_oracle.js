@@ -91,6 +91,11 @@ function paused({ reason, callFrames, data }) {
     send('Debugger.resume');
     return;
   }
+  // So is a debugger statement there.
+  if (reason === 'other' && skipped) {
+    send('Debugger.resume');
+    return;
+  }
   const { lineNumber, columnNumber } = top.location;
   const uncaught = exception ? ` ${data?.uncaught ? 'uncaught' : 'caught'}` : '';
   console.log(`PAUSE ${reason} ${top.functionName || '-'} ${lineNumber + 1} ${columnNumber + 1}${uncaught}`);

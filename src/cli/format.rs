@@ -1007,11 +1007,19 @@ pub fn stop(reason: &StopReason, renderer: Renderer) -> String {
             "{} at the runtime's report of an event it could not read: {description}",
             stopped(Role::Warning)
         ),
-        StopReason::ProgramBreakpoint { address } => format!(
+        StopReason::ProgramBreakpoint {
+            address: Some(address),
+        } => format!(
             "{} by the program's breakpoint instruction at {}",
             stopped(Role::Current),
             renderer.paint(Role::Metadata, address)
         ),
+        StopReason::ProgramBreakpoint { address: None } => {
+            format!(
+                "{} at the program's debugger statement",
+                stopped(Role::Current)
+            )
+        }
         StopReason::Exec { followed: true } => format!(
             "{} as the inferior executed a program",
             stopped(Role::Current)

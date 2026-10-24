@@ -17,6 +17,7 @@ mod native;
 mod oracle;
 mod session;
 mod stacks;
+mod statements;
 mod steps;
 mod truth;
 mod values;

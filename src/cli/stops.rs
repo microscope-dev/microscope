@@ -134,6 +134,7 @@ const fn in_code(reason: &StopReason) -> bool {
             | StopReason::Exception(_)
             | StopReason::LanguageException(_)
             | StopReason::RuntimeEvent { .. }
+            | StopReason::ProgramBreakpoint { .. }
             | StopReason::Pause
             | StopReason::Jump
             | StopReason::Assignment

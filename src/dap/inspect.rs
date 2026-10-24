@@ -1117,7 +1117,9 @@ impl Session {
 
                 return Ok(body);
             }
-            StopReason::ProgramBreakpoint { address } => (
+            StopReason::ProgramBreakpoint {
+                address: Some(address),
+            } => (
                 "program breakpoint".to_owned(),
                 format!("the program executed a breakpoint instruction at {address}"),
             ),

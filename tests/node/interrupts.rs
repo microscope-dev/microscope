@@ -10,8 +10,8 @@ use crate::session::{MATRIX, NodeSession};
 
 const FIXTURE: &str = "interrupts.js";
 
-/// The lines of `spin()`'s loop, in the fixture.
-const SPIN: std::ops::RangeInclusive<u32> = 9..=11;
+/// The lines of `spin()`'s loop, its header included, in the fixture.
+const SPIN: std::ops::RangeInclusive<u32> = 8..=11;
 
 /// What the selected frame shows for the variable `name`: its summary,
 /// `unavailable` for one V8 keeps where microscope cannot read it, or

@@ -911,9 +911,12 @@ impl<P: LinuxTraceOps> Controller<P> {
             ClassifiedStop::Breakpoint(address) => self.handle_breakpoint_stop(pid, address),
             // The program goes on after its own trap, which it raised for
             // the debugger; the SIGTRAP is not delivered.
-            ClassifiedStop::ProgramTrap(address) => {
-                self.begin_visible_stop(pid, StopReason::ProgramBreakpoint { address })
-            }
+            ClassifiedStop::ProgramTrap(address) => self.begin_visible_stop(
+                pid,
+                StopReason::ProgramBreakpoint {
+                    address: Some(address),
+                },
+            ),
             ClassifiedStop::Watch(owners) => self.handle_watch_stop(pid, owners),
             ClassifiedStop::Trace { watch } => self.handle_trace_stop(pid, watch),
             ClassifiedStop::SignalDelivery(pending) => self.handle_signal_stop(pid, pending),

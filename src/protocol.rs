@@ -1748,11 +1748,13 @@ pub enum StopReason {
         description: Arc<str>,
     },
 
-    /// The program executed a breakpoint instruction of its own, such as
-    /// Go's `runtime.Breakpoint`. It resumes after the instruction.
+    /// The program executed a breakpoint of its own: an instruction, such
+    /// as Go's `runtime.Breakpoint`, or a statement its runtime stops at,
+    /// such as JavaScript's `debugger`. It resumes after it.
     ProgramBreakpoint {
-        /// The breakpoint instruction.
-        address: VirtualAddress,
+        /// The breakpoint instruction; `None` for a runtime's statement,
+        /// whose frame is selected.
+        address: Option<VirtualAddress>,
     },
 
     /// A thread entered or returned from a system call a catchpoint
