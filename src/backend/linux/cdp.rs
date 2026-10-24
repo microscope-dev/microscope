@@ -1163,12 +1163,22 @@ mod tests {
             Err(RecvTimeoutError::Disconnected)
         );
 
-        // Nextest runs each test in its own process, so no other test owns a thread.
-        let tasks = std::fs::read_dir("/proc/self/task").expect("tasks");
-        for task in tasks {
-            let comm = std::fs::read_to_string(task.expect("task").path().join("comm"))
-                .unwrap_or_default();
-            assert_ne!(comm.trim(), "cdp", "a transport thread is still running");
+        // Nextest runs each test in its own process, so no other test owns a
+        // thread. A joined thread leaves the task list only once the kernel
+        // reaps it, a moment after its join returns.
+        let running = || {
+            std::fs::read_dir("/proc/self/task")
+                .expect("tasks")
+                .filter_map(|task| std::fs::read_to_string(task.ok()?.path().join("comm")).ok())
+                .any(|comm| comm.trim() == "cdp")
+        };
+        let started = Instant::now();
+        while running() {
+            assert!(
+                started.elapsed() < DEADLINE,
+                "a transport thread is still running"
+            );
+            std::thread::sleep(Duration::from_millis(1));
         }
 
         client.finish();
