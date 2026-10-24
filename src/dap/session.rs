@@ -1230,9 +1230,12 @@ impl Session {
 
         match &target.start {
             Start::Core(_) => self.stopped(stop_id, thread_id, reason).await?,
-            // The group runs and stops its members together.
+            // The group runs and stops its members together. The member's
+            // own event may have reported the stop while it was announced.
             Start::Attach { .. } if matches!(target.owner, Owner::Member(..)) => {
-                self.stopped(stop_id, thread_id, reason).await?;
+                if self.stop.as_ref().map(|stop| stop.id) != Some(stop_id) {
+                    self.stopped(stop_id, thread_id, reason).await?;
+                }
             }
             Start::Attach { .. } if target.stop_on_entry => {
                 self.stopped(stop_id, thread_id, StopReason::Entry).await?;
