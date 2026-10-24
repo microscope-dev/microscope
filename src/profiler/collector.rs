@@ -775,10 +775,11 @@ mod tests {
             .map(|segment| segment.address())
             .min()
             .expect("a segment");
-        let maps = std::fs::read_to_string(format!("/proc/{pid}/maps")).expect("its mappings");
-        let start = maps
-            .lines()
-            .find_map(|line| {
+        // The child may not have mapped the program yet when `spawn` returns.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let start = loop {
+            let maps = std::fs::read_to_string(format!("/proc/{pid}/maps")).expect("its mappings");
+            let start = maps.lines().find_map(|line| {
                 let fields: Vec<&str> = line.split_whitespace().collect();
                 (fields.len() == 6
                     && fields[2] == "00000000"
@@ -786,8 +787,16 @@ mod tests {
                     .then(|| fields[0].split_once('-'))
                     .flatten()
                     .and_then(|(start, _)| u64::from_str_radix(start, 16).ok())
-            })
-            .expect("the mapping of the program's start");
+            });
+            if let Some(start) = start {
+                break start;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the mapping of the program's start"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
         Found {
             module: processor.builder().module("probes", None, [0; 16], 0),
             path: "probes".into(),
@@ -797,6 +806,29 @@ mod tests {
             ),
             table: Arc::new(table),
         }
+    }
+
+    /// `spawn` returns once the kernel closes the child's close-on-exec
+    /// pipe, before it maps the program, so `found` waits for the mapping.
+    #[test]
+    fn a_program_is_found_though_it_is_not_yet_mapped() {
+        let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("build/test-programs/probes")
+            .canonicalize()
+            .expect("run `just build-test-programs`");
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "sleep 0.3; exec \"$0\" records"])
+            .arg(&program)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .expect("the shell");
+        let mut processor = record::Processor::new(DebugFileSearch::default(), 64);
+        let found = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            found(child.id(), &program, &mut processor).bias
+        }));
+        drop(child.stdin.take());
+        child.wait().expect("its exit");
+        assert!(found.is_ok(), "the program was not found");
     }
 
     /// A site the program defines as a recording ends is off once it has
