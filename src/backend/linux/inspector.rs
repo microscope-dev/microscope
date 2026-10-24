@@ -58,12 +58,28 @@ pub(super) struct Inspectors {
 
     records: BTreeMap<RuntimeId, Inspector>,
 
+    /// When a client's pause stops every thread natively, unless V8
+    /// pauses running JavaScript first.
+    pub(super) interrupt: Option<std::time::Instant>,
+
     /// The stack locals V8 named for each interpreted frame of a thread it
     /// holds paused, by frame, valid until that thread runs (G5).
     pub(super) locals: BTreeMap<VirtualAddress, crate::runtime_model::ReportedLocals>,
 }
 
 impl Inspectors {
+    /// Ends the interrupt under way, withdrawing the pauses not yet sent.
+    fn end_interrupt(&mut self) -> bool {
+        for link in self
+            .records
+            .values_mut()
+            .filter_map(|inspector| inspector.connection.as_mut())
+        {
+            link.deferred_pause = false;
+        }
+        self.interrupt.take().is_some()
+    }
+
     /// Forgets a site whose memory is gone.
     pub(super) fn forget(&mut self, address: VirtualAddress) {
         self.entries.remove(&address);
@@ -149,12 +165,6 @@ struct Stepping {
 }
 
 impl Inspector {
-    /// Whether anything needs the connection: a client that is connected
-    /// when the program ends makes Node wait for it.
-    fn wanted(&self) -> bool {
-        !self.desired.is_empty() || self.step.is_some() || !matches!(self.pausing, "" | "none")
-    }
-
     /// Whether the managed location `number` is set, or why it waits.
     fn readiness(&self, number: u64) -> std::result::Result<(), Arc<str>> {
         if let Some(problem) = &self.problem {
@@ -225,6 +235,9 @@ struct Paused {
 
     /// The exception V8 paused at, if it paused at one.
     exception: Option<Thrown>,
+
+    /// Whether the pause answers a client's interrupt.
+    interrupted: bool,
 }
 
 /// An exception a pause reported.
@@ -294,9 +307,11 @@ struct Link {
     connection: Connection,
     connected: bool,
 
-    /// The release, after whose reply a connection nothing needs closes:
-    /// at exit, Node waits for every connected client to leave.
-    release: Option<RequestId>,
+    /// Whether V8 was told to resume and has not yet left its pause.
+    resuming: bool,
+
+    /// Whether an interrupt's pause waits for V8 to leave its pause.
+    deferred_pause: bool,
 }
 
 impl std::fmt::Debug for Link {
@@ -566,7 +581,8 @@ impl<P: LinuxTraceOps> Controller<P> {
                     generation,
                     connection,
                     connected: false,
-                    release: None,
+                    resuming: false,
+                    deferred_pause: false,
                 });
             }
             Err(error) => {
@@ -634,7 +650,6 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         let Some(link) = inspector.connection.as_ref().filter(|link| link.connected) else {
             if inspector.connection.is_none()
-                && inspector.wanted()
                 && inspector.target.is_some()
                 && inspector.problem.is_none()
             {
@@ -720,7 +735,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         else {
             return Ok(());
         };
-        let wanted = inspector.wanted();
         let Some(link) = inspector
             .connection
             .as_mut()
@@ -733,19 +747,19 @@ impl<P: LinuxTraceOps> Controller<P> {
         match incoming {
             Incoming::Connected => {
                 link.connected = true;
-                if wanted {
-                    // Node then reports the program's end, rather than
-                    // waiting for the debugger to leave unasked.
-                    for (method, params) in [
-                        (
-                            inspector_protocol::NOTIFY_END,
-                            serde_json::json!({ "enabled": true }),
-                        ),
-                        (inspector_protocol::ENABLE_DEBUGGER, serde_json::json!({})),
-                    ] {
-                        let sent = link.connection.send(&Session::main(), method, params);
-                        record!("{method}: {sent:?}");
-                    }
+                // The connection stays while the process is debugged, so an
+                // interrupt can pause its JavaScript (F20: it costs nothing
+                // while it runs). Node then reports the program's end, rather
+                // than waiting for the debugger to leave unasked.
+                for (method, params) in [
+                    (
+                        inspector_protocol::NOTIFY_END,
+                        serde_json::json!({ "enabled": true }),
+                    ),
+                    (inspector_protocol::ENABLE_DEBUGGER, serde_json::json!({})),
+                ] {
+                    let sent = link.connection.send(&Session::main(), method, params);
+                    record!("{method}: {sent:?}");
                 }
                 self.sync_inspector(runtime);
                 let Some(link) = self
@@ -763,15 +777,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     serde_json::json!({}),
                 );
                 record!("the inspector is connected; released: {released:?}");
-                if !wanted {
-                    link.release = released.ok();
-                }
                 self.publish_breakpoints_changed();
-            }
-            Incoming::Reply { id, .. } if link.release == Some(id) => {
-                record!("the node is released, and nothing needs the inspector");
-                link.connection.close();
-                inspector.connection = None;
             }
             Incoming::Reply { id, result, .. }
                 if inspector
@@ -884,6 +890,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.publish_breakpoints_changed();
     }
 
+    #[cfg_attr(
+        not(debug_assertions),
+        expect(unused_variables, reason = "only recorded")
+    )]
     fn inspector_event(
         &mut self,
         runtime: RuntimeId,
@@ -915,6 +925,19 @@ impl<P: LinuxTraceOps> Controller<P> {
                 {
                     site.state = SiteState::Resolved;
                     self.publish_breakpoints_changed();
+                }
+            }
+            inspector_protocol::RESUMED if session.path().is_empty() => {
+                if let Some(link) = inspector.connection.as_mut() {
+                    link.resuming = false;
+                    if std::mem::take(&mut link.deferred_pause) {
+                        let sent = link.connection.send(
+                            &session,
+                            inspector_protocol::PAUSE,
+                            serde_json::json!({}),
+                        );
+                        record!("V8 left its pause and is asked to pause: {sent:?}");
+                    }
                 }
             }
             inspector_protocol::PAUSED if session.path().is_empty() => {
@@ -952,6 +975,12 @@ impl<P: LinuxTraceOps> Controller<P> {
         if hits.is_empty() && self.step_goes_on(runtime, &session, params) {
             return Ok(());
         }
+        // Any pause answers an interrupt: once V8 holds a thread, the
+        // all-stop that judges the pause publishes it.
+        let interrupted = self
+            .inferior
+            .as_mut()
+            .is_some_and(|inferior| inferior.inspectors.end_interrupt());
         let Some(inspector) = self
             .inferior
             .as_mut()
@@ -1029,6 +1058,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             frames,
             listing,
             exception: Thrown::of(params),
+            interrupted,
         });
         if listed {
             self.judge_inspector_pause(runtime)?;
@@ -1206,6 +1236,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .flat_map(|(_, owners)| owners.iter().copied())
             .collect::<BTreeSet<_>>();
         let depth = paused.frames.len();
+        let interrupted = paused.interrupted;
         let exception = paused.exception.as_ref().and_then(|thrown| {
             let filter =
                 inspector_protocol::exception_filter(self.exception_stops, thrown.uncaught)?;
@@ -1223,11 +1254,18 @@ impl<P: LinuxTraceOps> Controller<P> {
         let reason = if let Some(exception) = exception.filter(|_| hits.is_empty()) {
             exception
         } else if hits.is_empty() {
-            let Some(reason) = self.inspector_step_end(runtime, pid, depth) else {
-                record!("V8's pause stops for none of microscope's breakpoints or steps");
-                return;
-            };
-            reason
+            match self.inspector_step_end(runtime, pid, depth) {
+                Some(reason) => reason,
+                None if interrupted => StopReason::Pause,
+                // An interrupt's pause that V8 took after the program
+                // stopped otherwise, or one that could not be withdrawn,
+                // is absorbed: the program resumes as though it never
+                // paused.
+                None => {
+                    record!("V8's pause stops for none of microscope's breakpoints or steps");
+                    return;
+                }
+            }
         } else {
             StopReason::Breakpoint {
                 address: None,
@@ -1249,6 +1287,64 @@ impl<P: LinuxTraceOps> Controller<P> {
             barrier.triggering_thread = pid;
             barrier.reason = Some(reason);
         }
+        if interrupted && let Some(barrier) = inferior.barrier.as_mut() {
+            barrier.paused = true;
+        }
+    }
+
+    /// Asks every connected inspector to pause its running JavaScript for
+    /// a client's interrupt, and arms the deadline after which every thread
+    /// is stopped natively: whether any was asked.
+    pub(super) fn interrupt_javascript(&mut self) -> bool {
+        let Some(inferior) = self.inferior.as_mut() else {
+            return false;
+        };
+        // A second interrupt does not wait again.
+        if inferior.inspectors.end_interrupt() {
+            return false;
+        }
+        let mut asked = false;
+        for inspector in inferior.inspectors.records.values_mut() {
+            if let Some(link) = inspector.connection.as_mut().filter(|link| link.connected) {
+                if link.resuming {
+                    link.deferred_pause = true;
+                    asked = true;
+                    continue;
+                }
+                let sent = link.connection.send(
+                    &Session::main(),
+                    inspector_protocol::PAUSE,
+                    serde_json::json!({}),
+                );
+                record!("V8 is asked to pause: {sent:?}");
+                asked |= sent.is_ok();
+            }
+        }
+        if asked {
+            inferior.inspectors.interrupt = Some(std::time::Instant::now() + INTERRUPT_WAIT);
+        }
+        asked
+    }
+
+    /// Stops every thread natively once an interrupt's deadline passes
+    /// with no pause from V8, as when no JavaScript runs (F19).
+    pub(super) fn interrupt_expired(&mut self, now: std::time::Instant) -> Result<()> {
+        let Some(inferior) = self.inferior.as_mut() else {
+            return Ok(());
+        };
+        if inferior
+            .inspectors
+            .interrupt
+            .is_none_or(|deadline| deadline > now)
+        {
+            return Ok(());
+        }
+        inferior.inspectors.end_interrupt();
+        record!("V8 did not pause in time; every thread stops natively");
+        if inferior.active.is_none() {
+            return Ok(());
+        }
+        self.pause_natively()
     }
 
     /// Why a pause of `pid` with `depth` frames that no breakpoint stopped
@@ -1285,10 +1381,6 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     /// Lets go the threads V8 holds paused among `resumed`, which have just
     /// been resumed; a pause not yet judged is judged at an internal stop.
-    #[cfg_attr(
-        not(debug_assertions),
-        expect(unused_variables, reason = "only recorded")
-    )]
     pub(super) fn resume_inspectors(&mut self, resumed: &BTreeSet<Pid>) -> Result<()> {
         let Some(inferior) = self.inferior.as_mut() else {
             return Ok(());
@@ -1320,11 +1412,12 @@ impl<P: LinuxTraceOps> Controller<P> {
                 }
                 _ => inspector_protocol::RESUME,
             };
-            if let Some(link) = inspector.connection.as_ref() {
+            if let Some(link) = inspector.connection.as_mut() {
                 let resumed = link
                     .connection
                     .send(&paused.session, command, serde_json::json!({}));
                 record!("V8 resumes with {command}: {resumed:?}");
+                link.resuming |= resumed.is_ok() && paused.session.path().is_empty();
             }
             inspector.paused = None;
         }
@@ -1400,6 +1493,10 @@ fn stepping(
         skipped: 0,
     })
 }
+
+/// How long an interrupt waits for V8 to pause running JavaScript, which
+/// takes about a millisecond (F19), before every thread stops natively.
+const INTERRUPT_WAIT: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// The most pauses in skipped scripts a step goes on from before it ends
 /// where it is. From a timer's landing in Node's code, the program's next

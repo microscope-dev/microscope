@@ -484,6 +484,24 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(execution_id);
         }
 
+        // Running JavaScript pauses in its inspector, which names its
+        // locals; the native all-stop follows if it does not in time.
+        if self.interrupt_javascript() {
+            return Ok(execution_id);
+        }
+        self.pause_natively()?;
+        Ok(execution_id)
+    }
+
+    /// Stops every thread for a client's pause, wherever each is.
+    pub(super) fn pause_natively(&mut self) -> Result<()> {
+        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        if let Some(barrier) = inferior.barrier.as_mut() {
+            barrier.reason.get_or_insert(StopReason::Pause);
+            barrier.paused = true;
+            return Ok(());
+        }
+
         // Every thread is past its exit event, so none is left to stop: the
         // exit ends the execution, and with it the pause.
         if inferior
@@ -491,7 +509,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .values()
             .all(|thread| matches!(thread.state, NativeThreadState::Exiting))
         {
-            return Ok(execution_id);
+            return Ok(());
         }
 
         // A launching or starting thread has no stop to request: its first
@@ -521,8 +539,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         inferior.barrier = Some(StopBarrier::visible(triggering_thread, StopReason::Pause));
 
         self.request_stops()?;
-        self.finish_barrier_if_ready()?;
-        Ok(execution_id)
+        self.finish_barrier_if_ready()
     }
 }
 
@@ -1937,14 +1954,18 @@ impl<P: LinuxTraceOps> Controller<P> {
         // agent's hook it entered; and a store to an interpreted variable is
         // about the variable's frame, not the interpreter's code that made
         // it.
-        let reported = match reason {
-            StopReason::LanguageException(_) | StopReason::Breakpoint { address: None, .. } => true,
-            StopReason::Step { .. } | StopReason::StepIncomplete { .. } => {
-                self.agent_hook(triggering_thread).is_some()
-                    || self.inspector_holds(debug_thread_id(triggering_thread))
-            }
-            _ => false,
-        };
+        // A thread an inspector holds paused is in its script, whatever
+        // the reason, as at an interrupt V8 took.
+        let reported = self.inspector_holds(debug_thread_id(triggering_thread))
+            || match reason {
+                StopReason::LanguageException(_) | StopReason::Breakpoint { address: None, .. } => {
+                    true
+                }
+                StopReason::Step { .. } | StopReason::StepIncomplete { .. } => {
+                    self.agent_hook(triggering_thread).is_some()
+                }
+                _ => false,
+            };
 
         let watched = match reason {
             StopReason::Watchpoint { ref hits } => hits.first().and_then(|hit| {

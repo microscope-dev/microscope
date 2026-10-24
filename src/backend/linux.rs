@@ -1995,6 +1995,7 @@ impl<P: InspectionOps> Controller<P> {
                 .agents
                 .values()
                 .filter_map(runtime_agents::Installation::deadline)
+                .chain(inferior.inspectors.interrupt)
                 .min()
         })
     }
@@ -2096,7 +2097,11 @@ impl<P: LinuxTraceOps> Controller<P> {
                 keeps_running
             }
             ControllerMessage::AgentTimeout => {
-                if let Err(error) = self.agent_timeout(std::time::Instant::now()) {
+                let now = std::time::Instant::now();
+                if let Err(error) = self
+                    .agent_timeout(now)
+                    .and_then(|()| self.interrupt_expired(now))
+                {
                     self.fail_inferior(error);
                 }
                 true

@@ -23,6 +23,14 @@ pub const RESOLVED: &str = "Debugger.breakpointResolved";
 /// V8 paused a thread, which it holds until resumed.
 pub const PAUSED: &str = "Debugger.paused";
 pub const RESUME: &str = "Debugger.resume";
+
+/// V8 left its pause. A pause asked for before this is dropped, as V8
+/// takes it while it still holds the thread.
+pub const RESUMED: &str = "Debugger.resumed";
+
+/// Pauses running JavaScript at its next statement; it cannot be
+/// withdrawn (F19).
+pub const PAUSE: &str = "Debugger.pause";
 pub const STEP_INTO: &str = "Debugger.stepInto";
 pub const STEP_OVER: &str = "Debugger.stepOver";
 pub const STEP_OUT: &str = "Debugger.stepOut";

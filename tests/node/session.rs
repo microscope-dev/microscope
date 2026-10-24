@@ -201,6 +201,27 @@ impl NodeSession {
         lines
     }
 
+    /// Waits for the running fixture to write `line`, and fails if it
+    /// stops first.
+    pub async fn wrote(&self, line: &str) {
+        let started = Instant::now();
+        let running = self.running.as_ref().expect("the fixture runs");
+        while !self.output().lines().any(|written| written == line) {
+            assert!(
+                !running.is_finished(),
+                "{}: stopped before {line:?}\n{}",
+                self.context(),
+                self.output()
+            );
+            assert!(
+                started.elapsed() < CHECKPOINT_DEADLINE,
+                "{}: never wrote {line:?}",
+                self.context()
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
     /// Stops the running fixture wherever it is.
     pub async fn pause(&mut self) {
         let running = self.running.take().expect("the fixture runs");

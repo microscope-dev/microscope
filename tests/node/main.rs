@@ -12,6 +12,7 @@ mod debian;
 mod exceptions;
 mod frames;
 mod inspector;
+mod interrupts;
 mod native;
 mod oracle;
 mod session;

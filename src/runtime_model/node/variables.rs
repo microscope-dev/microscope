@@ -401,12 +401,11 @@ fn stack_names(
         }
     };
     let Some(count) = count else {
-        // Each name the interface gave, past the parameters, with why its
-        // value cannot be found.
-        let skip = parameters(reader, function).unwrap_or(0);
+        // Each name the interface gave, with why its value cannot be
+        // found. A parameter's slot holds the value passed, which optimized
+        // code may since have replaced, so the slot keeps its number.
         let optimized = reported
             .iter()
-            .skip(skip)
             .filter(|local| {
                 !captured
                     .iter()
