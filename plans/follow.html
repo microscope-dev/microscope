@@ -195,6 +195,7 @@ figcaption { font-size: 13px; color: var(--ink-3); max-width: 90ch; }
 .phase header { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; }
 .phase .pid { font: 600 13px/1 var(--mono); color: var(--accent); }
 .phase p { margin: 0; font-size: 14px; color: var(--ink-2); max-width: 90ch; }
+.phase .progress { font-size: 13.5px; color: var(--ink-2); border-left: 3px solid var(--accent); padding-left: 10px; }
 .phase .exit { font-size: 13.5px; color: var(--ink-2); border-left: 3px solid var(--good); padding-left: 10px; }
 .phase table.data { font-size: 13px; table-layout: fixed; min-width: 640px; }
 .phase table.data th:nth-child(1) { width: 64px; }
@@ -707,9 +708,23 @@ group.add_breakpoint(spec) · group.remove_breakpoint(id) · group.continue_all(
         <p class="exit">Exit: the group scenarios, fake-edge orderings, and <code>just sim 600</code> pass.</p>
       </div>
       <div class="phase">
-        <header><span class="pid">G4</span><h3>The group in every client</h3><span class="st doing">doing</span></header>
+        <header><span class="pid">G4</span><h3>The group in every client</h3><span class="st done">done</span></header>
         <p>CLI <code>processes</code>, selection, asynchronous notices, and batch rules; the web switcher; one DAP adapter for the group, with child sessions routed back by VS Code's descriptor factory and nvim-dap's adapter function, replacing <code>followForks</code>' separate adapters; the Node preload for children, with every waiting node released, and the 3.12/3.13 bootstrap for children. G4 needs the Node plan's inspector transport (N3), and N3's exit needs G4, so the two land as one milestone.</p>
         <p class="exit">Exit: <code>npm start</code>, <code>npx</code>, <code>node --test</code>, <code>--watch</code>, and Python pools stop at the user's breakpoint in the CLI, the browser, VS Code, and nvim-dap, with Yama's <code>ptrace_scope</code> 1 and no adoption timeouts. This is the condition the Node plan's N3 exit names.</p>
+        <p class="progress"><strong>Done, 24 October 2026,</strong> with the Node plan's N3. Each client was checked against real Node 22, 24, and 26:</p>
+        <ul class="progress">
+          <li>The CLI, through the group scenarios in <code>tests/debugger/group.rs</code>.</li>
+          <li>The browser, through <code>web/e2e/node.spec.ts</code> in Chromium and Firefox. It stops <code>npm start</code>'s app, each <code>node --test</code> file's node, and <code>node --watch</code>'s app before and after a restart (<code>902a12be</code>). That commit also fixed a tab that stopped following the program once the old app exited: a running state no longer changes which stop the tab counts as its own.</li>
+          <li>nvim-dap, through <code>nvim-npm-start</code>, <code>nvim-node-test</code> (<code>1666d40b</code>), and <code>nvim-node-watch</code> (<code>17078209</code>) in <code>editors/nvim/uat.lua</code>. Each stops in the member's child session that the adapter function routes.</li>
+          <li>VS Code, through the UAT's Node scenarios on 22, 24, 26, and debian-24 (<code>aa1cf3e6</code>). The UAT now runs on an Xvfb display of its own, because Run to Cursor needs a focused window and a desktop compositor may refuse it (<code>0a27b71c</code>).</li>
+        </ul>
+        <p class="progress">Bugs found on the way:</p>
+        <ul class="progress">
+          <li>A client that continued one member before the group had stopped the others left the group's pause of them under way, and its late arrival stopped the group again. The group now serves that resume once it has stopped (<code>b66842fe</code>).</li>
+          <li>A member's first stop reached a DAP client twice when its own event arrived while it was announced (<code>77501bc8</code>).</li>
+          <li>A client's pause that a breakpoint stop answered left its deadline armed (<code>40c1befd</code>).</li>
+        </ul>
+        <p class="progress">A <code>--watch</code> restart stops twice under the default signal policy, at the watcher's <code>SIGTERM</code> and at the one the old node raises again at itself.</p>
       </div>
       <div class="phase">
         <header><span class="pid">G5</span><h3>Retire the held-child hand-over</h3><span class="st done">done</span></header>
