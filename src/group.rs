@@ -492,6 +492,10 @@ struct Driver {
     /// Stops members made while the group stopped for another's, each
     /// reported at a later continue instead of resuming.
     pending: VecDeque<(MemberNumber, StopReason)>,
+
+    /// Continues and resumes a client asked for while the group stopped,
+    /// served once it has: the pauses under way are part of that stop.
+    deferred: Vec<Command>,
     internal: (
         mpsc::UnboundedSender<Internal>,
         mpsc::UnboundedReceiver<Internal>,
@@ -515,6 +519,7 @@ impl Driver {
             phase: Phase::Running,
             stops,
             pending: VecDeque::new(),
+            deferred: Vec::new(),
             internal: mpsc::unbounded_channel(),
         };
         driver.forward(1, &handle);
@@ -544,24 +549,18 @@ impl Driver {
             // that a command acts on the group as the events left it.
             tokio::select! {
                 biased;
-                Some(internal) = self.internal.1.recv() => match internal {
-                    Internal::Event(member, event) => self.event(member, event).await,
-                    Internal::PauseFailed(member) => self.paused(member, None),
-                    Internal::Ended(member) => self.ended(member),
-                },
+                Some(internal) = self.internal.1.recv() => {
+                    match internal {
+                        Internal::Event(member, event) => self.event(member, event).await,
+                        Internal::PauseFailed(member) => self.paused(member, None),
+                        Internal::Ended(member) => self.ended(member),
+                    }
+                    self.after_internal().await;
+                }
                 Some(notice) = notices.recv() => self.notice(notice).await,
                 command = commands.recv() => match command {
-                    Some(Command::ContinueAll(reply)) => {
-                        let _ = reply.send(self.continue_all().await);
-                    }
-                    Some(Command::ResumeAll(observed, reply)) => {
-                        self.pending.clear();
-                        let caught_up = match observed {
-                            Some((number, stop)) => self.catch_up(number, stop).await,
-                            None => false,
-                        };
-                        let resumed = self.continue_all().await;
-                        let _ = reply.send(if caught_up { resumed.or(Ok(())) } else { resumed });
+                    Some(command @ (Command::ContinueAll(_) | Command::ResumeAll(..))) => {
+                        self.resume(command).await;
                     }
                     Some(Command::Detach(number, reply)) => {
                         let _ = reply.send(self.detach(number).await);
@@ -1002,6 +1001,46 @@ impl Driver {
         resumed
     }
 
+    /// Serves the continues and resumes that waited for the group to
+    /// finish stopping, once it has.
+    async fn after_internal(&mut self) {
+        if matches!(self.phase, Phase::Stopping { .. }) {
+            return;
+        }
+        for command in std::mem::take(&mut self.deferred) {
+            self.resume(command).await;
+        }
+    }
+
+    /// Serves a client's continue or resume of the group. One asked while
+    /// members are still pausing waits for them, or a pause under way
+    /// would land after the resume and stop the group again.
+    async fn resume(&mut self, command: Command) {
+        if matches!(self.phase, Phase::Stopping { .. }) {
+            self.deferred.push(command);
+            return;
+        }
+        match command {
+            Command::ContinueAll(reply) => {
+                let _ = reply.send(self.continue_all().await);
+            }
+            Command::ResumeAll(observed, reply) => {
+                self.pending.clear();
+                let caught_up = match observed {
+                    Some((number, stop)) => self.catch_up(number, stop).await,
+                    None => false,
+                };
+                let resumed = self.continue_all().await;
+                let _ = reply.send(if caught_up {
+                    resumed.or(Ok(()))
+                } else {
+                    resumed
+                });
+            }
+            _ => {}
+        }
+    }
+
     async fn continue_all(&mut self) -> Result<()> {
         if let Some((member, reason)) = self.pending.pop_front() {
             self.phase = Phase::Stopped;
@@ -1249,8 +1288,8 @@ fn command_line(process: ProcessId) -> String {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn a_stop_arriving_after_a_pause_failure_is_still_reported() {
+    /// A driver for an unlaunched root, and the group's events.
+    fn driver() -> (Driver, broadcast::Receiver<GroupEvent>) {
         let root = Debugger::new(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("build/test-programs/fork"),
         )
@@ -1260,19 +1299,66 @@ mod tests {
             handles: Mutex::default(),
             copies: Mutex::default(),
         });
-        let (events, mut received) = broadcast::channel(GROUP_EVENT_CAPACITY);
-        let mut driver = Driver::new(shared, events, root, StopScope::Group);
-        driver.phase = Phase::Stopping {
-            first: Some((2, StopReason::Pause)),
-            waiting: BTreeSet::from([1, 3]),
-        };
-        let breakpoint = StopReason::Breakpoint {
+        let (events, received) = broadcast::channel(GROUP_EVENT_CAPACITY);
+        (
+            Driver::new(shared, events, root, StopScope::Group),
+            received,
+        )
+    }
+
+    fn breakpoint_stop() -> StopReason {
+        StopReason::Breakpoint {
             address: Some(crate::VirtualAddress::new(0x1234)),
             hits: Arc::from([crate::BreakpointHit {
                 breakpoint: BreakpointId::new(1),
                 hit_count: 1,
             }]),
+        }
+    }
+
+    /// A client that shows each member's stop may resume before the group
+    /// has stopped the rest. The pause still on its way to a member is
+    /// part of that group stop, not a stop of its own.
+    #[tokio::test]
+    async fn a_resume_while_the_group_stops_waits_for_the_pauses_under_way() {
+        let (mut driver, mut received) = driver();
+        driver.phase = Phase::Stopping {
+            first: Some((2, breakpoint_stop())),
+            waiting: BTreeSet::from([1]),
         };
+        let (reply, resumed) = oneshot::channel();
+
+        driver.resume(Command::ResumeAll(None, reply)).await;
+        driver.stopped(1, StopReason::Pause);
+        driver.after_internal().await;
+
+        assert_eq!(
+            received.try_recv().expect("the group stop"),
+            GroupEvent::GroupStopped {
+                member: 2,
+                reason: breakpoint_stop(),
+            }
+        );
+        assert!(
+            received.try_recv().is_err(),
+            "the pause under way stops nothing more"
+        );
+        assert!(resumed.await.is_ok(), "the resume is answered");
+        assert!(matches!(driver.phase, Phase::Running), "the group runs");
+        tokio::time::timeout(std::time::Duration::from_secs(5), driver.shutdown())
+            .await
+            .expect("end the root session in time")
+            .expect("end the root session");
+    }
+
+    #[tokio::test]
+    async fn a_stop_arriving_after_a_pause_failure_is_still_reported() {
+        let (mut driver, mut received) = driver();
+        driver.phase = Phase::Stopping {
+            first: Some((2, StopReason::Pause)),
+            waiting: BTreeSet::from([1, 3]),
+        };
+        let breakpoint = breakpoint_stop();
 
         driver.paused(1, None);
         driver.stopped(1, breakpoint.clone());
