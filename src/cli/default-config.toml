@@ -52,6 +52,8 @@ show-bytes = true
 [step]
 runtime = "skip"          # skip | enter: stop in a language runtime's own code, such as
                           # Go's or tokio's, or pass over it to the program's code it calls
+skip = []                 # globs of source files steps pass through, such as
+                          # "**/node_modules/**"; JavaScript steps honor them
 
 [backtrace]
 runtime = "fold"          # fold | show: each run of a language runtime's own frames, as an

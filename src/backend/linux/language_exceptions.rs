@@ -281,7 +281,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         pid: Pid,
     ) -> Option<crate::StackFrameId> {
         let inferior = self.inferior.as_ref()?;
-        self.agent_hook(pid)?;
+        if !self.inspector_holds(debug_thread_id(pid)) {
+            self.agent_hook(pid)?;
+        }
         let trace = self.backtrace(stop_id, &StackRoot::of_thread(pid)).ok()?;
 
         self.blamed_frame(inferior, &trace)

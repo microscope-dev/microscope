@@ -39,7 +39,13 @@ impl<P: InspectionOps> Controller<P> {
         let root = self
             .stack_root(stop_id, ExecutionContext::Thread(debug_thread_id(pid)))
             .ok()?;
-        if !self.interprets_on(inferior, &root) {
+        // V8 runs its frames on the native stack, in code it generated.
+        if !self.interprets_on(inferior, &root)
+            && !self
+                .runtimes(inferior)
+                .iter()
+                .any(|runtime| runtime.model.owns_generated_code())
+        {
             return None;
         }
 

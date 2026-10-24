@@ -195,6 +195,12 @@
                 "default": false,
                 "description": "Let steps stop in a language runtime's own code, such as Go's or tokio's, rather than pass over it."
               },
+              "skipFiles": {
+                "type": "array",
+                "items": { "type": "string" },
+                "default": [],
+                "description": "Globs of source files steps pass through without stopping, such as **/node_modules/**. JavaScript steps honor them."
+              },
               "signals": {
                 "type": "object",
                 "additionalProperties": {
@@ -311,6 +317,12 @@
                 "type": "boolean",
                 "default": false,
                 "description": "Let steps stop in a language runtime's own code, such as Go's or tokio's, rather than pass over it."
+              },
+              "skipFiles": {
+                "type": "array",
+                "items": { "type": "string" },
+                "default": [],
+                "description": "Globs of source files steps pass through without stopping, such as **/node_modules/**. JavaScript steps honor them."
               },
               "signals": {
                 "type": "object",

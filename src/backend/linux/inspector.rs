@@ -113,6 +113,34 @@ struct Inspector {
 
     /// The pause V8 reported and holds its thread in, until resumed.
     paused: Option<Paused>,
+
+    /// The step the runtime is armed with, which V8 runs.
+    step: Option<Stepping>,
+
+    /// The URL of each script V8 parsed, by its id: V8's pauses name
+    /// scripts only by id (F19).
+    scripts: BTreeMap<Arc<str>, Arc<str>>,
+}
+
+/// A step V8 runs for microscope.
+#[derive(Debug)]
+struct Stepping {
+    number: u64,
+    kind: crate::StepKind,
+
+    /// How many frames the paused thread had where the step began.
+    depth: usize,
+
+    /// The command the step continues with as its thread resumes: the
+    /// step's own, then `stepOut` from where a breakpoint whose condition
+    /// failed paused it deeper than it ends.
+    command: &'static str,
+
+    /// Whether V8 was sent the command, so that its next pause ends it.
+    sent: bool,
+
+    /// How many pauses in skipped scripts the step has gone on from.
+    skipped: u32,
 }
 
 impl Inspector {
@@ -512,14 +540,19 @@ impl<P: LinuxTraceOps> Controller<P> {
         runtime: RuntimeId,
         arming: &Arming<'_>,
     ) -> std::result::Result<(), Arc<str>> {
-        if arming.step.is_some() || arming.assignment.is_some() {
-            return Err("microscope cannot yet step or assign in JavaScript".into());
+        if arming.assignment.is_some() {
+            return Err("microscope cannot yet assign in JavaScript".into());
         }
         let inferior = self
             .inferior
             .as_mut()
             .ok_or_else(|| Arc::<str>::from("the process is gone"))?;
         let inspector = inferior.inspectors.records.entry(runtime).or_default();
+        inspector.step = match (arming.step, inspector.step.take()) {
+            (None, _) => None,
+            (Some(step), Some(stepping)) if stepping.number == step.number => Some(stepping),
+            (Some(step), _) => Some(stepping(inspector.paused.as_ref(), step)?),
+        };
         inspector.desired = arming.breakpoints.to_vec();
         self.sync_inspector(runtime);
         Ok(())
@@ -691,6 +724,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 record!("the inspector connection closed: {reason}");
                 inspector.connection = None;
                 inspector.sites.clear();
+                inspector.scripts.clear();
                 inspector.paused = None;
                 inspector.problem =
                     Some(format!("the inspector connection closed: {reason}").into());
@@ -798,6 +832,12 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
 
         match method {
+            inspector_protocol::SCRIPT_PARSED if session.path().is_empty() => {
+                if let (Some(id), Some(url)) = (params["scriptId"].as_str(), params["url"].as_str())
+                {
+                    inspector.scripts.insert(id.into(), url.into());
+                }
+            }
             inspector_protocol::RESOLVED => {
                 let id = params["breakpointId"].as_str().unwrap_or_default();
                 if let Some(site) = inspector
@@ -834,6 +874,16 @@ impl<P: LinuxTraceOps> Controller<P> {
         session: Session,
         params: &serde_json::Value,
     ) -> Result<()> {
+        let hits: Vec<Arc<str>> = params["hitBreakpoints"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|hit| hit.as_str().map(Arc::from))
+            .collect();
+        record!("V8 paused: {} {hits:?}", params["reason"]);
+        if hits.is_empty() && self.step_goes_on(runtime, &session, params) {
+            return Ok(());
+        }
         let Some(inspector) = self
             .inferior
             .as_mut()
@@ -841,13 +891,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         else {
             return Ok(());
         };
-        let hits = params["hitBreakpoints"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|hit| hit.as_str().map(Arc::from))
-            .collect();
-        record!("V8 paused: {} {hits:?}", params["reason"]);
         let Some(link) = inspector.connection.as_ref() else {
             return Ok(());
         };
@@ -922,6 +965,51 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.judge_inspector_pause(runtime)?;
         }
         Ok(())
+    }
+
+    /// Whether the step V8 runs in `runtime` goes on from the pause
+    /// `params` describes, which no breakpoint stopped: a pause in a
+    /// skipped script goes on into the program's next statement, with the
+    /// program left running.
+    #[cfg_attr(
+        not(debug_assertions),
+        expect(unused_variables, reason = "only recorded")
+    )]
+    fn step_goes_on(
+        &mut self,
+        runtime: RuntimeId,
+        session: &Session,
+        params: &serde_json::Value,
+    ) -> bool {
+        let Some(inspector) = self
+            .inferior
+            .as_mut()
+            .and_then(|inferior| inferior.inspectors.records.get_mut(&runtime))
+        else {
+            return false;
+        };
+        let top = params["callFrames"][0]["location"]["scriptId"]
+            .as_str()
+            .and_then(|id| inspector.scripts.get(id));
+        let (Some(step), Some(link)) = (inspector.step.as_mut(), inspector.connection.as_ref())
+        else {
+            return false;
+        };
+        if !step.sent
+            || params["reason"] != "step"
+            || !top.is_some_and(|url| skipped(url, &self.step_skips, self.step_into_runtime))
+            || step.skipped >= MAX_SKIPPED
+        {
+            return false;
+        }
+        step.skipped += 1;
+        let sent = link.connection.send(
+            session,
+            inspector_protocol::STEP_INTO,
+            serde_json::json!({}),
+        );
+        record!("the step goes on from {top:?}: {sent:?}");
+        true
     }
 
     /// Has the pause V8 reported in `runtime` judged, once its frames'
@@ -1044,18 +1132,23 @@ impl<P: LinuxTraceOps> Controller<P> {
             .filter_map(|&number| inferior.managed.site(runtime, number))
             .flat_map(|(_, owners)| owners.iter().copied())
             .collect::<BTreeSet<_>>();
-        if owners.is_empty() {
-            record!("V8's pause hit none of microscope's breakpoints");
-            return;
-        }
-
-        let hits = self.judge_hits(pid, &owners, None);
-        if hits.is_empty() {
-            return;
-        }
-        let reason = StopReason::Breakpoint {
-            address: None,
-            hits,
+        let depth = paused.frames.len();
+        let hits = if owners.is_empty() {
+            Arc::from([])
+        } else {
+            self.judge_hits(pid, &owners, None)
+        };
+        let reason = if hits.is_empty() {
+            let Some(reason) = self.inspector_step_end(runtime, pid, depth) else {
+                record!("V8's pause stops for none of microscope's breakpoints or steps");
+                return;
+            };
+            reason
+        } else {
+            StopReason::Breakpoint {
+                address: None,
+                hits,
+            }
         };
         let Some(inferior) = self.inferior.as_mut() else {
             return;
@@ -1072,6 +1165,38 @@ impl<P: LinuxTraceOps> Controller<P> {
             barrier.triggering_thread = pid;
             barrier.reason = Some(reason);
         }
+    }
+
+    /// Why a pause of `pid` with `depth` frames that no breakpoint stopped
+    /// ends the step V8 runs in `runtime`, if it does. One that does not
+    /// end it continues it out of the call it paused in.
+    fn inspector_step_end(
+        &mut self,
+        runtime: RuntimeId,
+        pid: Pid,
+        depth: usize,
+    ) -> Option<StopReason> {
+        let step = self
+            .inferior
+            .as_mut()?
+            .inspectors
+            .records
+            .get_mut(&runtime)?
+            .step
+            .as_mut()
+            .filter(|step| step.sent)?;
+        if !ends_step(step, depth) {
+            step.command = inspector_protocol::STEP_OUT;
+            step.sent = false;
+            return None;
+        }
+        let number = step.number;
+        let incomplete = (step.skipped >= MAX_SKIPPED).then(|| {
+            Arc::from(format!(
+                "the step went through {MAX_SKIPPED} statements of Node's own scripts and stopped there"
+            ))
+        });
+        self.runtime_step_end(pid, runtime, number, incomplete)
     }
 
     /// Lets go the threads V8 holds paused among `resumed`, which have just
@@ -1103,13 +1228,19 @@ impl<P: LinuxTraceOps> Controller<P> {
             {
                 continue;
             }
+            // The isolate a step began in runs the step.
+            let command = match inspector.step.as_mut() {
+                Some(step) => {
+                    step.sent = true;
+                    step.command
+                }
+                _ => inspector_protocol::RESUME,
+            };
             if let Some(link) = inspector.connection.as_ref() {
-                let resumed = link.connection.send(
-                    &paused.session,
-                    inspector_protocol::RESUME,
-                    serde_json::json!({}),
-                );
-                record!("V8 resumes: {resumed:?}");
+                let resumed = link
+                    .connection
+                    .send(&paused.session, command, serde_json::json!({}));
+                record!("V8 resumes with {command}: {resumed:?}");
             }
             inspector.paused = None;
         }
@@ -1154,6 +1285,60 @@ impl<P: InspectionOps> Controller<P> {
                     .is_some_and(|pid| super::debug_thread_id(pid) == thread)
             })
         })
+    }
+}
+
+/// The step V8 runs for `step`, which begins at `paused`, the pause V8
+/// holds the step's thread in.
+fn stepping(
+    paused: Option<&Paused>,
+    step: &crate::runtime_model::RuntimeStep,
+) -> std::result::Result<Stepping, Arc<str>> {
+    let command = match step.kind {
+        crate::StepKind::IntoSource => inspector_protocol::STEP_INTO,
+        crate::StepKind::OverSource => inspector_protocol::STEP_OVER,
+        crate::StepKind::Out => inspector_protocol::STEP_OUT,
+        kind => return Err(format!("V8 cannot step JavaScript by {kind:?}").into()),
+    };
+    let paused = paused
+        .filter(|paused| {
+            paused.judged && paused.thread.map(super::debug_thread_id) == Some(step.thread)
+        })
+        .ok_or(
+            "JavaScript steps begin where V8 paused the thread, as at a JavaScript breakpoint",
+        )?;
+    Ok(Stepping {
+        number: step.number,
+        kind: step.kind,
+        depth: paused.frames.len(),
+        command,
+        sent: false,
+        skipped: 0,
+    })
+}
+
+/// The most pauses in skipped scripts a step goes on from before it ends
+/// where it is. From a timer's landing in Node's code, the program's next
+/// statement took 59 (F19).
+const MAX_SKIPPED: u32 = 1000;
+
+/// Whether a step goes on from a pause in the script at `url`: Node's own
+/// scripts, unless steps enter a runtime's code, and the files `skips`
+/// names. V8's blackboxing cannot skip Node's: it decides by a script's
+/// context, which the builtins in Node's snapshot do not record.
+fn skipped(url: &str, skips: &crate::StepSkips, enter_runtime: bool) -> bool {
+    (url.starts_with("node:") && !enter_runtime)
+        || skips.matches(&inspector_protocol::script_path(url))
+}
+
+/// Whether a pause with `depth` frames ends `step`, which no breakpoint
+/// stopped: V8 ends a step at its next pause, unless a breakpoint whose
+/// condition failed paused it in a call the step runs through.
+const fn ends_step(step: &Stepping, depth: usize) -> bool {
+    match step.kind {
+        crate::StepKind::OverSource => depth <= step.depth,
+        crate::StepKind::Out => depth < step.depth,
+        _ => true,
     }
 }
 

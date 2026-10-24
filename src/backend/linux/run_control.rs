@@ -1941,6 +1941,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             StopReason::LanguageException(_) | StopReason::Breakpoint { address: None, .. } => true,
             StopReason::Step { .. } | StopReason::StepIncomplete { .. } => {
                 self.agent_hook(triggering_thread).is_some()
+                    || self.inspector_holds(debug_thread_id(triggering_thread))
             }
             _ => false,
         };

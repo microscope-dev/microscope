@@ -914,6 +914,7 @@ impl Session {
             threads,
             debug_files: _,
             step_into_runtime,
+            step_skips,
         } = configuration;
         let launched = matches!(start, Start::Launch(_));
         let core = matches!(start, Start::Core(_));
@@ -945,6 +946,9 @@ impl Session {
 
         if step_into_runtime {
             handle.set_step_into_runtime(true).await.map_err(error)?;
+        }
+        if !step_skips.patterns().is_empty() {
+            handle.set_step_skips(step_skips).await.map_err(error)?;
         }
 
         if let Owner::Group { group, .. } = &owner {

@@ -103,6 +103,9 @@ pub struct Configuration {
 
     /// Whether steps stop in a language runtime's own code.
     pub step_into_runtime: bool,
+
+    /// The source files steps pass through, as `skipFiles` names them.
+    pub step_skips: microscope::StepSkips,
 }
 
 /// What the client's threads are.
@@ -141,7 +144,7 @@ enum Threads {
 /// the session presents and handles a program, which a fork does not
 /// change, and the adapter's `type`, by which a client such as nvim-dap
 /// finds the adapter to start for the child.
-const INHERITED: [&str; 12] = [
+const INHERITED: [&str; 13] = [
     "type",
     "debugDirectories",
     "debuginfod",
@@ -153,6 +156,7 @@ const INHERITED: [&str; 12] = [
     "runtimeTasks",
     "maxTasks",
     "stepIntoRuntime",
+    "skipFiles",
     "cwd",
 ];
 
@@ -213,6 +217,9 @@ struct Arguments {
 
     #[serde(default)]
     step_into_runtime: bool,
+
+    #[serde(default)]
+    skip_files: Vec<String>,
 }
 
 /// Which processes the program starts are debugged: a mode, or a table as
@@ -433,6 +440,8 @@ fn common(
         working_directory: parsed.cwd,
         follow,
         step_into_runtime: parsed.step_into_runtime,
+        step_skips: microscope::StepSkips::parse(&parsed.skip_files)
+            .map_err(|error| format!("skipFiles: {error}"))?,
         inherited,
         source_paths,
         syntax: match parsed.disassembly_syntax {

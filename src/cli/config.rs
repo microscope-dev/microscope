@@ -240,6 +240,9 @@ impl Default for Disassembly {
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Stepping {
     pub runtime: StepRuntime,
+
+    /// Globs of the source files steps pass through.
+    pub skip: Vec<String>,
 }
 
 /// Whether steps pass over a runtime's code to the program's code it

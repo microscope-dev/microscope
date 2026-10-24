@@ -65,6 +65,7 @@ mod rust_names;
 )]
 pub mod sim;
 mod source_map;
+mod step_skip;
 mod sync;
 pub mod syscalls;
 
@@ -110,6 +111,7 @@ pub use disassembly::{
     InstructionToken, InstructionTokenKind, MAX_BACKWARD_DISTANCE, MAX_FUNCTION_INSTRUCTIONS,
     MAX_WINDOW_AFTER, MAX_WINDOW_BEFORE, TargetBoundary,
 };
+pub use step_skip::StepSkips;
 
 pub use error::{Error, Result};
 pub use eval::Evaluation;
@@ -1935,6 +1937,14 @@ impl DebuggerHandle {
     /// roles either way: backtraces fold the runtime's frames as before.
     pub async fn set_step_into_runtime(&self, enter: bool) -> Result<bool> {
         self.request(|reply| Request::SetStepIntoRuntime { enter, reply })
+            .await
+    }
+
+    /// Chooses the source files steps pass through without stopping, as
+    /// they pass through a runtime's own code, for the steps that begin
+    /// after it. Steps through Node's inspector honor it.
+    pub async fn set_step_skips(&self, skips: StepSkips) -> Result<()> {
+        self.request(|reply| Request::SetStepSkips { skips, reply })
             .await
     }
 

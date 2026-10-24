@@ -92,6 +92,7 @@ struct Settings {
     exception_stops: Option<crate::ExceptionStops>,
     exec_stops: Option<bool>,
     step_into_runtime: Option<bool>,
+    step_skips: Option<crate::StepSkips>,
     views: Option<Arc<crate::view::ViewSet>>,
     views_enabled: Option<bool>,
 
@@ -106,6 +107,7 @@ pub(super) enum Setting {
     ExceptionStops(crate::ExceptionStops),
     ExecStops(bool),
     StepIntoRuntime(bool),
+    StepSkips(crate::StepSkips),
     Views(Arc<crate::view::ViewSet>),
     ViewsEnabled(bool),
     AddCatchpoint(crate::Catchpoint),
@@ -226,6 +228,7 @@ impl<P: super::native::InspectionOps> Controller<P> {
             Setting::StepIntoRuntime(enter) => {
                 settings.step_into_runtime.replace(enter) != Some(enter)
             }
+            Setting::StepSkips(skips) => settings.step_skips.replace(skips.clone()) != Some(skips),
             Setting::Views(views) => !settings
                 .views
                 .replace(Arc::clone(&views))
@@ -294,6 +297,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
         if let Some(enter) = settings.step_into_runtime {
             self.step_into_runtime = enter;
+        }
+        if let Some(skips) = settings.step_skips {
+            self.step_skips = skips;
         }
         if let Some(views) = settings.views
             && !Arc::ptr_eq(&views, &self.views.set)

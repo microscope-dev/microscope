@@ -1594,6 +1594,9 @@ struct Controller<P: InspectionOps> {
     /// Whether steps stop in a language runtime's own code.
     step_into_runtime: bool,
 
+    /// The source files steps pass through.
+    step_skips: crate::StepSkips,
+
     /// The language runtime each image carries, bound on first need.
     runtime_models: runtimes::RuntimeCache,
     revision: u64,
@@ -1915,6 +1918,7 @@ impl<P: InspectionOps> Controller<P> {
             ending: Ending::Kill,
             group: None,
             step_into_runtime: false,
+            step_skips: crate::StepSkips::default(),
             runtime_models: RefCell::default(),
             revision: 0,
             messages_served: 0,
@@ -2659,6 +2663,11 @@ impl<P: InspectionOps> Controller<P> {
             Request::SetStepIntoRuntime { enter, reply } => {
                 self.share(follow::Setting::StepIntoRuntime(enter));
                 let _ = reply.send(Ok(std::mem::replace(&mut self.step_into_runtime, enter)));
+            }
+            Request::SetStepSkips { skips, reply } => {
+                self.share(follow::Setting::StepSkips(skips.clone()));
+                self.step_skips = skips;
+                let _ = reply.send(Ok(()));
             }
             Request::ExplainType { name, reply } => {
                 let _ = reply.send(Ok(self.explain_type(&name)));

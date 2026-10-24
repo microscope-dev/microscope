@@ -6,7 +6,11 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use microscope::{InferiorState, LaunchOptions, StateSnapshot, StopReason};
+use microscope::{
+    BreakpointOptions, BreakpointSpec, DebuggerEvent, InferiorState, LaunchOptions, StateSnapshot,
+    StopReason,
+};
+use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
 use crate::support::truth::Report;
@@ -112,6 +116,40 @@ impl NodeSession {
         node_arguments: &[&str],
         fixture_arguments: &[&str],
     ) -> Self {
+        let (mut session, options) =
+            Self::prepare(entry, fixture, node_arguments, fixture_arguments);
+        session.running = Some(session.scenario.start_running_with(options).await);
+        session
+    }
+
+    /// Launches `fixture` under the Node build `entry` with `breakpoints`
+    /// added first, and runs it to its first stop: the session, the stop,
+    /// and the events published since the breakpoints were added.
+    pub async fn launch_to_stop(
+        entry: &str,
+        fixture: &str,
+        breakpoints: Vec<(BreakpointSpec, BreakpointOptions)>,
+    ) -> (Self, StopReason, broadcast::Receiver<DebuggerEvent>) {
+        Self::unlaunched(entry, fixture)
+            .run_to_stop(breakpoints)
+            .await
+    }
+
+    /// A session for `fixture` under `entry`, not yet launched, whose
+    /// debugger can be set up before [`Self::run_to_stop`].
+    pub fn unlaunched(entry: &str, fixture: &str) -> Pending {
+        let (session, options) = Self::prepare(entry, fixture, &[], &[]);
+        Pending { session, options }
+    }
+
+    /// The session for `fixture` under `entry`, not yet launched, and the
+    /// options that launch it.
+    fn prepare(
+        entry: &str,
+        fixture: &str,
+        node_arguments: &[&str],
+        fixture_arguments: &[&str],
+    ) -> (Self, LaunchOptions) {
         let scratch = ScratchDir::new("node");
         let output = scratch.path().join("stdout");
         let file = std::fs::File::create(&output).expect("create the fixture's output");
@@ -125,28 +163,29 @@ impl NodeSession {
 
         // No NODE_OPTIONS, or any other variable, reaches the fixture.
         let environment = std::env::vars_os().map(|(name, _)| (name, None)).collect();
-
-        let mut scenario = Scenario::new(format!("node {entry} {fixture}"), node::node(entry));
-        let running = scenario
-            .start_running_with(LaunchOptions {
-                arguments,
-                environment,
-                stdin: Some(Stdio::from(reader)),
-                stdout: Some(Stdio::from(file)),
-                stderr: Some(Stdio::from(errors)),
-                ..LaunchOptions::default()
-            })
-            .await;
-
-        Self {
-            scenario,
+        let options = LaunchOptions {
+            arguments,
+            environment,
+            stdin: Some(Stdio::from(reader)),
+            stdout: Some(Stdio::from(file)),
+            stderr: Some(Stdio::from(errors)),
+            ..LaunchOptions::default()
+        };
+        let session = Self {
+            scenario: Scenario::new(format!("node {entry} {fixture}"), node::node(entry)),
             entry: entry.to_owned(),
             fixture: fixture.to_owned(),
             output,
             input: Some(input),
-            running: Some(running),
+            running: None,
             _scratch: scratch,
-        }
+        };
+        (session, options)
+    }
+
+    /// Everything the fixture wrote so far, standard output and error.
+    pub fn output(&self) -> String {
+        std::fs::read_to_string(&self.output).unwrap_or_default()
     }
 
     /// Waits for the fixture to park at the checkpoint `name`, then stops
@@ -228,6 +267,45 @@ impl NodeSession {
     pub async fn shutdown(mut self) {
         drop(self.input.take());
         self.scenario.shutdown().await;
+    }
+}
+
+/// A session not yet launched.
+pub struct Pending {
+    session: NodeSession,
+    options: LaunchOptions,
+}
+
+impl std::ops::Deref for Pending {
+    type Target = NodeSession;
+
+    fn deref(&self) -> &NodeSession {
+        &self.session
+    }
+}
+
+impl Pending {
+    /// Adds `breakpoints` and runs the fixture to its first stop.
+    pub async fn run_to_stop(
+        self,
+        breakpoints: Vec<(BreakpointSpec, BreakpointOptions)>,
+    ) -> (NodeSession, StopReason, broadcast::Receiver<DebuggerEvent>) {
+        let Self {
+            mut session,
+            options,
+        } = self;
+        for (spec, options) in breakpoints {
+            session
+                .scenario
+                .operation(
+                    "add breakpoint",
+                    session.scenario.handle().add_breakpoint_with(spec, options),
+                )
+                .await;
+        }
+        let events = session.scenario.handle().subscribe();
+        let reason = session.scenario.run_with_to_stop(options).await;
+        (session, reason, events)
     }
 }
 

@@ -80,6 +80,9 @@ pub enum Error {
     #[error("invalid log message: {0}")]
     InvalidLogMessage(String),
 
+    #[error("invalid step skip pattern: {0}")]
+    InvalidStepSkip(String),
+
     #[error("no symbol named '{0}' was found")]
     SymbolNotFound(String),
 

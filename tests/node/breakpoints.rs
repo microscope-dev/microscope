@@ -6,18 +6,17 @@
 //! were told apart, and the program prints what it computed, which
 //! stopping must not change.
 
-use std::process::Stdio;
 use std::sync::Arc;
 
 use microscope::{
     BreakpointId, BreakpointOptions, BreakpointSpec, Condition, DebuggerEvent, Evaluation,
-    ExitStatus, Expression, HitComparison, HitCondition, LaunchOptions, LineNumber, LogMessage,
-    LogPart, SourceLanguage, StopReason, VariableState,
+    ExitStatus, Expression, HitComparison, HitCondition, LineNumber, LogMessage, LogPart,
+    SourceLanguage, StopReason, VariableState,
 };
 use tokio::sync::broadcast;
 
-use crate::session::MATRIX;
-use crate::support::{Scenario, ScratchDir, node};
+use crate::session::{MATRIX, NodeSession};
+use crate::support::node;
 
 const FIXTURE: &str = "breakpoints.js";
 
@@ -98,55 +97,33 @@ impl Planted {
 }
 
 struct Run {
-    scenario: Scenario,
+    session: NodeSession,
     context: String,
     ids: Vec<BreakpointId>,
     events: broadcast::Receiver<DebuggerEvent>,
-    output: std::path::PathBuf,
     logged: Vec<String>,
-    _scratch: ScratchDir,
 }
 
 impl Run {
     async fn launch(entry: &str) -> (Self, StopReason) {
-        let scratch = ScratchDir::new("node-breakpoints");
-        let output = scratch.path().join("output");
-        let file = std::fs::File::create(&output).expect("create the fixture's output");
-        let errors = file.try_clone().expect("share the fixture's output");
-        let environment = std::env::vars_os().map(|(name, _)| (name, None)).collect();
-
-        let context = format!("node {entry} {FIXTURE}");
-        let mut scenario = Scenario::new(context.clone(), node::node(entry));
-        let mut ids = Vec::new();
-        for planted in PLANTED {
-            let (spec, options) = planted.request();
-            let breakpoint = scenario
-                .operation(
-                    "add breakpoint",
-                    scenario.handle().add_breakpoint_with(spec, options),
-                )
-                .await;
-            ids.push(breakpoint.id);
-        }
-        let events = scenario.handle().subscribe();
-        let reason = scenario
-            .run_with_to_stop(LaunchOptions {
-                arguments: vec![node::fixture(FIXTURE).into_os_string()],
-                environment,
-                stdin: Some(Stdio::null()),
-                stdout: Some(Stdio::from(file)),
-                stderr: Some(Stdio::from(errors)),
-                ..LaunchOptions::default()
-            })
+        let requests = PLANTED.iter().map(|planted| planted.request()).collect();
+        let (session, reason, events) = NodeSession::launch_to_stop(entry, FIXTURE, requests).await;
+        let snapshot = session
+            .scenario
+            .operation("snapshot", session.scenario.handle().snapshot())
             .await;
+        let mut ids: Vec<_> = snapshot
+            .breakpoints
+            .iter()
+            .map(|breakpoint| breakpoint.id)
+            .collect();
+        ids.sort_unstable();
         let mut run = Self {
-            scenario,
-            context,
+            context: session.context(),
+            session,
             ids,
             events,
-            output,
             logged: Vec::new(),
-            _scratch: scratch,
         };
         run.drain();
         (run, reason)
@@ -157,7 +134,7 @@ impl Run {
     }
 
     fn output(&self) -> String {
-        std::fs::read_to_string(&self.output).unwrap_or_default()
+        self.session.output()
     }
 
     /// Keeps the log messages reported so far, as text.
@@ -174,7 +151,7 @@ impl Run {
     }
 
     async fn resume(&mut self) -> StopReason {
-        let reason = self.scenario.resume_to_stop().await;
+        let reason = self.session.scenario.resume_to_stop().await;
         self.drain();
         reason
     }
@@ -206,13 +183,15 @@ impl Run {
         assert_eq!(hits, [(self.id(planted), count)], "{context}: {reason:?}");
 
         let snapshot = self
+            .session
             .scenario
-            .operation("snapshot", self.scenario.handle().snapshot())
+            .operation("snapshot", self.session.scenario.handle().snapshot())
             .await;
         let selected = snapshot.selected_frame.expect("a selected frame");
         let trace = self
+            .session
             .scenario
-            .operation("backtrace", self.scenario.handle().backtrace())
+            .operation("backtrace", self.session.scenario.handle().backtrace())
             .await;
         let frame = trace
             .frames
@@ -236,8 +215,9 @@ impl Run {
     async fn value(&self, text: &str) -> String {
         let expression = Expression::parse(text).expect("an expression");
         let evaluation = self
+            .session
             .scenario
-            .operation(text, self.scenario.handle().evaluate(&expression))
+            .operation(text, self.session.scenario.handle().evaluate(&expression))
             .await;
         let Evaluation::Value { value, .. } = evaluation else {
             panic!("{}: `{text}` has no value", self.context);
@@ -283,7 +263,7 @@ async fn every_kind_of_breakpoint(entry: &str) {
     let (mut run, reason) = Run::launch(entry).await;
     let context = run.context.clone();
 
-    let snapshot = run.scenario.snapshot().await;
+    let snapshot = run.session.scenario.snapshot().await;
     let ready = |planted: Planted| {
         let breakpoint = snapshot
             .breakpoints
@@ -348,7 +328,7 @@ async fn every_kind_of_breakpoint(entry: &str) {
     let expected: Vec<_> = (0..6).map(|index| format!("{index}x2")).collect();
     assert_eq!(run.logged, expected, "{context}");
 
-    let snapshot = run.scenario.snapshot().await;
+    let snapshot = run.session.scenario.snapshot().await;
     for (planted, count) in [
         (Planted::Log, 6),
         (Planted::EverySecond, 6),
@@ -362,7 +342,7 @@ async fn every_kind_of_breakpoint(entry: &str) {
             .expect("a planted breakpoint");
         assert_eq!(breakpoint.hit_count, count, "{context}: {planted:?}");
     }
-    run.scenario.shutdown().await;
+    run.session.shutdown().await;
 }
 
 #[tokio::test]

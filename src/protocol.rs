@@ -2419,6 +2419,12 @@ pub enum Request {
         enter: bool,
         reply: Reply<bool>,
     },
+
+    /// Chooses the source files steps pass through without stopping.
+    SetStepSkips {
+        skips: crate::StepSkips,
+        reply: Reply<()>,
+    },
     ExplainView {
         expression: crate::Expression,
         stop_id: StopId,
@@ -2608,6 +2614,7 @@ impl Request {
             Self::SetViews { .. } => "set views".to_owned(),
             Self::EnableViews { enabled, .. } => format!("enable views {enabled}"),
             Self::SetStepIntoRuntime { enter, .. } => format!("step into runtime {enter}"),
+            Self::SetStepSkips { skips, .. } => format!("step skips {:?}", skips.patterns()),
             Self::ExplainView { expression, .. } => {
                 format!("explain the view of `{}`", expression.text())
             }

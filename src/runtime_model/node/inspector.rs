@@ -21,7 +21,20 @@ pub const RESOLVED: &str = "Debugger.breakpointResolved";
 /// V8 paused a thread, which it holds until resumed.
 pub const PAUSED: &str = "Debugger.paused";
 pub const RESUME: &str = "Debugger.resume";
+pub const STEP_INTO: &str = "Debugger.stepInto";
+pub const STEP_OVER: &str = "Debugger.stepOver";
+pub const STEP_OUT: &str = "Debugger.stepOut";
+
+/// V8 parsed a script, which it names by id from then on.
+pub const SCRIPT_PARSED: &str = "Debugger.scriptParsed";
 
 /// Lists an object's own properties: here, the variables of a paused
 /// frame's scope.
 pub const GET_PROPERTIES: &str = "Runtime.getProperties";
+
+/// The path of the script V8 names `url`: a module's `file:` URL decoded,
+/// or the name itself, as a `CommonJS` script's path or a `node:` name.
+pub fn script_path(url: &str) -> std::borrow::Cow<'_, str> {
+    super::frames::file_url_path(url)
+        .map_or(std::borrow::Cow::Borrowed(url), std::borrow::Cow::Owned)
+}

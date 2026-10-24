@@ -645,6 +645,10 @@ impl Cli {
         if self.settings.config.step.runtime == config::StepRuntime::Enter {
             self.debugger().set_step_into_runtime(true).await?;
         }
+        if !self.settings.config.step.skip.is_empty() {
+            let skips = microscope::StepSkips::parse(&self.settings.config.step.skip)?;
+            self.debugger().set_step_skips(skips).await?;
+        }
 
         // Scripts behave the same in every checkout, so only a session at
         // a terminal keeps its breakpoints.
