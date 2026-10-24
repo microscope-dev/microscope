@@ -42,6 +42,7 @@ async fn interrupts_pause_running_javascript_where_it_runs() {
         let mut session = NodeSession::launch(entry, FIXTURE, &[], &[]).await;
         let context = session.context();
         session.wrote("IDLE").await;
+        session.reading_input().await;
         // V8 cannot pause in `fs.readSync`, so this stop is native.
         session.pause().await;
 
@@ -101,6 +102,7 @@ async fn a_step_from_a_native_stop_runs_to_the_next_statement() {
                 session.context()
             );
             session.wrote("IDLE").await;
+            session.reading_input().await;
             session.pause().await;
             if from_script {
                 select_script_frame(&session).await;

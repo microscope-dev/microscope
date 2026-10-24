@@ -235,6 +235,33 @@ impl NodeSession {
         }
     }
 
+    /// Waits until the fixture's main thread is blocked reading its
+    /// standard input. Its output can arrive while its JavaScript has yet
+    /// to begin the read, where an interrupt would pause in V8.
+    pub async fn reading_input(&self) {
+        let started = Instant::now();
+        loop {
+            let snapshot = self
+                .scenario
+                .operation("snapshot", self.scenario.handle().snapshot())
+                .await;
+            if let microscope::InferiorState::Running { process_id, .. } = snapshot.inferior {
+                let path = format!("/proc/{}/syscall", process_id.get());
+                // read(2) is system call 0 on x86-64; its first argument is the fd.
+                let call = std::fs::read_to_string(path).unwrap_or_default();
+                if call.split(' ').take(2).eq(["0", "0x0"]) {
+                    return;
+                }
+            }
+            assert!(
+                started.elapsed() < CHECKPOINT_DEADLINE,
+                "{}: never blocked reading its input",
+                self.context()
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
     /// Stops the running fixture wherever it is.
     pub async fn pause(&mut self) {
         let running = self.running.take().expect("the fixture runs");
