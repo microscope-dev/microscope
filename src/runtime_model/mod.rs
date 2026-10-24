@@ -805,8 +805,10 @@ pub struct RuntimeStep {
     /// The thread the step runs on.
     pub thread: ThreadId,
 
-    /// The interpreted frame the step begins in.
-    pub frame: VirtualAddress,
+    /// The interpreted frame the step begins in; `None` for one a runtime
+    /// begins where it next pauses the thread, as V8 does from a native
+    /// stop.
+    pub frame: Option<VirtualAddress>,
 
     /// Whether the thread is in native code the frame called, from which a
     /// native step returned to the runtime: the step ends at the thread's

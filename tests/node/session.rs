@@ -252,6 +252,12 @@ impl NodeSession {
     /// Writes the line the parked fixture waits for and runs it to its next
     /// checkpoint.
     pub async fn proceed(&mut self) {
+        self.feed();
+        self.resume().await;
+    }
+
+    /// Writes the line the parked fixture waits for.
+    pub fn feed(&mut self) {
         use std::io::Write;
 
         self.input
@@ -259,7 +265,6 @@ impl NodeSession {
             .expect("the fixture's input")
             .write_all(b"\n")
             .expect("write the fixture's input");
-        self.resume().await;
     }
 
     /// The stop the fixture is held at, with every thread it lists.

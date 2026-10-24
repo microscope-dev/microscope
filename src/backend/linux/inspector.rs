@@ -151,8 +151,10 @@ struct Stepping {
     number: u64,
     kind: crate::StepKind,
 
-    /// How many frames the paused thread had where the step began.
-    depth: usize,
+    /// How many frames the paused thread had where the step began; `None`
+    /// for a step begun where V8 did not hold the thread, which ends at
+    /// V8's next pause outside skipped scripts.
+    depth: Option<usize>,
 
     /// The command the step continues with as its thread resumes: the
     /// step's own, then `stepOut` from where a breakpoint whose condition
@@ -639,11 +641,12 @@ impl<P: LinuxTraceOps> Controller<P> {
             .inferior
             .as_mut()
             .ok_or_else(|| Arc::<str>::from("the process is gone"))?;
+        let main = super::debug_thread_id(inferior.tgid);
         let inspector = inferior.inspectors.records.entry(runtime).or_default();
         inspector.step = match (arming.step, inspector.step.take()) {
             (None, _) => None,
             (Some(step), Some(stepping)) if stepping.number == step.number => Some(stepping),
-            (Some(step), _) => Some(stepping(inspector.paused.as_ref(), step)?),
+            (Some(step), _) => Some(stepping(inspector.paused.as_ref(), step, main)?),
         };
         inspector.desired = arming.breakpoints.to_vec();
         inspector.pausing = inspector_protocol::pause_state(arming.exceptions);
@@ -1087,7 +1090,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
         let step = inspector.step.as_mut().filter(|step| step.sent);
         let command = match (params["reason"].as_str(), step) {
-            (Some("step"), Some(step)) if step.skipped < MAX_SKIPPED => {
+            // A step from a native stop pauses for no reason V8 names.
+            (Some("step" | "other"), Some(step)) if step.skipped < MAX_SKIPPED => {
                 step.skipped += 1;
                 inspector_protocol::STEP_INTO
             }
@@ -1381,8 +1385,12 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(());
         };
         let mut unjudged = Vec::new();
+        let main = inferior.tgid;
         for (&runtime, inspector) in &mut inferior.inspectors.records {
             let Some(paused) = inspector.paused.as_ref() else {
+                if resumed.contains(&main) {
+                    pause_for_step(inspector);
+                }
                 continue;
             };
             if !paused.judged {
@@ -1445,6 +1453,50 @@ impl<P: InspectionOps> Controller<P> {
         Some(inspector.readiness(number))
     }
 
+    /// The runtime whose inspector runs a step of `kind` from frame
+    /// `frame` of `pid`, the main isolate's thread, which V8 does not hold:
+    /// into or over from native code with no lines, from which a native
+    /// step would run to whatever native code outside has them. It runs to
+    /// the program's next JavaScript statement instead. A step out keeps
+    /// its native meaning.
+    pub(super) fn javascript_step_from_native(
+        &self,
+        stop_id: crate::protocol::StopId,
+        pid: Pid,
+        frame: crate::StackFrameId,
+        kind: crate::StepKind,
+    ) -> Option<RuntimeId> {
+        let inferior = self.inferior.as_ref()?;
+        if !matches!(
+            kind,
+            crate::StepKind::IntoSource | crate::StepKind::OverSource
+        ) || pid != inferior.tgid
+            || self.inspector_holds(super::debug_thread_id(pid))
+        {
+            return None;
+        }
+        let runtime = inferior
+            .inspectors
+            .records
+            .iter()
+            .find(|(_, inspector)| {
+                inspector
+                    .connection
+                    .as_ref()
+                    .is_some_and(|link| link.connected)
+            })
+            .map(|(&runtime, _)| runtime)?;
+        let trace = self
+            .backtrace(stop_id, &super::frames::StackRoot::of_thread(pid))
+            .ok()?;
+        trace
+            .frames
+            .iter()
+            .find(|candidate| candidate.id == frame)
+            .filter(|frame| frame.source.is_none() && frame.recorded.is_none())
+            .map(|_| runtime)
+    }
+
     /// Whether V8 holds thread `thread` paused, where its innermost
     /// JavaScript frame is the stop's.
     pub(super) fn inspector_holds(&self, thread: crate::ThreadId) -> bool {
@@ -1461,10 +1513,12 @@ impl<P: InspectionOps> Controller<P> {
 }
 
 /// The step V8 runs for `step`, which begins at `paused`, the pause V8
-/// holds the step's thread in.
+/// holds the step's thread in. From anywhere else on `main`, the thread
+/// of the main isolate, it pauses at the next statement V8 runs (F19).
 fn stepping(
     paused: Option<&Paused>,
     step: &crate::runtime_model::RuntimeStep,
+    main: crate::ThreadId,
 ) -> std::result::Result<Stepping, Arc<str>> {
     let command = match step.kind {
         crate::StepKind::IntoSource => inspector_protocol::STEP_INTO,
@@ -1472,21 +1526,51 @@ fn stepping(
         crate::StepKind::Out => inspector_protocol::STEP_OUT,
         kind => return Err(format!("V8 cannot step JavaScript by {kind:?}").into()),
     };
-    let paused = paused
-        .filter(|paused| {
-            paused.judged && paused.thread.map(super::debug_thread_id) == Some(step.thread)
-        })
-        .ok_or(
-            "JavaScript steps begin where V8 paused the thread, as at a JavaScript breakpoint",
-        )?;
+    let paused = paused.filter(|paused| {
+        paused.judged && paused.thread.map(super::debug_thread_id) == Some(step.thread)
+    });
+    let (depth, command) = match paused {
+        Some(paused) => (Some(paused.frames.len()), command),
+        None if step.thread == main => (None, inspector_protocol::PAUSE),
+        None => {
+            return Err(
+                "JavaScript steps from a native stop run on the main thread; on a worker, they begin where V8 paused it".into(),
+            );
+        }
+    };
     Ok(Stepping {
         number: step.number,
         kind: step.kind,
-        depth: paused.frames.len(),
+        depth,
         command,
         sent: false,
         skipped: 0,
     })
+}
+
+/// Asks V8 to pause for the step from a native stop that `inspector`
+/// runs, if it has one not yet begun, as its thread resumes.
+fn pause_for_step(inspector: &mut Inspector) {
+    let (Some(step), Some(link)) = (inspector.step.as_mut(), inspector.connection.as_mut()) else {
+        return;
+    };
+    if step.sent || step.depth.is_some() {
+        return;
+    }
+    step.sent = true;
+    if link.resuming {
+        link.pause = PauseRequest::Deferred;
+        return;
+    }
+    let sent = link.connection.send(
+        &Session::main(),
+        inspector_protocol::PAUSE,
+        serde_json::json!({}),
+    );
+    record!("V8 is asked to pause for a step: {sent:?}");
+    if sent.is_ok() {
+        link.pause = PauseRequest::Sent;
+    }
 }
 
 /// How long an interrupt waits for V8 to pause running JavaScript, which
@@ -1571,9 +1655,9 @@ fn list_frame(
 /// stopped: V8 ends a step at its next pause, unless a breakpoint whose
 /// condition failed paused it in a call the step runs through.
 const fn ends_step(step: &Stepping, depth: usize) -> bool {
-    match step.kind {
-        crate::StepKind::OverSource => depth <= step.depth,
-        crate::StepKind::Out => depth < step.depth,
+    match (step.kind, step.depth) {
+        (crate::StepKind::OverSource, Some(began)) => depth <= began,
+        (crate::StepKind::Out, Some(began)) => depth < began,
         _ => true,
     }
 }

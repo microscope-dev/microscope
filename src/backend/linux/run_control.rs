@@ -102,7 +102,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             _ => frame,
         };
         if into_call.is_none()
-            && let Some(interpreted) = self.interpreted_frame(stop_id, pid, frame)
+            && let Some(interpreted) = self.runtime_step_origin(stop_id, pid, frame, kind)
         {
             let result = self.begin_runtime_step(
                 process_id,

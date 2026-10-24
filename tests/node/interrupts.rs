@@ -3,7 +3,7 @@
 //! stops natively instead. A pause V8 takes after that native stop, at
 //! the next statement the program runs, never stops it.
 
-use microscope::VariableState;
+use microscope::{StepKind, StopReason, VariableState};
 
 use crate::oracle;
 use crate::session::{MATRIX, NodeSession};
@@ -79,4 +79,77 @@ async fn interrupts_pause_running_javascript_where_it_runs() {
         session.shutdown().await;
     }
     assert!(lies.is_empty(), "{}", lies.join("\n"));
+}
+
+/// How long a step from the read may take once the read returns.
+const STEP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The line after the fixture's read, where a step from it ends.
+const AFTER_READ: u32 = 17;
+
+/// On every build, a step from a native stop runs to the program's next
+/// JavaScript statement, through Node's own scripts: from the read's
+/// libc frame, which has no lines, and from the script's frame selected.
+#[tokio::test]
+async fn a_step_from_a_native_stop_runs_to_the_next_statement() {
+    let mut lies = Vec::new();
+    for entry in MATRIX {
+        for from_script in [false, true] {
+            let mut session = NodeSession::launch(entry, FIXTURE, &[], &[]).await;
+            let context = format!(
+                "{} from the script's frame: {from_script}",
+                session.context()
+            );
+            session.wrote("IDLE").await;
+            session.pause().await;
+            if from_script {
+                select_script_frame(&session).await;
+            }
+            let stepping = session.scenario.start_stepping(StepKind::OverSource).await;
+            session.feed();
+            let Ok(ended) = tokio::time::timeout(STEP_DEADLINE, stepping).await else {
+                lies.push(format!("{context}: the step never ended"));
+                session.shutdown().await;
+                continue;
+            };
+            let reason = ended.expect("the step task").expect("the step");
+            let pause = oracle::selected(&session.scenario).await;
+            if reason
+                != (StopReason::Step {
+                    kind: StepKind::OverSource,
+                })
+                || pause.line != AFTER_READ
+            {
+                lies.push(format!("{context}: {reason:?} at {pause}"));
+            }
+            session.resume().await;
+            session.pause().await;
+            session.shutdown().await;
+        }
+    }
+    assert!(lies.is_empty(), "{}", lies.join("\n"));
+}
+
+/// Selects the innermost frame of the fixture's own script.
+async fn select_script_frame(session: &NodeSession) {
+    let handle = session.scenario.handle();
+    let trace = session
+        .scenario
+        .operation("backtrace", handle.backtrace())
+        .await;
+    let frame = trace
+        .frames
+        .iter()
+        .find(|frame| {
+            frame
+                .recorded
+                .as_ref()
+                .and_then(|recorded| recorded.place.as_ref())
+                .is_some_and(|place| place.path.ends_with(FIXTURE))
+        })
+        .unwrap_or_else(|| panic!("{}: no frame of the script", session.context()));
+    session
+        .scenario
+        .operation("select frame", handle.select_frame(frame.id))
+        .await;
 }

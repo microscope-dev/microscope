@@ -302,7 +302,10 @@ impl super::Reading {
             .number
             .checked_add(1)
             .ok_or_else(|| Arc::<str>::from("Python step identifiers are exhausted"))?;
-        let origin = self.step_origin(stop, active.thread, active.frame, None)?;
+        let frame = active
+            .frame
+            .ok_or_else(|| Arc::<str>::from("Python steps begin in a frame its agent stopped"))?;
+        let origin = self.step_origin(stop, active.thread, frame, None)?;
 
         Ok(Some((
             number,

@@ -1879,7 +1879,7 @@ mod tests {
             number,
             kind: crate::StepKind::OverSource,
             thread: crate::ThreadId::new(7),
-            frame: crate::VirtualAddress::new(0x9000),
+            frame: Some(crate::VirtualAddress::new(0x9000)),
             returning: false,
         }
     }
@@ -1974,7 +1974,7 @@ mod tests {
             crate::ProcessId::new(pid.as_raw().cast_unsigned().into()),
             stop,
             pid,
-            (bound.id, crate::VirtualAddress::new(0x9000)),
+            (bound.id, Some(crate::VirtualAddress::new(0x9000))),
             crate::StepKind::OverSource,
             crate::ResumeScope::Process(crate::ProcessId::new(pid.as_raw().cast_unsigned().into())),
             crate::protocol::ExceptionDisposition::Pass,

@@ -55,6 +55,25 @@ impl<P: InspectionOps> Controller<P> {
         }
     }
 
+    /// The runtime that runs a step of `kind` from frame `frame` of `pid`,
+    /// and the interpreted frame it begins in, if a runtime runs it: one
+    /// from a frame a runtime interprets, or a JavaScript step from a
+    /// native stop, which begins where V8 next pauses.
+    pub(super) fn runtime_step_origin(
+        &self,
+        stop_id: StopId,
+        pid: Pid,
+        frame: StackFrameId,
+        kind: StepKind,
+    ) -> Option<(RuntimeId, Option<VirtualAddress>)> {
+        self.interpreted_frame(stop_id, pid, frame)
+            .map(|(runtime, frame)| (runtime, Some(frame)))
+            .or_else(|| {
+                self.javascript_step_from_native(stop_id, pid, frame, kind)
+                    .map(|runtime| (runtime, None))
+            })
+    }
+
     /// Whether `selection` selects an outer frame a runtime interprets.
     pub(super) fn selects_interpreted(&self, selection: &crate::StoppedSelection) -> bool {
         selection.frame != StackFrameId::INNERMOST
@@ -69,7 +88,8 @@ impl<P: InspectionOps> Controller<P> {
 
 impl<P: LinuxTraceOps> Controller<P> {
     /// Steps thread `pid` from the interpreted frame at `frame` of the
-    /// runtime `runtime`, as that runtime steps. A runtime that cannot step
+    /// runtime `runtime`, or from where it next pauses the thread when
+    /// there is none, as that runtime steps. A runtime that cannot step
     /// so refuses the step, and nothing runs.
     #[expect(
         clippy::too_many_arguments,
@@ -80,7 +100,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         process_id: ProcessId,
         stop_id: StopId,
         pid: Pid,
-        (runtime, frame): (RuntimeId, VirtualAddress),
+        (runtime, frame): (RuntimeId, Option<VirtualAddress>),
         kind: StepKind,
         scope: ResumeScope,
         exception: ExceptionDisposition,
@@ -376,7 +396,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     number,
                     kind: requested,
                     thread,
-                    frame,
+                    frame: Some(frame),
                     returning: true,
                 },
             ));
