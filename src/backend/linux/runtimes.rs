@@ -136,6 +136,9 @@ struct ProcessStop<'a, P> {
     /// The memory read at the published stop, if the process is at one.
     memory: Option<&'a crate::runtime_model::StopMemory>,
     identities: OnceCell<IdentityPairs>,
+
+    /// The stack locals runtimes' debugging interfaces named, by frame.
+    locals: &'a std::collections::BTreeMap<VirtualAddress, crate::runtime_model::ReportedLocals>,
 }
 
 /// Provider mistakes must not make single and batch identity queries disagree.
@@ -226,6 +229,13 @@ impl<P: InspectionOps> RuntimeStop for ProcessStop<'_, P> {
         self.memory
     }
 
+    fn reported_locals(
+        &self,
+        frame: VirtualAddress,
+    ) -> Option<crate::runtime_model::ReportedLocals> {
+        self.locals.get(&frame).cloned()
+    }
+
     fn thread_pointer(&self, thread: ThreadId) -> Option<u64> {
         let pid = debug_pid(thread).ok()?;
         self.ptrace
@@ -272,7 +282,10 @@ impl<P: InspectionOps> Controller<P> {
     /// bound to it. A module whose runtime cannot be bound has none; see
     /// [`Self::unbound_runtimes`].
     pub(super) fn runtimes(&self, inferior: &Inferior) -> Vec<BoundRuntime> {
+        // A copy of part of an image, as V8's of its builtins, is the
+        // runtime of the module that loaded the image, not one of its own.
         self.loaded_images(inferior)
+            .filter(|(module, _)| module.window.is_none())
             .flat_map(|(module, image)| {
                 self.bind_runtimes(image)
                     .into_iter()
@@ -450,6 +463,7 @@ impl<P: InspectionOps> Controller<P> {
                 .unwrap_or_default(),
             memory: inferior.public_stop.as_ref().map(|stop| &stop.memory),
             identities: OnceCell::new(),
+            locals: &inferior.inspectors.locals,
         })
     }
 
@@ -1185,8 +1199,14 @@ mod identity_tests {
             task_sets: Vec::new(),
             memory,
             identities: OnceCell::new(),
+            locals: &NO_LOCALS,
         }
     }
+
+    static NO_LOCALS: std::collections::BTreeMap<
+        VirtualAddress,
+        crate::runtime_model::ReportedLocals,
+    > = std::collections::BTreeMap::new();
 
     #[test]
     fn identity_queries_share_one_batch_with_and_without_a_published_stop() {

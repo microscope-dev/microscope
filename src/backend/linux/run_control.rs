@@ -612,17 +612,18 @@ impl<P: LinuxTraceOps> Controller<P> {
                     self.start_user_step(thread, kind)?;
                 }
 
-                self.continue_scope_threads()
+                self.continue_scope_threads()?;
+                self.resume_inspectors(&resume_threads)
             }
             ActiveKind::Launch
             | ActiveKind::Continue
             | ActiveKind::RuntimeStep { .. }
             | ActiveKind::RuntimeAssignment { .. } => {
-                for pid in resume_threads {
+                for &pid in &resume_threads {
                     self.continue_thread(pid)?;
                 }
 
-                Ok(())
+                self.resume_inspectors(&resume_threads)
             }
         }
     }

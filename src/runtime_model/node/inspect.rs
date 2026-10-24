@@ -32,6 +32,8 @@ mod error;
 mod format;
 mod text;
 
+pub(super) use text::bigint_to_string;
+
 #[cfg(test)]
 mod tests;
 

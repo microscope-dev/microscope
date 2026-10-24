@@ -9,8 +9,11 @@
 
 use std::collections::BTreeSet;
 
+use std::sync::Arc;
+
 use super::objects::{Object, Problem, Reader};
 use crate::image::v8::{Constant, Field, ScopeInfoSlice, scope_info_slice};
+use crate::runtime_model::{ReportedLocal, ReportedValue};
 
 /// The most contexts a chain is followed through.
 const MAX_CONTEXTS: usize = 256;
@@ -34,8 +37,17 @@ pub(super) enum Kind {
     /// A top-level binding of a module, or a top-level `let`, `const`, or
     /// `class` of any script.
     Module,
-    /// An interpreter register, by number.
-    Register(u32),
+    /// An interpreter register, by number, and why it has no name.
+    Register {
+        index: u32,
+        unnamed: Option<Problem>,
+    },
+    /// An interpreter register, by number, that the runtime's debugging
+    /// interface named.
+    Named(u32),
+    /// A local the runtime's debugging interface named in an optimized
+    /// frame, whose stack locals microscope cannot find.
+    Optimized,
     /// `globalThis`, the realm's global proxy.
     Global,
 }
@@ -45,10 +57,10 @@ impl Kind {
     pub(super) const fn shown(&self) -> crate::VariableKind {
         match self {
             Self::Receiver | Self::Argument(_) => crate::VariableKind::Parameter,
-            Self::Local => crate::VariableKind::Local,
+            Self::Local | Self::Named(_) | Self::Optimized => crate::VariableKind::Local,
             Self::Captured => crate::VariableKind::Captured,
             Self::Module => crate::VariableKind::Module,
-            Self::Register(_) => crate::VariableKind::Unnamed,
+            Self::Register { .. } => crate::VariableKind::Unnamed,
             Self::Global => crate::VariableKind::Global,
         }
     }
@@ -57,6 +69,152 @@ impl Kind {
 /// Why an interpreter register has no name.
 pub(super) const UNNAMED: &str =
     "V8 only records names for variables that a closure uses, so these have none";
+
+/// A level at which values are read without their contents.
+const HEADER_LEVEL: u32 = 3;
+
+/// Why an optimized frame's stack locals cannot be read.
+const OPTIMIZED: &str =
+    "V8 optimized this frame and keeps its locals where microscope cannot read them";
+
+/// The names a frame's parameters and registers take from what the
+/// runtime's debugging interface reported.
+#[derive(Debug, Default)]
+struct Binding {
+    /// By parameter position.
+    parameters: Vec<Option<Arc<str>>>,
+
+    /// By register number. A name declared again in an inner block names
+    /// only the inner register.
+    registers: Vec<Option<Arc<str>>>,
+
+    /// The registers of `let` and `const` variables V8 has not initialized,
+    /// whose hole it did not write.
+    uninitialized: BTreeSet<u32>,
+}
+
+/// Why a variable has no value yet: a `let`, `const`, or `class` before
+/// its declaration ran.
+pub(super) const UNINITIALIZED: &str = "the variable is not initialized yet";
+
+/// Binds the locals `reported` names, in declaration order, to the frame:
+/// the first `parameter_count` to its parameters, and the rest that no
+/// context of the frame (`own`) holds to its registers from the first. The
+/// binding stands only if every value matches what the slot holds now
+/// (F17); a catch binding or a destructuring temporary breaks the order.
+fn bind(
+    reader: &Reader<'_>,
+    reported: &[ReportedLocal],
+    own: &BTreeSet<&str>,
+    parameter_count: usize,
+    register_count: u32,
+    argument: &dyn Fn(u32) -> Result<u64, Problem>,
+    register: &dyn Fn(u32) -> Result<u64, Problem>,
+) -> Result<Binding, Problem> {
+    let mismatch = |name: &str| -> Problem {
+        format!(
+            "V8's debugger reported a local `{name}` whose value is not where microscope expects it, so the frame's locals keep their numbers"
+        )
+        .into()
+    };
+    let mut binding = Binding::default();
+    let (parameters, locals) = reported.split_at(parameter_count.min(reported.len()));
+    for (index, local) in parameters.iter().enumerate() {
+        // A captured parameter's current value is in its context.
+        if own.contains(&*local.name) {
+            binding.parameters.push(None);
+            continue;
+        }
+        let index = u32::try_from(index).map_err(|_| "too many parameters")?;
+        if !holds(reader, argument(index)?, &local.value)? {
+            return Err(mismatch(&local.name));
+        }
+        binding.parameters.push(Some(Arc::clone(&local.name)));
+    }
+    let locals = locals
+        .iter()
+        .filter(|local| !own.contains(&*local.name))
+        .collect::<Vec<_>>();
+    if locals.len() > register_count as usize {
+        return Err(mismatch(&locals[register_count as usize].name));
+    }
+    for (index, local) in locals.iter().enumerate() {
+        let index = u32::try_from(index).map_err(|_| "too many locals")?;
+        let word = register(index)?;
+        if !holds(reader, word, &local.value)? {
+            return Err(mismatch(&local.name));
+        }
+        if local.value == ReportedValue::Unavailable && !super::own::is_hole(reader, word)? {
+            binding.uninitialized.insert(index);
+        }
+        // The inner declaration of a name is the one in scope.
+        for earlier in &mut binding.registers {
+            if earlier.as_deref() == Some(&*local.name) {
+                *earlier = None;
+            }
+        }
+        binding.registers.push(Some(Arc::clone(&local.name)));
+    }
+    Ok(binding)
+}
+
+/// How many formal parameters `function` declares.
+fn parameters(reader: &Reader<'_>, function: Object) -> Result<usize, Problem> {
+    let shared = reader.typed_field(
+        function,
+        Field::JSFunctionSharedFunctionInfo,
+        Constant::SharedFunctionInfoType,
+    )?;
+    let mut count = [0; 2];
+    reader.bytes_into(
+        reader.field_address(shared, Field::SharedFunctionInfoFormalParameterCount)?,
+        &mut count,
+    )?;
+    // The count includes the receiver.
+    let count =
+        i64::from(u16::from_le_bytes(count)) - reader.constant(Constant::JSArgcReceiverSlots)?;
+    usize::try_from(count).map_err(|_| format!("the function declares {count} parameters").into())
+}
+
+/// Whether the tagged word `word` is the value `reported` describes: the
+/// same primitive, or an object of the same class.
+fn holds(reader: &Reader<'_>, word: u64, reported: &ReportedValue) -> Result<bool, Problem> {
+    use super::inspect::Value;
+
+    // V8's debugger reports a `let` before its initialization as
+    // unavailable, whose register holds the hole, or undefined where V8
+    // left out the hole's write.
+    if super::own::is_hole(reader, word)? {
+        return Ok(matches!(reported, ReportedValue::Unavailable));
+    }
+    let value = super::values::Builder::new(*reader).value(word, HEADER_LEVEL);
+    Ok(match (reported, value) {
+        (ReportedValue::Undefined | ReportedValue::Unavailable, Value::Undefined)
+        | (ReportedValue::Null, Value::Null)
+        | (ReportedValue::Symbol, Value::Symbol(_)) => true,
+        (ReportedValue::Boolean(expected), Value::Boolean(held)) => *expected == held,
+        (ReportedValue::Number(expected), Value::Number(held)) => {
+            expected.to_bits() == held.to_bits() || (expected.is_nan() && held.is_nan())
+        }
+        (ReportedValue::String(expected), Value::String(held)) => {
+            expected.encode_utf16().count() == held.length() as usize
+                && expected
+                    .encode_utf16()
+                    .zip(held.units())
+                    .all(|(expected, held)| expected == *held)
+        }
+        (ReportedValue::BigInt(expected), Value::BigInt(held)) => {
+            **expected == *super::inspect::bigint_to_string(&held)
+        }
+        (ReportedValue::Object(class), Value::Object(_)) => {
+            let object = reader.object(word)?.ok_or("an object is not an object")?;
+            class
+                .encode_utf16()
+                .eq(super::constructors::constructor_name(reader, object)?)
+        }
+        _ => false,
+    })
+}
 
 /// One variable of a frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,29 +265,82 @@ pub(super) fn variables(reader: &Reader<'_>, fp: u64) -> Result<Vec<Variable>, P
         kind: Kind::Receiver,
         word: this,
     });
-    for index in 0..u32::try_from(argc).unwrap_or(0) {
-        found.push(Variable {
-            name: format!("arguments[{index}]"),
-            kind: Kind::Argument(index),
-            word: reader.word(first + 8 * (u64::from(index) + 1)),
-        });
-    }
-
     let mut seen = BTreeSet::new();
     let closure = reader.field(function, Field::JSFunctionContext)?;
-    found.extend(context_variables(reader, context, closure, &mut seen)?);
+    let mut captured = context_variables(reader, context, closure, &mut seen)?;
+    let file = at(Constant::UnoptimizedFrameRegisterFileFromFp)?;
+    let count = registers(reader, fp, function)?;
+    let read_register = |index: u32| reader.word(file - 8 * u64::from(index));
 
-    if let Some(count) = registers(reader, fp, function)? {
-        let file = at(Constant::UnoptimizedFrameRegisterFileFromFp)?;
+    let argument = |index: u32| reader.word(first + 8 * (u64::from(index) + 1));
+    let Names {
+        parameters,
+        registers: names,
+        uninitialized,
+        unnamed,
+        optimized,
+    } = stack_names(
+        reader,
+        (fp, function),
+        &captured,
+        count,
+        &argument,
+        &read_register,
+    );
+    for variable in optimized {
+        seen.insert(variable.name.clone());
+        found.push(variable);
+    }
+
+    found.extend(arguments(argc, &parameters, &argument));
+
+    // A named local shadows the variables of outer scopes, as JavaScript
+    // resolves it.
+    for (index, name) in names.iter().enumerate() {
+        if let (Some(name), Ok(index)) = (name, u32::try_from(index)) {
+            seen.insert(name.to_string());
+            found.push(Variable {
+                name: name.to_string(),
+                kind: Kind::Named(index),
+                word: if uninitialized.contains(&index) {
+                    Err(UNINITIALIZED.into())
+                } else {
+                    read_register(index)
+                },
+            });
+        }
+    }
+    captured.retain(|variable| !names.iter().flatten().any(|name| **name == *variable.name));
+    found.extend(captured);
+
+    if let Some(count) = count {
         for index in 0..count {
+            if names.get(index as usize).is_some_and(Option::is_some) {
+                continue;
+            }
             found.push(Variable {
                 name: format!("r{index}"),
-                kind: Kind::Register(index),
-                word: reader.word(file - 8 * u64::from(index)),
+                kind: Kind::Register {
+                    index,
+                    unnamed: unnamed.clone(),
+                },
+                word: read_register(index),
             });
         }
     }
 
+    found.extend(script_bindings(reader, context, &mut seen)?);
+    Ok(found)
+}
+
+/// The script and module bindings of the realm of `context` that `seen`
+/// does not already hold, then `globalThis`.
+fn script_bindings(
+    reader: &Reader<'_>,
+    context: Object,
+    seen: &mut BTreeSet<String>,
+) -> Result<Vec<Variable>, Problem> {
+    let mut found = Vec::new();
     let native = super::access::native_context(reader, context)?;
     for context in super::access::script_contexts(reader, native)? {
         for (name, word) in locals(reader, context)? {
@@ -148,6 +359,128 @@ pub(super) fn variables(reader: &Reader<'_>, fp: u64) -> Result<Vec<Variable>, P
         word: super::access::slot(reader, native, Constant::ContextGlobalProxyIndex),
     });
     Ok(found)
+}
+
+/// The names a frame's stack slots take at this stop, from what the
+/// runtime's debugging interface reported.
+#[derive(Debug, Default)]
+struct Names {
+    parameters: Vec<Option<Arc<str>>>,
+    registers: Vec<Option<Arc<str>>>,
+    uninitialized: BTreeSet<u32>,
+
+    /// Why the registers keep their numbers, where the interface named
+    /// them but the binding failed.
+    unnamed: Option<Problem>,
+
+    /// The locals of an optimized frame, by name, without their values.
+    optimized: Vec<Variable>,
+}
+
+/// The [`Names`] of the frame at `fp` running `function`, whose contexts
+/// hold `captured` and which has `count` registers, or none for an
+/// optimized frame.
+fn stack_names(
+    reader: &Reader<'_>,
+    (fp, function): (u64, Object),
+    captured: &[Variable],
+    count: Option<u32>,
+    argument: &dyn Fn(u32) -> Result<u64, Problem>,
+    register: &dyn Fn(u32) -> Result<u64, Problem>,
+) -> Names {
+    let Some(reported) = reader.stop.reported_locals(crate::VirtualAddress::new(fp)) else {
+        return Names::default();
+    };
+    let reported = match reported {
+        Ok(reported) => reported,
+        Err(problem) => {
+            return Names {
+                unnamed: Some(problem),
+                ..Names::default()
+            };
+        }
+    };
+    let Some(count) = count else {
+        // Each name the interface gave, past the parameters, with why its
+        // value cannot be found.
+        let skip = parameters(reader, function).unwrap_or(0);
+        let optimized = reported
+            .iter()
+            .skip(skip)
+            .filter(|local| {
+                !captured
+                    .iter()
+                    .any(|variable| *variable.name == *local.name)
+            })
+            .map(|local| Variable {
+                name: local.name.to_string(),
+                kind: Kind::Optimized,
+                word: Err(OPTIMIZED.into()),
+            })
+            .collect();
+        return Names {
+            optimized,
+            ..Names::default()
+        };
+    };
+    let own = captured
+        .iter()
+        .filter(|variable| variable.kind == Kind::Local)
+        .map(|variable| variable.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let bound = parameters(reader, function).and_then(|parameter_count| {
+        bind(
+            reader,
+            &reported,
+            &own,
+            parameter_count,
+            count,
+            argument,
+            register,
+        )
+    });
+    match bound {
+        Ok(binding) => Names {
+            parameters: binding.parameters,
+            registers: binding.registers,
+            uninitialized: binding.uninitialized,
+            ..Names::default()
+        },
+        Err(problem) => Names {
+            unnamed: Some(problem),
+            ..Names::default()
+        },
+    }
+}
+
+/// The frame's `argc` arguments, each named by its parameter where the
+/// binding named it, then the declared parameters the call did not pass,
+/// whose slots V8 fills with undefined.
+fn arguments(
+    argc: i64,
+    parameters: &[Option<Arc<str>>],
+    argument: &dyn Fn(u32) -> Result<u64, Problem>,
+) -> Vec<Variable> {
+    let passed = u32::try_from(argc).unwrap_or(0);
+    let mut found = Vec::new();
+    for index in 0..passed {
+        let name = parameters.get(index as usize).cloned().flatten();
+        found.push(Variable {
+            name: name.map_or_else(|| format!("arguments[{index}]"), |name| name.to_string()),
+            kind: Kind::Argument(index),
+            word: argument(index),
+        });
+    }
+    for (index, name) in parameters.iter().enumerate().skip(passed as usize) {
+        if let (Some(name), Ok(index)) = (name, u32::try_from(index)) {
+            found.push(Variable {
+                name: name.to_string(),
+                kind: Kind::Argument(index),
+                word: argument(index),
+            });
+        }
+    }
+    found
 }
 
 /// How many registers the frame at `fp` has, or `None` for an optimized

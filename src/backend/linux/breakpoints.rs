@@ -158,6 +158,19 @@ impl<P: InspectionOps> Controller<P> {
                         if confirmed {
                             return None;
                         }
+                        // An inspector says of each location whether V8 set it.
+                        if let Some(readiness) = inferior
+                            .managed
+                            .number(location)
+                            .and_then(|number| self.inspector_readiness(location.runtime, number))
+                        {
+                            return readiness.err().map(|reason| {
+                                crate::PendingBreakpointLocation {
+                                    location: resolved.location.clone(),
+                                    reason,
+                                }
+                            });
+                        }
                         // A change not yet armed, as after an edit that
                         // failed between claiming and arming, is unconfirmed.
                         let reason = match inferior.managed.unarmed.get(&location.runtime) {

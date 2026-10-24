@@ -7,6 +7,7 @@
 mod support;
 
 mod addon;
+mod breakpoints;
 mod debian;
 mod frames;
 mod inspector;

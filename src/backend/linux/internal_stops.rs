@@ -160,6 +160,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 }
             }
             Edit::ReturnToRuntime { pid } => self.return_to_runtime(pid),
+            Edit::InspectorPaused { runtime } => self.apply_inspector_pause(runtime),
         }
     }
 
@@ -480,6 +481,7 @@ impl Edit {
             | Self::FollowStacks
             | Self::ArmAgents
             | Self::ReturnToRuntime { .. }
+            | Self::InspectorPaused { .. }
             | Self::AgentReport { .. } => {}
         }
     }

@@ -484,11 +484,18 @@ impl RuntimeModel for NodeRuntime {
                 .map(|variable| InterpretedLocal {
                     name: variable.name.into(),
                     kind: variable.kind.shown(),
-                    unnamed: matches!(variable.kind, variables::Kind::Register(_))
-                        .then(|| variables::UNNAMED.into()),
+                    unnamed: match &variable.kind {
+                        variables::Kind::Register { unnamed, .. } => {
+                            Some(unnamed.clone().unwrap_or_else(|| variables::UNNAMED.into()))
+                        }
+                        _ => None,
+                    },
                     slot: match variable.word {
                         Ok(word) => {
                             present::value(reader, present::Handle::Tagged(word).handle(), writer)
+                        }
+                        Err(problem) if *problem == *variables::UNINITIALIZED => {
+                            InterpretedSlot::Unbound
                         }
                         Err(problem) => InterpretedSlot::Unreadable(problem),
                     },

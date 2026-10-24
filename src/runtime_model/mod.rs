@@ -203,8 +203,48 @@ impl TargetThreadId {
     }
 }
 
+/// A local variable of a frame, as the runtime's own debugging interface
+/// reported it before the stop's barrier completed: a name, which memory
+/// does not keep, and the value it held, which proves where it is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReportedLocal {
+    pub name: Arc<str>,
+    pub value: ReportedValue,
+}
+
+/// What a runtime's debugging interface said a variable held.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReportedValue {
+    Undefined,
+    Null,
+    Boolean(bool),
+    Number(f64),
+    String(Arc<str>),
+    /// A big integer's decimal digits, with its sign.
+    BigInt(Arc<str>),
+    Symbol,
+    /// An object, by the name of its class.
+    Object(Arc<str>),
+    /// A value the interface reported unavailable: as V8 reports a `let`
+    /// before its initialization.
+    Unavailable,
+    /// A value the interface described in a way microscope does not read.
+    Unknown,
+}
+
+/// The stack locals a runtime's debugging interface named for a frame at
+/// this stop, or why it named none.
+pub type ReportedLocals = Result<Arc<[ReportedLocal]>, Arc<str>>;
+
 /// One validated stop of the process a runtime runs in.
 pub trait RuntimeStop {
+    /// The locals the runtime's debugging interface reported for the
+    /// interpreted frame at `frame` before this stop's barrier completed,
+    /// if it reported any for it.
+    fn reported_locals(&self, _frame: VirtualAddress) -> Option<ReportedLocals> {
+        None
+    }
+
     /// Fills `bytes` from memory as the program sees it, without the
     /// debugger's breakpoints, or returns `false` when any byte is
     /// unreadable.

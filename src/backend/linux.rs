@@ -802,6 +802,10 @@ impl StopBarrier {
 
 /// A breakpoint or watchpoint change that needs every thread stopped.
 enum Edit {
+    /// Judges the pause a runtime's inspector reported.
+    InspectorPaused {
+        runtime: crate::RuntimeId,
+    },
     AddBreakpoint {
         spec: crate::BreakpointSpec,
         options: Box<crate::BreakpointOptions>,
@@ -2094,7 +2098,9 @@ impl<P: LinuxTraceOps> Controller<P> {
                 true
             }
             ControllerMessage::Inspector(message) => {
-                self.inspector_message(message);
+                if let Err(error) = self.inspector_message(message) {
+                    self.fail_inferior(error);
+                }
                 true
             }
             ControllerMessage::Wait(status) => {

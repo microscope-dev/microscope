@@ -436,6 +436,24 @@ impl<P: InspectionOps> Controller<P> {
         inferior: &super::Inferior,
         trace: &crate::Backtrace,
     ) -> Option<crate::StackFrameId> {
+        // A thread an inspector holds paused is in its innermost script.
+        if let crate::ExecutionContext::Thread(thread) = trace.context
+            && self.inspector_holds(thread)
+        {
+            return trace
+                .frames
+                .iter()
+                .find(|frame| {
+                    frame.recorded.as_ref().is_some_and(|recorded| {
+                        matches!(
+                            recorded.language,
+                            crate::SourceLanguage::JavaScript | crate::SourceLanguage::TypeScript
+                        )
+                    })
+                })
+                .map(|frame| frame.id);
+        }
+
         // The runtime whose hook the thread entered.
         let runtime = trace
             .frames

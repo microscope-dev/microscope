@@ -239,6 +239,9 @@ impl<P: LinuxTraceOps> Controller<P> {
             exceptions: self.exception_stops,
         };
 
+        if bound.model.inspector_hook().is_some() {
+            return self.arm_inspector(bound.id, &arming);
+        }
         if bound.model.agent().is_some() {
             return self.arm_agent(&bound, &arming);
         }

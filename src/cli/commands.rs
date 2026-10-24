@@ -2735,6 +2735,20 @@ impl Cli {
             Err(error) => return Err(error.into()),
         };
 
+        // Code no debug information describes may run a function its
+        // runtime recorded, as V8's builtins run a script's.
+        if location.image.function.is_none() {
+            let selected = self.debugger().snapshot().await?.selected_frame;
+            let trace = self.debugger().backtrace().await?;
+            if let Some(frame) = trace
+                .frames
+                .iter()
+                .find(|frame| Some(frame.id) == selected && frame.recorded.is_some())
+            {
+                return Ok(format::interpreted_location(frame, renderer));
+            }
+        }
+
         self.describe(&location, with_address).await
     }
 
