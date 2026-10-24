@@ -13,6 +13,7 @@
 
 mod arming;
 mod interrupts;
+mod maps;
 mod pauses;
 mod protocol;
 mod steps;
@@ -78,6 +79,10 @@ pub(super) struct Inspectors {
     /// How many `SIGUSR1`s microscope sent to open an attached node's
     /// inspector that have not yet arrived; each passes quietly.
     pub(super) opening: u32,
+
+    /// The source map of each script that names one, by the script's
+    /// path, from any isolate.
+    maps: BTreeMap<Arc<str>, maps::ScriptMap>,
 }
 
 impl Inspectors {
@@ -102,6 +107,54 @@ impl Inspectors {
         self.entries.remove(&address);
         self.returns.remove(&address);
         self.calls.retain(|call| call.returns_to != address);
+    }
+
+    /// Shows each script frame of `frames` at the original place its
+    /// script's source map leads to, keeping the generated one. A frame in
+    /// generated code the map leads nowhere loses its place, with why.
+    pub(super) fn map_frames(&self, frames: &mut Arc<[crate::StackFrame]>) {
+        let mapped = |frame: &crate::StackFrame| {
+            frame.recorded.as_ref().is_some_and(|recorded| {
+                recorded.generated.is_none()
+                    && recorded
+                        .place
+                        .as_ref()
+                        .is_some_and(|place| self.maps.contains_key(&place.path))
+            })
+        };
+        if !frames.iter().any(mapped) {
+            return;
+        }
+        let mut shown = frames.to_vec();
+        for frame in shown.iter_mut().filter(|frame| mapped(frame)) {
+            let Some(recorded) = frame.recorded.as_mut() else {
+                continue;
+            };
+            let Some(generated) = recorded.place.take() else {
+                continue;
+            };
+            let Some(map) = self.maps.get(&generated.path) else {
+                continue;
+            };
+            match map.original(&generated) {
+                Ok(original) => {
+                    if [".ts", ".mts", ".cts", ".tsx"]
+                        .iter()
+                        .any(|end| original.path.ends_with(end))
+                    {
+                        recorded.language = crate::SourceLanguage::TypeScript;
+                    }
+                    recorded.place = Some(original);
+                }
+                Err(reason) => {
+                    recorded.problem.get_or_insert(reason);
+                }
+            }
+            // The function's first line is the generated code's.
+            recorded.first_line = None;
+            recorded.generated = Some(generated);
+        }
+        *frames = shown.into();
     }
 
     /// Every site planted: the entries and the calls' returns.
@@ -171,6 +224,16 @@ struct Isolate {
     /// scripts only by id (F19).
     scripts: BTreeMap<Arc<str>, Arc<str>>,
 
+    /// The breakpoint at the start of every script, while there are line
+    /// breakpoints, whose pause lets a script's mapped breakpoints be set
+    /// before it runs.
+    sentinel: Option<Sentinel>,
+
+    /// A sentinel's pause, as V8 reported it, judged once V8 answers the
+    /// mapped breakpoints set in its script: V8 sets them while paused,
+    /// and does not count one at the pause's own place hit.
+    deferred: Option<serde_json::Value>,
+
     /// The pause V8 reported and holds its thread in, until resumed.
     paused: Option<pauses::Paused>,
 
@@ -197,12 +260,34 @@ enum PauseRequest {
     Sent,
 }
 
-/// A managed location as an isolate holds it.
-#[derive(Debug)]
+/// A managed location as an isolate holds it: set by its path, and at
+/// each place in a script that a source map leads its line to.
+#[derive(Debug, Default)]
 struct Site {
+    placements: Vec<Placement>,
+}
+
+/// One of V8's breakpoints.
+#[derive(Debug)]
+struct Placement {
     /// V8's id for it, once V8 set it.
     id: Option<Arc<str>>,
     state: SiteState,
+
+    /// The script and zero-based place a source map led it to; `None` for
+    /// one set by the location's path.
+    mapped: Option<(Arc<str>, crate::debug_info::js_source_map::Position)>,
+
+    /// The zero-based line and column V8 placed it at, once it answered:
+    /// the breakable place at or after the one asked for.
+    actual: Option<(u64, u64)>,
+}
+
+/// An isolate's sentinel breakpoint and the URL pattern it was set with.
+#[derive(Debug)]
+struct Sentinel {
+    pattern: String,
+    placement: Placement,
 }
 
 #[derive(Debug)]
@@ -213,6 +298,10 @@ enum SiteState {
     Unresolved,
     Resolved,
     Refused(Arc<str>),
+
+    /// Requested by path, then found to fall in a script whose source map
+    /// moves its lines: removed once V8 names it.
+    Withdrawn(RequestId),
 }
 
 /// A connection and the generation its messages carry.
@@ -655,7 +744,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 }) {
                     return self.scope_listed(runtime, id, result);
                 }
-                self.breakpoint_set(runtime, id, result);
+                return self.breakpoint_set(runtime, id, result);
             }
             Incoming::Event {
                 session,
@@ -768,16 +857,23 @@ impl<P: LinuxTraceOps> Controller<P> {
                 if let (Some(id), Some(url)) = (params["scriptId"].as_str(), params["url"].as_str())
                 {
                     isolate.scripts.insert(id.into(), url.into());
+                    if let Some(map) = params["sourceMapURL"]
+                        .as_str()
+                        .filter(|map| !map.is_empty())
+                    {
+                        self.script_mapped(runtime, session, id, url, map);
+                    }
                 }
             }
             inspector_protocol::RESOLVED => {
                 let id = params["breakpointId"].as_str().unwrap_or_default();
-                if let Some(site) = isolate
+                if let Some(placement) = isolate
                     .sites
                     .values_mut()
-                    .find(|site| site.id.as_deref() == Some(id))
+                    .flat_map(|site| site.placements.iter_mut())
+                    .find(|placement| placement.id.as_deref() == Some(id))
                 {
-                    site.state = SiteState::Resolved;
+                    placement.state = SiteState::Resolved;
                     self.publish_breakpoints_changed();
                 }
             }

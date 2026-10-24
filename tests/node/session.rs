@@ -148,6 +148,13 @@ impl NodeSession {
         Pending { session, options }
     }
 
+    /// A session for the script `script`, a fixture's name or an absolute
+    /// path, under `entry` given `node_arguments`, not yet launched.
+    pub fn unlaunched_with_node(entry: &str, script: &str, node_arguments: &[&str]) -> Pending {
+        let (session, options) = Self::prepare(entry, script, node_arguments, &[]);
+        Pending { session, options }
+    }
+
     /// The session for `fixture` under `entry`, not yet launched, and the
     /// options that launch it.
     fn prepare(

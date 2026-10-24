@@ -254,6 +254,7 @@ mod tests {
             language: SourceLanguage::JavaScript,
             place: None,
             first_line: None,
+            generated: None,
             problem: None,
         }
     }

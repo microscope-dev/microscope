@@ -1031,6 +1031,10 @@
         # The Node.js builds Node support is tested against, one directory
         # each, out of the shell's packages.
         MICROSCOPE_NODE = "${nodes}";
+        # The compilers the source map tests run TypeScript through: tsx's
+        # package, whose loader each Node build imports, and esbuild.
+        MICROSCOPE_TSX = "${pkgs.tsx}/lib/tsx";
+        MICROSCOPE_ESBUILD = "${pkgs.esbuild}/bin/esbuild";
         # V8's Torque output for each supported V8 version, which
         # scripts/v8-layouts.py reads.
         MICROSCOPE_V8_TORQUE = "${v8Torques}";

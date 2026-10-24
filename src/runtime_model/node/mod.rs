@@ -54,7 +54,7 @@ use crate::{AddressRange, ImageAddress, StackSegment, ThreadId, VirtualAddress};
 
 /// The extensions of the scripts Node runs, whose breakpoints its
 /// inspector arms.
-pub const SCRIPT_EXTENSIONS: &[&str] = &["js", "mjs", "cjs", "ts", "mts", "cts"];
+pub const SCRIPT_EXTENSIONS: &[&str] = &["js", "mjs", "cjs", "jsx", "ts", "mts", "cts", "tsx"];
 
 /// `node::inspector::InspectorIoDelegate::GetTargetIds()`, which Node calls
 /// to list its inspector's targets (F29).

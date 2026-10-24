@@ -23,6 +23,9 @@ pub const WORKER_DETACHED: &str = "NodeWorker.detachedFromWorker";
 pub const SET_BREAKPOINT: &str = "Debugger.setBreakpointByUrl";
 pub const REMOVE_BREAKPOINT: &str = "Debugger.removeBreakpoint";
 
+/// Sets a breakpoint at one place in one script.
+pub const SET_BREAKPOINT_AT: &str = "Debugger.setBreakpoint";
+
 /// A breakpoint set before its script loaded is placed in it.
 pub const RESOLVED: &str = "Debugger.breakpointResolved";
 

@@ -62,6 +62,7 @@ pub(super) fn describe(
             language: SourceLanguage::JavaScript,
             place: None,
             first_line: None,
+            generated: None,
             problem: Some(problem),
         }],
     };
@@ -222,6 +223,7 @@ fn recorded(
         language,
         place,
         first_line: None,
+        generated: None,
         problem: problem.or(unnamed),
     })
 }

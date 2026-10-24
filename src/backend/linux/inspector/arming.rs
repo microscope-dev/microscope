@@ -1,15 +1,17 @@
 //! What each isolate is armed with: the runtime's managed locations, as V8
-//! breakpoints set by URL, and which exceptions pause it. A location is
-//! ready once any isolate placed it, since a script loads only in the
-//! isolates that run it.
+//! breakpoints set by URL and at the places source maps lead their lines
+//! to, and which exceptions pause it. A location is ready once any
+//! isolate placed it, since a script loads only in the isolates that run
+//! it.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::Arc;
 
 use super::super::Controller;
 use super::super::cdp::{Connection, RequestId, Session};
 use super::super::native::{InspectionOps, LinuxTraceOps};
-use super::{Inspector, Isolate, Site, SiteState, protocol, send};
+use super::{Inspector, Isolate, Placement, Sentinel, Site, SiteState, maps, protocol, send};
 use crate::runtime_model::{Arming, ManagedArm, inspector_protocol};
 use crate::{ManagedPlace, RuntimeId};
 
@@ -23,7 +25,8 @@ impl Inspector {
             self.isolates
                 .values()
                 .filter_map(|isolate| isolate.sites.get(&number))
-                .map(|site| &site.state)
+                .flat_map(|site| &site.placements)
+                .map(|placement| &placement.state)
         };
         if states().any(|state| matches!(state, SiteState::Resolved)) {
             return Ok(());
@@ -31,11 +34,17 @@ impl Inspector {
         if states().any(|state| matches!(state, SiteState::Requested(_))) {
             return Err("waiting for Node's inspector to set the breakpoint".into());
         }
-        if states().any(|state| matches!(state, SiteState::Unresolved)) {
-            return Err("no script by that name has loaded yet".into());
-        }
-        if let Some(SiteState::Refused(reason)) = states().next() {
+        if let Some(SiteState::Refused(reason)) =
+            states().find(|state| matches!(state, SiteState::Refused(_)))
+        {
             return Err(Arc::clone(reason));
+        }
+        if self
+            .isolates
+            .values()
+            .any(|isolate| isolate.sites.contains_key(&number))
+        {
+            return Err("no script by that name has loaded yet".into());
         }
         if self.target.is_none() {
             Err("Node's inspector has not started yet".into())
@@ -77,10 +86,14 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Brings what each isolate of `runtime` holds to what the runtime is
     /// armed with, connecting first when it can.
     pub(super) fn sync_inspector(&mut self, runtime: RuntimeId) {
-        let Some(inspector) = self
+        let Some(inspectors) = self
             .inferior
             .as_mut()
-            .and_then(|inferior| inferior.inspectors.records.get_mut(&runtime))
+            .map(|inferior| &mut inferior.inspectors)
+        else {
+            return;
+        };
+        let (Some(inspector), maps) = (inspectors.records.get_mut(&runtime), &inspectors.maps)
         else {
             return;
         };
@@ -100,17 +113,77 @@ impl<P: LinuxTraceOps> Controller<P> {
             .map(|arm| (arm.number, arm))
             .collect::<BTreeMap<_, _>>();
         for (session, isolate) in &mut inspector.isolates {
-            sync_isolate(
-                &link.connection,
+            let target = Target {
+                connection: &link.connection,
                 session,
-                isolate,
-                &desired,
-                inspector.pausing,
-            );
+                maps,
+            };
+            sync_isolate(&target, isolate, &desired, inspector.pausing);
         }
     }
 
-    /// Notes what V8 answered to setting a managed location in `runtime`.
+    /// Notes that the script `id` at `url`, in the isolate `session`
+    /// reaches, names the source map at `map`, and sets the line
+    /// breakpoints in its sources there. A breakpoint set by a path that
+    /// is the script's own is withdrawn: its lines are the generated
+    /// code's, not the source's.
+    pub(super) fn script_mapped(
+        &mut self,
+        runtime: RuntimeId,
+        session: &Session,
+        id: &str,
+        url: &str,
+        map: &str,
+    ) {
+        let Some(inspectors) = self
+            .inferior
+            .as_mut()
+            .map(|inferior| &mut inferior.inspectors)
+        else {
+            return;
+        };
+        let path = Arc::<str>::from(inspector_protocol::script_path(url));
+        if inspectors
+            .maps
+            .get(&path)
+            .is_none_or(|known| !known.is(map))
+        {
+            inspectors.maps.insert(
+                Arc::clone(&path),
+                maps::ScriptMap::new(Arc::clone(&path), map.into()),
+            );
+        }
+        let (Some(inspector), maps) = (inspectors.records.get_mut(&runtime), &inspectors.maps)
+        else {
+            return;
+        };
+        let (Some(link), Some(isolate)) = (
+            inspector.connection.as_ref(),
+            inspector.isolates.get_mut(session),
+        ) else {
+            return;
+        };
+        let target = Target {
+            connection: &link.connection,
+            session,
+            maps,
+        };
+        let script = (Arc::<str>::from(id), path);
+        for arm in &inspector.desired {
+            let (ManagedPlace::Line { path, line }, Some(site)) =
+                (&arm.place, isolate.sites.get_mut(&arm.number))
+            else {
+                continue;
+            };
+            if maps::names(Path::new(&*script.1), Path::new(&**path)) {
+                withdraw_by_path(&target, site);
+            }
+            place_mapped(&target, site, &script, Path::new(&**path), *line);
+        }
+        self.publish_breakpoints_changed();
+    }
+
+    /// Notes what V8 answered to setting a breakpoint in `runtime`.
     #[cfg_attr(
         not(debug_assertions),
         expect(unused_variables, reason = "only recorded")
@@ -120,39 +193,56 @@ impl<P: LinuxTraceOps> Controller<P> {
         runtime: RuntimeId,
         id: RequestId,
         result: std::result::Result<serde_json::Value, super::super::cdp::CdpError>,
-    ) {
+    ) -> crate::Result<()> {
         let Some(inspector) = self
             .inferior
             .as_mut()
             .and_then(|inferior| inferior.inspectors.records.get_mut(&runtime))
         else {
-            return;
+            return Ok(());
         };
-        let Some((number, site)) = inspector
-            .isolates
-            .values_mut()
-            .flat_map(|isolate| isolate.sites.iter_mut())
-            .find(|(_, site)| matches!(site.state, SiteState::Requested(request) if request == id))
-        else {
-            record!("inspector reply {id:?}: {result:?}");
-            return;
-        };
-        match result {
-            Ok(set) => {
-                site.id = set["breakpointId"].as_str().map(Arc::from);
-                let placed = set["locations"]
-                    .as_array()
-                    .is_some_and(|locations| !locations.is_empty());
-                site.state = if placed {
-                    SiteState::Resolved
-                } else {
-                    SiteState::Unresolved
-                };
+        let connection = inspector.connection.as_ref().map(|link| &link.connection);
+        for (session, isolate) in &mut inspector.isolates {
+            if let Some(sentinel) = isolate
+                .sentinel
+                .as_mut()
+                .filter(|sentinel| matches!(sentinel.placement.state, SiteState::Requested(request) if request == id))
+            {
+                answer(&mut sentinel.placement, result);
+                return Ok(());
             }
-            Err(error) => site.state = SiteState::Refused(error.to_string().into()),
+            for (number, site) in &mut isolate.sites {
+                let Some(index) = site.placements.iter().position(|placement| {
+                    matches!(placement.state, SiteState::Requested(request) | SiteState::Withdrawn(request) if request == id)
+                }) else {
+                    continue;
+                };
+                let placement = &mut site.placements[index];
+                if matches!(placement.state, SiteState::Withdrawn(_)) {
+                    if let (Some(connection), Ok(set)) = (connection, &result)
+                        && let Some(breakpoint) = set["breakpointId"].as_str()
+                    {
+                        remove(connection, session, breakpoint);
+                    }
+                    site.placements.remove(index);
+                    return Ok(());
+                }
+                answer(placement, result);
+                record!("location {number} is {:?}", placement.state);
+                // A sentinel's pause waits for the last of its script's.
+                let deferred = isolate
+                    .deferred
+                    .take_if(|pause| !awaits_mapped(isolate_sites(&isolate.sites), pause))
+                    .map(|pause| (session.clone(), pause));
+                self.publish_breakpoints_changed();
+                if let Some((session, pause)) = deferred {
+                    return self.inspector_paused(runtime, &session, &pause);
+                }
+                return Ok(());
+            }
         }
-        record!("location {number} is {:?}", site.state);
-        self.publish_breakpoints_changed();
+        record!("inspector reply {id:?}: {result:?}");
+        Ok(())
     }
 }
 
@@ -169,25 +259,38 @@ impl<P: InspectionOps> Controller<P> {
     }
 }
 
-/// Brings the isolate `session` reaches to `desired` and `pausing`: sets
-/// the locations it lacks, removes those no longer wanted, and tells it
-/// which exceptions pause it when that changed.
+/// Where an isolate's breakpoints are set: its session over a connection,
+/// with the source maps of the process's scripts.
+struct Target<'a> {
+    connection: &'a Connection,
+    session: &'a Session,
+    maps: &'a BTreeMap<Arc<str>, maps::ScriptMap>,
+}
+
+impl Target<'_> {
+    fn send(&self, method: &str, params: serde_json::Value) -> Result<RequestId, Arc<str>> {
+        send(self.connection, self.session, method, params)
+            .map_err(|error| error.to_string().into())
+    }
+}
+
+/// Brings an isolate to `desired` and `pausing`: sets the locations it
+/// lacks, removes those no longer wanted, holds a sentinel while any is
+/// a line, and tells it which exceptions pause it when that changed.
 fn sync_isolate(
-    connection: &Connection,
-    session: &Session,
+    target: &Target<'_>,
     isolate: &mut Isolate,
     desired: &BTreeMap<u64, &ManagedArm>,
     pausing: &'static str,
 ) {
     if isolate.told != Some(pausing) && !pausing.is_empty() {
-        let _ = send(
-            connection,
-            session,
+        let _ = target.send(
             inspector_protocol::PAUSE_ON_EXCEPTIONS,
             serde_json::json!({ "state": pausing }),
         );
         isolate.told = Some(pausing);
     }
+    sync_sentinel(target, isolate, desired);
     let gone = isolate
         .sites
         .keys()
@@ -195,13 +298,10 @@ fn sync_isolate(
         .copied()
         .collect::<Vec<_>>();
     for number in gone {
-        if let Some(Site { id: Some(id), .. }) = isolate.sites.remove(&number) {
-            let _ = send(
-                connection,
-                session,
-                inspector_protocol::REMOVE_BREAKPOINT,
-                serde_json::json!({ "breakpointId": id }),
-            );
+        for placement in isolate.sites.remove(&number).unwrap_or_default().placements {
+            if let Some(id) = placement.id {
+                remove(target.connection, target.session, &id);
+            }
         }
     }
 
@@ -209,23 +309,221 @@ fn sync_isolate(
         if isolate.sites.contains_key(&number) {
             continue;
         }
-        let state = match &arm.place {
-            ManagedPlace::Line { path, line } => match send(
-                connection,
-                session,
-                inspector_protocol::SET_BREAKPOINT,
-                serde_json::json!({
-                    "urlRegex": protocol::url_pattern(path),
-                    "lineNumber": line.saturating_sub(1),
-                }),
-            ) {
-                Ok(request) => SiteState::Requested(request),
-                Err(error) => SiteState::Refused(error.to_string().into()),
-            },
-            ManagedPlace::Function { .. } => {
-                SiteState::Refused("microscope cannot yet break at a JavaScript function".into())
+        let mut site = Site::default();
+        match &arm.place {
+            ManagedPlace::Line { path, line } => {
+                let mapped = isolate
+                    .scripts
+                    .iter()
+                    .filter_map(|(id, url)| {
+                        let path = inspector_protocol::script_path(url);
+                        let (path, _) = target.maps.get_key_value(&*path)?;
+                        Some((Arc::clone(id), Arc::clone(path)))
+                    })
+                    .collect::<Vec<_>>();
+                // A path that is a mapped script's own names the source
+                // compiled into it, at lines only the map knows.
+                if !mapped
+                    .iter()
+                    .any(|(_, script)| maps::names(Path::new(&**script), Path::new(&**path)))
+                {
+                    let state = match target.send(
+                        inspector_protocol::SET_BREAKPOINT,
+                        serde_json::json!({
+                            "urlRegex": protocol::url_pattern(path),
+                            "lineNumber": line.saturating_sub(1),
+                        }),
+                    ) {
+                        Ok(request) => SiteState::Requested(request),
+                        Err(reason) => SiteState::Refused(reason),
+                    };
+                    site.placements.push(Placement {
+                        id: None,
+                        state,
+                        mapped: None,
+                        actual: None,
+                    });
+                }
+                for script in &mapped {
+                    place_mapped(target, &mut site, script, Path::new(&**path), *line);
+                }
             }
-        };
-        isolate.sites.insert(number, Site { id: None, state });
+            ManagedPlace::Function { .. } => site.placements.push(Placement {
+                id: None,
+                state: SiteState::Refused(
+                    "microscope cannot yet break at a JavaScript function".into(),
+                ),
+                mapped: None,
+                actual: None,
+            }),
+        }
+        isolate.sites.insert(number, site);
     }
+}
+
+/// Holds the isolate's sentinel while `desired` has a line, with the
+/// pattern its paths call for, and removes it once none is.
+fn sync_sentinel(target: &Target<'_>, isolate: &mut Isolate, desired: &BTreeMap<u64, &ManagedArm>) {
+    let mut lines = desired
+        .values()
+        .filter_map(|arm| match &arm.place {
+            ManagedPlace::Line { path, .. } => Some(Path::new(&**path)),
+            ManagedPlace::Function { .. } => None,
+        })
+        .peekable();
+    let pattern = lines
+        .peek()
+        .is_some()
+        .then(|| maps::sentinel_pattern(lines));
+    if isolate.sentinel.as_ref().map(|sentinel| &sentinel.pattern) == pattern.as_ref() {
+        return;
+    }
+    if let Some(id) = isolate
+        .sentinel
+        .take()
+        .and_then(|sentinel| sentinel.placement.id)
+    {
+        remove(target.connection, target.session, &id);
+    }
+    let Some(pattern) = pattern else {
+        return;
+    };
+    let state = match target.send(
+        inspector_protocol::SET_BREAKPOINT,
+        serde_json::json!({ "urlRegex": pattern, "lineNumber": 0, "columnNumber": 0 }),
+    ) {
+        Ok(request) => SiteState::Requested(request),
+        Err(reason) => SiteState::Refused(reason),
+    };
+    isolate.sentinel = Some(Sentinel {
+        pattern,
+        placement: Placement {
+            id: None,
+            state,
+            mapped: None,
+            actual: None,
+        },
+    });
+}
+
+/// Sets a breakpoint on `line` of the source at `path` at each place its
+/// map leads that line to in `script`, its id and path, that `site` does
+/// not already hold.
+fn place_mapped(
+    target: &Target<'_>,
+    site: &mut Site,
+    (script, path_of_script): &(Arc<str>, Arc<str>),
+    path: &Path,
+    line: u32,
+) {
+    let Some(map) = target.maps.get(path_of_script) else {
+        return;
+    };
+    for position in map.positions(path, line) {
+        let at = Some((Arc::clone(script), position));
+        if site
+            .placements
+            .iter()
+            .any(|placement| placement.mapped == at)
+        {
+            continue;
+        }
+        let state = match target.send(
+            inspector_protocol::SET_BREAKPOINT_AT,
+            serde_json::json!({ "location": {
+                "scriptId": &**script,
+                "lineNumber": position.line.zero_based(),
+                "columnNumber": position.column.zero_based(),
+            }}),
+        ) {
+            Ok(request) => SiteState::Requested(request),
+            Err(reason) => SiteState::Refused(reason),
+        };
+        site.placements.push(Placement {
+            id: None,
+            state,
+            mapped: at,
+            actual: None,
+        });
+    }
+    record!("the source map of {path_of_script}: {:?}", map.map().err());
+}
+
+/// Withdraws the breakpoint `site` holds by its path.
+fn withdraw_by_path(target: &Target<'_>, site: &mut Site) {
+    site.placements.retain_mut(|placement| {
+        if placement.mapped.is_some() {
+            return true;
+        }
+        match &placement.state {
+            SiteState::Requested(request) => {
+                placement.state = SiteState::Withdrawn(*request);
+                true
+            }
+            SiteState::Withdrawn(_) => true,
+            _ => {
+                if let Some(id) = &placement.id {
+                    remove(target.connection, target.session, id);
+                }
+                false
+            }
+        }
+    });
+}
+
+/// Notes V8's answer to setting `placement`.
+fn answer(
+    placement: &mut Placement,
+    result: std::result::Result<serde_json::Value, super::super::cdp::CdpError>,
+) {
+    match result {
+        Ok(set) => {
+            placement.id = set["breakpointId"].as_str().map(Arc::from);
+            let actual = &set["actualLocation"];
+            placement.actual = actual["lineNumber"]
+                .as_u64()
+                .zip(actual["columnNumber"].as_u64());
+            // `setBreakpoint` answers its one location, and
+            // `setBreakpointByUrl` all it found.
+            let placed = set["locations"]
+                .as_array()
+                .is_some_and(|locations| !locations.is_empty())
+                || set.get("actualLocation").is_some();
+            placement.state = if placed {
+                SiteState::Resolved
+            } else {
+                SiteState::Unresolved
+            };
+        }
+        Err(error) => placement.state = SiteState::Refused(error.to_string().into()),
+    }
+}
+
+fn isolate_sites(sites: &BTreeMap<u64, Site>) -> impl Iterator<Item = &Placement> {
+    sites.values().flat_map(|site| &site.placements)
+}
+
+/// Whether a mapped breakpoint among `placements` in the script of the
+/// pause `pause` that V8 reported is not yet answered.
+pub(super) fn awaits_mapped<'a>(
+    mut placements: impl Iterator<Item = &'a Placement>,
+    pause: &serde_json::Value,
+) -> bool {
+    let script = pause["callFrames"][0]["location"]["scriptId"].as_str();
+    placements.any(|placement| {
+        matches!(placement.state, SiteState::Requested(_))
+            && placement
+                .mapped
+                .as_ref()
+                .is_some_and(|(id, _)| Some(&**id) == script)
+    })
+}
+
+fn remove(connection: &Connection, session: &Session, id: &str) {
+    let _ = send(
+        connection,
+        session,
+        inspector_protocol::REMOVE_BREAKPOINT,
+        serde_json::json!({ "breakpointId": id }),
+    );
 }

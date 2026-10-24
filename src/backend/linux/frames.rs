@@ -294,7 +294,9 @@ impl<P: InspectionOps> Controller<P> {
             &mut |activation, code| callers.tail_jumps(activation, code),
         )?;
         self.describe_code_frames(inferior, root, stack, modules, &mut expanded)?;
-        self.splice_driven(inferior, root, stack, modules, expanded)
+        let mut expanded = self.splice_driven(inferior, root, stack, modules, expanded)?;
+        inferior.inspectors.map_frames(&mut expanded.trace.frames);
+        Ok(expanded)
     }
 
     /// The inferior, once `stop_id` is its current stop and `root` begins in

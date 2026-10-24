@@ -1,7 +1,8 @@
 //! Steps V8 runs for microscope: `stepInto`, `stepOver`, and `stepOut`,
 //! owned by the isolate they began in, which go on through Node's own
-//! scripts and skipped files (F19). A step from a native stop of the main
-//! thread first pauses V8 at its next statement.
+//! scripts, skipped files (F19), and generated code a source map leads to
+//! no source. A step from a native stop of the main thread first pauses
+//! V8 at its next statement.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -18,7 +19,6 @@ use super::{Isolate, send};
 use crate::runtime_model::inspector_protocol;
 use crate::{RuntimeId, StopReason};
 
-/// A step V8 runs for microscope.
 /// A step V8 runs for microscope.
 #[derive(Debug)]
 pub(super) struct Stepping {
@@ -60,20 +60,42 @@ impl<P: LinuxTraceOps> Controller<P> {
         statement: bool,
     ) -> bool {
         let (skips, enter) = (self.step_skips.clone(), self.step_into_runtime);
-        let Some(inspector) = self
+        let Some(inspectors) = self
             .inferior
             .as_mut()
-            .and_then(|inferior| inferior.inspectors.records.get_mut(&runtime))
+            .map(|inferior| &mut inferior.inspectors)
         else {
             return false;
         };
-        let top = params["callFrames"][0]["location"]["scriptId"]
+        let (Some(inspector), maps) = (inspectors.records.get_mut(&runtime), &inspectors.maps)
+        else {
+            return false;
+        };
+        let location = &params["callFrames"][0]["location"];
+        let top = location["scriptId"]
             .as_str()
             .and_then(|id| inspector.isolates.get(session)?.scripts.get(id).cloned());
         let Some(link) = inspector.connection.as_ref() else {
             return false;
         };
-        if !top.is_some_and(|url| skipped(&url, &skips, enter)) {
+        let original = top.as_ref().and_then(|url| {
+            let map = maps.get(&*inspector_protocol::script_path(url))?;
+            let generated = crate::RecordedPlace {
+                path: Arc::clone(url),
+                line: u32::try_from(location["lineNumber"].as_u64()? + 1).ok()?,
+                column: u32::try_from(location["columnNumber"].as_u64()? + 1).ok()?,
+            };
+            Some(map.original(&generated))
+        });
+        // Generated code with no source is no statement of the program.
+        let unmapped = matches!(original, Some(Err(_)));
+        let skip = match (&top, original) {
+            (None, _) => false,
+            (Some(_), Some(Err(_))) => true,
+            (Some(_), Some(Ok(original))) => skipped(&original.path, &skips, enter),
+            (Some(url), None) => skipped(url, &skips, enter),
+        };
+        if !skip {
             return false;
         }
         let step = inspector
@@ -81,10 +103,17 @@ impl<P: LinuxTraceOps> Controller<P> {
             .as_mut()
             .filter(|step| step.sent && step.session == *session);
         let command = match (params["reason"].as_str(), step) {
-            // A step from a native stop pauses for no reason V8 names.
-            (Some("step" | "other"), Some(step)) if step.skipped < MAX_SKIPPED => {
+            // A step from a native stop pauses for no reason V8 names, and
+            // one into a script just loaded also at its sentinel.
+            (Some("step" | "other" | "ambiguous"), Some(step)) if step.skipped < MAX_SKIPPED => {
                 step.skipped += 1;
-                inspector_protocol::STEP_INTO
+                // Out of generated code by the step's own kind, and out of
+                // Node's into the program's next statement.
+                if unmapped && step.depth.is_some() {
+                    step.command
+                } else {
+                    inspector_protocol::STEP_INTO
+                }
             }
             // An exception caught in code steps pass through is that
             // code's own business, as Node's module loader's are.
@@ -98,6 +127,15 @@ impl<P: LinuxTraceOps> Controller<P> {
             _ => return false,
         };
         send(&link.connection, session, command, serde_json::json!({})).is_ok()
+    }
+
+    /// Whether a step V8 was told to run runs in the isolate `session`
+    /// reaches.
+    pub(super) fn steps_in(&self, runtime: RuntimeId, session: &Session) -> bool {
+        self.inferior
+            .as_ref()
+            .and_then(|inferior| inferior.inspectors.records.get(&runtime)?.step.as_ref())
+            .is_some_and(|step| step.sent && step.session == *session)
     }
 
     /// Why a pause of `pid` with `depth` frames, in the isolate `key`

@@ -14,6 +14,7 @@ mod exceptions;
 mod frames;
 mod inspector;
 mod interrupts;
+mod maps;
 mod native;
 mod oracle;
 mod session;

@@ -4713,8 +4713,13 @@ pub struct RecordedFrame {
     /// The language of the code the frame runs.
     pub language: SourceLanguage,
 
-    /// Where the frame is, when its runtime knows.
+    /// Where the frame is, when its runtime knows: in the original source
+    /// a source map leads to, where the script has one.
     pub place: Option<RecordedPlace>,
+
+    /// Where the frame is in the script the runtime runs, when a source
+    /// map moved `place` from it, or found no original place for it.
+    pub generated: Option<RecordedPlace>,
 
     /// The line of the place's file the function's code begins at, when
     /// its runtime knows: two functions of one name in one file differ in

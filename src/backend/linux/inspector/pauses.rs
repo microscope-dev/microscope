@@ -29,6 +29,10 @@ pub(super) struct Paused {
     /// The ids of V8's breakpoints the pause hit.
     hits: Vec<Arc<str>>,
 
+    /// The managed locations set where a sentinel paused, before V8 could
+    /// count them hit.
+    placed_here: Vec<u64>,
+
     /// The thread V8 holds, once found at an all-stop.
     thread: Option<Pid>,
 
@@ -167,29 +171,22 @@ impl<P: LinuxTraceOps> Controller<P> {
         session: &Session,
         params: &serde_json::Value,
     ) -> Result<()> {
-        let hits: Vec<Arc<str>> = params["hitBreakpoints"]
+        let mut hits: Vec<Arc<str>> = params["hitBreakpoints"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(|hit| hit.as_str().map(Arc::from))
             .collect();
         record!("V8 paused in {session:?}: {} {hits:?}", params["reason"]);
+        let Some((at_sentinel, placed_here)) =
+            self.sentinel_pause(runtime, session, &mut hits, params)
+        else {
+            return Ok(());
+        };
         // A worker that waited for its debugger pauses before its first
         // statement, for nothing microscope asked for.
         if params["reason"] == inspector_protocol::BREAK_ON_START && hits.is_empty() {
-            if let Some(link) = self
-                .inferior
-                .as_ref()
-                .and_then(|inferior| inferior.inspectors.records.get(&runtime))
-                .and_then(|inspector| inspector.connection.as_ref())
-            {
-                let _ = send(
-                    &link.connection,
-                    session,
-                    inspector_protocol::RESUME,
-                    serde_json::json!({}),
-                );
-            }
+            self.let_v8_go(runtime, session);
             return Ok(());
         }
         // A pause for no reason V8 names, and not the one asked for, is
@@ -197,8 +194,15 @@ impl<P: LinuxTraceOps> Controller<P> {
         let asked = self
             .isolate_mut(runtime, session)
             .is_some_and(|isolate| std::mem::take(&mut isolate.pause) == PauseRequest::Sent);
-        let statement = !asked && hits.is_empty() && params["reason"] == "other";
-        if hits.is_empty() && self.step_goes_on(runtime, session, params, statement) {
+        let statement = !asked
+            && !at_sentinel
+            && hits.is_empty()
+            && placed_here.is_empty()
+            && params["reason"] == "other";
+        if hits.is_empty()
+            && placed_here.is_empty()
+            && self.step_goes_on(runtime, session, params, statement)
+        {
             return Ok(());
         }
         // Any pause answers an interrupt: once V8 holds a thread, the
@@ -231,6 +235,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let listed = listing.is_empty();
         isolate.paused = Some(Paused {
             hits,
+            placed_here,
             thread: None,
             judged: false,
             reason: None,
@@ -250,6 +255,64 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.judge_inspector_pause()?;
         }
         Ok(())
+    }
+
+    /// Takes the isolate's sentinel out of `hits`, those of the pause V8
+    /// reported at `location`. Returns whether the pause is at the
+    /// sentinel, with the managed locations a source map set there, or
+    /// `None` when it is at nothing else and V8 is let go: the script runs
+    /// on with its mapped breakpoints set.
+    fn sentinel_pause(
+        &mut self,
+        runtime: RuntimeId,
+        session: &Session,
+        hits: &mut Vec<Arc<str>>,
+        params: &serde_json::Value,
+    ) -> Option<(bool, Vec<u64>)> {
+        let isolate = self.isolate_mut(runtime, session)?;
+        let location = &params["callFrames"][0]["location"];
+        let sentinel = isolate
+            .sentinel
+            .as_ref()
+            .and_then(|sentinel| sentinel.placement.id.clone());
+        let at_sentinel = sentinel.as_ref().is_some_and(|id| hits.contains(id));
+        if !at_sentinel {
+            return Some((false, Vec::new()));
+        }
+        hits.retain(|hit| Some(hit) != sentinel.as_ref());
+        let placements = isolate.sites.values().flat_map(|site| &site.placements);
+        if super::arming::awaits_mapped(placements, params) {
+            record!("the sentinel's pause waits for V8 to set its script's breakpoints");
+            isolate.deferred = Some(params.clone());
+            return None;
+        }
+        let placed_here = placed_at(isolate, location);
+        if hits.is_empty()
+            && placed_here.is_empty()
+            && isolate.pause != PauseRequest::Sent
+            && !self.steps_in(runtime, session)
+        {
+            self.let_v8_go(runtime, session);
+            return None;
+        }
+        Some((true, placed_here))
+    }
+
+    /// Resumes the isolate `session` reaches from a pause no one sees.
+    fn let_v8_go(&self, runtime: RuntimeId, session: &Session) {
+        if let Some(link) = self
+            .inferior
+            .as_ref()
+            .and_then(|inferior| inferior.inspectors.records.get(&runtime))
+            .and_then(|inspector| inspector.connection.as_ref())
+        {
+            let _ = send(
+                &link.connection,
+                session,
+                inspector_protocol::RESUME,
+                serde_json::json!({}),
+            );
+        }
     }
 
     /// Keeps the variables V8 listed for a scope of a pause in `runtime`,
@@ -409,10 +472,15 @@ impl<P: LinuxTraceOps> Controller<P> {
                 isolate
                     .sites
                     .iter()
-                    .find(|(_, site)| site.id.as_ref() == Some(hit))
+                    .find(|(_, site)| {
+                        site.placements
+                            .iter()
+                            .any(|placement| placement.id.as_ref() == Some(hit))
+                    })
                     .map(|(&number, _)| number)
             })
-            .collect::<Vec<_>>();
+            .chain(paused.placed_here.iter().copied())
+            .collect::<BTreeSet<_>>();
         let owners = numbers
             .iter()
             .filter_map(|&number| inferior.managed.site(*runtime, number))
@@ -514,10 +582,11 @@ impl<P: LinuxTraceOps> Controller<P> {
             .iter()
             .filter(|frame| protocol::is_script_frame(frame))
         {
+            // V8 places frames in the scripts it runs.
             let Some(place) = frame
                 .recorded
                 .as_ref()
-                .and_then(|recorded| recorded.place.as_ref())
+                .and_then(|recorded| recorded.generated.as_ref().or(recorded.place.as_ref()))
             else {
                 continue;
             };
@@ -672,6 +741,36 @@ impl<P: InspectionOps> Controller<P> {
                 .any(|pid| debug_thread_id(pid) == thread)
         })
     }
+}
+
+/// The managed locations `isolate` set by a source map at `location`, a
+/// place V8 paused at.
+fn placed_at(isolate: &Isolate, location: &serde_json::Value) -> Vec<u64> {
+    let (Some(script), Some(line), Some(column)) = (
+        location["scriptId"].as_str(),
+        location["lineNumber"].as_u64(),
+        location["columnNumber"].as_u64(),
+    ) else {
+        return Vec::new();
+    };
+    isolate
+        .sites
+        .iter()
+        .filter(|(_, site)| {
+            site.placements.iter().any(|placement| {
+                placement.mapped.as_ref().is_some_and(|(id, at)| {
+                    let at = placement.actual.unwrap_or_else(|| {
+                        (
+                            u64::from(at.line.zero_based()),
+                            u64::from(at.column.zero_based()),
+                        )
+                    });
+                    **id == *script && at == (line, column)
+                })
+            })
+        })
+        .map(|(&number, _)| number)
+        .collect()
 }
 
 /// Lets go the pause of the isolate `session` reaches, if V8 holds one
