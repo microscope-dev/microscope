@@ -1367,6 +1367,8 @@ async function refuseBadConfigurationsAndOfferPrograms() {
 }
 
 exports.run = async function run() {
+    // MICROSCOPE_UAT_ONLY names the scenarios to run, separated by commas.
+    const only = process.env.MICROSCOPE_UAT_ONLY?.split(',');
     try {
         for (const scenario of [
             createALaunchJson, findTheAdapterFromTheSetting, logTheProtocolToAFile, launchStepInspectAndRestart,
@@ -1377,7 +1379,7 @@ exports.run = async function run() {
             nodeTypeScriptThroughSourceMaps, nodeWorkerStopsOnItsThread, nodeAttachedByProcessId,
             pauseAndThreads, librariesAndTheirSources, runInTheIntegratedTerminal, attachToAProcess,
             pickAProcess, followAForkedChild, openACoreDump, refuseBadConfigurationsAndOfferPrograms,
-        ]) {
+        ].filter((scenario) => only === undefined || only.includes(scenario.name))) {
             console.log(`uat: ${scenario.name}`);
             await scenario();
             console.log(`uat: ${scenario.name} passed`);
