@@ -1942,6 +1942,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         inferior.barrier = None;
+        // Any stop answers a client's pause, so its deadline must not
+        // stop the threads again after the next continue.
+        inferior.inspectors.end_interrupt();
 
         // Once the request to end has been delivered, a stop hands the
         // signal back to its policy.

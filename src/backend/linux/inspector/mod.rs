@@ -90,7 +90,7 @@ pub(super) struct Inspectors {
 
 impl Inspectors {
     /// Ends the interrupt under way, withdrawing the pauses not yet sent.
-    fn end_interrupt(&mut self) -> bool {
+    pub(in crate::backend::linux) fn end_interrupt(&mut self) -> bool {
         for isolate in self.isolates_mut() {
             if isolate.pause == PauseRequest::Deferred {
                 isolate.pause = PauseRequest::None;

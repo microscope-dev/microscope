@@ -587,6 +587,56 @@ fn a_native_trap_then_a_v8_pause_in_one_all_stop_publish_one_each() {
     pause_beside_a_native_trap(false);
 }
 
+/// A client's pause asked while V8's pause at a breakpoint is still being
+/// listed is answered by that breakpoint's stop: its deadline ends with
+/// the stop rather than stopping every thread after the next continue.
+#[test]
+fn an_interrupt_answered_by_a_breakpoint_stop_ends_with_it() {
+    let mut scripted = Scripted::connected(2);
+    scripted.sent();
+    let managed = scripted.arm_line("app.scripted", 3, "app");
+    scripted.harness.start_continue();
+    scripted.actions();
+
+    let mut pause = paused("other", &["app"], 1);
+    pause["callFrames"][0]["scopeChain"] =
+        json!([{"type": "local", "object": {"objectId": "scope"}}]);
+    scripted.inspector.event(&[], cdp::PAUSED, pause);
+    scripted.pump_event(cdp::PAUSED);
+    let listing = scripted.sent();
+    let process = super::super::process_id(scripted.main());
+    scripted
+        .harness
+        .controller
+        .begin_pause(process)
+        .expect("the pause begins");
+    assert_eq!(scripted.sent_names(), [cdp::PAUSE]);
+
+    scripted.inspector.reply(&listing[0], json!({"result": []}));
+    scripted.pump_reply();
+    scripted.harness.settle_requested_stops();
+    assert_eq!(
+        scripted.stops(),
+        [(
+            super::super::debug_thread_id(scripted.main()),
+            managed_hit(&managed, 1)
+        )]
+    );
+
+    scripted.resume();
+    scripted.actions();
+    scripted
+        .harness
+        .controller
+        .interrupt_expired(Instant::now() + Duration::from_secs(1))
+        .expect("the deadline is looked at");
+    assert_eq!(
+        scripted.actions(),
+        Vec::<String>::new(),
+        "the interrupt ended with the stop that answered it"
+    );
+}
+
 /// A pause at a breakpoint id no location of microscope's has is no
 /// `debugger` statement: it stops nothing, and V8 is told to resume.
 #[test]
