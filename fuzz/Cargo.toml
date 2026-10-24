@@ -33,6 +33,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "cdp-message"
+path = "fuzz_targets/cdp_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "core-dump"
 path = "fuzz_targets/core_dump.rs"
 test = false

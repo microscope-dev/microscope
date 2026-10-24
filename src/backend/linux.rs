@@ -71,6 +71,8 @@ pub mod bpf;
 mod breakpoints;
 mod callers;
 mod catchpoints;
+#[allow(dead_code, reason = "until the Node controller drives the inspector")]
+mod cdp;
 mod classify;
 mod code_copies;
 mod code_frames;
@@ -141,6 +143,11 @@ pub use process_names::processes_named;
 #[cfg(feature = "fuzzing")]
 pub fn fuzz_core_dump(data: &[u8]) {
     core_dump::fuzz(data);
+}
+
+#[cfg(feature = "fuzzing")]
+pub fn fuzz_cdp_message(data: &[u8]) {
+    cdp::fuzz(data);
 }
 
 #[cfg(feature = "fuzzing")]

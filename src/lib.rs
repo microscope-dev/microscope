@@ -320,6 +320,14 @@ pub fn fuzz_profile_import(data: &[u8]) {
     }
 }
 
+/// Decodes one message from Node's inspector, workers' tunnels included,
+/// for the fuzz harness.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub fn fuzz_cdp_message(data: &[u8]) {
+    backend::fuzz_cdp_message(data);
+}
+
 /// Exercises debug-register planning invariants for the fuzz harness.
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]

@@ -1117,6 +1117,7 @@ dependencies = [
  "tokio-tungstenite",
  "toml",
  "ts-rs",
+ "tungstenite",
  "twox-hash",
  "ureq",
  "wasmi",

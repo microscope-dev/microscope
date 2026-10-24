@@ -113,7 +113,9 @@ nix = { version = "0.31", features = ["feature", "fs", "personality", "poll", "p
 object = { version = "0.39", features = ["read"] }
 perf-event = "0.4"
 # Safe wrappers of the system calls nix does not make; clap brings it in.
-rustix = { version = "1.1", features = ["event", "param", "process", "thread"] }
+rustix = { version = "1.1", features = ["event", "net", "param", "process", "thread"] }
+# The Node inspector's CDP transport runs on its own threads, without tokio.
+tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 rustc-demangle = "0.1"
 

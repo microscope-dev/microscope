@@ -436,6 +436,11 @@ pub fn fuzz_core_dump(data: &[u8]) {
 }
 
 #[cfg(feature = "fuzzing")]
+pub fn fuzz_cdp_message(data: &[u8]) {
+    linux::fuzz_cdp_message(data);
+}
+
+#[cfg(feature = "fuzzing")]
 pub fn fuzz_debug_register_plan(data: &[u8]) {
     linux::fuzz_debug_register_plan(data);
 }
