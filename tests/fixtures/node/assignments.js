@@ -19,6 +19,8 @@ function noop() {}
 
 function outer(seed) {
   let captured = seed * 2;
+  // An object both frames reach through outer()'s context.
+  let box = {k: 1};
   function inner(param) {
     let local = param + 1;
     const fixed = 'fixed';
@@ -36,6 +38,7 @@ function outer(seed) {
       const shown = {param, local, fixed, big, maybe, gone, blocked, captured, tally};
       console.log(`ASSIGNED ${util.inspect(shown, {breakLength: Infinity})}`);
       console.log(`HOLDER ${holder === other} ${util.inspect(holder)}`);
+      console.log(`BOX ${box === other} ${util.inspect(box)}`);
     }
     return captured;
   }

@@ -142,14 +142,31 @@ pub(super) struct PausedFrame {
     /// is the order V8 declares their variables in; each with its
     /// variables once listed.
     scopes: Vec<Option<std::result::Result<Vec<ReportedLocal>, Arc<str>>>>,
+
+    /// Each variable given a value during the pause, by the index in the
+    /// frame's chain of the scope V8 set it in and its name, with the
+    /// `CallArgument` it was given and how V8 reports that value. V8's
+    /// listings of the scopes still name the value each held as it paused.
+    pub(super) given: Vec<(usize, Arc<str>, serde_json::Value, ReportedValue)>,
 }
 
 impl PausedFrame {
     /// Notes that V8 gave the variable `name` of the scope at `scope` in
-    /// the frame's chain `value`. V8's listing of a scope is a copy made
-    /// as it paused, which listing again would repeat; the binding checks
-    /// the value given against the frame's slots as it checks V8's own.
-    pub(super) fn assigned(&mut self, scope: usize, name: &str, value: &ReportedValue) {
+    /// the frame's chain `argument`, which it reports as `value`. V8's
+    /// listing of a scope is a copy made as it paused, which listing again
+    /// would repeat; the binding checks the value given against the
+    /// frame's slots as it checks V8's own.
+    pub(super) fn assigned(
+        &mut self,
+        scope: usize,
+        name: &str,
+        argument: &serde_json::Value,
+        value: &ReportedValue,
+    ) {
+        self.given
+            .retain(|(at, given, ..)| (*at, &**given) != (scope, name));
+        self.given
+            .push((scope, name.into(), argument.clone(), value.clone()));
         let chain = self.reported["scopeChain"]
             .as_array()
             .map_or(&[][..], Vec::as_slice);
@@ -1048,5 +1065,6 @@ fn list_frame(
             .as_u64()
             .unwrap_or(u64::MAX),
         scopes,
+        given: Vec::new(),
     }
 }

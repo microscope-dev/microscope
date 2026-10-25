@@ -1099,7 +1099,11 @@ at its resume.
 
 V8's scope objects are copies made as it paused; listing one again after
 the assignment returns the old values. So `PausedFrame::assigned` puts the
-value given in place of the listed one. The frame's names still bind only
+value given in place of the listed one, and keeps the `CallArgument` it
+was given: a later `x = y` in the same pause gives `y`'s current object,
+not the one V8 listed. A name given a value in another frame or scope of
+the pause may share its context, so an object taken from it is refused
+until the program runs again. The frame's names still bind only
 if every listed value matches its slot, so a wrong value there unnames the
 frame rather than misnaming it. The answer is the variable read again from
 memory. A Turbofan frame's variables cannot be read back, and the answer

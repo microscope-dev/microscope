@@ -264,6 +264,10 @@ pub async fn each_binding_takes_each_value(entry: &str) {
         (inner("captured = 50"), "50"),
         (inner("tally = 7"), "7"),
         (inner("holder = other"), "{ b: 2 }"),
+        // In the same pause: V8's listing of the scope still names the
+        // object the variable held as it paused.
+        (inner("holder = holder"), "{ b: 2 }"),
+        (inner("box = other"), "{ b: 2 }"),
     ] {
         let summary = assigned(session, text, function).await;
         assert_eq!(summary, shown, "{context}: `{text}`");
@@ -299,6 +303,16 @@ pub async fn each_binding_takes_each_value(entry: &str) {
     .await;
     let register = unnamed_register(session).await;
     refused(session, None, &format!("{register} = 1"), kind, "register").await;
+    // outer()'s frame reaches the context inner() gave `box` through,
+    // whose value no listing of the pause names.
+    select(session, "outer").await;
+    // The refusal comes once V8 listed the frame's scopes, which the
+    // program resumed to answer.
+    match assign(session, None, "box = box").await {
+        Err(Error::Expression(error))
+            if error.kind == kind && error.message.contains("during this pause") => {}
+        other => panic!("{context}: `box = box` is not refused: {other:?}"),
+    }
 
     session.scenario.resume_to_stop().await;
     let output = session.output();
@@ -306,7 +320,8 @@ pub async fn each_binding_takes_each_value(entry: &str) {
         output.contains(
             "ASSIGNED { param: 41, local: 13, fixed: 'changed', big: 12345678901234567890n, \
              maybe: null, gone: 0.5, blocked: true, captured: 50, tally: 7 }"
-        ) && output.contains("HOLDER true { b: 2 }"),
+        ) && output.contains("HOLDER true { b: 2 }")
+            && output.contains("BOX true { b: 2 }"),
         "{context}: the program uses each value given: {output}"
     );
 

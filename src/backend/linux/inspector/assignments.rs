@@ -250,6 +250,62 @@ fn listed_as(properties: &Value, name: &str) -> Option<(Value, ReportedValue)> {
         .map(|value| (argument_of(value), protocol::reported_value(value)))
 }
 
+/// What the variable `name` holds in the frame at `frame` of the pause
+/// `isolate` holds, as V8 `found` it in each scope of the frame's chain:
+/// the innermost scope that holds the name is where JavaScript finds it.
+fn held(
+    isolate: &Isolate,
+    frame: usize,
+    found: BTreeMap<usize, Option<(Value, ReportedValue)>>,
+    name: &str,
+) -> std::result::Result<(Value, ReportedValue), Arc<str>> {
+    let (scope, listed) = found
+        .into_iter()
+        .find_map(|(scope, listed)| Some((scope, listed?)))
+        .ok_or_else(|| {
+            format!(
+                "V8 lists no variable {name} in the frame's scopes; an object is given as a \
+                 variable of the frame holds it"
+            )
+        })?;
+    given_in_pause(isolate, frame, scope, name).unwrap_or(Ok(listed))
+}
+
+/// What the variable `name` in the scope at `scope` of the frame at
+/// `frame` holds now, if an assignment during the pause `isolate` holds
+/// gave it a value, which V8's listing made as it paused does not show;
+/// or why it is not known, when one gave a variable of that name in
+/// another frame or scope a value, which may share the context holding
+/// it.
+fn given_in_pause(
+    isolate: &Isolate,
+    frame: usize,
+    scope: usize,
+    name: &str,
+) -> Option<std::result::Result<(Value, ReportedValue), Arc<str>>> {
+    let frames = &isolate.paused.as_ref()?.frames;
+    let mut elsewhere = false;
+    for (index, paused) in frames.iter().enumerate() {
+        for (at, given, argument, reported) in &paused.given {
+            if &**given != name {
+                continue;
+            }
+            if (index, *at) == (frame, scope) {
+                return Some(Ok((argument.clone(), reported.clone())));
+            }
+            elsewhere = true;
+        }
+    }
+    elsewhere.then(|| {
+        Err(format!(
+            "{name} was given a value in another frame or scope during this pause, which \
+             may be this variable, and V8's listing still names the value it held as it \
+             paused; continue and assign it at the next stop"
+        )
+        .into())
+    })
+}
+
 /// The `CallArgument` for a JavaScript number.
 fn js_number(value: f64) -> Value {
     if value.is_nan() {
@@ -477,7 +533,7 @@ fn set_replied(
                 .as_mut()
                 .and_then(|paused| paused.frames.get_mut(assignment.frame))
             {
-                paused.assigned(scope, &assignment.name, &reported);
+                paused.assigned(scope, &assignment.name, &argument, &reported);
             }
             assignment.state = State::Done(None);
         }
@@ -676,23 +732,16 @@ impl<P: LinuxTraceOps> Controller<P> {
                     assignment.state = State::Finding { requests, found };
                     return Ok(());
                 }
-                // The innermost scope that holds the name is where
-                // JavaScript finds it.
-                match found.into_values().flatten().next() {
-                    Some(argument) => {
-                        set(
-                            &link.connection,
-                            &session,
-                            &frame,
-                            assignment,
-                            argument,
-                            None,
-                        );
-                    }
-                    None => assignment.fail(format!(
-                        "V8 lists no variable {name} in the frame's scopes; an object is \
-                         given as a variable of the frame holds it"
-                    )),
+                match held(isolate, assignment.frame, found, &name) {
+                    Ok(argument) => set(
+                        &link.connection,
+                        &session,
+                        &frame,
+                        assignment,
+                        argument,
+                        None,
+                    ),
+                    Err(reason) => assignment.fail(reason),
                 }
             }
             State::Setting {
