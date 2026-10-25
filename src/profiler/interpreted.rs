@@ -196,11 +196,15 @@ pub enum Sampled {
     },
 
     /// Frames of a runtime that keeps them on the native stack, innermost
-    /// first, each to go before its native frame, and whether they end
-    /// before the thread's outermost.
+    /// first, each to go before its native frame; whether they end before
+    /// the thread's outermost; and whether the walk stopped at a frame
+    /// pointer it could not follow, as one a function that keeps no frame
+    /// left in its register, so that frames of the runtime's outside it
+    /// are unknown.
     Placed {
         frames: Vec<PlacedFrame>,
         ended: bool,
+        unreadable: bool,
     },
 }
 
@@ -413,6 +417,28 @@ impl Interpreted {
             }
             None => self.sampled(pid, record.map(|(_, bytes)| bytes), code),
         }
+    }
+
+    /// Whether the code at `address` of process `pid`, which `code` says
+    /// where it is, is its V8's own: code V8 generated, or its builtins or
+    /// a copy of them. Interpreted frames of V8's run only in such code, so
+    /// a stack with none of it runs none.
+    pub(super) fn runs_v8(
+        &self,
+        pid: Pid,
+        code: &dyn Fn(u64) -> Option<CodeAt>,
+        address: VirtualAddress,
+    ) -> bool {
+        self.found
+            .get(&pid)
+            .and_then(|found| found.runtime.as_ref())
+            .filter(|runtime| matches!(runtime.kind, Kind::V8 { .. }))
+            .is_some_and(|runtime| {
+                matches!(
+                    owner(runtime.model.as_ref(), code, address.get()),
+                    Some(Owner::Generated | Owner::Builtins)
+                )
+            })
     }
 
     /// The interpreted frames of a sample of process `pid`, from the
@@ -664,6 +690,7 @@ struct DrainedFrame {
 pub(super) struct DrainedV8 {
     frames: Vec<DrainedFrame>,
     ended: bool,
+    unreadable: bool,
 }
 
 /// Reads the JavaScript frames of a V8 walker's `stack` now, each whose
@@ -682,10 +709,11 @@ fn drain_v8(
     owner: &dyn Fn(u64) -> Option<Owner>,
     name: &mut dyn FnMut(&SampledCodeFrame) -> Option<Vec<crate::RecordedFrame>>,
 ) -> Option<DrainedV8> {
-    let ended = match stack.end {
+    let (ended, unreadable) = match stack.end {
         V8End::NoLayout => return None,
-        V8End::Complete | V8End::Unreadable => false,
-        V8End::Bounded => true,
+        V8End::Complete => (false, false),
+        V8End::Unreadable => (false, true),
+        V8End::Bounded => (true, false),
     };
     // Whether a frame inside this one is the program's: `None` where that
     // waits on whose code one runs.
@@ -749,7 +777,11 @@ fn drain_v8(
             called: under_call,
         });
     }
-    Some(DrainedV8 { frames, ended })
+    Some(DrainedV8 {
+        frames,
+        ended,
+        unreadable,
+    })
 }
 
 impl DrainedV8 {
@@ -784,6 +816,7 @@ impl DrainedV8 {
         Sampled::Placed {
             frames,
             ended: self.ended,
+            unreadable: self.unreadable,
         }
     }
 }
@@ -819,6 +852,24 @@ pub fn read_v8_record(
     drain_v8_record(model, stop, record, code).map_or(Sampled::Unknown, |drained| {
         drained.settle(&|address| owner(model, code, address))
     })
+}
+
+/// Where a sample's JavaScript frames leave its stack short, given whether
+/// its native frames run V8's own code (`runs_v8`): unknown frames, or a
+/// walk that stopped at a frame it could not follow, leave out frames only
+/// where V8's code runs, as no thread runs JavaScript in none.
+pub(super) fn v8_cut(
+    sampled: &Sampled,
+    runs_v8: bool,
+) -> Option<crate::capture::records::Truncation> {
+    use crate::capture::records::Truncation;
+    match *sampled {
+        Sampled::Unknown => runs_v8.then_some(Truncation::InterpretedUnknown),
+        Sampled::Placed {
+            ended, unreadable, ..
+        } => (ended || (unreadable && runs_v8)).then_some(Truncation::InterpretedEnded),
+        Sampled::None | Sampled::Frames { .. } => None,
+    }
 }
 
 /// Where each of a walker's frames goes among a sample's `natives`, each
@@ -1164,6 +1215,39 @@ mod tests {
         .expect("a layout")
         .settle(&|_| None);
         assert_eq!(names(&known), ["0xa0 innermost", "0xb0 called"]);
+    }
+
+    /// Unknown JavaScript frames, or a walk that stopped at a frame
+    /// pointer it could not follow, leave a stack short where its native
+    /// frames run V8's code, and only there; a walk that filled its record
+    /// does wherever it is.
+    #[test]
+    fn missing_javascript_frames_cut_a_stack_that_runs_v8() {
+        use crate::capture::records::Truncation;
+        let placed = |ended, unreadable| Sampled::Placed {
+            frames: Vec::new(),
+            ended,
+            unreadable,
+        };
+        for (sampled, runs, cut) in [
+            (Sampled::Unknown, true, Some(Truncation::InterpretedUnknown)),
+            (Sampled::Unknown, false, None),
+            (
+                placed(false, true),
+                true,
+                Some(Truncation::InterpretedEnded),
+            ),
+            (placed(false, true), false, None),
+            (
+                placed(true, false),
+                false,
+                Some(Truncation::InterpretedEnded),
+            ),
+            (placed(false, false), true, None),
+            (Sampled::None, true, None),
+        ] {
+            assert_eq!(v8_cut(&sampled, runs), cut, "{sampled:?}, runs V8: {runs}");
+        }
     }
 
     /// Each run of samples in one isolate is one span of its label, which

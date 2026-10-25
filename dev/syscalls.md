@@ -121,7 +121,12 @@ native frame with its address and frame pointer (`profiler::positions`), keeps
 it only where its code is V8's, and names it by `RuntimeModel::sampled_code_frame`
 and its proof. A system call is always made from inside a call, so each
 interpreted frame's slot holds the offset of the call it made and has its line;
-a compiled frame's line is unknown, as in a sample.
+a compiled frame's line is unknown, as in a sample. As in a sample, a stack
+one of whose native frames runs V8's code (`Stacks::owned_at`) ends with
+`InterpretedUnknown` where it has no V8 record, or one from before the
+layout, and with `InterpretedEnded` where the walk stopped at a frame pointer
+it could not follow, as at a call made from code that keeps no frame pointer
+in `rbp`; a stack in none of V8's code ends neither way.
 
 ## The BPF engine
 
@@ -237,6 +242,9 @@ With `--window` or `--continuous`, each saved file gets its own span's calls.
   stdin, then makes its calls, and its worker lives until stdin ends. They
   check that the BPF engine's frames agree with V8's and with the ptrace
   engine's. Each comparison has a self-test that it fails on each lie.
+  Another traces `tests/fixtures/node/frameless.js --opens`, whose opens of
+  `/dev/zero` an addon (`frameless.c`) makes with 8 in `rbp`: each must name
+  the function that made it or end saying its JavaScript frames are missing.
 - The BPF tests each map perf rings on every CPU, which count against the
   user's perf memory, so nextest runs at most two at once (the `perf-rings`
   group in `.config/nextest.toml`).

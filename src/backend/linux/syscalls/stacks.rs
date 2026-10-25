@@ -507,12 +507,15 @@ impl Stacks {
     fn sampled_code_frames(
         &self,
         process: Pid,
-        (model, runtime): (&dyn RuntimeModel, &LoadedModule),
+        (model, runtime, stored): (
+            &dyn RuntimeModel,
+            &LoadedModule,
+            &[crate::AddressRange<VirtualAddress>],
+        ),
         stop: &LiveStop<'_>,
         frames: &[SampledFrame],
         record: &sampler::V8Stack<'_>,
     ) -> Vec<InterpretedCall> {
-        let stored = model.process_code(stop);
         let natives: Vec<_> = frames
             .iter()
             .map(|frame| (frame.address, frame.frame_pointer))
@@ -528,7 +531,7 @@ impl Stacks {
             let pc = VirtualAddress::new(sampled.pc);
             let after_call = sampled.at_instruction == 0;
             let address = native_address(sampled);
-            let Some(generated) = self.owned_at(process, model, runtime, &stored, address) else {
+            let Some(generated) = self.owned_at(process, model, runtime, stored, address) else {
                 continue;
             };
             let frame = runtime_model::SampledCodeFrame {
@@ -641,19 +644,41 @@ impl Stacks {
             stack.truncated = stack
                 .truncated
                 .or_else(|| truncation.map(|reason| reason as u8));
-        } else if let Some((model, loaded)) = runtime
-            && let Some(record) = python
-                .filter(|bytes| sampler::is_v8(bytes))
-                .and_then(|bytes| sampler::decode_v8(bytes).ok())
-        {
+        } else if let Some((model, loaded)) = runtime {
             let stop = LiveStop::memory(process.get(), loaded.load_bias);
-            stack.interpreted = self
-                .sampled_code_frames(process, (model.as_ref(), &loaded), &stop, &frames, &record)
-                .into();
-            let truncation = match record.end {
-                sampler::V8End::Complete | sampler::V8End::Unreadable => None,
-                sampler::V8End::Bounded => Some(Truncation::InterpretedEnded),
-                sampler::V8End::NoLayout => Some(Truncation::InterpretedUnknown),
+            let stored = model.process_code(&stop);
+            // JavaScript frames that are unknown, or that the walk could
+            // not follow to the end, are missing where V8's code runs.
+            let runs_v8 = frames.iter().any(|frame| {
+                self.owned_at(process, model.as_ref(), &loaded, &stored, frame.address)
+                    .is_some()
+            });
+            let record = python
+                .filter(|bytes| sampler::is_v8(bytes))
+                .and_then(|bytes| sampler::decode_v8(bytes).ok());
+            let truncation = match record {
+                Some(record) => {
+                    stack.interpreted = self
+                        .sampled_code_frames(
+                            process,
+                            (model.as_ref(), &loaded, &stored),
+                            &stop,
+                            &frames,
+                            &record,
+                        )
+                        .into();
+                    match record.end {
+                        sampler::V8End::Complete => None,
+                        sampler::V8End::Bounded => Some(Truncation::InterpretedEnded),
+                        sampler::V8End::Unreadable => {
+                            runs_v8.then_some(Truncation::InterpretedEnded)
+                        }
+                        sampler::V8End::NoLayout => {
+                            runs_v8.then_some(Truncation::InterpretedUnknown)
+                        }
+                    }
+                }
+                None => runs_v8.then_some(Truncation::InterpretedUnknown),
             };
             stack.truncated = stack
                 .truncated

@@ -347,6 +347,18 @@ JavaScript functions placed at it. Functions placed at a frame of another role,
 as a bytecode handler a sample landed in, go after that frame, which they run
 (`Processor::splice_placed`).
 
+Node defines no activation of an interpreter's loop, so the rule that cuts a
+Python stack whose frames are unknown does not apply. Instead
+`interpreted::v8_cut` cuts a sample with `InterpretedUnknown` when its record
+was lost or came before the layout, and with `InterpretedEnded` when its walk
+stopped `V8_END_UNREADABLE`, as at a frame pointer that code built without
+frame pointers left in `rbp`, but only where one of its native frames runs
+V8's code (`Interpreted::runs_v8`): V8's builtins, a copy of them, or code it
+generated. A thread that runs none, as a libuv pool thread, runs no
+JavaScript. A walk that filled its record ends `InterpretedEnded` wherever it
+is. `tests/fixtures/node/frameless.c` is an addon that spins with 8 in `rbp`,
+which call-frame information unwinds through.
+
 The sampler's `v8_sample` also reads each thread's current isolate,
 `g_current_isolate_`, at each sample: the thread pointer from the task's
 `thread.fsbase` (CO-RE, through flavor types, since `kernel_types.h`'s

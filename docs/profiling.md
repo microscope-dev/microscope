@@ -193,7 +193,11 @@ microscope report --js --lines server.usprof
   recording no frames.
 
 A sample taken before microscope has read V8's layout, as just after the
-program starts, ends in "interpreted frames unknown". A frame whose function
+program starts, ends in "interpreted frames unknown". With `bpf`, a sample in
+native code that keeps something other than a frame pointer in its
+frame-pointer register, as an addon built without frame pointers may, hides
+the JavaScript frames under it, and ends in "interpreted frames ended
+early". A frame whose function
 V8's garbage collector moved or freed before microscope read it is
 `<unknown>`, with the reason, never another function's name. Frames of Node's
 own scripts, such as `node:internal/timers`, stay in the stacks.

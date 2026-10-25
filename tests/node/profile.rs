@@ -10,7 +10,8 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use microscope::profiler::{
-    Granularity, Look, Profile, PythonEngine, Query, RecordOptions, Source, Watch, record_watched,
+    Granularity, Look, Profile, PythonEngine, Query, RecordOptions, SampledStack, Source,
+    StackEnding, Watch, record_watched,
 };
 
 use crate::support::truth::Report;
@@ -820,6 +821,75 @@ fn the_spin_comparison_fails_on_each_lie() {
     }
 }
 
+/// How the samples of `frameless.js --spin`, `stacks`, hide that
+/// JavaScript frames are missing. The addon's `spin` runs only under
+/// `framelessSpins`, holding no frame pointer, so each sample in it either
+/// names that function or ends saying its JavaScript frames are
+/// incomplete; and the program spins long enough for many such samples.
+pub fn frameless_lies(stacks: &[SampledStack]) -> Vec<String> {
+    let spinning: Vec<&SampledStack> = stacks
+        .iter()
+        .filter(|stack| stack.functions.iter().any(|function| function == "spin"))
+        .collect();
+    if spinning.len() < 100 {
+        return vec![format!("only {} samples in spin", spinning.len())];
+    }
+    let silent: Vec<&&SampledStack> = spinning
+        .iter()
+        .filter(|stack| {
+            let ends = matches!(&stack.ending, StackEnding::Truncated(reason)
+                if reason.starts_with("interpreted frames"));
+            !ends
+                && !stack
+                    .functions
+                    .iter()
+                    .any(|function| function == "framelessSpins")
+        })
+        .collect();
+    silent
+        .first()
+        .map(|first| {
+            format!(
+                "{} of {} samples in spin hide their missing frames, as {first:#?}",
+                silent.len(),
+                spinning.len()
+            )
+        })
+        .into_iter()
+        .collect()
+}
+
+/// The frameless check fails on a sample in `spin` that shows neither
+/// the function that called it nor that its JavaScript frames are
+/// incomplete, and on a recording with too few samples in `spin`.
+#[test]
+fn the_frameless_check_fails_on_a_silent_sample() {
+    let sample = |functions: &[&str], ending: StackEnding| SampledStack {
+        pid: 7,
+        tid: 7,
+        time: 0,
+        weight: 1,
+        functions: functions
+            .iter()
+            .map(|&function| function.to_owned())
+            .collect(),
+        ending,
+        task: None,
+    };
+    let cut = sample(
+        &["spin", "Builtins_JSEntry"],
+        StackEnding::Truncated("interpreted frames ended early".into()),
+    );
+    let named = sample(&["spin", "framelessSpins"], StackEnding::Complete);
+    let silent = sample(&["spin", "Builtins_JSEntry"], StackEnding::Complete);
+    let mut stacks = vec![cut; 100];
+    stacks.push(named);
+    assert!(frameless_lies(&stacks).is_empty());
+    stacks.push(silent);
+    assert_eq!(frameless_lies(&stacks).len(), 1);
+    assert_eq!(frameless_lies(&stacks[..99]).len(), 1);
+}
+
 /// The BPF engine, whose program walks each sample's JavaScript frames,
 /// held to the frames V8 reported of each spinning thread. It needs
 /// `CAP_BPF` and `CAP_PERFMON`, so it runs only through `just test-bpf`.
@@ -969,6 +1039,57 @@ mod bpf {
         let zones = profile.zones();
         let lies = isolate_lies((&spinners, &pool), &weights, &zones);
         assert!(lies.is_empty(), "{entry}: {lies:#?}\n{weights:?}");
+    }
+
+    /// CPU samples of code that holds no frame pointer, under JavaScript
+    /// frames, leave the walk nothing to follow; each sample, unwound
+    /// through V8's code by call-frame information, says its JavaScript
+    /// frames ended early, and never stands complete without them.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
+    fn samples_the_walk_cannot_follow_say_their_javascript_frames_are_missing() {
+        let launcher = std::env::var_os("MICROSCOPE_BPF_LAUNCHER")
+            .expect("MICROSCOPE_BPF_LAUNCHER names the microscope-bpf wrapper");
+        let scratch = ScratchDir::new("node-frameless-bpf");
+        let profile = scratch.path().join("frameless.usprof");
+        // Samples before microscope reads node's debug information are
+        // unknown; a first recording loads it into the cache.
+        let record = |output: &Path, arguments: &[&std::ffi::OsStr]| {
+            let finished = Command::new(&launcher)
+                .arg(env!("CARGO_BIN_EXE_microscope"))
+                .args(["record", "--node", "bpf", "--output"])
+                .arg(output)
+                .arg("--")
+                .arg(node::node(ENTRY))
+                .args(arguments)
+                .env_remove("NODE_OPTIONS")
+                .stdin(Stdio::null())
+                .output()
+                .expect("run microscope");
+            assert!(
+                finished.status.success(),
+                "{}",
+                String::from_utf8_lossy(&finished.stderr)
+            );
+        };
+        record(
+            &scratch.path().join("warm.usprof"),
+            &["-e".as_ref(), "0".as_ref()],
+        );
+        let fixture = node::fixture("frameless.js");
+        let addon = crate::support::Scenario::fixture("node-frameless.node");
+        record(
+            &profile,
+            &[
+                fixture.as_os_str(),
+                addon.as_os_str(),
+                "--spin".as_ref(),
+                "3".as_ref(),
+            ],
+        );
+        let profile = Profile::read(&profile).expect("read the profile").profile;
+        let lies = frameless_lies(&profile.stacks());
+        assert!(lies.is_empty(), "{}", lies.join("\n"));
     }
 
     /// Two Node processes a shell starts, each with its own V8 and its own

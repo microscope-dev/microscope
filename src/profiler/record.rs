@@ -1426,14 +1426,30 @@ impl Processor {
             self.unclaimed.push((thread, time, task));
         }
 
-        let marker = if let Sampled::Placed {
-            frames: placed,
-            ended,
-        } = interpreted
-        {
-            self.splice_placed(&native, (&frames, &keys), &placed, ended)
+        // JavaScript frames that are unknown, or that a walk could not
+        // follow to the end, are missing where V8's code runs.
+        let missing = matches!(
+            interpreted,
+            Sampled::Unknown
+                | Sampled::Placed {
+                    unreadable: true,
+                    ..
+                }
+        );
+        let runs_v8 = missing
+            && self.interpreted.as_ref().is_some_and(|found| {
+                let (processes, images) = (&self.processes, &self.images);
+                let code = |address| code_at(processes, images, sample.pid, address);
+                frames
+                    .iter()
+                    .any(|frame| found.runs_v8(sample.pid, &code, frame.address))
+            });
+        let cut = interpreted::v8_cut(&interpreted, runs_v8);
+        let marker = if let Sampled::Placed { frames: placed, .. } = interpreted {
+            self.splice_placed(&native, (&frames, &keys), &placed);
+            cut
         } else {
-            self.splice_interpreted(&native, interpreted)
+            self.splice_interpreted(&native, interpreted).or(cut)
         };
 
         let truncation = match end {
@@ -1625,15 +1641,13 @@ impl Processor {
     /// `frames` it is, by its frame pointer and address, with that frame's
     /// key in `keys` as the interpreter's, or past the last where the native
     /// stack ended before it. One among the native frames that is none of
-    /// them is no frame of the runtime's. Returns where the frames say the
-    /// stack ends early, if they do.
+    /// them is no frame of the runtime's.
     fn splice_placed(
         &mut self,
         native: &[(u32, bool)],
         (frames, keys): (&[crate::unwind::sample::SampledFrame], &[(u32, u64)]),
         placed: &[interpreted::PlacedFrame],
-        ended: bool,
-    ) -> Option<Truncation> {
+    ) {
         self.frames.clear();
         let natives: Vec<_> = frames
             .iter()
@@ -1689,7 +1703,6 @@ impl Processor {
         if let Some(outer) = before.last() {
             self.frames.extend_from_slice(outer);
         }
-        ended.then_some(Truncation::InterpretedEnded)
     }
 
     /// The capture so far, every frame symbolized, which goes on growing:

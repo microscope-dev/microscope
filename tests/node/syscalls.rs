@@ -430,6 +430,71 @@ fn record(path: &str, frames: &[(&str, Option<&str>, Option<u32>)]) -> Value {
     serde_json::json!({"path": path, "tid": 7, "stack": stack})
 }
 
+/// How the opens of `frameless.js --opens` traced in `records`, in the
+/// order they were made, hide that JavaScript frames are missing, one line
+/// per open. Every open of /dev/zero is made by `framelessOpens`, through
+/// an addon that holds no frame pointer, so its stack either names that
+/// function or ends saying its JavaScript frames are incomplete. Opens
+/// before the first of /dev/random whose stack names `probe` came before
+/// the engine read V8, and only from there must its stacks name them.
+pub fn frameless_lies(records: &[Value]) -> Vec<String> {
+    let names = |record: &Value, function: &str| {
+        record["stack"]
+            .as_array()
+            .is_some_and(|stack| stack.iter().any(|frame| frame["function"] == function))
+    };
+    let Some(ready) = records
+        .iter()
+        .position(|record| record["path"] == "/dev/random" && names(record, "probe"))
+    else {
+        return vec!["no open of /dev/random names probe".into()];
+    };
+    let opens: Vec<&Value> = records[ready..]
+        .iter()
+        .filter(|record| record["path"] == "/dev/zero")
+        .collect();
+    if opens.is_empty() {
+        return vec!["no open of /dev/zero after the engine named probe".into()];
+    }
+    opens
+        .iter()
+        .filter(|record| {
+            let ends = record["stack"]
+                .as_array()
+                .and_then(|stack| stack.last())
+                .and_then(|end| end["ends"].as_str())
+                .is_some_and(|reason| reason.starts_with("interpreted frames"));
+            !names(record, "framelessOpens") && !ends
+        })
+        .map(|record| format!("an open of /dev/zero hides its missing frames: {record:#}"))
+        .collect()
+}
+
+/// The frameless check fails on a stack that shows neither the function
+/// that made its open nor that its JavaScript frames are incomplete, and
+/// on a trace in which the engine named no JavaScript frames.
+#[test]
+fn the_frameless_check_fails_on_a_silent_stack() {
+    let probe = record("/dev/random", &[("probe", None, None)]);
+    let named = record("/dev/zero", &[("framelessOpens", None, None)]);
+    let mut cut = record("/dev/zero", &[]);
+    cut["stack"] =
+        serde_json::json!([{"symbol": "open_path"}, {"ends": "interpreted frames ended early"}]);
+    let silent = record("/dev/zero", &[]);
+    let early = record("/dev/zero", &[]);
+
+    assert!(frameless_lies(&[early.clone(), probe.clone(), named.clone(), cut.clone()]).is_empty());
+    assert_eq!(
+        frameless_lies(&[probe.clone(), cut.clone(), silent]).len(),
+        1
+    );
+    assert_eq!(frameless_lies(&[early, cut.clone(), named]).len(), 1);
+    assert_eq!(
+        frameless_lies(&[probe, record("/dev/random", &[])]).len(),
+        1
+    );
+}
+
 /// The BPF comparison fails on each lie it exists to catch: a compiled
 /// frame's line where it has none proven, a lost line of the fixture's
 /// interpreted frame, a wrong function, a dropped frame, a wrong line of
@@ -571,6 +636,96 @@ mod bpf {
             probed,
         );
         let lies = bpf_lies(&reported, &records, &ptrace);
+        assert!(lies.is_empty(), "{}", lies.join("\n"));
+    }
+
+    /// A call made where rbp holds no frame pointer, under JavaScript
+    /// frames, leaves the walk nothing to follow; the stack, unwound
+    /// through V8's code by call-frame information, says its JavaScript
+    /// frames ended early, and never stands complete without them.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
+    fn a_call_the_walk_cannot_follow_says_its_javascript_frames_are_missing() {
+        use std::io::BufRead as _;
+
+        /// How long the engine may take to read V8, which waits for
+        /// Node's debug information to load, and then to trace the opens.
+        const DEADLINE: std::time::Duration = std::time::Duration::from_secs(180);
+
+        /// The opens of /dev/zero traced once the engine names JavaScript
+        /// frames, past which the fixture is ended.
+        const OPENS: usize = 20;
+
+        /// Kills and reaps the traced command if the test fails.
+        struct Running(std::process::Child);
+        impl Drop for Running {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let launcher = std::env::var_os("MICROSCOPE_BPF_LAUNCHER")
+            .expect("MICROSCOPE_BPF_LAUNCHER names the microscope-bpf wrapper");
+        let child = Command::new(launcher)
+            .arg(env!("CARGO_BIN_EXE_microscope"))
+            .args(["syscalls", "-f", "-e", "trace=openat", "--format", "ndjson"])
+            .args(["--engine", "bpf", "-k=dwarf", "-k", "-o", "-", "--"])
+            .arg(node::node(ENTRY))
+            .arg(node::fixture("frameless.js"))
+            .arg(crate::support::Scenario::fixture("node-frameless.node"))
+            .arg("--opens")
+            .env_remove("NODE_OPTIONS")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("run microscope");
+        let mut running = Running(child);
+        let mut stdin = running.0.stdin.take();
+        let stdout = running.0.stdout.take().expect("microscope's stdout");
+        let (sent, read) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout).lines() {
+                if sent.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+
+        let deadline = std::time::Instant::now() + DEADLINE;
+        let mut records: Vec<Value> = Vec::new();
+        let mut ready = false;
+        let mut after = 0;
+        for line in std::iter::from_fn(|| {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            read.recv_timeout(left).ok()
+        }) {
+            let line = line.expect("read the trace");
+            let record: Value =
+                serde_json::from_str(&line).unwrap_or_else(|error| panic!("{line}: {error}"));
+            ready |= record["path"] == "/dev/random"
+                && record["stack"]
+                    .as_array()
+                    .is_some_and(|stack| stack.iter().any(|frame| frame["function"] == "probe"));
+            after += usize::from(ready && record["path"] == "/dev/zero");
+            records.push(record);
+            if after >= OPENS {
+                stdin = None;
+            }
+        }
+        let status = running.0.wait().expect("reap microscope");
+        let mut stderr = String::new();
+        std::io::Read::read_to_string(
+            running.0.stderr.as_mut().expect("microscope's stderr"),
+            &mut stderr,
+        )
+        .expect("read microscope's stderr");
+        assert!(
+            stdin.is_none() && status.success(),
+            "the trace stalled or failed ({status}): {stderr}"
+        );
+        let lies = frameless_lies(&records);
         assert!(lies.is_empty(), "{}", lies.join("\n"));
     }
 }

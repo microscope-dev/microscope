@@ -112,7 +112,11 @@ because the engine does not prove which compiled code the frame ran. A
 frame whose function V8's garbage collector moved before microscope read it
 is `<unknown>`, never another function. Calls made before microscope has
 read V8's layout, just after the program starts, end with `interpreted
-frames unknown`. See [Node.js](languages.md#system-calls-1).
+frames unknown`. A call made from native code that keeps something other
+than a frame pointer in its frame-pointer register, as an addon built
+without frame pointers may, hides the JavaScript frames under it from the
+BPF engine, and its stack ends with `interpreted frames ended early`. See
+[Node.js](languages.md#system-calls-1).
 
 ## Save a trace and open it later
 
