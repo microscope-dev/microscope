@@ -981,6 +981,10 @@ entries! {
         EvalContextType = "EVAL_CONTEXT_TYPE",
         AwaitContextType = "AWAIT_CONTEXT_TYPE",
 
+        /// 14.6's cell a context slot may keep a number in, which no watch
+        /// follows; absent before 14.6.
+        ContextCellType = "CONTEXT_CELL_TYPE",
+
         /// The instance types `JSReceiver::class_name` and
         /// `GetConstructorHelper` tell apart.
         FunctionTemplateInfoType = "FUNCTION_TEMPLATE_INFO_TYPE",

@@ -2800,6 +2800,7 @@ pub(super) const GENERATED: &[Generated] = &[
             (Constant::WithContextType, 230),
             (Constant::EvalContextType, 225),
             (Constant::AwaitContextType, 221),
+            (Constant::ContextCellType, 265),
             (Constant::FunctionTemplateInfoType, 251),
             (Constant::Tuple2Type, 172),
             (Constant::WasmExportedFunctionDataType, 180),
