@@ -10,6 +10,7 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use nix::libc;
 use serde_json::{Value, json};
 use tungstenite::{Message, WebSocket};
 
@@ -1279,4 +1280,159 @@ fn an_assignment_holds_v8_s_pause_until_its_own_stop_resumes() {
 
     scripted.resume();
     assert_eq!(scripted.sent_names(), [cdp::RESUME]);
+}
+
+/// A thread exits while an attached session's shutdown releases a borrowed
+/// inspector, so its exit status is the last the cleanup's all-stop
+/// awaits. That status completes the all-stop, and the detach follows.
+#[test]
+fn a_thread_exiting_in_the_cleanup_stop_of_a_shutdown_lets_it_detach() {
+    use super::super::{Signal, WaitEvent};
+
+    let mut scripted = Scripted::connected(2);
+    scripted.sent();
+    scripted.record().ownership = super::super::node_launch::Ownership::Borrowed;
+    let [main, worker] = scripted.harness.threads[..] else {
+        unreachable!("two threads");
+    };
+    scripted
+        .harness
+        .controller
+        .inferior
+        .as_mut()
+        .expect("inferior")
+        .origin = super::super::InferiorOrigin::Attached;
+
+    let (reply, mut result) = tokio::sync::oneshot::channel();
+    scripted.harness.controller.begin_shutdown(Some(reply));
+    let release = scripted
+        .sent()
+        .into_iter()
+        .find(|request| request.method == "Runtime.getIsolateId")
+        .expect("the cleanup asks the borrowed inspector to acknowledge");
+
+    // The worker begins exiting while the cleanup runs every thread.
+    scripted
+        .harness
+        .controller
+        .handle_wait(WaitEvent::PtraceEvent(
+            worker,
+            Signal::SIGTRAP,
+            libc::PTRACE_EVENT_EXIT,
+        ));
+    scripted.inspector.reply(&release, json!({"id": "isolate"}));
+    scripted.pump_reply();
+    scripted
+        .harness
+        .controller
+        .handle_wait(WaitEvent::PtraceEvent(
+            main,
+            Signal::SIGTRAP,
+            libc::PTRACE_EVENT_STOP,
+        ));
+    assert!(
+        result.try_recv().is_err(),
+        "the detach awaits the exiting worker"
+    );
+
+    scripted
+        .harness
+        .controller
+        .handle_wait(WaitEvent::Exited(worker, 0));
+    assert!(
+        matches!(result.try_recv(), Ok(Ok(()))),
+        "the worker's exit ends the cleanup's stop and the detach: {:?}",
+        scripted.actions()
+    );
+}
+
+/// A step from a native stop asks V8 to pause, which the main thread takes
+/// only once the inspector's I/O thread has handed the request on. Until
+/// the I/O thread returns from taking it, the main thread stays stopped,
+/// since running it sooner lets it run on past the next statement.
+#[test]
+fn a_step_from_a_native_stop_holds_the_main_thread_until_its_pause_is_handed_on() {
+    let mut scripted = Scripted::connected(2);
+    scripted.sent();
+    let [main, io] = scripted.harness.threads[..] else {
+        unreachable!("two threads");
+    };
+    let entry = {
+        let controller = &scripted.harness.controller;
+        let inferior = controller.inferior.as_ref().expect("inferior");
+        controller.runtimes(inferior)[0]
+            .module
+            .virtual_address(crate::ImageAddress::new(0x60))
+            .expect("the entry")
+            .get()
+    };
+    scripted.actions();
+
+    let process = super::super::process_id(main);
+    let stop = scripted.harness.stop_id();
+    scripted
+        .harness
+        .controller
+        .begin_runtime_step(
+            process,
+            stop,
+            main,
+            (scripted.runtime, None),
+            crate::StepKind::OverSource,
+            crate::protocol::ResumeScope::Process(process),
+            crate::protocol::ExceptionDisposition::Pass,
+        )
+        .expect("the step begins");
+    assert!(scripted.sent_names().contains(&cdp::PAUSE.to_owned()));
+    let actions = scripted.actions();
+    assert!(
+        actions.contains(&format!("continue {io} None")),
+        "{actions:?}"
+    );
+    assert!(
+        !actions.contains(&format!("continue {main} None")),
+        "the main thread waits for the pause to be handed on: {actions:?}"
+    );
+
+    // The I/O thread takes the request, to return to 0x8000.
+    let trace = scripted.harness.trace();
+    trace.set_pc(io, entry + 1);
+    trace.stack_pointers.borrow_mut().insert(io, 0x9000);
+    scripted.harness.store(0x9000, 0x8000);
+    scripted
+        .harness
+        .trap(io, libc::SI_KERNEL, 0)
+        .expect("the entry trap");
+    let mut actions = scripted.actions();
+    if actions.contains(&format!("step {io}")) {
+        scripted.harness.finish_step(io).expect("the repair step");
+        actions.extend(scripted.actions());
+    }
+    assert!(
+        !actions.contains(&format!("continue {main} None")),
+        "the main thread waits while the request is handed on: {actions:?}"
+    );
+
+    // It returns, the request handed on.
+    let trace = scripted.harness.trace();
+    trace.set_pc(io, 0x8001);
+    trace.stack_pointers.borrow_mut().insert(io, 0x9008);
+    scripted
+        .harness
+        .trap(io, libc::SI_KERNEL, 0)
+        .expect("the return trap");
+    scripted.harness.settle_requested_stops();
+    for _ in 0..4 {
+        let actions = scripted.actions();
+        if actions.contains(&format!("continue {main} None")) {
+            return;
+        }
+        if let Some(step) = actions.iter().find(|action| action.starts_with("step ")) {
+            let pid = nix::unistd::Pid::from_raw(step[5..].parse().expect("a pid"));
+            scripted.harness.finish_step(pid).expect("the repair step");
+            continue;
+        }
+        panic!("the main thread never runs: {actions:?}");
+    }
+    panic!("the main thread never runs");
 }

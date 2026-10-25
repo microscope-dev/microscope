@@ -60,6 +60,9 @@ pub(super) struct Inspectors {
     pub(super) cleanup: Option<teardown::Cleanup>,
     startup: BTreeMap<RuntimeId, quiescence::Startup>,
     startup_planted: BTreeSet<VirtualAddress>,
+
+    /// The traps planted for the gates of steps from native stops.
+    gate_planted: BTreeSet<VirtualAddress>,
     /// The planted entries of `GetTargetIds`, by the runtime each lists.
     entries: BTreeMap<VirtualAddress, RuntimeId>,
 
@@ -104,6 +107,7 @@ impl Inspectors {
     pub(super) fn forget(&mut self, address: VirtualAddress) {
         self.entries.remove(&address);
         self.startup_planted.remove(&address);
+        self.gate_planted.remove(&address);
     }
 
     /// Shows each script frame of `frames` at the original place its
@@ -167,6 +171,7 @@ impl Inspectors {
             .copied()
             .chain(self.cleanup.iter().flat_map(teardown::Cleanup::sites))
             .chain(self.startup_planted.iter().copied())
+            .chain(self.gate_planted.iter().copied())
             .collect()
     }
 }
@@ -212,6 +217,10 @@ struct Inspector {
     /// The `stepInto` V8 still runs for a thread a JavaScript step left in
     /// a Node-API addon's C function.
     through: Option<addons::Through>,
+
+    /// What holds the main thread for a step from a native stop until V8
+    /// is sure to pause it.
+    gate: Option<steps::Gate>,
 
     /// Which exceptions V8 is to pause at, as `setPauseOnExceptions`
     /// names them.
@@ -364,6 +373,7 @@ fn send(
 impl<P: LinuxTraceOps> Controller<P> {
     /// Plants each loaded runtime's target entry and cleanup checkpoints.
     pub(super) fn sync_inspector_hooks(&mut self) -> Result<()> {
+        self.sync_step_gates(true)?;
         let Some(inferior) = self.inferior.as_ref() else {
             return Ok(());
         };
@@ -395,6 +405,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     .values()
                     .flat_map(quiescence::Startup::sites),
             )
+            .chain(inferior.inspectors.gate_planted.iter().copied())
             .collect::<BTreeSet<_>>();
 
         // The record changes with each site, so that a failed edit leaves
@@ -579,6 +590,9 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     /// Suppresses proven print/list calls before they allocate a UUID copy.
     pub(super) fn note_inspector_hook(&mut self, pid: Pid, address: VirtualAddress) -> Result<()> {
+        if self.note_step_gate(pid, address)? {
+            return Ok(());
+        }
         if self.note_inspector_startup_hook(pid, address)? {
             return Ok(());
         }
@@ -840,6 +854,8 @@ impl<P: LinuxTraceOps> Controller<P> {
                 inspector.problem =
                     Some(format!("the inspector connection closed: {reason}").into());
                 self.publish_breakpoints_changed();
+                // No pause is coming to hold the main thread for.
+                self.release_step_gate()?;
             }
             Incoming::Malformed { session, reason } => {
                 record!("inspector {session:?} sent a malformed message: {reason}");
@@ -1016,15 +1032,22 @@ impl<P: LinuxTraceOps> Controller<P> {
                 if isolate.pause == PauseRequest::Deferred
                     && let Some(link) = inspector.connection.as_ref()
                 {
-                    isolate.pause = match send(
+                    let sent = send(
                         &link.connection,
                         session,
                         inspector_protocol::PAUSE,
                         serde_json::json!({}),
-                    ) {
+                    );
+                    isolate.pause = match sent {
                         Ok(_) => PauseRequest::Sent,
                         Err(_) => PauseRequest::None,
                     };
+                    if *session == Session::main()
+                        && let Some(gate) = inspector.gate.as_mut()
+                    {
+                        gate.sent(sent.ok());
+                        return self.release_step_gate();
+                    }
                 }
             }
             inspector_protocol::PAUSED => {

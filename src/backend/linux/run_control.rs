@@ -771,6 +771,12 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(());
         }
 
+        // A step from a native stop holds the main thread until V8 is sure
+        // to pause it (`inspector::steps::Gate`).
+        if self.step_gate_holds(pid) {
+            return Ok(());
+        }
+
         self.resume_native(pid, Resume::Continue, true, ExpectedStop::None)
     }
 
