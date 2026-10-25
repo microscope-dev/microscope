@@ -267,49 +267,16 @@ impl NodeRuntime {
 
     /// Every task at `stop`, by number, and why some may be missing.
     fn all_tasks(&self, stop: &dyn RuntimeStop) -> (Vec<super::RuntimeTask>, Vec<Arc<str>>) {
-        let (layout, tasks) = match (&self.reading, &self.tasks) {
-            (Ok(layout), Ok(tasks)) => (layout, tasks),
-            (Err(reason), _) | (_, Err(reason)) => {
+        let walked = self.walk(stop, tasks::listed);
+        let (mut found, mut gaps) = match walked {
+            Ok(walked) => walked,
+            Err(reason) => {
                 return (
                     Vec::new(),
                     vec![format!("Node's tasks cannot be read: {reason}").into()],
                 );
             }
         };
-        let isolate = match &self.statics.isolate {
-            Some(Ok(place)) => *place,
-            Some(Err(reason)) => {
-                return (
-                    Vec::new(),
-                    vec![format!("Node's tasks cannot be read: no thread's isolate can be found: {reason}").into()],
-                );
-            }
-            None => {
-                return (
-                    Vec::new(),
-                    vec!["Node's tasks cannot be read: the module names no current isolate".into()],
-                );
-            }
-        };
-        let reader = objects::Reader {
-            stop,
-            layout,
-            version: self.version,
-            charge: None,
-            blocks: stop.memory(),
-        };
-        let mut table = self
-            .table
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut walk = tasks::Walk {
-            reader,
-            layout: tasks,
-            image: self.image.as_ref(),
-            table: &mut table,
-        };
-        let (mut found, mut gaps) = tasks::listed(&mut walk, isolate);
-        drop(table);
         match self.pool(stop) {
             Some(Ok(pool)) => found.extend(pool.busy.into_iter().map(pool::job)),
             Some(Err(problem)) => {
@@ -322,6 +289,44 @@ impl NodeRuntime {
             ),
         }
         (found, gaps)
+    }
+
+    /// Runs `walk` over Node's event loop work at `stop`, given where each
+    /// thread keeps its isolate, or says why it cannot.
+    fn walk<T>(
+        &self,
+        stop: &dyn RuntimeStop,
+        walk: impl FnOnce(&mut tasks::Walk<'_>, ThreadLocal) -> T,
+    ) -> Result<T, Arc<str>> {
+        let layout = self.reading.as_ref().map_err(Arc::clone)?;
+        let tasks = self.tasks.as_ref().map_err(Arc::clone)?;
+        let isolate = match &self.statics.isolate {
+            Some(Ok(place)) => *place,
+            Some(Err(reason)) => {
+                return Err(format!("no thread's isolate can be found: {reason}").into());
+            }
+            None => return Err("the module names no current isolate".into()),
+        };
+        let reader = objects::Reader {
+            stop,
+            layout,
+            version: self.version,
+            charge: None,
+            blocks: stop.memory(),
+        };
+        let mut table = self
+            .table
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(walk(
+            &mut tasks::Walk {
+                reader,
+                layout: tasks,
+                image: self.image.as_ref(),
+                table: &mut table,
+            },
+            isolate,
+        ))
     }
 
     /// libuv's pool at `stop`, or `None` where the module does not hold it.
@@ -493,11 +498,19 @@ impl RuntimeModel for NodeRuntime {
                 _ => Ok(None),
             };
         }
+        let stackless = || "it runs no code until Node calls its callback, so it has no frames";
+        // The entry this stop's listing located is read alone; without it,
+        // or where it no longer proves the task, every list is.
+        if let Some(locator) = task.locator
+            && self.walk(stop, |walk, isolate| {
+                tasks::located(walk, isolate, task.number, locator)
+            }) == Ok(Ok(true))
+        {
+            return Err(stackless().into());
+        }
         let (all, _) = self.all_tasks(stop);
         if all.iter().any(|listed| listed.number == task.number) {
-            return Err(
-                "it runs no code until Node calls its callback, so it has no frames".into(),
-            );
+            return Err(stackless().into());
         }
         Ok(None)
     }

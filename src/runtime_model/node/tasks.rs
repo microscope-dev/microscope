@@ -174,6 +174,52 @@ impl Owner {
     }
 }
 
+impl Owner {
+    /// Whose `Environment` the work numbered `number` is in, by the
+    /// numbering [`Owner::number`] gives.
+    pub(super) const fn of(number: u64) -> Self {
+        match number >> WORKER_SHIFT {
+            0 => Self::Main,
+            thread => Self::Worker(ThreadId::new(thread)),
+        }
+    }
+}
+
+/// Whether the entry this stop's listing located at `locator` is still the
+/// handle, request, or timer numbered `number`, reading that entry alone: a
+/// wrapper whose JavaScript object points back at it and whose async id
+/// gives the number, or a `Timeout` of the owner's `internal/timers` whose
+/// async id does.
+pub(super) fn located(
+    walk: &mut Walk<'_>,
+    isolate: ThreadLocal,
+    number: u64,
+    locator: u64,
+) -> Result<bool, Problem> {
+    let reader = walk.reader;
+    let owner = Owner::of(number);
+    let Some(timer) = reader.object(locator)? else {
+        // A wrapper is a C++ object, whose address carries no tag.
+        let (_, _, persistent) = layouts(&reader, walk.layout)?;
+        let (async_id, _) = async_ids(&reader, walk.layout, locator)?;
+        return Ok(owner.number(async_id).ok() == Some(number)
+            && object(&reader, walk.layout, locator, persistent)?.is_some());
+    };
+    let thread = match owner {
+        Owner::Main => reader.stop.main_thread().ok_or("the main thread is gone")?,
+        Owner::Worker(thread) => thread,
+    };
+    let held = super::current_isolate(reader.stop, thread, isolate)?;
+    if held == 0 {
+        return Ok(false);
+    }
+    let environment = Environment {
+        address: environment(&reader, walk.layout, held)?,
+        owner,
+    };
+    super::timers::located(walk, environment, timer, number)
+}
+
 /// The number of the thread-pool job `thread` runs.
 pub(super) const fn pool_job(thread: ThreadId) -> u64 {
     POOL_JOB | thread.get()

@@ -6543,3 +6543,42 @@ fn a_node_cores_tasks_show_each_callback_and_pool_job() {
         ],
     );
 }
+
+/// `tasks` asks for the stacks of only the tasks that have one: in a Node
+/// core, its two thread-pool jobs, and none of its handles, requests, and
+/// timers, each of which would have the runtime walk them all again.
+#[test]
+fn tasks_read_no_stack_of_a_stackless_task() {
+    let scratch = support::ScratchDir::new("stackless-backtraces");
+    let recording = scratch.path().join("recording.log");
+    let node = std::path::Path::new(&std::env::var("MICROSCOPE_NODE").expect("MICROSCOPE_NODE"))
+        .join("26/node");
+    let output = microscope_command()
+        .env("MICROSCOPE_FLIGHT_RECORDING", &recording)
+        .args(["--batch", "--eval", "tasks", "--eval", "tasks -t", "--core"])
+        .arg(fixture("build/test-programs/node-tasks-26.core"))
+        .arg(node)
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .stdin(Stdio::null())
+        .output()
+        .expect("run microscope");
+    let stdout = assert_success(output);
+    let jobs = stdout
+        .lines()
+        .filter(|line| line.contains(" — thread-pool job (thread "))
+        .count();
+    assert_eq!(jobs, 4, "two jobs, listed twice:\n{stdout}");
+    let contents = fs::read_to_string(&recording).expect("the recording");
+    let backtraces = contents
+        .lines()
+        .filter(|line| line.contains("request backtrace"))
+        .count();
+    assert_eq!(backtraces, jobs, "{contents}");
+    // A stackless task's stack says why it has none, as `-t` shows it.
+    assert!(
+        stdout.contains(
+            "are unavailable: it runs no code until its runtime calls its callback, so it has no frames\n"
+        ),
+        "{stdout}"
+    );
+}

@@ -601,6 +601,10 @@ pub fn command_named(name: &str) -> Option<&'static CommandSpec> {
         .find(|command| aliases(command).any(|alias| alias == name) || command.name == name)
 }
 
+/// Why a stackless task, such as an event loop's pending handle, shows no
+/// stack.
+const STACKLESS: &str = "it runs no code until its runtime calls its callback, so it has no frames";
+
 /// A command's other names, with each runtime's own name for its tasks for
 /// the commands about tasks: `goroutines` for `tasks` in Go. A runtime that
 /// calls its tasks tasks adds none.
@@ -1644,15 +1648,23 @@ impl Cli {
 
         let mut traced = Vec::with_capacity(tasks.len());
         for task in tasks {
-            let trace = self
-                .debugger()
-                .at(StopContext {
-                    stop,
-                    execution: ExecutionContext::Task(task.id),
-                    frame: StackFrameId::INNERMOST,
+            // A task that runs no code has no stack to ask for, and asking
+            // would have its runtime list every task again.
+            let trace = if task.stackless {
+                Err(microscope::Error::TaskUnavailable {
+                    task: task.id,
+                    reason: STACKLESS.into(),
                 })
-                .backtrace()
-                .await;
+            } else {
+                self.debugger()
+                    .at(StopContext {
+                        stop,
+                        execution: ExecutionContext::Task(task.id),
+                        frame: StackFrameId::INNERMOST,
+                    })
+                    .backtrace()
+                    .await
+            };
             traced.push((task, trace));
         }
 

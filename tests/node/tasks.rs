@@ -7,7 +7,10 @@
 
 use std::collections::BTreeSet;
 
-use microscope::{CoreDumpOptions, TaskSnapshot, TaskState};
+use microscope::{
+    CoreDumpOptions, Error, ExecutionContext, StackFrameId, StopContext, TaskId, TaskSnapshot,
+    TaskState,
+};
 
 use crate::session::{CORES, MATRIX, NodeSession};
 use crate::support::truth::Report;
@@ -425,4 +428,94 @@ async fn the_tasks_comparison_fails_on_the_lies_it_looks_for() {
         check(&observed, &gapped, &truth, true).is_err(),
         "a pool gap where the pool is linked"
     );
+}
+
+/// In each core, a listed handle, request, or timer, the main thread's or
+/// the worker's, has no frames and says why; a thread-pool job's frames
+/// are its pool thread's, through libuv's worker; and a number Node never
+/// gave names no task.
+#[tokio::test]
+async fn a_cores_stackless_tasks_refuse_frames_and_pool_jobs_have_their_threads() {
+    let mut wrong = Vec::new();
+    for entry in CORES {
+        let name = format!("node-tasks-{entry}.core");
+        let core = Scenario::fixture(&name);
+        let mut scenario = Scenario::open_core(&name, &CoreDumpOptions::new(core));
+        let page = scenario
+            .operation("tasks", scenario.handle().tasks(None, 256))
+            .await;
+        let stop = scenario.snapshot().await.stop_id.expect("a stop");
+        let backtrace = |task: TaskId| {
+            scenario.handle().at(StopContext {
+                stop,
+                execution: ExecutionContext::Task(task),
+                frame: StackFrameId::INNERMOST,
+            })
+        };
+        let named = |pick: &dyn Fn(&TaskSnapshot) -> bool, what: &str| {
+            page.tasks
+                .iter()
+                .find(|task| pick(task))
+                .unwrap_or_else(|| panic!("{name}: no {what}"))
+                .id
+        };
+        let stackless = [
+            named(
+                &|t| {
+                    t.detail
+                        .as_deref()
+                        .is_some_and(|d| d.starts_with("TCP server"))
+                },
+                "server",
+            ),
+            named(
+                &|t| {
+                    t.detail
+                        .as_deref()
+                        .is_some_and(|d| d.starts_with("fs open"))
+                },
+                "request",
+            ),
+            named(&|t| t.stackless && t.id.number == 2, "timer"),
+            named(
+                &|t| {
+                    t.stackless
+                        && t.id.number >> 32 != 0
+                        && t.id.number >> 62 == 0
+                        && t.detail
+                            .as_deref()
+                            .is_some_and(|d| d.starts_with("timeout"))
+                },
+                "worker's timer",
+            ),
+        ];
+        for task in stackless {
+            match backtrace(task).backtrace().await {
+                Err(Error::TaskUnavailable { reason, .. })
+                    if reason.contains("it runs no code until Node calls its callback") => {}
+                other => wrong.push(format!("{name}: task {}: {other:?}", task.number)),
+            }
+        }
+        let job = named(&|t| !t.stackless, "pool job");
+        match backtrace(job).backtrace().await {
+            Ok(trace)
+                if trace.frames.iter().any(|frame| {
+                    frame
+                        .function
+                        .as_ref()
+                        .is_some_and(|f| &*f.name == "worker")
+                }) => {}
+            other => wrong.push(format!("{name}: pool job {}: {other:?}", job.number)),
+        }
+        let unknown = TaskId {
+            number: 999_999,
+            ..job
+        };
+        match backtrace(unknown).backtrace().await {
+            Err(Error::UnknownTask(task)) if task == unknown => {}
+            other => wrong.push(format!("{name}: task 999999: {other:?}")),
+        }
+        scenario.shutdown().await;
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }

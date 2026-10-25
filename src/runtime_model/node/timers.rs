@@ -41,27 +41,9 @@ pub(super) fn listed(
     tasks: &mut Vec<RuntimeTask>,
 ) -> Result<(), Problem> {
     let reader = walk.reader;
-    let realm = reader.word(environment.address + walk.layout.principal_realm)?;
-    if realm == 0 {
-        return Err("the environment has no principal realm".into());
-    }
-    let handle = reader.word(realm + walk.layout.timers_callback)?;
-    if handle == 0 {
+    let Some(module) = module_of(walk, environment)? else {
         return Ok(());
-    }
-    let callback = super::tasks::function(&reader, reader.word(handle)?)?
-        .ok_or("the realm's timers callback is not a function")?;
-    let shared = super::tasks::shared(&reader, callback)?;
-    let path = super::tasks::script_path(&reader, walk.table, callback)?;
-    if super::names::function_name(&reader, shared)? != PROCESS_TIMERS
-        || path.as_ref().map(|(_, path)| &**path) != Some(TIMERS_SCRIPT)
-    {
-        return Err(format!(
-            "the realm's timers callback is not {TIMERS_SCRIPT}'s {PROCESS_TIMERS}"
-        )
-        .into());
-    }
-    let module = module(&reader, callback)?;
+    };
 
     let mut count = 0;
     for list in own::elements(&reader, module.lists, 0..u32::MAX)? {
@@ -89,6 +71,63 @@ pub(super) fn listed(
         }
     }
     Ok(())
+}
+
+/// The variables of the `internal/timers` of `environment`, through its
+/// principal realm's timers callback, which must be that module's
+/// `processTimers`; `None` before the environment set up its timers.
+fn module_of(walk: &mut Walk<'_>, environment: Environment) -> Result<Option<Module>, Problem> {
+    let reader = walk.reader;
+    let realm = reader.word(environment.address + walk.layout.principal_realm)?;
+    if realm == 0 {
+        return Err("the environment has no principal realm".into());
+    }
+    let handle = reader.word(realm + walk.layout.timers_callback)?;
+    if handle == 0 {
+        return Ok(None);
+    }
+    let callback = super::tasks::function(&reader, reader.word(handle)?)?
+        .ok_or("the realm's timers callback is not a function")?;
+    let shared = super::tasks::shared(&reader, callback)?;
+    let path = super::tasks::script_path(&reader, walk.table, callback)?;
+    if super::names::function_name(&reader, shared)? != PROCESS_TIMERS
+        || path.as_ref().map(|(_, path)| &**path) != Some(TIMERS_SCRIPT)
+    {
+        return Err(format!(
+            "the realm's timers callback is not {TIMERS_SCRIPT}'s {PROCESS_TIMERS}"
+        )
+        .into());
+    }
+    module(&reader, callback).map(Some)
+}
+
+/// Whether `timer` is a `Timeout` of `environment`'s `internal/timers`
+/// whose async id gives `number`.
+pub(super) fn located(
+    walk: &mut Walk<'_>,
+    environment: Environment,
+    timer: Object,
+    number: u64,
+) -> Result<bool, Problem> {
+    let reader = walk.reader;
+    let Some(module) = module_of(walk, environment)? else {
+        return Ok(false);
+    };
+    let properties = own::named(&reader, timer)?;
+    let mut timeout = false;
+    let mut async_id = None;
+    for property in &properties {
+        if property.symbol {
+            if property.key.0 == module.async_id {
+                async_id = Some(primitive(&reader, property.held)?);
+            }
+        } else if super::properties::is_named(&reader, property.key.0, "_idleTimeout")? {
+            timeout = true;
+        }
+    }
+    Ok(timeout
+        && matches!(async_id, Some(Primitive::Number(id))
+            if environment.owner.number(id).ok() == Some(number)))
 }
 
 /// The variables of the module whose context is the first out from
