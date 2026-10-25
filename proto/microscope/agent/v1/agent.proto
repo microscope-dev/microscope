@@ -1,7 +1,7 @@
 // The protocol between `microscope agent` and microscope's hosted service.
 //
 // The agent opens a WebSocket to the service's /v1/agent endpoint, with its
-// device token in the upgrade request's Authorization header. Every binary
+// project agent key in the upgrade request's Authorization header. Every binary
 // message on the socket is one zstd frame, with its content size in the frame
 // header, that holds one protobuf message: an AgentMessage from the agent or a
 // ServerMessage from the service. Text messages are a protocol error.
@@ -61,12 +61,16 @@ message Hello {
 
 // The service's answer to Hello.
 message Welcome {
-  // The account the device token belongs to.
-  string account_email = 1;
+  // Legacy user-bound agents used this field. Project keys never populate it.
+  string account_email = 1 [deprecated = true];
   // The largest UploadChunk.data the service accepts.
   uint32 max_chunk_bytes = 2;
   // How many chunk bytes the agent may send past the last UploadAck.
   uint64 window_bytes = 3;
+  // The destination's full name, such as acme/production.
+  string project_name = 4;
+  // The stable destination identity, unchanged by a project rename.
+  uint64 project_id = 5;
 }
 
 enum RecordingKind {
@@ -79,7 +83,7 @@ enum RecordingKind {
 // service answers with UploadResume, or UploadFailed.
 message UploadBegin {
   // 16 random bytes the agent chooses for the file. The same key from the same
-  // account resumes the same recording, so retries never make duplicates.
+  // project resumes the same recording, including after agent key replacement.
   bytes upload_key = 1;
   RecordingKind kind = 2;
   // The file's size in bytes.
@@ -156,7 +160,7 @@ message Goodbye {
     REASON_SHUTTING_DOWN = 1;
     // The agent's protocol revision is no longer supported. Upgrade it.
     REASON_PROTOCOL_UNSUPPORTED = 2;
-    // The device token was revoked.
+    // The project agent key was disabled.
     REASON_UNAUTHENTICATED = 3;
     // The agent broke the protocol.
     REASON_PROTOCOL_ERROR = 4;
@@ -167,8 +171,9 @@ message Goodbye {
   bool retry = 3;
 }
 
-// Something the account's owner asked this machine to do. Only sent to agents
-// whose Hello set accepts_commands.
+// An operation a project-authorized operator asked this machine to perform.
+// Only sent to agents whose Hello set accepts_commands. Possession of an agent
+// key never authorizes sending commands to another agent.
 message Command {
   // Answered by the CommandResult with the same id.
   uint64 id = 1;
