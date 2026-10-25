@@ -206,7 +206,8 @@ microscope report --js --lines server.usprof
 
   A thread is never recorded with a shorter stack or a guessed one. A wait
   shorter than one read of the thread is mostly left out. A read that
-  takes longer than SECONDS says so in the profile, as reads then ran less
+  ends after the next was due, because it took longer than SECONDS or a busy
+  machine started it late, says so in the profile, as reads then ran less
   often than asked.
 
 A sample taken before microscope has read V8's layout, as just after the

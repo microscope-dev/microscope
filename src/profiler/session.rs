@@ -703,6 +703,21 @@ fn snapshotters(pid: u32, options: &RecordOptions) -> Vec<Snapshots> {
         .collect()
 }
 
+/// What a live read that began `late` after it was due and took `took`
+/// says of reads asked for `every` so often: that they ran less often than
+/// asked, where the next was due before this one ended.
+fn fell_behind(late: Duration, took: Duration, every: Duration) -> Option<String> {
+    (late + took > every).then(|| {
+        format!(
+            "a live read took {:.1} ms and began {:.1} ms after it was due, longer than the \
+             {:.1} ms asked between reads, so reads ran less often than asked",
+            took.as_secs_f64() * 1e3,
+            late.as_secs_f64() * 1e3,
+            every.as_secs_f64() * 1e3
+        )
+    })
+}
+
 /// Takes a task snapshot every so often, once the program's debug
 /// information is read, with every event off while it holds the program
 /// stopped.
@@ -792,6 +807,7 @@ impl Snapshots {
             // The program runs on, and the samples it writes meanwhile
             // arrive as any do.
             let start = monotonic();
+            let late = std::time::Instant::now().saturating_duration_since(self.next);
             let modules = processor.modules_of(Pid::new(self.pid));
             let code = processor.mapped_code(Pid::new(self.pid));
             let taken = snapshotter.take_live(self.reads, &modules, &code);
@@ -816,16 +832,8 @@ impl Snapshots {
                 // another, so falling behind is a note of its own: the read
                 // did not fail, it was late.
                 let took = Duration::from_nanos(end.saturating_sub(start));
-                if took > self.every {
-                    processor.snapshot_noted(
-                        start,
-                        &format!(
-                            "a live read took {:.1} ms, longer than the {:.1} ms asked between \
-                             reads, so reads ran less often than asked",
-                            took.as_secs_f64() * 1e3,
-                            self.every.as_secs_f64() * 1e3
-                        ),
-                    );
+                if let Some(note) = fell_behind(late, took, self.every) {
+                    processor.snapshot_noted(start, &note);
                 }
             }
 
@@ -1327,4 +1335,28 @@ fn cut(
     builder.absorb(samples);
     builder.absorb(&capture.finish().capture);
     builder.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    /// A live read says reads ran less often than asked once the next was
+    /// due before it ended, whether it took long or began late, as on a
+    /// machine too busy to wake the recorder in time.
+    #[test]
+    fn a_live_read_that_ends_after_the_next_was_due_says_so() {
+        let ms = Duration::from_millis;
+        let every = ms(1);
+        assert!(super::fell_behind(ms(0), Duration::from_micros(300), every).is_none());
+        assert!(
+            super::fell_behind(ms(0), ms(3), every).is_some(),
+            "took long"
+        );
+        let late = super::fell_behind(ms(3), Duration::from_micros(200), every);
+        assert!(
+            late.is_some_and(|note| note.starts_with("a live read took")),
+            "began late"
+        );
+    }
 }
