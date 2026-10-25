@@ -57,6 +57,7 @@ use debug_registers::DebugRegisterPlan;
 use memory::MemoryAccessError;
 use modules::{ModuleMapping, loader_link_maps, mapped_module_load_bias, module_mappings};
 use native::{InspectionOps, LinuxPtrace, LinuxTraceOps, is_vanished_tracee};
+pub use proc_status::Asleep;
 use registers::Fxsave;
 pub(super) use tls::CLibrary;
 pub use tls::RunningTls;
@@ -173,6 +174,18 @@ pub fn running_thread_pointers(pid: u32) -> std::result::Result<Vec<(u32, u64)>,
         .into_iter()
         .filter_map(|(tid, pointer)| Some((u32::try_from(tid).ok()?, pointer)))
         .collect())
+}
+
+/// Thread `thread` of process `process`, if it is asleep in a system call,
+/// or why its state cannot be read.
+pub fn thread_asleep(process: u32, thread: u32) -> std::result::Result<Option<Asleep>, String> {
+    proc_status::thread_asleep(process, thread).map_err(|error| error.to_string())
+}
+
+/// How many times thread `thread` of process `process` has given up its
+/// CPU, of its own accord and not, or why it cannot be read.
+pub fn thread_switches(process: u32, thread: u32) -> std::result::Result<(u64, u64), String> {
+    proc_status::thread_switches(process, thread).map_err(|error| error.to_string())
 }
 
 pub fn thread_start_time(process: crate::model::Pid, thread: crate::model::Tid) -> Option<u64> {

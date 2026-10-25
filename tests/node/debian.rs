@@ -445,3 +445,14 @@ fn debian_attached_samples_unwind_through_v8s_generated_code() {
         profile.truncations()
     );
 }
+
+/// On Debian's node, whose libnode keeps each thread's isolate in dynamic
+/// thread-local storage, live snapshots read each thread blocked in native
+/// code as V8 reported it, and leave out the one that runs JavaScript.
+#[test]
+fn debian_live_snapshots_read_each_blocked_thread() {
+    if !inside("debian::debian_live_snapshots_read_each_blocked_thread") {
+        return;
+    }
+    crate::live::check(DEBIAN);
+}

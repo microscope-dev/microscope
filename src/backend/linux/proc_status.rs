@@ -227,6 +227,65 @@ pub(super) fn hex_field(status: &[u8], key: &[u8]) -> Option<u64> {
     u64::from_str_radix(std::str::from_utf8(value).ok()?, 16).ok()
 }
 
+/// A thread asleep in a system call, as its `/proc/PID/task/TID/syscall`
+/// record shows it: the system call's number and arguments, its stack
+/// pointer, and its instruction pointer. Of another process's thread, the
+/// kernel writes the record only while the thread is off its CPU and stays
+/// off it while the record is made (`task_current_syscall`); a thread that
+/// reads its own record finds the read it makes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Asleep {
+    pub stack_pointer: u64,
+    record: Vec<u8>,
+}
+
+/// The thread a `syscall` record describes, if it is asleep in a system
+/// call: not `running`, nor blocked outside one (`-1 sp pc`).
+pub(super) fn asleep(record: &[u8]) -> Option<Asleep> {
+    let fields: Vec<&[u8]> = record.trim_ascii().split(|byte| *byte == b' ').collect();
+    let [number, arguments @ .., stack_pointer, _instruction] = fields.as_slice() else {
+        return None;
+    };
+    let hex = |field: &[u8]| {
+        let digits = field.strip_prefix(b"0x")?;
+        (!digits.is_empty() && digits.iter().all(u8::is_ascii_hexdigit))
+            .then(|| u64::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok())
+            .flatten()
+    };
+    decimal(number)?;
+    if arguments.len() != 6 || arguments.iter().any(|argument| hex(argument).is_none()) {
+        return None;
+    }
+    Some(Asleep {
+        stack_pointer: hex(stack_pointer)?,
+        record: record.to_vec(),
+    })
+}
+
+/// How many times the thread a `status` record describes has given up its
+/// CPU, of its own accord and not.
+pub(super) fn context_switches(status: &[u8]) -> Option<(u64, u64)> {
+    let count = |key: &[u8]| decimal(field(status, key)?.trim_ascii());
+    Some((
+        count(b"voluntary_ctxt_switches:")?,
+        count(b"nonvoluntary_ctxt_switches:")?,
+    ))
+}
+
+/// Thread `thread` of process `process`, if it is asleep in a system call.
+pub(super) fn thread_asleep(process: u32, thread: u32) -> std::io::Result<Option<Asleep>> {
+    let record = read_path(format!("/proc/{process}/task/{thread}/syscall"))?;
+    Ok(asleep(&record))
+}
+
+/// How many times thread `thread` of process `process` has given up its
+/// CPU, of its own accord and not.
+pub(super) fn thread_switches(process: u32, thread: u32) -> std::io::Result<(u64, u64)> {
+    let status = read_path(format!("/proc/{process}/task/{thread}/status"))?;
+    context_switches(&status)
+        .ok_or_else(|| std::io::Error::other("the status names no context switches"))
+}
+
 fn valid_pid(value: u32) -> bool {
     value != 0 && i32::try_from(value).is_ok()
 }
@@ -287,6 +346,106 @@ fn thread_in_status(status: &[u8], process: u32, thread: u32) -> Option<TargetTh
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_thread_in_a_system_call_is_asleep_in_one() {
+        let record = b"7 0x7ffd1000 0x1 0x2 0x3 0x4 0x5 0x7ffd0fd8 0x7f00deadbeef\n";
+        let asleep = asleep(record).expect("asleep in poll");
+        assert_eq!(asleep.stack_pointer, 0x7ffd_0fd8);
+        assert_eq!(asleep, super::asleep(record).unwrap(), "the same record");
+        assert_ne!(
+            Some(asleep),
+            super::asleep(b"7 0x7ffd1000 0x1 0x2 0x3 0x4 0x6 0x7ffd0fd8 0x7f00deadbeef\n"),
+            "another argument is another sleep"
+        );
+
+        assert_eq!(super::asleep(b"running\n"), None);
+        assert_eq!(super::asleep(b"-1 0x7ffd0fd8 0x7f00deadbeef\n"), None);
+        assert_eq!(
+            super::asleep(b"7 0x1 0x2 0x7ffd0fd8 0x7f00deadbeef\n"),
+            None
+        );
+        assert_eq!(
+            super::asleep(b"7 0x1 0x2 0x3 0x4 0x5 0x6 sp 0x7f00deadbeef\n"),
+            None
+        );
+        assert_eq!(super::asleep(b""), None);
+    }
+
+    #[test]
+    fn a_status_says_how_often_its_thread_gave_up_its_cpu() {
+        let status = b"Name:\tnode\nState:\tS (sleeping)\nvoluntary_ctxt_switches:\t12\nnonvoluntary_ctxt_switches:\t3\n";
+        assert_eq!(context_switches(status), Some((12, 3)));
+        assert_eq!(context_switches(b"voluntary_ctxt_switches:\t12\n"), None);
+    }
+
+    /// A thread that spins is on its CPU, or waits for it, and is in no
+    /// system call; one blocked in a system call is asleep in it, and has
+    /// given up its CPU.
+    #[test]
+    fn a_blocked_thread_is_asleep_in_its_system_call() {
+        let process = std::process::id();
+        let spin = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let (started, spinning) = std::sync::mpsc::channel();
+        let spinner = std::thread::spawn({
+            let spin = std::sync::Arc::clone(&spin);
+            move || {
+                started
+                    .send(u32::try_from(nix::unistd::gettid().as_raw()).unwrap())
+                    .unwrap();
+                while spin.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::hint::spin_loop();
+                }
+            }
+        });
+        let spinner_id = spinning
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .unwrap();
+        // It may still be leaving the channel's send; once it spins, it
+        // stays in no system call.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        for _ in 0..100 {
+            assert_eq!(
+                thread_asleep(process, spinner_id).unwrap(),
+                None,
+                "spinning"
+            );
+        }
+        spin.store(false, std::sync::atomic::Ordering::Relaxed);
+        spinner.join().unwrap();
+
+        let (ready, parked) = std::sync::mpsc::channel();
+        let (reader, writer) = nix::unistd::pipe().unwrap();
+        let blocked = std::thread::spawn(move || {
+            ready
+                .send(u32::try_from(nix::unistd::gettid().as_raw()).unwrap())
+                .unwrap();
+            let mut byte = [0];
+            nix::unistd::read(&reader, &mut byte).unwrap();
+        });
+        let thread = parked
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let asleep = loop {
+            if let Some(asleep) = thread_asleep(process, thread).unwrap() {
+                break asleep;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the thread never blocked"
+            );
+            std::thread::yield_now();
+        };
+        assert!(
+            asleep.record.starts_with(b"0 "),
+            "asleep in read: {asleep:?}"
+        );
+        let switches = thread_switches(process, thread).unwrap();
+        assert!(switches.0 >= 1, "{switches:?}");
+        nix::unistd::write(&writer, b"x").unwrap();
+        blocked.join().unwrap();
+    }
 
     #[test]
     fn unavailable_proc_metadata_does_not_prove_process_exit() {

@@ -18,6 +18,7 @@ mod frames;
 mod functions;
 mod inspector;
 mod interrupts;
+mod live;
 mod maps;
 mod native;
 mod oracle;

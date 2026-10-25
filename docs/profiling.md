@@ -188,11 +188,24 @@ microscope report --js --lines server.usprof
   stack, as the debugger does: every frame has its function and line, in
   every tier. A snapshot writes nothing into the program and does not use
   Node's inspector.
-- `live` does not read JavaScript frames. A thread's JavaScript frames begin
-  at its frame pointer, and only stopping the thread shows that register:
-  `/proc` gives a running or blocked thread's stack and instruction pointers,
-  not its frame pointer. Each live read says so in the profile instead of
-  recording no frames.
+- `live[=SECONDS]` reads each thread's JavaScript frames every SECONDS,
+  0.01 if not given, without stopping the program. It reads a thread only
+  while the thread waits in a system call that JavaScript reached through
+  native code, such as `fs.readSync`, `Atomics.wait`, `execFileSync`, an
+  addon's function, or a pause at `debugger`. V8 then keeps where the
+  thread's JavaScript frames begin in its own memory. Each frame has its
+  function and line in every tier, as with `snapshot`. A thread idle in its
+  event loop has no JavaScript frames, and the profile records none for it.
+  A thread is left out, with the reason in the profile, when it:
+  - runs JavaScript or anything else, so it is not waiting in a system call;
+  - ran during the read;
+  - is collecting garbage, or V8 is rewriting its frames to deoptimize them;
+  - waits in a fast API call that Node 22's optimizing compiler made, whose
+    caller's line V8 does not record;
+  - runs WebAssembly.
+
+  A thread is never recorded with a shorter stack or a guessed one. A wait
+  shorter than one read of the thread is mostly left out.
 
 A sample taken before microscope has read V8's layout, as just after the
 program starts, ends in "interpreted frames unknown". With `bpf`, a sample in

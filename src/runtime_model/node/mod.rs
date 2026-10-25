@@ -22,6 +22,7 @@ pub mod inspector;
 
 pub use exceptions::EXCEPTION_FILTERS;
 mod lineage;
+mod live;
 mod lookup;
 mod names;
 mod napi;
@@ -190,6 +191,7 @@ pub fn detect(
         inspector_received: image.symbol(MESSAGE_RECEIVED).map(|symbol| symbol.address),
         native_inspector: runtime.inspector,
         tasks: runtime.tasks,
+        entry_stack: runtime.entry_stack,
         image: Arc::clone(image),
     })))
 }
@@ -396,6 +398,10 @@ struct NodeRuntime {
     /// does not say.
     tasks: Result<NodeTasks, Arc<str>>,
 
+    /// How far into an isolate its stack of entries is, or why the
+    /// module's code does not say.
+    entry_stack: Result<u64, Arc<str>>,
+
     /// The module's symbols, which name the classes of Node's wrappers.
     image: Arc<dyn RuntimeImage + Send + Sync>,
 }
@@ -593,6 +599,63 @@ impl RuntimeModel for NodeRuntime {
             &self.statics,
             frame,
         )
+    }
+
+    /// A thread's JavaScript frames, read from where V8 publishes them in
+    /// the thread's isolate while JavaScript calls out to native code
+    /// ([`live`]).
+    fn live_frames(
+        &self,
+        stop: &dyn RuntimeStop,
+        thread: &super::LiveThread<'_>,
+    ) -> Option<super::LiveFrames> {
+        let unread = |reason: String| Some(super::LiveFrames::Unread(reason.into()));
+        let layout = match &self.reading {
+            Ok(layout) => layout,
+            Err(reason) => return Some(super::LiveFrames::Unread(Arc::clone(reason))),
+        };
+        let isolate = match &self.statics.isolate {
+            Some(Ok(place)) => *place,
+            Some(Err(reason)) => {
+                return unread(format!("no thread's isolate can be found: {reason}"));
+            }
+            None => return unread("the module names no current isolate".to_owned()),
+        };
+        let entry_stack = match &self.entry_stack {
+            Ok(offset) => *offset,
+            Err(reason) => {
+                return unread(format!(
+                    "where an isolate keeps the isolates its thread entered before is not \
+                     known: {reason}"
+                ));
+            }
+        };
+        // The thread did not run while it is read, so what is read of it
+        // once holds for the whole read.
+        let read_now = StopMemory::default();
+        let reader = objects::Reader {
+            stop,
+            layout,
+            version: self.version,
+            charge: None,
+            blocks: Some(stop.memory().unwrap_or(&read_now)),
+        };
+        let mut table = self
+            .table
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut context = live::Context {
+            table: &mut table,
+            encoding: positions::Encoding::of(self.version),
+            statics: &self.statics,
+            isolate,
+            entry_stack,
+            builtins: self.builtins,
+            stored_builtins: self.stored_builtins(stop),
+        };
+        let read = live::read(stop, &reader, &mut context, thread);
+        drop(table);
+        Some(read)
     }
 
     fn sampled_code_frame(

@@ -42,7 +42,7 @@ test-group = 'perf-rings'
 max-threads = 1
 
 [[profile.default.overrides]]
-filter = 'binary(node) & test(/^(profile|syscalls)::/)'
+filter = 'binary(node) & test(/^(profile|syscalls|live)::|^debian::debian_live/)'
 test-group = 'node-recordings'
 
 # Each stopped snapshot's debugger reads every library's debug information

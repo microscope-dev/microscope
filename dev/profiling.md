@@ -246,12 +246,28 @@ A stopped snapshot attaches through `DebuggerHandle::observe_process`, which
 plants none of the loader's, the runtimes', or the inspector's breakpoints and
 opens no inspector: a snapshot writes nothing into the program. In a process
 that carries V8, a frame whose code V8 owns stands for the JavaScript function
-the debugger names, as an interpreter frame does for Python. A live snapshot of
-such a process records the problem `tasks::UNREAD_NATIVE` instead of an empty
-read, since JavaScript frames begin at a frame pointer only a stopped thread
-shows (`tests/node/profile.rs` holds a live recording to the problem): `/proc/PID/task/TID/syscall` gives a blocked thread's stack and
-instruction pointers but not its frame pointer, and unwinding glibc's system
-call wrappers from there does not reach V8's frames.
+the debugger names, as an interpreter frame does for Python.
+
+A live snapshot reads the JavaScript frames that V8 publishes in a thread's
+isolate while JavaScript calls out to native code
+(`RuntimeModel::live_frames`, `runtime_model/node/live.rs`). `/proc` gives a
+blocked thread's stack and instruction pointers but not its frame pointer,
+so the published frames are the only way in. `LiveRuntime::published` reads
+each thread that holds an isolate only while it is proven not to run. The
+thread must be asleep in a system call (`/proc/PID/task/TID/syscall`) before
+and after the read, with the same record. Its context-switch counts
+(`/proc/PID/task/TID/status`) must be the same before and after. To run and
+sleep again, a thread gives up its CPU, which counts. A thread that may have
+run counts as changed. Every thread left out for another reason is named in
+the snapshot's one problem, `frames not read live: threads 12, 13: REASON;
+...`. `LiveStop::stack` bounds each thread's stack by the thread pointers
+glibc lists: a thread's stack lies below its own thread pointer and above the
+next lower one, and the main thread's above them all. The reader treats an
+isolate whose outermost entry lies on another thread's stack as held by a
+helper thread, with no JavaScript frames of its own. A copy V8 made of its
+builtins (a `LoadedModule` with a `window`) runs no runtime of its own, so a
+live snapshot reads runtimes only through the full module. Otherwise each
+thread would be read twice, the second time with the copy's bias.
 
 ### Python frames in each sample
 

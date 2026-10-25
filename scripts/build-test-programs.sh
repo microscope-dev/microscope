@@ -2665,6 +2665,18 @@ build_program gcc sdk/node/microscope.c "$output_dir/node-microscope.node" \
     -std=c17 -Wall -Wextra -Werror -shared -fPIC -O2 -g "-I$MICROSCOPE_NODE/26/include" -ldl -pthread
 build_program gcc "$fixtures_dir/node/inspector-lifetime.c" "$output_dir/node-inspector-lifetime.node" \
     -std=c17 -Wall -Wextra -Werror -shared -fPIC -O0 -g -pthread "-I$MICROSCOPE_NODE/26/include"
+# An addon with a fast API function, against each build's own headers, as V8's
+# C++ API is not ABI-stable. Node ships no fast API header, which comes from
+# the V8 of the build's line; node.h, included first, has already defined
+# every V8 header that one includes.
+for entry_version in "26 14.6" "nixpkgs-26 14.6" "24 13.6" "nixpkgs-24 13.6" "debian-24 13.6" \
+    "22 12.4" "nixpkgs-22 12.4"; do
+    read -r entry version <<<"$entry_version"
+    build_program g++ "$fixtures_dir/node/fast.cc" "$output_dir/node-fast-${entry}.node" \
+        -std=c++20 -Wall -Wextra -Werror -shared -fPIC -O1 -g \
+        -isystem "$MICROSCOPE_NODE/$entry/include" \
+        -idirafter "$MICROSCOPE_V8_TORQUE/$version/v8/include"
+done
 for entry in 26 24 22; do
     node="$MICROSCOPE_NODE/$entry/node"
     for fixture in stacks tiers awaits; do

@@ -1609,6 +1609,17 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         None
     }
 
+    /// The frames of the runtime's code on a thread of a running process,
+    /// read from what the runtime publishes of them in memory, as V8 does
+    /// in each isolate when JavaScript calls out to native code; `None`
+    /// for a runtime that publishes nothing to read them by. The caller
+    /// has proven that the thread did not run for the whole read
+    /// ([`LiveThread`]), so what it reads of the thread holds together.
+    fn live_frames(&self, stop: &dyn RuntimeStop, thread: &LiveThread<'_>) -> Option<LiveFrames> {
+        let _ = (stop, thread);
+        None
+    }
+
     /// The identities of the class `class` and of each class it derives
     /// from, in the order the language looks attributes up in, which
     /// choose the view that presents its objects.
@@ -1804,6 +1815,64 @@ pub struct CodeFrame<'a> {
     /// The registers the unwinder recovered for the frame, as its frame
     /// pointer.
     pub registers: &'a RegisterFile,
+}
+
+/// A thread of a running process whose frames [`RuntimeModel::live_frames`]
+/// reads: one the caller has proven did not run while it was read, asleep
+/// in a system call with its stack pointer where it was before and after.
+#[derive(Clone)]
+pub struct LiveThread<'a> {
+    pub thread: ThreadId,
+    pub stack_pointer: u64,
+
+    /// The addresses its stack may hold that no other thread's stack does,
+    /// as where the C library keeps each thread's stack says: a frame or
+    /// stack pointer outside them is another thread's, or none.
+    pub stack: std::ops::Range<u64>,
+
+    /// Whose the process's code at an address is, as the mappings the
+    /// caller has proven say.
+    pub code: &'a dyn Fn(VirtualAddress) -> CodeAt,
+}
+
+impl std::fmt::Debug for LiveThread<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LiveThread")
+            .field("thread", &self.thread)
+            .field("stack_pointer", &self.stack_pointer)
+            .field("stack", &self.stack)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Whose a running process's code at an address is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodeAt {
+    /// The code of the module that carries the runtime, at this address
+    /// of its image: where the module is mapped, or a copy of its code the
+    /// process made, proven byte for byte.
+    Image(ImageAddress),
+
+    /// Code the runtime generated, which no image holds.
+    Generated,
+
+    /// Any other code, or none the caller has proven yet.
+    Other,
+}
+
+/// What [`RuntimeModel::live_frames`] read of a thread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LiveFrames {
+    /// The thread runs none of the runtime's code.
+    None,
+
+    /// Its frames, innermost first, each with its function and place.
+    Frames(Vec<InterpretedFrame>),
+
+    /// Why its frames are not read. A read that cannot prove every frame
+    /// of the thread is left out, never kept as a shorter stack.
+    Unread(Arc<str>),
 }
 
 /// What a runtime recorded of a physical frame whose code is its own.

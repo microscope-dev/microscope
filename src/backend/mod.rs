@@ -26,6 +26,7 @@ pub use linux::resume_address;
 pub use linux::sim_edge;
 pub use linux::syscalls as syscall_engines;
 pub use linux::{Capacity, GroupBackend, GroupNotice, Joined, Started, spawn_group};
+pub use linux::{thread_asleep, thread_switches};
 
 /// Identifies a file independently of the path used to open it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

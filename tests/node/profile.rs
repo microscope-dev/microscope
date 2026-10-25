@@ -38,12 +38,21 @@ const EVERY: Duration = Duration::from_millis(100);
 /// Each path of `source`'s call tree in `look` that weight ends at,
 /// outermost first, by line, with the weight that ends there.
 pub fn paths(profile: &Profile, source: Source, look: Look) -> BTreeMap<Vec<String>, u64> {
+    paths_of(
+        profile,
+        &Query {
+            source,
+            look,
+            ..Query::default()
+        },
+    )
+}
+
+/// Each path of the call tree `query` selects that weight ends at, by
+/// line, as [`paths`] gives them.
+pub fn paths_of(profile: &Profile, query: &Query) -> BTreeMap<Vec<String>, u64> {
     let keys = profile.keys(Granularity::Line);
-    let tree = keys.aggregate(&Query {
-        source,
-        look,
-        ..Query::default()
-    });
+    let tree = keys.aggregate(query);
 
     (0..tree.len())
         .filter(|node| tree.own[*node] > 0)
@@ -63,7 +72,7 @@ pub fn paths(profile: &Profile, source: Source, look: Look) -> BTreeMap<Vec<Stri
 
 /// A frame V8 reported, as a profile names a line: its function, its
 /// file's last component, and its line.
-fn line_key(function: &str, file: &str, line: Option<u32>) -> String {
+pub fn line_key(function: &str, file: &str, line: Option<u32>) -> String {
     let function = if function == "-" { "" } else { function };
     let file = file.rsplit('/').next().unwrap_or(file);
     format!("{function} {file}:{}", line.unwrap_or(0))
@@ -108,12 +117,32 @@ pub fn record_parked(
     options: &RecordOptions,
     mut ready: impl FnMut(&Profile, &[Thread]) -> bool,
 ) -> (Profile, Vec<Thread>) {
+    let mut command = Command::new(node::node(ENTRY));
+    command.arg(node::fixture(fixture));
+    let (profile, reported, _) = record_released(
+        command,
+        options,
+        |text| Some(parked(text, checkpoint)).filter(|threads| !threads.is_empty()),
+        |profile, reported| ready(profile, reported),
+    );
+    (profile, reported.unwrap_or_default())
+}
+
+/// Records `command`, a Node fixture, with `options`, holding it until its
+/// profile so far is `ready` for what its output reported, as `report`
+/// reads it once it is whole, or until the deadline; then releases it with
+/// a line on its standard input. The profile, what it reported, and its
+/// whole output once it exited.
+pub fn record_released<T>(
+    mut command: Command,
+    options: &RecordOptions,
+    report: impl Fn(&str) -> Option<T>,
+    mut ready: impl FnMut(&Profile, &T) -> bool,
+) -> (Profile, Option<T>, String) {
     let scratch = ScratchDir::new("node-profile");
     let output = scratch.path().join("output");
     let (reader, mut writer) = std::io::pipe().expect("pipe");
-    let mut command = Command::new(node::node(ENTRY));
     command
-        .arg(node::fixture(fixture))
         .env_clear()
         .stdin(reader)
         .stdout(std::fs::File::create(&output).expect("the fixture's output"))
@@ -122,22 +151,31 @@ pub fn record_parked(
     let stop = AtomicBool::new(false);
     let mut released = false;
     let started = Instant::now();
-    let mut reported = Vec::new();
+    let mut reported = None;
+    let read = || report(&std::fs::read_to_string(&output).unwrap_or_default());
     let recording = record_watched(
         command,
         options,
         &mut Watch {
             every: Duration::from_millis(50),
             publish: &mut |profile| {
-                if reported.is_empty() {
-                    reported = parked(&output, checkpoint);
+                if reported.is_none() {
+                    reported = read();
                 }
                 let waited = started.elapsed();
                 let given_up = waited > READY_DEADLINE
                     && (profile.task_snapshots().0 >= ENOUGH_SNAPSHOTS
                         || waited > SNAPSHOT_DEADLINE);
-                if !released && ((!reported.is_empty() && ready(&profile, &reported)) || given_up) {
-                    writer.write_all(b"\n").expect("release the program");
+                // Once released, the program is past what it reported.
+                let ready = !released
+                    && reported
+                        .as_ref()
+                        .is_some_and(|reported| ready(&profile, reported));
+                if !released && (ready || given_up) {
+                    // A program that ended on its own has nothing to let go.
+                    if let Err(error) = writer.write_all(b"\n") {
+                        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe, "{error}");
+                    }
                     released = true;
                 }
             },
@@ -148,20 +186,17 @@ pub fn record_parked(
     .expect("record");
 
     assert!(recording.status.success(), "{}", recording.status);
-    if reported.is_empty() {
-        reported = parked(&output, checkpoint);
-    }
-    (recording.profile, reported)
+    let text = std::fs::read_to_string(&output).unwrap_or_default();
+    (recording.profile, reported.or_else(|| report(&text)), text)
 }
 
-/// The threads the fixture writing `output` reported at `checkpoint`, once
-/// it has.
-fn parked(output: &Path, checkpoint: &str) -> Vec<Thread> {
-    let text = std::fs::read_to_string(output).unwrap_or_default();
+/// The threads a fixture whose output is `text` reported at `checkpoint`,
+/// once it has.
+fn parked(text: &str, checkpoint: &str) -> Vec<Thread> {
     if !text.contains("\nREADY\n") {
         return Vec::new();
     }
-    Report::parse(&text)
+    Report::parse(text)
         .checkpoint(checkpoint)
         .map(threads)
         .unwrap_or_default()
@@ -192,34 +227,36 @@ fn stopped_snapshots_find_each_threads_javascript_lines() {
     assert!(missing.is_empty(), "{}\n{paths:#?}", missing.join("\n"));
 }
 
-/// Live snapshots, which never stop the program, read no JavaScript
-/// frames, which begin at a frame pointer only a stopped thread shows: each
-/// says so, and records no thread's frames rather than finding none.
+/// Live snapshots, which never stop the program, read each thread's
+/// JavaScript frames by line from where V8 publishes them while the
+/// thread waits in native code: the main thread in `fs.readSync` and the
+/// workers in `Atomics.wait`, as V8 reported them.
 #[test]
-fn live_snapshots_say_they_read_no_javascript_frames() {
+fn live_snapshots_read_each_waiting_threads_javascript_lines() {
     let options = RecordOptions {
         python: Some(PythonEngine::Live { every: EVERY }),
         ..RecordOptions::default()
     };
-    let said = |profile: &Profile| {
-        profile
-            .task_snapshot_problems()
-            .iter()
-            .any(|(_, problem)| problem.contains("do not read JavaScript frames"))
+    let ready = |profile: &Profile, reported: &[Thread]| {
+        missing(
+            &expected(reported),
+            &paths(profile, Source::Waits, Look::Python),
+        )
+        .is_empty()
     };
-    let (profile, reported) =
-        record_parked("stacks.js", "parked", &options, |profile, _| said(profile));
+    let (profile, reported) = record_parked("stacks.js", "parked", &options, ready);
     assert_eq!(reported.len(), 3, "{reported:#?}");
-    let problems = profile.task_snapshot_problems();
-    assert!(said(&profile), "{problems:#?}");
+
+    let (taken, paused, _) = profile.task_snapshots();
+    assert!(taken > 0 && paused == 0, "{taken} {paused}");
+    let paths = paths(&profile, Source::Waits, Look::Python);
+    let missing = missing(&expected(&reported), &paths);
     assert!(
-        problems
-            .iter()
-            .all(|(_, problem)| problem.contains("frame pointer") && problem.contains("/proc")),
-        "{problems:#?}"
+        missing.is_empty(),
+        "{}\n{paths:#?}\n{:#?}",
+        missing.join("\n"),
+        profile.task_snapshot_problems()
     );
-    let waits = paths(&profile, Source::Waits, Look::Python);
-    assert!(waits.is_empty(), "{waits:#?}");
 }
 
 /// The comparison fails on each lie it exists to catch: a dropped frame, a

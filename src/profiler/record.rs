@@ -2203,8 +2203,27 @@ impl Processor {
         self.builder.count(AccountKind::TaskSamples as u32, claimed);
     }
 
-    /// Records that a task snapshot at `time` failed, or missed tasks, and
-    /// why.
+    /// Each piece of process `pid`'s code, in the order a frame's code is
+    /// found among them.
+    pub fn mapped_code(&self, pid: Pid) -> Vec<super::tasks::MappedCode> {
+        self.processes.get(&pid).map_or_else(Vec::new, |process| {
+            process
+                .mapped
+                .iter()
+                .map(|mapped| super::tasks::MappedCode {
+                    start: mapped.start,
+                    end: mapped.end,
+                    image: mapped.loaded.image,
+                    bias: mapped.loaded.load_bias,
+                    generated: self
+                        .images
+                        .get(mapped.image)
+                        .is_some_and(|image| image.generated),
+                })
+                .collect()
+        })
+    }
+
     /// The modules process `pid` maps, as its mapping records last said,
     /// each once, with its debug information: what a live task snapshot
     /// reads the process's runtimes through. A module whose debug
@@ -2215,6 +2234,8 @@ impl Processor {
             .map_or_else(Vec::new, |process| modules_in(process, &self.images))
     }
 
+    /// Records that a task snapshot at `time` failed, or missed tasks, and
+    /// why.
     pub fn snapshot_failed(&mut self, time: u64, why: &str) {
         record!("record: {why}");
         self.builder.count(AccountKind::SnapshotFailures as u32, 1);

@@ -1012,6 +1012,39 @@ gives its shared info, and:
   translation (`compiled.rs`, `translation.rs`), which names inlined
   functions too.
 
+**Live frames.** `node/live.rs` reads a running thread's JavaScript frames
+from memory alone, for live snapshots (`RuntimeModel::live_frames`). V8
+publishes where they begin only while JavaScript calls out to native code.
+`CEntry`, API callbacks, and accessors build an exit frame and store its
+frame pointer as `ThreadLocalTop::c_entry_fp_`. A fast C call builds none and
+stores its caller's frame pointer and return address in `IsolateData`.
+`JSEntry` saves both in its entry frame, clears them as it enters JavaScript
+again, and keeps the outermost entry frame's pointer as `js_entry_sp_`, which
+is 0 while the thread runs no JavaScript. The thread's isolate comes from
+`g_current_isolate_` by its `ThreadLocal` placement. A `Dynamic` placement is
+resolved through the loader's link maps and glibc's DTV in memory
+(`backend::RunningTls`). Before the reader believes a word, it checks that:
+
+- `ThreadLocalTop::isolate_` names the isolate;
+- the thread entered it from no other isolate (`EntryStackItem`);
+- a frame is published only with an outermost entry;
+- `stack_is_iterable` holds, which the deoptimizer clears while it rewrites
+  frames;
+- the VM state is not the collector's;
+- the exit frame's marker is an exit frame's;
+- every frame lies on the thread's own stack, above its stack pointer and
+  below the outermost entry, each above the one before;
+- every frame's code is V8's builtins or code V8 generated.
+
+An inner entry frame continues the walk at the exit frame or fast call it
+saved. Each frame is described by `frames::describe`, as at a stop, so lines
+are the stopped snapshot's. A fast C call from a bytecode handler runs in the
+interpreter's frame and saves no bytecode offset first, so it is left out, as
+is any frame `describe` cannot place, such as Node 22's Turbofan frame at a
+fast API call. WebAssembly frames are left out by marker. Every reason is a
+constant of `live.rs`. The caller proves the thread did not run during the
+read ([profiling](profiling.md#thread-snapshots)).
+
 **Await chains.** `node/awaits.rs` follows V8's `CaptureAsyncStackTrace`
 (`isolate.cc`). It starts at the frame of the closure that resumed an async
 function after an await: a frame V8 hides, whose function's builtin number

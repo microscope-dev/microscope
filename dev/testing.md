@@ -354,7 +354,17 @@ with its report beside it, as `build/test-programs/node-*.core` and
 
 The profiler and syscall tests (`tests/node/profile.rs`,
 `tests/node/syscalls.rs`) run on 26 alone, since every line shares the
-reader. `syscalls.js` prints V8's call sites before each open, and `busy.js`
+reader. The live JavaScript reader's tests (`tests/node/live.rs`) run on
+every build, since each reads V8's isolate by that build's offsets.
+`live.js` blocks one worker in each kind of native call and prints the
+frames with `truth.blocking()` on the line that blocks. The test holds each
+thread's live waits to those frames, and requires an idle worker to have
+none and a spinning one to be left out as not asleep. `live-stress.js`
+blocks for a millisecond at a time at known sites under
+`--stress-compaction` or `--deopt-every-n-times`. Its test allows no read
+that places a thread anywhere else and requires a share of exact reads. The
+fast API addon `node-fast-ENTRY.node` is built per build from
+`tests/fixtures/node/fast.cc`, since V8's C++ API is not ABI-stable. `syscalls.js` prints V8's call sites before each open, and `busy.js`
 prints each spinning thread's call sites and tiers before it spins. Their `bpf` modules run under
 `just test-bpf`, which includes `--test node`. `profiling_and_tracing_write_nothing`
 reads the flight recordings of a profile and a syscall trace and fails on any

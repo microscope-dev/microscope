@@ -67,6 +67,13 @@
 // present the value as. An unavailable line says a tier fixture could not
 // put a frame of TIER on the stack, and why.
 //
+// A thread that blocks in native code can instead print its own frames as it
+// blocks: blocking(name), called on the line that blocks, as
+// `truth.blocking('read'), fs.readSync(fd, buffer)`, prints the checkpoint
+// NAME and the calling thread's thread and frame lines, with ROLE blocked,
+// whose DEPTH 0 is the frame of that line. The frames the blocking call
+// runs, inside node: and native code, are not reported.
+//
 // Only the standard library is used. Tests run fixtures with an empty
 // environment, so no NODE_OPTIONS or user configuration changes them. Given
 // --abort, checkpoint() aborts the process after READY instead of parking,
@@ -349,6 +356,14 @@ function waitForLine() {
   }
 }
 
+/**
+ * Prints the calling thread's frames as the checkpoint `name`, from the
+ * caller of this function, which blocks on the same line.
+ */
+function blocking(name) {
+  write(line(['checkpoint', name]) + describe('blocked', name, blocking).text);
+}
+
 /** Lets every parked worker go on. */
 function release() {
   for (const worker of workers) {
@@ -359,7 +374,9 @@ function release() {
 
 if (natives !== null) {
   // The library's own frames stay out of the frames they measure.
-  for (const fn of [tier, tierOf, callSites, allSites, natives.status]) natives.neverOptimize(fn);
+  for (const fn of [tier, tierOf, callSites, allSites, blocking, natives.status]) {
+    natives.neverOptimize(fn);
+  }
   // A frame that runs bytecode must say so, or the status's layout is not
   // the one this library reads.
   const calibration = function calibration() {
@@ -375,4 +392,4 @@ if (threads.isMainThread) {
   report('process', process.pid, process.versions.node, process.versions.v8);
 }
 
-module.exports = {checkpoint, park, release, report, spawn, tier, tierOf};
+module.exports = {blocking, checkpoint, park, release, report, spawn, tier, tierOf};

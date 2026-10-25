@@ -241,7 +241,12 @@ executable's variables. `Slot` is a GOT slot the loader fills with that
 offset (initial exec). `Dynamic` is an offset in the module's own block, which
 `__tls_get_addr` reaches through the thread's DTV (general and local
 dynamic). `RuntimeStop::thread_local_address` resolves all three; `Dynamic`
-goes through the C library lookup above. A stripped library may name no
+goes through the C library lookup above. A live read, which cannot call into
+the process, uses `backend::RunningTls`. It finds the module's `link_map`
+through `_r_debug`, by the load bias, then the thread's block through glibc's
+DTV, all from memory. It caches the link map and glibc's symbols, proves the
+cached map again on each use, and clears its caches and retries once when a
+lookup fails. A stripped library may name no
 symbol for a variable. `elf::accessor_thread_local` then decodes the
 placement from the code of a function that reads it, by the x86-64 TLS ABI's
 sequences. V8 uses this for `g_current_isolate_` in Debian's `libnode`,
@@ -460,6 +465,15 @@ The rest comes from the V8 headers beside the Torque output, parsed by
 - the fp-relative slots of standard and unoptimized frames from
   `frame-constants.h`, its frame macros expanded from their own
   definitions, and `kJSArgcReceiverSlots`;
+- what a live read of a thread's frames needs (`runtime_model/node/live.rs`):
+  `ThreadLocalTop`'s `c_entry_fp_`, `js_entry_sp_`, `isolate_`, and
+  `current_vm_state_`, laid out from `thread-local-top.h`'s members;
+  `IsolateData`'s offsets of the thread-local top, the fast C call's frame
+  pointer and return address, and `stack_is_iterable`, and the root
+  register's bias, from `isolate-data.h`'s field list; `StateTag::GC`;
+  `CommonFrameConstants` and the entry frame's saved slots; and
+  `Isolate::EntryStackItem`'s fields from `isolate.h`. A member type,
+  macro, or construct the parser does not know fails the generator;
 - what reading an optimized frame's deoptimization translation needs, by
   `v8/deoptimization.rs`: both safepoint tables' headers and entry
   configuration bits (`safepoint-table.h`, `maglev-safepoint-table.h`; 12.4's
@@ -497,6 +511,8 @@ failure refuses only what needs it:
   clears after freeing its first segment and before deleting the address
   space in the next word. A 14.6 module without the symbol has an error
   here;
+- `entry_stack`, how far into the isolate its stack of entries is, from
+  the exported `v8::Isolate::IsInUse`, which reads it;
 - `embedded_blob`, the variables that hold the embedded builtins' bounds,
   from the exported `v8::Isolate::GetEmbeddedCodeRange`, by following which
   call's result it stores through each argument, then the one rip-relative
@@ -523,6 +539,18 @@ Binding a module checks, in order, and refuses it with the first reason:
   without Intl or Temporal, numbers its types differently;
 - each `v8dbg_` constant the headers define too has the headers' value;
 - the layout has every field and constant its version needs.
+
+`v8/isolate_oracle.rs` checks the offsets a live read relies on against
+every build's machine code. It reads the displacement from V8's root
+register, `r13`, at which the code saves, clears, and sets each word:
+`JSEntry`, `CEntry`, the fast C calls, the deoptimizer's entry, and
+`Isolate::Enter`. Each displacement must equal the generated offset less the
+root bias. Debian's libnode names no builtin, so each builtin is found there
+as the whole code the same V8 version's build with symbols has for it, and
+the fast calls by their shape. `a_planted_offset_is_caught` moves each offset
+by 8 and requires the check to fail. A new V8 version needs its headers in
+the flake, a regenerated layout, and this oracle passing on its builds before
+a live read trusts its offsets.
 
 `v8/conformance.rs` checks the layouts against both sources.
 `layouts_match_torque` regenerates the file from `MICROSCOPE_V8_TORQUE` and

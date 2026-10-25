@@ -152,13 +152,13 @@ pub const THREAD: &str = "thread";
 /// What a thread a snapshot read was doing, in a runtime's words.
 const SAMPLED: &str = "sampled";
 
-/// Why a live snapshot reads no thread of a runtime that runs its
-/// functions on the native stack, as V8 does: a running thread's frame
-/// pointer, where its frames begin, is not shown outside it.
-const UNREAD_NATIVE: &str = "live snapshots do not read JavaScript frames: they begin at a \
-                             thread's frame pointer, which only stopping the thread shows, as \
-                             /proc gives a running or blocked thread's stack and instruction \
-                             pointers but not its frame pointer; use --node snapshot or bpf";
+/// Why a live snapshot does not read a thread that is not asleep: it runs,
+/// or is about to, so its frames may change while they are read.
+const NOT_ASLEEP: &str = "it was not asleep in a system call";
+
+/// What begins the problem that names the threads a live read left out, as
+/// `threads 12, 13: REASON; threads 14: REASON`.
+const UNREAD_LIVE: &str = "frames not read live: ";
 
 /// One snapshot's tasks, where each waits, and why it may miss some.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -200,6 +200,39 @@ pub struct Snapshotter {
 
 /// A runtime a module carries, bound or with why it cannot be.
 type Detected = Result<Arc<dyn runtime_model::RuntimeModel>, runtime_model::Unbound>;
+
+/// A piece of a process's code as the recording mapped it: the image whose
+/// code it is and the bias it is mapped with, a copy of an image's code
+/// among them, or code a runtime generated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MappedCode {
+    pub start: u64,
+    pub end: u64,
+    pub image: crate::ModuleImageId,
+    pub bias: crate::LoadBias,
+    pub generated: bool,
+}
+
+/// Whose code at `address` is, by the first piece of `code` that holds it,
+/// as a sample's frame is placed, for the runtime the image `image`
+/// carries.
+fn code_at(
+    code: &[MappedCode],
+    image: crate::ModuleImageId,
+    address: crate::VirtualAddress,
+) -> runtime_model::CodeAt {
+    let at = address.get();
+    match code
+        .iter()
+        .find(|piece| piece.start <= at && at < piece.end)
+    {
+        Some(piece) if piece.generated => runtime_model::CodeAt::Generated,
+        Some(piece) if piece.image == image => {
+            runtime_model::CodeAt::Image(piece.bias.wrapping_unload(address))
+        }
+        _ => runtime_model::CodeAt::Other,
+    }
+}
 
 impl Snapshotter {
     /// Reads the debug information of `program`, which process `pid` runs,
@@ -610,6 +643,7 @@ impl Snapshotter {
         &mut self,
         reads: Reads,
         modules: &[(crate::LoadedModule, DebugInfo)],
+        code: &[MappedCode],
     ) -> Live {
         let _span = crate::span!("live task snapshot");
         let mut snapshot = Snapshot::default();
@@ -644,7 +678,9 @@ impl Snapshotter {
             .collect::<Vec<_>>();
         let mut unlearned = BTreeSet::new();
 
-        for (loaded, info) in modules {
+        // A copy of a module's code, as V8's of its builtins, runs the
+        // module's runtime, which the module itself reads.
+        for (loaded, info) in modules.iter().filter(|(loaded, _)| loaded.window.is_none()) {
             let stop = LiveStop {
                 pid: self.pid,
                 bias: loaded.load_bias,
@@ -667,6 +703,7 @@ impl Snapshotter {
                             image: &info.image,
                             stop: &stop,
                             modules: &unwinding,
+                            code,
                             model: model.as_ref(),
                         };
 
@@ -717,7 +754,7 @@ impl Snapshotter {
         let threads = threads(self.pid);
         let pointers = BTreeMap::new();
 
-        for (loaded, info) in modules {
+        for (loaded, info) in modules.iter().filter(|(loaded, _)| loaded.window.is_none()) {
             let stop = LiveStop {
                 pid: self.pid,
                 bias: loaded.load_bias,
@@ -879,6 +916,53 @@ impl<'a> LiveStop<'a> {
     }
 }
 
+impl LiveStop<'_> {
+    /// The addresses thread `tid`'s stack may hold that no other thread's
+    /// does. glibc keeps each thread's descriptor at its thread pointer,
+    /// on top of the stack it allocated for it or the program gave it
+    /// (`allocate_stack`), and the first thread's stack lies above every
+    /// mapping the program makes. So a thread's stack lies below its own
+    /// thread pointer and above every lower one, and the first thread's
+    /// above every other thread's thread pointer. A thread whose thread
+    /// pointer is not known may have its stack anywhere.
+    fn stack(&self, tid: u32) -> Result<std::ops::Range<u64>, Arc<str>> {
+        let mut pointers = Vec::with_capacity(self.threads.len());
+        let mut unknown = Vec::new();
+        for thread in &self.threads {
+            let Ok(other) = u32::try_from(thread.get()) else {
+                continue;
+            };
+            match self.pointers.get(&other) {
+                Some(&pointer) => pointers.push((other, pointer)),
+                None => unknown.push(other.to_string()),
+            }
+        }
+        if !unknown.is_empty() {
+            return Err(format!(
+                "the stacks of threads {} are not known, as their thread pointers are not",
+                unknown.join(", ")
+            )
+            .into());
+        }
+        let others = pointers.iter().filter(|(other, _)| *other != tid);
+        if tid == self.pid {
+            let highest = others.map(|&(_, pointer)| pointer).max().unwrap_or(0);
+            return Ok(highest.saturating_add(1)..u64::MAX);
+        }
+        let own = pointers
+            .iter()
+            .find(|(other, _)| *other == tid)
+            .map(|&(_, pointer)| pointer)
+            .ok_or("its thread pointer is not known")?;
+        let below = others
+            .map(|&(_, pointer)| pointer)
+            .filter(|&pointer| pointer < own)
+            .max()
+            .unwrap_or(0);
+        Ok(below.saturating_add(1)..own)
+    }
+}
+
 impl RuntimeStop for LiveStop<'_> {
     fn target_thread_id(&self, thread: crate::ThreadId) -> Option<runtime_model::TargetThreadId> {
         if self.threads.binary_search(&thread).is_err() {
@@ -1007,6 +1091,7 @@ struct LiveRuntime<'a> {
     image: &'a Arc<ModuleImage>,
     stop: &'a LiveStop<'a>,
     modules: &'a [crate::unwind::UnwindModule<'a>],
+    code: &'a [MappedCode],
     model: &'a dyn runtime_model::RuntimeModel,
 }
 
@@ -1072,7 +1157,7 @@ impl LiveRuntime<'_> {
     /// shorter stack.
     fn threads(&self, snapshot: &mut Snapshot) {
         if self.model.owns_generated_code() {
-            snapshot.problems.push(UNREAD_NATIVE.to_owned());
+            self.published(snapshot);
             return;
         }
         let Some(stacks) = self.model.interpreted(self.stop) else {
@@ -1100,6 +1185,98 @@ impl LiveRuntime<'_> {
                     .map(|frame| WaitFrame::Interpreted(InterpretedWait::of_frame(frame)))
                     .collect(),
             });
+        }
+    }
+
+    /// Adds where each thread is in the runtime's code to `snapshot`, as
+    /// the runtime publishes its frames in memory
+    /// ([`runtime_model::RuntimeModel::live_frames`]), for each thread
+    /// that holds something of the runtime's. A thread is read only while
+    /// it is proven not to run: asleep in a system call before and after
+    /// the read, with the same record of it and the same stack pointer,
+    /// and having given up its CPU no more times, since a thread that ran
+    /// meanwhile gave it up to sleep again. One that may have run is
+    /// counted as changed; one left out for another reason is said, by
+    /// the reason.
+    fn published(&self, snapshot: &mut Snapshot) {
+        let stop = self.stop;
+        let image = self.image.id();
+        let code = |address| code_at(self.code, image, address);
+        let mut unread: BTreeMap<Arc<str>, Vec<u64>> = BTreeMap::new();
+        for &thread in &stop.threads {
+            if self.model.thread_holding(stop, thread).is_none() {
+                continue;
+            }
+            let number = thread.get();
+            let read = u32::try_from(number)
+                .map_err(|_| Arc::<str>::from("it has no Linux id"))
+                .and_then(|tid| self.published_thread(tid, &code));
+            match read {
+                Ok(Some(frames)) if frames.is_empty() => {}
+                Ok(Some(frames)) => snapshot.waiting.push(Waiting {
+                    noun: THREAD,
+                    number,
+                    state: SAMPLED.to_owned(),
+                    labels: None,
+                    frames: frames
+                        .iter()
+                        .map(|frame| WaitFrame::Interpreted(InterpretedWait::of_frame(frame)))
+                        .collect(),
+                }),
+                Ok(None) => snapshot.changed += 1,
+                Err(reason) => unread.entry(reason).or_default().push(number),
+            }
+        }
+        // A snapshot keeps one problem, so every thread left out is in it,
+        // by its reason.
+        let unread: Vec<String> = unread
+            .into_iter()
+            .map(|(reason, threads)| {
+                let threads = threads
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("threads {threads}: {reason}")
+            })
+            .collect();
+        if !unread.is_empty() {
+            snapshot
+                .problems
+                .insert(0, format!("{UNREAD_LIVE}{}", unread.join("; ")));
+        }
+    }
+
+    /// The frames of thread `tid`, which holds something of the runtime's,
+    /// as one read proven quiet found them: none where it runs none of the
+    /// runtime's code, `None` where it may have run while read.
+    fn published_thread(
+        &self,
+        tid: u32,
+        code: &dyn Fn(crate::VirtualAddress) -> runtime_model::CodeAt,
+    ) -> Result<Option<Vec<runtime_model::InterpretedFrame>>, Arc<str>> {
+        let stop = self.stop;
+        let stack = stop.stack(tid)?;
+        let before = crate::backend::thread_switches(stop.pid, tid).map_err(Arc::<str>::from)?;
+        let asleep = crate::backend::thread_asleep(stop.pid, tid)
+            .map_err(Arc::<str>::from)?
+            .ok_or(NOT_ASLEEP)?;
+        let thread = runtime_model::LiveThread {
+            thread: crate::ThreadId::new(u64::from(tid)),
+            stack_pointer: asleep.stack_pointer,
+            stack,
+            code,
+        };
+        let read = self.model.live_frames(stop, &thread);
+        let again = crate::backend::thread_asleep(stop.pid, tid).map_err(Arc::<str>::from)?;
+        let after = crate::backend::thread_switches(stop.pid, tid).map_err(Arc::<str>::from)?;
+        if again.as_ref() != Some(&asleep) || after != before {
+            return Ok(None);
+        }
+        match read {
+            None | Some(runtime_model::LiveFrames::None) => Ok(Some(Vec::new())),
+            Some(runtime_model::LiveFrames::Frames(frames)) => Ok(Some(frames)),
+            Some(runtime_model::LiveFrames::Unread(reason)) => Err(reason),
         }
     }
 
@@ -1332,7 +1509,7 @@ mod tests {
             tasks: true,
             threads: true,
         };
-        let live = snapshotter.take_live(reads, &[]);
+        let live = snapshotter.take_live(reads, &[], &[]);
         child.wait().expect("reap the program");
         assert!(matches!(live, Live::Exited), "{live:?}");
     }

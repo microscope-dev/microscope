@@ -781,7 +781,8 @@ impl Snapshots {
             // arrive as any do.
             let start = monotonic();
             let modules = processor.modules_of(Pid::new(self.pid));
-            let taken = snapshotter.take_live(self.reads, &modules);
+            let code = processor.mapped_code(Pid::new(self.pid));
+            let taken = snapshotter.take_live(self.reads, &modules, &code);
             self.next = std::time::Instant::now() + self.every;
 
             // A program that exited, with which the recording ends, has no
@@ -791,6 +792,20 @@ impl Snapshots {
                 let weight = start.saturating_sub(self.previous);
                 processor.live_task_snapshot(Pid::new(self.pid), (start, end), weight, &snapshot);
                 self.previous = start;
+                // A snapshot keeps its first problem whole, which may be
+                // another, so falling behind is a problem of its own.
+                let took = Duration::from_nanos(end.saturating_sub(start));
+                if took > self.every {
+                    processor.snapshot_failed(
+                        start,
+                        &format!(
+                            "a live read took {:.1} ms, longer than the {:.1} ms asked between \
+                             reads, so reads ran less often than asked",
+                            took.as_secs_f64() * 1e3,
+                            self.every.as_secs_f64() * 1e3
+                        ),
+                    );
+                }
             }
 
             return;
