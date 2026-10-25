@@ -784,7 +784,12 @@ impl Snapshots {
 
         if let Some(loading) = self.loading.take_if(|loading| loading.is_finished()) {
             match loading.join() {
-                Ok(Ok(snapshotter)) => self.snapshotter = Some(snapshotter),
+                Ok(Ok(snapshotter)) => {
+                    // Reads are due from now on, not from when the
+                    // recording began loading what they need.
+                    self.snapshotter = Some(snapshotter);
+                    self.next = std::time::Instant::now();
+                }
 
                 Ok(Err(error)) => {
                     processor.snapshot_failed(
