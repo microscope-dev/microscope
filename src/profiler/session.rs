@@ -567,8 +567,10 @@ fn drive(
             if let Some(pacer) = &mut pacer {
                 wait = wait.min(pacer.pace(monotonic(), events, processor));
             }
-
-            events.wait(wait);
+            // A snapshot asked for more often than the drain's own pace
+            // is taken when due, not at the next drain.
+            let due = snapshots.iter().map(Snapshots::due_in).min();
+            events.wait(due.map_or(wait, |due| wait.min(due)));
         }
 
         buffer.clear();
@@ -743,6 +745,16 @@ impl Snapshots {
         }
     }
 
+    /// How long until the next snapshot is due; none is due while the
+    /// snapshotter still loads, which the drain's own pace checks on.
+    fn due_in(&self) -> Duration {
+        if self.snapshotter.is_none() {
+            return Duration::MAX;
+        }
+        self.next
+            .saturating_duration_since(std::time::Instant::now())
+    }
+
     /// Takes a snapshot when one is due, leaving the events as `sampling`
     /// says they were.
     fn when_due(
@@ -783,7 +795,9 @@ impl Snapshots {
             let modules = processor.modules_of(Pid::new(self.pid));
             let code = processor.mapped_code(Pid::new(self.pid));
             let taken = snapshotter.take_live(self.reads, &modules, &code);
-            self.next = std::time::Instant::now() + self.every;
+            // Reads keep their rate, whatever each takes; one that ran
+            // late is followed at once, and none makes up for those missed.
+            self.next = (self.next + self.every).max(std::time::Instant::now());
 
             // A program that exited, with which the recording ends, has no
             // tasks.

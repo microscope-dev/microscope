@@ -22,10 +22,11 @@
 //             the fast path and the line of the call, which runs in
 //             fastCaller, a frame CallSite does not report here
 //
-// and two that report only their native ids and when they began, TIME,
+// and three that report only their native ids and when they began, TIME,
 // process.hrtime.bigint(): `idle ID TIME`, a worker idle in its event loop
-// from then on, and `spin ID TIME`, a worker that runs JavaScript from then
-// on.
+// from then on; `spin ID TIME`, a worker that runs JavaScript from then on;
+// and `wasm ID TIME`, a worker blocked for good in Atomics.wait from a
+// JavaScript function that a WebAssembly function called.
 //
 // node --allow-natives-syntax live.js QUIET OPENED ADDON FRAMELESS FAST
 //
@@ -166,6 +167,23 @@ const states = {
   idle() {
     truth.report('idle', nativeId(), process.hrtime.bigint());
     setInterval(() => {}, 1 << 30);
+  },
+  wasm() {
+    // (module (import "m" "f" (func)) (func (export "run") call 0))
+    const bytes = new Uint8Array([
+      0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+      0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
+      0x02, 0x07, 0x01, 0x01, 0x6d, 0x01, 0x66, 0x00, 0x00,
+      0x03, 0x02, 0x01, 0x00,
+      0x07, 0x07, 0x01, 0x03, 0x72, 0x75, 0x6e, 0x00, 0x01,
+      0x0a, 0x06, 0x01, 0x04, 0x00, 0x10, 0x00, 0x0b,
+    ]);
+    const cell = new Int32Array(new SharedArrayBuffer(4));
+    const instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), {
+      m: {f: function fromWasm() { Atomics.wait(cell, 0, 0); }},
+    });
+    truth.report('wasm', nativeId(), process.hrtime.bigint());
+    instance.exports.run();
   },
   spin() {
     truth.report('spin', nativeId(), process.hrtime.bigint());

@@ -376,21 +376,45 @@ pub trait RuntimeStop {
 type ThreadIdPairs = Arc<[(ThreadId, TargetThreadId)]>;
 
 /// Memory of a stopped process read so far, in aligned blocks of
-/// [`StopMemory::BLOCK`] bytes, each as read or as unreadable. A stopped
-/// process's memory does not change, so a read near one made before, as an
-/// object's fields, a table's entries, and the objects allocated together
-/// are, reads nothing more. Whoever keeps one forgets it once the program
-/// runs or the debugger writes to it.
-#[derive(Debug, Default)]
+/// [`StopMemory::BLOCK`] bytes, or of the size it was made with, each as
+/// read or as unreadable. A stopped process's memory does not change, so a
+/// read near one made before, as an object's fields, a table's entries, and
+/// the objects allocated together are, reads nothing more. Whoever keeps
+/// one forgets it once the program runs or the debugger writes to it.
+#[derive(Debug)]
 pub struct StopMemory {
     blocks: std::cell::RefCell<std::collections::BTreeMap<u64, Option<Box<[u8]>>>>,
     thread_ids: std::cell::RefCell<Option<ThreadIdPairs>>,
+    block: usize,
+}
+
+impl Default for StopMemory {
+    fn default() -> Self {
+        Self::with_block(Self::BLOCK)
+    }
 }
 
 impl StopMemory {
     /// The size and alignment of a block. A page holds whole blocks, so a
     /// block is readable wherever any of its bytes are.
     pub const BLOCK: usize = 256;
+
+    /// A memory read in blocks of `block` bytes, a power of two no larger
+    /// than a page, so that a page still holds whole blocks: larger blocks
+    /// make fewer reads where those near each other are many, as a stack's.
+    pub fn with_block(block: usize) -> Self {
+        debug_assert!(block.is_power_of_two() && block <= 4096, "{block}");
+        Self {
+            blocks: std::cell::RefCell::default(),
+            thread_ids: std::cell::RefCell::default(),
+            block,
+        }
+    }
+
+    /// The size of each block.
+    pub const fn block(&self) -> usize {
+        self.block
+    }
 
     /// The most blocks kept, 4 MiB of them; past that, blocks are read as
     /// they are needed and not kept.
@@ -407,9 +431,9 @@ impl StopMemory {
         into: &mut [u8],
         read: impl FnOnce(VirtualAddress, &mut [u8]) -> Result<bool, E>,
     ) -> Result<Option<usize>, E> {
-        let block = Self::BLOCK as u64;
+        let block = self.block as u64;
         let start = at - at % block;
-        let offset = usize::try_from(at - start).unwrap_or(Self::BLOCK);
+        let offset = usize::try_from(at - start).unwrap_or(self.block);
         let copy = |held: &[u8], into: &mut [u8]| {
             let held = held.get(offset..)?;
             let copied = held.len().min(into.len());
@@ -421,7 +445,7 @@ impl StopMemory {
             return Ok(kept.as_deref().and_then(|held| copy(held, into)));
         }
 
-        let mut bytes = vec![0; Self::BLOCK].into_boxed_slice();
+        let mut bytes = vec![0; self.block].into_boxed_slice();
         let read = read(VirtualAddress::new(start), &mut bytes)?.then_some(bytes);
         let copied = read.as_deref().and_then(|held| copy(held, into));
         let mut blocks = self.blocks.borrow_mut();

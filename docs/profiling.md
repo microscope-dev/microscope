@@ -205,7 +205,9 @@ microscope report --js --lines server.usprof
   - runs WebAssembly.
 
   A thread is never recorded with a shorter stack or a guessed one. A wait
-  shorter than one read of the thread is mostly left out.
+  shorter than one read of the thread is mostly left out. A read that
+  takes longer than SECONDS says so in the profile, as reads then ran less
+  often than asked.
 
 A sample taken before microscope has read V8's layout, as just after the
 program starts, ends in "interpreted frames unknown". With `bpf`, a sample in

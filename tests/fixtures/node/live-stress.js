@@ -8,11 +8,15 @@
 //
 // ADDON and FAST are the built node-addon.node and the build's
 // node-fast-ENTRY.node. The main thread and WORKERS workers each loop over
-// the sites for SECONDS. Each prints, the first time it blocks at a site,
-// the site's frames with truth.blocking('SITE TID'), on the line that
-// blocks; then, once it has blocked at every site, `ready TID TIME`, and as
-// it stops, `done TID TIME`, with TIME process.hrtime.bigint(). Between the
-// two, the thread runs only these sites and the code that leads to them.
+// the sites for SECONDS, in phases of PHASE_MS each: each phase calls the
+// sites through a function of its own, phase0 to phase3 in turn, so that
+// the frames say which phase a thread was in. Each thread prints, the first
+// time it blocks at a site in a phase, the frames with
+// truth.blocking('SITE PHASE TID'), on the line that blocks; `phase TID
+// PHASE TIME` as it begins a phase; once it has blocked at every site in
+// every phase, `ready TID TIME`; and as it stops, `done TID TIME`, with
+// TIME process.hrtime.bigint(). Between ready and done, the thread runs only
+// these sites and the code that leads to them.
 //
 // The sites, each of which blocks in native code that JavaScript called:
 //
@@ -40,18 +44,27 @@ const fast = require(fastPath);
 // How long each site blocks, in milliseconds.
 const BLOCK_MS = 1;
 
+// How long each phase lasts, in milliseconds, and how many there are.
+const PHASE_MS = 400;
+const PHASES = 4;
+
 const tid = Number(fs.readlinkSync('/proc/thread-self').split('/').pop());
 const cell = new Int32Array(new SharedArrayBuffer(4));
 const seen = new Set();
 let garbage = [];
+let phase = 0;
 
-/** Whether this is the thread's first block at `site`, which it reports. */
+/**
+ * Whether this is the thread's first block at `site` in this phase, which
+ * it reports, as the name it reports it by.
+ */
 function first(site) {
-  if (seen.has(site)) {
-    return false;
+  const name = `${site} ${phase} ${tid}`;
+  if (seen.has(name)) {
+    return null;
   }
-  seen.add(site);
-  return true;
+  seen.add(name);
+  return name;
 }
 
 // Objects of shapes that change, kept a while, so that the collector moves
@@ -66,12 +79,12 @@ function churn(i) {
 }
 
 function siteWait(i) {
-  if (first('wait')) truth.blocking(`wait ${tid}`), Atomics.wait(cell, 0, 0, BLOCK_MS); else Atomics.wait(cell, 0, 0, BLOCK_MS);
+  const name = first('wait'); if (name) truth.blocking(name), Atomics.wait(cell, 0, 0, BLOCK_MS); else Atomics.wait(cell, 0, 0, BLOCK_MS);
   return churn(i);
 }
 
 function nestedInner(i) {
-  if (first('nested')) truth.blocking(`nested ${tid}`), Atomics.wait(cell, 0, 0, BLOCK_MS); else Atomics.wait(cell, 0, 0, BLOCK_MS);
+  const name = first('nested'); if (name) truth.blocking(name), Atomics.wait(cell, 0, 0, BLOCK_MS); else Atomics.wait(cell, 0, 0, BLOCK_MS);
   return churn(i);
 }
 
@@ -83,7 +96,7 @@ function siteNested(i) {
 }
 
 function reviverInner(i) {
-  if (first('reviver')) truth.blocking(`reviver ${tid}`), Atomics.wait(cell, 0, 0, BLOCK_MS); else Atomics.wait(cell, 0, 0, BLOCK_MS);
+  const name = first('reviver'); if (name) truth.blocking(name), Atomics.wait(cell, 0, 0, BLOCK_MS); else Atomics.wait(cell, 0, 0, BLOCK_MS);
   return churn(i);
 }
 
@@ -98,7 +111,7 @@ function siteReviver(i) {
 }
 
 function sortInner(i) {
-  if (first('sort')) truth.blocking(`sort ${tid}`), Atomics.wait(cell, 0, 0, BLOCK_MS); else Atomics.wait(cell, 0, 0, BLOCK_MS);
+  const name = first('sort'); if (name) truth.blocking(name), Atomics.wait(cell, 0, 0, BLOCK_MS); else Atomics.wait(cell, 0, 0, BLOCK_MS);
   return churn(i);
 }
 
@@ -111,22 +124,49 @@ function siteSort(i) {
 }
 
 function siteFast(i) {
-  if (first('fast')) truth.blocking(`fast ${tid}`), fast.nap(BLOCK_MS * 1000); else fast.nap(BLOCK_MS * 1000);
+  const name = first('fast'); if (name) truth.blocking(name), fast.nap(BLOCK_MS * 1000); else fast.nap(BLOCK_MS * 1000);
   return churn(i);
 }
 
 function siteMixed(i) {
   const value = i % 97 === 0 ? `s${i}` : i;
-  if (first('mixed')) truth.blocking(`mixed ${tid}`), Atomics.wait(cell, 0, 0, BLOCK_MS + 0 * `${value}`.length); else Atomics.wait(cell, 0, 0, BLOCK_MS + 0 * `${value}`.length);
+  const name = first('mixed'); if (name) truth.blocking(name), Atomics.wait(cell, 0, 0, BLOCK_MS + 0 * `${value}`.length); else Atomics.wait(cell, 0, 0, BLOCK_MS + 0 * `${value}`.length);
   return churn(i);
 }
 
 const sites = [siteWait, siteNested, siteReviver, siteSort, siteFast, siteMixed];
 
+function phase0(i) {
+  return sites[i % sites.length](i);
+}
+
+function phase1(i) {
+  return sites[i % sites.length](i);
+}
+
+function phase2(i) {
+  return sites[i % sites.length](i);
+}
+
+function phase3(i) {
+  return sites[i % sites.length](i);
+}
+
+const phases = [phase0, phase1, phase2, phase3];
+
 function loop(deadline) {
+  const start = Date.now();
+  let ready = false;
+  truth.report('phase', tid, phase, process.hrtime.bigint());
   for (let i = 0; Date.now() < deadline; i++) {
-    sites[i % sites.length](i);
-    if (i === sites.length - 1) {
+    const now = Math.floor((Date.now() - start) / PHASE_MS) % PHASES;
+    if (now !== phase) {
+      phase = now;
+      truth.report('phase', tid, phase, process.hrtime.bigint());
+    }
+    phases[phase](i);
+    if (!ready && seen.size === sites.length * PHASES) {
+      ready = true;
       truth.report('ready', tid, process.hrtime.bigint());
     }
   }

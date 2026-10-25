@@ -47,7 +47,7 @@ impl Reader<'_> {
     pub(super) fn bytes_into(&self, address: u64, bytes: &mut [u8]) -> Result<(), Problem> {
         let unreadable = || format!("the memory at {address:#x} is unreadable").into();
         if let Some(blocks) = self.blocks
-            && bytes.len() <= StopMemory::BLOCK
+            && bytes.len() <= blocks.block()
             && address.checked_add(bytes.len() as u64).is_some()
         {
             // The bytes span at most two blocks. If a block can't be read,

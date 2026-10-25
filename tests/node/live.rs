@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use microscope::profiler::{Look, Profile, PythonEngine, Query, RecordOptions, Source};
 
-use crate::profile::{line_key, paths_of, record_released};
+use crate::profile::{ENTRY, line_key, paths_of, record_released};
 use crate::support::truth::Report;
 use crate::support::{Scenario, ScratchDir, node};
 use crate::truth::{Thread, threads};
@@ -31,15 +31,20 @@ const SETTLED: usize = 20;
 /// Why a thread is left out that was in no system call when read.
 const NOT_ASLEEP: &str = "it was not asleep in a system call";
 
+/// Why a thread is left out whose frames include WebAssembly's.
+const WEBASSEMBLY: &str = "it runs WebAssembly, whose frames a live read does not walk";
+
 /// What `live.js` reported.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reported {
     /// The blocked threads, in [`BLOCKED`]'s order.
     pub blocked: Vec<Thread>,
 
-    /// The idle and spinning workers' native ids, and when they began.
+    /// The idle, spinning, and WebAssembly workers' native ids, and when
+    /// they began.
     pub idle: (u64, i64),
     pub spin: (u64, i64),
+    pub wasm: (u64, i64),
 
     /// How many calls took the fast path, and the line of the fast call.
     pub fast: (u64, u32),
@@ -59,6 +64,7 @@ pub fn reported(text: &str) -> Option<Reported> {
         blocked,
         idle: pair(&report, "idle")?,
         spin: pair(&report, "spin")?,
+        wasm: pair(&report, "wasm")?,
         fast: pair(&report, "fast")?,
     })
 }
@@ -258,6 +264,17 @@ pub fn lies(
     {
         lies.push(format!("spin: {paths:#?} {reasons:?}"));
     }
+    let (wasm, wasm_since) = reported.wasm;
+    let paths = thread_paths(profile, wasm, (wasm_since.max(since), until));
+    let reasons = left_out_threads(wasm);
+    if !paths.is_empty()
+        || !reasons.contains(&WEBASSEMBLY)
+        || reasons
+            .iter()
+            .any(|reason| *reason != WEBASSEMBLY && *reason != NOT_ASLEEP)
+    {
+        lies.push(format!("wasm: {paths:#?} {reasons:?}"));
+    }
     lies
 }
 
@@ -351,6 +368,10 @@ fn live_snapshots_read_each_blocked_thread_on_nixpkgs_22() {
 /// The sites `live-stress.js` blocks at.
 const STRESS_SITES: [&str; 6] = ["wait", "nested", "reviver", "sort", "fast", "mixed"];
 
+/// How many phases `live-stress.js` cycles through, each calling the sites
+/// through a function of its own.
+const STRESS_PHASES: usize = 4;
+
 /// The workers `live-stress.js` starts beside its main thread, and how
 /// long each loops.
 const STRESS_WORKERS: usize = 3;
@@ -365,12 +386,15 @@ const STRESS_EVERY: Duration = Duration::from_millis(2);
 /// millisecond at a time.
 const LEAST_EXACT: f64 = 0.25;
 
-/// What `live-stress.js` reported of one thread: each site's frames, and
-/// when it ran only the sites.
+/// What `live-stress.js` reported of one thread: each phase's frames at
+/// each site, when it ran only the sites, and when it began each phase.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Looping {
-    pub sites: Vec<(String, Thread)>,
+    /// By phase, then by site.
+    pub sites: Vec<Vec<(String, Thread)>>,
     pub window: (i64, i64),
+    /// Each phase the thread began, with when, in order.
+    pub phases: Vec<(usize, i64)>,
 }
 
 /// What `live-stress.js` reported of each thread, by native id, once every
@@ -390,18 +414,29 @@ pub fn looping(text: &str) -> Option<BTreeMap<u64, Looping>> {
     }
     done.iter()
         .map(|(&tid, &end)| {
-            let sites = STRESS_SITES
-                .iter()
-                .map(|site| {
-                    let mut found = threads(report.checkpoint(&format!("{site} {tid}"))?);
-                    (found.len() == 1).then(|| ((*site).to_owned(), found.remove(0)))
+            let sites = (0..STRESS_PHASES)
+                .map(|phase| {
+                    STRESS_SITES
+                        .iter()
+                        .map(|site| {
+                            let name = format!("{site} {phase} {tid}");
+                            let mut found = threads(report.checkpoint(&name)?);
+                            (found.len() == 1).then(|| ((*site).to_owned(), found.remove(0)))
+                        })
+                        .collect::<Option<Vec<_>>>()
                 })
                 .collect::<Option<Vec<_>>>()?;
+            let phases = report
+                .lines()
+                .filter(|fields| fields[0] == "phase" && fields.get(1) == Some(&tid.to_string()))
+                .map(|fields| Some((fields.get(2)?.parse().ok()?, fields.get(3)?.parse().ok()?)))
+                .collect::<Option<Vec<(usize, i64)>>>()?;
             Some((
                 tid,
                 Looping {
                     sites,
                     window: (*ready.get(&tid)?, end),
+                    phases,
                 },
             ))
         })
@@ -427,14 +462,32 @@ pub fn tally(profile: &Profile, looping: &BTreeMap<u64, Looping>) -> Tally {
     let waits = profile.task_waits();
     for (&tid, thread) in looping {
         let (since, until) = thread.window;
-        let sites: Vec<Vec<String>> = thread
+        let sites: Vec<Vec<Vec<String>>> = thread
             .sites
             .iter()
-            .map(|(_, reported)| reported_frames(reported))
+            .map(|phase| {
+                phase
+                    .iter()
+                    .map(|(_, reported)| reported_frames(reported))
+                    .collect()
+            })
             .collect();
-        for path in thread_paths(profile, tid, thread.window).keys() {
-            if !sites.contains(path) {
-                tally.wrong.push(format!("thread {tid}: {path:#?}"));
+        // A read that began in a phase finds the thread at a site of that
+        // phase, or of the next, which it may have begun before the read
+        // reached it; never of another.
+        for (index, &(phase, began)) in thread.phases.iter().enumerate() {
+            let ended = thread.phases.get(index + 1).map_or(i64::MAX, |&(_, at)| at);
+            let span = (began.max(since), ended.min(until));
+            if span.0 >= span.1 {
+                continue;
+            }
+            let next = (phase + 1) % STRESS_PHASES;
+            for path in thread_paths(profile, tid, span).keys() {
+                if !sites[phase].contains(path) && !sites[next].contains(path) {
+                    tally
+                        .wrong
+                        .push(format!("thread {tid} in phase {phase}: {path:#?}"));
+                }
             }
         }
         let found: Vec<i64> = waits
@@ -559,4 +612,31 @@ fn live_reads_under_collection_find_each_thread_at_its_site_on_22() {
 #[test]
 fn live_reads_under_deoptimization_find_each_thread_at_its_site_on_22() {
     stress("22", DEOPTIMIZING);
+}
+
+/// A live recording reads as often as it is asked to, or says it fell
+/// behind: reads at a millisecond's interval of an idle program either
+/// keep up or each say how long they took.
+#[test]
+fn live_reads_keep_their_interval_or_say_they_fell_behind() {
+    let every = Duration::from_millis(1);
+    let seconds: u32 = 2;
+    let mut command = Command::new(node::node(ENTRY));
+    command.args(["-e", &format!("setTimeout(() => {{}}, {})", seconds * 1000)]);
+    let options = RecordOptions {
+        python: Some(PythonEngine::Live { every }),
+        ..RecordOptions::default()
+    };
+    let (profile, _, _) = record_released(command, &options, |_| Some(()), |_, ()| true);
+    let (snapshots, _) = profile.live_snapshots();
+    let behind = profile
+        .task_snapshot_problems()
+        .iter()
+        .filter(|(_, problem)| problem.starts_with("a live read took"))
+        .count();
+    let asked = u64::from(seconds) * 1000;
+    assert!(
+        snapshots * 2 >= asked || u64::try_from(behind).expect("a count") * 2 >= snapshots,
+        "{snapshots} snapshots of {asked} asked, {behind} said they fell behind"
+    );
 }

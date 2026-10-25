@@ -269,6 +269,23 @@ builtins (a `LoadedModule` with a `window`) runs no runtime of its own, so a
 live snapshot reads runtimes only through the full module. Otherwise each
 thread would be read twice, the second time with the copy's bias.
 
+A thread that has not run since a quiet read is not read again
+(`tasks::Kept`). A read keeps the frames it found with the thread's
+context-switch counts and its `syscall` record. The next read reuses the
+frames only while both are unchanged and the thread's start time is the
+same. Its stack and the objects its frames name can change only while it
+runs: V8 collects an isolate's heap on the isolate's own thread. The
+exception is the heap isolates share under V8's flags for shared structs
+and strings, which Node leaves off and the reader does not check. A program
+whose threads stay parked then costs a few `/proc` reads per thread each
+time.
+
+Live reads keep the rate asked of them: each is due one interval after the
+last was due, not after it ended, and the drain loop wakes for it
+(`Snapshots::due_in`). A read that takes longer than the interval records
+the problem `a live read took N ms, longer than the M ms asked between
+reads`, so a recording that could not keep up says so.
+
 ### Python frames in each sample
 
 The BPF engine (`--python bpf`) runs a program on the sampler's own perf

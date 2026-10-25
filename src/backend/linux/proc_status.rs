@@ -13,7 +13,9 @@ const MAX_STATUS_BYTES: usize = 64 * 1024;
 const MAX_ID_VALUES: usize = 64;
 
 fn read(file: impl std::io::Read) -> std::io::Result<Vec<u8>> {
-    let mut bytes = Vec::new();
+    // Room for a whole record of most files up front: from an empty
+    // buffer, reading to the end begins with reads of a few bytes each.
+    let mut bytes = Vec::with_capacity(4096);
     file.take((MAX_STATUS_BYTES + 1) as u64)
         .read_to_end(&mut bytes)?;
 

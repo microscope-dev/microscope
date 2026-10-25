@@ -196,6 +196,27 @@ pub struct Snapshotter {
     /// What live snapshots read again to find a module's thread-local
     /// storage for a thread.
     tls: crate::backend::RunningTls,
+
+    /// What the last live read of each thread found of a runtime's frames,
+    /// by the module's image, the thread's id, and when it started.
+    kept: RefCell<BTreeMap<(crate::ModuleImageId, u32, u64), Kept>>,
+}
+
+/// The frames a live read proven quiet found of a thread, with the proof
+/// that the thread has not run since: its context-switch counts after the
+/// read and the system call it slept in. A thread that runs gives up its
+/// CPU to sleep again, which counts, so while both are as they were, its
+/// stack and the objects its frames name are as they were too: only the
+/// thread itself, or its runtime's collector, which runs only while the
+/// thread does, changes them. V8 collects an isolate's heap on its own
+/// thread. The one exception is the heap isolates share under V8's flags
+/// for shared structs and strings, which another isolate's thread may
+/// collect; Node leaves those flags off, and nothing here checks them.
+#[derive(Debug)]
+struct Kept {
+    switches: (u64, u64),
+    asleep: crate::backend::Asleep,
+    frames: Vec<runtime_model::InterpretedFrame>,
 }
 
 /// A runtime a module carries, bound or with why it cannot be.
@@ -250,6 +271,7 @@ impl Snapshotter {
             thread_pointers: BTreeMap::new(),
             runtimes: BTreeMap::new(),
             tls: crate::backend::RunningTls::new(pid),
+            kept: RefCell::default(),
         })
     }
 
@@ -660,14 +682,20 @@ impl Snapshotter {
 
         let threads = threads(self.pid);
         let learning = self.learn_thread_pointers(&threads);
-        let pointers = threads
+        let starts: BTreeMap<u32, u64> = threads
             .iter()
             .filter_map(|thread| {
                 let tid = u32::try_from(thread.get()).ok()?;
-                let start = thread_start(self.pid, tid)?;
-                Some((tid, *self.thread_pointers.get(&(tid, start))?))
+                Some((tid, thread_start(self.pid, tid)?))
             })
             .collect();
+        let pointers = starts
+            .iter()
+            .filter_map(|(&tid, &start)| Some((tid, *self.thread_pointers.get(&(tid, start))?)))
+            .collect();
+        self.kept
+            .get_mut()
+            .retain(|&(_, tid, start), _| starts.get(&tid) == Some(&start));
         let unwinding = modules
             .iter()
             .map(|(loaded, info)| crate::unwind::UnwindModule {
@@ -705,6 +733,8 @@ impl Snapshotter {
                             modules: &unwinding,
                             code,
                             model: model.as_ref(),
+                            starts: &starts,
+                            kept: &self.kept,
                         };
 
                         if reads.tasks {
@@ -1093,6 +1123,10 @@ struct LiveRuntime<'a> {
     modules: &'a [crate::unwind::UnwindModule<'a>],
     code: &'a [MappedCode],
     model: &'a dyn runtime_model::RuntimeModel,
+
+    /// When each thread started, by its id.
+    starts: &'a BTreeMap<u32, u64>,
+    kept: &'a RefCell<BTreeMap<(crate::ModuleImageId, u32, u64), Kept>>,
 }
 
 impl LiveRuntime<'_> {
@@ -1249,7 +1283,8 @@ impl LiveRuntime<'_> {
 
     /// The frames of thread `tid`, which holds something of the runtime's,
     /// as one read proven quiet found them: none where it runs none of the
-    /// runtime's code, `None` where it may have run while read.
+    /// runtime's code, `None` where it may have run while read. A thread
+    /// that has not run since such a read is not read again ([`Kept`]).
     fn published_thread(
         &self,
         tid: u32,
@@ -1261,6 +1296,19 @@ impl LiveRuntime<'_> {
         let asleep = crate::backend::thread_asleep(stop.pid, tid)
             .map_err(Arc::<str>::from)?
             .ok_or(NOT_ASLEEP)?;
+        let key = self
+            .starts
+            .get(&tid)
+            .map(|&start| (self.image.id(), tid, start));
+        if let Some(kept) = key.and_then(|key| {
+            self.kept
+                .borrow()
+                .get(&key)
+                .filter(|kept| kept.switches == before && kept.asleep == asleep)
+                .map(|kept| kept.frames.clone())
+        }) {
+            return Ok(Some(kept));
+        }
         let thread = runtime_model::LiveThread {
             thread: crate::ThreadId::new(u64::from(tid)),
             stack_pointer: asleep.stack_pointer,
@@ -1273,11 +1321,22 @@ impl LiveRuntime<'_> {
         if again.as_ref() != Some(&asleep) || after != before {
             return Ok(None);
         }
-        match read {
-            None | Some(runtime_model::LiveFrames::None) => Ok(Some(Vec::new())),
-            Some(runtime_model::LiveFrames::Frames(frames)) => Ok(Some(frames)),
-            Some(runtime_model::LiveFrames::Unread(reason)) => Err(reason),
+        let frames = match read {
+            None | Some(runtime_model::LiveFrames::None) => Vec::new(),
+            Some(runtime_model::LiveFrames::Frames(frames)) => frames,
+            Some(runtime_model::LiveFrames::Unread(reason)) => return Err(reason),
+        };
+        if let Some(key) = key {
+            self.kept.borrow_mut().insert(
+                key,
+                Kept {
+                    switches: after,
+                    asleep,
+                    frames: frames.clone(),
+                },
+            );
         }
+        Ok(Some(frames))
     }
 
     /// Where a waiting task waits, or `None` when it changed while read.

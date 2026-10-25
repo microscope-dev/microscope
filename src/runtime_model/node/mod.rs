@@ -92,6 +92,9 @@ const MESSAGE_RECEIVED: &str = "_ZN4node9inspector19InspectorIoDelegate15Message
 /// What V8 names each of its embedded builtins' code.
 const BUILTIN_PREFIX: &str = "Builtins_";
 
+/// The bytes a live read reads at once: a page.
+const LIVE_BLOCK: usize = 4096;
+
 /// Where V8 performs each collection, scavenge, minor mark-sweep, or full
 /// mark-compact, on the thread of the isolate whose heap it collects
 /// (`src/heap/heap.cc`).
@@ -632,7 +635,10 @@ impl RuntimeModel for NodeRuntime {
         };
         // The thread did not run while it is read, so what is read of it
         // once holds for the whole read.
-        let read_now = StopMemory::default();
+        // Pages, as a frame's slots and the objects a frame names lie
+        // near each other's, and a read costs about as much for a page as
+        // for a word.
+        let read_now = StopMemory::with_block(LIVE_BLOCK);
         let reader = objects::Reader {
             stop,
             layout,

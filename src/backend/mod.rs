@@ -25,8 +25,8 @@ pub use linux::resume_address;
 #[cfg(any(test, feature = "sim"))]
 pub use linux::sim_edge;
 pub use linux::syscalls as syscall_engines;
+pub use linux::{Asleep, thread_asleep, thread_switches};
 pub use linux::{Capacity, GroupBackend, GroupNotice, Joined, Started, spawn_group};
-pub use linux::{thread_asleep, thread_switches};
 
 /// Identifies a file independently of the path used to open it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
