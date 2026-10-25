@@ -91,7 +91,7 @@ pub struct InterpretedWait {
 impl InterpretedWait {
     /// A frame its runtime recorded as `recorded`, or one it could not
     /// read.
-    fn of(recorded: Option<&crate::RecordedFrame>) -> Self {
+    pub(super) fn of(recorded: Option<&crate::RecordedFrame>) -> Self {
         recorded.map_or_else(Self::unreadable, |recorded| Self {
             function: Arc::clone(&recorded.function),
             file: recorded.place.as_ref().map(|place| Arc::clone(&place.path)),

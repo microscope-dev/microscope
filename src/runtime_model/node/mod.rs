@@ -29,6 +29,7 @@ mod own;
 mod positions;
 mod present;
 mod properties;
+mod sampled;
 mod scripts;
 mod translation;
 mod typed;
@@ -324,6 +325,31 @@ impl RuntimeModel for NodeRuntime {
             &mut table,
             positions::Encoding::of(self.version),
             &self.statics,
+            frame,
+        )
+    }
+
+    fn sampled_code_frame(
+        &self,
+        stop: &dyn RuntimeStop,
+        frame: &super::SampledCodeFrame,
+    ) -> Option<Vec<crate::RecordedFrame>> {
+        let layout = self.reading.as_ref().ok()?;
+        let reader = objects::Reader {
+            stop,
+            layout,
+            version: self.version,
+            charge: None,
+            blocks: stop.memory(),
+        };
+        let mut table = self
+            .table
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        sampled::describe(
+            &reader,
+            &mut table,
+            positions::Encoding::of(self.version),
             frame,
         )
     }

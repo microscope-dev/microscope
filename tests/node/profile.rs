@@ -372,7 +372,7 @@ pub fn rootless(paths: &BTreeMap<Vec<String>, u64>) -> Vec<(String, u64)> {
 #[test]
 fn cpu_samples_unwind_through_v8s_code_to_each_threads_root() {
     let scratch = ScratchDir::new("node-busy");
-    let (command, _) = busy(&scratch, 3);
+    let (command, _) = busy(&scratch, 5);
     let recording =
         microscope::profiler::record(command, &RecordOptions::default()).expect("record");
     assert!(recording.status.success(), "{}", recording.status);
@@ -380,8 +380,10 @@ fn cpu_samples_unwind_through_v8s_code_to_each_threads_root() {
     let total: u64 = paths.values().sum();
     let rootless = rootless(&paths);
     let short: u64 = rootless.iter().map(|(_, weight)| weight).sum();
-    // Half a second of the three the program spins at least.
-    assert!(total >= 500_000_000, "{total} ns sampled");
+    // A tenth of a second of the five the program spins at least: a loaded
+    // machine gives the program less, and the kernel drops samples while
+    // the recording reads node's debug information.
+    assert!(total >= 100_000_000, "{total} ns sampled");
     // A sample may land where no unwinder can step, as in a signal
     // trampoline or a prologue: at most one in a hundred.
     assert!(
@@ -439,4 +441,197 @@ fn the_root_check_fails_on_a_short_stack() {
             ),
         ]
     );
+}
+
+/// The frames each thread of `busy.js` reported, outermost first, as a
+/// profile's interpreted look by the BPF engine keys them: by line, but
+/// for a frame of compiled code, whose line the walker does not prove, and
+/// the innermost frame, whose line the interpreter keeps only in a
+/// register, which are keyed by their function alone.
+pub fn spinning(output: &str) -> Vec<(String, Vec<String>)> {
+    let mut threads: Vec<(String, String, Vec<String>)> = Vec::new();
+    for fields in Report::parse(output).lines() {
+        match fields {
+            [kind, native, name] if kind == "spin" => {
+                threads.push((native.clone(), name.clone(), Vec::new()));
+            }
+            [kind, native, depth, function, file, line, tier] if kind == "frame" => {
+                let thread = threads
+                    .iter_mut()
+                    .find(|(of, ..)| of == native)
+                    .expect("a frame of a reported thread");
+                let compiled = tier == "sparkplug" || tier == "maglev" || tier == "turbofan";
+                let key = if compiled || depth == "0" {
+                    if function == "-" {
+                        String::new()
+                    } else {
+                        function.clone()
+                    }
+                } else {
+                    line_key(function, file, line.parse().ok())
+                };
+                thread.2.push(key);
+            }
+            _ => {}
+        }
+    }
+    threads
+        .into_iter()
+        .map(|(_, name, mut frames)| {
+            frames.reverse();
+            (name, frames)
+        })
+        .collect()
+}
+
+/// Each frame of `paths` of a function the threads in `truth` run whose
+/// key is neither the one V8's report gives it nor its function alone, as
+/// a line where none is proven, or a line it was not at: one line each.
+pub fn misplaced(
+    truth: &[(String, Vec<String>)],
+    paths: &BTreeMap<Vec<String>, u64>,
+) -> Vec<String> {
+    let function = |key: &str| key.split(' ').next().unwrap_or_default().to_owned();
+    let mut allowed: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for key in truth.iter().flat_map(|(_, frames)| frames) {
+        let name = function(key);
+        if !name.is_empty() {
+            allowed
+                .entry(name.clone())
+                .or_insert_with(|| vec![name.clone()])
+                .push(key.clone());
+        }
+    }
+    let mut misplaced: Vec<String> = paths
+        .keys()
+        .flatten()
+        .filter(|key| {
+            allowed
+                .get(&function(key))
+                .is_some_and(|keys| !keys.contains(key))
+        })
+        .cloned()
+        .collect();
+    misplaced.sort();
+    misplaced.dedup();
+    misplaced
+}
+
+/// The share of `paths`' weight whose JavaScript frames include one the
+/// engine could not name, among those that hold any.
+pub fn unknown_share(paths: &BTreeMap<Vec<String>, u64>) -> (u64, u64) {
+    let holding = |path: &Vec<String>| path.iter().any(|frame| frame.contains(".js:"));
+    let total = paths
+        .iter()
+        .filter(|(path, _)| holding(path))
+        .map(|(_, weight)| weight)
+        .sum();
+    let unknown = paths
+        .iter()
+        .filter(|(path, _)| {
+            holding(path) && path.iter().any(|frame| frame.starts_with("<unknown>"))
+        })
+        .map(|(_, weight)| weight)
+        .sum();
+    (unknown, total)
+}
+
+/// The spin comparisons fail on each lie they exist to catch: a line
+/// given to a compiled frame, one given to the innermost frame, a dropped
+/// frame, and a wrong line, on the path V8 reported or any other.
+#[test]
+fn the_spin_comparison_fails_on_each_lie() {
+    let output = "TRUTH\tspin\t7\tmain\n\
+                  TRUTH\tframe\t7\t0\tinner\t/a.js\t3\tignition\n\
+                  TRUTH\tframe\t7\t1\tfast\t/a.js\t5\tturbofan\n\
+                  TRUTH\tframe\t7\t2\touter\t/a.js\t9\t-\n";
+    let truth = spinning(output);
+    assert_eq!(
+        truth,
+        [(
+            "main".to_owned(),
+            vec![
+                "outer a.js:9".to_owned(),
+                "fast".to_owned(),
+                "inner".to_owned()
+            ]
+        )]
+    );
+    let path = |frames: &[&str]| -> BTreeMap<Vec<String>, u64> {
+        let mut native = frames
+            .iter()
+            .map(|frame| (*frame).to_owned())
+            .collect::<Vec<_>>();
+        native.push("Builtins_AddHandler".to_owned());
+        std::iter::once((native, 1)).collect()
+    };
+    assert!(missing(&truth, &path(&["outer a.js:9", "fast", "inner"])).is_empty());
+    assert!(misplaced(&truth, &path(&["outer a.js:9", "fast", "inner"])).is_empty());
+    assert!(misplaced(&truth, &path(&["outer a.js:9", "outer", "inner"])).is_empty());
+    for lie in [
+        path(&["outer a.js:9", "fast a.js:5", "inner"]),
+        path(&["outer a.js:9", "fast", "inner a.js:3"]),
+        path(&["outer a.js:8", "fast", "inner"]),
+    ] {
+        assert_eq!(misplaced(&truth, &lie).len(), 1, "{lie:?}");
+    }
+    for lie in [
+        path(&["outer a.js:9", "fast a.js:5", "inner"]),
+        path(&["outer a.js:9", "fast", "inner a.js:3"]),
+        path(&["outer a.js:9", "inner"]),
+        path(&["outer a.js:8", "fast", "inner"]),
+    ] {
+        assert_eq!(missing(&truth, &lie).len(), 1, "{lie:?}");
+    }
+}
+
+/// The BPF engine, whose program walks each sample's JavaScript frames,
+/// held to the frames V8 reported of each spinning thread. It needs
+/// `CAP_BPF` and `CAP_PERFMON`, so it runs only through `just test-bpf`.
+mod bpf {
+    use super::*;
+
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
+    fn samples_hold_each_spinning_threads_javascript_frames() {
+        let launcher = std::env::var_os("MICROSCOPE_BPF_LAUNCHER")
+            .expect("MICROSCOPE_BPF_LAUNCHER names the microscope-bpf wrapper");
+        let scratch = ScratchDir::new("node-busy-bpf");
+        let profile = scratch.path().join("busy.usprof");
+        let (fixture, output) = busy(&scratch, 10);
+        let mut command = Command::new(launcher);
+        command
+            .arg(env!("CARGO_BIN_EXE_microscope"))
+            .args(["record", "--python", "bpf", "--output"])
+            .arg(&profile)
+            .arg("--")
+            .arg(fixture.get_program())
+            .args(fixture.get_args())
+            .env_remove("NODE_OPTIONS")
+            .stdin(Stdio::null())
+            .stdout(std::fs::File::create(&output).expect("the fixture's output"))
+            .stderr(Stdio::piped());
+        let finished = command.output().expect("run microscope");
+        assert!(
+            finished.status.success(),
+            "{}",
+            String::from_utf8_lossy(&finished.stderr)
+        );
+
+        let truth = spinning(&std::fs::read_to_string(&output).expect("the fixture's output"));
+        assert_eq!(truth.len(), 2, "{truth:#?}");
+        let profile = Profile::read(&profile).expect("read the profile").profile;
+        let paths = paths(&profile, Source::Samples, Look::Python);
+        let missing = missing(&truth, &paths);
+        assert!(missing.is_empty(), "{}\n{paths:#?}", missing.join("\n"));
+        let misplaced = misplaced(&truth, &paths);
+        assert!(misplaced.is_empty(), "{misplaced:#?}\n{paths:#?}");
+
+        let (unknown, total) = unknown_share(&paths);
+        eprintln!("samples with an unknown JavaScript frame: {unknown} of {total} ns");
+        assert!(
+            unknown * 100 <= total,
+            "{unknown} of {total} ns: {paths:#?}"
+        );
+    }
 }

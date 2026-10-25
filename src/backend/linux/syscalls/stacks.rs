@@ -47,6 +47,10 @@ struct Mapped {
 
     /// Whether it holds code a runtime generated, which no image holds.
     generated: bool,
+
+    /// Whether it maps anonymous memory: a runtime's copy of a module's
+    /// code or code it generated.
+    anonymous: bool,
 }
 
 /// A file's image, if it could be read, and what names the file in a
@@ -125,6 +129,12 @@ pub struct Stacks {
     /// after its mappings were read again, which are not read again for
     /// them until the process maps something.
     uncovered: HashMap<Pid, std::collections::BTreeSet<u64>>,
+
+    /// The processes that mapped anonymous code since their mappings were
+    /// last read, which a runtime may have copied its code into or
+    /// generated code in: their mappings are read again at their next
+    /// stack, as only the process's memory proves which it is.
+    anonymous: std::collections::BTreeSet<Pid>,
 }
 
 impl std::fmt::Debug for Stacks {
@@ -179,6 +189,7 @@ impl Stacks {
             vdso: Vdso::Unread,
             runtimes: HashMap::default(),
             uncovered: HashMap::default(),
+            anonymous: std::collections::BTreeSet::new(),
         }
     }
 
@@ -186,11 +197,43 @@ impl Stacks {
     pub fn mapped(&mut self, mmap: &decode::Mmap<'_>) {
         let end = mmap.start.saturating_add(mmap.length);
         self.uncovered.remove(&mmap.pid);
+        if perf::jit::is_anonymous_code(mmap) {
+            self.anonymous.insert(mmap.pid);
+        }
         let process = self.processes.entry(mmap.pid).or_default();
         process.retain(|mapped| mapped.end <= mmap.start || mapped.start >= end);
         if let Some(mapped) = self.module(mmap) {
             self.processes.entry(mmap.pid).or_default().push(mapped);
         }
+        if perf::jit::is_anonymous_code(mmap) && self.carries_v8(mmap.pid) {
+            // Until the process's memory proves the code a copy of a
+            // module's, it is code V8 generated, which a worker's isolate
+            // may unmap before its mappings are read.
+            let id = ModuleId::new(self.next_module);
+            self.next_module += 1;
+            if let Some(generated) = self.generated(id, mmap.start..end) {
+                self.processes.entry(mmap.pid).or_default().push(generated);
+            }
+            self.cover(mmap.pid, None);
+        }
+    }
+
+    /// Whether a module `process` maps carries V8, whose isolates copy
+    /// their builtins and generate code in anonymous mappings that each
+    /// unmaps when it is disposed, so that they are read while it maps
+    /// them rather than at a stack recorded before then.
+    fn carries_v8(&self, process: Pid) -> bool {
+        self.processes
+            .get(&process)
+            .into_iter()
+            .flatten()
+            .any(|mapped| {
+                mapped
+                    .image
+                    .info
+                    .as_ref()
+                    .is_some_and(|info| crate::debug_info::v8::is_v8(&info.image))
+            })
     }
 
     /// The module a mapping maps, if it is a file's code or the vDSO.
@@ -223,6 +266,7 @@ impl Stacks {
             loaded,
             image,
             generated: false,
+            anonymous: false,
         })
     }
 
@@ -260,6 +304,7 @@ impl Stacks {
     pub fn forget(&mut self, process: Pid) {
         self.processes.remove(&process);
         self.uncovered.remove(&process);
+        self.anonymous.remove(&process);
         self.runtimes.retain(|&(of, _), _| of != process);
     }
 
@@ -286,7 +331,7 @@ impl Stacks {
             &mut Live(thread),
             MOST_FRAMES,
         );
-        if self.uncover(process, &frames) {
+        if self.uncover(process, &frames, end, &[]) {
             (frames, end) = unwind_memory(
                 &self.modules(process),
                 registers,
@@ -426,17 +471,111 @@ impl Stacks {
         frame: &SampledFrame,
     ) -> Option<(bool, crate::unwind::RegisterFile)> {
         let frame_pointer = frame.frame_pointer?;
-        let mapped = self.mapping_at(process, frame.address.get())?;
+        let generated = self.owned_at(process, model, runtime, stored, frame.address)?;
+        let registers = crate::unwind::RegisterFile::new([(crate::unwind::RBP, frame_pointer)]);
+        Some((generated, registers))
+    }
+
+    /// Whether the code at `address` is `model`'s own, and if so whether the
+    /// runtime generated it.
+    fn owned_at(
+        &self,
+        process: Pid,
+        model: &dyn RuntimeModel,
+        runtime: &LoadedModule,
+        stored: &[crate::AddressRange<VirtualAddress>],
+        address: VirtualAddress,
+    ) -> Option<bool> {
+        let mapped = self.mapping_at(process, address.get())?;
         let generated = mapped.generated;
         let owned = generated
             || (mapped.loaded.image == runtime.image
-                && model.owns_code(mapped.loaded.load_bias.wrapping_unload(frame.address)))
+                && model.owns_code(mapped.loaded.load_bias.wrapping_unload(address)))
             || stored
                 .iter()
-                .any(|range| range.start <= frame.address && frame.address < range.end);
-        owned.then(|| {
-            let registers = crate::unwind::RegisterFile::new([(crate::unwind::RBP, frame_pointer)]);
-            (generated, registers)
+                .any(|range| range.start <= address && address < range.end);
+        owned.then_some(generated)
+    }
+
+    /// The JavaScript frames of a record of the V8 walker's, each named
+    /// through `stop` and placed just before the native frame of `frames`
+    /// it is, by its frame pointer and instruction, or past the last native
+    /// frame where the native stack ended before it. A frame whose code is
+    /// not V8's, or that lies among the native frames but is none of them,
+    /// is no JavaScript frame, as a native function's slot may happen to
+    /// hold a function.
+    fn sampled_code_frames(
+        &self,
+        process: Pid,
+        (model, runtime): (&dyn RuntimeModel, &LoadedModule),
+        stop: &LiveStop<'_>,
+        frames: &[SampledFrame],
+        record: &sampler::V8Stack<'_>,
+    ) -> Vec<InterpretedCall> {
+        let stored = model.process_code(stop);
+        let natives: Vec<_> = frames
+            .iter()
+            .map(|frame| (frame.address, frame.frame_pointer))
+            .collect();
+        let walked: Vec<_> = record
+            .frames
+            .iter()
+            .map(|sampled| (sampled.fp, native_address(sampled)))
+            .collect();
+        let positions = crate::profiler::positions(&natives, &walked);
+        let mut calls = Vec::new();
+        for (sampled, before) in record.frames.iter().zip(positions) {
+            let pc = VirtualAddress::new(sampled.pc);
+            let after_call = sampled.at_instruction == 0;
+            let address = native_address(sampled);
+            let Some(generated) = self.owned_at(process, model, runtime, &stored, address) else {
+                continue;
+            };
+            let frame = runtime_model::SampledCodeFrame {
+                frame_pointer: sampled.fp,
+                instruction: pc,
+                after_call,
+                generated,
+                function: sampled.function,
+                shared: sampled.shared,
+                script: sampled.script,
+                script_id: sampled.script_id,
+                literal_id: sampled.literal_id,
+                bytecode: sampled.bytecode,
+                bytecode_offset: sampled.bytecode_offset,
+            };
+            let Some(functions) = model.sampled_code_frame(stop, &frame) else {
+                continue;
+            };
+            let before = u32::try_from(before).unwrap_or(u32::MAX);
+            calls.extend(functions.iter().map(|function| InterpretedCall {
+                before,
+                function: Arc::clone(&function.function),
+                file: function.place.as_ref().map(|place| Arc::clone(&place.path)),
+                line: function.place.as_ref().map_or(0, |place| place.line),
+                first_line: function.first_line,
+            }));
+        }
+        calls
+    }
+
+    /// The layout the BPF walker reads `process`'s JavaScript frames by, if
+    /// it runs a V8 microscope reads, or why it cannot be read so.
+    pub fn v8_layout(&mut self, process: Pid) -> Option<Result<sampler::RawV8Layout, String>> {
+        let (model, _) = self.interpreter(process)?;
+        if !model.owns_generated_code() {
+            return None;
+        }
+        let runtime = self.processes.get(&process)?.iter().find_map(|mapped| {
+            if mapped.loaded.window.is_some() {
+                return None;
+            }
+            mapped.image.info.as_ref()?.image.v8_runtime()
+        })?;
+        Some(match runtime.layout {
+            Ok(layout) => sampler::v8_layout(&layout)
+                .map_err(|missing| format!("V8's layout has no {missing}")),
+            Err(why) => Err(why.to_string()),
         })
     }
 
@@ -470,13 +609,13 @@ impl Stacks {
     ) -> CallStack {
         self.cover(process, sample.chain.first().copied());
         let (mut frames, mut end) = self.unwind_copy(process, sample);
-        if self.uncover(process, &frames) {
+        if self.uncover(process, &frames, end, sample.chain) {
             (frames, end) = self.unwind_copy(process, sample);
         }
         let runtime = self.interpreter(process);
         let modules = self.modules(process);
         let mut stack = stack(&frames, end);
-        if let Some((model, loaded)) = runtime
+        if let Some((model, loaded)) = runtime.clone()
             && !model.owns_generated_code()
         {
             let activations = activations(model.as_ref(), &modules, &frames);
@@ -492,11 +631,30 @@ impl Stacks {
                     }],
                     frames,
                 },
-                Sampled::None | Sampled::Unknown => InterpretedStacks::default(),
+                Sampled::None | Sampled::Unknown | Sampled::Placed { .. } => {
+                    InterpretedStacks::default()
+                }
             };
             let (interpreted, truncation) =
                 place(&read, thread, &activations, stack.addresses.len());
             stack.interpreted = interpreted.into();
+            stack.truncated = stack
+                .truncated
+                .or_else(|| truncation.map(|reason| reason as u8));
+        } else if let Some((model, loaded)) = runtime
+            && let Some(record) = python
+                .filter(|bytes| sampler::is_v8(bytes))
+                .and_then(|bytes| sampler::decode_v8(bytes).ok())
+        {
+            let stop = LiveStop::memory(process.get(), loaded.load_bias);
+            stack.interpreted = self
+                .sampled_code_frames(process, (model.as_ref(), &loaded), &stop, &frames, &record)
+                .into();
+            let truncation = match record.end {
+                sampler::V8End::Complete | sampler::V8End::Unreadable => None,
+                sampler::V8End::Bounded => Some(Truncation::InterpretedEnded),
+                sampler::V8End::NoLayout => Some(Truncation::InterpretedUnknown),
+            };
             stack.truncated = stack
                 .truncated
                 .or_else(|| truncation.map(|reason| reason as u8));
@@ -529,13 +687,35 @@ impl Stacks {
     }
 
     /// Reads `process`'s mappings again when `frames` end at code in no
-    /// module the reading knows, as a runtime's that it mapped since:
-    /// whether a mapping now holds that code.
-    fn uncover(&mut self, process: Pid, frames: &[SampledFrame]) -> bool {
-        let Some(last) = frames.last().filter(|frame| frame.module.is_none()) else {
+    /// module the reading knows, or at a return address into such code,
+    /// as a runtime's that it mapped since, which a remap of code may have
+    /// put where no record says: whether they were read. `chain` is the
+    /// kernel's walk of the stack's frame pointers, which may hold that
+    /// return address. Each address is read again for once, until the
+    /// process maps more.
+    fn uncover(
+        &mut self,
+        process: Pid,
+        frames: &[SampledFrame],
+        end: StackEnd,
+        chain: &[u64],
+    ) -> bool {
+        let Some(last) = frames.last() else {
             return false;
         };
-        let address = last.address.get();
+        let unmapped = matches!(end, StackEnd::Truncated(Truncation::UnmappedAddress, _));
+        if last.module.is_some() && !unmapped {
+            return false;
+        }
+        let address = if last.module.is_some() {
+            chain
+                .iter()
+                .copied()
+                .find(|&address| self.mapping_at(process, address).is_none())
+                .unwrap_or_else(|| last.address.get())
+        } else {
+            last.address.get()
+        };
         if self
             .uncovered
             .get(&process)
@@ -543,12 +723,10 @@ impl Stacks {
         {
             return false;
         }
-        self.cover(process, Some(address));
-        let covered = self.mapping_at(process, address).is_some();
-        if !covered {
-            self.uncovered.entry(process).or_default().insert(address);
-        }
-        covered
+        self.uncovered.entry(process).or_default().insert(address);
+        self.anonymous.insert(process);
+        self.cover(process, None);
+        !self.anonymous.contains(&process)
     }
 
     /// Names each address of a stack of `process`'s.
@@ -729,13 +907,14 @@ impl Stacks {
                     .any(|mapped| mapped.start <= address && address < mapped.end)
             })
         });
-        if known {
+        if known && !self.anonymous.contains(&process) {
             return;
         }
 
         let Ok(mappings) = perf::mappings(process.get()) else {
             return;
         };
+        self.anonymous.remove(&process);
 
         let mut modules = Vec::new();
         for mapping in &mappings {
@@ -758,6 +937,17 @@ impl Stacks {
             .filter(|mapping| perf::is_anonymous(mapping))
             .collect();
         self.runtime_code(process, &mut modules, &anonymous);
+        // A runtime's code that was mapped when it was read last, and that
+        // nothing maps over now, is kept for the stacks recorded while it
+        // was: an isolate unmaps its code when it is disposed, which is no
+        // later than the records of its stacks are handled.
+        let previous = self.processes.remove(&process).unwrap_or_default();
+        modules.extend(previous.into_iter().filter(|mapped| {
+            mapped.anonymous
+                && mappings
+                    .iter()
+                    .all(|mapping| mapping.end <= mapped.start || mapping.start >= mapped.end)
+        }));
         self.runtimes.retain(|&(of, _), _| of != process);
         self.processes.insert(process, modules);
     }
@@ -836,40 +1026,47 @@ impl Stacks {
                     },
                     image: source.image.clone(),
                     generated: false,
+                    anonymous: true,
                 }
             } else {
-                let path = format!("[V8 code {:#x}]", range.start);
-                let image_id = self.next_image_id();
-                let bounds = crate::AddressRange {
-                    start: ImageAddress::new(range.start),
-                    end: ImageAddress::new(range.end),
-                };
-                let Ok(info) = crate::debug_info::runtime_code::load(
-                    std::path::Path::new(&path),
-                    image_id,
-                    bounds,
-                ) else {
+                let Some(mapped) = self.generated(id, range) else {
                     continue;
                 };
-                Mapped {
-                    start: range.start,
-                    end: range.end,
-                    path: path.into(),
-                    loaded: LoadedModule {
-                        id,
-                        image: image_id,
-                        load_bias: LoadBias::new(0),
-                        window: None,
-                    },
-                    image: Image {
-                        info: Some(Arc::new(info)),
-                        identity: None,
-                    },
-                    generated: true,
-                }
+                mapped
             };
             modules.push(mapped);
         }
+    }
+
+    /// A module of the code V8 generated at `range`, which keeps V8's
+    /// frame-pointer convention (`debug_info::runtime_code`).
+    fn generated(&mut self, id: ModuleId, range: std::ops::Range<u64>) -> Option<Mapped> {
+        let path = format!("[V8 code {:#x}]", range.start);
+        let image_id = self.next_image_id();
+        let bounds = crate::AddressRange {
+            start: ImageAddress::new(range.start),
+            end: ImageAddress::new(range.end),
+        };
+        let info =
+            crate::debug_info::runtime_code::load(std::path::Path::new(&path), image_id, bounds)
+                .ok()?;
+        Some(Mapped {
+            start: range.start,
+            end: range.end,
+            path: path.into(),
+            loaded: LoadedModule {
+                id,
+                image: image_id,
+                load_bias: LoadBias::new(0),
+                window: None,
+            },
+            image: Image {
+                info: Some(Arc::new(info)),
+                identity: None,
+            },
+            generated: true,
+            anonymous: true,
+        })
     }
 
     const fn next_image_id(&mut self) -> ModuleImageId {
@@ -896,6 +1093,16 @@ impl Stacks {
             .unwrap_or_default();
         self.images.insert(key, image.clone());
         image
+    }
+}
+
+/// The address of the native frame a walked frame of V8's is: its
+/// instruction, or the byte before its return address.
+const fn native_address(sampled: &sampler::RawV8Frame) -> VirtualAddress {
+    if sampled.at_instruction == 0 {
+        VirtualAddress::new(sampled.pc.wrapping_sub(1))
+    } else {
+        VirtualAddress::new(sampled.pc)
     }
 }
 

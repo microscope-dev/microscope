@@ -21,12 +21,16 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 use super::super::perf;
 use crate::image::python::{Constant, Field, PythonLayout};
+use crate::image::v8::{Constant as V8Constant, Field as V8Field, V8Layout};
 
 /// The program, as `build.rs` compiled it.
 static OBJECT: &[u8] = aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/sampler.bpf.o"));
 
 /// `RECORD_PY_STACK`.
 const RECORD_PY_STACK: u32 = 9;
+
+/// `RECORD_V8_STACK`.
+const RECORD_V8_STACK: u32 = 10;
 
 /// `PY_ABSENT`: a field the version does not have.
 const ABSENT: u32 = u32::MAX;
@@ -144,9 +148,160 @@ struct RawPyStackRecord {
     pad: u16,
 }
 
+/// `struct v8_layout`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout)]
+pub struct RawV8Layout {
+    fp_function: i32,
+    fp_marker: i32,
+    fp_bytecode_array: i32,
+    fp_bytecode_offset: i32,
+    heap_object_tag_mask: u32,
+    heap_object_tag: u32,
+    smi_tag_mask: u32,
+    smi_tag: u32,
+    object_map: u32,
+    map_instance_type: u32,
+    first_function_type: u32,
+    last_function_type: u32,
+    shared_type: u32,
+    script_type: u32,
+    function_shared: u32,
+    shared_script: u32,
+    shared_literal_id: u32,
+    script_id: u32,
+}
+
+/// `struct v8_frame`: one JavaScript frame as the walker read it.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout)]
+pub struct RawV8Frame {
+    pub fp: u64,
+    pub pc: u64,
+    pub function: u64,
+    pub shared: u64,
+    pub script: u64,
+    pub script_id: u64,
+    pub bytecode: u64,
+    pub bytecode_offset: u64,
+    pub literal_id: i32,
+
+    /// 1 where `pc` is the frame's instruction, 0 where it is the return
+    /// address of a call.
+    pub at_instruction: u32,
+}
+
+/// `struct v8_stack_record`, which its frames follow.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout)]
+struct RawV8StackRecord {
+    header: RawRecord,
+    frames: u32,
+    end: u8,
+    pad: [u8; 3],
+}
+
+/// Why a thread's JavaScript frames end: `enum v8_end`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum V8End {
+    /// At the end of the frame-pointer chain.
+    Complete,
+
+    /// At the most frames a record holds, or steps a walk takes.
+    Bounded,
+
+    /// At a frame that could not be read, or a chain that does not climb.
+    Unreadable,
+
+    /// Before the walk: the process's layout was not yet known.
+    NoLayout,
+}
+
+/// A thread's JavaScript frames, as the walker wrote them.
+#[derive(Debug, Clone, Copy)]
+pub struct V8Stack<'a> {
+    pub end: V8End,
+
+    /// Innermost first.
+    pub frames: &'a [RawV8Frame],
+}
+
+/// Whether `bytes` is a record of JavaScript frames, as opposed to Python's.
+pub fn is_v8(bytes: &[u8]) -> bool {
+    RawRecord::ref_from_prefix(bytes).is_ok_and(|(record, _)| record.kind == RECORD_V8_STACK)
+}
+
+/// The record of JavaScript frames `bytes` holds.
+pub fn decode_v8(bytes: &[u8]) -> Result<V8Stack<'_>, Malformed> {
+    let (record, rest) = RawV8StackRecord::ref_from_prefix(bytes).map_err(|_| Malformed)?;
+    let size = usize::try_from(record.header.size).map_err(|_| Malformed)?;
+    if record.header.kind != RECORD_V8_STACK || size > bytes.len() {
+        return Err(Malformed);
+    }
+    let count = usize::try_from(record.frames).map_err(|_| Malformed)?;
+    let frames_bytes = count
+        .checked_mul(size_of::<RawV8Frame>())
+        .filter(|bytes| size_of::<RawV8StackRecord>() + bytes == size)
+        .ok_or(Malformed)?;
+    let frames = <[RawV8Frame]>::ref_from_bytes(rest.get(..frames_bytes).ok_or(Malformed)?)
+        .map_err(|_| Malformed)?;
+    let end = match record.end {
+        0 => V8End::Complete,
+        1 => V8End::Bounded,
+        2 => V8End::Unreadable,
+        3 => V8End::NoLayout,
+        _ => return Err(Malformed),
+    };
+    Ok(V8Stack { end, frames })
+}
+
+/// The layout the walker reads a V8 of `layout` by, or the field or
+/// constant it needs that the layout lacks.
+pub fn v8_layout(layout: &V8Layout) -> Result<RawV8Layout, &'static str> {
+    let constant = |constant: V8Constant| {
+        layout
+            .constant(constant)
+            .ok_or_else(|| constant.name())
+            .and_then(|value| u32::try_from(value).map_err(|_| constant.name()))
+    };
+    let slot = |constant: V8Constant| {
+        layout
+            .constant(constant)
+            .ok_or_else(|| constant.name())
+            .and_then(|value| i32::try_from(value).map_err(|_| constant.name()))
+    };
+    let field = |field: V8Field| {
+        layout
+            .field(field)
+            .ok_or_else(|| field.name())
+            .and_then(|offset| u32::try_from(offset).map_err(|_| field.name()))
+    };
+    Ok(RawV8Layout {
+        fp_function: slot(V8Constant::OffFpFunction)?,
+        fp_marker: slot(V8Constant::OffFpContextOrFrameType)?,
+        fp_bytecode_array: slot(V8Constant::OffFpBytecodeArray)?,
+        fp_bytecode_offset: slot(V8Constant::OffFpBytecodeOffset)?,
+        heap_object_tag_mask: constant(V8Constant::HeapObjectTagMask)?,
+        heap_object_tag: constant(V8Constant::HeapObjectTag)?,
+        smi_tag_mask: constant(V8Constant::SmiTagMask)?,
+        smi_tag: constant(V8Constant::SmiTag)?,
+        object_map: field(V8Field::HeapObjectMap)?,
+        map_instance_type: field(V8Field::MapInstanceType)?,
+        first_function_type: constant(V8Constant::FirstJSFunctionType)?,
+        last_function_type: constant(V8Constant::LastJSFunctionType)?,
+        shared_type: constant(V8Constant::SharedFunctionInfoType)?,
+        script_type: constant(V8Constant::ScriptType)?,
+        function_shared: field(V8Field::JSFunctionSharedFunctionInfo)?,
+        shared_script: field(V8Field::SharedFunctionInfoScript)?,
+        shared_literal_id: field(V8Field::SharedFunctionInfoFunctionLiteralId)?,
+        script_id: field(V8Field::ScriptId)?,
+    })
+}
+
 /// Map values cross as bytes, which aya can hold without unsafe code.
 type Bytes<const N: usize> = [u8; N];
 const LAYOUT_BYTES: usize = size_of::<RawPyLayout>();
+const V8_LAYOUT_BYTES: usize = size_of::<RawV8Layout>();
 const THREAD_BYTES: usize = size_of::<RawPyThread>();
 
 /// Why a thread's frames end: `enum py_end`.
@@ -425,11 +580,48 @@ impl PythonLayouts {
     }
 }
 
+/// A program's `V8_LAYOUTS`: the layout the walker reads each Node
+/// process by, by its process id as the kernel's initial pid namespace
+/// numbers it.
+pub struct V8Layouts(HashMap<MapData, u32, Bytes<V8_LAYOUT_BYTES>>);
+
+impl V8Layouts {
+    /// The map `V8_LAYOUTS` of a program, which it gives up.
+    ///
+    /// # Errors
+    ///
+    /// When the program has no such map, or it is another kind.
+    pub fn take(ebpf: &mut Ebpf) -> Result<Self, SamplerError> {
+        let map = ebpf
+            .take_map("V8_LAYOUTS")
+            .ok_or_else(|| load_error("the program has no V8_LAYOUTS map"))?;
+        Ok(Self(HashMap::try_from(map).map_err(load_error)?))
+    }
+
+    /// Sets the layout the walker reads process `tgid`'s frames by.
+    ///
+    /// # Errors
+    ///
+    /// When the kernel refuses the update, as when the map is full.
+    pub fn set(&mut self, tgid: u32, layout: &RawV8Layout) -> Result<(), SamplerError> {
+        let mut value = [0; V8_LAYOUT_BYTES];
+        value.copy_from_slice(layout.as_bytes());
+        self.0.insert(tgid, value, 0).map_err(load_error)
+    }
+
+    /// Forgets process `tgid`'s layout, as after it exited.
+    pub fn forget(&mut self, tgid: u32) {
+        // A process that is gone may be gone from the map already.
+        let _ = self.0.remove(&tgid);
+    }
+}
+
 /// The loaded program, attached to a recording's events, and its maps.
 pub struct Sampler {
     /// Holds the program, which the events run, and the maps.
     _ebpf: Ebpf,
     layouts: PythonLayouts,
+    v8_layouts: V8Layouts,
     threads: HashMap<MapData, u32, Bytes<THREAD_BYTES>>,
     lost: PerCpuArray<MapData, u64>,
 
@@ -502,6 +694,7 @@ impl Sampler {
         };
 
         let layouts = PythonLayouts(HashMap::try_from(take("LAYOUTS")?).map_err(load_error)?);
+        let v8_layouts = V8Layouts(HashMap::try_from(take("V8_LAYOUTS")?).map_err(load_error)?);
         let threads = HashMap::try_from(take("THREADS")?).map_err(load_error)?;
         let lost = PerCpuArray::try_from(take("LOST")?).map_err(load_error)?;
         let ids = outputs.iter().map(|output| output.id).collect();
@@ -511,6 +704,7 @@ impl Sampler {
             Self {
                 _ebpf: ebpf,
                 layouts,
+                v8_layouts,
                 threads,
                 lost,
                 _outputs: outputs,
@@ -527,6 +721,16 @@ impl Sampler {
     /// When the kernel refuses the update, as when the map is full.
     pub fn set_layout(&mut self, tgid: u32, layout: &RawPyLayout) -> Result<(), SamplerError> {
         self.layouts.set(tgid, layout)
+    }
+
+    /// Sets the layout the walker reads process `tgid`'s JavaScript frames
+    /// by.
+    ///
+    /// # Errors
+    ///
+    /// When the kernel refuses the update, as when the map is full.
+    pub fn set_v8_layout(&mut self, tgid: u32, layout: &RawV8Layout) -> Result<(), SamplerError> {
+        self.v8_layouts.set(tgid, layout)
     }
 
     /// Sets the states of process `tgid`'s threads to `threads`, each
@@ -565,6 +769,7 @@ impl Sampler {
         }
 
         self.layouts.forget(tgid);
+        self.v8_layouts.forget(tgid);
     }
 
     /// How many records found no room in their rings.
@@ -647,6 +852,51 @@ mod tests {
                 RawPyStackRecord,
                 "py_stack_record",
                 [header, state, running_task, frames, end, gil, pad]
+            ),
+            (
+                RawV8Layout,
+                "v8_layout",
+                [
+                    fp_function,
+                    fp_marker,
+                    fp_bytecode_array,
+                    fp_bytecode_offset,
+                    heap_object_tag_mask,
+                    heap_object_tag,
+                    smi_tag_mask,
+                    smi_tag,
+                    object_map,
+                    map_instance_type,
+                    first_function_type,
+                    last_function_type,
+                    shared_type,
+                    script_type,
+                    function_shared,
+                    shared_script,
+                    shared_literal_id,
+                    script_id,
+                ]
+            ),
+            (
+                RawV8Frame,
+                "v8_frame",
+                [
+                    fp,
+                    pc,
+                    function,
+                    shared,
+                    script,
+                    script_id,
+                    bytecode,
+                    bytecode_offset,
+                    literal_id,
+                    at_instruction
+                ]
+            ),
+            (
+                RawV8StackRecord,
+                "v8_stack_record",
+                [header, frames, end, pad]
             ),
         );
     }

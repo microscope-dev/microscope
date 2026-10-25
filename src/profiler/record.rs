@@ -33,13 +33,20 @@ use crate::{
 
 /// The modules `process` maps, each once, with their debug information,
 /// from `images`; a module whose debug information could not be read is
-/// left out.
+/// left out. A copy of a module's code, as V8's of its builtins, is a
+/// module of its own beside the module.
 fn modules_in(process: &ProcessState, images: &[Image]) -> Vec<(LoadedModule, DebugInfo)> {
     let mut seen = BTreeSet::new();
     process
         .mapped
         .iter()
-        .filter(|mapped| seen.insert(mapped.image))
+        .filter(|mapped| {
+            let window = mapped
+                .loaded
+                .window
+                .map(|window| (window.start.get(), window.end.get()));
+            seen.insert((mapped.image, window))
+        })
         .filter_map(|mapped| {
             let info = images.get(mapped.image)?.info.clone()?;
             Some((mapped.loaded, info))
@@ -59,6 +66,39 @@ fn find_interpreter(
         interpreted.find(pid, process.mappings, &modules_in(process, images));
     }
 }
+
+/// Where process `pid`'s code at `address` is, for its runtime's walker:
+/// code a runtime generated, or a V8 image's.
+fn code_at(
+    processes: &BTreeMap<Pid, ProcessState>,
+    images: &[Image],
+    pid: Pid,
+    address: u64,
+) -> Option<interpreted::CodeAt> {
+    let mapped = processes
+        .get(&pid)?
+        .mapped
+        .iter()
+        .find(|mapped| mapped.start <= address && address < mapped.end)?;
+    let image = images.get(mapped.image)?;
+    if image.generated {
+        return Some(interpreted::CodeAt::Generated);
+    }
+    let info = image.info.as_ref()?;
+    crate::debug_info::v8::is_v8(&info.image).then(|| {
+        interpreted::CodeAt::Runtime(
+            mapped
+                .loaded
+                .load_bias
+                .wrapping_unload(crate::VirtualAddress::new(address)),
+        )
+    })
+}
+
+/// A sample's native frames as a capture keeps them: each frame, with the
+/// name of the interpreter's code it runs, if it runs the interpreter's;
+/// and each frame's module and address, its key.
+type NativeFrames = (Vec<(u32, Option<Arc<str>>)>, Vec<(u32, u64)>);
 
 /// How a program's call sites keep the frame-pointer chain.
 pub enum Sites {
@@ -88,6 +128,10 @@ struct Image {
     /// recorded, and its frames outside every function it names are frames
     /// of no module.
     anonymous: bool,
+
+    /// Whether it is code a runtime generated, as V8's compiled
+    /// JavaScript, which the runtime's frames run.
+    generated: bool,
 }
 
 /// One executable mapping of a process.
@@ -460,6 +504,7 @@ impl Processor {
                     data,
                     ..
                 } => {
+                    let (processes, images) = (&self.processes, &self.images);
                     let interpreted = self.interpreted.as_mut();
                     if let Some(interpreted) = interpreted {
                         if let Some(index) = unpaired.iter().position(|(of, ..)| *of == (tid, cpu))
@@ -468,7 +513,8 @@ impl Processor {
                             interpreted.dropped((tid, cpu, superseded));
                         }
 
-                        interpreted.drained(pid, (tid, cpu, time), data);
+                        let code = |address| code_at(processes, images, pid, address);
+                        interpreted.drained(pid, (tid, cpu, time), data, &code);
                     }
 
                     unpaired.push(((tid, cpu), time, offset, length));
@@ -840,6 +886,7 @@ impl Processor {
             module,
             probes,
             anonymous: false,
+            generated: false,
         });
         image
     }
@@ -965,6 +1012,9 @@ impl Processor {
                 crate::debug_info::runtime_code::load(std::path::Path::new(&path), id, bounds).ok();
             let digest = twox_hash::XxHash3_128::oneshot(path.as_bytes());
             self.anonymous_module(pid, time, (id, &path, digest), code, info);
+            if let Some(image) = self.images.last_mut() {
+                image.generated = true;
+            }
             self.loading += thread_cpu().saturating_sub(began);
             return;
         };
@@ -1028,6 +1078,7 @@ impl Processor {
             module,
             probes: None,
             anonymous: true,
+            generated: false,
         });
 
         let loaded = LoadedModule {
@@ -1348,36 +1399,7 @@ impl Processor {
             self.note_task(sample.pid, thread, time, leaf, &owners);
         }
 
-        let mut native = Vec::with_capacity(frames.len());
-        for frame in &frames {
-            let owner = frame
-                .module
-                .map(|module| owners[module])
-                .filter(|owner| self.names(owner, frame.address.get()));
-            let id = match owner {
-                Some(owner) => self.builder.frame(
-                    FrameKind::Native,
-                    self.images[owner.image].module,
-                    owner.loaded.load_bias.wrapping_unload(frame.address).get(),
-                    role_number(frame.role),
-                ),
-                None => self
-                    .builder
-                    .frame(FrameKind::Native, NONE, frame.address.get(), 0),
-            };
-
-            // Only the interpreter's own code can be its loop, or call
-            // from it.
-            let name = owner
-                .filter(|_| frame.role == CodeRole::Interpreter)
-                .and_then(|owner| {
-                    let info = self.images[owner.image].info.as_ref()?;
-                    let address = owner.loaded.load_bias.wrapping_unload(frame.address);
-                    Some(info.image.symbolize(address)?.name)
-                });
-            native.push((id, name));
-        }
-
+        let (native, keys) = self.native_frames(&frames, &owners);
         let (interpreted, running) = self.sampled_interpreted(sample, thread);
         let native: Vec<(u32, bool)> = (0..native.len())
             .map(|index| {
@@ -1401,7 +1423,15 @@ impl Processor {
             self.unclaimed.push((thread, time, task));
         }
 
-        let marker = self.splice_interpreted(&native, interpreted);
+        let marker = if let Sampled::Placed {
+            frames: placed,
+            ended,
+        } = interpreted
+        {
+            self.splice_placed(&native, (&frames, &keys), &placed, ended)
+        } else {
+            self.splice_interpreted(&native, interpreted)
+        };
 
         let truncation = match end {
             StackEnd::Truncated(reason, module) => Some((
@@ -1442,19 +1472,79 @@ impl Processor {
 
         let stack = paired
             .as_ref()
+            .filter(|(_, bytes)| !crate::backend::bpf::sampler::is_v8(bytes))
             .and_then(|(_, bytes)| crate::backend::bpf::sampler::decode(bytes).ok());
         if let Some(stack) = &stack {
             let time = sample.time.cast_signed();
             interpreted.label(&mut self.builder, thread, (time, sample.period), stack.gil);
         }
 
+        let (processes, images) = (&self.processes, &self.images);
+        let code = |address| code_at(processes, images, sample.pid, address);
         (
             interpreted.paired(
                 sample.pid,
                 paired.as_ref().map(|(key, bytes)| (*key, bytes.as_slice())),
+                &code,
             ),
             stack.and_then(|stack| stack.running_task),
         )
+    }
+
+    /// Each of a sample's native `frames`, of the modules `owners`, as a
+    /// frame of the capture with the name of the interpreter's code it
+    /// runs, if it runs the interpreter's; and each frame's module and
+    /// address, its key.
+    fn native_frames(
+        &mut self,
+        frames: &[crate::unwind::sample::SampledFrame],
+        owners: &[Mapped],
+    ) -> NativeFrames {
+        let mut native = Vec::with_capacity(frames.len());
+        let mut keys = Vec::with_capacity(frames.len());
+        for frame in frames {
+            let owner = frame
+                .module
+                .map(|module| owners[module])
+                .filter(|owner| self.names(owner, frame.address.get()));
+            let key = owner.map_or_else(
+                || (NONE, frame.address.get()),
+                |owner| {
+                    (
+                        self.images[owner.image].module,
+                        owner.loaded.load_bias.wrapping_unload(frame.address).get(),
+                    )
+                },
+            );
+            // Code V8 generated runs only its functions and its own
+            // machinery, as an interpreter's loop does: a sample's frames
+            // of V8's name its functions where it has them.
+            let generated = frame
+                .module
+                .is_some_and(|module| self.images[owners[module].image].generated);
+            let role = if generated {
+                role_number(CodeRole::Interpreter)
+            } else if owner.is_some() {
+                role_number(frame.role)
+            } else {
+                0
+            };
+            let id = self.builder.frame(FrameKind::Native, key.0, key.1, role);
+            keys.push(key);
+
+            // Only the interpreter's own code can be its loop, or call
+            // from it.
+            let name = owner
+                .filter(|_| frame.role == CodeRole::Interpreter)
+                .and_then(|owner| {
+                    let info = self.images[owner.image].info.as_ref()?;
+                    let address = owner.loaded.load_bias.wrapping_unload(frame.address);
+                    Some(info.image.symbolize(address)?.name)
+                });
+            native.push((id, name));
+        }
+
+        (native, keys)
     }
 
     /// Puts the stack's frames in [`Self::frames`]: its `native` frames,
@@ -1469,7 +1559,8 @@ impl Processor {
         self.frames.clear();
         let natives = native.iter().map(|&(frame, _)| frame);
         let (frames, ended) = match interpreted {
-            Sampled::None => {
+            // The caller splices placed frames.
+            Sampled::None | Sampled::Placed { .. } => {
                 self.frames.extend(natives);
                 return None;
             }
@@ -1512,6 +1603,78 @@ impl Processor {
         self.frames.extend(natives);
         self.frames.extend(segments.into_iter().flatten());
         Some(Truncation::InterpretedUnplaced)
+    }
+
+    /// Puts the stack's frames in [`Self::frames`]: its `native` frames,
+    /// each `placed` frame's functions just before the native frame of
+    /// `frames` it is, by its frame pointer and address, with that frame's
+    /// key in `keys` as the interpreter's, or past the last where the native
+    /// stack ended before it. One among the native frames that is none of
+    /// them is no frame of the runtime's. Returns where the frames say the
+    /// stack ends early, if they do.
+    fn splice_placed(
+        &mut self,
+        native: &[(u32, bool)],
+        (frames, keys): (&[crate::unwind::sample::SampledFrame], &[(u32, u64)]),
+        placed: &[interpreted::PlacedFrame],
+        ended: bool,
+    ) -> Option<Truncation> {
+        self.frames.clear();
+        let natives: Vec<_> = frames
+            .iter()
+            .map(|frame| (frame.address, frame.frame_pointer))
+            .collect();
+        let walked: Vec<_> = placed
+            .iter()
+            .map(|frame| (frame.frame_pointer, frame.address))
+            .collect();
+        let positions = interpreted::positions(&natives, &walked);
+        let mut before: Vec<Vec<u32>> = vec![Vec::new(); native.len() + 1];
+        for (frame, index) in placed.iter().zip(positions) {
+            for function in &frame.functions {
+                let wait = InterpretedWait::of(Some(function));
+                let id = self.builder.interpreted(&InterpretedPlace {
+                    function: &wait.function,
+                    file: wait.file.as_deref(),
+                    line: wait.line,
+                    declared: wait.first_line,
+                });
+                if let Some(slot) = before.get_mut(index) {
+                    slot.push(id);
+                }
+            }
+        }
+        let interpreter = role_number(CodeRole::Interpreter);
+        for (index, &(id, _)) in native.iter().enumerate() {
+            let functions = before.get(index).map_or(&[][..], Vec::as_slice);
+            // A frame that runs the runtime's functions stands for them, as
+            // an interpreter's frame does. One of code that also runs apart
+            // from them, as a bytecode handler the sample landed in, which
+            // the frame of its function runs, is what they run.
+            let own = self
+                .builder
+                .frames()
+                .get(id as usize)
+                .map(|frame| frame.role);
+            if !functions.is_empty() && own != Some(interpreter) {
+                self.frames.push(id);
+                self.frames.extend_from_slice(functions);
+                continue;
+            }
+            self.frames.extend_from_slice(functions);
+            let id = match (functions.is_empty(), keys.get(index)) {
+                (false, Some(&(module, address))) => {
+                    self.builder
+                        .frame(FrameKind::Native, module, address, interpreter)
+                }
+                _ => id,
+            };
+            self.frames.push(id);
+        }
+        if let Some(outer) = before.last() {
+            self.frames.extend_from_slice(outer);
+        }
+        ended.then_some(Truncation::InterpretedEnded)
     }
 
     /// The capture so far, every frame symbolized, which goes on growing:

@@ -127,12 +127,13 @@ pub fn lies(reported: &BTreeMap<String, Call>, records: &[Value]) -> Vec<String>
 }
 
 /// `microscope syscalls`, run as `command`, tracing the fixture's opens
-/// with `arguments` into `trace`.
+/// with `arguments` into `trace`, `-` for standard output; with `hold`,
+/// the fixture waits for its standard input (`syscalls.js`).
 pub fn command(
     mut command: Command,
     arguments: &[&str],
     trace: &std::path::Path,
-    settle: bool,
+    hold: bool,
 ) -> Command {
     command
         .args(["syscalls", "-f", "-e", "trace=openat", "--format", "ndjson"])
@@ -143,7 +144,7 @@ pub fn command(
         .arg(node::node(ENTRY))
         .arg("--allow-natives-syntax")
         .arg(node::fixture("syscalls.js"))
-        .args(settle.then_some("--settle"))
+        .args(hold.then_some("--hold"))
         .env_remove("NODE_OPTIONS")
         .stdin(Stdio::null());
     command
@@ -222,5 +223,354 @@ fn the_comparison_fails_on_each_lie() {
         let mut records = honest.clone();
         records[0] = lie.clone();
         assert_eq!(lies(&reported, &records).len(), 1, "{lie}");
+    }
+}
+
+/// The functions whose frames the fixture runs compiled where they open
+/// their paths, whose lines the BPF engine leaves unknown: it does not
+/// prove which compiled code a frame ran (`runtime_model/node/sampled.rs`).
+const COMPILED: [&str; 2] = ["turbofanOpens", "sparkplugOpens"];
+
+/// The function of `node:fs` each of the fixture's opens runs.
+const NODE_OPENS: &str = "openSync";
+
+/// How each open the BPF engine traced, in `records`, differs from what
+/// the fixture reported of it and from the frames the ptrace engine traced
+/// of it, in `ptrace`, one line per difference. A frame of the fixture's
+/// own script has V8's function, file and line, or, where it ran compiled
+/// code, V8's function and no line; a frame of Node's own scripts has
+/// V8's function and V8's line or none, as Node's scripts may run compiled
+/// code where the fixture says nothing of it.
+pub fn bpf_lies(
+    reported: &BTreeMap<String, Call>,
+    records: &[Value],
+    ptrace: &[Value],
+) -> Vec<String> {
+    let mut lies = Vec::new();
+    for (path, _) in OPENS {
+        let Some(truth) = reported.get(path) else {
+            lies.push(format!("{path}: the fixture reported no such open"));
+            continue;
+        };
+        // Node opens some of the paths as it starts; the fixture's open is
+        // the last.
+        let find = |records: &[Value]| {
+            records
+                .iter()
+                .rev()
+                .find(|record| record["path"] == path)
+                .map(traced)
+        };
+        let (Some(mut seen), Some(other)) = (find(records), find(ptrace)) else {
+            lies.push(format!("{path}: an engine traced no such open"));
+            continue;
+        };
+        // node:fs's frame that opens the path, which the fixture's many
+        // opens compile, has no file where its line is unknown.
+        let opens = seen
+            .frames
+            .iter()
+            .take_while(|frame| **frame == (NODE_OPENS.to_owned(), "-".to_owned(), None))
+            .count();
+        seen.frames.drain(..opens);
+        if seen.thread != truth.thread {
+            lies.push(format!(
+                "{path}: on thread {}, not {}",
+                seen.thread, truth.thread
+            ));
+        }
+        let names = |call: &Call| -> Vec<String> {
+            call.frames
+                .iter()
+                .map(|(function, _, _)| function.clone())
+                .collect()
+        };
+        if names(&seen) != names(&other) {
+            lies.push(format!(
+                "{path}: functions\n  bpf    {:?}\n  ptrace {:?}",
+                names(&seen),
+                names(&other)
+            ));
+        }
+        let honest = seen.frames.len() == truth.frames.len()
+            && seen.frames.iter().zip(&truth.frames).all(|(seen, truth)| {
+                let unknown = (truth.0.clone(), "-".to_owned(), None);
+                if COMPILED.contains(&truth.0.as_str()) {
+                    *seen == unknown
+                } else if truth.1.starts_with("node:") {
+                    *seen == *truth || *seen == unknown
+                } else {
+                    *seen == *truth
+                }
+            });
+        if !honest {
+            lies.push(format!(
+                "{path}: frames\n  microscope {:?}\n  V8         {:?}",
+                seen.frames, truth.frames
+            ));
+        }
+    }
+    lies
+}
+
+/// The fixture, traced by `command` with `--hold` onto standard output:
+/// once a record satisfies `ready`, the fixture is told to make its calls,
+/// and once each of them is traced its standard input ends, which ends it.
+/// What the fixture reported, and the trace's records.
+pub fn run_held(
+    mut command: Command,
+    ready: impl Fn(&Value) -> bool,
+) -> (BTreeMap<String, Call>, Vec<Value>) {
+    use std::io::{BufRead, Read, Write};
+
+    /// How long the engine may take to name JavaScript frames, which waits
+    /// for Node's debug information to load, and then to trace the calls.
+    const DEADLINE: std::time::Duration = std::time::Duration::from_secs(180);
+
+    /// Kills and reaps the traced command if the test fails.
+    struct Running(std::process::Child);
+    impl Drop for Running {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    let child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run microscope");
+    let mut running = Running(child);
+    let mut stdin = running.0.stdin.take();
+    let stdout = running.0.stdout.take().expect("microscope's stdout");
+    let mut stderr = running.0.stderr.take().expect("microscope's stderr");
+    let (lines, read) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout).lines() {
+            if lines.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let errors = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = stderr.read_to_string(&mut text);
+        text
+    });
+
+    let deadline = std::time::Instant::now() + DEADLINE;
+    let mut records: Vec<Value> = Vec::new();
+    let mut told = false;
+    while stdin.is_some() {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let line = read
+            .recv_timeout(left)
+            .unwrap_or_else(|error| panic!("the trace ended or stalled ({error}): {records:#?}"))
+            .expect("read the trace");
+        // truth.js reports the process on standard output as it loads.
+        if line.starts_with("TRUTH\t") {
+            continue;
+        }
+        let record: Value =
+            serde_json::from_str(&line).unwrap_or_else(|error| panic!("{line}: {error}"));
+        if !told && ready(&record) {
+            stdin
+                .as_mut()
+                .expect("the fixture's stdin")
+                .write_all(b"go\n")
+                .expect("tell the fixture to go");
+            told = true;
+        }
+        records.push(record);
+        if told
+            && OPENS
+                .iter()
+                .all(|(path, _)| records.iter().any(|record| record["path"] == *path))
+        {
+            stdin = None;
+        }
+    }
+
+    for line in &read {
+        let line = line.expect("read the trace");
+        if line.starts_with("TRUTH\t") {
+            continue;
+        }
+        records.push(serde_json::from_str(&line).unwrap_or_else(|error| panic!("{line}: {error}")));
+    }
+    let status = running.0.wait().expect("reap microscope");
+    let stderr = errors.join().expect("read microscope's stderr");
+    assert!(status.success(), "microscope failed: {stderr}");
+    (reported(&stderr), records)
+}
+
+/// Whether `record` is of an open the fixture probes with while it waits,
+/// with the probing function among its JavaScript frames.
+pub fn probed(record: &Value) -> bool {
+    record["path"] == "/dev/random"
+        && record["stack"]
+            .as_array()
+            .is_some_and(|stack| stack.iter().any(|frame| frame["function"] == "probe"))
+}
+
+/// An ndjson record of an open of `path` on thread 7 whose stack holds
+/// `frames`, each a function and, where known, its file and line.
+fn record(path: &str, frames: &[(&str, Option<&str>, Option<u32>)]) -> Value {
+    let stack: Vec<Value> = frames
+        .iter()
+        .map(|(function, file, line)| match (file, line) {
+            (Some(file), Some(line)) => {
+                serde_json::json!({"function": function, "file": file, "line": line})
+            }
+            _ => serde_json::json!({"function": function}),
+        })
+        .collect();
+    serde_json::json!({"path": path, "tid": 7, "stack": stack})
+}
+
+/// The BPF comparison fails on each lie it exists to catch: a compiled
+/// frame's line where it has none proven, a lost line of the fixture's
+/// interpreted frame, a wrong function, a dropped frame, a wrong line of
+/// Node's own, and functions the ptrace engine does not find.
+#[test]
+fn the_bpf_comparison_fails_on_each_lie() {
+    let truth = |frames: &[(&str, &str, Option<u32>)]| -> Vec<JsFrame> {
+        frames
+            .iter()
+            .map(|(function, file, line)| ((*function).to_owned(), (*file).to_owned(), *line))
+            .collect()
+    };
+    let fixture = [
+        ("turbofanOpens", "/a.js", Some(3)),
+        ("ignitionOpens", "/a.js", Some(9)),
+        ("emit", "node:events", Some(20)),
+    ];
+    let mut reported = BTreeMap::new();
+    for (path, tier) in OPENS {
+        reported.insert(
+            path.to_owned(),
+            Call {
+                thread: 7,
+                tier: tier.to_owned(),
+                frames: truth(&fixture),
+            },
+        );
+    }
+    let honest_frames = [
+        ("turbofanOpens", None, None),
+        ("ignitionOpens", Some("/a.js"), Some(9)),
+        ("emit", None, None),
+    ];
+    let honest: Vec<Value> = OPENS
+        .iter()
+        .map(|(path, _)| record(path, &honest_frames))
+        .collect();
+    let ptrace: Vec<Value> = OPENS
+        .iter()
+        .map(|(path, _)| {
+            record(
+                path,
+                &fixture.map(|(function, file, line)| (function, Some(file), line)),
+            )
+        })
+        .collect();
+    assert_eq!(bpf_lies(&reported, &honest, &ptrace), Vec::<String>::new());
+
+    for lie in [
+        record(
+            "/dev/full",
+            &[
+                ("turbofanOpens", Some("/a.js"), Some(3)),
+                ("ignitionOpens", Some("/a.js"), Some(9)),
+                ("emit", None, None),
+            ],
+        ),
+        record(
+            "/dev/full",
+            &[
+                ("turbofanOpens", None, None),
+                ("ignitionOpens", None, None),
+                ("emit", None, None),
+            ],
+        ),
+        record(
+            "/dev/full",
+            &[
+                ("turbofanOpens", None, None),
+                ("other", Some("/a.js"), Some(9)),
+                ("emit", None, None),
+            ],
+        ),
+        record(
+            "/dev/full",
+            &[("turbofanOpens", None, None), ("emit", None, None)],
+        ),
+        record(
+            "/dev/full",
+            &[
+                ("turbofanOpens", None, None),
+                ("ignitionOpens", Some("/a.js"), Some(9)),
+                ("emit", Some("node:events"), Some(21)),
+            ],
+        ),
+    ] {
+        let mut records = honest.clone();
+        records[0] = lie.clone();
+        assert!(!bpf_lies(&reported, &records, &ptrace).is_empty(), "{lie}");
+    }
+
+    let mut other = ptrace;
+    other[0] = record(
+        "/dev/full",
+        &[
+            ("inner", None, None),
+            ("ignitionOpens", Some("/a.js"), Some(9)),
+            ("emit", None, None),
+        ],
+    );
+    assert!(!bpf_lies(&reported, &honest, &other).is_empty());
+}
+
+/// The BPF engine, whose program walks each call's JavaScript frames as it
+/// returns, held to the frames V8 reported and to the functions the ptrace
+/// engine names. It needs `CAP_BPF` and `CAP_PERFMON`, so it runs only
+/// through `just test-bpf`.
+mod bpf {
+    use super::*;
+
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
+    fn the_bpf_engine_names_the_javascript_frames_v8_and_the_ptrace_engine_do() {
+        let launcher = std::env::var_os("MICROSCOPE_BPF_LAUNCHER")
+            .expect("MICROSCOPE_BPF_LAUNCHER names the microscope-bpf wrapper");
+        let stdout = std::path::Path::new("-");
+
+        let (_, ptrace) = run_held(
+            command(
+                Command::new(env!("CARGO_BIN_EXE_microscope")),
+                &["--engine", "ptrace", "-k"],
+                stdout,
+                true,
+            ),
+            |_| true,
+        );
+
+        let mut microscope = Command::new(&launcher);
+        microscope.arg(env!("CARGO_BIN_EXE_microscope"));
+        // The engine unwinds native frames by a copy of the stack, as
+        // glibc's system call wrappers keep no frame pointer.
+        let (reported, records) = run_held(
+            command(
+                microscope,
+                &["--engine", "bpf", "-k=dwarf", "-k"],
+                stdout,
+                true,
+            ),
+            probed,
+        );
+        let lies = bpf_lies(&reported, &records, &ptrace);
+        assert!(lies.is_empty(), "{}", lies.join("\n"));
     }
 }

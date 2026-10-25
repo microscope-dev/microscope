@@ -10,7 +10,7 @@ use std::time::Duration;
 use super::budget::{Budget, Controller, Observation, STEPS};
 use super::calls::{self, Calls};
 use super::collector::{Collector, ProbeSelection};
-use super::interpreted::Walked;
+use super::interpreted::{Layout, Walked};
 use super::record::{self, Sites};
 use super::tasks::{self, Live, Reads, Snapshot, Snapshotter};
 use super::{
@@ -363,9 +363,11 @@ impl Walker {
     /// recording why it cannot: whether the engine has it.
     fn lay_out(&mut self, processor: &mut record::Processor, walked: &Walked) -> bool {
         let set = walked.layout.clone().and_then(|layout| {
-            self.sampler
-                .set_layout(walked.pid, &layout)
-                .map_err(|error| error.to_string())
+            match layout {
+                Layout::Python(layout) => self.sampler.set_layout(walked.pid, &layout),
+                Layout::V8(layout) => self.sampler.set_v8_layout(walked.pid, &layout),
+            }
+            .map_err(|error| error.to_string())
         });
         match set {
             Ok(()) => self.laid_out.insert(walked.pid),

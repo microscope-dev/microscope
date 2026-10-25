@@ -17,9 +17,16 @@
 // Sparkplug frame and /dev/null from the interpreted one; then a worker
 // opens /dev/urandom from an interpreted frame. Every function is warmed by
 // opening /dev/random, which the tests ignore, so that the optimized code
-// has seen the call it makes. With --settle the program first waits a
-// second: the BPF engine reads V8 a moment after the program starts, and
-// until then its calls' JavaScript frames are unknown.
+// has seen the call it makes.
+//
+// With --hold, for the BPF engine, which reads V8 a moment after the
+// program starts and the stacks a moment after each call:
+//   - the TRUTH lines go to stderr, as the trace takes stdout;
+//   - until stdin says "go", the program opens /dev/random from the
+//     function probe every 20 ms, so that the test can see when the
+//     engine names JavaScript frames;
+//   - then it makes its calls, and the worker stays alive until stdin
+//     ends, so that the engine reads its isolate while it lives.
 
 'use strict';
 
@@ -29,6 +36,8 @@ const truth = require('./truth.js');
 
 // The path warm-up calls open, which no test looks at.
 const WARM = '/dev/random';
+
+const HOLD = process.argv.slice(2).includes('--hold');
 
 function escape(text) {
   return String(text).replace(/\\/g, '\\\\').replace(/\t/g, '\\t').replace(/\n/g, '\\n');
@@ -69,7 +78,7 @@ function flags(path, fn) {
     text += line(['frame', path, depth, site.getFunctionName() ?? '-',
       site.getFileName() ?? '-', site.getLineNumber() ?? '-']);
   });
-  fs.writeSync(1, text);
+  fs.writeSync(HOLD ? 2 : 1, text);
   return 'r';
 }
 
@@ -96,6 +105,9 @@ function turbofanOpens(path, chain) {
 
 function worker() {
   ignitionOpens('/dev/urandom', []); // WORKER
+  if (HOLD) {
+    threads.parentPort.once('message', () => threads.parentPort.close());
+  }
 }
 
 %NeverOptimizeFunction(flags);
@@ -116,13 +128,29 @@ function main() {
   // callee has, so the innermost, Turbofan's, comes first.
   ignitionOpens('/dev/null', [(p, c) => sparkplugOpens('/dev/zero',
     [(q, d) => turbofanOpens('/dev/full', d)])]); // MAIN
-  new threads.Worker(__filename, {argv: process.argv.slice(2)});
+  return new threads.Worker(__filename, {argv: process.argv.slice(2)});
 }
 
 if (!threads.isMainThread) {
   worker();
-} else if (process.argv.slice(2).includes('--settle')) {
-  setTimeout(main, 1000);
+} else if (HOLD) {
+  const probe = setInterval(function probe() {
+    fs.closeSync(fs.openSync(WARM, 'r'));
+  }, 20);
+  let input = '';
+  let started = null;
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (chunk) => {
+    input += chunk;
+    if (started === null && input.includes('go\n')) {
+      clearInterval(probe);
+      started = main();
+    }
+  });
+  process.stdin.on('end', () => {
+    clearInterval(probe);
+    started?.postMessage('end');
+  });
 } else {
   main();
 }

@@ -11,6 +11,7 @@
 #include <bpf/bpf_helpers.h>
 
 #include "python.bpf.h"
+#include "v8.bpf.h"
 
 // Each Python process's layout, by its process id.
 struct {
@@ -27,6 +28,22 @@ struct {
 	__type(key, u32);
 	__type(value, struct py_thread);
 } THREADS SEC(".maps");
+
+// Each Node process's V8 layout, by its process id.
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 1024);
+	__type(key, u32);
+	__type(value, struct v8_layout);
+} V8_LAYOUTS SEC(".maps");
+
+// Where each CPU builds its record of JavaScript frames.
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, struct v8_stack);
+} V8_SCRATCH SEC(".maps");
 
 // Each CPU's BPF output event, which writes to that CPU's ring; microscope
 // sizes it to the CPUs.
@@ -53,6 +70,54 @@ struct {
 	__type(value, u64);
 } LOST SEC(".maps");
 
+// Counts a record that found no room in the CPU's ring.
+static __always_inline void lost_record(void)
+{
+	u32 zero = 0;
+	u64 *lost = bpf_map_lookup_elem(&LOST, &zero);
+	if (lost)
+		*lost += 1;
+}
+
+// Writes the sampled thread's JavaScript frames, when its process has a V8
+// layout: whether it has.
+static __always_inline int v8_sample(struct bpf_perf_event_data *ctx, u32 tgid, u32 tid)
+{
+	u32 zero = 0;
+	struct v8_layout *layout = bpf_map_lookup_elem(&V8_LAYOUTS, &tgid);
+	if (!layout)
+		return 0;
+	struct v8_stack *stack = bpf_map_lookup_elem(&V8_SCRATCH, &zero);
+	if (!stack)
+		return 1;
+	struct v8_stack_record *header = &stack->header;
+	header->header.kind = RECORD_V8_STACK;
+	header->header.tid = tid;
+	header->header.tgid = tgid;
+	header->pad[0] = header->pad[1] = header->pad[2] = 0;
+
+	// A sample taken in the kernel holds the kernel's registers; the
+	// thread's own are those it entered the kernel with.
+	struct pt_regs regs = ctx->regs;
+	if (!(regs.cs & 3)) {
+		void *user = (void *)bpf_task_pt_regs(bpf_get_current_task_btf());
+		if (!user || bpf_probe_read_kernel(&regs, sizeof(regs), user))
+			regs.rbp = regs.rip = 0;
+	}
+	v8_walk(layout, stack, regs.rbp, regs.rip);
+
+	u32 frames = header->frames;
+	if (frames > V8_FRAMES)
+		frames = V8_FRAMES;
+	u64 size = sizeof(struct v8_stack_record) + (u64)frames * sizeof(struct v8_frame);
+	header->header.size = size;
+	if (size > sizeof(struct v8_stack))
+		return 1;
+	if (bpf_perf_event_output(ctx, &OUTPUT, BPF_F_CURRENT_CPU, stack, size))
+		lost_record();
+	return 1;
+}
+
 SEC("perf_event")
 int python_sample(struct bpf_perf_event_data *ctx)
 {
@@ -63,6 +128,8 @@ int python_sample(struct bpf_perf_event_data *ctx)
 
 	u64 ids = bpf_get_current_pid_tgid();
 	u32 tgid = ids >> 32, tid = (u32)ids;
+	if (v8_sample(ctx, tgid, tid))
+		return 1;
 	struct py_stack_record *header = &stack->header;
 	header->header.kind = RECORD_PY_STACK;
 	header->header.tid = tid;
@@ -87,11 +154,8 @@ int python_sample(struct bpf_perf_event_data *ctx)
 	header->header.size = size;
 	if (size > sizeof(struct py_stack))
 		return 1;
-	if (bpf_perf_event_output(ctx, &OUTPUT, BPF_F_CURRENT_CPU, stack, size)) {
-		u64 *lost = bpf_map_lookup_elem(&LOST, &zero);
-		if (lost)
-			*lost += 1;
-	}
+	if (bpf_perf_event_output(ctx, &OUTPUT, BPF_F_CURRENT_CPU, stack, size))
+		lost_record();
 
 	return 1;
 }

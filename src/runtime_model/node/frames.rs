@@ -230,16 +230,7 @@ fn recorded(
         _ => (None, None),
     };
 
-    let language = match &path {
-        Some(path)
-            if [".ts", ".mts", ".cts"]
-                .iter()
-                .any(|end| path.ends_with(end)) =>
-        {
-            SourceLanguage::TypeScript
-        }
-        _ => SourceLanguage::JavaScript,
-    };
+    let language = language(path.as_deref());
     Ok(RecordedFrame {
         function: name,
         language,
@@ -308,8 +299,27 @@ fn offset_in_script(
     let slot = |constant| -> Result<u64, Problem> {
         reader.word(fp.wrapping_add_signed(reader.constant(constant)?))
     };
+    bytecode_offset_in_script(
+        reader,
+        encoding,
+        slot(Constant::OffFpBytecodeArray)?,
+        slot(Constant::OffFpBytecodeOffset)?,
+        shared,
+    )
+}
+
+/// The offset in its script of the code an interpreted frame of `shared`'s
+/// runs, whose bytecode slot held `bytecode` and whose offset slot held
+/// `offset`.
+pub(super) fn bytecode_offset_in_script(
+    reader: &Reader<'_>,
+    encoding: Encoding,
+    bytecode: u64,
+    offset: u64,
+    shared: Object,
+) -> Result<u64, Problem> {
     let bytecode = reader
-        .object(slot(Constant::OffFpBytecodeArray)?)?
+        .object(bytecode)?
         .filter(|bytecode| {
             reader
                 .is(*bytecode, Constant::BytecodeArrayType)
@@ -325,7 +335,7 @@ fn offset_in_script(
     // The frame keeps the offset from the bytecode array's tagged address,
     // past its header.
     let raw = reader
-        .smi(slot(Constant::OffFpBytecodeOffset)?)?
+        .smi(offset)?
         .ok_or("the frame's bytecode offset is no Smi")?;
     let header = i64::try_from(reader.offset(Field::BytecodeArrayBytes)?)
         .map_err(|_| "a bytecode header is out of range")?;
@@ -341,6 +351,20 @@ fn offset_in_script(
     positions::position_at(&table, offset)
         .and_then(positions::script_offset)
         .ok_or_else(|| "the bytecode has no position at the frame's offset".into())
+}
+
+/// The language of a script at `path`.
+pub(super) fn language(path: Option<&str>) -> SourceLanguage {
+    match path {
+        Some(path)
+            if [".ts", ".mts", ".cts"]
+                .iter()
+                .any(|end| path.ends_with(end)) =>
+        {
+            SourceLanguage::TypeScript
+        }
+        _ => SourceLanguage::JavaScript,
+    }
 }
 
 #[cfg(test)]

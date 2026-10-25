@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::tasks::LiveStop;
-use crate::backend::bpf::sampler::{self, Gil, NO_OFFSET, PyStack, StackEnd};
+use crate::backend::bpf::sampler::{self, Gil, NO_OFFSET, PyStack, StackEnd, V8End};
 use crate::capture::CaptureBuilder;
 use crate::capture::records::{NONE, Zone};
 use crate::debug_info::DebugInfo;
@@ -33,7 +33,7 @@ use crate::image::python::PythonLayout;
 use crate::model::{Pid, Tid};
 use crate::runtime_model::thread_ids::ThreadIds;
 use crate::runtime_model::{
-    self, InterpretedFrame, RuntimeImage, RuntimeModel, SampledCode, SampledFrame,
+    self, InterpretedFrame, RuntimeImage, RuntimeModel, SampledCode, SampledCodeFrame, SampledFrame,
 };
 use crate::{LoadBias, LoadedModule, VirtualAddress};
 
@@ -45,13 +45,50 @@ pub(super) const PAIRING_SLACK: u64 = 10_000_000;
 /// interpreter's GIL carries, as task snapshots label threads.
 const GIL: &str = "gil";
 
-/// A process's interpreter that the engine reads, its layout, and where
-/// the process keeps its runtime.
+/// A process's interpreter that the engine reads, and what its walker
+/// reads it by.
 struct Runtime {
     model: Arc<dyn RuntimeModel>,
     bias: LoadBias,
-    layout: Result<PythonLayout, Arc<str>>,
-    state: Option<VirtualAddress>,
+    kind: Kind,
+}
+
+/// Which walker reads a runtime, and by what.
+enum Kind {
+    /// CPython's: its layout, and where the process keeps its runtime.
+    Python {
+        layout: Result<Box<PythonLayout>, Arc<str>>,
+        state: Option<VirtualAddress>,
+    },
+
+    /// V8's, which keeps its frames on the native stack: its layout.
+    V8 {
+        layout: Result<sampler::RawV8Layout, String>,
+    },
+}
+
+/// Where a process's code at an address is, as the recording maps it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodeAt {
+    /// Code the runtime generated, which no image holds.
+    Generated,
+
+    /// An image's code, or a copy of it, at this address of the image,
+    /// whose runtime is the process's.
+    Runtime(crate::ImageAddress),
+}
+
+/// A JavaScript frame the V8 walker read at a sample, named as it was
+/// drained: where it is on the stack, which places it among the sample's
+/// native frames, and the functions it runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlacedFrame {
+    pub frame_pointer: u64,
+
+    /// Its native frame's address: its instruction in the walk's first
+    /// frame, and the byte before its return address in any other.
+    pub address: VirtualAddress,
+    pub functions: Vec<crate::RecordedFrame>,
 }
 
 /// What a process's modules said of its interpreter, when it had made
@@ -89,6 +126,21 @@ pub enum Sampled {
         frames: Vec<InterpretedFrame>,
         ended: bool,
     },
+
+    /// Frames of a runtime that keeps them on the native stack, innermost
+    /// first, each to go before its native frame, and whether they end
+    /// before the thread's outermost.
+    Placed {
+        frames: Vec<PlacedFrame>,
+        ended: bool,
+    },
+}
+
+/// The layout a walker reads a process's runtime by.
+#[derive(Debug, Clone)]
+pub enum Layout {
+    Python(sampler::RawPyLayout),
+    V8(sampler::RawV8Layout),
 }
 
 /// What a process's interpreter tells the program: the layout it reads
@@ -97,7 +149,7 @@ pub enum Sampled {
 #[derive(Debug)]
 pub struct Walked {
     pub pid: u32,
-    pub layout: Result<sampler::RawPyLayout, String>,
+    pub layout: Result<Layout, String>,
     pub threads: Vec<(u32, u64, u64)>,
     pub gaps: Vec<Arc<str>>,
 }
@@ -137,7 +189,27 @@ impl Interpreted {
     /// has made `mappings`.
     pub(super) fn find(&mut self, pid: Pid, mappings: u64, modules: &[(LoadedModule, DebugInfo)]) {
         let runtime = modules.iter().find_map(|(loaded, info)| {
+            // A copy of a module's code binds the runtime of the module.
+            if loaded.window.is_some() {
+                return None;
+            }
             let image: Arc<dyn RuntimeImage + Send + Sync> = Arc::clone(&info.image) as _;
+            if let Some(v8) = image.v8() {
+                let model = runtime_model::detect(&image)
+                    .into_iter()
+                    .flatten()
+                    .find(|model| model.owns_generated_code())?;
+                let layout = match v8.layout {
+                    Ok(layout) => sampler::v8_layout(&layout)
+                        .map_err(|missing| format!("V8's layout has no {missing}")),
+                    Err(why) => Err(why.to_string()),
+                };
+                return Some(Runtime {
+                    model,
+                    bias: loaded.load_bias,
+                    kind: Kind::V8 { layout },
+                });
+            }
             let python = image.python()?;
             let stop = LiveStop::memory(pid.get(), loaded.load_bias);
             let model = runtime_model::detect(&image)
@@ -147,8 +219,10 @@ impl Interpreted {
             Some(Runtime {
                 model,
                 bias: loaded.load_bias,
-                layout: python.layout,
-                state: loaded.load_bias.load(python.runtime.start),
+                kind: Kind::Python {
+                    layout: python.layout.map(Box::new),
+                    state: loaded.load_bias.load(python.runtime.start),
+                },
             })
         });
 
@@ -170,9 +244,16 @@ impl Interpreted {
         self.found.remove(&pid);
     }
 
-    /// Reads the frames of `record`, of process `pid`, as it is drained.
-    /// A record held back to a later drain was read in the first.
-    pub(super) fn drained(&mut self, pid: Pid, key: RecordKey, record: &[u8]) {
+    /// Reads the frames of `record`, of process `pid`, as it is drained,
+    /// where `code` says what code is the runtime's. A record held back to
+    /// a later drain was read in the first.
+    pub(super) fn drained(
+        &mut self,
+        pid: Pid,
+        key: RecordKey,
+        record: &[u8],
+        code: &dyn Fn(u64) -> Option<CodeAt>,
+    ) {
         if self.drained.contains_key(&key) {
             return;
         }
@@ -180,7 +261,7 @@ impl Interpreted {
         // A record lies four bytes into the sample that carries it, short
         // of its fields' alignment; a copy aligns them.
         let aligned = record.to_vec();
-        match self.sampled(pid, Some(&aligned)) {
+        match self.sampled(pid, Some(&aligned), code) {
             Sampled::None => {}
             sampled => {
                 self.drained.insert(key, sampled);
@@ -196,14 +277,24 @@ impl Interpreted {
     /// The interpreted frames of a sample of process `pid`, from the
     /// record of frames paired with it, if any, as they were read when
     /// it was drained.
-    pub(super) fn paired(&mut self, pid: Pid, record: Option<(RecordKey, &[u8])>) -> Sampled {
+    pub(super) fn paired(
+        &mut self,
+        pid: Pid,
+        record: Option<(RecordKey, &[u8])>,
+        code: &dyn Fn(u64) -> Option<CodeAt>,
+    ) -> Sampled {
         let drained = record.and_then(|(key, _)| self.drained.remove(&key));
-        drained.unwrap_or_else(|| self.sampled(pid, record.map(|(_, bytes)| bytes)))
+        drained.unwrap_or_else(|| self.sampled(pid, record.map(|(_, bytes)| bytes), code))
     }
 
     /// The interpreted frames of a sample of process `pid`, from the
     /// record of frames paired with it, if any, read now.
-    fn sampled(&self, pid: Pid, record: Option<&[u8]>) -> Sampled {
+    fn sampled(
+        &self,
+        pid: Pid,
+        record: Option<&[u8]>,
+        code: &dyn Fn(u64) -> Option<CodeAt>,
+    ) -> Sampled {
         let Some(runtime) = self
             .found
             .get(&pid)
@@ -213,18 +304,33 @@ impl Interpreted {
         };
 
         let stop = LiveStop::memory(pid.get(), runtime.bias);
-        read_record(runtime.model.as_ref(), &stop, record)
+        match runtime.kind {
+            Kind::Python { .. } => read_record(runtime.model.as_ref(), &stop, record),
+            Kind::V8 { .. } => read_v8_record(runtime.model.as_ref(), &stop, record, code),
+        }
     }
 
     /// What process `pid`'s interpreter tells the program, read now, or
     /// `None` for a process that runs no interpreter the engine reads.
     pub(super) fn walked(&self, pid: Pid) -> Option<Walked> {
         let runtime = self.found.get(&pid)?.runtime.as_ref()?;
+        let (layout, state) = match &runtime.kind {
+            Kind::V8 { layout } => {
+                return Some(Walked {
+                    pid: pid.get(),
+                    layout: layout.clone().map(Layout::V8),
+                    threads: Vec::new(),
+                    gaps: Vec::new(),
+                });
+            }
+            Kind::Python { layout, state } => (layout, *state),
+        };
         let layout = sampler::process_layout(
-            runtime.layout.as_ref().map_err(AsRef::as_ref),
-            runtime.state,
+            layout.as_ref().map(AsRef::as_ref).map_err(AsRef::as_ref),
+            state,
             pid.get(),
-        );
+        )
+        .map(Layout::Python);
         let stop = LiveStop::for_threads(pid.get(), runtime.bias);
         let hosts = match ThreadIds::new(&stop) {
             Ok(hosts) => hosts,
@@ -341,6 +447,106 @@ pub fn read_record(
         frames,
         ended: ended || end.is_some(),
     }
+}
+
+/// The JavaScript frames a record of the V8 walker's holds, if any, each
+/// named and proved by `model` through `stop`, the process's memory read
+/// now, where `code` says its code is the runtime's.
+pub fn read_v8_record(
+    model: &dyn RuntimeModel,
+    stop: &LiveStop<'_>,
+    record: Option<&[u8]>,
+    code: &dyn Fn(u64) -> Option<CodeAt>,
+) -> Sampled {
+    let Some(stack) = record
+        .filter(|bytes| sampler::is_v8(bytes))
+        .and_then(|bytes| sampler::decode_v8(bytes).ok())
+    else {
+        return Sampled::Unknown;
+    };
+    let ended = match stack.end {
+        V8End::NoLayout => return Sampled::Unknown,
+        V8End::Complete | V8End::Unreadable => false,
+        V8End::Bounded => true,
+    };
+    let frames = stack
+        .frames
+        .iter()
+        .enumerate()
+        .filter_map(|(index, sampled)| {
+            let after_call = sampled.at_instruction == 0;
+            let address = if after_call {
+                sampled.pc.wrapping_sub(1)
+            } else {
+                sampled.pc
+            };
+            let generated = match code(address)? {
+                CodeAt::Generated => true,
+                CodeAt::Runtime(image) => {
+                    if !model.owns_code(image) {
+                        return None;
+                    }
+                    false
+                }
+            };
+            // A sample may land in a bytecode handler that keeps a frame
+            // of its own, which the walk cannot tell from a call the
+            // innermost frame made, and the interpreter writes its offset
+            // to the frame only before a call: the innermost frame's place
+            // is unknown.
+            let frame = SampledCodeFrame {
+                frame_pointer: sampled.fp,
+                instruction: VirtualAddress::new(sampled.pc),
+                after_call: after_call && index > 0,
+                generated,
+                function: sampled.function,
+                shared: sampled.shared,
+                script: sampled.script,
+                script_id: sampled.script_id,
+                literal_id: sampled.literal_id,
+                bytecode: sampled.bytecode,
+                bytecode_offset: sampled.bytecode_offset,
+            };
+            Some(PlacedFrame {
+                frame_pointer: sampled.fp,
+                address: VirtualAddress::new(address),
+                functions: model.sampled_code_frame(stop, &frame)?,
+            })
+        })
+        .collect();
+    Sampled::Placed { frames, ended }
+}
+
+/// Where each of a walker's frames goes among a sample's `natives`, each
+/// native frame's address and frame pointer, innermost first: before the
+/// index of the native frame it is, or at their end where it is none of
+/// them, as one past where the native stack ended. `frames` are each
+/// walked frame's frame pointer and native address, innermost first. A
+/// frame is the first native frame not yet matched with its address whose
+/// frame pointer, where known, is its own: several frames may run the same
+/// code, as nested calls of interpreted functions do.
+pub fn positions(
+    natives: &[(VirtualAddress, Option<u64>)],
+    frames: &[(u64, VirtualAddress)],
+) -> Vec<usize> {
+    let mut next = 0;
+    frames
+        .iter()
+        .map(|&(fp, address)| {
+            let found = natives
+                .iter()
+                .enumerate()
+                .skip(next)
+                .find(|(_, (native, pointer))| {
+                    *native == address && pointer.is_none_or(|pointer| pointer == fp)
+                })
+                .map(|(index, _)| index);
+            found.map_or(natives.len(), |index| {
+                next = index + 1;
+                index
+            })
+        })
+        .collect()
 }
 
 /// The frames of a record, as the runtime model reads them.
@@ -474,6 +680,30 @@ pub(super) fn unknown_cuts(native: &[(u32, bool)]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each walked frame goes before the native frame it is, in order,
+    /// matched by address and by frame pointer where that is known, and
+    /// one that is no native frame goes at the end.
+    #[test]
+    fn walked_frames_go_before_their_native_frames_in_order() {
+        let at = VirtualAddress::new;
+        let natives = [
+            (at(0x10), Some(0x100)),
+            (at(0x20), None),
+            (at(0x20), None),
+            (at(0x30), Some(0x400)),
+        ];
+        assert_eq!(
+            positions(
+                &natives,
+                &[(0x200, at(0x20)), (0x300, at(0x20)), (0x500, at(0x40))]
+            ),
+            [1, 2, 4]
+        );
+        // A frame pointer that is known must agree.
+        assert_eq!(positions(&natives, &[(0x999, at(0x30))]), [4]);
+        assert_eq!(positions(&natives, &[(0x400, at(0x30))]), [3]);
+    }
 
     #[test]
     fn only_a_stack_in_the_loop_can_lack_interpreted_frames() {

@@ -15,6 +15,7 @@
 
 #include "kernel_types.h"
 #include "python.bpf.h"
+#include "v8.bpf.h"
 
 #define TS_COMPAT 0x0002
 #define X32_SYSCALL_BIT 0x40000000
@@ -191,6 +192,23 @@ struct {
 	__type(key, u32);
 	__type(value, struct py_stack);
 } PY_SCRATCH SEC(".maps");
+
+// Each Node process's V8 layout, by its process id as the kernel's initial
+// pid namespace numbers it.
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 1024);
+	__type(key, u32);
+	__type(value, struct v8_layout);
+} V8_LAYOUTS SEC(".maps");
+
+// Where each CPU builds a record of JavaScript frames.
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, struct v8_stack);
+} V8_SCRATCH SEC(".maps");
 
 
 // `value & mask`, computed where the verifier sees it: the barrier keeps
@@ -735,6 +753,35 @@ static __always_inline void send_python(u32 tid, u32 tgid)
 		lost();
 }
 
+// Sends the current thread's JavaScript frames, from the frame pointer and
+// instruction `regs` holds, when microscope told the walker its process's
+// V8 layout, after its stack.
+static __always_inline void send_v8(u32 tid, u32 tgid, struct pt_regs *regs)
+{
+	u32 host = bpf_get_current_pid_tgid() >> 32, zero = 0;
+	struct v8_layout *layout = bpf_map_lookup_elem(&V8_LAYOUTS, &host);
+	if (!layout)
+		return;
+	struct v8_stack *stack = bpf_map_lookup_elem(&V8_SCRATCH, &zero);
+	if (!stack)
+		return;
+	struct v8_stack_record *header = &stack->header;
+	header->header.kind = RECORD_V8_STACK;
+	header->header.tid = tid;
+	header->header.tgid = tgid;
+	header->pad[0] = header->pad[1] = header->pad[2] = 0;
+	v8_walk(layout, stack, BPF_CORE_READ(regs, bp), BPF_CORE_READ(regs, ip));
+	u32 frames = header->frames;
+	if (frames > V8_FRAMES)
+		frames = V8_FRAMES;
+	u64 size = sizeof(struct v8_stack_record) + (u64)frames * sizeof(struct v8_frame);
+	header->header.size = size;
+	if (size > sizeof(struct v8_stack))
+		return;
+	if (bpf_ringbuf_output(&EVENTS, stack, size, 0))
+		lost();
+}
+
 // Sends the stack of the current thread, whose user registers `regs`
 // holds, before the call or signal record that follows: the kernel's
 // walk of its frame pointers, and with CONFIG_STACK_COPY, a copy of its
@@ -790,6 +837,7 @@ static __always_inline void send_stack(void *ctx, u32 tid, u32 tgid, struct pt_r
 	if (bpf_ringbuf_output(&EVENTS, buffer->data, bounded(size, 16383), 0))
 		lost();
 	send_python(tid, tgid);
+	send_v8(tid, tgid, regs);
 }
 
 // Describes the descriptors a call made, as its spec says.

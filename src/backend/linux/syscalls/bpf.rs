@@ -27,7 +27,7 @@ use aya::{Btf, Ebpf, EbpfLoader};
 use aya_obj::btf::BtfKind;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-use super::super::bpf::sampler::{self, PythonLayouts};
+use super::super::bpf::sampler::{self, PythonLayouts, V8Layouts};
 use super::super::perf;
 use super::Sink;
 use super::budget::{Budget, CAPPED_BYTES, CAPPED_ELEMENTS, Step};
@@ -70,6 +70,7 @@ const RECORD_SIGNAL: u32 = 6;
 const RECORD_FILE: u32 = 7;
 const RECORD_STACK: u32 = 8;
 const RECORD_PY_STACK: u32 = 9;
+const RECORD_V8_STACK: u32 = 10;
 
 const MAKES_RESULT: u8 = 1;
 const MAKES_PAIR: u8 = 2;
@@ -618,7 +619,7 @@ pub fn decode(bytes: &[u8]) -> Result<Record, DecodeError> {
             }))
         }
         RECORD_STACK => stack_record(header, bytes),
-        RECORD_PY_STACK => Ok(Record::Python {
+        RECORD_PY_STACK | RECORD_V8_STACK => Ok(Record::Python {
             thread: Tid::new(header.tid),
             record: bytes.to_vec(),
         }),
@@ -1779,6 +1780,7 @@ fn run(
         sampled: BTreeMap::new(),
         python: BTreeMap::new(),
         layouts: None,
+        v8_layouts: None,
         laid_out: BTreeSet::new(),
         mappings,
         batch: Vec::new(),
@@ -1960,13 +1962,14 @@ struct Reader<'a> {
     /// Each thread's stack, until the call or signal it precedes.
     sampled: BTreeMap<Tid, SampledStack>,
 
-    /// Each thread's Python frames, which follow its stack.
+    /// Each thread's Python or JavaScript frames, which follow its stack.
     python: BTreeMap<Tid, Vec<u8>>,
 
     /// The walker's layouts, when stacks were asked for and the kernel's
     /// process ids are microscope's, and the processes given one or found
     /// to have none.
     layouts: Option<PythonLayouts>,
+    v8_layouts: Option<V8Layouts>,
     laid_out: BTreeSet<Pid>,
 
     /// What the traced processes map, as they map it, for their stacks.
@@ -2002,6 +2005,7 @@ impl Reader<'_> {
         // elsewhere, Python frames stay unknown, and the stacks say so.
         if self.stacks.is_some() && sampler::check_namespace().is_ok() {
             self.layouts = Some(PythonLayouts::take(&mut loaded.ebpf).map_err(load_error)?);
+            self.v8_layouts = Some(V8Layouts::take(&mut loaded.ebpf).map_err(load_error)?);
         }
         let mut stopping = false;
         let mut last_tick = monotonic();
@@ -2246,11 +2250,11 @@ impl Reader<'_> {
         }
     }
 
-    /// Gives the walker the layout of each process that runs Python and
-    /// has none yet: it maps its interpreter before any of its threads
-    /// runs Python code.
+    /// Gives the walkers the layout of each process that runs Python or V8
+    /// and has none yet: it maps its runtime before any of its threads
+    /// runs code of the runtime's.
     fn lay_out(&mut self) {
-        let (Some(layouts), Some(stacks)) = (&mut self.layouts, &self.stacks) else {
+        let Some(stacks) = &self.stacks else {
             return;
         };
 
@@ -2262,22 +2266,33 @@ impl Reader<'_> {
                 continue;
             }
 
-            let Some(layout) = stacks.python_layout(process) else {
+            let set = if let Some(layouts) = &mut self.layouts
+                && let Some(layout) = stacks.python_layout(process)
+            {
+                layout.and_then(|layout| {
+                    layouts
+                        .set(process.get(), &layout)
+                        .map_err(|error| error.to_string())
+                })
+            } else if let Some(layouts) = &mut self.v8_layouts
+                && let Some(layout) = stacks.v8_layout(process)
+            {
+                layout.and_then(|layout| {
+                    layouts
+                        .set(process.get(), &layout)
+                        .map_err(|error| error.to_string())
+                })
+            } else {
                 continue;
             };
 
             self.laid_out.insert(process);
-            let set = layout.and_then(|layout| {
-                layouts
-                    .set(process.get(), &layout)
-                    .map_err(|error| error.to_string())
-            });
             match set {
                 Ok(()) => {}
                 // Only the flight recorder, which release builds leave
                 // out, reads why.
                 #[cfg_attr(not(debug_assertions), expect(unused_variables))]
-                Err(why) => record!("syscalls bpf: python {process}: {why}"),
+                Err(why) => record!("syscalls bpf: runtime of {process}: {why}"),
             }
         }
 
@@ -2286,10 +2301,13 @@ impl Reader<'_> {
 
     /// Forgets the layout of `process`, which exited or replaced its image.
     fn forget_layout(&mut self, process: Pid) {
-        if self.laid_out.contains(&process)
-            && let Some(layouts) = &mut self.layouts
-        {
-            layouts.forget(process.get());
+        if self.laid_out.contains(&process) {
+            if let Some(layouts) = &mut self.layouts {
+                layouts.forget(process.get());
+            }
+            if let Some(layouts) = &mut self.v8_layouts {
+                layouts.forget(process.get());
+            }
         }
     }
 
