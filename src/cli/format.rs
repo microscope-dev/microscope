@@ -2359,6 +2359,7 @@ pub const fn stack_label(segment: StackSegment) -> &'static str {
         StackSegment::Signal => "on the signal stack",
         StackSegment::Future => "in the future the next frame drives",
         StackSegment::Unplaced => "interpreted, where in the stack unknown",
+        StackSegment::Awaiting => "async callers, suspended in await",
     }
 }
 

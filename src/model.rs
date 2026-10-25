@@ -556,6 +556,11 @@ pub enum StackSegment {
     /// Interpreted frames the thread runs whose place among its machine
     /// frames is unknown, shown after them.
     Unplaced,
+
+    /// No stack: the async functions suspended in await that wait for the
+    /// one the frames before run, which the frame after resumed, and what
+    /// waits between them, such as `Promise.all`.
+    Awaiting,
 }
 
 /// What a stopped thread runs for a language runtime.
@@ -4970,6 +4975,10 @@ pub enum DrivenFrames {
 
     /// The frames an activation of an interpreter's loop runs.
     Interpreted,
+
+    /// The async functions suspended in await that wait for the one it
+    /// resumed.
+    Awaiting,
 }
 
 impl Backtrace {
@@ -4996,7 +5005,8 @@ impl Backtrace {
                     && !matches!(frame.kind, FrameKind::Awaited { .. })
                     && (!interprets
                         || matches!(frame.kind, FrameKind::Interpreted { .. })
-                        || frame.source.is_some())
+                        || frame.source.is_some()
+                        || frame.recorded.is_some())
             })
     }
 

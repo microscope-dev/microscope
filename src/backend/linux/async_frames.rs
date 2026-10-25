@@ -305,6 +305,10 @@ impl<P: InspectionOps> Controller<P> {
     /// (see [`super::interpreted`]). A future being polled runs on the
     /// stack itself, so a driver below a frame that runs a coroutine is
     /// left as it is.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one pass splices each kind of driven frame in the stack's order"
+    )]
     pub(super) fn splice_driven(
         &self,
         inferior: &Inferior,
@@ -330,7 +334,7 @@ impl<P: InspectionOps> Controller<P> {
             .into_iter()
             .map(|(frame, driven, _)| (frame, driven))
             .collect();
-        if drivers.is_empty() && placement.is_empty() {
+        if drivers.is_empty() && placement.is_empty() && expanded.awaiting.is_empty() {
             return Ok(expanded);
         }
 
@@ -366,6 +370,7 @@ impl<P: InspectionOps> Controller<P> {
             if let Some(reason) = placement.notes.remove(&index) {
                 spliced.note(DrivenFrames::Interpreted, reason)?;
             }
+            spliced.push_awaiting(&expanded.awaiting, index, activation)?;
 
             if let Some((_, Driven::Future { variable })) =
                 drivers.next_if(|(driver, _)| *driver == index)
@@ -854,6 +859,53 @@ impl Spliced {
         self.interpreted.push(frame);
     }
 
+    /// Pushes the functions suspended in await that wait for the one the
+    /// trace's frame `index` resumed, which follow that function's frames,
+    /// from `chains`, each by its frame, with the runtime that keeps them,
+    /// and notes why a chain ends early, if it does. The physical frame
+    /// `activation` stands for them. They are no activation's of an
+    /// interpreter's loop, so each keeps its problem.
+    fn push_awaiting(
+        &mut self,
+        chains: &[(usize, crate::RuntimeId, crate::runtime_model::Awaiting)],
+        index: usize,
+        activation: usize,
+    ) -> Result<()> {
+        for (_, runtime, chain) in chains.iter().filter(|(at, ..)| *at == index) {
+            self.push_chain(*runtime, chain, activation)?;
+        }
+        Ok(())
+    }
+
+    fn push_chain(
+        &mut self,
+        runtime: crate::RuntimeId,
+        chain: &crate::runtime_model::Awaiting,
+        activation: usize,
+    ) -> Result<()> {
+        for frame in &chain.frames {
+            self.push_interpreted(
+                Placed {
+                    runtime,
+                    frame: frame.clone(),
+                },
+                StackSegment::Awaiting,
+                activation,
+            );
+            if let Some(recorded) = self
+                .frames
+                .last_mut()
+                .and_then(|built| built.recorded.as_mut())
+            {
+                recorded.problem.clone_from(&frame.problem);
+            }
+        }
+        if let Some(reason) = &chain.end {
+            self.note(DrivenFrames::Awaiting, Arc::clone(reason))?;
+        }
+        Ok(())
+    }
+
     /// The finished trace, its frames numbered by their levels.
     fn expanded(mut self, trace: Backtrace, lost: Vec<TypeReference>) -> Result<Expanded> {
         self.hide_inside_agent();
@@ -873,6 +925,7 @@ impl Spliced {
             futures: self.futures,
             interpreted: self.interpreted,
             lost,
+            awaiting: Vec::new(),
         })
     }
 }

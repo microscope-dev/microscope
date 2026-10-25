@@ -1,7 +1,7 @@
 //! JavaScript frames as microscope names them, held to what V8's own call
 //! sites reported at the same checkpoint.
 
-use microscope::{Backtrace, SourceLanguage, ThreadId};
+use microscope::{Backtrace, SourceLanguage, StackFrame, StackSegment, ThreadId};
 
 use microscope::CoreDumpOptions;
 
@@ -10,8 +10,8 @@ use crate::support::Scenario;
 use crate::support::truth::Report;
 use crate::truth::{Frame, Thread, check_threads, threads};
 
-/// The JavaScript frames of a backtrace, innermost first, past those
-/// `truth.js` and Node's `fs`, which the fixture parks in, run.
+/// The JavaScript frames of a backtrace's stack, innermost first, past
+/// those `truth.js` and Node's `fs`, which the fixture parks in, run.
 pub fn javascript(trace: &Backtrace) -> Vec<Frame> {
     javascript_recorded(trace)
         .into_iter()
@@ -19,13 +19,51 @@ pub fn javascript(trace: &Backtrace) -> Vec<Frame> {
         .collect()
 }
 
-/// The JavaScript frames of a backtrace as [`javascript`] gives them, each
-/// with the problem that kept its place unknown, if one did. A frame with a
-/// problem is never taken for V8's own.
+/// The JavaScript frames of a backtrace's stack as [`javascript`] gives
+/// them, each with the problem that kept its place unknown, if one did. A
+/// frame with a problem is never taken for V8's own.
 pub fn javascript_recorded(trace: &Backtrace) -> Vec<(Frame, Option<String>)> {
-    trace
-        .frames
-        .iter()
+    recorded(
+        trace
+            .frames
+            .iter()
+            .filter(|frame| frame.segment != StackSegment::Awaiting),
+    )
+    .skip_while(|(frame, problem)| {
+        frame.file.ends_with("/tests/fixtures/node/truth.js")
+            || frame.file.starts_with("node:fs")
+            || (frame.file == "-" && problem.is_none())
+    })
+    .collect()
+}
+
+/// The functions of a backtrace suspended in await below its stack,
+/// innermost first, each with the problem that kept its place unknown, if
+/// one did.
+pub fn awaiting_recorded(trace: &Backtrace) -> Vec<(Frame, Option<String>)> {
+    recorded(
+        trace
+            .frames
+            .iter()
+            .filter(|frame| frame.segment == StackSegment::Awaiting),
+    )
+    .collect()
+}
+
+/// The functions of a backtrace suspended in await below its stack.
+pub fn awaiting(trace: &Backtrace) -> Vec<Frame> {
+    awaiting_recorded(trace)
+        .into_iter()
+        .map(|(frame, _)| frame)
+        .collect()
+}
+
+/// The JavaScript frames among `frames`, as V8 would report them, each
+/// with its problem.
+fn recorded<'a>(
+    frames: impl Iterator<Item = &'a StackFrame>,
+) -> impl Iterator<Item = (Frame, Option<String>)> {
+    frames
         .filter_map(|frame| frame.recorded.as_ref())
         .filter(|recorded| {
             matches!(
@@ -48,12 +86,6 @@ pub fn javascript_recorded(trace: &Backtrace) -> Vec<(Frame, Option<String>)> {
             };
             (frame, recorded.problem.as_deref().map(str::to_owned))
         })
-        .skip_while(|(frame, problem)| {
-            frame.file.ends_with("/tests/fixtures/node/truth.js")
-                || frame.file.starts_with("node:fs")
-                || (frame.file == "-" && problem.is_none())
-        })
-        .collect()
 }
 
 /// Each reported thread as microscope reads it at the stop.
@@ -73,7 +105,7 @@ pub async fn observed(scenario: &Scenario, reported: &[Thread]) -> Vec<Thread> {
             .await;
         observed.push(Thread {
             frames: javascript(&trace),
-            awaiting: Vec::new(),
+            awaiting: awaiting(&trace),
             values: Vec::new(),
             ..thread.clone()
         });

@@ -164,7 +164,7 @@ pub fn check_frames(observed: &[Frame], truth: &[Frame]) -> Result<(), String> {
 }
 
 /// Whether `observed` are the threads `truth` reports, by native id, each
-/// with its frames.
+/// with its frames and its await chain.
 pub fn check_threads(observed: &[Thread], truth: &[Thread]) -> Result<(), String> {
     // Every thread's first lie, so that one thread's hides no other's.
     let mut lies = Vec::new();
@@ -175,6 +175,12 @@ pub fn check_threads(observed: &[Thread], truth: &[Thread]) -> Result<(), String
         };
         if let Err(lie) = check_frames(&seen.frames, &real.frames) {
             lies.push(format!("thread {} ({}): {lie}", real.native, real.name));
+        }
+        if let Err(lie) = check_frames(&seen.awaiting, &real.awaiting) {
+            lies.push(format!(
+                "thread {} ({}) awaiting: {lie}",
+                real.native, real.name
+            ));
         }
     }
     if observed.len() != truth.len() {

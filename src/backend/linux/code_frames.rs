@@ -132,7 +132,8 @@ fn owner<'a>(
 /// runtime recorded: those inlined as inline frames, then its own as the
 /// physical frame, which keeps its instruction, module, and symbol. Each
 /// described frame's source is its runtime. A description with no function
-/// only sets the role.
+/// only sets the role. An await chain a description names is kept for
+/// splicing, by the first of the activation's frames.
 fn rewrite(
     expanded: &mut Expanded,
     described: &[(usize, RuntimeId, DescribedFrame)],
@@ -166,6 +167,9 @@ fn rewrite(
             .filter(|&end| expanded.origins[end] == origin)
             .ok_or_else(|| Error::internal("an activation's frames end in its physical frame"))?;
         let first = frames.len();
+        if let Some(awaiting) = &description.awaiting {
+            expanded.awaiting.push((first, runtime, awaiting.clone()));
+        }
         push_described(&mut frames, &old[index..=end], description);
         let count = frames.len() - first;
         origins.extend((0..count).map(|at| FrameOrigin {
@@ -284,6 +288,7 @@ mod tests {
             futures: Vec::new(),
             interpreted: Vec::new(),
             lost: Vec::new(),
+            awaiting: Vec::new(),
         }
     }
 

@@ -1118,6 +1118,11 @@ pub(super) struct Expanded {
 
     /// The declared types of the futures frames drive that cannot be read.
     pub(super) lost: Vec<crate::TypeReference>,
+
+    /// The await chains a runtime's frames resumed, each by the frame of
+    /// the trace that resumed it, innermost first, which splicing shows
+    /// before it.
+    pub(super) awaiting: Vec<(usize, crate::RuntimeId, crate::runtime_model::Awaiting)>,
 }
 
 impl Expanded {
@@ -1237,6 +1242,7 @@ fn expand_inline_backtrace(
         futures: Vec::new(),
         interpreted: Vec::new(),
         lost: Vec::new(),
+        awaiting: Vec::new(),
     };
 
     if cfg!(debug_assertions) {

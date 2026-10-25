@@ -97,6 +97,10 @@ pub fn unfollowed(note: &microscope::Unfollowed, driver: &str) -> String {
             "the interpreted frames {driver} runs are not shown in full: {}",
             note.reason
         ),
+        microscope::DrivenFrames::Awaiting => format!(
+            "the async callers awaiting what {driver} resumed are not shown in full: {}",
+            note.reason
+        ),
     }
 }
 
@@ -148,7 +152,8 @@ pub fn folded_frames(trace: &Backtrace, selected: u32) -> Vec<bool> {
 pub fn folds(trace: &Backtrace, shown: usize, selected: u32) -> Vec<std::ops::Range<usize>> {
     let frames = &trace.frames[..shown];
 
-    // A frame that drives a future is shown with it, or with why it is not.
+    // A frame that drives a future is shown with it, or with why it is not,
+    // and so is every async caller suspended in await.
     let mut kept = trace
         .frames
         .windows(2)
@@ -157,6 +162,12 @@ pub fn folds(trace: &Backtrace, shown: usize, selected: u32) -> Vec<std::ops::Ra
         })
         .map(|pair| pair[1].level)
         .chain(trace.unfollowed.iter().map(|future| future.driver.get()))
+        .chain(
+            frames
+                .iter()
+                .filter(|frame| frame.segment == StackSegment::Awaiting)
+                .map(|frame| frame.level),
+        )
         .collect::<BTreeSet<_>>();
     kept.insert(selected);
 
