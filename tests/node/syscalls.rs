@@ -723,11 +723,18 @@ mod bpf {
         let mut records: Vec<Value> = Vec::new();
         let mut ready = false;
         let mut after = 0;
-        for line in std::iter::from_fn(|| {
+        // Until the fixture is told to end, then until microscope closes
+        // its output; either fails at the deadline, and the child is
+        // killed as `running` drops.
+        loop {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
-            read.recv_timeout(left).ok()
-        }) {
-            let line = line.expect("read the trace");
+            let line = match read.recv_timeout(left) {
+                Ok(line) => line.expect("read the trace"),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) if stdin.is_none() => break,
+                Err(error) => panic!(
+                    "the trace ended or stalled ({error}) after {after} of {OPENS} opens: {records:#?}"
+                ),
+            };
             let record: Value =
                 serde_json::from_str(&line).unwrap_or_else(|error| panic!("{line}: {error}"));
             ready |= record["path"] == "/dev/random"
@@ -747,10 +754,7 @@ mod bpf {
             &mut stderr,
         )
         .expect("read microscope's stderr");
-        assert!(
-            stdin.is_none() && status.success(),
-            "the trace stalled or failed ({status}): {stderr}"
-        );
+        assert!(status.success(), "the trace failed ({status}): {stderr}");
         let lies = frameless_lies(&records);
         assert!(lies.is_empty(), "{}", lies.join("\n"));
     }
