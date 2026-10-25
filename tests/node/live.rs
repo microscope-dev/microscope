@@ -615,28 +615,48 @@ fn live_reads_under_deoptimization_find_each_thread_at_its_site_on_22() {
 }
 
 /// A live recording reads as often as it is asked to, or says it fell
-/// behind: reads at a millisecond's interval of an idle program either
-/// keep up or each say how long they took.
+/// behind: reads at a millisecond's interval of a program parked in
+/// `Atomics.wait` either keep up from the first read on, as each read's
+/// wait shows, or each say how long they took.
 #[test]
 fn live_reads_keep_their_interval_or_say_they_fell_behind() {
     let every = Duration::from_millis(1);
-    let seconds: u32 = 2;
     let mut command = Command::new(node::node(ENTRY));
-    command.args(["-e", &format!("setTimeout(() => {{}}, {})", seconds * 1000)]);
+    command.args([
+        "-e",
+        "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5000)",
+    ]);
     let options = RecordOptions {
         python: Some(PythonEngine::Live { every }),
         ..RecordOptions::default()
     };
     let (profile, _, _) = record_released(command, &options, |_| Some(()), |_, ()| true);
-    let (snapshots, _) = profile.live_snapshots();
+    // Reads begin once the program's debug information is loaded, which
+    // takes longer on a loaded machine.
+    let reads: std::collections::BTreeSet<i64> = profile
+        .task_waits()
+        .iter()
+        .filter(|wait| wait.noun == "thread")
+        .map(|wait| wait.time)
+        .collect();
+    let (Some(&first), Some(&last)) = (reads.first(), reads.last()) else {
+        panic!("no read found the parked thread");
+    };
+    let asked = u64::try_from((last - first) / 1_000_000).expect("a span");
     let behind = profile
         .task_snapshot_problems()
         .iter()
-        .filter(|(_, problem)| problem.starts_with("a live read took"))
+        .filter(|(time, problem)| {
+            (first..=last).contains(time) && problem.starts_with("a live read took")
+        })
         .count();
-    let asked = u64::from(seconds) * 1000;
+    let reads = u64::try_from(reads.len()).expect("a count");
     assert!(
-        snapshots * 2 >= asked || u64::try_from(behind).expect("a count") * 2 >= snapshots,
-        "{snapshots} snapshots of {asked} asked, {behind} said they fell behind"
+        asked >= 500,
+        "reads spanned {asked} ms of the program's 5 s"
+    );
+    assert!(
+        reads * 2 >= asked || u64::try_from(behind).expect("a count") * 2 >= reads,
+        "{reads} reads in {asked} ms at 1 ms each, {behind} said they fell behind"
     );
 }
