@@ -3,10 +3,10 @@
 //! A frame of compiled code names its function, not its code. The code it
 //! runs is one of the function's: its current code, through the dispatch
 //! table from 13.6 or the function itself before; its baseline (Sparkplug)
-//! code; or optimized code it entered on a loop (OSR), which only its
-//! feedback vector keeps, weakly. The code whose instructions hold the
-//! frame's is the one it runs, and no other is ever used: a frame whose
-//! code is none of these has no place, never a nearby one.
+//! code; or optimized code it entered on a loop (OSR). A feedback vector
+//! may replace its OSR code while an old activation still runs it. If the
+//! function no longer holds that code, its instruction stream is found
+//! by a bounded search, checked against its code's back-reference and range.
 //!
 //! Optimized (Maglev and Turbofan) code maps an instruction to a source
 //! position, which may lie in a function its code inlined; the code's
@@ -23,6 +23,10 @@ use crate::runtime_model::CodeFrame;
 
 /// The most feedback slots searched for a function's OSR code.
 const MAX_FEEDBACK_SLOTS: u64 = 1 << 16;
+
+/// The most bytes searched before a PC for an uncached instruction stream.
+/// Larger code remains explicitly undescribed when no cache names it.
+const MAX_CODE_SEARCH: u64 = 1 << 20;
 
 /// The prefixes that widen the operands of the bytecode after them, by
 /// their bytecode number, with the operand scale's index each selects:
@@ -77,8 +81,12 @@ pub(super) fn running(
             Err(problem) => problems.push(problem),
         }
     }
+    if let Some(code) = containing_code(reader, lookup)? {
+        return Ok(code);
+    }
     let mut reason = String::from(
-        "none of its function's code holds the frame's instruction, so neither its place \
+        "none of its function's cached code holds the frame's instruction, and no matching \
+         instruction stream was found within the preceding 1 MiB; neither its place \
          nor the functions its code inlined are known",
     );
     for problem in problems {
@@ -86,6 +94,41 @@ pub(super) fn running(
         reason.push_str(&problem);
     }
     Err(reason.into())
+}
+
+/// Finds active code no function cache still names, proving the stream's
+/// type, code, back-reference, instruction start, and range all agree.
+fn containing_code(reader: &Reader<'_>, lookup: u64) -> Result<Option<Code>, Problem> {
+    let alignment = reader.constant(Constant::CodeAlignment)?.cast_unsigned();
+    let header = reader.offset(Field::InstructionStreamInstructions)?;
+    let tag = reader.constant(Constant::HeapObjectTag)?.cast_unsigned();
+    let mut entry = lookup & !(alignment - 1);
+    let first = entry.saturating_sub(MAX_CODE_SEARCH);
+    while entry >= first {
+        let Some(address) = entry.checked_sub(header) else {
+            break;
+        };
+        let stream = Object(address | tag);
+        if reader
+            .is(stream, Constant::InstructionStreamType)
+            .unwrap_or(false)
+            && let Ok(object) =
+                reader.typed_field(stream, Field::InstructionStreamCode, Constant::CodeType)
+            && let Ok(found) = code(reader, object)
+            && found.start == entry
+            && found.holds(lookup)
+            && reader
+                .field(object, Field::CodeInstructionStream)
+                .is_ok_and(|back| back == stream.0)
+        {
+            return Ok(Some(found));
+        }
+        let Some(previous) = entry.checked_sub(alignment) else {
+            break;
+        };
+        entry = previous;
+    }
+    Ok(None)
 }
 
 /// The functions a frame running `code` of `shared`'s function runs at its
