@@ -335,6 +335,11 @@ entries! {
         ErrorStackDataCallSiteInfosOrFormattedStack =
             "ErrorStackData::CallSiteInfosOrFormattedStack",
 
+        /// In 12.4, a nonnegative Smi caps the application's stack;
+        /// a negative Smi caps only the inspector's stack. A `FixedArray`
+        /// means V8 has already applied the application's limit.
+        ErrorStackDataLimitOrStackFrameInfos = "ErrorStackData::LimitOrStackFrameInfos",
+
         /// From 14.6, in its place (a change Node makes to V8): the
         /// formatted stack, any value but a `FixedArray`, or a `FixedArray`
         /// of the raw data `CallSiteInfo`s are made from
@@ -460,6 +465,8 @@ entries! {
         SlicedStringTag = "SlicedStringTag",
         ThinStringTag = "ThinStringTag",
         ExternalStringTag = "ExternalStringTag",
+        UncachedExternalStringMask = "internal::kUncachedExternalStringMask",
+        UncachedExternalStringTag = "internal::kUncachedExternalStringTag",
         OneByteStringTag = "OneByteStringTag",
         TwoByteStringTag = "TwoByteStringTag",
         FirstNonstringType = "FirstNonstringType",
@@ -1440,6 +1447,8 @@ pub struct V8RuntimeRecord {
     /// [`NONE`].
     pub node_problem: U32,
     pub node: [U32; 3],
+    pub inspector_problem: U32,
+    pub inspector: [U64; 20],
     pub offsets: [U32; Field::COUNT],
     pub constants: [I64; Constant::COUNT],
 }
@@ -1601,6 +1610,89 @@ pub struct V8Runtime {
     /// The Node release that built the module, or why its code does not
     /// say, as for a V8 that Node did not build.
     pub node: Result<NodeRelease, std::sync::Arc<str>>,
+    pub inspector: Result<NodeInspector, std::sync::Arc<str>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NodeInspector {
+    pub registry: ImageAddress,
+    pub signal_handler: ImageAddress,
+    pub vector: bool,
+    pub io: u64,
+    pub host_port: u64,
+    pub host: u64,
+    pub port: u64,
+    pub id: u64,
+    pub close: Option<(ImageAddress, ImageAddress)>,
+    pub startup: Option<InspectorStartup>,
+    pub targets: InspectorTargets,
+}
+
+impl NodeInspector {
+    fn decode(words: [u64; 20]) -> Self {
+        let [
+            registry,
+            vector,
+            io,
+            host_port,
+            host,
+            port,
+            id,
+            signal_handler,
+            dispatch,
+            stop,
+            before_wait,
+            after_wait,
+            check,
+            async_offset,
+            target_entry,
+            target_source,
+            print_start,
+            print_end,
+            list,
+            upgrade,
+        ] = words;
+        Self {
+            registry: ImageAddress::new(registry),
+            signal_handler: ImageAddress::new(signal_handler),
+            vector: vector != 0,
+            io,
+            host_port,
+            host,
+            port,
+            id,
+            close: (dispatch != 0)
+                .then_some((ImageAddress::new(dispatch), ImageAddress::new(stop))),
+            startup: (before_wait != 0).then_some(InspectorStartup {
+                before_wait: ImageAddress::new(before_wait),
+                after_wait: ImageAddress::new(after_wait),
+                check: ImageAddress::new(check),
+                async_offset,
+            }),
+            targets: InspectorTargets {
+                entry: ImageAddress::new(target_entry),
+                source: target_source,
+                hidden: [print_start, print_end, list].map(ImageAddress::new),
+                upgrade: ImageAddress::new(upgrade),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InspectorTargets {
+    pub entry: ImageAddress,
+    pub source: u64,
+    pub hidden: [ImageAddress; 3],
+    pub upgrade: ImageAddress,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InspectorStartup {
+    pub before_wait: ImageAddress,
+    pub after_wait: ImageAddress,
+    pub check: ImageAddress,
+    pub async_offset: u64,
 }
 
 /// Why a runtime could not be encoded.
@@ -1651,6 +1743,37 @@ fn encode(strings: &mut StringsBuilder, runtime: &V8Runtime) -> Result<V8Runtime
         ),
         Err(error) => ([U32::new(0); 3], problem(error)?),
     };
+    let (inspector, inspector_problem) = match &runtime.inspector {
+        Ok(layout) => (
+            [
+                layout.registry.get(),
+                u64::from(layout.vector),
+                layout.io,
+                layout.host_port,
+                layout.host,
+                layout.port,
+                layout.id,
+                layout.signal_handler.get(),
+                layout.close.map_or(0, |(dispatch, _)| dispatch.get()),
+                layout.close.map_or(0, |(_, stop)| stop.get()),
+                layout
+                    .startup
+                    .map_or(0, |startup| startup.before_wait.get()),
+                layout.startup.map_or(0, |startup| startup.after_wait.get()),
+                layout.startup.map_or(0, |startup| startup.check.get()),
+                layout.startup.map_or(0, |startup| startup.async_offset),
+                layout.targets.entry.get(),
+                layout.targets.source,
+                layout.targets.hidden[0].get(),
+                layout.targets.hidden[1].get(),
+                layout.targets.hidden[2].get(),
+                layout.targets.upgrade.get(),
+            ]
+            .map(U64::new),
+            NONE,
+        ),
+        Err(error) => ([U64::new(0); 20], problem(error)?),
+    };
 
     Ok(V8RuntimeRecord {
         major: runtime.version.major.into(),
@@ -1669,6 +1792,8 @@ fn encode(strings: &mut StringsBuilder, runtime: &V8Runtime) -> Result<V8Runtime
         blob,
         node_problem: node_problem.into(),
         node,
+        inspector_problem: inspector_problem.into(),
+        inspector,
         offsets: layout.offsets.map(U32::new),
         constants: layout.constants.map(I64::new),
     })
@@ -1715,6 +1840,10 @@ pub fn runtime(image: &Image) -> Option<V8Runtime> {
         }),
         id => Err(problem(id)),
     };
+    let inspector = match record.inspector_problem.get() {
+        NONE => Ok(NodeInspector::decode(record.inspector.map(U64::get))),
+        id => Err(problem(id)),
+    };
 
     Some(V8Runtime {
         version: V8Version {
@@ -1728,6 +1857,7 @@ pub fn runtime(image: &Image) -> Option<V8Runtime> {
         dispatch_table,
         embedded_blob,
         node,
+        inspector,
     })
 }
 
@@ -1757,10 +1887,25 @@ pub(super) fn validate(image: &Image) -> Result<(), String> {
         record.dispatch_problem.get(),
         record.blob_problem.get(),
         record.node_problem.get(),
+        record.inspector_problem.get(),
     ] {
         if problem != NONE && !image.strings().contains(StrId(problem)) {
             return Err(format!("the V8 runtime's problem {problem} is no string"));
         }
+    }
+
+    let mut target_sites = [14, 16, 17, 18, 19].map(|index| record.inspector[index].get());
+    target_sites.sort_unstable();
+    if record.inspector[1].get() > 1
+        || (record.inspector[8].get() == 0) != (record.inspector[9].get() == 0)
+        || (record.inspector_problem.get() == NONE
+            && (record.inspector[15].get() > 4096
+                || target_sites[0] == 0
+                || target_sites.windows(2).any(|pair| pair[0] == pair[1])))
+        || (record.inspector_problem.get() != NONE
+            && record.inspector.iter().any(|value| value.get() != 0))
+    {
+        return Err("the V8 runtime has an invalid Node inspector layout".to_owned());
     }
 
     let kind = record.dispatch_kind.get();

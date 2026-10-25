@@ -5,7 +5,7 @@
 //!
 //! A script is proven by its id, which V8 never reuses within an isolate,
 //! and its source string. A function's shared info is proven by its
-//! script's address and id and its function literal id, which together
+//! script's address, id, source, and its function literal id, which together
 //! name one function literal, and so one name. Line ends are decoded once
 //! per script, as far as a frame has needed them.
 
@@ -50,7 +50,7 @@ struct Lines {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FunctionProof {
     script: u64,
-    script_id: i64,
+    script_proof: ScriptProof,
     literal: i32,
 }
 
@@ -113,7 +113,10 @@ impl Table {
         };
         let proof = FunctionProof {
             script: script.0,
-            script_id: reader.smi_field(script, Field::ScriptId)?,
+            script_proof: ScriptProof {
+                id: reader.smi_field(script, Field::ScriptId)?,
+                source: reader.field(script, Field::ScriptSource)?,
+            },
             literal: reader.int32_field(shared, Field::SharedFunctionInfoFunctionLiteralId)?,
         };
         if let Some(row) = self.functions.get(&shared.0)
@@ -166,6 +169,9 @@ impl Table {
 /// The most source characters scanned for newlines at once.
 const SCAN: u64 = 1 << 16;
 
+const MAX_LINE_ENDS: usize = 1 << 22;
+const MAX_SOURCE_SCAN: u64 = 1 << 24;
+
 impl Lines {
     /// Reads newline offsets until one is at or past `offset`, or the
     /// script ends: from V8's line ends where it computed them, else from
@@ -187,8 +193,10 @@ impl Lines {
 
         if let Some(ends) = computed {
             let count = u64::try_from(reader.smi_field(ends, Field::FixedArrayBaseLength)?)
-                .map_err(|_| "a script's line ends have a negative length")?
-                .min(1 << 22);
+                .map_err(|_| "a script's line ends have a negative length")?;
+            if count > MAX_LINE_ENDS as u64 {
+                return Err("a script exceeds the line ends limit".into());
+            }
             let first = reader.field_address(ends, Field::FixedArrayObjects)?;
             let mut index = self.ends.len() as u64;
             while index < count {
@@ -211,22 +219,38 @@ impl Lines {
             .ok_or("the script keeps no source and no line ends")?;
         let length = u64::try_from(reader.int32_field(source, Field::StringLength)?)
             .map_err(|_| "a script's source has a negative length")?;
+        let target = offset.saturating_add(1).min(length);
+        if target > MAX_SOURCE_SCAN {
+            return Err("the script's offset exceeds the source scan limit".into());
+        }
         let mut text = Vec::new();
-        while self.scanned <= offset && self.scanned < length {
-            let limit = (offset + 1 - self.scanned).clamp(1, SCAN);
+        while self.scanned < target {
+            let limit = (target - self.scanned).min(SCAN);
             text.clear();
-            reader.string_into(source, self.scanned, limit, 0, &mut text)?;
+            // Look ahead one unit so a CRLF straddling reads ends at its LF.
+            reader.string_into(source, self.scanned, limit + 1, 0, &mut text)?;
             let scanned = self.scanned;
-            self.ends.extend(
-                text.iter()
-                    .enumerate()
-                    .filter(|(_, unit)| **unit == u16::from(b'\n'))
-                    .map(|(at, _)| scanned + at as u64),
-            );
-            self.scanned += text.len() as u64;
-            if text.is_empty() {
-                break;
+            let mut ends = Vec::new();
+            let consumed = text.len().min(limit as usize);
+            if consumed == 0 {
+                return Err("the script's source ends before its declared length".into());
             }
+            for (at, &unit) in text.iter().take(consumed).enumerate() {
+                let end = scanned + at as u64;
+                match unit {
+                    0x0d => ends.push(end + u64::from(text.get(at + 1) == Some(&0x0a))),
+                    0x0a if ends.last().or_else(|| self.ends.last()) != Some(&end) => {
+                        ends.push(end);
+                    }
+                    0x2028 | 0x2029 => ends.push(end),
+                    _ => {}
+                }
+            }
+            if ends.len() > MAX_LINE_ENDS - self.ends.len() {
+                return Err("a script exceeds the line ends limit".into());
+            }
+            self.ends.extend(ends);
+            self.scanned += consumed as u64;
         }
         self.complete = self.scanned >= length;
         Ok(())
@@ -298,6 +322,7 @@ mod tests {
             (Constant::HeapObjectTagMask, 3),
             (Constant::StringRepresentationMask, 7),
             (Constant::SeqStringTag, 0),
+            (Constant::ExternalStringTag, 2),
             (Constant::StringEncodingMask, 8),
             (Constant::OneByteStringTag, 8),
             (Constant::FirstNonstringType, 128),
@@ -305,6 +330,20 @@ mod tests {
             layout.set_constant(constant, value);
         }
         layout
+    }
+
+    fn reader<'a>(heap: &'a Heap, layout: &'a V8Layout) -> Reader<'a> {
+        Reader {
+            stop: heap,
+            layout,
+            version: V8Version {
+                major: 14,
+                minor: 6,
+                ..V8Version::default()
+            },
+            charge: None,
+            blocks: None,
+        }
     }
 
     const fn smi(value: u64) -> u64 {
@@ -346,6 +385,19 @@ mod tests {
             at + 1
         }
 
+        fn string_units(&mut self, at: u64, map: u64, text: &[u16]) -> u64 {
+            self.heap.word(at, map);
+            let length_at = at + self.offset(Field::StringLength);
+            self.heap
+                .bytes(length_at, &u32::try_from(text.len()).unwrap().to_le_bytes());
+            let chars = at + self.offset(Field::SeqTwoByteStringChars);
+            for (index, unit) in text.iter().enumerate() {
+                self.heap
+                    .bytes(chars + index as u64 * 2, &unit.to_le_bytes());
+            }
+            at + 1
+        }
+
         /// A script at `at`, numbered `id`, named `name`, of `source`.
         fn script(&mut self, at: u64, map: u64, (id, name, source): (u64, u64, u64)) -> u64 {
             let script = at + 1;
@@ -371,6 +423,203 @@ mod tests {
             self.heap.bytes(literal_at, &literal.to_le_bytes());
             shared
         }
+    }
+
+    #[test]
+    fn source_scanning_counts_every_javascript_line_terminator() {
+        let layout = layout();
+        for separator in ["\n", "\r", "\r\n", "\u{2028}", "\u{2029}"] {
+            let mut heap = Heap::default();
+            let mut writer = Writer {
+                heap: &mut heap,
+                layout: &layout,
+            };
+            let string_map = writer.map(0x1000, 0);
+            let source: Vec<_> = format!("a{separator}b").encode_utf16().collect();
+            let source = writer.string_units(0x2000, string_map, &source);
+            let name = writer.string_units(0x2100, string_map, &['s' as u16]);
+            let script = writer.script(0x3000, 0, (1, name, source));
+            let mut table = Table::default();
+            let reader = reader(&heap, &layout);
+            let at = 1 + separator.encode_utf16().count() as u64;
+            assert_eq!(
+                table.line_column(&reader, Object(script), at).unwrap(),
+                (2, 1),
+                "{separator:?}"
+            );
+            assert_eq!(
+                table.line_column(&reader, Object(script), 1).unwrap(),
+                (1, 2),
+                "{separator:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_scanning_coalesces_crlf_at_a_read_boundary() {
+        let layout = layout();
+        let mut heap = Heap::default();
+        let mut writer = Writer {
+            heap: &mut heap,
+            layout: &layout,
+        };
+        let map = writer.map(0x1000, 0);
+        let scan = u32::try_from(super::SCAN).unwrap();
+        let mut text = vec![u16::from(b'a'); usize::try_from(scan).unwrap() - 1];
+        text.extend("\r\nb".encode_utf16());
+        let source = writer.string_units(0x10000, map, &text);
+        let name = writer.string_units(0x2000, map, &['s' as u16]);
+        let script = Object(writer.script(0x3000, 0, (1, name, source)));
+        let mut table = Table::default();
+        let reader = reader(&heap, &layout);
+        assert_eq!(
+            table.line_column(&reader, script, super::SCAN - 1).unwrap(),
+            (1, scan)
+        );
+        assert_eq!(
+            table.line_column(&reader, script, super::SCAN).unwrap(),
+            (1, scan + 1)
+        );
+        assert_eq!(
+            table.line_column(&reader, script, super::SCAN + 1).unwrap(),
+            (2, 1)
+        );
+    }
+
+    #[test]
+    fn oversized_line_end_arrays_report_a_limit_instead_of_a_prefix() {
+        let layout = layout();
+        let mut heap = Heap::default();
+        let mut writer = Writer {
+            heap: &mut heap,
+            layout: &layout,
+        };
+        let ty = u16::try_from(layout.constant(Constant::FixedArrayType).unwrap()).unwrap();
+        let map = writer.map(0x1000, ty);
+        let script = Object(writer.script(0x2000, 0, (1, 0, 0)));
+        let ends = 0x3001;
+        writer.heap.word(0x3000, map);
+        writer.field(ends, Field::FixedArrayBaseLength, smi((1 << 22) + 1));
+        writer.field(ends, Field::FixedArrayObjects, smi(0));
+        writer.field(script.0, Field::ScriptLineEnds, ends);
+        let mut lines = super::Lines::default();
+        let problem = lines
+            .cover(&reader(&heap, &layout), script, 0)
+            .expect_err("the declared line count exceeds the limit");
+        assert!(problem.contains("limit"), "{problem}");
+    }
+
+    #[test]
+    fn source_scanning_refuses_offsets_beyond_its_total_work_limit() {
+        let layout = layout();
+        let mut heap = Heap::default();
+        let mut writer = Writer {
+            heap: &mut heap,
+            layout: &layout,
+        };
+        let map = writer.map(0x1000, 8);
+        let source = writer.string(0x2000, map, "");
+        let length_at = 0x2000 + writer.offset(Field::StringLength);
+        writer
+            .heap
+            .bytes(length_at, &((1_i32 << 24) + 1).to_le_bytes());
+        let script = Object(writer.script(0x3000, 0, (1, 0, source)));
+        let mut lines = super::Lines::default();
+        let problem = lines
+            .cover(&reader(&heap, &layout), script, 1 << 24)
+            .expect_err("the source scan is bounded");
+        assert!(problem.contains("scan limit"), "{problem}");
+    }
+
+    #[test]
+    fn identity_strings_report_their_limit_instead_of_truncating() {
+        let layout = layout();
+        let mut heap = Heap::default();
+        let mut writer = Writer {
+            heap: &mut heap,
+            layout: &layout,
+        };
+        let map = writer.map(0x1000, 8);
+        let text = "x".repeat(usize::try_from(super::super::objects::MAX_STRING).unwrap());
+        let string = Object(writer.string(0x10000, map, &text));
+        assert_eq!(reader(&heap, &layout).string(string).unwrap(), text);
+        let mut writer = Writer {
+            heap: &mut heap,
+            layout: &layout,
+        };
+        writer.string(0x10000, map, &(text + "x"));
+        let problem = reader(&heap, &layout)
+            .string(string)
+            .expect_err("the string exceeds the limit");
+        assert!(problem.contains("limit"), "{problem}");
+    }
+
+    #[test]
+    fn uncached_external_strings_do_not_read_the_adjacent_word_as_data() {
+        let layout = layout();
+        let mut heap = Heap::default();
+        let mut writer = Writer {
+            heap: &mut heap,
+            layout: &layout,
+        };
+        let cached = writer.map(0x1000, 8 | 2);
+        let uncached = writer.map(0x1100, 8 | 2 | 16);
+        writer.heap.word(0x2000, cached);
+        writer.heap.bytes(
+            0x2000 + writer.offset(Field::StringLength),
+            &3_i32.to_le_bytes(),
+        );
+        writer.field(0x2001, Field::ExternalStringResourceData, 0x3000);
+        writer.heap.bytes(0x3000, b"bad");
+        assert_eq!(
+            reader(&heap, &layout).string(Object(0x2001)).unwrap(),
+            "bad"
+        );
+        heap.word(0x2000, uncached);
+        let problem = reader(&heap, &layout)
+            .string(Object(0x2001))
+            .expect_err("an uncached external string has no cached data field");
+        assert!(problem.contains("uncached"), "{problem}");
+    }
+
+    #[test]
+    fn function_rows_miss_when_the_script_source_changes_without_its_id() {
+        let layout = layout();
+        let mut heap = Heap::default();
+        let mut writer = Writer {
+            heap: &mut heap,
+            layout: &layout,
+        };
+        let string_map = writer.map(0x1000, 8);
+        let script_map = writer.map(
+            0x1100,
+            u16::try_from(layout.constant(Constant::ScriptType).unwrap()).unwrap(),
+        );
+        let first = writer.string(0x2000, string_map, "first");
+        let second = writer.string(0x2100, string_map, "second");
+        let source_a = writer.string(0x2200, string_map, "a");
+        let source_b = writer.string(0x2300, string_map, "b");
+        let script = writer.script(0x3000, script_map, (7, first, source_a));
+        let shared = Object(writer.shared(0x4000, 0, script, 1, first));
+        let mut table = Table::default();
+        assert_eq!(
+            &*table
+                .function_name(&reader(&heap, &layout), shared)
+                .unwrap(),
+            "first"
+        );
+        let mut writer = Writer {
+            heap: &mut heap,
+            layout: &layout,
+        };
+        writer.script(0x3000, script_map, (7, second, source_b));
+        writer.shared(0x4000, 0, script, 1, second);
+        assert_eq!(
+            &*table
+                .function_name(&reader(&heap, &layout), shared)
+                .unwrap(),
+            "second"
+        );
     }
 
     /// A row answers only for the object it was made from: a function or

@@ -59,7 +59,7 @@ pub(super) struct Headers {
     config: BTreeMap<&'static str, bool>,
 }
 
-const FILES: [&str; 40] = [
+const FILES: [&str; 41] = [
     "src/common/globals.h",
     "include/v8-internal.h",
     "src/objects/trusted-object.h",
@@ -85,6 +85,7 @@ const FILES: [&str; 40] = [
     "src/utils/utils.h",
     "src/objects/heap-object.h",
     "src/objects/primitive-heap-object.h",
+    "src/objects/instance-type.h",
     "src/objects/bigint.h",
     "src/objects/struct.h",
     "src/objects/oddball.h",

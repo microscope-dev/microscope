@@ -1854,10 +1854,9 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     pub(super) fn handle_shutdown_wait(&mut self, status: WaitEvent) -> bool {
-        let attached = self
-            .inferior
-            .as_ref()
-            .is_some_and(|inferior| inferior.origin == InferiorOrigin::Attached);
+        let attached = self.inferior.as_ref().is_some_and(|inferior| {
+            inferior.origin == InferiorOrigin::Attached || self.ending == super::Ending::Release
+        });
         if self.absorb_untracked_wait(&status) {
             if attached && let Err(error) = self.detach_when_stopped() {
                 self.finish_shutdown(Err(error));
@@ -2002,7 +2001,11 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .all(|(&pid, thread)| inferior.settled(pid, thread));
         if ready {
             match self.drain_queued_traps() {
-                Ok(false) => self.detach_inferior(),
+                Ok(false) => match self.begin_inspector_cleanup() {
+                    Ok(true) => {}
+                    Ok(false) => self.detach_inferior(),
+                    Err(error) => self.detach_inferior_reporting(Some(error)),
+                },
                 Ok(true) => {}
                 // Queue evidence can be unavailable even at an all-stop.
                 // Report it, but still remove instrumentation and detach.
@@ -2272,7 +2275,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.detach_inferior_reporting(None);
     }
 
-    fn detach_inferior_reporting(&mut self, mut first_error: Option<Error>) {
+    pub(super) fn detach_inferior_reporting(&mut self, mut first_error: Option<Error>) {
         debug_assert!(
             self.inferior.as_ref().is_some_and(|inferior| {
                 inferior

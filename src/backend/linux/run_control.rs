@@ -355,6 +355,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             installation.start_deadline(std::time::Instant::now());
         }
 
+        self.open_inspectors();
         if let Err(error) = self.advance_execution() {
             // SIGKILL took threads out of the stop as they were resumed: the
             // execution has begun, and runs on into the program's end.
@@ -1338,16 +1339,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             .terminating
             .as_mut()
             .filter(|terminating| terminating.signal == pending.signal);
-        // Nor does the SIGUSR1 it sent to open an attached node's inspector.
-        let opening = pending.signal == Signal::SIGUSR1
-            && pending.code == 0
-            && pending.sender == i32::try_from(std::process::id()).ok()
-            && inferior.inspectors.opening > 0;
         let policy = if let Some(terminating) = terminating {
             terminating.delivered = true;
-            QUIET
-        } else if opening {
-            inferior.inspectors.opening -= 1;
             QUIET
         } else {
             self.signals.get(pending.signal)
@@ -1880,6 +1873,10 @@ impl<P: LinuxTraceOps> Controller<P> {
             return self.arrive_unstopped(pid, address);
         }
 
+        if self.inspector_cleanup_barrier()? {
+            return Ok(());
+        }
+
         if self
             .inferior
             .as_ref()
@@ -1932,7 +1929,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         // Last, so that a process ending while the stop forms keeps the
         // temporary breakpoints of a stop never published.
         let temporaries_removed = self.remove_stopped_temporaries()?;
-        self.mark_published_pause(triggering_thread);
+        self.mark_published_pause(triggering_thread, &reason);
         let stop_id = self.ptrace.allocate_stop_id()?;
         let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
         check_publishable(inferior, stop_id);

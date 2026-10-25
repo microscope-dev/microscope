@@ -63,18 +63,18 @@ pub(super) fn details(
 /// The value of `error.stack` when V8's own getter computes it.
 fn stack(builder: &mut Builder<'_>, error: Object) -> Result<Value, Problem> {
     let reader = builder.reader;
-    match lookup::find(&reader, error, lookup::Key::Name("stack"))? {
+    let accessor = match lookup::find(&reader, error, lookup::Key::Name("stack"))? {
         lookup::Found::Data(word) => return Ok(builder.value(word, 0)),
         lookup::Found::Absent => return Ok(Value::Undefined),
-        lookup::Found::Accessor { holder, .. } if holder == error => {}
+        lookup::Found::Accessor { holder, accessor } if holder == error => accessor,
         lookup::Found::Accessor { .. } => {
             return Err(
                 "the error's stack is an inherited getter, and microscope does not call getters"
                     .into(),
             );
         }
-    }
-    let symbol = stack_symbol(&reader, error)?;
+    };
+    let symbol = stack_symbol(&reader, error, accessor)?;
     let kept = own::all_named(&reader, error)?
         .into_iter()
         .find(|property| property.key == symbol)
@@ -83,9 +83,18 @@ fn stack(builder: &mut Builder<'_>, error: Object) -> Result<Value, Problem> {
         // V8's getter returns undefined if no stack was captured.
         return Ok(Value::Undefined);
     };
+    let mut limit = None;
     let held = if let Some(data) = reader.object(word)?
         && reader.is(data, Constant::ErrorStackDataType)?
     {
+        if reader
+            .layout
+            .has(Field::ErrorStackDataLimitOrStackFrameInfos)
+        {
+            limit = reader
+                .smi(reader.field(data, Field::ErrorStackDataLimitOrStackFrameInfos)?)?
+                .filter(|limit| *limit >= 0);
+        }
         let field = if reader
             .layout
             .has(Field::ErrorStackDataCallSiteInfosOrFormattedStack)
@@ -101,7 +110,7 @@ fn stack(builder: &mut Builder<'_>, error: Object) -> Result<Value, Problem> {
     if let Some(sites) = reader.object(held)?
         && reader.is(sites, Constant::FixedArrayType)?
     {
-        return super::call_sites::format(builder, error, sites);
+        return super::call_sites::format(builder, error, sites, limit);
     }
     Ok(builder.value(held, 0))
 }
@@ -110,8 +119,9 @@ fn stack(builder: &mut Builder<'_>, error: Object) -> Result<Value, Problem> {
 /// under. In every supported version `InstallError` (`bootstrapper.cc`)
 /// puts it in the first descriptor of `%Error%`'s initial map, at
 /// `kJSErrorErrorStackSymbolIndex`. Private root symbols have no
-/// description to search for, so it is found by position.
-fn stack_symbol(reader: &Reader<'_>, error: Object) -> Result<Object, Problem> {
+/// description to search for, so it is found by position. The same map's
+/// stack accessor proves that the error still uses V8's getter.
+fn stack_symbol(reader: &Reader<'_>, error: Object, accessor: Object) -> Result<Object, Problem> {
     let native = access::native_context(reader, reader.map(error)?)?;
     let function = reader
         .object(access::slot(
@@ -134,11 +144,75 @@ fn stack_symbol(reader: &Reader<'_>, error: Object) -> Result<Object, Problem> {
         })
         .ok_or("%Error% has no initial map")?;
     let key = properties::descriptor(reader, initial, 0, Constant::PropDescKey)?;
-    reader
+    let symbol = reader
         .object(key)?
         .filter(|symbol| {
             reader.is(*symbol, Constant::SymbolType).unwrap_or(false)
                 && values::is_private(reader, *symbol).unwrap_or(false)
         })
-        .ok_or_else(|| "the first property of %Error%'s instances is not a private symbol".into())
+        .ok_or("the first property of %Error%'s instances is not a private symbol")?;
+    let count = properties::part(
+        reader,
+        i64::from(
+            reader
+                .int32_field(initial, Field::MapBitField3)?
+                .cast_unsigned(),
+        ),
+        Constant::BitField3NumberOfOwnDescriptorsMask,
+        Some(Constant::BitField3NumberOfOwnDescriptorsShift),
+    )?;
+    for index in 1..count {
+        let key = properties::descriptor(reader, initial, index, Constant::PropDescKey)?;
+        if !properties::is_named(reader, key, "stack")? {
+            continue;
+        }
+        let native = properties::descriptor(reader, initial, index, Constant::PropDescValue)?;
+        let native = reader
+            .object(native)?
+            .ok_or("the native stack accessor is not an object")?;
+        if let Some(template) = getter_template(reader, native)?
+            && getter_template(reader, accessor)? == Some(template)
+        {
+            return Ok(symbol);
+        }
+        break;
+    }
+    Err(
+        "the error's stack getter is not V8's original, and microscope does not call getters"
+            .into(),
+    )
+}
+
+/// `AccessorPair::GetComponent` lazily replaces a `FunctionTemplateInfo` with
+/// its instantiated `JSFunction`. Both forms name the same native getter.
+fn getter_template(reader: &Reader<'_>, accessor: Object) -> Result<Option<Object>, Problem> {
+    if !reader.is(accessor, Constant::AccessorPairType)? {
+        return Ok(None);
+    }
+    let Some(mut getter) = reader.object(reader.field(accessor, Field::AccessorPairGetter)?)?
+    else {
+        return Ok(None);
+    };
+    if reader.is(getter, Constant::JSFunctionType)? {
+        let shared = reader.typed_field(
+            getter,
+            Field::JSFunctionSharedFunctionInfo,
+            Constant::SharedFunctionInfoType,
+        )?;
+        let field = if reader
+            .layout
+            .has(Field::SharedFunctionInfoUntrustedFunctionData)
+        {
+            Field::SharedFunctionInfoUntrustedFunctionData
+        } else {
+            Field::SharedFunctionInfoFunctionData
+        };
+        let Some(data) = reader.object(reader.field(shared, field)?)? else {
+            return Ok(None);
+        };
+        getter = data;
+    }
+    Ok(reader
+        .is(getter, Constant::FunctionTemplateInfoType)?
+        .then_some(getter))
 }

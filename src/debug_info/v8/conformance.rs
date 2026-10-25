@@ -350,6 +350,8 @@ fn header_constants(headers: &Headers, leaptiering: bool) -> BTreeMap<String, i6
         ("include/v8-internal.h", "kWeakHeapObjectTag"),
         ("src/common/globals.h", "kWeakHeapObjectMask"),
         ("src/common/globals.h", "kClearedWeakHeapObjectLower32"),
+        ("src/objects/instance-type.h", "kUncachedExternalStringMask"),
+        ("src/objects/instance-type.h", "kUncachedExternalStringTag"),
     ] {
         constants.insert(format!("internal::{name}"), headers.constant(file, name));
     }

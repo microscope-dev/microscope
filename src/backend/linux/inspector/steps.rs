@@ -80,6 +80,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
         let original = top.as_ref().and_then(|url| {
             let map = maps.get(&*inspector_protocol::script_path(url))?;
+            map.map().ok()?;
             let generated = crate::RecordedPlace {
                 path: Arc::clone(url),
                 line: u32::try_from(location["lineNumber"].as_u64()? + 1).ok()?,

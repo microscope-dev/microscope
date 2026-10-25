@@ -265,3 +265,48 @@ async fn an_exception_stops_at_the_typescript_that_throws_it() {
     }
     assert!(lies.is_empty(), "{}", lies.join("\n"));
 }
+
+#[tokio::test]
+async fn an_unreadable_source_map_keeps_generated_breakpoints_and_steps() {
+    let scratch = ScratchDir::new("node-missing-map");
+    let script = scratch.path().join("app.js");
+    std::fs::write(&script, "function run(n) {\n  const squared = n * n;\n  return squared + 1;\n}\nconsole.log(run(9));\n//# sourceMappingURL=missing.js.map\n")
+        .expect("write the script");
+    for entry in MATRIX {
+        let pending = NodeSession::unlaunched_with_node(entry, &script.display().to_string(), &[]);
+        let breakpoint = (
+            BreakpointSpec::Source {
+                path: script.clone(),
+                line: LineNumber::new(2).expect("a line"),
+            },
+            BreakpointOptions {
+                pending: true,
+                ..BreakpointOptions::default()
+            },
+        );
+        let (mut session, reason, _) = pending.run_to_stop(vec![breakpoint]).await;
+        assert!(
+            matches!(reason, StopReason::Breakpoint { .. }),
+            "{entry}: {reason:?}"
+        );
+        let place = where_stopped(&session, "n").await;
+        assert_eq!(
+            (place.0, place.1, place.3),
+            (script.display().to_string(), 2, "9".to_owned())
+        );
+        assert!(matches!(
+            session.scenario.step_to_stop(StepKind::OverSource).await,
+            StopReason::Step { .. }
+        ));
+        let place = where_stopped(&session, "squared").await;
+        assert_eq!(
+            (place.0, place.1, place.3),
+            (script.display().to_string(), 3, "81".to_owned())
+        );
+        assert_eq!(
+            session.scenario.resume_to_stop().await,
+            StopReason::Exited(ExitStatus::Code(0))
+        );
+        session.shutdown().await;
+    }
+}

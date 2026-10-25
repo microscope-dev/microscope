@@ -600,21 +600,40 @@ no script by that name has loaded yet; did you mean 'routes/users.js'?
 ```
 
 When microscope launches `node`, it adds a file of its own to
-`NODE_OPTIONS` with `--require`. In a node microscope traces, that file
-opens the inspector and waits for microscope to connect; anywhere else it
-does nothing. It puts `NODE_OPTIONS` back before the program runs. With a
-follow mode other than `none`, it leaves the variables, so that the nodes
-the program starts open theirs too: `npm start`, `npx`, and `node --test`
+`NODE_OPTIONS` with `--require`, before any user preloads. In a node
+microscope traces, that file opens the inspector and waits for microscope
+to connect; anywhere else it opens no inspector. It puts `NODE_OPTIONS`
+back before the program runs. With a follow mode other than `none`, it
+leaves the variables, so that the nodes the program starts open theirs
+too: `npm start`, `npx`, and `node --test`
 are followed into the `node` that runs your code (see
 [Debug the processes a program starts](debugging.md#debug-the-processes-a-program-starts)).
-When microscope attaches to a node, it opens the inspector with `SIGUSR1`,
-as `node inspect -p` does. JavaScript breakpoints stay pending, with the
-reason, when the inspector cannot open:
+Followed launches keep the preload under `$XDG_CACHE_HOME/microscope/node`
+(or `~/.cache/microscope/node`) so descendants can still start after the
+debugger exits. An untraced descendant restores the original options.
+
+When microscope attaches to a node, it uses an existing loopback inspector
+first. Otherwise, it sends `SIGUSR1` only after proving that Node's native
+inspector handler owns the signal. It never invokes an application's
+`SIGUSR1` listener. JavaScript breakpoints stay pending, with the reason,
+when the inspector cannot open:
 
 - a node started with `--disable-sigusr1`, when attaching: start it with
   `--inspect=127.0.0.1:0` instead;
+- a node with an application `SIGUSR1` handler, a blocked `SIGUSR1`, or
+  active seccomp filtering;
+- a build whose native inspector state microscope cannot prove;
 - a node started with `--permission` and without `--allow-inspector`;
 - a node whose parent replaced `NODE_OPTIONS`, so the file never loaded.
+
+On detach, microscope closes an inspector it opened and leaves a pre-existing
+server open. This also applies when a launched process is released on shutdown.
+Closing a server does not evaluate JavaScript or call application getters.
+If startup is already under way, detach finishes opening and closing the server
+before releasing the process. Cleanup lets the program run to drain startup
+callbacks. If it cannot verify closure within five seconds, for example because
+the main thread never returns to its event loop, detach reports the failure;
+the inspector may remain open.
 
 The inspector listens on 127.0.0.1, on a port the system chooses, under a
 random id. microscope reads the id from the process, so Node neither prints

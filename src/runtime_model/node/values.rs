@@ -20,6 +20,10 @@ use crate::image::v8::{Constant, Field};
 /// The deepest level at which inspect shows an object's contents.
 const FULL_LEVEL: u32 = 2;
 
+/// Bounds paths that do not increase inspect's level, such as proxy targets
+/// and an error's object-valued stack.
+const MAX_READ_DEPTH: usize = 64;
+
 /// inspect's `maxStringLength`, in UTF-16 units.
 const SHOWN_UNITS: u64 = 10_000;
 
@@ -34,6 +38,7 @@ pub(super) struct Builder<'r> {
     /// Each object read, by tagged address, and whether its contents were
     /// read too.
     rows: BTreeMap<u64, (ObjectId, bool)>,
+    depth: usize,
 }
 
 impl<'r> Builder<'r> {
@@ -42,13 +47,21 @@ impl<'r> Builder<'r> {
             reader,
             graph: ValueGraph::new(),
             rows: BTreeMap::new(),
+            depth: 0,
         }
     }
 
     /// The value of the tagged word `word`, at `level` below the root.
     pub(super) fn value(&mut self, word: u64, level: u32) -> Value {
-        self.read(word, level)
-            .unwrap_or_else(|problem| Value::Unreadable(problem.to_string()))
+        if self.depth >= MAX_READ_DEPTH {
+            return Value::Unreadable("the object or proxy chain is too long".to_owned());
+        }
+        self.depth += 1;
+        let value = self
+            .read(word, level)
+            .unwrap_or_else(|problem| Value::Unreadable(problem.to_string()));
+        self.depth -= 1;
+        value
     }
 
     fn read(&mut self, word: u64, level: u32) -> Result<Value, Problem> {
@@ -247,7 +260,7 @@ impl<'r> Builder<'r> {
         let reader = self.reader;
         let mut properties = Vec::new();
         if !indexed {
-            for element in own::elements(&reader, object, None, u32::MAX)? {
+            for element in own::elements(&reader, object, 0..u32::MAX)? {
                 if !element.enumerable {
                     continue;
                 }
@@ -277,6 +290,11 @@ impl<'r> Builder<'r> {
 
     /// The slot for a property holding `held`, its value read at `level`.
     pub(super) fn slot(&mut self, held: Held, level: u32) -> Slot {
+        if level > FULL_LEVEL + 1 {
+            return Slot::Data(Value::Unreadable(
+                "a property beyond inspect's depth".to_owned(),
+            ));
+        }
         let reader = self.reader;
         match held {
             Held::Data(word) => Slot::Data(self.value(word, level)),
@@ -346,7 +364,7 @@ impl<'r> Builder<'r> {
         }
         // Read every present element, however sparse, so the list is
         // complete up to the length.
-        let present = own::elements(&reader, object, Some(length), u32::MAX)?;
+        let present = own::elements(&reader, object, 0..length)?;
         let elements = present
             .into_iter()
             .map(|element| Element {
@@ -603,7 +621,7 @@ impl<'r> Builder<'r> {
                     // inspect may take it for a URL.
                     return Err("the last prototype has its own href".into());
                 }
-                let end_has_keys = own::elements(&reader, end, None, u32::MAX)?
+                let end_has_keys = own::elements(&reader, end, 0..u32::MAX)?
                     .iter()
                     .any(|element| element.enumerable)
                     || own::named(&reader, end)?

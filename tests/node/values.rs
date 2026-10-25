@@ -429,3 +429,210 @@ async fn optimized_frames_show_no_stale_registers() {
     }
     assert!(lies.is_empty(), "{lies:#?}");
 }
+
+#[tokio::test]
+async fn inspection_keys_follow_ordinary_and_integer_indexed_rules() {
+    let mut lies = Vec::new();
+    for entry in MATRIX {
+        let mut session = NodeSession::launch(entry, "values.js", &[], &["inspection"]).await;
+        let reported = threads(&session.stop_at("inspection").await);
+        let printer = reported.iter().find(|t| t.printer).expect("the printer");
+        select_function(&session, printer.native, "inspection").await;
+        for (expression, expected) in [
+            ("keyed[4294967295]", "42"),
+            ("keyed[\"4294967295\"]", "42"),
+            ("array[4294967295]", "43"),
+            ("typed[0]", "2"),
+            ("typed[\"01\"]", "98"),
+            ("typed[\"-1.0\"]", "97"),
+            ("inherited[0]", "2"),
+            ("inherited[\"01\"]", "98"),
+            ("shadowed[\"-1\"]", "44"),
+            ("boxed[2]", "'past string'"),
+            ("boxedInherited[2]", "'past string'"),
+            ("boxedShadowed[0]", "45"),
+        ] {
+            let (actual, _) = presented(&session, expression).await;
+            if actual != expected {
+                lies.push(format!("{entry}: {expression} is {actual}, not {expected}"));
+            }
+        }
+        for expression in ["boxed[0]", "boxedInherited[1]"] {
+            let (actual, _) = presented(&session, expression).await;
+            if !actual.contains("string wrapper's character") {
+                lies.push(format!(
+                    "{entry}: {expression} is {actual}, not a character refusal"
+                ));
+            }
+        }
+        for key in ["-1", "-0", "1.5", "NaN", "Infinity", "4294967295"] {
+            for object in ["typed", "inherited"] {
+                let expression = format!("{object}[\"{key}\"]");
+                let (actual, _) = presented(&session, &expression).await;
+                if actual != "<error: the value has no such property>" {
+                    lies.push(format!("{entry}: {expression} is {actual}, not absent"));
+                }
+            }
+        }
+        session.shutdown().await;
+    }
+    assert!(lies.is_empty(), "{}", lies.join("\n"));
+}
+
+#[tokio::test]
+async fn inspection_errors_refuse_replaced_stack_getters() {
+    let mut lies = Vec::new();
+    for entry in MATRIX {
+        let mut session = NodeSession::launch(entry, "values.js", &[], &["inspection"]).await;
+        let reported = threads(&session.stop_at("inspection").await);
+        let printer = reported.iter().find(|t| t.printer).expect("the printer");
+        select_function(&session, printer.native, "inspection").await;
+        let (_, custom) = presented(&session, "customStack").await;
+        if !custom.contains("stack getter is not V8's original") {
+            lies.push(format!("{entry}: custom stack getter shows {custom}"));
+        }
+        let (_, native) = presented(&session, "nativeStack").await;
+        if !native.starts_with("TypeError: native stack is still readable\n    at inspection (") {
+            lies.push(format!("{entry}: original stack getter shows {native}"));
+        }
+        session.shutdown().await;
+    }
+    assert!(lies.is_empty(), "{}", lies.join("\n"));
+}
+
+#[tokio::test]
+async fn inspection_depth_does_not_follow_hidden_property_chains() {
+    for entry in MATRIX {
+        let mut session = NodeSession::launch(entry, "values.js", &[], &["inspection"]).await;
+        let reported = threads(&session.stop_at("inspection").await);
+        let printer = reported.iter().find(|t| t.printer).expect("the printer");
+        select_function(&session, printer.native, "inspection").await;
+        let deep = printer
+            .values
+            .iter()
+            .find(|v| v.name == "deep")
+            .expect("deep");
+        let actual = presented(&session, "deep").await;
+        assert!(
+            lies_about(entry, deep, &actual).is_empty(),
+            "{entry}: {actual:?}"
+        );
+        let (proxy, _) = presented(&session, "proxies").await;
+        assert!(
+            proxy.contains("proxy chain is too long")
+                || (crate::session::major(entry) < 26 && proxy.contains("a proxy of a proxy")),
+            "{entry}: {proxy}"
+        );
+        session.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn dense_elements_cross_the_enumeration_limit_without_losing_values() {
+    let mut lies = Vec::new();
+    for entry in MATRIX {
+        let mut session = NodeSession::launch(entry, "values.js", &[], &["elements"]).await;
+        let reported = threads(&session.stop_at("elements").await);
+        let printer = reported.iter().find(|t| t.printer).expect("the printer");
+        select_function(&session, printer.native, "elementBoundary").await;
+        for value in &printer.values {
+            let actual = presented(&session, &value.name).await;
+            lies.extend(lies_about(entry, value, &actual));
+        }
+        for name in ["tagged", "doubles"] {
+            let (actual, _) = presented(&session, name).await;
+            if !actual.contains("elements exceeds the limit of 1048576") {
+                lies.push(format!(
+                    "{entry}: {name} has no explicit element limit: {actual}"
+                ));
+            }
+        }
+        session.shutdown().await;
+    }
+    assert!(lies.is_empty(), "{}", lies.join("\n"));
+}
+
+#[tokio::test]
+async fn inspection_children_include_numeric_own_properties_in_pages() {
+    use microscope::{ValueChildQuery, ValueChildRelationship, ValueChildren};
+    for entry in MATRIX {
+        let mut session = NodeSession::launch(entry, "values.js", &[], &["inspection"]).await;
+        let reported = threads(&session.stop_at("inspection").await);
+        let printer = reported.iter().find(|t| t.printer).expect("the printer");
+        select_function(&session, printer.native, "inspection").await;
+        let result = session
+            .scenario
+            .handle()
+            .evaluate(&Expression::parse("keyed").unwrap())
+            .await
+            .unwrap();
+        let Evaluation::Value { value, .. } = result else {
+            panic!("{result:?}")
+        };
+        let VariableState::Available {
+            presentation: Some(presentation),
+            ..
+        } = value.state
+        else {
+            panic!("{:?}", value.state)
+        };
+        let ValueChildren::Available(children) = &presentation.children else {
+            panic!("no children")
+        };
+        assert_eq!(children.total(), 3);
+        for limit in [1, 2] {
+            let mut found = Vec::new();
+            for offset in (0..3).step_by(limit as usize) {
+                let page = session
+                    .scenario
+                    .operation(
+                        "children",
+                        session.scenario.handle().value_children(
+                            std::sync::Arc::clone(children),
+                            ValueChildQuery { offset, limit },
+                        ),
+                    )
+                    .await;
+                for child in page.children.iter() {
+                    let ValueChildRelationship::Field { name } = &child.relationship else {
+                        panic!("{:?}", child.relationship)
+                    };
+                    let VariableState::Available {
+                        presentation: Some(value),
+                        ..
+                    } = &child.state
+                    else {
+                        panic!("{:?}", child.state)
+                    };
+                    found.push((name.to_string(), value.summary.to_string()));
+                }
+            }
+            assert_eq!(
+                found,
+                [
+                    ("0".into(), "'zero'".into()),
+                    ("foo".into(), "'bar'".into()),
+                    ("4294967295".into(), "42".into())
+                ],
+                "{entry}"
+            );
+        }
+        session.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn with_scope_refuses_crossed_names_but_keeps_inner_bindings() {
+    for entry in MATRIX {
+        let mut session = NodeSession::launch(entry, "values.js", &[], &["with"]).await;
+        let reported = threads(&session.stop_at("with").await);
+        let printer = reported.iter().find(|t| t.printer).expect("the printer");
+        select_function(&session, printer.native, "scope").await;
+        assert_eq!(presented(&session, "inner").await.0, "7", "{entry}");
+        for name in ["outer", "globalThis", "console", "missing"] {
+            let (outer, _) = presented(&session, name).await;
+            assert!(outer.contains("with context"), "{entry}: {name}: {outer}");
+        }
+        session.shutdown().await;
+    }
+}

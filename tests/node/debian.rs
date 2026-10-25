@@ -12,12 +12,13 @@ use std::io::Read;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use microscope::ThreadId;
+use microscope::{BreakpointOptions, BreakpointSpec, LineNumber, StopReason, ThreadId};
 
 use crate::frames::observed;
 use crate::native::check_thread;
 use crate::session::NodeSession;
 use crate::stacks::check_isolates;
+use crate::support::{ExternalProcess, Scenario, ScratchDir, node};
 use crate::truth::{check_threads, threads};
 
 /// The build, as the flake names it.
@@ -184,18 +185,132 @@ async fn debian_launched_nodes_inspector_is_shown_to_no_one() {
 }
 
 /// On Debian's node, every kind of breakpoint stops, logs, and waits as
-/// asked, each step ends where V8's ends, and each exception stops where V8
-/// pauses at it, with V8's frames and locals at every stop; a worker stops
+/// asked, and each exception stops where V8 pauses at it, with V8's frames
+/// and locals at every stop; a worker stops
 /// and steps on its own thread; and an attached node stops too.
 #[tokio::test]
-async fn debian_breakpoints_steps_and_exceptions_match_v8() {
-    if !inside("debian::debian_breakpoints_steps_and_exceptions_match_v8") {
+async fn debian_breakpoints_and_exceptions_match_v8() {
+    if !inside("debian::debian_breakpoints_and_exceptions_match_v8") {
         return;
     }
     crate::breakpoints::every_kind_of_breakpoint(DEBIAN).await;
-    let mut lies = crate::steps::lies(DEBIAN).await;
-    lies.extend(crate::exceptions::lies(DEBIAN).await);
+    let mut lies = crate::exceptions::lies(DEBIAN).await;
     lies.extend(crate::workers::worker_lies(DEBIAN).await);
     lies.extend(crate::attach::attach_lies(DEBIAN).await);
     assert!(lies.is_empty(), "{}", lies.join("\n"));
+}
+
+/// Main-thread stepping has its own namespace deadline, rather than sharing
+/// one with four independent run-control scenarios under cold-cache stress.
+#[tokio::test]
+async fn debian_steps_match_v8() {
+    if !inside("debian::debian_steps_match_v8") {
+        return;
+    }
+    let lies = crate::steps::lies(DEBIAN).await;
+    assert!(lies.is_empty(), "{}", lies.join("\n"));
+}
+
+#[tokio::test]
+async fn debian_detach_closes_its_owned_inspector_and_preserves_a_borrowed_one() {
+    if !inside("debian::debian_detach_closes_its_owned_inspector_and_preserves_a_borrowed_one") {
+        return;
+    }
+
+    for borrowed in [false, true] {
+        let scratch = ScratchDir::new("debian-inspector-close");
+        let report = scratch.path().join("report");
+        let mut command = Command::new(node::node(DEBIAN));
+        command.arg("--inspect-port=0");
+        if borrowed {
+            command.arg("--inspect=127.0.0.1:0");
+        }
+        let mut child = ExternalProcess::spawn_command(
+            command
+                .arg(node::fixture("attach-detach.js"))
+                .arg(&report)
+                .env_clear(),
+        );
+        let debugger = child.attach().await;
+        let mut scenario =
+            Scenario::attached(format!("Debian inspector borrowed={borrowed}"), debugger);
+        scenario
+            .operation(
+                "add breakpoint",
+                scenario.handle().add_breakpoint_with(
+                    BreakpointSpec::Source {
+                        path: node::fixture("attach-detach.js"),
+                        line: LineNumber::new(9).expect("a line"),
+                    },
+                    BreakpointOptions {
+                        pending: true,
+                        ..BreakpointOptions::default()
+                    },
+                ),
+            )
+            .await;
+        let running = scenario.start_resuming().await;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let snapshot = scenario.snapshot().await;
+            if !snapshot.breakpoints[0].locations.is_empty()
+                && snapshot.breakpoints[0].pending_locations.is_empty()
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "Debian breakpoint never arms");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        child.release();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(20), running)
+                .await
+                .expect("breakpoint deadline")
+                .expect("run task")
+                .expect("run"),
+            StopReason::Breakpoint { .. }
+        ));
+        let before: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&report).expect("before report")).expect("JSON");
+        let address: std::net::SocketAddr = before["before"]
+            .as_str()
+            .expect("open inspector")
+            .strip_prefix("ws://")
+            .expect("URL")
+            .split('/')
+            .next()
+            .expect("authority")
+            .parse()
+            .expect("address");
+        scenario.shutdown().await;
+        assert_eq!(
+            std::net::TcpStream::connect_timeout(&address, Duration::from_secs(1)).is_ok(),
+            borrowed,
+            "Debian inspector listener after detach"
+        );
+        child.release();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let after = loop {
+            let value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&report).expect("live report"))
+                    .unwrap_or(serde_json::Value::Null);
+            if value.get("after").is_some() {
+                break value;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Debian detached process cannot progress"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert_eq!(
+            after["after"],
+            if borrowed {
+                before["before"].clone()
+            } else {
+                serde_json::Value::Null
+            }
+        );
+        assert!(child.wait().success(), "Debian detached process survives");
+    }
 }

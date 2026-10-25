@@ -57,6 +57,7 @@ struct Routes {
 
     /// The member each thread already routed belongs to.
     owners: BTreeMap<Pid, MemberKey>,
+    direct: BTreeMap<Pid, std::sync::mpsc::Sender<WaitEvent>>,
     next_key: MemberKey,
 }
 
@@ -140,6 +141,21 @@ pub(super) struct HubEdge {
 }
 
 impl HubEdge {
+    pub(super) fn intercept(&self, pid: Pid) -> Option<DirectWait> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut routes = self.shared.lock();
+        if routes.direct.contains_key(&pid) {
+            return None;
+        }
+        routes.direct.insert(pid, sender);
+        drop(routes);
+        Some(DirectWait {
+            edge: self.clone(),
+            pid,
+            receiver,
+        })
+    }
+
     /// Starts waiting for the process `process`, whose statuses go to the
     /// member's queue until [`Self::stop_and_join`].
     pub(super) fn start(&self, process: Pid) {
@@ -192,6 +208,32 @@ impl HubEdge {
 
             thread::sleep(Duration::from_millis(1));
         }
+    }
+}
+
+pub(super) struct DirectWait {
+    edge: HubEdge,
+    pid: Pid,
+    pub(super) receiver: std::sync::mpsc::Receiver<WaitEvent>,
+}
+
+impl DirectWait {
+    pub(super) fn forward(&self, status: WaitEvent) {
+        let mut routes = self.edge.shared.lock();
+        if let Some(member) = routes.members.get_mut(&self.edge.key) {
+            member.backlog.push_back(status);
+        }
+    }
+}
+
+impl Drop for DirectWait {
+    fn drop(&mut self) {
+        let mut routes = self.edge.shared.lock();
+        routes.direct.remove(&self.pid);
+        while let Ok(status) = self.receiver.try_recv() {
+            routes.route(status);
+        }
+        drop(routes);
     }
 }
 
@@ -257,6 +299,11 @@ impl Routes {
     /// Sends `status` to the member that owns its thread.
     fn route(&mut self, status: WaitEvent) {
         let pid = status.pid();
+        if let Some(sender) = self.direct.get(&pid)
+            && sender.send(status).is_ok()
+        {
+            return;
+        }
         let Some(key) = self.owner_of(pid) else {
             record!("no member owns {pid}, whose status {status:?} is dropped");
             return;
@@ -338,5 +385,56 @@ fn deliver(sender: &mpsc::Sender<ControllerMessage>, status: WaitEvent) -> Optio
     match sender.try_send(ControllerMessage::Wait(status)) {
         Err(mpsc::error::TrySendError::Full(ControllerMessage::Wait(status))) => Some(status),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_direct_wait_returns_unconsumed_statuses_in_order_and_releases_its_route() {
+        let (sender, mut receiver) = mpsc::channel(8);
+        let pid = Pid::from_raw(123);
+        let mut routes = Routes::default();
+        routes.members.insert(
+            0,
+            Member {
+                sender,
+                process: Some(pid),
+                active: false,
+                backlog: VecDeque::new(),
+            },
+        );
+        routes.owners.insert(pid, 0);
+        let edge = HubEdge {
+            key: 0,
+            shared: Arc::new(Shared {
+                routes: Mutex::new(routes),
+                stop: AtomicBool::new(false),
+                epoch: AtomicU64::new(0),
+                waiter: Mutex::new(None),
+            }),
+        };
+        let wait = edge.intercept(pid).unwrap();
+        assert!(edge.intercept(pid).is_none());
+        let first = WaitEvent::Stopped(pid, super::super::Signal::SIGUSR1);
+        let second = WaitEvent::Stopped(pid, super::super::Signal::SIGTRAP);
+        edge.shared.lock().route(first);
+        assert_eq!(
+            wait.receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
+            first
+        );
+        wait.forward(first);
+        edge.shared.lock().route(second);
+        drop(wait);
+        edge.shared.lock().flush_backlogs();
+        for expected in [first, second] {
+            assert!(
+                matches!(receiver.try_recv().unwrap(), ControllerMessage::Wait(actual) if actual == expected)
+            );
+        }
+        assert!(edge.shared.lock().direct.is_empty());
+        assert!(edge.intercept(pid).is_some());
     }
 }

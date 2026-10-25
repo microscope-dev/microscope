@@ -802,6 +802,7 @@ impl StopBarrier {
 
 /// A breakpoint or watchpoint change that needs every thread stopped.
 enum Edit {
+    InspectorCleanup,
     /// Judges the pauses runtimes' inspectors reported.
     InspectorPaused,
     AddBreakpoint {
@@ -1994,6 +1995,13 @@ impl<P: InspectionOps> Controller<P> {
                 .values()
                 .filter_map(runtime_agents::Installation::deadline)
                 .chain(inferior.inspectors.interrupt)
+                .chain(
+                    inferior
+                        .inspectors
+                        .cleanup
+                        .as_ref()
+                        .and_then(inspector::teardown::Cleanup::deadline),
+                )
                 .min()
         })
     }
@@ -2099,6 +2107,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 if let Err(error) = self
                     .agent_timeout(now)
                     .and_then(|()| self.interrupt_expired(now))
+                    .and_then(|()| self.inspector_cleanup_timeout(now))
                 {
                     self.fail_inferior(error);
                 }
@@ -2825,7 +2834,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return self.handle_orphan_wait(status);
         }
 
-        if self.shutting_down {
+        if self.shutting_down && !self.inspector_cleanup_running() {
             return self.handle_shutdown_wait(status);
         }
 

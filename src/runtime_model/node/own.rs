@@ -5,6 +5,8 @@
 //! stores each property's enumeration index in its details. Private
 //! symbols, which no program can enumerate, are left out.
 
+use std::ops::Range;
+
 use super::objects::{Object, Problem, Reader};
 use super::properties::{descriptor, field_value, part};
 use crate::image::v8::{Constant, Field};
@@ -163,15 +165,15 @@ pub(super) fn store(reader: &Reader<'_>, kind: i64) -> Result<Store, Problem> {
     )
 }
 
-/// The elements of `holder` below index `below`, in index order, from its
-/// backing store (for an array, only those below `length`). Refuses typed
-/// arrays, sloppy `arguments`, and unknown kinds. For a `String` wrapper,
-/// returns the elements after its characters.
+/// The elements of `holder` in `range`, in index order, from its
+/// backing store. An array's caller bounds the range by its length.
+/// Refuses typed arrays, sloppy `arguments`, and unknown kinds. For a `String` wrapper,
+/// returns the elements after its characters. Refuses a backing-store scan
+/// larger than `MAX_ENTRIES` instead of returning an incomplete set.
 pub(super) fn elements(
     reader: &Reader<'_>,
     holder: Object,
-    length: Option<u32>,
-    below: u32,
+    range: Range<u32>,
 ) -> Result<Vec<Element>, Problem> {
     let map = reader.map(holder)?;
     plainly_held(reader, map, false)?;
@@ -182,15 +184,14 @@ pub(super) fn elements(
             .object(word)?
             .ok_or_else(|| format!("the elements of {:#x} are not an object", holder.0).into())
     };
-    let below = length.map_or(below, |length| length.min(below));
     match store {
         Store::Tagged | Store::StringWrapper { dictionary: false } => {
-            fast_elements(reader, backing()?, below)
+            fast_elements(reader, backing()?, range)
         }
-        Store::Doubles => double_elements(reader, backing()?, below),
+        Store::Doubles => double_elements(reader, backing()?, range),
         Store::Dictionary | Store::StringWrapper { dictionary: true } => {
             let mut found = dictionary_elements(reader, backing()?)?;
-            found.retain(|element| element.index < below);
+            found.retain(|element| range.contains(&element.index));
             Ok(found)
         }
         Store::Typed => Err("a typed array's elements are its numbers".into()),
@@ -200,23 +201,49 @@ pub(super) fn elements(
     }
 }
 
-/// The present elements of a fixed array below `below`.
-fn fast_elements(reader: &Reader<'_>, array: Object, below: u32) -> Result<Vec<Element>, Problem> {
+/// The requested slots within a fixed backing store's capacity, bounded by
+/// the amount of work rather than the largest index.
+fn element_range(
+    reader: &Reader<'_>,
+    array: Object,
+    range: Range<u32>,
+) -> Result<Range<u32>, Problem> {
+    let capacity = reader.smi_field(array, Field::FixedArrayBaseLength)?;
+    let capacity = u32::try_from(capacity).map_err(|_| {
+        format!(
+            "the elements {:#x} have invalid capacity {capacity}",
+            array.0
+        )
+    })?;
+    let end = range.end.min(capacity);
+    let start = range.start.min(end);
+    let count = end - start;
+    if i64::from(count) > MAX_ENTRIES {
+        return Err(format!("reading {count} elements exceeds the limit of {MAX_ENTRIES}").into());
+    }
+    Ok(start..end)
+}
+
+/// The present elements of a fixed array in `range`.
+fn fast_elements(
+    reader: &Reader<'_>,
+    array: Object,
+    range: Range<u32>,
+) -> Result<Vec<Element>, Problem> {
     let ty = reader.instance_type(array)?;
     if ty != reader.constant(Constant::FixedArrayType)? {
         // An object with no elements has the empty fixed array, or the
         // empty fixed double array if its kind is double.
         return Err(format!("the elements {:#x} are not a fixed array", array.0).into());
     }
-    let capacity = reader.smi_field(array, Field::FixedArrayBaseLength)?;
-    let count = capacity.min(i64::from(below)).clamp(0, MAX_ENTRIES);
-    let words = words(
-        reader,
-        reader.field_address(array, Field::FixedArrayObjects)?,
-        count,
-    )?;
+    let range = element_range(reader, array, range)?;
+    let base = reader.field_address(array, Field::FixedArrayObjects)?;
+    let address = base
+        .checked_add(8 * u64::from(range.start))
+        .ok_or("the element address overflows")?;
+    let words = words(reader, address, i64::from(range.end - range.start))?;
     let mut found = Vec::new();
-    for (index, word) in (0_u32..).zip(words) {
+    for (index, word) in range.zip(words) {
         if is_hole(reader, word)? {
             continue;
         }
@@ -229,11 +256,11 @@ fn fast_elements(reader: &Reader<'_>, array: Object, below: u32) -> Result<Vec<E
     Ok(found)
 }
 
-/// The present elements of a fixed double array below `below`.
+/// The present elements of a fixed double array in `range`.
 fn double_elements(
     reader: &Reader<'_>,
     array: Object,
-    below: u32,
+    range: Range<u32>,
 ) -> Result<Vec<Element>, Problem> {
     // An empty double array is the empty fixed array.
     if reader.is(array, Constant::FixedArrayType)?
@@ -244,12 +271,14 @@ fn double_elements(
     if !reader.is(array, Constant::FixedDoubleArrayType)? {
         return Err(format!("the elements {:#x} are not a fixed double array", array.0).into());
     }
-    let capacity = reader.smi_field(array, Field::FixedArrayBaseLength)?;
-    let count = capacity.min(i64::from(below)).clamp(0, MAX_ENTRIES);
+    let range = element_range(reader, array, range)?;
     let hole = reader.constant(Constant::HoleNanInt64)?.cast_unsigned();
     let base = reader.field_address(array, Field::FixedDoubleArrayValues)?;
-    let words = words(reader, base, count)?;
-    Ok((0_u32..)
+    let address = base
+        .checked_add(8 * u64::from(range.start))
+        .ok_or("the element address overflows")?;
+    let words = words(reader, address, i64::from(range.end - range.start))?;
+    Ok(range
         .zip(words)
         .filter(|(_, bits)| *bits != hole)
         .map(|(index, bits)| Element {

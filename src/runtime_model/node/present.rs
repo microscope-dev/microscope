@@ -342,6 +342,22 @@ pub(super) fn children(
         let start = range.start.max(elements) - elements;
         let end = range.end - elements;
         let mut index = 0;
+        let indexed = reader.is(object, crate::image::v8::Constant::JSArrayType)?
+            || reader.is(object, crate::image::v8::Constant::JSTypedArrayType)?;
+        if !indexed {
+            for element in own::elements(reader, object, 0..u32::MAX)? {
+                if !element.enumerable {
+                    continue;
+                }
+                if (start..end).contains(&index) {
+                    found.push(InterpretedChild::Attribute {
+                        name: element.index.to_string().into(),
+                        value: slot(element.held),
+                    });
+                }
+                index += 1;
+            }
+        }
         for property in own::named(reader, object)? {
             if !property.enumerable {
                 continue;
@@ -408,7 +424,7 @@ fn element_children(
     }
     let start = u32::try_from(range.start).map_err(|_| "the index is past the end of the array")?;
     let end = u32::try_from(range.end).map_err(|_| "the index is past the end of the array")?;
-    let present = own::elements(reader, object, None, end)?;
+    let present = own::elements(reader, object, start..end)?;
     Ok((start..end)
         .map(|index| {
             InterpretedChild::Element(

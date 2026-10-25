@@ -97,6 +97,8 @@ struct Binding {
 /// its declaration ran.
 pub(super) const UNINITIALIZED: &str = "the variable is not initialized yet";
 
+pub(super) const WITH_CONTEXT: &str = "lookup crosses a with context, whose object and Symbol.unscopables microscope does not evaluate";
+
 /// Binds the locals `reported` names, in declaration order, to the frame:
 /// the first `parameter_count` to its parameters, and the rest that no
 /// context of the frame (`own`) holds to its registers from register
@@ -237,6 +239,15 @@ pub(super) fn variables(
     reader: &Reader<'_>,
     frame: InterpretedFrameRef,
 ) -> Result<Vec<Variable>, Problem> {
+    scoped_variables(reader, frame).map(|(variables, _)| variables)
+}
+
+/// The displayed variables, and whether lookup of a name not among them
+/// must cross a `with` environment before reaching the global object.
+pub(super) fn scoped_variables(
+    reader: &Reader<'_>,
+    frame: InterpretedFrameRef,
+) -> Result<(Vec<Variable>, bool), Problem> {
     let fp = frame.address.get();
     let function = super::frames::javascript_function(reader, fp)?
         .ok_or("the frame runs no JavaScript function")?;
@@ -274,7 +285,7 @@ pub(super) fn variables(
     });
     let mut seen = BTreeSet::new();
     let closure = reader.field(function, Field::JSFunctionContext)?;
-    let mut captured = context_variables(reader, context, closure, &mut seen)?;
+    let (mut captured, crossed_with) = context_variables(reader, context, closure, &mut seen)?;
     let file = at(Constant::UnoptimizedFrameRegisterFileFromFp)?;
     // Optimized code, even code entered on a loop that kept the
     // interpreter's frame, leaves its registers stale.
@@ -342,8 +353,8 @@ pub(super) fn variables(
         }
     }
 
-    found.extend(script_bindings(reader, context, &mut seen)?);
-    Ok(found)
+    found.extend(script_bindings(reader, context, &mut seen, crossed_with)?);
+    Ok((found, crossed_with))
 }
 
 /// The script and module bindings of the realm of `context` that `seen`
@@ -352,6 +363,7 @@ fn script_bindings(
     reader: &Reader<'_>,
     context: Object,
     seen: &mut BTreeSet<String>,
+    crossed_with: bool,
 ) -> Result<Vec<Variable>, Problem> {
     let mut found = Vec::new();
     let native = super::access::native_context(reader, context)?;
@@ -361,7 +373,11 @@ fn script_bindings(
                 found.push(Variable {
                     name,
                     kind: Kind::Module,
-                    word,
+                    word: if crossed_with {
+                        Err(WITH_CONTEXT.into())
+                    } else {
+                        word
+                    },
                 });
             }
         }
@@ -369,7 +385,11 @@ fn script_bindings(
     found.push(Variable {
         name: "globalThis".to_owned(),
         kind: Kind::Global,
-        word: super::access::slot(reader, native, Constant::ContextGlobalProxyIndex),
+        word: if crossed_with {
+            Err(WITH_CONTEXT.into())
+        } else {
+            super::access::slot(reader, native, Constant::ContextGlobalProxyIndex)
+        },
     });
     Ok(found)
 }
@@ -536,15 +556,17 @@ fn context_variables(
     mut context: Object,
     closure: u64,
     seen: &mut BTreeSet<String>,
-) -> Result<Vec<Variable>, Problem> {
+) -> Result<(Vec<Variable>, bool), Problem> {
     let mut found = Vec::new();
     let mut own = true;
+    let mut crossed_with = false;
     for _ in 0..MAX_CONTEXTS {
         own &= context.0 != closure;
         let ty = reader.instance_type(context)?;
         if ty == reader.constant(Constant::NativeContextType)? {
-            return Ok(found);
+            return Ok((found, crossed_with));
         }
+        crossed_with |= ty == reader.constant(Constant::WithContextType)?;
         let first = reader.constant(Constant::FirstContextType)?;
         let last = reader.constant(Constant::LastContextType)?;
         if !(first..=last).contains(&ty) {
@@ -566,7 +588,11 @@ fn context_variables(
                 found.push(Variable {
                     name,
                     kind: kind.clone(),
-                    word,
+                    word: if crossed_with {
+                        Err(WITH_CONTEXT.into())
+                    } else {
+                        word
+                    },
                 });
             }
         }

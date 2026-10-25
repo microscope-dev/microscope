@@ -158,13 +158,13 @@ fn buffer(reader: &Reader<'_>, buffer: Object) -> Result<Buffer, Problem> {
     })
 }
 
-/// The first `min(count, SHOWN)` bytes at `data`. None if `full` is false,
+/// The first `count` bytes at `data`, bounded by the caller. None if `full` is false,
 /// at a depth where inspect shows no contents.
 fn shown(reader: &Reader<'_>, data: u64, count: u64, full: bool) -> Result<Vec<u8>, Problem> {
     if !full {
         return Ok(Vec::new());
     }
-    let mut bytes = vec![0; usize::try_from(count.min(SHOWN)).map_err(|_| "too many bytes")?];
+    let mut bytes = vec![0; usize::try_from(count).map_err(|_| "too many bytes")?];
     if !bytes.is_empty() {
         reader.bytes_into(data, &mut bytes)?;
     }
@@ -181,7 +181,12 @@ pub(super) fn array_buffer(
     let bytes = if buffer.detached {
         None
     } else {
-        Some(shown(reader, buffer.data, buffer.byte_length, full)?)
+        Some(shown(
+            reader,
+            buffer.data,
+            buffer.byte_length.min(SHOWN),
+            full,
+        )?)
     };
     Ok(Kind::ArrayBuffer {
         shared: buffer.shared,

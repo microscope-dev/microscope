@@ -23,6 +23,7 @@ pub use exceptions::EXCEPTION_FILTERS;
 mod lineage;
 mod lookup;
 mod names;
+mod native_inspector;
 mod objects;
 mod own;
 mod positions;
@@ -73,8 +74,6 @@ fn function_place(name: &str) -> Result<Vec<crate::ManagedPlace>, Arc<str>> {
 /// inspector arms.
 pub const SCRIPT_EXTENSIONS: &[&str] = &["js", "mjs", "cjs", "jsx", "ts", "mts", "cts", "tsx"];
 
-/// `node::inspector::InspectorIoDelegate::GetTargetIds()`, which Node calls
-/// to list its inspector's targets (F29).
 const GET_TARGET_IDS: &str = "_ZN4node9inspector19InspectorIoDelegate12GetTargetIdsB5cxx11Ev";
 
 /// What V8 names each of its embedded builtins' code.
@@ -101,7 +100,25 @@ pub fn detect(
         writer: writer(runtime.version, runtime.node),
         statics,
         table: std::sync::Mutex::default(),
-        inspector_hook: image.symbol(GET_TARGET_IDS).map(|symbol| symbol.address),
+        inspector_hook: runtime
+            .inspector
+            .as_ref()
+            .ok()
+            .map(|layout| layout.targets.entry)
+            // An unsupported body still traps at its named entry: inspector_target
+            // returns the metadata refusal before the preload can print its URL.
+            .or_else(|| image.symbol(GET_TARGET_IDS).map(|symbol| symbol.address)),
+        inspector_signal_handler: runtime
+            .inspector
+            .as_ref()
+            .ok()
+            .map(|layout| layout.signal_handler),
+        inspector_close_functions: runtime
+            .inspector
+            .as_ref()
+            .ok()
+            .and_then(|layout| layout.close),
+        native_inspector: runtime.inspector,
     })))
 }
 
@@ -193,6 +210,9 @@ struct NodeRuntime {
 
     /// Node's `GetTargetIds`, where the inspector's address is read.
     inspector_hook: Option<ImageAddress>,
+    inspector_signal_handler: Option<ImageAddress>,
+    native_inspector: Result<crate::image::v8::NodeInspector, Arc<str>>,
+    inspector_close_functions: Option<(ImageAddress, ImageAddress)>,
 }
 
 impl NodeRuntime {
@@ -406,6 +426,69 @@ impl RuntimeModel for NodeRuntime {
 
     fn inspector_hook(&self) -> Option<ImageAddress> {
         self.inspector_hook
+    }
+
+    fn inspector_target(
+        &self,
+        stop: &dyn RuntimeStop,
+        caller: VirtualAddress,
+        delegate: VirtualAddress,
+    ) -> Result<Option<Arc<str>>, Arc<str>> {
+        native_inspector::target(
+            self.native_inspector.as_ref().map_err(Clone::clone)?,
+            stop,
+            caller,
+            delegate,
+        )
+    }
+
+    fn inspector_signal_handler(&self) -> Option<ImageAddress> {
+        self.inspector_signal_handler
+    }
+
+    fn inspector_close_functions(&self) -> Option<(ImageAddress, ImageAddress)> {
+        self.inspector_close_functions
+    }
+
+    fn inspector_startup_hooks(&self) -> Option<[ImageAddress; 3]> {
+        let startup = self.native_inspector.as_ref().ok()?.startup?;
+        Some([startup.before_wait, startup.after_wait, startup.check])
+    }
+
+    fn inspector_startup_pending(
+        &self,
+        stop: &dyn RuntimeStop,
+        agent: VirtualAddress,
+    ) -> Result<bool, Arc<str>> {
+        native_inspector::startup_pending(
+            self.native_inspector.as_ref().map_err(Clone::clone)?,
+            stop,
+            agent,
+        )
+    }
+
+    fn inspector_agent(
+        &self,
+        stop: &dyn RuntimeStop,
+    ) -> Result<Option<(VirtualAddress, Arc<str>)>, Arc<str>> {
+        native_inspector::server(self.native_inspector.as_ref().map_err(Clone::clone)?, stop)
+            .map(|server| server.map(|server| (server.agent, server.target)))
+    }
+
+    fn inspector_message_matches(
+        &self,
+        stop: &dyn RuntimeStop,
+        view: VirtualAddress,
+        expected: &[u8],
+    ) -> Result<bool, Arc<str>> {
+        native_inspector::message_matches(stop, view, expected)
+    }
+
+    fn inspector_endpoint(
+        &self,
+        stop: &dyn RuntimeStop,
+    ) -> Result<Option<(std::net::SocketAddr, Arc<str>)>, Arc<str>> {
+        native_inspector::endpoint(self.native_inspector.as_ref().map_err(Clone::clone)?, stop)
     }
 
     fn moving_task(

@@ -412,6 +412,9 @@ fn bytecode_at(table: &[u8], bytecodes: &[u8], sizes: &[u8], offset: u64) -> Res
                 .get(next)
                 .ok_or("the offset table outlasts its bytecode")?,
         );
+        if byte >= count {
+            return Err("an unknown bytecode".into());
+        }
         let size = match PREFIXES.get(byte) {
             Some(scale) => {
                 let widened = usize::from(
@@ -419,6 +422,9 @@ fn bytecode_at(table: &[u8], bytecodes: &[u8], sizes: &[u8], offset: u64) -> Res
                         .get(next + 1)
                         .ok_or("a bytecode prefix ends its bytecode")?,
                 );
+                if widened >= count {
+                    return Err("an unknown bytecode".into());
+                }
                 1 + usize::from(
                     *sizes
                         .get(scale * count + widened)
@@ -442,6 +448,13 @@ mod tests {
     /// Sizes for a made-up set of five bytecodes at each scale: the four
     /// prefixes, then one whose operand widens from 1 byte to 2 and 4.
     const SIZES: [u8; 15] = [1, 1, 1, 1, 2, 1, 1, 1, 1, 3, 1, 1, 1, 1, 5];
+
+    #[test]
+    fn baseline_bytecodes_cannot_index_another_scale_row() {
+        for bytes in [&[5][..], &[0, 5][..], &[1, 5][..]] {
+            assert!(bytecode_at(&[0, 1], bytes, &SIZES, 1).is_err(), "{bytes:?}");
+        }
+    }
 
     /// The bytecode whose code holds an instruction is the one whose
     /// entry's end is at or past it, after the function's entry, with a

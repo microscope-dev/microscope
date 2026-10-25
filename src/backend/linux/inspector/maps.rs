@@ -13,6 +13,8 @@
 //! pauses only for ES modules).
 
 use std::cell::OnceCell;
+use std::io::Read as _;
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -147,15 +149,33 @@ fn read_map(path: &Path) -> std::result::Result<Vec<u8>, Arc<str>> {
             path.display()
         ))
     };
-    let size = std::fs::metadata(path).map_err(cannot)?.len();
-    if usize::try_from(size).map_or(true, |size| size > MAX_MAP_BYTES) {
-        return Err(format!(
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NONBLOCK)
+        .open(path)
+        .map_err(cannot)?;
+    let metadata = file.metadata().map_err(cannot)?;
+    if !metadata.is_file() {
+        return Err(format!("the source map {} is not a regular file", path.display()).into());
+    }
+    let size = metadata.len();
+    let too_large = || {
+        Arc::<str>::from(format!(
             "the source map {} is larger than microscope reads ({MAX_MAP_BYTES} bytes)",
             path.display()
-        )
-        .into());
+        ))
+    };
+    if usize::try_from(size).map_or(true, |size| size > MAX_MAP_BYTES) {
+        return Err(too_large());
     }
-    std::fs::read(path).map_err(cannot)
+    let mut bytes = Vec::new();
+    file.take(MAX_MAP_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(cannot)?;
+    if bytes.len() > MAX_MAP_BYTES {
+        return Err(too_large());
+    }
+    Ok(bytes)
 }
 
 /// The URL pattern of a sentinel for function breakpoints: every script
@@ -269,6 +289,23 @@ mod tests {
                 .map()
                 .is_err_and(|reason| reason.contains("https://example.com"))
         );
+    }
+
+    #[test]
+    fn a_source_map_refuses_a_pipe_even_when_it_contains_valid_json() {
+        use std::os::fd::AsRawFd as _;
+        let (read, write) = nix::unistd::pipe().expect("pipe");
+        let json = br#"{"version":3,"sources":["app.ts"],"names":[],"mappings":"AAAA"}"#;
+        nix::unistd::write(&write, json).expect("the map bytes");
+        drop(write);
+        let map = ScriptMap::new(
+            "/srv/app.js".into(),
+            format!("/proc/self/fd/{}", read.as_raw_fd()).into(),
+        );
+        let reason = map
+            .map()
+            .expect_err("a pipe may block the controller indefinitely");
+        assert!(reason.contains("regular file"), "{reason}");
     }
 
     #[test]

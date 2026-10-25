@@ -288,6 +288,9 @@ fn safepoints(table: &[u8], format: &SafepointFormat) -> Result<(Vec<Safepoint>,
     let pc_size = decode(format.pc_size);
     let deopt_index_size = decode(format.deopt_index_size);
     let registers = decode(format.register_indexes_size);
+    if pc_size > 4 || deopt_index_size > 4 || registers > 4 {
+        return Err("a safepoint table's field width exceeds four bytes".into());
+    }
     let deopt_size = if has_deopt_data {
         pc_size + deopt_index_size
     } else {
@@ -295,6 +298,12 @@ fn safepoints(table: &[u8], format: &SafepointFormat) -> Result<(Vec<Safepoint>,
     };
     let entry_size = pc_size + deopt_size + format.between + registers;
     let length = usize::try_from(length).map_err(|_| "a safepoint table's length is negative")?;
+    if length > 0 && entry_size == 0 {
+        return Err("a nonempty safepoint table has zero-width entries".into());
+    }
+    if length as u64 > MAX_SAFEPOINT_TABLE {
+        return Err("a safepoint table exceeds the entry count limit".into());
+    }
     if length
         .checked_mul(entry_size)
         .and_then(|entries| entries.checked_add(format.header_size))
@@ -715,7 +724,9 @@ impl<'a> Translation<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Offset, SafepointFormat, TranslatedFrame, deopt_index, summarize, vlq_unsigned};
+    use super::{
+        Offset, SafepointFormat, TranslatedFrame, deopt_index, safepoints, summarize, vlq_unsigned,
+    };
     use crate::image::v8::{TranslationOpcode as T, Translations, V8Layout, V8Version};
 
     /// Each V8 version microscope reads.
@@ -889,6 +900,17 @@ mod tests {
                 ((4, 12), (4, 16, 1)),
             ]
         );
+    }
+
+    #[test]
+    fn safepoints_refuse_nonempty_tables_with_zero_width_entries() {
+        for version in VERSIONS {
+            let format = SafepointFormat::of(&layout(version), false).unwrap();
+            let mut table = vec![0; format.header_size];
+            table[format.length_offset..format.length_offset + 4]
+                .copy_from_slice(&2_i32.to_le_bytes());
+            assert!(safepoints(&table, &format).is_err(), "{version:?}");
+        }
     }
 
     /// Two translations, the second repeating the first's frame from it:

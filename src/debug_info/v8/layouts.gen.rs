@@ -199,6 +199,7 @@ pub(super) const GENERATED: &[Generated] = &[
             (Field::JSFunctionPrototypeOrInitialMap, 56),
             (Field::JSGlobalObjectGlobalProxy, 24),
             (Field::ErrorStackDataCallSiteInfosOrFormattedStack, 8),
+            (Field::ErrorStackDataLimitOrStackFrameInfos, 16),
             (Field::CallSiteInfoReceiverOrInstance, 16),
             (Field::CallSiteInfoFunction, 24),
             (Field::CallSiteInfoCodeObject, 8),
@@ -223,6 +224,8 @@ pub(super) const GENERATED: &[Generated] = &[
             (Field::JSExternalObjectValue, 24),
         ],
         constants: &[
+            (Constant::UncachedExternalStringMask, 16),
+            (Constant::UncachedExternalStringTag, 16),
             (Constant::ScriptType, 167),
             (Constant::SharedFunctionInfoType, 274),
             (Constant::BytecodeArrayType, 205),
@@ -1353,6 +1356,8 @@ pub(super) const GENERATED: &[Generated] = &[
             (Field::JSExternalObjectValue, 24),
         ],
         constants: &[
+            (Constant::UncachedExternalStringMask, 16),
+            (Constant::UncachedExternalStringTag, 16),
             (Constant::ScriptType, 167),
             (Constant::SharedFunctionInfoType, 282),
             (Constant::SharedFunctionInfoWrapperType, 195),
@@ -2520,6 +2525,8 @@ pub(super) const GENERATED: &[Generated] = &[
             (Field::JSExternalObjectValue, 24),
         ],
         constants: &[
+            (Constant::UncachedExternalStringMask, 16),
+            (Constant::UncachedExternalStringTag, 16),
             (Constant::ScriptType, 166),
             (Constant::SharedFunctionInfoType, 288),
             (Constant::SharedFunctionInfoWrapperType, 195),

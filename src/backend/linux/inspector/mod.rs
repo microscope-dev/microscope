@@ -6,10 +6,9 @@
 //!
 //! The address is read where Node lists its targets,
 //! `InspectorIoDelegate::GetTargetIds`, which it calls as the server starts
-//! and at every WebSocket upgrade. At the call's return microscope reads the
-//! target's UUID from the returned `std::vector<std::string>` and empties
-//! the vector, so Node neither prints nor serves the address. Only the call
-//! made for microscope's own connection keeps it.
+//! and at every WebSocket upgrade. At entry microscope reads the delegate's
+//! immutable UUID and returns an empty vector for proven print/list callers,
+//! before any string is allocated. Native upgrade validation runs unchanged.
 
 mod arming;
 mod functions;
@@ -17,9 +16,11 @@ mod interrupts;
 mod maps;
 mod pauses;
 mod protocol;
+mod quiescence;
 #[cfg(test)]
 mod scripted;
 mod steps;
+pub(super) mod teardown;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
@@ -31,19 +32,13 @@ use nix::unistd::Pid;
 use super::breakpoints::remove_breakpoint_owner_from;
 use super::cdp::{Connection, Incoming, RequestId, Session};
 use super::native::LinuxTraceOps;
+use super::node_launch::Ownership;
 use super::{BreakpointOwner, Controller};
 use crate::runtime_model::ManagedArm;
 use crate::runtime_model::inspector_protocol;
 use crate::{Error, Result, RuntimeId, VirtualAddress};
 
-pub(super) use protocol::{catches_signal, is_script_frame, loopback_listeners};
-
-/// The longest target id read: Node's are 36-character UUIDs.
-const MAX_TARGET_ID: u64 = 64;
-
-/// The size of a libstdc++ `std::string`: its data pointer, its length, and
-/// a 16-byte buffer that holds short strings.
-const STRING_SIZE: u64 = 32;
+pub(super) use protocol::{is_script_frame, loopback_listeners};
 
 /// Numbers every connection, across processes, so that a message from a
 /// connection that has ended is never taken for a newer one's.
@@ -60,14 +55,11 @@ pub struct InspectorMessage {
 /// The inspectors of one process's runtimes and the sites that find them.
 #[derive(Debug, Default)]
 pub(super) struct Inspectors {
+    pub(super) cleanup: Option<teardown::Cleanup>,
+    startup: BTreeMap<RuntimeId, quiescence::Startup>,
+    startup_planted: BTreeSet<VirtualAddress>,
     /// The planted entries of `GetTargetIds`, by the runtime each lists.
     entries: BTreeMap<VirtualAddress, RuntimeId>,
-
-    /// Calls of `GetTargetIds` under way, each awaiting its return.
-    calls: Vec<Call>,
-
-    /// The return sites planted for `calls`.
-    returns: BTreeSet<VirtualAddress>,
 
     records: BTreeMap<RuntimeId, Inspector>,
 
@@ -78,10 +70,6 @@ pub(super) struct Inspectors {
     /// The stack locals V8 named for each interpreted frame of a thread it
     /// holds paused, by frame, valid until that thread runs (G5).
     pub(super) locals: BTreeMap<VirtualAddress, crate::runtime_model::ReportedLocals>,
-
-    /// How many `SIGUSR1`s microscope sent to open an attached node's
-    /// inspector that have not yet arrived; each passes quietly.
-    pub(super) opening: u32,
 
     /// The source map of each script that names one, by the script's
     /// path, from any isolate.
@@ -108,8 +96,7 @@ impl Inspectors {
     /// Forgets a site whose memory is gone.
     pub(super) fn forget(&mut self, address: VirtualAddress) {
         self.entries.remove(&address);
-        self.returns.remove(&address);
-        self.calls.retain(|call| call.returns_to != address);
+        self.startup_planted.remove(&address);
     }
 
     /// Shows each script frame of `frames` at the original place its
@@ -133,12 +120,18 @@ impl Inspectors {
             let Some(recorded) = frame.recorded.as_mut() else {
                 continue;
             };
-            let Some(generated) = recorded.place.take() else {
+            let Some(generated) = recorded.place.as_ref() else {
                 continue;
             };
             let Some(map) = self.maps.get(&generated.path) else {
                 continue;
             };
+            if let Err(reason) = map.map() {
+                recorded.problem.get_or_insert(reason);
+                continue;
+            }
+            let generated = recorded.place.take();
+            let Some(generated) = generated else { continue };
             match map.original(&generated) {
                 Ok(original) => {
                     if [".ts", ".mts", ".cts", ".tsx"]
@@ -160,35 +153,27 @@ impl Inspectors {
         *frames = shown.into();
     }
 
-    /// Every site planted: the entries and the calls' returns.
+    /// Every target, cleanup, and startup checkpoint planted.
     pub(super) fn planted(&self) -> BTreeSet<VirtualAddress> {
-        self.entries.keys().chain(&self.returns).copied().collect()
+        self.entries
+            .keys()
+            .copied()
+            .chain(self.cleanup.iter().flat_map(teardown::Cleanup::sites))
+            .chain(self.startup_planted.iter().copied())
+            .collect()
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct Call {
-    thread: Pid,
-    runtime: RuntimeId,
-    returns_to: VirtualAddress,
-
-    /// The stack pointer once the call returns, which tells its return
-    /// from a deeper call's return to the same place.
-    stack: u64,
 }
 
 /// One runtime's inspector.
 #[derive(Debug, Default)]
 struct Inspector {
+    ownership: Ownership,
+    owned_agent: Option<VirtualAddress>,
     /// The target's id, once its server listed it.
     target: Option<Arc<str>>,
 
     /// Where its server listens, once found.
     address: Option<SocketAddr>,
-
-    /// Whether the next listing is left whole, for microscope's own
-    /// connection's upgrade.
-    keep: bool,
 
     /// The loopback sockets the process listened on before microscope
     /// opened its inspector, none of which is the inspector's.
@@ -227,6 +212,9 @@ struct Inspector {
 struct Isolate {
     /// Each managed location set in it, by number.
     sites: BTreeMap<u64, Site>,
+
+    /// Placement replies still owed for breakpoints already removed.
+    withdrawn: BTreeSet<RequestId>,
 
     /// The URL of each script V8 parsed, by its id: V8's pauses name
     /// scripts only by id (F19).
@@ -359,8 +347,7 @@ fn send(
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// Plants the entry of each loaded runtime's `GetTargetIds`, and the
-    /// returns of its calls under way, and removes the rest.
+    /// Plants each loaded runtime's target entry and cleanup checkpoints.
     pub(super) fn sync_inspector_hooks(&mut self) -> Result<()> {
         let Some(inferior) = self.inferior.as_ref() else {
             return Ok(());
@@ -375,20 +362,24 @@ impl<P: LinuxTraceOps> Controller<P> {
             .collect::<BTreeMap<_, _>>();
 
         let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
-        let live = |pid: &Pid| inferior.threads.contains_key(pid);
-        let calls = (inferior.inspectors.calls.iter())
-            .filter(|call| live(&call.thread) && entries.values().any(|id| *id == call.runtime))
-            .copied()
-            .collect::<Vec<_>>();
-        let returns = calls
-            .iter()
-            .map(|call| call.returns_to)
-            .collect::<BTreeSet<_>>();
         let planted = inferior.inspectors.planted();
         let needed = entries
             .keys()
-            .chain(&returns)
             .copied()
+            .chain(
+                inferior
+                    .inspectors
+                    .cleanup
+                    .iter()
+                    .flat_map(teardown::Cleanup::sites),
+            )
+            .chain(
+                inferior
+                    .inspectors
+                    .startup
+                    .values()
+                    .flat_map(quiescence::Startup::sites),
+            )
             .collect::<BTreeSet<_>>();
 
         // The record changes with each site, so that a failed edit leaves
@@ -411,15 +402,19 @@ impl<P: LinuxTraceOps> Controller<P> {
                 address,
                 BreakpointOwner::InspectorHook,
             )?;
-            if !entries.contains_key(&address) {
-                inferior.inspectors.returns.insert(address);
+            if inferior
+                .inspectors
+                .startup
+                .values()
+                .any(|startup| startup.sites().contains(&address))
+            {
+                inferior.inspectors.startup_planted.insert(address);
             }
         }
 
         inferior.inspectors.entries = entries;
-        inferior.inspectors.calls = calls;
-        inferior.inspectors.returns = returns;
         self.open_inspectors();
+        self.capture_inspector_ownership();
         Ok(())
     }
 
@@ -427,7 +422,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// not listed its target, with the `SIGUSR1` Node handles by starting
     /// it (F12). A launched node opens its own, through the preload, and
     /// what may keep it from doing so is noted.
-    fn open_inspectors(&mut self) {
+    pub(super) fn open_inspectors(&mut self) {
         let Some(inferior) = self.inferior.as_mut() else {
             return;
         };
@@ -443,174 +438,186 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
             return;
         }
-        let runtimes = inferior
-            .inspectors
-            .entries
+        let Some(inferior) = self.inferior.as_ref() else {
+            return;
+        };
+        if inferior
+            .threads
             .values()
-            .copied()
-            .collect::<Vec<_>>();
-        for runtime in runtimes {
-            let caught = self.ptrace.catches_signal(pid, super::Signal::SIGUSR1);
-            let listening = self.ptrace.loopback_listeners(pid);
-            let Some(inferior) = self.inferior.as_mut() else {
-                return;
-            };
-            let inspector = inferior.inspectors.records.entry(runtime).or_default();
-            if inspector.looked || inspector.target.is_some() {
+            .any(|thread| thread.state != super::NativeThreadState::Stopped)
+        {
+            return;
+        }
+        let runtimes = self.runtimes(inferior);
+        for bound in runtimes {
+            let runtime = bound.id;
+            if bound.model.inspector_hook().is_none()
+                || self.inferior.as_ref().is_some_and(|inferior| {
+                    inferior
+                        .inspectors
+                        .records
+                        .get(&runtime)
+                        .is_some_and(|inspector| inspector.looked || inspector.target.is_some())
+                })
+            {
                 continue;
             }
-            inspector.looked = true;
-            match caught {
-                Ok(true) => {}
-                Ok(false) => {
-                    inspector.problem = Some(
-                        "the node does not handle SIGUSR1, as with --disable-sigusr1, so \
-                         microscope cannot open its inspector; start it with \
-                         --inspect=127.0.0.1:0"
-                            .into(),
-                    );
-                    continue;
-                }
-                Err(reason) => {
-                    inspector.problem = Some(reason);
-                    continue;
-                }
-            }
-            inspector.listening = listening.unwrap_or_default().into_iter().collect();
-            match self.ptrace.kill(pid, super::Signal::SIGUSR1) {
-                Ok(()) => {
-                    record!("SIGUSR1 opens the attached node's inspector");
-                    inferior.inspectors.opening += 1;
-                }
-                Err(error) => {
-                    inspector.problem = Some(
-                        format!("cannot signal the node to open its inspector: {error}").into(),
-                    );
-                }
-            }
-        }
-    }
-
-    /// Notes a thread that reached `GetTargetIds`, or the return of a call
-    /// of it, if `address` is one: at the entry, every thread stops to plant
-    /// the return; at the return, the target is read and hidden.
-    pub(super) fn note_inspector_hook(&mut self, pid: Pid, address: VirtualAddress) -> Result<()> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
-        let inspectors = &inferior.inspectors;
-        if !inspectors.entries.contains_key(&address) && !inspectors.returns.contains(&address) {
-            return Ok(());
-        }
-
-        let registers = self.ptrace.registers(pid)?;
-        if let Some(&runtime) = inspectors.entries.get(&address) {
-            let returns_to = VirtualAddress::new(self.ptrace.read_word(pid, registers.rsp)?);
-            record!("{pid} lists the inspector's targets, returning to {returns_to}");
-            let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
-            inferior.inspectors.calls.push(Call {
-                thread: pid,
-                runtime,
-                returns_to,
-                stack: registers.rsp.wrapping_add(8),
+            let Some(inferior) = self.inferior.as_ref() else {
+                return;
+            };
+            let existing = self.with_runtime_stop(inferior, &bound, pid, |stop| {
+                bound.model.inspector_endpoint(stop)
             });
-            return self.queue_module_refresh();
-        }
-
-        let Some(index) = inspectors.calls.iter().position(|call| {
-            call.thread == pid && call.returns_to == address && call.stack == registers.rsp
-        }) else {
-            return Ok(());
-        };
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
-        let call = inferior.inspectors.calls.remove(index);
-
-        // The vector is returned through the hidden pointer, which rax holds.
-        let listed = self.list_targets(pid, registers.rax);
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
-        let inspector = inferior.inspectors.records.entry(call.runtime).or_default();
-        match listed {
-            Ok(Some((begin, target))) => {
-                if inspector.keep {
-                    inspector.keep = false;
-                    record!("the inspector lists its target {target} for microscope");
-                } else {
-                    self.ptrace.write_word(pid, registers.rax + 8, begin)?;
-                    record!("the inspector's target {target} is hidden");
-                }
-                let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
-                let inspector = inferior.inspectors.records.entry(call.runtime).or_default();
-                if inspector.target.is_none() {
-                    inspector.target = Some(target);
-                    // What the inspector is to do is decided by arming, as
-                    // for any runtime: which exceptions pause, as well as
-                    // the breakpoints. A node the preload holds waits for
-                    // the connection either way.
-                    inferior.managed.mark_stale(call.runtime);
-                    if self.sync_runtime_arming() {
-                        self.publish_breakpoints_changed();
-                    }
-                    let connected = self.inferior.as_ref().is_some_and(|inferior| {
+            let existing = match existing {
+                Ok(existing) => existing,
+                Err(reason) => {
+                    self.inspector_problem(runtime, &reason);
+                    if let Some(inferior) = self.inferior.as_mut() {
                         inferior
                             .inspectors
                             .records
-                            .get(&call.runtime)
-                            .is_some_and(|inspector| inspector.connection.is_some())
-                    });
-                    if !connected {
-                        self.connect_inspector(call.runtime);
+                            .entry(runtime)
+                            .or_default()
+                            .looked = true;
                     }
+                    continue;
                 }
+            };
+            if let Some((address, target)) = existing {
+                let Some(inferior) = self.inferior.as_mut() else {
+                    return;
+                };
+                let inspector = inferior.inspectors.records.entry(runtime).or_default();
+                inspector.looked = true;
+                inspector.address = Some(address);
+                inspector.target = Some(target);
+                self.open_connection(runtime, address);
+                continue;
             }
-            Ok(None) => {}
-            Err(reason) => {
-                record!("the inspector's targets cannot be read: {reason}");
-                inspector.problem = Some(reason);
+            // Do not enqueue Node's asynchronous startup before the first
+            // resume: an immediate detach must leave no pending server open.
+            if self
+                .inferior
+                .as_ref()
+                .is_some_and(|inferior| inferior.active.is_some())
+            {
+                self.activate_inspector(&bound, pid);
             }
         }
-
-        self.queue_module_refresh()
     }
 
-    /// The first target's id in the `std::vector<std::string>` at `vector`,
-    /// with the vector's begin, or `None` for an empty vector.
-    fn list_targets(
-        &self,
-        pid: Pid,
-        vector: u64,
-    ) -> std::result::Result<Option<(u64, Arc<str>)>, Arc<str>> {
-        let word = |address: u64| {
-            self.ptrace
-                .read_word(pid, address)
-                .map_err(|error| Arc::<str>::from(error.to_string()))
+    fn activate_inspector(&mut self, bound: &super::runtimes::BoundRuntime, pid: Pid) {
+        let listening = self.ptrace.loopback_listeners(pid);
+        let mut interrupted = None;
+        let opened = bound
+            .model
+            .inspector_signal_handler()
+            .and_then(|address| bound.module.virtual_address(address).ok())
+            .ok_or_else(|| {
+                Arc::<str>::from("Node's native SIGUSR1 handler cannot be proven from this image")
+            })
+            .and_then(|native| {
+                if self
+                    .inferior
+                    .as_ref()
+                    .and_then(|inferior| inferior.threads.get(&pid))
+                    .is_none_or(|thread| {
+                        thread.pending_signal.is_some() || thread.held_signal.is_some()
+                    })
+                {
+                    return Err(
+                        "cannot query Node's signal disposition over a pending delivery".into(),
+                    );
+                }
+                self.prepare_inspector_startup(bound)
+                    .map_err(|error| Arc::from(error.to_string()))?;
+                self.ptrace
+                    .open_inspector_signal(pid, native.get(), &mut interrupted)
+            });
+        let Some(inferior) = self.inferior.as_mut() else {
+            return;
         };
-        let begin = word(vector)?;
-        let end = word(vector + 8)?;
-        if begin == end {
-            return Ok(None);
-        }
-        if end < begin || (end - begin) % STRING_SIZE != 0 {
-            return Err("the inspector's list of targets is not a vector of strings".into());
-        }
-
-        let data = word(begin)?;
-        let length = word(begin + 8)?;
-        if length == 0 || length > MAX_TARGET_ID {
-            return Err(format!("the inspector's target id is {length} bytes long").into());
-        }
-        let mut bytes = Vec::new();
-        let mut offset = 0;
-        while offset < length {
-            bytes.extend_from_slice(&word(data + offset)?.to_le_bytes());
-            offset += 8;
-        }
-        bytes.truncate(usize::try_from(length).map_err(|_| "a target id too long to read")?);
-        if !bytes
-            .iter()
-            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'-')
+        if let Some(pending) = interrupted
+            && let Some(thread) = inferior.threads.get_mut(&pid)
         {
-            return Err("the inspector's target id is not a UUID".into());
+            thread.pending_signal = Some(pending);
         }
-        let target = String::from_utf8(bytes).map_err(|_| "the target id is not text")?;
-        Ok(Some((begin, target.into())))
+        let inspector = inferior.inspectors.records.entry(bound.id).or_default();
+        inspector.looked = true;
+        match opened {
+            Ok(true) => {
+                inspector.ownership = Ownership::Created;
+                inspector.listening = listening.unwrap_or_default().into_iter().collect();
+                record!("SIGUSR1 opens the attached node's inspector");
+            }
+            Ok(false) => {
+                inspector.problem = Some(
+                    "the node's SIGUSR1 disposition is not Node's native inspector handler; \
+                     microscope will not deliver SIGUSR1 to application code; start it with \
+                     --inspect=127.0.0.1:0"
+                        .into(),
+                );
+            }
+            Err(reason) => inspector.problem = Some(reason),
+        }
+    }
+
+    /// Suppresses proven print/list calls before they allocate a UUID copy.
+    pub(super) fn note_inspector_hook(&mut self, pid: Pid, address: VirtualAddress) -> Result<()> {
+        if self.note_inspector_startup_hook(pid, address)? {
+            return Ok(());
+        }
+        if self.note_inspector_cleanup_hook(pid, address)? {
+            return Ok(());
+        }
+        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let Some(&runtime) = inferior.inspectors.entries.get(&address) else {
+            return Ok(());
+        };
+        let bound = self
+            .runtimes(inferior)
+            .into_iter()
+            .find(|bound| bound.id == runtime)
+            .ok_or(Error::NotRunning)?;
+        let mut registers = self.ptrace.registers(pid)?;
+        let caller = VirtualAddress::new(self.ptrace.read_word(pid, registers.rsp)?);
+        let target = self
+            .with_runtime_stop(inferior, &bound, pid, |stop| {
+                bound
+                    .model
+                    .inspector_target(stop, caller, VirtualAddress::new(registers.rsi))
+            })
+            .map_err(Error::RuntimeAgent)?;
+        let Some(target) = target else {
+            return Ok(());
+        };
+        // SysV's nontrivial vector result is uninitialized storage in rdi.
+        // No element has been constructed: an all-null empty vector owns nothing.
+        for offset in [0, 8, 16] {
+            let address = registers.rdi.checked_add(offset).ok_or_else(|| {
+                Error::RuntimeAgent("the inspector result address overflows".into())
+            })?;
+            self.ptrace.write_word(pid, address, 0)?;
+        }
+        registers.rax = registers.rdi;
+        registers.rip = caller.get();
+        registers.rsp = registers
+            .rsp
+            .checked_add(8)
+            .ok_or_else(|| Error::RuntimeAgent("the inspector return stack overflows".into()))?;
+        self.ptrace.set_registers(pid, registers)?;
+        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        inferior.thread_mut(pid)?.stopped_at_breakpoint = None;
+        let inspector = inferior.inspectors.records.entry(runtime).or_default();
+        if inspector.target.is_none() {
+            inspector.target = Some(target);
+            inferior.managed.mark_stale(runtime);
+            if self.sync_runtime_arming() {
+                self.publish_breakpoints_changed();
+            }
+            self.connect_inspector(runtime);
+        }
+        self.queue_module_refresh()
     }
 
     /// Connects to the inspector of `runtime`, whose target is known, at
@@ -693,9 +700,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         inspector.address = Some(address);
         let generation = GENERATIONS.fetch_add(1, Ordering::Relaxed);
         let sender = self.message_sender.clone();
-        // The connection's upgrade lists the targets again, and must find
-        // its own.
-        inspector.keep = true;
         let opened = Connection::open(address, &format!("/{target}"), move |incoming| {
             sender
                 .blocking_send(crate::backend::ControllerMessage::Inspector(
@@ -720,7 +724,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                 });
             }
             Err(error) => {
-                inspector.keep = false;
                 inspector.problem =
                     Some(format!("cannot connect to the inspector: {error}").into());
             }
@@ -745,6 +748,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         expect(unused_variables, reason = "only recorded")
     )]
     pub(super) fn inspector_message(&mut self, message: InspectorMessage) -> Result<()> {
+        let starting = self.inspector_cleanup_starting();
+        if self.inspector_cleanup_running() && !starting {
+            return self.inspector_cleanup_message(message);
+        }
         let InspectorMessage {
             generation,
             runtime,
@@ -769,6 +776,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         match incoming {
             Incoming::Connected => self.inspector_connected(runtime),
             Incoming::Reply { id, result, .. } => {
+                if starting {
+                    self.queue_internal_edit(super::Edit::InspectorCleanup)?;
+                    return self.finish_barrier_if_ready();
+                }
                 if inspector.isolates.values().any(|isolate| {
                     isolate
                         .paused
@@ -786,7 +797,20 @@ impl<P: LinuxTraceOps> Controller<P> {
                 session,
                 method,
                 params,
-            } => return self.inspector_event(runtime, &session, &method, &params),
+            } => {
+                if starting && method.as_ref() == inspector_protocol::PAUSED {
+                    if let Some(link) = inspector.connection.as_ref() {
+                        let _ = send(
+                            &link.connection,
+                            &session,
+                            inspector_protocol::RESUME,
+                            serde_json::json!({}),
+                        );
+                    }
+                    return Ok(());
+                }
+                return self.inspector_event(runtime, &session, &method, &params);
+            }
             Incoming::Closed { reason } => {
                 record!("the inspector connection closed: {reason}");
                 inspector.connection = None;
@@ -841,6 +865,12 @@ impl<P: LinuxTraceOps> Controller<P> {
             let _ = send(
                 &link.connection,
                 &main,
+                "Runtime.enable",
+                serde_json::json!({}),
+            );
+            let _ = send(
+                &link.connection,
+                &main,
                 inspector_protocol::ENABLE_RUNTIME,
                 serde_json::json!({}),
             );
@@ -866,6 +896,35 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
+    fn inspector_preload_acknowledged(
+        &mut self,
+        runtime: RuntimeId,
+        params: &serde_json::Value,
+    ) -> Result<()> {
+        let Some(inferior) = self.inferior.as_mut() else {
+            return Ok(());
+        };
+        if inferior.origin == super::InferiorOrigin::Attached {
+            return Ok(());
+        }
+        let Some(inspector) = inferior.inspectors.records.get_mut(&runtime) else {
+            return Ok(());
+        };
+        if inspector.ownership != Ownership::Pending {
+            return Ok(());
+        }
+        let Some(target) = inspector.target.as_ref() else {
+            return Ok(());
+        };
+        let ownership = super::node_launch::acknowledge(inferior.tgid, target, params);
+        if ownership == Ownership::Pending {
+            return Ok(());
+        }
+        record!("the launch preload confirms inspector ownership {ownership:?}");
+        inspector.ownership = ownership;
+        self.queue_module_refresh()
+    }
+
     fn inspector_event(
         &mut self,
         runtime: RuntimeId,
@@ -873,6 +932,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         method: &str,
         params: &serde_json::Value,
     ) -> Result<()> {
+        if method == "Runtime.consoleAPICalled" && *session == Session::main() {
+            return self.inspector_preload_acknowledged(runtime, params);
+        }
         let Some(inspector) = self
             .inferior
             .as_mut()

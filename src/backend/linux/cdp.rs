@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
@@ -29,6 +29,9 @@ pub(super) const MAX_SESSION_DEPTH: usize = 8;
 
 /// Requests waiting for the transport's thread to write them.
 const QUEUE_LENGTH: usize = 256;
+
+/// Requests and worker envelopes queued or waiting for replies.
+const MAX_OUTSTANDING: usize = 4096;
 
 const SEND_TO_WORKER: &str = "NodeWorker.sendMessageToWorker";
 const FROM_WORKER: &str = "NodeWorker.receivedMessageFromWorker";
@@ -63,6 +66,12 @@ impl Session {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct RequestId(u64);
 
+impl RequestId {
+    pub(super) const fn number(self) -> u64 {
+        self.0
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub(super) enum CdpError {
     #[error("the inspector answered error {code}: {message}")]
@@ -73,6 +82,10 @@ pub(super) enum CdpError {
     Malformed(Arc<str>),
     #[error("{QUEUE_LENGTH} requests are already waiting to be written")]
     QueueFull,
+    #[error(
+        "the inspector has reached its limit of {MAX_OUTSTANDING} outstanding requests and worker envelopes"
+    )]
+    OutstandingFull,
     #[error("the session nests more than {MAX_SESSION_DEPTH} workers")]
     TooDeep,
 }
@@ -112,6 +125,8 @@ struct Shared {
     ended: Mutex<Option<Arc<str>>>,
     closing: AtomicBool,
     next_id: AtomicU64,
+    /// Includes queued requests and every unanswered worker envelope.
+    outstanding: AtomicUsize,
     /// An eventfd that wakes the transport's thread from `poll`.
     wake: OwnedFd,
 }
@@ -140,6 +155,7 @@ impl Connection {
             ended: Mutex::new(None),
             closing: AtomicBool::new(false),
             next_id: AtomicU64::new(1),
+            outstanding: AtomicUsize::new(0),
             wake,
         });
 
@@ -169,8 +185,8 @@ impl Connection {
     }
 
     /// Queues a request; requests made before `Connected` are sent after the
-    /// handshake, in order. Fails without blocking when the queue is full or
-    /// the connection has closed.
+    /// handshake, in order. Fails without blocking when the queue or the
+    /// outstanding-request limit is full, or the connection has closed.
     pub(super) fn send(
         &self,
         session: &Session,
@@ -208,7 +224,17 @@ impl Connection {
         if let Some(reason) = ended.as_ref() {
             return Err(CdpError::Closed(Arc::clone(reason)));
         }
+        let slots = session.0.len() + 1;
+        self.shared
+            .outstanding
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                (used + slots <= MAX_OUTSTANDING).then_some(used + slots)
+            })
+            .map_err(|_| CdpError::OutstandingFull)?;
         let queued = self.queue.try_send(outgoing);
+        if queued.is_err() {
+            self.shared.outstanding.fetch_sub(slots, Ordering::Relaxed);
+        }
         drop(ended);
 
         match queued {
@@ -290,6 +316,8 @@ impl Write for QuickAck {
 /// A request or wrapper awaiting its reply.
 struct Pending {
     session: Session,
+    /// The final worker, including for an envelope sent on its parent.
+    target: Session,
     /// The caller's request this entry belongs to; its own id unless a hop.
     owner: u64,
 }
@@ -324,36 +352,15 @@ impl Transport {
             return receiver_stopped();
         }
 
-        let mut blocked = false;
         loop {
             if shared.closing() {
                 return closed_by_caller();
             }
 
-            // Take new requests only once earlier ones are written, so the
-            // bounded queue holds back a target that stops reading.
-            if !blocked {
-                while let Ok(request) = outgoing.try_recv() {
-                    self.register(&request);
-                    match socket.write(Message::text(request.text)) {
-                        Ok(()) => {}
-                        // The frame is buffered; the flush below finds the socket full.
-                        Err(tungstenite::Error::Io(error))
-                            if error.kind() == io::ErrorKind::WouldBlock =>
-                        {
-                            break;
-                        }
-                        Err(error) => return format!("cannot write a request: {error}").into(),
-                    }
-                }
-            }
-            match socket.flush() {
-                Ok(()) => blocked = false,
-                Err(tungstenite::Error::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
-                    blocked = true;
-                }
+            let blocked = match self.write_requests(&mut socket, outgoing) {
+                Ok(waiting) => waiting,
                 Err(error) => return format!("cannot write a request: {error}").into(),
-            }
+            };
 
             let flags = if blocked {
                 PollFlags::IN | PollFlags::OUT
@@ -369,7 +376,7 @@ impl Transport {
             loop {
                 match socket.read() {
                     Ok(Message::Text(text)) => {
-                        if !self.receive(text.as_str()) {
+                        if !self.receive(text.as_str(), shared) {
                             return receiver_stopped();
                         }
                     }
@@ -412,12 +419,46 @@ impl Transport {
         }
     }
 
+    fn write_requests(
+        &mut self,
+        socket: &mut WebSocket<impl Read + Write>,
+        outgoing: &Receiver<Outgoing>,
+    ) -> tungstenite::Result<bool> {
+        // Take new requests only once earlier ones are written, so the
+        // bounded queue holds back a target that stops reading.
+        match socket.flush() {
+            Ok(()) => {}
+            Err(tungstenite::Error::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
+                return Ok(true);
+            }
+            Err(error) => return Err(error),
+        }
+        while let Ok(request) = outgoing.try_recv() {
+            self.register(&request);
+            match socket.write(Message::text(request.text)) {
+                Ok(()) => {}
+                Err(tungstenite::Error::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
+                    return Ok(true);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        match socket.flush() {
+            Ok(()) => Ok(false),
+            Err(tungstenite::Error::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
+                Ok(true)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     fn register(&mut self, request: &Outgoing) {
         let owner = request.id;
         self.pending.insert(
             owner,
             Pending {
                 session: request.session.clone(),
+                target: request.session.clone(),
                 owner,
             },
         );
@@ -426,6 +467,7 @@ impl Transport {
                 *hop,
                 Pending {
                     session: session.clone(),
+                    target: request.session.clone(),
                     owner,
                 },
             );
@@ -433,28 +475,61 @@ impl Transport {
     }
 
     /// Delivers what one received text holds. Returns false once the sink stops.
-    fn receive(&mut self, text: &str) -> bool {
+    fn receive(&mut self, text: &str, shared: &Shared) -> bool {
         let incoming = match decode(text) {
             Decoded::Event {
                 session,
                 method,
                 params,
-            } => Incoming::Event {
-                session,
-                method,
-                params,
-            },
+            } => {
+                let detached = (method.as_ref() == "NodeWorker.detachedFromWorker")
+                    .then(|| params["sessionId"].as_str().map(|id| session.worker(id)))
+                    .flatten();
+                self.deliver(Incoming::Event {
+                    session,
+                    method,
+                    params,
+                });
+                if let Some(worker) = detached {
+                    self.detach_worker(&worker, shared);
+                }
+                return !self.stopped;
+            }
             Decoded::Malformed { session, reason } => Incoming::Malformed { session, reason },
             Decoded::Reply {
                 session,
                 id,
                 result,
-            } => match self.reply(session, id, result) {
+            } => match self.reply(session, id, result, shared) {
                 Some(incoming) => incoming,
                 None => return !self.stopped,
             },
         };
         self.deliver(incoming)
+    }
+
+    fn detach_worker(&mut self, worker: &Session, shared: &Shared) {
+        let mut requests = Vec::new();
+        let before = self.pending.len();
+        self.pending.retain(|&id, pending| {
+            if !pending.target.path().starts_with(worker.path()) {
+                return true;
+            }
+            if pending.owner == id {
+                requests.push((id, pending.session.clone()));
+            }
+            false
+        });
+        shared
+            .outstanding
+            .fetch_sub(before - self.pending.len(), Ordering::Relaxed);
+        for (id, session) in requests {
+            self.deliver(Incoming::Reply {
+                id: RequestId(id),
+                session,
+                result: Err(CdpError::Closed("the worker session detached".into())),
+            });
+        }
     }
 
     /// Matches a reply to its request by session and id. A wrapper's reply
@@ -464,6 +539,7 @@ impl Transport {
         session: Session,
         id: u64,
         result: Result<Value, CdpError>,
+        shared: &Shared,
     ) -> Option<Incoming> {
         let owner = match self.pending.get(&id) {
             Some(pending) if pending.session == session => pending.owner,
@@ -476,6 +552,7 @@ impl Transport {
         };
 
         self.pending.remove(&id);
+        shared.outstanding.fetch_sub(1, Ordering::Relaxed);
         if owner == id {
             return Some(Incoming::Reply {
                 id: RequestId(id),
@@ -487,8 +564,13 @@ impl Transport {
         let Err(error) = result else {
             return None;
         };
-        let request = self.pending.remove(&owner)?;
+        let before = self.pending.len();
+        let request = self.pending.remove(&owner);
         self.pending.retain(|_, pending| pending.owner != owner);
+        shared
+            .outstanding
+            .fetch_sub(before - self.pending.len(), Ordering::Relaxed);
+        let request = request?;
         Some(Incoming::Reply {
             id: RequestId(owner),
             session: request.session,
@@ -506,6 +588,9 @@ impl Transport {
         }
 
         let pending = std::mem::take(&mut self.pending);
+        shared
+            .outstanding
+            .fetch_sub(pending.len(), Ordering::Relaxed);
         for (id, entry) in pending {
             if entry.owner != id {
                 continue;
@@ -833,6 +918,10 @@ mod tests {
         /// Closes the connection and checks the transport delivered nothing more.
         fn finish(mut self) {
             self.connection.join();
+            assert_eq!(
+                self.connection.shared.outstanding.load(Ordering::Relaxed),
+                0
+            );
             loop {
                 match self.incoming.recv_timeout(DEADLINE) {
                     Ok(Incoming::Closed { .. } | Incoming::Reply { .. }) => {}
@@ -1028,6 +1117,10 @@ mod tests {
             message: "No session with given id".into(),
         };
         assert_eq!(reply_to(&client), (id, worker, Err(error)));
+        assert_eq!(
+            client.connection.shared.outstanding.load(Ordering::Relaxed),
+            0
+        );
 
         client.finish();
         server.join().expect("server");
@@ -1064,6 +1157,63 @@ mod tests {
             Err(CdpError::Closed(_))
         ));
 
+        client.finish();
+        server.join().expect("server");
+    }
+
+    #[test]
+    fn a_detached_worker_answers_its_requests_and_releases_nested_envelopes() {
+        let (address, server) = serve(|stream| {
+            let mut server = accept(stream);
+            let outer = request(&mut server);
+            let nested = untunnel(&outer, "gone");
+            let _ = untunnel(&nested, "inner");
+            let answered = request(&mut server);
+            let inner = untunnel(&answered, "gone");
+            // The request can complete before its envelope is acknowledged.
+            reply(
+                &mut server,
+                &tunnel(
+                    "gone",
+                    &json!({"id": inner["id"], "result": {"done": true}}),
+                ),
+            );
+            reply(
+                &mut server,
+                &json!({"method": "NodeWorker.detachedFromWorker", "params": {"sessionId": "gone"}}),
+            );
+            let live = request(&mut server);
+            reply(
+                &mut server,
+                &json!({"id": live["id"], "result": {"live": true}}),
+            );
+            linger(server);
+        });
+        let client = Client::open(address);
+        assert_eq!(client.next(), Incoming::Connected);
+        let gone = Session::main().worker("gone");
+        let nested = gone.worker("inner");
+        let pending = client.send(&nested, "Runtime.evaluate", json!({}));
+        let completed = client.send(&gone, "Runtime.evaluate", json!({}));
+        assert_eq!(
+            reply_to(&client),
+            (completed, gone, Ok(json!({"done": true})))
+        );
+        assert!(
+            matches!(client.next(), Incoming::Event { method, .. } if &*method == "NodeWorker.detachedFromWorker")
+        );
+        let (id, session, result) = reply_to(&client);
+        assert_eq!((id, session), (pending, nested));
+        assert!(matches!(result, Err(CdpError::Closed(_))), "{result:?}");
+        assert_eq!(
+            client.connection.shared.outstanding.load(Ordering::Relaxed),
+            0
+        );
+        let live = client.send(&Session::main(), "Runtime.evaluate", json!({}));
+        assert_eq!(
+            reply_to(&client),
+            (live, Session::main(), Ok(json!({"live": true})))
+        );
         client.finish();
         server.join().expect("server");
     }
@@ -1233,6 +1383,177 @@ mod tests {
         }
         assert!(matches!(client.next(), Incoming::Closed { .. }));
 
+        client.finish();
+        server.join().expect("server");
+    }
+
+    #[test]
+    fn queued_requests_progress_after_write_backpressure() {
+        #[derive(Default)]
+        struct Stream {
+            blocked: bool,
+            bytes: Vec<u8>,
+        }
+        impl Read for Stream {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::WouldBlock.into())
+            }
+        }
+        impl Write for Stream {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                if self.blocked {
+                    return Err(io::ErrorKind::WouldBlock.into());
+                }
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let stream = Stream {
+            blocked: true,
+            ..Stream::default()
+        };
+        let mut socket = WebSocket::from_raw_socket(
+            stream,
+            tungstenite::protocol::Role::Client,
+            Some(WebSocketConfig::default().write_buffer_size(0)),
+        );
+        let (sender, outgoing) = mpsc::sync_channel(2);
+        for id in 1..=2 {
+            sender
+                .send(Outgoing {
+                    id,
+                    session: Session::main(),
+                    hops: Vec::new(),
+                    text: json!({"id":id,"method":"A.queued"}).to_string(),
+                })
+                .expect("queue");
+        }
+        let mut transport = Transport {
+            sink: Box::new(|_| true),
+            pending: BTreeMap::new(),
+            stopped: false,
+        };
+        assert!(
+            transport
+                .write_requests(&mut socket, &outgoing)
+                .expect("blocked write")
+        );
+        assert_eq!(transport.pending.len(), 1);
+        socket.get_mut().blocked = false;
+        assert!(
+            !transport
+                .write_requests(&mut socket, &outgoing)
+                .expect("writable again")
+        );
+        assert_eq!(
+            transport.pending.len(),
+            2,
+            "the second request must be written before polling"
+        );
+        let mut server = WebSocket::from_raw_socket(
+            io::Cursor::new(socket.into_inner().bytes),
+            tungstenite::protocol::Role::Server,
+            None,
+        );
+        for id in 1..=2 {
+            let message = server
+                .read()
+                .expect("written request")
+                .into_text()
+                .expect("text");
+            assert_eq!(
+                serde_json::from_str::<Value>(&message).expect("JSON")["id"],
+                id
+            );
+        }
+    }
+
+    #[test]
+    fn outstanding_requests_are_bounded_after_the_queue_drains() {
+        let (received, requests) = mpsc::channel();
+        let (answer, answers) = mpsc::channel();
+        let (address, server) = serve(move |stream| {
+            let mut server = accept(stream);
+            let mut ids = Vec::new();
+            for _ in 0..MAX_OUTSTANDING {
+                let message = request(&mut server);
+                ids.push(message["id"].clone());
+                received.send(()).expect("received request");
+            }
+            answers.recv_timeout(DEADLINE).expect("answer one");
+            reply(&mut server, &json!({"id": ids[0], "result": {}}));
+            let last = request(&mut server);
+            reply(&mut server, &json!({"id": last["id"], "result": {}}));
+            linger(server);
+        });
+        let client = Client::open(address);
+        assert_eq!(client.next(), Incoming::Connected);
+        let mut ids = Vec::new();
+        for _ in 0..MAX_OUTSTANDING {
+            ids.push(client.send(&Session::main(), "A.pending", json!({})));
+            requests
+                .recv_timeout(DEADLINE)
+                .expect("server read request");
+        }
+        assert_eq!(
+            client
+                .connection
+                .send(&Session::main(), "A.excess", json!({})),
+            Err(CdpError::OutstandingFull)
+        );
+        answer.send(()).expect("allow reply");
+        assert_eq!(reply_to(&client).0, ids[0]);
+        let last = client.send(&Session::main(), "A.recovered", json!({}));
+        assert_eq!(reply_to(&client).0, last);
+        client.finish();
+        server.join().expect("server");
+    }
+
+    #[test]
+    fn outstanding_worker_envelopes_are_bounded_until_they_reply() {
+        let (received, requests) = mpsc::channel();
+        let (answer, answers) = mpsc::channel();
+        let (address, server) = serve(move |stream| {
+            let mut server = accept(stream);
+            let mut wrappers = Vec::new();
+            for _ in 0..MAX_OUTSTANDING - 1 {
+                let outer = request(&mut server);
+                let inner = untunnel(&outer, "worker");
+                wrappers.push(outer["id"].clone());
+                reply(
+                    &mut server,
+                    &tunnel("worker", &json!({"id": inner["id"], "result": {}})),
+                );
+                received.send(()).expect("received request");
+            }
+            answers.recv_timeout(DEADLINE).expect("answer wrapper");
+            reply(&mut server, &json!({"id": wrappers[0], "result": {}}));
+            let last = request(&mut server);
+            reply(&mut server, &json!({"id": last["id"], "result": {}}));
+            linger(server);
+        });
+        let client = Client::open(address);
+        assert_eq!(client.next(), Incoming::Connected);
+        let worker = Session::main().worker("worker");
+        // Leave one slot for the last worker's owner, which its reply frees.
+        for _ in 0..MAX_OUTSTANDING - 1 {
+            let id = client.send(&worker, "A.pending", json!({}));
+            requests
+                .recv_timeout(DEADLINE)
+                .expect("server read request");
+            assert_eq!(reply_to(&client).0, id);
+        }
+        assert_eq!(
+            client.connection.send(&worker, "A.excess", json!({})),
+            Err(CdpError::OutstandingFull)
+        );
+        // A main-isolate request uses the remaining slot, unlike a worker request.
+        let main = client.send(&Session::main(), "A.last", json!({}));
+        answer.send(()).expect("allow wrapper reply");
+        assert_eq!(reply_to(&client).0, main);
         client.finish();
         server.join().expect("server");
     }

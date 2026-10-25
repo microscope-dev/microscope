@@ -986,9 +986,11 @@ any Python value, so every operation on Python values applies to it.
 
 ## Node
 
-Node support reads V8 from outside, as a core dump allows, and puts no code
-in the process. It covers V8 12.4, 13.6, and 14.6 (Node 22, 24, and 26),
-the official and nixpkgs builds, and Debian's shared `libnode`.
+Node stack and value inspection read V8 from outside, including core dumps,
+without executing JavaScript. Live run control uses Node's inspector and
+the launch preload described below. Support covers V8 12.4, 13.6, and 14.6
+(Node 22, 24, and 26), the official and nixpkgs builds, and Debian's shared
+`libnode`.
 `plans/node.html` records the decisions and findings (F1 to F31) behind it.
 
 **Layouts.** `src/debug_info/v8.rs` detects V8 and binds one generated
@@ -1013,7 +1015,7 @@ gives its shared info, and:
 Names follow `JSFunction::GetDebugName` (`names.rs`). Scripts, function
 names, and line ends are kept in `scripts.rs`'s process-lifetime table.
 Each use proves its row again: a script by its id and source, a function
-by its script and its function literal id.
+by its script's address, id, and source, and its function literal id.
 
 **Values.** `node/objects.rs`'s `Reader` reads the heap at a stop through
 the stop's block cache, charging an inspection's budget. `values.rs` and
@@ -1034,6 +1036,50 @@ it, which chooses its view.
 
 **Threads.** `thread_holding` labels a thread with the isolate it works
 for, as described under [Thread labels](#thread-labels).
+
+**Inspector.** `backend/linux/inspector/` owns CDP breakpoints, steps,
+exception stops, and worker sessions under the native all-stop controller.
+`backend/linux/cdp.rs` owns the bounded, nonblocking transport. Worker
+detach cancels outstanding requests for that worker and its descendants,
+including their envelopes, without closing the main connection.
+
+Static native inspector facts belong in `debug_info/v8/inspector.rs`,
+`inspector_activation.rs`, and `inspector_targets.rs`, and are cached in
+`image/v8.rs`. Instruction proofs refuse unknown or conflicting layouts.
+Proven printing and listing calls return an empty target vector before
+allocating its strings; upgrade validation runs normally. Caller identity,
+not a shared one-shot exception, keeps listing requests from consuming the
+debugger's upgrade permission.
+`runtime_model/node/native_inspector.rs` reads those facts at one stop to
+identify an existing server without evaluating JavaScript or probing
+application listeners. Only the Linux controller may activate a missing
+server: `backend/linux/signal_action.rs` queries the stopped thread's
+kernel signal disposition and compares it with the proven native handler.
+Seccomp-filtered tasks are refused before the injected syscall executes.
+
+`inspector/teardown.rs` owns asynchronous detach cleanup. Attach records
+ownership when it activates Node's native handler. The launch preload
+acknowledges ownership over CDP with a per-launch nonce and target UUID;
+an existing server is acknowledged as borrowed. Cleanup finishes any
+pending startup. For attach activation, `inspector/quiescence.rs` observes
+the watchdog finishing its startup postings, a complete main-thread libuv
+check callback, and a cleared startup async pending flag at all-stop. This
+prevents either deferred startup callback from reopening a closed server.
+It relies on libuv's non-reentrant event-loop contract. Cleanup then validates
+the native agent and UUID at an exact nonce-bearing main-thread dispatch
+entry and redirects that entry to `Agent::Stop`.
+All threads run while Stop joins the I/O thread. Its return starts an all-stop
+barrier that verifies the server closed before ptrace detach. Borrowed servers
+only release debugger pauses and acknowledge the protocol cleanup. Native
+entry extraction and StringView layout are provider facts, not controller
+guesses. Cleanup has a deadline and reports failures, including a main thread
+that never reaches the check callback. It does not prevent the application
+or another signal sender from deliberately reopening the inspector.
+
+The launch preload precedes user `NODE_OPTIONS` preloads. Followed launches
+retain a content-addressed private cache copy so released descendants do
+not inherit a deleted require path. An untraced descendant restores the
+original environment; workers leave their supplied environment unchanged.
 
 The suite is `just node`; Debian's tests run inside its namespace
 (`tests/node/debian.rs`). `tests/fixtures/node/truth.js` makes each fixture

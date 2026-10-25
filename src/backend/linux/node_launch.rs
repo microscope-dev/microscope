@@ -1,6 +1,6 @@
 //! The launch preload through which a launched Node opens its inspector and
 //! waits for microscope (F31): a private directory holding `preload.js`,
-//! which a launch appends to `NODE_OPTIONS` as `--require`, and
+//! which a launch prepends to `NODE_OPTIONS` as `--require`, and
 //! `MICROSCOPE_TRACER`, the tracer thread's ID, which only a node that
 //! thread traces matches. The preload puts the variables back before the
 //! program runs, unless the launch follows the processes the program
@@ -9,7 +9,7 @@
 use std::ffi::OsString;
 use std::io::Read as _;
 use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
-use std::os::unix::fs::OpenOptionsExt as _;
+use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -24,6 +24,72 @@ const PREFIX: &str = ".microscope-node-";
 const TRACER: &str = "MICROSCOPE_TRACER";
 const ORIGINAL_OPTIONS: &str = "MICROSCOPE_NODE_OPTIONS";
 const FOLLOW: &str = "MICROSCOPE_NODE_FOLLOW";
+const OWNERSHIP: &str = "MICROSCOPE_NODE_OWNERSHIP";
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Ownership {
+    #[default]
+    Pending,
+    Created,
+    Borrowed,
+}
+
+/// Checks a preload console acknowledgement against this process's launch nonce.
+pub(super) fn acknowledge(
+    pid: nix::unistd::Pid,
+    target: &str,
+    params: &serde_json::Value,
+) -> Ownership {
+    let Ok(environment) = std::fs::read(format!("/proc/{pid}/environ")) else {
+        return Ownership::Pending;
+    };
+    acknowledgement(&environment, target, params)
+}
+
+fn acknowledgement(environment: &[u8], target: &str, params: &serde_json::Value) -> Ownership {
+    let Some(nonce) = environment.split(|&byte| byte == 0).find_map(|variable| {
+        variable
+            .strip_prefix(OWNERSHIP.as_bytes())?
+            .strip_prefix(b"=")
+    }) else {
+        return Ownership::Pending;
+    };
+    let Some(arguments) = params["args"].as_array() else {
+        return Ownership::Pending;
+    };
+    let strings = arguments
+        .iter()
+        .map(|argument| {
+            (argument["type"] == "string")
+                .then(|| argument["value"].as_str())
+                .flatten()
+        })
+        .collect::<Option<Vec<_>>>();
+    let Some(strings) = strings else {
+        return Ownership::Pending;
+    };
+    let [
+        "microscope ownership",
+        reported_nonce,
+        reported_target,
+        ownership,
+    ] = strings.as_slice()
+    else {
+        return Ownership::Pending;
+    };
+    if params["type"] != "debug"
+        || nonce.len() != 32
+        || reported_nonce.as_bytes() != nonce
+        || *reported_target != target
+    {
+        return Ownership::Pending;
+    }
+    match *ownership {
+        "created" => Ownership::Created,
+        "borrowed" => Ownership::Borrowed,
+        _ => Ownership::Pending,
+    }
+}
 
 fn problem(error: impl std::fmt::Display) -> Arc<str> {
     format!("the Node launch preload failed: {error}").into()
@@ -71,10 +137,12 @@ fn unstarted_by(command: &[u8], environment: &[u8]) -> Option<&'static str> {
     )
 }
 
-/// A launch's preload directory, removed when the launch ends.
+/// A launch's preload directory. Followed launches retain a cached copy
+/// because a released descendant can still inherit its require path.
 #[derive(Debug)]
 pub(super) struct NodeLaunch {
     directory: PathBuf,
+    persistent: bool,
 }
 
 impl NodeLaunch {
@@ -92,7 +160,10 @@ impl NodeLaunch {
             return Ok(None);
         }
 
-        let launch = Self::create()?;
+        let launch = Self::create(follows)?;
+        let mut nonce = [0; 16];
+        getrandom::fill(&mut nonce).map_err(problem)?;
+        let ownership = format!("{:032x}", u128::from_le_bytes(nonce));
         let set = environment
             .iter()
             .rev()
@@ -101,22 +172,22 @@ impl NodeLaunch {
                 || std::env::var_os("NODE_OPTIONS"),
                 |(_, value)| value.clone(),
             );
-        let mut options = OsString::new();
+        let mut options = OsString::from("--require ");
+        options.push(quoted(&launch.directory.join("preload.js")));
         let mut original = OsString::from("0");
         if let Some(set) = set {
             if !set.is_empty() {
-                options.push(&set);
                 options.push(" ");
+                options.push(&set);
             }
             original = OsString::from("1");
             original.push(&set);
         }
-        options.push("--require ");
-        options.push(quoted(&launch.directory.join("preload.js")));
 
         environment.push(("NODE_OPTIONS".into(), Some(options)));
         environment.push((ORIGINAL_OPTIONS.into(), Some(original)));
         environment.push((TRACER.into(), Some(tracer.to_string().into())));
+        environment.push((OWNERSHIP.into(), Some(ownership.into())));
         if follows {
             environment.push((FOLLOW.into(), Some("1".into())));
         }
@@ -124,46 +195,123 @@ impl NodeLaunch {
         Ok(Some(launch))
     }
 
-    fn create() -> Result<Self, Arc<str>> {
+    fn create(follows: bool) -> Result<Self, Arc<str>> {
+        use sha2::{Digest as _, Sha256};
+        use std::fmt::Write as _;
+
+        let cached = if follows {
+            let root = std::env::var_os("XDG_CACHE_HOME")
+                .filter(|path| Path::new(path).is_absolute())
+                .map(PathBuf::from)
+                .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".cache")))
+                .ok_or("following Node needs HOME or an absolute XDG_CACHE_HOME for its preload")?
+                .join("microscope/node");
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(&root)
+                .map_err(problem)?;
+            let mut key = String::with_capacity(64);
+            for byte in Sha256::digest(PRELOAD.as_bytes()) {
+                write!(&mut key, "{byte:02x}").map_err(problem)?;
+            }
+            Some(root.join(key))
+        } else {
+            None
+        };
+        if let Some(directory) = cached.as_ref().filter(|directory| directory.exists()) {
+            validate_directory(directory)?;
+            validate_preload(directory)?;
+            return Ok(Self {
+                directory: directory.clone(),
+                persistent: true,
+            });
+        }
         let mut random = [0; 16];
         std::fs::File::open("/dev/urandom")
             .and_then(|mut file| file.read_exact(&mut random))
             .map_err(problem)?;
 
-        let directory =
-            Path::new("/tmp").join(format!("{PREFIX}{:032x}", u128::from_le_bytes(random)));
+        let parent = cached
+            .as_ref()
+            .and_then(|directory| directory.parent())
+            .unwrap_or_else(|| Path::new("/tmp"));
+        let directory = parent.join(format!("{PREFIX}{:032x}", u128::from_le_bytes(random)));
         nix::unistd::mkdir(&directory, Mode::S_IRWXU).map_err(problem)?;
 
-        let made = || -> Result<(), Arc<str>> {
-            let held = open(
-                &directory,
-                OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
-                Mode::empty(),
-            )
-            .map_err(problem)?;
-            let stat = fstat(&held).map_err(problem)?;
-            if stat.st_uid != rustix::process::geteuid().as_raw() || stat.st_mode & 0o777 != 0o700 {
-                return Err("the Node launch directory is not private to the debugger".into());
-            }
-            std::fs::write(directory.join("preload.js"), PRELOAD).map_err(problem)
+        let mut launch = Self {
+            directory,
+            persistent: false,
         };
-
-        match made() {
-            Ok(()) => Ok(Self { directory }),
-            Err(reason) => {
-                let _ = std::fs::remove_dir_all(&directory);
-                Err(reason)
+        validate_directory(&launch.directory)?;
+        std::fs::write(launch.directory.join("preload.js"), PRELOAD).map_err(problem)?;
+        if let Some(cached) = cached {
+            // Publish the complete directory atomically: a concurrent launch
+            // must never load a partially written preload.
+            match std::fs::rename(&launch.directory, &cached) {
+                Ok(()) => {
+                    launch.directory = cached;
+                    launch.persistent = true;
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::DirectoryNotEmpty
+                    ) =>
+                {
+                    validate_directory(&cached)?;
+                    validate_preload(&cached)?;
+                    return Ok(Self {
+                        directory: cached,
+                        persistent: true,
+                    });
+                }
+                Err(error) => return Err(problem(error)),
             }
         }
+        Ok(launch)
     }
 }
 
 impl Drop for NodeLaunch {
     fn drop(&mut self) {
-        // A node that inherited the option after this cannot load the
-        // preload and fails to start, as an unreadable --require does.
-        let _ = std::fs::remove_dir_all(&self.directory);
+        if !self.persistent {
+            let _ = std::fs::remove_dir_all(&self.directory);
+        }
     }
+}
+
+fn validate_directory(directory: &Path) -> Result<(), Arc<str>> {
+    let held = open(
+        directory,
+        OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(problem)?;
+    let stat = fstat(&held).map_err(problem)?;
+    if stat.st_uid != rustix::process::geteuid().as_raw() || stat.st_mode & 0o777 != 0o700 {
+        return Err("the Node launch directory is not private to the debugger".into());
+    }
+    Ok(())
+}
+
+fn validate_preload(directory: &Path) -> Result<(), Arc<str>> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+        .open(directory.join("preload.js"))
+        .map_err(problem)?;
+    if !file.metadata().map_err(problem)?.is_file() {
+        return Err("the cached Node preload is not a regular file".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(PRELOAD.len() as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(problem)?;
+    if bytes != PRELOAD.as_bytes() {
+        return Err("the cached Node preload differs from its content identity".into());
+    }
+    Ok(())
 }
 
 /// `path` as a word of `NODE_OPTIONS`, which Node splits at spaces outside
@@ -229,6 +377,85 @@ fn launches_node(executable: &Path) -> bool {
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    #[test]
+    fn acknowledgement_requires_the_launch_nonce_and_native_target() {
+        let nonce = "0123456789abcdef0123456789abcdef";
+        let environment = format!("{OWNERSHIP}={nonce}\0");
+        let event = |nonce: &str, target: &str, ownership: &str| {
+            let arguments = ["microscope ownership", nonce, target, ownership]
+                .map(|value| serde_json::json!({"type": "string", "value": value}));
+            serde_json::json!({
+                "type": "debug",
+                "args": arguments,
+            })
+        };
+        for (reported_nonce, target, ownership, expected) in [
+            (nonce, "native-target", "created", Ownership::Created),
+            (nonce, "native-target", "borrowed", Ownership::Borrowed),
+            (nonce, "stale-target", "created", Ownership::Pending),
+            (
+                "wrong nonce",
+                "native-target",
+                "created",
+                Ownership::Pending,
+            ),
+            (nonce, "native-target", "unknown", Ownership::Pending),
+        ] {
+            assert_eq!(
+                acknowledgement(
+                    environment.as_bytes(),
+                    "native-target",
+                    &event(reported_nonce, target, ownership)
+                ),
+                expected
+            );
+        }
+        assert_eq!(
+            acknowledgement(
+                b"",
+                "native-target",
+                &event(nonce, "native-target", "created")
+            ),
+            Ownership::Pending
+        );
+        assert_eq!(
+            acknowledgement(
+                environment.as_bytes(),
+                "native-target",
+                &serde_json::json!({})
+            ),
+            Ownership::Pending
+        );
+    }
+
+    #[test]
+    fn inherited_options_work_after_the_followed_launch_ends() {
+        let root = std::env::var_os("MICROSCOPE_NODE").expect("the pinned Node matrix");
+        let node = Path::new(&root).join("nixpkgs-24/node");
+        let mut environment = vec![("NODE_OPTIONS".into(), Some("--no-warnings".into()))];
+        let launch = NodeLaunch::prepare(&node, &mut environment, true, u32::MAX)
+            .expect("prepare the launch")
+            .expect("a Node preload");
+        drop(launch);
+        let mut command = std::process::Command::new(node);
+        for (name, value) in environment {
+            if let Some(value) = value {
+                command.env(name, value);
+            } else {
+                command.env_remove(name);
+            }
+        }
+        let output = command
+            .args(["-p", "process.env.NODE_OPTIONS"])
+            .output()
+            .expect("start the descendant");
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "--no-warnings"
+        );
+    }
 
     #[test]
     fn an_inspector_that_may_never_start_is_explained() {

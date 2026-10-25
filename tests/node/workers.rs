@@ -185,3 +185,86 @@ async fn an_exception_in_a_worker_stops_on_its_thread() {
     }
     assert!(lies.is_empty(), "{}", lies.join("\n"));
 }
+
+#[tokio::test]
+async fn a_worker_pause_is_not_assigned_to_another_script_at_the_same_position() {
+    let scratch = crate::support::ScratchDir::new("node-worker-identity");
+    let worker = |operation: &str| {
+        format!(
+            r"
+const {{ workerData, parentPort }} = require('worker_threads');
+function crunch(n) {{
+  const squared = {operation};
+  return squared + 1;
+}}
+parentPort.postMessage(require('fs').readlinkSync('/proc/thread-self').split('/').pop());
+parentPort.once('message', () => {{
+  const result = crunch(workerData.n);
+  parentPort.postMessage(result);
+}});
+"
+        )
+    };
+    std::fs::write(
+        scratch.path().join("parked.js"),
+        worker("Atomics.wait(workerData.flags, 0, 0)"),
+    )
+    .expect("write the parked worker");
+    let active = scratch.path().join("active.js");
+    std::fs::write(&active, worker("        n * n")).expect("write the active worker");
+    let main = scratch.path().join("main.js");
+    std::fs::write(&main, r"
+const { Worker } = require('worker_threads');
+const fs = require('fs');
+const flags = new Int32Array(new SharedArrayBuffer(4));
+const parked = new Worker(require('path').join(__dirname, 'parked.js'), { workerData: { n: 6, flags } });
+parked.once('message', (tid) => {
+  parked.postMessage('go');
+  const deadline = Date.now() + 5000;
+  while (!fs.readFileSync(`/proc/self/task/${tid}/syscall`, 'utf8').startsWith('202 ')) {
+    if (Date.now() > deadline) throw new Error('worker did not park');
+  }
+  const active = new Worker(require('path').join(__dirname, 'active.js'), { workerData: { n: 9, flags } });
+  active.once('message', (tid) => {
+    console.log('ACTIVE', tid);
+    active.postMessage('go');
+  });
+  active.on('message', (value) => {
+    if (typeof value !== 'number') return;
+    Atomics.store(flags, 0, 1);
+    Atomics.notify(flags, 0);
+  });
+});
+").expect("write the main script");
+    for entry in MATRIX {
+        let pending = NodeSession::unlaunched_with_node(entry, &main.display().to_string(), &[]);
+        let breakpoint = (
+            BreakpointSpec::Source {
+                path: active.clone(),
+                line: LineNumber::new(4).expect("a line"),
+            },
+            BreakpointOptions {
+                pending: true,
+                ..BreakpointOptions::default()
+            },
+        );
+        let (mut session, reason, _) = pending.run_to_stop(vec![breakpoint]).await;
+        let (thread, n) = where_stopped(&session, "n").await;
+        let output = session.output();
+        let tid = output
+            .lines()
+            .find_map(|line| line.strip_prefix("ACTIVE "))
+            .and_then(|tid| tid.parse::<u64>().ok())
+            .expect("the active worker's native id");
+        assert!(
+            matches!(reason, StopReason::Breakpoint { .. }),
+            "{entry}: {reason:?}"
+        );
+        assert_eq!((thread, n), (ThreadId::new(tid), "9".to_owned()), "{entry}");
+        assert_eq!(
+            session.scenario.resume_to_stop().await,
+            StopReason::Exited(ExitStatus::Code(0))
+        );
+        session.shutdown().await;
+    }
+}

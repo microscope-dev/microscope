@@ -56,12 +56,13 @@ pub(super) fn format(
     builder: &Builder<'_>,
     error: Object,
     sites: Object,
+    limit: Option<i64>,
 ) -> Result<Value, Problem> {
     let reader = builder.reader;
     let realm = Realm::of(&reader, error)?;
     let node = Node::find(&reader, &realm)?;
     realm.check_call_site_to_string(&reader)?;
-    let sites = read_sites(&reader, sites)?;
+    let sites = read_sites(&reader, sites, limit)?;
     let mut text = node.header(&reader, error)?;
     let sources = Sources::default();
     for site in sites {
@@ -554,7 +555,11 @@ struct Site {
 /// they are raw data, as `CallSiteInfo::ConstructFromRawData` reads it,
 /// with baseline frames resolved as `ExpandDeferredFrames` does; before
 /// that they are `CallSiteInfo` objects.
-fn read_sites(reader: &Reader<'_>, sites: Object) -> Result<Vec<Result<Site, Problem>>, Problem> {
+fn read_sites(
+    reader: &Reader<'_>,
+    sites: Object,
+    limit: Option<i64>,
+) -> Result<Vec<Result<Site, Problem>>, Problem> {
     let length = reader.smi_field(sites, Field::FixedArrayBaseLength)?;
     if !(0..=MAX_SITES).contains(&length) {
         return Err(format!("an error claims {length} call sites").into());
@@ -572,6 +577,7 @@ fn read_sites(reader: &Reader<'_>, sites: Object) -> Result<Vec<Result<Site, Pro
             .layout
             .has(Field::ErrorStackDataRawDataForCallSiteInfosOrFormattedStack)
     {
+        let length = limit.map_or(length, |limit| length.min(limit));
         return Ok((0..length)
             .map(|index| call_site_info(reader, reader.element(sites, index)?))
             .collect());

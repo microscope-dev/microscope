@@ -193,6 +193,9 @@ function binary() {
     uint8: new Uint8Array([1, 2, 255]),
     int32: new Int32Array([-1, 0, 2147483647]),
     float64: new Float64Array([0.1, -0, NaN]),
+    longFloat64: new Float64Array(101).fill(1.5),
+    longUint32: new Uint32Array(101).fill(42),
+    longUint16: new Uint16Array(101).fill(7),
     bigInt64: new BigInt64Array([1n, -1n]),
     view: new Uint16Array(new ArrayBuffer(16), 4, 3),
     arrayBuffer: new ArrayBuffer(4),
@@ -430,4 +433,86 @@ async function errorsOfEachCase(topLevel, widget) {
 }
 
 const topLevel = new SyntaxError('never read');
-unreadErrors(topLevel).then(gallery);
+if (process.argv[2] === 'inspection') {
+  inspection();
+} else if (process.argv[2] === 'elements') {
+  elementBoundary();
+} else if (process.argv[2] === 'with') {
+  // Function's body is sloppy even though this fixture is strict.
+  /* eslint-disable no-new-func */
+  new Function('truth', `
+    const outer = 1;
+    with ({outer: 42}) {
+      function scope() {
+        const inner = 7;
+        const keep = () => [outer, inner];
+        truth.checkpoint('with', {locals: {outer, inner}});
+        return keep;
+      }
+      scope();
+    }
+  `)(truth);
+  /* eslint-enable no-new-func */
+} else {
+  unreadErrors(topLevel).then(gallery);
+}
+
+function inspection() {
+  let chain = {};
+  for (let i = 0; i < 2000; i++) chain = {next: chain};
+  const deep = {chain, tail: {value: 42}};
+  let proxies = {value: 42};
+  for (let i = 0; i < 2000; i++) proxies = new Proxy(proxies, {});
+  const keyed = {0: 'zero', foo: 'bar', 4294967295: 42};
+  const array = Object.assign([], {4294967295: 43});
+  const typed = new Uint8Array([2]);
+  const numeric = {'-1': 99, '-0': 99, '1.5': 99, NaN: 99, Infinity: 99,
+    '4294967295': 99, '01': 98, '-1.0': 97};
+  Object.setPrototypeOf(typed, Object.assign(Object.create(Uint8Array.prototype), numeric));
+  const inherited = Object.create(typed);
+  const shadowed = Object.create(typed, {'-1': {value: 44}});
+  const boxed = Object('xy');
+  Object.setPrototypeOf(boxed, {0: 'wrong character', 2: 'past string'});
+  const boxedInherited = Object.create(boxed);
+  const boxedShadowed = Object.create(boxed, {0: {value: 45}});
+  const customStack = new Error('original stack must not be shown');
+  Object.defineProperty(customStack, 'stack', {get() {throw new Error('getter ran');}});
+  const nativeStack = new TypeError('native stack is still readable');
+  const {get} = Object.getOwnPropertyDescriptor(nativeStack, 'stack');
+  Object.defineProperty(nativeStack, 'stack', {get, set() {}});
+  const keep = () => [deep, proxies, keyed, array, typed, inherited, shadowed,
+    boxed, boxedInherited, boxedShadowed, customStack, nativeStack];
+  truth.checkpoint('inspection', {locals: {deep, keyed, array}});
+  return keep;
+}
+
+function elementBoundary() {
+  const limit = 1 << 20;
+  const tagged = new Array(limit + 3).fill(0);
+  const doubles = new Array(limit + 3).fill(0.5);
+  tagged[0] = 'tagged first';
+  tagged[limit - 1] = 'tagged before';
+  tagged[limit] = 'tagged at';
+  tagged[limit + 1] = 'tagged after';
+  doubles[0] = -0.25;
+  doubles[limit - 1] = 1.25;
+  doubles[limit] = -2.5;
+  doubles[limit + 1] = 3.75;
+  const prototype = Object.assign(Object.create(Array.prototype), {
+    [limit - 1]: 'wrong before', [limit]: 'wrong at',
+    [limit + 1]: 'wrong after', [limit + 2]: 'inherited hole',
+  });
+  Object.setPrototypeOf(tagged, prototype);
+  Object.setPrototypeOf(doubles, prototype);
+  delete tagged[limit + 2];
+  delete doubles[limit + 2];
+  const samples = {};
+  for (const [name, array] of Object.entries({tagged, doubles})) {
+    for (const index of [0, limit - 1, limit, limit + 1, limit + 2]) {
+      samples[`${name}[${index}]`] = array[index];
+    }
+  }
+  const keep = () => [tagged, doubles];
+  truth.checkpoint('elements', {locals: samples});
+  return keep;
+}

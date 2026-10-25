@@ -441,6 +441,7 @@ fn connecting_readies_the_main_isolate_and_releases_it_once_node_waits() {
             cdp::NOTIFY_END,
             cdp::ENABLE_DEBUGGER,
             cdp::ENABLE_WORKERS,
+            "Runtime.enable",
             cdp::ENABLE_RUNTIME
         ]
     );
@@ -474,6 +475,47 @@ fn connecting_readies_the_main_isolate_and_releases_it_once_node_waits() {
     scripted.inspector.event(&[], cdp::WAITING, json!({}));
     scripted.pump_event(cdp::WAITING);
     assert_eq!(scripted.sent_names(), [cdp::RELEASE]);
+}
+
+#[test]
+fn removing_a_breakpoint_before_v8_answers_removes_its_late_placements() {
+    let mut scripted = Scripted::connected(1);
+    scripted.sent();
+    let breakpoint = scripted.add_line("app.scripted", 3, crate::BreakpointOptions::default());
+    let requests = scripted.sent();
+    let placements = requests
+        .iter()
+        .filter(|request| request.method == cdp::SET_BREAKPOINT)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        placements.len(),
+        2,
+        "the sentinel and the user's breakpoint"
+    );
+    scripted
+        .harness
+        .edit(|reply| super::super::Edit::RemoveBreakpoint {
+            id: breakpoint.id,
+            reply,
+        })
+        .try_recv()
+        .expect("a reply")
+        .expect("removed");
+    scripted.sent();
+    for request in placements {
+        let id = format!("late-{}", request.id);
+        scripted
+            .inspector
+            .reply(request, json!({"breakpointId": id, "locations": []}));
+        scripted.pump_reply();
+        let removed = scripted.sent();
+        assert!(
+            removed.iter().any(|request| {
+                request.method == cdp::REMOVE_BREAKPOINT && request.params["breakpointId"] == id
+            }),
+            "the withdrawn placement {id} remains in V8: {removed:?}"
+        );
+    }
 }
 
 /// The managed breakpoint `breakpoint`'s hit, counted `count` times.
@@ -1012,10 +1054,10 @@ fn a_process_exiting_while_armed_closes_the_connection() {
 
 /// The main isolate and a worker pause at once. The main isolate's pause
 /// runs on the main thread and stops; no thread is found running the
-/// worker's, whose script frames the fake cannot unwind, so it stops
-/// nothing and is let go with the resume.
+/// worker's, whose script frames the fake cannot unwind, so its failure
+/// is reported separately without attributing its breakpoint to a thread.
 #[test]
-fn two_isolates_pausing_at_once_stop_for_the_one_placed() {
+fn an_unidentified_worker_pause_does_not_replace_a_concurrent_breakpoint() {
     let mut scripted = Scripted::connected(2);
     scripted.sent();
     let managed = scripted.arm_line("app.scripted", 3, "app");
@@ -1042,10 +1084,15 @@ fn two_isolates_pausing_at_once_stop_for_the_one_placed() {
     assert_eq!(scripted.sent_names(), Vec::<String>::new());
 
     scripted.resume();
-    assert_eq!(
-        scripted.sent_names(),
-        [cdp::RESUME.to_owned(), format!("w1 {}", cdp::RESUME)]
+    assert_eq!(scripted.sent_names(), [cdp::RESUME]);
+    scripted.harness.settle_requested_stops();
+    let stops = scripted.stops();
+    assert!(
+        matches!(stops.as_slice(), [(_, StopReason::RuntimeEvent { description })] if description.contains("no native thread")),
+        "{stops:?}"
     );
+    scripted.resume();
+    assert_eq!(scripted.sent_names(), [format!("w1 {}", cdp::RESUME)]);
     assert_eq!(scripted.stops(), []);
 }
 

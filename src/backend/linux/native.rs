@@ -27,6 +27,8 @@ use crate::protocol::{LaunchOptions, StopId};
 use crate::{Error, Result, VirtualAddress};
 
 use super::memory::MemoryAccessError;
+#[path = "signal_action.rs"]
+mod signal_action;
 use super::modules::{
     ModuleMapping, ProcessMappings, identify_mapped_module, load_bias, process_mappings_in,
     read_maps,
@@ -179,10 +181,14 @@ pub(super) trait LinuxTraceOps: InspectionOps {
         Ok(None)
     }
 
-    /// Whether process `pid` has a handler for `signal`.
-    fn catches_signal(&self, pid: Pid, signal: Signal) -> std::result::Result<bool, Arc<str>> {
-        let _ = (pid, signal);
-        Err("this target has no signal handlers to read".into())
+    fn open_inspector_signal(
+        &self,
+        pid: Pid,
+        native_handler: u64,
+        interrupted: &mut Option<super::PendingSignal>,
+    ) -> std::result::Result<bool, Arc<str>> {
+        let _ = (pid, native_handler, interrupted);
+        Err("model gap: this target cannot prove and activate Node's native signal handler".into())
     }
 
     /// The TCP sockets process `pid` listens on at 127.0.0.1.
@@ -789,8 +795,15 @@ impl LinuxTraceOps for LinuxPtrace {
         super::inspector::loopback_listeners(pid)
     }
 
-    fn catches_signal(&self, pid: Pid, signal: Signal) -> std::result::Result<bool, Arc<str>> {
-        super::inspector::catches_signal(pid, signal.number())
+    fn open_inspector_signal(
+        &self,
+        pid: Pid,
+        native_handler: u64,
+        interrupted: &mut Option<super::PendingSignal>,
+    ) -> std::result::Result<bool, Arc<str>> {
+        self.assert_owner_thread();
+        signal_action::open_inspector(self, pid, native_handler, interrupted)
+            .map_err(|error| error.to_string().into())
     }
 
     fn python_join(

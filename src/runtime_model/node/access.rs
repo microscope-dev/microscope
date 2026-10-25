@@ -29,11 +29,14 @@ pub(super) fn bind(
     frame: InterpretedFrameRef,
     name: &str,
 ) -> Result<Option<Bound>, Problem> {
-    let found = variables::variables(reader, frame)?;
+    let (found, crossed_with) = variables::scoped_variables(reader, frame)?;
     if let Some(index) = found.iter().position(|variable| variable.name == name) {
         return Ok(Some(Bound::Variable(
             u32::try_from(index).map_err(|_| "too many variables")?,
         )));
+    }
+    if crossed_with {
+        return Err(variables::WITH_CONTEXT.into());
     }
     let context = reader.word(
         frame
@@ -161,10 +164,14 @@ pub(super) fn member(
     if reader.is(object, Constant::JSProxyType)? {
         return Err("the object is a proxy, and microscope does not call proxy traps".into());
     }
-    if let Ok(index) = name.parse::<u32>()
-        && index.to_string() == name
+    // Canonical numeric names must respect typed arrays anywhere in the
+    // prototype chain. "01" and "-1.0" remain ordinary names.
+    if name == "-0"
+        || name
+            .parse::<f64>()
+            .is_ok_and(|number| crate::view::summary::number_to_string(number) == name)
     {
-        return element(reader, object, index);
+        return element(reader, object, name);
     }
     if let Some(found) = built_in_getter(reader, handle, object, name)? {
         return Ok(Some(found));
@@ -178,23 +185,41 @@ pub(super) fn member(
     }
 }
 
-/// The element `index` of `object` or of its prototype chain.
+/// A canonical numeric property of `object` or its prototype chain.
 fn element(
     reader: &Reader<'_>,
     object: Object,
-    index: u32,
+    name: &str,
 ) -> Result<Option<InterpretedHandle>, Problem> {
-    if reader.is(object, Constant::JSTypedArrayType)? {
-        return typed_element(reader, object, index);
-    }
-    let below = index
-        .checked_add(1)
-        .ok_or("the index is past the end of the array")?;
+    let index = name.parse::<u32>().ok().filter(|index| *index != u32::MAX);
     let mut holder = object;
     for _ in 0..64 {
-        let found = own::elements(reader, holder, None, below)?;
-        if let Some(element) = found.iter().find(|element| element.index == index) {
-            return match element.held {
+        if reader.is(holder, Constant::JSTypedArrayType)? {
+            return name
+                .parse::<u64>()
+                .map_or(Ok(None), |index| typed_element(reader, holder, index));
+        }
+        let found = if let Some(index) = index {
+            if reader.is(holder, Constant::JSPrimitiveWrapperType)?
+                && let Some(value) =
+                    reader.object(reader.field(holder, Field::JSPrimitiveWrapperValue)?)?
+                && is_string(reader, value)?
+                && i64::from(index) < i64::from(reader.int32_field(value, Field::StringLength)?)
+            {
+                return Err(
+                    "V8 computes a string wrapper's character on demand, so no object holds it"
+                        .into(),
+                );
+            }
+            own::elements(reader, holder, index..index + 1)?
+                .into_iter()
+                .find(|element| element.index == index)
+                .map(|element| element.held)
+        } else {
+            lookup::own(reader, holder, Key::Name(name))?.map(|(held, _)| held)
+        };
+        if let Some(held) = found {
+            return match held {
                 own::Held::Data(word) => Ok(Some(Handle::Tagged(word).handle())),
                 own::Held::Double { address, .. } => Ok(Some(Handle::Double(address).handle())),
                 own::Held::Accessor(_) => Err("microscope does not call accessor elements".into()),
@@ -262,15 +287,18 @@ fn number(reader: &Reader<'_>, value: i64) -> Result<InterpretedHandle, Problem>
 fn typed_element(
     reader: &Reader<'_>,
     object: Object,
-    index: u32,
+    index: u64,
 ) -> Result<Option<InterpretedHandle>, Problem> {
     use super::inspect::ElementType as E;
     let (element, length, data) = super::typed::extent(reader, object)?;
-    if u64::from(index) >= length {
+    if index >= length {
         return Ok(None);
     }
     let size = super::typed::size(element);
-    let address = data + u64::from(index) * size;
+    let address = index
+        .checked_mul(size)
+        .and_then(|offset| data.checked_add(offset))
+        .ok_or("the typed array element address overflows")?;
     if element == E::Float64 {
         return Ok(Some(Handle::Double(address).handle()));
     }

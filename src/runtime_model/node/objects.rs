@@ -275,8 +275,16 @@ impl Reader<'_> {
     /// The text of the string `object`, of at most [`MAX_STRING`]
     /// characters, or the problem that it is no string or cannot be read.
     pub(super) fn string(&self, object: Object) -> Result<String, Problem> {
+        let length = u64::try_from(self.int32_field(object, Field::StringLength)?)
+            .map_err(|_| "a string has a negative length")?;
+        if length > MAX_STRING {
+            return Err(format!("the string exceeds the {MAX_STRING}-character read limit").into());
+        }
         let mut text = Vec::new();
         self.string_into(object, 0, MAX_STRING, 0, &mut text)?;
+        if text.len() as u64 != length {
+            return Err("the string's contents end before its declared length".into());
+        }
         Ok(String::from_utf16_lossy(&text))
     }
 
@@ -328,6 +336,11 @@ impl Reader<'_> {
                 text,
             )
         } else if representation == self.constant(Constant::ExternalStringTag)? {
+            if ty & self.constant(Constant::UncachedExternalStringMask)?
+                == self.constant(Constant::UncachedExternalStringTag)?
+            {
+                return Err("uncached external strings are unsupported".into());
+            }
             let data = self.word(self.field_address(object, Field::ExternalStringResourceData)?)?;
             if data == 0 {
                 return Err(format!("the external string {:#x} keeps no data", object.0).into());

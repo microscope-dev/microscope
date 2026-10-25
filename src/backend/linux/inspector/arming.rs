@@ -219,6 +219,9 @@ impl<P: LinuxTraceOps> Controller<P> {
             maps,
         };
         let script = (Arc::<str>::from(id), path);
+        if maps.get(&script.1).is_none_or(|map| map.map().is_err()) {
+            return;
+        }
         for arm in &inspector.desired {
             let (ManagedPlace::Line { path, line }, Some(site)) =
                 (&arm.place, isolate.sites.get_mut(&arm.number))
@@ -253,6 +256,14 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
         let connection = inspector.connection.as_ref().map(|link| &link.connection);
         for (session, isolate) in &mut inspector.isolates {
+            if isolate.withdrawn.remove(&id) {
+                if let (Some(connection), Ok(set)) = (connection, &result)
+                    && let Some(breakpoint) = set["breakpointId"].as_str()
+                {
+                    remove(connection, session, breakpoint);
+                }
+                return Ok(());
+            }
             if let Some(sentinel) = isolate
                 .sentinel
                 .as_mut()
@@ -350,6 +361,10 @@ fn sync_isolate(
         for placement in isolate.sites.remove(&number).unwrap_or_default().placements {
             if let Some(id) = placement.id {
                 remove(target.connection, target.session, &id);
+            } else if let SiteState::Requested(request) | SiteState::Withdrawn(request) =
+                placement.state
+            {
+                isolate.withdrawn.insert(request);
             }
         }
     }
@@ -367,7 +382,8 @@ fn sync_isolate(
                     .iter()
                     .filter_map(|(id, url)| {
                         let path = inspector_protocol::script_path(url);
-                        let (path, _) = target.maps.get_key_value(&*path)?;
+                        let (path, map) = target.maps.get_key_value(&*path)?;
+                        map.map().ok()?;
                         Some((Arc::clone(id), Arc::clone(path)))
                     })
                     .collect::<Vec<_>>();
@@ -434,12 +450,12 @@ fn sync_sentinel(target: &Target<'_>, isolate: &mut Isolate, desired: &BTreeMap<
     if isolate.sentinel.as_ref().map(|sentinel| &sentinel.pattern) == pattern.as_ref() {
         return;
     }
-    if let Some(id) = isolate
-        .sentinel
-        .take()
-        .and_then(|sentinel| sentinel.placement.id)
-    {
-        remove(target.connection, target.session, &id);
+    if let Some(sentinel) = isolate.sentinel.take() {
+        if let Some(id) = sentinel.placement.id {
+            remove(target.connection, target.session, &id);
+        } else if let SiteState::Requested(request) = sentinel.placement.state {
+            isolate.withdrawn.insert(request);
+        }
     }
     let Some(pattern) = pattern else {
         return;

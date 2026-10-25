@@ -1022,6 +1022,60 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         None
     }
 
+    /// A hidden listing's immutable target, or no edit for native upgrade
+    /// validation. An unrecognized caller is refused rather than exposed.
+    fn inspector_target(
+        &self,
+        _stop: &dyn RuntimeStop,
+        _caller: VirtualAddress,
+        _delegate: VirtualAddress,
+    ) -> Result<Option<Arc<str>>, Arc<str>> {
+        Err("the runtime cannot prove its inspector target caller".into())
+    }
+
+    fn inspector_signal_handler(&self) -> Option<ImageAddress> {
+        None
+    }
+
+    fn inspector_close_functions(&self) -> Option<(ImageAddress, ImageAddress)> {
+        None
+    }
+
+    fn inspector_startup_hooks(&self) -> Option<[ImageAddress; 3]> {
+        None
+    }
+
+    fn inspector_startup_pending(
+        &self,
+        _stop: &dyn RuntimeStop,
+        _agent: VirtualAddress,
+    ) -> Result<bool, Arc<str>> {
+        Err("the runtime cannot prove inspector startup quiescence".into())
+    }
+
+    fn inspector_agent(
+        &self,
+        _stop: &dyn RuntimeStop,
+    ) -> Result<Option<(VirtualAddress, Arc<str>)>, Arc<str>> {
+        Err("the runtime cannot identify its native inspector agent".into())
+    }
+
+    fn inspector_message_matches(
+        &self,
+        _stop: &dyn RuntimeStop,
+        _view: VirtualAddress,
+        _expected: &[u8],
+    ) -> Result<bool, Arc<str>> {
+        Err("the runtime cannot read a native inspector message".into())
+    }
+
+    fn inspector_endpoint(
+        &self,
+        _stop: &dyn RuntimeStop,
+    ) -> Result<Option<(std::net::SocketAddr, Arc<str>)>, Arc<str>> {
+        Ok(None)
+    }
+
     /// The number of the task whose stack a stopped thread entering the
     /// stack mover, given its registers there, is moving.
     fn moving_task(

@@ -1502,6 +1502,17 @@ build_fixture gcc "$c_fixtures_dir/basic.c" "$output_dir/basic-split-dwarf" \
 build_fixture gcc "$c_fixtures_dir/basic.c" "$output_dir/basic.o" -O0 -g3 -c
 build_fixture gcc "$c_fixtures_dir/attach.c" "$output_dir/attach" \
     -O0 -g3 -fPIE -pie
+build_fixture gcc "$c_fixtures_dir/signal-query-filter.c" "$output_dir/signal-query-filter" \
+    -O0 -g3 -fPIE -pie
+for version_node in "12.4 22" "13.6 24" "14.6 26"; do
+    read -r version node <<<"$version_node"
+    for compiler in g++ clang++; do
+        build_cpp_fixture "$compiler" "$cpp_fixtures_dir/inspector-string-view.cpp" \
+            "$output_dir/inspector-string-view-$version-$compiler" -O0 \
+            -isystem "$MICROSCOPE_V8_TORQUE/$version/v8/include" \
+            -isystem "$MICROSCOPE_NODE/$node/include"
+    done
+done
 build_fixture gcc "$c_fixtures_dir/attach-threads.c" "$output_dir/attach-threads" \
     -O0 -g3 -fPIE -pie -pthread
 build_fixture gcc "$c_fixtures_dir/attach-clones.c" "$output_dir/attach-clones" \
@@ -2644,6 +2655,8 @@ fi
 # ABI-stable and every build declares napi_value alike, so one build serves all.
 build_program gcc "$fixtures_dir/node/addon.c" "$output_dir/node-addon.node" \
     -std=c17 -Wall -Wextra -Werror -shared -fPIC -O0 -g "-I$MICROSCOPE_NODE/26/include"
+build_program gcc "$fixtures_dir/node/inspector-lifetime.c" "$output_dir/node-inspector-lifetime.node" \
+    -std=c17 -Wall -Wextra -Werror -shared -fPIC -O0 -g -pthread "-I$MICROSCOPE_NODE/26/include"
 for entry in 26 24 22; do
     node="$MICROSCOPE_NODE/$entry/node"
     for fixture in stacks tiers; do

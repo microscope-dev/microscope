@@ -29,6 +29,12 @@ mod layouts;
 #[path = "v8/accessors.rs"]
 mod accessors;
 
+#[path = "v8/inspector.rs"]
+mod inspector;
+
+#[path = "v8/inspector_activation.rs"]
+mod inspector_activation;
+
 #[cfg(test)]
 #[path = "v8/conformance.rs"]
 mod conformance;
@@ -370,6 +376,7 @@ pub(super) fn runtime(object: &object::File<'_>) -> Option<V8Runtime> {
         runtime.embedded_blob = accessors::embedded_blob(object);
     }
     runtime.node = accessors::node_release(object);
+    runtime.inspector = inspector::layout(object);
     Some(runtime)
 }
 
@@ -396,6 +403,7 @@ fn describe(exports: &Exports) -> Option<V8Runtime> {
             dispatch_table: Err(UNKNOWN_VERSION.into()),
             embedded_blob: Err(UNKNOWN_VERSION.into()),
             node: Err(UNKNOWN_VERSION.into()),
+            inspector: Err(UNKNOWN_VERSION.into()),
         });
     };
 
@@ -412,6 +420,7 @@ fn describe(exports: &Exports) -> Option<V8Runtime> {
         layout: bind(version, &exports.values, exports.sandbox),
         dispatch_table: Err(unread.clone()),
         embedded_blob: Err(unread.clone()),
+        inspector: Err(unread.clone()),
         node: Err(unread),
     })
 }
@@ -696,7 +705,8 @@ fn requires_field(field: Field, version: (u32, u32)) -> bool {
     match field {
         Field::JSFunctionCode
         | Field::SharedFunctionInfoFunctionData
-        | Field::FeedbackVectorMaybeOptimizedCode => version < LEAPTIERING,
+        | Field::FeedbackVectorMaybeOptimizedCode
+        | Field::ErrorStackDataLimitOrStackFrameInfos => version < LEAPTIERING,
         Field::JSFunctionDispatchHandle
         | Field::SharedFunctionInfoTrustedFunctionData
         | Field::SharedFunctionInfoUntrustedFunctionData

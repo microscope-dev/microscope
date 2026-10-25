@@ -163,29 +163,6 @@ pub(in crate::backend::linux) fn loopback_listeners(
     Ok(listeners(&table, &inodes))
 }
 
-/// Whether process `pid` has a handler for the signal numbered `signal`,
-/// as the `SigCgt` mask of `/proc/PID/status` shows it.
-pub(in crate::backend::linux) fn catches_signal(
-    pid: Pid,
-    signal: i32,
-) -> std::result::Result<bool, Arc<str>> {
-    let status = std::fs::read_to_string(format!("/proc/{pid}/status"))
-        .map_err(|error| Arc::<str>::from(format!("cannot read the process's status: {error}")))?;
-    caught(&status, signal)
-}
-
-/// Whether the `SigCgt` mask of `status`, as `/proc/PID/status` writes
-/// it, holds the signal numbered `signal`.
-fn caught(status: &str, signal: i32) -> std::result::Result<bool, Arc<str>> {
-    let mask = status
-        .lines()
-        .find_map(|line| line.strip_prefix("SigCgt:"))
-        .and_then(|mask| u64::from_str_radix(mask.trim(), 16).ok())
-        .ok_or_else(|| Arc::<str>::from("the process's status has no SigCgt mask"))?;
-    let bit = u32::try_from(signal - 1).map_err(|_| "no such signal")?;
-    Ok(mask.checked_shr(bit).is_some_and(|mask| mask & 1 == 1))
-}
-
 /// The sockets of `table`, as `/proc/net/tcp` writes it, listening on
 /// 127.0.0.1 whose inodes are in `inodes`.
 fn listeners(table: &str, inodes: &BTreeSet<u64>) -> Vec<SocketAddr> {
@@ -214,21 +191,6 @@ fn listeners(table: &str, inodes: &BTreeSet<u64>) -> Vec<SocketAddr> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_signal_is_caught_when_its_bit_of_sig_cgt_is_set() {
-        // SIGUSR1 (10) and SIGPIPE (13), from a node's status.
-        let status = "Name:\tnode\nSigIgn:\t0000000000001000\nSigCgt:\t0000000180004202\n";
-        assert_eq!(caught(status, 10), Ok(true));
-        assert_eq!(caught(status, 2), Ok(true), "bit 1 is SIGINT");
-        assert_eq!(caught(status, 1), Ok(false), "bit 0 is SIGHUP");
-        assert_eq!(
-            caught(status, 13),
-            Ok(false),
-            "SIGPIPE is ignored, not caught"
-        );
-        assert!(caught("Name:\tnode\n", 10).is_err());
-    }
 
     #[test]
     fn listeners_are_the_processs_loopback_sockets_that_listen() {

@@ -192,14 +192,17 @@ impl<P: LinuxTraceOps> LinuxTraceOps for Recorded<P> {
         listeners
     }
 
-    fn catches_signal(
+    fn open_inspector_signal(
         &self,
         pid: Pid,
-        signal: super::Signal,
+        native_handler: u64,
+        interrupted: &mut Option<super::PendingSignal>,
     ) -> std::result::Result<bool, Arc<str>> {
-        let caught = self.0.catches_signal(pid, signal);
-        record!("{pid} catches {signal:?}: {caught:?}");
-        caught
+        let opened = self
+            .0
+            .open_inspector_signal(pid, native_handler, interrupted);
+        record!("{pid} native inspector activation: {opened:?}; interrupted: {interrupted:?}");
+        opened
     }
 
     fn python_join(

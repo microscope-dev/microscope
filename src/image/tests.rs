@@ -260,6 +260,8 @@ fn the_schema_is_the_records_layout() {
             blob,
             node_problem,
             node,
+            inspector_problem,
+            inspector,
             offsets,
             constants
         ]
@@ -624,7 +626,7 @@ fn the_schema_is_the_records_layout() {
     // layouts before reading tables; the container format is independent.
     assert_eq!(
         schema::layout_fingerprint(),
-        0x57f8_a551_123e_04dc,
+        0x2879_7a6a_a6b9_746f,
         "the layout changed:\n{}",
         schema::schema_text()
     );
@@ -3789,6 +3791,14 @@ fn validation_rejects_a_python_runtime_that_names_nothing() {
     assert!(refusal(vec![reserved]).contains("flags it does not define"));
 }
 
+fn sealed_v8(runtime: Option<&super::v8::V8Runtime>) -> Option<super::v8::V8Runtime> {
+    let mut builder = Builder::new(TARGET);
+    let mut strings = StringsBuilder::default();
+    super::v8::add_to(&mut builder, &mut strings, runtime).unwrap();
+    builder.bytes(TableKind::Strings, strings.into_bytes());
+    super::v8::runtime(&builder.seal(Limits::default()).unwrap())
+}
+
 /// A V8 runtime reads back as it was sealed, with its layout or the reason
 /// it has none; a field or constant the layout lacks reads back absent.
 #[test]
@@ -3798,14 +3808,6 @@ fn a_v8_runtime_reads_back_with_its_layout_or_its_problem() {
         V8Runtime, V8Version,
     };
     use crate::ImageAddress;
-
-    let sealed = |runtime: Option<&V8Runtime>| {
-        let mut builder = Builder::new(TARGET);
-        let mut strings = StringsBuilder::default();
-        v8::add_to(&mut builder, &mut strings, runtime).unwrap();
-        builder.bytes(TableKind::Strings, strings.into_bytes());
-        v8::runtime(&builder.seal(Limits::default()).unwrap())
-    };
 
     let mut layout = V8Layout::default();
     layout.set_field(Field::JSFunctionSharedFunctionInfo, 32);
@@ -3836,8 +3838,9 @@ fn a_v8_runtime_reads_back_with_its_layout_or_its_problem() {
             minor: 12,
             patch: 1,
         }),
+        inspector: Err("the fixture has no native inspector".into()),
     };
-    let read = sealed(Some(&runtime)).unwrap();
+    let read = sealed_v8(Some(&runtime)).unwrap();
     assert_eq!(read, runtime);
     assert_eq!(read.version.to_string(), "14.6.202.33");
     let layout = read.layout.unwrap();
@@ -3853,17 +3856,50 @@ fn a_v8_runtime_reads_back_with_its_layout_or_its_problem() {
         dispatch_table: Err("names no js_dispatch_table_address".into()),
         embedded_blob: Err("names no GetEmbeddedCodeRange".into()),
         node: Err("names no napi_get_node_version".into()),
+        inspector: Err("names no native inspector registry".into()),
         ..runtime
     };
-    assert_eq!(sealed(Some(&refused)), Some(refused));
+    assert_eq!(sealed_v8(Some(&refused)), Some(refused));
     for dispatch_table in [Ok(None), Ok(Some(DispatchTable::Isolate { offset: 0x268 }))] {
         let other = V8Runtime {
             dispatch_table,
             ..runtime.clone()
         };
-        assert_eq!(sealed(Some(&other)), Some(other));
+        assert_eq!(sealed_v8(Some(&other)), Some(other));
     }
-    assert_eq!(sealed(None), None);
+    for close in [
+        None,
+        Some((ImageAddress::new(0x100), ImageAddress::new(0x200))),
+    ] {
+        let other = V8Runtime {
+            inspector: Ok(v8::NodeInspector {
+                registry: ImageAddress::new(0x300),
+                signal_handler: ImageAddress::new(0x400),
+                vector: true,
+                io: 24,
+                host_port: 32,
+                host: 40,
+                port: 72,
+                id: 184,
+                close,
+                startup: Some(v8::InspectorStartup {
+                    before_wait: ImageAddress::new(0x500),
+                    after_wait: ImageAddress::new(0x505),
+                    check: ImageAddress::new(0x600),
+                    async_offset: 192,
+                }),
+                targets: v8::InspectorTargets {
+                    entry: ImageAddress::new(0x700),
+                    source: 160,
+                    hidden: [0x800, 0x900, 0xa00].map(ImageAddress::new),
+                    upgrade: ImageAddress::new(0xb00),
+                },
+            }),
+            ..runtime.clone()
+        };
+        assert_eq!(sealed_v8(Some(&other)), Some(other));
+    }
+    assert_eq!(sealed_v8(None), None);
 }
 
 #[test]
@@ -3885,6 +3921,8 @@ fn validation_rejects_a_v8_runtime_that_names_nothing() {
         blob: [0.into(); 4],
         node_problem: u32::MAX.into(),
         node: [0.into(); 3],
+        inspector_problem: u32::MAX.into(),
+        inspector: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 160, 2, 3, 4, 5].map(Into::into),
         offsets: [u32::MAX.into(); super::v8::Field::COUNT],
         constants: [i64::MIN.into(); super::v8::Constant::COUNT],
     };
@@ -3903,6 +3941,19 @@ fn validation_rejects_a_v8_runtime_that_names_nothing() {
     let mut reserved = record(u32::MAX);
     reserved.reserved = 1.into();
     assert!(refusal(vec![reserved]).contains("flags it does not define"));
+    for field in [8, 9] {
+        let mut partial_close = record(u32::MAX);
+        partial_close.inspector[field] = 8.into();
+        assert!(refusal(vec![partial_close]).contains("invalid Node inspector layout"));
+    }
+    for field in [14, 16, 17, 18, 19] {
+        let mut missing_target = record(u32::MAX);
+        missing_target.inspector[field] = 0.into();
+        assert!(refusal(vec![missing_target]).contains("invalid Node inspector layout"));
+    }
+    let mut ambiguous = record(u32::MAX);
+    ambiguous.inspector[19] = ambiguous.inspector[18];
+    assert!(refusal(vec![ambiguous]).contains("invalid Node inspector layout"));
     let mut kind = record(u32::MAX);
     kind.dispatch_kind = 3.into();
     assert!(refusal(vec![kind]).contains("dispatch table of kind 3"));

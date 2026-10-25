@@ -124,6 +124,8 @@ impl Thrown {
 /// A frame of a pause, as V8 listed it.
 #[derive(Debug)]
 struct PausedFrame {
+    path: Option<Arc<str>>,
+
     /// Its place: zero-based line and column.
     line: u64,
     column: u64,
@@ -153,6 +155,7 @@ impl PausedFrame {
 /// A script frame of a thread's stack: its one-based place, and the
 /// interpreted frame it is, when the runtime places it.
 struct ScriptFrame {
+    path: Arc<str>,
     line: u64,
     column: u64,
     frame: Option<VirtualAddress>,
@@ -230,7 +233,16 @@ impl<P: LinuxTraceOps> Controller<P> {
             .into_iter()
             .flatten()
             .enumerate()
-            .map(|(index, frame)| list_frame(&link.connection, session, frame, index, &mut listing))
+            .map(|(index, frame)| {
+                list_frame(
+                    &link.connection,
+                    session,
+                    &isolate.scripts,
+                    frame,
+                    index,
+                    &mut listing,
+                )
+            })
             .collect();
         let listed = listing.is_empty();
         isolate.paused = Some(Paused {
@@ -418,23 +430,27 @@ impl<P: LinuxTraceOps> Controller<P> {
     )]
     fn judge_pause(&mut self, key: &PauseKey) {
         let thread = self.paused_thread(key);
+        let fallback = self.inferior.as_ref().map(|inferior| inferior.tgid);
         let Some(paused) = self.paused_mut(key) else {
             return;
         };
         paused.judged = true;
-        paused.thread = thread;
+        paused.thread = thread.as_ref().ok().copied();
         // A pause held over from an earlier stop keeps the reason it was
         // judged to have, and counts no hit again.
         let decided = paused.reason.clone();
-        let Some(pid) = thread else {
-            record!("no thread runs the pause in {key:?}; it is resumed");
-            paused.reason = None;
-            return;
+        let (pid, reason) = match thread {
+            Ok(pid) => {
+                if let Err(error) = self.bind_paused_frames(key, pid) {
+                    record!("the pause's frames are not bound: {error}");
+                }
+                (pid, decided.or_else(|| self.pause_reason(key, pid)))
+            }
+            Err(description) => {
+                let Some(pid) = fallback else { return };
+                (pid, Some(StopReason::RuntimeEvent { description }))
+            }
         };
-        if let Err(error) = self.bind_paused_frames(key, pid) {
-            record!("the pause's frames are not bound: {error}");
-        }
-        let reason = decided.or_else(|| self.pause_reason(key, pid));
         let Some(paused) = self.paused_mut(key) else {
             return;
         };
@@ -447,7 +463,12 @@ impl<P: LinuxTraceOps> Controller<P> {
         let Some(inferior) = self.inferior.as_mut() else {
             return;
         };
-        if let Some(thread) = inferior.threads.get_mut(&pid) {
+        if let Some(thread) = inferior.threads.get_mut(&pid)
+            && thread.reason.as_ref().is_none_or(|current| {
+                super::super::classify::visible_stop_priority(&reason)
+                    > super::super::classify::visible_stop_priority(current)
+            })
+        {
             thread.reason = Some(reason.clone());
         }
         if let Some(barrier) = inferior.barrier.as_mut() {
@@ -532,12 +553,12 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// The thread the pause `key` names holds: the process's main thread
     /// for the main isolate, and for a worker the one thread no other
     /// pause holds whose script frames are the ones V8 listed.
-    fn paused_thread(&self, key: &PauseKey) -> Option<Pid> {
-        let inferior = self.inferior.as_ref()?;
+    fn paused_thread(&self, key: &PauseKey) -> std::result::Result<Pid, Arc<str>> {
+        let inferior = self.inferior.as_ref().ok_or("the process is gone")?;
         if key.1.path().is_empty() {
-            return Some(inferior.tgid);
+            return Ok(inferior.tgid);
         }
-        let paused = self.paused(key)?;
+        let paused = self.paused(key).ok_or("V8 no longer holds this pause")?;
         let held = inferior
             .inspectors
             .records
@@ -551,21 +572,25 @@ impl<P: LinuxTraceOps> Controller<P> {
             .filter(|&&pid| pid != inferior.tgid && !held.contains(&pid))
             .filter(|&&pid| {
                 self.script_frames(pid).is_ok_and(|frames| {
-                    !paused.frames.is_empty()
+                    paused
+                        .frames
+                        .first()
+                        .is_some_and(|frame| frame.path.is_some())
                         && frames.len() >= paused.frames.len()
                         && frames.iter().zip(&paused.frames).all(|(frame, listed)| {
-                            frame.line == listed.line + 1 && frame.column == listed.column + 1
+                            listed.path.as_ref().is_none_or(|path| path == &frame.path)
+                                && Some(frame.line) == listed.line.checked_add(1)
+                                && Some(frame.column) == listed.column.checked_add(1)
                         })
                 })
             })
             .copied()
             .collect::<Vec<_>>();
-        if matching.len() > 1 {
-            // Threads paused at the same places are told apart by nothing
-            // V8 reports; their locals are checked against their slots.
-            record!("threads {matching:?} all match the pause in {key:?}");
+        match matching.as_slice() {
+            [pid] => Ok(*pid),
+            [] => Err("no native thread can be proved to hold V8's worker pause; its locals and breakpoint hits are not attributed".into()),
+            _ => Err(format!("native threads {matching:?} have identical script stacks at V8's worker pause; its locals and breakpoint hits are not attributed").into()),
         }
-        matching.first().copied()
     }
 
     /// The script frames of `pid`'s stack, innermost first.
@@ -601,6 +626,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             let resolved =
                 self.resolved_in(inferior, &root, &stack, &modules, &expanded, frame.id)?;
             frames.push(ScriptFrame {
+                path: Arc::clone(&place.path),
                 line: u64::from(place.line),
                 column: u64::from(place.column),
                 frame: match resolved.scope {
@@ -624,7 +650,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
         let mut bound = BTreeMap::new();
         for (frame, listed) in frames.iter().zip(&paused.frames) {
-            if frame.line != listed.line + 1 || frame.column != listed.column + 1 {
+            if Some(frame.line) != listed.line.checked_add(1)
+                || Some(frame.column) != listed.column.checked_add(1)
+                || listed.path.as_ref().is_some_and(|path| path != &frame.path)
+            {
                 record!(
                     "V8's frames part from the stack's at {}:{}",
                     frame.line,
@@ -645,14 +674,19 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     /// Notes that the stop published is the pause V8 holds `pid` in, if
     /// it is one.
-    pub(in crate::backend::linux) fn mark_published_pause(&mut self, pid: Pid) {
+    pub(in crate::backend::linux) fn mark_published_pause(
+        &mut self,
+        pid: Pid,
+        reason: &StopReason,
+    ) {
         if let Some(inferior) = self.inferior.as_mut() {
             for isolate in inferior.inspectors.isolates_mut() {
-                if let Some(paused) = isolate
-                    .paused
-                    .as_mut()
-                    .filter(|paused| paused.thread == Some(pid))
-                {
+                if let Some(paused) = isolate.paused.as_mut().filter(|paused| {
+                    paused.thread == Some(pid)
+                        || (paused.thread.is_none()
+                            && matches!(reason, StopReason::RuntimeEvent { .. })
+                            && paused.reason.as_ref() == Some(reason))
+                }) {
                     paused.published = true;
                 }
             }
@@ -843,6 +877,7 @@ fn resume_isolate(
 fn list_frame(
     connection: &Connection,
     session: &Session,
+    scripts: &BTreeMap<Arc<str>, Arc<str>>,
     frame: &serde_json::Value,
     index: usize,
     listing: &mut BTreeMap<RequestId, (usize, usize)>,
@@ -890,6 +925,10 @@ fn list_frame(
         }
     }
     PausedFrame {
+        path: frame["location"]["scriptId"]
+            .as_str()
+            .and_then(|id| scripts.get(id))
+            .map(|url| Arc::from(inspector_protocol::script_path(url).as_ref())),
         line: frame["location"]["lineNumber"].as_u64().unwrap_or(u64::MAX),
         column: frame["location"]["columnNumber"]
             .as_u64()

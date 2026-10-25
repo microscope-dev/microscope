@@ -231,7 +231,7 @@ fn valid_pid(value: u32) -> bool {
     value != 0 && i32::try_from(value).is_ok()
 }
 
-fn field<'a>(status: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
+pub(super) fn field<'a>(status: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
     let mut values = status
         .split(|byte| *byte == b'\n')
         .filter_map(|line| line.strip_prefix(key));
