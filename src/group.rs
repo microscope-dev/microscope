@@ -760,37 +760,39 @@ impl Driver {
         }
 
         let command = command_line(process);
-        self.shared
-            .members
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(Member {
-                number,
-                process: Some(process),
-                parent,
-                executed: executed.clone(),
-                command,
-                state: if live.gone {
-                    MemberState::Detached
-                } else {
-                    MemberState::Running
-                },
-            });
-        self.shared
-            .handles
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(number, handle.clone());
-
+        let mut member = Member {
+            number,
+            process: Some(process),
+            parent,
+            executed: executed.clone(),
+            command,
+            state: if live.gone {
+                MemberState::Detached
+            } else {
+                MemberState::Running
+            },
+        };
         let resume = !live.gone && matches!(self.phase, Phase::Running);
         if resume {
             live.running = continue_stopped(&handle).await.is_ok();
         } else if let Ok(snapshot) = handle.snapshot().await
             && let InferiorState::Stopped { reason, .. } = snapshot.inferior
         {
-            self.shared
-                .update(number, |member| member.state = MemberState::Stopped(reason));
+            member.state = MemberState::Stopped(reason);
         }
+
+        // A stopped group must not expose a joining member as running
+        // while its snapshot is still on the way.
+        self.shared
+            .members
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(member);
+        self.shared
+            .handles
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(number, handle.clone());
         self.members.insert(number, live);
 
         self.emit(GroupEvent::MemberJoined {
