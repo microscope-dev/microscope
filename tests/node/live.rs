@@ -785,12 +785,15 @@ fn live_reads_keep_their_interval_or_say_they_fell_behind() {
     );
 }
 
-/// How long a read took, by the note that it fell behind, `a live read
-/// took 2.5 ms and began ...`.
+/// How long at most a read took, by the note that it fell behind, `a live
+/// read took 2.5 ms and began ...`, which rounds to a tenth of a
+/// millisecond.
 fn read_took(note: &str) -> Option<Duration> {
     let rest = note.strip_prefix("a live read took ")?;
     let (took, _) = rest.split_once(" ms and began ")?;
-    Some(Duration::from_secs_f64(took.parse::<f64>().ok()? / 1e3))
+    Some(Duration::from_secs_f64(
+        (took.parse::<f64>().ok()? + 0.05) / 1e3,
+    ))
 }
 
 /// How far behind a note that a live read fell behind says it was: how
