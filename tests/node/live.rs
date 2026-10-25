@@ -616,33 +616,33 @@ fn live_reads_under_deoptimization_find_each_thread_at_its_site_on_22() {
 
 /// A live recording reads as often as it is asked to, or says it fell
 /// behind: reads at a millisecond's interval of a program parked in
-/// `Atomics.wait` either keep up from the first read on, as each read's
+/// `fs.readSync` either keep up from the first read on, as each read's
 /// wait shows, or each say how long they took.
 #[test]
 fn live_reads_keep_their_interval_or_say_they_fell_behind() {
     let every = Duration::from_millis(1);
     let mut command = Command::new(node::node(ENTRY));
-    command.args([
-        "-e",
-        "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5000)",
-    ]);
+    command.args(["-e", "require('node:fs').readSync(0, Buffer.alloc(1))"]);
     let options = RecordOptions {
         python: Some(PythonEngine::Live { every }),
         ..RecordOptions::default()
     };
-    let (profile, _, _) = record_released(command, &options, |_| Some(()), |_, ()| true);
     // Reads begin once the program's debug information is loaded, which
-    // takes longer on a loaded machine.
-    let reads: std::collections::BTreeSet<i64> = profile
-        .task_waits()
-        .iter()
-        .filter(|wait| wait.noun == "thread")
-        .map(|wait| wait.time)
-        .collect();
-    let (Some(&first), Some(&last)) = (reads.first(), reads.last()) else {
+    // takes seconds on a loaded machine, so the program waits for them.
+    let (profile, _, _) = record_released(
+        command,
+        &options,
+        |_| Some(()),
+        |profile, ()| {
+            reads_of_one_thread(profile).is_some_and(|(_, first, last)| {
+                Duration::from_nanos((last - first).unsigned_abs()) >= READ_FOR
+            })
+        },
+    );
+    let Some((reads, first, last)) = reads_of_one_thread(&profile) else {
         panic!("no read found the parked thread");
     };
-    let asked = u64::try_from((last - first) / 1_000_000).expect("a span");
+    let span = Duration::from_nanos((last - first).unsigned_abs());
     let behind = profile
         .task_snapshot_problems()
         .iter()
@@ -650,13 +650,29 @@ fn live_reads_keep_their_interval_or_say_they_fell_behind() {
             (first..=last).contains(time) && problem.starts_with("a live read took")
         })
         .count();
-    let reads = u64::try_from(reads.len()).expect("a count");
-    assert!(
-        asked >= 500,
-        "reads spanned {asked} ms of the program's 5 s"
-    );
+    let asked = u64::try_from(span.as_millis()).expect("a span");
+    assert!(span >= READ_FOR, "reads spanned {span:?}");
     assert!(
         reads * 2 >= asked || u64::try_from(behind).expect("a count") * 2 >= reads,
         "{reads} reads in {asked} ms at 1 ms each, {behind} said they fell behind"
     );
+}
+
+/// How long the interval test reads its program.
+const READ_FOR: Duration = Duration::from_secs(1);
+
+/// How many reads found a thread in `profile`, and when the first and the
+/// last began; `None` before any did.
+fn reads_of_one_thread(profile: &Profile) -> Option<(u64, i64, i64)> {
+    let times: std::collections::BTreeSet<i64> = profile
+        .task_waits()
+        .iter()
+        .filter(|wait| wait.noun == "thread")
+        .map(|wait| wait.time)
+        .collect();
+    Some((
+        u64::try_from(times.len()).ok()?,
+        *times.first()?,
+        *times.last()?,
+    ))
 }
