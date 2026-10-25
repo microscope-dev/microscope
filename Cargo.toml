@@ -23,6 +23,10 @@ sim = []
 # Allocates with the C library's allocator instead of mimalloc, for heap
 # profilers such as Valgrind's that cannot see mimalloc.
 system-alloc = []
+# Loads a BPF sampler that times each walk of JavaScript frames and records
+# the totals in the profile's setting `v8 walk times`, for measuring the walk
+# alone (dev/performance.md). The shipping sampler has no clock.
+bpf-walk-timing = []
 # Developer tools: `microscope-tools` dumps every answer a program's debug
 # information gives, loads programs for benchmarks, and summarizes timings.
 tools = []

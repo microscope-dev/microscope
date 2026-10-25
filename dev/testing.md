@@ -352,6 +352,14 @@ it. The build saves a core of `stacks.js` and `tiers.js` for 26, 24, and 22
 with its report beside it, as `build/test-programs/node-*.core` and
 `.core.log`. `just node` runs the suite alone; arguments go to nextest.
 
+The profiler and syscall tests (`tests/node/profile.rs`,
+`tests/node/syscalls.rs`) run on 26 alone, since every line shares the
+reader. `syscalls.js` prints V8's call sites before each open, and `busy.js`
+prints each spinning thread's call sites and tiers before it spins. Their `bpf` modules run under
+`just test-bpf`, which includes `--test node`. `profiling_and_tracing_write_nothing`
+reads the flight recordings of a profile and a syscall trace and fails on any
+memory write or inspector command.
+
 ## Unit tests
 
 Unit-test complicated deterministic logic where a failure can identify the

@@ -327,6 +327,22 @@ pub fn cpython_role(name: &str) -> Option<CodeRole> {
         .then_some(CodeRole::Interpreter)
 }
 
+/// The frame V8 runs each interpreted JavaScript function in: a backtrace
+/// shows the function in its place. The names are V8's own builtins', so
+/// only an image that carries V8 gives them this role.
+const V8_INTERPRETER: [&str; 2] = [
+    "Builtins_InterpreterEntryTrampoline",
+    "Builtins_InterpreterEntryTrampolineForProfiling",
+];
+
+/// The role V8's code at a symbol of this name plays, in an image that
+/// carries V8, or `None` for code of its own role.
+pub fn v8_role(name: &str) -> Option<CodeRole> {
+    V8_INTERPRETER
+        .contains(&split_from(name))
+        .then_some(CodeRole::Interpreter)
+}
+
 /// What `_asyncio`, CPython's accelerator for asyncio, steps a task's
 /// coroutine through: the event loop calls it, and it resumes the coroutine.
 const ASYNCIO_MACHINERY: [&str; 6] = [
@@ -521,6 +537,27 @@ mod tests {
 
         assert_eq!(symbol_role("_PyEval_EvalFrameDefault"), CodeRole::Ordinary);
         assert_eq!(symbol_role("py::jit:executor"), CodeRole::Interpreter);
+    }
+
+    /// V8's interpreter entry is the frame of an interpreted function; the
+    /// bytecode handlers and other builtins are not.
+    #[test]
+    fn v8s_interpreter_entry_is_the_interpreters() {
+        assert_eq!(
+            v8_role("Builtins_InterpreterEntryTrampoline"),
+            Some(CodeRole::Interpreter)
+        );
+        assert_eq!(
+            v8_role("Builtins_InterpreterEntryTrampolineForProfiling"),
+            Some(CodeRole::Interpreter)
+        );
+        for name in ["Builtins_AddHandler", "Builtins_JSEntry", "main"] {
+            assert_eq!(v8_role(name), None, "{name}");
+        }
+        assert_eq!(
+            symbol_role("Builtins_InterpreterEntryTrampoline"),
+            CodeRole::Ordinary
+        );
     }
 
     /// `_asyncio`'s task stepping is the interpreter's machinery; the

@@ -94,6 +94,40 @@ through `RuntimeModel::sampled_frames` and places them by the same rule as
 `unwind_live`. The kernel's process ids key the map, so the reader sets
 layouts only when microscope runs in the initial PID namespace.
 
+### JavaScript frames
+
+V8 runs JavaScript on the native stack, so a Node process's stacks need its
+anonymous code as modules before they unwind past the first V8 frame. In a
+process that carries V8 (`Stacks::carries_v8`), each anonymous executable
+mapping becomes a module as it is mapped: a byte-for-byte copy of node's
+builtins (`unwind::code_copies`, the proof the controller uses too) binds
+node's image, and any other is V8's generated code, unwound by frame pointers.
+They are read at the `mmap` record, not when a stack needs them, because an
+isolate unmaps its code range when it is disposed and a worker's calls are
+often read after it has gone. A stack that ends in code no module holds reads
+the process's mappings once more.
+
+At a ptrace stop, `Stacks::unwind_live` names each frame whose code is V8's
+builtins or code it generated through the Node model's `code_frame`, with the
+frame pointer and the thread's `fs_base` for its isolate, as the debugger
+does: every tier has its line.
+
+The BPF programs run the V8 walker (`v8.bpf.h`, described in
+[profiling](profiling.md#javascript-frames-in-each-sample)) in `send_stack`
+when the process has a `v8_layout` in `V8_LAYOUTS`, and send a
+`RECORD_V8_STACK`. `Stacks::v8_layout` gives the layout once the V8 module is
+mapped. `Stacks::sampled_code_frames` places each walked frame before the
+native frame with its address and frame pointer (`profiler::positions`), keeps
+it only where its code is V8's, and names it by `RuntimeModel::sampled_code_frame`
+and its proof. A system call is always made from inside a call, so each
+interpreted frame's slot holds the offset of the call it made and has its line;
+a compiled frame's line is unknown, as in a sample. As in a sample, a stack
+one of whose native frames runs V8's code (`Stacks::owned_at`) ends with
+`InterpretedUnknown` where it has no V8 record, or one from before the
+layout, and with `InterpretedEnded` where the walk stopped at a frame pointer
+it could not follow, as at a call made from code that keeps no frame pointer
+in `rbp`; a stack in none of V8's code ends neither way.
+
 ## The BPF engine
 
 The kernel programs are C in `src/backend/linux/bpf/`, a directory the
@@ -200,9 +234,23 @@ With `--window` or `--continuous`, each saved file gets its own span's calls.
   activation that C began, the text, and a saved trace's call site. It also
   checks a catchpoint's backtrace. Its `bpf` module holds the BPF engine to
   the same frames, with `-k=dwarf`, after the fixture's `--settle` second.
+- `tests/node/syscalls.rs` traces `tests/fixtures/node/syscalls.js`, which
+  prints the call sites V8 reports (`CallSite`) on the line before each
+  `openat`, in every tier and on a worker, and holds each engine's frames to
+  them. Its BPF tests run the fixture under `--hold`: it opens a probe path
+  until the trace names its JavaScript frames and the test writes `go` to its
+  stdin, then makes its calls, and its worker lives until stdin ends. They
+  check that the BPF engine's frames agree with V8's and with the ptrace
+  engine's. Each comparison has a self-test that it fails on each lie.
+  Another traces `tests/fixtures/node/frameless.js --opens`, whose opens of
+  `/dev/zero` an addon (`frameless.c`) makes with 8 in `rbp`: each must name
+  the function that made it or end saying its JavaScript frames are missing.
 - The BPF tests each map perf rings on every CPU, which count against the
-  user's perf memory, so nextest runs at most two at once (the `perf-rings`
-  group in `.config/nextest.toml`).
+  user's perf memory, so nextest runs at most two at once: one of the
+  `perf-rings` group, and one of `bpf-profiles`, which holds Node's BPF
+  tests and Python's BPF profile tests, so that Node's spinning programs
+  never run beside the Python tests that bound their unread samples
+  (`.config/nextest.toml`).
 - The browser's view is covered by `tests/web/syscalls.rs`, Vitest, and
   `web/e2e/syscalls.spec.ts`.
 

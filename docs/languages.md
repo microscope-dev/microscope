@@ -750,6 +750,37 @@ you choose them:
 The stop selects the throwing frame and names the exception as Node would
 print it. An exception thrown and caught in a skipped script does not stop.
 
+### Profiling
+
+`microscope record --node bpf` puts each CPU sample's JavaScript frames in
+its stack, and labels it with the isolate its thread ran in; `--node
+snapshot` stops the program to read every frame with its line. See [Record Node programs](profiling.md#record-node-programs), and
+[Instrument a Node program](profiling.md#instrument-a-node-program) for the
+`sdk/node` package.
+
+### System calls
+
+`microscope syscalls -k` shows each call's JavaScript frames among V8's
+native ones:
+
+```text
+openat(AT_FDCWD, "/etc/hostname", O_RDONLY|O_CLOEXEC) = 20
+ > /usr/lib/libc.so.6(open+0x56) [0x117536]
+ > /usr/bin/node(uv__fs_work+0x9a) [0x1a1053a]
+ > /usr/bin/node(uv_fs_open+0xe8) [0x1a12ed8]
+ > /usr/bin/node(node::fs::Open(v8::FunctionCallbackInfo<v8::Value> const&)+0x4b4) [0x9f7a34]
+ > /usr/bin/node(Builtins_CallApiCallbackGeneric+0x68) [0x1a34ae8]
+ > openSync at node:fs:782
+ > /usr/bin/node(Builtins_InterpreterEntryTrampoline+0xe3) [0x1a330a3]
+ > loadSettings at /srv/app/server.js:3
+ > /usr/bin/node(Builtins_InterpreterEntryTrampoline+0xe3) [0x1a330a3]
+ > main at /srv/app/server.js:6
+```
+
+The ptrace engine gives every frame its line. The BPF engine gives a line to
+frames V8's interpreter runs, and names compiled frames by function alone;
+see [Show where calls come from](syscalls.md#show-where-calls-come-from).
+
 ### Assignments
 
 `set var`, the console, and an editor's **Set Value** give a variable of a

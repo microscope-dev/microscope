@@ -119,7 +119,7 @@ test-bpf LAUNCHER="/run/wrappers/bin/microscope-bpf" *ARGS: build-test-programs
         exit 1
     fi
     ulimit -c 0
-    MICROSCOPE_BPF_LAUNCHER="$1" MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features tools --run-ignored only --test syscalls --test python -E 'test(/(^|::)bpf::/)' "${@:2}"
+    MICROSCOPE_BPF_LAUNCHER="$1" MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features tools --run-ignored only --test syscalls --test python --test node -E 'test(/(^|::)bpf::/)' "${@:2}"
 
 # How many seeds `just miri` tries its concurrent tests under: about as many
 # as run at once. Try more with `just miri_seeds=0..256 miri`, or

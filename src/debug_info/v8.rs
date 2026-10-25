@@ -79,6 +79,15 @@ pub fn is_v8(image: &crate::ModuleImage) -> bool {
     image.symbol_named(FRAME_FUNCTION_OFFSET).is_ok()
 }
 
+/// Whether the object being read carries V8, as [`is_v8`] tells of its
+/// image.
+pub(super) fn carries_runtime(object: &object::File<'_>) -> bool {
+    object
+        .symbols()
+        .chain(object.dynamic_symbols())
+        .any(|symbol| symbol.name() == Ok(FRAME_FUNCTION_OFFSET))
+}
+
 /// The symbol at which the embedded builtins begin.
 const EMBEDDED_BLOB: &str = "v8_Default_embedded_blob_code_";
 

@@ -99,14 +99,15 @@ pub struct RecordArgs {
     #[arg(long, requires = "task_snapshots")]
     live_snapshots: bool,
 
-    /// Read where a Python program's threads are, by ENGINE: `bpf` walks
-    /// each sampled thread's Python frames as the sample is taken, which
-    /// needs `CAP_BPF` and `CAP_PERFMON`; `snapshot[=SECONDS]` stops the
-    /// program every SECONDS (0.1 if not given) and reads each thread's
-    /// stack, Python and native; `live[=SECONDS]` reads each thread's
-    /// Python frames every SECONDS (0.01 if not given) as the program runs,
-    /// leaving out each that changes while read.
-    #[arg(long, value_name = "ENGINE")]
+    /// Read where a Python or Node program's threads are, by ENGINE: `bpf`
+    /// walks each sampled thread's Python or JavaScript frames as the
+    /// sample is taken, which needs `CAP_BPF` and `CAP_PERFMON`;
+    /// `snapshot[=SECONDS]` stops the program every SECONDS (0.1 if not
+    /// given) and reads each thread's stack, interpreted and native;
+    /// `live[=SECONDS]` reads each thread's Python frames every SECONDS
+    /// (0.01 if not given) as the program runs, leaving out each that
+    /// changes while read.
+    #[arg(long, visible_alias = "node", value_name = "ENGINE")]
     python: Option<String>,
 
     /// Keep only the last SECONDS of the recording. SIGUSR2 saves the
@@ -249,9 +250,10 @@ pub struct LookArgs {
     #[arg(long, conflicts_with = "python")]
     native: bool,
 
-    /// Each stack as its Python code sees it: from its outermost Python
-    /// frame in, without the interpreter's own frames.
-    #[arg(long)]
+    /// Each stack as its Python or JavaScript code sees it: from its
+    /// outermost Python or JavaScript frame in, without the interpreter's
+    /// own frames.
+    #[arg(long, visible_alias = "js")]
     python: bool,
 }
 

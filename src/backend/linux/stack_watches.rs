@@ -261,7 +261,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// has a watch, and removes the rest, with the returns of moves no
     /// watch waits for any more.
     pub(super) fn sync_stack_movers(&mut self) -> Result<()> {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.inferior.as_ref().filter(|inferior| !inferior.observer) else {
             return Ok(());
         };
 

@@ -10,7 +10,7 @@ use std::time::Duration;
 use super::budget::{Budget, Controller, Observation, STEPS};
 use super::calls::{self, Calls};
 use super::collector::{Collector, ProbeSelection};
-use super::interpreted::Walked;
+use super::interpreted::{Layout, Walked};
 use super::record::{self, Sites};
 use super::tasks::{self, Live, Reads, Snapshot, Snapshotter};
 use super::{
@@ -352,9 +352,11 @@ impl Walker {
             if let Some(problem) = failed.or_else(|| walked.gaps.first().map(ToString::to_string))
                 && self.troubled.insert(walked.pid)
             {
-                processor
-                    .builder()
-                    .setting(&format!("python {} threads", walked.pid), &problem);
+                let what = match walked.layout {
+                    Ok(Layout::V8(_)) => format!("node {} isolates", walked.pid),
+                    _ => format!("python {} threads", walked.pid),
+                };
+                processor.builder().setting(&what, &problem);
             }
         }
     }
@@ -363,9 +365,11 @@ impl Walker {
     /// recording why it cannot: whether the engine has it.
     fn lay_out(&mut self, processor: &mut record::Processor, walked: &Walked) -> bool {
         let set = walked.layout.clone().and_then(|layout| {
-            self.sampler
-                .set_layout(walked.pid, &layout)
-                .map_err(|error| error.to_string())
+            match layout {
+                Layout::Python(layout) => self.sampler.set_layout(walked.pid, &layout),
+                Layout::V8(layout) => self.sampler.set_v8_layout(walked.pid, &layout),
+            }
+            .map_err(|error| error.to_string())
         });
         match set {
             Ok(()) => self.laid_out.insert(walked.pid),
@@ -395,6 +399,17 @@ impl Walker {
                 );
             }
             Err(error) => builder.setting("python lost records", &format!("not counted: {error}")),
+        }
+        #[cfg(feature = "bpf-walk-timing")]
+        match self.sampler.walk_times() {
+            Ok([walks, ns, frames, most, full, full_ns]) => builder.setting(
+                "v8 walk times",
+                &format!(
+                    "{walks} walks, {ns} ns, {frames} frames, {most} ns at most, \
+                     {full} full walks, {full_ns} ns"
+                ),
+            ),
+            Err(error) => builder.setting("v8 walk times", &format!("not read: {error}")),
         }
     }
 }

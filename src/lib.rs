@@ -644,6 +644,7 @@ impl Debugger {
             .handle
             .request(|reply| Request::Attach {
                 process_id: process,
+                observe: false,
                 reply,
             })
             .await;
@@ -1177,8 +1178,26 @@ impl DebuggerHandle {
 
     /// Attaches to an existing process and returns its coherent initial stop.
     pub async fn attach_process(&self, process_id: ProcessId) -> Result<StopId> {
-        self.request(|reply| Request::Attach { process_id, reply })
-            .await
+        self.request(|reply| Request::Attach {
+            process_id,
+            observe: false,
+            reply,
+        })
+        .await
+    }
+
+    /// Attaches to an existing process only to read it, and returns its
+    /// coherent initial stop. The session plants none of the breakpoints
+    /// through which the debugger follows libraries, runtimes, and
+    /// inspectors, so it writes nothing to the process's memory, and it sees
+    /// the process as it was at the stop.
+    pub async fn observe_process(&self, process_id: ProcessId) -> Result<StopId> {
+        self.request(|reply| Request::Attach {
+            process_id,
+            observe: true,
+            reply,
+        })
+        .await
     }
 
     /// Launches the inferior and waits until that execution stops or exits.

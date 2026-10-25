@@ -1326,6 +1326,21 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         )
     }
 
+    /// The functions a frame a walker in the kernel read at a sample runs,
+    /// innermost first, named through `stop` once what the walker read
+    /// proves the runtime's objects are still the ones the frame ran; a
+    /// frame whose objects moved or were freed since is one unknown
+    /// function. `None` for a frame that runs none of the program's
+    /// functions, which a stack leaves out.
+    fn sampled_code_frame(
+        &self,
+        stop: &dyn RuntimeStop,
+        frame: &SampledCodeFrame,
+    ) -> Option<Vec<crate::RecordedFrame>> {
+        let _ = (stop, frame);
+        None
+    }
+
     /// The local variables of the interpreted frame the interpreter keeps
     /// at `frame`, as [`RuntimeModel::interpreted`] named it at this stop,
     /// in the order the code declares them. Each read is charged to
@@ -1728,6 +1743,35 @@ pub struct SampledCode {
     pub qualname: u64,
     pub linetable: u64,
     pub first_line: i32,
+}
+
+/// A frame of a runtime that keeps its frames on the native stack, as
+/// V8 does, as a walker in the kernel read it at a sample: where the frame
+/// is and what it ran, with the words the walker read of the runtime's
+/// objects, which prove them when they are read again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SampledCodeFrame {
+    /// The frame's pointer, and its instruction: the return address of its
+    /// call where [`Self::after_call`].
+    pub frame_pointer: u64,
+    pub instruction: VirtualAddress,
+    pub after_call: bool,
+
+    /// Whether its code is code the runtime generated, which no image
+    /// holds.
+    pub generated: bool,
+
+    /// The function, its shared information, its script, and the words
+    /// of the script's id and the function's literal id, as read.
+    pub function: u64,
+    pub shared: u64,
+    pub script: u64,
+    pub script_id: u64,
+    pub literal_id: i32,
+
+    /// The words the frame's bytecode and bytecode offset slots held.
+    pub bytecode: u64,
+    pub bytecode_offset: u64,
 }
 
 /// A physical frame whose code a runtime owns, as the unwinder found it.

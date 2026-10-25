@@ -29,6 +29,9 @@ enum record_kind {
 	// A thread's Python frames, which the sample or call that follows
 	// on its CPU was taken in.
 	RECORD_PY_STACK = 9,
+	// A thread's JavaScript frames as V8 keeps them on its stack, which the
+	// sample or call that follows on its CPU was taken in.
+	RECORD_V8_STACK = 10,
 };
 
 // Which descriptors a call makes, from call_spec.makes.
@@ -404,4 +407,107 @@ struct py_stack_record {
 	u8 end;
 	u8 gil;
 	u16 pad;
+};
+
+// What the V8 walker reads a process's frames and heap objects by: each
+// frame slot's offset from the frame pointer, the tags of V8's words, and
+// each field's offset from its object's start. V8Layout fills them; the
+// sampler and the syscall programs keep one per process in V8_LAYOUTS.
+struct v8_layout {
+	// The frame's function, and the slot that holds a JavaScript frame's
+	// context or the marker of a frame of V8's own.
+	s32 fp_function;
+	s32 fp_marker;
+	// An interpreted frame's bytecode array and its offset in it.
+	s32 fp_bytecode_array;
+	s32 fp_bytecode_offset;
+	u32 heap_object_tag_mask;
+	u32 heap_object_tag;
+	u32 smi_tag_mask;
+	u32 smi_tag;
+	u32 object_map;
+	u32 map_instance_type;
+	u32 first_function_type;
+	u32 last_function_type;
+	u32 shared_type;
+	u32 script_type;
+	u32 function_shared;
+	u32 shared_script;
+	u32 shared_literal_id;
+	u32 script_id;
+	// Where each thread keeps its current isolate, g_current_isolate_, as
+	// enum v8_isolate_place says: `isolate_offset` from the thread pointer,
+	// or the offset the word at `isolate_slot` holds. The profiler reads it
+	// to label samples; the syscall programs leave it unplaced.
+	u32 isolate_place;
+	u32 isolate_pad;
+	s64 isolate_offset;
+	u64 isolate_slot;
+};
+
+// Where a process's threads keep their current isolate.
+enum v8_isolate_place {
+	// Not where the walker reads: in no image, or in a library's dynamic
+	// block of thread-local storage, which only its loader's tables find.
+	V8_ISOLATE_UNPLACED = 0,
+	// At a fixed offset from the thread pointer.
+	V8_ISOLATE_OFFSET = 1,
+	// At the offset from the thread pointer that a word of the image holds.
+	V8_ISOLATE_SLOT = 2,
+};
+
+// What a record says of its thread's current isolate.
+enum v8_isolate {
+	// Not read: its place is not known.
+	V8_ISOLATE_NOT_READ = 0,
+	// Read: `isolate` is its address, 0 where the thread has none.
+	V8_ISOLATE_READ = 1,
+	// Its place is known, but the thread pointer or the word there could
+	// not be read.
+	V8_ISOLATE_UNREADABLE = 2,
+};
+
+// Why a thread's JavaScript frames end.
+enum v8_end {
+	// At a frame pointer of 0, where the chain ends.
+	V8_END_COMPLETE = 0,
+	// At the most frames a record holds, or steps a walk takes.
+	V8_END_BOUNDED = 1,
+	// At a frame pointer whose frame could not be read, or a caller's that
+	// does not climb the stack, as code that keeps no frame pointer leaves.
+	V8_END_UNREADABLE = 2,
+	// Before the walk began: the process's layout is not yet known.
+	V8_END_NO_LAYOUT = 3,
+};
+
+// One frame whose function slot holds a JavaScript function, as the walker
+// read it. The function's shared information, its script, the script's id,
+// and its function literal id prove, when microscope reads them later, that
+// the shared information is the one the frame ran.
+struct v8_frame {
+	// The frame's pointer, and its code's address.
+	u64 fp;
+	u64 pc;
+	u64 function;
+	u64 shared;
+	u64 script;
+	// The words the frame's script id and bytecode slots held, as read.
+	u64 script_id;
+	u64 bytecode;
+	u64 bytecode_offset;
+	s32 literal_id;
+	// 1 where `pc` is the instruction, as for the walk's first frame, and 0
+	// where it is the return address of a call.
+	u32 at_instruction;
+};
+
+// Followed by `frames` v8_frames, innermost first.
+struct v8_stack_record {
+	struct record header;
+	u32 frames;
+	u8 end;
+	// An enum v8_isolate.
+	u8 isolate_read;
+	u8 pad[2];
+	u64 isolate;
 };

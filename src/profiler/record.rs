@@ -33,13 +33,20 @@ use crate::{
 
 /// The modules `process` maps, each once, with their debug information,
 /// from `images`; a module whose debug information could not be read is
-/// left out.
+/// left out. A copy of a module's code, as V8's of its builtins, is a
+/// module of its own beside the module.
 fn modules_in(process: &ProcessState, images: &[Image]) -> Vec<(LoadedModule, DebugInfo)> {
     let mut seen = BTreeSet::new();
     process
         .mapped
         .iter()
-        .filter(|mapped| seen.insert(mapped.image))
+        .filter(|mapped| {
+            let window = mapped
+                .loaded
+                .window
+                .map(|window| (window.start.get(), window.end.get()));
+            seen.insert((mapped.image, window))
+        })
         .filter_map(|mapped| {
             let info = images.get(mapped.image)?.info.clone()?;
             Some((mapped.loaded, info))
@@ -59,6 +66,39 @@ fn find_interpreter(
         interpreted.find(pid, process.mappings, &modules_in(process, images));
     }
 }
+
+/// Where process `pid`'s code at `address` is, for its runtime's walker:
+/// code a runtime generated, or a V8 image's.
+fn code_at(
+    processes: &BTreeMap<Pid, ProcessState>,
+    images: &[Image],
+    pid: Pid,
+    address: u64,
+) -> Option<interpreted::CodeAt> {
+    let mapped = processes
+        .get(&pid)?
+        .mapped
+        .iter()
+        .find(|mapped| mapped.start <= address && address < mapped.end)?;
+    let image = images.get(mapped.image)?;
+    if image.generated {
+        return Some(interpreted::CodeAt::Generated);
+    }
+    let info = image.info.as_ref()?;
+    crate::debug_info::v8::is_v8(&info.image).then(|| {
+        interpreted::CodeAt::Runtime(
+            mapped
+                .loaded
+                .load_bias
+                .wrapping_unload(crate::VirtualAddress::new(address)),
+        )
+    })
+}
+
+/// A sample's native frames as a capture keeps them: each frame, with the
+/// name of the interpreter's code it runs, if it runs the interpreter's;
+/// and each frame's module and address, its key.
+type NativeFrames = (Vec<(u32, Option<Arc<str>>)>, Vec<(u32, u64)>);
 
 /// How a program's call sites keep the frame-pointer chain.
 pub enum Sites {
@@ -88,6 +128,10 @@ struct Image {
     /// recorded, and its frames outside every function it names are frames
     /// of no module.
     anonymous: bool,
+
+    /// Whether it is code a runtime generated, as V8's compiled
+    /// JavaScript, which the runtime's frames run.
+    generated: bool,
 }
 
 /// One executable mapping of a process.
@@ -460,6 +504,7 @@ impl Processor {
                     data,
                     ..
                 } => {
+                    let (processes, images) = (&self.processes, &self.images);
                     let interpreted = self.interpreted.as_mut();
                     if let Some(interpreted) = interpreted {
                         if let Some(index) = unpaired.iter().position(|(of, ..)| *of == (tid, cpu))
@@ -468,7 +513,8 @@ impl Processor {
                             interpreted.dropped((tid, cpu, superseded));
                         }
 
-                        interpreted.drained(pid, (tid, cpu, time), data);
+                        let code = |address| code_at(processes, images, pid, address);
+                        interpreted.drained(pid, (tid, cpu, time), data, &code);
                     }
 
                     unpaired.push(((tid, cpu), time, offset, length));
@@ -656,6 +702,9 @@ impl Processor {
             decode::Record::Exit { pid, tid, .. } => {
                 self.switched_out.remove(&tid);
                 self.builder.thread_exit(tid, at);
+                if let Some(interpreted) = &mut self.interpreted {
+                    interpreted.thread_exited(pid, tid);
+                }
 
                 let ended = self.processes.get_mut(&pid).is_some_and(|process| {
                     process.threads.remove(&tid);
@@ -712,6 +761,9 @@ impl Processor {
         );
 
         let Some((image, bias)) = image else {
+            if perf::jit::is_anonymous_code(mmap) {
+                self.v8_code(mmap.pid, mmap.time, mmap.start..end);
+            }
             return;
         };
 
@@ -837,6 +889,7 @@ impl Processor {
             module,
             probes,
             anonymous: false,
+            generated: false,
         });
         image
     }
@@ -894,6 +947,120 @@ impl Processor {
         self.loading += thread_cpu().saturating_sub(began);
     }
 
+    /// Maps a module over anonymous `code` of process `pid`, where a module
+    /// it maps carries V8, as the syscall tracer does: a copy of a module's
+    /// code, proven byte for byte while the process runs, is that module's
+    /// code at another address, and any other is code V8 generated, whose
+    /// frames keep V8's frame-pointer convention
+    /// (`debug_info::runtime_code`). Code the process may write is never
+    /// taken for a copy, which it may since have changed.
+    fn v8_code(&mut self, pid: Pid, time: u64, code: std::ops::Range<u64>) {
+        let Some(process) = self.processes.get(&pid) else {
+            return;
+        };
+        let v8: Vec<(usize, &Mapped, &DebugInfo)> = process
+            .mapped
+            .iter()
+            .enumerate()
+            .filter_map(|(index, mapped)| {
+                let info = self.images[mapped.image].info.as_ref()?;
+                crate::debug_info::v8::is_v8(&info.image).then_some((index, mapped, info))
+            })
+            .collect();
+        if v8.is_empty() {
+            return;
+        }
+
+        let read_only = perf::mappings(pid.get()).is_ok_and(|mappings| {
+            mappings.iter().any(|mapping| {
+                mapping.start <= code.start && code.end <= mapping.end && !mapping.writable
+            })
+        });
+        let copy = read_only
+            .then(|| {
+                let sources: Vec<crate::unwind::code_copies::Source<'_, usize>> = v8
+                    .iter()
+                    .map(
+                        |&(index, mapped, info)| crate::unwind::code_copies::Source {
+                            key: index,
+                            image: &info.image,
+                            loaded: mapped.loaded,
+                            stored: perf::stored_code(
+                                pid.get(),
+                                info,
+                                mapped.loaded,
+                                mapped.start..mapped.end,
+                            ),
+                        },
+                    )
+                    .collect();
+                perf::copy_of(pid.get(), &code, &sources)
+            })
+            .flatten()
+            .and_then(|proven| {
+                let source = process.mapped.get(proven.source)?;
+                Some((*source, proven.image_start, proven.length))
+            });
+        drop(v8);
+
+        let Some((source, image_start, length)) = copy else {
+            let began = thread_cpu();
+            let id = ModuleImageId::new(u32::try_from(self.images.len()).unwrap_or(u32::MAX));
+            let path = format!("[V8 code {:#x}]", code.start);
+            let bounds = crate::AddressRange {
+                start: ImageAddress::new(code.start),
+                end: ImageAddress::new(code.end),
+            };
+            let info =
+                crate::debug_info::runtime_code::load(std::path::Path::new(&path), id, bounds).ok();
+            let digest = twox_hash::XxHash3_128::oneshot(path.as_bytes());
+            self.anonymous_module(pid, time, (id, &path, digest), code, info);
+            if let Some(image) = self.images.last_mut() {
+                image.generated = true;
+            }
+            self.loading += thread_cpu().saturating_sub(began);
+            return;
+        };
+
+        let end = code.start.saturating_add(length);
+        let bias = LoadBias::between(image_start, crate::VirtualAddress::new(code.start));
+        let loaded = LoadedModule {
+            id: ModuleId::new(self.next_module),
+            image: source.loaded.image,
+            load_bias: bias,
+            window: Some(crate::AddressRange {
+                start: image_start,
+                end: ImageAddress::new(image_start.get().saturating_add(length)),
+            }),
+        };
+        self.next_module += 1;
+        let module = self.images[source.image].module;
+        let process = self.builder.process(pid, time.cast_signed());
+        let held = &mut self.processes.entry(pid).or_default().mapped;
+        uncover(held, code.start, end);
+        // A module is found by its image's bounds, and those of the code V8
+        // generated span its whole code range, which holds the copy: the
+        // copy comes first.
+        held.insert(
+            0,
+            Mapped {
+                start: code.start,
+                end,
+                image: source.image,
+                loaded,
+            },
+        );
+        self.builder.mapping(Mapping {
+            process: process.into(),
+            module: module.into(),
+            start: code.start.into(),
+            end: end.into(),
+            file_offset: 0.into(),
+            bias: bias.get().into(),
+            time: time.cast_signed().into(),
+        });
+    }
+
     /// Maps the module of anonymous code `id` named `path`, which `digest`
     /// identifies, over `code`, replacing whatever the process mapped there.
     fn anonymous_module(
@@ -914,6 +1081,7 @@ impl Processor {
             module,
             probes: None,
             anonymous: true,
+            generated: false,
         });
 
         let loaded = LoadedModule {
@@ -923,7 +1091,6 @@ impl Processor {
             window: None,
         };
         self.next_module += 1;
-
         let process = self.builder.process(pid, time.cast_signed());
         let held = &mut self.processes.entry(pid).or_default().mapped;
         uncover(held, code.start, code.end);
@@ -1235,37 +1402,7 @@ impl Processor {
             self.note_task(sample.pid, thread, time, leaf, &owners);
         }
 
-        let mut native = Vec::with_capacity(frames.len());
-
-        for frame in &frames {
-            let owner = frame
-                .module
-                .map(|module| owners[module])
-                .filter(|owner| self.names(owner, frame.address.get()));
-            let id = match owner {
-                Some(owner) => self.builder.frame(
-                    FrameKind::Native,
-                    self.images[owner.image].module,
-                    owner.loaded.load_bias.wrapping_unload(frame.address).get(),
-                    role_number(frame.role),
-                ),
-                None => self
-                    .builder
-                    .frame(FrameKind::Native, NONE, frame.address.get(), 0),
-            };
-
-            // Only the interpreter's own code can be its loop, or call
-            // from it.
-            let name = owner
-                .filter(|_| frame.role == CodeRole::Interpreter)
-                .and_then(|owner| {
-                    let info = self.images[owner.image].info.as_ref()?;
-                    let address = owner.loaded.load_bias.wrapping_unload(frame.address);
-                    Some(info.image.symbolize(address)?.name)
-                });
-            native.push((id, name));
-        }
-
+        let (native, keys) = self.native_frames(&frames, &owners);
         let (interpreted, running) = self.sampled_interpreted(sample, thread);
         let native: Vec<(u32, bool)> = (0..native.len())
             .map(|index| {
@@ -1289,7 +1426,31 @@ impl Processor {
             self.unclaimed.push((thread, time, task));
         }
 
-        let marker = self.splice_interpreted(&native, interpreted);
+        // JavaScript frames that are unknown, or that a walk could not
+        // follow to the end, are missing where V8's code runs.
+        let missing = matches!(
+            interpreted,
+            Sampled::Unknown
+                | Sampled::Placed {
+                    unreadable: true,
+                    ..
+                }
+        );
+        let runs_v8 = missing
+            && self.interpreted.as_ref().is_some_and(|found| {
+                let (processes, images) = (&self.processes, &self.images);
+                let code = |address| code_at(processes, images, sample.pid, address);
+                frames
+                    .iter()
+                    .any(|frame| found.runs_v8(sample.pid, &code, frame.address))
+            });
+        let cut = interpreted::v8_cut(&interpreted, runs_v8);
+        let marker = if let Sampled::Placed { frames: placed, .. } = interpreted {
+            self.splice_placed(&native, (&frames, &keys), &placed);
+            cut
+        } else {
+            self.splice_interpreted(&native, interpreted).or(cut)
+        };
 
         let truncation = match end {
             StackEnd::Truncated(reason, module) => Some((
@@ -1330,19 +1491,91 @@ impl Processor {
 
         let stack = paired
             .as_ref()
+            .filter(|(_, bytes)| !crate::backend::bpf::sampler::is_v8(bytes))
             .and_then(|(_, bytes)| crate::backend::bpf::sampler::decode(bytes).ok());
+        let time = sample.time.cast_signed();
         if let Some(stack) = &stack {
-            let time = sample.time.cast_signed();
             interpreted.label(&mut self.builder, thread, (time, sample.period), stack.gil);
         }
+        let javascript = paired
+            .as_ref()
+            .filter(|(_, bytes)| crate::backend::bpf::sampler::is_v8(bytes))
+            .and_then(|(_, bytes)| crate::backend::bpf::sampler::decode_v8(bytes).ok());
+        if let Some(javascript) = javascript {
+            interpreted.isolate(
+                &mut self.builder,
+                (sample.pid, sample.tid, thread),
+                (time, sample.period),
+                javascript.isolate,
+            );
+        }
 
+        let (processes, images) = (&self.processes, &self.images);
+        let code = |address| code_at(processes, images, sample.pid, address);
         (
             interpreted.paired(
                 sample.pid,
                 paired.as_ref().map(|(key, bytes)| (*key, bytes.as_slice())),
+                &code,
             ),
             stack.and_then(|stack| stack.running_task),
         )
+    }
+
+    /// Each of a sample's native `frames`, of the modules `owners`, as a
+    /// frame of the capture with the name of the interpreter's code it
+    /// runs, if it runs the interpreter's; and each frame's module and
+    /// address, its key.
+    fn native_frames(
+        &mut self,
+        frames: &[crate::unwind::sample::SampledFrame],
+        owners: &[Mapped],
+    ) -> NativeFrames {
+        let mut native = Vec::with_capacity(frames.len());
+        let mut keys = Vec::with_capacity(frames.len());
+        for frame in frames {
+            let owner = frame
+                .module
+                .map(|module| owners[module])
+                .filter(|owner| self.names(owner, frame.address.get()));
+            let key = owner.map_or_else(
+                || (NONE, frame.address.get()),
+                |owner| {
+                    (
+                        self.images[owner.image].module,
+                        owner.loaded.load_bias.wrapping_unload(frame.address).get(),
+                    )
+                },
+            );
+            // Code V8 generated runs only its functions and its own
+            // machinery, as an interpreter's loop does: a sample's frames
+            // of V8's name its functions where it has them.
+            let generated = frame
+                .module
+                .is_some_and(|module| self.images[owners[module].image].generated);
+            let role = if generated {
+                role_number(CodeRole::Interpreter)
+            } else if owner.is_some() {
+                role_number(frame.role)
+            } else {
+                0
+            };
+            let id = self.builder.frame(FrameKind::Native, key.0, key.1, role);
+            keys.push(key);
+
+            // Only the interpreter's own code can be its loop, or call
+            // from it.
+            let name = owner
+                .filter(|_| frame.role == CodeRole::Interpreter)
+                .and_then(|owner| {
+                    let info = self.images[owner.image].info.as_ref()?;
+                    let address = owner.loaded.load_bias.wrapping_unload(frame.address);
+                    Some(info.image.symbolize(address)?.name)
+                });
+            native.push((id, name));
+        }
+
+        (native, keys)
     }
 
     /// Puts the stack's frames in [`Self::frames`]: its `native` frames,
@@ -1357,7 +1590,8 @@ impl Processor {
         self.frames.clear();
         let natives = native.iter().map(|&(frame, _)| frame);
         let (frames, ended) = match interpreted {
-            Sampled::None => {
+            // The caller splices placed frames.
+            Sampled::None | Sampled::Placed { .. } => {
                 self.frames.extend(natives);
                 return None;
             }
@@ -1400,6 +1634,75 @@ impl Processor {
         self.frames.extend(natives);
         self.frames.extend(segments.into_iter().flatten());
         Some(Truncation::InterpretedUnplaced)
+    }
+
+    /// Puts the stack's frames in [`Self::frames`]: its `native` frames,
+    /// each `placed` frame's functions just before the native frame of
+    /// `frames` it is, by its frame pointer and address, with that frame's
+    /// key in `keys` as the interpreter's, or past the last where the native
+    /// stack ended before it. One among the native frames that is none of
+    /// them is no frame of the runtime's.
+    fn splice_placed(
+        &mut self,
+        native: &[(u32, bool)],
+        (frames, keys): (&[crate::unwind::sample::SampledFrame], &[(u32, u64)]),
+        placed: &[interpreted::PlacedFrame],
+    ) {
+        self.frames.clear();
+        let natives: Vec<_> = frames
+            .iter()
+            .map(|frame| (frame.address, frame.frame_pointer))
+            .collect();
+        let walked: Vec<_> = placed
+            .iter()
+            .map(|frame| (frame.frame_pointer, frame.address))
+            .collect();
+        let positions = interpreted::positions(&natives, &walked);
+        let mut before: Vec<Vec<u32>> = vec![Vec::new(); native.len() + 1];
+        for (frame, index) in placed.iter().zip(positions) {
+            for function in &frame.functions {
+                let wait = InterpretedWait::of(Some(function));
+                let id = self.builder.interpreted(&InterpretedPlace {
+                    function: &wait.function,
+                    file: wait.file.as_deref(),
+                    line: wait.line,
+                    declared: wait.first_line,
+                });
+                if let Some(slot) = before.get_mut(index) {
+                    slot.push(id);
+                }
+            }
+        }
+        let interpreter = role_number(CodeRole::Interpreter);
+        for (index, &(id, _)) in native.iter().enumerate() {
+            let functions = before.get(index).map_or(&[][..], Vec::as_slice);
+            // A frame that runs the runtime's functions stands for them, as
+            // an interpreter's frame does. One of code that also runs apart
+            // from them, as a bytecode handler the sample landed in, which
+            // the frame of its function runs, is what they run.
+            let own = self
+                .builder
+                .frames()
+                .get(id as usize)
+                .map(|frame| frame.role);
+            if !functions.is_empty() && own != Some(interpreter) {
+                self.frames.push(id);
+                self.frames.extend_from_slice(functions);
+                continue;
+            }
+            self.frames.extend_from_slice(functions);
+            let id = match (functions.is_empty(), keys.get(index)) {
+                (false, Some(&(module, address))) => {
+                    self.builder
+                        .frame(FrameKind::Native, module, address, interpreter)
+                }
+                _ => id,
+            };
+            self.frames.push(id);
+        }
+        if let Some(outer) = before.last() {
+            self.frames.extend_from_slice(outer);
+        }
     }
 
     /// The capture so far, every frame symbolized, which goes on growing:
@@ -1816,7 +2119,9 @@ impl Processor {
                 .copied()
         });
         let owner = owner.filter(|owner| self.names(owner, address));
-        let (module, address, role) = owner.map_or((NONE, address, 0), |owner| {
+        // The debugger knew the role of code in no module the recording
+        // knows, as V8's: it keeps it.
+        let (module, address, role) = owner.map_or((NONE, address, role), |owner| {
             (
                 self.images[owner.image].module,
                 owner

@@ -28,7 +28,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(());
         };
 
-        if inferior.loader_site.is_some() || inferior.unfollowed_exec.is_some() {
+        if inferior.loader_site.is_some() || inferior.unfollowed_exec.is_some() || inferior.observer
+        {
             return Ok(());
         }
 

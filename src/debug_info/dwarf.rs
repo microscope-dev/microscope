@@ -1522,6 +1522,13 @@ fn load_image(
             super::roles::cpython_role,
         );
     }
+    if super::v8::carries_runtime(&object) {
+        super::cpython::assign_roles(
+            &mut function_metadata.functions,
+            &mut symbols.symbols,
+            super::roles::v8_role,
+        );
+    }
     if super::cpython::is_asyncio(&object) {
         super::cpython::assign_roles(
             &mut function_metadata.functions,

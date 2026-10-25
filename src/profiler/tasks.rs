@@ -91,7 +91,7 @@ pub struct InterpretedWait {
 impl InterpretedWait {
     /// A frame its runtime recorded as `recorded`, or one it could not
     /// read.
-    fn of(recorded: Option<&crate::RecordedFrame>) -> Self {
+    pub(super) fn of(recorded: Option<&crate::RecordedFrame>) -> Self {
         recorded.map_or_else(Self::unreadable, |recorded| Self {
             function: Arc::clone(&recorded.function),
             file: recorded.place.as_ref().map(|place| Arc::clone(&place.path)),
@@ -151,6 +151,14 @@ pub const THREAD: &str = "thread";
 
 /// What a thread a snapshot read was doing, in a runtime's words.
 const SAMPLED: &str = "sampled";
+
+/// Why a live snapshot reads no thread of a runtime that runs its
+/// functions on the native stack, as V8 does: a running thread's frame
+/// pointer, where its frames begin, is not shown outside it.
+const UNREAD_NATIVE: &str = "live snapshots do not read JavaScript frames: they begin at a \
+                             thread's frame pointer, which only stopping the thread shows, as \
+                             /proc gives a running or blocked thread's stack and instruction \
+                             pointers but not its frame pointer; use --node snapshot or bpf";
 
 /// One snapshot's tasks, where each waits, and why it may miss some.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -242,7 +250,7 @@ impl Snapshotter {
         let handle = debugger.handle();
 
         let read = match handle
-            .attach_process(ProcessId::new(u64::from(self.pid)))
+            .observe_process(ProcessId::new(u64::from(self.pid)))
             .await
         {
             Ok(stop) => {
@@ -478,7 +486,21 @@ fn frames(backtrace: &crate::Backtrace, futures: Vec<String>) -> Vec<WaitFrame> 
     let mut exact = true;
 
     for frame in backtrace.frames.iter() {
-        let role = role_number(frame.role);
+        // A frame whose code a runtime owns runs the functions it recorded,
+        // which stand for it in an interpreted look, as an interpreter's
+        // frames that run interpreted ones do.
+        let recorded = frame
+            .recorded
+            .as_ref()
+            .filter(|_| matches!(frame.kind, FrameKind::Inline | FrameKind::Physical));
+        if let Some(recorded) = recorded {
+            frames.push(WaitFrame::Interpreted(InterpretedWait::of(Some(recorded))));
+        }
+        let role = role_number(if recorded.is_some() {
+            crate::CodeRole::Interpreter
+        } else {
+            frame.role
+        });
         match frame.kind {
             FrameKind::Inline | FrameKind::TailCall => {}
 
@@ -824,6 +846,26 @@ impl LiveStop<'static> {
     }
 }
 
+impl<'a> LiveStop<'a> {
+    /// Process `pid`'s memory and its stopped thread `tid` alone, whose
+    /// thread pointer `pointers` holds, as the runtime model of a module
+    /// loaded with `bias` reads them.
+    pub fn for_stopped_thread(
+        pid: u32,
+        tid: u32,
+        pointers: &'a BTreeMap<u32, u64>,
+        bias: crate::LoadBias,
+    ) -> Self {
+        Self {
+            pid,
+            bias,
+            threads: vec![crate::ThreadId::new(u64::from(tid))],
+            pointers,
+            unlearned: RefCell::new(BTreeSet::new()),
+        }
+    }
+}
+
 impl RuntimeStop for LiveStop<'_> {
     fn target_thread_id(&self, thread: crate::ThreadId) -> Option<runtime_model::TargetThreadId> {
         if self.threads.binary_search(&thread).is_err() {
@@ -1000,6 +1042,10 @@ impl LiveRuntime<'_> {
     /// which is unreadable, is left out and counted, never kept as a
     /// shorter stack.
     fn threads(&self, snapshot: &mut Snapshot) {
+        if self.model.owns_generated_code() {
+            snapshot.problems.push(UNREAD_NATIVE.to_owned());
+            return;
+        }
         let Some(stacks) = self.model.interpreted(self.stop) else {
             return;
         };

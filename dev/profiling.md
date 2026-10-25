@@ -23,6 +23,7 @@ over those layers. The browser reads the same profile and analysis results.
 | `src/profiler/tasks.rs`, `src/profiler/calls.rs`, `src/profiler/frame_pointers.rs` | Task and thread snapshots, and stack reconstruction |
 | `src/backend/linux/reaped.rs` | The exit status of a recorded program that a snapshot's debugger reaped |
 | `src/backend/linux/bpf/sampler.bpf.c`, `src/backend/linux/bpf/python.bpf.h`, `src/backend/linux/bpf/sampler.rs`, `src/profiler/interpreted.rs` | The BPF engine for Python stacks: its program, walker, loader, and splice |
+| `src/backend/linux/bpf/v8.bpf.h`, `src/runtime_model/node/sampled.rs`, `src/unwind/code_copies.rs` | The BPF walker of JavaScript frames, the proof that names what it read, and V8's anonymous code as modules |
 | `src/profiler/jit.rs`, `src/debug_info/perf_map.rs`, `src/debug_info/gdb_jit.rs` | Perf maps and registered JIT objects: anonymous code as modules |
 | `src/profiler/annotate.rs`, `src/profiler/symbols.rs`, `src/profiler/zones.rs` | Symbol, source, and instrumentation annotation |
 | `src/profiler/formats/` | Chrome, folded-stack, and pprof output |
@@ -31,6 +32,7 @@ over those layers. The browser reads the same profile and analysis results.
 | `src/cli/profile.rs` | `record`, `report`, `convert`, and `symbolize` command adapters |
 | `src/web/profiles.rs`, `web/src/profile/`, `web/src/ui/profile/` | Profile transport, browser model, and profile pages |
 | `sdk/c/microscope_kernel.h`, `sdk/rust-probes/`, `sdk/zig/microscope_kernel.zig` | Target-side profiling and instrumentation interfaces |
+| `sdk/python/`, `sdk/node/` | The Python and Node packages over the probes SDK's run-time sites |
 | `tests/profiler.rs`, `src/capture/tests.rs`, `src/analysis/tests.rs` | End-to-end and format/analysis tests |
 
 ## Recording model
@@ -228,6 +230,17 @@ Each also stores the labels the runtimes give each thread
 (`RuntimeModel::thread_labels`), which the recording keeps as label spans on
 the thread from the snapshot before to this one.
 
+A stopped snapshot attaches through `DebuggerHandle::observe_process`, which
+plants none of the loader's, the runtimes', or the inspector's breakpoints and
+opens no inspector: a snapshot writes nothing into the program. In a process
+that carries V8, a frame whose code V8 owns stands for the JavaScript function
+the debugger names, as an interpreter frame does for Python. A live snapshot of
+such a process records the problem `tasks::UNREAD_NATIVE` instead of an empty
+read, since JavaScript frames begin at a frame pointer only a stopped thread
+shows (`tests/node/profile.rs` holds a live recording to the problem): `/proc/PID/task/TID/syscall` gives a blocked thread's stack and
+instruction pointers but not its frame pointer, and unwinding glibc's system
+call wrappers from there does not reach V8's frames.
+
 ### Python frames in each sample
 
 The BPF engine (`--python bpf`) runs a program on the sampler's own perf
@@ -271,6 +284,110 @@ two differ in number the frames follow the native ones and the stack ends in
 one per run of samples with one value, and from 3.14 the asyncio task the
 thread ran joins the samples that task snapshots claim, as a task a Go or
 tokio sample keeps in a register does.
+
+### JavaScript frames in each sample
+
+The same program walks a Node process's JavaScript frames when its pid has a
+`v8_layout` in `V8_LAYOUTS` (`v8.bpf.h`, a global function verified once).
+V8 keeps its frames on the native stack with frame pointers, so the walk
+follows the chain from the sample's `rbp`, at most `V8_STEPS` steps and
+`V8_FRAMES` frames, and records each frame whose slot at
+`v8dbg_off_fp_function` holds a `JSFunction`: the function, its
+`SharedFunctionInfo`, the shared information's `Script`, the script's id, the
+function literal id, and the bytecode array and offset slots
+(`v8dbg_off_fp_bytecode_array`, `v8dbg_off_fp_bytecode_offset`). It reads no
+thread-local state, so it needs no isolate address and works where V8 keeps its
+isolate in dynamic TLS. The record is `RECORD_V8_STACK`, paired with its sample
+as Python's is.
+
+`sampler::v8_layout` fills the layout from the image's `V8Layout`: the
+`v8dbg_` frame offsets and tags, and the generated layout's fields
+`HeapObjectMap`, `MapInstanceType`, `JSFunctionSharedFunctionInfo`,
+`SharedFunctionInfoScript`, `SharedFunctionInfoFunctionLiteralId`, and
+`ScriptId`. A layout that lacks one refuses with its name. The recorder sets a
+process's layout once its V8 module is mapped and forgets it at exec and exit;
+each process of a group binds its own.
+
+A walked frame is kept only where its address is V8's code: a module V8 owns
+(`RuntimeModel::owns_code`) or a mapping of code it generated. Its functions
+are read as the record is drained (`interpreted::drain_v8`), but a drain may
+hold a new code mapping, as a short-lived worker's, beside the samples that
+run it, and mappings are processed in time order after the drain reads its
+records. So a frame whose code no mapping covers yet is read as each code it
+may run, and `DrainedV8::settle` keeps or drops it, and picks the reading, by
+the mappings in effect when its sample is processed. Each frame is named
+through `RuntimeModel::sampled_code_frame`, which for Node is
+`node::sampled::describe`. The proof is the one the script table
+uses: the shared information is still a `SharedFunctionInfo` whose script is
+the one the walker read, with the same script id, and the same function literal
+id. A script id is never reused in an isolate and a literal id names one
+function literal in its script, so a frame that passes ran that function; one
+that fails is `<unknown>` with the reason. A shared information of no script,
+as a native function's, is not a frame of the program.
+
+Lines follow what V8 writes, never what it might hold. The interpreter keeps a
+frame's bytecode offset in a register (`r9`, `kInterpreterBytecodeOffsetRegister`
+in `register-x64.h` of 22, 24, and 26), but `InterpreterAssembler` treats it as
+a variable its handlers allocate freely and stores it to the frame only before a
+call. So a CPU sample gives an interpreted frame its line only when a frame of
+the program's that it called is inside it (`after_call && called`): a sample in
+a bytecode handler that keeps a frame of its own would otherwise read a stale
+offset. The innermost frame has no line, and a compiled frame has none either,
+since the walk does not prove which code object it ran and V8's GC can move
+code. Both say why in the frame's problem.
+
+A recording maps V8's anonymous code as modules (`unwind::code_copies`): a
+mapping that copies node's builtins byte for byte binds node's image; any
+other anonymous executable mapping is V8's generated code, unwound by frame
+pointers. `modules_in` keeps a copy beside its image's own module, keyed by
+image and window, so the copy does not hide V8 from the walker. In an image
+that carries V8, the interpreter's entry trampoline plays the interpreter role
+(`roles::v8_role`) and generated code frames do too, so each stands for the
+JavaScript functions placed at it. Functions placed at a frame of another role,
+as a bytecode handler a sample landed in, go after that frame, which they run
+(`Processor::splice_placed`).
+
+Node defines no activation of an interpreter's loop, so the rule that cuts a
+Python stack whose frames are unknown does not apply. Instead
+`interpreted::v8_cut` cuts a sample with `InterpretedUnknown` when its record
+was lost or came before the layout, and with `InterpretedEnded` when its walk
+stopped `V8_END_UNREADABLE`, as at a frame pointer that code built without
+frame pointers left in `rbp`, but only where one of its native frames runs
+V8's code (`Interpreted::runs_v8`): V8's builtins, a copy of them, or code it
+generated. A thread that runs none, as a libuv pool thread, runs no
+JavaScript. A walk that filled its record ends `InterpretedEnded` wherever it
+is. `tests/fixtures/node/frameless.c` is an addon that spins with 8 in `rbp`,
+which call-frame information unwinds through.
+
+The sampler's `v8_sample` also reads each thread's current isolate,
+`g_current_isolate_`, at each sample: the thread pointer from the task's
+`thread.fsbase` (CO-RE, through flavor types, since `kernel_types.h`'s
+`pt_regs` would clash with the perf event's), plus the variable's offset
+(`ThreadLocal::Offset`, as Node 24 and 26 place it) or the offset a GOT slot
+of the image holds (`ThreadLocal::Slot`, as 22 does), which the program reads
+at every sample, as the loader fills it after the recorder may have read the
+layout. `fsbase` is what the kernel set at clone or `arch_prctl` and saves as
+the thread switches out; glibc never writes it with `wrfsbase`. A library's
+dynamic TLS (`ThreadLocal::Dynamic`, Debian's `libnode`) is left unplaced,
+and the recording's setting `node PID isolates` says why. The syscall
+programs leave the record's isolate unread.
+
+`interpreted::IsolateNumbers` numbers each process's isolates by first sight.
+Unlike `backend::linux::holdings`, it keeps a number while a thread seen in
+the isolate lives, though the thread is seen in none for a moment: samples
+find a worker between its isolate's scopes, where a stop seldom does, and
+Node runs each isolate on one thread for that thread's life. A thread that
+finds the address of an isolate none of whose threads is in it now is in a
+new isolate, which took a disposed one's address, and gets a new number. A
+thread's exit (`thread_exited`) forgets the numbers only it held. The
+debugger keeps its own rule on purpose, which frees a number once every
+thread seen holding it is seen holding none, so a profile and the thread
+list may give one worker's isolate different numbers. The numbers become
+spans of the label `isolate`, built as the GIL's are
+(`Interpreted::extend`). `tests/node/profile.rs`
+records `busy.js --pool` on 26 and 22: its main thread and worker each carry
+one isolate number of their own, and the libuv pool thread that runs its
+PBKDF2, which no JavaScript runs on, carries none.
 
 ### Reaping the program
 
@@ -328,6 +445,16 @@ with ctypes from the SDK built as a cdylib. A site is the pointer
 call. `tests/python/profile.rs` records `tests/fixtures/python/probes.py`,
 which uses every mark and `trace_calls`, and checks the package without its
 library.
+
+The Node package in `sdk/node` is `index.js` over a Node-API addon,
+`microscope.c`, which `dlopen`s the same library (from
+`MICROSCOPE_PROBES_LIBRARY` or beside the addon) and passes calls through;
+Node-API keeps one build working on every Node release. A site is keyed by
+kind, name, and the caller's file and line, from a `CallSite`.
+`scripts/build-test-programs.sh` builds the addon against the dev shell's Node
+headers as `build/test-programs/node-microscope.node`, and
+`tests/node/profile.rs` records `tests/fixtures/node/probes.js` on the main
+thread and a worker, and checks the package without its native parts.
 
 Probe writers must remain safe when no recorder exists, when the recorder is
 killed, and when a reader falls behind. The timeout turns instrumentation off

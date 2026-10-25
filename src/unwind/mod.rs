@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, HashSet};
 use crate::debug_info::UnwindInfo;
 use crate::{ImageAddress, LoadedModule, ModuleImage, UnwindTermination, VirtualAddress};
 
+pub mod code_copies;
 pub mod sample;
 
 pub const DEFAULT_MAX_FRAMES: usize = 256;
