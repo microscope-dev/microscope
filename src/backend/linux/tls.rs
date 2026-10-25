@@ -12,7 +12,7 @@
 //! The second word of both points at the thread's dynamic thread vector
 //! (DTV), which holds the address of each module's block.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::IoSliceMut;
 use std::num::NonZeroU64;
 use std::sync::Arc;
@@ -218,6 +218,132 @@ pub(in crate::backend) fn running_thread_pointers(pid: Pid) -> Result<Vec<(u64, 
         .collect())
 }
 
+/// Finds each module's thread-local storage for the threads of a running
+/// process that uses glibc, from its memory alone, without stopping it: the
+/// loader's `_r_debug` lists each module's `link_map`, and glibc's own
+/// descriptors and a thread's DTV, from its thread pointer, place the
+/// module's block, as for a stopped thread.
+///
+/// What does not change while the process runs is kept: the addresses of
+/// the symbols the lookups read, which would take reading every mapped
+/// file again, and each module's `link_map`, which is proven again by its
+/// load bias at each use. A process that execs maps other files: a
+/// lookup that fails forgets what was kept and tries once more.
+pub struct RunningTls {
+    pid: Pid,
+    symbols: std::cell::RefCell<BTreeMap<SymbolKey, Option<u64>>>,
+    link_maps: std::cell::RefCell<BTreeMap<u64, u64>>,
+}
+
+/// A symbol looked up, by the module preferred and its name.
+type SymbolKey = (Option<String>, String);
+
+/// The most modules the loader's list holds before it counts as corrupt.
+const MAX_LINK_MAPS: usize = 1 << 12;
+
+/// Where the loader's `r_debug` keeps the head of its list, and each
+/// `link_map` its load bias and the next (`<link.h>`).
+const R_MAP: u64 = 8;
+const L_ADDR: u64 = 0;
+const L_NEXT: u64 = 24;
+
+impl RunningTls {
+    #[must_use]
+    pub fn new(pid: u32) -> Self {
+        Self {
+            pid: Pid::from_raw(i32::try_from(pid).unwrap_or(0)),
+            symbols: std::cell::RefCell::default(),
+            link_maps: std::cell::RefCell::default(),
+        }
+    }
+
+    /// The address of `offset` in the block of the module loaded with
+    /// `bias`, for the thread whose thread pointer is `thread_pointer`.
+    pub fn address(&self, thread_pointer: u64, bias: LoadBias, offset: u64) -> Result<u64, String> {
+        self.try_address(thread_pointer, bias, offset).or_else(|_| {
+            self.symbols.borrow_mut().clear();
+            self.link_maps.borrow_mut().clear();
+            self.try_address(thread_pointer, bias, offset)
+        })
+    }
+
+    fn try_address(&self, thread_pointer: u64, bias: LoadBias, offset: u64) -> Result<u64, String> {
+        if self.pid.as_raw() <= 0 {
+            return Err(format!("process {} has no Linux id", self.pid));
+        }
+        let services = RunningThread {
+            tls: self,
+            thread_pointer,
+        };
+        let link_map = self.link_map(&services, bias)?;
+        glibc::tls_address(&services, self.pid, link_map, offset).map_err(|error| error.to_string())
+    }
+
+    /// The `link_map` of the module loaded with `bias`.
+    fn link_map(&self, services: &RunningThread<'_>, bias: LoadBias) -> Result<u64, String> {
+        let word =
+            |address: u64| read_word(services, Some(address)).map_err(|error| error.to_string());
+        if let Some(&kept) = self.link_maps.borrow().get(&bias.get())
+            && word(kept.wrapping_add(L_ADDR)) == Ok(bias.get())
+        {
+            return Ok(kept);
+        }
+
+        let r_debug = services
+            .lookup_symbol(Some("ld-linux"), "_r_debug")
+            .ok_or("the loader names no _r_debug")?;
+        let mut map = word(r_debug.wrapping_add(R_MAP))?;
+        let mut visited = BTreeSet::new();
+        while map != 0 {
+            if visited.len() == MAX_LINK_MAPS || !visited.insert(map) {
+                return Err("the loader's list of modules does not end".to_owned());
+            }
+            if word(map.wrapping_add(L_ADDR))? == bias.get() {
+                self.link_maps.borrow_mut().insert(bias.get(), map);
+                return Ok(map);
+            }
+            map = word(map.wrapping_add(L_NEXT))?;
+        }
+        Err(format!(
+            "the loader lists no module loaded with the bias {:#x}",
+            bias.get()
+        ))
+    }
+}
+
+/// A running thread as glibc's lookups read it: the process's memory, and
+/// of the thread's registers its thread pointer alone, which it keeps for
+/// life.
+struct RunningThread<'a> {
+    tls: &'a RunningTls,
+    thread_pointer: u64,
+}
+
+impl ProcessServices for RunningThread<'_> {
+    fn read(&self, address: u64, output: &mut [u8]) -> bool {
+        usize::try_from(address).is_ok_and(|address| read_process(self.tls.pid, address, output))
+    }
+
+    fn registers(&self, _lwp: Pid) -> Option<libc::user_regs_struct> {
+        let mut values = [0; super::core_dump::GENERAL_REGISTER_COUNT];
+        values[FS_BASE] = self.thread_pointer;
+        Some(super::core_dump::user_registers(values))
+    }
+
+    fn lookup_symbol(&self, object: Option<&str>, symbol: &str) -> Option<u64> {
+        let key = (object.map(str::to_owned), symbol.to_owned());
+        if let Some(&kept) = self.tls.symbols.borrow().get(&key) {
+            return kept;
+        }
+        let found = lookup_symbol(self.tls.pid, object, symbol);
+        self.tls.symbols.borrow_mut().insert(key, found);
+        found
+    }
+}
+
+/// Where `fs_base` is in the kernel's `user_regs_struct`.
+const FS_BASE: usize = 21;
+
 /// The thread pointer of `thread`, which addresses its control block once
 /// the C library sets it up.
 fn thread_pointer(services: &dyn ProcessServices, thread: Pid) -> Result<u64, TlsError> {
@@ -383,6 +509,94 @@ fn failed(message: impl Into<String>) -> TlsError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The load bias of this process's C library, and the offset of its
+    /// `errno` in its block of thread-local storage.
+    fn errno_place() -> (LoadBias, u64) {
+        let pid = nix::unistd::getpid();
+        let mapping = module_mappings(pid)
+            .unwrap()
+            .into_iter()
+            .find(|mapping| {
+                mapping
+                    .path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("libc.so"))
+            })
+            .expect("this process maps glibc");
+        let bias = mapped_module_load_bias(&mapping).unwrap();
+        let data = std::fs::read(&mapping.path).unwrap();
+        let object = object::File::parse(data.as_slice()).unwrap();
+        let errno = object
+            .dynamic_symbols()
+            .find(|symbol| symbol.kind() == SymbolKind::Tls && symbol.name() == Ok("errno"))
+            .expect("glibc exports errno");
+        (bias, errno.address())
+    }
+
+    /// Each thread's `errno`, a variable of the C library's thread-local
+    /// storage, is found from its thread pointer alone while it runs on.
+    #[test]
+    fn a_running_threads_thread_local_storage_is_found_from_memory() {
+        let pid = u32::try_from(nix::unistd::getpid().as_raw()).unwrap();
+        let (bias, offset) = errno_place();
+        let tls = RunningTls::new(pid);
+        let read_errno = |tid: u32| {
+            let pointers = running_thread_pointers(Pid::from_raw(pid.cast_signed())).unwrap();
+            let (_, pointer) = pointers
+                .into_iter()
+                .find(|&(listed, _)| listed == u64::from(tid))
+                .expect("glibc lists the thread");
+            let address = tls.address(pointer, bias, offset).unwrap();
+            let mut value = [0; 4];
+            assert!(read_process(
+                Pid::from_raw(pid.cast_signed()),
+                usize::try_from(address).unwrap(),
+                &mut value
+            ));
+            i32::from_le_bytes(value)
+        };
+
+        let (ready, parked) = std::sync::mpsc::channel();
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let other = std::thread::spawn(move || {
+            nix::errno::Errno::set_raw(4321);
+            let tid = u32::try_from(nix::unistd::gettid().as_raw()).unwrap();
+            ready.send(tid).unwrap();
+            wait.recv().ok();
+        });
+        let other_tid = parked
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .unwrap();
+
+        let own = u32::try_from(nix::unistd::gettid().as_raw()).unwrap();
+        nix::errno::Errno::set_raw(1234);
+        assert_eq!(read_errno(own), 1234);
+        assert_eq!(read_errno(other_tid), 4321);
+        nix::errno::Errno::set_raw(77);
+        assert_eq!(read_errno(own), 77, "the same address read again");
+
+        // A module loaded with no listed bias is refused, not guessed.
+        let refused = tls
+            .address(0, LoadBias::new(bias.get() ^ 0x1000), offset)
+            .unwrap_err();
+        assert!(refused.contains("lists no module"), "{refused}");
+
+        release.send(()).unwrap();
+        other.join().unwrap();
+    }
+
+    #[test]
+    fn a_running_threads_registers_hold_only_its_thread_pointer() {
+        let tls = RunningTls::new(1);
+        let thread = RunningThread {
+            tls: &tls,
+            thread_pointer: 0x7f00_1234_5000,
+        };
+        let registers = thread.registers(Pid::from_raw(1)).unwrap();
+        assert_eq!(registers.fs_base, 0x7f00_1234_5000);
+        assert_eq!((registers.rip, registers.rsp, registers.rbp), (0, 0, 0));
+    }
 
     fn musl(id: u64) -> TlsModule {
         TlsModule::Musl {

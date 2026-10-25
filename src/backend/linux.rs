@@ -59,6 +59,7 @@ use modules::{ModuleMapping, loader_link_maps, mapped_module_load_bias, module_m
 use native::{InspectionOps, LinuxPtrace, LinuxTraceOps, is_vanished_tracee};
 use registers::Fxsave;
 pub(super) use tls::CLibrary;
+pub use tls::RunningTls;
 use tls::TlsModule;
 
 mod activation;

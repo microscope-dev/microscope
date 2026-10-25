@@ -192,6 +192,10 @@ pub struct Snapshotter {
     /// The runtimes each module's image carries, by the image, which live
     /// snapshots find once.
     runtimes: BTreeMap<crate::ModuleImageId, Vec<Detected>>,
+
+    /// What live snapshots read again to find a module's thread-local
+    /// storage for a thread.
+    tls: crate::backend::RunningTls,
 }
 
 /// A runtime a module carries, bound or with why it cannot be.
@@ -212,6 +216,7 @@ impl Snapshotter {
             program,
             thread_pointers: BTreeMap::new(),
             runtimes: BTreeMap::new(),
+            tls: crate::backend::RunningTls::new(pid),
         })
     }
 
@@ -645,6 +650,7 @@ impl Snapshotter {
                 bias: loaded.load_bias,
                 threads: threads.clone(),
                 pointers: &pointers,
+                tls: Some(&self.tls),
                 unlearned: RefCell::new(BTreeSet::new()),
             };
 
@@ -717,6 +723,7 @@ impl Snapshotter {
                 bias: loaded.load_bias,
                 threads: threads.clone(),
                 pointers: &pointers,
+                tls: None,
                 unlearned: RefCell::new(BTreeSet::new()),
             };
 
@@ -807,6 +814,10 @@ pub struct LiveStop<'a> {
     threads: Vec<crate::ThreadId>,
     pointers: &'a BTreeMap<u32, u64>,
 
+    /// Where the module's thread-local storage is found for a thread, by
+    /// its thread pointer; `None` where the stop does not find it.
+    tls: Option<&'a crate::backend::RunningTls>,
+
     /// The threads whose thread pointers a model asked for and none was
     /// learned.
     unlearned: RefCell<BTreeSet<u32>>,
@@ -841,6 +852,7 @@ impl LiveStop<'static> {
             bias,
             threads: Vec::new(),
             pointers: &NO_POINTERS,
+            tls: None,
             unlearned: RefCell::new(BTreeSet::new()),
         }
     }
@@ -861,6 +873,7 @@ impl<'a> LiveStop<'a> {
             bias,
             threads: vec![crate::ThreadId::new(u64::from(tid))],
             pointers,
+            tls: None,
             unlearned: RefCell::new(BTreeSet::new()),
         }
     }
@@ -902,6 +915,22 @@ impl RuntimeStop for LiveStop<'_> {
         }
 
         pointer
+    }
+
+    fn module_thread_local(
+        &self,
+        thread: crate::ThreadId,
+        offset: u64,
+    ) -> Result<crate::VirtualAddress, Arc<str>> {
+        let tls = self
+            .tls
+            .ok_or("a live read of memory alone finds no module's thread-local storage")?;
+        let pointer = self
+            .thread_pointer(thread)
+            .ok_or("the thread's thread pointer is unknown")?;
+        tls.address(pointer, self.bias, offset)
+            .map(crate::VirtualAddress::new)
+            .map_err(Arc::from)
     }
 
     fn instruction(&self, _thread: crate::ThreadId) -> Option<crate::VirtualAddress> {

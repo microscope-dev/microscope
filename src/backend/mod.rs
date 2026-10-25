@@ -15,6 +15,7 @@ use crate::{Error, ProcessId, Result};
 
 pub use linux::ControllerJoin;
 pub use linux::PostMortemSession;
+pub use linux::RunningTls;
 pub use linux::bpf;
 #[cfg(test)]
 pub use linux::native_tracee;
