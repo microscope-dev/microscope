@@ -314,3 +314,29 @@ async fn debian_detach_closes_its_owned_inspector_and_preserves_a_borrowed_one()
         assert!(child.wait().success(), "Debian detached process survives");
     }
 }
+
+/// At every checkpoint of `awaits.js`, each thread's await chain is the
+/// one V8 reported: the builtins that resume an await, which no symbol
+/// names in Debian's build, have the numbers of its V8 release's.
+#[tokio::test]
+async fn debian_await_chains_are_the_ones_v8_reported() {
+    if !inside("debian::debian_await_chains_are_the_ones_v8_reported") {
+        return;
+    }
+    let mut session = NodeSession::launch(DEBIAN, "awaits.js", &[], &[]).await;
+    let mut lies = Vec::new();
+    for (index, (checkpoint, resumed, ends_early)) in
+        crate::awaits::CHECKPOINTS.into_iter().enumerate()
+    {
+        if index > 0 {
+            session.proceed().await;
+        }
+        let reported = threads(&session.stop_at(checkpoint).await);
+        let context = format!("{} at {checkpoint}", session.context());
+        lies.extend(
+            crate::awaits::check(&session.scenario, &reported, resumed, ends_early, &context).await,
+        );
+    }
+    session.shutdown().await;
+    assert!(lies.is_empty(), "{lies:#?}");
+}
