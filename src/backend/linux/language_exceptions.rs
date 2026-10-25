@@ -264,7 +264,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                         self.runtime_assignment_end(pid, site.runtime, number, failure)
                     }
                     Ok(HookEvent::StepCalls { number, target }) => {
-                        self.step_into_native(pid, site.runtime, number, target);
+                        let _ = self.step_into_native(pid, site.runtime, number, target);
                         None
                     }
                     Err(description) => Some(StopReason::RuntimeEvent { description }),
@@ -330,7 +330,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     /// What the runtime `runtime` reports of the stopped thread `pid` at
     /// one of its hooks, through `read`.
-    fn read_hook<T>(
+    pub(super) fn read_hook<T>(
         &self,
         pid: Pid,
         runtime: RuntimeId,

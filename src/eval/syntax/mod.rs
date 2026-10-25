@@ -233,6 +233,22 @@ impl Expression {
         }
     }
 
+    /// The name a plain assignment gives its target the value of, as `y`
+    /// in `x = y`; `None` for any other expression.
+    #[must_use]
+    pub fn assigned_name(&self) -> Option<&str> {
+        let tree = self.tree()?;
+        match tree.kind(tree.root()) {
+            ast::NodeKind::Assign {
+                op: None, value, ..
+            } => match tree.kind(*value) {
+                ast::NodeKind::Name(_) => Some(tree.span(*value).text(self.text())),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// Whether both parse the same, whatever their spacing.
     #[must_use]
     pub fn same_shape(&self, other: &Self) -> bool {

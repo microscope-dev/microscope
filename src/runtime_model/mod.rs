@@ -237,6 +237,10 @@ impl TargetThreadId {
 pub struct ReportedLocal {
     pub name: Arc<str>,
     pub value: ReportedValue,
+
+    /// Whether the interface listed it in a block's scope, whose each entry
+    /// binds it anew.
+    pub block: bool,
 }
 
 /// What a runtime's debugging interface said a variable held.
@@ -1052,10 +1056,37 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
     /// the move has finished once it returns.
     fn stack_mover(&self) -> Option<ImageAddress>;
 
+    /// Code of the runtime's image that no call-frame information
+    /// describes and that runs in a frame keeping the frame-pointer chain
+    /// by the runtime's convention, as V8's bytecode handlers run in the
+    /// interpreter's frame: the unwinder walks it as code the runtime
+    /// generated.
+    fn frame_pointer_code(&self) -> Vec<AddressRange<ImageAddress>> {
+        Vec::new()
+    }
+
     /// The function the runtime's inspector calls to list its targets,
     /// where the debugger reads the inspector's address and hides it.
     fn inspector_hook(&self) -> Option<ImageAddress> {
         None
+    }
+
+    /// Where the runtime enters the native functions a program gives it,
+    /// as V8 enters a Node-API function's C callback: a step into a call
+    /// of one traps there for [`Self::native_callee`].
+    fn native_entry(&self) -> Option<ImageAddress> {
+        None
+    }
+
+    /// The native function a thread entering [`Self::native_entry`] with
+    /// `registers` is about to run.
+    fn native_callee(
+        &self,
+        stop: &dyn RuntimeStop,
+        registers: &RegisterFile,
+    ) -> Result<VirtualAddress, Arc<str>> {
+        let _ = (stop, registers);
+        Err("the runtime enters no native functions of the program's".into())
     }
 
     /// A hidden listing's immutable target, or no edit for native upgrade
@@ -1333,6 +1364,20 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         Err(InterpretedFailure::interprets_nothing())
     }
 
+    /// How the runtime's debugging interface names the variable in slot
+    /// `slot` of the interpreted frame at `frame`, which an assignment
+    /// through it gives a value; or why it cannot be assigned so.
+    fn assigned_binding(
+        &self,
+        stop: &dyn RuntimeStop,
+        frame: InterpretedFrameRef,
+        slot: u32,
+        budget: &mut InspectionBudget,
+    ) -> Result<AssignedBinding, InterpretedFailure> {
+        let _ = (stop, frame, slot, budget);
+        Err(InterpretedFailure::interprets_nothing())
+    }
+
     /// Where the variable in slot `slot` of the interpreted frame at
     /// `frame` keeps the object it holds, to watch, and the code the frame
     /// runs; or why the variable cannot be watched so.
@@ -1348,16 +1393,65 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
     }
 
     /// Whether `thread` still runs the interpreted frame at `frame`, which
-    /// runs `code`, as when its variable was watched.
+    /// runs `code`, as when its variable was watched, and the frame still
+    /// reaches the variable's word at `watched`.
     fn interpreted_frame_runs(
         &self,
         stop: &dyn RuntimeStop,
         thread: ThreadId,
         frame: VirtualAddress,
         code: VirtualAddress,
+        watched: VirtualAddress,
     ) -> Result<bool, Arc<str>> {
-        let _ = (stop, thread, frame, code);
+        let _ = (stop, thread, frame, code, watched);
         Err("the runtime interprets no frames".into())
+    }
+
+    /// The code that builds an interpreted frame on the thread's native
+    /// stack, whose stores into a frame's slots begin a new frame there;
+    /// `None` for a runtime whose interpreted frames are not on the native
+    /// stack. A frame there is at a canonical frame address 16 bytes above
+    /// its address, so one below the innermost frame's has returned.
+    fn stack_frame_builders(&self) -> Option<Vec<AddressRange<ImageAddress>>> {
+        None
+    }
+
+    /// Where the runtime begins a collection that may move the objects
+    /// that hold watched variables, on the thread whose objects it moves;
+    /// the collection has finished once it returns.
+    fn collector(&self) -> Option<ImageAddress> {
+        None
+    }
+
+    /// Where the runtime begins replacing a running interpreted frame's
+    /// code, as V8's on-stack replacement does, after which the frame
+    /// keeps its variables elsewhere.
+    fn frame_replacers(&self) -> Vec<FrameReplacer> {
+        Vec::new()
+    }
+
+    /// How the interpreted frame at `frame` reaches the watched word at
+    /// `watched`, which a collection that moves the frame's objects keeps.
+    fn interpreted_place(
+        &self,
+        stop: &dyn RuntimeStop,
+        frame: VirtualAddress,
+        watched: VirtualAddress,
+    ) -> Result<InterpretedPlace, Arc<str>> {
+        let _ = (stop, frame, watched);
+        Err("the runtime moves no interpreted frame's objects".into())
+    }
+
+    /// Where the interpreted frame at `frame` keeps the word it reaches by
+    /// `place`, and the code it runs, after a collection.
+    fn interpreted_placed(
+        &self,
+        stop: &dyn RuntimeStop,
+        frame: VirtualAddress,
+        place: InterpretedPlace,
+    ) -> Result<InterpretedWatch, Arc<str>> {
+        let _ = (stop, frame, place);
+        Err("the runtime moves no interpreted frame's objects".into())
     }
 
     /// Whether `thread` is the only thread the runtime knows, which alone
@@ -1634,6 +1728,15 @@ pub struct CodeFrame<'a> {
     /// Whether the frame's code is code the runtime generated, which no
     /// image holds, rather than the image's.
     pub generated: bool,
+
+    /// Where the image of the module carrying the runtime holds the
+    /// frame's instruction, for code the image holds.
+    pub image_instruction: Option<ImageAddress>,
+
+    /// Whether the unwinder found the frame's rbp to be its own frame
+    /// pointer, 16 bytes below its canonical frame address, as it is at
+    /// each call; at the innermost frame's instruction it may not be.
+    pub entered: bool,
 
     /// The registers the unwinder recovered for the frame, as its frame
     /// pointer.
@@ -2057,6 +2160,30 @@ pub enum InterpretedChild {
     },
 }
 
+/// A variable an assignment through a runtime's debugging interface
+/// gives a value: its name, and which of the frame's scopes holds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssignedBinding {
+    pub name: Arc<str>,
+    pub reach: BindingReach,
+
+    /// Why the interface may refuse it, said if it does.
+    pub refusable: Option<Arc<str>>,
+}
+
+/// Which scopes of a frame may hold a variable, innermost first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindingReach {
+    /// The frame's own: its function's scope and the blocks inside it.
+    Frame,
+
+    /// A scope of a function the frame's function is nested in.
+    Enclosing,
+
+    /// A script's or a module's top level.
+    Script,
+}
+
 /// Where an interpreted frame's variable keeps the object it holds, which
 /// a watch of the variable watches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2067,6 +2194,30 @@ pub struct InterpretedWatch {
     /// The code the frame runs, which tells a later frame at its address
     /// from it.
     pub code: VirtualAddress,
+}
+
+/// Where a runtime begins replacing a running interpreted frame's code,
+/// and how the entering thread's frame pointer reaches that frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameReplacer {
+    pub entry: ImageAddress,
+
+    /// How many saved frame pointers link the entering thread's frame
+    /// pointer to the replaced frame's, each read from the frame it
+    /// points at.
+    pub links: u8,
+}
+
+/// How an interpreted frame reaches a watched variable's word, which a
+/// collection that moves the runtime's objects keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterpretedPlace {
+    /// A slot of the frame itself, which no collection moves.
+    Frame(VirtualAddress),
+
+    /// The word `offset` bytes into the scope object `depth` links out
+    /// along the frame's chain of scope objects, from its current one.
+    Scope { depth: u32, offset: u64 },
 }
 
 /// What a name means in an interpreted frame, as an expression binds it.

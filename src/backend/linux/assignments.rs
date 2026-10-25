@@ -37,6 +37,9 @@ pub(super) struct PendingAssignment {
 
     /// Why the agent did not make it, as it reported.
     failure: Option<Arc<str>>,
+
+    /// Whether V8's inspector reported it made, whatever stop followed.
+    made: bool,
 }
 
 /// An assignment refused at `span` for `reason`.
@@ -78,6 +81,16 @@ impl<P: LinuxTraceOps> Controller<P> {
                 "only a frame a thread runs can be changed, not a suspended one",
             )
         })?;
+        if self.inspects(runtime) {
+            return self.assign_javascript(
+                stop_id,
+                pid,
+                (runtime, frame, slot),
+                (expression, limits),
+                value,
+                span,
+            );
+        }
         let value = assigned_value(runtime, value, span)?;
         self.assignable(pid, runtime, span)?;
 
@@ -135,6 +148,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 limits,
                 span,
                 failure: None,
+                made: false,
             });
         }
         let _ = self.events.send(crate::DebuggerEvent::InferiorContinued {
@@ -144,6 +158,103 @@ impl<P: LinuxTraceOps> Controller<P> {
             resumed: scope,
         });
         Ok(())
+    }
+
+    /// Whether the runtime `runtime` is driven through its inspector, which
+    /// makes its assignments, rather than an agent.
+    fn inspects(&self, runtime: RuntimeId) -> bool {
+        self.inferior.as_ref().is_some_and(|inferior| {
+            inferior.inspectors.has(runtime)
+                && self
+                    .runtimes(inferior)
+                    .into_iter()
+                    .any(|bound| bound.id == runtime && bound.model.agent().is_none())
+        })
+    }
+
+    /// Begins giving the variable in slot `slot` of the JavaScript frame
+    /// `frame` the value `value`, which V8's inspector gives it while V8
+    /// holds the thread paused and every thread runs.
+    fn assign_javascript(
+        &mut self,
+        stop_id: StopId,
+        pid: Pid,
+        (runtime, frame, slot): (RuntimeId, crate::runtime_model::InterpretedFrameRef, u32),
+        (expression, limits): (&Expression, InspectionLimits),
+        value: Assigned<Place>,
+        span: Span,
+    ) -> Result<()> {
+        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let number = inferior.next_runtime_assignment.saturating_add(1);
+        let assignment = self
+            .javascript_assignment(
+                pid,
+                runtime,
+                frame,
+                slot,
+                value,
+                expression.assigned_name(),
+                number,
+            )
+            .map_err(|reason| refused(span, &*reason))?;
+        let process = process_id(inferior.tgid);
+        // V8 answers only while its inspector's thread runs.
+        let scope = ResumeScope::Process(process);
+        // The execution's resume sends V8 its first request.
+        self.await_javascript_assignment(runtime, Some(assignment));
+        let begun = self.begin_execution(
+            process,
+            stop_id,
+            scope,
+            ActiveKind::RuntimeAssignment {
+                thread: pid,
+                runtime,
+                number,
+            },
+            ExceptionDisposition::Pass,
+        );
+        let execution_id = match begun {
+            Ok(execution_id) => execution_id,
+            Err(error) => {
+                self.await_javascript_assignment(runtime, None);
+                return Err(error);
+            }
+        };
+        if let Some(inferior) = self.inferior.as_mut() {
+            inferior.next_runtime_assignment = number;
+            inferior.assignment = Some(PendingAssignment {
+                reply: None,
+                thread: pid,
+                frame: frame.address,
+                expression: expression.clone(),
+                limits,
+                span,
+                failure: None,
+                made: false,
+            });
+        }
+        let _ = self.events.send(crate::DebuggerEvent::InferiorContinued {
+            revision: self.revision,
+            process_id: process,
+            execution_id,
+            resumed: scope,
+        });
+        Ok(())
+    }
+
+    /// Notes how the pending JavaScript assignment ended: made, or, with
+    /// why, not.
+    pub(super) fn javascript_assignment_ended(&mut self, made: bool, failure: Option<Arc<str>>) {
+        if let Some(pending) = self
+            .inferior
+            .as_mut()
+            .and_then(|inferior| inferior.assignment.as_mut())
+        {
+            pending.made |= made;
+            if failure.is_some() {
+                pending.failure = failure;
+            }
+        }
     }
 
     /// Refuses an assignment the runtime `runtime`'s agent would make on
@@ -264,9 +375,12 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// ends it forms: the agent makes each assignment once, by its number,
     /// so that being armed with it again never makes it twice.
     pub(super) fn end_runtime_assignment(&mut self) {
+        self.end_javascript_assignments();
+        // Only an agent is armed with an assignment.
         let runtime = self
             .inferior
             .as_ref()
+            .filter(|inferior| inferior.runtime_assignment.is_some())
             .and_then(|inferior| inferior.active.as_ref())
             .and_then(|active| match active.kind {
                 ActiveKind::RuntimeAssignment { runtime, .. } => Some(runtime),
@@ -293,7 +407,27 @@ impl<P: LinuxTraceOps> Controller<P> {
         else {
             return;
         };
-        self.select_interpreted_frame(thread, frame);
+        let Some((stop_id, context)) = self
+            .inferior
+            .as_ref()
+            .and_then(|inferior| inferior.public_stop.as_ref())
+            .map(|stop| (stop.id, stop.selected))
+        else {
+            return;
+        };
+        let Ok(trace) = self.backtrace(stop_id, &StackRoot::of_thread(thread)) else {
+            return;
+        };
+        let Some(id) = self.assigned_frame(stop_id, thread, &trace.frames, frame) else {
+            return;
+        };
+        if let Some(stop) = self
+            .inferior
+            .as_mut()
+            .and_then(|inferior| inferior.public_stop.as_mut())
+        {
+            stop.selected_frames.insert(context, id);
+        }
     }
 
     /// Answers the pending assignment's request at the stop `stop_id`,
@@ -309,7 +443,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
         let answer = match (reason, &pending.failure) {
             (StopReason::Assignment, None) => self.read_assignment(stop_id, &pending),
-            (StopReason::Assignment, Some(failure)) => Err(refused(pending.span, &**failure)),
+            (_, None) if pending.made => self.read_assignment(stop_id, &pending),
+            (_, Some(failure)) => Err(refused(pending.span, &**failure)),
             _ => Err(refused(
                 pending.span,
                 "the thread stopped for another reason before its agent reported the \
@@ -346,19 +481,34 @@ impl<P: LinuxTraceOps> Controller<P> {
             ExecutionContext::Thread(debug_thread_id(pending.thread)),
         )?;
         let trace = self.backtrace(stop_id, &root)?;
-        let frame = trace
-            .frames
-            .iter()
-            .find(|candidate| {
-                candidate.kind
-                    == FrameKind::Interpreted {
-                        frame: pending.frame,
-                    }
-            })
-            .map(|candidate| candidate.id)
+        let frame = self
+            .assigned_frame(stop_id, pending.thread, &trace.frames, pending.frame)
             .ok_or_else(|| refused(pending.span, "the variable's frame is gone"))?;
 
         self.read_assigned(stop_id, &root, frame, &pending.expression, pending.limits)
+    }
+
+    /// The frame among `frames`, `pid`'s at the stop `stop_id`, that shows
+    /// the interpreted frame at `address`: an interpreter's own frame, or a
+    /// frame of code a runtime generated, as V8's are, whose frame pointer
+    /// it is.
+    fn assigned_frame(
+        &self,
+        stop_id: StopId,
+        pid: Pid,
+        frames: &[crate::StackFrame],
+        address: VirtualAddress,
+    ) -> Option<crate::StackFrameId> {
+        frames
+            .iter()
+            .find(|candidate| candidate.kind == FrameKind::Interpreted { frame: address })
+            .or_else(|| {
+                frames.iter().find(|candidate| {
+                    self.interpreted_frame(stop_id, pid, candidate.id)
+                        .is_some_and(|(_, found)| found == address)
+                })
+            })
+            .map(|candidate| candidate.id)
     }
 
     /// Arms the runtime with no assignment.
@@ -387,6 +537,9 @@ fn assigned_value(runtime: RuntimeId, value: Assigned<Place>, span: Span) -> Res
         Assigned::Bool(value) => AssignedValue::Bool(value),
         Assigned::Text(text) => AssignedValue::Text(text.into()),
         Assigned::Nothing => AssignedValue::Nothing,
+        Assigned::Undefined | Assigned::BigInt(_) => {
+            return Err(refused(span, "Python has no such value"));
+        }
         Assigned::Object(Place::Interpreted {
             runtime: keeper,
             object,

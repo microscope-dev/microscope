@@ -766,6 +766,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 | BreakpointOwner::Loader
                 | BreakpointOwner::Runtime
                 | BreakpointOwner::StackMove
+                | BreakpointOwner::InterpretedMove
                 | BreakpointOwner::Resolver
                 | BreakpointOwner::InspectorHook => None,
             })
@@ -1194,6 +1195,9 @@ impl<P: LinuxTraceOps> Controller<P> {
                         inferior.runtime_hooks.remove(&address);
                     }
                     BreakpointOwner::StackMove => inferior.stack_moves.forget(address),
+                    BreakpointOwner::InterpretedMove => {
+                        inferior.interpreted_moves.forget(address);
+                    }
                     BreakpointOwner::Resolver => inferior.indirect.forget(address),
                     BreakpointOwner::InspectorHook => inferior.inspectors.forget(address),
                 }

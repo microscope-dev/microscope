@@ -177,6 +177,8 @@ fn evaluate(world_name: &str, text: &str) -> String {
             Assigned::Bool(value) => format!("gives {value}"),
             Assigned::Text(text) => format!("gives {text:?}"),
             Assigned::Nothing => "gives None".to_owned(),
+            Assigned::Undefined => "gives undefined".to_owned(),
+            Assigned::BigInt(value) => format!("gives {value}n"),
             Assigned::Object(_) => "gives an object".to_owned(),
         },
         Ok(Outcome::Assign { .. } | Outcome::AssignRegister { .. }) => {

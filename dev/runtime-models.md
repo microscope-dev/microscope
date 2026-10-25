@@ -1128,6 +1128,104 @@ guesses. Cleanup has a deadline and reports failures, including a main thread
 that never reaches the check callback. It does not prevent the application
 or another signal sender from deliberately reopening the inspector.
 
+**Assignments.** `Controller::assign_interpreted` hands a JavaScript
+assignment to `assign_javascript` when the runtime is driven through its
+inspector. `RuntimeModel::assigned_binding` names the variable and which
+scopes may hold it (`BindingReach`): the frame's own, an enclosing
+function's, or the script's. The receiver, a global, an unnamed register,
+and a variable found through `with` are refused there. A variable kept by
+optimized code is tried, since V8 assigns it only if a context holds it,
+and its refusal says why. `inspector/assignments.rs` makes the
+`Debugger.setVariableValue` request, which needs a `callFrameId` from a
+pause V8 holds: `Paused::bound` maps each bound interpreted frame to the
+frame V8 listed. No request goes out while a stop is published. The
+assignment is an execution of every thread (`ActiveKind::RuntimeAssignment`).
+`resume_inspectors` sends its first request in place of the pause's
+`Debugger.resume`, so the paused thread stays in V8's message loop. V8 is
+asked for each candidate scope, innermost first, until one holds the name.
+An object is given as the `objectId` V8 lists for the variable that holds
+it, found with `Runtime.getProperties` on the frame's scopes. Once V8
+answers, `Edit::InspectorAssigned` stops every thread and publishes
+`StopReason::Assignment`. The pause stays held for that stop and is let go
+at its resume.
+
+V8's scope objects are copies made as it paused; listing one again after
+the assignment returns the old values. So `PausedFrame::assigned` puts the
+value given in place of the listed one, and keeps the `CallArgument` it
+was given: a later `x = y` in the same pause gives `y`'s current object,
+not the one V8 listed. A name given a value in another frame or scope of
+the pause may share its context, so an object taken from it is refused
+until the program runs again. The frame's names still bind only
+if every listed value matches its slot, so a wrong value there unnames the
+frame rather than misnaming it. The answer is the variable read again from
+memory. A Turbofan frame's variables cannot be read back, and the answer
+says so. `tests/node/assignments.rs` checks each binding and value against
+the program's own output on every build, Debian's included. The scripted
+test `an_assignment_holds_v8_s_pause_until_its_own_stop_resumes` fixes the
+order of requests.
+
+**Addons.** `node/napi.rs` reads the C function a Node-API call runs, where
+V8 enters `v8impl::FunctionCallbackWrapper::Invoke` with the call's
+`FunctionCallbackInfo` in `rdi`. On 12.4 the template's data is in the
+info's implicit arguments. On 13.6 the template is there, and on 14.6 it is
+in the info's own words. The data, `FunctionTemplateInfo::CallbackData`, is
+a `JSExternalObject` holding the function's `CallbackBundle`, whose third
+word is the callback. Each step is checked against the type V8 records
+there. [Process control](process-control.md) describes the step into the
+callback and back. `tests/node/addon_steps.rs` holds the C stops to the
+addon's marked lines, and the JavaScript stops to V8's own `stepInto` and
+`stepOut` under the plain CDP oracle. A V8 `Debugger.pause` asked while the
+thread runs C pauses at the next function entry, not at the caller's next
+statement, so the step back relies on the step V8 still has armed, never on
+a pause.
+
+**Watches.** `node/watches.rs` resolves `watch name` in a frame to the
+word that holds the variable: an interpreter or Sparkplug frame's register
+or argument slot, or a slot of a context the frame reaches. Each is an
+`InterpretedPlace`, either an offset from the frame or a context depth and
+slot, so that the place can be found again after V8 moves the context.
+`variables.rs` keeps each variable's slot address for this. Refused: the
+receiver, a global, a script binding, a variable found through `with`, an
+optimized frame's variable, a resumable function's frame slot, a
+block's register variable, and, on 14.6, a context slot that holds or
+will hold a context cell (`Context::Set`). V8 gives each block's variable
+a register of its own (`Scope::AllocateStackSlot`), but each entry of the
+block binds it anew there with no bytecode to mark it; V8's listing says
+which names are a block's (`ReportedLocal::block`). A block's captured
+variable is in the block's own context, which each entry makes anew, so
+its watch ends with the block.
+
+`backend/linux/interpreted_watches.rs` follows V8's collector. A
+collection runs on its isolate's thread, so a breakpoint on
+`Heap::PerformGarbageCollection` sets the watches of that thread's frames
+aside, noting each place. At the collector's return the debugger places
+them where the frames reach their words now, with their values read anew.
+The collector's own writes are never reported. Probes under gdb on 12.4,
+13.6, and 14.6, with `--minor-ms`, `--stress-compaction`, and
+`--single-threaded-gc` and with a worker, found every scavenge,
+mark-compact, and evacuation inside that function on the isolate's own
+thread. A breakpoint on the on-stack replacement builtins, planted in
+every mapping of the image because V8 may run a copy of its builtins, ends
+the watches of the replaced frame's own slots with `FrameReplaced`, even if
+the replacement then fails. A `FrameReplacer` names how many saved frame
+pointers lie between the entry's rbp and the replaced frame.
+`InterpreterOnStackReplacement` is entered from the `JumpLoop` handler's
+own frame, which it drops before entering the code, so its replaced frame
+is `[rbp]`. Sparkplug's builtin is entered from the frame itself. V8
+re-enters a builtin on each back edge while it compiles the replacement,
+and each entry stops every thread. So the builtins are planted only while
+a frame-slot watch exists, and its first entry ends that watch.
+`stack_frame_left` ends a frame-slot watch when the frame returned (no
+frame of the thread's unwound stack is at its address, the innermost CFA
+is above it, or rbp is above it in V8's code) or when
+a frame builder (`InterpreterEntryTrampoline`, Sparkplug's prologue) runs
+at the frame's address. A store stops inside a bytecode handler.
+`frames.rs` describes that frame as the handler's function, and the
+unwinder walks handlers by frame pointer (`frame_pointer_code`). The
+collector's sites are planted only while an interpreted watch exists. Debian's `libnode` names neither function, so every watch is
+refused there. `tests/node/watches.rs` checks each hit against the program's
+own prints under `--stress-compaction`.
+
 The launch preload precedes user `NODE_OPTIONS` preloads. Followed launches
 retain a content-addressed private cache copy so released descendants do
 not inherit a deleted require path. An untraced descendant restores the

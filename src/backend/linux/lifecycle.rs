@@ -1302,6 +1302,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         true
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one reset per piece of state an exec replaces"
+    )]
     pub(super) fn handle_exec_event(&mut self, pid: Pid) -> Result<()> {
         let Some(old_tid) = self.event_message_of(pid)? else {
             return self.handle_classified_stop(pid, ClassifiedStop::Superseded);
@@ -1355,6 +1359,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let had_arming_reasons = !inferior.managed.unarmed.is_empty();
         inferior.managed = super::managed::ManagedSites::default();
         inferior.stack_moves.clear();
+        inferior.interpreted_moves = super::interpreted_watches::InterpretedMoves::default();
         inferior.indirect = super::indirect::IndirectFunctions::default();
         // The inspector ran in the image the exec replaced.
         inferior.inspectors = super::inspector::Inspectors::default();

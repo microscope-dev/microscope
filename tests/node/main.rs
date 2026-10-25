@@ -7,6 +7,8 @@
 mod support;
 
 mod addon;
+mod addon_steps;
+mod assignments;
 mod attach;
 mod awaits;
 mod breakpoints;
@@ -27,4 +29,5 @@ mod tasks;
 mod truth;
 mod values;
 mod views;
+mod watches;
 mod workers;

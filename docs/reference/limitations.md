@@ -118,11 +118,24 @@ narrower limits and report them when used.
   `--allow-inspector`, or whose parent replaced `NODE_OPTIONS`. A function
   breakpoint takes a function's own name, not a dotted one. A variable V8
   records no name for is an unnamed register except at a stop made through
-  the inspector. JavaScript variables cannot be assigned or watched, and a
-  step does not enter a Node-API addon's native code. A core dump's
-  JavaScript is read-only. An await chain starts only at an async function
-  resumed after an `await`, not inside a `.then` handler, and a suspended
-  function's locals are unnamed registers but for those a closure uses.
+  the inspector. A JavaScript variable takes a value only at a stop where V8
+  paused its thread, and only where V8's debugger assigns it: not `this`, a
+  property, a global, an unnamed register, or a variable optimized code keeps
+  outside a context. The statement V8 paused at may still use the old value.
+  A JavaScript watchpoint watches a variable of a frame the interpreter or
+  Sparkplug runs, or a captured variable a context holds: not a property,
+  `this`, a global, a script's top-level binding, a block's variable that
+  no closure captured, a generator's or async function's variable kept
+  outside a context, a variable optimized code keeps, or, on Node 26, a variable V8 keeps in a context cell, as it does
+  in a context of at most two variables. A watch of a frame's own slot
+  ends where V8 begins replacing the frame by optimized code, even if the
+  replacement then fails. No watch is set on Debian's node, whose `libnode`
+  does not name V8's collector. A step enters a Node-API addon's C
+  function only from a stop where V8 paused the thread, only where the addon
+  has debug information, and not on Debian's node, whose `libnode` does not
+  name the function V8 enters addons through. An await chain starts only at
+  an async function resumed after an `await`, not inside a `.then` handler.
+  A core dump's JavaScript is read-only.
 - A profile's Python stacks (`record --python`) come from the BPF engine,
   which needs `CAP_BPF` and `CAP_PERFMON`, or from snapshots that stop the
   program or read it as it runs. The BPF engine's first samples of a program

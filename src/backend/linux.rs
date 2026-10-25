@@ -92,6 +92,7 @@ mod internal_stops;
 mod interpreted;
 mod interpreted_values;
 mod interpreted_views;
+mod interpreted_watches;
 mod invariants;
 mod jit_objects;
 mod language_exceptions;
@@ -317,6 +318,11 @@ enum BreakpointOwner {
     /// The entry or a return of a language runtime's code that moves a
     /// watched task's stack.
     StackMove,
+
+    /// The entry or a return of a language runtime's collector, or the
+    /// entry of its replacement of a frame's code, which a watched
+    /// interpreted variable's storage follows.
+    InterpretedMove,
 
     /// The entry of an indirect function's resolver, or the return of a
     /// call of one, that a breakpoint on the function waits for.
@@ -805,6 +811,8 @@ enum Edit {
     InspectorCleanup,
     /// Judges the pauses runtimes' inspectors reported.
     InspectorPaused,
+    /// Ends the assignment a runtime's inspector made or could not.
+    InspectorAssigned,
     AddBreakpoint {
         spec: crate::BreakpointSpec,
         options: Box<crate::BreakpointOptions>,
@@ -865,6 +873,11 @@ enum Edit {
     /// Set aside the watches of tasks whose stacks a runtime is moving, and
     /// place those whose moves finished on their new stacks.
     FollowStacks,
+
+    /// Set aside the watches of interpreted frames whose runtime began
+    /// collecting their objects, place those whose collections finished,
+    /// and end those whose frames' code was replaced.
+    FollowInterpreted,
     ArmAgents,
 
     /// Go on with the source step of thread `pid`, which returned from
@@ -1029,6 +1042,7 @@ struct Inferior {
     /// The runtime functions whose entry stops for an exception.
     runtime_hooks: BTreeMap<VirtualAddress, language_exceptions::HookSite>,
     stack_moves: stack_watches::StackMoves,
+    interpreted_moves: interpreted_watches::InterpretedMoves,
 
     /// The breakpoint locations runtimes manage that user breakpoints own.
     managed: managed::ManagedSites,
@@ -1115,6 +1129,7 @@ impl Inferior {
             loader_site: None,
             runtime_hooks: BTreeMap::new(),
             stack_moves: stack_watches::StackMoves::default(),
+            interpreted_moves: interpreted_watches::InterpretedMoves::default(),
             managed: managed::ManagedSites::default(),
             agents: BTreeMap::new(),
             python_launch: None,
@@ -1995,6 +2010,7 @@ impl<P: InspectionOps> Controller<P> {
                 .values()
                 .filter_map(runtime_agents::Installation::deadline)
                 .chain(inferior.inspectors.interrupt)
+                .chain(inferior.inspectors.assignment_deadline())
                 .chain(
                     inferior
                         .inspectors
@@ -2107,6 +2123,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 if let Err(error) = self
                     .agent_timeout(now)
                     .and_then(|()| self.interrupt_expired(now))
+                    .and_then(|()| self.assignment_expired(now))
                     .and_then(|()| self.inspector_cleanup_timeout(now))
                 {
                     self.fail_inferior(error);

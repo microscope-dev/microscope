@@ -750,11 +750,95 @@ you choose them:
 The stop selects the throwing frame and names the exception as Node would
 print it. An exception thrown and caught in a skipped script does not stop.
 
-### Not supported yet
+### Assignments
 
-Assigning to a JavaScript variable, watchpoints on JavaScript variables,
-and stepping into a Node-API addon's native code are not supported yet.
-[Known limits](reference/limitations.md) lists them all.
+`set var`, the console, and an editor's **Set Value** give a variable of a
+JavaScript frame a number, a BigInt, text, `true` or `false`, `null`,
+`undefined`, or the object another variable of the frame holds. V8's
+debugger makes the change, at a stop where V8 paused the thread: a
+breakpoint, the end of a step, an exception, a `debugger` statement, or an
+interrupt that paused JavaScript. Every thread runs while V8 makes it, and
+none of the program's JavaScript does. The stop is then published again,
+under a new stop, with the variable's frame selected:
+
+```text
+(microscope) set var param = 41
+(number) param = 41
+(microscope) set var big = 5n
+(bigint) big = 5n
+(microscope) set var holder = other
+(Object) holder = { b: 2 }
+```
+
+A parameter, a `let`, a `const`, a block's variable, a variable a closure
+captured, and a script's top-level `let` take a value. `this`, a property
+(`obj.x = 1`), a global, an unnamed register, and a variable at a native
+stop are refused, and nothing runs. In a frame of optimized code, V8 gives
+a value only to a variable a context holds, and refuses the rest. An
+integer a JavaScript number holds only approximately, such as
+9007199254740993, is refused; write `9007199254740993n` for a BigInt.
+
+V8 may already have loaded a variable for the statement it paused at, so
+that statement can still use the old value: at `x += 0`, the new `x` takes
+effect only from the next statement. Chrome's DevTools have the same limit,
+since they make the change the same way.
+
+### Node-API addons
+
+`step` at a call of a Node-API addon's function stops at the first line of
+its C function when the addon has debug information. In C, `next` and
+`finish` work as they do in any native code. A step that leaves the C
+function goes back to JavaScript and stops where V8's own step from the call
+would stop: at the caller's next statement or, when the addon calls back into
+JavaScript, at the callback's first statement. The JavaScript a step over
+the addon's lines runs does not stop it.
+
+An addon without debug information is stepped over, as V8 steps over it.
+Debian's `libnode` does not name the function V8 enters addons through, so
+there a step always steps over an addon.
+
+### Watchpoints
+
+From a stop in a JavaScript frame, `watch name` watches one of the frame's
+variables. Each store that gives it another value stops, with the value
+before and after, as Node prints them:
+
+```text
+(microscope) watch a
+watchpoint 1 set on a: 8 bytes at 0x2a42f05a7678 using 1 hardware slot (interpreted frame 0x7fffffff5ee8 of thread 4242)
+stopped by watchpoint 1 (change, hit 1) on a in moved [thread 4242 of 8]
+  old: null
+  new: { round: 1 }
+```
+
+A parameter, a function's own local, and a variable a closure captured
+can be watched. V8 keeps a captured variable in a context object,
+which its collector moves, young or old; the watch moves with it, and the
+collector's own rewrites are never reported. The watch ends when the frame
+returns or unwinds, and microscope says so. It also ends where V8 begins
+replacing the frame by optimized code, which keeps its variables elsewhere,
+unless a context holds the variable.
+
+The store stops inside V8's interpreter, which keeps the statement it runs
+in a register, so the stop names the frame's function but not always its
+line; `next` continues to the next statement.
+
+A property (`obj.x`), `this`, a global, a script's top-level binding, a
+variable optimized code keeps, and a generator's or async function's
+variable outside a context are refused. So is a block's variable that no
+closure captured: each entry of its block, as each iteration of a loop,
+binds it anew in the same register, with stores that cannot be told from
+its own. Node 26 keeps the number of a
+context with at most two variables in a cell whose fields change with the
+number's type; such a variable is refused. A watch follows the collector
+by stopping every thread as each collection on the frame's thread begins
+and ends. That costs about 1 to 3 ms per collection for a Node process with
+eight threads. A loop that allocated five million small objects, and
+collected 60 to 80 times, ran 1.3 to 1.7 times as long with a watch set.
+Debian's `libnode` does not name the collector, so there no JavaScript
+variable is watched.
+
+[Known limits](reference/limitations.md) lists what is not supported.
 
 ## Zig, Odin, D, Nim, Ada, and Fortran
 

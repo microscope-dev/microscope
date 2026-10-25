@@ -384,6 +384,9 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Plants a step's plan breakpoints for `execution`, removing those it
     /// planted when one cannot be.
     fn install_plan(&mut self, kind: &ActiveKind, execution: ExecutionId) -> Result<()> {
+        if let ActiveKind::RuntimeStep { runtime, kind, .. } = kind {
+            return self.install_native_entry(*runtime, *kind, execution);
+        }
         let ActiveKind::Step { start, .. } = kind else {
             return Ok(());
         };
@@ -1022,6 +1025,15 @@ impl<P: LinuxTraceOps> Controller<P> {
             return self.reach_plan_site(pid, address, kind);
         }
 
+        // A JavaScript step into a Node-API function goes on into it.
+        if self.reach_native_entry(pid, address) {
+            return if self.barrier_active() {
+                self.finish_barrier_if_ready()
+            } else {
+                self.repair_when_alone(pid, address)
+            };
+        }
+
         // A runtime step into native code ends where its own thread enters
         // the function it called.
         if let Some(kind) = self.runtime_step_arrival(pid, address) {
@@ -1093,7 +1105,9 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         self.note_returned_activation(pid, mode)?;
 
-        if self.source_step_returned_to_runtime(pid, mode)? {
+        if self.source_step_returned_to_runtime(pid, mode)?
+            || self.native_step_returned_to_javascript(pid, mode)?
+        {
             self.let_step_run_on()?;
             self.queue_internal_edit(Edit::ReturnToRuntime { pid })?;
             return self.go_on_without_plan(pid, address, None);
@@ -1134,6 +1148,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         self.note_stack_move(pid, address)?;
+        self.note_interpreted_move(pid, address)?;
         self.note_resolver(pid, address)?;
         self.note_inspector_hook(pid, address)
     }

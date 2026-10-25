@@ -10,7 +10,9 @@
 //! immutable UUID and returns an empty vector for proven print/list callers,
 //! before any string is allocated. Native upgrade validation runs unchanged.
 
+mod addons;
 mod arming;
+pub(super) mod assignments;
 mod functions;
 mod interrupts;
 mod maps;
@@ -77,6 +79,11 @@ pub(super) struct Inspectors {
 }
 
 impl Inspectors {
+    /// Whether the debugger drives `runtime` through its inspector.
+    pub(super) fn has(&self, runtime: RuntimeId) -> bool {
+        self.records.contains_key(&runtime)
+    }
+
     /// Ends the interrupt under way, withdrawing the pauses not yet sent.
     pub(in crate::backend::linux) fn end_interrupt(&mut self) -> bool {
         for isolate in self.isolates_mut() {
@@ -197,6 +204,14 @@ struct Inspector {
 
     /// The step the runtime is armed with, which V8 runs.
     step: Option<steps::Stepping>,
+
+    /// The assignment V8 is asked to make, while it holds the pause it is
+    /// made in.
+    assigning: Option<assignments::Assigning>,
+
+    /// The `stepInto` V8 still runs for a thread a JavaScript step left in
+    /// a Node-API addon's C function.
+    through: Option<addons::Through>,
 
     /// Which exceptions V8 is to pause at, as `setPauseOnExceptions`
     /// names them.
@@ -779,6 +794,13 @@ impl<P: LinuxTraceOps> Controller<P> {
                 if starting {
                     self.queue_internal_edit(super::Edit::InspectorCleanup)?;
                     return self.finish_barrier_if_ready();
+                }
+                if inspector
+                    .assigning
+                    .as_ref()
+                    .is_some_and(|assignment| assignment.awaits(id))
+                {
+                    return self.assignment_replied(runtime, id, result);
                 }
                 if inspector.isolates.values().any(|isolate| {
                     isolate

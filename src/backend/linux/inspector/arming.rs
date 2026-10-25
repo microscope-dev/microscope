@@ -125,6 +125,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         inspector.step = match (arming.step, inspector.step.take()) {
             (None, _) => None,
             (Some(step), Some(stepping)) if stepping.number == step.number => Some(stepping),
+            (Some(step), _) if step.returning => {
+                Some(super::addons::returning(inspector.through.take(), step)?)
+            }
             (Some(step), _) => Some(super::steps::stepping(&inspector.isolates, step, main)?),
         };
         inspector.desired = arming.breakpoints.to_vec();

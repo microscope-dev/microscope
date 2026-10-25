@@ -230,6 +230,7 @@ pub(super) const GENERATED: &[Generated] = &[
             (Field::PromiseReactionFulfillHandler, 32),
             (Field::PromiseReactionPromiseOrCapability, 40),
             (Field::PromiseCapabilityPromise, 8),
+            (Field::FunctionTemplateInfoCallbackData, 80),
         ],
         constants: &[
             (Constant::UncachedExternalStringMask, 16),
@@ -1379,6 +1380,7 @@ pub(super) const GENERATED: &[Generated] = &[
             (Field::PromiseReactionFulfillHandler, 32),
             (Field::PromiseReactionPromiseOrCapability, 40),
             (Field::PromiseCapabilityPromise, 8),
+            (Field::FunctionTemplateInfoCallbackData, 88),
         ],
         constants: &[
             (Constant::UncachedExternalStringMask, 16),
@@ -2567,6 +2569,7 @@ pub(super) const GENERATED: &[Generated] = &[
             (Field::PromiseReactionFulfillHandler, 32),
             (Field::PromiseReactionPromiseOrCapability, 40),
             (Field::PromiseCapabilityPromise, 8),
+            (Field::FunctionTemplateInfoCallbackData, 88),
         ],
         constants: &[
             (Constant::UncachedExternalStringMask, 16),
@@ -2842,6 +2845,7 @@ pub(super) const GENERATED: &[Generated] = &[
             (Constant::WithContextType, 230),
             (Constant::EvalContextType, 225),
             (Constant::AwaitContextType, 221),
+            (Constant::ContextCellType, 265),
             (Constant::FunctionTemplateInfoType, 251),
             (Constant::Tuple2Type, 172),
             (Constant::WasmExportedFunctionDataType, 180),

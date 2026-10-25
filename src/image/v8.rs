@@ -504,6 +504,9 @@ entries! {
         PromiseReactionFulfillHandler = "PromiseReaction::FulfillHandler",
         PromiseReactionPromiseOrCapability = "PromiseReaction::PromiseOrCapability",
         PromiseCapabilityPromise = "PromiseCapability::Promise",
+        /// The data an API function's template passes its callback: for a
+        /// Node-API function, a `JSExternalObject` holding its bundle.
+        FunctionTemplateInfoCallbackData = "FunctionTemplateInfo::CallbackData",
     }
 }
 
@@ -1100,6 +1103,10 @@ entries! {
         WithContextType = "WITH_CONTEXT_TYPE",
         EvalContextType = "EVAL_CONTEXT_TYPE",
         AwaitContextType = "AWAIT_CONTEXT_TYPE",
+
+        /// 14.6's cell a context slot may keep a number in, which no watch
+        /// follows; absent before 14.6.
+        ContextCellType = "CONTEXT_CELL_TYPE",
 
         /// The instance types `JSReceiver::class_name` and
         /// `GetConstructorHelper` tell apart.

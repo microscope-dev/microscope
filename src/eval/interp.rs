@@ -70,7 +70,16 @@ pub enum Assigned<P> {
     Float(f64),
     Bool(bool),
     Text(String),
+
+    /// The language's value for no value: Python's `None`, JavaScript's
+    /// `null`.
     Nothing,
+
+    /// JavaScript's `undefined`.
+    Undefined,
+
+    /// A JavaScript `BigInt`, as `1n` writes one.
+    BigInt(Exact),
     Object(P),
 }
 
@@ -957,6 +966,12 @@ impl<M: Machine> Interpreter<'_, M> {
         span: Span,
     ) -> Result<Outcome<M::Place>, Halt> {
         if matches!(target.ty, Ty::Dynamic) {
+            if matches!(value.ty, Ty::Null) {
+                return Ok(Outcome::AssignDynamic {
+                    value: Assigned::Nothing,
+                    span,
+                });
+            }
             let assigned = self.eval(value)?;
             return Ok(Outcome::AssignDynamic {
                 value: Self::assigned(assigned, value.span)?,
@@ -1016,9 +1031,23 @@ impl<M: Machine> Interpreter<'_, M> {
                 .map(Assigned::Text)
                 .map_err(|_| refuse("text that is not UTF-8")),
             Value::Place(place) => Ok(Assigned::Object(place)),
-            // Only a Python variable is given a value.
             Value::Loaded(loaded) if loaded.language == Some(Rules::JavaScript) => {
-                Err(refuse("a JavaScript value"))
+                match loaded.value {
+                    LoadedValue::Nothing => Ok(Assigned::Nothing),
+                    LoadedValue::Undefined => Ok(Assigned::Undefined),
+                    LoadedValue::Bool(value) => Ok(Assigned::Bool(value)),
+                    LoadedValue::Int(value) => Ok(Assigned::BigInt(value)),
+                    LoadedValue::Float(value) => float(value),
+                    LoadedValue::Text(text)
+                        if matches!(text.completion, crate::TextCompletion::Complete) =>
+                    {
+                        String::from_utf8(text.bytes.to_vec())
+                            .map(Assigned::Text)
+                            .map_err(|_| refuse("text that is not UTF-8"))
+                    }
+                    LoadedValue::Text(_) => Err(refuse("text that was not read whole")),
+                    _ => Err(refuse("a JavaScript value of this type")),
+                }
             }
             Value::Loaded(loaded) => match loaded.value {
                 LoadedValue::Nothing => Ok(Assigned::Nothing),

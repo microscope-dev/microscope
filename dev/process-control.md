@@ -138,6 +138,7 @@ submodules divide work by behavior:
 | `stepping`, `step_targets` | Source and instruction execution plans |
 | `breakpoints` | Physical sites, logical owners, hit processing, and repair |
 | `writes` | Mutations that require a valid public stop |
+| `watchpoints`, `interpreted_watches` | Debug-register watch plans, and following watches whose storage a runtime moves |
 | `frames`, `async_frames`, `returns` | Native and logical frames and return state |
 | `inspection`, `evaluation`, `presentation` | Read stopped program state |
 | `memory`, `disassembly` | Low-level reads and decoded code |
@@ -251,6 +252,21 @@ on a thread that runs the step. Any other report goes on unseen. The runtime
 is armed with no step as whatever stop ends the step forms. A runtime that
 cannot make a step refuses it, and nothing runs.
 
+A JavaScript step into, begun where V8 holds the thread paused, also plants
+a trap in its plan where V8 enters Node-API callbacks
+(`RuntimeModel::native_entry`, `inspector/addons.rs`). When the step's own
+thread reaches it, `native_callee` reads the C function from the call's info.
+`step_into_native` then plants a trap at that function's first statement, and
+the step ends there. When another thread reaches the entry trap, it is
+repaired and goes on. V8's `stepInto` stays armed meanwhile, and
+`Inspector::through` records it. A native step over or out that returns from
+the addon into Node's image becomes the runtime step back
+(`Edit::ReturnToRuntime`, `RuntimeStep::returning`). Its `Stepping` counts as
+already sent, so V8's next pause in that isolate ends it. A pause no one
+claimed in a function the addon calls, deeper than the step began, continues
+with `stepOut`, so the step back stays armed until the addon returns. Any
+other resume of that isolate forgets the record.
+
 ## Breakpoint installation and repair
 
 A software breakpoint replaces the first byte of an instruction with `int3`.
@@ -303,6 +319,16 @@ New threads do not necessarily begin with usable copies of the debugger's
 desired debug-register state. Arm and verify them as part of tracee lifecycle.
 DR6 is evidence from the latest debug exception and can be stale at other
 stops; read it only in the context that gives it meaning.
+
+A watch of an interpreted variable whose storage the runtime moves (V8's
+contexts and frames) is set aside while the collector runs on the frame's
+thread: internal breakpoints at the collector's entry and return stop
+every thread, and the follow removes the watch from the plan and later
+re-places it at the address the frame reaches now (`interpreted_watches`).
+No watch is added while its thread is collecting. A set-aside watch holds
+no debug register, and the invariant checker verifies that. A frame
+replacer's entry, or a frame builder at the frame's address, ends a
+frame-slot watch rather than letting it report another frame's stores.
 
 The simulator has conformance rules for watch traps, single-step overlap,
 thread creation, rejected register writes, repeated-string instructions, and

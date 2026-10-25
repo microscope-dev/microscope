@@ -212,6 +212,22 @@ async fn debian_steps_match_v8() {
 }
 
 #[tokio::test]
+async fn debian_assignments_reach_the_program() {
+    if !inside("debian::debian_assignments_reach_the_program") {
+        return;
+    }
+    crate::assignments::each_binding_takes_each_value(DEBIAN).await;
+}
+
+#[tokio::test]
+async fn debian_watches_are_refused_without_v8_s_collector() {
+    if !inside("debian::debian_watches_are_refused_without_v8_s_collector") {
+        return;
+    }
+    crate::watches::watches_are_refused_without_the_collector(DEBIAN).await;
+}
+
+#[tokio::test]
 async fn debian_detach_closes_its_owned_inspector_and_preserves_a_borrowed_one() {
     if !inside("debian::debian_detach_closes_its_owned_inspector_and_preserves_a_borrowed_one") {
         return;

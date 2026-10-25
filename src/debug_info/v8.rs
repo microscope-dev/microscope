@@ -804,6 +804,7 @@ fn requires_constant(constant: Constant, version: (u32, u32)) -> bool {
         | C::ScopeAllocatesArgumentsMask
         | C::ScopeHasContextCellsShift
         | C::ScopeHasContextCellsMask
+        | C::ContextCellType
         | C::SymbolPrivateSymbolKindShift
         | C::SymbolPrivateSymbolKindMask
         | C::PrivateSymbolKindPublic

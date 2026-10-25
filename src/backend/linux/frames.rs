@@ -163,6 +163,7 @@ impl<P: InspectionOps> Controller<P> {
             | BreakpointOwner::Loader
             | BreakpointOwner::Runtime
             | BreakpointOwner::StackMove
+            | BreakpointOwner::InterpretedMove
             | BreakpointOwner::Resolver
             | BreakpointOwner::InspectorHook => None,
         }) {
@@ -1856,6 +1857,17 @@ impl<P: InspectionOps> Controller<P> {
                 .runtime_process_code(inferior, runtimes, pid)
                 .into_iter()
                 .flatten()
+                .chain(runtimes.iter().flat_map(|runtime| {
+                    runtime.model.frame_pointer_code().into_iter().map(|range| {
+                        super::runtimes::ProcessCode {
+                            process: crate::AddressRange {
+                                start: VirtualAddress::new(0),
+                                end: VirtualAddress::new(0),
+                            },
+                            image: Some((runtime.module.image, range)),
+                        }
+                    })
+                }))
                 .collect(),
         }
     }

@@ -1037,6 +1037,7 @@ impl SimController {
                             super::BreakpointOwner::Loader
                             | super::BreakpointOwner::Runtime
                             | super::BreakpointOwner::StackMove
+                            | super::BreakpointOwner::InterpretedMove
                             | super::BreakpointOwner::Resolver
                             | super::BreakpointOwner::InspectorHook => {}
                         }
