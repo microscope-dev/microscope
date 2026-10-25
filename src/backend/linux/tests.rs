@@ -2674,6 +2674,151 @@ fn a_process_killed_while_its_temporary_breakpoint_is_deleted_reports_its_death(
     );
 }
 
+/// A breakpoint of two locations at [`HIT_SITE`] and past it, which no
+/// process has installed.
+fn two_location_breakpoint() -> Breakpoint {
+    Breakpoint {
+        pending_locations: Arc::from([]),
+        id: BreakpointId::new(1),
+        spec: BreakpointSpec::Address(VirtualAddress::new(HIT_SITE)),
+        locations: Arc::from([HIT_SITE, HIT_SITE + 0x10].map(|address| {
+            ResolvedBreakpointLocation {
+                location: crate::BreakpointLocation::Virtual(VirtualAddress::new(address)),
+                code_instances: Arc::from([]),
+                library: None,
+            }
+        })),
+        hit_condition: None,
+        condition: None,
+        log_message: None,
+        hit_count: 0,
+        enabled: true,
+        temporary: false,
+    }
+}
+
+/// SIGKILL takes a thread as a breakpoint's second trap is written:
+/// taking back the first can only fail too. The error is the death's, and
+/// each site record still matches memory: the first trap stays, recorded,
+/// until the process's exit takes both.
+#[test]
+fn a_breakpoint_a_dying_process_cannot_take_is_not_taken_back() {
+    let mut harness = watch_harness(1);
+    let pid = harness.threads[0];
+    let breakpoint = two_location_breakpoint();
+    *harness.trace().kill_point.borrow_mut() = Some((pid, "install_breakpoint", 1));
+    let controller = &mut harness.controller;
+    let inferior = controller.inferior.as_mut().expect("inferior");
+    let error = breakpoints::install_logical_breakpoint(&controller.ptrace, inferior, &breakpoint)
+        .expect_err("the second trap fails");
+    assert!(is_vanished_tracee(&error), "{error:?}");
+    assert!(
+        !harness
+            .trace()
+            .take_actions()
+            .iter()
+            .any(|action| action.starts_with("remove_site")),
+        "nothing is taken back"
+    );
+    let inferior = harness.inferior();
+    let sites = inferior.breakpoints.keys().copied().collect::<Vec<_>>();
+    assert_eq!(sites, [VirtualAddress::new(HIT_SITE)]);
+    assert!(inferior.breakpoints[&VirtualAddress::new(HIT_SITE)].installed);
+    let memory = harness.trace().memory.borrow();
+    assert_eq!(
+        memory.get(&HIT_SITE).map(|word| word & 0xff),
+        Some(u64::from(BREAKPOINT_OPCODE)),
+        "the first trap is in memory, as its record says"
+    );
+    assert_ne!(
+        memory.get(&(HIT_SITE + 0x10)).map(|word| word & 0xff),
+        Some(u64::from(BREAKPOINT_OPCODE)),
+        "the second trap was never written"
+    );
+}
+
+/// SIGKILL from outside takes the thread of an attach as its first stop
+/// plants a breakpoint of two locations, at the second. The process is
+/// dying, not failed: nothing is released, and the client's shutdown,
+/// queued behind the stop, ends when its exit status reports the kill,
+/// which is what the client is told.
+#[test]
+fn a_process_killed_while_its_attach_plants_a_breakpoint_reports_its_death() {
+    let mut harness = watch_harness(1);
+    let pid = harness.threads[0];
+    harness
+        .controller
+        .breakpoints
+        .push(two_location_breakpoint());
+    harness.controller.next_breakpoint_id = 2;
+    let mut attached = harness.begin_attach();
+    *harness.trace().kill_point.borrow_mut() = Some((pid, "install_breakpoint", 1));
+    let (reply, mut answer) = tokio::sync::oneshot::channel();
+    harness
+        .controller
+        .message_sender
+        .try_send(ControllerMessage::Request(Request::Shutdown { reply }))
+        .expect("the shutdown is queued");
+
+    let serve = |harness: &mut WatchHarness, message| harness.controller.handle_message(message);
+    let mut running = serve(
+        &mut harness,
+        ControllerMessage::Wait(WaitEvent::PtraceEvent(
+            pid,
+            Signal::SIGTRAP,
+            libc::PTRACE_EVENT_STOP,
+        )),
+    );
+    while running && let Some(message) = harness.controller.next_message(false) {
+        running = serve(&mut harness, message);
+    }
+    assert!(
+        harness.trace().kill_point.borrow().is_none(),
+        "the thread was killed at the second trap"
+    );
+    let actions = harness.trace().take_actions();
+    assert!(
+        !actions.iter().any(|action| action.starts_with("detach ")),
+        "a dying process is not released: {actions:?}"
+    );
+    assert!(answer.try_recv().is_err(), "the shutdown awaits the exit");
+
+    let ended = !serve(
+        &mut harness,
+        ControllerMessage::Wait(WaitEvent::Signaled(pid, Signal::SIGKILL, false)),
+    );
+    let published = harness.published();
+    assert!(
+        published.iter().any(|event| matches!(
+            event,
+            DebuggerEvent::InferiorExited {
+                status: ExitStatus::Terminated(info),
+                ..
+            } if info.code == 9
+        )),
+        "the kill is reported: {published:?}"
+    );
+    assert!(
+        !published
+            .iter()
+            .any(|event| matches!(event, DebuggerEvent::InferiorDetached { .. })),
+        "no detach is reported: {published:?}"
+    );
+    assert!(
+        harness.controller.inferior.is_none(),
+        "the process is reaped"
+    );
+    assert!(ended, "the controller ends");
+    assert!(
+        matches!(answer.try_recv(), Ok(Ok(()))),
+        "the shutdown is answered"
+    );
+    assert!(
+        matches!(attached.try_recv(), Ok(Err(_))),
+        "the attach is answered"
+    );
+}
+
 /// A failure that releases an attached process ends the controller with a
 /// client's shutdown still queued. That shutdown is answered, not dropped.
 #[test]

@@ -1559,6 +1559,12 @@ pub(super) fn install_logical_breakpoint(
         if let Err(cause) =
             ptrace.install_breakpoint(pid, &mut inferior.breakpoints, address, owner)
         {
+            // As in `remove_logical_breakpoint`: a dying process gets
+            // nothing taken back. Each site record still matches memory:
+            // the traps written stay, recorded, until the process exits.
+            if is_vanished_tracee(&cause) {
+                return Err(cause);
+            }
             for installed_address in installed.into_iter().rev() {
                 if let Err(recovery) =
                     remove_breakpoint_owner_from(ptrace, inferior, installed_address, owner)
