@@ -554,6 +554,17 @@ microscope --core core node
 A core dump shows stacks and values; breakpoints and steps need a live
 process.
 
+### Async functions
+
+An async function that resumed after an `await` is followed in its
+backtrace by the async functions suspended in `await` that wait for it, as
+V8's own async stack trace lists them, under "async callers, suspended in
+await". `Promise.all`, `Promise.allSettled`, and `Promise.any` appear
+between them with the element's index, as `Promise.all (index 1)`. Select
+a suspended frame to read its arguments, its closures' variables, and the
+registers it saved at the `await`. The chain ends where V8's does; where
+several functions await one promise, a note says so.
+
 ### Variables
 
 A JavaScript frame's variables are in JavaScript's scopes: Arguments, with

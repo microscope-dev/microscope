@@ -1012,6 +1012,27 @@ gives its shared info, and:
   translation (`compiled.rs`, `translation.rs`), which names inlined
   functions too.
 
+**Await chains.** `node/awaits.rs` follows V8's `CaptureAsyncStackTrace`
+(`isolate.cc`). It starts at the frame of the closure that resumed an async
+function after an await: a frame V8 hides, whose function's builtin number
+is one of the await closures'. The closure's await context holds the
+running generator, whose promise the chain follows. A pending promise's one
+reaction names what waits next: an await's closure names a suspended
+generator, which becomes a frame at its saved bytecode offset; `Promise.all`,
+`allSettled`, and `any` name a combinator frame and the capability they
+settle; a capability's default resolve names its promise; and any other
+reaction names the promise it settles. The chain ends where V8's does, and
+says why when several reactions wait or a step cannot be read. Builtin
+numbers come from `builtins.gen.rs`, checked at bind against the module's
+`Builtins_` symbols, which V8 embeds in number order; a stripped build
+such as Debian's uses its release's numbers. The frames splice after the
+resumed function's frames on `StackSegment::Awaiting`, kept at their
+generators' tagged addresses. `variables.rs` reads such a frame's receiver,
+contexts, and the arguments and registers its `SuspendGenerator` saved. The
+current microtask, which would start a chain inside a `.then` handler, is
+not read: V8 keeps it among the isolate's roots, whose index microscope has
+no generated layout for.
+
 Names follow `JSFunction::GetDebugName` (`names.rs`). Scripts, function
 names, and line ends are kept in `scripts.rs`'s process-lifetime table.
 Each use proves its row again: a script by its id and source, a function

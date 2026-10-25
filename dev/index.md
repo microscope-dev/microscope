@@ -254,6 +254,7 @@ path:
 | `src/image/v8/slices.gen.rs` | `MICROSCOPE_UPDATE_V8=1 just test slices_match_torque` |
 | `src/image/v8/translation.gen.rs` | `MICROSCOPE_UPDATE_V8=1 just test translations_match_torque` |
 | `src/image/v8/bytecodes.gen.rs` | `MICROSCOPE_UPDATE_V8=1 just test bytecode_sizes_match_torque` |
+| `src/image/v8/builtins.gen.rs` | `MICROSCOPE_UPDATE_V8=1 just test builtin_ids_match_release` (each official build's `builtin_metadata`) |
 | `src/runtime_model/python/printable.gen.rs` | `scripts/python-printable.sh`, in the dev shell |
 | Golden manifests | `just golden-record NAME` |
 | Benchmark baselines | The owning benchmark's explicit record option, only after review |

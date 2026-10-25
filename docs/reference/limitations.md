@@ -120,7 +120,9 @@ narrower limits and report them when used.
   records no name for is an unnamed register except at a stop made through
   the inspector. JavaScript variables cannot be assigned or watched, and a
   step does not enter a Node-API addon's native code. A core dump's
-  JavaScript is read-only.
+  JavaScript is read-only. An await chain starts only at an async function
+  resumed after an `await`, not inside a `.then` handler, and a suspended
+  function's locals are unnamed registers but for those a closure uses.
 - A profile's Python stacks (`record --python`) come from the BPF engine,
   which needs `CAP_BPF` and `CAP_PERFMON`, or from snapshots that stop the
   program or read it as it runs. The BPF engine's first samples of a program
