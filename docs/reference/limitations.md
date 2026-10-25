@@ -118,9 +118,12 @@ narrower limits and report them when used.
   `--allow-inspector`, or whose parent replaced `NODE_OPTIONS`. A function
   breakpoint takes a function's own name, not a dotted one. A variable V8
   records no name for is an unnamed register except at a stop made through
-  the inspector. JavaScript variables cannot be assigned or watched, and a
-  step does not enter a Node-API addon's native code. A core dump's
-  JavaScript is read-only.
+  the inspector. A JavaScript variable takes a value only at a stop where V8
+  paused its thread, and only where V8's debugger assigns it: not `this`, a
+  property, a global, an unnamed register, or a variable optimized code keeps
+  outside a context. The statement V8 paused at may still use the old value.
+  JavaScript variables cannot be watched, and a step does not enter a
+  Node-API addon's native code. A core dump's JavaScript is read-only.
 - A profile's Python stacks (`record --python`) come from the BPF engine,
   which needs `CAP_BPF` and `CAP_PERFMON`, or from snapshots that stop the
   program or read it as it runs. The BPF engine's first samples of a program

@@ -164,6 +164,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 self.apply_inspector_pauses();
             }
             Edit::InspectorPaused => {}
+            Edit::InspectorAssigned => self.apply_inspector_assignment(),
             Edit::InspectorCleanup => self.apply_inspector_cleanup(),
         }
     }
@@ -486,6 +487,7 @@ impl Edit {
             | Self::ArmAgents
             | Self::ReturnToRuntime { .. }
             | Self::InspectorPaused
+            | Self::InspectorAssigned
             | Self::InspectorCleanup
             | Self::AgentReport { .. } => {}
         }

@@ -1168,3 +1168,115 @@ fn a_v8_step_over_ends_only_at_a_pause_no_deeper_than_it_began() {
         )]
     );
 }
+
+/// An assignment at a stop V8's pause published sends V8 nothing while the
+/// stop stands. The execution's resume asks V8 to set the variable in each
+/// scope that may hold it, innermost first, and lets V8 keep its pause: it
+/// is told to resume only after the assignment's own stop is published and
+/// resumed in turn.
+#[test]
+fn an_assignment_holds_v8_s_pause_until_its_own_stop_resumes() {
+    let mut scripted = Scripted::connected(2);
+    scripted.sent();
+    let managed = scripted.arm_line("app.scripted", 3, "app");
+    scripted.harness.start_continue();
+    scripted.actions();
+
+    let mut pause = paused("other", &["app"], 1);
+    pause["callFrames"][0]["scopeChain"] = json!([
+        {"type": "block", "object": {"objectId": "block"}},
+        {"type": "local", "object": {"objectId": "local"}},
+    ]);
+    scripted.inspector.event(&[], cdp::PAUSED, pause);
+    scripted.pump_event(cdp::PAUSED);
+    for listing in scripted.sent() {
+        scripted.inspector.reply(&listing, json!({"result": []}));
+        scripted.pump_reply();
+    }
+    scripted.harness.settle_requested_stops();
+    let main = scripted.main();
+    assert_eq!(
+        scripted.stops(),
+        [(
+            super::super::debug_thread_id(main),
+            managed_hit(&managed, 1)
+        )]
+    );
+
+    let runtime = scripted.runtime;
+    scripted.harness.controller.await_javascript_assignment(
+        runtime,
+        Some(super::assignments::Assigning::scripted(
+            1,
+            main,
+            "x",
+            json!({"value": 5}),
+        )),
+    );
+    assert_eq!(
+        scripted.sent_names(),
+        Vec::<String>::new(),
+        "nothing is sent at a published stop"
+    );
+
+    let inferior = scripted
+        .harness
+        .controller
+        .inferior
+        .as_ref()
+        .expect("inferior");
+    let process = super::super::process_id(inferior.tgid);
+    let stop = inferior.public_stop.as_ref().expect("a stop").id;
+    scripted
+        .harness
+        .controller
+        .begin_execution(
+            process,
+            stop,
+            crate::protocol::ResumeScope::Process(process),
+            super::super::ActiveKind::RuntimeAssignment {
+                thread: main,
+                runtime,
+                number: 1,
+            },
+            crate::protocol::ExceptionDisposition::Pass,
+        )
+        .expect("the assignment runs");
+    let sent = scripted.sent();
+    assert_eq!(
+        sent.iter().map(Request::named).collect::<Vec<_>>(),
+        ["Debugger.setVariableValue"],
+        "V8 keeps its pause"
+    );
+    assert_eq!(sent[0].params["scopeNumber"], 0, "the block first");
+    assert_eq!(sent[0].params["callFrameId"], "0");
+    assert_eq!(sent[0].params["newValue"], json!({"value": 5}));
+
+    // V8 holds no x in the block.
+    scripted.inspector.send(
+        &[],
+        json!({"id": sent[0].id, "error": {"code": -32603, "message": "Internal error"}}),
+    );
+    scripted.pump_reply();
+    let sent = scripted.sent();
+    assert_eq!(
+        sent.iter().map(Request::named).collect::<Vec<_>>(),
+        ["Debugger.setVariableValue"]
+    );
+    assert_eq!(
+        sent[0].params["scopeNumber"], 1,
+        "then the function's scope"
+    );
+
+    scripted.inspector.reply(&sent[0], json!({}));
+    scripted.pump_reply();
+    scripted.harness.settle_requested_stops();
+    assert_eq!(
+        scripted.stops(),
+        [(super::super::debug_thread_id(main), StopReason::Assignment)]
+    );
+    assert_eq!(scripted.sent_names(), Vec::<String>::new());
+
+    scripted.resume();
+    assert_eq!(scripted.sent_names(), [cdp::RESUME]);
+}

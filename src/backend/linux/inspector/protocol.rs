@@ -54,7 +54,7 @@ pub(super) fn scope_locals(
 }
 
 /// What a CDP `RemoteObject` says a value is.
-fn reported_value(object: &serde_json::Value) -> ReportedValue {
+pub(super) fn reported_value(object: &serde_json::Value) -> ReportedValue {
     let text = |key: &str| object[key].as_str().map(Arc::<str>::from);
     match object["type"].as_str() {
         Some("undefined") => ReportedValue::Undefined,

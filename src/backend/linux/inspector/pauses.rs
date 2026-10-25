@@ -20,7 +20,7 @@ use super::super::debug_thread_id;
 use super::super::native::{InspectionOps, LinuxTraceOps};
 use super::steps::{Stepping, pause_for_step};
 use super::{Inspector, Isolate, PauseRequest, protocol, send};
-use crate::runtime_model::{ReportedLocal, inspector_protocol};
+use crate::runtime_model::{ReportedLocal, ReportedValue, inspector_protocol};
 use crate::{Error, Result, RuntimeId, StopReason, VirtualAddress};
 
 /// A pause V8 reported.
@@ -34,7 +34,7 @@ pub(super) struct Paused {
     placed_here: Vec<u64>,
 
     /// The thread V8 holds, once found at an all-stop.
-    thread: Option<Pid>,
+    pub(super) thread: Option<Pid>,
 
     /// Whether the pause has been judged, at an all-stop.
     judged: bool,
@@ -48,7 +48,11 @@ pub(super) struct Paused {
     published: bool,
 
     /// The paused thread's frames, innermost first, as V8 listed them.
-    frames: Vec<PausedFrame>,
+    pub(super) frames: Vec<PausedFrame>,
+
+    /// Which of `frames` each interpreted frame of the thread's stack is,
+    /// by the frame's address, once bound at an all-stop.
+    pub(super) bound: BTreeMap<VirtualAddress, usize>,
 
     /// The scope listings asked for and not yet answered, by the frame and
     /// scope each lists. The pause is judged once all are answered: the
@@ -123,7 +127,11 @@ impl Thrown {
 
 /// A frame of a pause, as V8 listed it.
 #[derive(Debug)]
-struct PausedFrame {
+pub(super) struct PausedFrame {
+    /// The frame as the pause reported it: its `callFrameId` and scope
+    /// chain, which name it to V8 while the pause lasts.
+    pub(super) reported: serde_json::Value,
+
     path: Option<Arc<str>>,
 
     /// Its place: zero-based line and column.
@@ -137,6 +145,28 @@ struct PausedFrame {
 }
 
 impl PausedFrame {
+    /// Notes that V8 gave the variable `name` of the scope at `scope` in
+    /// the frame's chain `value`. V8's listing of a scope is a copy made
+    /// as it paused, which listing again would repeat; the binding checks
+    /// the value given against the frame's slots as it checks V8's own.
+    pub(super) fn assigned(&mut self, scope: usize, name: &str, value: &ReportedValue) {
+        let chain = self.reported["scopeChain"]
+            .as_array()
+            .map_or(&[][..], Vec::as_slice);
+        let Some(position) = listed_scopes(chain)
+            .iter()
+            .position(|&index| index == scope)
+        else {
+            // A context's variables are read from the context.
+            return;
+        };
+        if let Some(Some(Ok(listed))) = self.scopes.get_mut(position) {
+            for local in listed.iter_mut().filter(|local| &*local.name == name) {
+                local.value = value.clone();
+            }
+        }
+    }
+
     /// The frame's variables in declaration order, or why they are not
     /// known.
     fn locals(&self) -> crate::runtime_model::ReportedLocals {
@@ -253,6 +283,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             reason: None,
             published: false,
             frames,
+            bound: BTreeMap::new(),
             listing,
             exception: Thrown::of(params),
             answers: if interrupted {
@@ -643,13 +674,14 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Binds the variables V8 listed for the frames of the pause `key`
     /// names to the interpreted frames of `pid`'s stack, pairing them
     /// innermost first while their places agree.
-    fn bind_paused_frames(&mut self, key: &PauseKey, pid: Pid) -> Result<()> {
+    pub(super) fn bind_paused_frames(&mut self, key: &PauseKey, pid: Pid) -> Result<()> {
         let frames = self.script_frames(pid)?;
         let Some(paused) = self.paused(key) else {
             return Ok(());
         };
         let mut bound = BTreeMap::new();
-        for (frame, listed) in frames.iter().zip(&paused.frames) {
+        let mut indices = BTreeMap::new();
+        for (index, (frame, listed)) in frames.iter().zip(&paused.frames).enumerate() {
             if Some(frame.line) != listed.line.checked_add(1)
                 || Some(frame.column) != listed.column.checked_add(1)
                 || listed.path.as_ref().is_some_and(|path| path != &frame.path)
@@ -663,7 +695,11 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
             if let Some(address) = frame.frame {
                 bound.insert(address, listed.locals());
+                indices.insert(address, index);
             }
+        }
+        if let Some(paused) = self.paused_mut(key) {
+            paused.bound = indices;
         }
         record!("V8 named the locals of {} frames", bound.len());
         if let Some(inferior) = self.inferior.as_mut() {
@@ -705,15 +741,28 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
         let main = inferior.tgid;
         let mut held = false;
+        let mut ended = false;
         for inspector in inferior.inspectors.records.values_mut() {
             let Inspector {
                 connection,
                 isolates,
                 step,
                 desired,
+                assigning,
                 ..
             } = inspector;
             for (session, isolate) in isolates.iter_mut() {
+                // The isolate an assignment is made in stays paused while
+                // the program runs, and is asked to make it.
+                if let (Some(assignment), Some(link)) = (
+                    inspector_assigning(assigning, session, isolate, resumed),
+                    connection.as_ref(),
+                ) {
+                    super::assignments::begin(&link.connection, session, isolate, assignment);
+                    // One that could not be begun ends at once.
+                    ended |= assignment.ended();
+                    continue;
+                }
                 held |= resume_isolate(
                     connection.as_ref().map(|link| &link.connection),
                     session,
@@ -750,6 +799,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
         if held {
             self.queue_internal_edit(super::super::Edit::InspectorPaused)?;
+        }
+        if ended {
+            self.queue_internal_edit(super::super::Edit::InspectorAssigned)?;
         }
         Ok(())
     }
@@ -827,6 +879,25 @@ fn placed_at(isolate: &Isolate, location: &serde_json::Value) -> Vec<u64> {
         .collect()
 }
 
+/// The assignment not yet begun that `assigning` asks of the isolate
+/// `session` reaches, whose paused thread is among `resumed`.
+fn inspector_assigning<'a>(
+    assigning: &'a mut Option<super::assignments::Assigning>,
+    session: &Session,
+    isolate: &Isolate,
+    resumed: &BTreeSet<Pid>,
+) -> Option<&'a mut super::assignments::Assigning> {
+    assigning.as_mut().filter(|assignment| {
+        assignment.unbegun()
+            && assignment.session == *session
+            && isolate
+                .paused
+                .as_ref()
+                .and_then(|paused| paused.thread)
+                .is_some_and(|thread| resumed.contains(&thread))
+    })
+}
+
 /// Lets go the pause of the isolate `session` reaches, if V8 holds one
 /// on a thread among `resumed`, with the step it runs if `step` began
 /// there, or `Debugger.resume`. Returns whether the pause stays held: one
@@ -872,6 +943,24 @@ fn resume_isolate(
     false
 }
 
+/// The scopes of a frame whose variables are its stack locals, by their
+/// index in its scope chain, in the order they are listed: the local
+/// scope, then the blocks inside it from the outermost. V8 gives the chain
+/// innermost first.
+fn listed_scopes(chain: &[serde_json::Value]) -> Vec<usize> {
+    let local = chain
+        .iter()
+        .position(|scope| scope["type"] == "local")
+        .unwrap_or(chain.len());
+    (local..chain.len().min(local + 1))
+        .chain(
+            (0..local)
+                .rev()
+                .filter(|&index| chain[index]["type"] == "block"),
+        )
+        .collect()
+}
+
 /// The frame `frame` of a pause, the `index`th, whose scopes' variables
 /// are asked for over `connection`, each request entered in `listing`.
 fn list_frame(
@@ -885,20 +974,11 @@ fn list_frame(
     let chain = frame["scopeChain"]
         .as_array()
         .map_or(&[][..], Vec::as_slice);
-    // The local scope, then the blocks inside it from the outermost; V8
-    // lists the chain innermost first.
-    let local = chain
-        .iter()
-        .position(|scope| scope["type"] == "local")
-        .unwrap_or(chain.len());
-    let listed = chain[local..].iter().take(1).chain(
-        chain[..local]
-            .iter()
-            .rev()
-            .filter(|scope| scope["type"] == "block"),
-    );
     let mut scopes = Vec::new();
-    for scope in listed {
+    for scope in listed_scopes(chain)
+        .into_iter()
+        .filter_map(|index| chain.get(index))
+    {
         let sent = scope["object"]["objectId"]
             .as_str()
             .ok_or_else(|| Arc::<str>::from("V8 gave the scope no object"))
@@ -925,6 +1005,7 @@ fn list_frame(
         }
     }
     PausedFrame {
+        reported: frame.clone(),
         path: frame["location"]["scriptId"]
             .as_str()
             .and_then(|id| scripts.get(id))

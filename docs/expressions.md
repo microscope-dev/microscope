@@ -973,6 +973,16 @@ assign: name = "\xff"  => error assignment at `"\xff"`
 assign: count = &point => error assignment at `&point`
 ```
 
+In a JavaScript frame, `=` and the compound operators give a variable a
+number, a BigInt, text, `true` or `false`, `null`, `undefined`, or the object
+another variable of the frame holds. V8's debugger makes the change, at a
+stop where V8 paused the thread, while every thread runs and none of the
+program's JavaScript does; the stop is then published again, under a new
+stop, and the result is the variable read again from memory. An integer
+must be exactly a JavaScript number, or written as a BigInt such as `5n`.
+[Assignments](languages.md#assignments) in the Node section lists what V8
+refuses.
+
 A register is assigned the same way. It holds an unsigned number of its own
 width, which the value must fit, or a pointer. Only the innermost frame's
 registers belong to the thread; a caller's are what unwinding recovered, and

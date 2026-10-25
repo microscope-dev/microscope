@@ -702,11 +702,44 @@ you choose them:
 The stop selects the throwing frame and names the exception as Node would
 print it. An exception thrown and caught in a skipped script does not stop.
 
+### Assignments
+
+`set var`, the console, and an editor's **Set Value** give a variable of a
+JavaScript frame a number, a BigInt, text, `true` or `false`, `null`,
+`undefined`, or the object another variable of the frame holds. V8's
+debugger makes the change, at a stop where V8 paused the thread: a
+breakpoint, the end of a step, an exception, a `debugger` statement, or an
+interrupt that paused JavaScript. Every thread runs while V8 makes it, and
+none of the program's JavaScript does. The stop is then published again,
+under a new stop, with the variable's frame selected:
+
+```text
+(microscope) set var param = 41
+(number) param = 41
+(microscope) set var big = 5n
+(bigint) big = 5n
+(microscope) set var holder = other
+(Object) holder = { b: 2 }
+```
+
+A parameter, a `let`, a `const`, a block's variable, a variable a closure
+captured, and a script's top-level `let` take a value. `this`, a property
+(`obj.x = 1`), a global, an unnamed register, and a variable at a native
+stop are refused, and nothing runs. In a frame of optimized code, V8 gives
+a value only to a variable a context holds, and refuses the rest. An
+integer a JavaScript number holds only approximately, such as
+9007199254740993, is refused; write `9007199254740993n` for a BigInt.
+
+V8 may already have loaded a variable for the statement it paused at, so
+that statement can still use the old value: at `x += 0`, the new `x` takes
+effect only from the next statement. Chrome's DevTools have the same limit,
+since they make the change the same way.
+
 ### Not supported yet
 
-Assigning to a JavaScript variable, watchpoints on JavaScript variables,
-and stepping into a Node-API addon's native code are not supported yet.
-[Known limits](reference/limitations.md) lists them all.
+Watchpoints on JavaScript variables and stepping into a Node-API addon's
+native code are not supported yet. [Known limits](reference/limitations.md)
+lists them all.
 
 ## Zig, Odin, D, Nim, Ada, and Fortran
 

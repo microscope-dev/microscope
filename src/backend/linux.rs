@@ -805,6 +805,8 @@ enum Edit {
     InspectorCleanup,
     /// Judges the pauses runtimes' inspectors reported.
     InspectorPaused,
+    /// Ends the assignment a runtime's inspector made or could not.
+    InspectorAssigned,
     AddBreakpoint {
         spec: crate::BreakpointSpec,
         options: Box<crate::BreakpointOptions>,
@@ -1995,6 +1997,7 @@ impl<P: InspectionOps> Controller<P> {
                 .values()
                 .filter_map(runtime_agents::Installation::deadline)
                 .chain(inferior.inspectors.interrupt)
+                .chain(inferior.inspectors.assignment_deadline())
                 .chain(
                     inferior
                         .inspectors
@@ -2107,6 +2110,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 if let Err(error) = self
                     .agent_timeout(now)
                     .and_then(|()| self.interrupt_expired(now))
+                    .and_then(|()| self.assignment_expired(now))
                     .and_then(|()| self.inspector_cleanup_timeout(now))
                 {
                     self.fail_inferior(error);

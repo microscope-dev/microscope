@@ -35,6 +35,7 @@ will change:
 | Change views or visualizers | `src/view/`, `views/`, `web/src/visualize/` | `tests/debugger/views.rs`, `web/test/drawing.test.tsx` |
 | Change goroutines, tasks, or async frames | `src/runtime_model/`, `src/backend/linux/runtimes.rs` | [runtime models](runtime-models.md) |
 | Change Node's frames or JavaScript values | `src/runtime_model/node/`, `src/debug_info/v8/` | [runtime models](runtime-models.md#node), `tests/node/` |
+| Change JavaScript assignments | `src/backend/linux/inspector/assignments.rs`, `src/backend/linux/assignments.rs` | [runtime models](runtime-models.md#node), `tests/node/assignments.rs` |
 | Change profiling or capture analysis | `src/profiler/`, `src/capture/`, `src/analysis/` | [profiling](profiling.md) |
 | Change system call tracing or catchpoints | `src/syscalls/`, `src/backend/linux/syscalls/` | [system call tracing](syscalls.md) |
 | Change the CLI, DAP server, or web UI | `src/cli/`, `src/dap/`, `src/web/`, `web/src/` | [web UI](web-ui.md) and the client test suites |

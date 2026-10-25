@@ -47,8 +47,9 @@ use crate::ThreadLocal;
 use crate::image::v8::{DispatchTable, EmbeddedBlob, NodeRelease, V8Layout, V8Version};
 use crate::inspection::InspectionBudget;
 use crate::runtime_model::{
-    InterpretedChild, InterpretedFailure, InterpretedFrameRef, InterpretedHandle, InterpretedLocal,
-    InterpretedName, InterpretedOperand, InterpretedSlot, InterpretedStep, ObjectTypes,
+    AssignedBinding, BindingReach, InterpretedChild, InterpretedFailure, InterpretedFrameRef,
+    InterpretedHandle, InterpretedLocal, InterpretedName, InterpretedOperand, InterpretedSlot,
+    InterpretedStep, ObjectTypes,
 };
 use crate::unwind::RegisterFile;
 use crate::{AddressRange, ImageAddress, StackSegment, ThreadId, VirtualAddress};
@@ -651,6 +652,61 @@ impl RuntimeModel for NodeRuntime {
         budget: &mut InspectionBudget,
     ) -> Result<InterpretedHandle, InterpretedFailure> {
         self.expression(stop, budget, |reader| access::variable(reader, frame, slot))
+    }
+
+    fn assigned_binding(
+        &self,
+        stop: &dyn RuntimeStop,
+        frame: InterpretedFrameRef,
+        slot: u32,
+        budget: &mut InspectionBudget,
+    ) -> Result<AssignedBinding, InterpretedFailure> {
+        use variables::Kind;
+        let found = self.expression(stop, budget, |reader| {
+            variables::variables(reader, frame)?
+                .into_iter()
+                .nth(usize::try_from(slot).unwrap_or(usize::MAX))
+                .ok_or_else(|| "the frame no longer has the variable".into())
+        })?;
+        let refused = |reason: &str| {
+            InterpretedFailure::Refused(
+                crate::eval::error::ErrorKind::Assignment,
+                format!("{} {reason}", found.name).into(),
+            )
+        };
+        if let Err(problem) = &found.word
+            && **problem == *variables::WITH_CONTEXT
+        {
+            return Err(refused(
+                "is found through a `with` statement's object, which V8 does not assign",
+            ));
+        }
+        let mut refusable = None;
+        let reach = match &found.kind {
+            Kind::Argument(_) | Kind::Named(_) | Kind::Local => BindingReach::Frame,
+            // V8 gives a value to an optimized frame's variable that a
+            // context holds, but not to one optimized code keeps.
+            Kind::Optimized => {
+                refusable = Some(
+                    "V8 assigns no variable optimized code keeps, only one a context holds".into(),
+                );
+                BindingReach::Frame
+            }
+            Kind::Captured => BindingReach::Enclosing,
+            Kind::Module => BindingReach::Script,
+            Kind::Receiver => return Err(refused("cannot be given a value in JavaScript")),
+            Kind::Register { .. } => {
+                return Err(refused(
+                    "is a register V8 names no variable, which its debugger does not assign",
+                ));
+            }
+            Kind::Global => return Err(refused("is the global object, which is not assigned")),
+        };
+        Ok(AssignedBinding {
+            name: found.name.into(),
+            reach,
+            refusable,
+        })
     }
 
     fn interpreted_step(

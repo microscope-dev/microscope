@@ -1297,6 +1297,20 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         Err(InterpretedFailure::interprets_nothing())
     }
 
+    /// How the runtime's debugging interface names the variable in slot
+    /// `slot` of the interpreted frame at `frame`, which an assignment
+    /// through it gives a value; or why it cannot be assigned so.
+    fn assigned_binding(
+        &self,
+        stop: &dyn RuntimeStop,
+        frame: InterpretedFrameRef,
+        slot: u32,
+        budget: &mut InspectionBudget,
+    ) -> Result<AssignedBinding, InterpretedFailure> {
+        let _ = (stop, frame, slot, budget);
+        Err(InterpretedFailure::interprets_nothing())
+    }
+
     /// Where the variable in slot `slot` of the interpreted frame at
     /// `frame` keeps the object it holds, to watch, and the code the frame
     /// runs; or why the variable cannot be watched so.
@@ -2002,6 +2016,30 @@ pub enum InterpretedChild {
         name: Arc<str>,
         value: InterpretedSlot,
     },
+}
+
+/// A variable an assignment through a runtime's debugging interface
+/// gives a value: its name, and which of the frame's scopes holds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssignedBinding {
+    pub name: Arc<str>,
+    pub reach: BindingReach,
+
+    /// Why the interface may refuse it, said if it does.
+    pub refusable: Option<Arc<str>>,
+}
+
+/// Which scopes of a frame may hold a variable, innermost first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindingReach {
+    /// The frame's own: its function's scope and the blocks inside it.
+    Frame,
+
+    /// A scope of a function the frame's function is nested in.
+    Enclosing,
+
+    /// A script's or a module's top level.
+    Script,
 }
 
 /// Where an interpreted frame's variable keeps the object it holds, which

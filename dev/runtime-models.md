@@ -1076,6 +1076,38 @@ guesses. Cleanup has a deadline and reports failures, including a main thread
 that never reaches the check callback. It does not prevent the application
 or another signal sender from deliberately reopening the inspector.
 
+**Assignments.** `Controller::assign_interpreted` hands a JavaScript
+assignment to `assign_javascript` when the runtime is driven through its
+inspector. `RuntimeModel::assigned_binding` names the variable and which
+scopes may hold it (`BindingReach`): the frame's own, an enclosing
+function's, or the script's. The receiver, a global, an unnamed register,
+and a variable found through `with` are refused there. A variable kept by
+optimized code is tried, since V8 assigns it only if a context holds it,
+and its refusal says why. `inspector/assignments.rs` makes the
+`Debugger.setVariableValue` request, which needs a `callFrameId` from a
+pause V8 holds: `Paused::bound` maps each bound interpreted frame to the
+frame V8 listed. No request goes out while a stop is published. The
+assignment is an execution of every thread (`ActiveKind::RuntimeAssignment`).
+`resume_inspectors` sends its first request in place of the pause's
+`Debugger.resume`, so the paused thread stays in V8's message loop. V8 is
+asked for each candidate scope, innermost first, until one holds the name.
+An object is given as the `objectId` V8 lists for the variable that holds
+it, found with `Runtime.getProperties` on the frame's scopes. Once V8
+answers, `Edit::InspectorAssigned` stops every thread and publishes
+`StopReason::Assignment`. The pause stays held for that stop and is let go
+at its resume.
+
+V8's scope objects are copies made as it paused; listing one again after
+the assignment returns the old values. So `PausedFrame::assigned` puts the
+value given in place of the listed one. The frame's names still bind only
+if every listed value matches its slot, so a wrong value there unnames the
+frame rather than misnaming it. The answer is the variable read again from
+memory. A Turbofan frame's variables cannot be read back, and the answer
+says so. `tests/node/assignments.rs` checks each binding and value against
+the program's own output on every build, Debian's included. The scripted
+test `an_assignment_holds_v8_s_pause_until_its_own_stop_resumes` fixes the
+order of requests.
+
 The launch preload precedes user `NODE_OPTIONS` preloads. Followed launches
 retain a content-addressed private cache copy so released descendants do
 not inherit a deleted require path. An untraced descendant restores the
