@@ -434,14 +434,22 @@ fn record(path: &str, frames: &[(&str, Option<&str>, Option<u32>)]) -> Value {
 /// order they were made, hide that JavaScript frames are missing, one line
 /// per open. Every open of /dev/zero is made by `framelessOpens`, through
 /// an addon that holds no frame pointer, so its stack either names that
-/// function or ends saying its JavaScript frames are incomplete. Opens
-/// before the first of /dev/random whose stack names `probe` came before
-/// the engine read V8, and only from there must its stacks name them.
+/// function or ends saying it is incomplete: before the first open of
+/// /dev/random whose stack names `probe`, the engine may not yet know V8
+/// or the program's code, and any reason will do; from there, the reason
+/// must be that its JavaScript frames are.
 pub fn frameless_lies(records: &[Value]) -> Vec<String> {
     let names = |record: &Value, function: &str| {
         record["stack"]
             .as_array()
             .is_some_and(|stack| stack.iter().any(|frame| frame["function"] == function))
+    };
+    let ends = |record: &Value| {
+        record["stack"]
+            .as_array()
+            .and_then(|stack| stack.last())
+            .and_then(|end| end["ends"].as_str())
+            .map(str::to_owned)
     };
     let Some(ready) = records
         .iter()
@@ -449,23 +457,27 @@ pub fn frameless_lies(records: &[Value]) -> Vec<String> {
     else {
         return vec!["no open of /dev/random names probe".into()];
     };
-    let opens: Vec<&Value> = records[ready..]
+    let opens = |records: &[Value]| -> Vec<Value> {
+        records
+            .iter()
+            .filter(|record| record["path"] == "/dev/zero" && !names(record, "framelessOpens"))
+            .cloned()
+            .collect()
+    };
+    if !records[ready..]
         .iter()
-        .filter(|record| record["path"] == "/dev/zero")
-        .collect();
-    if opens.is_empty() {
+        .any(|record| record["path"] == "/dev/zero")
+    {
         return vec!["no open of /dev/zero after the engine named probe".into()];
     }
-    opens
-        .iter()
-        .filter(|record| {
-            let ends = record["stack"]
-                .as_array()
-                .and_then(|stack| stack.last())
-                .and_then(|end| end["ends"].as_str())
-                .is_some_and(|reason| reason.starts_with("interpreted frames"));
-            !names(record, "framelessOpens") && !ends
-        })
+    let early = opens(&records[..ready])
+        .into_iter()
+        .filter(|record| ends(record).is_none());
+    let late = opens(&records[ready..]).into_iter().filter(|record| {
+        !ends(record).is_some_and(|reason| reason.starts_with("interpreted frames"))
+    });
+    early
+        .chain(late)
         .map(|record| format!("an open of /dev/zero hides its missing frames: {record:#}"))
         .collect()
 }
@@ -475,20 +487,34 @@ pub fn frameless_lies(records: &[Value]) -> Vec<String> {
 /// on a trace in which the engine named no JavaScript frames.
 #[test]
 fn the_frameless_check_fails_on_a_silent_stack() {
+    let ending = |reason: &str| {
+        let mut ended = record("/dev/zero", &[]);
+        ended["stack"] = serde_json::json!([{"symbol": "open_path"}, {"ends": reason}]);
+        ended
+    };
     let probe = record("/dev/random", &[("probe", None, None)]);
     let named = record("/dev/zero", &[("framelessOpens", None, None)]);
-    let mut cut = record("/dev/zero", &[]);
-    cut["stack"] =
-        serde_json::json!([{"symbol": "open_path"}, {"ends": "interpreted frames ended early"}]);
+    let cut = ending("interpreted frames ended early");
+    let unmapped = ending("unmapped return address");
     let silent = record("/dev/zero", &[]);
-    let early = record("/dev/zero", &[]);
 
-    assert!(frameless_lies(&[early.clone(), probe.clone(), named.clone(), cut.clone()]).is_empty());
+    let honest = [unmapped.clone(), probe.clone(), named.clone(), cut.clone()];
+    assert!(frameless_lies(&honest).is_empty());
+    // A silent open, after the engine named probe or before it.
     assert_eq!(
-        frameless_lies(&[probe.clone(), cut.clone(), silent]).len(),
+        frameless_lies(&[probe.clone(), cut.clone(), silent.clone()]).len(),
         1
     );
-    assert_eq!(frameless_lies(&[early, cut.clone(), named]).len(), 1);
+    assert_eq!(
+        frameless_lies(&[silent, probe.clone(), cut.clone()]).len(),
+        1
+    );
+    // Once the engine is ready, only missing JavaScript frames excuse it.
+    assert_eq!(
+        frameless_lies(&[probe.clone(), unmapped, cut.clone()]).len(),
+        1
+    );
+    assert_eq!(frameless_lies(&[cut, named]).len(), 1);
     assert_eq!(
         frameless_lies(&[probe, record("/dev/random", &[])]).len(),
         1
