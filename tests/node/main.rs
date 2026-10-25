@@ -18,6 +18,7 @@ mod interrupts;
 mod maps;
 mod native;
 mod oracle;
+mod profile;
 mod session;
 mod stacks;
 mod statements;

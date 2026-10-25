@@ -478,7 +478,21 @@ fn frames(backtrace: &crate::Backtrace, futures: Vec<String>) -> Vec<WaitFrame> 
     let mut exact = true;
 
     for frame in backtrace.frames.iter() {
-        let role = role_number(frame.role);
+        // A frame whose code a runtime owns runs the functions it recorded,
+        // which stand for it in an interpreted look, as an interpreter's
+        // frames that run interpreted ones do.
+        let recorded = frame
+            .recorded
+            .as_ref()
+            .filter(|_| matches!(frame.kind, FrameKind::Inline | FrameKind::Physical));
+        if let Some(recorded) = recorded {
+            frames.push(WaitFrame::Interpreted(InterpretedWait::of(Some(recorded))));
+        }
+        let role = role_number(if recorded.is_some() {
+            crate::CodeRole::Interpreter
+        } else {
+            frame.role
+        });
         match frame.kind {
             FrameKind::Inline | FrameKind::TailCall => {}
 

@@ -1816,7 +1816,9 @@ impl Processor {
                 .copied()
         });
         let owner = owner.filter(|owner| self.names(owner, address));
-        let (module, address, role) = owner.map_or((NONE, address, 0), |owner| {
+        // The debugger knew the role of code in no module the recording
+        // knows, as V8's: it keeps it.
+        let (module, address, role) = owner.map_or((NONE, address, role), |owner| {
             (
                 self.images[owner.image].module,
                 owner
