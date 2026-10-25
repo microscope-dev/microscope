@@ -365,6 +365,81 @@ fn live_snapshots_read_each_blocked_thread_on_nixpkgs_22() {
     check("nixpkgs-22");
 }
 
+/// Whether `rest`, the frames a path holds past those `tiers.js` reported,
+/// are those `truth.checkpoint()` parks in: its own, then Node's
+/// `fs.readSync`.
+fn parked_at_checkpoint(rest: &[String]) -> bool {
+    let function = |frame: &String| frame.split(' ').next().unwrap_or_default().to_owned();
+    rest.last().is_some_and(|last| function(last) == "readSync")
+        && rest[..rest.len() - 1]
+            .iter()
+            .all(|frame| frame.contains(" truth.js:"))
+}
+
+/// A thread parked under a frame of every tier V8 runs, in `tiers.js`, is
+/// read live as V8 reported it, function and line, on every build: an
+/// interpreted frame, one of Sparkplug's, Maglev's where the build runs
+/// Maglev, Turbofan's with a function inlined in it, one that deoptimized,
+/// and one that entered optimized code on its loop.
+#[test]
+fn live_reads_a_frame_of_every_tier_as_v8_reported_it() {
+    for entry in crate::session::MATRIX {
+        let mut command = Command::new(node::node(entry));
+        command
+            .arg("--allow-natives-syntax")
+            .arg(node::fixture("tiers.js"));
+        let options = RecordOptions {
+            python: Some(PythonEngine::Live { every: EVERY }),
+            ..RecordOptions::default()
+        };
+        let report = |text: &str| {
+            Report::parse(text)
+                .checkpoint("tiers")
+                .map(<[Vec<String>]>::to_vec)
+        };
+        let mut since = None;
+        let reads = |profile: &Profile, tid: u64, since: i64| {
+            profile
+                .task_waits()
+                .iter()
+                .filter(|wait| wait.noun == "thread" && wait.task == tid && wait.time >= since)
+                .count()
+        };
+        let (profile, lines, text) =
+            record_released(command, &options, report, |profile, lines| {
+                // The checkpoint's report is whole once read, and the thread
+                // parks after it.
+                let since = *since.get_or_insert_with(monotonic);
+                let [thread] = &threads(lines)[..] else {
+                    return false;
+                };
+                reads(profile, thread.native, since) >= SETTLED
+            });
+        let lines = lines.unwrap_or_else(|| panic!("{entry}: no checkpoint:\n{text}"));
+        let since = since.expect("read once reported");
+        crate::stacks::check_tiers(entry, entry, &Report::parse(&text), &lines);
+        let [thread] = &threads(&lines)[..] else {
+            panic!("{entry}: one thread");
+        };
+        let frames = reported_frames(thread);
+        let paths = thread_paths(&profile, thread.native, (since, i64::MAX));
+        assert!(!paths.is_empty(), "{entry}: no read found the thread");
+        for path in paths.keys() {
+            assert!(
+                path.starts_with(&frames) && parked_at_checkpoint(&path[frames.len()..]),
+                "{entry}: {path:#?}, not {frames:#?}"
+            );
+        }
+        let reasons: Vec<String> = left_out(&profile, (since, i64::MAX))
+            .into_iter()
+            .filter(|(tid, _)| *tid == thread.native)
+            .map(|(_, reason)| reason)
+            .filter(|reason| reason != NOT_ASLEEP)
+            .collect();
+        assert!(reasons.is_empty(), "{entry}: left out: {reasons:?}");
+    }
+}
+
 /// The sites `live-stress.js` blocks at.
 const STRESS_SITES: [&str; 6] = ["wait", "nested", "reviver", "sort", "fast", "mixed"];
 
@@ -455,11 +530,26 @@ pub struct Tally {
     /// Each read that found a thread twice, or both found it and left it
     /// out.
     pub twice: Vec<String>,
+
+    /// How many times a thread began a phase other than the one after.
+    pub skips: usize,
 }
 
 pub fn tally(profile: &Profile, looping: &BTreeMap<u64, Looping>) -> Tally {
     let mut tally = Tally::default();
     let waits = profile.task_waits();
+    // When thread `tid`'s reads in `span` found `path`.
+    let found_at = |tid: u64, span: (i64, i64), path: &Vec<String>| -> Vec<i64> {
+        waits
+            .iter()
+            .filter(|wait| wait.noun == "thread" && wait.task == tid)
+            .filter(|wait| (span.0..span.1).contains(&wait.time))
+            .filter(|wait| {
+                thread_paths(profile, tid, (wait.time, wait.time + 1)).contains_key(path)
+            })
+            .map(|wait| wait.time)
+            .collect()
+    };
     for (&tid, thread) in looping {
         let (since, until) = thread.window;
         let sites: Vec<Vec<Vec<String>>> = thread
@@ -473,20 +563,32 @@ pub fn tally(profile: &Profile, looping: &BTreeMap<u64, Looping>) -> Tally {
             })
             .collect();
         // A read that began in a phase finds the thread at a site of that
-        // phase, or of the next, which it may have begun before the read
-        // reached it; never of another.
+        // phase, or of the one it began next, which it may have begun
+        // before the read reached it; never of another. A thread picks its
+        // phase by the clock, so one held off its CPU for longer than a
+        // phase skips the phases it missed: its next is not always the
+        // phase after.
         for (index, &(phase, began)) in thread.phases.iter().enumerate() {
-            let ended = thread.phases.get(index + 1).map_or(i64::MAX, |&(_, at)| at);
+            let following = thread.phases.get(index + 1);
+            let ended = following.map_or(i64::MAX, |&(_, at)| at);
+            let next = following.map_or(phase, |&(next, _)| next);
+            if next != (phase + 1) % STRESS_PHASES && following.is_some() {
+                tally.skips += 1;
+            }
             let span = (began.max(since), ended.min(until));
             if span.0 >= span.1 {
                 continue;
             }
-            let next = (phase + 1) % STRESS_PHASES;
             for path in thread_paths(profile, tid, span).keys() {
                 if !sites[phase].contains(path) && !sites[next].contains(path) {
-                    tally
-                        .wrong
-                        .push(format!("thread {tid} in phase {phase}: {path:#?}"));
+                    tally.wrong.push(format!(
+                        "thread {tid} in phase {phase}, from {} to {}, read at {:?}: \
+                         {path:#?}\nits phases: {:?}",
+                        span.0,
+                        span.1,
+                        found_at(tid, span, path),
+                        thread.phases
+                    ));
                 }
             }
         }
@@ -557,10 +659,11 @@ pub fn stress(entry: &str, flags: &[&str]) {
     let (snapshots, changed) = profile.live_snapshots();
     let summary = format!(
         "{entry} {flags:?}: {} exact of {read} reads, left out {:#?}, {} wrong; \
-         {changed} changed while read, in {snapshots} snapshots",
+         {changed} changed while read, in {snapshots} snapshots; {} phases skipped",
         tally.exact,
         tally.left_out,
-        tally.wrong.len()
+        tally.wrong.len(),
+        tally.skips
     );
     eprintln!("{summary}");
     // A recording whose reads fell behind what it asked says so.

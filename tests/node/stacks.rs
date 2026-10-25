@@ -53,7 +53,7 @@ fn check_stacks(context: &str, reported: &[Thread]) {
 
 /// Holds what `tiers.js` reported on the build `entry` to a frame of each
 /// tier that build can put on the stack, and the rest reported unavailable.
-fn check_tiers(context: &str, entry: &str, report: &Report, lines: &[Vec<String>]) {
+pub fn check_tiers(context: &str, entry: &str, report: &Report, lines: &[Vec<String>]) {
     // Node 22's V8 runs no Maglev code unless told to, so its OSR is to
     // Turbofan and its maglev frame stays interpreted.
     let maglev = major(entry) >= 24;
