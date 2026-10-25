@@ -686,13 +686,13 @@ in it.
 
 ### Event loop tasks
 
-`tasks` lists what each event loop waits on: its handles, such as servers,
-sockets, child processes, and message ports; its pending requests, such as
-file operations; and each `setTimeout` and `setInterval` timer, though Node
-runs them all from one libuv timer. The main thread's and every worker's
-loop are listed. An item's number is the async id `async_hooks` gives it.
-A worker's numbers add its thread id times 2³², so two threads' numbers
-never collide. The `type` label is the name `async_hooks` uses, and
+`tasks`, or `handles`, lists what each event loop waits on: its handles,
+such as servers, sockets, child processes, and message ports; its pending
+requests, such as file operations; and each `setTimeout` and `setInterval`
+timer, though Node runs them all from one libuv timer. The main thread's
+and every worker's loop are listed. An item's number is the async id
+`async_hooks` gives it. A worker's numbers add its thread id times 2³², so
+two threads' numbers never collide. The `type` label is the name `async_hooks` uses, and
 `class` is Node's C++ class:
 
 ```text

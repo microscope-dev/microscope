@@ -73,8 +73,7 @@ fn function_place(name: &str) -> Result<Vec<crate::ManagedPlace>, Arc<str>> {
     Ok(vec![crate::ManagedPlace::Function { name: name.into() }])
 }
 
-/// What Node calls the work its event loop waits on. It is no alias of
-/// the CLI's task commands, whose `handle` sets how signals stop.
+/// What Node calls the work its event loop waits on.
 pub(super) const TASK_NOUN: (&str, &str) = ("handle", "handles");
 
 /// The extensions of the scripts Node runs, whose breakpoints its

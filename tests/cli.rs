@@ -890,12 +890,12 @@ fn help_lists_every_command_and_details_one_by_name_or_alias() {
         ],
     );
     for expected in [
-        "  break        b           Set a breakpoint",
-        "  finish       fin, f      Run until the selected frame returns",
-        "  continue     c           Continue execution",
-        "  delete       del, d      Delete breakpoints, watchpoints wID, and catchpoints cID",
-        "  clear        cls         Clear and redraw the terminal",
-        "  help         h, ?        Show command help",
+        "  break        b                    Set a breakpoint",
+        "  finish       fin, f               Run until the selected frame returns",
+        "  continue     c                    Continue execution",
+        "  delete       del, d               Delete breakpoints, watchpoints wID, and catchpoints cID",
+        "  clear        cls                  Clear and redraw the terminal",
+        "  help         h, ?                 Show command help",
         "  Clear and redraw the terminal\n  aliases: cls",
         "delete <ids...>",
         "aliases: del, d",
@@ -6579,6 +6579,29 @@ fn tasks_read_no_stack_of_a_stackless_task() {
         stdout.contains(
             "are unavailable: it runs no code until its runtime calls its callback, so it has no frames\n"
         ),
+        "{stdout}"
+    );
+}
+
+/// Node calls its tasks handles: `handles` lists them, while `handle` stays
+/// the command that sets how a signal stops.
+#[test]
+fn handles_lists_nodes_tasks_and_handle_still_sets_signals() {
+    let node = std::path::Path::new(&std::env::var("MICROSCOPE_NODE").expect("MICROSCOPE_NODE"))
+        .join("26/node");
+    let node = node.to_str().expect("a UTF-8 path");
+    let stdout = batch(
+        &["--core", "build/test-programs/node-tasks-26.core", node],
+        &["handles", "handle SIGUSR2 nostop"],
+    );
+    assert!(
+        stdout.contains("  [2] timeout 30000 ms — callback sessionTimeout at "),
+        "{stdout}"
+    );
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.starts_with("SIGUSR2") && line.contains("no")),
         "{stdout}"
     );
 }

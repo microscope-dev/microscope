@@ -607,7 +607,9 @@ const STACKLESS: &str = "it runs no code until its runtime calls its callback, s
 
 /// A command's other names, with each runtime's own name for its tasks for
 /// the commands about tasks: `goroutines` for `tasks` in Go. A runtime that
-/// calls its tasks tasks adds none.
+/// calls its tasks tasks adds none, and a noun that names another command
+/// stays that command's: Node's `handle` sets how a signal stops, though
+/// `handles` lists Node's tasks.
 pub fn aliases(command: &CommandSpec) -> impl Iterator<Item = &'static str> {
     let nouns = microscope::TASK_NOUNS.iter();
     let runtime = match command.command {
@@ -615,12 +617,18 @@ pub fn aliases(command: &CommandSpec) -> impl Iterator<Item = &'static str> {
         Command::Task => nouns.map(|(singular, _)| *singular).collect(),
         _ => Vec::new(),
     };
+    let names_another = |noun: &str| {
+        COMMANDS.iter().any(|other| {
+            other.command != command.command
+                && (other.name == noun || other.aliases.contains(&noun))
+        })
+    };
 
-    command
-        .aliases
-        .iter()
-        .copied()
-        .chain(runtime.into_iter().filter(|noun| *noun != command.name))
+    command.aliases.iter().copied().chain(
+        runtime
+            .into_iter()
+            .filter(move |noun| *noun != command.name && !names_another(noun)),
+    )
 }
 
 /// Whether `word` names a task: `task`, or a runtime's own name for one,

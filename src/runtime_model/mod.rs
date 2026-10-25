@@ -652,7 +652,7 @@ pub enum Crossing {
 
 /// What each runtime a model knows calls its tasks, singular and plural,
 /// so that clients can speak of them as the runtime's users do.
-pub const TASK_NOUNS: [(&str, &str); 2] = [go::TASK_NOUN, self::tokio::TASK_NOUN];
+pub const TASK_NOUNS: [(&str, &str); 3] = [go::TASK_NOUN, self::tokio::TASK_NOUN, node::TASK_NOUN];
 
 /// The exceptions each runtime a model knows reports, which clients may
 /// choose to stop at before they know which runtimes a program has.
