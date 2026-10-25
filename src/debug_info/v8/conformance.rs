@@ -361,7 +361,47 @@ fn header_constants(headers: &Headers, leaptiering: bool) -> BTreeMap<String, i6
     }
     super::deoptimization::add_constants(headers, &mut constants);
     add_value_constants(headers, &mut constants);
+    add_await_constants(headers, &mut constants);
     constants
+}
+
+/// The constants an await chain is read by: a running generator's
+/// continuation, and the context slots of the promise closures it passes
+/// through. The slot a capability's resolve function keeps its promise in
+/// is `kPromiseSlot` through 13.6 and `kPromiseIfNotResolvedSlot` from
+/// 14.6, which clears it once the promise resolves; both are read as the
+/// latter's name.
+fn add_await_constants(headers: &Headers, constants: &mut BTreeMap<String, i64>) {
+    let executing = headers
+        .class_constant(
+            "src/objects/js-generator.h",
+            &["JSGeneratorObject"],
+            "kGeneratorExecuting",
+        )
+        .expect("js-generator.h gives JSGeneratorObject no kGeneratorExecuting");
+    constants.insert(
+        "JSGeneratorObject::kGeneratorExecuting".to_owned(),
+        executing,
+    );
+
+    let slots = headers.promise_context_slots(constants["Context::MIN_CONTEXT_SLOTS"]);
+    for name in [
+        "kPromiseAllResolveElementCapabilitySlot",
+        "kPromiseAnyRejectElementCapabilitySlot",
+    ] {
+        constants.insert(format!("PromiseBuiltins::{name}"), slots[name]);
+    }
+    let promise = match (
+        slots.get("kPromiseIfNotResolvedSlot"),
+        slots.get("kPromiseSlot"),
+    ) {
+        (Some(&slot), None) | (None, Some(&slot)) => slot,
+        both => panic!("a capability's resolve function keeps its promise in {both:?}"),
+    };
+    constants.insert(
+        "PromiseBuiltins::kPromiseIfNotResolvedSlot".to_owned(),
+        promise,
+    );
 }
 
 /// The constants of JavaScript's values the headers give: their kinds and

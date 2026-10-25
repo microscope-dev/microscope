@@ -125,3 +125,12 @@ pub(super) const BYTECODE_SIZES: &[(u32, u32, &[u8])] = &[
         1, 5, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
     ]),
 ];
+
+/// Each version's number of `SuspendGenerator`, whose operands are
+/// the generator's register, the first register it saves, how many
+/// it saves, and the suspend's number.
+pub(super) const SUSPEND_GENERATOR: &[(u32, u32, u8)] = &[
+    (12, 4, 180),
+    (13, 6, 185),
+    (14, 6, 189),
+];

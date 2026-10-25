@@ -59,7 +59,7 @@ pub(super) struct Headers {
     config: BTreeMap<&'static str, bool>,
 }
 
-const FILES: [&str; 41] = [
+const FILES: [&str; 43] = [
     "src/common/globals.h",
     "include/v8-internal.h",
     "src/objects/trusted-object.h",
@@ -101,6 +101,8 @@ const FILES: [&str; 41] = [
     "src/objects/script.h",
     "include/v8-promise.h",
     "src/execution/frame-constants.h",
+    "src/objects/js-generator.h",
+    "src/builtins/builtins-promise.h",
 ];
 
 /// The headers of 12.4, which has no JS dispatch table.
@@ -750,6 +752,30 @@ impl Headers {
         }
 
         self.enumerator_values(file, &body.replace(native, &(slots.join(", ") + ",")))
+    }
+
+    /// The slots of the contexts of `PromiseBuiltins`' closures
+    /// (`builtins-promise.h`), each enum's first at a context's first
+    /// local, `min_context_slots`, as `Context::MIN_CONTEXT_SLOTS` puts it.
+    pub(super) fn promise_context_slots(&self, min_context_slots: i64) -> BTreeMap<String, i64> {
+        let file = "src/builtins/builtins-promise.h";
+        let mut slots = BTreeMap::new();
+        for head in [
+            "enum PromiseResolvingFunctionContextSlot",
+            "enum PromiseAllResolveElementContextSlots",
+            "enum PromiseAnyRejectElementContextSlots",
+        ] {
+            let body = self.enum_body(file, head);
+            assert!(
+                body.trim_start()
+                    .split_once(',')
+                    .is_some_and(|(first, _)| first.ends_with("= Context::MIN_CONTEXT_SLOTS")),
+                "{file}'s {head} no longer begins at a context's first local: {body:?}"
+            );
+            let body = body.replace("Context::MIN_CONTEXT_SLOTS", &min_context_slots.to_string());
+            slots.extend(self.enumerator_values(file, &body));
+        }
+        slots
     }
 
     /// The bits of the hole in a double array, `kHoleNanInt64`, as

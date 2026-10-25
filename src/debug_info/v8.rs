@@ -718,7 +718,9 @@ fn requires_field(field: Field, version: (u32, u32)) -> bool {
         | Field::TrustedWeakFixedArrayLength
         | Field::TrustedWeakFixedArrayObjects => version >= LEAPTIERING,
         Field::ErrorStackDataCallSiteInfosOrFormattedStack => version < (14, 6),
-        Field::ErrorStackDataRawDataForCallSiteInfosOrFormattedStack => version >= (14, 6),
+        Field::ErrorStackDataRawDataForCallSiteInfosOrFormattedStack
+        | Field::JSAsyncFunctionObjectAwaitResolveClosure
+        | Field::JSAsyncFunctionObjectAwaitRejectClosure => version >= (14, 6),
         _ => true,
     }
 }

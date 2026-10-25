@@ -45,6 +45,23 @@ pub fn bytecode_sizes(version: V8Version) -> Result<&'static [u8], std::sync::Ar
         })
 }
 
+/// V8 `version`'s number of the bytecode `SuspendGenerator`, generated
+/// from its headers; or why microscope has none.
+#[allow(dead_code)] // TEMP
+pub fn suspend_generator(version: V8Version) -> Result<u8, std::sync::Arc<str>> {
+    bytecodes::SUSPEND_GENERATOR
+        .iter()
+        .find(|(major, minor, _)| (*major, *minor) == (version.major, version.minor))
+        .map(|(_, _, number)| *number)
+        .ok_or_else(|| {
+            format!(
+                "V8 {}.{} has no bytecode numbers in this build of microscope",
+                version.major, version.minor
+            )
+            .into()
+        })
+}
+
 #[cfg(test)]
 #[path = "v8/scope_info_tests.rs"]
 mod scope_info_tests;
@@ -381,6 +398,24 @@ entries! {
         JSGeneratorObjectParametersAndRegisters = "JSGeneratorObject::ParametersAndRegisters",
         JSAsyncFunctionObjectPromise = "JSAsyncFunctionObject::Promise",
         JSExternalObjectValue = "JSExternalObject::Value",
+
+        /// What an await chain is read from (`js-generator.tq`,
+        /// `promise.tq`): a suspended generator's bytecode offset, a Smi
+        /// from the bytecode array's tagged address; from 14.6, the
+        /// closures an async function reuses at each await; an async
+        /// generator's queue of requests, and each request's promise; a
+        /// promise reaction's next reaction, handlers, and the promise it
+        /// settles; and a capability's promise.
+        JSGeneratorObjectInputOrDebugPos = "JSGeneratorObject::InputOrDebugPos",
+        JSAsyncFunctionObjectAwaitResolveClosure = "JSAsyncFunctionObject::AwaitResolveClosure",
+        JSAsyncFunctionObjectAwaitRejectClosure = "JSAsyncFunctionObject::AwaitRejectClosure",
+        JSAsyncGeneratorObjectQueue = "JSAsyncGeneratorObject::Queue",
+        AsyncGeneratorRequestPromise = "AsyncGeneratorRequest::Promise",
+        PromiseReactionNext = "PromiseReaction::Next",
+        PromiseReactionRejectHandler = "PromiseReaction::RejectHandler",
+        PromiseReactionFulfillHandler = "PromiseReaction::FulfillHandler",
+        PromiseReactionPromiseOrCapability = "PromiseReaction::PromiseOrCapability",
+        PromiseCapabilityPromise = "PromiseCapability::Promise",
     }
 }
 
@@ -1382,6 +1417,24 @@ entries! {
         /// How many of a JavaScript call's argument count are its receiver
         /// (`globals.h`).
         JSArgcReceiverSlots = "internal::kJSArgcReceiverSlots",
+
+        /// What an await chain is read from: the instance types of a
+        /// promise reaction, a capability, and an async generator's
+        /// request; the continuation of a generator that runs
+        /// (`js-generator.h`); and the context slots of the closures
+        /// `Promise.all`, `allSettled`, and `any` give each element, which
+        /// hold the capability they settle, and of a capability's default
+        /// resolve function, which holds its promise until it resolves
+        /// (`builtins-promise.h`; `kPromiseSlot` through 13.6).
+        PromiseReactionType = "PROMISE_REACTION_TYPE",
+        PromiseCapabilityType = "PROMISE_CAPABILITY_TYPE",
+        AsyncGeneratorRequestType = "ASYNC_GENERATOR_REQUEST_TYPE",
+        GeneratorExecuting = "JSGeneratorObject::kGeneratorExecuting",
+        PromiseAllResolveElementCapabilitySlot =
+            "PromiseBuiltins::kPromiseAllResolveElementCapabilitySlot",
+        PromiseAnyRejectElementCapabilitySlot =
+            "PromiseBuiltins::kPromiseAnyRejectElementCapabilitySlot",
+        PromiseIfNotResolvedSlot = "PromiseBuiltins::kPromiseIfNotResolvedSlot",
     }
 }
 

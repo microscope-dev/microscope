@@ -194,6 +194,7 @@ pub(super) fn generate(versions: &[((u32, u32), PathBuf)], notice: &str) -> Stri
          /// size per bytecode.\n\
          pub(super) const BYTECODE_SIZES: &[(u32, u32, &[u8])] = &[\n",
     );
+    let mut suspends = Vec::new();
     for ((major, minor), torque) in versions {
         let interpreter = torque
             .parent()
@@ -204,6 +205,7 @@ pub(super) fn generate(versions: &[((u32, u32), PathBuf)], notice: &str) -> Stri
                 .unwrap_or_else(|error| panic!("read {file} of V8 {major}.{minor}: {error}"))
         };
         let sizes = sizes(&read("bytecodes.h"), &read("bytecode-operands.h"));
+        suspends.push((*major, *minor, suspend_generator(&read("bytecodes.h"))));
         writeln!(text, "    ({major}, {minor}, &[").expect("write");
         for row in table(&sizes).chunks(sizes.len()) {
             for line in row.chunks(24) {
@@ -213,8 +215,39 @@ pub(super) fn generate(versions: &[((u32, u32), PathBuf)], notice: &str) -> Stri
         }
         writeln!(text, "    ]),").expect("write");
     }
+    text.push_str(
+        "];\n\n\
+         /// Each version's number of `SuspendGenerator`, whose operands are\n\
+         /// the generator's register, the first register it saves, how many\n\
+         /// it saves, and the suspend's number.\n\
+         pub(super) const SUSPEND_GENERATOR: &[(u32, u32, u8)] = &[\n",
+    );
+    for (major, minor, number) in suspends {
+        writeln!(text, "    ({major}, {minor}, {number}),").expect("write");
+    }
     text.push_str("];\n");
     text
+}
+
+/// The number of `SuspendGenerator` in `BYTECODE_LIST`'s order, which must
+/// keep the operands an await's frame is read by.
+fn suspend_generator(bytecodes: &str) -> u8 {
+    let list = expand(&defines(bytecodes), "BYTECODE_LIST");
+    let number = list
+        .iter()
+        .position(|entry| entry[0] == "SuspendGenerator")
+        .expect("BYTECODE_LIST has SuspendGenerator");
+    assert_eq!(
+        list[number][2..],
+        [
+            "OperandType::kReg",
+            "OperandType::kRegList",
+            "OperandType::kRegCount",
+            "OperandType::kUImm"
+        ],
+        "SuspendGenerator's operands"
+    );
+    u8::try_from(number).expect("a bytecode's number is a byte")
 }
 
 /// A list's entries come from its callbacks and from the lists it calls,
