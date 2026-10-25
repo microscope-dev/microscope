@@ -10,6 +10,7 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use nix::libc;
 use serde_json::{Value, json};
 use tungstenite::{Message, WebSocket};
 
@@ -1166,5 +1167,69 @@ fn a_v8_step_over_ends_only_at_a_pause_no_deeper_than_it_began() {
                 kind: crate::StepKind::OverSource
             }
         )]
+    );
+}
+
+/// A thread exits while an attached session's shutdown releases a borrowed
+/// inspector, so its exit status is the last the cleanup's all-stop
+/// awaits. That status completes the all-stop, and the detach follows.
+#[test]
+fn a_thread_exiting_in_the_cleanup_stop_of_a_shutdown_lets_it_detach() {
+    use super::super::{Signal, WaitEvent};
+
+    let mut scripted = Scripted::connected(2);
+    scripted.sent();
+    scripted.record().ownership = super::super::node_launch::Ownership::Borrowed;
+    let [main, worker] = scripted.harness.threads[..] else {
+        unreachable!("two threads");
+    };
+    scripted
+        .harness
+        .controller
+        .inferior
+        .as_mut()
+        .expect("inferior")
+        .origin = super::super::InferiorOrigin::Attached;
+
+    let (reply, mut result) = tokio::sync::oneshot::channel();
+    scripted.harness.controller.begin_shutdown(Some(reply));
+    let release = scripted
+        .sent()
+        .into_iter()
+        .find(|request| request.method == "Runtime.getIsolateId")
+        .expect("the cleanup asks the borrowed inspector to acknowledge");
+
+    // The worker begins exiting while the cleanup runs every thread.
+    scripted
+        .harness
+        .controller
+        .handle_wait(WaitEvent::PtraceEvent(
+            worker,
+            Signal::SIGTRAP,
+            libc::PTRACE_EVENT_EXIT,
+        ));
+    scripted.inspector.reply(&release, json!({"id": "isolate"}));
+    scripted.pump_reply();
+    scripted
+        .harness
+        .controller
+        .handle_wait(WaitEvent::PtraceEvent(
+            main,
+            Signal::SIGTRAP,
+            libc::PTRACE_EVENT_STOP,
+        ));
+    assert!(
+        result.try_recv().is_err(),
+        "the detach awaits the exiting worker"
+    );
+
+    scripted
+        .harness
+        .controller
+        .handle_wait(WaitEvent::Exited(worker, 0));
+    assert!(
+        matches!(result.try_recv(), Ok(Ok(()))),
+        "the worker's exit ends the cleanup's stop and the detach: {:?}",
+        scripted.actions()
     );
 }

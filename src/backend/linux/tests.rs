@@ -5006,6 +5006,17 @@ impl crate::runtime_model::RuntimeModel for ScriptedRuntime {
         self.inspector_hook
     }
 
+    /// An inspected runtime's agent serves the target the scripted
+    /// inspector tests connect to.
+    fn inspector_agent(
+        &self,
+        _stop: &dyn crate::runtime_model::RuntimeStop,
+    ) -> std::result::Result<Option<(VirtualAddress, Arc<str>)>, Arc<str>> {
+        Ok(self
+            .inspector_hook
+            .map(|_| (VirtualAddress::new(0x7000), Arc::from("0f2b5c1e-uuid"))))
+    }
+
     fn hook_event(
         &self,
         _stop: &dyn crate::runtime_model::RuntimeStop,

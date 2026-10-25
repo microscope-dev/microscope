@@ -1654,7 +1654,12 @@ impl<P: LinuxTraceOps> Controller<P> {
         });
 
         // A shutdown only stops and releases threads; it never runs them.
+        // Its inspector cleanup runs them, though, and this exit may be
+        // what the cleanup's all-stop was waiting for.
         if self.shutting_down {
+            if barrier_active && self.inspector_cleanup_running() {
+                return self.finish_barrier_if_ready();
+            }
             return Ok(());
         }
 
