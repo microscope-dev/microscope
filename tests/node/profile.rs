@@ -484,11 +484,16 @@ pub fn spinning(output: &str) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
-/// Each frame of `paths` of a function the threads in `truth` run whose
-/// key is neither the one V8's report gives it nor its function alone, as
-/// a line where none is proven, or a line it was not at: one line each.
+/// Each frame of `paths` of a function the threads in `truth` run that
+/// lies, one line each: its key is neither one V8's report gives it, nor
+/// its function alone, nor a line of `lines`, which the fixture's
+/// interpreted functions call from; or it has a line but called nothing,
+/// which its frame alone does not prove: the interpreter writes a frame's
+/// offset only before a call, so a frame with a proven line has a callee,
+/// never a bytecode handler, inside it.
 pub fn misplaced(
     truth: &[(String, Vec<String>)],
+    lines: &[String],
     paths: &BTreeMap<Vec<String>, u64>,
 ) -> Vec<String> {
     let function = |key: &str| key.split(' ').next().unwrap_or_default().to_owned();
@@ -496,25 +501,65 @@ pub fn misplaced(
     for key in truth.iter().flat_map(|(_, frames)| frames) {
         let name = function(key);
         if !name.is_empty() {
-            allowed
+            let keys = allowed
                 .entry(name.clone())
-                .or_insert_with(|| vec![name.clone()])
-                .push(key.clone());
+                .or_insert_with(|| vec![name.clone()]);
+            keys.push(key.clone());
+            keys.extend(lines.iter().filter(|line| function(line) == name).cloned());
         }
     }
-    let mut misplaced: Vec<String> = paths
-        .keys()
-        .flatten()
-        .filter(|key| {
-            allowed
-                .get(&function(key))
-                .is_some_and(|keys| !keys.contains(key))
-        })
-        .cloned()
-        .collect();
+    let mut misplaced: Vec<String> = Vec::new();
+    for path in paths.keys() {
+        for (index, key) in path.iter().enumerate() {
+            let Some(keys) = allowed.get(&function(key)) else {
+                continue;
+            };
+            let inside = path.get(index + 1);
+            let made_a_call = inside.is_some_and(|frame| {
+                !(frame.starts_with("Builtins_") && frame.contains("Handler"))
+            });
+            if !keys.contains(key) {
+                misplaced.push(key.clone());
+            } else if key.contains(".js:") && !made_a_call {
+                misplaced.push(format!(
+                    "{key} > {}",
+                    inside.map_or("nothing", String::as_str)
+                ));
+            }
+        }
+    }
     misplaced.sort();
     misplaced.dedup();
     misplaced
+}
+
+/// The keys of the lines `busy.js`'s interpreted frames call from, which
+/// `output` reported: each such frame's own, and the line its function
+/// loops on, the line after its own in the fixture's source, from which
+/// the loop may call into the runtime.
+pub fn called_lines(output: &str) -> Vec<String> {
+    let source = std::fs::read_to_string(node::fixture("busy.js")).expect("read busy.js");
+    let source: Vec<&str> = source.lines().collect();
+    let mut lines = Vec::new();
+    for fields in Report::parse(output).lines() {
+        if let [kind, _, _, function, file, line, tier] = fields
+            && kind == "frame"
+            && (tier == "ignition" || tier == "-")
+        {
+            lines.push(line_key(function, file, line.parse().ok()));
+            let header = format!("function {function}(");
+            if let Some(at) = source.iter().position(|text| text.starts_with(&header))
+                && source
+                    .get(at + 1)
+                    .is_some_and(|text| text.trim_start().starts_with("for ("))
+            {
+                lines.push(format!("{function} busy.js:{}", at + 2));
+            }
+        }
+    }
+    lines.sort();
+    lines.dedup();
+    lines
 }
 
 /// The share of `paths`' weight whose JavaScript frames include one the
@@ -566,14 +611,29 @@ fn the_spin_comparison_fails_on_each_lie() {
         std::iter::once((native, 1)).collect()
     };
     assert!(missing(&truth, &path(&["outer a.js:9", "fast", "inner"])).is_empty());
-    assert!(misplaced(&truth, &path(&["outer a.js:9", "fast", "inner"])).is_empty());
-    assert!(misplaced(&truth, &path(&["outer a.js:9", "outer", "inner"])).is_empty());
+    let lines = ["inner a.js:2".to_owned(), "inner a.js:3".to_owned()];
+    let called = |frames: &[&str]| -> BTreeMap<Vec<String>, u64> {
+        let mut native = frames
+            .iter()
+            .map(|frame| (*frame).to_owned())
+            .collect::<Vec<_>>();
+        native.push("v8::internal::Runtime_StackGuard".to_owned());
+        std::iter::once((native, 1)).collect()
+    };
+    for honest in [
+        path(&["outer a.js:9", "fast", "inner"]),
+        called(&["outer a.js:9", "fast", "inner a.js:2"]),
+        called(&["outer a.js:9", "fast", "inner a.js:3"]),
+    ] {
+        assert!(misplaced(&truth, &lines, &honest).is_empty(), "{honest:?}");
+    }
     for lie in [
         path(&["outer a.js:9", "fast a.js:5", "inner"]),
-        path(&["outer a.js:9", "fast", "inner a.js:3"]),
-        path(&["outer a.js:8", "fast", "inner"]),
+        path(&["outer a.js:9", "fast", "inner a.js:2"]),
+        called(&["outer a.js:8", "fast", "inner"]),
+        called(&["outer a.js:9", "fast", "inner a.js:4"]),
     ] {
-        assert_eq!(misplaced(&truth, &lie).len(), 1, "{lie:?}");
+        assert_eq!(misplaced(&truth, &lines, &lie).len(), 1, "{lie:?}");
     }
     for lie in [
         path(&["outer a.js:9", "fast a.js:5", "inner"]),
@@ -624,7 +684,8 @@ mod bpf {
         let paths = paths(&profile, Source::Samples, Look::Python);
         let missing = missing(&truth, &paths);
         assert!(missing.is_empty(), "{}\n{paths:#?}", missing.join("\n"));
-        let misplaced = misplaced(&truth, &paths);
+        let lines = called_lines(&std::fs::read_to_string(&output).expect("the fixture's output"));
+        let misplaced = misplaced(&truth, &lines, &paths);
         assert!(misplaced.is_empty(), "{misplaced:#?}\n{paths:#?}");
 
         let (unknown, total) = unknown_share(&paths);
@@ -633,6 +694,96 @@ mod bpf {
             unknown * 100 <= total,
             "{unknown} of {total} ns: {paths:#?}"
         );
+    }
+
+    /// Two Node processes a shell starts, each with its own V8 and its own
+    /// layout for the walker: each process's samples hold its own threads'
+    /// JavaScript frames, as each reported them.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
+    fn each_process_of_a_group_holds_its_own_javascript_frames() {
+        let launcher = std::env::var_os("MICROSCOPE_BPF_LAUNCHER")
+            .expect("MICROSCOPE_BPF_LAUNCHER names the microscope-bpf wrapper");
+        let scratch = ScratchDir::new("node-busy-group");
+        let profile = scratch.path().join("group.usprof");
+        let outputs = [scratch.path().join("first"), scratch.path().join("second")];
+        let run = |output: &Path| {
+            format!(
+                "'{}' --allow-natives-syntax --sparkplug-filter=sparkplugSpin '{}' --seconds 10 > '{}'",
+                node::node(ENTRY).display(),
+                node::fixture("busy.js").display(),
+                output.display()
+            )
+        };
+        let script = format!("{} & {}; wait", run(&outputs[0]), run(&outputs[1]));
+        let finished = Command::new(launcher)
+            .arg(env!("CARGO_BIN_EXE_microscope"))
+            .args(["record", "--node", "bpf", "--output"])
+            .arg(&profile)
+            .args(["--", "sh", "-c", &script])
+            .env_remove("NODE_OPTIONS")
+            .stdin(Stdio::null())
+            .output()
+            .expect("run microscope");
+        assert!(
+            finished.status.success(),
+            "{}",
+            String::from_utf8_lossy(&finished.stderr)
+        );
+
+        let profile = Profile::read(&profile).expect("read the profile").profile;
+        let threads = profile.threads();
+        for output in &outputs {
+            let text = std::fs::read_to_string(output).expect("the fixture's output");
+            let pid: u32 = Report::parse(&text)
+                .lines()
+                .find_map(|fields| match fields {
+                    [kind, pid, ..] if kind == "process" => pid.parse().ok(),
+                    _ => None,
+                })
+                .expect("the process the fixture reported");
+            let rows: Vec<u32> = threads
+                .iter()
+                .filter(|thread| thread.pid == pid)
+                .map(|thread| thread.row)
+                .collect();
+            let paths = process_paths(&profile, rows);
+            let truth = spinning(&text);
+            assert_eq!(truth.len(), 2, "{pid}: {truth:#?}");
+            let missing = missing(&truth, &paths);
+            assert!(
+                missing.is_empty(),
+                "{pid}: {}\n{paths:#?}",
+                missing.join("\n")
+            );
+            let misplaced = misplaced(&truth, &called_lines(&text), &paths);
+            assert!(misplaced.is_empty(), "{pid}: {misplaced:#?}\n{paths:#?}");
+        }
+    }
+
+    /// The paths of the samples of the threads `rows`, in the interpreted
+    /// look, as [`paths`] gives them.
+    fn process_paths(profile: &Profile, rows: Vec<u32>) -> BTreeMap<Vec<String>, u64> {
+        let keys = profile.keys(Granularity::Line);
+        let tree = keys.aggregate(&Query {
+            source: Source::Samples,
+            look: Look::Python,
+            threads: Some(rows),
+            ..Query::default()
+        });
+        (0..tree.len())
+            .filter(|node| tree.own[*node] > 0)
+            .map(|node| {
+                let mut path = Vec::new();
+                let mut at = u32::try_from(node).expect("a node");
+                while let Some(&key) = tree.key.get(at as usize) {
+                    path.push(keys.name(key));
+                    at = tree.parent[at as usize];
+                }
+                path.reverse();
+                (path, tree.own[node])
+            })
+            .collect()
     }
 }
 

@@ -469,51 +469,48 @@ pub fn read_v8_record(
         V8End::Complete | V8End::Unreadable => false,
         V8End::Bounded => true,
     };
-    let frames = stack
-        .frames
-        .iter()
-        .enumerate()
-        .filter_map(|(index, sampled)| {
-            let after_call = sampled.at_instruction == 0;
-            let address = if after_call {
-                sampled.pc.wrapping_sub(1)
-            } else {
-                sampled.pc
-            };
-            let generated = match code(address)? {
-                CodeAt::Generated => true,
-                CodeAt::Runtime(image) => {
-                    if !model.owns_code(image) {
-                        return None;
-                    }
-                    false
-                }
-            };
-            // A sample may land in a bytecode handler that keeps a frame
-            // of its own, which the walk cannot tell from a call the
-            // innermost frame made, and the interpreter writes its offset
-            // to the frame only before a call: the innermost frame's place
-            // is unknown.
-            let frame = SampledCodeFrame {
-                frame_pointer: sampled.fp,
-                instruction: VirtualAddress::new(sampled.pc),
-                after_call: after_call && index > 0,
-                generated,
-                function: sampled.function,
-                shared: sampled.shared,
-                script: sampled.script,
-                script_id: sampled.script_id,
-                literal_id: sampled.literal_id,
-                bytecode: sampled.bytecode,
-                bytecode_offset: sampled.bytecode_offset,
-            };
-            Some(PlacedFrame {
-                frame_pointer: sampled.fp,
-                address: VirtualAddress::new(address),
-                functions: model.sampled_code_frame(stop, &frame)?,
-            })
-        })
-        .collect();
+    // A sample may land in a bytecode handler that keeps a frame of its
+    // own, which the walk cannot tell from a call the frame made, and the
+    // interpreter writes its offset to the frame only before a call: a
+    // frame's place is known only once a frame of the program's it called
+    // is, inside it.
+    let mut called = false;
+    let mut frames = Vec::with_capacity(stack.frames.len());
+    for sampled in stack.frames {
+        let after_call = sampled.at_instruction == 0;
+        let address = if after_call {
+            sampled.pc.wrapping_sub(1)
+        } else {
+            sampled.pc
+        };
+        let generated = match code(address) {
+            Some(CodeAt::Generated) => true,
+            Some(CodeAt::Runtime(image)) if model.owns_code(image) => false,
+            Some(CodeAt::Runtime(_)) | None => continue,
+        };
+        let frame = SampledCodeFrame {
+            frame_pointer: sampled.fp,
+            instruction: VirtualAddress::new(sampled.pc),
+            after_call: after_call && called,
+            generated,
+            function: sampled.function,
+            shared: sampled.shared,
+            script: sampled.script,
+            script_id: sampled.script_id,
+            literal_id: sampled.literal_id,
+            bytecode: sampled.bytecode,
+            bytecode_offset: sampled.bytecode_offset,
+        };
+        let Some(functions) = model.sampled_code_frame(stop, &frame) else {
+            continue;
+        };
+        called = true;
+        frames.push(PlacedFrame {
+            frame_pointer: sampled.fp,
+            address: VirtualAddress::new(address),
+            functions,
+        });
+    }
     Sampled::Placed { frames, ended }
 }
 
