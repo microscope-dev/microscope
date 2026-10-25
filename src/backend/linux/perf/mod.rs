@@ -928,6 +928,38 @@ pub fn copy_of<K: Copy>(
     prove(range, sources, &mut probe, &mut compare)
 }
 
+/// The ranges of the image `info` describes, loaded as `loaded` over
+/// `mapped`, that a runtime it carries says process `pid` keeps its own
+/// code in, where no symbol bounds it, as V8's builtins in a stripped
+/// libnode, where a copy of them may begin.
+pub fn stored_code(
+    pid: u32,
+    info: &crate::debug_info::DebugInfo,
+    loaded: crate::LoadedModule,
+    mapped: std::ops::Range<u64>,
+) -> Vec<(crate::ImageAddress, crate::ImageAddress)> {
+    use crate::runtime_model::RuntimeImage;
+
+    let image: std::sync::Arc<dyn RuntimeImage + Send + Sync> =
+        std::sync::Arc::clone(&info.image) as _;
+    if image.v8().is_none() {
+        return Vec::new();
+    }
+    let stop = crate::profiler::LiveStop::memory(pid, loaded.load_bias);
+    crate::runtime_model::detect(&image)
+        .into_iter()
+        .flatten()
+        .flat_map(|model| model.process_code(&stop))
+        .filter(|range| mapped.start <= range.start.get() && range.end.get() <= mapped.end)
+        .map(|range| {
+            (
+                loaded.load_bias.wrapping_unload(range.start),
+                loaded.load_bias.wrapping_unload(range.end),
+            )
+        })
+        .collect()
+}
+
 /// Reads process `pid`'s memory at `address` into `buffer`, from outside
 /// it: how many bytes it read, which a mapping's end may cut short.
 pub fn read_memory(pid: u32, address: u64, buffer: &mut [u8]) -> std::io::Result<usize> {

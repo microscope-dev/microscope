@@ -712,6 +712,9 @@ impl Processor {
         );
 
         let Some((image, bias)) = image else {
+            if perf::jit::is_anonymous_code(mmap) {
+                self.v8_code(mmap.pid, mmap.time, mmap.start..end);
+            }
             return;
         };
 
@@ -894,6 +897,117 @@ impl Processor {
         self.loading += thread_cpu().saturating_sub(began);
     }
 
+    /// Maps a module over anonymous `code` of process `pid`, where a module
+    /// it maps carries V8, as the syscall tracer does: a copy of a module's
+    /// code, proven byte for byte while the process runs, is that module's
+    /// code at another address, and any other is code V8 generated, whose
+    /// frames keep V8's frame-pointer convention
+    /// (`debug_info::runtime_code`). Code the process may write is never
+    /// taken for a copy, which it may since have changed.
+    fn v8_code(&mut self, pid: Pid, time: u64, code: std::ops::Range<u64>) {
+        let Some(process) = self.processes.get(&pid) else {
+            return;
+        };
+        let v8: Vec<(usize, &Mapped, &DebugInfo)> = process
+            .mapped
+            .iter()
+            .enumerate()
+            .filter_map(|(index, mapped)| {
+                let info = self.images[mapped.image].info.as_ref()?;
+                crate::debug_info::v8::is_v8(&info.image).then_some((index, mapped, info))
+            })
+            .collect();
+        if v8.is_empty() {
+            return;
+        }
+
+        let read_only = perf::mappings(pid.get()).is_ok_and(|mappings| {
+            mappings.iter().any(|mapping| {
+                mapping.start <= code.start && code.end <= mapping.end && !mapping.writable
+            })
+        });
+        let copy = read_only
+            .then(|| {
+                let sources: Vec<crate::unwind::code_copies::Source<'_, usize>> = v8
+                    .iter()
+                    .map(
+                        |&(index, mapped, info)| crate::unwind::code_copies::Source {
+                            key: index,
+                            image: &info.image,
+                            loaded: mapped.loaded,
+                            stored: perf::stored_code(
+                                pid.get(),
+                                info,
+                                mapped.loaded,
+                                mapped.start..mapped.end,
+                            ),
+                        },
+                    )
+                    .collect();
+                perf::copy_of(pid.get(), &code, &sources)
+            })
+            .flatten()
+            .and_then(|proven| {
+                let source = process.mapped.get(proven.source)?;
+                Some((*source, proven.image_start, proven.length))
+            });
+        drop(v8);
+
+        let Some((source, image_start, length)) = copy else {
+            let began = thread_cpu();
+            let id = ModuleImageId::new(u32::try_from(self.images.len()).unwrap_or(u32::MAX));
+            let path = format!("[V8 code {:#x}]", code.start);
+            let bounds = crate::AddressRange {
+                start: ImageAddress::new(code.start),
+                end: ImageAddress::new(code.end),
+            };
+            let info =
+                crate::debug_info::runtime_code::load(std::path::Path::new(&path), id, bounds).ok();
+            let digest = twox_hash::XxHash3_128::oneshot(path.as_bytes());
+            self.anonymous_module(pid, time, (id, &path, digest), code, info);
+            self.loading += thread_cpu().saturating_sub(began);
+            return;
+        };
+
+        let end = code.start.saturating_add(length);
+        let bias = LoadBias::between(image_start, crate::VirtualAddress::new(code.start));
+        let loaded = LoadedModule {
+            id: ModuleId::new(self.next_module),
+            image: source.loaded.image,
+            load_bias: bias,
+            window: Some(crate::AddressRange {
+                start: image_start,
+                end: ImageAddress::new(image_start.get().saturating_add(length)),
+            }),
+        };
+        self.next_module += 1;
+        let module = self.images[source.image].module;
+        let process = self.builder.process(pid, time.cast_signed());
+        let held = &mut self.processes.entry(pid).or_default().mapped;
+        uncover(held, code.start, end);
+        // A module is found by its image's bounds, and those of the code V8
+        // generated span its whole code range, which holds the copy: the
+        // copy comes first.
+        held.insert(
+            0,
+            Mapped {
+                start: code.start,
+                end,
+                image: source.image,
+                loaded,
+            },
+        );
+        self.builder.mapping(Mapping {
+            process: process.into(),
+            module: module.into(),
+            start: code.start.into(),
+            end: end.into(),
+            file_offset: 0.into(),
+            bias: bias.get().into(),
+            time: time.cast_signed().into(),
+        });
+    }
+
     /// Maps the module of anonymous code `id` named `path`, which `digest`
     /// identifies, over `code`, replacing whatever the process mapped there.
     fn anonymous_module(
@@ -923,7 +1037,6 @@ impl Processor {
             window: None,
         };
         self.next_module += 1;
-
         let process = self.builder.process(pid, time.cast_signed());
         let held = &mut self.processes.entry(pid).or_default().mapped;
         uncover(held, code.start, code.end);
@@ -1236,7 +1349,6 @@ impl Processor {
         }
 
         let mut native = Vec::with_capacity(frames.len());
-
         for frame in &frames {
             let owner = frame
                 .module

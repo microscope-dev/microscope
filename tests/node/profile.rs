@@ -314,3 +314,129 @@ fn the_write_check_fails_on_each_write() {
     }
     assert!(writes("   0.5 controller PTRACE_SEIZE 7 exit_kill=false\n").is_empty());
 }
+
+/// Runs the fixture `busy.js` on the entry for `seconds`, with `arguments`
+/// before it: the command, and where its output goes.
+pub fn busy(scratch: &ScratchDir, seconds: u32) -> (Command, std::path::PathBuf) {
+    let output = scratch.path().join("output");
+    let mut command = Command::new(node::node(ENTRY));
+    command
+        .args(["--allow-natives-syntax", "--sparkplug-filter=sparkplugSpin"])
+        .arg(node::fixture("busy.js"))
+        .args(["--seconds", &seconds.to_string()])
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(std::fs::File::create(&output).expect("the fixture's output"))
+        .stderr(Stdio::null());
+    (command, output)
+}
+
+/// The functions a thread's stack begins with: glibc's entry for the main
+/// thread, and the system call that starts each other thread.
+const ROOTS: [&str; 3] = ["_start", "clone3", "__GI___clone3"];
+
+/// Whether `path` is a sample in one of V8's builtins that no unwind table
+/// describes, which the stack ends at, as it must: a builtin may run
+/// without a frame of its own, so its caller is not known.
+fn at_builtin(path: &[String]) -> bool {
+    matches!(
+        path,
+        [end, leaf] if end.starts_with("[no unwind information: ") && leaf.starts_with("Builtins_")
+    )
+}
+
+/// Each path of `paths` that begins with no thread's root, and does not end
+/// at a builtin, with its weight. A path may begin with a marker of where
+/// unwinding ended past the root, in brackets, as one past `clone3` does,
+/// whose caller is no function.
+pub fn rootless(paths: &BTreeMap<Vec<String>, u64>) -> Vec<(String, u64)> {
+    paths
+        .iter()
+        .filter(|(path, _)| {
+            let root = path.iter().find(|frame| !frame.starts_with('['));
+            !at_builtin(path)
+                && !root.is_some_and(|root| {
+                    ROOTS
+                        .iter()
+                        .any(|name| root.split(' ').next() == Some(*name))
+                })
+        })
+        .map(|(path, weight)| (path.join(" > "), *weight))
+        .collect()
+}
+
+/// CPU samples of a Node program spinning in JavaScript unwind through
+/// the code V8 generated and the builtins it copied, which name
+/// themselves, to the root of their thread, or else end visibly at a
+/// builtin they were sampled in.
+#[test]
+fn cpu_samples_unwind_through_v8s_code_to_each_threads_root() {
+    let scratch = ScratchDir::new("node-busy");
+    let (command, _) = busy(&scratch, 3);
+    let recording =
+        microscope::profiler::record(command, &RecordOptions::default()).expect("record");
+    assert!(recording.status.success(), "{}", recording.status);
+    let paths = paths(&recording.profile, Source::Samples, Look::Native);
+    let total: u64 = paths.values().sum();
+    let rootless = rootless(&paths);
+    let short: u64 = rootless.iter().map(|(_, weight)| weight).sum();
+    // Half a second of the three the program spins at least.
+    assert!(total >= 500_000_000, "{total} ns sampled");
+    // A sample may land where no unwinder can step, as in a signal
+    // trampoline or a prologue: at most one in a hundred.
+    assert!(
+        short * 100 <= total,
+        "{short} of {total} ns begin with no thread's root:\n{rootless:#?}"
+    );
+    let at_builtins: u64 = paths
+        .iter()
+        .filter(|(path, _)| at_builtin(path))
+        .map(|(_, weight)| weight)
+        .sum();
+    let entered = paths
+        .iter()
+        .filter(|(path, _)| {
+            path.iter()
+                .any(|frame| frame.starts_with("Builtins_JSEntry "))
+        })
+        .map(|(_, weight)| weight)
+        .sum::<u64>();
+    assert!(
+        (entered + at_builtins) * 2 >= total,
+        "{entered} of {total} ns entered JavaScript"
+    );
+}
+
+/// The root check fails on a stack that ends short.
+#[test]
+fn the_root_check_fails_on_a_short_stack() {
+    let path = |frames: &[&str]| frames.iter().map(|frame| (*frame).to_owned()).collect();
+    let paths: BTreeMap<Vec<String>, u64> = [
+        (path(&["_start a.c:1", "main a.c:2"]), 3),
+        (
+            path(&["[frame pointer not kept: libc.so.6]", "__GI___clone3 b.S:9"]),
+            2,
+        ),
+        (path(&["Builtins_JSEntry ?:0", "0x7fffc8001000 ?:0"]), 1),
+        (
+            path(&["[no unwind information: node]", "Builtins_AddHandler ?:0"]),
+            4,
+        ),
+        (
+            path(&["[no unwind information: node]", "0x7fffc8001000 ?:0"]),
+            5,
+        ),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(
+        rootless(&paths),
+        [
+            ("Builtins_JSEntry ?:0 > 0x7fffc8001000 ?:0".to_owned(), 1),
+            (
+                "[no unwind information: node] > 0x7fffc8001000 ?:0".to_owned(),
+                5
+            ),
+        ]
+    );
+}

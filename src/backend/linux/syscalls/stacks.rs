@@ -793,7 +793,12 @@ impl Stacks {
                     key: index,
                     image: &info.image,
                     loaded: mapped.loaded,
-                    stored: stored_code(process, mapped),
+                    stored: perf::stored_code(
+                        process.get(),
+                        info,
+                        mapped.loaded,
+                        mapped.start..mapped.end,
+                    ),
                 })
             })
             .collect();
@@ -892,33 +897,6 @@ impl Stacks {
         self.images.insert(key, image.clone());
         image
     }
-}
-
-/// The ranges of `mapped`'s image that a runtime it carries says process
-/// `process` keeps its own code in, where no symbol bounds it, as V8's
-/// builtins in a stripped libnode, where a copy of them may begin.
-fn stored_code(process: Pid, mapped: &Mapped) -> Vec<(ImageAddress, ImageAddress)> {
-    let Some(info) = &mapped.image.info else {
-        return Vec::new();
-    };
-    let image: Arc<dyn RuntimeImage + Send + Sync> = Arc::clone(&info.image) as _;
-    if image.v8().is_none() {
-        return Vec::new();
-    }
-    let stop = LiveStop::memory(process.get(), mapped.loaded.load_bias);
-    runtime_model::detect(&image)
-        .into_iter()
-        .flatten()
-        .flat_map(|model| model.process_code(&stop))
-        .filter(|range| mapped.start <= range.start.get() && range.end.get() <= mapped.end)
-        .map(|range| {
-            let bias = mapped.loaded.load_bias;
-            (
-                bias.wrapping_unload(range.start),
-                bias.wrapping_unload(range.end),
-            )
-        })
-        .collect()
 }
 
 /// The stack of unwound frames: the innermost frame's instruction, and for
