@@ -7,6 +7,7 @@
 mod support;
 
 mod addon;
+mod addon_steps;
 mod assignments;
 mod attach;
 mod breakpoints;

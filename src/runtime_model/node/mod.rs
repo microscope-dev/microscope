@@ -23,6 +23,7 @@ pub use exceptions::EXCEPTION_FILTERS;
 mod lineage;
 mod lookup;
 mod names;
+mod napi;
 mod native_inspector;
 mod objects;
 mod own;
@@ -109,6 +110,7 @@ pub fn detect(
             // An unsupported body still traps at its named entry: inspector_target
             // returns the metadata refusal before the preload can print its URL.
             .or_else(|| image.symbol(GET_TARGET_IDS).map(|symbol| symbol.address)),
+        native_entry: image.symbol(napi::INVOKE).map(|symbol| symbol.address),
         inspector_signal_handler: runtime
             .inspector
             .as_ref()
@@ -211,6 +213,9 @@ struct NodeRuntime {
 
     /// Node's `GetTargetIds`, where the inspector's address is read.
     inspector_hook: Option<ImageAddress>,
+
+    /// Where V8 enters a Node-API function's C callback.
+    native_entry: Option<ImageAddress>,
     inspector_signal_handler: Option<ImageAddress>,
     native_inspector: Result<crate::image::v8::NodeInspector, Arc<str>>,
     inspector_close_functions: Option<(ImageAddress, ImageAddress)>,
@@ -427,6 +432,25 @@ impl RuntimeModel for NodeRuntime {
 
     fn inspector_hook(&self) -> Option<ImageAddress> {
         self.inspector_hook
+    }
+
+    fn native_entry(&self) -> Option<ImageAddress> {
+        self.native_entry
+    }
+
+    fn native_callee(
+        &self,
+        stop: &dyn RuntimeStop,
+        registers: &RegisterFile,
+    ) -> Result<crate::VirtualAddress, Arc<str>> {
+        let info = registers
+            .get(crate::unwind::RDI)
+            .ok_or("the call's info is not in rdi")?;
+        let mut budget = InspectionBudget::new(crate::InspectionLimits::default());
+        self.reading(stop, &mut budget, |reader| {
+            napi::callback(reader, self.version, info)
+        })
+        .map(crate::VirtualAddress::new)
     }
 
     fn inspector_target(

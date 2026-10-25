@@ -735,11 +735,24 @@ that statement can still use the old value: at `x += 0`, the new `x` takes
 effect only from the next statement. Chrome's DevTools have the same limit,
 since they make the change the same way.
 
+### Node-API addons
+
+`step` at a call of a Node-API addon's function stops at the first line of
+its C function when the addon has debug information. In C, `next` and
+`finish` work as they do in any native code. A step that leaves the C
+function goes back to JavaScript and stops where V8's own step from the call
+would stop: at the caller's next statement or, when the addon calls back into
+JavaScript, at the callback's first statement. The JavaScript a step over
+the addon's lines runs does not stop it.
+
+An addon without debug information is stepped over, as V8 steps over it.
+Debian's `libnode` does not name the function V8 enters addons through, so
+there a step always steps over an addon.
+
 ### Not supported yet
 
-Watchpoints on JavaScript variables and stepping into a Node-API addon's
-native code are not supported yet. [Known limits](reference/limitations.md)
-lists them all.
+Watchpoints on JavaScript variables are not supported yet.
+[Known limits](reference/limitations.md) lists them all.
 
 ## Zig, Odin, D, Nim, Ada, and Fortran
 

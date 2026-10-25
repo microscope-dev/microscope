@@ -222,6 +222,7 @@ pub(super) const GENERATED: &[Generated] = &[
             (Field::JSGeneratorObjectParametersAndRegisters, 72),
             (Field::JSAsyncFunctionObjectPromise, 80),
             (Field::JSExternalObjectValue, 24),
+            (Field::FunctionTemplateInfoCallbackData, 80),
         ],
         constants: &[
             (Constant::UncachedExternalStringMask, 16),
@@ -1354,6 +1355,7 @@ pub(super) const GENERATED: &[Generated] = &[
             (Field::JSGeneratorObjectParametersAndRegisters, 72),
             (Field::JSAsyncFunctionObjectPromise, 80),
             (Field::JSExternalObjectValue, 24),
+            (Field::FunctionTemplateInfoCallbackData, 88),
         ],
         constants: &[
             (Constant::UncachedExternalStringMask, 16),
@@ -2523,6 +2525,7 @@ pub(super) const GENERATED: &[Generated] = &[
             (Field::JSGeneratorObjectParametersAndRegisters, 72),
             (Field::JSAsyncFunctionObjectPromise, 80),
             (Field::JSExternalObjectValue, 24),
+            (Field::FunctionTemplateInfoCallbackData, 88),
         ],
         constants: &[
             (Constant::UncachedExternalStringMask, 16),

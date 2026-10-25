@@ -1108,6 +1108,21 @@ the program's own output on every build, Debian's included. The scripted
 test `an_assignment_holds_v8_s_pause_until_its_own_stop_resumes` fixes the
 order of requests.
 
+**Addons.** `node/napi.rs` reads the C function a Node-API call runs, where
+V8 enters `v8impl::FunctionCallbackWrapper::Invoke` with the call's
+`FunctionCallbackInfo` in `rdi`. On 12.4 the template's data is in the
+info's implicit arguments. On 13.6 the template is there, and on 14.6 it is
+in the info's own words. The data, `FunctionTemplateInfo::CallbackData`, is
+a `JSExternalObject` holding the function's `CallbackBundle`, whose third
+word is the callback. Each step is checked against the type V8 records
+there. [Process control](process-control.md) describes the step into the
+callback and back. `tests/node/addon_steps.rs` holds the C stops to the
+addon's marked lines, and the JavaScript stops to V8's own `stepInto` and
+`stepOut` under the plain CDP oracle. A V8 `Debugger.pause` asked while the
+thread runs C pauses at the next function entry, not at the caller's next
+statement, so the step back relies on the step V8 still has armed, never on
+a pause.
+
 The launch preload precedes user `NODE_OPTIONS` preloads. Followed launches
 retain a content-addressed private cache copy so released descendants do
 not inherit a deleted require path. An untraced descendant restores the

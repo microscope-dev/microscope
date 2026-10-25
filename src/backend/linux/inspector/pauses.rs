@@ -749,6 +749,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 step,
                 desired,
                 assigning,
+                through,
                 ..
             } = inspector;
             for (session, isolate) in isolates.iter_mut() {
@@ -767,7 +768,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     connection.as_ref().map(|link| &link.connection),
                     session,
                     isolate,
-                    step,
+                    (step, through),
                     resumed,
                 );
             }
@@ -906,7 +907,7 @@ fn resume_isolate(
     connection: Option<&Connection>,
     session: &Session,
     isolate: &mut Isolate,
-    step: &mut Option<Stepping>,
+    (step, through): (&mut Option<Stepping>, &mut Option<super::addons::Through>),
     resumed: &BTreeSet<Pid>,
 ) -> bool {
     let Some(paused) = isolate.paused.as_mut() else {
@@ -934,13 +935,45 @@ fn resume_isolate(
             step.sent = true;
             step.command
         }
-        None => inspector_protocol::RESUME,
+        None => continue_through(through.as_ref(), session, paused),
     };
+    // A step microscope runs, or a resume, ends the step V8 ran back
+    // from an addon.
+    if command != inspector_protocol::STEP_OUT
+        && through
+            .as_ref()
+            .is_some_and(|through| through.session == *session)
+    {
+        *through = None;
+    }
     if let Some(connection) = connection {
         isolate.resuming |= send(connection, session, command, serde_json::json!({})).is_ok();
     }
     isolate.paused = None;
     false
+}
+
+/// How V8 goes on from `paused`, in the isolate `session` reaches, which
+/// no step of microscope's runs: a pause no one claimed in a function an
+/// addon calls, deeper than the JavaScript step that entered the addon
+/// began, continues V8's step back out of it (`through`); any other
+/// resumes.
+fn continue_through(
+    through: Option<&super::addons::Through>,
+    session: &Session,
+    paused: &Paused,
+) -> &'static str {
+    match through {
+        Some(through)
+            if through.session == *session
+                && paused.thread == Some(through.thread)
+                && paused.reason.is_none()
+                && paused.frames.len() > through.depth =>
+        {
+            inspector_protocol::STEP_OUT
+        }
+        _ => inspector_protocol::RESUME,
+    }
 }
 
 /// The scopes of a frame whose variables are its stack locals, by their

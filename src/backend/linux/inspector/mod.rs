@@ -10,6 +10,7 @@
 //! immutable UUID and returns an empty vector for proven print/list callers,
 //! before any string is allocated. Native upgrade validation runs unchanged.
 
+mod addons;
 mod arming;
 pub(super) mod assignments;
 mod functions;
@@ -207,6 +208,10 @@ struct Inspector {
     /// The assignment V8 is asked to make, while it holds the pause it is
     /// made in.
     assigning: Option<assignments::Assigning>,
+
+    /// The `stepInto` V8 still runs for a thread a JavaScript step left in
+    /// a Node-API addon's C function.
+    through: Option<addons::Through>,
 
     /// Which exceptions V8 is to pause at, as `setPauseOnExceptions`
     /// names them.

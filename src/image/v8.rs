@@ -381,6 +381,10 @@ entries! {
         JSGeneratorObjectParametersAndRegisters = "JSGeneratorObject::ParametersAndRegisters",
         JSAsyncFunctionObjectPromise = "JSAsyncFunctionObject::Promise",
         JSExternalObjectValue = "JSExternalObject::Value",
+
+        /// The data an API function's template passes its callback: for a
+        /// Node-API function, a `JSExternalObject` holding its bundle.
+        FunctionTemplateInfoCallbackData = "FunctionTemplateInfo::CallbackData",
     }
 }
 

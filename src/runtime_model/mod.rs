@@ -1022,6 +1022,24 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         None
     }
 
+    /// Where the runtime enters the native functions a program gives it,
+    /// as V8 enters a Node-API function's C callback: a step into a call
+    /// of one traps there for [`Self::native_callee`].
+    fn native_entry(&self) -> Option<ImageAddress> {
+        None
+    }
+
+    /// The native function a thread entering [`Self::native_entry`] with
+    /// `registers` is about to run.
+    fn native_callee(
+        &self,
+        stop: &dyn RuntimeStop,
+        registers: &RegisterFile,
+    ) -> Result<VirtualAddress, Arc<str>> {
+        let _ = (stop, registers);
+        Err("the runtime enters no native functions of the program's".into())
+    }
+
     /// A hidden listing's immutable target, or no edit for native upgrade
     /// validation. An unrecognized caller is refused rather than exposed.
     fn inspector_target(

@@ -209,12 +209,12 @@ impl<P: LinuxTraceOps> Controller<P> {
         runtime: RuntimeId,
         number: u64,
         target: VirtualAddress,
-    ) {
+    ) -> bool {
         let Some(inferior) = self.inferior.as_ref() else {
-            return;
+            return false;
         };
         let Some(active) = inferior.active.as_ref() else {
-            return;
+            return false;
         };
         let ActiveKind::RuntimeStep {
             owner,
@@ -223,25 +223,28 @@ impl<P: LinuxTraceOps> Controller<P> {
             number: step,
         } = active.kind
         else {
-            return;
+            return false;
         };
         if stepping != runtime || step != number || !self.runs_step(owner, pid) {
-            return;
+            return false;
         }
 
         let execution = active.id;
         let Some(destination) = self.native_step_destination(inferior, runtime, target) else {
             record!("the step into {target} leaves it to the runtime");
-            return;
+            return false;
         };
 
         let Some(inferior) = self.inferior.as_mut() else {
-            return;
+            return false;
         };
 
-        if let Err(error) = install_plan_breakpoint(&self.ptrace, inferior, destination, execution)
-        {
-            record!("the step into {target} cannot trap at {destination}: {error}");
+        match install_plan_breakpoint(&self.ptrace, inferior, destination, execution) {
+            Ok(()) => true,
+            Err(error) => {
+                record!("the step into {target} cannot trap at {destination}: {error}");
+                false
+            }
         }
     }
 
@@ -324,6 +327,35 @@ impl<P: LinuxTraceOps> Controller<P> {
             .any(|bound| bound.module.id == module.id && bound.model.agent().is_some()))
     }
 
+    /// Whether the active source step's activation on thread `pid` has
+    /// returned into the code of a runtime's own image, as a Node-API
+    /// function returns into Node's.
+    pub(super) fn returned_into_unlined_code(&self, pid: Pid) -> Result<bool> {
+        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let Some(activation) = inferior
+            .active
+            .as_ref()
+            .and_then(|active| match &active.kind {
+                ActiveKind::Step { start, .. } if !start.running_on => start.activation,
+                _ => None,
+            })
+        else {
+            return Ok(false);
+        };
+        let registers = self.ptrace.registers(pid)?;
+        if !activation.has_returned(self.stack_position(pid, &registers)) {
+            return Ok(false);
+        }
+        let Some((module, _, _)) = self.holding(inferior, VirtualAddress::new(registers.rip))
+        else {
+            return Ok(false);
+        };
+        Ok(self
+            .runtimes(inferior)
+            .iter()
+            .any(|bound| bound.module.id == module.id))
+    }
+
     /// Turns the active source step of thread `pid`, which returned into a
     /// runtime's interpreter (see [`Self::source_step_returned_to_runtime`]),
     /// into that runtime's step back from the thread's innermost
@@ -362,24 +394,27 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
 
         let thread = debug_thread_id(pid);
-        let Some((runtime, frame)) = self
-            .runtimes(inferior)
-            .into_iter()
-            .filter(|bound| bound.model.agent().is_some())
-            .find_map(|bound| {
-                let stacks = self.with_runtime_stop(inferior, &bound, pid, |stop| {
-                    bound.model.interpreted(stop)
-                })?;
-                let on = stacks.value.threads.iter().find(|on| on.thread == thread)?;
-                let frame = stacks
-                    .value
-                    .frames_of(on)
-                    .iter()
-                    .find(|frame| frame.role == CodeRole::Ordinary)?
-                    .frame;
-                Some((bound.id, frame))
-            })
-        else {
+        // V8 runs the step back from a Node-API function itself, from no
+        // frame of its own; an agent steps back from the thread's frame.
+        let through = self.returns_through(pid).map(|runtime| (runtime, None));
+        let Some((runtime, frame)) = through.or_else(|| {
+            self.runtimes(inferior)
+                .into_iter()
+                .filter(|bound| bound.model.agent().is_some())
+                .find_map(|bound| {
+                    let stacks = self.with_runtime_stop(inferior, &bound, pid, |stop| {
+                        bound.model.interpreted(stop)
+                    })?;
+                    let on = stacks.value.threads.iter().find(|on| on.thread == thread)?;
+                    let frame = stacks
+                        .value
+                        .frames_of(on)
+                        .iter()
+                        .find(|frame| frame.role == CodeRole::Ordinary)?
+                        .frame;
+                    Some((bound.id, Some(frame)))
+                })
+        }) else {
             record!("thread {thread} returned into a runtime that runs none of its code");
             return;
         };
@@ -396,7 +431,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     number,
                     kind: requested,
                     thread,
-                    frame: Some(frame),
+                    frame,
                     returning: true,
                 },
             ));

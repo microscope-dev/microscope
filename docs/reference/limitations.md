@@ -122,8 +122,11 @@ narrower limits and report them when used.
   paused its thread, and only where V8's debugger assigns it: not `this`, a
   property, a global, an unnamed register, or a variable optimized code keeps
   outside a context. The statement V8 paused at may still use the old value.
-  JavaScript variables cannot be watched, and a step does not enter a
-  Node-API addon's native code. A core dump's JavaScript is read-only.
+  JavaScript variables cannot be watched. A step enters a Node-API addon's C
+  function only from a stop where V8 paused the thread, only where the addon
+  has debug information, and not on Debian's node, whose `libnode` does not
+  name the function V8 enters addons through. A core dump's JavaScript is
+  read-only.
 - A profile's Python stacks (`record --python`) come from the BPF engine,
   which needs `CAP_BPF` and `CAP_PERFMON`, or from snapshots that stop the
   program or read it as it runs. The BPF engine's first samples of a program
