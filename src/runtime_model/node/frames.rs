@@ -45,18 +45,28 @@ pub(super) fn describe(
             functions: Vec::new(),
             role: CodeRole::Interpreter,
             live_registers: false,
+            awaiting: None,
         });
     }
 
     let function = javascript_function(reader, fp).ok()??;
     let (functions, live_registers) =
         match functions(reader, table, encoding, statics, frame, fp, function) {
-            // A function V8's own stack traces hide is its machinery.
+            // A function V8's own stack traces hide is its machinery, such
+            // as the closure that resumed an async function after an
+            // await, which the functions awaiting it follow.
             Ok(None) => {
                 return Some(DescribedFrame {
                     functions: Vec::new(),
                     role: CodeRole::Interpreter,
                     live_registers: false,
+                    awaiting: super::awaits::awaiting(
+                        reader,
+                        table,
+                        encoding,
+                        &statics.awaits,
+                        function,
+                    ),
                 });
             }
             Ok(Some(found)) => found,
@@ -86,6 +96,7 @@ pub(super) fn describe(
         functions,
         role,
         live_registers,
+        awaiting: None,
     })
 }
 
@@ -179,14 +190,14 @@ pub(super) fn javascript_function(reader: &Reader<'_>, fp: u64) -> Result<Option
 /// information, or one an optimized frame inlined, known only by its
 /// shared information.
 #[derive(Clone, Copy)]
-enum Named {
+pub(super) enum Named {
     Function((Object, Object)),
     Shared(Object),
 }
 
 /// The function `named` as V8 records it, at `offset` in its script, or
 /// with the problem that it has no place known.
-fn recorded(
+pub(super) fn recorded(
     reader: &Reader<'_>,
     table: &mut Table,
     named: Named,
@@ -322,25 +333,43 @@ fn offset_in_script(
         return Err("the frame's bytecode is not its function's".into());
     }
 
-    // The frame keeps the offset from the bytecode array's tagged address,
-    // past its header.
     let raw = reader
         .smi(slot(Constant::OffFpBytecodeOffset)?)?
         .ok_or("the frame's bytecode offset is no Smi")?;
+    let offset = bytecode_offset(reader, bytecode, raw)?;
+    script_offset_at(reader, encoding, bytecode, offset)
+}
+
+/// The offset in `bytecode` of the instruction whose offset V8 keeps as
+/// `raw`, from the bytecode array's tagged address, past its header, as a
+/// frame and a suspended generator keep it.
+pub(super) fn bytecode_offset(
+    reader: &Reader<'_>,
+    bytecode: Object,
+    raw: i64,
+) -> Result<i64, Problem> {
     let header = i64::try_from(reader.offset(Field::BytecodeArrayBytes)?)
         .map_err(|_| "a bytecode header is out of range")?;
     let offset = raw - header + reader.constant(Constant::HeapObjectTag)?;
     let length = reader.smi_field(bytecode, Field::BytecodeArrayLength)?;
     if !(0..length).contains(&offset) {
-        return Err(
-            format!("the frame's bytecode offset {offset} is outside its {length} bytes").into(),
-        );
+        return Err(format!("the bytecode offset {offset} is outside its {length} bytes").into());
     }
+    Ok(offset)
+}
 
+/// The offset in its script of the instruction at `offset` of `bytecode`,
+/// by the bytecode's position table.
+pub(super) fn script_offset_at(
+    reader: &Reader<'_>,
+    encoding: Encoding,
+    bytecode: Object,
+    offset: i64,
+) -> Result<u64, Problem> {
     let table = positions::decode(&positions::table_bytes(reader, bytecode)?, encoding)?;
     positions::position_at(&table, offset)
         .and_then(positions::script_offset)
-        .ok_or_else(|| "the bytecode has no position at the frame's offset".into())
+        .ok_or_else(|| "the bytecode has no position at its offset".into())
 }
 
 #[cfg(test)]

@@ -1618,6 +1618,23 @@ pub struct DescribedFrame {
     /// Whether the interpreter's registers in the frame hold its variables.
     /// V8's optimized code keeps the interpreter's frame but not its values.
     pub live_registers: bool,
+
+    /// For a frame that resumed an async function after an await, the
+    /// functions suspended in await that wait for it, which follow the
+    /// frames the frame runs.
+    pub awaiting: Option<Awaiting>,
+}
+
+/// The chain of async functions suspended in await that wait for one a
+/// thread runs, and the promise combinators between them, innermost
+/// first. Each is kept by the runtime at [`InterpretedFrame::frame`], as
+/// V8 keeps a suspended function's generator object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Awaiting {
+    pub frames: Vec<InterpretedFrame>,
+
+    /// Why the chain ends before what waits last, if it does.
+    pub end: Option<Arc<str>>,
 }
 
 /// An interpreted frame: where the interpreter keeps it, and whether its

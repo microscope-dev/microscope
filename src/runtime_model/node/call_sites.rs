@@ -1416,7 +1416,7 @@ fn function_kind(reader: &Reader<'_>, shared: Object) -> Result<i64, Problem> {
 
 /// The number of the V8 builtin `shared` runs, if any (`HasBuiltinId`): a
 /// builtin's function data is its number as a Smi.
-fn builtin_id(reader: &Reader<'_>, shared: Object) -> Result<Option<i64>, Problem> {
+pub(super) fn builtin_id(reader: &Reader<'_>, shared: Object) -> Result<Option<i64>, Problem> {
     let field = if reader
         .layout
         .has(Field::SharedFunctionInfoUntrustedFunctionData)

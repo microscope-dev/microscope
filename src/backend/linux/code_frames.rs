@@ -299,6 +299,7 @@ mod tests {
             functions: vec![recorded("inner"), recorded("middle"), recorded("outer")],
             role: CodeRole::Ordinary,
             live_registers: true,
+            awaiting: None,
         };
         rewrite(&mut expanded, &[(1, RuntimeId::new(7), description)]).unwrap();
 
@@ -373,6 +374,7 @@ mod tests {
             functions: Vec::new(),
             role: CodeRole::Interpreter,
             live_registers: false,
+            awaiting: None,
         };
         rewrite(&mut expanded, &[(1, RuntimeId::new(7), description)]).unwrap();
 

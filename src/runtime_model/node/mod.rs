@@ -9,6 +9,7 @@
 //! as V8 recorded it ([`RuntimeModel::code_frame`]).
 
 mod access;
+mod awaits;
 mod call_sites;
 mod collections;
 mod compiled;
@@ -91,6 +92,7 @@ pub fn detect(
     let statics = Statics {
         isolate: image.thread_local(crate::image::v8::CURRENT_ISOLATE),
         dispatch_table: runtime.dispatch_table,
+        awaits: await_builtins(image.as_ref(), runtime.version),
     };
     Some(Ok(Arc::new(NodeRuntime {
         version: runtime.version,
@@ -160,6 +162,60 @@ struct Statics {
     /// Where each thread keeps its current isolate.
     isolate: Option<Result<ThreadLocal, Arc<str>>>,
     dispatch_table: Result<Option<DispatchTable>, Arc<str>>,
+
+    /// The numbers of the builtins an await chain is read by.
+    awaits: Result<awaits::Builtins, Arc<str>>,
+}
+
+/// The numbers of the builtins an await chain is read by, in V8
+/// `version`, checked against the image's own builtins where its symbols
+/// name them: V8 numbers its builtins in the order it embeds them, and a
+/// build whose configuration adds or drops one numbers the rest apart.
+/// A module without the symbols, as Debian's, has the numbers of its V8
+/// release's official build.
+fn await_builtins(
+    image: &(dyn RuntimeImage + Send + Sync),
+    version: V8Version,
+) -> Result<awaits::Builtins, Arc<str>> {
+    let (count, numbers) = crate::image::v8::builtins(version)?;
+    let mut addresses: Vec<ImageAddress> = image
+        .functions_starting(BUILTIN_PREFIX)
+        .into_iter()
+        .map(|symbol| symbol.address)
+        .collect();
+    if addresses.is_empty() {
+        return Ok(numbers);
+    }
+    addresses.sort_unstable();
+    addresses.dedup();
+    if addresses.len() != count as usize {
+        return Err(format!(
+            "the module has {} builtins, where V8 {}.{} has {count}",
+            addresses.len(),
+            version.major,
+            version.minor
+        )
+        .into());
+    }
+    for (builtin, number) in numbers {
+        let name = usize::try_from(*number)
+            .ok()
+            .and_then(|index| addresses.get(index))
+            .and_then(|address| image.symbol_at(*address));
+        if name
+            .as_deref()
+            .and_then(|name| name.strip_prefix(BUILTIN_PREFIX))
+            != Some(builtin.name())
+        {
+            return Err(format!(
+                "the module's builtin {number} is {}, not {}",
+                name.as_deref().unwrap_or("unnamed"),
+                builtin.name()
+            )
+            .into());
+        }
+    }
+    Ok(numbers)
 }
 
 /// The range of the image's code its embedded builtins span, where it

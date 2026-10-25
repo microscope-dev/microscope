@@ -70,7 +70,6 @@ mod builtins;
 /// an async function or generator after an await, those `Promise.all`,
 /// `allSettled`, and `any` give each element, and a capability's default
 /// resolve function, by its name in `BUILTIN_LIST`.
-#[allow(dead_code)] // TEMP
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Builtin {
     AsyncFunctionAwaitResolveClosure,
@@ -85,9 +84,9 @@ pub enum Builtin {
     PromiseCapabilityDefaultResolve,
 }
 
-#[allow(dead_code)] // TEMP
 impl Builtin {
     /// Every builtin, in order.
+    #[cfg(test)]
     pub const ALL: &[Self] = &[
         Self::AsyncFunctionAwaitResolveClosure,
         Self::AsyncFunctionAwaitRejectClosure,
@@ -129,7 +128,6 @@ pub type Numbers = &'static [(Builtin, i64)];
 /// How many builtins V8 `version` has, and each of [`Builtin`]'s number,
 /// as its release build's `builtin_metadata` gives them; or why microscope
 /// has none.
-#[allow(dead_code)] // TEMP
 pub fn builtins(version: V8Version) -> Result<(u32, Numbers), std::sync::Arc<str>> {
     builtins::BUILTINS
         .iter()
@@ -147,7 +145,7 @@ pub fn builtins(version: V8Version) -> Result<(u32, Numbers), std::sync::Arc<str
 /// The symbol of the table of V8's builtins' names, as clang and gcc
 /// mangle it: 24 bytes per builtin in number order, each beginning with a
 /// pointer to its name.
-#[allow(dead_code)] // TEMP
+#[cfg(test)]
 pub const BUILTIN_METADATA: [&str; 2] = [
     "_ZN2v88internal12_GLOBAL__N_1L16builtin_metadataE",
     "_ZN2v88internal12_GLOBAL__N_116builtin_metadataE",
