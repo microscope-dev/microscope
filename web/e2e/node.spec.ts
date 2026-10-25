@@ -2,7 +2,7 @@
 // breakpoint in a .js file, set before the run, stops the node that runs
 // it, which the switcher shows among the group's processes.
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, fixture, join, type Microscope, test } from "./server";
@@ -199,4 +199,29 @@ test("a Node core's tasks panel lists its event loops' work, each with its callb
   await expect(opened).toContainText("callback configOpened");
   await expect(tasks.getByRole("button", { name: /^task \d+$/ })).toHaveCount(2);
   await expect(tasks).toContainText("thread-pool job");
+
+  // Grouped, only the pool jobs open a stack. Their numbers, bit 62 and
+  // the thread ids the core's log names, are above 2^53, and are shown
+  // exactly.
+  const log = await readFile(`${fixture("node-tasks-26.core")}.log`, "utf8");
+  const jobs = [...log.matchAll(/^TRUTH\tpool\t(\d+)$/gm)]
+    .map((match) => ((1n << 62n) | BigInt(match[1] ?? "")).toString())
+    .sort();
+  expect(jobs).toHaveLength(2);
+  await page.getByRole("button", { name: "group" }).click();
+  const groups = page.getByTestId("task-group");
+  await expect(groups.getByRole("button")).toHaveCount(2);
+  const shown = (await groups.getByRole("button").allTextContents()).sort();
+  expect(shown).toEqual(jobs);
+  const uncalled = groups.filter({ hasText: "no callback" });
+  await expect(uncalled).toContainText("16 in");
+  await expect(uncalled.getByTestId("stackless-task")).toHaveCount(16);
+  await expect(uncalled.getByRole("button")).toHaveCount(0);
+
+  // A pool job opens its own thread's stack, through libuv's worker.
+  const job = jobs[0] ?? "";
+  await groups.getByRole("button", { name: `task ${job}`, exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/task/\\d+\\.${job}/f/`));
+  await expect(page.getByRole("region", { name: "Call stack" })).toContainText(`task ${job}`);
+  await expect(page.getByTestId("stack")).toContainText("worker");
 });

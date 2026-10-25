@@ -71,15 +71,27 @@ export function Tasks() {
                 <li key={place} className="task-group" data-testid="task-group">
                   <div className="row task-row" title={place}>
                     <span className="dim">{tasks.length} in</span>
-                    <span className="fn">{tasks[0]?.frame?.name ?? place}</span>
+                    <span className="fn">{tasks[0]?.frame?.name ?? (place || "no callback")}</span>
                     {tasks[0]?.frame && <span className="end">{where(tasks[0].frame)}</span>}
                   </div>
                   <div className="task-numbers">
-                    {tasks.map((task) => (
-                      <TaskButton key={key(task.key)} task={task} at={at} onChoose={choose}>
-                        {task.key.number}
-                      </TaskButton>
-                    ))}
+                    {tasks.map((task) =>
+                      // Work that runs no code opens no stack.
+                      task.stackless ? (
+                        <span
+                          key={key(task.key)}
+                          className="chip dim"
+                          data-testid="stackless-task"
+                          title={describe(task)}
+                        >
+                          {task.key.number}
+                        </span>
+                      ) : (
+                        <TaskButton key={key(task.key)} task={task} at={at} onChoose={choose}>
+                          {task.key.number}
+                        </TaskButton>
+                      ),
+                    )}
                   </div>
                 </li>
               ))

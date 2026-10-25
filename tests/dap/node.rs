@@ -183,6 +183,17 @@ fn a_node_cores_event_loop_work_is_listed_as_threads() {
         .as_array()
         .expect("threads")
         .clone();
+    // Every task, though Node numbers pool jobs above 2^62 and a worker's
+    // work above 2^32, is a thread of its own, by an id DAP can carry.
+    let ids: std::collections::BTreeSet<i64> = threads
+        .iter()
+        .map(|thread| thread["id"].as_i64().expect("an integer id"))
+        .collect();
+    assert_eq!(ids.len(), threads.len(), "{threads:#?}");
+    assert!(
+        ids.iter().all(|id| (1..=i64::from(i32::MAX)).contains(id)),
+        "{ids:?}"
+    );
     let named = |prefix: &str| {
         threads
             .iter()

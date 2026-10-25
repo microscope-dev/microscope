@@ -1,6 +1,6 @@
 // Generated from src/web/protocol.rs by `cargo test`; do not edit.
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 export type Role = "control" | "view";
 
@@ -813,7 +813,12 @@ debugInformationProblem: string | null, };
 
 export type StopAt = { stop: number, };
 
-export type TaskKey = { runtime: number, number: number, };
+export type TaskKey = { runtime: number, 
+/**
+ * In decimal: a runtime's numbers use all 64 bits, as Node's pool
+ * jobs set bit 62, and a JSON number reads exactly only below 2^53.
+ */
+number: string, };
 
 export type TaskList = { 
 /**
