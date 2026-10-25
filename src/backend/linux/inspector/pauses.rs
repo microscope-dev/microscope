@@ -710,6 +710,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 connection,
                 isolates,
                 step,
+                gate,
                 desired,
                 ..
             } = inspector;
@@ -726,7 +727,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 && let (Some(link), Some(isolate)) =
                     (connection.as_ref(), isolates.get_mut(&Session::main()))
             {
-                pause_for_step(&link.connection, isolate, step.as_mut());
+                pause_for_step(&link.connection, isolate, step.as_mut(), gate.as_mut());
             }
             // A function compiled while the program ran is found as it
             // runs on.

@@ -1094,6 +1094,11 @@ exception stops, and worker sessions under the native all-stop controller.
 `backend/linux/cdp.rs` owns the bounded, nonblocking transport. Worker
 detach cancels outstanding requests for that worker and its descendants,
 including their envelopes, without closing the main connection.
+A step from a native stop sends `Debugger.pause`, which the main thread
+takes only at an interrupt check after the I/O thread hands it on. The main
+thread stays stopped until the I/O thread returns from
+`InspectorIoDelegate::MessageReceived` with that request (`steps::Gate`),
+so it cannot run past the statement the step should end at first.
 
 Static native inspector facts belong in `debug_info/v8/inspector.rs`,
 `inspector_activation.rs`, and `inspector_targets.rs`, and are cached in

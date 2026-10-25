@@ -985,6 +985,9 @@ pub(super) struct FakeTrace {
     /// Memory words by address; others read as zero.
     memory: RefCell<BTreeMap<u64, u64>>,
 
+    /// Threads' stack pointers; others' are 0.
+    pub(super) stack_pointers: RefCell<BTreeMap<Pid, u64>>,
+
     /// Words whose reads fail, as unmapped memory's do.
     unreadable: RefCell<BTreeSet<u64>>,
 
@@ -1010,7 +1013,7 @@ impl FakeTrace {
         self.actions.borrow_mut().push(action);
     }
 
-    fn set_pc(&self, pid: Pid, pc: u64) {
+    pub(super) fn set_pc(&self, pid: Pid, pc: u64) {
         self.program_counters.borrow_mut().insert(pid, pc);
     }
 
@@ -1175,6 +1178,7 @@ impl InspectionOps for FakeTrace {
             .get(&pid)
             .copied()
             .unwrap_or(0x5000);
+        registers.rsp = self.stack_pointers.borrow().get(&pid).copied().unwrap_or(0);
         Ok(registers)
     }
 }
@@ -1724,7 +1728,7 @@ impl WatchHarness {
     }
 
     /// Reports a SIGTRAP with `code` while DR6 holds `status`.
-    fn trap(&mut self, pid: Pid, code: i32, status: u64) -> Result<()> {
+    pub(super) fn trap(&mut self, pid: Pid, code: i32, status: u64) -> Result<()> {
         let mut registers = self.trace().registers_of(pid);
         registers[debug_registers::STATUS_REGISTER] = status;
         self.trace().registers.borrow_mut().insert(pid, registers);
@@ -5015,6 +5019,21 @@ impl crate::runtime_model::RuntimeModel for ScriptedRuntime {
         Ok(self
             .inspector_hook
             .map(|_| (VirtualAddress::new(0x7000), Arc::from("0f2b5c1e-uuid"))))
+    }
+
+    /// An inspected runtime's I/O thread takes messages at 0x60, every
+    /// one the message asked about.
+    fn inspector_message_received(&self) -> Option<ImageAddress> {
+        self.inspector_hook.map(|_| ImageAddress::new(0x60))
+    }
+
+    fn inspector_received_matches(
+        &self,
+        _stop: &dyn crate::runtime_model::RuntimeStop,
+        _message: VirtualAddress,
+        _expected: &[u8],
+    ) -> std::result::Result<bool, Arc<str>> {
+        Ok(true)
     }
 
     fn hook_event(

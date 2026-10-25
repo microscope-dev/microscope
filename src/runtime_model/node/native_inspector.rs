@@ -186,6 +186,26 @@ pub(super) fn message_matches(
     })
 }
 
+/// Whether the `std::string` at `message`, which `MessageReceived` takes,
+/// holds exactly `expected`. Its mangled name's `__cxx11` tag gives
+/// libstdc++'s layout, the data pointer then the length, as `string` reads.
+pub(super) fn received_matches(
+    stop: &dyn RuntimeStop,
+    message: crate::VirtualAddress,
+    expected: &[u8],
+) -> Result<bool, Arc<str>> {
+    let length = word(stop, checked(message.get(), 8)?)?;
+    if length != u64::try_from(expected.len()).map_err(|_| "the message is too large")? {
+        return Ok(false);
+    }
+    let data = word(stop, message.get())?;
+    let mut bytes = vec![0; expected.len()];
+    if !stop.read(crate::VirtualAddress::new(data), &mut bytes) {
+        return Err("the message Node's inspector received is unreadable".into());
+    }
+    Ok(bytes == expected)
+}
+
 fn checked(base: u64, offset: u64) -> Result<u64, Arc<str>> {
     base.checked_add(offset)
         .ok_or_else(|| "Node's inspector address overflows".into())

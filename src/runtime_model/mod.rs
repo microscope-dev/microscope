@@ -1105,6 +1105,25 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         Err("the runtime cannot read a native inspector message".into())
     }
 
+    /// Where the inspector's I/O thread takes a message from the debugger,
+    /// called with the message as its third argument. Once the call
+    /// returns, the message waits for the main thread, which takes it at
+    /// its next interrupt check.
+    fn inspector_message_received(&self) -> Option<ImageAddress> {
+        None
+    }
+
+    /// Whether the message the I/O thread takes at `message`, the third
+    /// argument at `inspector_message_received`, is `expected`.
+    fn inspector_received_matches(
+        &self,
+        _stop: &dyn RuntimeStop,
+        _message: VirtualAddress,
+        _expected: &[u8],
+    ) -> Result<bool, Arc<str>> {
+        Err("the runtime cannot read a message its inspector received".into())
+    }
+
     fn inspector_endpoint(
         &self,
         _stop: &dyn RuntimeStop,

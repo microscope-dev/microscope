@@ -82,6 +82,7 @@ pub(super) const TASK_NOUN: (&str, &str) = ("handle", "handles");
 pub const SCRIPT_EXTENSIONS: &[&str] = &["js", "mjs", "cjs", "jsx", "ts", "mts", "cts", "tsx"];
 
 const GET_TARGET_IDS: &str = "_ZN4node9inspector19InspectorIoDelegate12GetTargetIdsB5cxx11Ev";
+const MESSAGE_RECEIVED: &str = "_ZN4node9inspector19InspectorIoDelegate15MessageReceivedEiRKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE";
 
 /// What V8 names each of its embedded builtins' code.
 const BUILTIN_PREFIX: &str = "Builtins_";
@@ -126,6 +127,7 @@ pub fn detect(
             .as_ref()
             .ok()
             .and_then(|layout| layout.close),
+        inspector_received: image.symbol(MESSAGE_RECEIVED).map(|symbol| symbol.address),
         native_inspector: runtime.inspector,
         tasks: runtime.tasks,
         image: Arc::clone(image),
@@ -277,6 +279,10 @@ struct NodeRuntime {
     inspector_signal_handler: Option<ImageAddress>,
     native_inspector: Result<crate::image::v8::NodeInspector, Arc<str>>,
     inspector_close_functions: Option<(ImageAddress, ImageAddress)>,
+
+    /// Node's `InspectorIoDelegate::MessageReceived`, where the I/O thread
+    /// hands each message on to the main thread.
+    inspector_received: Option<ImageAddress>,
 
     /// Where Node keeps its event loop's work, or why the module's code
     /// does not say.
@@ -676,6 +682,19 @@ impl RuntimeModel for NodeRuntime {
         expected: &[u8],
     ) -> Result<bool, Arc<str>> {
         native_inspector::message_matches(stop, view, expected)
+    }
+
+    fn inspector_message_received(&self) -> Option<ImageAddress> {
+        self.inspector_received
+    }
+
+    fn inspector_received_matches(
+        &self,
+        stop: &dyn RuntimeStop,
+        message: VirtualAddress,
+        expected: &[u8],
+    ) -> Result<bool, Arc<str>> {
+        native_inspector::received_matches(stop, message, expected)
     }
 
     fn inspector_endpoint(

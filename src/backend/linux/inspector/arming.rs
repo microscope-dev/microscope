@@ -118,17 +118,48 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
         let inferior = self
             .inferior
-            .as_mut()
+            .as_ref()
             .ok_or_else(|| Arc::<str>::from("the process is gone"))?;
         let main = super::super::debug_thread_id(inferior.tgid);
+        let received = self
+            .runtimes(inferior)
+            .into_iter()
+            .find(|bound| bound.id == runtime)
+            .and_then(|bound| {
+                let entry = bound.model.inspector_message_received()?;
+                bound.module.virtual_address(entry).ok()
+            });
+        let inferior = self
+            .inferior
+            .as_mut()
+            .ok_or_else(|| Arc::<str>::from("the process is gone"))?;
         let inspector = inferior.inspectors.records.entry(runtime).or_default();
         inspector.step = match (arming.step, inspector.step.take()) {
             (None, _) => None,
             (Some(step), Some(stepping)) if stepping.number == step.number => Some(stepping),
             (Some(step), _) => Some(super::steps::stepping(&inspector.isolates, step, main)?),
         };
+        // A step from a native stop holds the main thread until its pause
+        // is handed to it; V8 holds the thread for any other step.
+        let number = inspector
+            .step
+            .as_ref()
+            .filter(|step| step.command == inspector_protocol::PAUSE && !step.sent)
+            .map(|step| step.number);
+        if inspector.gate.as_ref().map(|gate| gate.number) != number {
+            inspector.gate = number.and_then(|number| {
+                if received.is_none() {
+                    record!(
+                        "Node names no MessageReceived; a step from a native stop may pause late"
+                    );
+                }
+                Some(super::steps::Gate::new(number, received?))
+            });
+        }
         inspector.desired = arming.breakpoints.to_vec();
         inspector.pausing = inspector_protocol::pause_state(arming.exceptions);
+        self.sync_step_gates(true)
+            .map_err(|error| Arc::<str>::from(error.to_string()))?;
         self.sync_inspector(runtime);
         Ok(())
     }
