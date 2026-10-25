@@ -33,6 +33,9 @@ const GET_DEFAULT_GROUP: &str = "_ZN2v812IsolateGroup10GetDefaultEv";
 const GROUP_HANDLE_DESTRUCTORS: [&str; 2] =
     ["_ZN2v812IsolateGroupD1Ev", "_ZN2v812IsolateGroupD2Ev"];
 
+/// `v8::Isolate::IsInUse()`, which every build exports with V8's API.
+pub(super) const IS_IN_USE: &str = "_ZN2v87Isolate7IsInUseEv";
+
 /// The most bytes of an accessor's code decoded.
 const ACCESSOR_BYTES: usize = 96;
 
@@ -1027,6 +1030,40 @@ fn decode_node_version(instructions: &[Instruction], what: &str) -> Result<u64, 
     })
 }
 
+/// How far into an isolate it keeps the stack of its entries, as the
+/// exported `v8::Isolate::IsInUse` reads it:
+///
+/// ```cpp
+/// bool IsInUse() { return entry_stack_ != nullptr; }
+/// ```
+///
+/// which every build compiles to `mov rax, [rdi + offset]; test rax, rax;
+/// setne al`, with the isolate in rdi. A build's configuration moves the
+/// member: official Node 26 keeps it at 0xffe0, nixpkgs' at 0xfff0.
+pub(super) fn entry_stack(object: &object::File<'_>) -> Result<u64, Arc<str>> {
+    let function = function(object, IS_IN_USE, false)
+        .ok_or_else(|| -> Arc<str> { format!("the module names no {IS_IN_USE}").into() })?;
+    decode_entry_stack(&instructions(object, function)?, IS_IN_USE)
+}
+
+/// The offset `IsInUse`'s `instructions` load and test.
+fn decode_entry_stack(instructions: &[Instruction], what: &str) -> Result<u64, Arc<str>> {
+    let mut code = instructions.iter();
+    let offset = next_as(&mut code, what, |instruction| {
+        load_into_rax(instruction, Register::RDI)
+    })?;
+    next_as(&mut code, what, |instruction| {
+        tests(instruction, Register::RAX).then_some(())
+    })?;
+    next_as(&mut code, what, |instruction| {
+        (instruction.mnemonic() == Mnemonic::Setne
+            && instruction.op0_kind() == OpKind::Register
+            && instruction.op0_register() == Register::AL)
+            .then_some(())
+    })?;
+    Ok(offset)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1396,5 +1433,26 @@ mod tests {
         // Returning before storing either.
         let flow = follow(&decode(&[RET]), "range").expect("a flow");
         assert!(assign_blob(&flow, &[], "range").is_err());
+    }
+
+    #[test]
+    fn is_in_use_gives_the_offset_of_the_entries() {
+        // mov rax, [rdi + 0xffe0]; test rax, rax; setne al; ret
+        let official = decode(&[
+            0x48, 0x8b, 0x87, 0xe0, 0xff, 0, 0, 0x48, 0x85, 0xc0, 0x0f, 0x95, 0xc0, RET,
+        ]);
+        assert_eq!(decode_entry_stack(&official, IS_IN_USE), Ok(0xffe0));
+
+        // Another register loaded, or compared otherwise, is refused.
+        let other = decode(&[
+            0x48, 0x8b, 0x86, 0xe0, 0xff, 0, 0, 0x48, 0x85, 0xc0, 0x0f, 0x95, 0xc0, RET,
+        ]);
+        let refused = decode_entry_stack(&other, IS_IN_USE).unwrap_err();
+        assert!(refused.contains("is `mov rax,[rsi+0FFE0h]`"), "{refused}");
+        let sete = decode(&[
+            0x48, 0x8b, 0x87, 0xe0, 0xff, 0, 0, 0x48, 0x85, 0xc0, 0x0f, 0x94, 0xc0, RET,
+        ]);
+        assert!(decode_entry_stack(&sete, IS_IN_USE).is_err());
+        assert!(decode_entry_stack(&[], IS_IN_USE).is_err());
     }
 }

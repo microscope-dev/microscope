@@ -808,6 +808,8 @@ pub(super) const SCHEMA: &[TableSchema] = &[
             ("inspector", 104, 160),
             ("tasks_problem", 264, 4),
             ("tasks", 268, 8 * v8::NodeTasks::WORDS),
+            ("entry_stack_problem", V8_ENTRY_STACK, 4),
+            ("entry_stack", V8_ENTRY_STACK + 4, 8),
             ("offsets", V8_OFFSETS, 4 * v8::Field::COUNT),
             (
                 "constants",
@@ -821,8 +823,11 @@ pub(super) const SCHEMA: &[TableSchema] = &[
 /// Where a Python runtime record's offsets begin.
 const PYTHON_OFFSETS: usize = 28;
 
+/// Where a V8 runtime record says where its isolates keep their entries.
+const V8_ENTRY_STACK: usize = 268 + 8 * v8::NodeTasks::WORDS;
+
 /// Where a V8 runtime record's offsets begin.
-const V8_OFFSETS: usize = 268 + 8 * v8::NodeTasks::WORDS;
+const V8_OFFSETS: usize = V8_ENTRY_STACK + 12;
 
 const fn keyed(kind: TableKind) -> TableSchema {
     TableSchema {

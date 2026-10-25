@@ -10,7 +10,7 @@
 // call-site-info.h, v8-promise.h, frame-constants.h,
 // frame-constants-x64.h, constants-x64.h, isolate-data.h,
 // isolate-data-fields.h, stack-guard.h, thread-local-top.h,
-// thread-id.h, v8-unwinder.h, v8-callbacks.h), by
+// thread-id.h, v8-unwinder.h, v8-callbacks.h, isolate.h), by
 // `debug_info::v8::conformance::layouts_match_torque`. Do not edit;
 // rerun that test with MICROSCOPE_UPDATE_V8=1.
 //
@@ -758,6 +758,8 @@ pub(super) const GENERATED: &[Generated] = &[
             (Constant::ThreadLocalTopJsEntrySp, 152),
             (Constant::ThreadLocalTopCurrentVmState, 168),
             (Constant::StateTagGc, 1),
+            (Constant::EntryStackItemPreviousIsolate, 16),
+            (Constant::EntryStackItemPreviousItem, 24),
             (Constant::CommonFrameCallerFpOffset, 0),
             (Constant::CommonFrameCallerPcOffset, 8),
             (Constant::CommonFrameContextOrFrameTypeOffset, -8),
@@ -1937,6 +1939,8 @@ pub(super) const GENERATED: &[Generated] = &[
             (Constant::ThreadLocalTopJsEntrySp, 152),
             (Constant::ThreadLocalTopCurrentVmState, 168),
             (Constant::StateTagGc, 1),
+            (Constant::EntryStackItemPreviousIsolate, 16),
+            (Constant::EntryStackItemPreviousItem, 24),
             (Constant::CommonFrameCallerFpOffset, 0),
             (Constant::CommonFrameCallerPcOffset, 8),
             (Constant::CommonFrameContextOrFrameTypeOffset, -8),
@@ -3156,6 +3160,8 @@ pub(super) const GENERATED: &[Generated] = &[
             (Constant::ThreadLocalTopJsEntrySp, 152),
             (Constant::ThreadLocalTopCurrentVmState, 168),
             (Constant::StateTagGc, 1),
+            (Constant::EntryStackItemPreviousIsolate, 16),
+            (Constant::EntryStackItemPreviousItem, 24),
             (Constant::CommonFrameCallerFpOffset, 0),
             (Constant::CommonFrameCallerPcOffset, 8),
             (Constant::CommonFrameContextOrFrameTypeOffset, -8),

@@ -1559,6 +1559,13 @@ entries! {
         ThreadLocalTopCurrentVmState = "offsetof(ThreadLocalTop, current_vm_state_)",
         StateTagGc = "StateTag::GC",
 
+        /// Where each item of the stack of entries an isolate keeps for
+        /// the thread that entered it holds the isolate that thread had
+        /// entered before, if any, and the item before it (`isolate.h`'s
+        /// `Isolate::EntryStackItem`).
+        EntryStackItemPreviousIsolate = "offsetof(Isolate::EntryStackItem, previous_isolate)",
+        EntryStackItemPreviousItem = "offsetof(Isolate::EntryStackItem, previous_item)",
+
         /// Where every frame keeps its caller's frame pointer and return
         /// address, and its context or marker, from its frame pointer
         /// (`frame-constants.h`).
@@ -1645,6 +1652,11 @@ pub struct V8RuntimeRecord {
     /// module's code does not say, a string, or [`NONE`].
     pub tasks_problem: U32,
     pub tasks: [U64; NodeTasks::WORDS],
+
+    /// [`V8Runtime::entry_stack`]: the offset, or why the module's code
+    /// does not say, a string, or [`NONE`].
+    pub entry_stack_problem: U32,
+    pub entry_stack: U64,
     pub offsets: [U32; Field::COUNT],
     pub constants: [I64; Constant::COUNT],
 }
@@ -1811,6 +1823,12 @@ pub struct V8Runtime {
     /// Where Node keeps its event loop's handles, requests, and timers, or
     /// why the module's code does not say.
     pub tasks: Result<NodeTasks, std::sync::Arc<str>>,
+
+    /// How far into an isolate it keeps the stack of its entries,
+    /// `Isolate::entry_stack_`, as the module's exported
+    /// `v8::Isolate::IsInUse` reads it, or why its code does not say. A
+    /// build's configuration moves it.
+    pub entry_stack: Result<u64, std::sync::Arc<str>>,
 }
 
 /// The `nodedbg_` variables Node sets for debuggers, which a release sets
@@ -2112,6 +2130,10 @@ fn encode(strings: &mut StringsBuilder, runtime: &V8Runtime) -> Result<V8Runtime
         Ok(tasks) => (tasks.encode().map(U64::new), NONE),
         Err(error) => ([U64::new(0); NodeTasks::WORDS], problem(error)?),
     };
+    let (entry_stack, entry_stack_problem) = match &runtime.entry_stack {
+        Ok(offset) => (*offset, NONE),
+        Err(error) => (0, problem(error)?),
+    };
 
     Ok(V8RuntimeRecord {
         major: runtime.version.major.into(),
@@ -2134,6 +2156,8 @@ fn encode(strings: &mut StringsBuilder, runtime: &V8Runtime) -> Result<V8Runtime
         inspector,
         tasks_problem: tasks_problem.into(),
         tasks,
+        entry_stack_problem: entry_stack_problem.into(),
+        entry_stack: entry_stack.into(),
         offsets: layout.offsets.map(U32::new),
         constants: layout.constants.map(I64::new),
     })
@@ -2188,6 +2212,10 @@ pub fn runtime(image: &Image) -> Option<V8Runtime> {
         NONE => Ok(NodeTasks::decode(record.tasks.map(U64::get))),
         id => Err(problem(id)),
     };
+    let entry_stack = match record.entry_stack_problem.get() {
+        NONE => Ok(record.entry_stack.get()),
+        id => Err(problem(id)),
+    };
 
     Some(V8Runtime {
         version: V8Version {
@@ -2203,6 +2231,7 @@ pub fn runtime(image: &Image) -> Option<V8Runtime> {
         node,
         inspector,
         tasks,
+        entry_stack,
     })
 }
 
@@ -2234,6 +2263,7 @@ pub(super) fn validate(image: &Image) -> Result<(), String> {
         record.node_problem.get(),
         record.inspector_problem.get(),
         record.tasks_problem.get(),
+        record.entry_stack_problem.get(),
     ] {
         if problem != NONE && !image.strings().contains(StrId(problem)) {
             return Err(format!("the V8 runtime's problem {problem} is no string"));
@@ -2272,6 +2302,10 @@ pub(super) fn validate(image: &Image) -> Result<(), String> {
 
     if record.blob_problem.get() != NONE && record.blob.iter().any(|at| at.get() != 0) {
         return Err("the V8 runtime places its embedded blob and says it cannot".to_owned());
+    }
+
+    if record.entry_stack_problem.get() != NONE && record.entry_stack.get() != 0 {
+        return Err("the V8 runtime places its isolates' entries and says it cannot".to_owned());
     }
 
     if record.node_problem.get() != NONE && record.node.iter().any(|number| number.get() != 0) {

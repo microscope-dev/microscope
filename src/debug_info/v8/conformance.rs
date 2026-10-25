@@ -994,7 +994,7 @@ fn generate() -> String {
          // call-site-info.h, v8-promise.h, frame-constants.h,\n\
          // frame-constants-x64.h, constants-x64.h, isolate-data.h,\n\
          // isolate-data-fields.h, stack-guard.h, thread-local-top.h,\n\
-         // thread-id.h, v8-unwinder.h, v8-callbacks.h), by\n\
+         // thread-id.h, v8-unwinder.h, v8-callbacks.h, isolate.h), by\n\
          // `debug_info::v8::conformance::layouts_match_torque`. Do not edit;\n\
          // rerun that test with MICROSCOPE_UPDATE_V8=1.\n\
          //\n\

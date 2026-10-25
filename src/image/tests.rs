@@ -264,6 +264,8 @@ fn the_schema_is_the_records_layout() {
             inspector,
             tasks_problem,
             tasks,
+            entry_stack_problem,
+            entry_stack,
             offsets,
             constants
         ]
@@ -628,7 +630,7 @@ fn the_schema_is_the_records_layout() {
     // layouts before reading tables; the container format is independent.
     assert_eq!(
         schema::layout_fingerprint(),
-        0x5990_97f4_8ed5_c513,
+        0xd5c5_8d08_01cc_76b9,
         "the layout changed:\n{}",
         schema::schema_text()
     );
@@ -3842,6 +3844,7 @@ fn a_v8_runtime_reads_back_with_its_layout_or_its_problem() {
         }),
         inspector: Err("the fixture has no native inspector".into()),
         tasks: Err("the fixture has no Node tasks".into()),
+        entry_stack: Ok(0xffe0),
     };
     let read = sealed_v8(Some(&runtime)).unwrap();
     assert_eq!(read, runtime);
@@ -3861,6 +3864,7 @@ fn a_v8_runtime_reads_back_with_its_layout_or_its_problem() {
         node: Err("names no napi_get_node_version".into()),
         inspector: Err("names no native inspector registry".into()),
         tasks: Err("names no GetCurrentContext".into()),
+        entry_stack: Err("names no v8::Isolate::IsInUse".into()),
         ..runtime
     };
     assert_eq!(sealed_v8(Some(&refused)), Some(refused));
@@ -3930,6 +3934,8 @@ fn validation_rejects_a_v8_runtime_that_names_nothing() {
         inspector: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 160, 2, 3, 4, 5].map(Into::into),
         tasks_problem: u32::MAX.into(),
         tasks: [0.into(); super::v8::NodeTasks::WORDS],
+        entry_stack_problem: u32::MAX.into(),
+        entry_stack: 0.into(),
         offsets: [u32::MAX.into(); super::v8::Field::COUNT],
         constants: [i64::MIN.into(); super::v8::Constant::COUNT],
     };
@@ -4017,6 +4023,22 @@ fn validation_rejects_a_v8_runtime_that_names_nothing() {
     let refused = builder.seal(Limits::default()).unwrap_err().to_string();
     assert!(
         refused.contains("gives a Node release and says it cannot"),
+        "{refused}"
+    );
+
+    // Where the isolates keep their entries, together with a reason the
+    // code does not say.
+    let mut strings = StringsBuilder::default();
+    let problem = strings.push("no v8::Isolate::IsInUse").unwrap().0;
+    let mut both = record(u32::MAX);
+    both.entry_stack = 0xffe0.into();
+    both.entry_stack_problem = problem.into();
+    let mut builder = Builder::new(TARGET);
+    builder.owned_table(vec![both]);
+    builder.bytes(TableKind::Strings, strings.into_bytes());
+    let refused = builder.seal(Limits::default()).unwrap_err().to_string();
+    assert!(
+        refused.contains("places its isolates' entries and says it cannot"),
         "{refused}"
     );
 }

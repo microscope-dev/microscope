@@ -12,6 +12,9 @@
 //!   isolate, and clears `c_entry_fp` only after `leave`.
 //! - A fast C call stores its return address, then its frame pointer.
 //! - The deoptimizer's entry clears `stack_is_iterable` and sets it again.
+//! - V8's `Isolate::Enter`, which the exported `v8::Isolate::Enter` runs,
+//!   stores its new entry where the exported `v8::Isolate::IsInUse` reads
+//!   the isolate's entries, and at no word beside it.
 //!
 //! Debian's libnode names no builtin. V8 generates its builtins' code
 //! itself, so a build of one V8 version and configuration has the same
@@ -135,6 +138,23 @@ impl Build {
         // The bytes borrow the file's data, which outlives the object.
         let start = code.as_ptr() as usize - self.data.as_ptr() as usize;
         Some((symbol.address(), &self.data[start..start + code.len()]))
+    }
+
+    /// The code at `address`, at most `length` bytes of it.
+    fn code_at(&self, address: u64, length: usize) -> Option<&[u8]> {
+        self.code().into_iter().find_map(|(start, bytes)| {
+            let at = usize::try_from(address.checked_sub(start)?).ok()?;
+            let end = bytes.len().min(at.checked_add(length)?);
+            bytes.get(at..end)
+        })
+    }
+
+    /// The address of the exported function `name`.
+    fn exported(&self, name: &str) -> Option<u64> {
+        self.object()
+            .dynamic_symbols()
+            .find(|symbol| symbol.name() == Ok(name) && symbol.is_definition())
+            .map(|symbol| symbol.address())
     }
 
     /// Whether symbols name the build's builtins.
@@ -442,6 +462,84 @@ pub(super) fn read(build: &Build, named: Option<&Build>) -> Result<Found, String
     Ok(found)
 }
 
+/// `v8::Isolate::Enter()`, which every build exports with V8's API, and
+/// which runs V8's own `Isolate::Enter`.
+const ENTER: &str = "_ZN2v87Isolate5EnterEv";
+
+/// How many bytes of `Isolate::Enter` are read for its store of its new
+/// entry.
+const ENTER_BYTES: usize = 1024;
+
+/// The displacements from a register that the code of V8's
+/// `Isolate::Enter` writes a register to, as `entry_stack_ = item` does:
+/// `mov` or `xchg` to `[base+d]`, or to `[r]` after `lea r, [base+d]`. The
+/// exported `v8::Isolate::Enter` runs it, or jumps to it.
+pub(super) fn enter_stores(build: &Build) -> Result<Vec<i64>, String> {
+    let exported = build
+        .exported(ENTER)
+        .ok_or_else(|| format!("no exported {ENTER}"))?;
+    let mut address = exported;
+    // Past a frame it builds and drops, `push rbp; mov rbp, rsp; pop rbp`.
+    let first = decode(
+        address,
+        build.code_at(address, 16).ok_or("no code at Enter")?,
+    );
+    let framed = |instruction: &&Instruction| {
+        matches!(instruction.mnemonic(), Mnemonic::Push | Mnemonic::Pop)
+            && reg(instruction, 0, Register::RBP)
+            || instruction.mnemonic() == Mnemonic::Mov
+                && reg(instruction, 0, Register::RBP)
+                && reg(instruction, 1, Register::RSP)
+    };
+    if let Some(jump) = first
+        .iter()
+        .find(|instruction| !framed(instruction))
+        .filter(|instruction| {
+            instruction.mnemonic() == Mnemonic::Jmp
+                && instruction.op0_kind() == OpKind::NearBranch64
+        })
+    {
+        address = jump.near_branch_target();
+    }
+    let code = build
+        .code_at(address, ENTER_BYTES)
+        .ok_or("no code at V8's Isolate::Enter")?;
+    let mut stores = Vec::new();
+    let mut addressed: BTreeMap<Register, i64> = BTreeMap::new();
+    for instruction in decode(address, code) {
+        let writes = matches!(instruction.mnemonic(), Mnemonic::Mov | Mnemonic::Xchg)
+            && instruction.op0_kind() == OpKind::Memory
+            && instruction.op1_kind() == OpKind::Register
+            && instruction.op1_register().is_gpr64()
+            && instruction.memory_index() == Register::None;
+        if writes {
+            let base = instruction.memory_base();
+            let displacement = instruction.memory_displacement64().cast_signed();
+            if displacement == 0
+                && let Some(&through) = addressed.get(&base)
+            {
+                stores.push(through);
+            } else if base != Register::RSP && base != Register::RIP {
+                stores.push(displacement);
+            }
+        }
+        if instruction.mnemonic() == Mnemonic::Lea
+            && instruction.op0_kind() == OpKind::Register
+            && instruction.memory_index() == Register::None
+            && instruction.memory_base() != Register::RIP
+        {
+            addressed.insert(
+                instruction.op0_register(),
+                instruction.memory_displacement64().cast_signed(),
+            );
+        }
+        if instruction.mnemonic() == Mnemonic::Ret {
+            break;
+        }
+    }
+    Ok(stores)
+}
+
 /// Every way what `found` read differs from what `expected` says.
 pub(super) fn disagreements(expected: &Expected, found: &Found) -> Vec<String> {
     fn check(wrong: &mut Vec<String>, what: &str, read: Option<i64>, says: i64) {
@@ -572,6 +670,35 @@ mod tests {
                 read(&build, named.as_ref()).unwrap_or_else(|problem| panic!("{entry}: {problem}"));
             let wrong = disagreements(&expected(entry, &build), &found);
             assert!(wrong.is_empty(), "{entry}: {wrong:#?}\n{found:#?}");
+        }
+    }
+
+    /// Where every build's exported `v8::Isolate::IsInUse` reads an
+    /// isolate's entries, V8's `Isolate::Enter` stores its new entry, and
+    /// a word either way of it is no such store. Debian's libnode runs
+    /// its unnamed `Isolate::Enter` through the exported one's jump.
+    #[test]
+    fn each_build_enters_isolates_where_it_reads_their_entries() {
+        for (entry, path, _) in super::super::conformance::matrix() {
+            let build = Build::read(&path);
+            let runtime = super::super::runtime(&build.object())
+                .unwrap_or_else(|| panic!("{entry}: no V8 runtime"));
+            let offset = runtime
+                .entry_stack
+                .unwrap_or_else(|problem| panic!("{entry}: {problem}"))
+                .cast_signed();
+            let stores =
+                enter_stores(&build).unwrap_or_else(|problem| panic!("{entry}: {problem}"));
+            assert!(
+                stores.contains(&offset),
+                "{entry}: {offset:#x} not in {stores:x?}"
+            );
+            for planted in [offset - 8, offset + 8] {
+                assert!(
+                    !stores.contains(&planted),
+                    "{entry}: Isolate::Enter also stores at {planted:#x}"
+                );
+            }
         }
     }
 

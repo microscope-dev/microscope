@@ -398,6 +398,7 @@ pub(super) fn runtime(object: &object::File<'_>) -> Option<V8Runtime> {
     runtime.node = accessors::node_release(object);
     runtime.inspector = inspector::layout(object);
     runtime.tasks = node_tasks::layout(object, runtime.layout.as_ref());
+    runtime.entry_stack = accessors::entry_stack(object);
     Some(runtime)
 }
 
@@ -426,6 +427,7 @@ fn describe(exports: &Exports) -> Option<V8Runtime> {
             node: Err(UNKNOWN_VERSION.into()),
             inspector: Err(UNKNOWN_VERSION.into()),
             tasks: Err(UNKNOWN_VERSION.into()),
+            entry_stack: Err(UNKNOWN_VERSION.into()),
         });
     };
 
@@ -444,6 +446,7 @@ fn describe(exports: &Exports) -> Option<V8Runtime> {
         embedded_blob: Err(unread.clone()),
         inspector: Err(unread.clone()),
         tasks: Err(unread.clone()),
+        entry_stack: Err(unread.clone()),
         node: Err(unread),
     })
 }

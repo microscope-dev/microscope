@@ -59,7 +59,7 @@ pub(super) struct Headers {
     config: BTreeMap<&'static str, bool>,
 }
 
-const FILES: [&str; 52] = [
+const FILES: [&str; 53] = [
     "src/common/globals.h",
     "include/v8-internal.h",
     "src/objects/trusted-object.h",
@@ -112,6 +112,7 @@ const FILES: [&str; 52] = [
     "src/codegen/x64/constants-x64.h",
     "include/v8-unwinder.h",
     "include/v8-callbacks.h",
+    "src/execution/isolate.h",
 ];
 
 /// The headers a version may lack: 12.4 has no JS dispatch table, and
@@ -1202,6 +1203,17 @@ impl Headers {
             constants.push((format!("offsetof(ThreadLocalTop, {member})"), *offset));
         }
 
+        let item = self.entry_stack_item();
+        for member in ["previous_isolate", "previous_item"] {
+            let offset = item
+                .get(member)
+                .unwrap_or_else(|| panic!("Isolate::EntryStackItem has no {member}"));
+            constants.push((
+                format!("offsetof(Isolate::EntryStackItem, {member})"),
+                *offset,
+            ));
+        }
+
         let states = self.enumerators("include/v8-unwinder.h", "enum StateTag");
         constants.push(("StateTag::GC".to_owned(), states["GC"]));
 
@@ -1273,22 +1285,7 @@ impl Headers {
     /// from the class's `kSizeInBytes`.
     pub(super) fn thread_local_top(&self) -> (i64, BTreeMap<String, i64>) {
         let file = "src/execution/thread-local-top.h";
-        let body = self.class_text(file, "ThreadLocalTop");
-        let mut offsets = BTreeMap::new();
-        let (mut offset, mut alignment) = (0, 1);
-        for (statement, conditional) in class_statements(body) {
-            let Some((ty, name)) = Self::data_member(&statement) else {
-                continue;
-            };
-            assert!(!conditional, "{file}: {name} is under a conditional");
-            let size = self.member_type_size(&ty);
-            offset = align(offset, size);
-            alignment = alignment.max(size);
-            let previous = offsets.insert(name.clone(), offset);
-            assert!(previous.is_none(), "{file} declares {name} twice");
-            offset += size;
-        }
-        let size = align(offset, alignment);
+        let (size, offsets) = self.lay_out(file, "ThreadLocalTop", Names::V8);
         let declared = self
             .class_constant(file, &["ThreadLocalTop"], "kSizeInBytes")
             .expect("ThreadLocalTop::kSizeInBytes");
@@ -1299,14 +1296,46 @@ impl Headers {
         (size, offsets)
     }
 
+    /// The offsets of the data members of `Isolate::EntryStackItem`, each
+    /// item of the stack of entries an isolate keeps for the thread that
+    /// entered it, as [`Self::thread_local_top`] lays them out. Its
+    /// members are named without V8's trailing underscore.
+    pub(super) fn entry_stack_item(&self) -> BTreeMap<String, i64> {
+        self.lay_out("src/execution/isolate.h", "EntryStackItem", Names::Plain)
+            .1
+    }
+
+    /// The size and the data members' offsets of `class`, which `file`
+    /// declares, laid out as C++ lays out the types it declares: x64,
+    /// without pointer compression. Any statement or type it does not
+    /// know fails, as does a member under a preprocessor conditional.
+    fn lay_out(&self, file: &str, class: &str, names: Names) -> (i64, BTreeMap<String, i64>) {
+        let body = self.class_text(file, class);
+        let mut offsets = BTreeMap::new();
+        let (mut offset, mut alignment) = (0, 1);
+        for (statement, conditional) in class_statements(body) {
+            let Some((ty, name)) = Self::data_member(&statement, names) else {
+                continue;
+            };
+            assert!(!conditional, "{file}: {name} is under a conditional");
+            let size = self.member_type_size(&ty);
+            offset = align(offset, size);
+            alignment = alignment.max(size);
+            let previous = offsets.insert(name.clone(), offset);
+            assert!(previous.is_none(), "{file} declares {name} twice");
+            offset += size;
+        }
+        (align(offset, alignment), offsets)
+    }
+
     /// The type and name of a class's data member `statement`, `None` for
     /// a statement known to be no data member, failing on any other.
-    fn data_member(statement: &str) -> Option<(String, String)> {
+    fn data_member(statement: &str, names: Names) -> Option<(String, String)> {
         let statement = normalized(statement);
         let statement = statement.trim();
         for label in ["public:", "private:", "protected:"] {
             if let Some(rest) = statement.strip_prefix(label) {
-                return Self::data_member(rest);
+                return Self::data_member(rest, names);
             }
         }
         if statement.is_empty()
@@ -1317,27 +1346,37 @@ impl Headers {
         {
             return None;
         }
-        // A member, its type with no parentheses, and its name V8's way,
-        // perhaps with an initializer.
-        let member = Regex::new(r"^([^()=;]+?)\s*\b(\w+_)\s*(?:=[^=].*)?$").expect("a pattern");
-        if let Some(captures) = member.captures(statement) {
-            return Some((captures[1].trim().to_owned(), captures[2].to_owned()));
-        }
-        // A function: a template, a declaration, or what is left of a
-        // definition whose body was dropped.
-        let function = Regex::new(
-            r"^(?:template\s*<[^;]*>\s*)?(?:[\w:<>,*&~]+\s+)*~?\w+\s*\([^;]*\)\s*(?:const\s*)?(?:override\s*)?(?:=\s*(?:default|delete|0)\s*)?$",
-        )
-        .expect("a pattern");
+        // A member of a function's pointer type, written out, would read as
+        // a function.
         assert!(
-            function.is_match(statement),
+            !statement.contains("(*") && !statement.contains("(&"),
             "an unknown statement {statement:?}"
         );
-        None
+        // A function, an operator among them: a template, a declaration,
+        // or what is left of a definition whose body was dropped.
+        let function = Regex::new(
+            r"^(?:template\s*<[^;]*>\s*)?(?:[\w:<>,*&~]+\s+)*~?(?:\w+|operator\s*[^\s(\w]+)\s*\([^;]*\)\s*(?:const\s*)?(?:override\s*)?(?:=\s*(?:default|delete|0)\s*)?$",
+        )
+        .expect("a pattern");
+        if function.is_match(statement) {
+            return None;
+        }
+        // A member, its type with no parentheses, and its name V8's way or
+        // plainly, perhaps with an initializer.
+        let name = match names {
+            Names::V8 => r"\w+_",
+            Names::Plain => r"[a-z]\w*",
+        };
+        let member =
+            Regex::new(&format!(r"^([^()=;]+?)\s*\b({name})\s*(?:=[^=].*)?$")).expect("a pattern");
+        let captures = member
+            .captures(statement)
+            .unwrap_or_else(|| panic!("an unknown statement {statement:?}"));
+        Some((captures[1].trim().to_owned(), captures[2].to_owned()))
     }
 
-    /// The size, and alignment, of a type `ThreadLocalTop` declares a
-    /// member of.
+    /// The size, and alignment, of a type `ThreadLocalTop` or
+    /// `Isolate::EntryStackItem` declares a member of.
     fn member_type_size(&self, ty: &str) -> i64 {
         let globals = self.file("src/common/globals.h");
         if ty.ends_with('*') {
@@ -1354,7 +1393,7 @@ impl Headers {
                 );
                 type_size(globals, "uintptr_t")
             }
-            "uintptr_t" | "uint8_t" => type_size(globals, ty),
+            "uintptr_t" | "uint8_t" | "int" => type_size(globals, ty),
             "StateTag" => {
                 let unwinder = self.file("include/v8-unwinder.h");
                 assert!(
@@ -1381,7 +1420,7 @@ impl Headers {
                 );
                 self.size("kSystemPointerSize")
             }
-            _ => panic!("no size of ThreadLocalTop's member type {ty:?}"),
+            _ => panic!("no size of the member type {ty:?}"),
         }
     }
 
@@ -1434,6 +1473,14 @@ impl Headers {
         eval(expression, &lookup)
             .unwrap_or_else(|| panic!("{file}: cannot evaluate {expression:?}"))
     }
+}
+
+/// How a class names its data members: V8's way, with a trailing
+/// underscore, or plainly, as `Isolate::EntryStackItem` does.
+#[derive(Debug, Clone, Copy)]
+enum Names {
+    V8,
+    Plain,
 }
 
 /// A class body's statements outside its functions' bodies, each with
@@ -1999,9 +2046,14 @@ fn thread_local_top_fails_on_what_it_does_not_know() {
             "an unknown statement",
         ),
         (
+            "a member of a function's pointer type",
+            "  Address c_entry_fp_;\n  void (*callback_)(int);\n  Address js_entry_sp_;",
+            "an unknown statement",
+        ),
+        (
             "an unknown member type",
             "  Address c_entry_fp_;\n  Unknown flag_;\n  Address js_entry_sp_;",
-            "no size of ThreadLocalTop's member type",
+            "no size of the member type",
         ),
         (
             "a member under a conditional",
