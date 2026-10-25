@@ -1107,6 +1107,57 @@ fn bytecode_sizes_match_torque() {
     );
 }
 
+const BUILTINS_FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/image/v8/builtins.gen.rs");
+
+/// Fails when `src/image/v8/builtins.gen.rs` no longer matches the
+/// builtins of the official build of each version in `MICROSCOPE_NODE`.
+/// Set `MICROSCOPE_UPDATE_V8=1` to rewrite it.
+#[test]
+fn builtin_ids_match_release() {
+    let builds: Vec<_> = matrix()
+        .into_iter()
+        .filter(|(entry, ..)| ["26", "24", "22"].contains(entry))
+        .map(|(_, path, version)| (version, super::builtins::names(&path)))
+        .collect();
+    let expected = super::builtins::generate(&builds, V8_NOTICE);
+    if std::env::var_os("MICROSCOPE_UPDATE_V8").is_some() {
+        std::fs::write(BUILTINS_FILE, &expected).expect("write the generated builtins");
+        return;
+    }
+
+    let actual = std::fs::read_to_string(BUILTINS_FILE).unwrap_or_default();
+    assert!(
+        actual == expected,
+        "src/image/v8/builtins.gen.rs is stale; rerun with MICROSCOPE_UPDATE_V8=1"
+    );
+}
+
+/// Every build of the matrix, Debian's libnode included, numbers its
+/// builtins as the generated table does: as many, and each that an await
+/// chain is read by under its name.
+#[test]
+fn each_builds_builtins_are_the_generated_ones() {
+    for (entry, path, (major, minor)) in matrix() {
+        let version = crate::image::v8::V8Version {
+            major,
+            minor,
+            build: 0,
+            patch: 0,
+        };
+        let (count, numbers) = crate::image::v8::builtins(version)
+            .unwrap_or_else(|problem| panic!("{entry}: {problem}"));
+        let names = super::builtins::names(&path);
+        assert_eq!(names.len(), count as usize, "{entry}: how many builtins");
+        for (builtin, number) in numbers {
+            assert_eq!(
+                names[usize::try_from(*number).expect("a number")],
+                builtin.name(),
+                "{entry}: builtin {number}"
+            );
+        }
+    }
+}
+
 /// V8's own table of its bytecodes' sizes, which only a symbol table names.
 const BYTECODE_SIZES: &str = "_ZN2v88internal11interpreter9Bytecodes14kBytecodeSizesE";
 

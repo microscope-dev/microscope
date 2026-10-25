@@ -52,6 +52,10 @@ mod deoptimization;
 mod bytecodes;
 
 #[cfg(test)]
+#[path = "v8/builtins.rs"]
+mod builtins;
+
+#[cfg(test)]
 #[path = "v8/translate.rs"]
 mod translate;
 

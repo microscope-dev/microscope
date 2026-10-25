@@ -62,6 +62,97 @@ pub fn suspend_generator(version: V8Version) -> Result<u8, std::sync::Arc<str>> 
         })
 }
 
+#[rustfmt::skip]
+#[path = "v8/builtins.gen.rs"]
+mod builtins;
+
+/// A builtin of V8's an await chain is read by: the closures that resume
+/// an async function or generator after an await, those `Promise.all`,
+/// `allSettled`, and `any` give each element, and a capability's default
+/// resolve function, by its name in `BUILTIN_LIST`.
+#[allow(dead_code)] // TEMP
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Builtin {
+    AsyncFunctionAwaitResolveClosure,
+    AsyncFunctionAwaitRejectClosure,
+    AsyncGeneratorAwaitResolveClosure,
+    AsyncGeneratorAwaitRejectClosure,
+    AsyncGeneratorYieldWithAwaitResolveClosure,
+    PromiseAllResolveElementClosure,
+    PromiseAllSettledResolveElementClosure,
+    PromiseAllSettledRejectElementClosure,
+    PromiseAnyRejectElementClosure,
+    PromiseCapabilityDefaultResolve,
+}
+
+#[allow(dead_code)] // TEMP
+impl Builtin {
+    /// Every builtin, in order.
+    pub const ALL: &[Self] = &[
+        Self::AsyncFunctionAwaitResolveClosure,
+        Self::AsyncFunctionAwaitRejectClosure,
+        Self::AsyncGeneratorAwaitResolveClosure,
+        Self::AsyncGeneratorAwaitRejectClosure,
+        Self::AsyncGeneratorYieldWithAwaitResolveClosure,
+        Self::PromiseAllResolveElementClosure,
+        Self::PromiseAllSettledResolveElementClosure,
+        Self::PromiseAllSettledRejectElementClosure,
+        Self::PromiseAnyRejectElementClosure,
+        Self::PromiseCapabilityDefaultResolve,
+    ];
+
+    /// The builtin's name, as `BUILTIN_LIST` gives it.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::AsyncFunctionAwaitResolveClosure => "AsyncFunctionAwaitResolveClosure",
+            Self::AsyncFunctionAwaitRejectClosure => "AsyncFunctionAwaitRejectClosure",
+            Self::AsyncGeneratorAwaitResolveClosure => "AsyncGeneratorAwaitResolveClosure",
+            Self::AsyncGeneratorAwaitRejectClosure => "AsyncGeneratorAwaitRejectClosure",
+            Self::AsyncGeneratorYieldWithAwaitResolveClosure => {
+                "AsyncGeneratorYieldWithAwaitResolveClosure"
+            }
+            Self::PromiseAllResolveElementClosure => "PromiseAllResolveElementClosure",
+            Self::PromiseAllSettledResolveElementClosure => {
+                "PromiseAllSettledResolveElementClosure"
+            }
+            Self::PromiseAllSettledRejectElementClosure => "PromiseAllSettledRejectElementClosure",
+            Self::PromiseAnyRejectElementClosure => "PromiseAnyRejectElementClosure",
+            Self::PromiseCapabilityDefaultResolve => "PromiseCapabilityDefaultResolve",
+        }
+    }
+}
+
+/// Each of some of [`Builtin`]'s numbers.
+pub type Numbers = &'static [(Builtin, i64)];
+
+/// How many builtins V8 `version` has, and each of [`Builtin`]'s number,
+/// as its release build's `builtin_metadata` gives them; or why microscope
+/// has none.
+#[allow(dead_code)] // TEMP
+pub fn builtins(version: V8Version) -> Result<(u32, Numbers), std::sync::Arc<str>> {
+    builtins::BUILTINS
+        .iter()
+        .find(|(major, minor, ..)| (*major, *minor) == (version.major, version.minor))
+        .map(|(_, _, count, numbers)| (*count, *numbers))
+        .ok_or_else(|| {
+            format!(
+                "V8 {}.{} has no builtin numbers in this build of microscope",
+                version.major, version.minor
+            )
+            .into()
+        })
+}
+
+/// The symbol of the table of V8's builtins' names, as clang and gcc
+/// mangle it: 24 bytes per builtin in number order, each beginning with a
+/// pointer to its name.
+#[allow(dead_code)] // TEMP
+pub const BUILTIN_METADATA: [&str; 2] = [
+    "_ZN2v88internal12_GLOBAL__N_1L16builtin_metadataE",
+    "_ZN2v88internal12_GLOBAL__N_116builtin_metadataE",
+];
+
 #[cfg(test)]
 #[path = "v8/scope_info_tests.rs"]
 mod scope_info_tests;
