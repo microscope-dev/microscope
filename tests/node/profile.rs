@@ -480,6 +480,128 @@ fn cpu_samples_unwind_through_v8s_code_to_each_threads_root() {
     );
 }
 
+/// Under `--perf-basic-prof`, Node's perf map names the code V8
+/// generated, and samples there keep both: each frame the map names
+/// has its name, and the stack still unwinds by V8's frame pointers
+/// through that code to the thread's root.
+#[test]
+fn perf_map_names_v8s_code_that_samples_unwind_through() {
+    const ENOUGH: usize = 20;
+    let named = |stack: &SampledStack| {
+        stack.ending == StackEnding::Complete
+            && stack.functions.iter().any(|name| name.starts_with("JS:"))
+    };
+    let scratch = ScratchDir::new("node-perf-map");
+    let output = scratch.path().join("output");
+    let mut command = Command::new(node::node(ENTRY));
+    command
+        .args([
+            "--perf-basic-prof",
+            "--allow-natives-syntax",
+            "--sparkplug-filter=sparkplugSpin",
+        ])
+        .arg(node::fixture("busy.js"))
+        .args(["--seconds", "60"])
+        // Its V8 log goes where it runs.
+        .current_dir(scratch.path())
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(std::fs::File::create(&output).expect("the fixture's output"))
+        .stderr(Stdio::null());
+    let stop = AtomicBool::new(false);
+    let started = Instant::now();
+    let recording = record_watched(
+        command,
+        &RecordOptions::default(),
+        &mut Watch {
+            every: Duration::from_millis(100),
+            publish: &mut |profile| {
+                let enough = profile.stacks().iter().filter(|stack| named(stack)).count();
+                if enough >= ENOUGH || started.elapsed() > READY_DEADLINE {
+                    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            },
+            stop: &stop,
+            save: None,
+        },
+    );
+    // The program leaves its map behind: its main thread's id is its pid.
+    let text = std::fs::read_to_string(&output).unwrap_or_default();
+    let mut map = String::new();
+    for (name, pid) in spinners(&text) {
+        if name == "main" {
+            let path = format!("/tmp/perf-{pid}.map");
+            map = std::fs::read_to_string(&path).unwrap_or_default();
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    let profile = recording.expect("record").profile;
+    // A frame of V8's code stands for the JavaScript functions placed at
+    // it, which the JavaScript look shows in its place.
+    let keys = profile.keys(Granularity::Function);
+    let ordinary: Vec<String> = (0..u32::try_from(keys.count()).expect("keys"))
+        .filter(|&key| {
+            keys.name(key).starts_with("JS:") && keys.role(key) != microscope::CodeRole::Interpreter
+        })
+        .map(|key| keys.name(key))
+        .collect();
+    assert!(ordinary.is_empty(), "{ordinary:?}");
+    let stacks = profile.stacks();
+    assert!(!map.is_empty(), "node wrote no perf map");
+    // A sample the map was read too late for may have one, but no more.
+    let lost = known_by_address(&map, &stacks);
+    assert!(
+        lost.len() * 20 <= stacks.len(),
+        "{} of {} samples have a frame the perf map names known by its address: {:?}",
+        lost.len(),
+        stacks.len(),
+        lost.first().map(|stack| &stack.functions)
+    );
+    let through = stacks.iter().filter(|stack| named(stack)).count();
+    let any_named = stacks
+        .iter()
+        .flat_map(|stack| &stack.functions)
+        .any(|name| name.starts_with("JS:"));
+    let complete = stacks
+        .iter()
+        .filter(|stack| stack.ending == StackEnding::Complete)
+        .count();
+    assert!(
+        through >= ENOUGH,
+        "{through} of {} samples have a frame the perf map names and unwind to their root; \
+         any frame named: {any_named}, complete stacks: {complete}",
+        stacks.len()
+    );
+}
+
+/// Each of `stacks` with a frame that a function the perf map `map` names
+/// holds, known by its address only.
+fn known_by_address<'a>(map: &str, stacks: &'a [SampledStack]) -> Vec<&'a SampledStack> {
+    let functions: Vec<(u64, u64)> = map
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(3, ' ');
+            let start = u64::from_str_radix(fields.next()?, 16).ok()?;
+            let size = u64::from_str_radix(fields.next()?, 16).ok()?;
+            Some((start, start + size))
+        })
+        .collect();
+    stacks
+        .iter()
+        .filter(|stack| {
+            stack.functions.iter().any(|name| {
+                name.strip_prefix("0x")
+                    .and_then(|address| u64::from_str_radix(address, 16).ok())
+                    .is_some_and(|address| {
+                        functions
+                            .iter()
+                            .any(|&(start, end)| (start..end).contains(&address))
+                    })
+            })
+        })
+        .collect()
+}
+
 /// The root check fails on a stack that ends short.
 #[test]
 fn the_root_check_fails_on_a_short_stack() {

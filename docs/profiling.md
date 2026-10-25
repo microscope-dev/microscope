@@ -164,7 +164,9 @@ GIL is off, so it has no GIL labels. A label is as the GIL was when read.
 ## Record Node programs
 
 CPU samples of a Node program unwind through V8's own code: its builtins,
-its interpreter, and the code its compilers generate. `--node ENGINE`, the
+its interpreter, and the code its compilers generate. Run Node with
+`--perf-basic-prof` and its perf map names the code its compilers generate
+in each stack, which still unwinds through it. `--node ENGINE`, the
 same option as `--python ENGINE`, reads each thread's JavaScript frames as
 well:
 

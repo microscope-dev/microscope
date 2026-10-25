@@ -936,8 +936,46 @@ impl Processor {
     }
 
     /// Makes the module of anonymous code a perf map names, mapped at the
-    /// addresses it names, in place of what the range held.
+    /// addresses it names, in place of what the range held. In a process
+    /// that carries V8, as Node's map under `--perf-basic-prof` names its
+    /// code, the module of each piece V8 generated is made again with the
+    /// map's functions for its symbols, and still V8's convention for its
+    /// frames: the map's own proof of a frame does not follow V8's, and the
+    /// module gives V8's frames their JavaScript functions. A copy of a
+    /// module's code keeps that module, which names it already.
     fn perf_map_module(&mut self, pid: Pid, time: u64, stale: &Stale) {
+        let held: &[Mapped] = self
+            .processes
+            .get(&pid)
+            .map_or(&[], |process| &process.mapped);
+        let carries_v8 = held.iter().any(|mapped| {
+            self.images[mapped.image]
+                .info
+                .as_ref()
+                .is_some_and(|info| crate::debug_info::v8::is_v8(&info.image))
+        });
+        if carries_v8 {
+            let generated: Vec<std::ops::Range<u64>> = held
+                .iter()
+                .filter(|mapped| {
+                    self.images[mapped.image].generated
+                        && mapped.start < stale.end
+                        && stale.start < mapped.end
+                })
+                .map(|mapped| mapped.start.max(stale.start)..mapped.end.min(stale.end))
+                .collect();
+            for code in generated {
+                self.generated_module(pid, time, code, &stale.functions);
+                // A module is found by its image's bounds, and those of the
+                // module it replaces may span more than its pieces.
+                let held = &mut self.processes.entry(pid).or_default().mapped;
+                if let Some(named) = held.pop() {
+                    held.insert(0, named);
+                }
+            }
+            return;
+        }
+
         let began = thread_cpu();
         let id = ModuleImageId::new(u32::try_from(self.images.len()).unwrap_or(u32::MAX));
         let range = crate::AddressRange {
@@ -1045,21 +1083,7 @@ impl Processor {
         drop(v8);
 
         let Some((source, image_start, length)) = copy else {
-            let began = thread_cpu();
-            let id = ModuleImageId::new(u32::try_from(self.images.len()).unwrap_or(u32::MAX));
-            let path = format!("[V8 code {:#x}]", code.start);
-            let bounds = crate::AddressRange {
-                start: ImageAddress::new(code.start),
-                end: ImageAddress::new(code.end),
-            };
-            let info =
-                crate::debug_info::runtime_code::load(std::path::Path::new(&path), id, bounds).ok();
-            let digest = twox_hash::XxHash3_128::oneshot(path.as_bytes());
-            self.anonymous_module(pid, time, (id, &path, digest), code, info);
-            if let Some(image) = self.images.last_mut() {
-                image.generated = true;
-            }
-            self.loading += thread_cpu().saturating_sub(began);
+            self.generated_module(pid, time, code, &[]);
             return;
         };
 
@@ -1100,6 +1124,46 @@ impl Processor {
             bias: bias.get().into(),
             time: time.cast_signed().into(),
         });
+    }
+
+    /// Maps the module of `code` that V8 generated, whose frames keep V8's
+    /// frame-pointer convention, with the functions of `jitted` a perf map
+    /// names there for its symbols.
+    fn generated_module(
+        &mut self,
+        pid: Pid,
+        time: u64,
+        code: std::ops::Range<u64>,
+        jitted: &[crate::debug_info::perf_map::Jitted],
+    ) {
+        let began = thread_cpu();
+        let id = ModuleImageId::new(u32::try_from(self.images.len()).unwrap_or(u32::MAX));
+        let path = format!("[V8 code {:#x}]", code.start);
+        let bounds = crate::AddressRange {
+            start: ImageAddress::new(code.start),
+            end: ImageAddress::new(code.end),
+        };
+        let info = crate::debug_info::perf_map::load_runtime_code(
+            std::path::Path::new(&path),
+            id,
+            bounds,
+            jitted,
+        )
+        .ok();
+        let mut digest = twox_hash::XxHash3_128::new();
+        digest.write(path.as_bytes());
+
+        for function in jitted {
+            digest.write(&function.entry.start.to_le_bytes());
+            digest.write(&function.entry.end.to_le_bytes());
+            digest.write(function.entry.name.as_bytes());
+        }
+
+        self.anonymous_module(pid, time, (id, &path, digest.finish_128()), code, info);
+        if let Some(image) = self.images.last_mut() {
+            image.generated = true;
+        }
+        self.loading += thread_cpu().saturating_sub(began);
     }
 
     /// Maps the module of anonymous code `id` named `path`, which `digest`
@@ -1235,14 +1299,22 @@ impl Processor {
             descriptors.into_iter().collect()
         };
 
-        let unmapped = addresses.iter().copied().filter(|&address| {
-            !mapped
+        // Code V8 generated is anonymous code too, which the map may name.
+        let unnamed = addresses.iter().copied().filter(|&address| {
+            mapped
                 .iter()
-                .any(|mapped| (mapped.start..mapped.end).contains(&address))
+                .find(|mapped| (mapped.start..mapped.end).contains(&address))
+                .is_none_or(|mapped| {
+                    let image = &images[mapped.image];
+                    image.generated
+                        && !image.info.as_ref().is_some_and(|info| {
+                            info.image.symbolize(ImageAddress::new(address)).is_some()
+                        })
+                })
         });
         let refreshed = process
             .jit
-            .refresh(sample.pid.get(), sample.time, unmapped, descriptors);
+            .refresh(sample.pid.get(), sample.time, unnamed, descriptors);
         if let Some(problem) = process.jit.take_problem() {
             self.builder.setting(
                 &format!("perf map {}", sample.pid),

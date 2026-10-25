@@ -38,6 +38,17 @@ pub fn load(
     id: ModuleImageId,
     range: AddressRange<ImageAddress>,
 ) -> Result<DebugInfo, crate::model::SealError> {
+    load_named(path, id, range, Vec::new())
+}
+
+/// The debug information of the runtime's code `range` holds, as [`load`]
+/// gives it, with `symbols` naming its functions.
+pub(super) fn load_named(
+    path: &Path,
+    id: ModuleImageId,
+    range: AddressRange<ImageAddress>,
+    symbols: Vec<crate::SymbolInfo>,
+) -> Result<DebugInfo, crate::model::SealError> {
     let tables = crate::model::seal(
         crate::TargetDescription {
             architecture: crate::Architecture::X86_64,
@@ -45,7 +56,10 @@ pub fn load(
             pointer_width: crate::PointerWidth::Bits64,
         },
         range,
-        crate::model::ModuleMetadata::default(),
+        crate::model::ModuleMetadata {
+            symbols,
+            ..crate::model::ModuleMetadata::default()
+        },
     )?;
     let binding = crate::model::Binding {
         path: Arc::new(path.to_path_buf()),

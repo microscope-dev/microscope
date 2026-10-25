@@ -86,51 +86,7 @@ pub fn load(
     range: AddressRange<ImageAddress>,
     jitted: &[Jitted],
 ) -> Result<DebugInfo, crate::model::SealError> {
-    let mut functions: BTreeMap<u64, &Jitted> = BTreeMap::new();
-    for function in jitted {
-        let Entry { start, end, .. } = function.entry;
-        if start < range.start.get() || end > range.end.get() {
-            continue;
-        }
-
-        let overlapped: Vec<u64> = functions
-            .range(..end)
-            .rev()
-            .take_while(|(_, earlier)| earlier.entry.end > start)
-            .map(|(start, _)| *start)
-            .collect();
-        for start in overlapped {
-            functions.remove(&start);
-        }
-
-        functions.insert(start, function);
-    }
-
-    let symbols = functions
-        .values()
-        .enumerate()
-        .map(|(index, function)| {
-            let range = AddressRange {
-                start: ImageAddress::new(function.entry.start),
-                end: ImageAddress::new(function.entry.end),
-            };
-            SymbolInfo {
-                id: SymbolId::new(u32::try_from(index).unwrap_or(u32::MAX)),
-                name: Arc::clone(&function.entry.name),
-                address: range.start,
-                kind: SymbolKind::Function,
-                binding: SymbolBinding::Local,
-                exported: false,
-                extent: Some(SymbolExtent {
-                    range,
-                    provenance: SymbolExtentProvenance::Declared,
-                }),
-                storage: None,
-                role: CodeRole::Ordinary,
-            }
-        })
-        .collect();
-
+    let functions = within(range, jitted);
     let tables = crate::model::seal(
         crate::TargetDescription {
             architecture: crate::Architecture::X86_64,
@@ -139,7 +95,7 @@ pub fn load(
         },
         range,
         crate::model::ModuleMetadata {
-            symbols,
+            symbols: symbols(&functions),
             ..crate::model::ModuleMetadata::default()
         },
     )?;
@@ -172,6 +128,82 @@ pub fn load(
         variables: super::dwarf::no_variables(&image),
         image,
     })
+}
+
+/// The debug information of code a runtime generated in `range`, as
+/// [`super::runtime_code::load`] gives it, with the functions `jitted`
+/// names there, as [`load`] chooses them, for its symbols: the map names
+/// the functions, and the runtime's convention unwinds their frames. Each
+/// plays the interpreter's role, as the runtime's frames stand for the
+/// interpreted functions placed at them.
+pub fn load_runtime_code(
+    path: &Path,
+    id: ModuleImageId,
+    range: AddressRange<ImageAddress>,
+    jitted: &[Jitted],
+) -> Result<DebugInfo, crate::model::SealError> {
+    let symbols = symbols(&within(range, jitted))
+        .into_iter()
+        .map(|symbol| SymbolInfo {
+            role: CodeRole::Interpreter,
+            ..symbol
+        })
+        .collect();
+    super::runtime_code::load_named(path, id, range, symbols)
+}
+
+/// The functions of `jitted` that `range` holds, by start, each replacing
+/// every earlier one it overlaps.
+fn within(range: AddressRange<ImageAddress>, jitted: &[Jitted]) -> BTreeMap<u64, &Jitted> {
+    let mut functions: BTreeMap<u64, &Jitted> = BTreeMap::new();
+    for function in jitted {
+        let Entry { start, end, .. } = function.entry;
+        if start < range.start.get() || end > range.end.get() {
+            continue;
+        }
+
+        let overlapped: Vec<u64> = functions
+            .range(..end)
+            .rev()
+            .take_while(|(_, earlier)| earlier.entry.end > start)
+            .map(|(start, _)| *start)
+            .collect();
+        for start in overlapped {
+            functions.remove(&start);
+        }
+
+        functions.insert(start, function);
+    }
+
+    functions
+}
+
+/// The symbol of each of `functions`.
+fn symbols(functions: &BTreeMap<u64, &Jitted>) -> Vec<SymbolInfo> {
+    functions
+        .values()
+        .enumerate()
+        .map(|(index, function)| {
+            let range = AddressRange {
+                start: ImageAddress::new(function.entry.start),
+                end: ImageAddress::new(function.entry.end),
+            };
+            SymbolInfo {
+                id: SymbolId::new(u32::try_from(index).unwrap_or(u32::MAX)),
+                name: Arc::clone(&function.entry.name),
+                address: range.start,
+                kind: SymbolKind::Function,
+                binding: SymbolBinding::Local,
+                exported: false,
+                extent: Some(SymbolExtent {
+                    range,
+                    provenance: SymbolExtentProvenance::Declared,
+                }),
+                storage: None,
+                role: CodeRole::Ordinary,
+            }
+        })
+        .collect()
 }
 
 /// Unwinds the frames of a map's functions by what their instructions

@@ -142,6 +142,18 @@ and a frame in a range outside every function it names belongs to no module.
 A map made before its process began was written by an earlier process with
 its pid, and is not read; the capture's `perf map PID` setting says why.
 
+In a process that carries V8, V8's anonymous code is mapped as its own
+modules (see [JavaScript frames in each sample](#javascript-frames-in-each-sample)),
+and Node writes a map under `--perf-basic-prof`. Code V8 generated that
+no function the map names covers is read for as code in no mapping is. The
+map's functions in it become the symbols of its module, made again over
+each piece of it (`Processor::perf_map_module`), which keeps V8's
+frame-pointer convention for its frames, as the map's proof of a frame from
+its code does not reach most of V8's, and the interpreter's role, so the
+JavaScript frames placed at it still stand for it. A copy of node's
+builtins keeps node's image, which names it already, and no perf-map module
+of its own is made in such a process.
+
 A compiler that registers objects through the GDB JIT interface, as CPython
 3.15's JIT does, describes its code fully. Each object is an ELF image whose
 sections lie at the addresses its code runs at, with symbols and call-frame
