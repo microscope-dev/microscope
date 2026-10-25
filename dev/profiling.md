@@ -339,13 +339,16 @@ code. Both say why in the frame's problem.
 A recording maps V8's anonymous code as modules (`unwind::code_copies`): a
 mapping that copies node's builtins byte for byte binds node's image; any
 other anonymous executable mapping is V8's generated code, unwound by frame
-pointers. `modules_in` keeps a copy beside its image's own module, keyed by
-image and window, so the copy does not hide V8 from the walker. In an image
-that carries V8, the interpreter's entry trampoline plays the interpreter role
-(`roles::v8_role`) and generated code frames do too, so each stands for the
-JavaScript functions placed at it. Functions placed at a frame of another role,
-as a bytecode handler a sample landed in, go after that frame, which they run
-(`Processor::splice_placed`).
+pointers. Mappings read from `/proc/PID/maps`, as at an attach, come in
+address order, and Debian's V8 reserves its code range below `libnode`, so
+anonymous code mapped before any module that carries V8 waits for one
+(`ProcessState::before_v8`). `modules_in` keeps a copy beside its image's
+own module, keyed by image and window, so the copy does not hide V8 from the
+walker. In an image that carries V8, the interpreter's entry trampoline plays
+the interpreter role (`roles::v8_role`) and generated code frames do too, so
+each stands for the JavaScript functions placed at it. Functions placed at a
+frame of another role, as a bytecode handler a sample landed in, go after that
+frame, which they run (`Processor::splice_placed`).
 
 Node defines no activation of an interpreter's loop, so the rule that cuts a
 Python stack whose frames are unknown does not apply. Instead

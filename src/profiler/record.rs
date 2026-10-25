@@ -182,6 +182,12 @@ struct ProcessState {
     mappings: u64,
     threads: BTreeSet<Tid>,
     jit: Jit,
+
+    /// Anonymous code mapped before any module that carries V8, which
+    /// is V8's once one is mapped: mappings read from `/proc/PID/maps`
+    /// come in address order, and V8's code range may lie below the
+    /// module, as below Debian's `libnode`.
+    before_v8: Vec<std::ops::Range<u64>>,
 }
 
 /// When one task snapshot held the program stopped, and the task row of
@@ -647,6 +653,7 @@ impl Processor {
                     // interpreter and compiled code it held.
                     let state = self.processes.entry(pid).or_default();
                     state.mapped.clear();
+                    state.before_v8.clear();
                     state.jit.exec();
                     if let Some(interpreted) = &mut self.interpreted {
                         interpreted.forget(pid);
@@ -664,12 +671,14 @@ impl Processor {
             decode::Record::Fork { pid, ppid, tid, .. } => {
                 if tid == pid.leader() && pid != ppid {
                     // A forked process starts with its parent's mappings.
-                    let mapped = self
+                    let (mapped, before_v8) = self
                         .processes
                         .get(&ppid)
-                        .map(|parent| parent.mapped.clone())
+                        .map(|parent| (parent.mapped.clone(), parent.before_v8.clone()))
                         .unwrap_or_default();
-                    self.processes.entry(pid).or_default().mapped = mapped;
+                    let child = self.processes.entry(pid).or_default();
+                    child.mapped = mapped;
+                    child.before_v8 = before_v8;
                 }
 
                 self.thread(pid, tid, at);
@@ -752,6 +761,16 @@ impl Processor {
 
         // A mapping replaces whatever it overlaps.
         uncover(&mut state.mapped, mmap.start, end);
+        state.before_v8 = std::mem::take(&mut state.before_v8)
+            .into_iter()
+            .flat_map(|code| {
+                [
+                    code.start..code.end.min(mmap.start),
+                    code.start.max(end)..code.end,
+                ]
+            })
+            .filter(|piece| !piece.is_empty())
+            .collect();
         state.mappings += 1;
         state.jit.mapped(
             mmap.start,
@@ -762,7 +781,17 @@ impl Processor {
 
         let Some((image, bias)) = image else {
             if perf::jit::is_anonymous_code(mmap) {
-                self.v8_code(mmap.pid, mmap.time, mmap.start..end);
+                let carries_v8 = state.mapped.iter().any(|mapped| {
+                    self.images[mapped.image]
+                        .info
+                        .as_ref()
+                        .is_some_and(|info| crate::debug_info::v8::is_v8(&info.image))
+                });
+                if carries_v8 {
+                    self.v8_code(mmap.pid, mmap.time, mmap.start..end);
+                } else {
+                    state.before_v8.push(mmap.start..end);
+                }
             }
             return;
         };
@@ -804,6 +833,18 @@ impl Processor {
             bias: bias.get().into(),
             time: mmap.time.cast_signed().into(),
         });
+
+        let state = self.processes.entry(mmap.pid).or_default();
+        let carries_v8 = !state.before_v8.is_empty()
+            && self.images[image]
+                .info
+                .as_ref()
+                .is_some_and(|info| crate::debug_info::v8::is_v8(&info.image));
+        if carries_v8 {
+            for code in std::mem::take(&mut state.before_v8) {
+                self.v8_code(mmap.pid, mmap.time, code);
+            }
+        }
     }
 
     /// The vDSO's image, which no file holds, and the address it links at.

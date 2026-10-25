@@ -369,3 +369,79 @@ async fn debian_tasks_are_the_ones_node_reported() {
         panic!("{lies}");
     }
 }
+
+/// Debian's V8 reserves its code range below `libnode`, so an attach, which
+/// maps what the process holds in address order, meets the range before it
+/// knows the process carries V8. The range is V8's code all the same once
+/// `libnode` is mapped: samples in it unwind on into `libnode`, as a
+/// launched recording's do, rather than end at an unmapped address.
+#[test]
+fn debian_attached_samples_unwind_through_v8s_generated_code() {
+    struct Killed(std::process::Child);
+    impl Drop for Killed {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    // Samples whose frame in V8's code a frame in `libnode` called.
+    const ENOUGH: usize = 10;
+    const SPINNING: Duration = Duration::from_secs(15);
+    const RECORDING: Duration = Duration::from_secs(30);
+    if !inside("debian::debian_attached_samples_unwind_through_v8s_generated_code") {
+        return;
+    }
+    let through = |profile: &microscope::profiler::Profile| {
+        profile
+            .stacks()
+            .iter()
+            .filter(|stack| {
+                stack
+                    .functions
+                    .windows(2)
+                    .any(|pair| pair[0].starts_with("0x") && pair[1].starts_with("libnode.so"))
+            })
+            .count()
+    };
+
+    let scratch = ScratchDir::new("node-debian-attach");
+    let (mut command, output) = crate::profile::busy_on(DEBIAN, &scratch, 60);
+    let child = Killed(command.spawn().expect("start busy.js"));
+    let began = Instant::now();
+    while !std::fs::read_to_string(&output)
+        .unwrap_or_default()
+        .contains("TRUTH\tspin\t")
+    {
+        assert!(began.elapsed() < SPINNING, "busy.js never spun");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let recording = Instant::now();
+    let attachment = microscope::profiler::record_attached(
+        child.0.id(),
+        &microscope::profiler::RecordOptions::default(),
+        &mut microscope::profiler::Watch {
+            every: Duration::from_millis(100),
+            publish: &mut |profile| {
+                if through(&profile) >= ENOUGH || recording.elapsed() > RECORDING {
+                    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            },
+            stop: &stop,
+            save: None,
+        },
+    )
+    .expect("attach");
+    drop(child);
+
+    let profile = attachment.profile;
+    let through = through(&profile);
+    assert!(
+        through >= ENOUGH,
+        "{through} of {} samples unwound from V8's code into libnode; their ends: {:?}",
+        profile.stacks().len(),
+        profile.truncations()
+    );
+}
