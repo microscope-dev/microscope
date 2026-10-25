@@ -2154,7 +2154,26 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         // A shutdown, whether requested or begun when an attached process
         // failed, ends the controller once nothing is left to release.
-        keeps_running && !(self.shutting_down && self.inferior.is_none() && self.orphans.is_none())
+        let keeps_running = keeps_running
+            && !(self.shutting_down && self.inferior.is_none() && self.orphans.is_none());
+        if !keeps_running {
+            self.answer_queued_shutdowns();
+        }
+        keeps_running
+    }
+
+    /// Answers the shutdowns still queued as the controller ends, which
+    /// it ended on its own, as a failed attached process makes it: the
+    /// process is released, which is all a shutdown asks.
+    fn answer_queued_shutdowns(&self) {
+        // Closed first, so that none is queued after the last is taken.
+        self.messages.borrow_mut().close();
+        self.drain_messages();
+        for message in self.pending.borrow_mut().drain(..) {
+            if let ControllerMessage::Request(Request::Shutdown { reply }) = message {
+                let _ = reply.send(Ok(()));
+            }
+        }
     }
 
     #[expect(

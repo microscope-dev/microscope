@@ -2581,6 +2581,69 @@ fn a_failure_that_detaches_an_attached_process_ends_the_controller() {
     assert!(!keeps_running, "the controller ends");
 }
 
+/// SIGKILL from outside takes an attached thread as the stop its
+/// temporary breakpoint made deletes it: lifting its second trap fails,
+/// and so does putting back the first. The failure releases the process
+/// and ends the controller, with a client's shutdown queued behind the
+/// stop. That shutdown is answered, never dropped.
+#[test]
+fn a_shutdown_queued_behind_a_failure_that_releases_the_process_is_answered() {
+    let mut harness = hit_harness(1, ">0");
+    harness.attached();
+    harness.controller.next_breakpoint_id = 2;
+    let pid = harness.threads[0];
+    let second = HIT_SITE + 0x10;
+    let breakpoint = &mut harness.controller.breakpoints[0];
+    breakpoint.temporary = true;
+    breakpoint.hit_condition = None;
+    breakpoint.locations =
+        Arc::from(
+            [HIT_SITE, second].map(|address| ResolvedBreakpointLocation {
+                location: crate::BreakpointLocation::Virtual(VirtualAddress::new(address)),
+                code_instances: Arc::from([]),
+                library: None,
+            }),
+        );
+    harness.inferior().breakpoints.insert(
+        VirtualAddress::new(second),
+        BreakpointSite {
+            original_byte: 0x90,
+            installed: true,
+            owners: BTreeSet::from([BreakpointOwner::User(BreakpointId::new(1))]),
+        },
+    );
+    harness.store(second, u64::from(BREAKPOINT_OPCODE));
+    *harness.trace().kill_point.borrow_mut() = Some((pid, "remove_breakpoint", 1));
+
+    let (reply, mut answer) = tokio::sync::oneshot::channel();
+    harness
+        .controller
+        .message_sender
+        .try_send(ControllerMessage::Request(Request::Shutdown { reply }))
+        .expect("the shutdown is queued");
+    harness.trace().set_pc(pid, HIT_SITE + 1);
+    harness.trace().set_siginfo(pid, libc::SI_KERNEL, None);
+    let keeps_running =
+        harness
+            .controller
+            .handle_message(ControllerMessage::Wait(WaitEvent::Stopped(
+                pid,
+                Signal::SIGTRAP,
+            )));
+    assert!(
+        harness
+            .trace()
+            .take_actions()
+            .contains(&format!("detach {pid} None")),
+        "the failure releases the process"
+    );
+    assert!(!keeps_running, "the controller ends");
+    assert!(
+        matches!(answer.try_recv(), Ok(Ok(()))),
+        "the queued shutdown is answered"
+    );
+}
+
 #[test]
 fn an_attached_stop_collects_traps_queued_behind_its_interrupt() {
     let mut harness = watch_harness(2);
