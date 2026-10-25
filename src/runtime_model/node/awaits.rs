@@ -631,3 +631,554 @@ pub(super) fn saved_registers(
     }
     Err("no bytecode begins at the generator's offset".into())
 }
+
+#[cfg(test)]
+mod tests {
+    //! The walk over a heap the tests write, on 14.6's generated layout:
+    //! each object is a zeroed block whose first word is its map, and each
+    //! map a zeroed block that keeps an instance type. Memory no test wrote
+    //! cannot be read.
+
+    use std::collections::HashMap;
+
+    use super::super::objects::{Object, Reader};
+    use super::super::positions::Encoding;
+    use super::super::scripts::Table;
+    use super::{Builtins, MAX_BYTECODE, MAX_STEPS};
+    use crate::image::v8::{Builtin, Constant, Field, V8Layout, V8Version};
+    use crate::runtime_model::{Awaiting, RuntimeStop};
+    use crate::{LoadBias, ThreadId, VirtualAddress};
+
+    /// A V8 heap the tests write: bytes by address.
+    #[derive(Default)]
+    struct Heap(HashMap<u64, u8>);
+
+    impl Heap {
+        fn bytes(&mut self, address: u64, bytes: &[u8]) {
+            for (at, byte) in (address..).zip(bytes) {
+                self.0.insert(at, *byte);
+            }
+        }
+
+        fn word(&mut self, address: u64, word: u64) {
+            self.bytes(address, &word.to_le_bytes());
+        }
+    }
+
+    impl RuntimeStop for Heap {
+        fn read(&self, address: VirtualAddress, bytes: &mut [u8]) -> bool {
+            for (at, byte) in (address.get()..).zip(bytes.iter_mut()) {
+                let Some(read) = self.0.get(&at) else {
+                    return false;
+                };
+                *byte = *read;
+            }
+            true
+        }
+
+        fn thread_pointer(&self, _thread: ThreadId) -> Option<u64> {
+            None
+        }
+
+        fn instruction(&self, _thread: ThreadId) -> Option<VirtualAddress> {
+            None
+        }
+
+        fn load_bias(&self) -> LoadBias {
+            LoadBias::default()
+        }
+
+        fn threads(&self) -> Vec<ThreadId> {
+            Vec::new()
+        }
+    }
+
+    const VERSION: V8Version = V8Version {
+        major: 14,
+        minor: 6,
+        build: 0,
+        patch: 0,
+    };
+
+    /// The numbers the tests give the builtins, chosen by hand: any
+    /// distinct non-negative numbers serve.
+    const NUMBERS: Builtins = &[
+        (Builtin::AsyncFunctionAwaitResolveClosure, 11),
+        (Builtin::AsyncFunctionAwaitRejectClosure, 12),
+        (Builtin::AsyncGeneratorAwaitResolveClosure, 13),
+        (Builtin::AsyncGeneratorAwaitRejectClosure, 14),
+        (Builtin::AsyncGeneratorYieldWithAwaitResolveClosure, 15),
+        (Builtin::PromiseAllResolveElementClosure, 16),
+        (Builtin::PromiseAllSettledResolveElementClosure, 17),
+        (Builtin::PromiseAllSettledRejectElementClosure, 18),
+        (Builtin::PromiseAnyRejectElementClosure, 19),
+        (Builtin::PromiseCapabilityDefaultResolve, 20),
+    ];
+    const AWAIT_RESOLVE: u64 = 11;
+    const GENERATOR_AWAIT_RESOLVE: u64 = 13;
+
+    /// The bytes each object and map takes, past every field the tests
+    /// write.
+    const BLOCK: u64 = 0x100;
+
+    /// An address no test writes.
+    const UNREADABLE: u64 = 0xdead_0000;
+
+    /// 14.6's generated layout, with the constants each build exports.
+    fn layout() -> V8Layout {
+        let mut layout = crate::debug_info::v8::generated_layout(14, 6).expect("a layout");
+        let function = layout.constant(Constant::JSFunctionType).expect("a type");
+        for (constant, value) in [
+            (Constant::SmiTag, 0),
+            (Constant::SmiTagMask, 1),
+            (Constant::SmiShiftSize, 31),
+            (Constant::HeapObjectTag, 1),
+            (Constant::HeapObjectTagMask, 3),
+            (Constant::StringRepresentationMask, 7),
+            (Constant::SeqStringTag, 0),
+            (Constant::ExternalStringTag, 2),
+            (Constant::StringEncodingMask, 8),
+            (Constant::OneByteStringTag, 8),
+            (Constant::FirstNonstringType, 128),
+            // A map's bit field 3 as 14.6 lays it out; every map the
+            // tests write keeps it zero, with no descriptors of its own.
+            (Constant::BitField3NumberOfOwnDescriptorsMask, 0x3ff << 12),
+            (Constant::BitField3NumberOfOwnDescriptorsShift, 12),
+            (Constant::BitField3IsDictionaryMapShift, 22),
+            (Constant::FirstJSFunctionType, function),
+            (Constant::LastJSFunctionType, function),
+        ] {
+            layout.set_constant(constant, value);
+        }
+        layout
+    }
+
+    const fn smi(value: u64) -> u64 {
+        value << 32
+    }
+
+    /// Writes the objects of a chain into a heap, each at the next free
+    /// block.
+    struct Writer {
+        heap: Heap,
+        layout: V8Layout,
+        next: u64,
+        maps: HashMap<Constant, u64>,
+        string_map: u64,
+    }
+
+    impl Writer {
+        fn new() -> Self {
+            let mut writer = Self {
+                heap: Heap::default(),
+                layout: layout(),
+                next: 0x10_0000,
+                maps: HashMap::new(),
+                string_map: 0,
+            };
+            writer.string_map = writer.map_of_type(8);
+            writer
+        }
+
+        fn offset(&self, field: Field) -> u64 {
+            let offset = self.layout.field(field).expect("a field");
+            assert!(offset + 8 <= BLOCK, "{field:?} is past a block");
+            offset
+        }
+
+        /// A zeroed block; its address.
+        fn block(&mut self) -> u64 {
+            let at = self.next;
+            self.next += BLOCK;
+            self.heap
+                .bytes(at, &vec![0; usize::try_from(BLOCK).expect("a block")]);
+            at
+        }
+
+        fn map_of_type(&mut self, ty: u16) -> u64 {
+            let at = self.block();
+            self.heap.word(at, at + 1);
+            let instance_type = self.offset(Field::MapInstanceType);
+            self.heap.bytes(at + instance_type, &ty.to_le_bytes());
+            at + 1
+        }
+
+        /// The map of objects of the instance type `ty`, made once.
+        fn map(&mut self, ty: Constant) -> u64 {
+            if let Some(map) = self.maps.get(&ty) {
+                return *map;
+            }
+            let value = self.layout.constant(ty).expect("a type");
+            let map = self.map_of_type(u16::try_from(value).expect("a type"));
+            self.maps.insert(ty, map);
+            map
+        }
+
+        /// An object of the instance type `ty`; tagged.
+        fn object(&mut self, ty: Constant) -> u64 {
+            let map = self.map(ty);
+            let at = self.block();
+            self.heap.word(at, map);
+            at + 1
+        }
+
+        fn field(&mut self, object: u64, field: Field, word: u64) {
+            let at = object - 1 + self.offset(field);
+            self.heap.word(at, word);
+        }
+
+        /// A context of the instance type `ty` whose slot `index` holds
+        /// `word`; tagged.
+        fn context(&mut self, ty: Constant, index: Constant, word: u64) -> u64 {
+            let context = self.object(ty);
+            let slot = u64::try_from(self.layout.constant(index).expect("a slot")).expect("u64");
+            let at = context - 1 + self.offset(Field::ContextElements) + 8 * slot;
+            assert!(at + 8 <= context - 1 + BLOCK, "{index:?} is past a block");
+            self.heap.word(at, word);
+            context
+        }
+
+        /// A sequential one-byte string; tagged.
+        fn string(&mut self, text: &str) -> u64 {
+            let at = self.block();
+            self.heap.word(at, self.string_map);
+            let length = u32::try_from(text.len()).expect("a short string");
+            let length_at = at + self.offset(Field::StringLength);
+            self.heap.bytes(length_at, &length.to_le_bytes());
+            let chars = at + self.offset(Field::SeqOneByteStringChars);
+            self.heap.bytes(chars, text.as_bytes());
+            at + 1
+        }
+
+        /// A function whose shared information is `shared`, in `context`;
+        /// tagged. Its map keeps no descriptors and no prototype, so its
+        /// name is its shared information's.
+        fn function(&mut self, shared: u64, context: u64) -> u64 {
+            let function = self.object(Constant::JSFunctionType);
+            self.field(function, Field::JSFunctionSharedFunctionInfo, shared);
+            self.field(function, Field::JSFunctionContext, context);
+            function
+        }
+
+        /// The closure that runs the builtin numbered `number`, in
+        /// `context`; tagged.
+        fn builtin(&mut self, number: u64, context: u64) -> u64 {
+            let shared = self.object(Constant::SharedFunctionInfoType);
+            self.field(
+                shared,
+                Field::SharedFunctionInfoUntrustedFunctionData,
+                smi(number),
+            );
+            self.function(shared, context)
+        }
+
+        /// A function of no script named `name`: native, which V8's stack
+        /// traces show, or hidden; tagged.
+        fn native(&mut self, name: &str, shown: bool) -> u64 {
+            let shared = self.object(Constant::SharedFunctionInfoType);
+            let name = self.string(name);
+            self.field(shared, Field::SharedFunctionInfoNameOrScopeInfo, name);
+            if shown {
+                let native = self
+                    .layout
+                    .constant(Constant::SfiIsNativeMask)
+                    .expect("a mask");
+                let flags = u32::try_from(native).expect("a mask");
+                let at = shared - 1 + self.offset(Field::SharedFunctionInfoFlags);
+                self.heap.bytes(at, &flags.to_le_bytes());
+            }
+            self.function(shared, smi(0))
+        }
+
+        /// A pending promise whose reactions are `reactions`; tagged.
+        fn promise(&mut self, reactions: u64) -> u64 {
+            let promise = self.object(Constant::JSPromiseType);
+            self.field(promise, Field::JSPromiseFlags, smi(0));
+            self.field(promise, Field::JSPromiseReactionsOrResult, reactions);
+            promise
+        }
+
+        /// A reaction whose next one is `next`, that calls `fulfill` and
+        /// settles `settles`; tagged.
+        fn reaction(&mut self, next: u64, fulfill: u64, settles: u64) -> u64 {
+            let reaction = self.object(Constant::PromiseReactionType);
+            self.field(reaction, Field::PromiseReactionNext, next);
+            self.field(reaction, Field::PromiseReactionFulfillHandler, fulfill);
+            self.field(reaction, Field::PromiseReactionRejectHandler, smi(0));
+            self.field(reaction, Field::PromiseReactionPromiseOrCapability, settles);
+            reaction
+        }
+
+        /// An async function's generator at `continuation`, running
+        /// `function`, whose promise is `promise`, and the closure, in an
+        /// await context of the generator's, that resumes it; both tagged.
+        fn async_function(&mut self, function: u64, continuation: i64, promise: u64) -> (u64, u64) {
+            let generator = self.object(Constant::JSAsyncFunctionObjectType);
+            self.field(generator, Field::JSGeneratorObjectFunction, function);
+            self.field(
+                generator,
+                Field::JSGeneratorObjectContinuation,
+                signed_smi(continuation),
+            );
+            self.field(generator, Field::JSAsyncFunctionObjectPromise, promise);
+            let context = self.context(
+                Constant::AwaitContextType,
+                Constant::ContextExtensionIndex,
+                generator,
+            );
+            let closure = self.builtin(AWAIT_RESOLVE, context);
+            self.field(
+                generator,
+                Field::JSAsyncFunctionObjectAwaitResolveClosure,
+                closure,
+            );
+            (generator, closure)
+        }
+
+        /// The chain of the function `closure` resumed.
+        fn walk(&self, closure: u64) -> Awaiting {
+            let reader = Reader {
+                stop: &self.heap,
+                layout: &self.layout,
+                version: VERSION,
+                charge: None,
+                blocks: None,
+            };
+            super::awaiting(
+                &reader,
+                &mut Table::default(),
+                Encoding::of(VERSION),
+                &Ok(NUMBERS),
+                Object(closure),
+            )
+            .expect("a closure that resumes an async function")
+        }
+    }
+
+    /// The Smi word of the signed `value`.
+    fn signed_smi(value: i64) -> u64 {
+        value.cast_unsigned() << 32
+    }
+
+    /// The running async function, whose promise is `promise`, and the
+    /// closure that resumed it.
+    fn running(writer: &mut Writer, promise: u64) -> u64 {
+        let function = writer.native("inner", true);
+        let (_, closure) = writer.async_function(function, -2, promise);
+        closure
+    }
+
+    /// The chain's functions and generators, and why it ends.
+    fn shown(chain: &Awaiting) -> (Vec<(String, u64)>, Option<String>) {
+        (
+            chain
+                .frames
+                .iter()
+                .map(|frame| {
+                    (
+                        frame.function.as_deref().unwrap_or("?").to_owned(),
+                        frame.frame.get(),
+                    )
+                })
+                .collect(),
+            chain.end.as_deref().map(str::to_owned),
+        )
+    }
+
+    /// Two async functions, and a hidden one between them, suspended in
+    /// await: the chain names the two, innermost first, each at its
+    /// generator, and ends complete at a promise nothing waits for.
+    #[test]
+    fn a_chain_of_two_suspended_functions_ends_where_nothing_waits() {
+        let mut writer = Writer::new();
+        let last = writer.promise(smi(0));
+        let outer = writer.native("outer", true);
+        let (outer, outer_closure) = writer.async_function(outer, 1, last);
+        let to_outer = writer.reaction(smi(0), outer_closure, smi(0));
+        let hidden_promise = writer.promise(to_outer);
+        let hidden = writer.native("hidden", false);
+        let (_, hidden_closure) = writer.async_function(hidden, 0, hidden_promise);
+        let to_hidden = writer.reaction(smi(0), hidden_closure, smi(0));
+        let middle_promise = writer.promise(to_hidden);
+        let middle = writer.native("middle", true);
+        let (middle, middle_closure) = writer.async_function(middle, 3, middle_promise);
+        let to_middle = writer.reaction(smi(0), middle_closure, smi(0));
+        let first = writer.promise(to_middle);
+        let closure = running(&mut writer, first);
+
+        let chain = writer.walk(closure);
+        assert_eq!(
+            shown(&chain),
+            (
+                vec![("middle".to_owned(), middle), ("outer".to_owned(), outer)],
+                None
+            )
+        );
+        assert!(chain.frames.iter().all(|frame| frame.problem.is_none()));
+    }
+
+    /// A chain of `count` promises, each settled by the reaction of the
+    /// one before, the first the running function's; the closure.
+    fn line_of(writer: &mut Writer, count: usize) -> u64 {
+        let mut next = writer.promise(smi(0));
+        for _ in 1..count {
+            let reaction = writer.reaction(smi(0), smi(0), next);
+            next = writer.promise(reaction);
+        }
+        running(writer, next)
+    }
+
+    /// The walk takes at most `MAX_STEPS` steps: a chain of that many
+    /// promises ends complete, and one more promise is too long.
+    #[test]
+    fn a_chain_longer_than_its_steps_says_so() {
+        assert_eq!(MAX_STEPS, 256);
+        let mut writer = Writer::new();
+        let closure = line_of(&mut writer, 256);
+        assert_eq!(shown(&writer.walk(closure)), (Vec::new(), None));
+
+        let mut writer = Writer::new();
+        let closure = line_of(&mut writer, 257);
+        assert_eq!(
+            shown(&writer.walk(closure)),
+            (
+                Vec::new(),
+                Some("the await chain is longer than 256 promises".to_owned())
+            )
+        );
+    }
+
+    /// Two promises each settled by the other's reaction are a cycle.
+    #[test]
+    fn a_cycle_ends_the_chain() {
+        let mut writer = Writer::new();
+        let first = writer.promise(smi(0));
+        let back = writer.reaction(smi(0), smi(0), first);
+        let second = writer.promise(back);
+        let forth = writer.reaction(smi(0), smi(0), second);
+        writer.field(first, Field::JSPromiseReactionsOrResult, forth);
+        let closure = running(&mut writer, first);
+        assert_eq!(
+            shown(&writer.walk(closure)),
+            (Vec::new(), Some("the await chain is a cycle".to_owned()))
+        );
+    }
+
+    /// A promise several reactions wait for ends the chain, with why, as
+    /// V8 follows none of them.
+    #[test]
+    fn several_reactions_end_the_chain() {
+        let mut writer = Writer::new();
+        let last = writer.promise(smi(0));
+        let second = writer.reaction(smi(0), smi(0), last);
+        let first = writer.reaction(second, smi(0), last);
+        let promise = writer.promise(first);
+        let closure = running(&mut writer, promise);
+        assert_eq!(
+            shown(&writer.walk(closure)),
+            (
+                Vec::new(),
+                Some("several reactions wait for the promise, and V8 follows only one".to_owned())
+            )
+        );
+    }
+
+    /// A pending promise whose reactions are some other object ends the
+    /// chain, with why.
+    #[test]
+    fn reactions_that_are_no_reaction_end_the_chain() {
+        let mut writer = Writer::new();
+        let other = writer.promise(smi(0));
+        let promise = writer.promise(other);
+        let closure = running(&mut writer, promise);
+        assert_eq!(
+            shown(&writer.walk(closure)),
+            (
+                Vec::new(),
+                Some("a pending promise's reactions are no PromiseReaction".to_owned())
+            )
+        );
+    }
+
+    /// A reaction that settles a capability whose promise cannot be read
+    /// ends the chain with the read's failure, never as complete.
+    #[test]
+    fn an_unreadable_next_promise_ends_the_chain_with_its_reason() {
+        let mut writer = Writer::new();
+        let capability = writer.object(Constant::PromiseCapabilityType);
+        writer.field(capability, Field::PromiseCapabilityPromise, UNREADABLE + 1);
+        let reaction = writer.reaction(smi(0), smi(0), capability);
+        let promise = writer.promise(reaction);
+        let closure = running(&mut writer, promise);
+        let (frames, end) = shown(&writer.walk(closure));
+        assert_eq!(frames, Vec::new());
+        let end = end.expect("a chain that ends at what cannot be read");
+        assert!(end.contains(&format!("{UNREADABLE:#x}")), "{end}");
+    }
+
+    /// An async generator whose request cannot be read ends the chain
+    /// with the read's failure, never as complete.
+    #[test]
+    fn an_unreadable_generator_request_ends_the_chain_with_its_reason() {
+        let mut writer = Writer::new();
+        let function = writer.native("produce", true);
+        let generator = writer.object(Constant::JSAsyncGeneratorObjectType);
+        writer.field(generator, Field::JSGeneratorObjectFunction, function);
+        writer.field(
+            generator,
+            Field::JSGeneratorObjectContinuation,
+            signed_smi(-2),
+        );
+        writer.field(
+            generator,
+            Field::JSAsyncGeneratorObjectQueue,
+            UNREADABLE + 1,
+        );
+        let context = writer.context(
+            Constant::AwaitContextType,
+            Constant::ContextExtensionIndex,
+            generator,
+        );
+        let closure = writer.builtin(GENERATOR_AWAIT_RESOLVE, context);
+        let (frames, end) = shown(&writer.walk(closure));
+        assert_eq!(frames, Vec::new());
+        let end = end.expect("a chain that ends at what cannot be read");
+        assert!(end.contains(&format!("{UNREADABLE:#x}")), "{end}");
+    }
+
+    /// A bytecode array longer than any the reader reads is refused
+    /// before its bytes are: none of them is in the heap, so a read would
+    /// fail otherwise.
+    #[test]
+    fn an_implausibly_long_bytecode_array_is_refused() {
+        let mut writer = Writer::new();
+        let length = u64::try_from(MAX_BYTECODE).expect("u64") + 1;
+        let bytecode = writer.object(Constant::BytecodeArrayType);
+        writer.field(bytecode, Field::BytecodeArrayLength, smi(length));
+        let shared = writer.object(Constant::SharedFunctionInfoType);
+        writer.field(
+            shared,
+            Field::SharedFunctionInfoTrustedFunctionData,
+            bytecode,
+        );
+        // V8 keeps the offset from the array's tagged address: the last
+        // byte, past the header less the tag.
+        let header = writer.offset(Field::BytecodeArrayBytes);
+        let generator = writer.object(Constant::JSAsyncFunctionObjectType);
+        writer.field(
+            generator,
+            Field::JSGeneratorObjectInputOrDebugPos,
+            smi(length - 1 + header - 1),
+        );
+        let reader = Reader {
+            stop: &writer.heap,
+            layout: &writer.layout,
+            version: VERSION,
+            charge: None,
+            blocks: None,
+        };
+        let problem = super::saved_registers(&reader, Object(generator), Object(shared))
+            .expect_err("a bytecode array past the bound");
+        assert_eq!(&*problem, "a bytecode array is implausibly long");
+    }
+}
