@@ -540,8 +540,18 @@ pub fn stress(entry: &str, flags: &[&str]) {
         }),
         ..RecordOptions::default()
     };
-    let (profile, looping, text) = record_released(command, &options, looping, |_, _| true);
-    let looping = looping.unwrap_or_else(|| panic!("{entry} {flags:?}: no report:\n{text}"));
+    // The program waits to loop until the recording reads it, which
+    // takes seconds on a loaded machine.
+    let waiting = |text: &str| {
+        Report::parse(text)
+            .lines()
+            .any(|fields| fields[0] == "waiting")
+            .then_some(())
+    };
+    let (profile, _, text) = record_released(command, &options, waiting, |profile, ()| {
+        profile.live_snapshots().0 > 0
+    });
+    let looping = looping(&text).unwrap_or_else(|| panic!("{entry} {flags:?}: no report:\n{text}"));
     let tally = tally(&profile, &looping);
     let read = tally.exact + tally.left_out.values().sum::<usize>();
     let (snapshots, changed) = profile.live_snapshots();

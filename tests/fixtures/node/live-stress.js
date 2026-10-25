@@ -7,7 +7,10 @@
 // node --allow-natives-syntax [V8 flags] live-stress.js ADDON FAST WORKERS SECONDS
 //
 // ADDON and FAST are the built node-addon.node and the build's
-// node-fast-ENTRY.node. The main thread and WORKERS workers each loop over
+// node-fast-ENTRY.node. The main thread prints `waiting` and waits for a
+// line on its standard input, sent once the recording reads it, so that
+// loading the program's debug information takes none of the run. Then the
+// main thread and WORKERS workers each loop over
 // the sites for SECONDS, in phases of PHASE_MS each: each phase calls the
 // sites through a function of its own, phase0 to phase3 in turn, so that
 // the frames say which phase a thread was in. Each thread prints, the first
@@ -174,6 +177,8 @@ function loop(deadline) {
 }
 
 if (threads.isMainThread) {
+  truth.report('waiting');
+  fs.readSync(0, Buffer.alloc(1));
   for (let worker = 0; worker < Number(workers); worker++) {
     new threads.Worker(__filename, {workerData: [addonPath, fastPath, '0', seconds]});
   }
