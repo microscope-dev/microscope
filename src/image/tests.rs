@@ -262,6 +262,8 @@ fn the_schema_is_the_records_layout() {
             node,
             inspector_problem,
             inspector,
+            tasks_problem,
+            tasks,
             offsets,
             constants
         ]
@@ -626,7 +628,7 @@ fn the_schema_is_the_records_layout() {
     // layouts before reading tables; the container format is independent.
     assert_eq!(
         schema::layout_fingerprint(),
-        0x2879_7a6a_a6b9_746f,
+        0x71a1_a366_e3c0_b9fa,
         "the layout changed:\n{}",
         schema::schema_text()
     );
@@ -3839,6 +3841,7 @@ fn a_v8_runtime_reads_back_with_its_layout_or_its_problem() {
             patch: 1,
         }),
         inspector: Err("the fixture has no native inspector".into()),
+        tasks: Err("the fixture has no Node tasks".into()),
     };
     let read = sealed_v8(Some(&runtime)).unwrap();
     assert_eq!(read, runtime);
@@ -3857,6 +3860,7 @@ fn a_v8_runtime_reads_back_with_its_layout_or_its_problem() {
         embedded_blob: Err("names no GetEmbeddedCodeRange".into()),
         node: Err("names no napi_get_node_version".into()),
         inspector: Err("names no native inspector registry".into()),
+        tasks: Err("names no GetCurrentContext".into()),
         ..runtime
     };
     assert_eq!(sealed_v8(Some(&refused)), Some(refused));
@@ -3903,6 +3907,7 @@ fn a_v8_runtime_reads_back_with_its_layout_or_its_problem() {
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "one check for each refusal")]
 fn validation_rejects_a_v8_runtime_that_names_nothing() {
     let record = |problem: u32| V8RuntimeRecord {
         major: 14.into(),
@@ -3923,6 +3928,8 @@ fn validation_rejects_a_v8_runtime_that_names_nothing() {
         node: [0.into(); 3],
         inspector_problem: u32::MAX.into(),
         inspector: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 160, 2, 3, 4, 5].map(Into::into),
+        tasks_problem: u32::MAX.into(),
+        tasks: [0.into(); super::v8::NodeTasks::WORDS],
         offsets: [u32::MAX.into(); super::v8::Field::COUNT],
         constants: [i64::MIN.into(); super::v8::Constant::COUNT],
     };
@@ -3951,6 +3958,12 @@ fn validation_rejects_a_v8_runtime_that_names_nothing() {
         missing_target.inspector[field] = 0.into();
         assert!(refusal(vec![missing_target]).contains("invalid Node inspector layout"));
     }
+    let mut pooled = record(u32::MAX);
+    pooled.tasks[10] = 2.into();
+    assert!(refusal(vec![pooled]).contains("invalid Node task layout"));
+    let mut stray_pool = record(u32::MAX);
+    stray_pool.tasks[12] = 8.into();
+    assert!(refusal(vec![stray_pool]).contains("invalid Node task layout"));
     let mut ambiguous = record(u32::MAX);
     ambiguous.inspector[19] = ambiguous.inspector[18];
     assert!(refusal(vec![ambiguous]).contains("invalid Node inspector layout"));
