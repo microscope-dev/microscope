@@ -62,6 +62,10 @@ mod builtins;
 #[path = "v8/translate.rs"]
 mod translate;
 
+#[cfg(test)]
+#[path = "v8/isolate_oracle.rs"]
+mod isolate_oracle;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -791,7 +795,9 @@ fn requires_constant(constant: Constant, version: (u32, u32)) -> bool {
         | C::ScopeIsWrappedFunctionShift
         | C::ScopeIsWrappedFunctionMask
         | C::VariableModeAwaitUsing
-        | C::FunctionKindModuleWithTopLevelAwait => since_13_6,
+        | C::FunctionKindModuleWithTopLevelAwait
+        | C::EntryFrameNextFastCallFrameFpOffset
+        | C::EntryFrameNextFastCallFramePcOffset => since_13_6,
         C::ScopeIsReplModeScopeShift
         | C::ScopeIsReplModeScopeMask
         | C::ScopeHasLocalsBlockListShift

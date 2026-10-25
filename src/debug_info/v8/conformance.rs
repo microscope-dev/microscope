@@ -360,6 +360,10 @@ fn header_constants(headers: &Headers, leaptiering: bool) -> BTreeMap<String, i6
         add_dispatch_constants(headers, &mut constants);
     }
     super::deoptimization::add_constants(headers, &mut constants);
+    for (name, value) in headers.isolate_constants() {
+        let previous = constants.insert(name.clone(), value);
+        assert!(previous.is_none(), "{name} is given twice");
+    }
     add_value_constants(headers, &mut constants);
     add_await_constants(headers, &mut constants);
     constants
@@ -525,6 +529,9 @@ fn add_frame_constants(headers: &Headers, add: &mut impl FnMut(String, i64)) {
         ("UnoptimizedFrameConstants", "kFeedbackVectorFromFp"),
         ("UnoptimizedFrameConstants", "kBytecodeArrayFromFp"),
         ("InterpreterFrameConstants", "kBytecodeOffsetFromFp"),
+        ("CommonFrameConstants", "kCallerFPOffset"),
+        ("CommonFrameConstants", "kCallerPCOffset"),
+        ("CommonFrameConstants", "kContextOrFrameTypeOffset"),
     ]) {
         add(name, value);
     }
@@ -984,7 +991,10 @@ fn generate() -> String {
          // heap-object.h, primitive-heap-object.h, bigint.h, struct.h,\n\
          // oddball.h, name.h, elements-kind.h, function-kind.h,\n\
          // ordered-hash-table.h, contexts.h, contexts-inl.h, map-inl.h,\n\
-         // call-site-info.h, v8-promise.h, frame-constants.h), by\n\
+         // call-site-info.h, v8-promise.h, frame-constants.h,\n\
+         // frame-constants-x64.h, constants-x64.h, isolate-data.h,\n\
+         // isolate-data-fields.h, stack-guard.h, thread-local-top.h,\n\
+         // thread-id.h, v8-unwinder.h, v8-callbacks.h), by\n\
          // `debug_info::v8::conformance::layouts_match_torque`. Do not edit;\n\
          // rerun that test with MICROSCOPE_UPDATE_V8=1.\n\
          //\n\
@@ -1215,7 +1225,7 @@ fn each_builds_bytecode_sizes_are_the_generated_ones() {
 /// Each build of the dev shell's Node matrix, the file that holds its V8,
 /// and V8's major.minor version: Node 26 has 14.6, 24 has 13.6, and 22
 /// has 12.4.
-fn matrix() -> Vec<(&'static str, PathBuf, (u32, u32))> {
+pub(super) fn matrix() -> Vec<(&'static str, PathBuf, (u32, u32))> {
     let root = PathBuf::from(
         std::env::var_os("MICROSCOPE_NODE")
             .expect("MICROSCOPE_NODE names the Node builds; run tests in the dev shell"),

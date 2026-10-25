@@ -59,7 +59,7 @@ pub(super) struct Headers {
     config: BTreeMap<&'static str, bool>,
 }
 
-const FILES: [&str; 43] = [
+const FILES: [&str; 52] = [
     "src/common/globals.h",
     "include/v8-internal.h",
     "src/objects/trusted-object.h",
@@ -103,10 +103,26 @@ const FILES: [&str; 43] = [
     "src/execution/frame-constants.h",
     "src/objects/js-generator.h",
     "src/builtins/builtins-promise.h",
+    "src/execution/isolate-data.h",
+    "src/execution/isolate-data-fields.h",
+    "src/execution/stack-guard.h",
+    "src/execution/thread-local-top.h",
+    "src/execution/thread-id.h",
+    "src/execution/x64/frame-constants-x64.h",
+    "src/codegen/x64/constants-x64.h",
+    "include/v8-unwinder.h",
+    "include/v8-callbacks.h",
 ];
 
-/// The headers of 12.4, which has no JS dispatch table.
-const OPTIONAL: [&str; 1] = ["src/sandbox/js-dispatch-table.h"];
+/// The headers a version may lack: 12.4 has no JS dispatch table, and
+/// before 14.6 `isolate-data.h` lists the isolate's fields itself.
+fn optional(file: &str, leaptiering: bool) -> bool {
+    match file {
+        "src/sandbox/js-dispatch-table.h" => !leaptiering,
+        "src/execution/isolate-data-fields.h" => true,
+        _ => false,
+    }
+}
 
 impl Headers {
     pub(super) fn read(v8: &Path, leaptiering: bool) -> Self {
@@ -118,7 +134,7 @@ impl Headers {
                     files.insert(file, release(&strip_comments(&text)));
                 }
                 Err(error) => assert!(
-                    OPTIONAL.contains(&file) && !leaptiering,
+                    optional(file, leaptiering),
                     "read {}: {error}",
                     path.display()
                 ),
@@ -205,7 +221,16 @@ impl Headers {
             .iter()
             .filter(|own| self.files.contains_key(**own))
             .find_map(|own| namespace_constant(self.file(own), name))
-            .map(|expression| self.eval(file, &[], &expression))
+            .map(|expression| {
+                // The API's sizes, as `kApiSystemPointerSize = sizeof(void*)`.
+                expression
+                    .strip_prefix("sizeof(")
+                    .and_then(|ty| ty.strip_suffix(')'))
+                    .map_or_else(
+                        || self.eval(file, &[], &expression),
+                        |ty| type_size(self.file("src/common/globals.h"), ty.trim()),
+                    )
+            })
     }
 
     /// The header that declares `class`, of those read.
@@ -1089,6 +1114,399 @@ impl Headers {
         }
         opcodes
     }
+
+    /// What a running thread's frames are read from: where the isolate
+    /// keeps its `ThreadLocalTop`, its fast C call's frame pointer and
+    /// return address, and whether its stack is iterable; the root
+    /// register's bias; `ThreadLocalTop`'s members; the VM state of a
+    /// collection; and the slots of x64's entry frame. Each by the name
+    /// [`crate::image::v8::Constant`] gives it.
+    pub(super) fn isolate_constants(&self) -> Vec<(String, i64)> {
+        let internals = "include/v8-internal.h";
+        let internal = |name: &str| -> i64 {
+            let body = self.class_text(internals, "Internals");
+            let pattern = format!(r"static\s+(?:constexpr|const)\s+int\s+{name}\s*=");
+            let definitions = Regex::new(&pattern)
+                .expect("a pattern")
+                .find_iter(body)
+                .count();
+            assert_eq!(
+                definitions, 1,
+                "{internals} defines Internals::{name} {definitions} times"
+            );
+            self.class_constant(internals, &["Internals"], name)
+                .unwrap_or_else(|| panic!("{internals}: Internals::{name}"))
+        };
+
+        let mut constants = Vec::new();
+        for name in [
+            "kIsolateThreadLocalTopOffset",
+            "kIsolateFastCCallCallerFpOffset",
+            "kIsolateFastCCallCallerPcOffset",
+        ] {
+            constants.push((format!("Internals::{name}"), internal(name)));
+        }
+
+        // The stack guard is the second field, and the byte flags follow it.
+        let stack_guard = self
+            .class_constant(
+                "src/execution/stack-guard.h",
+                &["StackGuard"],
+                "kSizeInBytes",
+            )
+            .expect("StackGuard::kSizeInBytes");
+        assert_eq!(
+            stack_guard,
+            internal("kStackGuardSize"),
+            "the stack guard's sizes disagree"
+        );
+        assert_eq!(
+            internal("kVariousBooleanFlagsOffset"),
+            internal("kIsolateStackGuardOffset") + stack_guard,
+            "the isolate's flags do not follow its stack guard"
+        );
+        let flag = self.isolate_byte_flag("StackIsIterable");
+        assert!(
+            flag < internal("kNumberOfBooleanFlags"),
+            "stack_is_iterable is not among the isolate's boolean flags"
+        );
+        constants.push((
+            "IsolateData::kStackIsIterableOffset".to_owned(),
+            internal("kVariousBooleanFlagsOffset") + flag,
+        ));
+
+        let bias = self
+            .class_constant(
+                "src/execution/isolate-data.h",
+                &["IsolateData"],
+                "kIsolateRootBias",
+            )
+            .expect("IsolateData::kIsolateRootBias");
+        constants.push(("IsolateData::kIsolateRootBias".to_owned(), bias));
+
+        let (size, members) = self.thread_local_top();
+        assert_eq!(
+            size,
+            internal("kThreadLocalTopSize"),
+            "ThreadLocalTop's sizes disagree"
+        );
+        for member in [
+            "c_entry_fp_",
+            "isolate_",
+            "js_entry_sp_",
+            "current_vm_state_",
+        ] {
+            let offset = members
+                .get(member)
+                .unwrap_or_else(|| panic!("ThreadLocalTop has no {member}"));
+            constants.push((format!("offsetof(ThreadLocalTop, {member})"), *offset));
+        }
+
+        let states = self.enumerators("include/v8-unwinder.h", "enum StateTag");
+        constants.push(("StateTag::GC".to_owned(), states["GC"]));
+
+        constants.extend(self.entry_frame_constants());
+        constants
+    }
+
+    /// Where `IsolateData`'s byte flag `name` is among the flags that
+    /// follow its stack guard, which `ISOLATE_DATA_FIELDS` lists: 12.4
+    /// names each `kNameOffset` or `kName`, later versions `Name`.
+    fn isolate_byte_flag(&self, name: &str) -> i64 {
+        let head = "#define ISOLATE_DATA_FIELDS(V)";
+        let defining: Vec<&str> = [
+            "src/execution/isolate-data.h",
+            "src/execution/isolate-data-fields.h",
+        ]
+        .into_iter()
+        .filter(|file| self.files.get(file).is_some_and(|text| text.contains(head)))
+        .collect();
+        let [file] = defining.as_slice() else {
+            panic!("{} headers define ISOLATE_DATA_FIELDS", defining.len());
+        };
+        let list = macro_body(self.file(file), head);
+        let bare = |entry: &str| -> String {
+            let entry = entry.strip_suffix("Offset").unwrap_or(entry);
+            match entry.strip_prefix('k') {
+                Some(rest) if rest.starts_with(char::is_uppercase) => rest.to_owned(),
+                _ => entry.to_owned(),
+            }
+        };
+        // Nothing but V( entries may come between the guard and the flag:
+        // another macro's fields would be unknown.
+        let guard_at = list.find("V(").expect("a field");
+        let entries = v_entries(&list[guard_at..]);
+        let names: Vec<String> = entries.iter().map(|(entry, _)| bare(entry)).collect();
+        assert_eq!(
+            names.first().map(String::as_str),
+            Some("CageBase"),
+            "{file}: the first field"
+        );
+        assert_eq!(
+            names.get(1).map(String::as_str),
+            Some("StackGuard"),
+            "{file}: the second field"
+        );
+        let at = names
+            .iter()
+            .position(|entry| entry == name)
+            .unwrap_or_else(|| panic!("{file} lists no {name}"));
+        let between = &list[guard_at..];
+        let flag_text = format!("V({}", entries[at].0);
+        let end = between.find(&flag_text).expect("the flag's entry");
+        let listed = between[..end].matches("V(").count();
+        assert_eq!(listed, at, "{file}: a macro lists fields before {name}");
+        for (entry, rest) in &entries[2..=at] {
+            let size = rest.split(',').next().expect("a size").trim();
+            assert_eq!(
+                size, "kUInt8Size",
+                "{file}: {entry} before {name} is not a byte"
+            );
+        }
+        i64::try_from(at - 2).expect("a small index")
+    }
+
+    /// `ThreadLocalTop`'s size and its data members' offsets, laid out as
+    /// C++ lays out the types it declares: x64, without pointer
+    /// compression. Any statement or type it does not know fails, as does
+    /// a member under a preprocessor conditional, and a size that differs
+    /// from the class's `kSizeInBytes`.
+    pub(super) fn thread_local_top(&self) -> (i64, BTreeMap<String, i64>) {
+        let file = "src/execution/thread-local-top.h";
+        let body = self.class_text(file, "ThreadLocalTop");
+        let mut offsets = BTreeMap::new();
+        let (mut offset, mut alignment) = (0, 1);
+        for (statement, conditional) in class_statements(body) {
+            let Some((ty, name)) = Self::data_member(&statement) else {
+                continue;
+            };
+            assert!(!conditional, "{file}: {name} is under a conditional");
+            let size = self.member_type_size(&ty);
+            offset = align(offset, size);
+            alignment = alignment.max(size);
+            let previous = offsets.insert(name.clone(), offset);
+            assert!(previous.is_none(), "{file} declares {name} twice");
+            offset += size;
+        }
+        let size = align(offset, alignment);
+        let declared = self
+            .class_constant(file, &["ThreadLocalTop"], "kSizeInBytes")
+            .expect("ThreadLocalTop::kSizeInBytes");
+        assert_eq!(
+            size, declared,
+            "{file}: the members take {size} bytes, not kSizeInBytes"
+        );
+        (size, offsets)
+    }
+
+    /// The type and name of a class's data member `statement`, `None` for
+    /// a statement known to be no data member, failing on any other.
+    fn data_member(statement: &str) -> Option<(String, String)> {
+        let statement = normalized(statement);
+        let statement = statement.trim();
+        for label in ["public:", "private:", "protected:"] {
+            if let Some(rest) = statement.strip_prefix(label) {
+                return Self::data_member(rest);
+            }
+        }
+        if statement.is_empty()
+            || statement.starts_with("static ")
+            || statement.starts_with("static_assert(")
+            || statement.starts_with("friend ")
+            || statement.starts_with("using ")
+        {
+            return None;
+        }
+        // A member, its type with no parentheses, and its name V8's way,
+        // perhaps with an initializer.
+        let member = Regex::new(r"^([^()=;]+?)\s*\b(\w+_)\s*(?:=[^=].*)?$").expect("a pattern");
+        if let Some(captures) = member.captures(statement) {
+            return Some((captures[1].trim().to_owned(), captures[2].to_owned()));
+        }
+        // A function: a template, a declaration, or what is left of a
+        // definition whose body was dropped.
+        let function = Regex::new(
+            r"^(?:template\s*<[^;]*>\s*)?(?:[\w:<>,*&~]+\s+)*~?\w+\s*\([^;]*\)\s*(?:const\s*)?(?:override\s*)?(?:=\s*(?:default|delete|0)\s*)?$",
+        )
+        .expect("a pattern");
+        assert!(
+            function.is_match(statement),
+            "an unknown statement {statement:?}"
+        );
+        None
+    }
+
+    /// The size, and alignment, of a type `ThreadLocalTop` declares a
+    /// member of.
+    fn member_type_size(&self, ty: &str) -> i64 {
+        let globals = self.file("src/common/globals.h");
+        if ty.ends_with('*') {
+            return self.size("kSystemPointerSize");
+        }
+        if ty.starts_with("Tagged<") && ty.ends_with('>') {
+            return self.size("kTaggedSize");
+        }
+        match ty {
+            "Address" => {
+                assert!(
+                    self.contains("include/v8-internal.h", "typedef uintptr_t Address;"),
+                    "Address is no longer a uintptr_t"
+                );
+                type_size(globals, "uintptr_t")
+            }
+            "uintptr_t" | "uint8_t" => type_size(globals, ty),
+            "StateTag" => {
+                let unwinder = self.file("include/v8-unwinder.h");
+                assert!(
+                    unwinder.contains("enum StateTag : uint16_t {"),
+                    "StateTag is no longer a uint16_t"
+                );
+                2
+            }
+            "std::atomic<ThreadId>" => {
+                // A lock-free atomic of a type has its size.
+                let thread_id = class_body(self.file("src/execution/thread-id.h"), "ThreadId")
+                    .expect("thread-id.h declares ThreadId");
+                let members = data_members(thread_id);
+                assert_eq!(members, ["int id_;"], "ThreadId's members");
+                4
+            }
+            "v8::FailedAccessCheckCallback" => {
+                assert!(
+                    self.contains(
+                        "include/v8-callbacks.h",
+                        "using FailedAccessCheckCallback = void (*)("
+                    ),
+                    "FailedAccessCheckCallback is no longer a function pointer"
+                );
+                self.size("kSystemPointerSize")
+            }
+            _ => panic!("no size of ThreadLocalTop's member type {ty:?}"),
+        }
+    }
+
+    /// x64's `EntryFrameConstants`, outside Windows: where `JSEntry` saves
+    /// the exit frame pointer it clears, and from 13.6 the fast C call's
+    /// frame pointer and return address. Every other conditional fails.
+    fn entry_frame_constants(&self) -> Vec<(String, i64)> {
+        let file = "src/execution/x64/frame-constants-x64.h";
+        let body = without_windows(self.class_text(file, "EntryFrameConstants"));
+        assert!(
+            !body.contains('#'),
+            "{file}'s EntryFrameConstants has a conditional"
+        );
+        assert!(
+            self.contains(file, "class EntryFrameConstants : public AllStatic {"),
+            "{file}'s EntryFrameConstants derives from a class"
+        );
+        let constant = |name: &str| -> Option<i64> {
+            let pattern = format!(r"static\s+constexpr\s+int\s+{name}\s*=\s*([^;]+);");
+            let pattern = Regex::new(&pattern).expect("a pattern");
+            let definitions: Vec<_> = pattern.captures_iter(&body).collect();
+            assert!(definitions.len() <= 1, "{file} defines {name} twice");
+            let expression = definitions.first()?[1].to_owned();
+            Some(self.eval_in(file, &body, &expression))
+        };
+        let mut constants = Vec::new();
+        for (name, required) in [
+            ("kNextExitFrameFPOffset", true),
+            ("kNextFastCallFrameFPOffset", false),
+            ("kNextFastCallFramePCOffset", false),
+        ] {
+            match constant(name) {
+                Some(value) => constants.push((format!("EntryFrameConstants::{name}"), value)),
+                None => assert!(!required, "{file} defines no EntryFrameConstants::{name}"),
+            }
+        }
+        constants
+    }
+
+    /// An expression of a class whose `body` defines the constants it
+    /// names, or the headers do.
+    fn eval_in(&self, file: &str, body: &str, expression: &str) -> i64 {
+        let lookup = |name: &str| {
+            let pattern = format!(r"static\s+constexpr\s+int\s+{name}\s*=\s*([^;]+);");
+            Regex::new(&pattern).ok()?.captures(body).map_or_else(
+                || self.lookup(file, &[], name),
+                |own| Some(self.eval_in(file, body, &own[1])),
+            )
+        };
+        eval(expression, &lookup)
+            .unwrap_or_else(|| panic!("{file}: cannot evaluate {expression:?}"))
+    }
+}
+
+/// A class body's statements outside its functions' bodies, each with
+/// whether a preprocessor conditional encloses it. A dropped body ends
+/// its statement, so that what follows is a statement of its own.
+fn class_statements(body: &str) -> Vec<(String, bool)> {
+    let mut statements = Vec::new();
+    let mut current = String::new();
+    let (mut depth, mut conditionals) = (0, 0_usize);
+    let mut conditional = false;
+    for line in body.lines() {
+        let directive = line.trim_start();
+        if depth == 0 && directive.starts_with('#') {
+            if directive.starts_with("#if") {
+                conditionals += 1;
+            } else if directive.starts_with("#endif") {
+                conditionals = conditionals.checked_sub(1).expect("a balanced #endif");
+            }
+            continue;
+        }
+        for c in line.chars().chain(std::iter::once('\n')) {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        statements.push((std::mem::take(&mut current), conditional));
+                        conditional = false;
+                    }
+                }
+                ';' if depth == 0 => {
+                    statements.push((
+                        std::mem::take(&mut current),
+                        conditional || conditionals > 0,
+                    ));
+                    conditional = false;
+                }
+                c if depth == 0 => {
+                    if !c.is_whitespace() && conditionals > 0 {
+                        conditional = true;
+                    }
+                    current.push(c);
+                }
+                _ => {}
+            }
+        }
+    }
+    assert!(
+        current.trim().is_empty(),
+        "a class body ends in {current:?}"
+    );
+    statements
+}
+
+/// A class body with each `#ifdef V8_TARGET_OS_WIN` replaced by its other
+/// branch.
+fn without_windows(body: &str) -> String {
+    let mut kept = String::new();
+    let mut windows: Option<bool> = None;
+    for line in body.lines() {
+        match (line.trim(), windows) {
+            ("#ifdef V8_TARGET_OS_WIN", None) => windows = Some(true),
+            ("#else", Some(true)) => windows = Some(false),
+            (endif, Some(_)) if endif.starts_with("#endif") => windows = None,
+            (_, Some(true)) => {}
+            _ => {
+                kept.push_str(line);
+                kept.push('\n');
+            }
+        }
+    }
+    assert!(windows.is_none(), "an unclosed #ifdef V8_TARGET_OS_WIN");
+    kept
 }
 
 /// `value` rounded up to a multiple of `alignment`, which is positive.
@@ -1101,7 +1519,8 @@ fn type_size(globals: &str, ty: &str) -> i64 {
     match ty {
         "int16_t" | "uint16_t" => 2,
         "int" | "int32_t" | "uint32_t" => 4,
-        "int64_t" | "uint64_t" | "void*" | "intptr_t" | "uintptr_t" => 8,
+        "int64_t" | "uint64_t" | "void*" | "intptr_t" | "uintptr_t" | "size_t" => 8,
+        "uint8_t" | "int8_t" => 1,
         "Address" if globals.contains("using Address = uintptr_t;") => 8,
         _ => panic!("no size of the type {ty:?}"),
     }
@@ -1378,9 +1797,9 @@ fn namespace_constant(text: &str, name: &str) -> Option<String> {
 }
 
 /// The value of a C++ integer expression: literals, names `lookup` gives,
-/// unary minus, `* + - << |`, parentheses, and `condition ? a : b`.
+/// unary minus, `* + - << == |`, parentheses, and `condition ? a : b`.
 pub(super) fn eval(expression: &str, lookup: &dyn Fn(&str) -> Option<i64>) -> Option<i64> {
-    let tokens = Regex::new(r"[A-Za-z_][\w:]*|0x[0-9a-fA-F]+[uUlL]*|\d+[uUlL]*|<<|[-+*|()?:]")
+    let tokens = Regex::new(r"[A-Za-z_][\w:]*|0x[0-9a-fA-F]+[uUlL]*|\d+[uUlL]*|<<|==|[-+*|()?:]")
         .ok()?
         .find_iter(expression)
         .map(|token| token.as_str())
@@ -1429,9 +1848,17 @@ impl<'a> Parser<'a> {
     }
 
     fn or(&mut self) -> Option<i64> {
-        let mut value = self.shift()?;
+        let mut value = self.equality()?;
         while self.eat("|") {
-            value |= self.shift()?;
+            value |= self.equality()?;
+        }
+        Some(value)
+    }
+
+    fn equality(&mut self) -> Option<i64> {
+        let mut value = self.shift()?;
+        while self.eat("==") {
+            value = i64::from(value == self.shift()?);
         }
         Some(value)
     }
@@ -1502,6 +1929,8 @@ fn expressions_evaluate_as_cpp_does() {
     assert_eq!(eval("-1", &lookup), Some(-1));
     assert_eq!(eval("0xffffull", &lookup), Some(0xffff));
     assert_eq!(eval("(kTen - 2) * 2 | 1", &lookup), Some(17));
+    assert_eq!(eval("kTen == 8 ? 0 : kTen", &lookup), Some(10));
+    assert_eq!(eval("2 * 4 == 8 ? 0 : 1", &lookup), Some(0));
     assert_eq!(eval("kUnknown + 1", &lookup), None);
     assert_eq!(eval("sizeof(int)", &lookup), None);
 }
@@ -1531,4 +1960,66 @@ fn field_lists_fail_on_what_they_do_not_know() {
     assert!(unknown.is_err(), "an unknown configuration fails");
     let odd = std::panic::catch_unwind(|| headers.field_size("sizeof(Foo)"));
     assert!(odd.is_err(), "an unknown size fails");
+}
+
+#[test]
+fn thread_local_top_fails_on_what_it_does_not_know() {
+    let headers = |members: &str| Headers {
+        files: BTreeMap::from([
+            ("src/common/globals.h", String::new()),
+            (
+                "include/v8-internal.h",
+                "typedef uintptr_t Address;".to_owned(),
+            ),
+            (
+                "src/execution/thread-local-top.h",
+                format!(
+                    "class ThreadLocalTop {{\n public:\n  static constexpr uint32_t kSizeInBytes = 24;\n  void Clear();\n{members}\n}};\n"
+                ),
+            ),
+        ]),
+        config: BTreeMap::new(),
+    };
+    let known = "  Address c_entry_fp_;\n  uint8_t flag_ = 0;\n  Address js_entry_sp_;";
+    let (size, offsets) = headers(known).thread_local_top();
+    assert_eq!(size, 24);
+    assert_eq!(
+        offsets,
+        BTreeMap::from([
+            ("c_entry_fp_".to_owned(), 0),
+            ("flag_".to_owned(), 8),
+            ("js_entry_sp_".to_owned(), 16),
+        ])
+    );
+
+    for (what, members, says) in [
+        (
+            "an unknown statement",
+            "  Address c_entry_fp_;\n  int (*table_)[2];\n  Address js_entry_sp_;",
+            "an unknown statement",
+        ),
+        (
+            "an unknown member type",
+            "  Address c_entry_fp_;\n  Unknown flag_;\n  Address js_entry_sp_;",
+            "no size of ThreadLocalTop's member type",
+        ),
+        (
+            "a member under a conditional",
+            "  Address c_entry_fp_;\n#if V8_SOMETHING\n  uint8_t flag_;\n#endif\n  Address js_entry_sp_;",
+            "flag_ is under a conditional",
+        ),
+        (
+            "a size that is not kSizeInBytes",
+            "  Address c_entry_fp_;\n  Address js_entry_sp_;",
+            "not kSizeInBytes",
+        ),
+    ] {
+        let headers = headers(members);
+        let failure = std::panic::catch_unwind(|| headers.thread_local_top()).expect_err(what);
+        let message = failure
+            .downcast_ref::<String>()
+            .cloned()
+            .unwrap_or_default();
+        assert!(message.contains(says), "{what}: {message}");
+    }
 }

@@ -931,6 +931,11 @@
           # frame's instruction to its bytecode when no symbol names V8's table.
           (cd deps/v8 && cp --parents src/interpreter/bytecodes.h \
             src/interpreter/bytecode-operands.h $out/v8/)
+          # Where x64's JSEntry saves the frame pointers its caller
+          # published, and the root register's bias from the isolate, for
+          # reading a running thread's frames from what its isolate says.
+          (cd deps/v8 && cp --parents src/execution/x64/frame-constants-x64.h \
+            src/codegen/x64/constants-x64.h $out/v8/)
           cp deps/v8/include/v8-version.h $out/v8/
           runHook postInstall
         '';

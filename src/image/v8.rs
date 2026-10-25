@@ -1535,6 +1535,44 @@ entries! {
         PromiseAnyRejectElementCapabilitySlot =
             "PromiseBuiltins::kPromiseAnyRejectElementCapabilitySlot",
         PromiseIfNotResolvedSlot = "PromiseBuiltins::kPromiseIfNotResolvedSlot",
+
+        /// What a thread's frames are read from while it runs: where an
+        /// isolate keeps its `ThreadLocalTop`, the frame pointer and return
+        /// address of the fast C call it makes (`v8-internal.h`'s
+        /// `Internals`), and whether its stack can be walked
+        /// (`IsolateData`'s field list); how far V8's root register points
+        /// past the isolate (`kRootRegisterBias`, `constants-x64.h`).
+        IsolateThreadLocalTopOffset = "Internals::kIsolateThreadLocalTopOffset",
+        IsolateFastCCallCallerFpOffset = "Internals::kIsolateFastCCallCallerFpOffset",
+        IsolateFastCCallCallerPcOffset = "Internals::kIsolateFastCCallCallerPcOffset",
+        IsolateStackIsIterableOffset = "IsolateData::kStackIsIterableOffset",
+        IsolateRootBias = "IsolateData::kIsolateRootBias",
+
+        /// `ThreadLocalTop`'s members (`thread-local-top.h`): the frame
+        /// pointer of the innermost exit frame, the isolate it belongs to,
+        /// the stack pointer of the outermost entry into JavaScript, and
+        /// the VM state; with `StateTag::GC`, the state of a collection
+        /// (`v8-unwinder.h`).
+        ThreadLocalTopCEntryFp = "offsetof(ThreadLocalTop, c_entry_fp_)",
+        ThreadLocalTopIsolate = "offsetof(ThreadLocalTop, isolate_)",
+        ThreadLocalTopJsEntrySp = "offsetof(ThreadLocalTop, js_entry_sp_)",
+        ThreadLocalTopCurrentVmState = "offsetof(ThreadLocalTop, current_vm_state_)",
+        StateTagGc = "StateTag::GC",
+
+        /// Where every frame keeps its caller's frame pointer and return
+        /// address, and its context or marker, from its frame pointer
+        /// (`frame-constants.h`).
+        CommonFrameCallerFpOffset = "CommonFrameConstants::kCallerFPOffset",
+        CommonFrameCallerPcOffset = "CommonFrameConstants::kCallerPCOffset",
+        CommonFrameContextOrFrameTypeOffset = "CommonFrameConstants::kContextOrFrameTypeOffset",
+
+        /// Where x64's entry frame keeps the exit frame pointer, and from
+        /// 13.6 the fast C call's frame pointer and return address, that
+        /// it cleared on entering JavaScript (`frame-constants-x64.h`,
+        /// without Windows' branch).
+        EntryFrameNextExitFrameFpOffset = "EntryFrameConstants::kNextExitFrameFPOffset",
+        EntryFrameNextFastCallFrameFpOffset = "EntryFrameConstants::kNextFastCallFrameFPOffset",
+        EntryFrameNextFastCallFramePcOffset = "EntryFrameConstants::kNextFastCallFramePCOffset",
     }
 }
 
