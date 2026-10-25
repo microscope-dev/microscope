@@ -397,7 +397,9 @@ fn live_reads_a_frame_of_every_tier_as_v8_reported_it() {
                 .checkpoint("tiers")
                 .map(<[Vec<String>]>::to_vec)
         };
-        let mut since = None;
+        // From a moment after the checkpoint was reported to the last one
+        // before the program was let go.
+        let mut window = (None, 0);
         let reads = |profile: &Profile, tid: u64, since: i64| {
             profile
                 .task_waits()
@@ -409,20 +411,22 @@ fn live_reads_a_frame_of_every_tier_as_v8_reported_it() {
             record_released(command, &options, report, |profile, lines| {
                 // The checkpoint's report is whole once read, and the thread
                 // parks after it.
-                let since = *since.get_or_insert_with(monotonic);
+                let now = monotonic();
+                let since = *window.0.get_or_insert(now);
+                window.1 = now;
                 let [thread] = &threads(lines)[..] else {
                     return false;
                 };
                 reads(profile, thread.native, since) >= SETTLED
             });
         let lines = lines.unwrap_or_else(|| panic!("{entry}: no checkpoint:\n{text}"));
-        let since = since.expect("read once reported");
+        let (since, until) = (window.0.expect("read once reported"), window.1);
         crate::stacks::check_tiers(entry, entry, &Report::parse(&text), &lines);
         let [thread] = &threads(&lines)[..] else {
             panic!("{entry}: one thread");
         };
         let frames = reported_frames(thread);
-        let paths = thread_paths(&profile, thread.native, (since, i64::MAX));
+        let paths = thread_paths(&profile, thread.native, (since, until));
         assert!(!paths.is_empty(), "{entry}: no read found the thread");
         for path in paths.keys() {
             assert!(
@@ -430,7 +434,7 @@ fn live_reads_a_frame_of_every_tier_as_v8_reported_it() {
                 "{entry}: {path:#?}, not {frames:#?}"
             );
         }
-        let reasons: Vec<String> = left_out(&profile, (since, i64::MAX))
+        let reasons: Vec<String> = left_out(&profile, (since, until))
             .into_iter()
             .filter(|(tid, _)| *tid == thread.native)
             .map(|(_, reason)| reason)
