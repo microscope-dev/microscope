@@ -89,6 +89,30 @@ with `bench/overhead.json`; update the baseline only for a deliberate change.
 `just syscall-overhead` measures what each system call tracing engine adds to
 a call. See [system call tracing](syscalls.md#overhead).
 
+The kernel's own BPF statistics need `CAP_SYS_ADMIN` to switch on, which the
+`microscope-bpf` wrapper does not grant. To time the sampler's walk of
+JavaScript frames alone, build with the `bpf-walk-timing` feature, which loads
+a second sampler that brackets each walk with `bpf_ktime_get_ns()` and records
+the totals in the profile's setting `v8 walk times`: the walks, their
+nanoseconds and frames, the slowest, and the walks that filled all 64 frames.
+The shipping sampler has no clock. Build it beside the normal target, so the
+tests keep the shipping program, and record `busy.js`, whose `--depth 60`
+holds the main thread's walks at the bound:
+
+```sh
+just dev --command bash -c '
+  CARGO_TARGET_DIR=$PWD/target/walk-timing \
+    cargo build --release --features bpf-walk-timing --bin microscope
+  /run/wrappers/bin/microscope-bpf target/walk-timing/release/microscope record --node bpf \
+    -o walk.usprof -- $MICROSCOPE_NODE/26/node --allow-natives-syntax \
+    --sparkplug-filter=sparkplugSpin tests/fixtures/node/busy.js --seconds 10 --depth 60'
+```
+
+Record `node -e 0` the same way first, so that node's debug information is
+cached: until it is read, the kernel drops samples. On the machine that
+measured it, a walk of `busy.js`'s 12 frames took about 2 µs, and one of 64
+frames 9 to 12 µs, about 150 to 190 ns a frame.
+
 ## Profilers
 
 The default shell contains command-line profiling tools. For the larger tools

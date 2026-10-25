@@ -24,7 +24,14 @@ use crate::image::python::{Constant, Field, PythonLayout};
 use crate::image::v8::{Constant as V8Constant, Field as V8Field, V8Layout};
 
 /// The program, as `build.rs` compiled it.
+#[cfg(not(feature = "bpf-walk-timing"))]
 static OBJECT: &[u8] = aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/sampler.bpf.o"));
+
+/// The program that also times each walk of JavaScript frames, for
+/// measuring the walk alone.
+#[cfg(feature = "bpf-walk-timing")]
+static OBJECT: &[u8] =
+    aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/sampler-timed.bpf.o"));
 
 /// `RECORD_PY_STACK`.
 const RECORD_PY_STACK: u32 = 9;
@@ -695,6 +702,12 @@ pub struct Sampler {
     threads: HashMap<MapData, u32, Bytes<THREAD_BYTES>>,
     lost: PerCpuArray<MapData, u64>,
 
+    /// Each CPU's walks of JavaScript frames, their nanoseconds, their
+    /// frames, the most nanoseconds one took, and the walks that filled
+    /// their record and their nanoseconds: `struct v8_walk_times`.
+    #[cfg(feature = "bpf-walk-timing")]
+    walk_times: PerCpuArray<MapData, [u64; 6]>,
+
     /// Each CPU's output event, which `OUTPUT` holds as well.
     _outputs: Vec<perf::Output>,
 
@@ -767,6 +780,8 @@ impl Sampler {
         let v8_layouts = V8Layouts(HashMap::try_from(take("V8_LAYOUTS")?).map_err(load_error)?);
         let threads = HashMap::try_from(take("THREADS")?).map_err(load_error)?;
         let lost = PerCpuArray::try_from(take("LOST")?).map_err(load_error)?;
+        #[cfg(feature = "bpf-walk-timing")]
+        let walk_times = PerCpuArray::try_from(take("V8_WALK_TIMES")?).map_err(load_error)?;
         let ids = outputs.iter().map(|output| output.id).collect();
         record!("python sampler: attached, {} outputs", outputs.len());
 
@@ -777,6 +792,8 @@ impl Sampler {
                 v8_layouts,
                 threads,
                 lost,
+                #[cfg(feature = "bpf-walk-timing")]
+                walk_times,
                 _outputs: outputs,
                 known: BTreeMap::new(),
             },
@@ -840,6 +857,30 @@ impl Sampler {
 
         self.layouts.forget(tgid);
         self.v8_layouts.forget(tgid);
+    }
+
+    /// What every CPU's walks of JavaScript frames took: the walks, their
+    /// nanoseconds, their frames, the most nanoseconds one took, and the
+    /// walks that filled their record and their nanoseconds.
+    ///
+    /// # Errors
+    ///
+    /// When the kernel refuses the read.
+    #[cfg(feature = "bpf-walk-timing")]
+    pub fn walk_times(&self) -> Result<[u64; 6], SamplerError> {
+        let cpus = self.walk_times.get(&0, 0).map_err(load_error)?;
+        Ok(cpus
+            .iter()
+            .fold([0; 6], |[walks, ns, frames, most, full, full_ns], cpu| {
+                [
+                    walks.saturating_add(cpu[0]),
+                    ns.saturating_add(cpu[1]),
+                    frames.saturating_add(cpu[2]),
+                    most.max(cpu[3]),
+                    full.saturating_add(cpu[4]),
+                    full_ns.saturating_add(cpu[5]),
+                ]
+            }))
     }
 
     /// How many records found no room in their rings.

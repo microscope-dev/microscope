@@ -14,6 +14,8 @@
 // TIER is truth.tierOf()'s, or - for a frame no tier is asked of. Each
 // spinning function's loop is one line of its own, between its function
 // line and its closing brace, so a sample in it is on a line within them.
+// With --depth DEPTH, the main thread spins under DEPTH more interpreted
+// frames of nest(), for a walk of the deepest stacks.
 // With --pool, a thread of libuv's pool derives a key with PBKDF2 for
 // about as long, which runs no JavaScript, so it is in no isolate.
 // The program spins for --seconds SECONDS, 3 by default, then exits. Run
@@ -29,6 +31,7 @@ const truth = require('./truth.js');
 
 const argv = process.argv.slice(2);
 const seconds = Number(argv[argv.indexOf('--seconds') + 1]) || 3;
+const depth = argv.includes('--depth') ? Number(argv[argv.indexOf('--depth') + 1]) : 0;
 
 // How many rounds each frame spins between its calls: about a millisecond.
 const ROUNDS = 200000;
@@ -117,6 +120,13 @@ function spinFor(spin, end) {
 
 %NeverOptimizeFunction(spinFor);
 
+// Runs `fn` under `levels` frames of its own.
+function nest(levels, fn) {
+  return levels > 0 ? nest(levels - 1, fn) : fn();
+}
+
+%NeverOptimizeFunction(nest);
+
 function worker() {
   const end = Date.now() + seconds * 1000;
   reporting = true;
@@ -136,7 +146,7 @@ function main() {
     crypto.pbkdf2('secret', 'salt', (seconds + 1) * 1000000, 64, 'sha512', () => {});
   }
   new threads.Worker(__filename, {argv});
-  return spinFor(ignitionSpin, end);
+  return depth > 0 ? nest(depth, () => spinFor(ignitionSpin, end)) : spinFor(ignitionSpin, end);
 }
 
 if (threads.isMainThread) {

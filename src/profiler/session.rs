@@ -400,6 +400,17 @@ impl Walker {
             }
             Err(error) => builder.setting("python lost records", &format!("not counted: {error}")),
         }
+        #[cfg(feature = "bpf-walk-timing")]
+        match self.sampler.walk_times() {
+            Ok([walks, ns, frames, most, full, full_ns]) => builder.setting(
+                "v8 walk times",
+                &format!(
+                    "{walks} walks, {ns} ns, {frames} frames, {most} ns at most, \
+                     {full} full walks, {full_ns} ns"
+                ),
+            ),
+            Err(error) => builder.setting("v8 walk times", &format!("not read: {error}")),
+        }
     }
 }
 

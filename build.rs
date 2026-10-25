@@ -155,18 +155,30 @@ fn bpf_programs(manifest: &Path, out: &Path) {
         digest.write(&contents);
     }
 
+    // The bpf-walk-timing feature builds a second sampler that times each
+    // walk of JavaScript frames, which only a measurement loads.
+    let timing = std::env::var_os("CARGO_FEATURE_BPF_WALK_TIMING").is_some();
+    digest.write_u8(u8::from(timing));
+
     let inputs = format!("{:016x}", digest.finish());
-    let sources: Vec<(&PathBuf, PathBuf)> = files
+    let mut sources: Vec<(&PathBuf, PathBuf, &[&str])> = files
         .iter()
         .filter(|path| path.to_string_lossy().ends_with(".bpf.c"))
         .map(|source| {
             let name = source.file_name().expect("a file").to_string_lossy();
-            (source, out.join(name.replace(".bpf.c", ".bpf.o")))
+            (source, out.join(name.replace(".bpf.c", ".bpf.o")), &[][..])
         })
         .collect();
+    if timing && let Some(sampler) = files.iter().find(|path| path.ends_with("sampler.bpf.c")) {
+        sources.push((
+            sampler,
+            out.join("sampler-timed.bpf.o"),
+            &["-DMICROSCOPE_WALK_TIMING"][..],
+        ));
+    }
     let stamp = out.join("bpf-inputs");
     let built = std::fs::read_to_string(&stamp).is_ok_and(|built| built == inputs);
-    if built && sources.iter().all(|(_, object)| object.exists()) {
+    if built && sources.iter().all(|(_, object, _)| object.exists()) {
         return;
     }
 
@@ -175,9 +187,10 @@ fn bpf_programs(manifest: &Path, out: &Path) {
         std::fs::remove_file(&stamp).expect("remove the BPF stamp");
     }
 
-    for (source, object) in sources {
+    for (source, object, defines) in sources {
         let status = std::process::Command::new(&clang)
             .args(&flags)
+            .args(defines)
             .arg("-c")
             .arg(source)
             .arg("-o")

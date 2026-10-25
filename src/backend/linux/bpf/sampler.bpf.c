@@ -71,6 +71,27 @@ struct {
 	__type(value, u64);
 } LOST SEC(".maps");
 
+#ifdef MICROSCOPE_WALK_TIMING
+// What each CPU's walks of JavaScript frames took, in a build for measuring
+// it alone (the bpf-walk-timing feature): the shipping program has no clock.
+struct v8_walk_times {
+	u64 walks;
+	u64 ns;
+	u64 frames;
+	u64 most_ns;
+	// The walks that filled the record, V8_FRAMES frames each.
+	u64 full_walks;
+	u64 full_ns;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, struct v8_walk_times);
+} V8_WALK_TIMES SEC(".maps");
+#endif
+
 // Counts a record that found no room in the CPU's ring.
 static __always_inline void lost_record(void)
 {
@@ -148,7 +169,25 @@ static __always_inline int v8_sample(struct bpf_perf_event_data *ctx, u32 tgid, 
 		if (!user || bpf_probe_read_kernel(&regs, sizeof(regs), user))
 			regs.rbp = regs.rip = 0;
 	}
+#ifdef MICROSCOPE_WALK_TIMING
+	u64 began = bpf_ktime_get_ns();
+#endif
 	v8_walk(layout, stack, regs.rbp, regs.rip);
+#ifdef MICROSCOPE_WALK_TIMING
+	u64 took = bpf_ktime_get_ns() - began;
+	struct v8_walk_times *times = bpf_map_lookup_elem(&V8_WALK_TIMES, &zero);
+	if (times) {
+		times->walks += 1;
+		times->ns += took;
+		times->frames += header->frames;
+		if (took > times->most_ns)
+			times->most_ns = took;
+		if (header->frames >= V8_FRAMES) {
+			times->full_walks += 1;
+			times->full_ns += took;
+		}
+	}
+#endif
 
 	u32 frames = header->frames;
 	if (frames > V8_FRAMES)
