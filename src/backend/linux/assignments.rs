@@ -387,6 +387,9 @@ fn assigned_value(runtime: RuntimeId, value: Assigned<Place>, span: Span) -> Res
         Assigned::Bool(value) => AssignedValue::Bool(value),
         Assigned::Text(text) => AssignedValue::Text(text.into()),
         Assigned::Nothing => AssignedValue::Nothing,
+        Assigned::Undefined | Assigned::BigInt(_) => {
+            return Err(refused(span, "Python has no such value"));
+        }
         Assigned::Object(Place::Interpreted {
             runtime: keeper,
             object,
