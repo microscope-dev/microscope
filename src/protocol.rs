@@ -2204,6 +2204,10 @@ pub enum Request {
     },
     Attach {
         process_id: ProcessId,
+
+        /// Whether the session only reads the process: it plants no
+        /// breakpoint of its own, so it writes nothing to its memory.
+        observe: bool,
         reply: Reply<StopId>,
     },
     LaunchByExec {

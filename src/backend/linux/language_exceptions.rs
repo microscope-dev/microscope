@@ -64,6 +64,9 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .iter()
                 .flat_map(|runtime| runtime.model.signals().handled.iter().copied()),
         );
+        if inferior.observer {
+            return Ok(());
+        }
         let stops = self.exception_stops;
         let wanted = runtimes
             .iter()

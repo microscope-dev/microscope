@@ -349,7 +349,7 @@ fn send(
 impl<P: LinuxTraceOps> Controller<P> {
     /// Plants each loaded runtime's target entry and cleanup checkpoints.
     pub(super) fn sync_inspector_hooks(&mut self) -> Result<()> {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.inferior.as_ref().filter(|inferior| !inferior.observer) else {
             return Ok(());
         };
         let entries = self

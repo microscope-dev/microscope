@@ -46,7 +46,11 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         match start {
             Start::Launch(options, reply) => self.launch(options, reply),
-            Start::Attach { requested, reply } => self.attach(requested, reply),
+            Start::Attach {
+                requested,
+                observe,
+                reply,
+            } => self.attach(requested, observe, reply),
             Start::LaunchByExec {
                 requested,
                 stop_at_entry,
@@ -286,7 +290,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         });
     }
 
-    fn attach(&mut self, requested: ProcessId, reply: Reply<StopId>) {
+    fn attach(&mut self, requested: ProcessId, observe: bool, reply: Reply<StopId>) {
         self.restore_launched_program();
         let (tgid, seized, unseized, waiter) = match self.seize_process(requested) {
             Ok(seized) => seized,
@@ -310,6 +314,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             Some(waiter),
         );
         inferior.unseized_threads = unseized;
+        inferior.observer = observe;
         self.inferior = Some(inferior);
         self.attach_reply = Some(reply);
         self.attach_rescans = 0;

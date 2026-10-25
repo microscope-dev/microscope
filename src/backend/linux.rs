@@ -988,6 +988,10 @@ struct Inferior {
     /// of theirs is due.
     unseized_threads: BTreeSet<Pid>,
 
+    /// Whether the session only reads the process, so plants none of the
+    /// debugger's own breakpoints (`DebuggerHandle::observe_process`).
+    observer: bool,
+
     /// Fork children announced before their initial stop arrived, with the
     /// breakpoint sites each inherited.
     fork_children: BTreeMap<Pid, Vec<(VirtualAddress, u8)>>,
@@ -1098,6 +1102,7 @@ impl Inferior {
             unowned_stops: BTreeMap::new(),
             vanished_threads: BTreeSet::new(),
             unseized_threads: BTreeSet::new(),
+            observer: false,
             former_sites: BTreeMap::new(),
             fork_children: BTreeMap::new(),
             vfork_children: BTreeSet::new(),
@@ -1641,6 +1646,7 @@ enum Start {
     Launch(crate::LaunchOptions, Reply<ExecutionId>),
     Attach {
         requested: ProcessId,
+        observe: bool,
         reply: Reply<StopId>,
     },
     LaunchByExec {
@@ -2258,8 +2264,13 @@ impl<P: LinuxTraceOps> Controller<P> {
                 self.edit(Edit::RemoveCatchpoint { id, reply });
             }
             Request::Launch { options, reply } => self.start(Start::Launch(*options, reply)),
-            Request::Attach { process_id, reply } => self.start(Start::Attach {
+            Request::Attach {
+                process_id,
+                observe,
+                reply,
+            } => self.start(Start::Attach {
                 requested: process_id,
+                observe,
                 reply,
             }),
             Request::LaunchByExec {

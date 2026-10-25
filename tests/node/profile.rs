@@ -216,3 +216,101 @@ fn the_path_comparison_fails_on_each_lie() {
         assert_eq!(missing(&truth, &lie).len(), 1, "{lie:?}");
     }
 }
+
+/// What a flight recording shows of a write to the program, or of a turn
+/// to its inspector: a planted trap, a stored word or register, a signal
+/// that opens the inspector, and a CDP command.
+#[cfg(debug_assertions)]
+const WRITES: [&str; 6] = [
+    "install breakpoint",
+    "reinstall breakpoint",
+    "PTRACE_POKEDATA",
+    "PTRACE_SETREGS",
+    "SIGUSR1",
+    " to Session",
+];
+
+/// Each line of a flight recording that shows a write.
+#[cfg(debug_assertions)]
+fn writes(recording: &str) -> Vec<&str> {
+    recording
+        .lines()
+        .filter(|line| WRITES.iter().any(|write| line.contains(write)))
+        .collect()
+}
+
+/// Profiling a Node program with stopped snapshots, and tracing its system
+/// calls with their stacks, only read it: the flight recordings of both
+/// show snapshots taken and calls traced, and no write to the program.
+#[cfg(debug_assertions)]
+#[test]
+fn profiling_and_tracing_write_nothing() {
+    let scratch = ScratchDir::new("node-read-only");
+    let recording = scratch.path().join("record.log");
+    let (reader, mut writer) = std::io::pipe().expect("pipe");
+    let mut record = Command::new(env!("CARGO_BIN_EXE_microscope"))
+        .env("MICROSCOPE_FLIGHT_RECORDING", &recording)
+        .args(["record", "--python", "snapshot=0.1", "-o"])
+        .arg(scratch.path().join("profile.json"))
+        .arg("--")
+        .arg(node::node(ENTRY))
+        .arg(node::fixture("stacks.js"))
+        .env_remove("NODE_OPTIONS")
+        .stdin(reader)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("run microscope record");
+
+    // Three snapshots, each a session that ended.
+    let mut text = String::new();
+    crate::support::wait_until("three snapshots end", || {
+        text = std::fs::read_to_string(&recording).unwrap_or_default();
+        text.matches("request shutdown").count() >= 3
+    });
+    writer.write_all(b"\n").expect("release the program");
+    assert!(record.wait().expect("microscope record").success());
+    let text = std::fs::read_to_string(&recording).expect("the recording");
+    assert!(text.contains("request attach"), "{text}");
+    let written = writes(&text);
+    assert!(
+        written.is_empty(),
+        "the snapshots wrote:\n{}",
+        written.join("\n")
+    );
+
+    let trace = scratch.path().join("trace.ndjson");
+    let tracing = scratch.path().join("syscalls.log");
+    let mut microscope = Command::new(env!("CARGO_BIN_EXE_microscope"));
+    microscope.env("MICROSCOPE_FLIGHT_RECORDING", &tracing);
+    let (reported, records) = crate::syscalls::run(
+        crate::syscalls::command(microscope, &["--engine", "ptrace", "-k"], &trace, false),
+        &trace,
+    );
+    assert!(!reported.is_empty() && !records.is_empty());
+    let text = std::fs::read_to_string(&tracing).expect("the recording");
+    let written = writes(&text);
+    assert!(
+        written.is_empty(),
+        "the tracer wrote:\n{}",
+        written.join("\n")
+    );
+}
+
+/// The check fails on each write it exists to catch.
+#[cfg(debug_assertions)]
+#[test]
+fn the_write_check_fails_on_each_write() {
+    for write in [
+        "   1.0 controller install breakpoint 0x10 in 7 for Loader",
+        "   1.0 controller reinstall breakpoint 0x10 in 7",
+        "   1.0 controller PTRACE_POKEDATA 7 0x10 0x0000000000000000",
+        "   1.0 controller PTRACE_SETREGS 7 rip=0x10",
+        "   1.0 controller tgkill 7 7 SIGUSR1",
+        "   1.0 controller Runtime.evaluate to Session(1): Ok(1)",
+    ] {
+        let recording = format!("   0.5 controller request attach 7\n{write}\n");
+        assert_eq!(writes(&recording), [write], "{write}");
+    }
+    assert!(writes("   0.5 controller PTRACE_SEIZE 7 exit_kill=false\n").is_empty());
+}

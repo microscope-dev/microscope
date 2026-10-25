@@ -242,7 +242,7 @@ impl Snapshotter {
         let handle = debugger.handle();
 
         let read = match handle
-            .attach_process(ProcessId::new(u64::from(self.pid)))
+            .observe_process(ProcessId::new(u64::from(self.pid)))
             .await
         {
             Ok(stop) => {
