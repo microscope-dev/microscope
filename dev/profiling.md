@@ -380,8 +380,11 @@ Node runs each isolate on one thread for that thread's life. A thread that
 finds the address of an isolate none of whose threads is in it now is in a
 new isolate, which took a disposed one's address, and gets a new number. A
 thread's exit (`thread_exited`) forgets the numbers only it held. The
-numbers become spans of the label `isolate`,
-built as the GIL's are (`Interpreted::extend`). `tests/node/profile.rs`
+debugger keeps its own rule on purpose, which frees a number once every
+thread seen holding it is seen holding none, so a profile and the thread
+list may give one worker's isolate different numbers. The numbers become
+spans of the label `isolate`, built as the GIL's are
+(`Interpreted::extend`). `tests/node/profile.rs`
 records `busy.js --pool` on 26 and 22: its main thread and worker each carry
 one isolate number of their own, and the libuv pool thread that runs its
 PBKDF2, which no JavaScript runs on, carries none.
