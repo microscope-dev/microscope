@@ -200,14 +200,24 @@ async fn debian_breakpoints_and_exceptions_match_v8() {
     assert!(lies.is_empty(), "{}", lies.join("\n"));
 }
 
-/// Main-thread stepping has its own namespace deadline, rather than sharing
-/// one with four independent run-control scenarios under cold-cache stress.
+// Split the cases so cold-cache stress stays within each namespace deadline.
 #[tokio::test]
-async fn debian_steps_match_v8() {
-    if !inside("debian::debian_steps_match_v8") {
+async fn debian_steps_match_v8_in_the_first_half_of_cases() {
+    if !inside("debian::debian_steps_match_v8_in_the_first_half_of_cases") {
         return;
     }
-    let lies = crate::steps::lies(DEBIAN).await;
+    let cases = &crate::steps::CASES;
+    let lies = crate::steps::lies(DEBIAN, &cases[..cases.len() / 2]).await;
+    assert!(lies.is_empty(), "{}", lies.join("\n"));
+}
+
+#[tokio::test]
+async fn debian_steps_match_v8_in_the_second_half_of_cases() {
+    if !inside("debian::debian_steps_match_v8_in_the_second_half_of_cases") {
+        return;
+    }
+    let cases = &crate::steps::CASES;
+    let lies = crate::steps::lies(DEBIAN, &cases[cases.len() / 2..]).await;
     assert!(lies.is_empty(), "{}", lies.join("\n"));
 }
 
