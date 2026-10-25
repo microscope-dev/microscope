@@ -323,6 +323,8 @@ impl Values<'_, '_> {
             parent: None,
             internal: false,
             labels,
+            callback: None,
+            stackless: false,
         }
     }
 

@@ -314,3 +314,16 @@ async fn debian_detach_closes_its_owned_inspector_and_preserves_a_borrowed_one()
         assert!(child.wait().success(), "Debian detached process survives");
     }
 }
+
+/// Debian's event loop work is what its fixture reported: its handles,
+/// requests, and timers, and a named gap for the pool its shared libuv
+/// keeps.
+#[tokio::test]
+async fn debian_tasks_are_the_ones_node_reported() {
+    if !inside("debian::debian_tasks_are_the_ones_node_reported") {
+        return;
+    }
+    if let Err(lies) = crate::tasks::task_lies(DEBIAN).await {
+        panic!("{lies}");
+    }
+}

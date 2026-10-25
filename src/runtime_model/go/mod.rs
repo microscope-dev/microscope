@@ -387,6 +387,8 @@ impl GoRuntime {
                 stop.load_bias().wrapping_unload(VirtualAddress::new(entry)),
             ),
             labels: Vec::new(),
+            callback: None,
+            stackless: false,
         }))
     }
 

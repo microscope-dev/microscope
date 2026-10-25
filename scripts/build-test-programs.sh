@@ -2668,6 +2668,16 @@ for entry in 26 24 22; do
             "$fixtures_dir/node/${fixture}.js $fixtures_dir/node/truth.js $node" \
             env -i "$node" "${flags[@]}" "$fixtures_dir/node/${fixture}.js" --abort
     done
+    # The tasks fixture's file request opens a FIFO no one writes, which
+    # blocks a pool thread.
+    fifo="$output_dir/node-tasks.fifo"
+    if [[ ! -p "$fifo" ]]; then
+        rm -f "$fifo"
+        mkfifo "$fifo"
+    fi
+    generate_core "$output_dir/node-tasks-${entry}.core" 6 "$default_core_filter" \
+        "$fixtures_dir/node/tasks.js $fixtures_dir/node/truth.js $node" \
+        env -i "$node" "$fixtures_dir/node/tasks.js" "$fifo" --abort
 done
 # A stack that runs through code the program copied into anonymous memory.
 generate_core "$output_dir/code-copy.core" 6 "$default_core_filter" \

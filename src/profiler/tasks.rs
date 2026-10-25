@@ -1201,6 +1201,7 @@ fn same_context(
 /// no thread, since a running thread's registers are not read.
 const fn live_waits(task: &runtime_model::RuntimeTask) -> bool {
     !task.internal
+        && !task.stackless
         && task.thread.is_none()
         && matches!(
             task.state,

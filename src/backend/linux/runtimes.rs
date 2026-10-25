@@ -181,6 +181,19 @@ impl<P: InspectionOps> ProcessStop<'_, P> {
     }
 }
 
+/// The futex word a thread with `registers` is blocked on: the kernel
+/// stopped it inside `futex` (202 on x86-64), whose result is still one of
+/// the restart codes a signal leaves an interrupted wait with, and whose
+/// first argument, rdi, is the word.
+fn blocked_futex(registers: &nix::libc::user_regs_struct) -> Option<u64> {
+    const FUTEX: u64 = 202;
+    // -EINTR, -ERESTARTSYS, -ERESTARTNOINTR, -ERESTARTNOHAND, and
+    // -ERESTART_RESTARTBLOCK.
+    const INTERRUPTED: [i64; 5] = [-4, -512, -513, -514, -516];
+    (registers.orig_rax == FUTEX && INTERRUPTED.contains(&registers.rax.cast_signed()))
+        .then_some(registers.rdi)
+}
+
 impl<P: InspectionOps> RuntimeStop for ProcessStop<'_, P> {
     fn target_thread_id(&self, thread: ThreadId) -> Option<crate::runtime_model::TargetThreadId> {
         if self.threads.binary_search(&thread).is_err() {
@@ -236,6 +249,12 @@ impl<P: InspectionOps> RuntimeStop for ProcessStop<'_, P> {
         self.locals.get(&frame).cloned()
     }
 
+    fn blocked_futex(&self, thread: ThreadId) -> Option<u64> {
+        let pid = debug_pid(thread).ok()?;
+        let registers = self.ptrace.registers(pid).ok()?;
+        blocked_futex(&registers)
+    }
+
     fn thread_pointer(&self, thread: ThreadId) -> Option<u64> {
         let pid = debug_pid(thread).ok()?;
         self.ptrace
@@ -274,6 +293,11 @@ impl<P: InspectionOps> RuntimeStop for ProcessStop<'_, P> {
 
     fn threads(&self) -> Vec<ThreadId> {
         self.threads.clone()
+    }
+
+    fn main_thread(&self) -> Option<ThreadId> {
+        let main = debug_thread_id(self.process);
+        self.threads.binary_search(&main).is_ok().then_some(main)
     }
 }
 
@@ -699,7 +723,21 @@ impl<P: InspectionOps> Controller<P> {
             state: task.state.clone(),
             detail: task.detail.clone(),
             thread: task.thread,
-            resume: task.resume.map(code),
+            resume: task.resume.map(code).or_else(|| {
+                let callback = task.callback.as_ref()?;
+                let mut location = callback.place.as_ref().map_or_else(
+                    || TaskLocation {
+                        address: None,
+                        module: Some(runtime.module.id),
+                        function: None,
+                        source: None,
+                        recorded: None,
+                    },
+                    |place| self.recorded_location(inferior, &runtime.module, place),
+                );
+                location.function = Some(Arc::clone(&callback.function));
+                Some(location)
+            }),
             creation: task.creation.map(code).or_else(|| {
                 task.spawned
                     .as_ref()
@@ -715,6 +753,7 @@ impl<P: InspectionOps> Controller<P> {
             internal: task.internal,
             labels: task.labels.clone().into(),
             object: (task.locator != 0).then(|| VirtualAddress::new(task.locator)),
+            stackless: task.stackless,
         }
     }
 
