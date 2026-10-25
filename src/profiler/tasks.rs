@@ -219,6 +219,14 @@ struct Kept {
     frames: Vec<runtime_model::InterpretedFrame>,
 }
 
+/// Whether a thread whose kept read left its context-switch counts at
+/// `kept` may have run since, by its counts read `before` and `after` its
+/// system call record: a thread that ran between the two reads and slept
+/// again in the same call leaves the same record behind.
+fn ran_since(kept: (u64, u64), before: (u64, u64), after: (u64, u64)) -> bool {
+    kept != before || kept != after
+}
+
 /// A runtime a module carries, bound or with why it cannot be.
 type Detected = Result<Arc<dyn runtime_model::RuntimeModel>, runtime_model::Unbound>;
 
@@ -1300,14 +1308,18 @@ impl LiveRuntime<'_> {
             .starts
             .get(&tid)
             .map(|&start| (self.image.id(), tid, start));
-        if let Some(kept) = key.and_then(|key| {
+        let kept = key.and_then(|key| {
             self.kept
                 .borrow()
                 .get(&key)
                 .filter(|kept| kept.switches == before && kept.asleep == asleep)
-                .map(|kept| kept.frames.clone())
-        }) {
-            return Ok(Some(kept));
+                .map(|kept| (kept.switches, kept.frames.clone()))
+        });
+        if let Some((switches, frames)) = kept {
+            let after = crate::backend::thread_switches(stop.pid, tid).map_err(Arc::<str>::from)?;
+            if !ran_since(switches, before, after) {
+                return Ok(Some(frames));
+            }
         }
         let thread = runtime_model::LiveThread {
             thread: crate::ThreadId::new(u64::from(tid)),
@@ -1522,6 +1534,23 @@ const fn live_waits(task: &runtime_model::RuntimeTask) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// A kept read is reused only while the thread's counts, read before
+    /// and after its system call record, are both those it left.
+    #[test]
+    fn a_kept_read_is_reused_only_while_the_counts_around_the_record_hold() {
+        use super::ran_since;
+        assert!(!ran_since((5, 1), (5, 1), (5, 1)));
+        assert!(
+            ran_since((5, 1), (6, 1), (6, 1)),
+            "ran before the first read"
+        );
+        assert!(ran_since((5, 1), (5, 1), (6, 1)), "ran between the reads");
+        assert!(
+            ran_since((5, 1), (5, 1), (5, 2)),
+            "preempted between the reads"
+        );
+    }
+
     #[test]
     fn a_live_thread_with_a_non_utf8_comm_is_not_mistaken_for_an_exited_process() {
         let original = nix::sys::prctl::get_name().unwrap();

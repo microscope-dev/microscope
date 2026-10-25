@@ -272,8 +272,10 @@ thread would be read twice, the second time with the copy's bias.
 A thread that has not run since a quiet read is not read again
 (`tasks::Kept`). A read keeps the frames it found with the thread's
 context-switch counts and its `syscall` record. The next read reuses the
-frames only while both are unchanged and the thread's start time is the
-same. Its stack and the objects its frames name can change only while it
+frames only while the record is unchanged, the counts read before and after
+it are both unchanged, and the thread's start time is the same. A thread
+that ran between the two reads of a single check and slept again in the same
+call leaves the same record, which the second count catches (`ran_since`). Its stack and the objects its frames name can change only while it
 runs: V8 collects an isolate's heap on the isolate's own thread. The
 exception is the heap isolates share under V8's flags for shared structs
 and strings, which Node leaves off and the reader does not check. A program
