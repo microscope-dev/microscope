@@ -161,6 +161,49 @@ select samples and draw lanes as instrumentation labels do. CPython before
 3.15 does not say which threads wait for the GIL, and a free-threaded build's
 GIL is off, so it has no GIL labels. A label is as the GIL was when read.
 
+## Record Node programs
+
+CPU samples of a Node program unwind through V8's own code: its builtins,
+its interpreter, and the code its compilers generate. `--node ENGINE`, the
+same option as `--python ENGINE`, reads each thread's JavaScript frames as
+well:
+
+```sh
+microscope record --node bpf -o server.usprof -- node server.js
+microscope report --js --lines server.usprof
+```
+
+- `bpf` reads the sampled thread's JavaScript frames in the kernel as each
+  CPU sample is taken, without stopping the program, and needs the same
+  privileges as Python's. Each frame is named by its function. Its line is
+  known only for a frame V8's interpreter runs that has called another
+  JavaScript frame of the sample. The innermost frame and frames that
+  Sparkplug, Maglev, or Turbofan compiled have their function without a
+  line. A sample's line is never a guess: V8 writes an interpreted frame's
+  place to the stack only before a call, and the walk does not prove which
+  compiled code a frame ran.
+- `snapshot[=SECONDS]` stops the program and reads each thread's whole
+  stack, as the debugger does: every frame has its function and line, in
+  every tier. A snapshot writes nothing into the program and does not use
+  Node's inspector.
+- `live` does not read JavaScript frames. A running thread's frames begin at
+  its frame pointer, which only a stopped thread shows, so each live read
+  says so instead of recording no frames.
+
+A sample taken before microscope has read V8's layout, as just after the
+program starts, ends in "interpreted frames unknown". A frame whose function
+V8's garbage collector moved or freed before microscope read it is
+`<unknown>`, with the reason, never another function's name. Frames of Node's
+own scripts, such as `node:internal/timers`, stay in the stacks.
+
+`--js` is the same look as `--python`: each stack from its outermost
+JavaScript frame in, without V8's frames between them. With `--lines`,
+JavaScript functions are told apart by line where the line is known.
+
+A recording that follows a program's children, as `sh -c 'node a.js & node
+b.js'` starts, reads each Node process by its own V8 and keeps its samples
+apart.
+
 ## Keep a rolling window
 
 `--window SECONDS` retains only the latest part of a recording. Sending
@@ -268,6 +311,37 @@ The package loads the probes SDK's shared library, built with
 `MICROSCOPE_PROBES_LIBRARY`. Without it, every mark does nothing and
 `microscope.problem` says why. It works with every Python 3 version and GIL
 mode; nothing is written unless a recording switches a site on.
+
+### Instrument a Node program
+
+The `microscope` package in `sdk/node` marks a Node program's work the same
+way:
+
+```js
+const microscope = require('microscope');
+
+const handle = microscope.wrap('handle', (request) =>
+  microscope.label('route', request.route, () => {
+    const rows = microscope.zone('query', () => query(request));
+    microscope.plot('rows', rows.length);
+    return render(rows);
+  }));
+```
+
+`zone(name, fn)` runs `fn` as a span of the thread's time, `wrap(name, fn)`
+makes each call of `fn` one, and `label(name, value, fn)` labels the time
+`fn` runs. `message(name, text)`, `frame()`, `trigger(why)`, and
+`listening()` complete it. A zone or label spans a function of one thread,
+so neither accepts an async function or a generator, whose waits other work
+fills. Each mark is a site named by its name and where it was called from.
+A `worker_threads` worker marks its own thread.
+
+The package's Node-API addon, `microscope.node`, works with every Node
+release, and loads the probes SDK's shared library, built as for Python, from
+`libmicroscope_probes.so` beside the package or from
+`MICROSCOPE_PROBES_LIBRARY`. `MICROSCOPE_NODE_ADDON` names the addon when it
+is not beside `index.js`. `sdk/node/README.md` shows how to build both.
+Without them every mark does nothing and `microscope.problem` says why.
 
 > TODO: write a short public probes tutorial after the SDK has a supported
 > installation and versioning story.

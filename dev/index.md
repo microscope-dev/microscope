@@ -35,6 +35,8 @@ will change:
 | Change views or visualizers | `src/view/`, `views/`, `web/src/visualize/` | `tests/debugger/views.rs`, `web/test/drawing.test.tsx` |
 | Change goroutines, tasks, or async frames | `src/runtime_model/`, `src/backend/linux/runtimes.rs` | [runtime models](runtime-models.md) |
 | Change Node's frames or JavaScript values | `src/runtime_model/node/`, `src/debug_info/v8/` | [runtime models](runtime-models.md#node), `tests/node/` |
+| Change JavaScript frames in samples or syscall stacks | `src/backend/linux/bpf/v8.bpf.h`, `src/runtime_model/node/sampled.rs`, `src/unwind/code_copies.rs` | [profiling](profiling.md#javascript-frames-in-each-sample), [system call tracing](syscalls.md#javascript-frames), `tests/node/profile.rs`, `tests/node/syscalls.rs` |
+| Change the Node instrumentation package | `sdk/node/` | [profiling](profiling.md#instrumentation-probes), `tests/fixtures/node/probes.js` |
 | Change profiling or capture analysis | `src/profiler/`, `src/capture/`, `src/analysis/` | [profiling](profiling.md) |
 | Change system call tracing or catchpoints | `src/syscalls/`, `src/backend/linux/syscalls/` | [system call tracing](syscalls.md) |
 | Change the CLI, DAP server, or web UI | `src/cli/`, `src/dap/`, `src/web/`, `web/src/` | [web UI](web-ui.md) and the client test suites |

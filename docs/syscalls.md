@@ -103,6 +103,17 @@ with either engine; see [Python](languages.md#system-calls). In ndjson, such
 a frame has `function`, `file`, and `line`, where a native frame has
 `symbol`.
 
+A Node program's stacks show its JavaScript frames the same way, among the
+native frames of V8 that run them. The ptrace engine reads the stopped
+thread as the debugger does, so every frame has its line, in every tier. The
+BPF engine names every frame's function. A frame V8's interpreter runs has
+its line. A frame that Sparkplug, Maglev, or Turbofan compiled has no line,
+because the engine does not prove which compiled code the frame ran. A
+frame whose function V8's garbage collector moved before microscope read it
+is `<unknown>`, never another function. Calls made before microscope has
+read V8's layout, just after the program starts, end with `interpreted
+frames unknown`. See [Node.js](languages.md#system-calls-1).
+
 ## Save a trace and open it later
 
 When the `-o` file name ends in `.usprof`, microscope saves the whole trace:
