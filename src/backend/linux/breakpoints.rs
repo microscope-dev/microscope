@@ -658,6 +658,11 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .filter(|breakpoint| breakpoint.enabled)
             {
                 if let Err(cause) = remove_logical_breakpoint(&self.ptrace, inferior, breakpoint) {
+                    // As in `remove_logical_breakpoint`: a dying process
+                    // gets nothing back.
+                    if is_vanished_tracee(&cause) {
+                        return Err(cause);
+                    }
                     for prior in removed.iter().rev() {
                         if let Err(recovery) =
                             install_logical_breakpoint(&self.ptrace, inferior, prior)
@@ -1599,6 +1604,13 @@ pub(super) fn remove_logical_breakpoint(
     let mut removed = Vec::new();
     for address in addresses {
         if let Err(cause) = remove_breakpoint_owner_from(ptrace, inferior, address, owner) {
+            // SIGKILL took the thread: the address space is dying, so
+            // nothing is put back, and the caller learns of the death
+            // itself, which the process's exit status then confirms. Each
+            // site record still matches memory: the traps lifted are gone.
+            if is_vanished_tracee(&cause) {
+                return Err(cause);
+            }
             for prior in removed.into_iter().rev() {
                 if let Err(recovery) = ptrace.install_breakpoint(
                     inferior.memory_thread(),

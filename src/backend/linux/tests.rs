@@ -2583,11 +2583,12 @@ fn a_failure_that_detaches_an_attached_process_ends_the_controller() {
 
 /// SIGKILL from outside takes an attached thread as the stop its
 /// temporary breakpoint made deletes it: lifting its second trap fails,
-/// and so does putting back the first. The failure releases the process
-/// and ends the controller, with a client's shutdown queued behind the
-/// stop. That shutdown is answered, never dropped.
+/// and so would putting back the first. The process is dying, not failed:
+/// nothing is released or restored, and the client's shutdown, queued
+/// behind the stop, ends when its exit status reports the kill, which is
+/// what the client is told.
 #[test]
-fn a_shutdown_queued_behind_a_failure_that_releases_the_process_is_answered() {
+fn a_process_killed_while_its_temporary_breakpoint_is_deleted_reports_its_death() {
     let mut harness = hit_harness(1, ">0");
     harness.attached();
     harness.controller.next_breakpoint_id = 2;
@@ -2623,20 +2624,76 @@ fn a_shutdown_queued_behind_a_failure_that_releases_the_process_is_answered() {
         .expect("the shutdown is queued");
     harness.trace().set_pc(pid, HIT_SITE + 1);
     harness.trace().set_siginfo(pid, libc::SI_KERNEL, None);
-    let keeps_running =
-        harness
-            .controller
-            .handle_message(ControllerMessage::Wait(WaitEvent::Stopped(
-                pid,
-                Signal::SIGTRAP,
-            )));
+    let serve = |harness: &mut WatchHarness, message| harness.controller.handle_message(message);
+    let mut running = serve(
+        &mut harness,
+        ControllerMessage::Wait(WaitEvent::Stopped(pid, Signal::SIGTRAP)),
+    );
+    while running && let Some(message) = harness.controller.next_message(false) {
+        running = serve(&mut harness, message);
+    }
     assert!(
-        harness
+        !harness
             .trace()
             .take_actions()
-            .contains(&format!("detach {pid} None")),
-        "the failure releases the process"
+            .iter()
+            .any(|action| action.starts_with("detach ")),
+        "a dying process is not released"
     );
+    assert!(answer.try_recv().is_err(), "the shutdown awaits the exit");
+
+    let ended = !serve(
+        &mut harness,
+        ControllerMessage::Wait(WaitEvent::Signaled(pid, Signal::SIGKILL, false)),
+    );
+    let published = harness.published();
+    assert!(
+        published.iter().any(|event| matches!(
+            event,
+            DebuggerEvent::InferiorExited {
+                status: ExitStatus::Terminated(info),
+                ..
+            } if info.code == 9
+        )),
+        "the kill is reported: {published:?}"
+    );
+    assert!(
+        !published
+            .iter()
+            .any(|event| matches!(event, DebuggerEvent::InferiorDetached { .. })),
+        "no detach is reported: {published:?}"
+    );
+    assert!(
+        harness.controller.inferior.is_none(),
+        "the process is reaped"
+    );
+    assert!(ended, "the controller ends");
+    assert!(
+        matches!(answer.try_recv(), Ok(Ok(()))),
+        "the shutdown is answered"
+    );
+}
+
+/// A failure that releases an attached process ends the controller with a
+/// client's shutdown still queued. That shutdown is answered, not dropped.
+#[test]
+fn a_shutdown_queued_behind_a_failure_that_releases_the_process_is_answered() {
+    let mut harness = watch_harness(2);
+    harness.attached();
+    let (reply, mut answer) = tokio::sync::oneshot::channel();
+    harness
+        .controller
+        .message_sender
+        .try_send(ControllerMessage::Request(Request::Shutdown { reply }))
+        .expect("the shutdown is queued");
+    let unowned = WaitEvent::PtraceEvent(
+        Pid::from_raw(9999),
+        Signal::SIGTRAP,
+        libc::PTRACE_EVENT_CLONE,
+    );
+    let keeps_running = harness
+        .controller
+        .handle_message(ControllerMessage::Wait(unowned));
     assert!(!keeps_running, "the controller ends");
     assert!(
         matches!(answer.try_recv(), Ok(Ok(()))),
