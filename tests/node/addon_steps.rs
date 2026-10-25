@@ -183,11 +183,26 @@ pub async fn lies(entry: &str) -> Vec<String> {
     lies
 }
 
-#[tokio::test]
-async fn steps_enter_an_addons_c_functions_and_come_back_where_v8_does() {
+/// Checks the builds whose names `nixpkgs` does or does not start, half of
+/// the matrix each, so that each test stays within its deadline when the
+/// machine is loaded.
+async fn check_builds(nixpkgs: bool) {
     let mut found = Vec::new();
-    for entry in MATRIX {
+    for entry in MATRIX
+        .into_iter()
+        .filter(|entry| entry.starts_with("nixpkgs") == nixpkgs)
+    {
         found.extend(lies(entry).await);
     }
     assert!(found.is_empty(), "{}", found.join("\n"));
+}
+
+#[tokio::test]
+async fn steps_enter_an_addons_c_functions_and_come_back_where_v8_does() {
+    check_builds(false).await;
+}
+
+#[tokio::test]
+async fn steps_enter_an_addons_c_functions_and_come_back_on_nixpkgs_builds() {
+    check_builds(true).await;
 }
