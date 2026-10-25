@@ -733,8 +733,8 @@ fn live_reads_under_deoptimization_find_each_thread_at_its_site_on_22() {
 
 /// A live recording reads as often as it is asked to, or says it fell
 /// behind: reads at a millisecond's interval of a program parked in
-/// `fs.readSync` either keep up from the first read on, as each read's
-/// wait shows, or each say how long they took.
+/// `fs.readSync` keep up from the first read on, as each read's wait shows,
+/// but for the time the reads that fell behind say they did.
 #[test]
 fn live_reads_keep_their_interval_or_say_they_fell_behind() {
     let every = Duration::from_millis(1);
@@ -760,19 +760,49 @@ fn live_reads_keep_their_interval_or_say_they_fell_behind() {
         panic!("no read found the parked thread");
     };
     let span = Duration::from_nanos((last - first).unsigned_abs());
-    let behind = profile
-        .task_snapshot_problems()
+    // Each read that fell behind says how long it took and how late it
+    // began, which accounts for the reads it kept from being taken; the
+    // rest of the span must hold reads at no less than half the rate.
+    let problems = profile.task_snapshot_problems();
+    let notes: Vec<&String> = problems
         .iter()
-        .filter(|(time, problem)| {
-            (first..=last).contains(time) && problem.starts_with("a live read took")
-        })
-        .count();
-    let asked = u64::try_from(span.as_millis()).expect("a span");
-    assert!(span >= READ_FOR, "reads spanned {span:?}");
+        .filter(|(time, _)| (first..=last).contains(time))
+        .map(|(_, problem)| problem)
+        .filter(|problem| problem.starts_with("a live read took"))
+        .collect();
+    let explained: Duration = notes.iter().filter_map(|note| behind_by(note)).sum();
     assert!(
-        reads * 2 >= asked || u64::try_from(behind).expect("a count") * 2 >= reads,
-        "{reads} reads in {asked} ms at 1 ms each, {behind} said they fell behind"
+        notes.iter().all(|note| behind_by(note).is_some()),
+        "a note that says not how far behind: {notes:#?}"
     );
+    assert!(span >= READ_FOR, "reads spanned {span:?}");
+    let unexplained = span.saturating_sub(explained);
+    assert!(
+        every * u32::try_from(reads).expect("a count") * 2 >= unexplained,
+        "{reads} reads in {span:?} at {every:?} each, of which {explained:?} is said to be \
+         behind; {:?} snapshots and changed while read in all; problems meanwhile: {:#?}",
+        profile.live_snapshots(),
+        problems
+            .iter()
+            .filter(|(time, _)| (first..=last).contains(time))
+            .map(|(_, problem)| problem.chars().take(120).collect::<String>())
+            .collect::<std::collections::BTreeSet<_>>()
+    );
+}
+
+/// How far behind a note that a live read fell behind says it was: how
+/// long the read took and how late it began, as `a live read took 2.5 ms
+/// and began 0.5 ms after it was due, ...`.
+fn behind_by(note: &str) -> Option<Duration> {
+    let rest = note.strip_prefix("a live read took ")?;
+    let (took, rest) = rest.split_once(" ms and began ")?;
+    let (late, _) = rest.split_once(" ms after it was due")?;
+    let ms = |text: &str| {
+        text.parse::<f64>()
+            .ok()
+            .map(|ms| Duration::from_secs_f64(ms / 1e3))
+    };
+    Some(ms(took)? + ms(late)?)
 }
 
 /// How long the interval test reads its program.
