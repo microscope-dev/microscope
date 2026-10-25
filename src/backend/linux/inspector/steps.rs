@@ -268,7 +268,8 @@ pub(super) struct Gate {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum GatePhase {
-    /// The pause is not yet sent: V8 has yet to resume.
+    /// The pause is not yet sent: V8 has yet to resume, which the main
+    /// thread runs to bring about.
     Unsent,
     Sent(Vec<u8>),
 
@@ -308,9 +309,16 @@ impl Gate {
         });
     }
 
-    /// Whether the gate still holds the main thread.
-    pub(super) fn holds(&self) -> bool {
-        self.phase != GatePhase::Passed
+    /// Whether the gate still holds the main thread, until the pause is
+    /// handed on. While the main isolate is `resuming`, a pause not yet
+    /// sent waits for V8 to resume, which the main thread must run to
+    /// bring about, so the gate lets it run until the pause is sent.
+    pub(super) const fn holds(&self, resuming: bool) -> bool {
+        match self.phase {
+            GatePhase::Unsent => !resuming,
+            GatePhase::Sent(_) | GatePhase::Receiving { .. } => true,
+            GatePhase::Passed => false,
+        }
     }
 
     /// The traps the gate needs.
@@ -329,8 +337,15 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.inferior.as_ref().is_some_and(|inferior| {
             pid == inferior.tgid
                 && inferior.inspectors.records.values().any(|inspector| {
+                    let resuming = inspector
+                        .isolates
+                        .get(&Session::main())
+                        .is_some_and(|isolate| isolate.resuming);
                     inspector.connection.is_some()
-                        && inspector.gate.as_ref().is_some_and(Gate::holds)
+                        && inspector
+                            .gate
+                            .as_ref()
+                            .is_some_and(|gate| gate.holds(resuming))
                 })
         })
     }
@@ -446,17 +461,15 @@ impl<P: LinuxTraceOps> Controller<P> {
             if inferior.inspectors.planted().contains(&address) {
                 continue;
             }
+            // Removing the last owner restores the instruction and forgets
+            // the repairs of the threads stopped there; a site another
+            // owner keeps keeps its trap, and their repairs.
             super::super::breakpoints::remove_breakpoint_owner_from(
                 &self.ptrace,
                 inferior,
                 address,
                 super::super::BreakpointOwner::InspectorHook,
             )?;
-            for thread in inferior.threads.values_mut() {
-                if thread.stopped_at_breakpoint == Some(address) {
-                    thread.stopped_at_breakpoint = None;
-                }
-            }
         }
         let pid = inferior.memory_thread();
         for &address in needed.difference(&planted) {

@@ -1436,3 +1436,103 @@ fn a_step_from_a_native_stop_holds_the_main_thread_until_its_pause_is_handed_on(
     }
     panic!("the main thread never runs");
 }
+
+/// Begins a step over from the published native stop of `scripted`'s main
+/// thread, and returns where the I/O thread takes messages.
+fn begin_native_step(scripted: &mut Scripted) -> crate::VirtualAddress {
+    let main = scripted.main();
+    let entry = {
+        let controller = &scripted.harness.controller;
+        let inferior = controller.inferior.as_ref().expect("inferior");
+        controller.runtimes(inferior)[0]
+            .module
+            .virtual_address(crate::ImageAddress::new(0x60))
+            .expect("the entry")
+    };
+    let process = super::super::process_id(main);
+    let stop = scripted.harness.stop_id();
+    scripted
+        .harness
+        .controller
+        .begin_runtime_step(
+            process,
+            stop,
+            main,
+            (scripted.runtime, None),
+            crate::StepKind::OverSource,
+            crate::protocol::ResumeScope::Process(process),
+            crate::protocol::ExceptionDisposition::Pass,
+        )
+        .expect("the step begins");
+    entry
+}
+
+/// The native stop came after `Debugger.resume` was sent and before the
+/// main thread took it, so the step's pause waits for `Debugger.resumed`,
+/// which the main thread must run to bring. The gate does not hold it
+/// before the pause is sent.
+#[test]
+fn a_step_whose_pause_waits_for_a_resume_lets_the_main_thread_take_it() {
+    let mut scripted = Scripted::connected(2);
+    scripted.sent();
+    let main = scripted.main();
+    scripted
+        .record()
+        .isolates
+        .get_mut(&Session::main())
+        .expect("the main isolate")
+        .resuming = true;
+    scripted.actions();
+    begin_native_step(&mut scripted);
+    let actions = scripted.actions();
+    assert!(
+        actions.contains(&format!("continue {main} None")),
+        "the main thread runs to take the resume: {actions:?}"
+    );
+}
+
+/// A gate's trap that a user breakpoint shares stays when the gate ends,
+/// and a thread stopped at it still steps over it as it resumes.
+#[test]
+fn a_gate_ending_keeps_the_repair_of_a_trap_it_shares() {
+    let mut scripted = Scripted::connected(2);
+    scripted.sent();
+    let io = scripted.harness.threads[1];
+    let entry = begin_native_step(&mut scripted);
+    let inferior = scripted
+        .harness
+        .controller
+        .inferior
+        .as_mut()
+        .expect("inferior");
+    inferior
+        .breakpoints
+        .get_mut(&entry)
+        .expect("the gate's trap")
+        .owners
+        .insert(super::super::BreakpointOwner::User(
+            crate::BreakpointId::new(9),
+        ));
+    inferior.thread_mut(io).expect("io").stopped_at_breakpoint = Some(entry);
+    scripted.record().gate = None;
+    scripted
+        .harness
+        .controller
+        .sync_step_gates(true)
+        .expect("the gate's traps are removed");
+    let inferior = scripted
+        .harness
+        .controller
+        .inferior
+        .as_ref()
+        .expect("inferior");
+    assert!(
+        inferior.breakpoints[&entry].installed,
+        "the user's trap stays"
+    );
+    assert_eq!(
+        inferior.thread(io).expect("io").stopped_at_breakpoint,
+        Some(entry),
+        "the thread still steps over the trap"
+    );
+}
