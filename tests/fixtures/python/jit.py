@@ -1,8 +1,6 @@
-"""A loop hot enough for CPython's JIT to compile, which calls the
-extension's C function on every pass: a native breakpoint there, set once
-the loop has run long enough, stops in C that the JIT's code called. The
-first argument is the directory of the extension built for the
-interpreter.
+"""A hot loop that calls the extension's C function on every pass.
+The first argument is the extension's directory. With --cold-stop, wait
+for input and make an interpreted call before the loop warms up.
 """
 
 import sys
@@ -21,4 +19,9 @@ def spin():
 
 
 print("JIT", sys._jit.is_enabled(), flush=True)
+debugging = "--cold-stop" in sys.argv
+if debugging:
+    print("READY", flush=True)
+    input()
+    microscope_extension.reached(-1)
 spin()
