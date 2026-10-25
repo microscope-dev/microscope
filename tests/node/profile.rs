@@ -318,8 +318,13 @@ fn the_write_check_fails_on_each_write() {
 /// Runs the fixture `busy.js` on the entry for `seconds`, with `arguments`
 /// before it: the command, and where its output goes.
 pub fn busy(scratch: &ScratchDir, seconds: u32) -> (Command, std::path::PathBuf) {
+    busy_on(ENTRY, scratch, seconds)
+}
+
+/// Runs `busy.js` as [`busy`] does, on `entry`.
+pub fn busy_on(entry: &str, scratch: &ScratchDir, seconds: u32) -> (Command, std::path::PathBuf) {
     let output = scratch.path().join("output");
-    let mut command = Command::new(node::node(ENTRY));
+    let mut command = Command::new(node::node(entry));
     command
         .args(["--allow-natives-syntax", "--sparkplug-filter=sparkplugSpin"])
         .arg(node::fixture("busy.js"))
@@ -572,6 +577,105 @@ pub fn misplaced(
     misplaced
 }
 
+/// Each spinning thread `busy.js` reported in `output`, by its name and
+/// native id.
+pub fn spinners(output: &str) -> Vec<(String, u32)> {
+    Report::parse(output)
+        .lines()
+        .filter_map(|fields| match fields {
+            [kind, native, name] if kind == "spin" => Some((name.clone(), native.parse().ok()?)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Each lie the `isolate` labels of `zones` tell of `spinners`, each
+/// thread's name and native id, and of the threads `outside`, whose sampled
+/// time `weights` holds by native id. Each spinner runs in one isolate of
+/// its own, so its labels have one value, no other spinner's, and cover at
+/// least half of the time it was sampled, as the walker reads its isolate
+/// at every sample once the process's layout is known. A thread outside
+/// every isolate, as libuv's pool threads are, has no label.
+pub fn isolate_lies(
+    (spinners, outside): (&[(String, u32)], &[u32]),
+    weights: &BTreeMap<u32, u64>,
+    zones: &[microscope::profiler::ProfileZone],
+) -> Vec<String> {
+    let mut lies = Vec::new();
+    for tid in outside {
+        let labelled: Vec<_> = zones
+            .iter()
+            .filter(|zone| zone.tid == *tid && zone.name == "isolate")
+            .filter_map(|zone| zone.value.as_deref())
+            .take(4)
+            .collect();
+        if !labelled.is_empty() {
+            lies.push(format!("{tid}, in no isolate, is labelled {labelled:?}"));
+        }
+    }
+    let mut seen: BTreeMap<String, &str> = BTreeMap::new();
+    for (name, tid) in spinners {
+        let labels: Vec<_> = zones
+            .iter()
+            .filter(|zone| zone.tid == *tid && zone.name == "isolate")
+            .collect();
+        let mut values: Vec<&str> = labels
+            .iter()
+            .filter_map(|zone| zone.value.as_deref())
+            .collect();
+        values.sort_unstable();
+        values.dedup();
+        let [value] = values[..] else {
+            let shown: Vec<_> = values.iter().take(4).collect();
+            lies.push(format!(
+                "{name} ({tid}) is labelled with {} values, as {shown:?}",
+                values.len()
+            ));
+            continue;
+        };
+        if let Some(other) = seen.insert(value.to_owned(), name) {
+            lies.push(format!("{name} ({tid}) is in {other}'s isolate {value}"));
+        }
+        let labelled: i64 = labels.iter().map(|zone| zone.end - zone.start).sum();
+        let sampled = weights.get(tid).copied().unwrap_or(0);
+        if u64::try_from(labelled).unwrap_or(0) * 2 < sampled {
+            lies.push(format!(
+                "{name} ({tid}) is labelled for {labelled} of {sampled} ns"
+            ));
+        }
+    }
+    lies
+}
+
+/// The isolate check fails on each lie.
+#[test]
+fn the_isolate_check_fails_on_each_lie() {
+    let spinners = [("main".to_owned(), 10), ("worker".to_owned(), 11)];
+    let threads = (&spinners[..], &[12][..]);
+    let weights = BTreeMap::from([(10, 100), (11, 100), (12, 100)]);
+    let zone = |tid: u32, value: &str, end: i64| microscope::profiler::ProfileZone {
+        pid: 10,
+        tid,
+        depth: 0,
+        name: "isolate".to_owned(),
+        value: Some(value.to_owned()),
+        start: 0,
+        end,
+        flags: 0,
+    };
+    let truth = [zone(10, "1", 100), zone(11, "2", 90)];
+    assert!(isolate_lies(threads, &weights, &truth).is_empty());
+    for lie in [
+        vec![zone(10, "1", 100), zone(11, "2", 100), zone(12, "3", 100)],
+        vec![zone(10, "1", 100), zone(11, "1", 100)],
+        vec![zone(10, "1", 100)],
+        vec![zone(10, "1", 100), zone(11, "2", 50), zone(11, "3", 100)],
+        vec![zone(10, "1", 100), zone(11, "2", 40)],
+    ] {
+        assert_eq!(isolate_lies(threads, &weights, &lie).len(), 1, "{lie:?}");
+    }
+}
+
 /// The keys of the lines `busy.js`'s interpreted frames call from, which
 /// `output` reported: each such frame's own, and the line its function
 /// loops on, the line after its own in the fixture's source, from which
@@ -737,6 +841,106 @@ mod bpf {
         );
     }
 
+    /// Each sample carries the isolate its thread ran in, as the label
+    /// `isolate`, numbered by when the recording first saw it: the main
+    /// thread and its worker each run in an isolate of their own, which
+    /// `busy.js` names them by their native ids, and the thread of libuv's
+    /// pool that derives its key in none: the thread whose samples are in OpenSSL's key derivation.
+    /// Node 26 keeps the isolate at a fixed offset from the thread
+    /// pointer, and 22 at the offset a slot of its image holds.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
+    fn samples_carry_each_threads_own_isolate() {
+        for entry in [ENTRY, "22"] {
+            samples_carry_each_threads_own_isolate_on(entry);
+        }
+    }
+
+    fn samples_carry_each_threads_own_isolate_on(entry: &str) {
+        let launcher = std::env::var_os("MICROSCOPE_BPF_LAUNCHER")
+            .expect("MICROSCOPE_BPF_LAUNCHER names the microscope-bpf wrapper");
+        let scratch = ScratchDir::new("node-busy-isolates");
+        let profile = scratch.path().join("busy.usprof");
+        // The recording reads node's debug information as it starts, and
+        // the kernel drops samples until it has; a first recording caches
+        // it, so that the one the test reads loses only its first moments.
+        let warmed = Command::new(&launcher)
+            .arg(env!("CARGO_BIN_EXE_microscope"))
+            .args(["record", "--node", "bpf", "--output"])
+            .arg(scratch.path().join("warm.usprof"))
+            .arg("--")
+            .arg(node::node(entry))
+            .args(["-e", "0"])
+            .env_remove("NODE_OPTIONS")
+            .output()
+            .expect("run microscope");
+        assert!(
+            warmed.status.success(),
+            "{entry}: {}",
+            String::from_utf8_lossy(&warmed.stderr)
+        );
+        let (fixture, output) = busy_on(entry, &scratch, 5);
+        let finished = Command::new(launcher)
+            .arg(env!("CARGO_BIN_EXE_microscope"))
+            .args(["record", "--node", "bpf", "--output"])
+            .arg(&profile)
+            .arg("--")
+            .arg(fixture.get_program())
+            .args(fixture.get_args())
+            .arg("--pool")
+            .env_remove("NODE_OPTIONS")
+            .stdin(Stdio::null())
+            .stdout(std::fs::File::create(&output).expect("the fixture's output"))
+            .stderr(Stdio::piped())
+            .output()
+            .expect("run microscope");
+        assert!(
+            finished.status.success(),
+            "{}",
+            String::from_utf8_lossy(&finished.stderr)
+        );
+
+        let spinners = spinners(&std::fs::read_to_string(&output).expect("the fixture's output"));
+        assert_eq!(spinners.len(), 2, "{entry}: {spinners:?}");
+        let profile = Profile::read(&profile).expect("read the profile").profile;
+        let threads = profile.threads();
+        let weights: BTreeMap<u32, u64> = threads
+            .iter()
+            .map(|thread| (thread.tid, thread.weight))
+            .collect();
+        // The threads sampled for a tenth of a second at least in OpenSSL's
+        // key derivation, which only libuv's pool runs: by their code, as
+        // a thread's name comes in a record the kernel may drop.
+        let pool: Vec<u32> = threads
+            .iter()
+            .filter(|thread| {
+                let deriving: u64 = process_paths(&profile, vec![thread.row], Look::Native)
+                    .iter()
+                    .filter(|(path, _)| {
+                        path.iter().any(|frame| {
+                            let frame = frame.to_ascii_lowercase();
+                            frame.contains("pbkdf2") || frame.contains("sha512")
+                        })
+                    })
+                    .map(|(_, weight)| weight)
+                    .sum();
+                deriving >= 100_000_000
+            })
+            .map(|thread| thread.tid)
+            .collect();
+        let sampled: Vec<_> = threads
+            .iter()
+            .map(|thread| (thread.tid, thread.name.as_deref(), thread.weight))
+            .collect();
+        assert!(
+            !pool.is_empty(),
+            "{entry}: no pool thread worked: {sampled:?}"
+        );
+        let zones = profile.zones();
+        let lies = isolate_lies((&spinners, &pool), &weights, &zones);
+        assert!(lies.is_empty(), "{entry}: {lies:#?}\n{weights:?}");
+    }
+
     /// Two Node processes a shell starts, each with its own V8 and its own
     /// layout for the walker: each process's samples hold its own threads'
     /// JavaScript frames, as each reported them.
@@ -788,7 +992,7 @@ mod bpf {
                 .filter(|thread| thread.pid == pid)
                 .map(|thread| thread.row)
                 .collect();
-            let paths = process_paths(&profile, rows);
+            let paths = process_paths(&profile, rows, Look::Python);
             let truth = spinning(&text);
             assert_eq!(truth.len(), 2, "{pid}: {truth:#?}");
             let missing = missing(&truth, &paths);
@@ -804,11 +1008,11 @@ mod bpf {
 
     /// The paths of the samples of the threads `rows`, in the interpreted
     /// look, as [`paths`] gives them.
-    fn process_paths(profile: &Profile, rows: Vec<u32>) -> BTreeMap<Vec<String>, u64> {
+    fn process_paths(profile: &Profile, rows: Vec<u32>, look: Look) -> BTreeMap<Vec<String>, u64> {
         let keys = profile.keys(Granularity::Line);
         let tree = keys.aggregate(&Query {
             source: Source::Samples,
-            look: Look::Python,
+            look,
             threads: Some(rows),
             ..Query::default()
         });

@@ -702,6 +702,9 @@ impl Processor {
             decode::Record::Exit { pid, tid, .. } => {
                 self.switched_out.remove(&tid);
                 self.builder.thread_exit(tid, at);
+                if let Some(interpreted) = &mut self.interpreted {
+                    interpreted.thread_exited(pid, tid);
+                }
 
                 let ended = self.processes.get_mut(&pid).is_some_and(|process| {
                     process.threads.remove(&tid);
@@ -1474,9 +1477,21 @@ impl Processor {
             .as_ref()
             .filter(|(_, bytes)| !crate::backend::bpf::sampler::is_v8(bytes))
             .and_then(|(_, bytes)| crate::backend::bpf::sampler::decode(bytes).ok());
+        let time = sample.time.cast_signed();
         if let Some(stack) = &stack {
-            let time = sample.time.cast_signed();
             interpreted.label(&mut self.builder, thread, (time, sample.period), stack.gil);
+        }
+        let javascript = paired
+            .as_ref()
+            .filter(|(_, bytes)| crate::backend::bpf::sampler::is_v8(bytes))
+            .and_then(|(_, bytes)| crate::backend::bpf::sampler::decode_v8(bytes).ok());
+        if let Some(javascript) = javascript {
+            interpreted.isolate(
+                &mut self.builder,
+                (sample.pid, sample.tid, thread),
+                (time, sample.period),
+                javascript.isolate,
+            );
         }
 
         let (processes, images) = (&self.processes, &self.images);

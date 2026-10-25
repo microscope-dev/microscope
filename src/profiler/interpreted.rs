@@ -21,11 +21,11 @@
 //! program may have exited. One freed since, or whose program exited
 //! before its record was drained, is unreadable.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use super::tasks::LiveStop;
-use crate::backend::bpf::sampler::{self, Gil, NO_OFFSET, PyStack, StackEnd, V8End};
+use crate::backend::bpf::sampler::{self, Gil, NO_OFFSET, PyStack, StackEnd, V8End, V8Isolate};
 use crate::capture::CaptureBuilder;
 use crate::capture::records::{NONE, Zone};
 use crate::debug_info::DebugInfo;
@@ -45,6 +45,10 @@ pub(super) const PAIRING_SLACK: u64 = 10_000_000;
 /// interpreter's GIL carries, as task snapshots label threads.
 const GIL: &str = "gil";
 
+/// The label a sample of a thread that runs in a V8 isolate carries, its
+/// value the isolate's number, as the debugger lists threads.
+const ISOLATE: &str = "isolate";
+
 /// A process's interpreter that the engine reads, and what its walker
 /// reads it by.
 struct Runtime {
@@ -61,9 +65,12 @@ enum Kind {
         state: Option<VirtualAddress>,
     },
 
-    /// V8's, which keeps its frames on the native stack: its layout.
+    /// V8's, which keeps its frames on the native stack: its layout, and
+    /// why it does not say where threads keep their isolate, if it does
+    /// not.
     V8 {
         layout: Result<sampler::RawV8Layout, String>,
+        unplaced: Option<Arc<str>>,
     },
 }
 
@@ -99,11 +106,72 @@ struct Found {
 }
 
 /// One thread's latest span of one label value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Span {
-    value: &'static str,
+    value: Box<str>,
     start: i64,
     end: i64,
+}
+
+/// The numbers of one process's isolates, by when a sample first showed
+/// each, as the debugger numbers them (`backend::linux::holdings`). An
+/// isolate's address may be another's once it is disposed, and a thread
+/// runs in none between its isolate's scopes, which samples see and stops
+/// seldom do. Node runs each isolate on one thread for that thread's life,
+/// so a thread seen at an address again is in the isolate it was, and a
+/// thread that finds an address no thread seen there is in now is in a new
+/// isolate. A number is forgotten once the threads seen in it exit.
+#[derive(Debug, Default)]
+struct IsolateNumbers {
+    /// The last number given.
+    last: u64,
+
+    /// Each isolate's number, and the living threads seen in it.
+    numbers: BTreeMap<u64, (u64, BTreeSet<Tid>)>,
+
+    /// The isolate each thread was last seen in, if it was in one.
+    held: BTreeMap<Tid, u64>,
+}
+
+impl IsolateNumbers {
+    /// The number of the isolate at `address` that thread `tid` was seen
+    /// in, or of none where `address` is 0; `None` too once numbers run
+    /// out.
+    fn number(&mut self, tid: Tid, address: u64) -> Option<u64> {
+        if address == 0 {
+            self.held.remove(&tid);
+            return None;
+        }
+        let held = &self.held;
+        let known = self.numbers.get_mut(&address).filter(|(_, holders)| {
+            holders.contains(&tid)
+                || holders
+                    .iter()
+                    .any(|holder| held.get(holder) == Some(&address))
+        });
+        let number = if let Some((number, holders)) = known {
+            holders.insert(tid);
+            *number
+        } else {
+            let number = self.last.checked_add(1)?;
+            self.last = number;
+            self.numbers
+                .insert(address, (number, BTreeSet::from([tid])));
+            number
+        };
+        self.held.insert(tid, address);
+        Some(number)
+    }
+
+    /// Forgets thread `tid`, which exited, and the number of each isolate
+    /// only it was seen in.
+    fn exited(&mut self, tid: Tid) {
+        self.held.remove(&tid);
+        self.numbers.retain(|_, (_, holders)| {
+            holders.remove(&tid);
+            !holders.is_empty()
+        });
+    }
 }
 
 /// A record of frames, by its thread, CPU, and time.
@@ -160,7 +228,10 @@ pub(super) struct Interpreted {
     /// begins with.
     pub(super) outputs: Vec<u64>,
     found: BTreeMap<Pid, Found>,
-    spans: BTreeMap<u32, Span>,
+
+    /// Each thread's open span of each label, by its row and the label.
+    spans: BTreeMap<(u32, &'static str), Span>,
+    isolates: BTreeMap<Pid, IsolateNumbers>,
 
     /// The frames of each record drained but not yet processed, read as
     /// it was drained.
@@ -173,6 +244,7 @@ impl Interpreted {
             outputs,
             found: BTreeMap::new(),
             spans: BTreeMap::new(),
+            isolates: BTreeMap::new(),
             drained: BTreeMap::new(),
         }
     }
@@ -199,15 +271,33 @@ impl Interpreted {
                     .into_iter()
                     .flatten()
                     .find(|model| model.owns_generated_code())?;
-                let layout = match v8.layout {
+                let mut layout = match v8.layout {
                     Ok(layout) => sampler::v8_layout(&layout)
                         .map_err(|missing| format!("V8's layout has no {missing}")),
                     Err(why) => Err(why.to_string()),
                 };
+                let placed: Result<(), Arc<str>> =
+                    match image.thread_local(crate::image::v8::CURRENT_ISOLATE) {
+                        Some(Ok(place)) => layout.as_mut().map_or(Ok(()), |layout| {
+                            layout
+                                .place_isolate(place, loaded.load_bias)
+                                .map_err(Arc::from)
+                        }),
+                        Some(Err(why)) => Err(format!(
+                            "its variable of the current isolate is not found: {why}"
+                        )
+                        .into()),
+                        None => Err("its image names no variable of the current isolate".into()),
+                    };
                 return Some(Runtime {
                     model,
                     bias: loaded.load_bias,
-                    kind: Kind::V8 { layout },
+                    kind: Kind::V8 {
+                        layout,
+                        unplaced: placed
+                            .err()
+                            .map(|why| format!("samples have no isolate labels: {why}").into()),
+                    },
                 });
             }
             let python = image.python()?;
@@ -242,6 +332,15 @@ impl Interpreted {
     /// Forgets process `pid`, which exited.
     pub(super) fn forget(&mut self, pid: Pid) {
         self.found.remove(&pid);
+        self.isolates.remove(&pid);
+    }
+
+    /// Forgets thread `tid` of process `pid`, which exited, as the isolate
+    /// it was last seen in.
+    pub(super) fn thread_exited(&mut self, pid: Pid, tid: Tid) {
+        if let Some(numbers) = self.isolates.get_mut(&pid) {
+            numbers.exited(tid);
+        }
     }
 
     /// Reads the frames of `record`, of process `pid`, as it is drained,
@@ -315,12 +414,12 @@ impl Interpreted {
     pub(super) fn walked(&self, pid: Pid) -> Option<Walked> {
         let runtime = self.found.get(&pid)?.runtime.as_ref()?;
         let (layout, state) = match &runtime.kind {
-            Kind::V8 { layout } => {
+            Kind::V8 { layout, unplaced } => {
                 return Some(Walked {
                     pid: pid.get(),
                     layout: layout.clone().map(Layout::V8),
                     threads: Vec::new(),
-                    gaps: Vec::new(),
+                    gaps: unplaced.iter().cloned().collect(),
                 });
             }
             Kind::Python { layout, state } => (layout, *state),
@@ -362,7 +461,7 @@ impl Interpreted {
         &mut self,
         builder: &mut CaptureBuilder,
         thread: u32,
-        (time, period): (i64, u64),
+        sample: (i64, u64),
         gil: Gil,
     ) {
         let value = match gil {
@@ -370,26 +469,57 @@ impl Interpreted {
             Gil::Waiting => Some("waiting"),
             Gil::Unknown | Gil::Released | Gil::Off => None,
         };
+        self.extend(builder, (thread, GIL), value, sample);
+    }
 
+    /// Labels thread `tid` of process `pid`, whose row is `thread`, with
+    /// the number of the isolate it ran in at a sample at `time` of
+    /// `period`: none where it ran in none, or where the isolate was not
+    /// read, which the recording says why of once.
+    pub(super) fn isolate(
+        &mut self,
+        builder: &mut CaptureBuilder,
+        (pid, tid, thread): (Pid, Tid, u32),
+        sample: (i64, u64),
+        isolate: V8Isolate,
+    ) {
+        let number = match isolate {
+            V8Isolate::Read(address) => self.isolates.entry(pid).or_default().number(tid, address),
+            V8Isolate::NotRead | V8Isolate::Unreadable => None,
+        };
+        let value = number.map(|number| number.to_string());
+        self.extend(builder, (thread, ISOLATE), value.as_deref(), sample);
+    }
+
+    /// Extends the span of label `key` on the thread whose row is
+    /// `thread` with a sample at `time` of `period` whose value is `value`,
+    /// or ends it, recording it, where the value differs or the samples do
+    /// not meet.
+    fn extend(
+        &mut self,
+        builder: &mut CaptureBuilder,
+        (thread, key): (u32, &'static str),
+        value: Option<&str>,
+        (time, period): (i64, u64),
+    ) {
         let start = time.saturating_sub(period.cast_signed());
-        let current = self.spans.get(&thread).copied();
+        let span = self.spans.get_mut(&(thread, key));
 
-        match (current, value) {
+        match (span, value) {
             // A sample takes up where the last of its value left off.
-            (Some(span), Some(value)) if span.value == value && span.end >= start => {
-                self.spans.insert(thread, Span { end: time, ..span });
+            (Some(span), Some(value)) if *span.value == *value && span.end >= start => {
+                span.end = time;
             }
-            (current, value) => {
-                if let Some(span) = current {
-                    record_span(builder, thread, span);
-                    self.spans.remove(&thread);
+            (_, value) => {
+                if let Some(span) = self.spans.remove(&(thread, key)) {
+                    record_span(builder, (thread, key), &span);
                 }
 
                 if let Some(value) = value {
                     self.spans.insert(
-                        thread,
+                        (thread, key),
                         Span {
-                            value,
+                            value: value.into(),
                             start,
                             end: time,
                         },
@@ -402,16 +532,16 @@ impl Interpreted {
     /// Records each thread's open span in `builder`, as of where it last
     /// reached.
     pub(super) fn close(&self, builder: &mut CaptureBuilder) {
-        for (&thread, &span) in &self.spans {
-            record_span(builder, thread, span);
+        for (&key, span) in &self.spans {
+            record_span(builder, key, span);
         }
     }
 }
 
-/// Records a span of a GIL label.
-fn record_span(builder: &mut CaptureBuilder, thread: u32, span: Span) {
-    let site = builder.site(GIL, "", 0, NONE, microscope_probes::abi::SITE_LABEL);
-    let value = builder.string(span.value);
+/// Records a span of label `key` on the thread whose row is `thread`.
+fn record_span(builder: &mut CaptureBuilder, (thread, key): (u32, &'static str), span: &Span) {
+    let site = builder.site(key, "", 0, NONE, microscope_probes::abi::SITE_LABEL);
+    let value = builder.string(&span.value);
     builder.zone(
         thread,
         Zone {
@@ -727,6 +857,85 @@ mod tests {
     /// A run of samples with one label is one span, from the first's
     /// period to the last; a change of value, or a sample with none, or a
     /// run that lapses, begins another.
+    /// Isolates are numbered as samples first show them, and a number
+    /// lasts while a thread last seen in its isolate lives: a thread that
+    /// moves on, or exits, frees it, and an isolate at its address then
+    /// gets a new number. A thread in no isolate has none.
+    #[test]
+    fn isolates_are_numbered_by_first_sight_while_a_thread_holds_them() {
+        let mut numbers = IsolateNumbers::default();
+        let (main, worker, helper) = (Tid::new(10), Tid::new(11), Tid::new(12));
+        assert_eq!(numbers.number(main, 0xa000), Some(1));
+        assert_eq!(numbers.number(main, 0xa000), Some(1));
+        assert_eq!(numbers.number(worker, 0xb000), Some(2));
+        assert_eq!(numbers.number(helper, 0xa000), Some(1));
+        assert_eq!(numbers.number(helper, 0), None);
+        assert_eq!(numbers.number(main, 0xa000), Some(1));
+
+        // A thread between its isolate's scopes is in none, and back in
+        // its own isolate after them, though no other thread is in it.
+        assert_eq!(numbers.number(worker, 0), None);
+        assert_eq!(numbers.number(worker, 0xb000), Some(2));
+
+        numbers.exited(worker);
+        assert_eq!(numbers.number(helper, 0xb000), Some(3));
+
+        // A thread finds the address of an isolate whose threads live but
+        // are not in it: a new isolate took the disposed one's address.
+        assert_eq!(numbers.number(helper, 0), None);
+        let late = Tid::new(14);
+        assert_eq!(numbers.number(late, 0xb000), Some(4));
+        assert_eq!(numbers.number(helper, 0xb000), Some(4));
+
+        // Of the threads seen in the main isolate, one exited and the
+        // other is in another: a thread at its address is in a new one.
+        numbers.exited(main);
+        assert_eq!(numbers.number(Tid::new(13), 0xa000), Some(5));
+    }
+
+    /// Each run of samples in one isolate is one span of its label, which
+    /// a sample in none, or one whose isolate was not read, ends.
+    #[test]
+    fn each_run_of_samples_in_one_isolate_is_one_span() {
+        let mut interpreted = Interpreted::new(Vec::new());
+        let mut builder = CaptureBuilder::new();
+        let (pid, tid) = (Pid::new(10), Tid::new(10));
+        let thread = builder.thread(pid, tid, 0);
+        for (time, isolate) in [
+            (10, V8Isolate::Read(0xa000)),
+            (20, V8Isolate::Read(0xa000)),
+            (30, V8Isolate::Unreadable),
+            (40, V8Isolate::Read(0xa000)),
+            (50, V8Isolate::Read(0)),
+            (60, V8Isolate::Read(0xb000)),
+            (70, V8Isolate::NotRead),
+        ] {
+            interpreted.isolate(&mut builder, (pid, tid, thread), (time, 10), isolate);
+        }
+        interpreted.close(&mut builder);
+        let capture = builder.finish();
+        let mut spans: Vec<(i64, i64, String)> = capture
+            .zones
+            .iter()
+            .map(|zone| {
+                (
+                    zone.start.get(),
+                    zone.end.get(),
+                    capture.string(zone.value.get()).to_owned(),
+                )
+            })
+            .collect();
+        spans.sort();
+        assert_eq!(
+            spans,
+            [
+                (0, 20, "1".to_owned()),
+                (30, 40, "1".to_owned()),
+                (50, 60, "2".to_owned()),
+            ]
+        );
+    }
+
     #[test]
     fn each_run_of_one_gil_label_is_one_span() {
         let mut interpreted = Interpreted::new(Vec::new());

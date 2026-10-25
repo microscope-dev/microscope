@@ -9,6 +9,7 @@
 #include <linux/bpf.h>
 #include <linux/bpf_perf_event.h>
 #include <bpf/bpf_helpers.h>
+#include <bpf/bpf_core_read.h>
 
 #include "python.bpf.h"
 #include "v8.bpf.h"
@@ -79,6 +80,48 @@ static __always_inline void lost_record(void)
 		*lost += 1;
 }
 
+// The kernel's record of a thread's registers that the kernel keeps for it
+// as it switches tasks, of which only its thread pointer is read. These
+// are flavors (CO-RE drops the ___v8), relocated against the running
+// kernel's task_struct: kernel_types.h's pt_regs would clash with the
+// perf event's.
+struct thread_struct___v8 {
+	unsigned long fsbase;
+} __attribute__((preserve_access_index));
+
+struct task_struct___v8 {
+	struct thread_struct___v8 thread;
+} __attribute__((preserve_access_index));
+
+// Reads the current thread's isolate into the record `header`, where
+// `layout` places it. The thread pointer is the one the kernel set when
+// the thread was made, or by arch_prctl, and saves as it switches away:
+// glibc never writes it otherwise.
+static __always_inline void v8_isolate(const struct v8_layout *layout,
+				       struct v8_stack_record *header)
+{
+	header->isolate_read = V8_ISOLATE_NOT_READ;
+	header->isolate = 0;
+	if (layout->isolate_place != V8_ISOLATE_OFFSET && layout->isolate_place != V8_ISOLATE_SLOT)
+		return;
+	header->isolate_read = V8_ISOLATE_UNREADABLE;
+	struct task_struct___v8 *task = (void *)bpf_get_current_task_btf();
+	u64 fsbase = 0;
+	if (bpf_core_read(&fsbase, sizeof(fsbase), &task->thread.fsbase) || !fsbase)
+		return;
+	s64 offset = layout->isolate_offset;
+	// A slot is read at each sample, as the loader fills it only once the
+	// image is mapped, after microscope may have read the layout.
+	if (layout->isolate_place == V8_ISOLATE_SLOT &&
+	    bpf_probe_read_user(&offset, sizeof(offset), (const void *)layout->isolate_slot))
+		return;
+	u64 isolate = 0;
+	if (bpf_probe_read_user(&isolate, sizeof(isolate), (const void *)(fsbase + offset)))
+		return;
+	header->isolate = isolate;
+	header->isolate_read = V8_ISOLATE_READ;
+}
+
 // Writes the sampled thread's JavaScript frames, when its process has a V8
 // layout: whether it has.
 static __always_inline int v8_sample(struct bpf_perf_event_data *ctx, u32 tgid, u32 tid)
@@ -94,7 +137,8 @@ static __always_inline int v8_sample(struct bpf_perf_event_data *ctx, u32 tgid, 
 	header->header.kind = RECORD_V8_STACK;
 	header->header.tid = tid;
 	header->header.tgid = tgid;
-	header->pad[0] = header->pad[1] = header->pad[2] = 0;
+	header->pad[0] = header->pad[1] = 0;
+	v8_isolate(layout, header);
 
 	// A sample taken in the kernel holds the kernel's registers; the
 	// thread's own are those it entered the kernel with.

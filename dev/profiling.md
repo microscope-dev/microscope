@@ -341,6 +341,33 @@ JavaScript functions placed at it. Functions placed at a frame of another role,
 as a bytecode handler a sample landed in, go after that frame, which they run
 (`Processor::splice_placed`).
 
+The sampler's `v8_sample` also reads each thread's current isolate,
+`g_current_isolate_`, at each sample: the thread pointer from the task's
+`thread.fsbase` (CO-RE, through flavor types, since `kernel_types.h`'s
+`pt_regs` would clash with the perf event's), plus the variable's offset
+(`ThreadLocal::Offset`, as Node 24 and 26 place it) or the offset a GOT slot
+of the image holds (`ThreadLocal::Slot`, as 22 does), which the program reads
+at every sample, as the loader fills it after the recorder may have read the
+layout. `fsbase` is what the kernel set at clone or `arch_prctl` and saves as
+the thread switches out; glibc never writes it with `wrfsbase`. A library's
+dynamic TLS (`ThreadLocal::Dynamic`, Debian's `libnode`) is left unplaced,
+and the recording's setting `node PID isolates` says why. The syscall
+programs leave the record's isolate unread.
+
+`interpreted::IsolateNumbers` numbers each process's isolates by first sight.
+Unlike `backend::linux::holdings`, it keeps a number while a thread seen in
+the isolate lives, though the thread is seen in none for a moment: samples
+find a worker between its isolate's scopes, where a stop seldom does, and
+Node runs each isolate on one thread for that thread's life. A thread that
+finds the address of an isolate none of whose threads is in it now is in a
+new isolate, which took a disposed one's address, and gets a new number. A
+thread's exit (`thread_exited`) forgets the numbers only it held. The
+numbers become spans of the label `isolate`,
+built as the GIL's are (`Interpreted::extend`). `tests/node/profile.rs`
+records `busy.js --pool` on 26 and 22: its main thread and worker each carry
+one isolate number of their own, and the libuv pool thread that runs its
+PBKDF2, which no JavaScript runs on, carries none.
+
 ### Reaping the program
 
 A stopped snapshot's debugger runs in the recorder's process and waits for

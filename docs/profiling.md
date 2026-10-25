@@ -200,6 +200,17 @@ own scripts, such as `node:internal/timers`, stay in the stacks.
 JavaScript frame in, without V8's frames between them. With `--lines`,
 JavaScript functions are told apart by line where the line is known.
 
+With `bpf`, each sample carries the label `isolate` with the number of the V8
+isolate its thread ran in: the main thread's, a `worker_threads` worker's, or
+the one a V8 helper thread works for. Isolates are numbered 1, 2, and on in
+the order the recording first sees them, and a thread keeps its isolate's
+number for its life. An isolate that takes the address of one disposed before
+it gets a new number. A thread in no isolate, as one of libuv's pool or a
+worker between two of its tasks, has no label. The labels select
+samples and draw lanes as instrumentation labels do. Debian's `libnode` keeps
+the current isolate where the kernel program cannot read it, so its samples
+have no isolate labels, and the profile's settings say why.
+
 A recording that follows a program's children, as `sh -c 'node a.js & node
 b.js'` starts, reads each Node process by its own V8 and keeps its samples
 apart.

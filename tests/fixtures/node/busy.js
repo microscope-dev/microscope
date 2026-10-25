@@ -14,12 +14,15 @@
 // TIER is truth.tierOf()'s, or - for a frame no tier is asked of. Each
 // spinning function's loop is one line of its own, between its function
 // line and its closing brace, so a sample in it is on a line within them.
+// With --pool, a thread of libuv's pool derives a key with PBKDF2 for
+// about as long, which runs no JavaScript, so it is in no isolate.
 // The program spins for --seconds SECONDS, 3 by default, then exits. Run
 // it with --sparkplug-filter=sparkplugSpin, which keeps V8 from compiling
 // the interpreted frames' functions with Sparkplug as they grow hot.
 
 'use strict';
 
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const threads = require('node:worker_threads');
 const truth = require('./truth.js');
@@ -128,6 +131,10 @@ function main() {
   %OptimizeFunctionOnNextCall(turbofanSpin);
   ignitionSpin(0);
   reporting = true;
+  if (argv.includes('--pool')) {
+    // About a million rounds a second, past the spin's end.
+    crypto.pbkdf2('secret', 'salt', (seconds + 1) * 1000000, 64, 'sha512', () => {});
+  }
   new threads.Worker(__filename, {argv});
   return spinFor(ignitionSpin, end);
 }

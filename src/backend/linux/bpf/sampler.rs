@@ -170,6 +170,46 @@ pub struct RawV8Layout {
     shared_script: u32,
     shared_literal_id: u32,
     script_id: u32,
+    isolate_place: u32,
+    isolate_pad: u32,
+    isolate_offset: i64,
+    isolate_slot: u64,
+}
+
+/// `enum v8_isolate_place`.
+const V8_ISOLATE_UNPLACED: u32 = 0;
+const V8_ISOLATE_OFFSET: u32 = 1;
+const V8_ISOLATE_SLOT: u32 = 2;
+
+impl RawV8Layout {
+    /// Tells the walker where each thread of a process whose V8 module
+    /// `bias` loaded keeps its current isolate, which the module's image
+    /// places at `place`; or why it cannot read it there, as from a
+    /// library's dynamic block of thread-local storage, which only the
+    /// loader's tables find.
+    pub const fn place_isolate(
+        &mut self,
+        place: crate::ThreadLocal,
+        bias: crate::LoadBias,
+    ) -> Result<(), &'static str> {
+        match place {
+            crate::ThreadLocal::Offset(offset) => {
+                self.isolate_place = V8_ISOLATE_OFFSET;
+                self.isolate_offset = offset;
+            }
+            crate::ThreadLocal::Slot(slot) => {
+                self.isolate_place = V8_ISOLATE_SLOT;
+                self.isolate_slot = bias.wrapping_load(slot).get();
+            }
+            crate::ThreadLocal::Dynamic(_) => {
+                return Err(
+                    "the module keeps the current isolate in its dynamic block of \
+                            thread-local storage, which the walker does not read",
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 /// `struct v8_frame`: one JavaScript frame as the walker read it.
@@ -198,7 +238,22 @@ struct RawV8StackRecord {
     header: RawRecord,
     frames: u32,
     end: u8,
-    pad: [u8; 3],
+    isolate_read: u8,
+    pad: [u8; 2],
+    isolate: u64,
+}
+
+/// What a record says of its thread's current isolate: `enum v8_isolate`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum V8Isolate {
+    /// Not read, as its process's layout does not place it.
+    NotRead,
+
+    /// The isolate's address, 0 where the thread has none.
+    Read(u64),
+
+    /// Placed, but its thread pointer or the word there was unreadable.
+    Unreadable,
 }
 
 /// Why a thread's JavaScript frames end: `enum v8_end`.
@@ -221,6 +276,7 @@ pub enum V8End {
 #[derive(Debug, Clone, Copy)]
 pub struct V8Stack<'a> {
     pub end: V8End,
+    pub isolate: V8Isolate,
 
     /// Innermost first.
     pub frames: &'a [RawV8Frame],
@@ -252,7 +308,17 @@ pub fn decode_v8(bytes: &[u8]) -> Result<V8Stack<'_>, Malformed> {
         3 => V8End::NoLayout,
         _ => return Err(Malformed),
     };
-    Ok(V8Stack { end, frames })
+    let isolate = match record.isolate_read {
+        0 => V8Isolate::NotRead,
+        1 => V8Isolate::Read(record.isolate),
+        2 => V8Isolate::Unreadable,
+        _ => return Err(Malformed),
+    };
+    Ok(V8Stack {
+        end,
+        isolate,
+        frames,
+    })
 }
 
 /// The layout the walker reads a V8 of `layout` by, or the field or
@@ -295,6 +361,10 @@ pub fn v8_layout(layout: &V8Layout) -> Result<RawV8Layout, &'static str> {
         shared_script: field(V8Field::SharedFunctionInfoScript)?,
         shared_literal_id: field(V8Field::SharedFunctionInfoFunctionLiteralId)?,
         script_id: field(V8Field::ScriptId)?,
+        isolate_place: V8_ISOLATE_UNPLACED,
+        isolate_pad: 0,
+        isolate_offset: 0,
+        isolate_slot: 0,
     })
 }
 
@@ -798,6 +868,7 @@ mod tests {
         assert!(!initial_pid_namespace(&ordinary).unwrap());
     }
 
+    #[allow(clippy::too_many_lines, reason = "one row per record")]
     #[test]
     fn records_h_and_the_sampler_agree_field_for_field() {
         crate::backend::linux::bpf::assert_mirrors!(
@@ -875,6 +946,10 @@ mod tests {
                     shared_script,
                     shared_literal_id,
                     script_id,
+                    isolate_place,
+                    isolate_pad,
+                    isolate_offset,
+                    isolate_slot,
                 ]
             ),
             (
@@ -896,9 +971,79 @@ mod tests {
             (
                 RawV8StackRecord,
                 "v8_stack_record",
-                [header, frames, end, pad]
+                [header, frames, end, isolate_read, pad, isolate]
             ),
         );
+    }
+
+    fn v8_record(isolate_read: u8, isolate: u64) -> Vec<u8> {
+        let header = RawV8StackRecord {
+            header: RawRecord {
+                kind: RECORD_V8_STACK,
+                size: u32::try_from(size_of::<RawV8StackRecord>()).expect("small"),
+                tid: 12,
+                tgid: 10,
+            },
+            frames: 0,
+            end: 0,
+            isolate_read,
+            pad: [0; 2],
+            isolate,
+        };
+        header.as_bytes().to_vec()
+    }
+
+    /// A record of JavaScript frames says whether it read its thread's
+    /// isolate, and the isolate it read; any other state is malformed.
+    #[test]
+    fn a_v8_record_says_what_it_read_of_its_threads_isolate() {
+        let isolate =
+            |read, address| decode_v8(&v8_record(read, address)).map(|stack| stack.isolate);
+        assert_eq!(isolate(0, 0), Ok(V8Isolate::NotRead));
+        assert_eq!(isolate(1, 0x1234_0000), Ok(V8Isolate::Read(0x1234_0000)));
+        assert_eq!(isolate(1, 0), Ok(V8Isolate::Read(0)));
+        assert_eq!(isolate(2, 0), Ok(V8Isolate::Unreadable));
+        assert_eq!(isolate(3, 0), Err(Malformed));
+    }
+
+    /// The walker reads an isolate at a fixed offset from the thread
+    /// pointer, or at the offset a slot of the loaded image holds, and
+    /// refuses one in a library's dynamic block, which it does not find.
+    #[test]
+    fn the_isolate_is_placed_by_its_offset_or_its_slot() {
+        use zerocopy::FromZeros as _;
+        let unplaced = RawV8Layout::new_zeroed();
+        let mut layout = unplaced;
+        assert_eq!(
+            layout.place_isolate(
+                crate::ThreadLocal::Offset(-0x40),
+                crate::LoadBias::new(0x1000)
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            (layout.isolate_place, layout.isolate_offset),
+            (V8_ISOLATE_OFFSET, -0x40)
+        );
+        let mut layout = unplaced;
+        assert_eq!(
+            layout.place_isolate(
+                crate::ThreadLocal::Slot(crate::ImageAddress::new(0x2000)),
+                crate::LoadBias::new(0x5000_0000)
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            (layout.isolate_place, layout.isolate_slot),
+            (V8_ISOLATE_SLOT, 0x5000_2000)
+        );
+        let mut layout = unplaced;
+        assert!(
+            layout
+                .place_isolate(crate::ThreadLocal::Dynamic(0x170), crate::LoadBias::new(0))
+                .is_err()
+        );
+        assert_eq!(layout, unplaced);
     }
 
     fn record(frames: &[RawPyFrame], end: u8, gil: u8) -> Vec<u8> {

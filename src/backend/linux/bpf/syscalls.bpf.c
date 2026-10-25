@@ -769,7 +769,9 @@ static __always_inline void send_v8(u32 tid, u32 tgid, struct pt_regs *regs)
 	header->header.kind = RECORD_V8_STACK;
 	header->header.tid = tid;
 	header->header.tgid = tgid;
-	header->pad[0] = header->pad[1] = header->pad[2] = 0;
+	header->isolate_read = V8_ISOLATE_NOT_READ;
+	header->pad[0] = header->pad[1] = 0;
+	header->isolate = 0;
 	v8_walk(layout, stack, BPF_CORE_READ(regs, bp), BPF_CORE_READ(regs, ip));
 	u32 frames = header->frames;
 	if (frames > V8_FRAMES)

@@ -705,8 +705,8 @@ print it. An exception thrown and caught in a skipped script does not stop.
 ### Profiling
 
 `microscope record --node bpf` puts each CPU sample's JavaScript frames in
-its stack; `--node snapshot` stops the program to read every frame with its
-line. See [Record Node programs](profiling.md#record-node-programs), and
+its stack, and labels it with the isolate its thread ran in; `--node
+snapshot` stops the program to read every frame with its line. See [Record Node programs](profiling.md#record-node-programs), and
 [Instrument a Node program](profiling.md#instrument-a-node-program) for the
 `sdk/node` package.
 

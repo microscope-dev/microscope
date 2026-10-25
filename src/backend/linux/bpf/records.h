@@ -435,6 +435,36 @@ struct v8_layout {
 	u32 shared_script;
 	u32 shared_literal_id;
 	u32 script_id;
+	// Where each thread keeps its current isolate, g_current_isolate_, as
+	// enum v8_isolate_place says: `isolate_offset` from the thread pointer,
+	// or the offset the word at `isolate_slot` holds. The profiler reads it
+	// to label samples; the syscall programs leave it unplaced.
+	u32 isolate_place;
+	u32 isolate_pad;
+	s64 isolate_offset;
+	u64 isolate_slot;
+};
+
+// Where a process's threads keep their current isolate.
+enum v8_isolate_place {
+	// Not where the walker reads: in no image, or in a library's dynamic
+	// block of thread-local storage, which only its loader's tables find.
+	V8_ISOLATE_UNPLACED = 0,
+	// At a fixed offset from the thread pointer.
+	V8_ISOLATE_OFFSET = 1,
+	// At the offset from the thread pointer that a word of the image holds.
+	V8_ISOLATE_SLOT = 2,
+};
+
+// What a record says of its thread's current isolate.
+enum v8_isolate {
+	// Not read: its place is not known.
+	V8_ISOLATE_NOT_READ = 0,
+	// Read: `isolate` is its address, 0 where the thread has none.
+	V8_ISOLATE_READ = 1,
+	// Its place is known, but the thread pointer or the word there could
+	// not be read.
+	V8_ISOLATE_UNREADABLE = 2,
 };
 
 // Why a thread's JavaScript frames end.
@@ -476,5 +506,8 @@ struct v8_stack_record {
 	struct record header;
 	u32 frames;
 	u8 end;
-	u8 pad[3];
+	// An enum v8_isolate.
+	u8 isolate_read;
+	u8 pad[2];
+	u64 isolate;
 };

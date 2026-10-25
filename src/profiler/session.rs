@@ -352,9 +352,11 @@ impl Walker {
             if let Some(problem) = failed.or_else(|| walked.gaps.first().map(ToString::to_string))
                 && self.troubled.insert(walked.pid)
             {
-                processor
-                    .builder()
-                    .setting(&format!("python {} threads", walked.pid), &problem);
+                let what = match walked.layout {
+                    Ok(Layout::V8(_)) => format!("node {} isolates", walked.pid),
+                    _ => format!("python {} threads", walked.pid),
+                };
+                processor.builder().setting(&what, &problem);
             }
         }
     }
