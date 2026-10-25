@@ -35,21 +35,11 @@ use super::modules::AnonymousCode;
 use super::native::{InspectionOps, LinuxTraceOps};
 use super::{BREAKPOINT_OPCODE, Controller, RuntimeModule};
 use crate::protocol::DebuggerEvent;
-use crate::{
-    AddressRange, ImageAddress, LoadBias, LoadedModule, ModuleId, SymbolKind, VirtualAddress,
-};
-
-/// The size of the pages copies begin on.
-const PAGE: u64 = 4096;
-
-/// How many of a copy's first bytes pick the function it may copy.
-const PROBE: usize = 16;
+use crate::unwind::code_copies as copies;
+use crate::{AddressRange, ImageAddress, LoadBias, LoadedModule, ModuleId, VirtualAddress};
 
 /// How much of a copy is compared at once.
 const CHUNK: usize = 256 * 1024;
-
-/// The most of a copy compared, past which its window ends.
-const MAX_COPY: u64 = 256 * 1024 * 1024;
 
 /// What a mapping of anonymous code was found to be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -319,39 +309,32 @@ impl<P: InspectionOps> Controller<P> {
         mapping: &Range<u64>,
         stored: &[(ModuleId, ImageAddress, ImageAddress)],
     ) -> Option<Proven> {
-        let probe = raw_block(&self.ptrace, pid, mapping.start, PROBE)?;
-        // Unused memory proves nothing.
-        if probe.len() < PROBE || probe.iter().all(|byte| *byte == 0) {
-            return None;
-        }
-
-        self.modules
+        let sources: Vec<copies::Source<'_, ModuleId>> = self
+            .modules
             .values()
-            .filter(|module| module.loaded.window.is_none())
-            .find_map(|module| {
-                let stored = stored
+            .map(|module| copies::Source {
+                key: module.loaded.id,
+                image: &module.image,
+                loaded: module.loaded,
+                stored: stored
                     .iter()
                     .filter(|(source, ..)| *source == module.loaded.id)
-                    .map(|&(_, start, end)| (start, end));
-                candidates(module).chain(stored).find_map(|(start, end)| {
-                    let source = module.loaded.virtual_address(start).ok()?.get();
-                    let limit = (end.get() - start.get())
-                        .min(mapping.end - mapping.start)
-                        .min(MAX_COPY);
-                    let probed = limit.min(PROBE as u64);
-                    if self.compare(pid, source, mapping.start, probed).0 < probed {
-                        return None;
-                    }
-                    // Code that ends before the probe does is proven whole.
-                    let (length, traps) = self.compare(pid, source, mapping.start, limit);
-                    (length >= probed).then_some(Proven {
-                        source: module.loaded.id,
-                        image_start: start,
-                        length,
-                        traps,
-                    })
-                })
+                    .map(|&(_, start, end)| (start, end))
+                    .collect(),
             })
+            .collect();
+        let mut probe = |address| {
+            raw_block(&self.ptrace, pid, address, copies::PROBE)?
+                .try_into()
+                .ok()
+        };
+        let mut compare = |source, copy, limit| self.compare(pid, source, copy, limit);
+        copies::prove(mapping, &sources, &mut probe, &mut compare).map(|proven| Proven {
+            source: proven.source,
+            image_start: proven.image_start,
+            length: proven.length,
+            traps: proven.found,
+        })
     }
 
     /// How many bytes from `copy` are those from `source`, up to `limit`,
@@ -451,30 +434,4 @@ fn raw_block(ptrace: &impl InspectionOps, pid: Pid, address: u64, size: usize) -
     )
     .ok()?;
     (read.bytes.len() == size).then_some(read.bytes)
-}
-
-/// The functions of `module`'s code that begin a page, with where the
-/// code they lie in ends, where a copy of its code may begin.
-fn candidates(module: &RuntimeModule) -> impl Iterator<Item = (ImageAddress, ImageAddress)> + '_ {
-    let sections = module.image.sections();
-    module
-        .image
-        .symbols()
-        .filter(|symbol| {
-            symbol.kind() == SymbolKind::Function && symbol.address().get() % PAGE == 0
-        })
-        .filter_map(move |symbol| {
-            let address = symbol.address();
-            sections
-                .iter()
-                .find(|section| section.executable && section.range.contains(address))
-                .map(|section| (address, section.range.end))
-        })
-        .scan(None, |previous, candidate| {
-            // Aliases at one address are one candidate.
-            let repeated = *previous == Some(candidate.0);
-            *previous = Some(candidate.0);
-            Some((!repeated).then_some(candidate))
-        })
-        .flatten()
 }

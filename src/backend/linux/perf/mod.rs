@@ -835,6 +835,9 @@ pub struct Mapped {
     pub file_offset: u64,
     pub inode: u64,
     pub executable: bool,
+
+    /// Whether the process may write it, as a JIT compiler's code.
+    pub writable: bool,
     pub path: Vec<u8>,
 }
 
@@ -882,12 +885,47 @@ pub fn mappings(pid: u32) -> std::io::Result<Vec<Mapped>> {
                 file_offset,
                 inode: inode.unwrap_or(0),
                 executable,
+                writable: permissions.get(1) == Some(&b'w'),
                 path: path.to_vec(),
             });
         }
     }
 
     Ok(mappings)
+}
+
+/// Whether `mapping` is anonymous code, which no file backs: a JIT
+/// compiler's, or a copy a runtime made of a module's code.
+pub fn is_anonymous(mapping: &Mapped) -> bool {
+    mapping.inode == 0 && (mapping.path == b"//anon" || mapping.path.starts_with(b"[anon:"))
+}
+
+/// The range of one of `sources`' code that process `pid`'s anonymous
+/// code at `range` begins with a copy of, if any, read from the running
+/// process (see [`crate::unwind::code_copies`]).
+pub fn copy_of<K: Copy>(
+    pid: u32,
+    range: &std::ops::Range<u64>,
+    sources: &[crate::unwind::code_copies::Source<'_, K>],
+) -> Option<crate::unwind::code_copies::Proven<K, ()>> {
+    use crate::unwind::code_copies::{PROBE, compare_bytes, prove};
+
+    /// How much of a copy is compared at once.
+    const CHUNK: usize = 256 * 1024;
+
+    let mut read = |address: u64, length: usize| {
+        let mut bytes = vec![0; length];
+        let read = read_memory(pid, address, &mut bytes).ok()?;
+        bytes.truncate(read);
+        Some(bytes)
+    };
+    let mut probe = |address| {
+        let mut bytes = [0; PROBE];
+        (read_memory(pid, address, &mut bytes).ok()? == PROBE).then_some(bytes)
+    };
+    let mut compare =
+        |source, copy, limit| (compare_bytes(&mut read, source, copy, limit, CHUNK), ());
+    prove(range, sources, &mut probe, &mut compare)
 }
 
 /// Reads process `pid`'s memory at `address` into `buffer`, from outside

@@ -117,6 +117,11 @@ pub struct Stacks {
     /// stack first needs it. Each process has its own, as a model learns
     /// the code objects of the process it reads.
     runtimes: HashMap<(Pid, ModuleId), Option<Arc<dyn RuntimeModel>>>,
+
+    /// The addresses of each process a stack ended at in no module even
+    /// after its mappings were read again, which are not read again for
+    /// them until the process maps something.
+    uncovered: HashMap<Pid, std::collections::BTreeSet<u64>>,
 }
 
 impl std::fmt::Debug for Stacks {
@@ -170,12 +175,14 @@ impl Stacks {
             next_image: 0,
             vdso: Vdso::Unread,
             runtimes: HashMap::default(),
+            uncovered: HashMap::default(),
         }
     }
 
     /// A mapping the process made, from its record.
     pub fn mapped(&mut self, mmap: &decode::Mmap<'_>) {
         let end = mmap.start.saturating_add(mmap.length);
+        self.uncovered.remove(&mmap.pid);
         let process = self.processes.entry(mmap.pid).or_default();
         process.retain(|mapped| mapped.end <= mmap.start || mapped.start >= end);
         if let Some(mapped) = self.module(mmap) {
@@ -248,6 +255,7 @@ impl Stacks {
     /// are read again when a stack next needs them.
     pub fn forget(&mut self, process: Pid) {
         self.processes.remove(&process);
+        self.uncovered.remove(&process);
         self.runtimes.retain(|&(of, _), _| of != process);
     }
 
@@ -265,9 +273,22 @@ impl Stacks {
             (register == crate::unwind::RETURN_ADDRESS).then_some(value)
         });
         self.cover(process, instruction);
+        let (mut frames, mut end) = unwind_memory(
+            &self.modules(process),
+            registers,
+            &mut Live(thread),
+            MOST_FRAMES,
+        );
+        if self.uncover(process, &frames) {
+            (frames, end) = unwind_memory(
+                &self.modules(process),
+                registers,
+                &mut Live(thread),
+                MOST_FRAMES,
+            );
+        }
         let runtime = self.interpreter(process);
         let modules = self.modules(process);
-        let (frames, end) = unwind_memory(&modules, registers, &mut Live(thread), MOST_FRAMES);
         let mut stack = stack(&frames, end);
         if let Some((model, bias)) = runtime
             && let Some(read) =
@@ -290,6 +311,10 @@ impl Stacks {
     /// that holds it, if it runs one microscope reads.
     fn interpreter(&mut self, process: Pid) -> Option<(Arc<dyn RuntimeModel>, LoadBias)> {
         for mapped in self.processes.get(&process)? {
+            // A copy of a module's code binds the runtime of the module.
+            if mapped.loaded.window.is_some() {
+                continue;
+            }
             let model = self
                 .runtimes
                 .entry((process, mapped.loaded.id))
@@ -340,22 +365,12 @@ impl Stacks {
         python: Option<&[u8]>,
     ) -> CallStack {
         self.cover(process, sample.chain.first().copied());
+        let (mut frames, mut end) = self.unwind_copy(process, sample);
+        if self.uncover(process, &frames) {
+            (frames, end) = self.unwind_copy(process, sample);
+        }
         let runtime = self.interpreter(process);
-        let modules: Vec<UnwindModule<'_>> = self
-            .processes
-            .get(&process)
-            .into_iter()
-            .flatten()
-            .filter_map(|mapped| {
-                let info = mapped.image.info.as_deref()?;
-                Some(UnwindModule {
-                    loaded: mapped.loaded,
-                    image: &info.image,
-                    unwind: info.unwind.as_ref(),
-                })
-            })
-            .collect();
-        let (frames, end) = unwind_sample(&modules, &mut self.rules, sample, MOST_FRAMES);
+        let modules = self.modules(process);
         let mut stack = stack(&frames, end);
         if let Some((model, bias)) = runtime {
             let activations = activations(model.as_ref(), &modules, &frames);
@@ -382,6 +397,52 @@ impl Stacks {
         }
 
         stack
+    }
+
+    /// Unwinds a sampled stack of `process` through its modules.
+    fn unwind_copy(
+        &mut self,
+        process: Pid,
+        sample: SampledState<'_>,
+    ) -> (Vec<SampledFrame>, StackEnd) {
+        let modules: Vec<UnwindModule<'_>> = self
+            .processes
+            .get(&process)
+            .into_iter()
+            .flatten()
+            .filter_map(|mapped| {
+                let info = mapped.image.info.as_deref()?;
+                Some(UnwindModule {
+                    loaded: mapped.loaded,
+                    image: &info.image,
+                    unwind: info.unwind.as_ref(),
+                })
+            })
+            .collect();
+        unwind_sample(&modules, &mut self.rules, sample, MOST_FRAMES)
+    }
+
+    /// Reads `process`'s mappings again when `frames` end at code in no
+    /// module the reading knows, as a runtime's that it mapped since:
+    /// whether a mapping now holds that code.
+    fn uncover(&mut self, process: Pid, frames: &[SampledFrame]) -> bool {
+        let Some(last) = frames.last().filter(|frame| frame.module.is_none()) else {
+            return false;
+        };
+        let address = last.address.get();
+        if self
+            .uncovered
+            .get(&process)
+            .is_some_and(|addresses| addresses.contains(&address))
+        {
+            return false;
+        }
+        self.cover(process, Some(address));
+        let covered = self.mapping_at(process, address).is_some();
+        if !covered {
+            self.uncovered.entry(process).or_default().insert(address);
+        }
+        covered
     }
 
     /// Names each address of a stack of `process`'s.
@@ -571,7 +632,7 @@ impl Stacks {
         };
 
         let mut modules = Vec::new();
-        for mapping in mappings {
+        for mapping in &mappings {
             let mmap = decode::Mmap {
                 pid: process,
                 start: mapping.start,
@@ -586,8 +647,116 @@ impl Stacks {
             modules.extend(self.module(&mmap));
         }
 
+        let anonymous: Vec<&perf::Mapped> = mappings
+            .iter()
+            .filter(|mapping| perf::is_anonymous(mapping))
+            .collect();
+        self.runtime_code(process, &mut modules, &anonymous);
         self.runtimes.retain(|&(of, _), _| of != process);
         self.processes.insert(process, modules);
+    }
+
+    /// Adds to the `modules` of `process` a module for each of its mappings
+    /// of `anonymous` code, where a module of them carries V8: a copy of a
+    /// module's code, proven byte for byte, binds that module's image, and
+    /// any other is code V8 generated, whose frames keep V8's frame-pointer
+    /// convention (`debug_info::runtime_code`), as the debugger has them.
+    fn runtime_code(
+        &mut self,
+        process: Pid,
+        modules: &mut Vec<Mapped>,
+        anonymous: &[&perf::Mapped],
+    ) {
+        let v8 = modules.iter().any(|mapped| {
+            mapped
+                .image
+                .info
+                .as_ref()
+                .is_some_and(|info| crate::debug_info::v8::is_v8(&info.image))
+        });
+        if !v8 || anonymous.is_empty() {
+            return;
+        }
+
+        let sources: Vec<crate::unwind::code_copies::Source<'_, usize>> = modules
+            .iter()
+            .enumerate()
+            .filter_map(|(index, mapped)| {
+                let info = mapped.image.info.as_ref()?;
+                Some(crate::unwind::code_copies::Source {
+                    key: index,
+                    image: &info.image,
+                    loaded: mapped.loaded,
+                    stored: stored_code(process, mapped),
+                })
+            })
+            .collect();
+        let found: Vec<_> = anonymous
+            .iter()
+            .map(|mapping| {
+                let range = mapping.start..mapping.end;
+                let copy = (!mapping.writable)
+                    .then(|| perf::copy_of(process.get(), &range, &sources))
+                    .flatten()
+                    .map(|proven| (proven.source, proven.image_start, proven.length));
+                (range, copy)
+            })
+            .collect();
+        drop(sources);
+
+        for (range, copy) in found {
+            let id = ModuleId::new(self.next_module);
+            self.next_module += 1;
+            let mapped = if let Some((source, image_start, length)) = copy {
+                let source = &modules[source];
+                let image_end = ImageAddress::new(image_start.get().saturating_add(length));
+                Mapped {
+                    start: range.start,
+                    end: range.start.saturating_add(length),
+                    path: Arc::clone(&source.path),
+                    loaded: LoadedModule {
+                        id,
+                        image: source.loaded.image,
+                        load_bias: LoadBias::between(image_start, VirtualAddress::new(range.start)),
+                        window: Some(crate::AddressRange {
+                            start: image_start,
+                            end: image_end,
+                        }),
+                    },
+                    image: source.image.clone(),
+                }
+            } else {
+                let path = format!("[V8 code {:#x}]", range.start);
+                let image_id = self.next_image_id();
+                let bounds = crate::AddressRange {
+                    start: ImageAddress::new(range.start),
+                    end: ImageAddress::new(range.end),
+                };
+                let Ok(info) = crate::debug_info::runtime_code::load(
+                    std::path::Path::new(&path),
+                    image_id,
+                    bounds,
+                ) else {
+                    continue;
+                };
+                Mapped {
+                    start: range.start,
+                    end: range.end,
+                    path: path.into(),
+                    loaded: LoadedModule {
+                        id,
+                        image: image_id,
+                        load_bias: LoadBias::new(0),
+                        window: None,
+                    },
+                    image: Image {
+                        info: Some(Arc::new(info)),
+                        identity: None,
+                    },
+                }
+            };
+            modules.push(mapped);
+        }
     }
 
     const fn next_image_id(&mut self) -> ModuleImageId {
@@ -615,6 +784,33 @@ impl Stacks {
         self.images.insert(key, image.clone());
         image
     }
+}
+
+/// The ranges of `mapped`'s image that a runtime it carries says process
+/// `process` keeps its own code in, where no symbol bounds it, as V8's
+/// builtins in a stripped libnode, where a copy of them may begin.
+fn stored_code(process: Pid, mapped: &Mapped) -> Vec<(ImageAddress, ImageAddress)> {
+    let Some(info) = &mapped.image.info else {
+        return Vec::new();
+    };
+    let image: Arc<dyn RuntimeImage + Send + Sync> = Arc::clone(&info.image) as _;
+    if image.v8().is_none() {
+        return Vec::new();
+    }
+    let stop = LiveStop::memory(process.get(), mapped.loaded.load_bias);
+    runtime_model::detect(&image)
+        .into_iter()
+        .flatten()
+        .flat_map(|model| model.process_code(&stop))
+        .filter(|range| mapped.start <= range.start.get() && range.end.get() <= mapped.end)
+        .map(|range| {
+            let bias = mapped.loaded.load_bias;
+            (
+                bias.wrapping_unload(range.start),
+                bias.wrapping_unload(range.end),
+            )
+        })
+        .collect()
 }
 
 /// The stack of unwound frames: the innermost frame's instruction, and for
