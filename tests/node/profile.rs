@@ -365,44 +365,79 @@ pub fn rootless(paths: &BTreeMap<Vec<String>, u64>) -> Vec<(String, u64)> {
         .collect()
 }
 
+/// How much of `paths`' sampled time entered JavaScript, through V8's
+/// entry, and how much ended at a builtin no unwind table describes.
+fn entered(paths: &BTreeMap<Vec<String>, u64>) -> (u64, u64) {
+    let weight = |keep: &dyn Fn(&[String]) -> bool| -> u64 {
+        paths
+            .iter()
+            .filter(|(path, _)| keep(path))
+            .map(|(_, weight)| weight)
+            .sum()
+    };
+    (
+        weight(&|path| {
+            path.iter()
+                .any(|frame| frame.split(' ').next() == Some("Builtins_JSEntry"))
+        }),
+        weight(&|path| at_builtin(path)),
+    )
+}
+
 /// CPU samples of a Node program spinning in JavaScript unwind through
 /// the code V8 generated and the builtins it copied, which name
 /// themselves, to the root of their thread, or else end visibly at a
 /// builtin they were sampled in.
 #[test]
 fn cpu_samples_unwind_through_v8s_code_to_each_threads_root() {
+    // A second of samples in JavaScript, which a loaded machine, or one
+    // reading node's debug information as the kernel drops samples, takes
+    // longer to give: the recording ends once it has them, or the program
+    // at its own deadline.
+    const ENOUGH: u64 = 1_000_000_000;
     let scratch = ScratchDir::new("node-busy");
-    let (command, _) = busy(&scratch, 5);
-    let recording =
-        microscope::profiler::record(command, &RecordOptions::default()).expect("record");
-    assert!(recording.status.success(), "{}", recording.status);
+    let (command, _) = busy(&scratch, 60);
+    let stop = AtomicBool::new(false);
+    let recording = record_watched(
+        command,
+        &RecordOptions::default(),
+        &mut Watch {
+            every: Duration::from_millis(100),
+            publish: &mut |profile| {
+                let (entered, _) = entered(&paths(&profile, Source::Samples, Look::Native));
+                if entered >= ENOUGH {
+                    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            },
+            stop: &stop,
+            save: None,
+        },
+    )
+    .expect("record");
+    let stopped = stop.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        stopped || recording.status.success(),
+        "{}",
+        recording.status
+    );
     let paths = paths(&recording.profile, Source::Samples, Look::Native);
     let total: u64 = paths.values().sum();
     let rootless = rootless(&paths);
     let short: u64 = rootless.iter().map(|(_, weight)| weight).sum();
-    // A tenth of a second of the five the program spins at least: a loaded
-    // machine gives the program less, and the kernel drops samples while
-    // the recording reads node's debug information.
-    assert!(total >= 100_000_000, "{total} ns sampled");
+    let (entered, at_builtins) = entered(&paths);
+    let mut heaviest: Vec<_> = paths.iter().filter(|(path, _)| !at_builtin(path)).collect();
+    heaviest.sort_by_key(|(_, weight)| std::cmp::Reverse(**weight));
+    heaviest.truncate(5);
+    assert!(
+        entered >= ENOUGH,
+        "{entered} of {total} ns entered JavaScript; the heaviest stacks:\n{heaviest:#?}"
+    );
     // A sample may land where no unwinder can step, as in a signal
     // trampoline or a prologue: at most one in a hundred.
     assert!(
         short * 100 <= total,
         "{short} of {total} ns begin with no thread's root:\n{rootless:#?}"
     );
-    let at_builtins: u64 = paths
-        .iter()
-        .filter(|(path, _)| at_builtin(path))
-        .map(|(_, weight)| weight)
-        .sum();
-    let entered = paths
-        .iter()
-        .filter(|(path, _)| {
-            path.iter()
-                .any(|frame| frame.starts_with("Builtins_JSEntry "))
-        })
-        .map(|(_, weight)| weight)
-        .sum::<u64>();
     assert!(
         (entered + at_builtins) * 2 >= total,
         "{entered} of {total} ns entered JavaScript"
