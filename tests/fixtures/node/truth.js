@@ -16,6 +16,7 @@
 //     TRUTH  checkpoint   NAME
 //     TRUTH  thread       NATIVE-ID  NAME  ROLE
 //     TRUTH  frame        NATIVE-ID  DEPTH  FUNCTION  FILE  LINE  COLUMN  TIER
+//     TRUTH  async        NATIVE-ID  INDEX  FUNCTION  FILE  LINE  COLUMN
 //     TRUTH  value        NATIVE-ID  DEPTH  NAME  CANONICAL
 //     TRUTH  unavailable  TIER  REASON
 //
@@ -27,8 +28,14 @@
 // native id.
 //
 // A thread's frames are the frames on its stack while it parks, innermost
-// first, as CallSite reports them; V8's await chain, which is not on the
-// stack, is left out. DEPTH 0 is the frame that called checkpoint() or
+// first, as CallSite reports them. V8's await chain, which is not on the
+// stack, follows as async lines: the async functions suspended in await
+// that wait for the innermost one the thread resumed, and the promise
+// combinators between them, innermost first from INDEX 0, as V8's
+// CaptureAsyncStackTrace finds them (the sites whose isAsync() holds). A
+// combinator's FUNCTION is Promise.NAME (index N), as an error's stack
+// writes it, with N its getPromiseIndex(), and its FILE, LINE, and COLUMN
+// are -. DEPTH 0 is the frame that called checkpoint() or
 // park(). The frames inside this file and what it calls, above DEPTH 0, are
 // not reported: the printer parks in fs.readSync (node:fs) under checkpoint(),
 // a worker in Atomics.wait under park(), and a core's printer in
@@ -114,6 +121,14 @@ function nativeId() {
  * left out, and so is V8's await chain.
  */
 function callSites(above) {
+  return allSites(above).filter((site) => !site.isAsync());
+}
+
+/**
+ * The call sites V8 reports from the caller of `above` outward: the
+ * stack's, then those of its await chain.
+ */
+function allSites(above) {
   const prepare = Error.prepareStackTrace;
   const limit = Error.stackTraceLimit;
   try {
@@ -121,7 +136,7 @@ function callSites(above) {
     Error.stackTraceLimit = Infinity;
     const holder = {};
     Error.captureStackTrace(holder, above);
-    return holder.stack.filter((site) => !site.isAsync());
+    return holder.stack;
   } finally {
     Error.prepareStackTrace = prepare;
     Error.stackTraceLimit = limit;
@@ -206,14 +221,25 @@ function tierAt(height, name) {
 /** The lines that describe the calling thread, from the caller of `above`. */
 function describe(role, name, above, locals) {
   const id = nativeId();
-  const sites = callSites(above);
+  const all = allSites(above);
+  const sites = all.filter((site) => !site.isAsync());
   const lines = [line(['thread', id, name, role])];
-  sites.forEach((site, depth) => {
+  const place = (site) => {
     const given = site.getFileName() ?? site.getScriptNameOrSourceURL() ?? '-';
     const file = given.startsWith('file:') ? url.fileURLToPath(given) : given;
+    return [file, site.getLineNumber() ?? '-', site.getColumnNumber() ?? '-'];
+  };
+  sites.forEach((site, depth) => {
     const fn = site.getFunctionName() ?? '-';
-    lines.push(line(['frame', id, depth, fn, file, site.getLineNumber() ?? '-',
-      site.getColumnNumber() ?? '-', tierAt(sites.length - 1 - depth, fn)]));
+    lines.push(line(['frame', id, depth, fn, ...place(site),
+      tierAt(sites.length - 1 - depth, fn)]));
+  });
+  all.filter((site) => site.isAsync()).forEach((site, index) => {
+    const combinator = site.isPromiseAll() || site.getPromiseIndex() !== null;
+    lines.push(line(combinator
+      ? ['async', id, index, `Promise.${site.getFunctionName()} (index ${site.getPromiseIndex()})`,
+        '-', '-', '-']
+      : ['async', id, index, site.getFunctionName() ?? '-', ...place(site)]));
   });
   for (const [local, value] of Object.entries(locals ?? {})) {
     lines.push(line(['value', id, 0, local, util.inspect(value, {customInspect: false}),
@@ -333,7 +359,7 @@ function release() {
 
 if (natives !== null) {
   // The library's own frames stay out of the frames they measure.
-  for (const fn of [tier, tierOf, callSites, natives.status]) natives.neverOptimize(fn);
+  for (const fn of [tier, tierOf, callSites, allSites, natives.status]) natives.neverOptimize(fn);
   // A frame that runs bytecode must say so, or the status's layout is not
   // the one this library reads.
   const calibration = function calibration() {

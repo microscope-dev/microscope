@@ -29,6 +29,11 @@ pub struct Thread {
     pub printer: bool,
     pub frames: Vec<Frame>,
 
+    /// V8's await chain below the frames, innermost first: the async
+    /// functions suspended in await, and the promise combinators between
+    /// them, named as `Promise.all (index 1)`.
+    pub awaiting: Vec<Frame>,
+
     pub values: Vec<Named>,
 }
 
@@ -66,6 +71,7 @@ pub fn threads(lines: &[Vec<String>]) -> Vec<Thread> {
                 name: fields[2].clone(),
                 printer: fields[3] == "printer",
                 frames: Vec::new(),
+                awaiting: Vec::new(),
                 values: Vec::new(),
             }),
             Some("frame") => {
@@ -82,6 +88,24 @@ pub fn threads(lines: &[Vec<String>]) -> Vec<Thread> {
                     line: optional(&fields[5]).map(|line| number(&line)),
                     column: optional(&fields[6]).map(|column| number(&column)),
                     tier: optional(&fields[7]),
+                });
+            }
+            Some("async") => {
+                let thread = threads
+                    .last_mut()
+                    .expect("an async frame of a reported thread");
+                assert_eq!(thread.native, number::<u64>(&fields[1]), "{fields:?}");
+                assert_eq!(
+                    thread.awaiting.len(),
+                    number::<usize>(&fields[2]),
+                    "{fields:?}"
+                );
+                thread.awaiting.push(Frame {
+                    function: fields[3].clone(),
+                    file: fields[4].clone(),
+                    line: optional(&fields[5]).map(|line| number(&line)),
+                    column: optional(&fields[6]).map(|column| number(&column)),
+                    tier: None,
                 });
             }
             Some("value") => {

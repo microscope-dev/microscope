@@ -73,6 +73,7 @@ pub async fn observed(scenario: &Scenario, reported: &[Thread]) -> Vec<Thread> {
             .await;
         observed.push(Thread {
             frames: javascript(&trace),
+            awaiting: Vec::new(),
             values: Vec::new(),
             ..thread.clone()
         });
