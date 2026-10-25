@@ -534,26 +534,20 @@ pub struct Tally {
     /// Each read that found a thread twice, or both found it and left it
     /// out.
     pub twice: Vec<String>,
-
-    /// How many times a thread began a phase other than the one after.
-    pub skips: usize,
 }
 
 pub fn tally(profile: &Profile, looping: &BTreeMap<u64, Looping>) -> Tally {
     let mut tally = Tally::default();
     let waits = profile.task_waits();
-    // When thread `tid`'s reads in `span` found `path`.
-    let found_at = |tid: u64, span: (i64, i64), path: &Vec<String>| -> Vec<i64> {
-        waits
-            .iter()
-            .filter(|wait| wait.noun == "thread" && wait.task == tid)
-            .filter(|wait| (span.0..span.1).contains(&wait.time))
-            .filter(|wait| {
-                thread_paths(profile, tid, (wait.time, wait.time + 1)).contains_key(path)
-            })
-            .map(|wait| wait.time)
-            .collect()
-    };
+    // How long each read that fell behind took, by when it began: a
+    // snapshot's waits are stamped when it began, and it reaches each
+    // thread before it ends, which on a starved machine can be a second
+    // later. One that says nothing ended within the interval.
+    let took: BTreeMap<i64, Duration> = profile
+        .task_snapshot_problems()
+        .iter()
+        .filter_map(|(time, problem)| Some((*time, read_took(problem)?)))
+        .collect();
     for (&tid, thread) in looping {
         let (since, until) = thread.window;
         let sites: Vec<Vec<Vec<String>>> = thread
@@ -566,31 +560,33 @@ pub fn tally(profile: &Profile, looping: &BTreeMap<u64, Looping>) -> Tally {
                     .collect()
             })
             .collect();
-        // A read that began in a phase finds the thread at a site of that
-        // phase, or of the one it began next, which it may have begun
-        // before the read reached it; never of another. A thread picks its
-        // phase by the clock, so one held off its CPU for longer than a
-        // phase skips the phases it missed: its next is not always the
-        // phase after.
-        for (index, &(phase, began)) in thread.phases.iter().enumerate() {
-            let following = thread.phases.get(index + 1);
-            let ended = following.map_or(i64::MAX, |&(_, at)| at);
-            let next = following.map_or(phase, |&(next, _)| next);
-            if next != (phase + 1) % STRESS_PHASES && following.is_some() {
-                tally.skips += 1;
-            }
-            let span = (began.max(since), ended.min(until));
-            if span.0 >= span.1 {
-                continue;
-            }
-            for path in thread_paths(profile, tid, span).keys() {
-                if !sites[phase].contains(path) && !sites[next].contains(path) {
+        // A read finds the thread at a site of a phase it was in while
+        // the read ran: the one it was in as the read began, or one it
+        // began before the read ended; never of another.
+        let times: std::collections::BTreeSet<i64> = waits
+            .iter()
+            .filter(|wait| wait.noun == "thread" && wait.task == tid)
+            .filter(|wait| (since..until).contains(&wait.time))
+            .map(|wait| wait.time)
+            .collect();
+        for &time in &times {
+            let ran = took.get(&time).copied().unwrap_or(STRESS_EVERY);
+            let ended = time.saturating_add(i64::try_from(ran.as_nanos()).unwrap_or(i64::MAX));
+            let current = thread
+                .phases
+                .iter()
+                .rposition(|&(_, began)| began <= time)
+                .unwrap_or(0);
+            let phases: Vec<usize> = thread.phases[current..]
+                .iter()
+                .take_while(|&&(_, began)| began <= ended)
+                .map(|&(phase, _)| phase)
+                .collect();
+            for path in thread_paths(profile, tid, (time, time + 1)).keys() {
+                if !phases.iter().any(|&phase| sites[phase].contains(path)) {
                     tally.wrong.push(format!(
-                        "thread {tid} in phase {phase}, from {} to {}, read at {:?}: \
+                        "thread {tid} read from {time} to {ended}, in phases {phases:?}: \
                          {path:#?}\nits phases: {:?}",
-                        span.0,
-                        span.1,
-                        found_at(tid, span, path),
                         thread.phases
                     ));
                 }
@@ -663,11 +659,10 @@ pub fn stress(entry: &str, flags: &[&str]) {
     let (snapshots, changed) = profile.live_snapshots();
     let summary = format!(
         "{entry} {flags:?}: {} exact of {read} reads, left out {:#?}, {} wrong; \
-         {changed} changed while read, in {snapshots} snapshots; {} phases skipped",
+         {changed} changed while read, in {snapshots} snapshots",
         tally.exact,
         tally.left_out,
-        tally.wrong.len(),
-        tally.skips
+        tally.wrong.len()
     );
     eprintln!("{summary}");
     // A recording whose reads fell behind what it asked says so.
@@ -788,6 +783,14 @@ fn live_reads_keep_their_interval_or_say_they_fell_behind() {
             .map(|(_, problem)| problem.chars().take(120).collect::<String>())
             .collect::<std::collections::BTreeSet<_>>()
     );
+}
+
+/// How long a read took, by the note that it fell behind, `a live read
+/// took 2.5 ms and began ...`.
+fn read_took(note: &str) -> Option<Duration> {
+    let rest = note.strip_prefix("a live read took ")?;
+    let (took, _) = rest.split_once(" ms and began ")?;
+    Some(Duration::from_secs_f64(took.parse::<f64>().ok()? / 1e3))
 }
 
 /// How far behind a note that a live read fell behind says it was: how
