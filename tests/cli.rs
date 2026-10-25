@@ -6517,3 +6517,29 @@ fn print_shows_a_javascript_value_as_node_writes_it() {
         ],
     );
 }
+
+/// A Node core's `tasks` lists what its event loops wait on, each by what
+/// it waits for and the callback Node will call, and its thread-pool jobs
+/// on their threads; grouped, the items with no callback are one group.
+#[test]
+fn a_node_cores_tasks_show_each_callback_and_pool_job() {
+    let node = std::path::Path::new(&std::env::var("MICROSCOPE_NODE").expect("MICROSCOPE_NODE"))
+        .join("26/node");
+    let node = node.to_str().expect("a UTF-8 path");
+    let stdout = batch(
+        &["--core", "build/test-programs/node-tasks-26.core", node],
+        &["tasks", "tasks -g"],
+    );
+    assert_in_order(
+        &stdout,
+        &[
+            "  [2] timeout 30000 ms — callback sessionTimeout at tests/fixtures/node/tasks.js:78 {type: Timeout}\n",
+            "  [4] timeout 60000 ms, unref'd — callback idleTimer at tests/fixtures/node/tasks.js:80 {type: Timeout}\n",
+            "  [5] fs open build/test-programs/node-tasks.fifo — pending — callback configOpened at tests/fixtures/node/tasks.js:83 {type: FSREQCALLBACK, class: \"node::fs::FSReqCallback\"}\n",
+            "  [27] TCP server — listening — callback onconnection at node:net:",
+            " — thread-pool job (thread ",
+            "1 handle in callback sessionTimeout at tests/fixtures/node/tasks.js:78: 2\n",
+            " handles in <no callback>: 7, 9,",
+        ],
+    );
+}

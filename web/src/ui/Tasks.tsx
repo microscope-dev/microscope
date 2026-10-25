@@ -83,16 +83,31 @@ export function Tasks() {
                   </div>
                 </li>
               ))
-            : list.tasks.map((task) => (
-                <li key={key(task.key)}>
-                  <TaskButton task={task} at={at} onChoose={choose} row>
+            : list.tasks.map((task) =>
+                // Work an event loop waits on has no stack to show: it is
+                // what it waits for, then the callback it will run.
+                task.stackless ? (
+                  <li
+                    key={key(task.key)}
+                    className="row task-row"
+                    aria-label={`task ${task.key.number}`}
+                    title={describe(task)}
+                  >
                     <span className="dim task-number">{task.key.number}</span>
-                    <span className="fn">{task.frame?.name ?? task.place}</span>
-                    <span className="dim detail">{task.detail ?? task.state}</span>
-                    {task.frame && <span className="end">{where(task.frame)}</span>}
-                  </TaskButton>
-                </li>
-              ))}
+                    <span className="fn">{task.detail ?? task.state}</span>
+                    {task.place && <span className="dim detail">{task.place}</span>}
+                  </li>
+                ) : (
+                  <li key={key(task.key)}>
+                    <TaskButton task={task} at={at} onChoose={choose} row>
+                      <span className="dim task-number">{task.key.number}</span>
+                      <span className="fn">{task.frame?.name ?? task.place}</span>
+                      <span className="dim detail">{task.detail ?? task.state}</span>
+                      {task.frame && <span className="end">{where(task.frame)}</span>}
+                    </TaskButton>
+                  </li>
+                ),
+              )}
           {list.more && <li className="row dim">and more {noun}s, which this list leaves out</li>}
         </ul>
       </div>
@@ -131,7 +146,9 @@ function TaskButton({
 /** Everything a task's row says, for its tooltip. */
 function describe(task: Task): string {
   return [
-    `task ${task.key.number} in ${task.place}`,
+    task.stackless
+      ? `task ${task.key.number}${task.place ? `, ${task.place}` : ""}`
+      : `task ${task.key.number} in ${task.place}`,
     task.detail ?? task.state,
     task.labels,
     task.thread === null ? null : `on thread ${task.thread}`,

@@ -2644,6 +2644,11 @@ pub struct Task {
 
     /// The thread running it.
     pub thread: Option<u64>,
+
+    /// Whether it runs no code and has no stack, as an event loop's pending
+    /// handle; its place is then the callback its runtime will call, or
+    /// empty where it recorded none.
+    pub stackless: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

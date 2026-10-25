@@ -162,3 +162,64 @@ fn a_launched_node_program_breaks_steps_and_stops_where_it_throws() {
     dap.output_containing(started.mark, "stdout", "DONE");
     dap.finish();
 }
+
+/// In a Node core, each handle, request, and timer of its event loops is a
+/// thread named by what it waits for and its callback, with no frames, and
+/// a thread-pool job is its pool thread's, with that thread's frames.
+#[test]
+fn a_node_cores_event_loop_work_is_listed_as_threads() {
+    let mut dap = Dap::start("node tasks");
+    let started = dap.begin(
+        Profile::VsCode,
+        (
+            "attach",
+            json!({"coreFile": crate::dap::fixture("node-tasks-26.core")}),
+        ),
+        &Configuration::default(),
+    );
+    dap.stopped(started.mark);
+
+    let threads = dap.request("threads", Value::Null)["threads"]
+        .as_array()
+        .expect("threads")
+        .clone();
+    let named = |prefix: &str| {
+        threads
+            .iter()
+            .find(|thread| {
+                thread["name"]
+                    .as_str()
+                    .is_some_and(|name| name.starts_with(prefix))
+            })
+            .unwrap_or_else(|| panic!("no thread named {prefix}: {threads:#?}"))
+            .clone()
+    };
+    let timer = named("[2] timeout 30000 ms — callback sessionTimeout at ");
+    assert!(
+        timer["name"]
+            .as_str()
+            .is_some_and(|name| name.ends_with("tests/fixtures/node/tasks.js:78 {type: Timeout}")),
+        "{timer}"
+    );
+    let trace = dap.request("stackTrace", json!({"threadId": timer["id"], "levels": 16}));
+    assert_eq!(trace["stackFrames"], json!([]), "{trace}");
+
+    let job = threads
+        .iter()
+        .find(|thread| {
+            thread["name"]
+                .as_str()
+                .is_some_and(|name| name.contains("— thread-pool job (thread "))
+        })
+        .unwrap_or_else(|| panic!("no pool job: {threads:#?}"));
+    let trace = dap.request("stackTrace", json!({"threadId": job["id"], "levels": 64}));
+    assert!(
+        trace["stackFrames"]
+            .as_array()
+            .is_some_and(|frames| frames.iter().any(|frame| frame["name"]
+                .as_str()
+                .is_some_and(|name| name.contains("worker")))),
+        "{trace}"
+    );
+    dap.finish();
+}

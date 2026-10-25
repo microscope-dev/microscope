@@ -1713,7 +1713,10 @@ impl Cli {
         if grouped {
             let mut groups: Vec<(String, Vec<u64>)> = Vec::new();
             for (task, trace) in &shown {
-                let place = format::task_place(task, trace, &traces.images, renderer);
+                let mut place = format::task_place(task, trace, &traces.images, renderer);
+                if place.is_empty() {
+                    place = renderer.paint(Role::Metadata, "<no callback>").to_string();
+                }
                 match groups.iter_mut().find(|(known, _)| *known == place) {
                     Some((_, numbers)) => numbers.push(task.id.number),
                     None => groups.push((place, vec![task.id.number])),

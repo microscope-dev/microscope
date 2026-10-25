@@ -155,6 +155,11 @@ impl Session {
 
         // A closed client has no use for the list either.
         let _ = self.forget_tasks(&tasks).await;
+        self.stackless = tasks
+            .iter()
+            .filter(|task| task.stackless)
+            .map(|task| task.id)
+            .collect();
         let snapshot = handle.snapshot().await.map_err(error)?;
         let stopped = |thread: microscope::ThreadId| {
             snapshot
@@ -252,6 +257,25 @@ impl Session {
         task: &microscope::TaskSnapshot,
         stopped: Option<String>,
     ) -> String {
+        // Work that runs no code is what it waits for, then whom it calls.
+        if task.stackless {
+            let what = task.detail.as_deref().unwrap_or(task.noun);
+            let callback = task
+                .resume
+                .as_ref()
+                .and_then(|resume| {
+                    let function = resume.function.as_deref()?;
+                    Some(resume.recorded.as_ref().map_or_else(
+                        || format!(" — callback {function}"),
+                        |place| format!(" — callback {function} at {}:{}", place.path, place.line),
+                    ))
+                })
+                .unwrap_or_default();
+            let labels = crate::cli::format::task_labels(task)
+                .map(|labels| format!(" {labels}"))
+                .unwrap_or_default();
+            return format!("[{}] {what}{callback}{labels}", task.id.number);
+        }
         let place = self
             .backtrace(stop, ExecutionContext::Task(task.id))
             .await
@@ -294,6 +318,12 @@ impl Session {
         let arguments = parse::<StackTraceArguments>(arguments, "stackTrace arguments")?;
         let stop = self.current_stop()?;
         let context = self.thread_ids.context(arguments.thread_id)?;
+        // Work an event loop waits on runs no code, so it has no frames.
+        if let ExecutionContext::Task(task) = context
+            && self.stackless.contains(&task)
+        {
+            return Ok(json!({"stackFrames": [], "totalFrames": 0}));
+        }
         let trace = self.backtrace(&stop, context).await?;
 
         // Where a stack goes on on another, a label heads each run of

@@ -5,7 +5,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import type { Page } from "@playwright/test";
-import { expect, join, type Microscope, test } from "./server";
+import { expect, fixture, join, type Microscope, test } from "./server";
 
 const node = path.join(process.env.MICROSCOPE_NODE ?? "", "26", "node");
 
@@ -175,4 +175,28 @@ test("node --watch stops in the app, and again in the app it restarts", async ({
   await expect(
     switcher.getByRole("button", { name: new RegExp(`^\\[${first}\\] `) }),
   ).toContainText("exited");
+});
+
+test("a Node core's tasks panel lists its event loops' work, each with its callback", async ({
+  page,
+  microscope,
+}) => {
+  const server = await microscope.start(["--core", fixture("node-tasks-26.core"), node]);
+  await join(page, server.link);
+  await expect(page.getByTestId("status")).toContainText("Core dump");
+
+  // A timer is what it waits for, then the program's callback, and opens
+  // no stack; a pool job runs on its thread.
+  const tasks = page.getByTestId("tasks");
+  const timer = tasks.getByRole("listitem", { name: "task 2", exact: true });
+  await expect(timer).toContainText("timeout 30000 ms");
+  await expect(timer).toContainText(
+    /callback sessionTimeout at \S*tests\/fixtures\/node\/tasks\.js:78$/,
+  );
+  await expect(timer.getByRole("button")).toHaveCount(0);
+  const opened = tasks.getByRole("listitem", { name: "task 5", exact: true });
+  await expect(opened).toContainText("fs open");
+  await expect(opened).toContainText("callback configOpened");
+  await expect(tasks.getByRole("button", { name: /^task \d+$/ })).toHaveCount(2);
+  await expect(tasks).toContainText("thread-pool job");
 });

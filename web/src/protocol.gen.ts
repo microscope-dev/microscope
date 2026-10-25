@@ -852,7 +852,13 @@ labels: string | null,
 /**
  * The thread running it.
  */
-thread: number | null, };
+thread: number | null, 
+/**
+ * Whether it runs no code and has no stack, as an event loop's pending
+ * handle; its place is then the callback its runtime will call, or
+ * empty where it recorded none.
+ */
+stackless: boolean, };
 
 export type TaskState = "running" | "runnable" | "blocked" | "exited" | "unknown";
 
