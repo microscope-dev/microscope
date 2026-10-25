@@ -2234,6 +2234,14 @@ impl Processor {
             .map_or_else(Vec::new, |process| modules_in(process, &self.images))
     }
 
+    /// Records why the task snapshot at `time`, which did not fail, ran
+    /// otherwise than asked, as later than due.
+    pub fn snapshot_noted(&mut self, time: u64, why: &str) {
+        record!("record: {why}");
+        self.builder
+            .marker(time.cast_signed(), MarkerKind::TaskSnapshot, why);
+    }
+
     /// Records that a task snapshot at `time` failed, or missed tasks, and
     /// why.
     pub fn snapshot_failed(&mut self, time: u64, why: &str) {

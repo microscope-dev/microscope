@@ -285,8 +285,10 @@ time.
 Live reads keep the rate asked of them: each is due one interval after the
 last was due, not after it ended, and the drain loop wakes for it
 (`Snapshots::due_in`). A read that takes longer than the interval records
-the problem `a live read took N ms, longer than the M ms asked between
-reads`, so a recording that could not keep up says so.
+the note `a live read took N ms, longer than the M ms asked between reads`
+(`Processor::snapshot_noted`), so a recording that could not keep up says
+so. The note is a snapshot marker like a problem, but it does not count as
+a failed snapshot: the read itself succeeded.
 
 ### Python frames in each sample
 

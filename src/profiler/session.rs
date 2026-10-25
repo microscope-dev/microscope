@@ -807,10 +807,11 @@ impl Snapshots {
                 processor.live_task_snapshot(Pid::new(self.pid), (start, end), weight, &snapshot);
                 self.previous = start;
                 // A snapshot keeps its first problem whole, which may be
-                // another, so falling behind is a problem of its own.
+                // another, so falling behind is a note of its own: the read
+                // did not fail, it was late.
                 let took = Duration::from_nanos(end.saturating_sub(start));
                 if took > self.every {
-                    processor.snapshot_failed(
+                    processor.snapshot_noted(
                         start,
                         &format!(
                             "a live read took {:.1} ms, longer than the {:.1} ms asked between \
