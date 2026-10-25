@@ -45,6 +45,29 @@ pub(super) fn watch(
                  scopes, which microscope does not watch",
             );
         }
+        // V8 gives a block's variable a register of its own, but each
+        // entry of the block, as a loop's next iteration, binds the variable
+        // anew in that register, which no bytecode marks; the stores that
+        // begin a new binding cannot be told from the variable's own. The
+        // register's name binds the innermost declaration
+        // (`variables::bind`), so a block's declaration of it is the one.
+        Kind::Named(_)
+            if reader
+                .stop
+                .reported_locals(frame.address)
+                .and_then(Result::ok)
+                .is_some_and(|reported| {
+                    reported
+                        .iter()
+                        .any(|local| local.block && *local.name == *variable.name)
+                }) =>
+        {
+            return refused(
+                "is a block's variable kept in a register, which each entry of the block \
+                 binds anew, as a loop's next iteration does, with stores microscope cannot \
+                 tell from the variable's own",
+            );
+        }
         _ => {}
     }
     if let Err(problem) = &variable.word

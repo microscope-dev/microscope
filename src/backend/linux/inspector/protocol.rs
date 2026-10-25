@@ -48,6 +48,7 @@ pub(super) fn scope_locals(
             Ok(ReportedLocal {
                 name: name.into(),
                 value,
+                block: false,
             })
         })
         .collect()

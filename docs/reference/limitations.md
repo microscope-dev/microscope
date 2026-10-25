@@ -124,9 +124,9 @@ narrower limits and report them when used.
   outside a context. The statement V8 paused at may still use the old value.
   A JavaScript watchpoint watches a variable of a frame the interpreter or
   Sparkplug runs, or a captured variable a context holds: not a property,
-  `this`, a global, a script's top-level binding, a generator's or async
-  function's variable kept outside a context, a variable optimized code
-  keeps, or, on Node 26, a variable V8 keeps in a context cell, as it does
+  `this`, a global, a script's top-level binding, a block's variable that
+  no closure captured, a generator's or async function's variable kept
+  outside a context, a variable optimized code keeps, or, on Node 26, a variable V8 keeps in a context cell, as it does
   in a context of at most two variables. A watch of a frame's own slot
   ends where V8 begins replacing the frame by optimized code, even if the
   replacement then fails. No watch is set on Debian's node, whose `libnode`

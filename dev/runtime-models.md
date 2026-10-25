@@ -1134,9 +1134,14 @@ or argument slot, or a slot of a context the frame reaches. Each is an
 slot, so that the place can be found again after V8 moves the context.
 `variables.rs` keeps each variable's slot address for this. Refused: the
 receiver, a global, a script binding, a variable found through `with`, an
-optimized frame's variable, a resumable function's frame slot, and, on
-14.6, a context slot that holds or will hold a context cell
-(`Context::Set`).
+optimized frame's variable, a resumable function's frame slot, a
+block's register variable, and, on 14.6, a context slot that holds or
+will hold a context cell (`Context::Set`). V8 gives each block's variable
+a register of its own (`Scope::AllocateStackSlot`), but each entry of the
+block binds it anew there with no bytecode to mark it; V8's listing says
+which names are a block's (`ReportedLocal::block`). A block's captured
+variable is in the block's own context, which each entry makes anew, so
+its watch ends with the block.
 
 `backend/linux/interpreted_watches.rs` follows V8's collector. A
 collection runs on its isolate's thread, so a breakpoint on
@@ -1158,8 +1163,9 @@ is `[rbp]`. Sparkplug's builtin is entered from the frame itself. V8
 re-enters a builtin on each back edge while it compiles the replacement,
 and each entry stops every thread. So the builtins are planted only while
 a frame-slot watch exists, and its first entry ends that watch.
-`stack_frame_left` ends a frame-slot watch when the frame returned (the
-innermost CFA is above the frame, or rbp is above it in V8's code) or when
+`stack_frame_left` ends a frame-slot watch when the frame returned (no
+frame of the thread's unwound stack is at its address, the innermost CFA
+is above it, or rbp is above it in V8's code) or when
 a frame builder (`InterpreterEntryTrampoline`, Sparkplug's prologue) runs
 at the frame's address. A store stops inside a bytecode handler.
 `frames.rs` describes that frame as the handler's function, and the

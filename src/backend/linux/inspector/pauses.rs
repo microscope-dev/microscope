@@ -187,10 +187,19 @@ impl PausedFrame {
     /// The frame's variables in declaration order, or why they are not
     /// known.
     fn locals(&self) -> crate::runtime_model::ReportedLocals {
+        let chain = self.reported["scopeChain"]
+            .as_array()
+            .map_or(&[][..], Vec::as_slice);
         let mut locals = Vec::new();
-        for scope in &self.scopes {
+        for (scope, index) in self.scopes.iter().zip(listed_scopes(chain)) {
+            let block = chain[index]["type"] == "block";
             match scope {
-                Some(Ok(scope)) => locals.extend(scope.iter().cloned()),
+                Some(Ok(scope)) => locals.extend(
+                    scope
+                        .iter()
+                        .cloned()
+                        .map(|local| ReportedLocal { block, ..local }),
+                ),
                 Some(Err(reason)) => return Err(Arc::clone(reason)),
                 None => return Err("V8 did not list the frame's variables before the stop".into()),
             }

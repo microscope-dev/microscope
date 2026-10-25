@@ -763,8 +763,8 @@ stopped by watchpoint 1 (change, hit 1) on a in moved [thread 4242 of 8]
   new: { round: 1 }
 ```
 
-A parameter, a local, a block's variable, and a variable a closure
-captured can be watched. V8 keeps a captured variable in a context object,
+A parameter, a function's own local, and a variable a closure captured
+can be watched. V8 keeps a captured variable in a context object,
 which its collector moves, young or old; the watch moves with it, and the
 collector's own rewrites are never reported. The watch ends when the frame
 returns or unwinds, and microscope says so. It also ends where V8 begins
@@ -775,9 +775,12 @@ The store stops inside V8's interpreter, which keeps the statement it runs
 in a register, so the stop names the frame's function but not always its
 line; `next` continues to the next statement.
 
-A property (`obj.x`), `this`, a global, and a script's top-level binding
-are refused, as are a variable optimized code keeps and a generator's or
-async function's variable outside a context. Node 26 keeps the number of a
+A property (`obj.x`), `this`, a global, a script's top-level binding, a
+variable optimized code keeps, and a generator's or async function's
+variable outside a context are refused. So is a block's variable that no
+closure captured: each entry of its block, as each iteration of a loop,
+binds it anew in the same register, with stores that cannot be told from
+its own. Node 26 keeps the number of a
 context with at most two variables in a cell whose fields change with the
 number's type; such a variable is refused. A watch follows the collector
 by stopping every thread as each collection on the frame's thread begins

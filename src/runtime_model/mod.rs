@@ -230,6 +230,10 @@ impl TargetThreadId {
 pub struct ReportedLocal {
     pub name: Arc<str>,
     pub value: ReportedValue,
+
+    /// Whether the interface listed it in a block's scope, whose each entry
+    /// binds it anew.
+    pub block: bool,
 }
 
 /// What a runtime's debugging interface said a variable held.

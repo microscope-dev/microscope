@@ -21,7 +21,8 @@ use nix::unistd::Pid;
 
 use crate::protocol::{InvalidatedWatchpoint, WatchScope, WatchpointId, WatchpointInvalidation};
 use crate::runtime_model::InterpretedPlace;
-use crate::{AddressRange, Error, Result, RuntimeId, ThreadId, VirtualAddress};
+use crate::unwind::{CallerProvider, CallerResult, DEFAULT_MAX_FRAMES};
+use crate::{AddressRange, Error, Result, RuntimeId, ThreadId, UnwindTermination, VirtualAddress};
 
 use super::breakpoints::remove_breakpoint_owner_from;
 use super::debug_registers;
@@ -137,21 +138,39 @@ impl<P: InspectionOps> Controller<P> {
             cfa: None,
             signal_frame: false,
         };
-        let cfa = self
-            .caller_provider(
-                inferior,
-                &self.runtimes(inferior),
-                pid,
-                x86_64_registers(&registers),
-                true,
-            )
-            .frame_cfa(&context)
-            .ok()
-            .map(VirtualAddress::get);
+        let runtimes = self.runtimes(inferior);
+        let mut provider =
+            self.caller_provider(inferior, &runtimes, pid, x86_64_registers(&registers), true);
+        let cfa = provider.frame_cfa(&context).ok().map(VirtualAddress::get);
         let own = frame
             .get()
             .checked_add(16)
             .ok_or_else(|| Error::internal("a frame's address leaves room for its caller's"))?;
+        // The frame is live only while a frame of the thread's stack is
+        // at its address: a deeper frame may since reuse the slots of one
+        // that returned, as a native function's prologue does.
+        let mut walked = context;
+        let mut on_stack = None;
+        for _ in 0..DEFAULT_MAX_FRAMES {
+            match provider.caller(&walked) {
+                CallerResult::Caller(caller) => {
+                    match caller.cfa.map(VirtualAddress::get) {
+                        Some(at) if at == own => on_stack = Some(true),
+                        Some(at) if at > own => on_stack = Some(false),
+                        _ => {}
+                    }
+                    if on_stack.is_some() {
+                        break;
+                    }
+                    walked = caller;
+                }
+                CallerResult::Finished(UnwindTermination::Complete) => {
+                    on_stack = Some(false);
+                    break;
+                }
+                CallerResult::Finished(_) => break,
+            }
+        }
         let modules = self.unwind_modules(inferior);
         let (in_runtime, in_builder) =
             unwind_module_for(&modules, instruction).map_or((false, false), |(module, address)| {
@@ -162,8 +181,9 @@ impl<P: InspectionOps> Controller<P> {
                     own_image && builders.iter().any(|range| range.contains(address)),
                 )
             });
-        let returned =
-            cfa.is_some_and(|cfa| cfa > own) || (in_runtime && registers.rbp > frame.get());
+        let returned = on_stack == Some(false)
+            || cfa.is_some_and(|cfa| cfa > own)
+            || (in_runtime && registers.rbp > frame.get());
         if returned {
             record!(
                 "the frame at {frame} on {pid} returned: the innermost frame is at {cfa:x?}, rbp {:#x}",

@@ -19,7 +19,12 @@ const FIXTURE: &str = "watches.js";
 
 /// The line of the fixture that carries `marker`.
 fn line_of(marker: &str) -> LineNumber {
-    let text = std::fs::read_to_string(node::fixture(FIXTURE)).expect("read the fixture");
+    line_in(FIXTURE, marker)
+}
+
+/// The line of `fixture` that carries `marker`.
+fn line_in(fixture: &str, marker: &str) -> LineNumber {
+    let text = std::fs::read_to_string(node::fixture(fixture)).expect("read the fixture");
     let index = text
         .lines()
         .position(|line| line.ends_with(&format!("// {marker}")))
@@ -28,10 +33,14 @@ fn line_of(marker: &str) -> LineNumber {
 }
 
 fn breakpoint(marker: &str) -> (BreakpointSpec, BreakpointOptions) {
+    breakpoint_in(FIXTURE, marker)
+}
+
+fn breakpoint_in(fixture: &str, marker: &str) -> (BreakpointSpec, BreakpointOptions) {
     (
         BreakpointSpec::Source {
-            path: node::fixture(FIXTURE),
-            line: line_of(marker),
+            path: node::fixture(fixture),
+            line: line_in(fixture, marker),
         },
         BreakpointOptions {
             pending: true,
@@ -323,6 +332,84 @@ pub async fn variables_are_watched_for_their_frames_life(entry: &str) {
     owned.shutdown().await;
 }
 
+/// A block's variable, which each iteration of its loop binds anew in its
+/// register, is refused; the function's own variable reports its stores
+/// until the call returns, and nothing Node's own code later writes in its
+/// slot.
+pub async fn registers_are_watched_for_their_bindings_life(entry: &str) {
+    const BLOCKS: &str = "blocks.js";
+    let (mut owned, reason, mut events) = NodeSession::unlaunched_with_node(entry, BLOCKS, &[])
+        .run_to_stop(vec![breakpoint_in(BLOCKS, "BLOCK")])
+        .await;
+    let session = &mut owned;
+    let context = session.context();
+    assert!(
+        matches!(reason, StopReason::Breakpoint { .. }),
+        "{context}: {reason:?}\n{}",
+        session.output()
+    );
+    let refused = watch(session, "c").await;
+    assert!(
+        matches!(&refused, Err(Error::WatchTargetUnsupported(reason)) if reason.contains("block's variable")),
+        "{context}: `c` is refused: {refused:?}"
+    );
+    let total = watch(session, "total").await.expect("watch total").id.get();
+    for breakpoint in session.scenario.snapshot().await.breakpoints.to_vec() {
+        session.scenario.remove_breakpoint(breakpoint.id).await;
+    }
+
+    let mut hits = Vec::new();
+    let mut ended = Vec::new();
+    loop {
+        let reason = session.scenario.resume_to_stop().await;
+        while let Ok(event) = events.try_recv() {
+            if let DebuggerEvent::WatchpointsInvalidated { invalidated, .. } = event {
+                ended.extend(
+                    invalidated
+                        .iter()
+                        .map(|entry| (entry.watchpoint.id.get(), entry.reason)),
+                );
+            }
+        }
+        match reason {
+            StopReason::Watchpoint { hits: found } => hits.extend(found.iter().map(|hit| {
+                (
+                    hit.watchpoint.get(),
+                    hit.previous_value.as_deref().unwrap_or("?").to_owned(),
+                    hit.current_value.as_deref().unwrap_or("?").to_owned(),
+                )
+            })),
+            StopReason::WatchpointInvalidated { .. } => {}
+            StopReason::Exited(_) => break,
+            other => panic!("{context}: {other:?}\n{}", session.output()),
+        }
+    }
+    assert_eq!(
+        hits,
+        [
+            (total, "0".to_owned(), "1".to_owned()),
+            (total, "1".to_owned(), "12".to_owned()),
+            (total, "12".to_owned(), "33".to_owned()),
+        ],
+        "{context}: the call's stores, and nothing written in its slot after it returned\n{}",
+        session.output()
+    );
+    assert!(
+        ended
+            .iter()
+            .all(|&ended| ended == (total, WatchpointInvalidation::ScopeExited)),
+        "{context}: {ended:?}"
+    );
+    assert!(
+        session
+            .output()
+            .contains("TOTAL 33\nNATIVE 44 1,234,567.891 object\nBLOCKS DONE\n"),
+        "{context}: {}",
+        session.output()
+    );
+    owned.shutdown().await;
+}
+
 /// A build that does not name V8's collector, as Debian's stripped
 /// libnode does not, refuses every watch of a JavaScript variable, which
 /// no collection could be followed through.
@@ -345,6 +432,13 @@ pub async fn watches_are_refused_without_the_collector(entry: &str) {
     }
     assert!(watchpoints(&mut owned).await.is_empty(), "{context}");
     owned.shutdown().await;
+}
+
+#[tokio::test]
+async fn registers_are_watched_for_their_bindings_life_on_every_build() {
+    for entry in MATRIX {
+        registers_are_watched_for_their_bindings_life(entry).await;
+    }
 }
 
 #[tokio::test]
