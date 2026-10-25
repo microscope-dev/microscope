@@ -2655,6 +2655,9 @@ fi
 # ABI-stable and every build declares napi_value alike, so one build serves all.
 build_program gcc "$fixtures_dir/node/addon.c" "$output_dir/node-addon.node" \
     -std=c17 -Wall -Wextra -Werror -shared -fPIC -O0 -g "-I$MICROSCOPE_NODE/26/include"
+# microscope's Node package's addon, which loads the probes library.
+build_program gcc sdk/node/microscope.c "$output_dir/node-microscope.node" \
+    -std=c17 -Wall -Wextra -Werror -shared -fPIC -O2 -g "-I$MICROSCOPE_NODE/26/include" -ldl -pthread
 build_program gcc "$fixtures_dir/node/inspector-lifetime.c" "$output_dir/node-inspector-lifetime.node" \
     -std=c17 -Wall -Wextra -Werror -shared -fPIC -O0 -g -pthread "-I$MICROSCOPE_NODE/26/include"
 for entry in 26 24 22; do

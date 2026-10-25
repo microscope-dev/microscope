@@ -635,3 +635,153 @@ mod bpf {
         );
     }
 }
+
+/// A program instrumented with the Node package is recorded as one
+/// instrumented with the Rust SDK is: its zones nest as its calls did, on
+/// the main thread and a worker, its labels, plots, and messages land on
+/// its thread, and the sites past the library's table record nothing,
+/// which the profile says.
+#[test]
+fn the_node_package_records_what_the_program_marks() {
+    let mut command = Command::new(node::node(ENTRY));
+    command
+        .arg(node::fixture("probes.js"))
+        .env_clear()
+        .env(
+            "MICROSCOPE_PROBES_LIBRARY",
+            crate::support::Scenario::fixture("libmicroscope_probes_c.so"),
+        )
+        .env(
+            "MICROSCOPE_NODE_ADDON",
+            crate::support::Scenario::fixture("node-microscope.node"),
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped());
+    let recording =
+        microscope::profiler::record(command, &RecordOptions::default()).expect("record");
+    assert!(recording.status.success(), "{}", recording.status);
+
+    let profile = recording.profile;
+    let counts = profile.probe_counts();
+    assert!(!counts.lost() && counts.malformed == 0, "{counts:?}");
+
+    let zones = profile.zones();
+    let named = |name: &str| {
+        zones
+            .iter()
+            .filter(|zone| zone.name == name)
+            .collect::<Vec<_>>()
+    };
+    let rounds = named("round");
+    assert_eq!(
+        rounds
+            .iter()
+            .map(|zone| zone.value.as_deref())
+            .collect::<Vec<_>>(),
+        [Some("0"), Some("1"), Some("2")],
+        "{zones:?}"
+    );
+    let (load, parse) = (named("load"), named("parse"));
+    assert_eq!((load.len(), parse.len()), (3, 3), "{zones:?}");
+    for ((round, load), parse) in rounds.iter().zip(&load).zip(&parse) {
+        assert!(
+            round.depth < load.depth && load.depth < parse.depth,
+            "{zones:?}"
+        );
+        assert!(
+            round.start <= load.start
+                && load.start <= parse.start
+                && parse.end <= load.end
+                && load.end <= round.end,
+            "{zones:?}"
+        );
+    }
+    assert!(named("suspends").is_empty(), "{zones:?}");
+    let worker = named("worker");
+    assert_eq!(worker.len(), 1, "{zones:?}");
+    assert_ne!(worker[0].tid, rounds[0].tid, "{zones:?}");
+
+    let plotted = profile
+        .plots()
+        .into_iter()
+        .map(|plot| (plot.name, plot.value))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        plotted,
+        [
+            ("rows", 1.0),
+            ("rows", 2.0),
+            ("rows", 3.0),
+            ("worker rows", 7.0)
+        ]
+        .map(|(name, value)| (name.to_owned(), value))
+    );
+
+    let said = profile
+        .program_markers()
+        .into_iter()
+        .filter_map(|marker| marker.text)
+        .collect::<Vec<_>>();
+    assert_eq!(said, ["round 0", "round 1", "round 2"]);
+
+    let problems = profile.probe_problems();
+    assert!(
+        problems
+            .iter()
+            .any(|(_, problem)| problem.contains("all 4096 of its run-time sites")),
+        "{problems:?}"
+    );
+}
+
+/// Without its addon, or with an addon but no library, the package still
+/// loads, and every mark does nothing, as with no recording; `problem`
+/// says why.
+#[test]
+fn the_node_package_without_its_native_parts_does_nothing_and_says_why() {
+    let sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/node");
+    let script = r"
+const microscope = require(process.argv[1]);
+const expected = process.argv[2];
+if (!String(microscope.problem).includes(expected)) {
+  throw new Error(`problem: ${microscope.problem}`);
+}
+const load = microscope.wrap('load', () => 1);
+if (load() !== 1 || microscope.listening()) {
+  throw new Error('a mark did something');
+}
+microscope.zone('block', () => microscope.label('key', 1, () => {
+  microscope.plot('rows', 1);
+  microscope.message('said', 'text');
+  microscope.frame();
+  microscope.trigger('why');
+}));
+process.stdout.write('NOTHING OK\n');
+";
+    let addon = crate::support::Scenario::fixture("node-microscope.node");
+    for (addon, expected) in [
+        (
+            std::path::PathBuf::from("/nonexistent/microscope.node"),
+            "the addon could not be loaded",
+        ),
+        (addon, "the probes library could not be loaded"),
+    ] {
+        let output = Command::new(node::node(ENTRY))
+            .args(["-e", script])
+            .arg(&sdk)
+            .arg(expected)
+            .env_clear()
+            .env("MICROSCOPE_NODE_ADDON", &addon)
+            .env(
+                "MICROSCOPE_PROBES_LIBRARY",
+                "/nonexistent/libmicroscope_probes.so",
+            )
+            .output()
+            .expect("run node");
+        let printed = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && printed.contains("NOTHING OK"),
+            "{expected}: {printed}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
