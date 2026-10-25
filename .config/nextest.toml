@@ -24,6 +24,17 @@ perf-rings = { max-threads = 2 }
 filter = 'test(/(^|::)bpf::/)'
 test-group = 'perf-rings'
 
+# Node's profile and syscall tests record a program that spins two threads,
+# or stop it again and again for snapshots, and their own reads of V8 take
+# a CPU each: run together under `just stress`, they starve the debugger's
+# Node tests past their deadlines. One at a time leaves those the CPUs.
+[test-groups.node-recordings]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = 'binary(node) & test(/^(profile|syscalls)::/)'
+test-group = 'node-recordings'
+
 # Each stopped snapshot's debugger reads every library's debug information
 # again, which `just stress`, with no image cache, makes take seconds of
 # every CPU: one recording at a time leaves the other tests the CPUs.
