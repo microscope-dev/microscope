@@ -238,9 +238,10 @@ async fn detach_closes_only_the_inspector_server_created_by_attach() {
             );
             child.release();
             let after = detached_report(&report, entry, borrowed).await;
+            let status = child.wait();
             assert!(
-                child.wait().success(),
-                "node {entry}: detached process survives"
+                status.success(),
+                "node {entry}: detached process borrowed={borrowed} exited with {status}"
             );
             assert_eq!(
                 after["after"],

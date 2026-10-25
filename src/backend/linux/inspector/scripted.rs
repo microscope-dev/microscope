@@ -758,6 +758,43 @@ fn interrupt_unanswered(scripted: &mut Scripted) {
     scripted.actions();
 }
 
+#[test]
+fn an_interrupt_during_an_internal_stop_still_waits_for_v8() {
+    let mut scripted = Scripted::connected(2);
+    scripted.sent();
+    scripted.harness.start_continue();
+    scripted
+        .harness
+        .controller
+        .queue_internal_edit(super::super::Edit::RefreshModules)
+        .expect("the internal stop begins");
+    let process = super::super::process_id(scripted.main());
+    scripted
+        .harness
+        .controller
+        .begin_pause(process)
+        .expect("the interrupt begins");
+    scripted.harness.settle_requested_stops();
+    assert_eq!(
+        scripted.stops(),
+        [],
+        "V8 has not answered the interrupt yet"
+    );
+
+    scripted
+        .inspector
+        .event(&[], cdp::PAUSED, paused("other", &[], 1));
+    scripted.pump_event(cdp::PAUSED);
+    scripted.harness.settle_requested_stops();
+    assert_eq!(
+        scripted.stops(),
+        [(
+            super::super::debug_thread_id(scripted.main()),
+            StopReason::Pause
+        )]
+    );
+}
+
 /// An interrupt V8 never answers, as in an idle event loop, stops every
 /// thread natively. The pause V8 takes after the resume answers nothing:
 /// it is judged, absorbed, and resumed.
