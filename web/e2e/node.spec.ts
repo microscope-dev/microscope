@@ -2,10 +2,10 @@
 // breakpoint in a .js file, set before the run, stops the node that runs
 // it, which the switcher shows among the group's processes.
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import type { Page } from "@playwright/test";
-import { expect, join, type Microscope, test } from "./server";
+import { expect, fixture, join, type Microscope, test } from "./server";
 
 const node = path.join(process.env.MICROSCOPE_NODE ?? "", "26", "node");
 
@@ -175,4 +175,53 @@ test("node --watch stops in the app, and again in the app it restarts", async ({
   await expect(
     switcher.getByRole("button", { name: new RegExp(`^\\[${first}\\] `) }),
   ).toContainText("exited");
+});
+
+test("a Node core's tasks panel lists its event loops' work, each with its callback", async ({
+  page,
+  microscope,
+}) => {
+  const server = await microscope.start(["--core", fixture("node-tasks-26.core"), node]);
+  await join(page, server.link);
+  await expect(page.getByTestId("status")).toContainText("Core dump");
+
+  // A timer is what it waits for, then the program's callback, and opens
+  // no stack; a pool job runs on its thread.
+  const tasks = page.getByTestId("tasks");
+  const timer = tasks.getByRole("listitem", { name: "task 2", exact: true });
+  await expect(timer).toContainText("timeout 30000 ms");
+  await expect(timer).toContainText(
+    /callback sessionTimeout at \S*tests\/fixtures\/node\/tasks\.js:78$/,
+  );
+  await expect(timer.getByRole("button")).toHaveCount(0);
+  const opened = tasks.getByRole("listitem", { name: "task 5", exact: true });
+  await expect(opened).toContainText("fs open");
+  await expect(opened).toContainText("callback configOpened");
+  await expect(tasks.getByRole("button", { name: /^task \d+$/ })).toHaveCount(2);
+  await expect(tasks).toContainText("thread-pool job");
+
+  // Grouped, only the pool jobs open a stack. Their numbers, bit 62 and
+  // the thread ids the core's log names, are above 2^53, and are shown
+  // exactly.
+  const log = await readFile(`${fixture("node-tasks-26.core")}.log`, "utf8");
+  const jobs = [...log.matchAll(/^TRUTH\tpool\t(\d+)$/gm)]
+    .map((match) => ((1n << 62n) | BigInt(match[1] ?? "")).toString())
+    .sort();
+  expect(jobs).toHaveLength(2);
+  await page.getByRole("button", { name: "group" }).click();
+  const groups = page.getByTestId("task-group");
+  await expect(groups.getByRole("button")).toHaveCount(2);
+  const shown = (await groups.getByRole("button").allTextContents()).sort();
+  expect(shown).toEqual(jobs);
+  const uncalled = groups.filter({ hasText: "no callback" });
+  await expect(uncalled).toContainText("16 in");
+  await expect(uncalled.getByTestId("stackless-task")).toHaveCount(16);
+  await expect(uncalled.getByRole("button")).toHaveCount(0);
+
+  // A pool job opens its own thread's stack, through libuv's worker.
+  const job = jobs[0] ?? "";
+  await groups.getByRole("button", { name: `task ${job}`, exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/task/\\d+\\.${job}/f/`));
+  await expect(page.getByRole("region", { name: "Call stack" })).toContainText(`task ${job}`);
+  await expect(page.getByTestId("stack")).toContainText("worker");
 });

@@ -505,7 +505,8 @@ pub struct TaskSnapshot {
     /// it is being parked.
     pub thread: Option<ThreadId>,
 
-    /// Where a task that is not on a thread will resume.
+    /// Where a task that is not on a thread will resume: for a stackless
+    /// task, the function its runtime will call for it.
     pub resume: Option<TaskLocation>,
 
     /// The call that created the task.
@@ -530,6 +531,11 @@ pub struct TaskSnapshot {
     /// `g`. A runtime may reuse the memory for another task once this one
     /// exits.
     pub object: Option<VirtualAddress>,
+
+    /// Whether the task runs no code and has no frames: work its runtime
+    /// will hand to the function `resume` names once it is done, as an
+    /// event loop's pending handle or request.
+    pub stackless: bool,
 }
 
 /// Whose stack a frame is on.

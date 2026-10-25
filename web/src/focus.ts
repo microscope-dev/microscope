@@ -217,6 +217,12 @@ export function stopPath(session: string, at: At): string {
   return `/s/${session}/stop/${at.stop}/${who}/f/${at.frame}`;
 }
 
+/** Whether `text` is a 64-bit unsigned number's decimal digits, as the
+ * server writes a task's number. */
+export function isU64(text: string): boolean {
+  return /^(0|[1-9]\d{0,19})$/.test(text) && BigInt(text) < 2n ** 64n;
+}
+
 /** Parses a route's path parameters, or null when they are not numbers. */
 export function parseAt(params: {
   stop: string;
@@ -231,9 +237,10 @@ export function parseAt(params: {
     return null;
   }
   if (params.task !== undefined) {
-    const parts = params.task.split(".").map(number);
-    const [runtime, task] = parts as [number, number];
-    if (parts.length !== 2 || parts.some(Number.isNaN)) {
+    // A task's number uses all 64 bits, so it stays the digits it is.
+    const parts = params.task.split(".");
+    const [runtime, task] = [number(parts[0] ?? ""), parts[1] ?? ""];
+    if (parts.length !== 2 || Number.isNaN(runtime) || !isU64(task)) {
       return null;
     }
     return { stop, thread: 0, task: { runtime, number: task }, frame };

@@ -601,9 +601,15 @@ pub fn command_named(name: &str) -> Option<&'static CommandSpec> {
         .find(|command| aliases(command).any(|alias| alias == name) || command.name == name)
 }
 
+/// Why a stackless task, such as an event loop's pending handle, shows no
+/// stack.
+const STACKLESS: &str = "it runs no code until its runtime calls its callback, so it has no frames";
+
 /// A command's other names, with each runtime's own name for its tasks for
 /// the commands about tasks: `goroutines` for `tasks` in Go. A runtime that
-/// calls its tasks tasks adds none.
+/// calls its tasks tasks adds none, and a noun that names another command
+/// stays that command's: Node's `handle` sets how a signal stops, though
+/// `handles` lists Node's tasks.
 pub fn aliases(command: &CommandSpec) -> impl Iterator<Item = &'static str> {
     let nouns = microscope::TASK_NOUNS.iter();
     let runtime = match command.command {
@@ -611,12 +617,18 @@ pub fn aliases(command: &CommandSpec) -> impl Iterator<Item = &'static str> {
         Command::Task => nouns.map(|(singular, _)| *singular).collect(),
         _ => Vec::new(),
     };
+    let names_another = |noun: &str| {
+        COMMANDS.iter().any(|other| {
+            other.command != command.command
+                && (other.name == noun || other.aliases.contains(&noun))
+        })
+    };
 
-    command
-        .aliases
-        .iter()
-        .copied()
-        .chain(runtime.into_iter().filter(|noun| *noun != command.name))
+    command.aliases.iter().copied().chain(
+        runtime
+            .into_iter()
+            .filter(move |noun| *noun != command.name && !names_another(noun)),
+    )
 }
 
 /// Whether `word` names a task: `task`, or a runtime's own name for one,
@@ -1644,15 +1656,23 @@ impl Cli {
 
         let mut traced = Vec::with_capacity(tasks.len());
         for task in tasks {
-            let trace = self
-                .debugger()
-                .at(StopContext {
-                    stop,
-                    execution: ExecutionContext::Task(task.id),
-                    frame: StackFrameId::INNERMOST,
+            // A task that runs no code has no stack to ask for, and asking
+            // would have its runtime list every task again.
+            let trace = if task.stackless {
+                Err(microscope::Error::TaskUnavailable {
+                    task: task.id,
+                    reason: STACKLESS.into(),
                 })
-                .backtrace()
-                .await;
+            } else {
+                self.debugger()
+                    .at(StopContext {
+                        stop,
+                        execution: ExecutionContext::Task(task.id),
+                        frame: StackFrameId::INNERMOST,
+                    })
+                    .backtrace()
+                    .await
+            };
             traced.push((task, trace));
         }
 
@@ -1713,7 +1733,10 @@ impl Cli {
         if grouped {
             let mut groups: Vec<(String, Vec<u64>)> = Vec::new();
             for (task, trace) in &shown {
-                let place = format::task_place(task, trace, &traces.images, renderer);
+                let mut place = format::task_place(task, trace, &traces.images, renderer);
+                if place.is_empty() {
+                    place = renderer.paint(Role::Metadata, "<no callback>").to_string();
+                }
                 match groups.iter_mut().find(|(known, _)| *known == place) {
                     Some((_, numbers)) => numbers.push(task.id.number),
                     None => groups.push((place, vec![task.id.number])),

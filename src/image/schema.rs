@@ -806,6 +806,8 @@ pub(super) const SCHEMA: &[TableSchema] = &[
             ("node", 88, 12),
             ("inspector_problem", 100, 4),
             ("inspector", 104, 160),
+            ("tasks_problem", 264, 4),
+            ("tasks", 268, 8 * v8::NodeTasks::WORDS),
             ("offsets", V8_OFFSETS, 4 * v8::Field::COUNT),
             (
                 "constants",
@@ -820,7 +822,7 @@ pub(super) const SCHEMA: &[TableSchema] = &[
 const PYTHON_OFFSETS: usize = 28;
 
 /// Where a V8 runtime record's offsets begin.
-const V8_OFFSETS: usize = 264;
+const V8_OFFSETS: usize = 268 + 8 * v8::NodeTasks::WORDS;
 
 const fn keyed(kind: TableKind) -> TableSchema {
     TableSchema {

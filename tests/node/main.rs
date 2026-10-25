@@ -23,6 +23,7 @@ mod session;
 mod stacks;
 mod statements;
 mod steps;
+mod tasks;
 mod truth;
 mod values;
 mod views;

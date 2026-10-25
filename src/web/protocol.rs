@@ -13,7 +13,7 @@ use serde_json::Value;
 
 /// Changes whenever a message changes incompatibly; the page refuses a
 /// server that speaks another version.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// What a connection may do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -440,7 +440,36 @@ pub struct Focus {
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct TaskKey {
     pub runtime: u32,
+
+    /// In decimal: a runtime's numbers use all 64 bits, as Node's pool
+    /// jobs set bit 62, and a JSON number reads exactly only below 2^53.
+    #[serde(with = "decimal")]
+    #[cfg_attr(test, ts(type = "string"))]
     pub number: u64,
+}
+
+/// A `u64` as a JSON string of its decimal digits, which a browser reads
+/// exactly where a JSON number would round.
+mod decimal {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde's `with` passes the field by reference"
+    )]
+    pub fn serialize<S: Serializer>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(value)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+        let text = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+        // Only digits: `u64::from_str` also takes a leading `+`.
+        if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(D::Error::custom(format!("{text:?} is no decimal number")));
+        }
+        text.parse()
+            .map_err(|_| D::Error::custom(format!("{text} does not fit in 64 bits")))
+    }
 }
 
 impl TaskKey {
@@ -2644,6 +2673,11 @@ pub struct Task {
 
     /// The thread running it.
     pub thread: Option<u64>,
+
+    /// Whether it runs no code and has no stack, as an event loop's pending
+    /// handle; its place is then the callback its runtime will call, or
+    /// empty where it recorded none.
+    pub stackless: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -2975,6 +3009,32 @@ mod tests {
 
     /// Fails when the checked-in TypeScript is stale. Set
     /// `MICROSCOPE_UPDATE_PROTOCOL=1` to rewrite it.
+    /// A task number above 2^53, which a JSON number would round to its
+    /// neighbour, goes out and comes back exactly, as digits.
+    #[test]
+    fn task_numbers_round_trip_exactly_above_two_to_the_fifty_third() {
+        let key = TaskKey {
+            runtime: 3,
+            number: (1 << 62) + 1_884_211,
+        };
+        let text = serde_json::to_string(&key).expect("serialize");
+        assert_eq!(text, r#"{"runtime":3,"number":"4611686018429272115"}"#);
+        assert_eq!(serde_json::from_str::<TaskKey>(&text).expect("parse"), key);
+        let neighbour = TaskKey {
+            number: key.number + 1,
+            ..key
+        };
+        assert_ne!(serde_json::to_string(&neighbour).expect("serialize"), text);
+        for wrong in [
+            r#"{"runtime":3,"number":4611686018429272115}"#,
+            r#"{"runtime":3,"number":"+1"}"#,
+            r#"{"runtime":3,"number":""}"#,
+            r#"{"runtime":3,"number":"18446744073709551616"}"#,
+        ] {
+            assert!(serde_json::from_str::<TaskKey>(wrong).is_err(), "{wrong}");
+        }
+    }
+
     #[test]
     fn typescript_matches_the_protocol() {
         let expected = typescript();

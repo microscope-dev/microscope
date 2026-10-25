@@ -27,10 +27,13 @@ mod names;
 mod native_inspector;
 mod objects;
 mod own;
+mod pool;
 mod positions;
 mod present;
 mod properties;
 mod scripts;
+mod tasks;
+mod timers;
 mod translation;
 mod typed;
 mod values;
@@ -45,7 +48,7 @@ use super::{
     TaskContext, TaskPage, TaskRef, TaskStarter, ThreadActivity, ThreadHolding, Unbound,
 };
 use crate::ThreadLocal;
-use crate::image::v8::{DispatchTable, EmbeddedBlob, NodeRelease, V8Layout, V8Version};
+use crate::image::v8::{DispatchTable, EmbeddedBlob, NodeRelease, NodeTasks, V8Layout, V8Version};
 use crate::inspection::InspectionBudget;
 use crate::runtime_model::{
     InterpretedChild, InterpretedFailure, InterpretedFrameRef, InterpretedHandle, InterpretedLocal,
@@ -70,6 +73,9 @@ fn function_place(name: &str) -> Result<Vec<crate::ManagedPlace>, Arc<str>> {
     }
     Ok(vec![crate::ManagedPlace::Function { name: name.into() }])
 }
+
+/// What Node calls the work its event loop waits on.
+pub(super) const TASK_NOUN: (&str, &str) = ("handle", "handles");
 
 /// The extensions of the scripts Node runs, whose breakpoints its
 /// inspector arms.
@@ -121,6 +127,8 @@ pub fn detect(
             .ok()
             .and_then(|layout| layout.close),
         native_inspector: runtime.inspector,
+        tasks: runtime.tasks,
+        image: Arc::clone(image),
     })))
 }
 
@@ -269,6 +277,13 @@ struct NodeRuntime {
     inspector_signal_handler: Option<ImageAddress>,
     native_inspector: Result<crate::image::v8::NodeInspector, Arc<str>>,
     inspector_close_functions: Option<(ImageAddress, ImageAddress)>,
+
+    /// Where Node keeps its event loop's work, or why the module's code
+    /// does not say.
+    tasks: Result<NodeTasks, Arc<str>>,
+
+    /// The module's symbols, which name the classes of Node's wrappers.
+    image: Arc<dyn RuntimeImage + Send + Sync>,
 }
 
 impl NodeRuntime {
@@ -303,6 +318,88 @@ impl NodeRuntime {
             blocks: Some(stop.memory().unwrap_or(&read_now)),
         };
         read(&reader)
+    }
+
+    /// Every task at `stop`, by number, and why some may be missing.
+    fn all_tasks(&self, stop: &dyn RuntimeStop) -> (Vec<super::RuntimeTask>, Vec<Arc<str>>) {
+        let walked = self.walk(stop, tasks::listed);
+        let (mut found, mut gaps) = match walked {
+            Ok(walked) => walked,
+            Err(reason) => {
+                return (
+                    Vec::new(),
+                    vec![format!("Node's tasks cannot be read: {reason}").into()],
+                );
+            }
+        };
+        match self.pool(stop) {
+            Some(Ok(pool)) => found.extend(pool.busy.into_iter().map(pool::job)),
+            Some(Err(problem)) => {
+                gaps.push(format!("libuv's thread-pool jobs cannot be read: {problem}").into());
+            }
+            None => gaps.push(
+                "libuv's thread-pool jobs are not listed: the module does not link libuv's pool, \
+                 which a shared libuv keeps"
+                    .into(),
+            ),
+        }
+        (found, gaps)
+    }
+
+    /// Runs `walk` over Node's event loop work at `stop`, given where each
+    /// thread keeps its isolate, or says why it cannot.
+    fn walk<T>(
+        &self,
+        stop: &dyn RuntimeStop,
+        walk: impl FnOnce(&mut tasks::Walk<'_>, ThreadLocal) -> T,
+    ) -> Result<T, Arc<str>> {
+        let layout = self.reading.as_ref().map_err(Arc::clone)?;
+        let tasks = self.tasks.as_ref().map_err(Arc::clone)?;
+        let isolate = match &self.statics.isolate {
+            Some(Ok(place)) => *place,
+            Some(Err(reason)) => {
+                return Err(format!("no thread's isolate can be found: {reason}").into());
+            }
+            None => return Err("the module names no current isolate".into()),
+        };
+        let reader = objects::Reader {
+            stop,
+            layout,
+            version: self.version,
+            charge: None,
+            blocks: stop.memory(),
+        };
+        let mut table = self
+            .table
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(walk(
+            &mut tasks::Walk {
+                reader,
+                layout: tasks,
+                image: self.image.as_ref(),
+                table: &mut table,
+            },
+            isolate,
+        ))
+    }
+
+    /// libuv's pool at `stop`, or `None` where the module does not hold it.
+    fn pool(&self, stop: &dyn RuntimeStop) -> Option<Result<pool::Pool, Arc<str>>> {
+        let tasks = self.tasks.as_ref().ok()?;
+        let uv = tasks.pool.as_ref()?;
+        let layout = match &self.reading {
+            Ok(layout) => layout,
+            Err(reason) => return Some(Err(Arc::clone(reason))),
+        };
+        let reader = objects::Reader {
+            stop,
+            layout,
+            version: self.version,
+            charge: None,
+            blocks: stop.memory(),
+        };
+        Some(pool::read(&reader, uv))
     }
 
     /// [`Self::reading`] for expressions, where a failure means the value is
@@ -384,24 +481,40 @@ impl RuntimeModel for NodeRuntime {
         )
     }
 
+    /// Every handle, request, and timer of each JavaScript thread's event
+    /// loop, by number, then the jobs libuv's pool runs.
     fn tasks(
         &self,
-        _stop: &dyn RuntimeStop,
-        _start: u64,
-        _limit: usize,
+        stop: &dyn RuntimeStop,
+        start: u64,
+        limit: usize,
         _program_only: bool,
     ) -> Partial<TaskPage> {
+        let (all, gaps) = self.all_tasks(stop);
+        let start = usize::try_from(start).unwrap_or(usize::MAX);
+        let tasks: Vec<_> = all.iter().skip(start).take(limit).cloned().collect();
+        let end = start.saturating_add(tasks.len());
         Partial {
             value: TaskPage {
-                tasks: Vec::new(),
-                next: None,
+                tasks,
+                next: (end < all.len()).then_some(end as u64),
             },
-            gaps: Vec::new(),
+            // Every page reads the whole list; its gaps are said once.
+            gaps: if start == 0 { gaps } else { Vec::new() },
         }
     }
 
-    fn thread_activity(&self, _stop: &dyn RuntimeStop, _thread: ThreadId) -> ThreadActivity {
-        ThreadActivity::Outside
+    /// A pool thread runs its job; no other thread runs a task of Node's,
+    /// whose event loop's work runs no code until it is done.
+    fn thread_activity(&self, stop: &dyn RuntimeStop, thread: ThreadId) -> ThreadActivity {
+        match self.pool(stop) {
+            Some(Ok(pool)) if pool.busy.contains(&thread) => ThreadActivity::Task {
+                number: tasks::pool_job(thread),
+                stack: StackSegment::Thread,
+            },
+            None | Some(Ok(_)) => ThreadActivity::Outside,
+            Some(Err(problem)) => ThreadActivity::Unknown(problem),
+        }
     }
 
     /// The address of the isolate the thread works for. Main and worker
@@ -424,11 +537,36 @@ impl RuntimeModel for NodeRuntime {
         })
     }
 
+    /// A thread-pool job runs on its thread. A handle, request, or timer
+    /// runs no code until Node calls its callback, so it has no frames.
     fn task_context(
         &self,
-        _stop: &dyn RuntimeStop,
-        _task: TaskRef,
+        stop: &dyn RuntimeStop,
+        task: TaskRef,
     ) -> Result<Option<TaskContext>, Arc<str>> {
+        if let Some(thread) = tasks::pool_thread(task.number) {
+            return match self.pool(stop) {
+                Some(Ok(pool)) if pool.busy.contains(&thread) => {
+                    Ok(Some(TaskContext::OnThread(thread)))
+                }
+                Some(Err(problem)) => Err(problem),
+                _ => Ok(None),
+            };
+        }
+        let stackless = || "it runs no code until Node calls its callback, so it has no frames";
+        // The entry this stop's listing located is read alone; without it,
+        // or where it no longer proves the task, every list is.
+        if let Some(locator) = task.locator
+            && self.walk(stop, |walk, isolate| {
+                tasks::located(walk, isolate, task.number, locator)
+            }) == Ok(Ok(true))
+        {
+            return Err(stackless().into());
+        }
+        let (all, _) = self.all_tasks(stop);
+        if all.iter().any(|listed| listed.number == task.number) {
+            return Err(stackless().into());
+        }
         Ok(None)
     }
 
@@ -585,7 +723,7 @@ impl RuntimeModel for NodeRuntime {
     }
 
     fn task_noun(&self) -> &'static str {
-        "handle"
+        TASK_NOUN.0
     }
 
     fn resolve_breakpoint(

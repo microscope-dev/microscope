@@ -1091,6 +1091,7 @@ entries! {
         JSExternalObjectType = "JS_EXTERNAL_OBJECT_TYPE",
         PropertyCellType = "PROPERTY_CELL_TYPE",
         ScriptContextTableType = "SCRIPT_CONTEXT_TABLE_TYPE",
+        EmbedderDataArrayType = "EMBEDDER_DATA_ARRAY_TYPE",
         FunctionContextType = "FUNCTION_CONTEXT_TYPE",
         BlockContextType = "BLOCK_CONTEXT_TYPE",
         ScriptContextType = "SCRIPT_CONTEXT_TYPE",
@@ -1472,6 +1473,10 @@ entries! {
         ContextScriptContextTableIndex = "Context::SCRIPT_CONTEXT_TABLE_INDEX",
         ContextGlobalProxyIndex = "Context::GLOBAL_PROXY_INDEX",
 
+        /// A native context's embedder data, an `EmbedderDataArray` whose
+        /// slots Node fills (`node_context_data.h`).
+        ContextEmbedderDataIndex = "Context::EMBEDDER_DATA_INDEX",
+
         /// A native context's `%Error%`, whose initial map's first
         /// descriptor is keyed by the private symbol every error keeps its
         /// stack under (`InstallError` in `bootstrapper.cc`).
@@ -1590,6 +1595,11 @@ pub struct V8RuntimeRecord {
     pub node: [U32; 3],
     pub inspector_problem: U32,
     pub inspector: [U64; 20],
+
+    /// Where Node keeps its event loop's work, [`NodeTasks`], or why the
+    /// module's code does not say, a string, or [`NONE`].
+    pub tasks_problem: U32,
+    pub tasks: [U64; NodeTasks::WORDS],
     pub offsets: [U32; Field::COUNT],
     pub constants: [I64; Constant::COUNT],
 }
@@ -1752,6 +1762,144 @@ pub struct V8Runtime {
     /// say, as for a V8 that Node did not build.
     pub node: Result<NodeRelease, std::sync::Arc<str>>,
     pub inspector: Result<NodeInspector, std::sync::Arc<str>>,
+
+    /// Where Node keeps its event loop's handles, requests, and timers, or
+    /// why the module's code does not say.
+    pub tasks: Result<NodeTasks, std::sync::Arc<str>>,
+}
+
+/// The `nodedbg_` variables Node sets for debuggers, which a release sets
+/// at run time (22 and 24, and nixpkgs' 26) and only some in its file, so
+/// that their values are read from the process at a stop.
+pub const NODEDBG: [&str; 12] = [
+    "nodedbg_const_ContextEmbedderIndex__kEnvironment__int",
+    "nodedbg_offset_BaseObject__persistent_handle___v8_Persistent_v8_Object",
+    "nodedbg_offset_Environment__handle_wrap_queue___Environment_HandleWrapQueue",
+    "nodedbg_offset_Environment__req_wrap_queue___Environment_ReqWrapQueue",
+    "nodedbg_offset_Environment_HandleWrapQueue__head___ListNode_HandleWrap",
+    "nodedbg_offset_Environment_ReqWrapQueue__head___ListNode_ReqWrapQueue",
+    "nodedbg_offset_HandleWrap__handle_wrap_queue___ListNode_HandleWrap",
+    "nodedbg_offset_ReqWrap__req_wrap_queue___ListNode_ReqWrapQueue",
+    "nodedbg_offset_ListNode_HandleWrap__next___uintptr_t",
+    "nodedbg_offset_ListNode_ReqWrap__next___uintptr_t",
+    "nodedbg_offset_ListNode_HandleWrap__prev___uintptr_t",
+    "nodedbg_offset_ListNode_ReqWrap__prev___uintptr_t",
+];
+
+/// Where Node keeps its event loop's work, from its own code and its
+/// `nodedbg_` variables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NodeTasks {
+    /// Where an isolate keeps the context it entered, as
+    /// `v8::Isolate::GetCurrentContext` reads it.
+    pub current_context: u64,
+
+    /// The embedder data slots of Node's `Environment` and of its context
+    /// tag, and the variable that holds the tag's address, as
+    /// `node::timers::BindingData::SetupTimers` reads them.
+    pub environment_slot: u64,
+    pub tag_slot: u64,
+    pub context_tag: ImageAddress,
+
+    /// Where an `Environment` keeps its principal realm, and the realm the
+    /// global handle of the function Node calls for its timers.
+    pub principal_realm: u64,
+    pub timers_callback: u64,
+
+    /// Where an `AsyncWrap` keeps its provider type, and the table of the
+    /// providers' names, as `AsyncWrap::MemoryInfoName` reads them.
+    pub provider_type: u64,
+    pub provider_names: ImageAddress,
+
+    /// Where an `AsyncWrap` keeps its async id, the trigger's after it, and
+    /// where its JavaScript object keeps the wrapper's address, from the
+    /// object's untagged start, as `AsyncWrap::GetAsyncId` reads them.
+    pub async_id: u64,
+    pub object_wrapper: u64,
+
+    /// The `nodedbg_` variables, in [`NODEDBG`]'s order.
+    pub nodedbg: [ImageAddress; NODEDBG.len()],
+
+    /// libuv's thread pool, where the module holds it.
+    pub pool: Option<UvPool>,
+}
+
+/// The variables of libuv's thread pool (`threadpool.c`): its threads'
+/// `pthread_t`s and how many, how many wait for work, and the condition and
+/// mutex they wait on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UvPool {
+    pub threads: ImageAddress,
+    pub nthreads: ImageAddress,
+    pub idle_threads: ImageAddress,
+    pub cond: ImageAddress,
+    pub mutex: ImageAddress,
+}
+
+impl NodeTasks {
+    /// The words a record keeps them in.
+    pub const WORDS: usize = 16 + NODEDBG.len();
+
+    fn encode(&self) -> [u64; Self::WORDS] {
+        let mut words = [0; Self::WORDS];
+        let pool = self.pool.map_or([0; 5], |pool| {
+            [
+                pool.threads,
+                pool.nthreads,
+                pool.idle_threads,
+                pool.cond,
+                pool.mutex,
+            ]
+            .map(ImageAddress::get)
+        });
+        let fixed = [
+            self.current_context,
+            self.environment_slot,
+            self.tag_slot,
+            self.context_tag.get(),
+            self.principal_realm,
+            self.timers_callback,
+            self.provider_type,
+            self.provider_names.get(),
+            self.async_id,
+            self.object_wrapper,
+            u64::from(self.pool.is_some()),
+        ];
+        for (word, value) in words.iter_mut().zip(
+            fixed
+                .into_iter()
+                .chain(pool)
+                .chain(self.nodedbg.map(ImageAddress::get)),
+        ) {
+            *word = value;
+        }
+        words
+    }
+
+    fn decode(words: [u64; Self::WORDS]) -> Self {
+        let word = |at: usize| words.get(at).copied().unwrap_or(0);
+        let address = |at: usize| ImageAddress::new(word(at));
+        Self {
+            current_context: word(0),
+            environment_slot: word(1),
+            tag_slot: word(2),
+            context_tag: address(3),
+            principal_realm: word(4),
+            timers_callback: word(5),
+            provider_type: word(6),
+            provider_names: address(7),
+            async_id: word(8),
+            object_wrapper: word(9),
+            pool: (word(10) != 0).then(|| UvPool {
+                threads: address(11),
+                nthreads: address(12),
+                idle_threads: address(13),
+                cond: address(14),
+                mutex: address(15),
+            }),
+            nodedbg: std::array::from_fn(|at| address(16 + at)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1915,6 +2063,10 @@ fn encode(strings: &mut StringsBuilder, runtime: &V8Runtime) -> Result<V8Runtime
         ),
         Err(error) => ([U64::new(0); 20], problem(error)?),
     };
+    let (tasks, tasks_problem) = match &runtime.tasks {
+        Ok(tasks) => (tasks.encode().map(U64::new), NONE),
+        Err(error) => ([U64::new(0); NodeTasks::WORDS], problem(error)?),
+    };
 
     Ok(V8RuntimeRecord {
         major: runtime.version.major.into(),
@@ -1935,6 +2087,8 @@ fn encode(strings: &mut StringsBuilder, runtime: &V8Runtime) -> Result<V8Runtime
         node,
         inspector_problem: inspector_problem.into(),
         inspector,
+        tasks_problem: tasks_problem.into(),
+        tasks,
         offsets: layout.offsets.map(U32::new),
         constants: layout.constants.map(I64::new),
     })
@@ -1985,6 +2139,10 @@ pub fn runtime(image: &Image) -> Option<V8Runtime> {
         NONE => Ok(NodeInspector::decode(record.inspector.map(U64::get))),
         id => Err(problem(id)),
     };
+    let tasks = match record.tasks_problem.get() {
+        NONE => Ok(NodeTasks::decode(record.tasks.map(U64::get))),
+        id => Err(problem(id)),
+    };
 
     Some(V8Runtime {
         version: V8Version {
@@ -1999,6 +2157,7 @@ pub fn runtime(image: &Image) -> Option<V8Runtime> {
         embedded_blob,
         node,
         inspector,
+        tasks,
     })
 }
 
@@ -2029,6 +2188,7 @@ pub(super) fn validate(image: &Image) -> Result<(), String> {
         record.blob_problem.get(),
         record.node_problem.get(),
         record.inspector_problem.get(),
+        record.tasks_problem.get(),
     ] {
         if problem != NONE && !image.strings().contains(StrId(problem)) {
             return Err(format!("the V8 runtime's problem {problem} is no string"));
@@ -2071,6 +2231,14 @@ pub(super) fn validate(image: &Image) -> Result<(), String> {
 
     if record.node_problem.get() != NONE && record.node.iter().any(|number| number.get() != 0) {
         return Err("the V8 runtime gives a Node release and says it cannot".to_owned());
+    }
+
+    let tasks = record.tasks.map(U64::get);
+    if (record.tasks_problem.get() != NONE && tasks.iter().any(|word| *word != 0))
+        || tasks[10] > 1
+        || (tasks[10] == 0 && tasks[11..16].iter().any(|word| *word != 0))
+    {
+        return Err("the V8 runtime has an invalid Node task layout".to_owned());
     }
 
     Ok(())

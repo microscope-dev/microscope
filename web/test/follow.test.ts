@@ -9,7 +9,19 @@ import { received } from "./transcripts";
 const states = received("steps").flatMap((message) =>
   message.type === "state" ? [message as State] : [],
 );
-const stopped = states.filter((state) => state.inferior.state === "stopped");
+// Each stop's first state: a server may publish a stop's state again.
+const stopped = states.filter(
+  (state, index) =>
+    state.inferior.state === "stopped" &&
+    !states
+      .slice(0, index)
+      .some(
+        (earlier) =>
+          earlier.inferior.state === "stopped" &&
+          state.inferior.state === "stopped" &&
+          earlier.inferior.stop === state.inferior.stop,
+      ),
+);
 const at = (state: State) => {
   if (state.inferior.state !== "stopped") {
     throw new Error("not stopped");

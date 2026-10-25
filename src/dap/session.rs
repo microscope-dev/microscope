@@ -421,6 +421,9 @@ pub struct Session {
     /// The tasks the client was told about, with their client ids.
     pub(super) tasks: BTreeMap<microscope::TaskId, i64>,
 
+    /// The tasks of the last list that run no code, whose stacks are empty.
+    pub(super) stackless: BTreeSet<microscope::TaskId>,
+
     /// The modules the client was told are loaded.
     pub(super) modules: BTreeMap<ModuleId, microscope::LoadedModuleRecord>,
 
@@ -473,6 +476,7 @@ impl Session {
             thread_ids: ThreadHandles::default(),
             threads: BTreeMap::new(),
             tasks: BTreeMap::new(),
+            stackless: BTreeSet::new(),
             modules: BTreeMap::new(),
             resumed: None,
             restarting: false,

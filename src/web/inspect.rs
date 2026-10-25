@@ -427,10 +427,18 @@ pub async fn tasks(
     let mut tasks = Vec::with_capacity(page.tasks.len());
 
     for task in page.tasks.iter() {
-        let trace = handle
-            .at(innermost(at.stop, ExecutionContext::Task(task.id)))
-            .backtrace()
-            .await;
+        // Work that runs no code has no stack to read.
+        let trace = if task.stackless {
+            Err(microscope::Error::TaskUnavailable {
+                task: task.id,
+                reason: "it runs no code".into(),
+            })
+        } else {
+            handle
+                .at(innermost(at.stop, ExecutionContext::Task(task.id)))
+                .backtrace()
+                .await
+        };
         let mut known = BTreeMap::new();
 
         if let Ok(trace) = &trace {
@@ -470,6 +478,7 @@ pub async fn tasks(
             },
             labels: format::task_labels(task),
             thread: task.thread.map(microscope::ThreadId::get),
+            stackless: task.stackless,
         });
     }
 

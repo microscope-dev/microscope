@@ -340,3 +340,16 @@ async fn debian_await_chains_are_the_ones_v8_reported() {
     session.shutdown().await;
     assert!(lies.is_empty(), "{lies:#?}");
 }
+
+/// Debian's event loop work is what its fixture reported: its handles,
+/// requests, and timers, and a named gap for the pool its shared libuv
+/// keeps.
+#[tokio::test]
+async fn debian_tasks_are_the_ones_node_reported() {
+    if !inside("debian::debian_tasks_are_the_ones_node_reported") {
+        return;
+    }
+    if let Err(lies) = crate::tasks::task_lies(DEBIAN).await {
+        panic!("{lies}");
+    }
+}

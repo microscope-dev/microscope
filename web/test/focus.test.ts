@@ -95,18 +95,31 @@ describe("places and paths", () => {
     expect(parseAt({ stop: huge, thread: "1", frame: "0" })).toBeNull();
     expect(parseAt({ stop: "1", thread: huge, frame: "0" })).toBeNull();
     expect(parseAt({ stop: "1", thread: "1", frame: huge })).toBeNull();
-    expect(parseAt({ stop: "1", task: `2.${huge}`, frame: "0" })).toBeNull();
+    expect(parseAt({ stop: "1", task: "2.18446744073709551616", frame: "0" })).toBeNull();
     expect(parsePlace(`a.c:${huge}`)).toBeNull();
     expect(parsePlace("a.c:3-9007199254740993")).toBeNull();
   });
 
   it("names a task by its runtime and number, and reads it back", () => {
-    const at = { stop: 7, thread: 0, task: { runtime: 2, number: 31 }, frame: 3 };
+    const at = { stop: 7, thread: 0, task: { runtime: 2, number: "31" }, frame: 3 };
     expect(stopPath("k7q2", at)).toBe("/s/k7q2/stop/7/task/2.31/f/3");
     expect(parseAt({ stop: "7", task: "2.31", frame: "3" })).toEqual(at);
-    for (const task of ["2", "2.x", "2.31.4", "", ".31"]) {
+    for (const task of ["2", "2.x", "2.31.4", "", ".31", "2.+31", "2.031", "2."]) {
       expect(parseAt({ stop: "7", task, frame: "0" }), task).toBeNull();
     }
+  });
+
+  it("keeps a task number above 2^53 exact, apart from its neighbour", () => {
+    // A Node pool job's number: bit 62 and its thread's id.
+    const job = "4611686018429272115";
+    const next = "4611686018429272116";
+    const at = { stop: 7, thread: 0, task: { runtime: 2, number: job }, frame: 0 };
+    expect(stopPath("k7q2", at)).toBe(`/s/k7q2/stop/7/task/2.${job}/f/0`);
+    expect(parseAt({ stop: "7", task: `2.${job}`, frame: "0" })).toEqual(at);
+    expect(parseAt({ stop: "7", task: `2.${next}`, frame: "0" })?.task?.number).toBe(next);
+    expect(parseAt({ stop: "7", task: "2.18446744073709551615", frame: "0" })?.task?.number).toBe(
+      "18446744073709551615",
+    );
   });
 
   it("follows a new stop keeping the view, watches, and expansion, not the place", () => {

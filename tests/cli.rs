@@ -890,12 +890,12 @@ fn help_lists_every_command_and_details_one_by_name_or_alias() {
         ],
     );
     for expected in [
-        "  break        b           Set a breakpoint",
-        "  finish       fin, f      Run until the selected frame returns",
-        "  continue     c           Continue execution",
-        "  delete       del, d      Delete breakpoints, watchpoints wID, and catchpoints cID",
-        "  clear        cls         Clear and redraw the terminal",
-        "  help         h, ?        Show command help",
+        "  break        b                    Set a breakpoint",
+        "  finish       fin, f               Run until the selected frame returns",
+        "  continue     c                    Continue execution",
+        "  delete       del, d               Delete breakpoints, watchpoints wID, and catchpoints cID",
+        "  clear        cls                  Clear and redraw the terminal",
+        "  help         h, ?                 Show command help",
         "  Clear and redraw the terminal\n  aliases: cls",
         "delete <ids...>",
         "aliases: del, d",
@@ -6515,5 +6515,93 @@ fn print_shows_a_javascript_value_as_node_writes_it() {
                 properties.join(", ")
             ),
         ],
+    );
+}
+
+/// A Node core's `tasks` lists what its event loops wait on, each by what
+/// it waits for and the callback Node will call, and its thread-pool jobs
+/// on their threads; grouped, the items with no callback are one group.
+#[test]
+fn a_node_cores_tasks_show_each_callback_and_pool_job() {
+    let node = std::path::Path::new(&std::env::var("MICROSCOPE_NODE").expect("MICROSCOPE_NODE"))
+        .join("26/node");
+    let node = node.to_str().expect("a UTF-8 path");
+    let stdout = batch(
+        &["--core", "build/test-programs/node-tasks-26.core", node],
+        &["tasks", "tasks -g"],
+    );
+    assert_in_order(
+        &stdout,
+        &[
+            "  [2] timeout 30000 ms — callback sessionTimeout at tests/fixtures/node/tasks.js:78 {type: Timeout}\n",
+            "  [4] timeout 60000 ms, unref'd — callback idleTimer at tests/fixtures/node/tasks.js:80 {type: Timeout}\n",
+            "  [5] fs open build/test-programs/node-tasks.fifo — pending — callback configOpened at tests/fixtures/node/tasks.js:83 {type: FSREQCALLBACK, class: \"node::fs::FSReqCallback\"}\n",
+            "  [27] TCP server — listening — callback onconnection at node:net:",
+            " — thread-pool job (thread ",
+            "1 handle in callback sessionTimeout at tests/fixtures/node/tasks.js:78: 2\n",
+            " handles in <no callback>: 7, 9,",
+        ],
+    );
+}
+
+/// `tasks` asks for the stacks of only the tasks that have one: in a Node
+/// core, its two thread-pool jobs, and none of its handles, requests, and
+/// timers, each of which would have the runtime walk them all again.
+#[test]
+fn tasks_read_no_stack_of_a_stackless_task() {
+    let scratch = support::ScratchDir::new("stackless-backtraces");
+    let recording = scratch.path().join("recording.log");
+    let node = std::path::Path::new(&std::env::var("MICROSCOPE_NODE").expect("MICROSCOPE_NODE"))
+        .join("26/node");
+    let output = microscope_command()
+        .env("MICROSCOPE_FLIGHT_RECORDING", &recording)
+        .args(["--batch", "--eval", "tasks", "--eval", "tasks -t", "--core"])
+        .arg(fixture("build/test-programs/node-tasks-26.core"))
+        .arg(node)
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .stdin(Stdio::null())
+        .output()
+        .expect("run microscope");
+    let stdout = assert_success(output);
+    let jobs = stdout
+        .lines()
+        .filter(|line| line.contains(" — thread-pool job (thread "))
+        .count();
+    assert_eq!(jobs, 4, "two jobs, listed twice:\n{stdout}");
+    let contents = fs::read_to_string(&recording).expect("the recording");
+    let backtraces = contents
+        .lines()
+        .filter(|line| line.contains("request backtrace"))
+        .count();
+    assert_eq!(backtraces, jobs, "{contents}");
+    // A stackless task's stack says why it has none, as `-t` shows it.
+    assert!(
+        stdout.contains(
+            "are unavailable: it runs no code until its runtime calls its callback, so it has no frames\n"
+        ),
+        "{stdout}"
+    );
+}
+
+/// Node calls its tasks handles: `handles` lists them, while `handle` stays
+/// the command that sets how a signal stops.
+#[test]
+fn handles_lists_nodes_tasks_and_handle_still_sets_signals() {
+    let node = std::path::Path::new(&std::env::var("MICROSCOPE_NODE").expect("MICROSCOPE_NODE"))
+        .join("26/node");
+    let node = node.to_str().expect("a UTF-8 path");
+    let stdout = batch(
+        &["--core", "build/test-programs/node-tasks-26.core", node],
+        &["handles", "handle SIGUSR2 nostop"],
+    );
+    assert!(
+        stdout.contains("  [2] timeout 30000 ms — callback sessionTimeout at "),
+        "{stdout}"
+    );
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.starts_with("SIGUSR2") && line.contains("no")),
+        "{stdout}"
     );
 }

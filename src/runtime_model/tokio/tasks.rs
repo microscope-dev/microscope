@@ -775,6 +775,8 @@ const fn task(number: u64, locator: u64) -> RuntimeTask {
         parent: None,
         internal: false,
         labels: Vec::new(),
+        callback: None,
+        stackless: false,
     }
 }
 

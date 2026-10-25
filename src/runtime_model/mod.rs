@@ -103,6 +103,13 @@ pub trait RuntimeImage: std::fmt::Debug {
     /// The demangled name of the symbol that begins at an address.
     fn symbol_at(&self, address: ImageAddress) -> Option<Arc<str>>;
 
+    /// The C++ class whose vtable holds an address, and where the vtable
+    /// begins, by the vtable's symbol.
+    fn vtable_class(&self, address: ImageAddress) -> Option<(String, ImageAddress)> {
+        let _ = address;
+        None
+    }
+
     /// Whether the image has a function of this name, by its debug
     /// information, its symbols, or a language's own function table.
     fn has_function(&self, name: &str) -> bool;
@@ -319,6 +326,12 @@ pub trait RuntimeStop {
     /// Every thread of the process, in the order of their ids.
     fn threads(&self) -> Vec<ThreadId>;
 
+    /// The process's main thread, whose id is the process's, while it
+    /// lives; `None` where the stop does not say.
+    fn main_thread(&self) -> Option<ThreadId> {
+        None
+    }
+
     /// The id this live thread has in the target's namespace, if proven.
     /// Absence is unknown; it must never be inferred from `ThreadId`.
     fn target_thread_id(&self, _thread: ThreadId) -> Option<TargetThreadId> {
@@ -339,6 +352,13 @@ pub trait RuntimeStop {
     /// them: tasks that no runtime lists while their set waits.
     fn task_sets(&self) -> Vec<u64> {
         Vec::new()
+    }
+
+    /// The futex word a stopped thread waits on, the first argument of a
+    /// `futex` system call it is blocked in, or `None` for a thread that is
+    /// not in one or whose registers cannot be read.
+    fn blocked_futex(&self, _thread: ThreadId) -> Option<u64> {
+        None
     }
 
     /// The memory read at this stop so far, which lasts as long as the
@@ -516,6 +536,22 @@ pub struct RuntimeTask {
     /// the runtime's order, such as Go's profiler labels, or the tokio
     /// runtime that holds it in a process with several.
     pub labels: TaskLabels,
+
+    /// The function the runtime will call for the task, for one that runs
+    /// no code until then, as an event loop's pending work does.
+    pub callback: Option<TaskCallback>,
+
+    /// Whether the task runs no code and keeps no frames: it is work the
+    /// runtime will hand to `callback` once it is done, so it has no stack.
+    pub stackless: bool,
+}
+
+/// A function a runtime will call for a task, and where the source it
+/// recorded the function by begins it, if it is readable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskCallback {
+    pub function: Arc<str>,
+    pub place: Option<crate::RecordedPlace>,
 }
 
 /// A task the debugger asks a runtime about: its number, and the locator
@@ -616,7 +652,7 @@ pub enum Crossing {
 
 /// What each runtime a model knows calls its tasks, singular and plural,
 /// so that clients can speak of them as the runtime's users do.
-pub const TASK_NOUNS: [(&str, &str); 2] = [go::TASK_NOUN, self::tokio::TASK_NOUN];
+pub const TASK_NOUNS: [(&str, &str); 3] = [go::TASK_NOUN, self::tokio::TASK_NOUN, node::TASK_NOUN];
 
 /// The exceptions each runtime a model knows reports, which clients may
 /// choose to stop at before they know which runtimes a program has.
@@ -2179,6 +2215,10 @@ impl RuntimeImage for ModuleImage {
                 .extent()
                 .map(|extent| extent.range.end.get() - extent.range.start.get()),
         })
+    }
+
+    fn vtable_class(&self, address: ImageAddress) -> Option<(String, ImageAddress)> {
+        Self::vtable_class(self, address)
     }
 
     fn symbol_at(&self, address: ImageAddress) -> Option<Arc<str>> {

@@ -1184,10 +1184,39 @@ pub fn task(task: &TaskSnapshot, place: &str, selected: bool, renderer: Renderer
         .map(|labels| format!(" {}", renderer.paint(Role::Name, labels)))
         .unwrap_or_default();
 
-    format!(
-        "{marker} {} {place}{detail}{labels}{thread}",
-        renderer.paint(Role::Metadata, format_args!("[{}]", task.id.number))
-    )
+    let number = format!("[{}]", task.id.number);
+    let number = renderer.paint(Role::Metadata, &number);
+    // Work that runs no code is what it waits for, then whom it will call.
+    if task.stackless {
+        let what = task.detail.as_deref().unwrap_or(task.noun);
+        let place = if place.is_empty() {
+            String::new()
+        } else {
+            format!(" — {place}")
+        };
+        return format!("{marker} {number} {what}{place}{labels}{thread}");
+    }
+
+    format!("{marker} {number} {place}{detail}{labels}{thread}")
+}
+
+/// The function a stackless task's runtime will call for it, `callback
+/// onTimeout at app.js:12`, or nothing where it recorded none.
+fn task_callback(
+    task: &TaskSnapshot,
+    images: &BTreeMap<ModuleId, Arc<ModuleImage>>,
+    renderer: Renderer,
+) -> String {
+    let Some(callback) = task.resume.as_ref() else {
+        return String::new();
+    };
+    let Some(function) = callback.function.as_deref() else {
+        return String::new();
+    };
+    let at = location_source(callback, images, renderer)
+        .map(|source| format!(" at {}", renderer.paint(Role::Metadata, source)))
+        .unwrap_or_default();
+    format!("callback {}{at}", renderer.paint(Role::Name, function))
 }
 
 /// Where a task was created, as its runtime knows: `created by main.main
@@ -1199,19 +1228,7 @@ pub fn task_creation(
     renderer: Renderer,
 ) -> Option<String> {
     let creation = task.creation.as_ref()?;
-    let source = creation
-        .source
-        .as_ref()
-        .and_then(|source| {
-            let file = images.get(&creation.module?)?.source_file(source.file)?;
-            Some(renderer.location(&file.path, source.line))
-        })
-        .or_else(|| {
-            creation
-                .recorded
-                .as_ref()
-                .map(|place| renderer.location(std::path::Path::new(&*place.path), place.line))
-        });
+    let source = location_source(creation, images, renderer);
 
     let by = creation
         .function
@@ -1226,6 +1243,28 @@ pub fn task_creation(
             at.unwrap_or_default()
         )
     })
+}
+
+/// Where a task location's source is: the file of its module's that holds
+/// it, or the path its runtime recorded.
+fn location_source(
+    location: &microscope::TaskLocation,
+    images: &BTreeMap<ModuleId, Arc<ModuleImage>>,
+    renderer: Renderer,
+) -> Option<String> {
+    location
+        .source
+        .as_ref()
+        .and_then(|source| {
+            let file = images.get(&location.module?)?.source_file(source.file)?;
+            Some(renderer.location(&file.path, source.line))
+        })
+        .or_else(|| {
+            location
+                .recorded
+                .as_ref()
+                .map(|place| renderer.location(std::path::Path::new(&*place.path), place.line))
+        })
 }
 
 /// A task's labels as Go's tracebacks show them, `{job: resize, user: "a
@@ -1277,6 +1316,9 @@ pub fn task_place(
     images: &BTreeMap<ModuleId, Arc<ModuleImage>>,
     renderer: Renderer,
 ) -> String {
+    if task.stackless {
+        return task_callback(task, images, renderer);
+    }
     match trace {
         Ok(trace) => trace.user_frame().map_or_else(
             || {

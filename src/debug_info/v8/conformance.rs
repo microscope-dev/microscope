@@ -1388,6 +1388,66 @@ fn every_build_in_the_matrix_binds_to_its_layout() {
     }
 }
 
+/// Every build in the matrix gives where Node keeps its event loop's work,
+/// with the offsets gdb read from each build's running process when the
+/// walk was designed (`Environment::principal_realm_` and the realm's
+/// timers handle per build; the rest per V8 line), and libuv's pool where
+/// the build links libuv statically.
+#[test]
+fn every_build_says_where_node_keeps_its_tasks() {
+    for (entry, path, (major, minor)) in matrix() {
+        let data = std::fs::read(&path)
+            .unwrap_or_else(|error| panic!("{entry}: read {}: {error}", path.display()));
+        let object = object::File::parse(data.as_slice()).expect("an ELF file");
+        let runtime = super::runtime(&object).unwrap_or_else(|| panic!("{entry}: no V8 runtime"));
+        let tasks = runtime
+            .tasks
+            .unwrap_or_else(|problem| panic!("{entry}: {problem}"));
+        let context = match (major, minor) {
+            (12, 4) => 0x120,
+            (13, 6) => 0x150,
+            _ => 0x158,
+        };
+        assert_eq!(tasks.current_context, context, "{entry}");
+        assert_eq!(
+            (tasks.environment_slot, tasks.tag_slot),
+            (0x10f, 0x147),
+            "{entry}: kEnvironment 32 and kContextTag 39 of an EmbedderDataArray"
+        );
+        assert_eq!(
+            (tasks.provider_type, tasks.async_id),
+            (0x30, 0x38),
+            "{entry}"
+        );
+        assert_eq!(
+            tasks.object_wrapper,
+            if major == 12 { 0x20 } else { 0x28 },
+            "{entry}"
+        );
+        let measured = match entry {
+            "22" => Some((0xb80, 0x288)),
+            "24" | "debian-24" => Some((0xbc8, 0x280)),
+            "26" => Some((0xc80, 0x288)),
+            "nixpkgs-24" => Some((0xb88, 0x278)),
+            "nixpkgs-26" => Some((0xbc8, 0x288)),
+            _ => None,
+        };
+        if let Some(measured) = measured {
+            assert_eq!(
+                (tasks.principal_realm, tasks.timers_callback),
+                measured,
+                "{entry}"
+            );
+        }
+        assert_eq!(
+            tasks.pool.is_some(),
+            matches!(entry, "22" | "24" | "26"),
+            "{entry}: only the official builds link libuv statically"
+        );
+        eprintln!("{entry}: {tasks:x?}");
+    }
+}
+
 /// Whether `object` defines a symbol named `name`.
 fn defines(object: &object::File<'_>, name: &str) -> bool {
     use object::{Object, ObjectSymbol};
