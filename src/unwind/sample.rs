@@ -45,6 +45,16 @@ pub struct SampledFrame {
     /// The module covering the address, by index in the modules.
     pub module: Option<usize>,
     pub role: CodeRole,
+
+    /// The frame's rbp, where it is known: call-frame information gives
+    /// every frame's, and the kernel's chain each link's.
+    pub frame_pointer: Option<u64>,
+
+    /// The frame's canonical frame address, where it is known: call-frame
+    /// information gives it for each frame it unwound, and a frame the
+    /// kernel's chain follows that keeps the chain has it 16 bytes above
+    /// its link.
+    pub cfa: Option<u64>,
 }
 
 /// How an unwound stack ends.
@@ -92,10 +102,9 @@ impl MemoryReader for StackCopy<'_> {
     }
 }
 
-/// A frame call-frame information reached, with its own rbp.
+/// A frame call-frame information reached.
 struct Unwound {
     frame: SampledFrame,
-    frame_pointer: Option<u64>,
 }
 
 /// Unwinds one sample through `modules`, innermost frame first, collecting
@@ -142,13 +151,20 @@ fn sampled_frames(
     let (mut unwound, cfi_end) = (walked.unwound, walked.end);
 
     // The kernel's chain from the deepest frame that keeps the chain.
-    let Some((kept, link)) = splice(modules, rules, &unwound, sample, &mut memory) else {
+    let Some((kept, link, links)) = splice(modules, rules, &unwound, sample, &mut memory) else {
         return (frames(unwound), cfi_end);
     };
 
     unwound.truncate(kept + 1);
     let mut frames = frames(unwound);
-    let end = follow_chain(modules, rules, &mut frames, &sample.chain[link..], limit);
+    let links = links.get(link..).unwrap_or_default();
+    let end = follow_chain(
+        modules,
+        rules,
+        &mut frames,
+        (&sample.chain[link..], links),
+        limit,
+    );
     (frames, end)
 }
 
@@ -230,8 +246,9 @@ fn walk_cfi(
                 address,
                 module: index,
                 role,
+                frame_pointer: registers.get(RBP),
+                cfa: None,
             },
-            frame_pointer: registers.get(RBP),
         });
 
         if unwound.len() >= limit {
@@ -266,6 +283,10 @@ fn walk_cfi(
             }
             Err(_) => break StackEnd::Truncated(Truncation::InvalidCaller, index),
         };
+
+        if let Some(last) = unwound.last_mut() {
+            last.frame.cfa = Some(step.cfa.get());
+        }
 
         let caller = match step.registers.get(RETURN_ADDRESS) {
             None | Some(0) => return Walked::certain(unwound, StackEnd::Complete),
@@ -335,8 +356,9 @@ fn signal_trampoline(
                 .iter()
                 .position(|candidate| candidate.loaded.id == module.loaded.id),
             role: CodeRole::SignalTrampoline,
+            frame_pointer: registers.get(RBP),
+            cfa: None,
         },
-        frame_pointer: registers.get(RBP),
     })
 }
 
@@ -357,7 +379,7 @@ fn splice(
     unwound: &[Unwound],
     sample: SampledState<'_>,
     memory: &mut StackCopy<'_>,
-) -> Option<(usize, usize)> {
+) -> Option<(usize, usize, Vec<u64>)> {
     let mut links = Vec::new();
     let mut link = sample
         .registers
@@ -381,7 +403,7 @@ fn splice(
     }
 
     for (index, frame) in unwound.iter().enumerate().rev() {
-        let Some(frame_pointer) = frame.frame_pointer else {
+        let Some(frame_pointer) = frame.frame.frame_pointer else {
             continue;
         };
 
@@ -410,19 +432,21 @@ fn splice(
             continue;
         }
 
-        return Some((index, caller));
+        return Some((index, caller, links));
     }
 
     None
 }
 
 /// Appends the callers `chain` lists, beginning with the caller of the
-/// last of `frames`, while each frame provably keeps the chain.
+/// last of `frames`, while each frame provably keeps the chain; `links`
+/// holds the links of the walk over the copy that are each's rbp, as far
+/// as the copy reached.
 fn follow_chain(
     modules: &[UnwindModule<'_>],
     rules: &mut FrameRules,
     frames: &mut Vec<SampledFrame>,
-    chain: &[u64],
+    (chain, links): (&[u64], &[u64]),
     limit: usize,
 ) -> StackEnd {
     for (position, &return_address) in chain.iter().enumerate() {
@@ -435,10 +459,16 @@ fn follow_chain(
             .iter()
             .position(|candidate| candidate.loaded.id == module.loaded.id);
         let role = module.image.code_role(image_address);
+        let kept = rules.rule(&module, address);
+        let frame_pointer = links.get(position).copied();
         frames.push(SampledFrame {
             address,
             module: index,
             role,
+            frame_pointer,
+            cfa: frame_pointer
+                .filter(|_| kept == FramePointerRule::Kept)
+                .map(|link| link.wrapping_add(16)),
         });
         if role == CodeRole::Outermost {
             return StackEnd::Complete;
@@ -447,8 +477,6 @@ fn follow_chain(
         if frames.len() >= limit {
             return StackEnd::Truncated(Truncation::DepthLimit, None);
         }
-
-        let kept = rules.rule(&module, address);
 
         // A switch the chain does not carry on through ends the stack at
         // the switch, whatever its frame keeps.

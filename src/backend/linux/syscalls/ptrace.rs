@@ -546,6 +546,7 @@ impl Tracer<'_> {
     fn stack(&self, process: u32, tid: u32) -> Option<crate::syscalls::CallStack> {
         let stacks = self.options.stacks.as_ref()?;
         let registers = ptrace::getregs(Pid::from_raw(tid.cast_signed())).ok()?;
+        let fs_base = registers.fs_base;
         let registers = [
             (0, registers.rax),
             (1, registers.rdx),
@@ -570,7 +571,7 @@ impl Tracer<'_> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        Some(stacks.unwind_live(syscalls::Pid::new(process), tid, &registers))
+        Some(stacks.unwind_live(syscalls::Pid::new(process), tid, &registers, Some(fs_base)))
     }
 
     fn syscall_stop(&mut self, tid: u32, seccomp: bool) -> Result<(), Errno> {

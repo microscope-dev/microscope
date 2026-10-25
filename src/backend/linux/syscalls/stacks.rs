@@ -44,6 +44,9 @@ struct Mapped {
     path: Arc<str>,
     loaded: LoadedModule,
     image: Image,
+
+    /// Whether it holds code a runtime generated, which no image holds.
+    generated: bool,
 }
 
 /// A file's image, if it could be read, and what names the file in a
@@ -219,6 +222,7 @@ impl Stacks {
             path: String::from_utf8_lossy(mmap.path).into(),
             loaded,
             image,
+            generated: false,
         })
     }
 
@@ -263,11 +267,14 @@ impl Stacks {
     /// number, reading its memory: its instruction, then each return
     /// address, innermost first, and the frames an interpreter runs on it,
     /// which stay as they are while it is stopped.
+    /// `thread_pointer` is the thread's, which reading V8's compiled
+    /// frames needs.
     pub fn unwind_live(
         &mut self,
         process: Pid,
         thread: u32,
         registers: &[(crate::unwind::DwarfRegister, u64)],
+        thread_pointer: Option<u64>,
     ) -> CallStack {
         let instruction = registers.iter().find_map(|&(register, value)| {
             (register == crate::unwind::RETURN_ADDRESS).then_some(value)
@@ -288,11 +295,29 @@ impl Stacks {
             );
         }
         let runtime = self.interpreter(process);
-        let modules = self.modules(process);
         let mut stack = stack(&frames, end);
-        if let Some((model, bias)) = runtime
-            && let Some(read) =
-                model.interpreted(&LiveStop::for_thread(process.get(), thread, bias))
+        if let Some((model, loaded)) = &runtime
+            && model.owns_generated_code()
+        {
+            let pointers: BTreeMap<u32, u64> = thread_pointer
+                .map(|pointer| (thread, pointer))
+                .into_iter()
+                .collect();
+            let stop =
+                LiveStop::for_stopped_thread(process.get(), thread, &pointers, loaded.load_bias);
+            stack.interpreted = self
+                .code_frames(process, model.as_ref(), loaded, &stop, thread, &frames)
+                .into();
+            return stack;
+        }
+
+        let modules = self.modules(process);
+        if let Some((model, loaded)) = runtime
+            && let Some(read) = model.interpreted(&LiveStop::for_thread(
+                process.get(),
+                thread,
+                loaded.load_bias,
+            ))
         {
             let activations = activations(model.as_ref(), &modules, &frames);
             let thread = crate::ThreadId::new(u64::from(thread));
@@ -309,7 +334,7 @@ impl Stacks {
 
     /// The interpreter `process` runs, and the load bias of the module
     /// that holds it, if it runs one microscope reads.
-    fn interpreter(&mut self, process: Pid) -> Option<(Arc<dyn RuntimeModel>, LoadBias)> {
+    fn interpreter(&mut self, process: Pid) -> Option<(Arc<dyn RuntimeModel>, LoadedModule)> {
         for mapped in self.processes.get(&process)? {
             // A copy of a module's code binds the runtime of the module.
             if mapped.loaded.window.is_some() {
@@ -321,19 +346,98 @@ impl Stacks {
                 .or_insert_with(|| {
                     let info = mapped.image.info.as_ref()?;
                     let image: Arc<dyn RuntimeImage + Send + Sync> = Arc::clone(&info.image) as _;
-                    image.python()?;
+                    if image.python().is_none() && image.v8().is_none() {
+                        return None;
+                    }
                     let stop = LiveStop::memory(process.get(), mapped.loaded.load_bias);
                     runtime_model::detect(&image)
                         .into_iter()
                         .flatten()
-                        .find(|model| model.walked_threads(&stop).is_some())
+                        .find(|model| {
+                            model.owns_generated_code() || model.walked_threads(&stop).is_some()
+                        })
                 });
             if let Some(model) = model {
-                return Some((Arc::clone(model), mapped.loaded.load_bias));
+                return Some((Arc::clone(model), mapped.loaded));
             }
         }
 
         None
+    }
+
+    /// The functions each frame of `frames`, a stopped thread's, runs where
+    /// its code is `model`'s own, as the runtime recorded them, each just
+    /// before its frame: V8's builtins in the module `runtime` loaded, and
+    /// in copies of it, and the code V8 generated.
+    fn code_frames(
+        &self,
+        process: Pid,
+        model: &dyn RuntimeModel,
+        runtime: &LoadedModule,
+        stop: &LiveStop<'_>,
+        thread: u32,
+        frames: &[SampledFrame],
+    ) -> Vec<InterpretedCall> {
+        let stored = model.process_code(stop);
+        let mut calls = Vec::new();
+        for (index, frame) in frames.iter().enumerate() {
+            let Some((generated, registers)) = self.owned(process, model, runtime, &stored, frame)
+            else {
+                continue;
+            };
+            // The innermost frame, and one a signal interrupted, are at
+            // their instruction, not after a call.
+            let after_call = index != 0 && frames[index - 1].role != CodeRole::SignalTrampoline;
+            let code = runtime_model::CodeFrame {
+                thread: crate::ThreadId::new(u64::from(thread)),
+                instruction: if after_call {
+                    VirtualAddress::new(frame.address.get().wrapping_add(1))
+                } else {
+                    frame.address
+                },
+                after_call,
+                generated,
+                registers: &registers,
+            };
+            let Some(described) = model.code_frame(stop, &code) else {
+                continue;
+            };
+            let before = u32::try_from(index).unwrap_or(u32::MAX);
+            calls.extend(described.functions.iter().map(|function| InterpretedCall {
+                before,
+                function: Arc::clone(&function.function),
+                file: function.place.as_ref().map(|place| Arc::clone(&place.path)),
+                line: function.place.as_ref().map_or(0, |place| place.line),
+                first_line: function.first_line,
+            }));
+        }
+        calls
+    }
+
+    /// Whether `frame`'s code is `model`'s own, and if so whether the
+    /// runtime generated it, with the registers the runtime reads it by:
+    /// its frame pointer.
+    fn owned(
+        &self,
+        process: Pid,
+        model: &dyn RuntimeModel,
+        runtime: &LoadedModule,
+        stored: &[crate::AddressRange<VirtualAddress>],
+        frame: &SampledFrame,
+    ) -> Option<(bool, crate::unwind::RegisterFile)> {
+        let frame_pointer = frame.frame_pointer?;
+        let mapped = self.mapping_at(process, frame.address.get())?;
+        let generated = mapped.generated;
+        let owned = generated
+            || (mapped.loaded.image == runtime.image
+                && model.owns_code(mapped.loaded.load_bias.wrapping_unload(frame.address)))
+            || stored
+                .iter()
+                .any(|range| range.start <= frame.address && frame.address < range.end);
+        owned.then(|| {
+            let registers = crate::unwind::RegisterFile::new([(crate::unwind::RBP, frame_pointer)]);
+            (generated, registers)
+        })
     }
 
     /// The layout the BPF walker reads `process`'s interpreter by, if it
@@ -372,9 +476,11 @@ impl Stacks {
         let runtime = self.interpreter(process);
         let modules = self.modules(process);
         let mut stack = stack(&frames, end);
-        if let Some((model, bias)) = runtime {
+        if let Some((model, loaded)) = runtime
+            && !model.owns_generated_code()
+        {
             let activations = activations(model.as_ref(), &modules, &frames);
-            let stop = LiveStop::memory(process.get(), bias);
+            let stop = LiveStop::memory(process.get(), loaded.load_bias);
             let thread = crate::ThreadId::new(0);
             let read = match read_record(model.as_ref(), &stop, python) {
                 Sampled::Frames { frames, ended } => InterpretedStacks {
@@ -724,6 +830,7 @@ impl Stacks {
                         }),
                     },
                     image: source.image.clone(),
+                    generated: false,
                 }
             } else {
                 let path = format!("[V8 code {:#x}]", range.start);
@@ -753,6 +860,7 @@ impl Stacks {
                         info: Some(Arc::new(info)),
                         identity: None,
                     },
+                    generated: true,
                 }
             };
             modules.push(mapped);

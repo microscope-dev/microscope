@@ -824,6 +824,26 @@ impl LiveStop<'static> {
     }
 }
 
+impl<'a> LiveStop<'a> {
+    /// Process `pid`'s memory and its stopped thread `tid` alone, whose
+    /// thread pointer `pointers` holds, as the runtime model of a module
+    /// loaded with `bias` reads them.
+    pub fn for_stopped_thread(
+        pid: u32,
+        tid: u32,
+        pointers: &'a BTreeMap<u32, u64>,
+        bias: crate::LoadBias,
+    ) -> Self {
+        Self {
+            pid,
+            bias,
+            threads: vec![crate::ThreadId::new(u64::from(tid))],
+            pointers,
+            unlearned: RefCell::new(BTreeSet::new()),
+        }
+    }
+}
+
 impl RuntimeStop for LiveStop<'_> {
     fn target_thread_id(&self, thread: crate::ThreadId) -> Option<runtime_model::TargetThreadId> {
         if self.threads.binary_search(&thread).is_err() {

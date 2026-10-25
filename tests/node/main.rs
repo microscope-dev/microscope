@@ -22,6 +22,7 @@ mod session;
 mod stacks;
 mod statements;
 mod steps;
+mod syscalls;
 mod truth;
 mod values;
 mod views;
