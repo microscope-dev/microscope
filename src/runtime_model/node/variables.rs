@@ -248,6 +248,11 @@ pub(super) fn scoped_variables(
     reader: &Reader<'_>,
     frame: InterpretedFrameRef,
 ) -> Result<(Vec<Variable>, bool), Problem> {
+    // A frame on the stack is at its frame pointer, which is aligned; a
+    // function suspended in await is at its generator, a tagged pointer.
+    if let Some(object) = reader.object(frame.address.get())? {
+        return suspended_variables(reader, object);
+    }
     let fp = frame.address.get();
     let function = super::frames::javascript_function(reader, fp)?
         .ok_or("the frame runs no JavaScript function")?;
@@ -355,6 +360,105 @@ pub(super) fn scoped_variables(
 
     found.extend(script_bindings(reader, context, &mut seen, crossed_with)?);
     Ok((found, crossed_with))
+}
+
+/// The variables of a function suspended in await, as its generator object
+/// keeps them: its receiver, the arguments and registers it saved when it
+/// suspended, and its contexts' variables; or none for the frame of a
+/// promise combinator, `object` the function V8 made for one element.
+fn suspended_variables(
+    reader: &Reader<'_>,
+    object: Object,
+) -> Result<(Vec<Variable>, bool), Problem> {
+    if !super::awaits::is_generator(reader, object)? {
+        return Ok((Vec::new(), false));
+    }
+    let generator = object;
+    let function = reader
+        .object(reader.field(generator, Field::JSGeneratorObjectFunction)?)?
+        .ok_or("the generator's function is not an object")?;
+    let context = suspended_context(reader, generator)?;
+    let mut found = Vec::new();
+    let this = if is_arrow(reader, function)? {
+        lexical_this(reader, context)?.unwrap_or_else(|| {
+            Err("V8 did not keep `this` because the arrow function does not use it".into())
+        })
+    } else {
+        reader.field(generator, Field::JSGeneratorObjectReceiver)
+    };
+    found.push(Variable {
+        name: "this".to_owned(),
+        kind: Kind::Receiver,
+        word: this,
+    });
+
+    let mut seen = BTreeSet::new();
+    let closure = reader.field(function, Field::JSFunctionContext)?;
+    let (captured, crossed_with) = context_variables(reader, context, closure, &mut seen)?;
+    let saved = reader
+        .object(reader.field(generator, Field::JSGeneratorObjectParametersAndRegisters)?)?
+        .ok_or("the generator's saved registers are not an array")?;
+    // V8 saves the formal parameters, then the registers the suspend
+    // names (`ExportParametersAndRegisterFile`).
+    let parameter_count = u32::try_from(parameters(reader, function)?)
+        .map_err(|_| "the function declares too many parameters")?;
+    for index in 0..parameter_count {
+        found.push(Variable {
+            name: format!("arguments[{index}]"),
+            kind: Kind::Argument(index),
+            word: reader.element(saved, i64::from(index)),
+        });
+    }
+    found.extend(captured);
+    let shared = reader.typed_field(
+        function,
+        Field::JSFunctionSharedFunctionInfo,
+        Constant::SharedFunctionInfoType,
+    )?;
+    let count = super::awaits::saved_registers(reader, generator, shared)?;
+    if i64::from(count) >= MAX_SLOTS {
+        return Err(format!("the generator saved {count} registers").into());
+    }
+    for index in 0..count {
+        found.push(Variable {
+            name: format!("r{index}"),
+            kind: Kind::Register {
+                index,
+                unnamed: None,
+            },
+            word: reader.element(saved, i64::from(parameter_count + index)),
+        });
+    }
+    found.extend(script_bindings(reader, context, &mut seen, crossed_with)?);
+    Ok((found, crossed_with))
+}
+
+/// The context the function suspended in the generator `generator` runs
+/// in.
+fn suspended_context(reader: &Reader<'_>, generator: Object) -> Result<Object, Problem> {
+    reader
+        .object(reader.field(generator, Field::JSGeneratorObjectContext)?)?
+        .ok_or_else(|| "the generator's context is not an object".into())
+}
+
+/// The context of the frame `frame`: a frame's on the stack, or that of a
+/// function suspended in await.
+pub(super) fn frame_context(
+    reader: &Reader<'_>,
+    frame: InterpretedFrameRef,
+) -> Result<Object, Problem> {
+    let address = frame.address.get();
+    if let Some(object) = reader.object(address)? {
+        if !super::awaits::is_generator(reader, object)? {
+            return Err("a promise combinator's frame runs no function of the program".into());
+        }
+        return suspended_context(reader, object);
+    }
+    let context =
+        reader.word(address.wrapping_add_signed(reader.constant(Constant::OffFpContext)?))?;
+    reader
+        .object(context)?
+        .ok_or_else(|| "the frame's context is not an object".into())
 }
 
 /// The script and module bindings of the realm of `context` that `seen`

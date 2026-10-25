@@ -28,7 +28,7 @@ const MAX_FEEDBACK_SLOTS: u64 = 1 << 16;
 /// their bytecode number, with the operand scale's index each selects:
 /// `Wide`, `ExtraWide`, `DebugBreakWide`, and `DebugBreakExtraWide`, the
 /// first four bytecodes on 12.4, 13.6, and 14.6.
-const PREFIXES: [usize; 4] = [1, 2, 1, 2];
+pub(super) const PREFIXES: [usize; 4] = [1, 2, 1, 2];
 
 /// A function a frame runs, by its `SharedFunctionInfo`, and its offset
 /// in its script, or why it has none.

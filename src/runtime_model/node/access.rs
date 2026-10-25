@@ -38,15 +38,7 @@ pub(super) fn bind(
     if crossed_with {
         return Err(variables::WITH_CONTEXT.into());
     }
-    let context = reader.word(
-        frame
-            .address
-            .get()
-            .wrapping_add_signed(reader.constant(Constant::OffFpContext)?),
-    )?;
-    let context = reader
-        .object(context)?
-        .ok_or("the frame's context is not an object")?;
+    let context = variables::frame_context(reader, frame)?;
     let native = native_context(reader, context)?;
     let global = reader
         .object(slot(reader, native, Constant::ContextExtensionIndex)?)?

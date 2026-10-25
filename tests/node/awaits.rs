@@ -4,12 +4,15 @@
 //! `CaptureAsyncStackTrace` finds), and each placed after the function the
 //! thread resumed.
 
-use microscope::{Backtrace, DrivenFrames, StackSegment, ThreadId};
+use microscope::{
+    Backtrace, DrivenFrames, SourceLanguage, StackSegment, ThreadId, VariableKind, VariableState,
+};
 
 use crate::frames::{awaiting_recorded, observed};
 use crate::session::{MATRIX, NodeSession};
 use crate::support::Scenario;
 use crate::truth::{Frame, Thread, check_threads, threads};
+use crate::values::presented;
 
 /// Each checkpoint of `awaits.js`, in order, with the function its printer
 /// resumed, and whether V8's chain ends where several reactions wait.
@@ -142,6 +145,111 @@ pub async fn check(
         );
     }
     lies
+}
+
+/// On every build, the variables of `middle`, suspended in await, are the
+/// ones its generator keeps: its argument, `captured` from its context, by
+/// name and by expression, `this`, which its strict call left undefined,
+/// and the string `plain` in the register its frame on the stack holds it
+/// in once the await resumed it.
+#[tokio::test]
+async fn a_suspended_functions_variables_are_its_generators() {
+    let mut lies = Vec::new();
+    for entry in MATRIX {
+        let mut session = NodeSession::launch(entry, "awaits.js", &[], &[]).await;
+        let reported = threads(&session.stop_at("chain").await);
+        let context = session.context();
+        let suspended =
+            middle_variables(&session, reported[0].native, StackSegment::Awaiting).await;
+        for (name, kind, text) in [
+            ("this", VariableKind::Parameter, "undefined"),
+            ("arguments[0]", VariableKind::Parameter, "20"),
+            ("captured", VariableKind::Local, "40"),
+        ] {
+            if !suspended
+                .iter()
+                .any(|(n, k, t)| n == name && *k == kind && t == text)
+            {
+                lies.push(format!(
+                    "{context}: no {name} {kind:?} {text}: {suspended:#?}"
+                ));
+            }
+        }
+        let (summary, _) = presented(&session, "captured").await;
+        if summary != "40" {
+            lies.push(format!("{context}: captured evaluates to {summary}"));
+        }
+
+        session.proceed().await;
+        let reported = threads(&session.stop_at("resumed").await);
+        let running = middle_variables(&session, reported[0].native, StackSegment::Thread).await;
+        let plain = |variables: &[(String, VariableKind, String)]| -> Option<String> {
+            variables
+                .iter()
+                .find(|(_, kind, text)| *kind == VariableKind::Unnamed && text == "'plain-10'")
+                .map(|(name, ..)| name.clone())
+        };
+        if plain(&suspended).is_none() || plain(&suspended) != plain(&running) {
+            lies.push(format!(
+                "{context}: plain is in {:?} suspended, {:?} on the stack",
+                plain(&suspended),
+                plain(&running)
+            ));
+        }
+        session.shutdown().await;
+    }
+    assert!(lies.is_empty(), "{lies:#?}");
+}
+
+/// The name, kind, and summary of each variable of the frame of `middle`
+/// on the stack `segment` of the thread `native`, which it selects.
+async fn middle_variables(
+    session: &NodeSession,
+    native: u64,
+    segment: StackSegment,
+) -> Vec<(String, VariableKind, String)> {
+    let handle = session.scenario.handle();
+    session
+        .scenario
+        .operation("select", handle.select_context(ThreadId::new(native)))
+        .await;
+    let trace = session
+        .scenario
+        .operation("backtrace", handle.backtrace())
+        .await;
+    let middle = trace
+        .frames
+        .iter()
+        .find(|frame| {
+            frame.segment == segment
+                && frame.recorded.as_ref().is_some_and(|recorded| {
+                    recorded.language == SourceLanguage::JavaScript
+                        && &*recorded.function == "middle"
+                })
+        })
+        .unwrap_or_else(|| panic!("{}: no frame of middle on {segment:?}", session.context()));
+    session
+        .scenario
+        .operation("select frame", handle.select_frame(middle.id))
+        .await;
+    let variables = session
+        .scenario
+        .operation("variables", handle.variables())
+        .await;
+    variables
+        .variables
+        .iter()
+        .map(|variable| {
+            let text = match &variable.state {
+                VariableState::Available {
+                    presentation: Some(presentation),
+                    ..
+                } => presentation.summary.to_string(),
+                state => format!("<{state:?}>"),
+            };
+            (variable.name.to_string(), variable.kind, text)
+        })
+        .collect()
 }
 
 /// The comparisons fail on a dropped async frame, a wrong line, a wrong

@@ -47,7 +47,6 @@ pub fn bytecode_sizes(version: V8Version) -> Result<&'static [u8], std::sync::Ar
 
 /// V8 `version`'s number of the bytecode `SuspendGenerator`, generated
 /// from its headers; or why microscope has none.
-#[allow(dead_code)] // TEMP
 pub fn suspend_generator(version: V8Version) -> Result<u8, std::sync::Arc<str>> {
     bytecodes::SUSPEND_GENERATOR
         .iter()

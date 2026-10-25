@@ -549,3 +549,74 @@ fn script_offset(
     super::frames::script_offset_at(reader, encoding, bytecode, offset)
 }
 
+/// How many registers the suspended generator `generator`, whose
+/// function's shared information is `shared`, saved: the register count
+/// operand of the `SuspendGenerator` it suspended at, whose operands are
+/// its generator's register, the first register saved, the count, and
+/// the suspend's number, each as wide as its prefix makes it. The offset
+/// V8 keeps is the bytecode's own, past any prefix, so the bytecode is
+/// read from its start to tell its prefix from an operand.
+pub(super) fn saved_registers(
+    reader: &Reader<'_>,
+    generator: Object,
+    shared: Object,
+) -> Result<u32, Problem> {
+    const WIDTHS: [usize; 3] = [1, 2, 4];
+    let (bytecode, offset) = suspended_at(reader, generator, shared)?;
+    let sizes = crate::image::v8::bytecode_sizes(reader.version)?;
+    let suspend = crate::image::v8::suspend_generator(reader.version)?;
+    let count = sizes.len() / 3;
+    let offset = usize::try_from(offset).map_err(|_| "a negative bytecode offset")?;
+    // The instruction's four operands follow it, at their widest.
+    let mut bytes = vec![0; offset + 1 + 4 * 4];
+    let length = usize::try_from(reader.smi_field(bytecode, Field::BytecodeArrayLength)?)
+        .map_err(|_| "a bytecode array has a negative length")?;
+    bytes.truncate(length);
+    reader.bytes_into(
+        reader.field_address(bytecode, Field::BytecodeArrayBytes)?,
+        &mut bytes,
+    )?;
+
+    let mut at = 0;
+    while at <= offset {
+        let byte = usize::from(*bytes.get(at).ok_or("the bytecode ends before its offset")?);
+        let (opcode, scale) = super::compiled::PREFIXES
+            .get(byte)
+            .map_or((at, 0), |scale| (at + 1, *scale));
+        let code = usize::from(
+            *bytes
+                .get(opcode)
+                .ok_or("a bytecode prefix ends its bytecode")?,
+        );
+        if code >= count {
+            return Err("an unknown bytecode".into());
+        }
+        if opcode == offset {
+            if code != usize::from(suspend) {
+                return Err(format!(
+                    "the generator suspended at bytecode {code}, which is no SuspendGenerator"
+                )
+                .into());
+            }
+            let width = WIDTHS[scale];
+            let operand = opcode + 1 + 2 * width;
+            let field = bytes
+                .get(operand..operand + width)
+                .ok_or("the SuspendGenerator's operands end its bytecode")?;
+            let mut word = [0; 4];
+            word[..width].copy_from_slice(field);
+            return Ok(u32::from_le_bytes(word));
+        }
+        let size = usize::from(
+            *sizes
+                .get(scale * count + code)
+                .ok_or("an unknown bytecode")?,
+        );
+        if size == 0 {
+            return Err(format!("bytecode {code} has no size").into());
+        }
+        // A prefix is a byte of its own before the bytecode it widens.
+        at = opcode + size;
+    }
+    Err("no bytecode begins at the generator's offset".into())
+}
