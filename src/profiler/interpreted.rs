@@ -235,7 +235,19 @@ pub(super) struct Interpreted {
 
     /// The frames of each record drained but not yet processed, read as
     /// it was drained.
-    drained: BTreeMap<RecordKey, Sampled>,
+    drained: BTreeMap<RecordKey, Drained>,
+}
+
+/// The frames of a record, read as it was drained.
+enum Drained {
+    /// Read whole.
+    Read(Sampled),
+
+    /// JavaScript frames, which the runtime `model` owns the code of: which
+    /// are the program's is known only once the mappings in effect at
+    /// their sample are, and a drain may hold mappings it has not yet
+    /// processed.
+    V8(DrainedV8, Arc<dyn RuntimeModel>),
 }
 
 impl Interpreted {
@@ -360,12 +372,23 @@ impl Interpreted {
         // A record lies four bytes into the sample that carries it, short
         // of its fields' alignment; a copy aligns them.
         let aligned = record.to_vec();
-        match self.sampled(pid, Some(&aligned), code) {
-            Sampled::None => {}
-            sampled => {
-                self.drained.insert(key, sampled);
-            }
-        }
+        let Some(runtime) = self
+            .found
+            .get(&pid)
+            .and_then(|found| found.runtime.as_ref())
+        else {
+            return;
+        };
+        let stop = LiveStop::memory(pid.get(), runtime.bias);
+        let model = runtime.model.as_ref();
+        let drained = match runtime.kind {
+            Kind::Python { .. } => Drained::Read(read_record(model, &stop, Some(&aligned))),
+            Kind::V8 { .. } => drain_v8_record(model, &stop, Some(&aligned), code)
+                .map_or(Drained::Read(Sampled::Unknown), |drained| {
+                    Drained::V8(drained, Arc::clone(&runtime.model))
+                }),
+        };
+        self.drained.insert(key, drained);
     }
 
     /// Forgets the frames of a record that goes with no sample.
@@ -375,15 +398,21 @@ impl Interpreted {
 
     /// The interpreted frames of a sample of process `pid`, from the
     /// record of frames paired with it, if any, as they were read when
-    /// it was drained.
+    /// it was drained, and kept where `code`, the mappings in effect at
+    /// the sample, says their code is the runtime's.
     pub(super) fn paired(
         &mut self,
         pid: Pid,
         record: Option<(RecordKey, &[u8])>,
         code: &dyn Fn(u64) -> Option<CodeAt>,
     ) -> Sampled {
-        let drained = record.and_then(|(key, _)| self.drained.remove(&key));
-        drained.unwrap_or_else(|| self.sampled(pid, record.map(|(_, bytes)| bytes), code))
+        match record.and_then(|(key, _)| self.drained.remove(&key)) {
+            Some(Drained::Read(sampled)) => sampled,
+            Some(Drained::V8(drained, model)) => {
+                drained.settle(&|address| owner(model.as_ref(), code, address))
+            }
+            None => self.sampled(pid, record.map(|(_, bytes)| bytes), code),
+        }
     }
 
     /// The interpreted frames of a sample of process `pid`, from the
@@ -579,32 +608,88 @@ pub fn read_record(
     }
 }
 
-/// The JavaScript frames a record of the V8 walker's holds, if any, each
-/// named and proved by `model` through `stop`, the process's memory read
-/// now, where `code` says its code is the runtime's.
-pub fn read_v8_record(
+/// Whose code a JavaScript frame runs, as a recording's mappings say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Owner {
+    /// Code V8 generated, whose frames are compiled.
+    Generated,
+
+    /// V8's builtins, or a copy of them, whose frames are its interpreter's
+    /// or its own.
+    Builtins,
+
+    /// None of the mappings yet says: a drain may hold a mapping it has not
+    /// yet processed, and the code may also be no runtime's.
+    Unknown,
+}
+
+/// Whose code is at `address`, which `code` says where it is, of the
+/// runtime `model`: `None` for another module's.
+fn owner(
     model: &dyn RuntimeModel,
-    stop: &LiveStop<'_>,
-    record: Option<&[u8]>,
     code: &dyn Fn(u64) -> Option<CodeAt>,
-) -> Sampled {
-    let Some(stack) = record
-        .filter(|bytes| sampler::is_v8(bytes))
-        .and_then(|bytes| sampler::decode_v8(bytes).ok())
-    else {
-        return Sampled::Unknown;
-    };
+    address: u64,
+) -> Option<Owner> {
+    match code(address) {
+        Some(CodeAt::Generated) => Some(Owner::Generated),
+        Some(CodeAt::Runtime(image)) if model.owns_code(image) => Some(Owner::Builtins),
+        Some(CodeAt::Runtime(_)) => None,
+        None => Some(Owner::Unknown),
+    }
+}
+
+/// A JavaScript frame of a record, read as the record was drained.
+#[derive(Debug)]
+struct DrainedFrame {
+    frame_pointer: u64,
+    address: VirtualAddress,
+
+    /// Whether its instruction is the return address of a call.
+    after_call: bool,
+    owner: Owner,
+
+    /// Its functions, read as the frame of each code it may run: compiled
+    /// code; the interpreter's, with no call seen made from it; and the
+    /// interpreter's, under a call it made. `None` for one it cannot be.
+    compiled: Option<Vec<crate::RecordedFrame>>,
+    innermost: Option<Vec<crate::RecordedFrame>>,
+    called: Option<Vec<crate::RecordedFrame>>,
+}
+
+/// The JavaScript frames of a record of the V8 walker's, read as it was
+/// drained: their functions are read then, and which of the frames are
+/// the program's, and how, is settled once the mappings in effect at
+/// their sample are known.
+#[derive(Debug)]
+pub(super) struct DrainedV8 {
+    frames: Vec<DrainedFrame>,
+    ended: bool,
+}
+
+/// Reads the JavaScript frames of a V8 walker's `stack` now, each whose
+/// code `owner` says may be the runtime's named by `name` as each code it
+/// may run would name it.
+///
+/// A sample may land in a bytecode handler that keeps a frame of its own,
+/// which the walk cannot tell from a call the frame made, and the
+/// interpreter writes its offset to the frame only before a call: a
+/// frame's place is known only once a frame of the program's it called
+/// is, inside it. Where that waits on whose code an inner frame runs, the
+/// frame is read both ways. A model names a frame or not by the function
+/// it ran, not by the code it ran.
+fn drain_v8(
+    stack: &sampler::V8Stack<'_>,
+    owner: &dyn Fn(u64) -> Option<Owner>,
+    name: &mut dyn FnMut(&SampledCodeFrame) -> Option<Vec<crate::RecordedFrame>>,
+) -> Option<DrainedV8> {
     let ended = match stack.end {
-        V8End::NoLayout => return Sampled::Unknown,
+        V8End::NoLayout => return None,
         V8End::Complete | V8End::Unreadable => false,
         V8End::Bounded => true,
     };
-    // A sample may land in a bytecode handler that keeps a frame of its
-    // own, which the walk cannot tell from a call the frame made, and the
-    // interpreter writes its offset to the frame only before a call: a
-    // frame's place is known only once a frame of the program's it called
-    // is, inside it.
-    let mut called = false;
+    // Whether a frame inside this one is the program's: `None` where that
+    // waits on whose code one runs.
+    let mut called = Some(false);
     let mut frames = Vec::with_capacity(stack.frames.len());
     for sampled in stack.frames {
         let after_call = sampled.at_instruction == 0;
@@ -613,15 +698,13 @@ pub fn read_v8_record(
         } else {
             sampled.pc
         };
-        let generated = match code(address) {
-            Some(CodeAt::Generated) => true,
-            Some(CodeAt::Runtime(image)) if model.owns_code(image) => false,
-            Some(CodeAt::Runtime(_)) | None => continue,
+        let Some(owner) = owner(address) else {
+            continue;
         };
-        let frame = SampledCodeFrame {
+        let frame = |generated, after_call| SampledCodeFrame {
             frame_pointer: sampled.fp,
             instruction: VirtualAddress::new(sampled.pc),
-            after_call: after_call && called,
+            after_call,
             generated,
             function: sampled.function,
             shared: sampled.shared,
@@ -631,17 +714,111 @@ pub fn read_v8_record(
             bytecode: sampled.bytecode,
             bytecode_offset: sampled.bytecode_offset,
         };
-        let Some(functions) = model.sampled_code_frame(stop, &frame) else {
-            continue;
+        let interpreted = owner != Owner::Generated;
+        let mut read = |wanted: bool, generated, after_call| {
+            wanted
+                .then(|| name(&frame(generated, after_call)))
+                .flatten()
         };
-        called = true;
-        frames.push(PlacedFrame {
+        let compiled = read(owner != Owner::Builtins, true, false);
+        let innermost = read(
+            interpreted && !(after_call && called == Some(true)),
+            false,
+            false,
+        );
+        let under_call = read(
+            interpreted && after_call && called != Some(false),
+            false,
+            true,
+        );
+        if compiled.is_none() && innermost.is_none() && under_call.is_none() {
+            continue;
+        }
+        called = match (owner, called) {
+            (Owner::Unknown, Some(false)) => None,
+            (Owner::Unknown, called) => called,
+            (Owner::Generated | Owner::Builtins, _) => Some(true),
+        };
+        frames.push(DrainedFrame {
             frame_pointer: sampled.fp,
             address: VirtualAddress::new(address),
-            functions,
+            after_call,
+            owner,
+            compiled,
+            innermost,
+            called: under_call,
         });
     }
-    Sampled::Placed { frames, ended }
+    Some(DrainedV8 { frames, ended })
+}
+
+impl DrainedV8 {
+    /// The frames whose code `owner`, the mappings in effect at their
+    /// sample, says is the runtime's, each named as the code it runs.
+    fn settle(self, owner: &dyn Fn(u64) -> Option<Owner>) -> Sampled {
+        let mut called = false;
+        let mut frames = Vec::with_capacity(self.frames.len());
+        for frame in self.frames {
+            let owner = match frame.owner {
+                Owner::Unknown => owner(frame.address.get()),
+                known => Some(known),
+            };
+            let functions = match owner {
+                None | Some(Owner::Unknown) => continue,
+                Some(Owner::Generated) => frame.compiled,
+                Some(Owner::Builtins) if frame.after_call && called => frame.called,
+                Some(Owner::Builtins) => frame.innermost,
+            };
+            // The drain read each way the frame could turn out.
+            debug_assert!(functions.is_some(), "a frame not read as it settled");
+            let Some(functions) = functions else {
+                continue;
+            };
+            called = true;
+            frames.push(PlacedFrame {
+                frame_pointer: frame.frame_pointer,
+                address: frame.address,
+                functions,
+            });
+        }
+        Sampled::Placed {
+            frames,
+            ended: self.ended,
+        }
+    }
+}
+
+/// The JavaScript frames a record of the V8 walker's holds, read now by
+/// `model` through `stop`, the process's memory, and not yet settled; or
+/// `None` where they are unknown.
+fn drain_v8_record(
+    model: &dyn RuntimeModel,
+    stop: &LiveStop<'_>,
+    record: Option<&[u8]>,
+    code: &dyn Fn(u64) -> Option<CodeAt>,
+) -> Option<DrainedV8> {
+    let stack = record
+        .filter(|bytes| sampler::is_v8(bytes))
+        .and_then(|bytes| sampler::decode_v8(bytes).ok())?;
+    drain_v8(
+        &stack,
+        &|address| owner(model, code, address),
+        &mut |frame| model.sampled_code_frame(stop, frame),
+    )
+}
+
+/// The JavaScript frames a record of the V8 walker's holds, if any, each
+/// named and proved by `model` through `stop`, the process's memory read
+/// now, where `code` says its code is the runtime's.
+pub fn read_v8_record(
+    model: &dyn RuntimeModel,
+    stop: &LiveStop<'_>,
+    record: Option<&[u8]>,
+    code: &dyn Fn(u64) -> Option<CodeAt>,
+) -> Sampled {
+    drain_v8_record(model, stop, record, code).map_or(Sampled::Unknown, |drained| {
+        drained.settle(&|address| owner(model, code, address))
+    })
 }
 
 /// Where each of a walker's frames goes among a sample's `natives`, each
@@ -891,6 +1068,102 @@ mod tests {
         // other is in another: a thread at its address is in a new one.
         numbers.exited(main);
         assert_eq!(numbers.number(Tid::new(13), 0xa000), Some(5));
+    }
+
+    /// A walked frame at `pc` of the function whose shared information is
+    /// at `shared`, at its instruction or after a call.
+    fn walked(pc: u64, shared: u64, at_instruction: bool) -> sampler::RawV8Frame {
+        sampler::RawV8Frame {
+            fp: pc << 4,
+            pc,
+            function: shared + 1,
+            shared,
+            script: 0x50,
+            script_id: 3,
+            bytecode: 0,
+            bytecode_offset: 0,
+            literal_id: 1,
+            at_instruction: u32::from(at_instruction),
+        }
+    }
+
+    /// Each placed frame's name, which `named` gives it.
+    fn names(sampled: &Sampled) -> Vec<String> {
+        let Sampled::Placed { frames, .. } = sampled else {
+            return vec![format!("{sampled:?}")];
+        };
+        frames
+            .iter()
+            .flat_map(|frame| frame.functions.iter())
+            .map(|function| function.function.to_string())
+            .collect()
+    }
+
+    /// Names a frame by its function and how it was read, as compiled
+    /// code, the interpreter's innermost, or the interpreter's under a call.
+    fn named(frame: &SampledCodeFrame) -> Vec<crate::RecordedFrame> {
+        let how = match (frame.generated, frame.after_call) {
+            (true, _) => "compiled",
+            (false, false) => "innermost",
+            (false, true) => "called",
+        };
+        vec![crate::RecordedFrame {
+            function: format!("{:#x} {how}", frame.shared).into(),
+            language: crate::SourceLanguage::JavaScript,
+            place: None,
+            generated: None,
+            first_line: None,
+            problem: None,
+        }]
+    }
+
+    /// A frame in code a drain holds the mapping of but has not yet
+    /// processed is read as the drain finds it and kept once the mapping
+    /// in effect at its sample says the code is V8's, read as that code's
+    /// frame; the frame outside it is then one it called. Where the
+    /// mapping never says, the frame is dropped, and the frame outside it
+    /// called none of the program's.
+    #[test]
+    fn a_frame_in_code_its_drain_has_not_mapped_is_kept_once_its_mapping_is() {
+        let frames = [
+            walked(0x1000, 0xa0, true),
+            walked(0x2001, 0xb0, false),
+            walked(0x3001, 0xc0, false),
+        ];
+        let stack = sampler::V8Stack {
+            end: V8End::Complete,
+            isolate: V8Isolate::NotRead,
+            frames: &frames,
+        };
+        let drained_owner = |address| match address {
+            0x1000 => Some(Owner::Unknown),
+            0x2000 => Some(Owner::Builtins),
+            _ => None,
+        };
+        let drain =
+            || drain_v8(&stack, &drained_owner, &mut |frame| Some(named(frame))).expect("a layout");
+
+        let mapped = drain().settle(&|address| match address {
+            0x1000 => Some(Owner::Generated),
+            other => drained_owner(other),
+        });
+        assert_eq!(names(&mapped), ["0xa0 compiled", "0xb0 called"]);
+
+        let unmapped = drain().settle(&drained_owner);
+        assert_eq!(names(&unmapped), ["0xb0 innermost"]);
+
+        // Frames whose code the drain knows settle as they were read.
+        let known = drain_v8(
+            &stack,
+            &|address| match address {
+                0x1000 => Some(Owner::Builtins),
+                other => drained_owner(other),
+            },
+            &mut |frame| Some(named(frame)),
+        )
+        .expect("a layout")
+        .settle(&|_| None);
+        assert_eq!(names(&known), ["0xa0 innermost", "0xb0 called"]);
     }
 
     /// Each run of samples in one isolate is one span of its label, which

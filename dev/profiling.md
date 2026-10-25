@@ -308,10 +308,16 @@ as Python's is.
 process's layout once its V8 module is mapped and forgets it at exec and exit;
 each process of a group binds its own.
 
-`interpreted::read_v8_record` keeps a walked frame only where its address is
-V8's code: a module V8 owns (`RuntimeModel::owns_code`) or a mapping of code it
-generated. It then names it through `RuntimeModel::sampled_code_frame`, which
-for Node is `node::sampled::describe`. The proof is the one the script table
+A walked frame is kept only where its address is V8's code: a module V8 owns
+(`RuntimeModel::owns_code`) or a mapping of code it generated. Its functions
+are read as the record is drained (`interpreted::drain_v8`), but a drain may
+hold a new code mapping, as a short-lived worker's, beside the samples that
+run it, and mappings are processed in time order after the drain reads its
+records. So a frame whose code no mapping covers yet is read as each code it
+may run, and `DrainedV8::settle` keeps or drops it, and picks the reading, by
+the mappings in effect when its sample is processed. Each frame is named
+through `RuntimeModel::sampled_code_frame`, which for Node is
+`node::sampled::describe`. The proof is the one the script table
 uses: the shared information is still a `SharedFunctionInfo` whose script is
 the one the walker read, with the same script id, and the same function literal
 id. A script id is never reused in an isolate and a literal id names one
