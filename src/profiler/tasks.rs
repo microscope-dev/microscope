@@ -152,6 +152,12 @@ pub const THREAD: &str = "thread";
 /// What a thread a snapshot read was doing, in a runtime's words.
 const SAMPLED: &str = "sampled";
 
+/// Why a live snapshot reads no thread of a runtime that runs its
+/// functions on the native stack, as V8 does: a running thread's frame
+/// pointer, where its frames begin, is not shown outside it.
+const UNREAD_NATIVE: &str = "live snapshots do not read JavaScript frames, which begin at a frame \
+                             pointer only a stopped thread shows: use --node snapshot or bpf";
+
 /// One snapshot's tasks, where each waits, and why it may miss some.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Snapshot {
@@ -1034,6 +1040,10 @@ impl LiveRuntime<'_> {
     /// which is unreadable, is left out and counted, never kept as a
     /// shorter stack.
     fn threads(&self, snapshot: &mut Snapshot) {
+        if self.model.owns_generated_code() {
+            snapshot.problems.push(UNREAD_NATIVE.to_owned());
+            return;
+        }
         let Some(stacks) = self.model.interpreted(self.stop) else {
             return;
         };
