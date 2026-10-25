@@ -29,6 +29,10 @@ use crate::{CodeRole, VirtualAddress};
 /// The most promises a chain follows.
 const MAX_STEPS: usize = 256;
 
+/// The longest bytecode array read to find a suspend's operands, as long
+/// as the longest byte array the position tables read.
+const MAX_BYTECODE: usize = 1 << 24;
+
 /// The closures that resume an async function or generator after an
 /// await, as `IsBuiltinAsyncFulfillHandler` and
 /// `IsBuiltinAsyncRejectHandler` know them.
@@ -285,14 +289,12 @@ impl Walk<'_, '_> {
             } else {
                 Constant::PromiseAllResolveElementCapabilitySlot
             };
-            let capability = reader
-                .object(super::access::slot(reader, context, slot)?)?
-                .filter(|capability| {
-                    reader
-                        .is(*capability, Constant::PromiseCapabilityType)
-                        .unwrap_or(false)
-                })
-                .ok_or("a combinator's element keeps no PromiseCapability")?;
+            let capability = object_where(
+                reader,
+                super::access::slot(reader, context, slot)?,
+                |capability| reader.is(capability, Constant::PromiseCapabilityType),
+            )?
+            .ok_or("a combinator's element keeps no PromiseCapability")?;
             return capability_promise(reader, capability);
         }
 
@@ -320,9 +322,7 @@ impl Walk<'_, '_> {
     fn suspended(&mut self, generator: Object) -> Result<(), Problem> {
         let reader = self.reader;
         let function = reader.field(generator, Field::JSGeneratorObjectFunction)?;
-        let function = reader
-            .object(function)?
-            .filter(|function| is_function(reader, *function).unwrap_or(false))
+        let function = object_where(reader, function, |function| is_function(reader, function))?
             .ok_or("a generator's function is no JSFunction")?;
         let shared = reader.typed_field(
             function,
@@ -426,10 +426,7 @@ pub(super) fn is_generator(reader: &Reader<'_>, object: Object) -> Result<bool, 
 /// A reaction's handler, the function it is if it is one, and that
 /// function's builtin number if it runs one.
 fn handler(reader: &Reader<'_>, word: u64) -> Result<(Option<Object>, Option<i64>), Problem> {
-    let Some(function) = reader
-        .object(word)?
-        .filter(|object| is_function(reader, *object).unwrap_or(false))
-    else {
+    let Some(function) = object_where(reader, word, |object| is_function(reader, object))? else {
         return Ok((None, None));
     };
     let shared = reader.typed_field(
@@ -456,14 +453,12 @@ fn generator(reader: &Reader<'_>, closure: Object) -> Result<Object, Problem> {
     if !reader.is(context, Constant::AwaitContextType)? {
         return Err("an await's closure has no await context".into());
     }
-    reader
-        .object(super::access::slot(
-            reader,
-            context,
-            Constant::ContextExtensionIndex,
-        )?)?
-        .filter(|generator| is_generator(reader, *generator).unwrap_or(false))
-        .ok_or_else(|| "an await's context holds no generator".into())
+    object_where(
+        reader,
+        super::access::slot(reader, context, Constant::ContextExtensionIndex)?,
+        |generator| is_generator(reader, generator),
+    )?
+    .ok_or_else(|| "an await's context holds no generator".into())
 }
 
 /// The promise the caller of the async function or generator
@@ -485,11 +480,10 @@ fn promise_of(reader: &Reader<'_>, generator: Object) -> Step {
         );
     }
     let queue = reader.field(generator, Field::JSAsyncGeneratorObjectQueue)?;
-    let Some(request) = reader.object(queue)?.filter(|request| {
-        reader
-            .is(*request, Constant::AsyncGeneratorRequestType)
-            .unwrap_or(false)
-    }) else {
+    let Some(request) = object_where(reader, queue, |request| {
+        reader.is(request, Constant::AsyncGeneratorRequestType)
+    })?
+    else {
         return Ok(None);
     };
     reader
@@ -511,11 +505,24 @@ fn capability_promise(reader: &Reader<'_>, capability: Object) -> Step {
 /// The promise `word` is, or `None` where it is none, as a capability of
 /// a thenable that is no native promise holds.
 fn js_promise(reader: &Reader<'_>, word: u64) -> Step {
-    Ok(reader.object(word)?.filter(|promise| {
-        reader
-            .is(*promise, Constant::JSPromiseType)
-            .unwrap_or(false)
-    }))
+    object_where(reader, word, |promise| {
+        reader.is(promise, Constant::JSPromiseType)
+    })
+}
+
+/// The object `word` is when `is` holds of it, or `None` when it is no
+/// object or `is` does not hold. A failure to tell is the failure, never
+/// `None`, so that an unreadable object ends a chain with its reason
+/// rather than as a chain that is complete.
+fn object_where(
+    reader: &Reader<'_>,
+    word: u64,
+    is: impl FnOnce(Object) -> Result<bool, Problem>,
+) -> Result<Option<Object>, Problem> {
+    match reader.object(word)? {
+        Some(object) if is(object)? => Ok(Some(object)),
+        _ => Ok(None),
+    }
 }
 
 /// The bytecode of the suspended generator `generator`, whose function's
@@ -567,11 +574,15 @@ pub(super) fn saved_registers(
     let suspend = crate::image::v8::suspend_generator(reader.version)?;
     let count = sizes.len() / 3;
     let offset = usize::try_from(offset).map_err(|_| "a negative bytecode offset")?;
-    // The instruction's four operands follow it, at their widest.
-    let mut bytes = vec![0; offset + 1 + 4 * 4];
     let length = usize::try_from(reader.smi_field(bytecode, Field::BytecodeArrayLength)?)
         .map_err(|_| "a bytecode array has a negative length")?;
-    bytes.truncate(length);
+    // Bounded before allocating, as a byte array is: the length is the
+    // target's, and the read is charged only once the buffer exists.
+    if length > MAX_BYTECODE {
+        return Err("a bytecode array is implausibly long".into());
+    }
+    // The instruction's four operands follow it, at their widest.
+    let mut bytes = vec![0; (offset + 1 + 4 * 4).min(length)];
     reader.bytes_into(
         reader.field_address(bytecode, Field::BytecodeArrayBytes)?,
         &mut bytes,
