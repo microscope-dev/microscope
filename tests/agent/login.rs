@@ -1,10 +1,10 @@
-//! `microscope agent login`: saving the device token.
+//! Project key configuration, private storage, and transport restrictions.
 
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::process::{Output, Stdio};
 
-use crate::{Agent, Scratch};
+use crate::{Agent, Scratch, TOKEN};
 
 fn login(scratch: &Scratch, args: &[&str], stdin: &str) -> Output {
     let mut child = scratch
@@ -31,12 +31,15 @@ fn login_saves_a_private_token_and_the_server() {
     let output = login(
         &scratch,
         &["--server", "http://localhost:8080/"],
-        "msd_abc\n",
+        &format!("{TOKEN}\n"),
     );
     assert!(output.status.success(), "{output:?}");
 
     let token = scratch.config().join("agent-token");
-    assert_eq!(std::fs::read_to_string(&token).unwrap(), "msd_abc\n");
+    assert_eq!(
+        std::fs::read_to_string(&token).unwrap(),
+        format!("{TOKEN}\n")
+    );
     let mode = std::fs::metadata(&token).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o600);
 
@@ -53,7 +56,7 @@ fn login_saves_a_private_token_and_the_server() {
 fn login_keeps_the_other_settings() {
     let scratch = Scratch::new("login-keep");
     scratch.log_in("server = \"http://old/\"\nallow-remote = true\n");
-    let output = login(&scratch, &["--server", "https://new.example/"], "msd_new\n");
+    let output = login(&scratch, &["--server", "https://new.example/"], TOKEN);
     assert!(output.status.success(), "{output:?}");
 
     let settings = std::fs::read_to_string(scratch.config().join("agent.toml")).unwrap();
@@ -64,17 +67,17 @@ fn login_keeps_the_other_settings() {
 #[test]
 fn login_reuses_the_saved_server() {
     let scratch = Scratch::new("login-reuse");
-    scratch.log_in("server = \"http://saved/\"\n");
-    let output = login(&scratch, &[], "msd_again\n");
+    scratch.log_in("server = \"https://saved.example/\"\n");
+    let output = login(&scratch, &[], TOKEN);
     assert!(output.status.success(), "{output:?}");
     let token = std::fs::read_to_string(scratch.config().join("agent-token")).unwrap();
-    assert_eq!(token, "msd_again\n");
+    assert_eq!(token, format!("{TOKEN}\n"));
 }
 
 #[test]
 fn login_needs_a_server() {
     let scratch = Scratch::new("login-no-server");
-    let output = login(&scratch, &[], "msd_abc\n");
+    let output = login(&scratch, &[], TOKEN);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("--server"));
     assert!(!scratch.config().join("agent-token").exists());
@@ -86,12 +89,41 @@ fn login_refuses_what_is_not_a_token_or_a_server() {
     for (args, stdin) in [
         (["--server", "http://localhost/"], "\n"),
         (["--server", "http://localhost/"], "two words\n"),
+        (
+            ["--server", "http://localhost/"],
+            "msd_legacy-device-token\n",
+        ),
+        (["--server", "http://localhost/"], "mss_browser-session\n"),
         (["--server", "localhost:8080"], "msd_abc\n"),
         (["--server", "ftp://localhost/"], "msd_abc\n"),
     ] {
         let output = login(&scratch, &args, stdin);
         assert!(!output.status.success(), "{args:?} {stdin:?}");
         assert!(!scratch.config().join("agent-token").exists());
+    }
+}
+
+#[test]
+fn login_refuses_insecure_remote_servers_and_embedded_credentials() {
+    let scratch = Scratch::new("login-insecure");
+    for server in [
+        "http://service.example/",
+        "ws://10.0.0.2/",
+        "https://user:secret@service.example/",
+        "https://service.example/?token=secret",
+        "http://localhost@service.example/",
+    ] {
+        let output = login(
+            &scratch,
+            &["--server", server],
+            "msi_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n",
+        );
+        assert!(!output.status.success(), "{server}: {output:?}");
+        assert!(!scratch.config().join("agent-token").exists());
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).contains("user:secret"),
+            "credentials must not appear in diagnostics"
+        );
     }
 }
 
@@ -118,5 +150,67 @@ fn the_agent_needs_a_login() {
     std::fs::remove_file(scratch.config().join("agent-token")).unwrap();
     let (status, stderr) = Agent::start(&scratch, &[]).exit();
     assert!(!status.success());
-    assert!(stderr.contains("no device token"), "{stderr}");
+    assert!(stderr.contains("no project agent key"), "{stderr}");
+}
+
+#[test]
+fn login_can_reference_a_managed_private_key_file_without_copying_its_secret() {
+    let scratch = Scratch::new("managed-key");
+    let path = scratch.path().join("managed-key");
+    std::fs::write(&path, format!("{TOKEN}\n")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let link = scratch.path().join("secret-manager-link");
+    std::os::unix::fs::symlink(&path, &link).unwrap();
+    let output = login(
+        &scratch,
+        &[
+            "--server",
+            "https://service.example/",
+            "--key-file",
+            link.to_str().unwrap(),
+        ],
+        "",
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert!(!scratch.config().join("agent-token").exists());
+    let settings = std::fs::read_to_string(scratch.config().join("agent.toml")).unwrap();
+    assert!(settings.contains(link.to_str().unwrap()), "{settings}");
+    assert!(!settings.contains(TOKEN));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(TOKEN));
+
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let (status, stderr) = Agent::start(&scratch, &[]).exit();
+    assert!(!status.success());
+    assert!(stderr.contains("chmod 600"), "{stderr}");
+    assert!(!stderr.contains(TOKEN));
+}
+
+#[test]
+fn managed_key_files_must_be_regular_files_and_never_wait_for_a_fifo_writer() {
+    let scratch = Scratch::new("nonregular-key");
+    scratch.log_in("server = \"http://localhost:1/\"\n");
+    let fifo = scratch.path().join("key-fifo");
+    nix::unistd::mkfifo(
+        &fifo,
+        nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+    )
+    .unwrap();
+    for path in [&fifo, scratch.path()] {
+        let (status, stderr) =
+            Agent::start(&scratch, &["--key-file", path.to_str().unwrap()]).exit();
+        assert!(!status.success());
+        assert!(stderr.contains("regular file"), "{stderr}");
+    }
+}
+
+#[test]
+fn invalid_replacement_preserves_the_configured_key() {
+    let scratch = Scratch::new("invalid-replacement");
+    scratch.log_in("server = \"https://saved.example/\"\n");
+    let output = login(&scratch, &[], "msd_old-device-token");
+    assert!(!output.status.success());
+    assert_eq!(
+        std::fs::read_to_string(scratch.config().join("agent-token")).unwrap(),
+        format!("{TOKEN}\n")
+    );
 }

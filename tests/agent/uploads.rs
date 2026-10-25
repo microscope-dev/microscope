@@ -234,6 +234,69 @@ fn interrupted_uploads_begin_again_under_the_same_key() {
 }
 
 #[test]
+fn replacing_a_key_resumes_an_active_upload_only_in_the_same_project() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    use crate::service::proto::{Goodbye, Welcome, goodbye};
+
+    for project_id in [7, 8] {
+        let service = Service::start();
+        let scratch = logged_in(&service, "rotate-active-upload");
+        let bytes = capture(300 << 10);
+        let key = scratch.queue(&bytes, "active-upload");
+        let mut agent = Agent::start(&scratch, &[]);
+        let old = service.welcomed();
+        let first = begin(&old);
+        resume(&old, &first, 0);
+        let agent_message::Body::UploadChunk(chunk) = old.recv() else {
+            panic!("expected the first chunk");
+        };
+        assert_eq!(chunk.data.as_ref(), &bytes[..chunk.data.len()]);
+
+        let partial = scratch.path().join("replacement-key");
+        std::fs::write(&partial, "msi_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBE").unwrap();
+        std::fs::set_permissions(&partial, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::rename(partial, scratch.config().join("agent-token")).unwrap();
+        old.send(server_message::Body::Goodbye(Goodbye {
+            reason: goodbye::Reason::Unauthenticated.into(),
+            message: String::new(),
+            retry: false,
+        }));
+        let new = service.accept();
+        new.hello();
+        new.send(server_message::Body::Welcome(Welcome {
+            max_chunk_bytes: CHUNK,
+            window_bytes: WINDOW,
+            project_name: "destination/project".to_owned(),
+            project_id,
+            ..Welcome::default()
+        }));
+        if project_id == 8 {
+            let (status, stderr) = agent.exit();
+            assert!(!status.success(), "{stderr}");
+            assert!(stderr.contains("different service or project"), "{stderr}");
+            assert_eq!(new.closed(), Some(1008));
+            assert_eq!(
+                std::fs::read(scratch.outbox().join(format!("{key}.usprof"))).unwrap(),
+                bytes
+            );
+        } else {
+            let again = begin(&new);
+            assert_eq!(again.upload_key, first.upload_key);
+            assert_eq!(again.sha256, first.sha256);
+            let offset = chunk.data.len() as u64;
+            resume(&new, &again, offset);
+            assert_eq!(take_chunks(&new, &again, offset), bytes[chunk.data.len()..]);
+            done(&new, &again, "http://service/recordings/rotated");
+            agent.line("uploaded active-upload");
+            eventually("the rotated upload leaves the outbox", || {
+                !scratch.outbox().join(format!("{key}.usprof")).exists()
+            });
+        }
+    }
+}
+
+#[test]
 fn recordings_the_service_already_has_finish_at_once() {
     let service = Service::start();
     let scratch = logged_in(&service, "already");
@@ -380,7 +443,7 @@ fn record_upload_prints_the_link() {
         "http://service/recordings/new\n"
     );
     let stderr = String::from_utf8_lossy(&recorded.stderr);
-    assert!(stderr.contains("stays private to your account"), "{stderr}");
+    assert!(stderr.contains("project read access"), "{stderr}");
 }
 
 #[test]

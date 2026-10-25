@@ -8,7 +8,8 @@
 //! name and renamed, so the agent never reads one half written.
 
 use std::collections::BTreeSet;
-use std::os::unix::fs::DirBuilderExt as _;
+use std::io::Write as _;
+use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -76,6 +77,42 @@ impl Outbox {
 
     pub fn recording(&self, key: Key) -> PathBuf {
         self.dir.join(format!("{key}.usprof"))
+    }
+
+    /// Key replacement must not redirect queued or in-progress recordings.
+    pub fn bind_destination(&self, endpoint: &str, project: u64) -> Result<()> {
+        let destination = format!("{endpoint}\n{project}\n");
+        match std::fs::read_to_string(self.dir.join("destination")) {
+            Ok(previous) => anyhow::ensure!(
+                previous == destination,
+                "the outbox belongs to a different service or project; use a separate XDG_STATE_HOME for another destination"
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let partial = self
+                    .dir
+                    .join(format!(".destination-{}.partial", Key::random()?));
+                let result = (|| -> std::io::Result<()> {
+                    let mut file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .mode(0o600)
+                        .open(&partial)?;
+                    file.write_all(destination.as_bytes())?;
+                    file.sync_all()?;
+                    std::fs::rename(&partial, self.dir.join("destination"))
+                })();
+                if result.is_err() {
+                    let _ = std::fs::remove_file(&partial);
+                }
+                result.context("writing the outbox destination")?;
+            }
+            Err(error) => return Err(error).context("reading the outbox destination"),
+        }
+        // Also retry a directory sync that failed after a previous rename.
+        std::fs::File::open(&self.dir)
+            .and_then(|directory| directory.sync_all())
+            .context("persisting the outbox destination")?;
+        Ok(())
     }
 
     /// Where a recording is written before [`Outbox::commit`] queues it.

@@ -81,12 +81,15 @@ These options apply to `microscope web`.
 ## Agent options
 
 These options apply to `microscope agent`. `microscope agent login --server
-URL` saves a device token, read from standard input, for the service at
-`URL`.
+URL` saves a project agent key, read from standard input, for the service at
+`URL`. HTTPS is required except on localhost or a loopback address. Add
+`--key-file PATH` to use a private key file managed by deployment tooling
+instead of copying a key from standard input.
 
 | Option | Meaning |
 |---|---|
 | `--server URL` | Connect to this service instead of the one `agent.toml` names |
+| `--key-file PATH` | Read a project agent key from this private file; replacement reconnects automatically |
 | `--watch DIR` | Also upload each segment `record --continuous DIR` finishes; repeatable |
 | `--allow-remote` | Run the commands the service sends, such as recording one of your processes |
 
