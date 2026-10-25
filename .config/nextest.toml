@@ -16,9 +16,19 @@ slow-timeout = { period = "60s", terminate-after = 1440 }
 
 # The BPF engines' tests each map perf rings on every CPU, which count
 # against this user's perf memory (kernel.perf_event_mlock_kb on each CPU,
-# then RLIMIT_MEMLOCK): more than two at once can run out of it.
+# then RLIMIT_MEMLOCK): more than two at once can run out of it. Each of
+# the two groups below runs one at a time.
 [test-groups]
-perf-rings = { max-threads = 2 }
+perf-rings = { max-threads = 1 }
+bpf-profiles = { max-threads = 1 }
+
+# Python's BPF profile tests bound the share of samples whose frames could
+# not be read, which Node's BPF tests, whose programs spin threads that the
+# walker and microscope's reads of V8 follow, push past it beside them:
+# those run one at a time with each other.
+[[profile.default.overrides]]
+filter = 'test(/(^|::)bpf::/) & (binary(node) | (binary(python) & test(/^profile::/)))'
+test-group = 'bpf-profiles'
 
 [[profile.default.overrides]]
 filter = 'test(/(^|::)bpf::/)'

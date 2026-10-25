@@ -246,8 +246,11 @@ With `--window` or `--continuous`, each saved file gets its own span's calls.
   `/dev/zero` an addon (`frameless.c`) makes with 8 in `rbp`: each must name
   the function that made it or end saying its JavaScript frames are missing.
 - The BPF tests each map perf rings on every CPU, which count against the
-  user's perf memory, so nextest runs at most two at once (the `perf-rings`
-  group in `.config/nextest.toml`).
+  user's perf memory, so nextest runs at most two at once: one of the
+  `perf-rings` group, and one of `bpf-profiles`, which holds Node's BPF
+  tests and Python's BPF profile tests, so that Node's spinning programs
+  never run beside the Python tests that bound their unread samples
+  (`.config/nextest.toml`).
 - The browser's view is covered by `tests/web/syscalls.rs`, Vitest, and
   `web/e2e/syscalls.spec.ts`.
 
