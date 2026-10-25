@@ -725,7 +725,7 @@ impl Debugger {
     /// Ends the session and joins the backend controller. A launched inferior
     /// is killed and reaped; an attached one is detached and left running.
     pub async fn shutdown(mut self) -> Result<()> {
-        let (send, mut receive) = oneshot::channel();
+        let (send, receive) = oneshot::channel();
         self.shutdown_permit
             .take()
             .ok_or_else(|| Error::internal("the shutdown permit is present"))?
@@ -733,17 +733,10 @@ impl Debugger {
                 reply: send,
             }));
 
-        // A controller that ended, as a panic ends it, closes its queue
-        // with the request in it unanswered. One that answered closed it
-        // after, so the answer is there to take, even when the runtime's
-        // budget held back the wait for it.
-        let replied = timeout(SHUTDOWN_TIMEOUT, async {
-            tokio::select! {
-                biased;
-                replied = &mut receive => replied.ok(),
-                () = self.handle.requests.closed() => receive.try_recv().ok(),
-            }
-        });
+        let replied = timeout(
+            SHUTDOWN_TIMEOUT,
+            shutdown_reply(&self.handle.requests, receive),
+        );
         let result = match replied.await {
             Ok(Some(result)) => result,
             Ok(None) => Err(Error::RequestCancelled),
@@ -758,6 +751,23 @@ impl Debugger {
         }
 
         result
+    }
+}
+
+/// The answer to a shutdown, or `None` where the controller ended without
+/// one, as a panic ends it, with the request in its queue. A controller
+/// that ends on its own closes its queue before it answers the shutdowns
+/// left in it, so a closed queue is no sign that the answer is there yet:
+/// the answer, or the dropped request, comes once the controller lets go
+/// of what its queue held.
+async fn shutdown_reply(
+    requests: &mpsc::Sender<ControllerMessage>,
+    mut receive: oneshot::Receiver<Result<()>>,
+) -> Option<Result<()>> {
+    tokio::select! {
+        biased;
+        replied = &mut receive => replied.ok(),
+        () = requests.closed() => receive.await.ok(),
     }
 }
 
@@ -2599,4 +2609,40 @@ pub(crate) struct StoppedSelection {
     /// Whether the selected frame is one a runtime interprets, which it
     /// steps from wherever the frame is.
     pub(crate) interpreted: bool,
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use tokio::sync::{mpsc, oneshot};
+
+    use super::{ControllerMessage, shutdown_reply};
+
+    /// The controller closes its queue, then answers the shutdown it held:
+    /// the caller, woken by the close, still gets the answer.
+    #[tokio::test]
+    async fn a_shutdown_answered_after_its_queue_closed_succeeds() {
+        let (requests, mut queue) = mpsc::channel::<ControllerMessage>(1);
+        let (send, receive) = oneshot::channel();
+        queue.close();
+        let answer = tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            let _ = send.send(Ok(()));
+        });
+        assert!(matches!(
+            shutdown_reply(&requests, receive).await,
+            Some(Ok(()))
+        ));
+        answer.await.expect("the answer is sent");
+    }
+
+    /// A controller that ended without answering drops the request: no
+    /// answer.
+    #[tokio::test]
+    async fn a_shutdown_dropped_unanswered_has_no_answer() {
+        let (requests, queue) = mpsc::channel::<ControllerMessage>(1);
+        let (send, receive) = oneshot::channel::<super::Result<()>>();
+        drop(queue);
+        drop(send);
+        assert!(shutdown_reply(&requests, receive).await.is_none());
+    }
 }
