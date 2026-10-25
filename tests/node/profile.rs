@@ -191,6 +191,36 @@ fn stopped_snapshots_find_each_threads_javascript_lines() {
     assert!(missing.is_empty(), "{}\n{paths:#?}", missing.join("\n"));
 }
 
+/// Live snapshots, which never stop the program, read no JavaScript
+/// frames, which begin at a frame pointer only a stopped thread shows: each
+/// says so, and records no thread's frames rather than finding none.
+#[test]
+fn live_snapshots_say_they_read_no_javascript_frames() {
+    let options = RecordOptions {
+        python: Some(PythonEngine::Live { every: EVERY }),
+        ..RecordOptions::default()
+    };
+    let said = |profile: &Profile| {
+        profile
+            .task_snapshot_problems()
+            .iter()
+            .any(|(_, problem)| problem.contains("do not read JavaScript frames"))
+    };
+    let (profile, reported) =
+        record_parked("stacks.js", "parked", &options, |profile, _| said(profile));
+    assert_eq!(reported.len(), 3, "{reported:#?}");
+    let problems = profile.task_snapshot_problems();
+    assert!(said(&profile), "{problems:#?}");
+    assert!(
+        problems
+            .iter()
+            .all(|(_, problem)| problem.contains("frame pointer") && problem.contains("/proc")),
+        "{problems:#?}"
+    );
+    let waits = paths(&profile, Source::Waits, Look::Python);
+    assert!(waits.is_empty(), "{waits:#?}");
+}
+
 /// The comparison fails on each lie it exists to catch: a dropped frame, a
 /// wrong line, and a wrong function.
 #[test]

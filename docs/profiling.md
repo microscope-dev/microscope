@@ -186,9 +186,11 @@ microscope report --js --lines server.usprof
   stack, as the debugger does: every frame has its function and line, in
   every tier. A snapshot writes nothing into the program and does not use
   Node's inspector.
-- `live` does not read JavaScript frames. A running thread's frames begin at
-  its frame pointer, which only a stopped thread shows, so each live read
-  says so instead of recording no frames.
+- `live` does not read JavaScript frames. A thread's JavaScript frames begin
+  at its frame pointer, and only stopping the thread shows that register:
+  `/proc` gives a running or blocked thread's stack and instruction pointers,
+  not its frame pointer. Each live read says so in the profile instead of
+  recording no frames.
 
 A sample taken before microscope has read V8's layout, as just after the
 program starts, ends in "interpreted frames unknown". A frame whose function

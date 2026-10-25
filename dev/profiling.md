@@ -237,7 +237,7 @@ that carries V8, a frame whose code V8 owns stands for the JavaScript function
 the debugger names, as an interpreter frame does for Python. A live snapshot of
 such a process records the problem `tasks::UNREAD_NATIVE` instead of an empty
 read, since JavaScript frames begin at a frame pointer only a stopped thread
-shows: `/proc/PID/task/TID/syscall` gives a blocked thread's stack and
+shows (`tests/node/profile.rs` holds a live recording to the problem): `/proc/PID/task/TID/syscall` gives a blocked thread's stack and
 instruction pointers but not its frame pointer, and unwinding glibc's system
 call wrappers from there does not reach V8's frames.
 

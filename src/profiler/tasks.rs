@@ -155,8 +155,10 @@ const SAMPLED: &str = "sampled";
 /// Why a live snapshot reads no thread of a runtime that runs its
 /// functions on the native stack, as V8 does: a running thread's frame
 /// pointer, where its frames begin, is not shown outside it.
-const UNREAD_NATIVE: &str = "live snapshots do not read JavaScript frames, which begin at a frame \
-                             pointer only a stopped thread shows: use --node snapshot or bpf";
+const UNREAD_NATIVE: &str = "live snapshots do not read JavaScript frames: they begin at a \
+                             thread's frame pointer, which only stopping the thread shows, as \
+                             /proc gives a running or blocked thread's stack and instruction \
+                             pointers but not its frame pointer; use --node snapshot or bpf";
 
 /// One snapshot's tasks, where each waits, and why it may miss some.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
