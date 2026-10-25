@@ -684,6 +684,43 @@ breakpoints stop that thread, its steps stay on it, and its exceptions stop
 there. A new worker waits to run until microscope has set its breakpoints
 in it.
 
+### Event loop tasks
+
+`tasks` lists what each event loop waits on: its handles, such as servers,
+sockets, child processes, and message ports; its pending requests, such as
+file operations; and each `setTimeout` and `setInterval` timer, though Node
+runs them all from one libuv timer. The main thread's and every worker's
+loop are listed. An item's number is the async id `async_hooks` gives it.
+A worker's numbers add its thread id times 2³², so two threads' numbers
+never collide. The `type` label is the name `async_hooks` uses, and
+`class` is Node's C++ class:
+
+```text
+(microscope) tasks
+  [2] timeout 30000 ms — callback sessionTimeout at session.js:40 {type: Timeout}
+  [4] timeout 60000 ms, unref'd — callback idleTimer at session.js:42 {type: Timeout}
+  [5] fs open /run/app.fifo — pending — callback configOpened at config.js:12 {type: FSREQCALLBACK, class: "node::fs::FSReqCallback"}
+  [27] TCP server — listening — callback onconnection at node:net:2757 {type: TCPSERVERWRAP, class: "node::TCPWrap"}
+  [4611686018429272115] __syscall_cancel_arch+0x32 — thread-pool job (thread 1884211)
+```
+
+An item runs no code until Node calls its callback, so it has no stack.
+Where Node wraps the program's function, as `fs` does, the program's
+function is shown. A server's callback is Node's own `onconnection`,
+which emits `connection` to the program's listeners. A message port shows
+no callback.
+
+A thread-pool job is work libuv's pool runs for the program, such as a
+file read or `crypto.pbkdf2`. It runs on its pool thread, and its stack is
+that thread's. Only builds that link libuv into `node`, such as the
+official ones, show pool jobs. nixpkgs's and Debian's builds use a shared
+libuv, and `tasks` says the jobs are not listed.
+
+A pool job's number is its thread's id plus 2⁶². `tasks -g` groups the
+items that show no callback together. `tasks` works in core dumps too. In an editor, each item is one of the
+program's threads with an empty stack. In the browser, the tasks panel
+lists them.
+
 ### Exceptions
 
 Two exception filters stop at JavaScript's exceptions. Both are off until

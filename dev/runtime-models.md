@@ -1037,6 +1037,37 @@ it, which chooses its view.
 **Threads.** `thread_holding` labels a thread with the isolate it works
 for, as described under [Thread labels](#thread-labels).
 
+**Tasks.** `node/tasks.rs` lists each JavaScript thread's event loop work.
+The isolate's current context (offset decoded from
+`v8::Isolate::GetCurrentContext`) leads to its native context's embedder
+data, whose Node context tag is checked before its `Environment` slot is
+read (slots decoded from `node::timers::BindingData::SetupTimers`). The
+`Environment`'s handle and request lists are walked by the `nodedbg_`
+variables, read from the process or core at each stop, since 22 and 24 set
+them at run time. Each node must link back to its neighbour. Each wrapper's
+libuv handle or request must point back at it. Its class comes from its
+vtable symbol, its provider name from `AsyncWrap`'s name table, and its
+async id and trigger from the offsets `GetAsyncId` reads. The static facts
+are decoded in `debug_info/v8/node_tasks.rs` and cached in the image
+record. A refused shape is named, never guessed.
+
+`node/timers.rs` reaches `internal/timers` through the context of the
+principal realm's timers callback, which must be that module's
+`processTimers`, and walks `timerListMap`'s `Timeout` lists. A callback
+that is a function of Node's own script capturing exactly one of the
+program's functions shows that function, as for `fs`'s `makeCallback`.
+`node/pool.rs` finds libuv's pool threads by their `pthread_t`s. A thread
+blocked in a futex on the pool's condition or mutex is idle, and any other
+runs a job. Builds that link a shared libuv have no pool statics, and the
+list says so as a gap.
+
+Handles, requests, and timers are `stackless`: they have no frames, and
+their `TaskSnapshot::resume` names the callback. Numbers are async ids, a
+worker's offset by its thread id `<< 32`, a pool job's `1 << 62 | tid`.
+`tests/fixtures/node/tasks.js` prints what `async_hooks`, `hasRef()`, and
+`/proc` say, and `tests/node/tasks.rs` compares against it, live, in cores,
+and on Debian.
+
 **Inspector.** `backend/linux/inspector/` owns CDP breakpoints, steps,
 exception stops, and worker sessions under the native all-stop controller.
 `backend/linux/cdp.rs` owns the bounded, nonblocking transport. Worker
