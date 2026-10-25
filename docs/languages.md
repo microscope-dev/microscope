@@ -749,10 +749,45 @@ An addon without debug information is stepped over, as V8 steps over it.
 Debian's `libnode` does not name the function V8 enters addons through, so
 there a step always steps over an addon.
 
-### Not supported yet
+### Watchpoints
 
-Watchpoints on JavaScript variables are not supported yet.
-[Known limits](reference/limitations.md) lists them all.
+From a stop in a JavaScript frame, `watch name` watches one of the frame's
+variables. Each store that gives it another value stops, with the value
+before and after, as Node prints them:
+
+```text
+(microscope) watch a
+watchpoint 1 set on a: 8 bytes at 0x2a42f05a7678 using 1 hardware slot (interpreted frame 0x7fffffff5ee8 of thread 4242)
+stopped by watchpoint 1 (change, hit 1) on a in moved [thread 4242 of 8]
+  old: null
+  new: { round: 1 }
+```
+
+A parameter, a local, a block's variable, and a variable a closure
+captured can be watched. V8 keeps a captured variable in a context object,
+which its collector moves, young or old; the watch moves with it, and the
+collector's own rewrites are never reported. The watch ends when the frame
+returns or unwinds, and microscope says so. It also ends where V8 begins
+replacing the frame by optimized code, which keeps its variables elsewhere,
+unless a context holds the variable.
+
+The store stops inside V8's interpreter, which keeps the statement it runs
+in a register, so the stop names the frame's function but not always its
+line; `next` continues to the next statement.
+
+A property (`obj.x`), `this`, a global, and a script's top-level binding
+are refused, as are a variable optimized code keeps and a generator's or
+async function's variable outside a context. Node 26 keeps the number of a
+context with at most two variables in a cell whose fields change with the
+number's type; such a variable is refused. A watch follows the collector
+by stopping every thread as each collection on the frame's thread begins
+and ends. That costs about 1 to 3 ms per collection for a Node process with
+eight threads. A loop that allocated five million small objects, and
+collected 60 to 80 times, ran 1.3 to 1.7 times as long with a watch set.
+Debian's `libnode` does not name the collector, so there no JavaScript
+variable is watched.
+
+[Known limits](reference/limitations.md) lists what is not supported.
 
 ## Zig, Odin, D, Nim, Ada, and Fortran
 

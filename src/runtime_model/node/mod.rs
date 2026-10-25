@@ -35,6 +35,7 @@ mod translation;
 mod typed;
 mod values;
 mod variables;
+mod watches;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -48,9 +49,9 @@ use crate::ThreadLocal;
 use crate::image::v8::{DispatchTable, EmbeddedBlob, NodeRelease, V8Layout, V8Version};
 use crate::inspection::InspectionBudget;
 use crate::runtime_model::{
-    AssignedBinding, BindingReach, InterpretedChild, InterpretedFailure, InterpretedFrameRef,
-    InterpretedHandle, InterpretedLocal, InterpretedName, InterpretedOperand, InterpretedSlot,
-    InterpretedStep, ObjectTypes,
+    AssignedBinding, BindingReach, FrameReplacer, InterpretedChild, InterpretedFailure,
+    InterpretedFrameRef, InterpretedHandle, InterpretedLocal, InterpretedName, InterpretedOperand,
+    InterpretedPlace, InterpretedSlot, InterpretedStep, InterpretedWatch, ObjectTypes,
 };
 use crate::unwind::RegisterFile;
 use crate::{AddressRange, ImageAddress, StackSegment, ThreadId, VirtualAddress};
@@ -81,6 +82,38 @@ const GET_TARGET_IDS: &str = "_ZN4node9inspector19InspectorIoDelegate12GetTarget
 /// What V8 names each of its embedded builtins' code.
 const BUILTIN_PREFIX: &str = "Builtins_";
 
+/// Where V8 performs each collection, scavenge, minor mark-sweep, or full
+/// mark-compact, on the thread of the isolate whose heap it collects
+/// (`src/heap/heap.cc`).
+const PERFORM_GARBAGE_COLLECTION: &str = "_ZN2v88internal4Heap24PerformGarbageCollectionENS0_16GarbageCollectorENS0_23GarbageCollectionReasonEPKc";
+
+/// The builtins that build an unoptimized frame and fill its registers:
+/// the interpreter's entry, and Sparkplug code's out-of-line prologue
+/// (`src/builtins/x64/builtins-x64.cc`).
+const FRAME_BUILDERS: &[&str] = &[
+    "Builtins_InterpreterEntryTrampoline",
+    "Builtins_InterpreterEntryTrampolineForProfiling",
+    "Builtins_BaselineOutOfLinePrologue",
+    "Builtins_BaselineOutOfLinePrologueDeopt",
+];
+
+/// The builtins a loop's back edge calls to enter optimized code in place
+/// of the interpreter's or Sparkplug's frame, with the saved frame
+/// pointers between the entry's frame pointer and that frame
+/// (`src/builtins/x64/builtins-x64.cc`). The interpreter's `JumpLoop`
+/// handler calls its builtin from the handler's own frame, which
+/// `OnStackReplacement` drops (`leave`) before it enters the code;
+/// Sparkplug's code calls its builtin from the frame itself. Each entry is
+/// reached on every back edge while the replacement compiles. Entering
+/// Sparkplug's code in place of the interpreter's keeps the frame's
+/// registers where they are (`UnoptimizedJSFrame::ReadInterpreterRegister`),
+/// so its builtin, `InterpreterOnStackReplacement_ToBaseline`, is not
+/// among them.
+const ON_STACK_REPLACEMENT: &[(&str, u8)] = &[
+    ("Builtins_InterpreterOnStackReplacement", 1),
+    ("Builtins_BaselineOnStackReplacement", 0),
+];
+
 /// The V8 runtime a module carries. One whose layout was refused still
 /// binds, so that its frames say why they cannot be read.
 pub fn detect(
@@ -93,6 +126,7 @@ pub fn detect(
     let statics = Statics {
         isolate: image.thread_local(crate::image::v8::CURRENT_ISOLATE),
         dispatch_table: runtime.dispatch_table,
+        handlers: bytecode_handlers(image.as_ref()),
     };
     Some(Ok(Arc::new(NodeRuntime {
         version: runtime.version,
@@ -111,6 +145,28 @@ pub fn detect(
             // returns the metadata refusal before the preload can print its URL.
             .or_else(|| image.symbol(GET_TARGET_IDS).map(|symbol| symbol.address)),
         native_entry: image.symbol(napi::INVOKE).map(|symbol| symbol.address),
+        collector: image
+            .symbol(PERFORM_GARBAGE_COLLECTION)
+            .map(|symbol| symbol.address),
+        replacers: ON_STACK_REPLACEMENT
+            .iter()
+            .filter_map(|&(name, links)| {
+                image.symbol(name).map(|symbol| FrameReplacer {
+                    entry: symbol.address,
+                    links,
+                })
+            })
+            .collect(),
+        frame_builders: FRAME_BUILDERS
+            .iter()
+            .filter_map(|name| {
+                let symbol = image.symbol(name)?;
+                Some(AddressRange {
+                    start: symbol.address,
+                    end: symbol.address.checked_add(symbol.size?)?,
+                })
+            })
+            .collect(),
         inspector_signal_handler: runtime
             .inspector
             .as_ref()
@@ -163,6 +219,9 @@ struct Statics {
     /// Where each thread keeps its current isolate.
     isolate: Option<Result<ThreadLocal, Arc<str>>>,
     dispatch_table: Result<Option<DispatchTable>, Arc<str>>,
+
+    /// The code of V8's bytecode handlers ([`bytecode_handlers`]).
+    handlers: Vec<AddressRange<ImageAddress>>,
 }
 
 /// The range of the image's code its embedded builtins span, where it
@@ -175,6 +234,40 @@ fn builtins(image: &(dyn RuntimeImage + Send + Sync)) -> Option<AddressRange<Ima
         .filter_map(|symbol| symbol.address.checked_add(symbol.size?))
         .max()?;
     Some(AddressRange { start, end })
+}
+
+/// The code of V8's bytecode handlers, `Builtins_` followed by a bytecode's
+/// name and `Handler`, `WideHandler`, or `ExtraWideHandler`, as ranges in
+/// address order. A handler runs in the interpreter's frame: the
+/// interpreter's entry calls the first, each jumps to the next, and the
+/// last returns, none moving rbp off the frame
+/// (`Generate_InterpreterEntryTrampoline`, `src/builtins/x64/builtins-x64.cc`).
+/// A build that names no builtins names no handler.
+fn bytecode_handlers(image: &(dyn RuntimeImage + Send + Sync)) -> Vec<AddressRange<ImageAddress>> {
+    let mut ranges = image
+        .functions_starting(BUILTIN_PREFIX)
+        .into_iter()
+        .filter(|symbol| {
+            image
+                .symbol_at(symbol.address)
+                .is_some_and(|name| name.ends_with("Handler"))
+        })
+        .filter_map(|symbol| {
+            Some(AddressRange {
+                start: symbol.address,
+                end: symbol.address.checked_add(symbol.size?)?,
+            })
+        })
+        .collect::<Vec<_>>();
+    ranges.sort_unstable_by_key(|range| range.start);
+    let mut merged: Vec<AddressRange<ImageAddress>> = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        match merged.last_mut() {
+            Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
+            _ => merged.push(range),
+        }
+    }
+    merged
 }
 
 /// The address of the isolate `thread` has entered, from its copy of the
@@ -216,6 +309,15 @@ struct NodeRuntime {
 
     /// Where V8 enters a Node-API function's C callback.
     native_entry: Option<ImageAddress>,
+
+    /// Where V8 performs a collection, which a watch follows.
+    collector: Option<ImageAddress>,
+
+    /// Where V8 replaces an unoptimized frame by optimized code.
+    replacers: Vec<FrameReplacer>,
+
+    /// The code that builds an unoptimized frame ([`FRAME_BUILDERS`]).
+    frame_builders: Vec<AddressRange<ImageAddress>>,
     inspector_signal_handler: Option<ImageAddress>,
     native_inspector: Result<crate::image::v8::NodeInspector, Arc<str>>,
     inspector_close_functions: Option<(ImageAddress, ImageAddress)>,
@@ -428,6 +530,10 @@ impl RuntimeModel for NodeRuntime {
 
     fn stack_mover(&self) -> Option<ImageAddress> {
         None
+    }
+
+    fn frame_pointer_code(&self) -> Vec<AddressRange<ImageAddress>> {
+        self.statics.handlers.clone()
     }
 
     fn inspector_hook(&self) -> Option<ImageAddress> {
@@ -731,6 +837,86 @@ impl RuntimeModel for NodeRuntime {
             reach,
             refusable,
         })
+    }
+
+    fn interpreted_watch(
+        &self,
+        stop: &dyn RuntimeStop,
+        frame: InterpretedFrameRef,
+        slot: u32,
+        budget: &mut InspectionBudget,
+    ) -> Result<InterpretedWatch, InterpretedFailure> {
+        let refused = |reason: Arc<str>| {
+            InterpretedFailure::Refused(crate::eval::error::ErrorKind::Unsupported, reason)
+        };
+        // Without the collector's entry, no watch can follow the contexts
+        // a collection moves, nor tell its rewrites of a frame's slots
+        // from the program's stores.
+        if self.collector.is_none() || self.replacers.len() != ON_STACK_REPLACEMENT.len() {
+            return Err(refused(
+                "this build of Node does not name V8's collector and on-stack replacement, \
+                 which a watch of a JavaScript variable follows"
+                    .into(),
+            ));
+        }
+        self.expression(stop, budget, |reader| watches::watch(reader, frame, slot))?
+            .map_err(refused)
+    }
+
+    fn interpreted_frame_runs(
+        &self,
+        stop: &dyn RuntimeStop,
+        thread: ThreadId,
+        frame: VirtualAddress,
+        code: VirtualAddress,
+        watched: VirtualAddress,
+    ) -> Result<bool, Arc<str>> {
+        let _ = thread;
+        let mut budget = InspectionBudget::new(crate::InspectionLimits::default());
+        self.reading(stop, &mut budget, |reader| {
+            watches::runs(reader, frame.get(), code.get(), watched.get())
+        })
+    }
+
+    fn collector(&self) -> Option<ImageAddress> {
+        self.collector
+    }
+
+    fn stack_frame_builders(&self) -> Option<Vec<AddressRange<ImageAddress>>> {
+        Some(self.frame_builders.clone())
+    }
+
+    fn frame_replacers(&self) -> Vec<FrameReplacer> {
+        self.replacers.clone()
+    }
+
+    fn interpreted_place(
+        &self,
+        stop: &dyn RuntimeStop,
+        frame: VirtualAddress,
+        watched: VirtualAddress,
+    ) -> Result<InterpretedPlace, Arc<str>> {
+        let mut budget = InspectionBudget::new(crate::InspectionLimits::default());
+        self.reading(stop, &mut budget, |reader| {
+            watches::place(reader, frame.get(), watched.get())?
+                .ok_or_else(|| "the frame no longer reaches the watched word".into())
+        })
+    }
+
+    fn interpreted_placed(
+        &self,
+        stop: &dyn RuntimeStop,
+        frame: VirtualAddress,
+        place: InterpretedPlace,
+    ) -> Result<InterpretedWatch, Arc<str>> {
+        let mut budget = InspectionBudget::new(crate::InspectionLimits::default());
+        self.reading(stop, &mut budget, |reader| {
+            watches::placed(reader, frame.get(), place)
+        })
+    }
+
+    fn interpreted_watched(&self, bits: u64) -> Result<Option<InterpretedHandle>, Arc<str>> {
+        Ok(Some(present::Handle::Tagged(bits).handle()))
     }
 
     fn interpreted_step(

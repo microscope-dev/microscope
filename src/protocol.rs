@@ -1076,6 +1076,14 @@ pub enum WatchpointInvalidation {
     /// The language runtime moved the stack holding the object somewhere
     /// the debugger could not follow.
     StackMoved,
+
+    /// The language runtime's collector moved the object holding the
+    /// variable somewhere the debugger could not follow.
+    ObjectMoved,
+
+    /// The language runtime replaced the code of the frame owning the
+    /// variable, which keeps it elsewhere from then on.
+    FrameReplaced,
 }
 
 /// A watchpoint that was removed because its storage's lifetime ended.

@@ -172,6 +172,7 @@ fn a_watched_frame_is_gone_only_where_every_thread_state_is_read() {
             HOST,
             VirtualAddress::new(frame),
             VirtualAddress::new(code),
+            VirtualAddress::new(0),
         )
     };
     assert_eq!(runs(&process, frame, code), Ok(true));

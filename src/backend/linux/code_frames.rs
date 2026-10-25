@@ -17,7 +17,7 @@ use crate::backend::linux::native::InspectionOps;
 use crate::error::{Error, Result};
 use crate::runtime_model::{CodeFrame, DescribedFrame};
 use crate::unwind::{UnwindModule, unwind_module_for};
-use crate::{FrameKind, ModuleId, RuntimeId, StackFrame};
+use crate::{FrameKind, ImageAddress, ModuleId, RuntimeId, StackFrame};
 
 impl<P: InspectionOps> Controller<P> {
     /// Names each frame of `expanded` whose code a runtime owns as the
@@ -48,15 +48,40 @@ impl<P: InspectionOps> Controller<P> {
         };
         let mut described = Vec::new();
         for (activation, physical) in stack.frames.iter().enumerate() {
-            let Some((owner, generated)) = owner(&owners, modules, stack, activation) else {
+            let Some((owner, generated, image_instruction)) =
+                owner(&owners, modules, stack, activation)
+            else {
                 continue;
             };
 
+            let after_call = activation != 0 || stack.after_call;
+            // The frame at an instruction other than a call's return has
+            // entered its frame where its unwind rules find it 16 bytes
+            // above rbp.
+            let entered = after_call
+                || physical
+                    .registers
+                    .get(crate::unwind::RBP)
+                    .and_then(|rbp| rbp.checked_add(16))
+                    .zip(
+                        self.caller_provider(
+                            inferior,
+                            &runtimes,
+                            root.reader(),
+                            physical.registers.clone(),
+                            true,
+                        )
+                        .frame_cfa(&physical.context)
+                        .ok(),
+                    )
+                    .is_some_and(|(frame, cfa)| frame == cfa.get());
             let frame = CodeFrame {
                 thread,
                 instruction: physical.context.instruction,
-                after_call: activation != 0 || stack.after_call,
+                after_call,
                 generated,
+                image_instruction,
+                entered,
                 registers: &physical.registers,
             };
             let description = self.with_runtime_stop(inferior, owner, root.reader(), |stop| {
@@ -91,13 +116,14 @@ struct Owned<'a> {
 /// the code is in one of the modules a runtime generated, in the image the
 /// runtime was bound to, as the runtime says, through any binding of that
 /// image, such as a copy of its code, or where the runtime says the
-/// process keeps code it owns.
+/// process keeps code it owns. With it, whether the runtime generated the
+/// code, and where the runtime's image holds the activation's instruction.
 fn owner<'a>(
     owned: &Owned<'a>,
     modules: &[UnwindModule<'_>],
     stack: &PhysicalStack,
     activation: usize,
-) -> Option<(&'a BoundRuntime, bool)> {
+) -> Option<(&'a BoundRuntime, bool, Option<ImageAddress>)> {
     let lookup = stack.lookup_address(activation)?;
     let in_module = unwind_module_for(modules, lookup);
     if let Some((module, _)) = in_module
@@ -107,7 +133,7 @@ fn owner<'a>(
             .runtimes
             .iter()
             .find(|runtime| runtime.model.owns_generated_code())
-            .map(|runtime| (runtime, true));
+            .map(|runtime| (runtime, true, None));
     }
 
     let by_image = in_module.and_then(|(module, address)| {
@@ -125,7 +151,16 @@ fn owner<'a>(
                 .find(|(_, ranges)| ranges.iter().any(|range| range.holds(lookup, code)))
                 .map(|(runtime, _)| runtime)
         })
-        .map(|runtime| (runtime, false))
+        .map(|runtime| {
+            let instruction = stack
+                .frames
+                .get(activation)
+                .map(|frame| frame.context.instruction)
+                .and_then(|instruction| unwind_module_for(modules, instruction))
+                .filter(|(module, _)| module.loaded.image == runtime.module.image)
+                .map(|(_, address)| address);
+            (runtime, false, instruction)
+        })
 }
 
 /// Replaces each described activation's frames with the functions its

@@ -1148,6 +1148,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         self.note_stack_move(pid, address)?;
+        self.note_interpreted_move(pid, address)?;
         self.note_resolver(pid, address)?;
         self.note_inspector_hook(pid, address)
     }

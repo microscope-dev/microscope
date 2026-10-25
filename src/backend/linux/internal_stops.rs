@@ -149,6 +149,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 let _ = self.refresh_libraries();
             }
             Edit::FollowStacks => self.follow_stacks(),
+            Edit::FollowInterpreted => self.follow_interpreted(),
             Edit::AgentReport {
                 runtime,
                 generation,
@@ -484,6 +485,7 @@ impl Edit {
             }
             Self::RefreshModules
             | Self::FollowStacks
+            | Self::FollowInterpreted
             | Self::ArmAgents
             | Self::ReturnToRuntime { .. }
             | Self::InspectorPaused

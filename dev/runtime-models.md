@@ -1123,6 +1123,47 @@ thread runs C pauses at the next function entry, not at the caller's next
 statement, so the step back relies on the step V8 still has armed, never on
 a pause.
 
+**Watches.** `node/watches.rs` resolves `watch name` in a frame to the
+word that holds the variable: an interpreter or Sparkplug frame's register
+or argument slot, or a slot of a context the frame reaches. Each is an
+`InterpretedPlace`, either an offset from the frame or a context depth and
+slot, so that the place can be found again after V8 moves the context.
+`variables.rs` keeps each variable's slot address for this. Refused: the
+receiver, a global, a script binding, a variable found through `with`, an
+optimized frame's variable, a resumable function's frame slot, and, on
+14.6, a context slot that holds or will hold a context cell
+(`Context::Set`).
+
+`backend/linux/interpreted_watches.rs` follows V8's collector. A
+collection runs on its isolate's thread, so a breakpoint on
+`Heap::PerformGarbageCollection` sets the watches of that thread's frames
+aside, noting each place. At the collector's return the debugger places
+them where the frames reach their words now, with their values read anew.
+The collector's own writes are never reported. Probes under gdb on 12.4,
+13.6, and 14.6, with `--minor-ms`, `--stress-compaction`, and
+`--single-threaded-gc` and with a worker, found every scavenge,
+mark-compact, and evacuation inside that function on the isolate's own
+thread. A breakpoint on the on-stack replacement builtins, planted in
+every mapping of the image because V8 may run a copy of its builtins, ends
+the watches of the replaced frame's own slots with `FrameReplaced`, even if
+the replacement then fails. A `FrameReplacer` names how many saved frame
+pointers lie between the entry's rbp and the replaced frame.
+`InterpreterOnStackReplacement` is entered from the `JumpLoop` handler's
+own frame, which it drops before entering the code, so its replaced frame
+is `[rbp]`. Sparkplug's builtin is entered from the frame itself. V8
+re-enters a builtin on each back edge while it compiles the replacement,
+and each entry stops every thread. So the builtins are planted only while
+a frame-slot watch exists, and its first entry ends that watch.
+`stack_frame_left` ends a frame-slot watch when the frame returned (the
+innermost CFA is above the frame, or rbp is above it in V8's code) or when
+a frame builder (`InterpreterEntryTrampoline`, Sparkplug's prologue) runs
+at the frame's address. A store stops inside a bytecode handler.
+`frames.rs` describes that frame as the handler's function, and the
+unwinder walks handlers by frame pointer (`frame_pointer_code`). The
+collector's sites are planted only while an interpreted watch exists. Debian's `libnode` names neither function, so every watch is
+refused there. `tests/node/watches.rs` checks each hit against the program's
+own prints under `--stress-compaction`.
+
 The launch preload precedes user `NODE_OPTIONS` preloads. Followed launches
 retain a content-addressed private cache copy so released descendants do
 not inherit a deleted require path. An untraced descendant restores the

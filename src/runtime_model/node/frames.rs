@@ -30,10 +30,23 @@ pub(super) fn describe(
     frame: &CodeFrame<'_>,
 ) -> Option<DescribedFrame> {
     // A frame stopped inside its code may not have entered its frame yet,
-    // or may have left it; only a call is made from inside one.
-    if !frame.after_call {
+    // or may have left it; only a call is made from inside one, unless the
+    // unwinder found it entered. Of the image's code, only a bytecode
+    // handler's frame is the interpreter's, whose rbp it keeps.
+    let running = if frame.after_call {
+        Running::AfterCall
+    } else if !frame.entered {
         return None;
-    }
+    } else if frame.generated {
+        Running::Generated
+    } else if frame
+        .image_instruction
+        .is_some_and(|address| statics.handlers.iter().any(|range| range.contains(address)))
+    {
+        Running::Handler
+    } else {
+        return None;
+    };
     let fp = frame.registers.get(RBP)?;
     let marker = reader
         .word(fp.wrapping_add_signed(reader.constant(Constant::OffFpContextOrFrameType).ok()?))
@@ -49,29 +62,36 @@ pub(super) fn describe(
     }
 
     let function = javascript_function(reader, fp).ok()??;
-    let (functions, live_registers) =
-        match functions(reader, table, encoding, statics, frame, fp, function) {
-            // A function V8's own stack traces hide is its machinery.
-            Ok(None) => {
-                return Some(DescribedFrame {
-                    functions: Vec::new(),
-                    role: CodeRole::Interpreter,
-                    live_registers: false,
-                });
-            }
-            Ok(Some(found)) => found,
-            Err(problem) => (
-                vec![RecordedFrame {
-                    function: "<unknown>".into(),
-                    language: SourceLanguage::JavaScript,
-                    place: None,
-                    first_line: None,
-                    generated: None,
-                    problem: Some(problem),
-                }],
-                false,
-            ),
-        };
+    let (functions, live_registers) = match functions(
+        reader,
+        table,
+        encoding,
+        statics,
+        frame,
+        (fp, running),
+        function,
+    ) {
+        // A function V8's own stack traces hide is its machinery.
+        Ok(None) => {
+            return Some(DescribedFrame {
+                functions: Vec::new(),
+                role: CodeRole::Interpreter,
+                live_registers: false,
+            });
+        }
+        Ok(Some(found)) => found,
+        Err(problem) => (
+            vec![RecordedFrame {
+                function: "<unknown>".into(),
+                language: SourceLanguage::JavaScript,
+                place: None,
+                first_line: None,
+                generated: None,
+                problem: Some(problem),
+            }],
+            false,
+        ),
+    };
     // The frame's own function, outermost, decides whose code it is.
     let role = if functions
         .last()
@@ -89,19 +109,42 @@ pub(super) fn describe(
     })
 }
 
+/// Where a described frame's instruction is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Running {
+    /// At the return address of a call it made.
+    AfterCall,
+
+    /// Elsewhere in the code V8 generated for it, in its entered frame.
+    Generated,
+
+    /// In a bytecode handler, inside the interpreter's frame.
+    Handler,
+}
+
+/// Why the statement a bytecode handler runs is not known: the interpreter
+/// keeps the offset of the bytecode it runs in a register, and stores it in
+/// its frame only before a call.
+const IN_HANDLER: &str = "the frame runs a bytecode handler, which keeps the offset of its \
+     bytecode in a register, not in the frame, so its statement is not known";
+
+/// Why optimized code's statement is not known between its calls.
+const BETWEEN_CALLS: &str = "optimized code records the statement it runs only at its calls, and this frame is between them";
+
 /// The functions the frame at `fp`, which runs `function`, runs, innermost
 /// first: those its code inlined, then its own; and whether the frame's
 /// interpreter registers are live, as they are unless its code is
 /// optimized. `None` for a function V8's stack traces hide: one of no
 /// script that is not exposed to the program as a native function, such
-/// as the closures that resume an `await`.
+/// as the closures that resume an `await`. `running` says where in its
+/// code the frame's instruction is.
 fn functions(
     reader: &Reader<'_>,
     table: &mut Table,
     encoding: Encoding,
     statics: &Statics,
     frame: &CodeFrame<'_>,
-    fp: u64,
+    (fp, running): (u64, Running),
     function: Object,
 ) -> Result<Option<(Vec<RecordedFrame>, bool)>, Problem> {
     let shared = reader.typed_field(
@@ -116,12 +159,25 @@ fn functions(
     // its registers; optimized code, even entered on a loop, does not.
     let (places, live_registers) = if frame.generated {
         match compiled::running(reader, statics, frame, (function, shared)) {
+            // A return address may be just past its call's bytecode; an
+            // instruction itself is in its own, which its next byte is.
+            Ok(code) if running == Running::Generated => {
+                let baseline = code.is_baseline(reader)?;
+                let places = if baseline {
+                    compiled::places(reader, encoding, &code, shared, frame.instruction.get() + 1)
+                } else {
+                    Err(BETWEEN_CALLS.into())
+                };
+                (places, baseline)
+            }
             Ok(code) => (
                 compiled::places(reader, encoding, &code, shared, frame.instruction.get()),
                 code.is_baseline(reader)?,
             ),
             Err(problem) => (Err(problem), false),
         }
+    } else if running == Running::Handler {
+        (Err(IN_HANDLER.into()), true)
     } else {
         (
             offset_in_script(reader, encoding, fp, shared).map(|offset| vec![(shared, Ok(offset))]),

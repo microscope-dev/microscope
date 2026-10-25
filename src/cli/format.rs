@@ -826,6 +826,12 @@ pub const fn invalidation_text(reason: WatchpointInvalidation) -> &'static str {
         WatchpointInvalidation::StackMoved => {
             "its runtime moved its stack where the debugger could not follow"
         }
+        WatchpointInvalidation::ObjectMoved => {
+            "its runtime's collector moved it where the debugger could not follow"
+        }
+        WatchpointInvalidation::FrameReplaced => {
+            "its runtime replaced its frame's code, which keeps it elsewhere"
+        }
     }
 }
 

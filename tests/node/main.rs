@@ -27,4 +27,5 @@ mod steps;
 mod truth;
 mod values;
 mod views;
+mod watches;
 mod workers;

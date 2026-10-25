@@ -216,13 +216,16 @@ impl Inferior {
         self.check_watches();
     }
 
+    #[expect(clippy::too_many_lines, reason = "one check per site owner")]
     fn check_sites(&self) {
         let stack_moves = self.stack_moves.planted();
+        let interpreted_moves = self.interpreted_moves.planted();
         let resolvers = self.indirect.planted();
         let inspector_hooks = self.inspectors.planted();
 
         for (owner, planted) in [
             (BreakpointOwner::StackMove, &stack_moves),
+            (BreakpointOwner::InterpretedMove, &interpreted_moves),
             (BreakpointOwner::Resolver, &resolvers),
             (BreakpointOwner::InspectorHook, &inspector_hooks),
         ] {
@@ -268,6 +271,10 @@ impl Inferior {
                     BreakpointOwner::StackMove => debug_assert!(
                         stack_moves.contains(&address),
                         "a stack mover owns the site at {address}, but none is recorded"
+                    ),
+                    BreakpointOwner::InterpretedMove => debug_assert!(
+                        interpreted_moves.contains(&address),
+                        "an interpreted move owns the site at {address}, but none is recorded"
                     ),
                     BreakpointOwner::Resolver => debug_assert!(
                         resolvers.contains(&address),
@@ -477,7 +484,8 @@ impl Inferior {
                 .iter()
                 .flatten()
                 .any(|slot| slot.owners.contains(&id));
-            let set_aside = self.stack_moves.sets_aside(record.task);
+            let set_aside = self.stack_moves.sets_aside(record.task)
+                || self.interpreted_moves.sets_aside(&record.watchpoint.scope);
             debug_assert_eq!(
                 planned,
                 record.watchpoint.enabled && !set_aside,

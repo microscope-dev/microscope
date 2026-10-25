@@ -1220,6 +1220,7 @@ impl RuntimeModel for PythonRuntime {
         thread: ThreadId,
         frame: VirtualAddress,
         code: VirtualAddress,
+        _watched: VirtualAddress,
     ) -> Result<bool, Arc<str>> {
         let reading = self.reading()?;
         let code_type = stop

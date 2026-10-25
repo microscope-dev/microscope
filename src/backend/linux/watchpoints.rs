@@ -39,6 +39,10 @@ use super::{
 type Observation = (Option<Arc<[u8]>>, Option<Arc<str>>);
 
 impl<P: LinuxTraceOps> Controller<P> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one target resolved, planned, and recorded"
+    )]
     pub(super) fn add_watchpoint(
         &mut self,
         spec: WatchpointSpec,
@@ -90,6 +94,14 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
 
         let task = self.task_watch(inferior, &scope, address)?;
+        // A watch set aside now would have no place noted to follow.
+        if inferior.interpreted_moves.sets_aside(&scope) {
+            return Err(Error::WatchTargetUnsupported(
+                "the runtime is collecting on the frame's thread, which moves its objects; \
+                 watch the variable once the collection finishes"
+                    .into(),
+            ));
+        }
         let chunks = debug_registers::split_range(address.get(), byte_size).map_err(|error| {
             watch_range_error(address, byte_size, error, inferior.watch.plan.free_slots())
         })?;
@@ -150,7 +162,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.next_watchpoint_id = next_id;
         self.publish_watchpoints_changed();
 
-        if let Err(error) = self.sync_stack_movers() {
+        if let Err(error) = self
+            .sync_stack_movers()
+            .and_then(|()| self.sync_interpreted_movers())
+        {
             let _ = self.remove_watchpoint(id);
             return Err(error);
         }
@@ -325,7 +340,11 @@ impl<P: LinuxTraceOps> Controller<P> {
                             inferior.watch.plan.free_slots(),
                         )
                     })?;
-            let plan = if inferior.stack_moves.sets_aside(record.task) {
+            let plan = if inferior.stack_moves.sets_aside(record.task)
+                || inferior
+                    .interpreted_moves
+                    .sets_aside(&record.watchpoint.scope)
+            {
                 None
             } else {
                 Some(planned_with(
@@ -377,6 +396,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .ok_or_else(|| Error::internal("removed watchpoint was recorded"))?;
         self.publish_watchpoints_changed();
         self.sync_stack_movers()?;
+        self.sync_interpreted_movers()?;
         Ok(record.watchpoint)
     }
 
@@ -400,6 +420,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         );
         self.publish_watchpoints_changed();
         self.sync_stack_movers()?;
+        self.sync_interpreted_movers()?;
 
         Ok(removed
             .into_values()
@@ -743,7 +764,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             invalidated: invalidated.into(),
         });
         self.publish_watchpoints_changed();
-        self.sync_stack_movers()
+        self.sync_stack_movers()?;
+        self.sync_interpreted_movers()
     }
 
     /// Discards the watchpoints of a process that no longer exists or whose
@@ -766,7 +788,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
 impl<P: InspectionOps> Controller<P> {
     /// A watch's bytes as [`Self::observe`] reads them.
-    fn observe_record(&self, record: &WatchRecord) -> Result<Observation> {
+    pub(super) fn observe_record(&self, record: &WatchRecord) -> Result<Observation> {
         let watchpoint = &record.watchpoint;
         self.observe(&watchpoint.scope, watchpoint.address, watchpoint.byte_size)
     }
@@ -883,7 +905,10 @@ impl<P: InspectionOps> Controller<P> {
             // frame's in its place, is the watch's end, changed or not.
             if record.watchpoint.access == WatchAccess::Change
                 && self.observe_record(record)?.0 == record.observed
-                && !matches!(self.interpreted_watch_live(inferior, record)?, Some(false))
+                && !matches!(
+                    self.interpreted_watch_live(inferior, record, true)?,
+                    Some(false)
+                )
             {
                 unchanged.insert(id);
             }
@@ -935,8 +960,15 @@ impl<P: InspectionOps> Controller<P> {
             }
             WatchScope::Interpreted { thread, .. } => {
                 if debug_pid(*thread).is_ok_and(|pid| inferior.threads.contains_key(&pid)) {
-                    matches!(self.interpreted_watch_live(inferior, record)?, Some(false))
-                        .then_some(WatchpointInvalidation::ScopeExited)
+                    let hit = debug_pid(*thread)
+                        .ok()
+                        .and_then(|pid| inferior.threads.get(&pid))
+                        .is_some_and(|owner| owner.watch_hits.contains_key(&record.watchpoint.id));
+                    matches!(
+                        self.interpreted_watch_live(inferior, record, hit)?,
+                        Some(false)
+                    )
+                    .then_some(WatchpointInvalidation::ScopeExited)
                 } else {
                     Some(WatchpointInvalidation::OwnerThreadExited)
                 }
@@ -951,10 +983,11 @@ impl<P: InspectionOps> Controller<P> {
         not(debug_assertions),
         expect(unused_variables, reason = "only recorded")
     )]
-    fn interpreted_watch_live(
+    pub(super) fn interpreted_watch_live(
         &self,
         inferior: &Inferior,
         record: &WatchRecord,
+        hit: bool,
     ) -> Result<Option<bool>> {
         let WatchScope::Interpreted {
             thread,
@@ -982,11 +1015,14 @@ impl<P: InspectionOps> Controller<P> {
         } else {
             inferior.memory_thread()
         };
+        if reader == pid && self.stack_frame_left(inferior, &bound, (pid, hit), frame)? {
+            return Ok(Some(false));
+        }
 
         match self.with_runtime_stop(inferior, &bound, reader, |stop| {
             bound
                 .model
-                .interpreted_frame_runs(stop, thread, frame, code)
+                .interpreted_frame_runs(stop, thread, frame, code, record.watchpoint.address)
         }) {
             Ok(runs) => Ok(Some(runs)),
             Err(reason) => {

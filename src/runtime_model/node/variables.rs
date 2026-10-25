@@ -16,7 +16,7 @@ use crate::image::v8::{Constant, Field, ScopeInfoSlice, scope_info_slice};
 use crate::runtime_model::{InterpretedFrameRef, ReportedLocal, ReportedValue};
 
 /// The most contexts a chain is followed through.
-const MAX_CONTEXTS: usize = 256;
+pub(super) const MAX_CONTEXTS: usize = 256;
 
 /// The most arguments or registers of a frame read.
 const MAX_SLOTS: i64 = 1 << 16;
@@ -164,7 +164,7 @@ fn bind(
 }
 
 /// How many formal parameters `function` declares.
-fn parameters(reader: &Reader<'_>, function: Object) -> Result<usize, Problem> {
+pub(super) fn parameters(reader: &Reader<'_>, function: Object) -> Result<usize, Problem> {
     let shared = reader.typed_field(
         function,
         Field::JSFunctionSharedFunctionInfo,
@@ -230,6 +230,10 @@ pub(super) struct Variable {
     /// Its tagged word, or why it can't be read. The hole means a `let` or
     /// `const` that is not initialized yet.
     pub(super) word: Result<u64, Problem>,
+
+    /// Where the word is, in the frame or in a context its chain reaches,
+    /// where microscope knows.
+    pub(super) at: Option<u64>,
 }
 
 /// The variables of the JavaScript frame `frame`, in display order: `this`,
@@ -282,6 +286,7 @@ pub(super) fn scoped_variables(
         name: "this".to_owned(),
         kind: Kind::Receiver,
         word: this,
+        at: None,
     });
     let mut seen = BTreeSet::new();
     let closure = reader.field(function, Field::JSFunctionContext)?;
@@ -294,7 +299,8 @@ pub(super) fn scoped_variables(
     } else {
         None
     };
-    let read_register = |index: u32| reader.word(file - 8 * u64::from(index));
+    let register_at = |index: u32| file - 8 * u64::from(index);
+    let read_register = |index: u32| reader.word(register_at(index));
 
     let argument = |index: u32| reader.word(first + 8 * (u64::from(index) + 1));
     let Names {
@@ -316,7 +322,7 @@ pub(super) fn scoped_variables(
         found.push(variable);
     }
 
-    found.extend(arguments(argc, &parameters, &argument));
+    found.extend(arguments(argc, &parameters, &argument, first));
 
     // A named local shadows the variables of outer scopes, as JavaScript
     // resolves it.
@@ -331,6 +337,7 @@ pub(super) fn scoped_variables(
                 } else {
                     read_register(index)
                 },
+                at: Some(register_at(index)),
             });
         }
     }
@@ -349,6 +356,7 @@ pub(super) fn scoped_variables(
                     unnamed: unnamed.clone(),
                 },
                 word: read_register(index),
+                at: Some(register_at(index)),
             });
         }
     }
@@ -378,6 +386,9 @@ fn script_bindings(
                     } else {
                         word
                     },
+                    // The realm's table holds it, which no frame's chain
+                    // reaches.
+                    at: None,
                 });
             }
         }
@@ -385,6 +396,7 @@ fn script_bindings(
     found.push(Variable {
         name: "globalThis".to_owned(),
         kind: Kind::Global,
+        at: None,
         word: if crossed_with {
             Err(WITH_CONTEXT.into())
         } else {
@@ -448,6 +460,7 @@ fn stack_names(
                 name: local.name.to_string(),
                 kind: Kind::Optimized,
                 word: Err(OPTIMIZED.into()),
+                at: None,
             })
             .collect();
         return Names {
@@ -495,12 +508,15 @@ fn stack_names(
 
 /// The frame's `argc` arguments, each named by its parameter where the
 /// binding named it, then the declared parameters the call did not pass,
-/// whose slots V8 fills with undefined.
+/// whose slots V8 fills with undefined. The receiver is at `first`, and
+/// each argument after it.
 fn arguments(
     argc: i64,
     parameters: &[Option<Arc<str>>],
     argument: &dyn Fn(u32) -> Result<u64, Problem>,
+    first: u64,
 ) -> Vec<Variable> {
+    let at = |index: u32| Some(first + 8 * (u64::from(index) + 1));
     let passed = u32::try_from(argc).unwrap_or(0);
     let mut found = Vec::new();
     for index in 0..passed {
@@ -509,6 +525,7 @@ fn arguments(
             name: name.map_or_else(|| format!("arguments[{index}]"), |name| name.to_string()),
             kind: Kind::Argument(index),
             word: argument(index),
+            at: at(index),
         });
     }
     for (index, name) in parameters.iter().enumerate().skip(passed as usize) {
@@ -517,6 +534,7 @@ fn arguments(
                 name: name.to_string(),
                 kind: Kind::Argument(index),
                 word: argument(index),
+                at: at(index),
             });
         }
     }
@@ -525,7 +543,11 @@ fn arguments(
 
 /// How many registers the frame at `fp` has, or `None` for an optimized
 /// frame, whose bytecode slot does not hold `function`'s bytecode.
-fn registers(reader: &Reader<'_>, fp: u64, function: Object) -> Result<Option<u32>, Problem> {
+pub(super) fn registers(
+    reader: &Reader<'_>,
+    fp: u64,
+    function: Object,
+) -> Result<Option<u32>, Problem> {
     let slot = fp.wrapping_add_signed(reader.constant(Constant::OffFpBytecodeArray)?);
     let Some(bytecode) = reader.object(reader.word(slot)?)? else {
         return Ok(None);
@@ -583,16 +605,17 @@ fn context_variables(
         } else {
             Kind::Captured
         };
-        for (name, word) in locals(reader, context)? {
-            if seen.insert(name.clone()) {
+        for (name, at) in located_locals(reader, context)? {
+            if name != "this" && seen.insert(name.clone()) {
                 found.push(Variable {
                     name,
                     kind: kind.clone(),
                     word: if crossed_with {
                         Err(WITH_CONTEXT.into())
                     } else {
-                        word
+                        reader.word(at)
                     },
+                    at: Some(at),
                 });
             }
         }
@@ -622,7 +645,7 @@ fn is_arrow(reader: &Reader<'_>, function: Object) -> Result<bool, Problem> {
 
 /// Whether `function` is a generator or an async function, whose frame
 /// can be suspended and resumed.
-fn is_resumable(reader: &Reader<'_>, function: Object) -> Result<bool, Problem> {
+pub(super) fn is_resumable(reader: &Reader<'_>, function: Object) -> Result<bool, Problem> {
     let shared = reader.typed_field(
         function,
         Field::JSFunctionSharedFunctionInfo,
@@ -672,7 +695,7 @@ fn lexical_this(
 }
 
 /// The tagged word in the slot `index` of `context`.
-fn slot(reader: &Reader<'_>, context: Object, index: Constant) -> Result<u64, Problem> {
+pub(super) fn slot(reader: &Reader<'_>, context: Object, index: Constant) -> Result<u64, Problem> {
     let index = u64::try_from(reader.constant(index)?).map_err(|_| "a negative context slot")?;
     reader.word(reader.field_address(context, Field::ContextElements)? + 8 * index)
 }
@@ -690,6 +713,15 @@ pub(super) fn locals(reader: &Reader<'_>, context: Object) -> Result<Vec<Local>,
 
 /// As [`locals`], with `this` where the context keeps it.
 fn all_locals(reader: &Reader<'_>, context: Object) -> Result<Vec<Local>, Problem> {
+    Ok(located_locals(reader, context)?
+        .into_iter()
+        .map(|(name, at)| (name, reader.word(at)))
+        .collect())
+}
+
+/// Each named local of `context`, `this` among them, with where its word
+/// is.
+fn located_locals(reader: &Reader<'_>, context: Object) -> Result<Vec<(String, u64)>, Problem> {
     let scope = slot(reader, context, Constant::ContextScopeInfoIndex)?;
     let scope = reader
         .object(scope)?
@@ -721,7 +753,7 @@ fn all_locals(reader: &Reader<'_>, context: Object) -> Result<Vec<Local>, Proble
         if name.is_empty() || name.starts_with('.') {
             continue;
         }
-        found.push((name, reader.word(elements + 8 * (first + index))));
+        found.push((name, elements + 8 * (first + index)));
     }
     Ok(found)
 }
