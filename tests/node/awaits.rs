@@ -5,12 +5,14 @@
 //! thread resumed.
 
 use microscope::{
-    Backtrace, DrivenFrames, SourceLanguage, StackSegment, ThreadId, VariableKind, VariableState,
+    Backtrace, CoreDumpOptions, DrivenFrames, SourceLanguage, StackSegment, ThreadId, VariableKind,
+    VariableState,
 };
 
 use crate::frames::{awaiting_recorded, observed};
-use crate::session::{MATRIX, NodeSession};
+use crate::session::{CORES, MATRIX, NodeSession};
 use crate::support::Scenario;
+use crate::support::truth::Report;
 use crate::truth::{Frame, Thread, check_threads, threads};
 use crate::values::presented;
 
@@ -99,6 +101,30 @@ async fn each_await_chain_is_the_one_v8_reported() {
             lies.extend(check(&session.scenario, &reported, resumed, ends_early, &context).await);
         }
         session.shutdown().await;
+    }
+    assert!(lies.is_empty(), "{lies:#?}");
+}
+
+/// In each core dump, taken where `awaits.js` aborted at its first
+/// checkpoint, every thread's await chain is the one V8 reported just
+/// before, after the function the thread resumed.
+#[tokio::test]
+async fn a_cores_await_chains_are_the_ones_v8_reported() {
+    let (checkpoint, resumed, ends_early) = CHECKPOINTS[0];
+    let mut lies = Vec::new();
+    for entry in CORES {
+        let name = format!("node-awaits-{entry}.core");
+        let core = Scenario::fixture(&name);
+        let log = std::fs::read_to_string(core.with_extension("core.log"))
+            .expect("the core's log; run `just build-test-programs`");
+        let reported = threads(
+            Report::parse(&log)
+                .checkpoint(checkpoint)
+                .expect("the checkpoint the core was taken at"),
+        );
+        let scenario = Scenario::open_core(&name, &CoreDumpOptions::new(core));
+        lies.extend(check(&scenario, &reported, resumed, ends_early, &name).await);
+        scenario.shutdown().await;
     }
     assert!(lies.is_empty(), "{lies:#?}");
 }

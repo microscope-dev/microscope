@@ -2659,7 +2659,7 @@ build_program gcc "$fixtures_dir/node/inspector-lifetime.c" "$output_dir/node-in
     -std=c17 -Wall -Wextra -Werror -shared -fPIC -O0 -g -pthread "-I$MICROSCOPE_NODE/26/include"
 for entry in 26 24 22; do
     node="$MICROSCOPE_NODE/$entry/node"
-    for fixture in stacks tiers; do
+    for fixture in stacks tiers awaits; do
         flags=()
         if [[ "$fixture" == tiers ]]; then
             flags=(--allow-natives-syntax)
