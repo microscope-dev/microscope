@@ -795,9 +795,15 @@ impl Snapshots {
             let modules = processor.modules_of(Pid::new(self.pid));
             let code = processor.mapped_code(Pid::new(self.pid));
             let taken = snapshotter.take_live(self.reads, &modules, &code);
-            // Reads keep their rate, whatever each takes; one that ran
-            // late is followed at once, and none makes up for those missed.
-            self.next = (self.next + self.every).max(std::time::Instant::now());
+            // Reads keep their rate, whatever each takes up to the
+            // interval. One that ran late is followed an interval after it
+            // ended, so that reads do not bunch on a loaded machine, and
+            // none makes up for those missed.
+            let now = std::time::Instant::now();
+            self.next += self.every;
+            if self.next <= now {
+                self.next = now + self.every;
+            }
 
             // A program that exited, with which the recording ends, has no
             // tasks.
