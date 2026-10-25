@@ -520,7 +520,10 @@ pub fn spinning(output: &str) -> Vec<(String, Vec<String>)> {
 }
 
 /// Each frame of `paths` of a function the threads in `truth` run that
-/// lies, one line each: its key is neither one V8's report gives it, nor
+/// lies, one line each, of the paths sampled as `busy.js` spins, under its
+/// `spinFor`, which is when V8's report holds: before then, and as the
+/// program exits, Node's own functions that call it run other lines. A
+/// frame lies where its key is neither one V8's report gives it, nor
 /// its function alone, nor a line of `lines`, which the fixture's
 /// interpreted functions call from; or it has a line but called nothing,
 /// which its frame alone does not prove: the interpreter writes a frame's
@@ -544,7 +547,8 @@ pub fn misplaced(
         }
     }
     let mut misplaced: Vec<String> = Vec::new();
-    for path in paths.keys() {
+    let spinning = |path: &&Vec<String>| path.iter().any(|key| function(key) == "spinFor");
+    for path in paths.keys().filter(spinning) {
         for (index, key) in path.iter().enumerate() {
             let Some(keys) = allowed.get(&function(key)) else {
                 continue;
@@ -624,14 +628,14 @@ fn the_spin_comparison_fails_on_each_lie() {
     let output = "TRUTH\tspin\t7\tmain\n\
                   TRUTH\tframe\t7\t0\tinner\t/a.js\t3\tignition\n\
                   TRUTH\tframe\t7\t1\tfast\t/a.js\t5\tturbofan\n\
-                  TRUTH\tframe\t7\t2\touter\t/a.js\t9\t-\n";
+                  TRUTH\tframe\t7\t2\tspinFor\t/a.js\t9\t-\n";
     let truth = spinning(output);
     assert_eq!(
         truth,
         [(
             "main".to_owned(),
             vec![
-                "outer a.js:9".to_owned(),
+                "spinFor a.js:9".to_owned(),
                 "fast".to_owned(),
                 "inner".to_owned()
             ]
@@ -645,7 +649,7 @@ fn the_spin_comparison_fails_on_each_lie() {
         native.push("Builtins_AddHandler".to_owned());
         std::iter::once((native, 1)).collect()
     };
-    assert!(missing(&truth, &path(&["outer a.js:9", "fast", "inner"])).is_empty());
+    assert!(missing(&truth, &path(&["spinFor a.js:9", "fast", "inner"])).is_empty());
     let lines = ["inner a.js:2".to_owned(), "inner a.js:3".to_owned()];
     let called = |frames: &[&str]| -> BTreeMap<Vec<String>, u64> {
         let mut native = frames
@@ -656,25 +660,27 @@ fn the_spin_comparison_fails_on_each_lie() {
         std::iter::once((native, 1)).collect()
     };
     for honest in [
-        path(&["outer a.js:9", "fast", "inner"]),
-        called(&["outer a.js:9", "fast", "inner a.js:2"]),
-        called(&["outer a.js:9", "fast", "inner a.js:3"]),
+        path(&["spinFor a.js:9", "fast", "inner"]),
+        called(&["spinFor a.js:9", "fast", "inner a.js:2"]),
+        called(&["spinFor a.js:9", "fast", "inner a.js:3"]),
+        // Before the spin, as it warms up, and after.
+        called(&["fast a.js:7", "inner a.js:8"]),
     ] {
         assert!(misplaced(&truth, &lines, &honest).is_empty(), "{honest:?}");
     }
     for lie in [
-        path(&["outer a.js:9", "fast a.js:5", "inner"]),
-        path(&["outer a.js:9", "fast", "inner a.js:2"]),
-        called(&["outer a.js:8", "fast", "inner"]),
-        called(&["outer a.js:9", "fast", "inner a.js:4"]),
+        path(&["spinFor a.js:9", "fast a.js:5", "inner"]),
+        path(&["spinFor a.js:9", "fast", "inner a.js:2"]),
+        called(&["spinFor a.js:8", "fast", "inner"]),
+        called(&["spinFor a.js:9", "fast", "inner a.js:4"]),
     ] {
         assert_eq!(misplaced(&truth, &lines, &lie).len(), 1, "{lie:?}");
     }
     for lie in [
-        path(&["outer a.js:9", "fast a.js:5", "inner"]),
-        path(&["outer a.js:9", "fast", "inner a.js:3"]),
-        path(&["outer a.js:9", "inner"]),
-        path(&["outer a.js:8", "fast", "inner"]),
+        path(&["spinFor a.js:9", "fast a.js:5", "inner"]),
+        path(&["spinFor a.js:9", "fast", "inner a.js:3"]),
+        path(&["spinFor a.js:9", "inner"]),
+        path(&["spinFor a.js:8", "fast", "inner"]),
     ] {
         assert_eq!(missing(&truth, &lie).len(), 1, "{lie:?}");
     }
