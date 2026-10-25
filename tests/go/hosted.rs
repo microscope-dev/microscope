@@ -115,11 +115,11 @@ async fn assert_listed(scenario: &Scenario, task: i128) {
     let trace = scenario
         .operation("backtrace", scenario.handle().backtrace())
         .await;
-    let user = trace
-        .user_frame()
-        .expect("the goroutine runs the library's code");
+    let user = trace.user_frame().unwrap_or_else(|| {
+        panic!("the goroutine runs the library's code: {waiting:#?}\n{trace:#?}")
+    });
 
-    // It may not have run yet; nothing the host does waits until it has.
+    // Initialization waits for entry, but the receive may not have parked yet.
     let lines = ["// HOSTED: began", "// HOSTED: waiting"]
         .map(|marker| support::source_line(SOURCE, marker));
     assert_eq!(
