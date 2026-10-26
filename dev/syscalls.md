@@ -14,7 +14,7 @@ formats, counts, or saves it.
 | `src/present/syscalls/` | strace's text format and the `-c` table, shared by the CLI and the browser |
 | `src/backend/linux/syscalls/ptrace.rs`, `seccomp.rs`, `info.rs`, `launch.rs` | The ptrace engine |
 | `src/backend/linux/syscalls/bpf.rs`, `src/backend/linux/bpf/syscalls.bpf.c`, `bpf/records.h` | The BPF engine: its loader and its kernel programs |
-| `src/backend/linux/syscalls/budget.rs`, `cgroup.rs`, `continuous.rs`, `stacks.rs`, `capture.rs` | Budgets, cgroup targets, continuous traces, stacks, and captures |
+| `src/backend/linux/syscalls/budget.rs`, `cgroup.rs`, `continuous.rs`, `stacks.rs`, `unwinder.rs`, `capture.rs` | Budgets, cgroup targets, continuous traces, stacks and the thread that unwinds them, and captures |
 | `src/backend/linux/catchpoints.rs` | Debugger catchpoints |
 | `src/cli/syscalls.rs` | The `microscope syscalls` command |
 | `src/profiler/syscalls.rs`, `src/profiler/session.rs` | Captures read back, call sites, and `record --syscalls` |
@@ -181,15 +181,34 @@ How it reads calls:
   ending `no stack` rather than pair it with the thread's last stack. A call
   whose entry record (`execve`, `rseq`) went out is thus never left
   unfinished by a lost stack.
-- The reader copies everything the ring holds out of it, then handles the
-  batch on the same thread: it unwinds each stack and names its frames, and
-  the CLI formats it. That work, not the ring, sets the rate a trace with
-  stacks keeps up with, so it is cached per image address: the code role
-  and frame-pointer rule (`FrameRules`), the call-frame row
-  (`DwarfUnwindInfo::row`), and the symbol and line (`Stacks::frame`). On
-  the machine that measured it, a call took about 7 µs with `-k` and 15 µs
-  with `-k=dwarf`. While a batch is handled, the ring fills; the ring's size
-  only decides how long a burst or a stall it rides out.
+- The reader copies everything the ring holds out of it and handles the
+  batch: it pairs each stack with its call or signal, and the CLI formats
+  each event. Each stack is unwound on a thread of its own
+  (`syscalls/unwinder.rs`), through the process's modules as they are when
+  the reader hands it over (`Stacks::unwinding`, an `Arc` of the module
+  list that later mappings replace rather than change). The reader keeps
+  each event, in the order of its record, until its stack comes back, then
+  finishes the stack (`Stacks::finish_sampled`: modules read again for code
+  no module held, and the interpreter's frames) and gives the event to the
+  sink. Stacks come back in the order they were sent. At most 2,048 events
+  wait (`MOST_PENDING`; with `-k=dwarf` each holds 8 KiB of stack); past
+  that, the reader waits for their stacks rather than drain more, and the
+  ring fills as before. Before each tick, the reader gives the sink every
+  waiting event, so what a tick tells the sink follows them. A panic while
+  unwinding is raised again on the reader, which ends the trace as it did
+  when the reader unwound the stack itself.
+- Unwinding is cached per image address: the code role and frame-pointer
+  rule (`FrameRules`, one per thread), the call-frame row
+  (`DwarfUnwindInfo::row`), and the symbol and line (`Stacks::frame`). On a
+  Ryzen 9 9950X, a `-k=dwarf` call costs the reader about 5 µs and the
+  unwinder about 3 µs, so the reader, mostly naming frames and formatting
+  them, sets the rate a trace keeps up with: about 200,000 calls a second
+  from one thread, against 135,000 when the reader unwound them too. One
+  unwinder is enough: two or three showed no more calls and used more CPU.
+  The handoff costs about 6% more CPU in all. On a machine with no idle
+  CPU, the unwinder only competes with the reader, and the rate is as
+  before. While a batch is handled, the ring fills; the ring's size only
+  decides how long a burst or a stall it rides out.
 - Calls in progress live in task storage. An `iter/task` program lists them
   every 100 ms tick, for `--in-flight`.
 - Statistics are a per-CPU array with a row per chosen call. For continuous

@@ -11,6 +11,7 @@ pub mod launch;
 pub mod ptrace;
 pub mod seccomp;
 pub mod stacks;
+pub mod unwinder;
 
 use crate::syscalls::stats::Folded;
 use crate::syscalls::{InFlight, TraceEvent};

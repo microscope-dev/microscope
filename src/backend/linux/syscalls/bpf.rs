@@ -1833,6 +1833,13 @@ fn run(
         perf: Vec::new(),
         lost: 0,
         untrusted: 0,
+        unwinder: options
+            .stacks
+            .as_ref()
+            .and_then(|_| super::unwinder::Unwinder::spawn().ok()),
+        pending: std::collections::VecDeque::new(),
+        arrived: std::collections::VecDeque::new(),
+        next_job: 0,
     };
 
     let result = reader.run(&mut loaded, stop, gate.as_ref().map(|gate| gate.pid));
@@ -2026,10 +2033,59 @@ struct Reader<'a> {
 
     /// The mapping rings' heads that could not be trusted, as last counted.
     untrusted: u64,
+
+    /// The thread that unwinds the stacks, when stacks were asked for.
+    unwinder: Option<super::unwinder::Unwinder>,
+
+    /// The events not yet given to the sink, in the order of their
+    /// records, each waiting for its stack, if it has one, or for those
+    /// before it.
+    pending: std::collections::VecDeque<Pending>,
+
+    /// The stacks unwound that the events at the front have not reached,
+    /// in the order the events wait for them.
+    arrived: std::collections::VecDeque<super::unwinder::Done>,
+    next_job: u64,
+}
+
+/// An event waiting to be given to the sink.
+struct Pending {
+    event: TraceEvent,
+
+    /// The number of the stack it waits for, and the walker's record of
+    /// the thread's interpreted frames, read as the stack is finished.
+    waiting: Option<(u64, Option<Vec<u8>>)>,
+}
+
+/// How long [`Reader::release`] waits.
+#[derive(Clone, Copy)]
+enum Until {
+    /// For nothing: it gives the sink the events whose stacks are here.
+    Waiting,
+
+    /// Until fewer than so many events wait.
+    Fewer(usize),
+
+    /// Until none waits.
+    None,
+}
+
+/// The stack of a call or signal, or the number of the job unwinding it.
+enum Unwound {
+    Now(Option<CallStack>),
+    Later(u64, Option<Vec<u8>>),
 }
 
 /// How long the reader waits for the ring before it looks at the world.
 const TICK_MS: u16 = 100;
+
+/// How long the reader waits for the ring while events wait for their
+/// stacks, which it then gives the sink.
+const WAITING_TICK_MS: u16 = 10;
+
+/// The most events that wait for their stacks before the reader waits for
+/// them rather than drain more: with `-k=dwarf`, each holds 8 KiB of stack.
+const MOST_PENDING: usize = 2048;
 
 impl Reader<'_> {
     fn run(
@@ -2082,6 +2138,7 @@ impl Reader<'_> {
                 .filter(|&pid| ended(pid.get()))
                 .collect();
             self.drain(&mut ring);
+            self.release(Until::Waiting);
             for pid in gone {
                 self.live.remove(&pid);
             }
@@ -2097,6 +2154,7 @@ impl Reader<'_> {
 
             if ended {
                 self.drain(&mut ring);
+                self.release(Until::None);
 
                 // Whatever was lost since the last tick.
                 self.report_lost(loaded, monotonic());
@@ -2106,6 +2164,9 @@ impl Reader<'_> {
             let now = monotonic();
             if now - last_tick >= u64::from(TICK_MS) * 1_000_000 {
                 last_tick = now;
+                // What the sink is told at a tick follows every event
+                // before it.
+                self.release(Until::None);
                 self.report_lost(loaded, now);
                 self.hold_budget(loaded, now)?;
                 self.sink.tick(now);
@@ -2127,12 +2188,18 @@ impl Reader<'_> {
                 ring.as_fd(),
                 nix::poll::PollFlags::POLLIN,
             )];
-            match nix::poll::poll(&mut fds, nix::poll::PollTimeout::from(TICK_MS)) {
+            let tick = if self.pending.is_empty() {
+                TICK_MS
+            } else {
+                WAITING_TICK_MS
+            };
+            match nix::poll::poll(&mut fds, nix::poll::PollTimeout::from(tick)) {
                 Ok(_) | Err(nix::errno::Errno::EINTR) => {}
                 Err(error) => return Err(BpfError::System(error)),
             }
         }
 
+        self.release(Until::None);
         self.report_lost(loaded, monotonic());
         for event in loaded.unfinished() {
             self.sink.event(TraceEvent::Call(event));
@@ -2192,7 +2259,7 @@ impl Reader<'_> {
         let lost = loaded.lost();
         if lost > self.lost {
             record!("syscalls bpf: {} records lost", lost - self.lost);
-            self.sink.event(TraceEvent::Lost {
+            self.emit(TraceEvent::Lost {
                 time,
                 count: lost - self.lost,
             });
@@ -2212,7 +2279,7 @@ impl Reader<'_> {
                 #[cfg_attr(not(debug_assertions), expect(unused_variables))]
                 Err(error) => {
                     record!("syscalls bpf: undecodable record: {error}");
-                    self.sink.event(TraceEvent::Lost {
+                    self.emit(TraceEvent::Lost {
                         time: monotonic(),
                         count: 1,
                     });
@@ -2224,6 +2291,9 @@ impl Reader<'_> {
         self.lay_out();
         for record in std::mem::take(&mut batch) {
             self.handle(record);
+            if self.pending.len() >= MOST_PENDING {
+                self.release(Until::Fewer(MOST_PENDING / 2));
+            }
         }
 
         self.batch = batch;
@@ -2232,7 +2302,7 @@ impl Reader<'_> {
     /// Takes in what the traced processes mapped since last asked, in the
     /// order they mapped it.
     fn map(&mut self) {
-        let Some(stacks) = &self.stacks else {
+        let Some(stacks) = self.stacks.clone() else {
             return;
         };
 
@@ -2245,21 +2315,35 @@ impl Reader<'_> {
         // the mappings in it.
         let untrusted = self.mappings.iter().map(perf::Events::untrusted).sum();
         if untrusted > self.untrusted {
-            self.sink.event(TraceEvent::Lost {
+            self.emit(TraceEvent::Lost {
                 time: monotonic(),
                 count: untrusted - self.untrusted,
             });
             self.untrusted = untrusted;
         }
 
+        // The records that change a process's modules.
         let mut records = Vec::new();
         let mut offset = 0;
         while let Some(Ok((record, length))) = perf::decode::next(&self.perf[offset..]) {
-            records.push((record.time().unwrap_or(0), offset));
+            let changes = match record {
+                perf::decode::Record::Mmap(mmap) => mmap.executable,
+                perf::decode::Record::Comm { exec, .. } => exec,
+                perf::decode::Record::Fork { pid, ppid, .. } => pid != ppid,
+                _ => false,
+            };
+            if changes {
+                records.push((record.time().unwrap_or(0), offset));
+            }
             offset += length;
         }
 
         records.sort_unstable();
+        // A stack is finished through its process's modules as they were
+        // before these changed them.
+        if !records.is_empty() {
+            self.release(Until::None);
+        }
         let mut stacks = stacks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2360,28 +2444,151 @@ impl Reader<'_> {
     /// Unwinds the stack the kernel sent before a thread's call or signal,
     /// unless the record says its stack did not fit in the ring, and that
     /// whatever the thread's last stack was, it is another record's.
-    fn unwind(&mut self, thread: Tid, lost: Option<CallStack>) -> Option<CallStack> {
+    ///
+    /// A stack is unwound on the thread of [`Self::unwinder`], through its
+    /// process's modules as they are now, and finished, with its
+    /// interpreted frames, as its event is given to the sink.
+    fn unwind(&mut self, thread: Tid, lost: Option<CallStack>) -> Unwound {
         let python = self.python.remove(&thread);
         let sampled = self.sampled.remove(&thread);
         if lost.is_some() {
-            return lost;
+            return Unwound::Now(lost);
         }
 
-        let sampled = sampled?;
-        let stacks = self.stacks.as_ref()?;
+        let (Some(sampled), Some(stacks)) = (sampled, self.stacks.as_ref()) else {
+            return Unwound::Now(None);
+        };
         let mut stacks = stacks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(unwinder) = &self.unwinder else {
+            return Unwound::Now(Some(stacks.unwind_sampled(
+                sampled.process,
+                SampledState {
+                    registers: &sampled.registers,
+                    stack: &sampled.copy,
+                    chain: &sampled.chain,
+                },
+                python.as_deref(),
+            )));
+        };
 
-        Some(stacks.unwind_sampled(
-            sampled.process,
-            SampledState {
-                registers: &sampled.registers,
-                stack: &sampled.copy,
-                chain: &sampled.chain,
-            },
-            python.as_deref(),
-        ))
+        let unwinding = stacks.unwinding(sampled.process, sampled.chain.first().copied());
+        drop(stacks);
+        let id = self.next_job;
+        self.next_job += 1;
+        let job = super::unwinder::Job {
+            id,
+            unwinding,
+            sampled,
+        };
+        if unwinder.send(job) {
+            Unwound::Later(id, python)
+        } else {
+            // The thread no longer runs.
+            self.unwinder = None;
+            Unwound::Now(Some(lost_stack()))
+        }
+    }
+
+    /// Gives `event`, whose stack is set, to the sink after those before it.
+    fn emit(&mut self, event: TraceEvent) {
+        if self.pending.is_empty() {
+            self.sink.event(event);
+        } else {
+            self.pending.push_back(Pending {
+                event,
+                waiting: None,
+            });
+        }
+    }
+
+    /// Gives `event` to the sink once its stack is unwound, or now.
+    fn emit_unwound(&mut self, mut event: TraceEvent, unwound: Unwound) {
+        match unwound {
+            Unwound::Now(stack) => {
+                set_stack(&mut event, stack);
+                self.emit(event);
+            }
+            Unwound::Later(id, python) => self.pending.push_back(Pending {
+                event,
+                waiting: Some((id, python)),
+            }),
+        }
+    }
+
+    /// Gives the sink each waiting event whose stack, and those before it,
+    /// are unwound, waiting for them as `until` says.
+    fn release(&mut self, until: Until) {
+        loop {
+            if let Some(unwinder) = &self.unwinder {
+                while let Some(done) = unwinder.try_done() {
+                    self.arrived.push_back(done);
+                }
+            }
+
+            let Some(front) = self.pending.front() else {
+                return;
+            };
+            // The stacks come back in the order the events wait for them.
+            if front.waiting.is_some() && self.arrived.is_empty() {
+                let wait = match until {
+                    Until::Waiting => false,
+                    Until::Fewer(most) => self.pending.len() >= most,
+                    Until::None => true,
+                };
+                if !wait {
+                    return;
+                }
+                if let Some(done) = self
+                    .unwinder
+                    .as_ref()
+                    .and_then(super::unwinder::Unwinder::wait_done)
+                {
+                    self.arrived.push_back(done);
+                } else {
+                    // The thread no longer runs: the stacks it had not
+                    // unwound are lost.
+                    self.unwinder = None;
+                    for pending in &mut self.pending {
+                        if pending.waiting.take().is_some() {
+                            set_stack(&mut pending.event, Some(lost_stack()));
+                        }
+                    }
+                }
+                continue;
+            }
+
+            let Some(Pending { mut event, waiting }) = self.pending.pop_front() else {
+                return;
+            };
+            if let Some((id, python)) = waiting
+                && let Some(done) = self.arrived.pop_front()
+                && let Some(stacks) = &self.stacks
+            {
+                debug_assert_eq!(done.id, id, "a stack came back out of turn");
+                let unwound = match done.unwound {
+                    Ok(unwound) => unwound,
+                    Err(panic) => std::panic::resume_unwind(panic),
+                };
+                let mut stacks = stacks
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let stack = stacks.finish_sampled(
+                    done.sampled.process,
+                    SampledState {
+                        registers: &done.sampled.registers,
+                        stack: &done.sampled.copy,
+                        chain: &done.sampled.chain,
+                    },
+                    unwound,
+                    python.as_deref(),
+                );
+                drop(stacks);
+                set_stack(&mut event, Some(stack));
+            }
+            self.sink.event(event);
+        }
     }
 
     fn handle(&mut self, record: Record) {
@@ -2397,7 +2604,7 @@ impl Reader<'_> {
                 self.entries.insert(entry.thread, entry);
             }
             Record::Call(mut call) => {
-                call.stack = self.unwind(call.thread, call.stack.take());
+                let unwound = self.unwind(call.thread, call.stack.take());
                 if let Some(entry) = self.entries.remove(&call.thread) {
                     if Some(entry.entered.unwrap_or(0)) == call.entered.or(Some(0)) {
                         let mut captured = entry.captured;
@@ -2406,11 +2613,11 @@ impl Reader<'_> {
                         call.captured = captured;
                     } else {
                         // The entry's exit was never seen.
-                        self.sink.event(TraceEvent::Call(entry));
+                        self.emit(TraceEvent::Call(entry));
                     }
                 }
 
-                self.sink.event(TraceEvent::Call(call));
+                self.emit_unwound(TraceEvent::Call(call), unwound);
             }
             Record::Event(mut event) => {
                 // A file record precedes its call, whose exit it shares.
@@ -2418,9 +2625,13 @@ impl Reader<'_> {
                     *time = monotonic();
                 }
 
-                if let TraceEvent::Signal { thread, stack, .. } = &mut event {
-                    *stack = self.unwind(*thread, stack.take());
-                }
+                let unwound = match &mut event {
+                    TraceEvent::Signal { thread, stack, .. } => {
+                        let (thread, stack) = (*thread, stack.take());
+                        self.unwind(thread, stack)
+                    }
+                    _ => Unwound::Now(None),
+                };
 
                 match &event {
                     TraceEvent::Spawn { child, thread, .. } if !*thread && self.follow => {
@@ -2447,9 +2658,22 @@ impl Reader<'_> {
                     _ => {}
                 }
 
-                self.sink.event(event);
+                match unwound {
+                    // An event other than a signal has no stack to set.
+                    Unwound::Now(None) => self.emit(event),
+                    unwound => self.emit_unwound(event, unwound),
+                }
             }
         }
+    }
+}
+
+/// Sets the stack of `event`, a call or a signal.
+fn set_stack(event: &mut TraceEvent, unwound: Option<CallStack>) {
+    match event {
+        TraceEvent::Call(call) => call.stack = unwound,
+        TraceEvent::Signal { stack, .. } => *stack = unwound,
+        _ => {}
     }
 }
 

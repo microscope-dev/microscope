@@ -360,10 +360,10 @@ many:
 
 The kernel hands calls to microscope through a ring of 16 MiB, or 64 MiB with
 `-k=dwarf`, whose stack copies make each call about 20 times as large. Each
-call's stack is unwound and named as it is read, which with `-k` takes a few
-microseconds, so a program making more than about 100,000 calls a second with
-`-k`, or 50,000 with `-k=dwarf`, can outrun it on a fast machine, and fewer
-on a busy one. `--ring 256M` gives a burst more room; it does not make
+call's stack is unwound on a thread of its own and named as it is shown, which
+takes a few microseconds, so a program making more than about 250,000 calls a
+second with `-k`, or 200,000 with `-k=dwarf`, can outrun it on a fast machine
+with a CPU to spare, and fewer on a busy one. `--ring 256M` gives a burst more room; it does not make
 the reader faster. A call whose stack is lost is still shown, its stack
 reading `[stack ends: no stack]`, and the stack counts among the lost.
 

@@ -113,7 +113,10 @@ type Names = (Option<(Arc<str>, u64)>, Option<(String, u64)>);
 pub struct Stacks {
     search: DebugFileSearch,
     images: HashMap<(PathBuf, u64), Image>,
-    processes: BTreeMap<Pid, Vec<Mapped>>,
+
+    /// Each process's modules, shared with the stacks being unwound
+    /// through them as they were.
+    processes: BTreeMap<Pid, Arc<Vec<Mapped>>>,
     rules: FrameRules,
 
     /// The symbol and line of each image address a stack named, by image:
@@ -164,6 +167,37 @@ enum Vdso {
     Unreadable,
 }
 
+/// A process's modules as they were when a stack was sampled, which the
+/// stack unwinds through on whichever thread unwinds it
+/// ([`Stacks::unwinding`]).
+pub struct Unwinding {
+    mapped: Arc<Vec<Mapped>>,
+}
+
+impl Unwinding {
+    /// Unwinds `sample` through the modules, remembering in `rules` what
+    /// each instruction it passes needs.
+    pub fn unwind(
+        &self,
+        rules: &mut FrameRules,
+        sample: SampledState<'_>,
+    ) -> (Vec<SampledFrame>, StackEnd) {
+        let modules: Vec<UnwindModule<'_>> = self
+            .mapped
+            .iter()
+            .filter_map(|mapped| {
+                let info = mapped.image.info.as_deref()?;
+                Some(UnwindModule {
+                    loaded: mapped.loaded,
+                    image: &info.image,
+                    unwind: info.unwind.as_ref(),
+                })
+            })
+            .collect();
+        unwind_sample(&modules, rules, sample, MOST_FRAMES)
+    }
+}
+
 /// Stacks shared by an engine, which unwinds them, and whatever prints
 /// them, so that each image loads once.
 pub type SharedStacks = Arc<std::sync::Mutex<Stacks>>;
@@ -210,10 +244,10 @@ impl Stacks {
         if perf::jit::is_anonymous_code(mmap) {
             self.anonymous.insert(mmap.pid);
         }
-        let process = self.processes.entry(mmap.pid).or_default();
+        let process = Arc::make_mut(self.processes.entry(mmap.pid).or_default());
         process.retain(|mapped| mapped.end <= mmap.start || mapped.start >= end);
         if let Some(mapped) = self.module(mmap) {
-            self.processes.entry(mmap.pid).or_default().push(mapped);
+            Arc::make_mut(self.processes.entry(mmap.pid).or_default()).push(mapped);
         }
         if perf::jit::is_anonymous_code(mmap) && self.carries_v8(mmap.pid) {
             // Until the process's memory proves the code a copy of a
@@ -222,7 +256,7 @@ impl Stacks {
             let id = ModuleId::new(self.next_module);
             self.next_module += 1;
             if let Some(generated) = self.generated(id, mmap.start..end) {
-                self.processes.entry(mmap.pid).or_default().push(generated);
+                Arc::make_mut(self.processes.entry(mmap.pid).or_default()).push(generated);
             }
             self.cover(mmap.pid, None);
         }
@@ -236,7 +270,7 @@ impl Stacks {
         self.processes
             .get(&process)
             .into_iter()
-            .flatten()
+            .flat_map(|mapped| mapped.iter())
             .any(|mapped| {
                 mapped
                     .image
@@ -390,7 +424,7 @@ impl Stacks {
     /// The interpreter `process` runs, and the load bias of the module
     /// that holds it, if it runs one microscope reads.
     fn interpreter(&mut self, process: Pid) -> Option<(Arc<dyn RuntimeModel>, LoadedModule)> {
-        for mapped in self.processes.get(&process)? {
+        for mapped in self.processes.get(&process)?.iter() {
             // A copy of a module's code binds the runtime of the module.
             if mapped.loaded.window.is_some() {
                 continue;
@@ -639,17 +673,44 @@ impl Stacks {
         sample: SampledState<'_>,
         python: Option<&[u8]>,
     ) -> CallStack {
-        self.cover(process, sample.chain.first().copied());
-        let (mut frames, mut end) = self.unwind_copy(process, sample);
+        let unwinding = self.unwinding(process, sample.chain.first().copied());
+        let mut rules = std::mem::take(&mut self.rules);
+        let unwound = unwinding.unwind(&mut rules, sample);
+        self.rules = rules;
+        self.finish_sampled(process, sample, unwound, python)
+    }
+
+    /// What a sampled stack of `process` whose innermost address is
+    /// `first` unwinds through: its modules as they are now, read again
+    /// from `/proc` first if none of them maps `first`. The stack can then
+    /// be unwound on any thread, while the modules change.
+    pub fn unwinding(&mut self, process: Pid, first: Option<u64>) -> Unwinding {
+        self.cover(process, first);
+        Unwinding {
+            mapped: self.processes.get(&process).cloned().unwrap_or_default(),
+        }
+    }
+
+    /// The stack a sample of `process` was `unwound` to through its
+    /// [`Self::unwinding`], unwound again if its modules were read again
+    /// for the code it ended at, with the frames of the interpreter it
+    /// runs, if any, from its walker's record `python`.
+    pub fn finish_sampled(
+        &mut self,
+        process: Pid,
+        sample: SampledState<'_>,
+        (mut frames, mut end): (Vec<SampledFrame>, StackEnd),
+        python: Option<&[u8]>,
+    ) -> CallStack {
         if self.uncover(process, &frames, end, sample.chain) {
             (frames, end) = self.unwind_copy(process, sample);
         }
         let runtime = self.interpreter(process);
-        let modules = self.modules(process);
         let mut stack = stack(&frames, end);
         if let Some((model, loaded)) = runtime.clone()
             && !model.owns_generated_code()
         {
+            let modules = self.modules(process);
             let activations = activations(model.as_ref(), &modules, &frames);
             let stop = LiveStop::memory(process.get(), loaded.load_bias);
             let thread = crate::ThreadId::new(0);
@@ -723,21 +784,10 @@ impl Stacks {
         process: Pid,
         sample: SampledState<'_>,
     ) -> (Vec<SampledFrame>, StackEnd) {
-        let modules: Vec<UnwindModule<'_>> = self
-            .processes
-            .get(&process)
-            .into_iter()
-            .flatten()
-            .filter_map(|mapped| {
-                let info = mapped.image.info.as_deref()?;
-                Some(UnwindModule {
-                    loaded: mapped.loaded,
-                    image: &info.image,
-                    unwind: info.unwind.as_ref(),
-                })
-            })
-            .collect();
-        unwind_sample(&modules, &mut self.rules, sample, MOST_FRAMES)
+        let unwinding = Unwinding {
+            mapped: self.processes.get(&process).cloned().unwrap_or_default(),
+        };
+        unwinding.unwind(&mut self.rules, sample)
     }
 
     /// Reads `process`'s mappings again when `frames` end at code in no
@@ -935,7 +985,7 @@ impl Stacks {
         self.processes
             .get(&process)
             .into_iter()
-            .flatten()
+            .flat_map(|mapped| mapped.iter())
             .filter_map(|mapped| {
                 let info = mapped.image.info.as_deref()?;
                 Some(UnwindModule {
@@ -1004,14 +1054,14 @@ impl Stacks {
         // was: an isolate unmaps its code when it is disposed, which is no
         // later than the records of its stacks are handled.
         let previous = self.processes.remove(&process).unwrap_or_default();
-        modules.extend(previous.into_iter().filter(|mapped| {
+        modules.extend(Arc::unwrap_or_clone(previous).into_iter().filter(|mapped| {
             mapped.anonymous
                 && mappings
                     .iter()
                     .all(|mapping| mapping.end <= mapped.start || mapping.start >= mapped.end)
         }));
         self.runtimes.retain(|&(of, _), _| of != process);
-        self.processes.insert(process, modules);
+        self.processes.insert(process, Arc::new(modules));
     }
 
     /// Adds to the `modules` of `process` a module for each of its mappings
