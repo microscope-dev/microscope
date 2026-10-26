@@ -42,11 +42,11 @@
 //! Anything else leaves the thread out with the reason: never a shorter
 //! stack, nor a guessed one.
 
+use super::Statics;
 use super::frames;
 use super::objects::{Problem, Reader};
 use super::positions::Encoding;
 use super::scripts::Table;
-use super::{Statics, current_isolate};
 use crate::image::v8::Constant;
 use crate::runtime_model::{
     CodeAt, CodeFrame, InterpretedFrame, LiveFrames, LiveThread, RuntimeStop,
@@ -264,8 +264,17 @@ fn frames_of(
     context: &mut Context<'_>,
     thread: &LiveThread<'_>,
 ) -> Result<LiveFrames, Unread> {
-    let isolate = current_isolate(stop, thread.thread, context.isolate)
-        .map_err(|reason| Problem::from(format!("its isolate cannot be found: {reason}")))?;
+    // Read with the reader's blocks, unlike `current_isolate`'s: the slot
+    // lies in the thread's own pages, which a read before this one read.
+    let cannot = |reason: &dyn std::fmt::Display| {
+        Problem::from(format!("its isolate cannot be found: {reason}"))
+    };
+    let slot = stop
+        .thread_local_address(thread.thread, context.isolate)
+        .map_err(|reason| cannot(&reason))?;
+    let isolate = reader
+        .word(slot.get())
+        .map_err(|_| cannot(&"the thread's current isolate is unreadable"))?;
     if isolate == 0 {
         return Ok(LiveFrames::None);
     }

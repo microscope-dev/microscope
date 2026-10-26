@@ -230,3 +230,46 @@ fn partial_identity_evidence_can_be_retried_at_the_same_stop() {
         &[(host, target)]
     );
 }
+
+#[test]
+fn prefetched_blocks_are_read_at_once_and_a_failed_one_is_read_again_alone() {
+    let memory = super::StopMemory::with_block(256);
+    let fill = |address: crate::VirtualAddress, bytes: &mut [u8]| {
+        bytes.fill(u8::try_from(address.get() >> 8 & 0xff).unwrap());
+    };
+    let mut asked = Vec::new();
+    memory.prefetch(&[0x1100, 0x1000, 0x1100, 0x1080, 0x2000], |reads| {
+        asked = reads.iter().map(|(address, _)| address.get()).collect();
+        reads
+            .iter_mut()
+            .map(|(address, bytes)| {
+                fill(*address, bytes);
+                address.get() != 0x2000
+            })
+            .collect()
+    });
+    // Each block once, in order, and none for a start inside a block.
+    assert_eq!(asked, [0x1000, 0x1100, 0x2000]);
+    // Prefetched is not used: a read keeps only the blocks it used.
+    assert_eq!(memory.used_blocks(), [] as [u64; 0]);
+
+    let mut word = [0; 4];
+    let held = memory.copy(0x1104, &mut word, |_, _| -> Result<bool, ()> {
+        panic!("a prefetched block is read again")
+    });
+    assert_eq!(held, Ok(Some(4)));
+    assert_eq!(word, [0x11; 4]);
+
+    let mut again = 0;
+    let read = memory.copy(0x2000, &mut word, |address, bytes| -> Result<bool, ()> {
+        again += 1;
+        fill(address, bytes);
+        Ok(true)
+    });
+    assert_eq!((read, again, word), (Ok(Some(4)), 1, [0x20; 4]));
+    let unreadable = memory.copy(0x3000, &mut word, |_, _| -> Result<bool, ()> { Ok(false) });
+    assert_eq!(unreadable, Ok(None));
+    assert_eq!(memory.used_blocks(), [0x1100, 0x2000], "used and readable");
+
+    memory.prefetch(&[0x1000, 0x2000], |_| panic!("held blocks are read again"));
+}

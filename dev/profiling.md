@@ -285,6 +285,17 @@ and strings, which Node leaves off and the reader does not check. A program
 whose threads stay parked then costs a few `/proc` reads per thread each
 time.
 
+A read of a thread that did run reads its memory in pages it keeps for the
+read (`StopMemory`). It first reads, in one `process_vm_readv` call, every
+page that thread's last read used (`NodeRuntime::pages`,
+`StopMemory::prefetch`, `perf::read_memory_each`). A thread blocked where it
+blocked before then needs no other memory read; each page it finds missing
+costs one call more. This prefetch happens inside the quiet check, as every
+read of the thread does. A page the call cannot read is left out of the kept
+pages, so the read that needs it reads it alone and fails as it would have.
+On 20 threads that each wake every 2 ms, the memory reads went from about
+36 system calls per thread read to about 1.
+
 Live reads keep the rate asked of them: each is due one interval after the
 last was due, not after it ended, and the drain loop wakes for it
 (`Snapshots::due_in`). A read that ends after the next one was due, because

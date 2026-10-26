@@ -1034,6 +1034,10 @@ impl RuntimeStop for LiveStop<'_> {
             .is_ok_and(|read| read == bytes.len())
     }
 
+    fn read_each(&self, reads: &mut [(crate::VirtualAddress, &mut [u8])]) -> Vec<bool> {
+        super::perf::read_memory_each(self.pid, reads)
+    }
+
     fn thread_pointer(&self, thread: crate::ThreadId) -> Option<u64> {
         let tid = u32::try_from(thread.get()).ok()?;
         let pointer = self.pointers.get(&tid).copied();

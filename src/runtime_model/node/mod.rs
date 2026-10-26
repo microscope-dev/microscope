@@ -95,6 +95,10 @@ const BUILTIN_PREFIX: &str = "Builtins_";
 /// The bytes a live read reads at once: a page.
 const LIVE_BLOCK: usize = 4096;
 
+/// The most threads whose pages [`NodeRuntime::pages`] keeps; past that it
+/// forgets them all, as threads that exited would otherwise stay.
+const MOST_PAGED_THREADS: usize = 4096;
+
 /// Where V8 performs each collection, scavenge, minor mark-sweep, or full
 /// mark-compact, on the thread of the isolate whose heap it collects
 /// (`src/heap/heap.cc`).
@@ -150,6 +154,7 @@ pub fn detect(
         writer: writer(runtime.version, runtime.node),
         statics,
         table: std::sync::Mutex::default(),
+        pages: std::sync::Mutex::default(),
         inspector_hook: runtime
             .inspector
             .as_ref()
@@ -375,6 +380,13 @@ struct NodeRuntime {
     /// The scripts and functions frames name, for the life of the process.
     table: std::sync::Mutex<scripts::Table>,
 
+    /// The pages each thread's last live read used, which its next read
+    /// reads first, in one call: a thread blocked where it blocked before
+    /// is read in the same pages, which one by one cost a system call
+    /// each. Only those it used, so that the pages follow where the thread
+    /// is now and do not grow with every page it was ever read in.
+    pages: std::sync::Mutex<std::collections::BTreeMap<ThreadId, Vec<u64>>>,
+
     /// Node's `GetTargetIds`, where the inspector's address is read.
     inspector_hook: Option<ImageAddress>,
 
@@ -542,12 +554,21 @@ impl NodeRuntime {
     /// a pointer, then a 32-bit size. `None` before V8 stored them, and
     /// where they cannot be read.
     fn stored_builtins(&self, stop: &dyn RuntimeStop) -> Option<AddressRange<VirtualAddress>> {
+        self.stored_builtins_read(stop, |address, bytes| stop.read(address, bytes))
+    }
+
+    /// [`Self::stored_builtins`], read with `read`.
+    fn stored_builtins_read(
+        &self,
+        stop: &dyn RuntimeStop,
+        read: impl Fn(VirtualAddress, &mut [u8]) -> bool,
+    ) -> Option<AddressRange<VirtualAddress>> {
         let blob = self.blob?;
         let bias = stop.load_bias();
         let mut pointer = [0; 8];
         let mut size = [0; 4];
-        if !stop.read(bias.load(blob.code)?, &mut pointer)
-            || !stop.read(bias.load(blob.code_size)?, &mut size)
+        if !read(bias.load(blob.code)?, &mut pointer)
+            || !read(bias.load(blob.code_size)?, &mut size)
         {
             return None;
         }
@@ -639,6 +660,19 @@ impl RuntimeModel for NodeRuntime {
         // near each other's, and a read costs about as much for a page as
         // for a word.
         let read_now = StopMemory::with_block(LIVE_BLOCK);
+        let lock_pages = || {
+            self.pages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+        let reading_now = stop.memory().is_none();
+        if reading_now {
+            let pages = lock_pages()
+                .get(&thread.thread)
+                .cloned()
+                .unwrap_or_default();
+            read_now.prefetch(&pages, |reads| stop.read_each(reads));
+        }
         let reader = objects::Reader {
             stop,
             layout,
@@ -657,10 +691,19 @@ impl RuntimeModel for NodeRuntime {
             isolate,
             entry_stack,
             builtins: self.builtins,
-            stored_builtins: self.stored_builtins(stop),
+            stored_builtins: self.stored_builtins_read(stop, |address, bytes| {
+                reader.bytes_into(address.get(), bytes).is_ok()
+            }),
         };
         let read = live::read(stop, &reader, &mut context, thread);
         drop(table);
+        if reading_now {
+            let mut pages = lock_pages();
+            if pages.len() >= MOST_PAGED_THREADS && !pages.contains_key(&thread.thread) {
+                pages.clear();
+            }
+            pages.insert(thread.thread, read_now.used_blocks());
+        }
         Some(read)
     }
 

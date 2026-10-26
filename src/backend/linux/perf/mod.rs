@@ -976,6 +976,68 @@ pub fn read_memory(pid: u32, address: u64, buffer: &mut [u8]) -> std::io::Result
     .map_err(std::io::Error::from)
 }
 
+/// Fills each of `reads`' buffers from process `pid`'s memory at its
+/// address, from outside it, in as few system calls as it can: whether
+/// each was filled whole.
+///
+/// The kernel reads the buffers in order and stops at the first it cannot
+/// fill whole, filling none of it (`process_vm_readv(2)`: it never splits
+/// one), so each call fills a run of them; the one that ended the run is
+/// not filled, and the rest are read on from the one after it. A failure
+/// other than a fault, as of a process that is gone, fills none.
+pub fn read_memory_each(pid: u32, reads: &mut [(crate::VirtualAddress, &mut [u8])]) -> Vec<bool> {
+    // The most buffers one call takes (`UIO_MAXIOV`).
+    const MOST: usize = 1024;
+    let mut filled = vec![false; reads.len()];
+    let mut next = 0;
+    while next < reads.len() {
+        let end = reads.len().min(next + MOST);
+        let batch = &mut reads[next..end];
+        let remote: Option<Vec<nix::sys::uio::RemoteIoVec>> = batch
+            .iter()
+            .map(|(address, bytes)| {
+                Some(nix::sys::uio::RemoteIoVec {
+                    base: usize::try_from(address.get()).ok()?,
+                    len: bytes.len(),
+                })
+            })
+            .collect();
+        let Some(remote) = remote else {
+            break;
+        };
+        let mut local: Vec<std::io::IoSliceMut<'_>> = batch
+            .iter_mut()
+            .map(|(_, bytes)| std::io::IoSliceMut::new(bytes))
+            .collect();
+        let mut left = match nix::sys::uio::process_vm_readv(
+            nix::unistd::Pid::from_raw(pid.cast_signed()),
+            &mut local,
+            &remote,
+        ) {
+            Ok(read) => read,
+            Err(nix::errno::Errno::EFAULT) => 0,
+            Err(_) => break,
+        };
+        drop(local);
+        let mut whole = 0;
+        for (_, bytes) in batch.iter() {
+            if left < bytes.len() {
+                break;
+            }
+            left -= bytes.len();
+            whole += 1;
+        }
+        filled[next..next + whole].fill(true);
+        next += whole;
+        // The buffer that ended the run, unless the call took all it was
+        // given.
+        if next < end {
+            next += 1;
+        }
+    }
+    filled
+}
+
 /// Writes `bytes` to process `pid`'s memory at `address`, from outside it.
 pub fn write_memory(pid: u32, address: u64, bytes: &[u8]) -> std::io::Result<()> {
     let remote = [nix::sys::uio::RemoteIoVec {
@@ -1025,4 +1087,80 @@ pub fn tsc_anchor() -> (u64, u64) {
     }
 
     (best.1, best.2)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The end of a readable mapping of this process with nothing mapped
+    /// just past it.
+    fn mapping_end() -> u64 {
+        let maps = std::fs::read_to_string("/proc/self/maps").expect("read maps");
+        let ranges: Vec<(u64, u64, bool)> = maps
+            .lines()
+            .filter_map(|line| {
+                let (range, rest) = line.split_once(' ')?;
+                let (start, end) = range.split_once('-')?;
+                Some((
+                    u64::from_str_radix(start, 16).ok()?,
+                    u64::from_str_radix(end, 16).ok()?,
+                    rest.starts_with('r'),
+                ))
+            })
+            .collect();
+        ranges
+            .windows(2)
+            .find(|pair| pair[0].2 && pair[1].0 > pair[0].1 + 0x1000)
+            .map(|pair| pair[0].1)
+            .expect("a readable mapping with a gap after it")
+    }
+
+    #[test]
+    fn each_read_is_filled_whole_or_not_at_all_and_the_rest_read_on() {
+        let pid = std::process::id();
+        let end = mapping_end();
+        let source: Vec<[u8; 8]> = (0..1500u64).map(u64::to_le_bytes).collect();
+        let at = |index: usize| crate::VirtualAddress::new(source[index].as_ptr() as u64);
+
+        // Index: what it reads, and whether it can be read whole.
+        let mut plan: Vec<(crate::VirtualAddress, usize, bool)> = (0..source.len())
+            .map(|index| (at(index), 8, true))
+            .collect();
+        // Cut short by the mapping's end, then nothing mapped, each
+        // followed by readable ones; and the last of the first call's
+        // buffers, and the first of the second's.
+        plan[1] = (crate::VirtualAddress::new(end - 8), 16, false);
+        plan[3] = (crate::VirtualAddress::new(end + 8), 8, false);
+        plan[4] = (crate::VirtualAddress::new(end - 8), 16, false);
+        plan[1023] = (crate::VirtualAddress::new(end + 8), 8, false);
+        plan[1024] = (crate::VirtualAddress::new(end - 8), 16, false);
+
+        let mut buffers: Vec<Vec<u8>> = plan.iter().map(|&(_, len, _)| vec![0xee; len]).collect();
+        let mut reads: Vec<(crate::VirtualAddress, &mut [u8])> = plan
+            .iter()
+            .zip(buffers.iter_mut())
+            .map(|(&(address, _, _), buffer)| (address, buffer.as_mut_slice()))
+            .collect();
+        let filled = read_memory_each(pid, &mut reads);
+        drop(reads);
+
+        let expected: Vec<bool> = plan.iter().map(|&(_, _, whole)| whole).collect();
+        assert_eq!(filled, expected);
+        for (index, buffer) in buffers.iter().enumerate() {
+            if expected[index] {
+                assert_eq!(buffer.as_slice(), &source[index], "read {index}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_process_that_is_gone_fills_no_read() {
+        let mut child = std::process::Command::new("true").spawn().expect("spawn");
+        let pid = child.id();
+        child.wait().expect("wait");
+        let mut bytes = [0; 8];
+        let mut reads = [(crate::VirtualAddress::new(0x40_0000), &mut bytes[..])];
+        assert_eq!(read_memory_each(pid, &mut reads), [false]);
+    }
 }

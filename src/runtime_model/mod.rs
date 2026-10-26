@@ -371,6 +371,16 @@ pub trait RuntimeStop {
     fn memory(&self) -> Option<&StopMemory> {
         None
     }
+
+    /// Fills each of `reads`' buffers from memory at its address, as
+    /// [`Self::read`] does each: whether each could be. A stop that reads
+    /// from outside the program makes them as few reads as it can.
+    fn read_each(&self, reads: &mut [(VirtualAddress, &mut [u8])]) -> Vec<bool> {
+        reads
+            .iter_mut()
+            .map(|(address, bytes)| self.read(*address, bytes))
+            .collect()
+    }
 }
 
 type ThreadIdPairs = Arc<[(ThreadId, TargetThreadId)]>;
@@ -383,9 +393,18 @@ type ThreadIdPairs = Arc<[(ThreadId, TargetThreadId)]>;
 /// one forgets it once the program runs or the debugger writes to it.
 #[derive(Debug)]
 pub struct StopMemory {
-    blocks: std::cell::RefCell<std::collections::BTreeMap<u64, Option<Box<[u8]>>>>,
+    blocks: std::cell::RefCell<std::collections::BTreeMap<u64, Block>>,
     thread_ids: std::cell::RefCell<Option<ThreadIdPairs>>,
     block: usize,
+}
+
+/// A block of [`StopMemory`]: its bytes, or `None` where they cannot be
+/// read, and whether a [`StopMemory::copy`] used it, which a block read
+/// only ahead ([`StopMemory::prefetch`]) has not.
+#[derive(Debug)]
+struct Block {
+    bytes: Option<Box<[u8]>>,
+    used: std::cell::Cell<bool>,
 }
 
 impl Default for StopMemory {
@@ -442,7 +461,8 @@ impl StopMemory {
         };
 
         if let Some(kept) = self.blocks.borrow().get(&start) {
-            return Ok(kept.as_deref().and_then(|held| copy(held, into)));
+            kept.used.set(true);
+            return Ok(kept.bytes.as_deref().and_then(|held| copy(held, into)));
         }
 
         let mut bytes = vec![0; self.block].into_boxed_slice();
@@ -450,10 +470,76 @@ impl StopMemory {
         let copied = read.as_deref().and_then(|held| copy(held, into));
         let mut blocks = self.blocks.borrow_mut();
         if blocks.len() < Self::MAX_BLOCKS {
-            blocks.insert(start, read);
+            blocks.insert(
+                start,
+                Block {
+                    bytes: read,
+                    used: std::cell::Cell::new(true),
+                },
+            );
         }
 
         Ok(copied)
+    }
+
+    /// Reads each block that starts at one of `starts` and is not held
+    /// yet, all in one call of `read`, which fills each buffer from its
+    /// address and says whether it could. A block `read` could not fill is
+    /// not held, so a later [`Self::copy`] reads it alone and learns why.
+    pub fn prefetch(
+        &self,
+        starts: &[u64],
+        read: impl FnOnce(&mut [(VirtualAddress, &mut [u8])]) -> Vec<bool>,
+    ) {
+        let block = self.block as u64;
+        let held = self.blocks.borrow();
+        let mut wanted: Vec<u64> = starts
+            .iter()
+            .filter(|&&start| start % block == 0 && !held.contains_key(&start))
+            .copied()
+            .collect();
+        wanted.sort_unstable();
+        wanted.dedup();
+        wanted.truncate(Self::MAX_BLOCKS.saturating_sub(held.len()));
+        drop(held);
+        if wanted.is_empty() {
+            return;
+        }
+        let mut buffers: Vec<Box<[u8]>> = wanted
+            .iter()
+            .map(|_| vec![0; self.block].into_boxed_slice())
+            .collect();
+        let mut reads: Vec<(VirtualAddress, &mut [u8])> = wanted
+            .iter()
+            .zip(buffers.iter_mut())
+            .map(|(&start, bytes)| (VirtualAddress::new(start), &mut **bytes))
+            .collect();
+        let read = read(&mut reads);
+        drop(reads);
+        let mut blocks = self.blocks.borrow_mut();
+        for ((start, bytes), read) in wanted.into_iter().zip(buffers).zip(read) {
+            if read {
+                blocks.insert(
+                    start,
+                    Block {
+                        bytes: Some(bytes),
+                        used: std::cell::Cell::new(false),
+                    },
+                );
+            }
+        }
+    }
+
+    /// The start of each block a [`Self::copy`] used that could be read, in
+    /// order: not those only read ahead, so that a reader that reads next
+    /// what it used before follows what it uses now.
+    pub fn used_blocks(&self) -> Vec<u64> {
+        self.blocks
+            .borrow()
+            .iter()
+            .filter(|(_, held)| held.used.get() && held.bytes.is_some())
+            .map(|(&start, _)| start)
+            .collect()
     }
 
     /// Identity evidence shares the stop's lifetime and invalidation: a

@@ -157,14 +157,19 @@ pub(super) fn byte_array(reader: &Reader<'_>, array: Object) -> Result<Vec<u8>, 
         return Err("a byte array is implausibly long".into());
     }
     let mut bytes = vec![0; length];
+    let address = reader.field_address(array, values)?;
+    let unreadable = || format!("the byte array at {:#x} is unreadable", array.0).into();
+    // One that fits a block is read with the blocks the reader keeps, as
+    // its own object is.
+    if reader.blocks.is_some_and(|blocks| length <= blocks.block()) {
+        reader.bytes_into(address, &mut bytes)?;
+        return Ok(bytes);
+    }
     reader
         .stop
-        .read(
-            crate::VirtualAddress::new(reader.field_address(array, values)?),
-            &mut bytes,
-        )
+        .read(crate::VirtualAddress::new(address), &mut bytes)
         .then_some(bytes)
-        .ok_or_else(|| format!("the byte array at {:#x} is unreadable", array.0).into())
+        .ok_or_else(unreadable)
 }
 
 #[cfg(test)]
