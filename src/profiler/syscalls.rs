@@ -338,11 +338,42 @@ impl Profile {
     /// information has none, so this is the program's own code that made
     /// the call. In a stack that holds an interpreter's frames, it is the
     /// innermost of those, the program's own, not the interpreter's.
+    ///
+    /// With no line in the stack, as in a release build, it is the
+    /// function of the innermost frame outside the C library and the
+    /// loader, as `recv`: their system call wrappers are shared by every
+    /// call of a kind, so they would put all of those in one site.
     #[must_use]
     pub fn syscall_site(&self, row: u32) -> Option<String> {
-        let place = self.syscall_place(row)?;
+        let Some(place) = self.syscall_place(row) else {
+            return self.caller_of_c_library(row);
+        };
         let file = place.file.rsplit('/').next().unwrap_or(place.file);
         Some(format!("{} · {file}:{}", place.function, place.line))
+    }
+
+    /// The innermost function of stack `row` outside the C library and the
+    /// loader.
+    fn caller_of_c_library(&self, row: u32) -> Option<String> {
+        let capture = &self.capture;
+        let frame = capture.stack_frames(row).find(|&frame| {
+            let record = &capture.frames[frame as usize];
+            let module = record.module.get();
+            record.kind != FrameKind::Truncated as u8
+                && (module == NONE || {
+                    let path = capture.string(capture.modules[module as usize].path.get());
+                    let name = path.rsplit('/').next().unwrap_or(path);
+                    !C_LIBRARY.iter().any(|prefix| name.starts_with(prefix))
+                })
+        })?;
+
+        Some(capture.frame_lines(frame).first().map_or_else(
+            || self.address_name(frame),
+            |line| {
+                let function = &capture.functions[line.function.get() as usize];
+                capture.string(function.name.get()).to_owned()
+            },
+        ))
     }
 
     /// The innermost frame of stack `row` with a source line, of its
@@ -376,6 +407,16 @@ impl Profile {
             .or_else(|| capture.stack_frames(row).find_map(place))
     }
 }
+
+/// The file names, by prefix, of glibc's and musl's C libraries and
+/// loaders, whose system call wrappers a call site looks past.
+const C_LIBRARY: [&str; 5] = [
+    "libc.so",
+    "libpthread.so",
+    "ld-linux",
+    "ld-musl",
+    "libc.musl",
+];
 
 /// Where a call was made: a function, and a line of a file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

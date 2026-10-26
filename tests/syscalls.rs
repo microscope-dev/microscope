@@ -587,6 +587,56 @@ fn the_summary_counts_calls_errors_and_errnos() {
     assert!(!lines.contains("openat("), "-c prints no calls\n{lines}");
 }
 
+/// A program with no lines, as a release build ships, names a call's site
+/// by its own function that called the C library, not by the C library's
+/// system call wrapper, which every call of the kind shares.
+#[test]
+fn a_call_in_a_program_without_lines_is_placed_in_its_own_function() {
+    let directory = ScratchDir::new("syscalls-nolines");
+    let captured = microscope(&["--engine", "ptrace", "-e", "trace=openat", "-Z", "-k"])
+        .args(["-o", "trace.usprof", "--"])
+        .arg(Scenario::fixture("syscalls-nolines"))
+        .arg("files")
+        .current_dir(directory.path())
+        .output()
+        .expect("run microscope");
+    assert_eq!(
+        captured.status.code(),
+        Some(3),
+        "{}",
+        text(&captured.stderr)
+    );
+
+    let profile = microscope::profiler::Profile::read(&directory.path().join("trace.usprof"))
+        .expect("the capture reads")
+        .profile;
+    let stacks: Vec<u32> = profile
+        .syscalls()
+        .events
+        .iter()
+        .filter(|event| matches!(event.event, microscope::syscalls::TraceEvent::Call(_)))
+        .filter_map(|event| event.stack)
+        .filter(|&stack| {
+            let (functions, _) = profile.syscall_stack(stack);
+            functions.iter().any(|function| function == "files")
+        })
+        .collect();
+
+    // The failed open of "missing", made in `files` through the C library.
+    assert_eq!(stacks.len(), 1, "{}", text(&captured.stderr));
+    let stack = stacks[0];
+    let (functions, _) = profile.syscall_stack(stack);
+    assert_ne!(
+        functions[0], "files",
+        "the call is made in the C library: {functions:?}"
+    );
+    assert_eq!(
+        profile.syscall_site(stack).as_deref(),
+        Some("files"),
+        "{functions:?}"
+    );
+}
+
 #[test]
 fn a_capture_holds_what_the_trace_shows_and_report_summarizes_it() {
     let directory = ScratchDir::new("syscalls-capture");

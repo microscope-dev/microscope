@@ -3408,6 +3408,15 @@ textarea.input {
   white-space: nowrap;
 }
 
+/* The name takes the width the numbers leave, and a long one, such as a
+   Rust function's generic types, is cut rather than pushing them out. */
+.syscalls-table td.name {
+  width: 100%;
+  max-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .syscalls-table .num {
   text-align: right;
   font-variant-numeric: tabular-nums;

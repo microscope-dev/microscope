@@ -1535,6 +1535,10 @@ done
 build_fixture gcc "$c_fixtures_dir/catch.c" "$output_dir/catch-spin" -O0 -g3 -DSPIN -pthread
 build_fixture gcc "$c_fixtures_dir/syscalls.c" "$output_dir/syscalls" \
     -O0 -g3 -fPIE -pie -pthread
+# With no lines, as a release build ships: a call's site is named by the
+# program's function past the C library's wrappers.
+build_fixture gcc "$c_fixtures_dir/syscalls.c" "$output_dir/syscalls-nolines" \
+    -O0 -fPIE -pie -pthread
 build_fixture gcc "$c_fixtures_dir/attach-fork.c" "$output_dir/attach-fork" \
     -O0 -g3 -fPIE -pie
 build_fixture gcc "$c_fixtures_dir/exited-leader.c" "$output_dir/exited-leader" \

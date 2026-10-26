@@ -161,7 +161,7 @@ function SummaryRow({
   return (
     <>
       <tr className={selected ? "selected" : undefined} onClick={select} data-row={row.key}>
-        <td className="mono">
+        <td className="mono name" title={row.name}>
           {row.errnos.length > 0 ? (
             <button
               type="button"
