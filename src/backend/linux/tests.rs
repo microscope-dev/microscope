@@ -958,6 +958,10 @@ pub(super) struct FakeTrace {
     /// time, counting from zero.
     kill_point: RefCell<Option<(Pid, &'static str, u32)>>,
 
+    /// A request that fails with the given error, not a death, the given
+    /// time it is made of any thread, counting from zero.
+    fail_point: RefCell<Option<(&'static str, u32, Errno)>>,
+
     /// A thread SIGKILL takes out of its stop as the controller reads the
     /// given address of it, such as a stack slot unwinding needs. That read
     /// fails while the thread runs to its exit event; once there, it answers
@@ -1060,6 +1064,19 @@ impl FakeTrace {
     /// Fails a request of a thread SIGKILL took out of its stop, which this
     /// request may be the one to do.
     fn reach(&self, pid: Pid, request: &'static str) -> Result<()> {
+        let mut failing = self.fail_point.borrow_mut();
+        if let Some((name, remaining, error)) = failing.as_mut()
+            && *name == request
+        {
+            if *remaining == 0 {
+                let error = *error;
+                *failing = None;
+                return Err(backend_error(LinuxError::System(error)));
+            }
+            *remaining -= 1;
+        }
+        drop(failing);
+
         let mut point = self.kill_point.borrow_mut();
         if let Some((target, name, remaining)) = point.as_mut()
             && *target == pid
@@ -2817,6 +2834,223 @@ fn a_process_killed_while_its_attach_plants_a_breakpoint_reports_its_death() {
         matches!(attached.try_recv(), Ok(Err(_))),
         "the attach is answered"
     );
+}
+
+/// Serves the exit status SIGKILL left `pid` with, and checks that it is
+/// reported as the kill and the process as reaped, never as released.
+fn assert_reported_killed(harness: &mut WatchHarness, pid: Pid) {
+    let actions = harness.trace().take_actions();
+    assert!(
+        !actions.iter().any(|action| action.starts_with("detach ")),
+        "a dying process is not released: {actions:?}"
+    );
+    harness
+        .controller
+        .handle_message(ControllerMessage::Wait(WaitEvent::Signaled(
+            pid,
+            Signal::SIGKILL,
+            false,
+        )));
+    let published = harness.published();
+    assert!(
+        published.iter().any(|event| matches!(
+            event,
+            DebuggerEvent::InferiorExited {
+                status: ExitStatus::Terminated(info),
+                ..
+            } if info.code == 9
+        )),
+        "the kill is reported: {published:?}"
+    );
+    assert!(
+        !published
+            .iter()
+            .any(|event| matches!(event, DebuggerEvent::InferiorDetached { .. })),
+        "no detach is reported: {published:?}"
+    );
+    assert!(
+        harness.controller.inferior.is_none(),
+        "the process is reaped"
+    );
+}
+
+/// Removing every breakpoint fails on one for a reason of its own, and
+/// SIGKILL from outside takes the thread as those removed already are put
+/// back. The process is dying, not failed: the request is told of the
+/// death, not of a failed recovery, and the exit status reports the kill.
+#[test]
+fn a_process_killed_while_a_failed_removal_puts_breakpoints_back_reports_its_death() {
+    let mut harness = watch_harness(1);
+    harness.attached();
+    let pid = harness.threads[0];
+    harness.add_breakpoint(0x40);
+    harness.add_breakpoint(0x48);
+
+    *harness.trace().fail_point.borrow_mut() = Some(("remove_breakpoint", 1, Errno::EIO));
+    *harness.trace().kill_point.borrow_mut() = Some((pid, "install_breakpoint", 0));
+    harness.trace().take_actions();
+
+    let error = harness
+        .edit(|reply| Edit::RemoveAllBreakpoints { reply })
+        .try_recv()
+        .expect("reply")
+        .expect_err("the removal fails");
+    assert!(
+        harness.trace().kill_point.borrow().is_none(),
+        "the thread was killed as the first was put back"
+    );
+    assert!(is_vanished_tracee(&error), "{error:?}");
+    assert_reported_killed(&mut harness, pid);
+}
+
+/// A breakpoint's traps fail to go in or come out for a reason of their
+/// own, and SIGKILL from outside takes the thread as those already changed
+/// are put back. The process is dying, not failed: the error is the
+/// death's, not a failed recovery's.
+#[test]
+fn a_rollback_a_dying_process_cannot_take_reports_its_death() {
+    for (failing, killing) in [
+        ("install_breakpoint", "remove_breakpoint"),
+        ("remove_breakpoint", "install_breakpoint"),
+    ] {
+        let mut harness = watch_harness(1);
+        let pid = harness.threads[0];
+        let breakpoint = two_location_breakpoint();
+        let controller = &mut harness.controller;
+        let inferior = controller.inferior.as_mut().expect("inferior");
+        if failing == "remove_breakpoint" {
+            breakpoints::install_logical_breakpoint(&controller.ptrace, inferior, &breakpoint)
+                .expect("installed");
+        }
+
+        *harness.trace().fail_point.borrow_mut() = Some((failing, 1, Errno::EIO));
+        *harness.trace().kill_point.borrow_mut() = Some((pid, killing, 0));
+        let controller = &mut harness.controller;
+        let inferior = controller.inferior.as_mut().expect("inferior");
+        let error = if failing == "install_breakpoint" {
+            breakpoints::install_logical_breakpoint(&controller.ptrace, inferior, &breakpoint)
+        } else {
+            breakpoints::remove_logical_breakpoint(&controller.ptrace, inferior, &breakpoint)
+        }
+        .expect_err("the second trap fails");
+        assert!(
+            harness.trace().kill_point.borrow().is_none(),
+            "the thread was killed in the rollback of {failing}"
+        );
+        assert!(is_vanished_tracee(&error), "{failing}: {error:?}");
+    }
+}
+
+/// An image whose source line 3 has a statement at 0x20 in `physical` and
+/// one at 0x40 in `middle`.
+fn two_statement_image() -> Arc<ModuleImage> {
+    let mut lines = crate::image::lines::LineTables::default();
+    for start in [0x20, 0x40] {
+        lines.begin_sequence().expect("a sequence");
+        lines
+            .push_row(&crate::image::lines::Row {
+                address: start,
+                file: Some(crate::SourceFileId::new(0)),
+                line: 3,
+                statement: true,
+                ..Default::default()
+            })
+            .expect("a statement");
+        lines
+            .push_range(
+                AddressRange {
+                    start: ImageAddress::new(start),
+                    end: ImageAddress::new(start + 0x10),
+                },
+                0,
+                true,
+            )
+            .expect("a range");
+        lines
+            .push_row(&crate::image::lines::Row {
+                address: start + 0x10,
+                end_sequence: true,
+                ..Default::default()
+            })
+            .expect("the sequence's end");
+    }
+
+    // In two functions, as a line of an inlined or duplicated function is.
+    lined_test_image(
+        &[(0, None, None, (0, 0x30)), (1, None, None, (0x30, 0x100))],
+        lines,
+    )
+}
+
+/// SIGKILL from outside takes the thread as a client's request writes its
+/// breakpoint's second trap, when the request adds the breakpoint and when
+/// it enables one. The process is dying, not failed: nothing is taken
+/// back, the request is told of the death, and the exit status reports the
+/// kill.
+#[test]
+fn a_process_killed_while_a_request_plants_a_breakpoint_reports_its_death() {
+    let line = || BreakpointSpec::Source {
+        path: "/test/inline.c".into(),
+        line: crate::LineNumber::new(3).expect("a line"),
+    };
+
+    for enabling in [false, true] {
+        let mut harness = watch_harness_of(1, &two_statement_image());
+        harness.attached();
+        let pid = harness.threads[0];
+        let disabled = enabling.then(|| {
+            harness
+                .edit(|reply| Edit::AddBreakpoint {
+                    spec: line(),
+                    options: Box::new(crate::BreakpointOptions {
+                        enabled: false,
+                        ..Default::default()
+                    }),
+                    reply,
+                })
+                .try_recv()
+                .expect("reply")
+                .expect("added disabled")
+        });
+        *harness.trace().kill_point.borrow_mut() = Some((pid, "install_breakpoint", 1));
+        harness.trace().take_actions();
+
+        let reply = match &disabled {
+            Some(disabled) => {
+                assert_eq!(disabled.locations.len(), 2, "{disabled:?}");
+                harness
+                    .edit(|reply| Edit::SetBreakpointEnabled {
+                        id: disabled.id,
+                        enabled: true,
+                        reply,
+                    })
+                    .try_recv()
+                    .expect("reply")
+            }
+            None => harness
+                .edit(|reply| Edit::AddBreakpoint {
+                    spec: line(),
+                    options: Box::default(),
+                    reply,
+                })
+                .try_recv()
+                .expect("reply"),
+        };
+        let error = reply.expect_err("the second trap fails");
+        assert!(
+            harness.trace().kill_point.borrow().is_none(),
+            "the thread was killed at the second trap (enabling: {enabling})"
+        );
+        assert!(is_vanished_tracee(&error), "{error:?}");
+        let actions = harness.trace().take_actions();
+        assert!(
+            !actions
+                .iter()
+                .any(|action| action.starts_with("remove_site")),
+            "nothing is taken back: {actions:?}"
+        );
+        assert_reported_killed(&mut harness, pid);
+    }
 }
 
 /// A failure that releases an attached process ends the controller with a

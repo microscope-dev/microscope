@@ -667,6 +667,12 @@ impl<P: LinuxTraceOps> Controller<P> {
                         if let Err(recovery) =
                             install_logical_breakpoint(&self.ptrace, inferior, prior)
                         {
+                            // SIGKILL took the thread as the rollback ran:
+                            // the death is what happened, and its exit
+                            // status reports it.
+                            if is_vanished_tracee(&recovery) {
+                                return Err(recovery);
+                            }
                             return Err(backend_error(LinuxError::BreakpointRemoveRecovery {
                                 cause: cause.to_string(),
                                 recovery: recovery.to_string(),
@@ -1569,6 +1575,10 @@ pub(super) fn install_logical_breakpoint(
                 if let Err(recovery) =
                     remove_breakpoint_owner_from(ptrace, inferior, installed_address, owner)
                 {
+                    // SIGKILL took the thread as the rollback ran.
+                    if is_vanished_tracee(&recovery) {
+                        return Err(recovery);
+                    }
                     return Err(backend_error(LinuxError::BreakpointInstallRecovery {
                         cause: cause.to_string(),
                         recovery: recovery.to_string(),
@@ -1624,6 +1634,10 @@ pub(super) fn remove_logical_breakpoint(
                     prior,
                     owner,
                 ) {
+                    // SIGKILL took the thread as the rollback ran.
+                    if is_vanished_tracee(&recovery) {
+                        return Err(recovery);
+                    }
                     return Err(backend_error(LinuxError::BreakpointRemoveRecovery {
                         cause: cause.to_string(),
                         recovery: recovery.to_string(),
