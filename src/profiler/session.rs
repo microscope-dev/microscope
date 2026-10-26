@@ -827,11 +827,26 @@ impl Snapshots {
             //
             // The watermark is taken before the drain, as the recording
             // loop takes its own: a drain that runs long must not pass
-            // records still to come from a ring it has already read.
-            let watermark = monotonic().saturating_sub(WATERMARK_DELAY);
-            let mut records = Vec::new();
-            events.drain(&mut records);
-            let code = processor.code_for_read(Pid::new(self.pid), &records, watermark);
+            // records still to come from a ring it has already read. A
+            // drain that ran long, as this one may if it loads the debug
+            // information, leaves what the program mapped meanwhile past
+            // its watermark, so another follows, up to a few.
+            let mut code;
+            let mut drains = 0;
+            loop {
+                let began = monotonic();
+                let mut records = Vec::new();
+                events.drain(&mut records);
+                code = processor.code_for_read(
+                    Pid::new(self.pid),
+                    &records,
+                    began.saturating_sub(WATERMARK_DELAY),
+                );
+                drains += 1;
+                if drains == READ_DRAINS || monotonic() - began < WATERMARK_DELAY {
+                    break;
+                }
+            }
             let start = monotonic();
             let late = std::time::Instant::now().saturating_duration_since(self.next);
             let modules = processor.modules_of(Pid::new(self.pid));
@@ -1095,6 +1110,12 @@ fn stack_copy(
 
 /// How far behind a drain records are processed.
 const WATERMARK_DELAY: u64 = 20_000_000;
+
+/// The most drains a live read takes before it, each after one that ran
+/// past [`WATERMARK_DELAY`]: the debug information that makes one run long
+/// is loaded once, and a recording that drains slowly throughout still
+/// reads.
+const READ_DRAINS: u32 = 4;
 
 /// Now, by `CLOCK_MONOTONIC`, which times what perf records.
 pub(super) fn monotonic() -> u64 {

@@ -934,3 +934,43 @@ fn reads_of_one_thread(profile: &Profile) -> Option<(u64, i64, i64)> {
         *times.last()?,
     ))
 }
+
+/// The reason a read gives for a frame in code that none of the mappings
+/// it was given covers.
+const FOREIGN_CODE: &str =
+    "a frame its isolate names runs code that is neither V8's builtins nor code V8 generated";
+
+/// Records `waits.js` on `entry` with the live engine from its start, as
+/// its threads block while V8 maps each isolate's code. Every read must
+/// find that code, however long the drain before it took to load the debug
+/// information of the module that carries V8.
+pub fn check_from_start(entry: &str) {
+    let mut command = Command::new(node::node(entry));
+    command
+        .arg(node::fixture("waits.js"))
+        .args(["4", "1"])
+        .env_clear()
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let options = RecordOptions {
+        python: Some(PythonEngine::Live { every: EVERY }),
+        ..RecordOptions::default()
+    };
+    let recording = microscope::profiler::record(command, &options).expect("record");
+    assert!(recording.status.success(), "{entry}: {}", recording.status);
+    let profile = recording.profile;
+    assert!(
+        profile.task_snapshots().0 > 0,
+        "{entry}: no read: {:#?}",
+        profile.task_snapshot_problems()
+    );
+    let foreign: Vec<u64> = left_out(&profile, (i64::MIN, i64::MAX))
+        .into_iter()
+        .filter(|(_, reason)| reason == FOREIGN_CODE)
+        .map(|(tid, _)| tid)
+        .collect();
+    assert!(
+        foreign.is_empty(),
+        "{entry}: left out as foreign code: {foreign:?}"
+    );
+}

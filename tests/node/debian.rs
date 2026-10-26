@@ -476,3 +476,14 @@ fn debian_live_snapshots_read_every_tier() {
     }
     crate::live::check_tiers(DEBIAN);
 }
+
+/// On Debian's node, whose V8 is in a library the recorder loads the debug
+/// information of as its first reads are due, those reads find the code V8
+/// mapped meanwhile.
+#[test]
+fn debian_live_snapshots_read_threads_from_their_start() {
+    if !inside("debian::debian_live_snapshots_read_threads_from_their_start") {
+        return;
+    }
+    crate::live::check_from_start(DEBIAN);
+}
