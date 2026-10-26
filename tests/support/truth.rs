@@ -1,16 +1,14 @@
 //! What a fixture reports about itself, in `TRUTH` lines on its output.
 //!
-//! A fixture prints what its own runtime knows, such as each thread's
-//! frames or a variable's value, as lines that begin `TRUTH`, then fields
-//! separated by tabs. A field escapes a backslash, tab, or newline in its
-//! text as `\\`, `\t`, or `\n`. A line whose first field is `checkpoint`
-//! begins a checkpoint, named by its second field: the lines up to the
-//! next checkpoint describe the program at that point.
+//! Runtime facts, such as thread frames or variable values, follow `TRUTH`
+//! as tab-separated fields. Fields escape backslashes, tabs, and newlines
+//! as `\\`, `\t`, and `\n`. A `checkpoint` first field starts a checkpoint
+//! named by the second field; subsequent lines describe that program state
+//! until the next checkpoint.
 //!
-//! The expected values come from the program as it runs, never from an
-//! earlier run of microscope, so they stay right when a line moves or a
-//! toolchain changes. Each suite that compares against a report also
-//! proves that the comparison fails on the lies it exists to catch.
+//! Expected values come from the running program, not an earlier microscope
+//! run, so source edits and toolchain changes do not make them stale. Each
+//! suite also checks that the comparison rejects the errors it should catch.
 
 use std::path::Path;
 

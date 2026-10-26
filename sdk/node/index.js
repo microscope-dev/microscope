@@ -13,17 +13,15 @@
 //         return render(rows);
 //       }));
 //
-// Each name is a site, which the package defines the first time it is used
-// where it is used. A site is off until a microscope recording switches it
-// on, by its name. Nothing is sent anywhere: an on site writes a few bytes
-// into its thread's ring in the program's own memory, which microscope
-// reads from outside, and every site switches itself off once microscope
-// stops reading.
+// Sites are defined on first use by name and source location, and stay off
+// until a recording enables them by name. Enabled sites write to a thread's
+// in-process ring, which microscope reads externally; nothing is sent over
+// the network. Sites disable themselves when microscope stops reading.
 //
-// The work is done by the probes SDK's shared library, which the addon
-// microscope.node loads, from next to itself or MICROSCOPE_PROBES_LIBRARY;
-// the package finds the addon next to itself or at MICROSCOPE_NODE_ADDON.
-// Without either, the package does nothing, and `problem` says why.
+// The microscope.node addon loads the probes SDK's shared library from
+// beside itself or MICROSCOPE_PROBES_LIBRARY. The addon is found beside this
+// file or at MICROSCOPE_NODE_ADDON. If either is missing, calls do nothing
+// and `problem` says why.
 
 'use strict';
 
@@ -87,8 +85,8 @@ function caller() {
   return call ? [call.getFileName() ?? '', call.getLineNumber() ?? 0] : ['', 0];
 }
 
-// Whether `fn` suspends: an async function's or generator's code returns
-// before its work is done, which a zone of one thread cannot span.
+// Async functions and generators return before finishing; a thread-local
+// zone cannot span their suspension.
 function suspends(fn) {
   const kind = Object.prototype.toString.call(fn);
   return kind === '[object AsyncFunction]' || kind === '[object GeneratorFunction]' ||
@@ -116,13 +114,13 @@ function zoned(at, fn, self, args) {
   }
 }
 
-// Runs `fn` as a span of the thread's time named `name`: its result.
+// Records `fn` as a thread-local span named `name` and returns its result.
 function zone(name, fn) {
   refuse(fn);
   return zoned(site(ZONE, name, caller()), fn, undefined, []);
 }
 
-// `fn`, each call of which is a span of the thread's time named `name`.
+// Wraps `fn` so each call records a thread-local span named `name`.
 function wrap(name, fn) {
   refuse(fn);
   const at = site(ZONE, name, caller());
@@ -134,8 +132,8 @@ function wrap(name, fn) {
   };
 }
 
-// Runs `fn` with the thread's time labelled `name=value`: samples and zones
-// inside it carry the label, its value cut to 256 bytes. `fn`'s result.
+// Runs `fn` with samples and zones labelled `name=value`, truncating the
+// value to 256 bytes. Returns `fn`'s result.
 function label(name, value, fn) {
   refuse(fn);
   const at = site(LABEL, name, caller());

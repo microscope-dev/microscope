@@ -1,7 +1,6 @@
-//! Interrupts that pause running JavaScript: an interrupt asks every
-//! isolate to pause and waits a moment for one to, before every thread is
-//! stopped natively, as one that runs no JavaScript must be (F19). A pause
-//! asked for cannot be withdrawn, so one V8 takes late is absorbed.
+//! Interrupts request a pause in every isolate before stopping all threads
+//! natively, including those running no JavaScript. Pause requests cannot
+//! be withdrawn; late V8 pauses are absorbed.
 
 use super::super::Controller;
 use super::super::cdp::{Connection, Session};
@@ -11,9 +10,8 @@ use crate::Result;
 use crate::runtime_model::inspector_protocol;
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// Asks every isolate of every connected inspector to pause its
-    /// running JavaScript for a client's interrupt, and arms the deadline
-    /// after which every thread is stopped natively: whether any was asked.
+    /// Requests pauses in all connected isolates and arms the native-stop
+    /// deadline. Returns whether any pause was requested.
     pub(in crate::backend::linux) fn interrupt_javascript(&mut self) -> bool {
         let Some(inferior) = self.inferior.as_mut() else {
             return false;
@@ -37,8 +35,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         asked
     }
 
-    /// Stops every thread natively once an interrupt's deadline passes
-    /// with no pause from V8, as when no JavaScript runs (F19).
+    /// Stops all threads natively if V8 has not paused before the deadline,
+    /// as when no JavaScript runs.
     pub(in crate::backend::linux) fn interrupt_expired(
         &mut self,
         now: std::time::Instant,
@@ -62,8 +60,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 }
 
-/// Asks the isolate `session` reaches to pause, at once or once it leaves
-/// the pause it is leaving: whether it was asked.
+/// Requests a pause, deferred until resume completes if needed.
+/// Returns whether the request was sent or deferred.
 pub(super) fn ask_pause(connection: &Connection, session: &Session, isolate: &mut Isolate) -> bool {
     if isolate.resuming {
         isolate.pause = PauseRequest::Deferred;

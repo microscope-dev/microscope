@@ -1,7 +1,5 @@
-//! A Python program's own source files: those under the directories Python
-//! searches for its modules before the standard library and installed
-//! packages. No debug information names them, so a front end lists them,
-//! and reads them, as these say.
+//! Lists and authorizes reads of Python project sources, which debug information does not name.
+//! Searches project module directories before the standard library and installed packages.
 
 use std::collections::{BTreeSet, VecDeque};
 use std::ffi::{OsStr, OsString};
@@ -169,11 +167,8 @@ impl Project {
         }
     }
 
-    /// Whether `path` is one of the project's files: a Python file under
-    /// one of its directories, through none that a listing skips, and no
-    /// link out of it. A link within a directory holds, though a listing,
-    /// which follows none, leaves it out: a frame may run a file through
-    /// one.
+    /// Accepts Python files under project directories, excluding skipped directories and links out.
+    /// Internal links are allowed for frame sources, though listings never follow links.
     pub fn holds(&self, path: &Path) -> bool {
         if !path.is_absolute() || !is_python(path) {
             return false;

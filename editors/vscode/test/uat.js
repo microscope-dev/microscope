@@ -1,15 +1,6 @@
-// User acceptance test: VS Code itself drives `microscope dap` through the
-// extension, as a user would from the editor, and every message each
-// session exchanges is recorded in the adapter log's format.
-//
-// Each scenario drives VS Code's own commands where VS Code has one for
-// what a user does: breakpoints, stepping, the debug console, the watch
-// view, hovers, run to cursor, the disassembly view, restart. It falls
-// back on a session's requests only for what has no command, and checks
-// what VS Code asks the adapter and what it is answered, which is what a
-// user sees.
-//
-// Run by run.sh through VS Code's extension test mode.
+// run.sh drives this test through VS Code's extension test mode.
+// Scenarios use editor commands where available, otherwise DAP requests.
+// Each session's requests and replies are checked and recorded as an adapter log.
 
 'use strict';
 

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Writes the Rust table of the characters a str's repr escapes on every
-# CPython interpreter in $MICROSCOPE_CPYTHON: those str.isprintable says do
-# not print in each one's Unicode database. Usage:
+# Writes the Rust table of code points unprintable in every $MICROSCOPE_CPYTHON
+# interpreter's Unicode database, as reported by str.isprintable. Usage:
 #   scripts/python-printable.sh [OUTPUT]
 
 set -euo pipefail

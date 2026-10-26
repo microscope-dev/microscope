@@ -1,11 +1,8 @@
-//! The text the debugger presents a built-in Python value as: Python's
-//! `repr` for ints at any size, floats, bytes, and strings. A string
-//! escapes a backslash, its quote, and each character every supported
-//! interpreter's Unicode database says does not print (`printable.gen.rs`):
-//! the controls, separators but the space, format characters, private
-//! use, lone surrogates, and code points no version assigns. A character
-//! that a later version than the interpreter's assigns is kept as it is,
-//! where that interpreter's `repr` escapes it.
+//! Python `repr` notation for arbitrary-size ints, floats, bytes, and strings.
+//! Strings escape backslashes, their quote, and characters unprintable in every supported
+//! Unicode database (`printable.gen.rs`): controls, non-space separators, format characters,
+//! private use, lone surrogates, and code points no version assigns.
+//! Characters assigned only by a newer version stay literal, unlike an older interpreter's `repr`.
 //! `tests/fixtures/python/truth.py` defines the same text.
 
 use std::fmt::Write as _;

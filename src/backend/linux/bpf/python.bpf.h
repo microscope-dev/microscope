@@ -1,14 +1,9 @@
-// The walker of a thread's CPython frames, which the sampler's program
-// runs at each sample and the syscall programs at each call's stack
-// (plans/python.html, "The BPF engine"). It finds the thread's state, reads
-// the chain from the thread's innermost frame by each frame's `previous`,
-// and writes one py_frame per frame, as py_layout places CPython's fields.
-// microscope proves and names each frame's code object later; the walker
-// only copies.
+// CPython frame walker for samples and syscall stacks (plans/python.html, "The BPF engine").
+// Follows `previous` from the thread's innermost frame, copying py_frame records via py_layout.
+// microscope validates and names code objects later; this walker only copies.
 //
-// The walk and the search for a state are global functions, so the
-// verifier checks each once for every program that calls it. They read
-// only user memory, each read failing whole, and end at a bound.
+// Global walk/search functions get one verifier check per calling program.
+// Reads access only user memory and fail whole; walks and searches are bounded.
 #pragma once
 
 #include "records.h"

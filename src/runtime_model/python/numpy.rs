@@ -1,20 +1,13 @@
-//! numpy's arrays, which keep their elements as the machine does, apart
-//! from any object.
+//! numpy arrays store elements as native values, not separate Python objects.
 //!
-//! An array's fields after the object's header are numpy's public C ABI,
-//! `PyArrayObject_fields`, unchanged from numpy 1 to 2: its data, its
-//! number of axes, its shape and strides, its base, and its dtype. numpy's
-//! extension carries no DWARF, so their offsets are written here, after
-//! the header the layout gives ([`Field::ObjectSize`]). A dtype keeps its
-//! kind, byte order, and type number at the same place in numpy 1 and 2,
-//! and numpy numbers its built-in types alike in both; the type number
-//! alone names the element.
+//! `PyArrayObject_fields` is public C ABI, unchanged between numpy 1 and 2: data, axes,
+//! shape, strides, base, and dtype. Without extension DWARF, offsets are recorded here
+//! relative to [`Field::ObjectSize`]. Dtype kind, byte order, and type number also retain
+//! their offsets; built-in type numbers identify the same elements in both versions.
 //!
-//! An array of truth values, integers, or 32- or 64-bit floats in the
-//! machine's byte order shows its elements; any other shows its shape and
-//! dtype alone, and says why. Its summary is `array(ELEMENTS,
-//! dtype=NAME)`, each element as Python writes the number, a float with
-//! the shortest digits its own width needs, as `float32(0.1)` is `0.1`.
+//! Native-endian bools, integers, and 32-/64-bit floats show elements; unsupported arrays
+//! show shape, dtype, and a reason. Summaries use `array(ELEMENTS, dtype=NAME)` and Python
+//! number notation, with shortest float digits at the element's width (`float32(0.1)` is `0.1`).
 
 use std::sync::Arc;
 

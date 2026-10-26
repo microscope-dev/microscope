@@ -76,9 +76,8 @@ pub use backend::syscall_engines;
 mod test_memory;
 pub mod timings;
 
-/// What the tests of microscope's unsafe code reach it through. They are a
-/// test target of their own, `tests/miri.rs`, so that Miri checks only
-/// them, not the whole crate, each time it runs them.
+/// Exports for `tests/miri.rs`, a separate target so Miri need not run the
+/// whole crate's tests.
 #[doc(hidden)]
 pub mod unsafe_parts {
     pub use crate::backend::perf::sys::{DATA_HEAD, DATA_TAIL, HEAP_DATA, RingMemory};

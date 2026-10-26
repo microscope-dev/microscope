@@ -1,24 +1,14 @@
-//! The standard library's types that only their own C defines, which no
-//! Python code can read: `collections.deque`, `defaultdict`, and
-//! `OrderedDict`, `datetime`'s `date`, `time`, `datetime`, `timedelta`,
-//! and `timezone`, and `decimal.Decimal`. The layouts copy their structures
-//! (`scripts/cpython-layouts.c`).
+//! Reads C-defined standard-library values using structures copied in `scripts/cpython-layouts.c`:
+//! `collections.deque`, `defaultdict`, and `OrderedDict`; `datetime`'s types; and `decimal.Decimal`.
 //!
-//! A type is one of them only where C defines it, as no class can be, and
-//! its module, its name, and the size of its objects are all the copied
-//! structure's: a type of the same name that a program or another
-//! extension defines is read as any other object is. A class deriving from
-//! one of them holds its value, as one deriving from `int` holds an int's.
+//! Recognition requires a C-defined type with matching module, name, and object size.
+//! Same-named nonmatching types are ordinary objects; subclasses retain the base value.
 //!
-//! Each is shown as its type's own `repr` writes it, with the names of the
-//! object's type that its C uses, and its items as its children: an
-//! `OrderedDict`'s in the order its list of nodes keeps, which `move_to_end`
-//! changes and its dict's order does not show. A `Decimal`'s exponent is
-//! written `E`, as the default context's `capitals` writes it.
+//! Summaries follow the type's C `repr`, including its type-name spelling; items are children.
+//! `OrderedDict` uses node order, which `move_to_end` changes without changing dict order.
+//! `Decimal` exponents use `E`, matching the default context's `capitals`.
 //!
-//! numpy's `ndarray` is identified alike, by its module and name and an
-//! object size that holds the fields of numpy's public structure, and read
-//! by [`super::numpy`].
+//! numpy's `ndarray` requires matching module/name and room for its public fields ([`super::numpy`]).
 
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -212,9 +202,8 @@ pub(super) struct Time {
     fold: u8,
 }
 
-/// A libmpdec number: its `flags`, its exponent, and its coefficient's
-/// digits, in words of [`DECIMAL_WORD_DIGITS`], least significant first;
-/// or the count of digits of one of more than are read.
+/// A libmpdec number's flags, exponent, and little-endian [`DECIMAL_WORD_DIGITS`]-digit words,
+/// or just its digit count when too large to read.
 pub(super) enum Decimal {
     Read {
         flags: u8,

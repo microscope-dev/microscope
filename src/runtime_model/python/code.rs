@@ -1,11 +1,7 @@
-//! The code objects of one process the model has read, kept across stops.
-//! A code object is decoded once, and its row is proved again each time
-//! it is used, by reading the object's header and comparing it with the
-//! row's: an object freed and another put in its place reads as a
-//! different object, and is decoded again.
+//! Process code objects, cached across stops. Each use compares the object's
+//! header with its cached proof; a mismatch after address reuse triggers decoding.
 //!
-//! Rows refer to their names, local names, and line tables by dense ids
-//! and spans into pools, so the table is a few vectors.
+//! Names, locals, and line tables live in vector pools, indexed by dense ids and spans.
 
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -135,8 +131,7 @@ impl CodeTable {
 
         let id = self.decode(reader, &header, proof)?;
         self.index.insert(address, id);
-        // Only the new row: the others were checked as they were decoded,
-        // and checking every row at each would cost each decode them all.
+        // Older rows were checked on decode; rechecking them would make each decode O(n).
         self.check_row(id.index());
         debug_assert!(
             self.rows

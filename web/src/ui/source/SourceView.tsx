@@ -1,7 +1,5 @@
-// One source file, read-only, in CodeMirror: the breakpoint gutter, the
-// line the program stopped at, the line a caller's frame is at, and the
-// lines the link selects. Its keys stay the debugger's: a letter key typed
-// here steps or breaks rather than moving a cursor through text.
+// Read-only CodeMirror view with breakpoint, frame, and selection markers.
+// Letter keys run debugger commands instead of moving the text cursor.
 
 import {
   Compartment,
@@ -49,7 +47,7 @@ export interface Marks {
   selection: { line: number; end: number } | null;
   /** Values beside the lines that compute them. */
   inline: ReadonlyMap<number, readonly InlineValue[]>;
-  /** Why the program stopped, under the line it says it of. */
+  /** Stop reason, displayed below its source line. */
   note: { line: number; text: string } | null;
 }
 

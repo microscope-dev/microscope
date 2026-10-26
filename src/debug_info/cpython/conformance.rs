@@ -1,8 +1,5 @@
-//! The generated layouts checked against DWARF, a third account of each
-//! interpreter's structures beside its headers and its own offsets table:
-//! the compiler's record of the build itself. Every interpreter in the
-//! matrix whose build has a debug output is checked on every field its
-//! layout holds and every constant DWARF describes.
+//! Checks generated layouts against DWARF, independently of headers and the offsets table.
+//! Covers every layout field and DWARF-described constant for matrix builds with debug output.
 
 use std::path::{Path, PathBuf};
 

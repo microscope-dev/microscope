@@ -1,20 +1,11 @@
-//! CPython, as the module that carries it describes it: an image is a
-//! Python runtime when it has a `.PyRuntime` section, as `libpython3.x.so`
-//! has, and an executable that links CPython statically or embeds it.
+//! Identifies CPython by `.PyRuntime` in libpython, a static executable, or an embedder.
 //!
-//! CPython 3.13 and later begin that section with `_Py_DebugOffsets`, a
-//! table of their own structures' offsets, which a debugger reads under
-//! a schema for each minor version ([`schemas`]). Go's runtime model never
-//! takes offsets from a table of versions; CPython describes itself in
-//! no DWARF a release ships with, so this provider does, where the target
-//! describes nothing: all of 3.12, which has no table, and the few fields
-//! and numbers the tables of later versions leave out. Those come from
-//! [`layouts`], generated from each interpreter's headers in the matrix,
-//! and a version microscope has no layout of is refused by name, never
-//! read by the nearest one's.
+//! From 3.13, `_Py_DebugOffsets` begins the section; [`schemas`] defines each minor's order.
+//! Release builds ship no DWARF. Missing fields and constants come from [`layouts`],
+//! generated from the matrix's headers; 3.12, which has no table, uses these entirely.
+//! Versions without a layout are refused by name, never read with the nearest version's.
 //!
-//! The provider also gives the evaluation loop and the call machinery
-//! around it their code role.
+//! Also assigns code roles to the evaluation loop and its call machinery.
 
 mod schemas;
 
@@ -229,13 +220,8 @@ fn describe(
     (version, flags, from_table(version, free_threaded, table))
 }
 
-/// The layout a 3.13 or later runtime's own table gives, completed by the
-/// layout generated for a build of its minor version whose structures it
-/// shares. Patch releases change structures the table does not describe,
-/// as 3.14.8's interpreter state is 24 bytes longer than 3.14.4's from its
-/// garbage collector's state on, so the build is the one whose layout
-/// agrees with the table on every field both name; and where builds that
-/// agree differ on a field the table leaves out, none is chosen.
+/// Completes a 3.13+ table with a same-minor generated layout agreeing on every shared field.
+/// Patch releases can change omitted fields; refuses matching builds whose layouts differ.
 fn from_table(
     version: PyVersion,
     free_threaded: bool,

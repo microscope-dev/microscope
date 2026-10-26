@@ -66,7 +66,7 @@ export function Breakpoints() {
   );
 }
 
-/** Where a breakpoint is, as briefly as it can be said. */
+/** Short source location, falling back to the requested location. */
 export function placeLabel(breakpoint: Breakpoint): string {
   const place = firstBreakpointPlace(breakpoint);
   if (place?.path && place.line) {
@@ -480,9 +480,8 @@ function WatchAdder() {
 }
 
 /**
- * The exceptions language runtimes report, each of which stops the program
- * once chosen: a list a program in one language mostly ignores, so it is
- * folded until opened, saying how many are on.
+ * Exception filters start collapsed because most apply to other languages.
+ * The summary counts enabled filters.
  */
 function Exceptions({ control }: { control: boolean }) {
   const session = useModel((model) => model.state?.session);

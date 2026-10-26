@@ -1,35 +1,28 @@
 //! A `Mutex` and `Condvar` for models, scheduled where loom's are not.
 //!
-//! Loom switches threads only before operations that can block or observe
-//! another thread, such as taking a lock; it never does so when its
-//! `Mutex` unlocks. A protocol that hands work off through `try_lock`
-//! depends on what another thread does between one unlock and the next: a
-//! worker that looks for more work, then lets go of the lock, strands
-//! whatever arrived in between. Loom never runs a thread in that gap, so a
-//! model of the protocol passes with the bug in it.
+//! Loom schedules before blocking or observing another thread, but not on
+//! mutex unlock. A `try_lock` handoff can strand work arriving between a
+//! worker's last check and its unlock; loom misses that gap and the bug.
 //!
-//! Loom's `Condvar` never wakes a waiter that was not notified, as a real
-//! one may, so a wait not rechecked in a loop passes too.
+//! Loom's `Condvar` has no spurious wakes, so it also misses waits that
+//! fail to recheck their condition in a loop.
 //!
-//! A model has no clock, so a timed wait here returns at once, having let
-//! the other threads run: the most a real one's time can run out.
+//! Models have no clock. Timed waits here yield to other threads, then
+//! return immediately, modeling the earliest possible timeout.
 //!
-//! And loom runs every thread of a model on one OS thread, so while one
-//! model thread unwinds a panic, `std::thread::panicking` holds in all of
-//! them. A guard another thread drops meanwhile poisons the std mutex that
-//! loom's `Mutex` keeps its data in, and loom unwraps it.
+//! All model threads share one OS thread, so `std::thread::panicking`
+//! holds in all of them while one unwinds. Another thread dropping a guard
+//! then poisons loom's backing std mutex, whose lock result loom unwraps.
 //!
-//! So this `Mutex` is a flag taken by compare-exchange and released by a
-//! store, at which loom schedules. A thread that finds it taken waits to be
-//! woken by the next release; spinning instead would give loom more
-//! schedules than it can explore. Its data sits in a std mutex that only
-//! the flag's holder locks and whose poisoning it ignores. The `Condvar`
-//! wakes its waiters the same way.
+//! This mutex instead uses a compare-exchange flag and a release store,
+//! both loom scheduling points. Contenders wait for the next release;
+//! spinning would produce too many schedules to explore. Only the flag's
+//! holder locks the backing std mutex, ignoring poison. The condvar uses
+//! the same wake mechanism.
 //!
-//! Each waiting thread waits on a `Notify` of its own, which loom wakes
-//! spuriously once in some schedules. It is the thread's for as long as
-//! the mutex or condvar lives: a new one for each wait would let loom
-//! choose a spurious wake every time, and never finish.
+//! Each mutex or condvar keeps one `Notify` per waiting thread for as long
+//! as it lives. Loom may wake it spuriously once; allocating one per wait
+//! would allow endless spurious wakes.
 
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, LockResult, PoisonError, TryLockError, TryLockResult};

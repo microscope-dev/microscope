@@ -1,7 +1,5 @@
-//! The thread states of every interpreter in the process: CPython's
-//! runtime state lists the interpreters, and each interpreter lists its
-//! threads' states, which name the native thread each runs on and its
-//! innermost frame.
+//! Enumerates interpreters from CPython's runtime state, then each interpreter's threads.
+//! Thread states identify their native thread and innermost frame.
 
 use std::collections::HashSet;
 

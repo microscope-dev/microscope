@@ -1,17 +1,11 @@
-//! Source maps: Source Map v3 as ECMA-426 defines it, which leads from a
-//! place in generated JavaScript to the place in an original source it came
-//! from, and back.
+//! Source Map v3 (ECMA-426): generated-to-original positions and reverse lookup.
 //!
-//! A map is decoded once, into a table of segments sorted by generated
-//! position and an index of them by original place. Lookups answer exactly
-//! what the segments say and nothing nearer: a position with no segment at
-//! or before it on its own line has no original place, even when an earlier
-//! line has one.
+//! Maps decode once into segments sorted by generated position and indexed by
+//! original position. Without a segment at or before a position on the same
+//! line, it has no original position; mappings never carry across lines.
 //!
-//! Bases: a source map counts lines and columns from zero, and columns in
-//! UTF-16 code units, as JavaScript strings index text. [`Line`] and
-//! [`Column`] hold those zero-based values, and convert from and to the
-//! one-based numbers that stack traces print only through their named
+//! Lines and UTF-16 code-unit columns are zero-based. [`Line`] and [`Column`]
+//! convert to and from one-based stack-trace positions only through named
 //! constructors and accessors.
 //!
 //! Every malformed input is a [`SourceMapError`]. Input sizes are bounded
@@ -42,8 +36,7 @@ impl Line {
         Self(line)
     }
 
-    /// The line a one-based count names, or `None` for zero, which names
-    /// no line.
+    /// Converts a one-based line; `None` for zero.
     #[must_use]
     pub const fn from_one_based(line: u32) -> Option<Self> {
         match line.checked_sub(1) {
@@ -169,14 +162,11 @@ pub struct GeneratedMatch {
 /// Which of the segments that map to an original line a breakpoint uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColumnChoice {
-    /// Those with the line's least original column: where the line's
-    /// first expression starts, in every copy of it the generated code
-    /// holds.
+    /// The line's least original column, across all generated copies.
     LineStart,
 
-    /// Those whose original column is the greatest at or before this one:
-    /// the segments that cover the column in the original line. None when
-    /// every segment on the line starts after it.
+    /// The greatest original column at or before this one on the same line.
+    /// None when every segment starts after it.
     Covering(Column),
 }
 

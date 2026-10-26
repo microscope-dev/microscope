@@ -1,14 +1,10 @@
-//! The launch bootstrap through which CPython 3.12 and 3.13, which have no
-//! PEP 768 request to run a script, take the agent's scripts: a private
-//! directory holding `sitecustomize.py`, which a launch puts first on
-//! `PYTHONPATH`; the FIFO beside it, which microscope holds open to read
-//! and write and writes each script's path to; and the launched process's
-//! ID, which only that process's bootstrap answers to. The bootstrap puts
-//! the variables and the path back before the program runs, unless the
-//! launch follows the processes the program starts: then they stay for
-//! child interpreters, and each one a group debugs gets a FIFO of its own
-//! in the same directory, `wake-PID`, which its bootstrap reads instead, as
-//! a forked interpreter's does once it forks.
+//! Agent bootstrap for CPython 3.12 and 3.13, which lack PEP 768 script requests.
+//! A private directory puts `sitecustomize.py` first on `PYTHONPATH` and holds a FIFO
+//! for script paths, opened read/write by microscope. A saved PID selects the launched process.
+//!
+//! The bootstrap restores the environment and path before running the program, unless
+//! following children. Each debugged child interpreter gets its own `wake-PID` FIFO
+//! in the launch directory; forked interpreters switch to theirs after forking.
 
 use std::ffi::OsString;
 use std::io::{Read as _, Write as _};
@@ -47,16 +43,13 @@ pub(super) struct PythonLaunch {
     directory: PathBuf,
     channel: std::fs::File,
 
-    /// For a process the launch's program started, its own FIFO, which is
-    /// all this removes: the directory is the launch's.
+    /// Child FIFO: removes only this file, not the launch's directory.
     member: Option<PathBuf>,
 }
 
 impl PythonLaunch {
-    /// Prepares the bootstrap for a launch of `executable`, when it is
-    /// CPython 3.12 or 3.13, and sets the variables that lead its
-    /// interpreter to it in `environment`, which holds the launch's own
-    /// changes to the debugger's environment.
+    /// Prepares CPython 3.12/3.13's bootstrap and adds its variables to the launch's
+    /// `environment` overrides, preserving any existing `PYTHONPATH` override.
     pub(super) fn prepare(
         executable: &Path,
         environment: &mut Vec<(OsString, Option<OsString>)>,
@@ -99,10 +92,8 @@ impl PythonLaunch {
         Ok(Some(launch))
     }
 
-    /// The bootstrap of `pid`, a process a launch's program started that
-    /// runs `executable`, when it is CPython 3.12 or 3.13: a FIFO of its
-    /// own in the directory the variables it inherited name. Made before
-    /// the process runs, so that its bootstrap finds the FIFO.
+    /// Creates a CPython 3.12/3.13 child's FIFO in the inherited bootstrap directory.
+    /// Must run before the child resumes so its bootstrap finds the FIFO.
     pub(super) fn join(executable: &Path, pid: Pid) -> Result<Option<Self>, Arc<str>> {
         if !launches_bootstrapped_python(executable) {
             return Ok(None);

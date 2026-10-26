@@ -15,8 +15,8 @@
 //! frame, as the stopped thread is, each frame described as
 //! [`frames::describe`] describes it at a stop.
 //!
-//! The caller proves the thread did not run while it was read
-//! ([`LiveThread`]). What this module proves before it believes a word:
+//! The caller proves the thread did not run during the read ([`LiveThread`]).
+//! This module validates:
 //!
 //! - `ThreadLocalTop`'s `isolate_` is the isolate it belongs to, which a
 //!   wrong layout would not give;
@@ -30,18 +30,14 @@
 //!   the thread's own stack, above its stack pointer and up to the
 //!   outermost entry, each above the one before.
 //!
-//! A thread whose isolate publishes frames on another thread's stack is a
-//! thread that holds the isolate without having entered it, as V8's
-//! helper threads do while they work for it (`LocalHeap::SetCurrent`), and
-//! runs none of its JavaScript. V8 runs no JavaScript on such a thread:
-//! only `Isolate::Enter` lets a thread run an isolate's code, and V8 makes
-//! a `LocalHeap` set the current isolate only on threads that run its
-//! background work. That holds while the isolate's heap is its own: with
-//! V8's shared heap on (`--shared-heap`, `--shared-string-table`,
-//! `--harmony-struct`), which Node leaves off unless asked, isolates share
-//! work V8 does not promise to keep apart, and such a thread is left out
-//! with that reason ([`SHARED_HEAP`]), read from the isolate's own
-//! `uses_shared_heap_flag`.
+//! Frames on another thread's stack identify a helper holding, but not
+//! entering, the isolate (`LocalHeap::SetCurrent`). Only `Isolate::Enter`
+//! permits JavaScript execution; `LocalHeap` sets the current isolate only
+//! for background workers. This distinction requires a private heap.
+//! With `--shared-heap`, `--shared-string-table`, or `--harmony-struct`
+//! (off by default in Node), V8 does not guarantee work stays within an
+//! isolate. Such threads are excluded with [`SHARED_HEAP`], based on the
+//! isolate's `uses_shared_heap_flag`.
 //!
 //! Anything else leaves the thread out with the reason: never a shorter
 //! stack, nor a guessed one.

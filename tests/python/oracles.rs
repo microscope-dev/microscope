@@ -1,5 +1,4 @@
-//! The comparisons the suite rests on, each shown to fail on the lies it
-//! exists to catch, and the attach path held to the same truth as launch.
+//! Mutation checks for frame/local comparisons, plus attach/launch parity against CPython.
 
 use microscope::{FrameKind, ThreadId};
 
@@ -7,8 +6,7 @@ use crate::locals::{PARKED, Stop, assert_locals, check_locals, reported_locals};
 use crate::session::PythonSession;
 use crate::stacks::{CodeLines, check_frames, reported_threads};
 
-/// The primary pair, which the plan runs the client and path scenarios
-/// on.
+/// Primary GIL and free-threaded builds for client and path scenarios.
 const PRIMARY: [&str; 2] = ["3.14", "3.14t"];
 
 /// The comparisons fail on a dropped frame, a wrong line, a swapped

@@ -43,8 +43,7 @@ async fn opens_on(tab: &mut Client, state: &Value, function: &str, line: usize) 
     assert_eq!(selected["name"], function, "{trace}");
     assert_eq!(selected["kind"], "interpreted", "{trace}");
 
-    // The interpreter holds the frame, which no machine state describes:
-    // that is how such a frame is, not a failure.
+    // Interpreted frames have no native register state; this is unsupported, not a read failure.
     let (kind, message) = tab
         .request(
             "registers",

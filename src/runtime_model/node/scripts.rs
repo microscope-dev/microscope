@@ -1,13 +1,10 @@
-//! A process-lifetime table of scripts and functions, like Python's
-//! `CodeTable`: each row is found by its object's address and proven again
-//! at every use, so a row for an object V8's GC moved, or for an address
-//! reused by another object, misses instead of misnaming.
+//! Process-lifetime script and function cache, like Python's `CodeTable`.
+//! Address-keyed rows are revalidated on every use; GC movement or address
+//! reuse causes a miss rather than a wrong name.
 //!
-//! A script is proven by its id, which V8 never reuses within an isolate,
-//! and its source string. A function's shared info is proven by its
-//! script's address, id, source, and its function literal id, which together
-//! name one function literal, and so one name. Line ends are decoded once
-//! per script, as far as a frame has needed them.
+//! Script identity uses its source string and id, never reused within an
+//! isolate. Function identity adds its script's address and function literal
+//! id. Line ends are decoded once per script, only as far as frames need.
 
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -1,21 +1,19 @@
 //! Instrumentation that microscope records: zones, frames, plots, messages,
 //! labels, and triggers.
 //!
-//! Each macro's site is static data in the `microscope_sites` section, which
-//! microscope reads from the program's file, so the program never sends a
-//! name. A site is off until microscope switches it on by writing its state
-//! byte, and an off site costs a load and a branch. An on site writes a
-//! 16-byte record, or a few, into its thread's ring in the program's own
-//! memory, which microscope reads from outside. The writer never waits: it
-//! overwrites the oldest records when microscope falls behind, and microscope
-//! counts every one. Nothing breaks if microscope goes away; once it stops
-//! saying it is there, every site switches itself off.
+//! Macro sites are static data in `microscope_sites`, read from the program's
+//! file rather than sent by the program. Sites start off until microscope
+//! writes their state byte; an off site costs a load and a branch. An on
+//! site writes one or more 16-byte records to its thread's in-process ring,
+//! which microscope reads externally. Writers never wait: old records are
+//! overwritten if microscope falls behind, and microscope counts the loss.
+//! Sites switch themselves off when microscope's heartbeat stops, so the
+//! program keeps running if microscope goes away.
 //!
 //! Without the `enabled` feature every macro expands to nothing, and its
 //! arguments are checked but never evaluated.
 //!
-//! A thread's first event takes it a ring, which allocates, so a signal
-//! handler should not be where a thread first records.
+//! A thread's first event allocates a ring; do not record it in a signal handler.
 //!
 //! ```ignore
 //! fn handle(request: &Request) -> Response {
@@ -33,8 +31,7 @@
 //! }
 //! ```
 //!
-//! The ABI is the records in [`abi`] and nothing Rust-specific, so that
-//! another language can write it.
+//! The records in [`abi`] are language-independent.
 
 // Production code returns errors instead of panicking.
 // Tests may unwrap.

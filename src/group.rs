@@ -1,19 +1,16 @@
 //! A process group: the processes a program starts that microscope debugs
 //! together.
 //!
-//! Every process is traced by one tracer thread. The group's root is the
-//! session a client made, which launches or attaches as a single session
-//! does. Each process the root's program starts that the follow policy
-//! debugs becomes a member, a [`DebuggerHandle`] of its own that works as a
-//! single session's does; the rest are watched until they execute a program
-//! the policy debugs. Members are numbered from 1, the root, in the order
-//! they joined, and keep their numbers after they exit.
+//! Each process has one tracer thread. The root launches or attaches as a
+//! single session does. Children accepted by the follow policy become
+//! members with their own [`DebuggerHandle`]; the rest are watched until
+//! they execute a program the policy accepts. Members are numbered in join
+//! order from 1 (the root), and keep their numbers after exiting.
 //!
-//! The root's breakpoints are the group's: each member gets every one of
-//! them before it runs an instruction, and changes to them reach every
-//! member. A stop in any member stops the group: every other member is
-//! paused, and [`GroupEvent::GroupStopped`] reports the stop once they are,
-//! unless the policy's [`StopScope`] says otherwise.
+//! Each member gets the root's breakpoints before running an instruction,
+//! and subsequent changes reach every member. Unless [`StopScope`] says
+//! otherwise, a stop in any member pauses all other members before
+//! [`GroupEvent::GroupStopped`] is published.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;

@@ -1,12 +1,8 @@
-//! V8's own answer to where JavaScript run control stops: the fixture run
-//! under Node's inspector by `cdp_oracle.js`, a plain CDP client that
-//! shares no code with microscope, and the same place read from a stop.
-//! Each pause is also the CDP differential: every JavaScript frame's
-//! function, and in the program's own frames its line, column, and the
-//! names of its parameters and locals with each primitive's value, as
-//! microscope reads them out of process and as V8's `Debugger.paused`
-//! reports them. Node's own frames are compared by function only: the
-//! oracle's `--inspect-brk` runs another branch of Node's module loader.
+//! Compares microscope stops with V8's `Debugger.paused` reports from
+//! `cdp_oracle.js`, an independent CDP client. Checks every JavaScript frame's
+//! function, plus source position, parameter and local names, and primitive
+//! values in the program's frames. Node frames are compared by function only:
+//! the oracle's `--inspect-brk` takes a different module-loader branch.
 
 use std::collections::BTreeMap;
 use std::process::{Command as Process, Stdio};
@@ -117,10 +113,9 @@ pub struct Skipping<'a> {
     pub enter: bool,
 }
 
-/// Where V8 pauses running `fixture` under the build `entry` with
-/// `breakpoints`, doing `commands` at the first pauses and resuming at the
-/// rest, stepping on through code `skipping` names, and pausing at
-/// `exceptions` (`none`, `caught`, or `uncaught`).
+/// Runs `fixture` under `entry` with the given breakpoints and exception filter
+/// (`none`, `caught`, or `uncaught`). Applies `commands` at successive pauses,
+/// then resumes; steps continue through scripts selected by `skipping`.
 pub fn pauses(
     entry: &str,
     fixture: &str,
@@ -181,8 +176,7 @@ pub fn pauses(
     found
 }
 
-/// Where the stop `scenario` is at selects: its JavaScript frame, and the
-/// JavaScript frames from it out, as microscope reads them.
+/// Reads the selected JavaScript frame and its JavaScript callers.
 pub async fn selected(scenario: &Scenario) -> Pause {
     let snapshot = scenario
         .operation("snapshot", scenario.handle().snapshot())
@@ -259,9 +253,7 @@ fn name(function: &str) -> String {
     }
 }
 
-/// The parameters and locals of the frame `frame` microscope read, each
-/// with its value as microscope writes it, and those it could not, with
-/// why.
+/// Reads formatted parameters and locals, retaining unreadable-value reasons.
 async fn locals(
     scenario: &Scenario,
     frame: microscope::StackFrameId,
@@ -391,9 +383,6 @@ fn local_differences(mine: &Frame, theirs: &Frame) -> Vec<String> {
     found
 }
 
-/// The differential fails on each kind of lie: a dropped frame, a wrong
-/// line, a wrong function, a wrong value, a missing local, an extra one,
-/// and an unread one; and passes the differences it allows.
 /// A named change to a pause, for the differential's self-test.
 #[cfg(test)]
 type Change<'a> = (&'a str, &'a dyn Fn(&mut Pause));

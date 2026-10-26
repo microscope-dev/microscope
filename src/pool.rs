@@ -1,10 +1,9 @@
 //! The loader's worker pool: one per process, shared by every load.
 //!
-//! The number of workers comes from, in order: the option a program
-//! passes to [`configure`], `MICROSCOPE_JOBS`, the `jobs` setting a program
-//! passes as its configuration, and otherwise the CPUs available, at most
-//! [`MAX_DEFAULT_JOBS`], or two under nextest, which runs many tests at
-//! once. Work already running on a pool, such as a test's own, stays there.
+//! Worker count precedence: [`configure`]'s option, `MICROSCOPE_JOBS`, the
+//! `jobs` configuration setting, then available CPUs capped at
+//! [`MAX_DEFAULT_JOBS`] (two under nextest, which runs tests concurrently).
+//! Work already running on a pool, such as a test's own, stays there.
 
 use std::num::NonZeroUsize;
 use std::sync::OnceLock;
@@ -83,17 +82,15 @@ fn start(jobs: NonZeroUsize) -> Result<&'static rayon::ThreadPool, JobsError> {
         .build()
         .map_err(|error| JobsError::Start(error.to_string()))?;
 
-    // Wait until every worker runs, so that what starting them allocates
-    // never lands in a measurement that follows.
+    // Start every worker before measuring, excluding startup allocations.
     pool.broadcast(|_| ());
 
     // Another thread may have started one first; either is the pool.
     Ok(POOL.get_or_init(|| pool))
 }
 
-/// Starts the pool with the workers `option` and `config` ask for, as
-/// [`resolve`] chooses between them, and returns how many it runs. A pool
-/// already started with another count is an error.
+/// Starts the pool with [`resolve`]'s worker count and returns that count.
+/// Fails if the pool already runs a different count.
 pub fn configure(
     option: Option<NonZeroUsize>,
     config: Option<NonZeroUsize>,

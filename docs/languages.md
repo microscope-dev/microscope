@@ -369,10 +369,10 @@ bootstrap does not run in these cases:
   `PYTHONPATH` or `site`;
 - one started through a wrapper.
 
-There, Python breakpoints stay pending with the reason. CPython 3.13's
-free-threaded build stops listing code to its collector once a second
-thread starts, so the agent could not find code that is already running.
-It takes no Python breakpoints; 3.14t does.
+In these cases, Python breakpoints stay pending with an explanation.
+CPython 3.13's free-threaded build stops listing code objects to its collector
+once a second thread starts, so the agent cannot find running code.
+Python breakpoints are unsupported on that build; 3.14t supports them.
 
 The interpreters a program starts, as `subprocess` and `multiprocessing`
 do, and the processes it forks are debugged as the follow policy says (see
@@ -448,10 +448,10 @@ watch ends when the frame returns or unwinds, and microscope says so. It
 works on every supported CPython, without the agent: from a breakpoint or a
 step, and also from a pause or a native stop with the frame selected.
 
-Only a variable itself is watched. An expression such as `total.real` or
-`items[0]` is refused, because CPython moves and replaces objects as it
-likes. So is a variable a closure shares through a cell, and a generator's
-or coroutine's variable, which lives in its object rather than its frame.
+Only frame variables can be watched. Attributes and elements such as
+`total.real` or `items[0]` are refused because CPython can move or replace
+their objects. Closure variables stored in cells and generator or coroutine
+variables stored outside the frame are also refused.
 
 ### Exceptions
 

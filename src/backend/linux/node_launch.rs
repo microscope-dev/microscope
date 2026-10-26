@@ -1,10 +1,8 @@
-//! The launch preload through which a launched Node opens its inspector and
-//! waits for microscope (F31): a private directory holding `preload.js`,
-//! which a launch prepends to `NODE_OPTIONS` as `--require`, and
-//! `MICROSCOPE_TRACER`, the tracer thread's ID, which only a node that
-//! thread traces matches. The preload puts the variables back before the
-//! program runs, unless the launch follows the processes the program
-//! starts: then they stay for child nodes.
+//! Launch preload that opens Node's inspector and waits for microscope.
+//! `NODE_OPTIONS` prepends `--require` with a private `preload.js`;
+//! `MICROSCOPE_TRACER` restricts it to nodes traced by that thread ID.
+//! The preload restores the environment before the program runs, except
+//! when following child processes, which must inherit it.
 
 use std::ffi::OsString;
 use std::io::Read as _;
@@ -95,9 +93,8 @@ fn problem(error: impl std::fmt::Display) -> Arc<str> {
     format!("the Node launch preload failed: {error}").into()
 }
 
-/// Why the inspector of the node `pid`, which microscope launched or
-/// followed, may never start, as its command line and first environment
-/// tell, if they do.
+/// Why a launched or followed node's inspector may never start, if its
+/// command line or initial environment reveals a cause.
 pub(super) fn unstarted(pid: i32) -> Option<&'static str> {
     let read = |name| std::fs::read(format!("/proc/{pid}/{name}")).ok();
     unstarted_by(&read("cmdline")?, &read("environ")?)
@@ -146,10 +143,8 @@ pub(super) struct NodeLaunch {
 }
 
 impl NodeLaunch {
-    /// Prepares the preload for a launch of `executable`, when it is Node or
-    /// the launch follows the processes it starts, and sets the variables
-    /// that lead each node `tracer` traces to it in `environment`, which
-    /// holds the launch's own changes to the debugger's environment.
+    /// Prepares a preload for Node or a launch that follows child processes.
+    /// Adds launch environment overrides for nodes traced by `tracer`.
     pub(super) fn prepare(
         executable: &Path,
         environment: &mut Vec<(OsString, Option<OsString>)>,

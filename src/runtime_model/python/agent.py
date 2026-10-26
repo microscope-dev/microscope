@@ -4,25 +4,20 @@ A probe is (event name, report kind, number, filename, line, qualified name).
 Empty selectors match any code; line zero matches any line. Conditions and
 expressions are never evaluated here. Event policy belongs to the debugger.
 
-A step is (number, kind, thread, depth, code): it steps into (0), over (1),
-or out of (2) the frame with `depth` callers on the thread whose native ID is
-`thread`, which runs the code whose id is `code`. It binds to that frame on
-its thread, at the stop it begins from, and follows the frame object. A step
-into reports each C function of the program's that the frame calls, where
-the debugger may end it. A step back (3) begins where the thread runs native
-code the frame called, and ends at the thread's next line in that frame or a
-caller.
+A step is (number, kind, thread, depth, code), with native thread ID,
+caller count, and code object ID identifying its frame. Into (0), over (1),
+and out (2) bind on that thread at the starting stop and follow the frame
+object. Into reports the frame's calls to program C functions, where the
+debugger may stop. Back (3) starts in native code called by the frame and
+ends at the thread's next line in that frame or a caller.
 
-An assignment is (number, thread, depth, code, name, value): on the thread
-whose native ID is `thread`, the frame with `depth` callers that runs the
-code whose id is `code` gives its variable `name` the value, which is
-["int", DECIMAL], ["float", BITS], ["bool", 0 or 1], ["str", TEXT], ["none"],
-or ["object", ID]: the object with that id that the frame's locals, globals,
-or builtins hold, or None, True, or False. No other object is taken, so an id
-that names nothing any more is never followed. It is made once, where its
-thread is stopped, and no code of the program's runs as it is; the object
-the variable held is kept until the thread's next callback, so that nothing
-it frees runs while other threads are stopped.
+An assignment is (number, thread, depth, code, name, value), identifying
+the frame as above. Values are ["int", DECIMAL], ["float", BITS],
+["bool", 0 or 1], ["str", TEXT], ["none"], or ["object", ID]. Object IDs
+must still name a local, global, builtin, None, True, or False; stale IDs
+are never dereferenced. Assign once on the stopped frame's thread without
+running program code. Retain the old value until that thread's next
+callback, so its destructors cannot run while other threads are stopped.
 
 Exceptions are bits: RAISED (1) reports each exception raised in Python code
 or reaching it; UNCAUGHT (2) each that leaves a thread's outermost Python
@@ -61,11 +56,9 @@ CONTROL_HEADER = 32
 CONTROL_CAPACITY = 65536
 CONTROL_MAGIC = b'MICPYC02'
 discovered = {}
-# Whether two absolute paths with one final component name one file, which
-# only links can make true; resolving them costs system calls.
+# Cache symlink equivalence for absolute paths sharing a basename; resolution costs syscalls.
 resolved = {}
-# Other threads run concurrently with this one in a free-threaded build, so
-# their frames can change, and be freed, under a reader.
+# Free-threaded builds can change or free other threads' frames during a read.
 FREE_THREADED = 't' in sys.abiflags
 _objects = gc.get_objects
 # Configuration and callbacks can run concurrently in free-threaded builds.
@@ -104,7 +97,6 @@ ASSIGNED = ("int", "float", "bool", "str", "none", "object")
 _SINGLETONS = (None, True, False)
 _MISSING = object()
 
-# Which exceptions report.
 raising = 0
 RAISED, UNCAUGHT = 1, 2
 # The longest exception text a report carries, in characters.
@@ -150,12 +142,8 @@ def matches(probe, code):
 
 
 def same_file(path, filename):
-    """Whether code compiled from `filename` is in the file a probe names.
-
-    An absolute path names one file, also through links to it or to its
-    directories under the same final name; a relative path names every file
-    whose path ends with its components.
-    """
+    """Matches absolute paths by symlink resolution when basenames agree.
+    Relative paths match filename suffixes on component boundaries."""
     if filename == path:
         return True
     if path[0] != '/':
@@ -203,12 +191,8 @@ def dispatch(event, code, location):
 
 
 def together(hits):
-    """The reports of an event's hits: every breakpoint hit in one, so the
-    debugger stops once for them all, as it does at one native address.
-
-    One number is reported whole; several by their count and the address of
-    an array of them, which lives while the native hook runs.
-    """
+    """Groups an event's breakpoint hits into one stop, like a native address.
+    Reports one ID directly, or count/address of an array kept alive through the hook."""
     numbers = [number for kind, number, _ in hits if kind == 1]
     others = [hit for hit in hits if hit[0] != 1]
     if len(numbers) < 2:
@@ -258,8 +242,7 @@ def global_mask():
 
 
 def watch(phase, frame):
-    """Moves the bound step to `phase`, watching `frame`, with the events it
-    needs, and takes away those it no longer does."""
+    """Moves the bound step to `phase`/`frame`, updating events and removing obsolete ones."""
     global stepped
     stepping[0], stepping[1] = phase, frame
     previous = stepped
@@ -297,15 +280,13 @@ def bind(frame):
 
 
 def waiting(frame, started, event=None):
-    """Makes a configured assignment and binds a configured step waiting
-    for this thread, from where it is, in a callback or call that began at
-    generation `started`, at `event`."""
+    """Applies this thread's assignment and binds its pending step at `event`.
+    `started` is the generation when this callback or call began."""
     return assigning(frame) + step_waiting(frame, started, event)
 
 
 def assigning(frame):
-    """Makes the configured assignment if it is this thread's and not yet
-    made, in the frame of the chain `frame` is in that it names."""
+    """Applies this thread's assignment once, locating its target in `frame`'s caller chain."""
     global assigned
     if (assignment is None or assignment[0] <= assigned
             or assignment[1] != _thread.get_native_id()):
@@ -337,8 +318,7 @@ def assigning(frame):
 
 
 def assigned_value(frame, value):
-    """The object an assignment's value names, from what the frame's names
-    hold where it names an object; otherwise the value it makes."""
+    """Decodes a literal or finds an object ID among singletons and the frame's bindings."""
     kind = value[0]
     if kind == "int":
         return int(value[1])
@@ -383,10 +363,8 @@ def step_waiting(frame, started, event):
 
 
 def returned(frame, event):
-    """Ends a step back at its thread's first line in its frame or a
-    caller: one with fewer callers, or as many and the frame's code. The
-    thread ran native code at the stop the step began at, so whatever it
-    runs next comes after that stop."""
+    """Ends a step back at the first LINE with fewer callers, or equal depth and matching code.
+    The starting stop was in native code, so this thread's next line follows it."""
     global stepping
     if event != 'LINE':
         return []
@@ -448,9 +426,8 @@ def step_event(event, code, frame, arguments):
     if frame is target:
         if phase == FRAME:
             if event == 'CALL':
-                # The debugger ends the step in the C function, if the
-                # program's code is there and described; the stack keeps
-                # the callable alive while the hook runs.
+                # End in C only for described program code; the stack keeps the callable
+                # alive while the hook runs.
                 if kind == INTO and native(arguments[0]):
                     return [(5, step[0], id(arguments[0]))]
                 return []
@@ -484,9 +461,8 @@ def discover(code):
         return
     mask = local_mask(code)
     if mask:
-        # A freed tool's events linger on code until it next starts or
-        # resumes. Setting the same events again would change nothing,
-        # leaving locations that tool disabled disabled.
+        # Clear a freed tool's lingering events before resetting them; an unchanged mask
+        # leaves its disabled locations disabled until the code starts or resumes.
         if monitoring.get_local_events(tool, code):
             monitoring.set_local_events(tool, code, 0)
         monitoring.set_local_events(tool, code, mask)
@@ -661,13 +637,9 @@ def would_report(event, code, location):
 
 
 def outermost(frame):
-    """Whether an exception that leaves `frame` leaves its thread's Python
-    code for Python's own report of it: the main module's code; another
-    thread's first frame, whose exception `_thread` reports; or the frame
-    threading runs a thread from, which gives what the thread raises to
-    threading.excepthook. Any other frame C calls on the main thread leaves
-    what it raises to C, which may handle it, as the import system does as
-    the interpreter starts."""
+    """Checks uncaught-exception boundaries: main module, a non-main thread's first frame
+    (`_thread` reports), or a threading target (`threading.excepthook` reports).
+    Other main-thread calls from C may handle exceptions, as startup imports do."""
     global _bootstrap
     caller = frame.f_back
     if caller is None and _thread.get_ident() != _main_ident():
@@ -711,9 +683,7 @@ def main_module(frame, caller):
 
 
 def described(exc):
-    """What Python's traceback would print last for `exc`, the exception's
-    type and text, where that runs none of the program's code; otherwise
-    its type alone."""
+    """Formats the traceback's final type/text without running program code; otherwise type only."""
     cls = type(exc)
     name = _qualname(cls)
     module = _module(cls)
@@ -837,9 +807,8 @@ def callback(event):
                 superseded = emit(notice, report_hook, report_owner, report_generation)
                 emitted.update(reported(notice))
                 if superseded:
-                    # A consumed configuration supersedes the batch. Sites
-                    # keep their numbers, so report what this event hits
-                    # under it that has not been reported already.
+                    # Recompute unsent hits under the new configuration; stable site numbers
+                    # let us exclude hits already reported.
                     with lock:
                         notices = [] if tool is None else together([
                             hit for hit in dispatch(event, code, location)
@@ -1040,12 +1009,9 @@ def apply(library, wanted_generation, wanted_probes, wanted_step=None, wanted_ex
 
 
 def forking():
-    """Takes the lock as the process forks, so that no other thread holds
-    it in the child, where that thread would not exist to release it. The
-    child's earlier fork handlers run with the agent still armed, and their
-    callbacks take the lock again on this thread. A load retried after the
-    handlers were registered registers them again, so this runs again
-    holding the lock, and takes it only once."""
+    """Locks before fork so the child cannot inherit another thread's unreleasable lock.
+    Earlier child handlers remain monitored; callbacks reacquire on this thread.
+    Retried loads can register duplicate handlers, so acquire only once."""
     if getattr(_local, 'forking', False):
         return
     lock.acquire()
@@ -1059,11 +1025,8 @@ def forked_parent():
 
 
 def forked():
-    """Disarms the parent's installation in a forked child: no one hears its
-    reports there, and its monitoring would only slow the child. A debugger
-    that follows the child can configure the agent from an at-fork handler
-    that runs before this one; that installation belongs to the child and
-    stays."""
+    """Disarms inherited monitoring, whose reports have no listener in the child.
+    Preserves child-owned installations configured by an earlier at-fork handler."""
     lock._at_fork_reinit()
     _local.forking = _local.busy = False
     if _configured_in == _getpid():

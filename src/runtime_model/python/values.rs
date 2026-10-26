@@ -1,18 +1,12 @@
-//! The values of Python's built-in types, as the debugger presents them:
-//! `None`, `bool`, `int` at any size, `float`, `str`, `bytes`, `list`,
-//! `tuple`, `dict`, `set`, and `frozenset`, each by its exact type, and
-//! classes and modules by their names, and the standard library's types
-//! that only C defines as their own `repr` writes them ([`super::library`]).
-//! An object of any other type, a subclass of one of those included, is
-//! shown as Python's default `repr` shows it, by its type's name and its
-//! address, with its attributes for children ([`super::instances`]).
+//! Presents exact built-in types: `None`, `bool`, arbitrary-size `int`, `float`, `str`,
+//! `bytes`, `list`, `tuple`, `dict`, `set`, and `frozenset`; classes and modules use names.
+//! C-defined standard-library types follow their own `repr` ([`super::library`]).
+//! Other objects, including subclasses, use default `repr` (type name and address)
+//! with attribute children ([`super::instances`]).
 //!
-//! A value's summary is its text in Python's notation ([`super::text`]),
-//! nesting containers to [`SUMMARY_DEPTH`] and showing [`SUMMARY_ITEMS`]
-//! of each; what lies past either shows as `...`, and a container within
-//! itself as Python's `repr` shows it. Every read is charged to the
-//! inspection's budget, and an object that is not what its type says ends
-//! its summary with a problem, never as an empty container.
+//! Summaries use Python notation ([`super::text`]), bounded by [`SUMMARY_DEPTH`] and
+//! [`SUMMARY_ITEMS`], with `...` for omitted contents and `repr`'s recursive-container notation.
+//! Every read charges the inspection budget; malformed objects report a problem, not emptiness.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;

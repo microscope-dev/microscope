@@ -1,28 +1,16 @@
-//! What expressions read of Python's objects: what a name means in a frame,
-//! the item a key or an index finds, and an object as an operand.
+//! Python name, item, and operand reads without running program code.
 //!
-//! A name is a variable of the frame's code, then a global of the frame's
-//! module, then a built-in, as Python's own lookup finds it. An attribute
-//! is found as [`super::instances`] finds it. A `dict`'s key
-//! is found as Python's lookup finds it, without running any code: by the
-//! key's hash, through the dict's table, comparing only the keys of equal
-//! hash it passes. A key of `None`, `bool`, `int`, `float`, `str`, `bytes`,
-//! or `tuple` is compared by value, a `tuple` with a tuple key item by
-//! item, in order, as `tuple_richcompare` does; a key of any other type
-//! only its own `__eq__` could compare, so meeting one refuses the lookup.
+//! Names resolve to frame variables, module globals, then builtins; attributes use
+//! [`super::instances`]. Dict probes compare equal-hash keys by value for `None`, `bool`,
+//! `int`, `float`, `str`, `bytes`, and `tuple` (itemwise in `tuple_richcompare` order).
+//! Other key types require their own `__eq__` and refuse the lookup if encountered.
 //!
-//! A key the expression takes from the program is that object, which a
-//! lookup, and a tuple's comparison of its items, find by identity before
-//! comparing values, as CPython's do: a NaN finds itself.
+//! Program-held keys and tuple items match by identity before value, so a NaN finds itself.
 //!
-//! A number's hash is CPython's, a `tuple`'s is `tuplehash` of its items'
-//! hashes, and a `str`'s is SipHash-1-3 keyed by the process's secret, once
-//! a key of the dict shows that hashing gives the hashes its strings keep,
-//! or the hash a `str` of the program keeps. A NaN of the program hashes
-//! by its address. Where no hash is known, as for a NaN the expression
-//! computed or where the secret cannot be read, every entry is compared,
-//! and a key of another type is ruled out only by the hash its entry
-//! keeps.
+//! Numbers use CPython hashes, tuples use `tuplehash`, and program NaNs hash by address.
+//! Strings use their stored hash or SipHash-1-3 with the process secret after a dict key
+//! confirms the algorithm. Unknown hashes (e.g. computed NaNs or unreadable secrets) scan
+//! every entry; another key type can be ruled out only by its entry's hash.
 
 use std::sync::Arc;
 

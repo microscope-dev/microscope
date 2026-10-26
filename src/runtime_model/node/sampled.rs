@@ -1,27 +1,20 @@
-//! The JavaScript frames the BPF walker read at a sample, named once what
-//! it read proves V8's objects are still the ones the frame ran.
+//! Names sampled JavaScript frames after revalidating V8 object identity.
 //!
-//! The walker reads each frame's function, its shared information, the
-//! shared information's script, the script's id, and the function literal
-//! id, as the sample is taken; microscope reads the shared information
-//! again a moment later, while the program runs on. A script's id is never
-//! reused within an isolate, and a script's literal id names one function
-//! literal, so a shared information that still has the script the walker
-//! read, with the same id, and the same literal id, is the function the
-//! frame ran (`scripts.rs` proves its rows the same way). One that V8's GC
-//! moved, or whose address another object took, fails the proof, and the
-//! frame is an unknown function, never a guess.
+//! The BPF walker captures the function, shared information, script address
+//! and id, and function literal id. A later read of shared information must
+//! retain the script address, script id, and literal id: script ids are never
+//! reused within an isolate, and a literal id names one function in that
+//! script (as in `scripts.rs`). GC movement or address reuse fails validation
+//! and leaves the function unknown.
 //!
-//! An interpreted frame's place comes from the bytecode and offset its
-//! slots held, once the bytecode is proven its function's. The interpreter
-//! keeps the frame's offset in a register, which its bytecode handlers
-//! allocate as they will, and writes it to the slot only before a call, so
-//! only a frame that made a call has a place: one with a frame inside it
-//! that a call made, or one at a system call. A CPU sample may land in a
-//! handler that keeps a frame of its own, which the walk cannot tell from a
-//! call, so the profiler takes no innermost frame for one that made a call.
-//! A compiled frame's code is not proven at the sample, so its line is
-//! unknown, though its function is not.
+//! Interpreted locations use the frame's bytecode and offset after proving
+//! the bytecode belongs to its function. Handlers keep the offset in varying
+//! registers and save it to the slot only before a call. A location therefore
+//! requires an observed call: a nested call frame or a system call. CPU
+//! samples cannot distinguish a handler's own frame from a call, so their
+//! innermost frame is not treated as having called.
+//! Compiled code identity is not captured, so its line remains unknown even
+//! when its function is known.
 
 use std::sync::Arc;
 

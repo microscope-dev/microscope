@@ -1,15 +1,12 @@
-// The native half of microscope's Node package: a Node-API addon that
-// loads the probes SDK's shared library and calls its run-time sites
-// (sdk/rust-probes/src/c.rs). index.js is the package; this file only
-// passes its calls through.
+// Node-API bridge from index.js to the probes SDK's run-time sites
+// (sdk/rust-probes/src/c.rs).
 //
 // The library is found at MICROSCOPE_PROBES_LIBRARY, or else next to this
 // addon. Without it, or with one that has no run-time sites, the addon
 // still loads: its `problem` says why, and every call does nothing.
 //
-// A site is the library's pointer, which lives for the program, passed to
-// JavaScript as a BigInt; 0n is no site. The addon is context-aware, so a
-// worker loads it too, and every worker shares the one library.
+// Sites are program-lifetime pointers passed to JavaScript as BigInts;
+// 0n means no site. The context-aware addon shares one library across workers.
 
 #define _GNU_SOURCE
 #include <dlfcn.h>

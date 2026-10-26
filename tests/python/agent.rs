@@ -1,4 +1,4 @@
-//! The agent is loaded by the fixture itself until P4.7 supplies injection.
+//! Agent transport, loading, and injection tests, including cooperative fixtures.
 
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -1098,11 +1098,8 @@ async fn a_missing_agent_acknowledgement_has_a_bounded_visible_failure() {
     session.shutdown().await;
 }
 
-/// While an agent's acknowledgement is outstanding, the controller waits
-/// for each step's stop blocked on its messages, with the alarm set for the
-/// deadline, so it takes the stop as it arrives. A controller that polled
-/// would sleep up to 5 ms after each. The controller's messages and sleeps
-/// are counted, not timed, so a busy machine cannot fail the test.
+/// Outstanding acknowledgements must wait on messages with a deadline alarm, not poll.
+/// Counts messages and sleeps rather than timing them to avoid scheduler-dependent failures.
 #[tokio::test]
 async fn steps_are_as_prompt_while_an_acknowledgement_is_outstanding() {
     use crate::session::PythonSession;

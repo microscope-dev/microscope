@@ -17,17 +17,12 @@ readonly ada_fixtures_dir="${fixtures_dir}/ada"
 readonly suite_stamp="${output_dir}/.suite.stamp"
 readonly suite_outputs="${output_dir}/.suite.outputs"
 readonly frame_oracle_script=scripts/frame-variables-oracle.py
-# Every output's signature names the checkout it was built from: outputs keep
-# its absolute paths, as DWARF's DW_AT_comp_dir does, and a checkout whose
-# build/ is shared with another's must not take the other's as its own.
+# Include the checkout in signatures: shared build directories may contain
+# another checkout's absolute DWARF paths.
 readonly checkout="checkout=${PWD}"
 
-# The Nix shell's compile flags carry a -frandom-seed named after the
-# shell's own store path, and gcc records it in every program's
-# DW_AT_producer. Any change to the shell, such as adding a tool to it,
-# then changed the bytes of every C and C++ output that was rebuilt, though
-# no signature names the shell. Builds drop it; the signature line rebuilds
-# those built with it.
+# Drop Nix's shell-specific random seed so shell changes don't alter fixture
+# bytes via DW_AT_producer. The signature below invalidates older builds.
 shell_seed=$(grep -o -- '-frandom-seed=[^ ]*' <<<"${NIX_CFLAGS_COMPILE-}" || true)
 if [[ -n "$shell_seed" ]]; then
     export NIX_CFLAGS_COMPILE="${NIX_CFLAGS_COMPILE//"$shell_seed"/}"
@@ -57,16 +52,11 @@ read_dash_version() {
     dash_version=${dash_version_by_tool["$tool"]}
 }
 
-# Compiles run at once, as many as there are CPUs (MICROSCOPE_FIXTURE_JOBS sets
-# how many; 1 builds one at a time). A step that reads what earlier steps
-# built waits for them first: one that reads only outputs it names waits for
-# the jobs making those (wait_for), as checks and compiles that link a
-# library built here do, and any other waits for every running compile
-# (wait_builds), as derivations do and the script does wherever it reads
-# outputs itself. Only a compile that the build helpers alone call runs in
-# the background; one a derivation or check makes runs in the foreground.
-# Cores and oracles run in the background too, and whatever reads a core
-# waits for it.
+# Compiles run in parallel, limited by MICROSCOPE_FIXTURE_JOBS (default: nproc).
+# Readers wait for named outputs with wait_for, or all compiles with wait_builds.
+# Only calls through build helpers run compiles in the background; derivations
+# and checks compile synchronously. Cores and oracles also run in the background;
+# readers must wait for their outputs.
 readonly max_jobs="${MICROSCOPE_FIXTURE_JOBS:-$(nproc)}"
 readonly background_builders=" build_program build_fixture build_c_fixture_directory \
 build_cpp_fixture_directory build_cpp_fixture build_shared_fixture build_symbols_library \
@@ -78,7 +68,6 @@ declare -A build_jobs=()
 failed_jobs=()
 trap 'running=$(jobs -pr); [[ -z "$running" ]] || kill $running 2>/dev/null || true' EXIT
 
-# Notes how the job PID ended.
 reap_job() {
     local pid="$1"
     local status="$2"
@@ -88,7 +77,6 @@ reap_job() {
     unset "job_outputs[$pid]" "build_jobs[$pid]"
 }
 
-# Fails the build, naming each job that failed.
 check_jobs() {
     if (( ${#failed_jobs[@]} > 0 )); then
         printf 'error: could not make %s\n' "${failed_jobs[@]}" >&2
@@ -161,11 +149,8 @@ called_by_builders() {
     done
 }
 
-# Waits for what a compile of OUTPUT from SOURCE with COMMAND reads in the
-# output directory: what its words name, the libraries its -l options find
-# in a -L directory there, and OUTPUT itself if a running job makes it. A
-# word that names the output directory any other way waits for every
-# compile.
+# Wait for SOURCE, OUTPUT, command arguments, and -L/-l libraries built here.
+# Unrecognized references to the output directory wait for all compiles.
 wait_for_inputs() {
     local source="$1"
     local output="$2"

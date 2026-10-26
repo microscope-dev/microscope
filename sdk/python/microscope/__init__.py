@@ -1,5 +1,4 @@
-"""Instrumentation that microscope records, for Python programs: zones,
-plots, messages, labels, frames, and triggers.
+"""Python instrumentation for microscope: zones, plots, messages, labels, frames, and triggers.
 
     import microscope
 
@@ -13,21 +12,19 @@ plots, messages, labels, frames, and triggers.
                 microscope.message("empty", f"no rows for {request.id}")
             return render(rows)
 
-Each name is a site, which the package defines the first time it is used,
-where it is used. A site is off until a microscope recording switches it on,
-by its name, and an off site costs a check of its state byte, which the
-package reads in place. Nothing is sent anywhere: an on
-site writes a few bytes into its thread's ring in the program's own memory,
-which microscope reads from outside, and every site switches itself off once
-microscope stops reading. Without a recording, nothing is written.
+Sites are defined at their first use, with a name and source location.
+A recording enables sites by name; disabled sites check an in-place state byte.
+Enabled sites write a few bytes to a per-thread ring in the program's memory,
+which microscope reads externally. Sites disable themselves when microscope
+stops reading. Without a recording, nothing is written or sent elsewhere.
 
-The work is done by the probes SDK's shared library, which the package finds
-next to itself or at MICROSCOPE_PROBES_LIBRARY. Without it, the package does
-nothing, and `problem` says why.
+The probes SDK's shared library must be beside this package or at
+MICROSCOPE_PROBES_LIBRARY. Without it, instrumentation does nothing;
+`problem` explains why.
 
-`trace_calls(prefix)` times every call of the functions of modules named
-`prefix` or under it, as zones named by module and qualified name. It is
-the program's own choice to make: microscope never asks for it.
+`trace_calls(prefix)` times calls in that module and its submodules, with
+zones named by module and qualified name. Only the program can opt in;
+microscope never enables it.
 """
 import ctypes
 import os
@@ -98,8 +95,8 @@ _NO_SITE = (0, None)
 
 
 def _site(kind, name, file, line):
-    """The site of `kind` named `name` at `file`'s `line`, and its state
-    byte, nonzero while it is on; (0, None) where there is none."""
+    """Returns (site, state byte) for this kind/name/location, or (0, None) if unavailable.
+    A nonzero state byte means enabled."""
     key = (kind, name, file, line)
     site = _sites.get(key)
     if site is not None or _library is None:
@@ -209,9 +206,8 @@ def plot(name, value):
 
 
 def message(name, text):
-    """A message on the thread's timeline at the site `name`, cut to 256
-    bytes. Its text is formed whether or not the site is on; pass a
-    callable to form it only while it is."""
+    """Records a thread-timeline message at `name`, truncated to 256 bytes.
+    Pass a callable to defer text creation until the site is enabled."""
     site, state = _site(_MESSAGE, name, *_caller())
     if state is not None and state.value != 0:
         if callable(text):
@@ -239,11 +235,9 @@ _traced = None
 
 
 def trace_calls(prefix):
-    """Times every call of each function of the module `prefix` and the
-    modules under it, from now on, as a zone named by its module and
-    qualified name. A generator's or coroutine's zone ends as it suspends
-    and begins again as it resumes. It needs Python 3.12's monitoring and
-    its profiler tool, which it takes; calling it again adds a prefix.
+    """Times future calls in `prefix` and its submodules as module/qualified-name zones.
+    Generator and coroutine zones end at suspension and restart at resumption.
+    Requires Python 3.12+ monitoring and claims its profiler tool; repeated calls add prefixes.
     Without the probes library it does nothing."""
     global _traced
     if not isinstance(prefix, str):
@@ -261,15 +255,13 @@ def trace_calls(prefix):
 
 
 class _Tracer:
-    """The calls `trace_calls` times: each code object of a traced module has
-    a zone's site; any other's events are disabled where they begin."""
+    """Assigns zone sites to traced code objects; disables untraced code's entry events."""
 
     def __init__(self, monitoring):
         self.monitoring = monitoring
         self.prefixes = ()
-        # By the code's identity, with the code, since equal code objects
-        # may be of different files: (code, site, state), whose site is 0
-        # for code not traced.
+        # Key by identity: equal code objects may belong to different files.
+        # Retain (code, site, state); site 0 means untraced.
         self.sites = {}
         self.stacks = threading.local()
         tool = monitoring.PROFILER_ID
@@ -288,8 +280,7 @@ class _Tracer:
                               | events.PY_YIELD | events.PY_THROW | events.PY_UNWIND)
 
     def add(self, prefix):
-        """Traces the modules `prefix` names too, including code already
-        seen, whose events were disabled where it began."""
+        """Adds `prefix`, reenabling events for previously seen, untraced code."""
         with _defining:
             self.prefixes = (*self.prefixes, prefix)
             self.sites = {key: entry for key, entry in self.sites.items() if entry[1]}

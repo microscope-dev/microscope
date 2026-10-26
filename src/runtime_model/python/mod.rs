@@ -1,16 +1,11 @@
-//! CPython, as the runtime that runs a program's Python code. The module
-//! that carries it, `libpython` or an executable that links it, has the
-//! layout its loader read (`crate::image::python`); this model reads the
-//! interpreters, their threads, and each thread's frames through it at a
-//! stop.
+//! Reads CPython interpreters, threads, and frames at a stop using the layout loaded
+//! from libpython or the executable (`crate::image::python`).
 //!
-//! Python frames are no native frames: the evaluation loop runs them, and
-//! each of its activations runs a segment of a thread's chain of frames,
-//! which the loop's entry frame ends. A backtrace places each segment
-//! before the activation that runs it ([`RuntimeModel::driven`]).
+//! Python frames are interpreted, not native. Each evaluation-loop activation runs a
+//! segment ending at its entry frame; backtraces place the segment before that activation
+//! ([`RuntimeModel::driven`]).
 //!
-//! The model keeps one cache across stops, the process's code objects
-//! ([`code::CodeTable`]), and proves each row again where it is used.
+//! Only code objects ([`code::CodeTable`]) are cached across stops; each use revalidates its row.
 
 mod agent;
 mod asyncio;
@@ -1075,11 +1070,8 @@ impl RuntimeModel for PythonRuntime {
     fn activation(&self, name: &str, inner: Option<&str>) -> bool {
         let instruction = |name: &str| split_from(name).starts_with(TAIL_CALL_PREFIX);
 
-        // A build that tail-calls a function for each instruction enters it
-        // from the loop with a call, so a loop the stack shows with the
-        // first instruction's function it called is one activation, which
-        // that function stands for: where the loop is inlined into what
-        // enters it, only the function shows.
+        // A tail-call instruction function represents its loop activation; don't count both.
+        // When the loop is inlined into its caller, only the instruction function appears.
         let called = inner.is_some_and(instruction);
         instruction(name) || (split_from(name) == EVALUATION_LOOP && !called)
     }

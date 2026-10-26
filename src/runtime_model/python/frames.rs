@@ -1,13 +1,10 @@
-//! A thread's chain of interpreter frames, from its innermost by each
-//! frame's `previous`. Each frame says who owns it: the thread or a
-//! generator owns a frame that runs Python code, and an entry frame is
-//! the one each activation of the evaluation loop pushes beneath the
-//! frames it runs, so it ends their segment.
+//! Follows a thread's interpreter frames from innermost through `previous`.
+//! Thread- and generator-owned frames run code; an evaluation-loop activation's
+//! entry frame sits beneath its frames and ends their segment.
 //!
-//! A frame is one read. Its code object is proved against the process's
-//! code table, and its line is the line table's for its instruction: the
-//! one it runs, or for a caller the call it is in. An instruction outside
-//! its code's bytecode has no line, never the nearest one.
+//! Each frame costs one read and its code object is checked against the process's code table.
+//! Lines refer to the current instruction, or a caller's call; out-of-bytecode instructions
+//! have no line, never the nearest one.
 
 use std::collections::HashSet;
 
@@ -78,8 +75,7 @@ impl Walk<'_, '_> {
         let mut seen = HashSet::new();
         let mut next = state.frame;
         let end = loop {
-            // From 3.15 every chain ends at its thread's base frame: one
-            // that ends before it was read as it changed.
+            // From 3.15, ending before the base frame indicates a concurrent change.
             let Some(address) = next else {
                 break (state.base.is_some() && !seen.is_empty())
                     .then(|| "the thread's frames end before its base frame".into());

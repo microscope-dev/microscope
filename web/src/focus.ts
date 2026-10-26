@@ -147,10 +147,8 @@ export function formatPlace(place: SourcePlace): string {
 }
 
 /**
- * A path as a link names it: relative to the directory microscope runs in, when
- * it is inside it, which keeps links short. A compiler can record relative
- * paths too, so a path stays whole when its short form names another of the
- * recorded `files`, or while they are unknown.
+ * Shorten paths under cwd for links, unless the result collides with a recorded
+ * relative path. Keep paths unchanged until the recorded file list is known.
  */
 export function linkPath(
   path: string,

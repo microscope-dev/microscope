@@ -1,7 +1,6 @@
-// Data pulled from the server, cached by what asked for it. A request names
-// its stop, but writes, settings, and library loads change answers within a
-// stop, so forget.ts forgets those. Answers lost to a dropped connection are
-// not kept, and readers ask again once it is back.
+// Cache server results by request. forget.ts invalidates results after writes,
+// settings changes, and library loads, even within a stop. Requests lost to a
+// dropped connection are discarded and retried on reconnection.
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Connection } from "./connection";
@@ -21,7 +20,7 @@ const LIMIT = 400;
 export class Cache {
   readonly #entries = new Map<string, Entry>();
   readonly #listeners = new Set<() => void>();
-  /** Counts forgetting, so readers of a forgotten answer ask again. */
+  /** Invalidation counter; changes trigger readers to request fresh data. */
   #version = 0;
 
   readonly subscribe = (listener: () => void): (() => void) => {
@@ -130,7 +129,7 @@ export function useRequest<M extends Method>(
 ): Requested<Results[M]> {
   const connection = useConnection();
   const key = params === null ? null : cacheKey(method, params);
-  // Forgetting answers asks again for any that were forgotten.
+  // Cache invalidation triggers a new request.
   const version = useSyncExternalStore(source.subscribe, source.version);
   const [shown, setShown] = useState<{ key: string | null; settled?: Settled }>(() => {
     if (key === null) {

@@ -1,7 +1,4 @@
-// The session's main screen: where the tab looks comes from the URL, and
-// every pane shows that one focus. The left column says where you are, the
-// center shows the code, the console, and the program's output, and the
-// right column shows the values at the focus.
+// All panes share the session, stop, and frame selected by the URL.
 
 import { useLocation, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { createContext, useContext, useEffect, useMemo, useRef } from "react";
@@ -34,7 +31,7 @@ export interface Focus {
   look: Look;
   /** The stack of the thread or task shown, once it has arrived. */
   trace: Backtrace | undefined;
-  /** Why the data shown may not be the program's now, if it may not. */
+  /** Why displayed data may be stale; null when current. */
   stale: "running" | "passed" | "disconnected" | null;
 }
 

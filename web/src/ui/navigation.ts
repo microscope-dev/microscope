@@ -18,8 +18,8 @@ import { useModel } from "../store";
 import { asked } from "../tab";
 import { useFocus } from "./Workspace";
 
-/** How to move: `replace` the address, or `ask` for the code shown, which
- * opens its file even if closed, as moving to a frame always does. */
+/** `replace` replaces browser history; `ask` reopens the displayed source file.
+ * Frame navigation always reopens its source. */
 export interface Moving {
   replace?: boolean;
   ask?: boolean;
@@ -29,8 +29,7 @@ export type Go = (at: At | null, look?: Look, options?: Moving) => void;
 
 type Navigate = ReturnType<typeof useNavigate>;
 
-/** Goes to a stop, thread or task, and frame, or to the session itself, from
- * a tab that looks at `session` as `current`. */
+/** Navigate within `session`, preserving `current` view settings unless overridden. */
 export function go(
   navigate: Navigate,
   session: string,
@@ -68,7 +67,7 @@ export function go(
             search,
             replace,
           });
-  // Once the address names it, the code shown opens its file again.
+  // Reopen the source only after navigation completes.
   if (!look || options?.ask) {
     void going.then(asked);
   }

@@ -1,10 +1,7 @@
-//! What reading an optimized frame's deoptimization data needs of V8's
-//! headers, as V8's `OptimizedJSFrame::Summarize` reads it: the safepoint
-//! tables that give a call's deoptimization index, the slots of a
-//! deoptimization entry, and the opcodes of the translations it indexes,
-//! with the checks that the headers still encode them as the runtime model
-//! decodes them. The constants join `layouts.gen.rs`; the opcodes, a table
-//! per version, are `src/image/v8/translation.gen.rs`.
+//! Extracts safepoint table layouts, deoptimization slots, and translation
+//! opcodes from V8 headers for `OptimizedJSFrame::Summarize` decoding.
+//! Checks that their encoding matches the runtime model. Constants go in
+//! `layouts.gen.rs`; per-version opcodes in `src/image/v8/translation.gen.rs`.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;

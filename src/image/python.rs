@@ -1,11 +1,8 @@
-//! The Python runtime a module carries: CPython's version, and where the
-//! structures it keeps its threads, frames, code, and objects in hold
-//! each field the runtime model reads, validated at load. One row, for a
-//! module with a `.PyRuntime` section (see `crate::debug_info::cpython`).
+//! CPython version and validated layouts for threads, frames, code, and objects.
+//! One row per module with `.PyRuntime` (see `crate::debug_info::cpython`).
 //!
-//! A layout is the offsets of [`Field`]s and the values of [`Constant`]s,
-//! each indexed by its enum, so that no per-version number or name
-//! reaches the runtime model.
+//! [`Field`] offsets and [`Constant`] values are enum-indexed, keeping version-specific
+//! numbers and names out of the runtime model.
 
 use zerocopy::little_endian::{U16, U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};

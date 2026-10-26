@@ -1,8 +1,6 @@
 /*
- * Prints one Generated struct literal for the CPython headers this was compiled
- * against: field offsets and sizes, and the frame, code, and unicode constants
- * the debugger reads. Driven by scripts/cpython-layouts.sh, which passes the
- * interpreter directory name as argv[1].
+ * Prints a Generated literal of offsets, sizes, and frame/code/Unicode constants from CPython headers.
+ * scripts/cpython-layouts.sh passes the interpreter directory name as argv[1].
  */
 #include <Python.h>
 

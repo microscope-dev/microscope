@@ -1,18 +1,11 @@
-//! Python's object model past the built-in types' values: classes and the
-//! static types, the attributes an instance keeps, and the attribute lookup
-//! `object.__getattribute__` makes, made without running any code.
+//! Classes, static types, and `object.__getattribute__` lookup without running code.
 //!
-//! An instance keeps the attributes its dict holds in a dict, or in values
-//! whose keys its class's instances share: inline after the object from
-//! 3.13, or behind a pointer tagged by its low bit before the object in
-//! 3.12. It keeps the rest in slots, which its classes' `__slots__` name. A
-//! static built-in type, such as `object`, keeps no dict of its own: its
-//! interpreter keeps the dict.
+//! Instance attributes use a dict or shared-key values: inline after the object
+//! from 3.13, or through a low-bit-tagged pointer before it in 3.12.
+//! Other attributes use `__slots__`. The interpreter holds static built-in types' dicts.
 //!
-//! A lookup follows Python's order: a data descriptor of the type, then the
-//! instance's own attributes, then any other attribute of the type. Where
-//! that order would run code, as a property's getter, a method's binding,
-//! or a class's own `__getattr__`, the lookup is refused, never guessed.
+//! Lookup checks data descriptors, instance attributes, then other type attributes.
+//! Property getters, method binding, and custom `__getattr__` are refused: they run code.
 
 use std::sync::Arc;
 
@@ -42,8 +35,7 @@ pub(super) struct Class {
     pub(super) module: Option<Arc<str>>,
     pub(super) name: Arc<str>,
 
-    /// The standard library's type that only C defines it is, if it is
-    /// one ([`super::library`]).
+    /// The C-defined standard-library type, if recognized ([`super::library`]).
     pub(super) library: Option<LibraryType>,
 }
 
@@ -93,9 +85,7 @@ impl Values<'_, '_> {
             return Ok(Arc::clone(class));
         }
 
-        // A type is an object whose type is `type` or a metaclass, which a
-        // pointer that is no object's type, as native code may hold, is
-        // not.
+        // Native pointers need not name types; require `type` or a metaclass.
         let reader = &self.reader;
         let meta = VirtualAddress::new(reader.field_word(ty, Field::ObjectType)?);
         if !self.is_class(meta)? {
@@ -243,10 +233,8 @@ impl Values<'_, '_> {
             || self.flagged(flags, Constant::TypeImmutableBit)
     }
 
-    /// The type defined in C the instances of `class` are laid out as: the
-    /// first its bases lead to, as `int` is for a class deriving from it,
-    /// or `object` for most classes; `None` for a type defined in C, which
-    /// is its own.
+    /// The first C-defined base determines instance layout, e.g. `int` or `object`.
+    /// Returns `None` when `class` is itself C-defined.
     pub(super) fn static_base(&self, class: &Class) -> Result<Option<VirtualAddress>, Problem> {
         let reader = &self.reader;
         if self.defined_in_c(class.flags) {
@@ -295,13 +283,8 @@ impl Values<'_, '_> {
         Err(format!("the type at {ty:#x} derives through more than {MAX_BASES} types").into())
     }
 
-    /// What an object of `class`, holding the built-in value `base` if it
-    /// holds one, is taken as for the special method `name`, which Python
-    /// calls on it: its base where the method found is the one the base's
-    /// type has, its own or one it inherits, as an `OrderedDict` has
-    /// `dict`'s `__getitem__`. The object is refused where another type defines `name`,
-    /// whose code would run, and is a type error where none does, as in
-    /// Python, which `doing` describes, as "has no items".
+    /// Uses `base` only when `name` resolves to its built-in method or one it inherits.
+    /// Refuses overrides that run code; a missing method is a type error described by `doing`.
     pub(super) fn special(
         &self,
         class: &Class,

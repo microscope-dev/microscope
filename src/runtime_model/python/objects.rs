@@ -1,7 +1,5 @@
-//! Reading CPython's structures and the objects they point to, with the
-//! offsets the module's layout gives. Every read is bounded, and memory
-//! that cannot be read or is not what the layout says is an error that
-//! names it, never a guess.
+//! Bounded CPython structure reads using the module's layout.
+//! Unreadable memory and layout mismatches return errors naming the affected memory.
 
 use std::sync::Arc;
 
@@ -44,9 +42,7 @@ pub(super) struct Reader<'a> {
     pub(super) layout: &'a PythonLayout,
     pub(super) charge: Option<&'a dyn Charge>,
 
-    /// Where the blocks read are kept, if they are: reads of at most a
-    /// block are then read by the block, from those kept where they can be,
-    /// at no cost.
+    /// Optional block cache for reads up to one block; cache hits incur no charge.
     pub(super) blocks: Option<&'a StopMemory>,
 }
 
@@ -92,9 +88,8 @@ impl<'a> Reader<'a> {
             && length <= BLOCK as u64
             && address.get().checked_add(length).is_some()
         {
-            // At most two blocks hold the bytes. Where one cannot be read,
-            // the bytes themselves may yet be, as in memory not mapped by
-            // the page, so they are read as they would be without blocks.
+            // At most two blocks overlap. If either is unreadable, try the exact range:
+            // it may still be readable in memory not mapped by the page.
             let mut done = 0;
 
             while let Some(rest) = bytes.get_mut(done..)
@@ -118,10 +113,8 @@ impl<'a> Reader<'a> {
         Ok(self.stop.read(address, bytes))
     }
 
-    /// Copies into `into` what the block that holds `at` holds from `at`
-    /// on, as much as fits, reading and paying for the block if it was not
-    /// read before: how many bytes it copied, or `None` where the block
-    /// cannot be read.
+    /// Copies from `at` to the block's end or `into`'s capacity, charging only new reads.
+    /// Returns bytes copied, or `None` if the block is unreadable.
     fn copy_block(
         &self,
         blocks: &StopMemory,

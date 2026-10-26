@@ -1,29 +1,25 @@
-"""microscope's launch bootstrap for CPython 3.12 and 3.13, which cannot be
-asked to run code as 3.14's PEP 768 lets a debugger ask.
+"""Agent bootstrap for CPython 3.12/3.13, which lack PEP 768 script requests.
 
-microscope puts this file's directory first on PYTHONPATH as
-`sitecustomize.py`, names the FIFO beside it in MICROSCOPE_PYTHON_WAKE, and
-writes the process ID it launched to `pid` beside it. In that process, the
-bootstrap runs each script whose path microscope writes to the FIFO, as
-PEP 768 runs a requested script: on the main thread before the program's
-code, those already written, and later on one thread started through
-`_thread`, which `threading` does not list and which waits on the FIFO.
+microscope places this file as `sitecustomize.py` first on PYTHONPATH.
+Its directory holds the launched process's `pid` and the script-path FIFO
+named by MICROSCOPE_PYTHON_WAKE. That process runs queued scripts on the
+main thread before program code, then reads later requests on a dedicated
+`_thread` thread, hidden from `threading`'s listings. Scripts run in fresh
+globals and contain their failures, like PEP 768 requests.
 
-Wherever it runs, it first puts PYTHONPATH, the variables, and `sys.path`
-back as they were, so that neither the program nor its children see them,
-and then imports the `sitecustomize` it hid, if there is one. When
-MICROSCOPE_PYTHON_FOLLOW says microscope follows the processes the program
-starts, the variables stay for them instead, and each child interpreter
-microscope debugs reads a FIFO of its own, `wake-PID`, which microscope
-makes before the child runs; so does a process the program forks, once it
-has.
+Before bootstrap work, remove this directory from `sys.path` and restore
+PYTHONPATH and the launch variables, hiding them from the program and its
+children. MICROSCOPE_PYTHON_FOLLOW instead retains the variables for child
+interpreters. Each debugged child gets a `wake-PID` FIFO before it resumes;
+forked processes switch to their own FIFO after forking. Finally, import
+the program's original `sitecustomize`, if present.
 """
 
 
 import os as _os
 import sys as _sys
 
-# First, so that nothing below can leave the program a changed path.
+# Restore paths before any bootstrap work can fail.
 if _os.environ.get('MICROSCOPE_PYTHON_FOLLOW') == '1':
     _microscope_wake = _os.environ.get('MICROSCOPE_PYTHON_WAKE')
 else:
@@ -49,9 +45,8 @@ def _microscope_bootstrap(wake, here):
         return
 
     def own_channel():
-        """The FIFO microscope writes this process's requests to, if it
-        debugs this process: the launch's for the process it launched, and
-        one of its own for any other."""
+        """Opens the launch FIFO for its saved PID, otherwise `wake-PID`.
+        Returns None if this process has no debugger-owned FIFO."""
         try:
             with open(os.path.join(here, 'pid'), 'rb') as file:
                 launched = int(file.read(32))
@@ -86,8 +81,7 @@ def _microscope_bootstrap(wake, here):
                 run(os.fsdecode(line))
 
     def serve(channel):
-        """Runs the requests already written, then reads the rest on a
-        thread of its own."""
+        """Runs queued requests on the main thread, then starts a FIFO reader thread."""
         module.main = _thread.get_ident()
         state['channel'], state['pending'] = channel, b''
         try:
@@ -101,8 +95,7 @@ def _microscope_bootstrap(wake, here):
 
     def waiting(channel):
         try:
-            # So that a thread list tells the debugger's thread from the
-            # program's.
+            # Distinguish the debugger's thread in thread listings.
             with open(f'/proc/self/task/{_thread.get_native_id()}/comm', 'w') as file:
                 file.write('microscope')
         except OSError:
@@ -119,9 +112,8 @@ def _microscope_bootstrap(wake, here):
             take(data)
 
     def forked():
-        # The thread that read the parent's channel is gone; microscope
-        # made the child's own channel before the child ran, if it debugs
-        # the child.
+        # The parent's reader thread is gone; a debugged child's channel was created
+        # before it resumed.
         if state['channel'] is not None:
             os.close(state['channel'])
             state['channel'] = None

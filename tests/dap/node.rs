@@ -12,11 +12,9 @@ fn line(marker: &str) -> u64 {
     line_of(&source("node/uat.js"), &format!("// {marker}"))
 }
 
-/// The frame VS Code focuses as the thread stops, as its
-/// `Thread.getTopStackFrame` chooses it: the first with a source, and at a
-/// stop for another reason than a breakpoint or a step, the first whose
-/// hint, or else its source's, is neither `subtle` nor `deemphasize`. V8
-/// pauses inside Node's and its own native frames.
+/// Matches VS Code's `Thread.getTopStackFrame`: first frame with source.
+/// Except at breakpoints and steps, skips `subtle` or `deemphasize` hints
+/// on the frame (or its source if absent), since V8 pauses in native code.
 fn top(dap: &mut Dap, stop: &Stopped) -> Value {
     let trace = dap.request(
         "stackTrace",
@@ -61,7 +59,6 @@ fn scope(dap: &mut Dap, frame: &Value, scope: &str) -> (Vec<String>, Vec<Value>)
     )
 }
 
-/// The value of the variable `name` among `variables`.
 fn value<'a>(variables: &'a [Value], name: &str) -> &'a Value {
     &variables
         .iter()

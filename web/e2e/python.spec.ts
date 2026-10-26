@@ -34,11 +34,11 @@ test("a Python breakpoint stops on the program's line, in view", async ({ page, 
   const line = page.locator(".cm-frame-line");
   await expect(line).toContainText('shelf.add(Item("bolt"');
   await expect(line).toBeInViewport();
-  // What the stop says shares the room with the command rather than taking it.
+  // The stop reason must leave room for the command.
   expect(await program.evaluate((name) => name.clientWidth >= name.scrollWidth / 2)).toBe(true);
   const variables = page.getByRole("region", { name: "Variables" });
   await expect(variables).toContainText("shelf");
-  // A value is shown as it is: its spaces are not run together.
+  // Preserve spaces inside string values.
   await expect(variables.locator(".value-text", { hasText: "north" })).toHaveJSProperty(
     "innerText",
     "'north    end'",
@@ -66,14 +66,12 @@ test.describe("an exception chosen as the program runs", () => {
     await input.press("Enter");
     await page.keyboard.press("F5");
     await expect(page.locator(".cm-frame-line")).toContainText("result = side * side");
-    // Every exception stops, the interpreter's own as it starts among them,
-    // so it is chosen once the program's code runs.
+    // Enable after startup to avoid stopping on the interpreter's exceptions.
     await breakpoints.getByTestId("exceptions").locator("summary").click();
     const raised = breakpoints.getByRole("checkbox", { name: "Every Python exception" });
     await expect(raised).not.toBeChecked();
     const summary = breakpoints.getByTestId("exceptions").locator("summary");
     const before = Number(/(\d+) of/.exec((await summary.textContent()) ?? "")?.[1]);
-    // It shows what the server chose, once it has.
     await raised.click();
     await expect(raised).toBeChecked();
     await expect(summary).toContainText(`${before + 1} of`);

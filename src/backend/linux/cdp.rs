@@ -141,10 +141,8 @@ struct Outgoing {
 }
 
 impl Connection {
-    /// Starts connecting at once and returns without waiting: the handshake
-    /// runs on the transport's thread, because the target serves it only while
-    /// the caller keeps running. The sink runs on that thread; when it returns
-    /// false the transport stops.
+    /// Connects without waiting; the caller must keep the target running for
+    /// the handshake. The sink runs on the transport thread; false stops it.
     pub(super) fn open(
         address: SocketAddr,
         path: &str,
@@ -288,9 +286,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The socket handed to tungstenite. It re-arms TCP quick acknowledgement
-/// after every read, because Linux falls back to delayed ACKs, which cost
-/// 41 ms per round trip against the inspector (plans/node.html F10).
+/// Re-arms TCP quick acknowledgement after every read to prevent Linux's
+/// delayed ACKs, measured at 41 ms per inspector round trip.
 struct QuickAck(TcpStream);
 
 impl Read for QuickAck {

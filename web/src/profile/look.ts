@@ -1,8 +1,5 @@
-// How a tab looks at a profile, all of it in the address bar: the view,
-// what it aggregates, the time range, threads, and tasks selected, the
-// transforms in order, and what is selected and zoomed, by function names
-// rather than node numbers, so a link opens the same view of the same
-// profile anywhere.
+// Profile view state is encoded in the URL. Selections use function names,
+// not node numbers, so links work across clients.
 
 import type {
   ProfileGranularity,

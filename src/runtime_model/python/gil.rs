@@ -1,12 +1,8 @@
-//! Who holds each interpreter's GIL. From 3.15 each thread state says
-//! whether it holds its interpreter's GIL and whether it asks for it.
-//! Before that only the GIL says who holds it: it is locked, and its last
-//! holder is the thread state that took it; which threads wait for it,
-//! nothing in memory says. A free-threaded build's GIL may be off, and
-//! then no thread holds or waits for it.
+//! GIL ownership and waits. From 3.15, thread states report both; earlier versions
+//! identify only the holder, from a locked GIL's last-holder field.
+//! A disabled GIL in a free-threaded build has neither holders nor waiters.
 //!
-//! Each is as the program was when read: a thread that runs on may take or
-//! drop the GIL as it is read.
+//! Live reads may race threads taking or dropping the GIL.
 
 use std::collections::BTreeMap;
 

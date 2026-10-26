@@ -1,7 +1,4 @@
-// Where a tab goes when the session moves on (D3). A tab that showed the
-// latest stop follows the program to the next one, at the thread that
-// stopped it. A tab pinned with `p`, or opened on an earlier stop, stays
-// where it is and says the stop has passed.
+// Tabs follow the latest stop unless pinned with `p` or showing an older stop.
 
 import type { At } from "./focus";
 import type { State } from "./protocol";
@@ -14,20 +11,18 @@ export function latestStop(state: State): number | undefined {
 }
 
 /**
- * The frame a tab opens on for `thread` at `stop`: on the thread that
- * stopped, the frame the stop selects, which at a runtime agent's stop is
- * the program's frame rather than the agent's; elsewhere the innermost.
+ * Use the stop's selected frame for its thread, otherwise the innermost frame.
+ * Runtime-agent stops select the program's frame, not the agent's.
  */
 export function openingFrame(state: State, stop: number, thread: number): number {
   const entry = state.stops.find((entry) => entry.stop === stop);
   return entry?.thread === thread ? entry.frame : 0;
 }
 
-/** Stops whose reason the place they show does not say. */
+/** Exceptions need an explanation beyond the source location. */
 const EXCEPTIONS = new Set(["exception", "languageException"]);
 
-/** Why an exception stopped the program, to say beside the line of the
- * frame the stop opened on when `at` shows that frame. */
+/** Exception details, shown only on the stop's original thread and frame. */
 export function stopNote(state: State, at: At): string | null {
   const entry = state.stops.find((candidate) => candidate.stop === at.stop);
   if (!entry || entry.thread !== at.thread || entry.frame !== at.frame || at.task) {
@@ -37,8 +32,7 @@ export function stopNote(state: State, at: At): string | null {
 }
 
 /**
- * Where to go now. `followed` is the latest stop as of the state before
- * this one, which a tab that was following was showing.
+ * `followed` is the previous state's latest stop, which following tabs showed.
  */
 export function follow(
   state: State,

@@ -1,16 +1,12 @@
-//! Assignments V8 makes for microscope: `Debugger.setVariableValue` in a
-//! frame of a pause V8 holds. No request is sent while a stop is
-//! published, so an assignment is an execution. Every thread runs, since
-//! V8 answers only while its inspector's thread and the paused thread can,
-//! but V8 keeps its pause: the paused thread stays in V8's message loop
-//! and runs no JavaScript. Once V8 answers, every thread is stopped and the
-//! stop is published with [`StopReason::Assignment`], answered with the
-//! variable read again from memory.
+//! Assignments through `Debugger.setVariableValue` in a paused frame.
+//! No request is sent at a published stop, so assignment is an execution.
+//! All threads resume so V8's inspector and paused thread can answer; the
+//! paused thread stays in V8's message loop without running JavaScript.
+//! After V8 answers, all threads stop before publishing
+//! [`StopReason::Assignment`] and returning the variable reread from memory.
 //!
-//! V8's listing of a scope is a copy it made as it paused, which listing
-//! again repeats unchanged, so the value given takes the place of the one
-//! listed for the variable; the frame's names hold only while every listed
-//! value matches the slot it names, the value given included.
+//! V8's scope listings retain their values from the pause. Substitute each
+//! assigned value; names remain valid only if every listed value matches its slot.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
@@ -67,8 +63,8 @@ pub(super) enum Given {
     /// A value V8 makes from its `CallArgument`.
     Argument(Value),
 
-    /// The object a variable of the frame's scopes holds, by its name,
-    /// which V8 names by an id only its listing of the scope gives.
+    /// An object held by a named variable in the frame's scopes. Only V8's
+    /// scope listing provides the object id.
     Variable(Arc<str>),
 }
 
@@ -76,17 +72,13 @@ pub(super) enum Given {
 enum State {
     Unbegun,
 
-    /// The frame's scopes are listed to find the object a variable holds:
-    /// each request by the scope it lists, and each scope's argument for
-    /// the variable once listed, where it holds it.
+    /// Pending scope listings and the variable's argument found in each scope.
     Finding {
         requests: BTreeMap<RequestId, usize>,
         found: BTreeMap<usize, Option<(Value, ReportedValue)>>,
     },
 
-    /// V8 is asked to set the variable in the scope `scope` of the frame's
-    /// chain, to `argument`, which it reports as `reported`; the scopes
-    /// left to try if it does not hold it there.
+    /// Assignment pending in `scope`; try `remaining` if it lacks the variable.
     Setting {
         request: RequestId,
         scope: usize,
@@ -95,7 +87,7 @@ enum State {
         reported: ReportedValue,
     },
 
-    /// It is made, or with why, is not.
+    /// Completed, with a failure reason if unsuccessful.
     Done(Option<Arc<str>>),
 }
 
@@ -238,9 +230,8 @@ fn reported_of(argument: &Value) -> ReportedValue {
     }
 }
 
-/// The `CallArgument` that gives a variable the value a scope's listing,
-/// `properties`, says its variable `name` holds, and what V8 reports it
-/// as; `None` if the scope does not hold `name`.
+/// The argument and reported value for `name` in a scope listing;
+/// `None` if the scope does not hold it.
 fn listed_as(properties: &Value, name: &str) -> Option<(Value, ReportedValue)> {
     properties["result"]
         .as_array()?
@@ -250,9 +241,8 @@ fn listed_as(properties: &Value, name: &str) -> Option<(Value, ReportedValue)> {
         .map(|value| (argument_of(value), protocol::reported_value(value)))
 }
 
-/// What the variable `name` holds in the frame at `frame` of the pause
-/// `isolate` holds, as V8 `found` it in each scope of the frame's chain:
-/// the innermost scope that holds the name is where JavaScript finds it.
+/// Resolves `name` in the innermost scope that holds it, accounting for
+/// assignments since V8 captured the scope listings.
 fn held(
     isolate: &Isolate,
     frame: usize,
@@ -271,12 +261,8 @@ fn held(
     given_in_pause(isolate, frame, scope, name).unwrap_or(Ok(listed))
 }
 
-/// What the variable `name` in the scope at `scope` of the frame at
-/// `frame` holds now, if an assignment during the pause `isolate` holds
-/// gave it a value, which V8's listing made as it paused does not show;
-/// or why it is not known, when one gave a variable of that name in
-/// another frame or scope a value, which may share the context holding
-/// it.
+/// Overrides V8's stale scope listing with the value assigned in this pause.
+/// Refuses a same-name assignment elsewhere that may share this context.
 fn given_in_pause(
     isolate: &Isolate,
     frame: usize,

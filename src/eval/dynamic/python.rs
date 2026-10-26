@@ -1,7 +1,5 @@
-//! Python's rules, as CPython 3.12 and later apply them. A `bool` counts as
-//! the `int` 0 or 1, as Python's `bool` derives from `int`, and stays a
-//! `bool` where Python's result is one. An `int` beyond the 128 bits
-//! microscope computes with is refused.
+//! CPython 3.12+ rules: bools count as integers 0/1 but retain bool results where Python does.
+//! Integers beyond microscope's 128-bit arithmetic are refused.
 
 use std::cmp::Ordering;
 use std::num::FpCategory;
@@ -65,8 +63,7 @@ pub(super) fn compare(op: BinaryOp, left: &Loaded, right: &Loaded) -> Result<boo
     let ordering = match (number(&left.value), number(&right.value)) {
         (Some(left), Some(right)) => numbers(left, right),
         _ => match (&left.value, &right.value) {
-            // UTF-8's byte order is its characters' order, which is
-            // Python's.
+            // UTF-8 byte order matches Python's character order.
             (LoadedValue::Text(left), LoadedValue::Text(right))
             | (LoadedValue::Bytes(left), LoadedValue::Bytes(right)) => {
                 Some(texts(left, right, equality, |left, right| {

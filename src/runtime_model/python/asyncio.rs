@@ -1,21 +1,13 @@
-//! asyncio's tasks, from CPython 3.14, which lists each `asyncio.Task`,
-//! and each object of a class deriving from it, in the state of the thread
-//! that made it, and those of threads that have exited in their
-//! interpreter's state. Each list is circular, linked through each task's
-//! node, and its head is no task's. A thread's state names the task it
-//! runs.
+//! From CPython 3.14, thread states list their `asyncio.Task` objects, including subclasses.
+//! Exited threads' tasks move to the interpreter's list; thread states also name the running task.
+//! Lists are circular, linked through task nodes, with a non-task sentinel head.
 //!
-//! A task is one only where its type is, or derives from, the type C
-//! defines as `_asyncio.Task` with objects of the size of the structure
-//! the layouts copy (`scripts/cpython-layouts.c`), which conformance.rs
-//! checks against `_asyncio`'s own `.AsyncioDebug` section.
+//! Tasks must derive from the C-defined `_asyncio.Task` with the generated structure size.
+//! `conformance.rs` checks `scripts/cpython-layouts.c` against `_asyncio`'s `.AsyncioDebug`.
 //!
-//! A task no thread runs is suspended in its coroutine, which awaits
-//! another coroutine, which may await another: each a coroutine or
-//! generator suspended in its `await` of the object atop its frame's
-//! stack. Their frames, innermost first, are the task's logical stack.
-//! The chain ends at an object no coroutine is, such as the future the
-//! task waits for. Its walk is bounded, and a loop ends it with a problem.
+//! Suspended tasks' logical stacks follow coroutines and generators awaiting the object atop
+//! each frame's stack, innermost first. A non-coroutine, such as a future, ends the chain.
+//! Walks are bounded; cycles report a problem.
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
@@ -159,11 +151,8 @@ impl Values<'_, '_> {
         running
     }
 
-    /// Whether the object at `task` is a task asyncio lists: one whose
-    /// node lies between neighbors that link back to it, since asyncio
-    /// links each task into a list as it makes it and unlinks it, clearing
-    /// its node, as it frees it. Only its own list's nodes are read, so a
-    /// snapshot that asks this of each task reads each list once.
+    /// Checks reciprocal neighbor links; asyncio clears the node when freeing a task.
+    /// Reads only adjacent nodes, so checking every task costs one pass per list.
     pub(super) fn is_listed_task(&self, task: VirtualAddress) -> Result<bool, Problem> {
         let reader = &self.reader;
         if !self.is_task(task)? {

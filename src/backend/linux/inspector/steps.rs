@@ -1,8 +1,7 @@
-//! Steps V8 runs for microscope: `stepInto`, `stepOver`, and `stepOut`,
-//! owned by the isolate they began in, which go on through Node's own
-//! scripts, skipped files (F19), and generated code a source map leads to
-//! no source. A step from a native stop of the main thread first pauses
-//! V8 at its next statement.
+//! V8 steps (`stepInto`, `stepOver`, `stepOut`) stay in their starting isolate
+//! and continue through Node's own scripts, skipped files, and generated code
+//! without a source mapping. A step from a native stop on the main thread
+//! first pauses V8 at its next statement.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -25,8 +24,7 @@ pub(super) struct Stepping {
     pub(super) number: u64,
     pub(super) kind: crate::StepKind,
 
-    /// The isolate that runs it, where it began: a pause in another does
-    /// not end it.
+    /// Starting isolate; pauses in other isolates do not end the step.
     pub(super) session: Session,
 
     /// How many frames the paused thread had where the step began; `None`
@@ -47,11 +45,9 @@ pub(super) struct Stepping {
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// Whether V8 goes on from the pause that `params` describes in the
-    /// isolate `session` reaches, which no breakpoint stopped, with the
-    /// program left running: a step that pauses in a skipped script goes
-    /// on into the program's next statement, and an exception caught or a
-    /// `debugger` statement there is ignored.
+    /// Continues a non-breakpoint pause in a skipped script, leaving the
+    /// program running. Caught exceptions and `debugger` statements there
+    /// are ignored; steps continue to the program's next statement.
     pub(super) fn step_goes_on(
         &mut self,
         runtime: RuntimeId,
@@ -506,10 +502,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 }
 
-/// The step V8 runs for `step`, which begins where an isolate of
-/// `isolates` holds the step's thread paused. From anywhere else on
-/// `main`, the thread of the main isolate, it pauses at the next statement
-/// V8 runs (F19).
+/// Prepares a step in the isolate holding its thread paused. From a native
+/// stop, only `main` can step, by first pausing at V8's next statement.
 pub(super) fn stepping(
     isolates: &BTreeMap<Session, Isolate>,
     step: &crate::runtime_model::RuntimeStep,
@@ -545,9 +539,8 @@ pub(super) fn stepping(
     })
 }
 
-/// The most pauses in skipped scripts a step goes on from before it ends
-/// where it is. From a timer's landing in Node's code, the program's next
-/// statement took 59 (F19).
+/// Bounds skipped pauses before stopping in place. Reaching the program's
+/// next statement from a Node timer callback took 59 pauses.
 const MAX_SKIPPED: u32 = 1000;
 
 /// Whether a step goes on from a pause in the script at `url`: Node's own

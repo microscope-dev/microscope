@@ -1,9 +1,6 @@
 // @ts-check
-// Starts `microscope dap` for microscope debug sessions, opens a launch.json when
-// there is no configuration to debug, offers the workspace's programs to
-// launch, picks processes to attach to, and shows values in the editor:
-// whole expressions on hover, and each variable's value on the lines where
-// the stopped frame's variable is the one in scope.
+// VS Code integration: DAP sessions, launch/attach pickers, expression hovers,
+// and inline values for in-scope variables.
 
 'use strict';
 
@@ -54,8 +51,7 @@ function activate(context) {
 
 /** @param {vscode.DebugSession} session */
 function createDebugAdapterDescriptor(session) {
-    // A process the program started, which the adapter that debugs the
-    // program hosts: its session connects back to that adapter.
+    // Child sessions reuse the parent's adapter.
     const member = session.configuration.__microscopeMember;
     if (member !== undefined) {
         return new vscode.DebugAdapterNamedPipeServer(member.socket);
@@ -482,10 +478,8 @@ function opening(text, close) {
 }
 
 /**
- * Shows the stopped frame's variables on the lines that use them: for each
- * variable the debugger declares in this file, the lines from its
- * declaration to the stop, except lines in blocks that close before the
- * stop, where the name may be another variable.
+ * Shows frame variables at uses between their declaration and the stop.
+ * Excludes blocks that closed before the stop, where a name may be shadowed.
  *
  * @param {vscode.TextDocument} document
  * @param {vscode.Range} viewPort
@@ -541,11 +535,9 @@ async function inlineValues(session, document, viewPort, context) {
 }
 
 /**
- * The first use of a name on each line from a declaration's line to the
- * stop's line, outside comments, strings, and member selections, and
- * outside blocks that close before the stop. None when the declaration's
- * own block closes before the stop, which means the name is not the
- * declared variable there.
+ * Finds the first use per line between declaration and stop, excluding comments,
+ * strings, members, and blocks closed before the stop. Returns no uses if the
+ * declaration's block closed, since the name then refers to another variable.
  *
  * @param {string[]} lines
  * @param {string} name

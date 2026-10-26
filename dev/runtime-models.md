@@ -95,13 +95,11 @@ such as `isolate 1` for the V8 isolate a Node thread runs. The CLI's
 `threads`, the debug adapter's thread names, and the browser's Threads pane
 show them. Any runtime model can fill them.
 
-A model fills them with `RuntimeModel::thread_holding`. It returns what the
-thread runs in, out of a kind of thing the runtime has several of: the kind
-(`"isolate"`) and an opaque `HeldIdentity`, such as the isolate's address.
-It returns `None` when the thread runs in nothing, and an error when the
-identity can't be read; the label then says why. An identity must differ
-between any two things that are live at the same time. The runtime may reuse
-it once the thing that had it is gone.
+`RuntimeModel::thread_holding` returns the runtime resource a thread uses:
+a kind (`"isolate"`) and an opaque `HeldIdentity`, such as its address.
+It returns `None` when there is no resource, or an error when the identity
+cannot be read; the label then shows the error. Identities must be unique
+among live resources but may be reused after a resource is destroyed.
 
 The backend turns identities into numbers, per runtime and kind, in the
 table `Inferior::holdings`. The table lasts for the life of the process, so
@@ -359,17 +357,15 @@ it frees it. It runs on the thread whose state names it. When some thread
 state's running task can't be read, the task's context is an error, because
 that thread may be running it.
 
-A task no thread runs is suspended in its coroutine: a coroutine or generator
-in the state `FRAME_SUSPENDED_YIELD_FROM` awaits the object below the top of
-its embedded frame's stack (`Constant::GeneratorAwaitedDepth`: 1, or 2 from
-3.15, whose `GET_ITER` pushes an index above it). The chain ends at the first
-object no coroutine is, such as a future, or at a coroutine resting at its
-start or a bare `yield`. Its frames, innermost first, are the task's
-`TaskContext::Interpreted`, which the backend roots as
-`RootOrigin::Interpreted`: each frame resolves as an interpreted frame
-(`FrameScope::Interpreted`), so locals, expressions, and children work as in
-a thread's Python frames, and a reason the chain ends early is the trace's
-`BrokenAwaitChain`. A running task is `TaskContext::OnThread`.
+A task not running on a thread is suspended in its coroutine. A coroutine or
+generator in `FRAME_SUSPENDED_YIELD_FROM` awaits an object on its embedded
+frame's stack. `Constant::GeneratorAwaitedDepth` locates it: 1, or 2 from
+3.15, where `GET_ITER` pushes an index above it. The await chain ends at a
+non-coroutine object, such as a future, or a coroutine at its start or a bare
+`yield`. The task's `TaskContext::Interpreted` lists its frames innermost first.
+The backend uses `RootOrigin::Interpreted` and `FrameScope::Interpreted`, so
+locals, expressions, and children work as in thread frames. A prematurely
+ended chain carries `BrokenAwaitChain`. Running tasks use `TaskContext::OnThread`.
 
 `tests/fixtures/python/tasks.py` reports every task `asyncio.all_tasks()`
 lists in each loop, with its state, what it awaits, who awaits it
@@ -721,13 +717,14 @@ code id, name, value]`, where `value` is `["int", DECIMAL]`,
 returns, whatever events the agent monitors, so a ready agent takes it even
 with only exceptions armed; a source request never carries an assignment.
 
-The agent makes it in `assigning` once per number, on that thread, through
-`frame.f_locals[name] = value`. It takes an object only where a name of the
-frame's locals, globals, or builtins, or `None`, `True`, or `False`, still
-holds that id, and never casts an address. The object the variable held is
-kept in `_kept` until the next callback, so that nothing it frees runs while
-other threads are stopped. It reports `(6, number, status)`: 0 made, 1 the
-frame is gone, 2 no name finds the object, 3 the interpreter refused.
+`assigning` applies each numbered assignment once, on the frame's thread,
+through `frame.f_locals[name] = value`. An object ID is accepted only if it
+matches an object still held by a local, global, or builtin, or is the ID of
+`None`, `True`, or `False`. Addresses are never cast to objects.
+The old value stays in `_kept` until the next callback to prevent its
+destructors from running while other threads are stopped.
+The result is `(6, number, status)`: 0 assigned, 1 frame gone,
+2 object no longer found by name, 3 interpreter refused.
 
 `HookEvent::Assigned` ends the execution with `StopReason::Assignment`,
 which ranks with a step's end. `publish_stop` selects the variable's frame
@@ -1187,17 +1184,15 @@ answers, `Edit::InspectorAssigned` stops every thread and publishes
 `StopReason::Assignment`. The pause stays held for that stop and is let go
 at its resume.
 
-V8's scope objects are copies made as it paused; listing one again after
-the assignment returns the old values. So `PausedFrame::assigned` puts the
-value given in place of the listed one, and keeps the `CallArgument` it
-was given: a later `x = y` in the same pause gives `y`'s current object,
-not the one V8 listed. A name given a value in another frame or scope of
-the pause may share its context, so an object taken from it is refused
-until the program runs again. The frame's names still bind only
-if every listed value matches its slot, so a wrong value there unnames the
-frame rather than misnaming it. The answer is the variable read again from
-memory. A Turbofan frame's variables cannot be read back, and the answer
-says so. `tests/node/assignments.rs` checks each binding and value against
+V8 snapshots scope objects at the pause; listing them after an assignment
+still returns old values. `PausedFrame::assigned` replaces the cached value
+and retains its `CallArgument`, so a later `x = y` uses `y`'s updated object.
+Assignments in another frame or scope may share the context, so those names
+cannot supply objects until the program runs again. Frame names bind only if
+every listed value matches its slot; a mismatch leaves the frame unnamed.
+The assignment reply reads the variable from memory again. Turbofan variables
+cannot be read back, and the reply says so.
+`tests/node/assignments.rs` checks each binding and value against
 the program's own output on every build, Debian's included. The scripted
 test `an_assignment_holds_v8_s_pause_until_its_own_stop_resumes` fixes the
 order of requests.

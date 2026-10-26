@@ -1,7 +1,6 @@
 //! Models of the alarm that wakes the controller at an agent's deadline.
-//! The alarm's thread reads a clock that says 10; the controller sets the
-//! alarm and waits for its ring, which, if it were lost, would leave the
-//! controller waiting forever, which loom reports as a deadlock.
+//! The clock stays at 10. The controller sets the alarm and waits for it
+//! to ring; a lost wake leaves it blocked, which loom reports as a deadlock.
 
 use std::time::Duration;
 

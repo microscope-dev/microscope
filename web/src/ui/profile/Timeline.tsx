@@ -8,7 +8,7 @@ import { type ProfileFocus, token, useAnswer, useProfile } from "./context";
 
 /** One lane, in CSS pixels. */
 const LANE = 18;
-/** The most task lanes drawn, the heaviest. */
+/** Show only the tasks with the greatest weight. */
 const MOST_TASK_LANES = 50;
 
 /** A lane: what the look selects it by, and the answer's lane id. */
@@ -20,8 +20,7 @@ interface Row {
   title: string;
 }
 
-/** The lanes a look shows: threads, or tasks, which waits always are, and
- * for samples, what no snapshot named. */
+/** Waits always use tasks. Task-based samples add a lane for unknown tasks. */
 function rows(summary: ProfileSummary, look: ProfileFocus["look"]): Row[] {
   const waits = look.src === "waits";
   if (!waits && look.lanes !== "tasks") {
@@ -58,12 +57,10 @@ function rows(summary: ProfileSummary, look: ProfileFocus["look"]): Row[] {
 }
 
 /**
- * A lane per thread of how its kept samples fall over the whole profile,
- * over bands of the time it spent off its CPU: grey where it blocked,
- * amber where it was preempted, as strong as the share of the slice it
- * was off; or a lane per task, of its samples or waits. Dragging selects a
- * time range, which every view then reads; a click clears it. A lane's
- * name selects or deselects its thread or task.
+ * Thread or task samples and waits across the whole profile.
+ * Off-CPU bands are grey for blocking and amber for preemption;
+ * intensity shows the off-CPU fraction. Drag to select a shared time range,
+ * click to clear it, or click a lane name to toggle its thread or task.
  */
 export function Timeline() {
   const { summary, query, look, setLook } = useProfile();

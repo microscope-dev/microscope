@@ -1,9 +1,7 @@
-//! The opcodes of V8's deoptimization translations, per version: what an
-//! optimized frame's deoptimization data says of the JavaScript frames it
-//! stands for. A translation is a byte per opcode, each followed by its
-//! operands, VLQ-encoded; the opcodes' numbers and operand counts are
-//! `translation-opcode.h`'s, which change between versions, generated in
-//! `translation.gen.rs`.
+//! Per-version deoptimization opcodes describing an optimized frame's
+//! JavaScript frames. Each opcode byte is followed by VLQ-encoded operands.
+//! `translation.gen.rs` records opcode numbers and operand counts from each
+//! version's `translation-opcode.h`.
 
 use std::sync::Arc;
 
@@ -32,7 +30,7 @@ macro_rules! opcodes {
                 }
             }
 
-            /// The opcode `name` names.
+            /// Looks up an opcode by its V8 name.
             #[must_use]
             #[cfg_attr(
                 not(test),

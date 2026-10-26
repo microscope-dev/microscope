@@ -1,6 +1,4 @@
-// What every view of a profile shares: which profile, its summary, how
-// the tab looks at it, and how to change that, which is a navigation, so
-// the address bar always opens the same view.
+// Shared profile state. View changes update the URL so the view can be linked.
 
 import { createContext, useContext, useRef } from "react";
 import { type Requested, useRequest } from "../../data";
@@ -30,10 +28,8 @@ export function useProfile(): ProfileFocus {
   return focus;
 }
 
-/** Asks for a profile's answer once connected, and again after a
- * reconnection, which fails whatever was on its way. The last answer
- * stays while disconnected and until the next comes, so a dropped
- * connection keeps every view, and its state, on screen. */
+/** Retries on reconnection, which cancels in-flight requests.
+ * Keeps the last result visible while disconnected or awaiting a new result. */
 export function useAnswer<M extends Method>(
   method: M,
   params: (ParamsOf<M> extends undefined ? undefined : ParamsOf<M>) | null,

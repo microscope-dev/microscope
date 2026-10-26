@@ -1,13 +1,10 @@
-//! Views: how a value of a type a view matches is presented as the thing
-//! it stands for, such as a `std::string` as its text or a `Vec` as its
-//! elements, while the stored value stays one step away
-//! (`docs/views.md`).
+//! Views present logical values, such as a `std::string`'s text or a `Vec`'s
+//! elements, while keeping the stored value accessible (`docs/views.md`).
 //!
-//! This module is pure, as the evaluator is: it reaches a program only
-//! through the evaluator's traits, which the debugger implements, and never
-//! performs I/O, reads clocks, or starts threads. A view is parsed once,
-//! bound against each concrete type it matches before anything runs, and
-//! then run at stops, charging every read to the inspection's budget.
+//! Program access uses the evaluator's traits, implemented by the debugger;
+//! this module performs no I/O, clock reads, or thread creation. A view is
+//! parsed once, bound to each matching concrete type before execution, and
+//! run at stops, charging every read to the inspection budget.
 
 pub mod bind;
 pub mod embedded;
