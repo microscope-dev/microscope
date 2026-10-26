@@ -788,9 +788,8 @@ static __always_inline void send_v8(u32 tid, u32 tgid, struct pt_regs *regs)
 // holds, before the call or signal record that follows: the kernel's
 // walk of its frame pointers, and with CONFIG_STACK_COPY, a copy of its
 // top, as far as it reads. Fails, having counted the loss, when the ring
-// has no room for it; the record it precedes is then not sent either, so
-// that the reader never pairs a record with another's stack, or shows one
-// without its stack.
+// has no room for it; the record it precedes then says so, so that the
+// reader shows it without a stack rather than with the thread's last one.
 static __always_inline int send_stack(void *ctx, u32 tid, u32 tgid, struct pt_regs *regs,
 				      u32 flags)
 {
@@ -974,7 +973,7 @@ static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
 			send_files(tid, tgid, spec, &entry, ret);
 		if ((settings->flags & CONFIG_STACKS) &&
 		    send_stack(ctx, tid, tgid, regs, settings->flags))
-			return 0;
+			entry.flags |= CALL_STACK_LOST;
 		send_call(tid, tgid, &entry, RECORD_CALL, READ_EXIT, ret, now);
 	}
 	return 0;
@@ -1163,10 +1162,11 @@ int signal_deliver(u64 *ctx)
 	struct config *settings = config();
 	if (!settings || !(settings->flags & CONFIG_STREAM))
 		return 0;
+	u32 flags = 0;
 	if (settings->flags & CONFIG_STACKS) {
 		struct pt_regs *regs = (struct pt_regs *)bpf_task_pt_regs(bpf_get_current_task_btf());
 		if (send_stack(ctx, tid, tgid, regs, settings->flags))
-			return 0;
+			flags = CALL_STACK_LOST;
 	}
 	struct signal_record *record = bpf_ringbuf_reserve(&EVENTS, sizeof(*record), 0);
 	if (!record) {
@@ -1179,7 +1179,7 @@ int signal_deliver(u64 *ctx)
 	record->header.tgid = tgid;
 	record->time = bpf_ktime_get_ns();
 	record->signal = (s32)ctx[0];
-	record->pad = 0;
+	record->flags = flags;
 	if (bpf_probe_read_kernel(record->info, sizeof(record->info), (void *)ctx[1]))
 		__builtin_memset(record->info, 0, sizeof(record->info));
 	bpf_ringbuf_submit(record, 0);

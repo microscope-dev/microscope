@@ -1942,7 +1942,7 @@ mod bpf {
             .filter(|line| line.starts_with("--- lost "))
             .collect();
 
-        // A call whose stack was lost is lost with it.
+        // A call whose stack was lost says so: `[stack ends: no stack]`.
         let bare: Vec<&String> = calls
             .iter()
             .filter(|(call, frames)| frames.is_empty() && !call.starts_with("+++ "))

@@ -61,7 +61,8 @@ enum config_flags {
 	CONFIG_GENERATION = 64,
 };
 
-// Bits of call_record.flags, as EventFlags.
+// Bits of call_record.flags, as EventFlags. A signal_record's flags hold
+// CALL_STACK_LOST alone.
 enum call_flags {
 	CALL_ENTRY_UNSEEN = 2,
 	CALL_ABI_UNCERTAIN = 4,
@@ -69,6 +70,8 @@ enum call_flags {
 	CALL_PROCESS_EXITED = 8,
 	// Left out of the stream by sampling, so counted by the kernel.
 	CALL_SAMPLED_OUT = 16,
+	// Its stack, which goes before it, did not fit in the ring.
+	CALL_STACK_LOST = 32,
 };
 
 enum abi {
@@ -229,7 +232,8 @@ struct signal_record {
 	struct record header;
 	u64 time;
 	s32 signal;
-	u32 pad;
+	// CALL_STACK_LOST, or nothing.
+	u32 flags;
 	// The kernel's siginfo, as much as every kind of signal fills.
 	u8 info[48];
 };

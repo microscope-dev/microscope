@@ -176,8 +176,10 @@ How it reads calls:
   never shrunk.
 - A record that does not fit counts one loss in `LOST`. A stack goes before
   the call or signal it belongs to; when the stack does not fit, that record
-  is not sent either, so the reader never shows a call without its stack or
-  with another call's.
+  carries `CALL_STACK_LOST`, and the reader shows it with an empty stack
+  ending `no stack` rather than pair it with the thread's last stack. A call
+  whose entry record (`execve`, `rseq`) went out is thus never left
+  unfinished by a lost stack.
 - The reader copies everything the ring holds out of it, then handles the
   batch on the same thread: it unwinds each stack and names its frames, and
   the CLI formats it. That work, not the ring, sets the rate a trace with

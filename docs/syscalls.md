@@ -281,8 +281,8 @@ call's stack is unwound and named as it is read, which with `-k` takes a few
 microseconds, so a program making more than about 100,000 calls a second with
 `-k`, or 50,000 with `-k=dwarf`, can outrun it on a fast machine, and fewer
 on a busy one. `--ring 256M` gives a burst more room; it does not make
-the reader faster. A call whose stack is lost is lost with it, and counted,
-rather than shown without its stack.
+the reader faster. A call whose stack is lost is still shown, its stack
+reading `[stack ends: no stack]`, and the stack counts among the lost.
 
 For a short list of calls, the BPF engine attaches to the kernel functions
 behind them, which costs other processes nothing. While it does, a call in

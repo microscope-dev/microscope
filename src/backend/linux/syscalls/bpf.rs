@@ -45,6 +45,7 @@ use crate::syscalls::{
     ReadAt, SyscallEvent, SyscallId, SyscallStats, Tid, TraceEvent,
 };
 
+use crate::capture::records::Truncation;
 use crate::unwind::DwarfRegister;
 use crate::unwind::sample::SampledState;
 
@@ -91,6 +92,16 @@ const CONFIG_STACK_COPY: u32 = 32;
 const CONFIG_GENERATION: u32 = 64;
 
 const CALL_PROCESS_EXITED: u8 = 8;
+const CALL_STACK_LOST: u8 = 32;
+
+/// The stack of a call or signal whose own did not fit in the ring.
+fn lost_stack() -> CallStack {
+    CallStack {
+        addresses: Arc::from([]),
+        truncated: Some(Truncation::NoStack as u8),
+        interpreted: Arc::from([]),
+    }
+}
 
 /// The flags a call record shares with [`EventFlags`].
 const CALL_EVENT_FLAGS: u8 = EventFlags::ENTRY_UNSEEN.0 | EventFlags::ABI_UNCERTAIN.0;
@@ -272,7 +283,7 @@ pub struct RawSignalRecord {
     pub header: RawRecord,
     pub time: u64,
     pub signal: i32,
-    pub pad: u32,
+    pub flags: u32,
     pub info: [u8; 48],
 }
 
@@ -625,7 +636,7 @@ pub fn decode(bytes: &[u8]) -> Result<Record, DecodeError> {
                 code: Some(code),
                 sender,
                 info: Some(Arc::from(&info[..])),
-                stack: None,
+                stack: (raw.flags & u32::from(CALL_STACK_LOST) != 0).then(lost_stack),
             }))
         }
         RECORD_STACK => stack_record(header, bytes),
@@ -740,7 +751,7 @@ fn call_record(header: RawRecord, bytes: &[u8]) -> Result<Record, DecodeError> {
         },
         entered: (!unseen).then_some(raw.entered),
         exited: (header.kind == RECORD_CALL && !exited_inside).then_some(raw.exited),
-        stack: None,
+        stack: (raw.flags & CALL_STACK_LOST != 0).then(lost_stack),
         flags: EventFlags(raw.flags & CALL_EVENT_FLAGS),
     };
 
@@ -2346,10 +2357,17 @@ impl Reader<'_> {
         }
     }
 
-    /// Unwinds the stack the kernel sent before a thread's call or signal.
-    fn unwind(&mut self, thread: Tid) -> Option<CallStack> {
+    /// Unwinds the stack the kernel sent before a thread's call or signal,
+    /// unless the record says its stack did not fit in the ring, and that
+    /// whatever the thread's last stack was, it is another record's.
+    fn unwind(&mut self, thread: Tid, lost: Option<CallStack>) -> Option<CallStack> {
         let python = self.python.remove(&thread);
-        let sampled = self.sampled.remove(&thread)?;
+        let sampled = self.sampled.remove(&thread);
+        if lost.is_some() {
+            return lost;
+        }
+
+        let sampled = sampled?;
         let stacks = self.stacks.as_ref()?;
         let mut stacks = stacks
             .lock()
@@ -2379,7 +2397,7 @@ impl Reader<'_> {
                 self.entries.insert(entry.thread, entry);
             }
             Record::Call(mut call) => {
-                call.stack = self.unwind(call.thread);
+                call.stack = self.unwind(call.thread, call.stack.take());
                 if let Some(entry) = self.entries.remove(&call.thread) {
                     if Some(entry.entered.unwrap_or(0)) == call.entered.or(Some(0)) {
                         let mut captured = entry.captured;
@@ -2401,7 +2419,7 @@ impl Reader<'_> {
                 }
 
                 if let TraceEvent::Signal { thread, stack, .. } = &mut event {
-                    *stack = self.unwind(*thread);
+                    *stack = self.unwind(*thread, stack.take());
                 }
 
                 match &event {
@@ -2544,7 +2562,7 @@ mod tests {
             (
                 RawSignalRecord,
                 "signal_record",
-                [header, time, signal, pad, info]
+                [header, time, signal, flags, info]
             ),
             (
                 RawStatValue,
@@ -2668,6 +2686,17 @@ mod tests {
             decode(&bytes),
             Ok(Record::Event(TraceEvent::Lost { count: 1, .. }))
         ));
+
+        // A call whose stack did not fit in the ring says so, rather than
+        // take the thread's last stack.
+        let Ok(Record::Call(call)) = decode(&call_bytes(RECORD_CALL, CALL_STACK_LOST, &[])) else {
+            panic!("a call");
+        };
+        let stack = call.stack.expect("a stack that says it was lost");
+        assert_eq!(
+            (stack.addresses.len(), stack.truncation()),
+            (0, Some(Truncation::NoStack))
+        );
 
         let mut bytes = call_bytes(RECORD_CALL, 0, &[(1, 0, b"/etc/hosts")]);
         let header = size_of::<RawCallRecord>();
