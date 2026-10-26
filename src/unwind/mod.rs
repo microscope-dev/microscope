@@ -211,6 +211,11 @@ impl RegisterFile {
         self.values.remove(&register);
     }
 
+    /// Forgets every register `keep` says not to keep.
+    pub fn retain(&mut self, mut keep: impl FnMut(DwarfRegister) -> bool) {
+        self.values.retain(|&register, _| keep(register));
+    }
+
     /// Every known register and its value, by number.
     pub fn iter(&self) -> impl Iterator<Item = (DwarfRegister, u64)> + '_ {
         self.values

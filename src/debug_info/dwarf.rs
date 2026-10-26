@@ -854,6 +854,12 @@ struct DwarfUnwindInfo {
     /// describes and says where Go frames saved the frame pointer, parsed
     /// on the first unwind that needs it.
     go: std::sync::OnceLock<Option<super::gopclntab::GoUnwind>>,
+
+    /// The row found at each address unwound, by whether it is
+    /// `.debug_frame`'s. Finding a row runs its entry's instructions from
+    /// the start, and a tracer or sampler unwinds the same few addresses
+    /// over and over.
+    rows: std::sync::Mutex<HashMap<(bool, u64), Arc<FrameRow>>>,
 }
 
 pub fn load(
@@ -1611,6 +1617,7 @@ fn bind(
         unwind: Arc::new(DwarfUnwindInfo {
             tables: Arc::clone(image.tables()),
             go: std::sync::OnceLock::new(),
+            rows: std::sync::Mutex::default(),
         }),
         variables: Arc::new(variables::DwarfVariableInfo::new(&image)),
         image,
@@ -2300,6 +2307,33 @@ impl DwarfUnwindInfo {
             .as_ref()
     }
 
+    /// The row at `address` of `.debug_frame` if `debug`, else of
+    /// `.eh_frame`, as `find` finds it, found once.
+    fn row(
+        &self,
+        debug: bool,
+        address: ImageAddress,
+        find: impl FnOnce() -> std::result::Result<FrameRow, UnwindTermination>,
+    ) -> std::result::Result<Arc<FrameRow>, UnwindTermination> {
+        let key = (debug, address.get());
+        let rows = || {
+            self.rows
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+        if let Some(row) = rows().get(&key) {
+            return Ok(Arc::clone(row));
+        }
+
+        let row = Arc::new(find()?);
+        let mut rows = rows();
+        if rows.len() < MOST_FRAME_ROWS {
+            rows.insert(key, Arc::clone(&row));
+        }
+        drop(rows);
+        Ok(row)
+    }
+
     /// Returns the registers the function at `address` may overwrite
     /// without saving them, by the calling convention it follows. Go's
     /// lets a callee overwrite registers the System V ABI preserves.
@@ -2368,25 +2402,27 @@ impl UnwindInfo for DwarfUnwindInfo {
         let sections = UnwindSections::in_image(view);
         let clobbered = self.call_clobbered_registers(address);
         let restored = view.restored(address);
-        let result = unwind_from_section(
-            &sections.eh_frame(),
-            view.eh_frame_index(),
-            &sections.bases,
-            address,
-            registers,
-            (clobbered, restored),
-            memory,
-        );
+        let eh_frame = sections.eh_frame();
+        let result = self
+            .row(false, address, || {
+                frame_row(&eh_frame, view.eh_frame_index(), &sections.bases, address)
+            })
+            .and_then(|row| {
+                unwind_by_row(&eh_frame, &row, registers, (clobbered, restored), memory)
+            });
         let result = if matches!(result, Err(UnwindTermination::NoUnwindInfo { .. })) {
-            unwind_from_section(
-                &sections.debug_frame(),
-                view.debug_frame_index(),
-                &sections.bases,
-                address,
-                registers,
-                (clobbered, restored),
-                memory,
-            )
+            let debug_frame = sections.debug_frame();
+            self.row(true, address, || {
+                frame_row(
+                    &debug_frame,
+                    view.debug_frame_index(),
+                    &sections.bases,
+                    address,
+                )
+            })
+            .and_then(|row| {
+                unwind_by_row(&debug_frame, &row, registers, (clobbered, restored), memory)
+            })
         } else {
             result
         };
@@ -2499,11 +2535,64 @@ where
     Ok((fde, row))
 }
 
+/// What unwinding a frame at one address needs of the call-frame
+/// information: the row in effect there, with only the rules it has, and
+/// the facts of the entry that holds it.
+#[derive(Debug)]
+struct FrameRow {
+    cfa: CfaRule<usize>,
+    rules: Box<[(gimli::Register, RegisterRule<usize>)]>,
+    return_register: DwarfRegister,
+    encoding: Encoding,
+    signal_frame: bool,
+}
+
+/// The rows an image's call-frame information was asked for most, past
+/// which a row is found again each time it is needed.
+const MOST_FRAME_ROWS: usize = 1 << 16;
+
+/// The row of `section` in effect at `address`.
+fn frame_row<'data, S>(
+    section: &S,
+    index: crate::image::unwind::FdeLookup<'_>,
+    bases: &BaseAddresses,
+    address: ImageAddress,
+) -> std::result::Result<FrameRow, UnwindTermination>
+where
+    S: UnwindSection<Reader<'data>>,
+{
+    let mut context = UnwindContext::new();
+    let (fde, row) = unwind_row(section, index, bases, address, &mut context)?;
+    Ok(FrameRow {
+        cfa: row.cfa().clone(),
+        rules: row.registers().cloned().collect(),
+        return_register: DwarfRegister::from(fde.cie().return_address_register()),
+        encoding: fde.cie().encoding(),
+        signal_frame: fde.cie().is_signal_trampoline(),
+    })
+}
+
+#[cfg(test)]
 fn unwind_from_section<'data, S>(
     section: &S,
     index: crate::image::unwind::FdeLookup<'_>,
     bases: &BaseAddresses,
     address: ImageAddress,
+    registers: &RegisterFile,
+    clobbered: (&[DwarfRegister], u32),
+    memory: &mut dyn MemoryReader,
+) -> std::result::Result<UnwindStep, UnwindTermination>
+where
+    S: UnwindSection<Reader<'data>>,
+{
+    let row = frame_row(section, index, bases, address)?;
+    unwind_by_row(section, &row, registers, clobbered, memory)
+}
+
+/// The caller of the frame whose `registers` `row` describes.
+fn unwind_by_row<'data, S>(
+    section: &S,
+    row: &FrameRow,
     registers: &RegisterFile,
     (clobbered, restored): (&[DwarfRegister], u32),
     memory: &mut dyn MemoryReader,
@@ -2511,33 +2600,30 @@ fn unwind_from_section<'data, S>(
 where
     S: UnwindSection<Reader<'data>>,
 {
-    let mut context = UnwindContext::new();
-    let (fde, row) = unwind_row(section, index, bases, address, &mut context)?;
-    let return_register = DwarfRegister::from(fde.cie().return_address_register());
-    let cfa = cfa_from_rule(row.cfa(), registers, section, fde.cie().encoding(), memory)?;
+    let return_register = row.return_register;
+    let cfa = cfa_from_rule(&row.cfa, registers, section, row.encoding, memory)?;
     let mut caller = registers.clone();
 
     // A callee may overwrite every register its calling convention does not
     // preserve across calls, so the caller's value survives only where the
     // row says where it was saved. Keeping the callee's value would present
     // it as the caller's.
-    for &register in clobbered {
-        if !row
-            .registers()
-            .any(|(described, _)| DwarfRegister::from(*described) == register)
-        {
-            caller.remove(register);
-        }
-    }
+    caller.retain(|register| {
+        !clobbered.contains(&register)
+            || row
+                .rules
+                .iter()
+                .any(|(described, _)| DwarfRegister::from(*described) == register)
+    });
 
     let rules = RuleContext {
         current: registers,
         cfa,
         section,
-        encoding: fde.cie().encoding(),
+        encoding: row.encoding,
     };
 
-    for &(register, ref rule) in row.registers() {
+    for &(register, ref rule) in &row.rules {
         let register = DwarfRegister::from(register);
         match rules.apply(&mut caller, memory, register, rule) {
             // A register saved where memory cannot be read is unknown in
@@ -2569,7 +2655,7 @@ where
     Ok(UnwindStep {
         registers: caller,
         cfa,
-        signal_frame: fde.cie().is_signal_trampoline(),
+        signal_frame: row.signal_frame,
     })
 }
 

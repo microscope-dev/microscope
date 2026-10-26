@@ -380,14 +380,14 @@ fn pids(texts: &[String]) -> Result<Vec<u32>> {
 
 /// A frame as strace's -k prints it: the module, the symbol and the
 /// offset from it, and the address within the module.
-fn frame_text(frame: &Frame) -> String {
-    match (&frame.module, &frame.symbol) {
+fn write_frame(out: &mut String, frame: &Frame) {
+    let _ = match (&frame.module, &frame.symbol) {
         (Some((module, address)), Some((symbol, offset))) => {
-            format!("{module}({symbol}+{offset:#x}) [{address:#x}]")
+            write!(out, "{module}({symbol}+{offset:#x}) [{address:#x}]")
         }
-        (Some((module, address)), None) => format!("{module}() [{address:#x}]"),
-        (None, _) => format!("[unmapped] [{:#x}]", frame.address),
-    }
+        (Some((module, address)), None) => write!(out, "{module}() [{address:#x}]"),
+        (None, _) => write!(out, "[unmapped] [{:#x}]", frame.address),
+    };
 }
 
 /// An interpreted frame as `-k` names it: its function, and where in its
@@ -1769,7 +1769,8 @@ impl Printer {
                     Err(call) => return Some(format!(" > {}", interpreted_text(call))),
                 };
 
-                let mut line = format!(" > {}", frame_text(frame));
+                let mut line = String::from(" > ");
+                write_frame(&mut line, frame);
                 if self.stack_lines
                     && let Some((file, number)) = &frame.source
                 {

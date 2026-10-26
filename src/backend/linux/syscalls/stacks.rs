@@ -101,6 +101,10 @@ pub struct Frame {
     pub source: Option<(String, u64)>,
 }
 
+/// A frame's symbol, with the address's offset from it, and its source
+/// file and line.
+type Names = (Option<(Arc<str>, u64)>, Option<(String, u64)>);
+
 /// Each traced process's modules, and the images they map, loaded once.
 ///
 /// A process's modules come from the records of its mappings, as they
@@ -111,6 +115,11 @@ pub struct Stacks {
     images: HashMap<(PathBuf, u64), Image>,
     processes: BTreeMap<Pid, Vec<Mapped>>,
     rules: FrameRules,
+
+    /// The symbol and line of each image address a stack named, by image:
+    /// an image never changes, and a busy thread's calls name the same
+    /// few addresses again and again.
+    names: HashMap<(ModuleImageId, u64), Names>,
     next_module: u32,
 
     /// The identifier the next image read gets, the vDSO's among them.
@@ -184,6 +193,7 @@ impl Stacks {
             images: HashMap::default(),
             processes: BTreeMap::new(),
             rules: FrameRules::default(),
+            names: HashMap::default(),
             next_module: 0,
             next_image: 0,
             vdso: Vdso::Unread,
@@ -786,7 +796,7 @@ impl Stacks {
             .collect()
     }
 
-    fn frame(&self, process: Pid, address: u64, innermost: bool) -> Frame {
+    fn frame(&mut self, process: Pid, address: u64, innermost: bool) -> Frame {
         // A return address may follow a call that never returns, past the
         // end of its function: the call itself names the caller's code.
         let code = if innermost {
@@ -809,7 +819,7 @@ impl Stacks {
             .loaded
             .load_bias
             .wrapping_unload(VirtualAddress::new(code));
-        let (symbol, source) = mapped.image.info.as_deref().map_or((None, None), |info| {
+        let named = |info: &DebugInfo| {
             let image = &info.image;
             let symbol = image.symbolize(code_address).map(|found| {
                 let name = image
@@ -823,7 +833,15 @@ impl Stacks {
                 Some((file.path.display().to_string(), location.line.get()))
             });
             (symbol, source)
-        });
+        };
+        let (symbol, source) = match mapped.image.info.as_deref() {
+            Some(info) => self
+                .names
+                .entry((info.image.id(), code_address.get()))
+                .or_insert_with(|| named(info))
+                .clone(),
+            None => (None, None),
+        };
 
         Frame {
             address: VirtualAddress::new(code),

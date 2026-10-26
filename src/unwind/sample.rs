@@ -18,7 +18,7 @@ use super::{
 };
 
 use crate::capture::records::Truncation;
-use crate::{CodeRole, ModuleImageId, UnwindTermination, VirtualAddress};
+use crate::{CodeRole, ImageAddress, ModuleImageId, UnwindTermination, VirtualAddress};
 
 /// One sampled thread's state.
 #[derive(Debug, Clone, Copy)]
@@ -67,14 +67,22 @@ pub enum StackEnd {
     Truncated(Truncation, Option<usize>),
 }
 
-/// Remembers each instruction's [`FramePointerRule`], which every sample
-/// through it asks again.
+/// Remembers each instruction's [`FramePointerRule`] and [`CodeRole`],
+/// which every sample through it asks again.
 #[derive(Debug, Default)]
 pub struct FrameRules {
     rules: HashMap<(ModuleImageId, u64), FramePointerRule>,
+    roles: HashMap<(ModuleImageId, u64), CodeRole>,
 }
 
 impl FrameRules {
+    fn role(&mut self, module: &UnwindModule<'_>, image_address: ImageAddress) -> CodeRole {
+        *self
+            .roles
+            .entry((module.loaded.image, image_address.get()))
+            .or_insert_with(|| module.image.code_role(image_address))
+    }
+
     fn rule(&mut self, module: &UnwindModule<'_>, address: VirtualAddress) -> FramePointerRule {
         let Ok(image_address) = module.loaded.image_address(address) else {
             return FramePointerRule::NoUnwindInfo;
@@ -143,7 +151,7 @@ fn sampled_frames(
         bytes: sample.stack,
     };
 
-    let walked = walk_cfi(modules, instruction, registers, &mut memory, limit);
+    let walked = walk_cfi(modules, rules, instruction, registers, &mut memory, limit);
     if walked.certain {
         return (frames(walked.unwound), walked.end);
     }
@@ -183,7 +191,8 @@ pub fn unwind_memory(
         return (Vec::new(), StackEnd::Truncated(Truncation::NoStack, None));
     };
 
-    let walked = walk_cfi(modules, instruction, registers, memory, limit);
+    let mut rules = FrameRules::default();
+    let walked = walk_cfi(modules, &mut rules, instruction, registers, memory, limit);
     let end = match walked.end {
         StackEnd::Truncated(Truncation::StackCopyExhausted, module) => {
             StackEnd::Truncated(Truncation::Unreadable, module)
@@ -222,6 +231,7 @@ impl Walked {
 /// reading the stack from `memory`, collecting at most `limit` frames.
 fn walk_cfi(
     modules: &[UnwindModule<'_>],
+    rules: &mut FrameRules,
     instruction: u64,
     mut registers: RegisterFile,
     memory: &mut dyn MemoryReader,
@@ -239,7 +249,7 @@ fn walk_cfi(
                 .position(|module| module.loaded.id == found.loaded.id)
         });
         let role = found.map_or(CodeRole::Ordinary, |(module, image_address)| {
-            module.image.code_role(image_address)
+            rules.role(&module, image_address)
         });
         unwound.push(Unwound {
             frame: SampledFrame {
@@ -303,7 +313,7 @@ fn walk_cfi(
         // A signal handler returns to the trampoline that restores what it
         // interrupted: its frame, at its first instruction, and then the
         // interrupted instruction, with the registers the kernel saved.
-        if let Some(trampoline) = signal_trampoline(modules, caller, &step.registers) {
+        if let Some(trampoline) = signal_trampoline(modules, rules, caller, &step.registers) {
             unwound.push(trampoline);
             if unwound.len() >= limit {
                 return Walked::certain(unwound, StackEnd::Truncated(Truncation::DepthLimit, None));
@@ -345,11 +355,12 @@ fn walk_cfi(
 /// there, with the registers of the handler it returns from.
 fn signal_trampoline(
     modules: &[UnwindModule<'_>],
+    rules: &mut FrameRules,
     caller: u64,
     registers: &RegisterFile,
 ) -> Option<Unwound> {
     let (module, image_address) = unwind_module_for(modules, VirtualAddress::new(caller))?;
-    (module.image.code_role(image_address) == CodeRole::SignalTrampoline).then(|| Unwound {
+    (rules.role(&module, image_address) == CodeRole::SignalTrampoline).then(|| Unwound {
         frame: SampledFrame {
             address: VirtualAddress::new(caller),
             module: modules
@@ -458,7 +469,7 @@ fn follow_chain(
         let index = modules
             .iter()
             .position(|candidate| candidate.loaded.id == module.loaded.id);
-        let role = module.image.code_role(image_address);
+        let role = rules.role(&module, image_address);
         let kept = rules.rule(&module, address);
         let frame_pointer = links.get(position).copied();
         frames.push(SampledFrame {
