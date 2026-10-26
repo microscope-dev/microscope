@@ -233,7 +233,11 @@ With `--window` or `--continuous`, each saved file gets its own span's calls.
   `-k` on three interpreters. It checks each call's Python lines, a second
   activation that C began, the text, and a saved trace's call site. It also
   checks a catchpoint's backtrace. Its `bpf` module holds the BPF engine to
-  the same frames, with `-k=dwarf`, after the fixture's `--settle` second.
+  the same frames, with `-k=dwarf`, running the fixture under `--hold` as
+  the Node tests below do (`tests/support/held.rs`). Its probe is `probe`'s
+  open of `/dev/random`. The fixture lives until the test has read its
+  calls: the engine reads a frame's code object as it drains the record,
+  and a program that has exited leaves that code unreadable.
 - `tests/node/syscalls.rs` traces `tests/fixtures/node/syscalls.js`, which
   prints the call sites V8 reports (`CallSite`) on the line before each
   `openat`, in every tier and on a worker, and holds each engine's frames to

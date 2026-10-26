@@ -307,18 +307,33 @@ mod bpf {
             command.arg(env!("CARGO_BIN_EXE_microscope"));
 
             // The engine unwinds native frames by a copy of the stack, as
-            // glibc's system call wrappers keep no frame pointer.
-            let traced = engine_command(
+            // glibc's system call wrappers keep no frame pointer. The
+            // fixture probes until the engine names its Python frames, and
+            // lives until its calls are traced: their code is read as the
+            // engine drains them, which a program that exited takes away.
+            let mut command = engine_command(
                 command,
                 "bpf",
                 interpreter,
                 &["-k=dwarf", "-k", "--format", "ndjson", "-o", "-"],
-            )
-            .arg("--settle")
-            .output()
-            .expect("run microscope");
+            );
+            command.arg("--hold");
+            let (records, _) = crate::support::held::trace(
+                command,
+                |record| {
+                    record["path"] == "/dev/random"
+                        && python_frames(record)
+                            .iter()
+                            .any(|(_, name)| name.starts_with("probe:"))
+                },
+                |records| {
+                    ["/proc/self/stat", "/dev/null"]
+                        .iter()
+                        .all(|path| records.iter().any(|record| record["path"] == *path))
+                },
+            );
 
-            check_frames(interpreter, &records(interpreter, &traced));
+            check_frames(interpreter, &records);
         }
     }
 }

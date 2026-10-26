@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use serde_json::Value;
 
 use crate::support::truth::Report;
-use crate::support::{ScratchDir, node};
+use crate::support::{ScratchDir, held, node};
 
 /// The entry the profiler and syscall tests run on: the reader is shared,
 /// and these test its use.
@@ -318,91 +318,14 @@ pub fn bpf_lies(
 /// and once each of them is traced its standard input ends, which ends it.
 /// What the fixture reported, and the trace's records.
 pub fn run_held(
-    mut command: Command,
+    command: Command,
     ready: impl Fn(&Value) -> bool,
 ) -> (BTreeMap<String, Call>, Vec<Value>) {
-    use std::io::{BufRead, Read, Write};
-
-    /// How long the engine may take to name JavaScript frames, which waits
-    /// for Node's debug information to load, and then to trace the calls.
-    const DEADLINE: std::time::Duration = std::time::Duration::from_secs(180);
-
-    /// Kills and reaps the traced command if the test fails.
-    struct Running(std::process::Child);
-    impl Drop for Running {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
-
-    let child = command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("run microscope");
-    let mut running = Running(child);
-    let mut stdin = running.0.stdin.take();
-    let stdout = running.0.stdout.take().expect("microscope's stdout");
-    let mut stderr = running.0.stderr.take().expect("microscope's stderr");
-    let (lines, read) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        for line in std::io::BufReader::new(stdout).lines() {
-            if lines.send(line).is_err() {
-                break;
-            }
-        }
+    let (records, stderr) = held::trace(command, ready, |records| {
+        OPENS
+            .iter()
+            .all(|(path, _)| records.iter().any(|record| record["path"] == *path))
     });
-    let errors = std::thread::spawn(move || {
-        let mut text = String::new();
-        let _ = stderr.read_to_string(&mut text);
-        text
-    });
-
-    let deadline = std::time::Instant::now() + DEADLINE;
-    let mut records: Vec<Value> = Vec::new();
-    let mut told = false;
-    while stdin.is_some() {
-        let left = deadline.saturating_duration_since(std::time::Instant::now());
-        let line = read
-            .recv_timeout(left)
-            .unwrap_or_else(|error| panic!("the trace ended or stalled ({error}): {records:#?}"))
-            .expect("read the trace");
-        // truth.js reports the process on standard output as it loads.
-        if line.starts_with("TRUTH\t") {
-            continue;
-        }
-        let record: Value =
-            serde_json::from_str(&line).unwrap_or_else(|error| panic!("{line}: {error}"));
-        if !told && ready(&record) {
-            stdin
-                .as_mut()
-                .expect("the fixture's stdin")
-                .write_all(b"go\n")
-                .expect("tell the fixture to go");
-            told = true;
-        }
-        records.push(record);
-        if told
-            && OPENS
-                .iter()
-                .all(|(path, _)| records.iter().any(|record| record["path"] == *path))
-        {
-            stdin = None;
-        }
-    }
-
-    for line in &read {
-        let line = line.expect("read the trace");
-        if line.starts_with("TRUTH\t") {
-            continue;
-        }
-        records.push(serde_json::from_str(&line).unwrap_or_else(|error| panic!("{line}: {error}")));
-    }
-    let status = running.0.wait().expect("reap microscope");
-    let stderr = errors.join().expect("read microscope's stderr");
-    assert!(status.success(), "microscope failed: {stderr}");
     (reported(&stderr), records)
 }
 

@@ -9,6 +9,7 @@
 #![allow(dead_code, reason = "each test crate uses a subset of the harness")]
 
 pub mod flight_recordings;
+pub mod held;
 mod memory_cap;
 pub mod node;
 pub mod python;
