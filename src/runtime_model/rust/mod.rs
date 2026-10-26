@@ -471,18 +471,48 @@ impl RuntimeModel for RustRuntime {
 
 /// Whether a function is the standard library's, by its name, for code
 /// with no lines to tell by: an item of `std`, `core`, or `alloc`, or a
-/// method of one of their types, as `<std::fs::File>::open` or
-/// `<&std::fs::File as std::io::Read>::read`. A program's own impl of a
-/// standard trait, as `<app::Config as core::fmt::Debug>::fmt`, is its own.
+/// method of one of their types, as `<std::fs::File>::open`, of a
+/// standard trait, as `<&std::fs::File as std::io::Read>::read`. A
+/// program's own trait on a standard type, as `<std::fs::File as
+/// app::Settings>::load`, or a standard trait on its own type, as
+/// `<app::Config as core::fmt::Debug>::fmt`, is the program's.
 pub fn standard_library_function(name: &str) -> bool {
-    let owner = name.strip_prefix('<').map_or(name, |inner| {
-        let inner = inner.trim_start_matches('&');
-        let inner = inner.strip_prefix("mut ").unwrap_or(inner);
-        inner.strip_prefix("dyn ").unwrap_or(inner)
-    });
-    ["std::", "core::", "alloc::"]
-        .iter()
-        .any(|krate| owner.starts_with(krate))
+    let standard = |path: &str| {
+        let path = path.trim_start_matches('&');
+        let path = path.strip_prefix("mut ").unwrap_or(path);
+        let path = path.strip_prefix("dyn ").unwrap_or(path);
+        ["std::", "core::", "alloc::"]
+            .iter()
+            .any(|krate| path.starts_with(krate))
+    };
+    let Some(inner) = name.strip_prefix('<') else {
+        return standard(name);
+    };
+
+    // `<Type as Trait>::method`: the `as` and the `>` outside any generic
+    // arguments of the type's own.
+    let mut depth = 0_usize;
+    let mut trait_at = None;
+    let mut end = inner.len();
+    for (at, byte) in inner.bytes().enumerate() {
+        match byte {
+            b'<' => depth += 1,
+            b'>' if depth == 0 => {
+                end = at;
+                break;
+            }
+            b'>' => depth -= 1,
+            b' ' if depth == 0 && trait_at.is_none() && inner[at..].starts_with(" as ") => {
+                trait_at = Some(at);
+            }
+            _ => {}
+        }
+    }
+
+    trait_at.map_or_else(
+        || standard(&inner[..end]),
+        |at| standard(&inner[..at]) && standard(&inner[at + 4..end]),
+    )
 }
 
 /// Whether a source file is the standard library's, wherever the toolchain
@@ -616,6 +646,7 @@ mod tests {
             "<&std::fs::File as std::io::Read>::read",
             "<&dyn core::ops::function::Fn<()> as core::ops::function::FnOnce<()>>::call_once",
             "alloc::raw_vec::finish_grow",
+            "<alloc::vec::Vec<app::Row> as core::fmt::Debug>::fmt",
         ] {
             assert!(super::standard_library_function(name), "{name}");
         }
@@ -623,6 +654,8 @@ mod tests {
         // standard types, are its own.
         for name in [
             "<app::Config as core::fmt::Debug>::fmt",
+            "<std::fs::File as app::Settings>::load",
+            "<std::collections::HashMap<u8, Vec<u8>> as app::Store<u8>>::save",
             "app::load::<std::fs::File>",
             "<fn() as core::ops::function::FnOnce<()>>::call_once",
             "main",
