@@ -324,6 +324,39 @@ about 2, 11 µs: the pages are as many as before, about 54, and the time
 saved is each call's own cost (measured with `microscope syscalls --format
 ndjson` on the recorder).
 
+A thread's isolate is found through the thread-local storage of the module
+that carries V8. On Debian's node that is `libnode`, whose block glibc
+places through each thread's DTV (`backend::RunningTls`). Walking the
+loader's state took about 50 small memory reads per thread per read. Most
+of them re-read glibc's descriptors of its own fields, which never change.
+`RunningTls` keeps those descriptors. Once a thread's DTV has placed a
+module's block at the module's static TLS offset, it also keeps that offset
+with the module's `link_map`, and finds the block for any thread as the
+thread pointer minus that offset. It reads the `link_map`'s offset again at
+each use, as a module loaded later may reuse the `link_map` of one unloaded.
+With 20 workers read at 100 Hz, a read of Debian's node went from about
+1,100 `process_vm_readv` calls to 144 (official 24 makes 48). At 1 kHz, the
+reads it took in a 20 s run went from about 8,600 to 15,800, near official
+24's 17,000, for the same CPU.
+
+A live read must find the code mapped before it, as a runtime runs the code
+it maps at once. Before each read, while the records processed lag the
+watermark a drain would take now by more than 2 ms, the recorder drains
+the rings and processes the records stamped up to that watermark
+(`Processor::code_for_read`), up to four times (`READ_DRAINS`). The drain
+just before a read that is on time leaves nothing to do. One that ran long
+leaves the program's newest mappings behind: one that loads a module's
+debug information, as the first drains do, or one on a loaded machine.
+Without these drains, Node 26 left a thread blocked in `fs.readSync` out of
+its first reads in 9 of 10 recordings. Debian's node left every thread out
+of one early read in each recording, because the drain loaded `libnode`'s
+debug information for about 0.6 s while V8 mapped each isolate's code range
+past its watermark. Code mapped within the watermark's delay (20 ms) before a
+read is still not seen, so a thread already running it is left out as
+running code that is neither V8's builtins nor code V8 generated. Under
+V8's stress flags on Node 22 that is about 10 thread reads in 3,800
+snapshots.
+
 Live reads keep the rate asked of them: each is due one interval after the
 last was due, not after it ended, and the drain loop wakes for it
 (`Snapshots::due_in`). A read that ends after the next one was due, because

@@ -69,6 +69,14 @@ fn find_interpreter(
 
 /// Where process `pid`'s code at `address` is, for its runtime's walker:
 /// code a runtime generated, or a V8 image's.
+/// How far behind a live read's watermark the records processed may lag
+/// before the read drains the rings first, in nanoseconds: the drain just
+/// before a read on time leaves them within it.
+const READ_SLACK: u64 = 2_000_000;
+
+/// The most drains a live read takes before it.
+const READ_DRAINS: u32 = 4;
+
 fn code_at(
     processes: &BTreeMap<Pid, ProcessState>,
     images: &[Image],
@@ -227,6 +235,9 @@ pub struct Processor {
     /// Records held back for the next batch, past its watermark.
     carry: Vec<u8>,
 
+    /// The latest watermark records were processed up to.
+    processed_to: u64,
+
     /// The ring heads that could not be trusted, as last counted.
     untrusted: u64,
 
@@ -323,6 +334,7 @@ impl Processor {
             // A stack keeps at least its innermost frame.
             limit: limit.max(1),
             carry: Vec::new(),
+            processed_to: 0,
             untrusted: 0,
             latest: 0,
             first: None,
@@ -490,6 +502,9 @@ impl Processor {
     /// enough behind the drain that every record before it has arrived,
     /// and one that still comes later is counted.
     pub fn ingest(&mut self, batch: &[u8], watermark: Option<u64>) {
+        if let Some(watermark) = watermark {
+            self.processed_to = self.processed_to.max(watermark);
+        }
         let mut bytes = std::mem::take(&mut self.carry);
         bytes.extend_from_slice(batch);
         self.order.clear();
@@ -2243,16 +2258,38 @@ impl Processor {
         self.builder.count(AccountKind::TaskSamples as u32, claimed);
     }
 
-    /// Each piece of process `pid`'s code once `drained` and the records
-    /// held back are processed up to `watermark`: what a live read taken
-    /// now finds code by.
+    /// Each piece of process `pid`'s code a live read taken now finds code
+    /// by, once the records stamped before `watermark()`, the watermark a
+    /// drain begun now would take, are processed. A runtime runs the code
+    /// it maps at once, so the read must find every mapping recorded before
+    /// it.
+    ///
+    /// The records `drain` gives are processed only while those processed
+    /// lag the watermark by more than [`READ_SLACK`], as the drain before
+    /// the read leaves them if it ran long, for one that loads a module's
+    /// debug information, and as a recording that reads more often than it
+    /// drains does. Each drain that runs long is followed by another, up to
+    /// [`READ_DRAINS`]: one that loads debug information leaves what the
+    /// program mapped meanwhile past its watermark, and a recording that
+    /// drains slowly throughout still reads.
     pub fn code_for_read(
         &mut self,
         pid: Pid,
-        drained: &[u8],
-        watermark: u64,
+        watermark: impl Fn() -> u64,
+        mut drain: impl FnMut(&mut Vec<u8>),
     ) -> Vec<super::tasks::MappedCode> {
-        self.ingest(drained, Some(watermark));
+        for _ in 0..READ_DRAINS {
+            // Taken before the drain, as the recording loop takes its own:
+            // a drain that runs long must not pass records still to come
+            // from a ring it has already read.
+            let watermark = watermark();
+            if self.processed_to.saturating_add(READ_SLACK) >= watermark {
+                break;
+            }
+            let mut records = Vec::new();
+            drain(&mut records);
+            self.ingest(&records, Some(watermark));
+        }
         self.mapped_code(pid)
     }
 
@@ -2918,9 +2955,11 @@ mod tests {
     /// A live read finds code by every mapping recorded before it: one the
     /// last drain held back, past a watermark a slow drain left behind, as
     /// V8's first code is while the drain loads Node's debug information,
-    /// and one still in the rings.
+    /// and one still in the rings. It drains only while what was processed
+    /// lags, and no more than so many times.
     #[test]
     fn a_live_read_finds_code_mapped_before_it_whatever_the_drain_held_back() {
+        const MS: u64 = 1_000_000;
         let own = std::process::id();
         let pid = Pid::new(own);
         let files: Vec<perf::Mapped> = perf::mappings(own)
@@ -2943,17 +2982,46 @@ mod tests {
         };
 
         let mut processor = Processor::new(DebugFileSearch::default(), 64);
-        processor.ingest(&mmap_record(own, first, 2_000), Some(1_000));
+        processor.ingest(&mmap_record(own, first, 1_010 * MS), Some(1_000 * MS));
         assert!(
             !covers(&processor.mapped_code(pid), first),
             "the drain processed a record past its watermark"
         );
-        let code = processor.code_for_read(pid, &[], 3_000);
+
+        // What was processed lags by less than the slack: no drain.
+        let mut drained = 0;
+        let code = processor.code_for_read(pid, || 1_001 * MS, |_| drained += 1);
+        assert_eq!(drained, 0, "drained though nothing lagged");
+        assert!(!covers(&code, first), "{code:?}");
+
+        // A slow drain left the record held back.
+        let code = processor.code_for_read(pid, || 1_050 * MS, |_| drained += 1);
+        assert_eq!(drained, 1);
         assert!(covers(&code, first), "held back: {code:?}");
 
-        let drained = mmap_record(own, second, 4_000);
-        let code = processor.code_for_read(pid, &drained, 5_000);
+        // A record still in the rings.
+        let mut rings = mmap_record(own, second, 1_060 * MS);
+        let code = processor.code_for_read(
+            pid,
+            || 1_100 * MS,
+            |records| {
+                records.append(&mut rings);
+            },
+        );
         assert!(covers(&code, second), "drained: {code:?}");
+
+        // Each drain ran long, but the read waits for no more than so many.
+        let now = std::cell::Cell::new(2_000 * MS);
+        let mut drained = 0;
+        processor.code_for_read(
+            pid,
+            || {
+                now.set(now.get() + 100 * MS);
+                now.get()
+            },
+            |_| drained += 1,
+        );
+        assert_eq!(drained, READ_DRAINS);
     }
 
     /// The bytes of a perf sample record that event `identifier` wrote of
