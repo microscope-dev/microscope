@@ -227,15 +227,21 @@ pub(in crate::backend) fn running_thread_pointers(pid: Pid) -> Result<Vec<(u64, 
 /// What does not change while the process runs is kept: the addresses of
 /// the symbols the lookups read, which would take reading every mapped
 /// file again; glibc's descriptors of its fields, constants of the C
-/// library at those symbols, which every lookup reads for each thread; and
+/// library at those symbols, which every lookup reads for each thread;
 /// each module's `link_map`, which is proven again by its load bias at
-/// each use. A process that execs maps other files: a lookup that fails
-/// forgets what was kept and tries once more.
+/// each use; and which static TLS offsets a thread's DTV proved for a
+/// `link_map`, so that a module whose `link_map` still gives that offset
+/// has its block at that offset below any thread's pointer, without
+/// reading the thread's DTV. The offset is read again at each use, as a
+/// module loaded later may reuse the `link_map` of one unloaded. A process
+/// that execs maps other files: a lookup that fails forgets what was kept
+/// and tries once more.
 pub struct RunningTls {
     pid: Pid,
     symbols: std::cell::RefCell<BTreeMap<SymbolKey, Option<u64>>>,
     descriptors: std::cell::RefCell<BTreeMap<u64, [u8; DESCRIPTOR_SIZE]>>,
     link_maps: std::cell::RefCell<BTreeMap<u64, u64>>,
+    static_offsets: std::cell::RefCell<BTreeSet<(u64, u64)>>,
 }
 
 /// A symbol looked up, by the module preferred and its name.
@@ -258,6 +264,7 @@ impl RunningTls {
             symbols: std::cell::RefCell::default(),
             descriptors: std::cell::RefCell::default(),
             link_maps: std::cell::RefCell::default(),
+            static_offsets: std::cell::RefCell::default(),
         }
     }
 
@@ -268,6 +275,7 @@ impl RunningTls {
             self.symbols.borrow_mut().clear();
             self.descriptors.borrow_mut().clear();
             self.link_maps.borrow_mut().clear();
+            self.static_offsets.borrow_mut().clear();
             self.try_address(thread_pointer, bias, offset)
         })
     }
@@ -281,7 +289,26 @@ impl RunningTls {
             thread_pointer,
         };
         let link_map = self.link_map(&services, bias)?;
-        glibc::tls_address(&services, self.pid, link_map, offset).map_err(|error| error.to_string())
+        let below = glibc::static_offset(&services, link_map).ok().flatten();
+        let at = |below: u64| {
+            thread_pointer
+                .checked_sub(below)
+                .and_then(|block| block.checked_add(offset))
+        };
+        if let Some(below) = below
+            && self.static_offsets.borrow().contains(&(link_map, below))
+        {
+            return at(below).ok_or_else(|| format!("static TLS offset {below:#x} overflows"));
+        }
+
+        let address = glibc::tls_address(&services, self.pid, link_map, offset)
+            .map_err(|error| error.to_string())?;
+        if let Some(below) = below
+            && at(below) == Some(address)
+        {
+            self.static_offsets.borrow_mut().insert((link_map, below));
+        }
+        Ok(address)
     }
 
     /// The `link_map` of the module loaded with `bias`.

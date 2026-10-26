@@ -368,6 +368,20 @@ pub(super) fn tls_address(
         .ok_or_else(|| failed("the TLS address overflows"))
 }
 
+/// The offset below every thread's pointer of the static TLS block of the
+/// module whose `link_map` is at `link_map`, if glibc gave it one, which it
+/// keeps for the module's life: the loader places the block of a module
+/// loaded with the program, or given static TLS later, at that offset in
+/// every thread, and copies it into the threads already running.
+pub(super) fn static_offset(
+    services: &dyn ProcessServices,
+    link_map: u64,
+) -> Result<Option<u64>, TlsError> {
+    let glibc = Glibc { services };
+    let offset = glibc.fetch_named("_thread_db_link_map_l_tls_offset", link_map, 0)?;
+    Ok((offset != NO_TLS_OFFSET && offset != FORCED_DYNAMIC_TLS_OFFSET).then_some(offset))
+}
+
 /// The address of `offset` within the TLS block of a statically linked
 /// program's executable, for `thread`.
 ///
