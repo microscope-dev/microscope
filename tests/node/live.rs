@@ -384,64 +384,70 @@ fn parked_at_checkpoint(rest: &[String]) -> bool {
 #[test]
 fn live_reads_a_frame_of_every_tier_as_v8_reported_it() {
     for entry in crate::session::MATRIX {
-        let mut command = Command::new(node::node(entry));
-        command
-            .arg("--allow-natives-syntax")
-            .arg(node::fixture("tiers.js"));
-        let options = RecordOptions {
-            python: Some(PythonEngine::Live { every: EVERY }),
-            ..RecordOptions::default()
-        };
-        let report = |text: &str| {
-            Report::parse(text)
-                .checkpoint("tiers")
-                .map(<[Vec<String>]>::to_vec)
-        };
-        // From a moment after the checkpoint was reported to the last one
-        // before the program was let go.
-        let mut window = (None, 0);
-        let reads = |profile: &Profile, tid: u64, since: i64| {
-            profile
-                .task_waits()
-                .iter()
-                .filter(|wait| wait.noun == "thread" && wait.task == tid && wait.time >= since)
-                .count()
-        };
-        let (profile, lines, text) =
-            record_released(command, &options, report, |profile, lines| {
-                // The checkpoint's report is whole once read, and the thread
-                // parks after it.
-                let now = monotonic();
-                let since = *window.0.get_or_insert(now);
-                window.1 = now;
-                let [thread] = &threads(lines)[..] else {
-                    return false;
-                };
-                reads(profile, thread.native, since) >= SETTLED
-            });
-        let lines = lines.unwrap_or_else(|| panic!("{entry}: no checkpoint:\n{text}"));
-        let (since, until) = (window.0.expect("read once reported"), window.1);
-        crate::stacks::check_tiers(entry, entry, &Report::parse(&text), &lines);
-        let [thread] = &threads(&lines)[..] else {
-            panic!("{entry}: one thread");
-        };
-        let frames = reported_frames(thread);
-        let paths = thread_paths(&profile, thread.native, (since, until));
-        assert!(!paths.is_empty(), "{entry}: no read found the thread");
-        for path in paths.keys() {
-            assert!(
-                path.starts_with(&frames) && parked_at_checkpoint(&path[frames.len()..]),
-                "{entry}: {path:#?}, not {frames:#?}"
-            );
-        }
-        let reasons: Vec<String> = left_out(&profile, (since, until))
-            .into_iter()
-            .filter(|(tid, _)| *tid == thread.native)
-            .map(|(_, reason)| reason)
-            .filter(|reason| reason != NOT_ASLEEP)
-            .collect();
-        assert!(reasons.is_empty(), "{entry}: left out: {reasons:?}");
+        check_tiers(entry);
     }
+}
+
+/// Records `tiers.js` on `entry` with the live engine until the thread it
+/// parks has been read, and checks that every read found its frames as V8
+/// reported them, and none left it out but while it was not asleep.
+pub fn check_tiers(entry: &str) {
+    let mut command = Command::new(node::node(entry));
+    command
+        .arg("--allow-natives-syntax")
+        .arg(node::fixture("tiers.js"));
+    let options = RecordOptions {
+        python: Some(PythonEngine::Live { every: EVERY }),
+        ..RecordOptions::default()
+    };
+    let report = |text: &str| {
+        Report::parse(text)
+            .checkpoint("tiers")
+            .map(<[Vec<String>]>::to_vec)
+    };
+    // From a moment after the checkpoint was reported to the last one
+    // before the program was let go.
+    let mut window = (None, 0);
+    let reads = |profile: &Profile, tid: u64, since: i64| {
+        profile
+            .task_waits()
+            .iter()
+            .filter(|wait| wait.noun == "thread" && wait.task == tid && wait.time >= since)
+            .count()
+    };
+    let (profile, lines, text) = record_released(command, &options, report, |profile, lines| {
+        // The checkpoint's report is whole once read, and the thread
+        // parks after it.
+        let now = monotonic();
+        let since = *window.0.get_or_insert(now);
+        window.1 = now;
+        let [thread] = &threads(lines)[..] else {
+            return false;
+        };
+        reads(profile, thread.native, since) >= SETTLED
+    });
+    let lines = lines.unwrap_or_else(|| panic!("{entry}: no checkpoint:\n{text}"));
+    let (since, until) = (window.0.expect("read once reported"), window.1);
+    crate::stacks::check_tiers(entry, entry, &Report::parse(&text), &lines);
+    let [thread] = &threads(&lines)[..] else {
+        panic!("{entry}: one thread");
+    };
+    let frames = reported_frames(thread);
+    let paths = thread_paths(&profile, thread.native, (since, until));
+    assert!(!paths.is_empty(), "{entry}: no read found the thread");
+    for path in paths.keys() {
+        assert!(
+            path.starts_with(&frames) && parked_at_checkpoint(&path[frames.len()..]),
+            "{entry}: {path:#?}, not {frames:#?}"
+        );
+    }
+    let reasons: Vec<String> = left_out(&profile, (since, until))
+        .into_iter()
+        .filter(|(tid, _)| *tid == thread.native)
+        .map(|(_, reason)| reason)
+        .filter(|reason| reason != NOT_ASLEEP)
+        .collect();
+    assert!(reasons.is_empty(), "{entry}: left out: {reasons:?}");
 }
 
 /// The sites `live-stress.js` blocks at.

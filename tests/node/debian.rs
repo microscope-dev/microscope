@@ -466,3 +466,13 @@ fn debian_live_snapshots_read_each_blocked_thread() {
     }
     crate::live::check(DEBIAN);
 }
+
+/// On Debian's node, live snapshots read a thread parked under a frame of
+/// every tier V8 runs as V8 reported it.
+#[test]
+fn debian_live_snapshots_read_every_tier() {
+    if !inside("debian::debian_live_snapshots_read_every_tier") {
+        return;
+    }
+    crate::live::check_tiers(DEBIAN);
+}
