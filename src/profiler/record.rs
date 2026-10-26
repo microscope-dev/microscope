@@ -180,6 +180,9 @@ struct ProcessState {
     /// How many mappings the process has made, which tells its modules
     /// apart from what they were, as their number may not.
     mappings: u64,
+
+    /// How many times the process has exec'd.
+    execs: u64,
     threads: BTreeSet<Tid>,
     jit: Jit,
 
@@ -368,7 +371,7 @@ impl Processor {
             .iter()
             .filter_map(|(&pid, process)| {
                 find_interpreter(interpreted, pid, process, &self.images);
-                interpreted.walked(pid)
+                interpreted.walked(pid, process.execs)
             })
             .collect()
     }
@@ -659,6 +662,7 @@ impl Processor {
                     // A new program replaces the address space, and the
                     // interpreter and compiled code it held.
                     let state = self.processes.entry(pid).or_default();
+                    state.execs += 1;
                     state.mapped.clear();
                     state.before_v8.clear();
                     state.jit.exec();

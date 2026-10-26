@@ -331,7 +331,9 @@ watermark passes it by `interpreted::PAIRING_SLACK`, as its sample was.
 
 The program reads each process through a `py_layout` the recorder fills from
 the interpreter's `PythonLayout` once its module is mapped, with where the
-process keeps `_PyRuntime` and its pid namespace. It begins each thread at
+process keeps `_PyRuntime` and its pid namespace. A process that execs keeps
+its pid, so the recorder counts its execs and lays it out again for each new
+program, whose interpreter may be another version. It begins each thread at
 the state a `tid → py_thread` map names, which the recorder refreshes every
 20 ms from the interpreter's thread list (`RuntimeModel::walked_threads`),
 when that state's `native_thread_id` is the thread's id in its namespace

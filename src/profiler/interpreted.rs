@@ -221,6 +221,10 @@ pub enum Layout {
 #[derive(Debug)]
 pub struct Walked {
     pub pid: u32,
+
+    /// Which program the process runs: how many times the recording saw
+    /// it exec. A new program keeps the pid but not its layout.
+    pub program: u64,
     pub layout: Result<Layout, String>,
     pub threads: Vec<(u32, u64, u64)>,
     pub gaps: Vec<Arc<str>>,
@@ -466,12 +470,14 @@ impl Interpreted {
 
     /// What process `pid`'s interpreter tells the program, read now, or
     /// `None` for a process that runs no interpreter the engine reads.
-    pub(super) fn walked(&self, pid: Pid) -> Option<Walked> {
+    /// The process runs its `program`th program.
+    pub(super) fn walked(&self, pid: Pid, program: u64) -> Option<Walked> {
         let runtime = self.found.get(&pid)?.runtime.as_ref()?;
         let (layout, state) = match &runtime.kind {
             Kind::V8 { layout, unplaced } => {
                 return Some(Walked {
                     pid: pid.get(),
+                    program,
                     layout: layout.clone().map(Layout::V8),
                     threads: Vec::new(),
                     gaps: unplaced.iter().cloned().collect(),
@@ -491,6 +497,7 @@ impl Interpreted {
             Err(problem) => {
                 return Some(Walked {
                     pid: pid.get(),
+                    program,
                     layout,
                     threads: Vec::new(),
                     gaps: vec![problem],
@@ -503,6 +510,7 @@ impl Interpreted {
 
         Some(Walked {
             pid: pid.get(),
+            program,
             layout,
             threads,
             gaps: walked.gaps,

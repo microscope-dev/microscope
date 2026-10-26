@@ -284,9 +284,9 @@ struct Walker {
     sampler: Sampler,
     next: std::time::Instant,
 
-    /// The processes whose layout it has, and those it was told it
-    /// cannot have.
-    laid_out: std::collections::BTreeSet<u32>,
+    /// The processes whose layout it has, each with the program it ran
+    /// then, and those it was told it cannot have.
+    laid_out: std::collections::BTreeMap<u32, u64>,
     refused: std::collections::BTreeSet<u32>,
 
     /// The processes some of whose threads it could not be told of.
@@ -311,7 +311,7 @@ impl Walker {
         Ok(Self {
             sampler,
             next: std::time::Instant::now(),
-            laid_out: std::collections::BTreeSet::new(),
+            laid_out: std::collections::BTreeMap::new(),
             refused: std::collections::BTreeSet::new(),
             troubled: std::collections::BTreeSet::new(),
         })
@@ -328,17 +328,21 @@ impl Walker {
         self.next = now + WALK_REFRESH;
         let walked = processor.walked();
         let sampler = &mut self.sampler;
-        self.laid_out.retain(|pid| {
-            let live = walked.iter().any(|walked| walked.pid == *pid);
-            if !live {
+        // A process gone, or one that exec'd since it was laid out, has a
+        // layout that no longer fits it.
+        self.laid_out.retain(|pid, program| {
+            let fits = walked
+                .iter()
+                .any(|walked| walked.pid == *pid && walked.program == *program);
+            if !fits {
                 sampler.forget(*pid);
             }
 
-            live
+            fits
         });
 
         for walked in walked {
-            if !self.laid_out.contains(&walked.pid) && !self.lay_out(processor, &walked) {
+            if !self.laid_out.contains_key(&walked.pid) && !self.lay_out(processor, &walked) {
                 continue;
             }
 
@@ -372,7 +376,10 @@ impl Walker {
             .map_err(|error| error.to_string())
         });
         match set {
-            Ok(()) => self.laid_out.insert(walked.pid),
+            Ok(()) => {
+                self.laid_out.insert(walked.pid, walked.program);
+                true
+            }
             Err(why) => {
                 if self.refused.insert(walked.pid) {
                     processor.builder().setting(
