@@ -534,6 +534,96 @@ pub struct Tally {
     /// Each read that found a thread twice, or both found it and left it
     /// out.
     pub twice: Vec<String>,
+
+    /// How many reads found a thread calling a site, before the site's
+    /// frame began ([`found`]).
+    pub calling: usize,
+}
+
+/// Where a read found a looping thread, best first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Found {
+    /// At a site, with the frames V8 reported there.
+    Site,
+    /// In its phase's call of a site, before the site's frame began.
+    Calling,
+    /// Anywhere else, which no thread of `live-stress.js` blocks at.
+    Wrong,
+}
+
+/// Where `path` finds a thread in phase `phase`, whose sites have the
+/// paths `sites`, each outermost first.
+///
+/// A thread can block in its phase's call of a site before the site has a
+/// frame: V8 compiles a site whose bytecode it flushed again as it is
+/// called, and the compile can wait on a lock, as on the isolate's stack
+/// guard (`Runtime_CompileLazy`, `Compiler::Compile`,
+/// `StackGuard::PushInterruptsScope`). Its path is then a site's, cut off
+/// at the phase's own frame.
+fn found(phase: usize, sites: &[Vec<String>], path: &[String]) -> Found {
+    if sites.iter().any(|site| site == path) {
+        return Found::Site;
+    }
+    let caller = format!("phase{phase} ");
+    let calling = |site: &Vec<String>| {
+        site.iter()
+            .position(|frame| frame.starts_with(&caller))
+            .is_some_and(|at| site[..=at] == *path)
+    };
+    if sites.iter().any(calling) {
+        return Found::Calling;
+    }
+    Found::Wrong
+}
+
+#[test]
+fn a_read_finds_a_thread_at_its_sites_or_calling_one() {
+    let outer = [" live-stress.js:186", "loop live-stress.js:170"];
+    let path = |frames: &[&str]| -> Vec<String> {
+        outer
+            .iter()
+            .chain(frames)
+            .map(|&frame| frame.to_owned())
+            .collect()
+    };
+    let phase1 = [
+        path(&["phase1 live-stress.js:147", "siteWait live-stress.js:85"]),
+        path(&[
+            "phase1 live-stress.js:147",
+            "siteNested live-stress.js:96",
+            "nestedInner live-stress.js:91",
+            "readSync fs:741",
+        ]),
+    ];
+    let phase2 = [path(&[
+        "phase2 live-stress.js:151",
+        "siteWait live-stress.js:85",
+    ])];
+
+    assert_eq!(found(1, &phase1, &phase1[1]), Found::Site);
+    // As a deoptimizing stress run read it once: a thread of phase 1 that
+    // waited on its isolate's stack guard as V8 compiled a flushed site
+    // again, before the site had a frame.
+    let calling = path(&["phase1 live-stress.js:147"]);
+    assert_eq!(found(1, &phase1, &calling), Found::Calling);
+    assert_eq!(
+        found(2, &phase2, &calling),
+        Found::Wrong,
+        "another phase's call"
+    );
+    for wrong in [
+        path(&[]),
+        path(&["phase1 live-stress.js:148"]),
+        path(&[
+            "phase1 live-stress.js:147",
+            "nestedInner live-stress.js:91",
+            "readSync fs:741",
+        ]),
+        path(&["phase1 live-stress.js:147", "siteNested live-stress.js:96"]),
+        path(&["phase1 live-stress.js:147", "siteWait live-stress.js:84"]),
+    ] {
+        assert_eq!(found(1, &phase1, &wrong), Found::Wrong, "{wrong:?}");
+    }
 }
 
 pub fn tally(profile: &Profile, looping: &BTreeMap<u64, Looping>) -> Tally {
@@ -583,7 +673,15 @@ pub fn tally(profile: &Profile, looping: &BTreeMap<u64, Looping>) -> Tally {
                 .map(|&(phase, _)| phase)
                 .collect();
             for path in thread_paths(profile, tid, (time, time + 1)).keys() {
-                if !phases.iter().any(|&phase| sites[phase].contains(path)) {
+                let at = phases
+                    .iter()
+                    .map(|&phase| found(phase, &sites[phase], path))
+                    .min()
+                    .unwrap_or(Found::Wrong);
+                if at == Found::Calling {
+                    tally.calling += 1;
+                }
+                if at == Found::Wrong {
                     tally.wrong.push(format!(
                         "thread {tid} read from {time} to {ended}, in phases {phases:?}: \
                          {path:#?}\nits phases: {:?}",
@@ -658,9 +756,10 @@ pub fn stress(entry: &str, flags: &[&str]) {
     let read = tally.exact + tally.left_out.values().sum::<usize>();
     let (snapshots, changed) = profile.live_snapshots();
     let summary = format!(
-        "{entry} {flags:?}: {} exact of {read} reads, left out {:#?}, {} wrong; \
-         {changed} changed while read, in {snapshots} snapshots",
+        "{entry} {flags:?}: {} exact of {read} reads ({} calling a site), left out {:#?}, \
+         {} wrong; {changed} changed while read, in {snapshots} snapshots",
         tally.exact,
+        tally.calling,
         tally.left_out,
         tally.wrong.len()
     );
