@@ -7,6 +7,7 @@ use microscope::{StepKind, StopReason, VariableState};
 
 use crate::oracle;
 use crate::session::{MATRIX, NodeSession};
+use crate::support::node;
 
 const FIXTURE: &str = "interrupts.js";
 
@@ -30,11 +31,8 @@ fn shown(variables: &[microscope::Variable], name: &str) -> String {
     }
 }
 
-/// On every build, an interrupt stops a program waiting in native code,
-/// and one spinning in JavaScript pauses inside `spin()`, whose locals are
-/// the ones V8 lists there. The loop runs optimized by then, so a local
-/// is unavailable rather than read from where it is not, and the
-/// argument passed is still read from its slot.
+/// Native waits pause natively; JavaScript pauses expose V8's locals,
+/// including explicit unavailability when optimization removes their slots.
 #[tokio::test]
 async fn interrupts_pause_running_javascript_where_it_runs() {
     let mut lies = Vec::new();
@@ -46,11 +44,20 @@ async fn interrupts_pause_running_javascript_where_it_runs() {
         // V8 cannot pause in `fs.readSync`, so this stop is native.
         session.pause().await;
 
-        // The line wakes the program, whose next statement is where V8
-        // takes the pause it was asked for; the program runs on.
-        session.proceed().await;
-        session.wrote("SPINNING").await;
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let breakpoint = session
+            .scenario
+            .add_breakpoint_spec(microscope::BreakpointSpec::Source {
+                path: node::fixture(FIXTURE),
+                line: microscope::LineNumber::new(10).expect("the loop body"),
+            })
+            .await;
+        session.feed();
+        assert!(matches!(
+            session.scenario.resume_to_stop().await,
+            StopReason::Breakpoint { .. }
+        ));
+        session.scenario.remove_breakpoint(breakpoint.id).await;
+        session.resume().await;
 
         // The second interrupt follows a resume at once, while V8 may not
         // yet have left its pause.
@@ -86,7 +93,7 @@ async fn interrupts_pause_running_javascript_where_it_runs() {
 const STEP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The line after the fixture's read, where a step from it ends.
-const AFTER_READ: u32 = 17;
+const AFTER_READ: u32 = 16;
 
 /// On every build, a step from a native stop runs to the program's next
 /// JavaScript statement, through Node's own scripts: from the read's

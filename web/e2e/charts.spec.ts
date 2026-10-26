@@ -398,6 +398,8 @@ test.describe("a Go program's counters", () => {
 
     // Hours by index, in the program's order; a bar opens its element.
     const hours = card(page, "hours");
+    await hours.scrollIntoViewIfNeeded();
+    await expect(hours.locator(".drawing-head")).toContainText("stop #3");
     const counts = numbers(await copyCsv(page, hours), "values");
     expect(counts).toHaveLength(24);
     const drawn = await titles(hours);

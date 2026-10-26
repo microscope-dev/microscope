@@ -660,7 +660,7 @@ fn upload(profile: &Profile, path: &std::path::Path) -> Result<()> {
 
     eprintln!(
         "microscope: uploading {}; a recording holds the program's paths, command lines, and \
-         function names, and stays private to your account until you share it",
+         function names, and is accessible to people with project read access",
         path.display()
     );
     match crate::agent::upload(path, &name)? {

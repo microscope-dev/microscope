@@ -9,14 +9,17 @@ import "C"
 
 // release lets a goroutine of the library's own end, once Triple has run.
 var release = make(chan struct{})
+var started = make(chan struct{})
 
 func init() {
 	go waiting()
+	<-started
 }
 
 // waiting parks until Triple has run.
-func waiting() { // HOSTED: began
-	<-release // HOSTED: waiting
+func waiting() {
+	close(started) // HOSTED: began
+	<-release      // HOSTED: waiting
 }
 
 // Triple triples a value for the host.

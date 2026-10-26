@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 pub(crate) const DEADLINE: Duration = Duration::from_secs(20);
 
 /// The token tests give the agent.
-pub(crate) const TOKEN: &str = "msd_test-token";
+pub(crate) const TOKEN: &str = "msi_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 /// A directory removed when dropped, which serves as the agent's home.
 pub(crate) struct Scratch(PathBuf);

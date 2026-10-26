@@ -298,6 +298,10 @@ fn header_constants(headers: &Headers, leaptiering: bool) -> BTreeMap<String, i6
         .into_iter()
         .map(|(kind, value)| (format!("CodeKind::{kind}"), value))
         .collect();
+    constants.insert(
+        "internal::kCodeAlignment".to_owned(),
+        headers.constant("src/common/globals.h", "kCodeAlignment"),
+    );
     // Optimized code's kind is TURBOFAN through 12.4, then TURBOFAN_JS.
     if let Some(&turbofan) = constants.get("CodeKind::TURBOFAN") {
         let previous = constants.insert("CodeKind::TURBOFAN_JS".to_owned(), turbofan);
@@ -903,6 +907,7 @@ fn generate_version(text: &mut String, (major, minor): (u32, u32), torque: &Path
         .code_fields()
         .into_iter()
         .chain(headers.code_wrapper_fields())
+        .chain(headers.instruction_stream_fields())
         .chain(headers.bigint_fields())
         .chain(headers.accessor_pair_fields().into_iter().flatten())
     {

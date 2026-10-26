@@ -364,6 +364,8 @@ entries! {
         CodePositionTable = "Code::PositionTable",
         CodeWrapper = "Code::Wrapper",
         CodeInstructionStream = "Code::InstructionStream",
+        InstructionStreamCode = "InstructionStream::Code",
+        InstructionStreamInstructions = "InstructionStream::Instructions",
 
         /// Where a code object's instructions begin and how long they are,
         /// and its flags, which hold its kind.
@@ -697,6 +699,8 @@ entries! {
         BytecodeWrapperType = "BYTECODE_WRAPPER_TYPE",
         ScopeInfoType = "SCOPE_INFO_TYPE",
         CodeType = "CODE_TYPE",
+        InstructionStreamType = "INSTRUCTION_STREAM_TYPE",
+        CodeAlignment = "internal::kCodeAlignment",
         InterpreterDataType = "INTERPRETER_DATA_TYPE",
         UncompiledDataWithPreparseDataType = "UNCOMPILED_DATA_WITH_PREPARSE_DATA_TYPE",
         UncompiledDataWithoutPreparseDataType = "UNCOMPILED_DATA_WITHOUT_PREPARSE_DATA_TYPE",

@@ -241,9 +241,11 @@ impl Connection {
 
     pub fn welcome(&self, max_chunk_bytes: u32, window_bytes: u64) {
         self.send(server_message::Body::Welcome(Welcome {
-            account_email: "dev@example.com".to_owned(),
             max_chunk_bytes,
             window_bytes,
+            project_name: "acme/production".to_owned(),
+            project_id: 7,
+            ..Welcome::default()
         }));
     }
 

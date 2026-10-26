@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use microscope::profiler::{Profile, RecordOptions, StackEnding, Watch, record_watched};
-use microscope::{BreakpointSpec, CodeRole, StopReason, UnwindTermination};
+use microscope::{Backtrace, BreakpointSpec, CodeRole, StopReason, UnwindTermination};
 
 use crate::extension::extension_directory;
 use crate::session::PythonSession;
@@ -31,9 +31,14 @@ fn line(marker: &str) -> u32 {
 #[tokio::test]
 async fn a_stack_unwinds_through_the_jits_code() {
     let directory = extension_directory("3.15");
-    let mut session =
-        PythonSession::launch_with("3.15", FIXTURE, &[&directory], &[("PYTHON_JIT", "1")]).await;
-    session.wait_for_output("WARM").await;
+    let mut session = PythonSession::launch_with(
+        "3.15",
+        FIXTURE,
+        &[&directory, "--cold-stop"],
+        &[("PYTHON_JIT", "1")],
+    )
+    .await;
+    session.wait_for_output("READY").await;
     let context = session.context();
     assert!(
         session.output().contains("JIT True"),
@@ -41,33 +46,73 @@ async fn a_stack_unwinds_through_the_jits_code() {
         session.output()
     );
 
-    session
+    let handle = session.scenario.handle().clone();
+    let reached = BreakpointSpec::Function("reached".to_owned());
+    let breakpoint = session
         .scenario
-        .operation(
-            "break in reached",
+        .operation("break in reached", handle.add_breakpoint(reached))
+        .await;
+
+    session.release();
+    let deadline = Instant::now() + JIT_DEADLINE;
+    let mut warmed = false;
+    let trace = loop {
+        let reason = session.finish_run().await;
+        assert!(
+            matches!(
+                reason,
+                StopReason::Breakpoint {
+                    address: Some(_),
+                    ..
+                }
+            ),
+            "{context}: {reason:?}"
+        );
+
+        let trace = session
+            .scenario
+            .operation("backtrace", handle.backtrace())
+            .await;
+        assert_eq!(trace.termination, UnwindTermination::Complete, "{trace:#?}");
+        if trace.frames.iter().any(|frame| {
+            frame
+                .symbol
+                .as_ref()
+                .is_some_and(|symbol| &*symbol.name == JIT_CODE)
+        }) {
+            break trace;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{context}: no call from the JIT's code before the deadline: {trace:#?}"
+        );
+        if warmed {
+            session.resume().await;
+        } else {
             session
                 .scenario
-                .handle()
-                .add_breakpoint(BreakpointSpec::Function("reached".to_owned())),
-        )
-        .await;
+                .operation(
+                    "disable the breakpoint during warmup",
+                    handle.set_breakpoint_enabled(breakpoint.id, false),
+                )
+                .await;
+            session.resume().await;
+            session.wait_for_output("WARM").await;
+            session
+                .scenario
+                .operation(
+                    "enable the breakpoint after warmup",
+                    handle.set_breakpoint_enabled(breakpoint.id, true),
+                )
+                .await;
+            warmed = true;
+        }
+    };
+    assert_jit_stack(&trace, &context);
+    session.shutdown().await;
+}
 
-    let reason = session.finish_run().await;
-    assert!(
-        matches!(
-            reason,
-            StopReason::Breakpoint {
-                address: Some(_),
-                ..
-            }
-        ),
-        "{context}: {reason:?}"
-    );
-
-    let trace = session
-        .scenario
-        .operation("backtrace", session.scenario.handle().backtrace())
-        .await;
+fn assert_jit_stack(trace: &Backtrace, context: &str) {
     let named = |name: &str| {
         trace.frames.iter().position(|frame| {
             frame
@@ -104,7 +149,6 @@ async fn a_stack_unwinds_through_the_jits_code() {
         trace.termination == UnwindTermination::Complete && named("_start").is_some(),
         "{context}: the stack unwinds to its outermost frame: {trace:#?}"
     );
-    session.shutdown().await;
 }
 
 /// The JIT's code, named as the debugger names it.

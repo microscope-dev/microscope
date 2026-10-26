@@ -59,6 +59,10 @@ function osr(real, chain) {
       %OptimizeOsr();
     }
     const optimized = truth.tierOf(osr) !== 'ignition';
+    if (optimized) {
+      // The active OSR code must remain readable after its cache entry is gone.
+      %ClearFunctionFeedback(osr);
+    }
     const depth = chain[4](optimized, chain);
     if (optimized) {
       return depth;

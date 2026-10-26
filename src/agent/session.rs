@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::io::Read as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -76,7 +76,7 @@ pub enum End {
 pub struct Agent {
     pub server: String,
     pub endpoint: String,
-    pub token: String,
+    pub key_file: PathBuf,
     pub hostname: String,
     pub allow_remote: bool,
     pub timeouts: Timeouts,
@@ -121,9 +121,9 @@ impl Agent {
     /// Connects, says hello, and serves the connection until it ends.
     /// Returns when the service welcomed the agent, if it did.
     pub async fn serve(&self, shutdown: &mut watch::Receiver<bool>) -> (End, Option<Instant>) {
-        let mut socket = tokio::select! {
+        let (mut socket, key) = tokio::select! {
             connected = self.connect() => match connected {
-                Ok(socket) => socket,
+                Ok(connected) => connected,
                 Err(end) => return (end, None),
             },
             _ = shutdown.changed() => return (End::Shutdown, None),
@@ -134,7 +134,7 @@ impl Agent {
         };
 
         let limits = tokio::select! {
-            welcomed = self.hello(&mut socket, &mut codec) => match welcomed {
+            welcomed = self.hello(&mut socket, &mut codec, &key) => match welcomed {
                 Ok(limits) => limits,
                 Err(end) => return (end, None),
             },
@@ -145,18 +145,22 @@ impl Agent {
         };
 
         let welcomed = Instant::now();
-        let end = self.run(&mut socket, &mut codec, limits, shutdown).await;
+        let end = self
+            .run(&mut socket, &mut codec, limits, shutdown, &key)
+            .await;
         (end, Some(welcomed))
     }
 
-    async fn connect(&self) -> Result<Socket, End> {
+    async fn connect(&self) -> Result<(Socket, String), End> {
+        let key = super::settings::read_token(&self.key_file)
+            .map_err(|error| End::Fatal(format!("reading the project agent key: {error:#}")))?;
         let mut request = self
             .endpoint
             .as_str()
             .into_client_request()
             .map_err(|error| End::Fatal(format!("{}: {error}", self.endpoint)))?;
-        let authorization = HeaderValue::from_str(&format!("Bearer {}", self.token))
-            .map_err(|_| End::Fatal("the device token is not a valid header".to_owned()))?;
+        let authorization = HeaderValue::from_str(&format!("Bearer {key}"))
+            .map_err(|_| End::Fatal("the project agent key is not a valid header".to_owned()))?;
         request
             .headers_mut()
             .insert(header::AUTHORIZATION, authorization);
@@ -177,7 +181,12 @@ impl Agent {
         );
 
         match tokio::time::timeout(CONNECT_TIMEOUT, connecting).await {
-            Ok(Ok((socket, _))) => Ok(socket),
+            Ok(Ok((socket, _))) => Ok((socket, key)),
+            Ok(Err(tungstenite::Error::Http(response)))
+                if response.status() == StatusCode::UNAUTHORIZED =>
+            {
+                Err(self.auth_refused(&key, refused(response.status())))
+            }
             Ok(Err(tungstenite::Error::Http(response))) => Err(refused(response.status())),
             Ok(Err(error)) => Err(End::Retry(format!(
                 "connecting to {} failed: {error}",
@@ -190,7 +199,12 @@ impl Agent {
         }
     }
 
-    async fn hello(&self, socket: &mut Socket, codec: &mut Codec) -> Result<Limits, End> {
+    async fn hello(
+        &self,
+        socket: &mut Socket,
+        codec: &mut Codec,
+        key: &str,
+    ) -> Result<Limits, End> {
         let hello = agent_message::Body::Hello(Hello {
             protocol: Protocol::V1.into(),
             agent_version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -204,9 +218,23 @@ impl Agent {
             .map_err(|_| End::Retry("the service did not answer hello".to_owned()))??;
         match message.body {
             Some(server_message::Body::Welcome(welcome)) => {
+                if welcome.project_id == 0 || welcome.project_name.is_empty() {
+                    close(socket, CloseCode::Protocol, "missing project identity").await;
+                    return Err(End::Fatal(
+                        "the service did not identify the destination project; upgrade the service"
+                            .to_owned(),
+                    ));
+                }
+                if let Err(error) = self
+                    .outbox
+                    .bind_destination(&self.endpoint, welcome.project_id)
+                {
+                    close(socket, CloseCode::Policy, "outbox destination changed").await;
+                    return Err(End::Fatal(error.to_string()));
+                }
                 eprintln!(
-                    "microscope: connected to {} as {}",
-                    self.server, welcome.account_email
+                    "microscope: connected to {} for project {}",
+                    self.server, welcome.project_name
                 );
                 let chunk = u64::from(welcome.max_chunk_bytes).clamp(1, MAX_CHUNK_BYTES as u64);
                 Ok(Limits {
@@ -214,7 +242,7 @@ impl Agent {
                     window: welcome.window_bytes.max(chunk),
                 })
             }
-            Some(server_message::Body::Goodbye(goodbye)) => Err(farewell(&goodbye)),
+            Some(server_message::Body::Goodbye(goodbye)) => Err(self.farewell(&goodbye, key)),
             _ => {
                 close(socket, CloseCode::Protocol, "expected welcome").await;
                 Err(End::Retry(
@@ -230,6 +258,7 @@ impl Agent {
         codec: &mut Codec,
         limits: Limits,
         shutdown: &mut watch::Receiver<bool>,
+        key: &str,
     ) -> End {
         let (results, mut answered) = mpsc::channel(16);
         let mut upload: Option<Upload> = None;
@@ -265,7 +294,7 @@ impl Agent {
                         }
                         Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
                     };
-                    if let Err(end) = self.handle(socket, message, &mut upload, &results).await {
+                    if let Err(end) = self.handle(socket, message, &mut upload, &results, key).await {
                         return end;
                     }
                 }
@@ -275,7 +304,17 @@ impl Agent {
                     }
                 }
                 () = self.uploads.notified() => {}
-                _ = scan.tick() => self.scan(),
+                _ = scan.tick() => {
+                    match super::settings::read_token(&self.key_file) {
+                        Ok(current) if current != key => {
+                            close(socket, CloseCode::Away, "agent key replaced").await;
+                            return End::Retry("the project agent key changed; reconnecting with its replacement".to_owned());
+                        }
+                        Ok(_) => {}
+                        Err(error) => return End::Fatal(format!("reading the project agent key: {error:#}")),
+                    }
+                    self.scan();
+                }
                 () = tokio::time::sleep_until(heard + self.timeouts.idle) => {
                     return End::Retry("the service stopped answering".to_owned());
                 }
@@ -465,6 +504,7 @@ impl Agent {
         message: ServerMessage,
         upload: &mut Option<Upload>,
         results: &mpsc::Sender<CommandResult>,
+        key: &str,
     ) -> Result<(), End> {
         let current = |key: &[u8]| {
             upload
@@ -544,12 +584,33 @@ impl Agent {
                 | server_message::Body::Welcome(_),
             )
             | None => {}
-            Some(server_message::Body::Goodbye(goodbye)) => return Err(farewell(&goodbye)),
+            Some(server_message::Body::Goodbye(goodbye)) => {
+                return Err(self.farewell(&goodbye, key));
+            }
             Some(server_message::Body::Command(command)) => {
                 self.command(command, results);
             }
         }
         Ok(())
+    }
+
+    fn auth_refused(&self, key: &str, refusal: End) -> End {
+        if super::settings::read_token(&self.key_file).is_ok_and(|current| current != key) {
+            End::Retry(
+                "the project agent key changed; reconnecting with its replacement".to_owned(),
+            )
+        } else {
+            refusal
+        }
+    }
+
+    fn farewell(&self, goodbye: &super::proto::Goodbye, key: &str) -> End {
+        let end = farewell(goodbye);
+        if goodbye.reason() == goodbye::Reason::Unauthenticated && !goodbye.retry {
+            self.auth_refused(key, end)
+        } else {
+            end
+        }
     }
 
     /// Runs a command on a task of its own, which answers through
@@ -640,11 +701,11 @@ fn tls() -> Result<Arc<rustls::ClientConfig>, rustls::Error> {
 fn refused(status: StatusCode) -> End {
     match status {
         StatusCode::UNAUTHORIZED => End::Fatal(
-            "the service refused this machine's device token; make a new one and run `microscope agent login`"
+            "the service refused the project agent key; replace a disabled or invalid key using `microscope agent login` or the managed key file"
                 .to_owned(),
         ),
         StatusCode::TOO_MANY_REQUESTS => {
-            End::Retry("this account has as many agents connected as the service allows".to_owned())
+            End::Retry("this project has as many agents connected as the service allows".to_owned())
         }
         StatusCode::SERVICE_UNAVAILABLE => End::Retry("the service is busy".to_owned()),
         status => End::Retry(format!("the service refused the connection with {status}")),
@@ -658,7 +719,7 @@ fn farewell(goodbye: &super::proto::Goodbye) -> End {
             goodbye::Reason::ProtocolUnsupported => {
                 "the service no longer supports this agent; upgrade microscope"
             }
-            goodbye::Reason::Unauthenticated => "the service revoked this machine's device token",
+            goodbye::Reason::Unauthenticated => "the service disabled the project agent key",
             goodbye::Reason::ProtocolError | goodbye::Reason::Unspecified => {
                 "the service closed the connection"
             }

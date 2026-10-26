@@ -480,13 +480,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
         validate_process(inferior, requested_process)?;
         let execution_id = inferior.active.as_ref().ok_or(Error::AlreadyStopped)?.id;
-        if let Some(barrier) = inferior.barrier.as_mut() {
-            // A stop in progress now ends in the pause, unless it publishes
-            // a more important reason.
-            barrier.reason.get_or_insert(StopReason::Pause);
-            barrier.paused = true;
-            return Ok(execution_id);
-        }
 
         // Running JavaScript pauses in its inspector, which names its
         // locals; the native all-stop follows if it does not in time.

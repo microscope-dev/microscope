@@ -1,15 +1,9 @@
-//! TODO: Delete this temporary agent implementation once we have thought through
-//! the product experience. Removal includes `src/agent/`, the agent CLI wiring,
-//! `record --upload`, `proto/microscope/agent/v1/agent.proto` and its build/dependency
-//! wiring, and the trusted-proxy profile serving in `src/web/` (`--trust-proxy`,
-//! `--listen-unix`, `--public-url`), along with their tests and docs.
-//!
 //! `microscope agent`: keeps this machine connected to microscope's service,
 //! uploads the recordings queued in its outbox, and, when allowed, records
 //! the processes the service asks for.
 //!
-//! The agent never touches a debugger; it records the way `microscope
-//! record --pid` does. It is meant for developers' workstations.
+//! A project key permits submission and command replies, never control-plane
+//! operations. Remote recording also requires the local operator's permission.
 
 mod backoff;
 mod commands;
@@ -20,7 +14,8 @@ pub mod settings;
 mod wire;
 
 use std::collections::BTreeMap;
-use std::io::{BufRead as _, IsTerminal as _, Write as _};
+use std::io::{BufRead as _, IsTerminal as _, Read as _, Write as _};
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -47,6 +42,10 @@ pub struct AgentArgs {
     #[arg(long, value_name = "URL")]
     server: Option<String>,
 
+    /// Read the project agent key from this private file, reloading replacements.
+    #[arg(long, value_name = "PATH")]
+    key_file: Option<PathBuf>,
+
     /// Also upload each segment `record --continuous DIR` writes to DIR,
     /// with agent.toml's `watch`.
     #[arg(long, value_name = "DIR")]
@@ -69,8 +68,7 @@ pub struct AgentArgs {
 
 #[derive(Debug, clap::Subcommand)]
 enum AgentCommand {
-    /// Save the device token the service made for this machine, reading it
-    /// from standard input.
+    /// Save a project agent key read from standard input, never a command argument.
     Login(LoginArgs),
 }
 
@@ -80,6 +78,10 @@ struct LoginArgs {
     /// becomes agent.toml's `server`.
     #[arg(long, value_name = "URL")]
     server: Option<String>,
+
+    /// Use a private key file managed by deployment tooling instead of copying it.
+    #[arg(long, value_name = "PATH")]
+    key_file: Option<PathBuf>,
 }
 
 /// Runs `microscope agent`, returning its exit code.
@@ -106,15 +108,27 @@ async fn run(args: &AgentArgs) -> Result<()> {
         .or(settings.server)
         .context("no service to connect to; run `microscope agent login --server URL`")?;
     let endpoint = settings::endpoint(&server)?;
-    if settings::exposes_token(&endpoint) {
-        eprintln!(
-            "microscope: warning: {server} is not https, so the device token and recordings cross the network unencrypted"
-        );
-    }
-    let token = settings::read_token(&paths.token)?;
-    settings::check_token(&token)?;
+    let key_file = args
+        .key_file
+        .clone()
+        .or(settings.key_file)
+        .unwrap_or(paths.token);
+    settings::read_token(&key_file)?;
 
     let outbox = Outbox::open(&paths.outbox)?;
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
+        .open(paths.outbox.join("agent.lock"))
+        .context("opening the agent lock")?;
+    let _lock = nix::fcntl::Flock::lock(lock, nix::fcntl::FlockArg::LockExclusiveNonblock)
+        .map_err(|(_, error)| {
+            anyhow::anyhow!("another agent is using this outbox, or it cannot be locked: {error}")
+        })?;
     let watched = settings
         .watch
         .iter()
@@ -129,7 +143,7 @@ async fn run(args: &AgentArgs) -> Result<()> {
     let agent = Agent {
         server,
         endpoint,
-        token,
+        key_file,
         hostname: hostname(),
         allow_remote,
         timeouts: Timeouts {
@@ -200,29 +214,37 @@ async fn login(paths: &Paths, args: &LoginArgs) -> Result<()> {
         .server
         .clone()
         .or_else(|| settings.server.clone())
-        .context("name the service the token is for with --server URL")?;
+        .context("name the service the project agent key is for with --server URL")?;
     settings::endpoint(&server)?;
 
-    let token = tokio::task::spawn_blocking(|| {
-        let stdin = std::io::stdin();
-        if stdin.is_terminal() {
-            eprint!("Paste the device token the service made for this machine: ");
-            let _ = std::io::stderr().flush();
-        }
-        let mut line = String::new();
-        stdin.lock().read_line(&mut line).map(|_| line)
-    })
-    .await?
-    .context("reading the device token from standard input")?;
-    let token = token.trim();
-    settings::check_token(token)?;
-
-    settings::write_token(&paths.token, token)?;
+    let key_file = if let Some(path) = &args.key_file {
+        settings::read_token(path)?;
+        let path = std::path::absolute(path).context("resolving the key file")?;
+        settings.key_file = Some(path.clone());
+        path
+    } else {
+        let token = tokio::task::spawn_blocking(|| {
+            let stdin = std::io::stdin();
+            if stdin.is_terminal() {
+                eprint!("Paste the project agent key from Agent setup: ");
+                let _ = std::io::stderr().flush();
+            }
+            let mut line = String::new();
+            stdin.lock().take(4096).read_line(&mut line).map(|_| line)
+        })
+        .await?
+        .context("reading the project agent key from standard input")?;
+        let token = token.trim();
+        settings::check_token(token)?;
+        settings::write_token(&paths.token, token)?;
+        settings.key_file = None;
+        paths.token.clone()
+    };
     settings.server = Some(server.clone());
     settings.write(&paths.settings)?;
     eprintln!(
-        "microscope: saved the device token for {server} to {}; start the agent with `microscope agent`",
-        paths.token.display()
+        "microscope: configured the project agent key for {server} in {}; start `microscope agent` to verify the destination and connect",
+        key_file.display()
     );
     Ok(())
 }

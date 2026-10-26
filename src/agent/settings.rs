@@ -4,7 +4,7 @@
 //! They are not in `config.toml`, whose project files a repository can ship,
 //! since a project must never choose where a user's recordings go.
 
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
@@ -26,6 +26,9 @@ pub struct Settings {
 
     /// Directories of `record --continuous` segments to upload.
     pub watch: Vec<PathBuf>,
+
+    /// A private key file managed by deployment tooling, instead of agent-token.
+    pub key_file: Option<PathBuf>,
 }
 
 /// The agent's files.
@@ -78,23 +81,35 @@ impl Settings {
 /// The WebSocket URL of the agent endpoint of the service at `server`: an
 /// `http` URL becomes `ws`, and `https` becomes `wss`.
 pub fn endpoint(server: &str) -> Result<String> {
-    let (scheme, rest) = server
-        .split_once("://")
-        .with_context(|| format!("{server} is not a URL, such as https://example.com/"))?;
+    use tokio_tungstenite::tungstenite::http::Uri;
+
+    let invalid = "invalid service URL; use https://HOST/ without credentials, query, or fragment";
+    anyhow::ensure!(
+        !server.contains(['@', '?', '#', '\\']) && !server.chars().any(char::is_whitespace),
+        "{invalid}"
+    );
+    let uri: Uri = server.parse().map_err(|_| anyhow::anyhow!(invalid))?;
+    anyhow::ensure!(uri.host().is_some_and(|host| !host.is_empty()), "{invalid}");
+    let (scheme, rest) = server.split_once("://").context(invalid)?;
     let scheme = match scheme {
         "https" | "wss" => "wss",
         "http" | "ws" => "ws",
-        _ => anyhow::bail!("{server} is not an http or https URL"),
+        _ => anyhow::bail!("{invalid}"),
     };
     anyhow::ensure!(
         !rest.is_empty() && !rest.starts_with('/') && !rest.contains(['?', '#']),
-        "{server} is not a service's URL, such as https://example.com/"
+        "{invalid}"
     );
     let base = rest.trim_end_matches('/');
-    Ok(format!("{scheme}://{base}/v1/agent"))
+    let endpoint = format!("{scheme}://{base}/v1/agent");
+    anyhow::ensure!(
+        !exposes_token(&endpoint),
+        "the agent requires HTTPS except on localhost or a loopback address"
+    );
+    Ok(endpoint)
 }
 
-/// Whether connecting to `endpoint` would send the device token
+/// Whether connecting to `endpoint` would send the project agent key
 /// unencrypted to another machine.
 pub fn exposes_token(endpoint: &str) -> bool {
     let Some(rest) = endpoint.strip_prefix("ws://") else {
@@ -108,19 +123,24 @@ pub fn exposes_token(endpoint: &str) -> bool {
     !matches!(host, "localhost" | "127.0.0.1" | "[::1]")
 }
 
-/// Reads the device token `login` wrote.
+/// Reads a bounded key from the same private file whose permissions are checked.
 pub fn read_token(path: &Path) -> Result<String> {
-    let token = match std::fs::read_to_string(path) {
-        Ok(token) => token,
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::fcntl::OFlag::O_NONBLOCK.bits())
+        .open(path)
+    {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            anyhow::bail!("this machine has no device token; run `microscope agent login`")
+            anyhow::bail!("this machine has no project agent key; run `microscope agent login`")
         }
         Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
     };
-    let mode = std::fs::metadata(path)
-        .with_context(|| format!("reading {}", path.display()))?
-        .permissions()
-        .mode();
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("reading {}", path.display()))?;
+    anyhow::ensure!(metadata.is_file(), "the agent key must be a regular file");
+    let mode = metadata.permissions().mode();
     let shared = mode & 0o077;
     anyhow::ensure!(
         shared == 0,
@@ -128,16 +148,26 @@ pub fn read_token(path: &Path) -> Result<String> {
         path.display(),
         path.display()
     );
-    Ok(token.trim().to_owned())
+    let mut token = String::new();
+    file.take(4096)
+        .read_to_string(&mut token)
+        .context("reading the project agent key")?;
+    let token = token.trim();
+    check_token(token)?;
+    Ok(token.to_owned())
 }
 
-/// Checks that `token` looks like a device token, without saying whether
+/// Checks that `token` looks like a project agent key, without saying whether
 /// the service accepts it.
 pub fn check_token(token: &str) -> Result<()> {
-    anyhow::ensure!(!token.is_empty(), "the device token is empty");
     anyhow::ensure!(
-        token.bytes().all(|byte| byte.is_ascii_graphic()),
-        "a device token is one word of printable characters"
+        token.strip_prefix("msi_").is_some_and(|key| {
+            key.len() == 43
+                && key
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        }),
+        "expected a project agent key from Agent setup (msi_ followed by 43 characters)"
     );
     Ok(())
 }
@@ -149,18 +179,29 @@ pub fn write_token(path: &Path, token: &str) -> Result<()> {
 
     // The partial file is private from its creation, so the token is never
     // readable by others, even for a moment.
-    let partial = parent.join(".agent-token.partial");
-    let _ = std::fs::remove_file(&partial);
+    let mut random = [0; 8];
+    getrandom::fill(&mut random)
+        .map_err(|error| anyhow::anyhow!("creating a private key file: {error}"))?;
+    let partial = parent.join(format!(
+        ".agent-key-{:016x}.partial",
+        u64::from_le_bytes(random)
+    ));
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
         .open(&partial)
         .with_context(|| format!("creating {}", partial.display()))?;
-    writeln!(file, "{token}").with_context(|| format!("writing {}", partial.display()))?;
-    file.sync_all()
-        .with_context(|| format!("writing {}", partial.display()))?;
-    std::fs::rename(&partial, path).with_context(|| format!("writing {}", path.display()))
+    let result = (|| {
+        writeln!(file, "{token}").with_context(|| format!("writing {}", partial.display()))?;
+        file.sync_all()
+            .with_context(|| format!("writing {}", partial.display()))?;
+        std::fs::rename(&partial, path).with_context(|| format!("writing {}", path.display()))
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&partial);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -211,9 +252,16 @@ mod tests {
     }
 
     #[test]
-    fn tokens_are_one_printable_word() {
-        assert!(check_token("msd_abc-DEF_123").is_ok());
-        for token in ["", "two words", "tab\there", "caf\u{e9}"] {
+    fn only_project_agent_keys_are_accepted() {
+        assert!(check_token("msi_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").is_ok());
+        for token in [
+            "",
+            "two words",
+            "msd_abc-DEF_123",
+            "mss_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "msi_short",
+            "caf\u{e9}",
+        ] {
             assert!(check_token(token).is_err(), "{token:?}");
         }
     }

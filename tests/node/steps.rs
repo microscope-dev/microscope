@@ -23,7 +23,7 @@ fn line_of(marker: &str) -> u64 {
 
 /// One case: the marked line it breaks at, the steps it takes there, and
 /// how those steps treat code that is not the program's.
-struct Case {
+pub struct Case {
     marker: &'static str,
     commands: &'static [Command],
     skipping: Skipping<'static>,
@@ -40,7 +40,7 @@ const fn case(marker: &'static str, commands: &'static [Command]) -> Case {
     }
 }
 
-const CASES: [Case; 10] = [
+pub const CASES: [Case; 10] = [
     case(
         "CALLS",
         &[
@@ -138,9 +138,9 @@ async fn run(entry: &str, case: &Case) -> (Vec<Pause>, Vec<Pause>) {
 
 /// Where, on the build `entry`, a step does not end where V8's own step
 /// ends.
-pub async fn lies(entry: &str) -> Vec<String> {
+pub async fn lies(entry: &str, cases: &[Case]) -> Vec<String> {
     let mut lies = Vec::new();
-    for case in &CASES {
+    for case in cases {
         let (seen, expected) = run(entry, case).await;
         let differences = oracle::differences(&seen, &expected);
         if !differences.is_empty() {
@@ -156,7 +156,7 @@ pub async fn lies(entry: &str) -> Vec<String> {
 
 /// Each step on the build `entry` ends where V8's own step ends.
 async fn steps_end_where_v8_ends_them(entry: &str) {
-    let found = lies(entry).await;
+    let found = lies(entry, &CASES).await;
     assert!(found.is_empty(), "{}", found.join("\n"));
 }
 

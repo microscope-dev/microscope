@@ -59,11 +59,13 @@ pub(super) struct Headers {
     config: BTreeMap<&'static str, bool>,
 }
 
-const FILES: [&str; 53] = [
+const FILES: [&str; 55] = [
     "src/common/globals.h",
     "include/v8-internal.h",
     "src/objects/trusted-object.h",
     "src/objects/code.h",
+    "src/objects/instruction-stream.h",
+    "src/objects/instruction-stream-inl.h",
     "src/objects/code-kind.h",
     "src/objects/deoptimization-data.h",
     "src/codegen/source-position.h",
@@ -174,6 +176,10 @@ impl Headers {
         match name {
             "kTaggedSize" | "kTrustedPointerSize" | "kCodePointerSize" => {
                 self.size("kSystemPointerSize")
+            }
+            "kProtectedPointerSize" => {
+                assert!(globals.contains("constexpr int kProtectedPointerSize = kTaggedSize;"));
+                self.size("kTaggedSize")
             }
             _ => {
                 let pattern = format!(r"constexpr int {name} = sizeof\(([\w*]+)\);");
@@ -319,6 +325,42 @@ impl Headers {
         );
         let list = macro_body(body, "#define FIELD_LIST(V)");
         self.field_list("CodeWrapper", &list, self.size("kTaggedSize"))
+    }
+
+    /// The stream's code slot and instruction start, after its padded header.
+    pub(super) fn instruction_stream_fields(&self) -> Vec<(String, i64)> {
+        let header = self.file("src/objects/instruction-stream.h");
+        assert!(
+            header.contains(
+                "DEFINE_FIELD_OFFSET_CONSTANTS(TrustedObject::kHeaderSize, ISTREAM_FIELDS)"
+            )
+        );
+        assert!(self.contains(
+            "src/objects/instruction-stream-inl.h",
+            "Address InstructionStream::instruction_start() const {\n  return field_address(kHeaderSize);\n}"
+        ));
+        let word = self.size("kTaggedSize");
+        let mut offset = word;
+        let mut fields = Vec::new();
+        for (name, size) in v_entries(&macro_body(header, "#define ISTREAM_FIELDS(V)")) {
+            match name.as_str() {
+                "kUnalignedSize" => {
+                    assert_eq!(size, "OBJECT_POINTER_PADDING(kUnalignedSize)");
+                    offset = align(offset, word);
+                }
+                "kHeaderSize" => {
+                    fields.push(("InstructionStream::Instructions".to_owned(), offset));
+                    return fields;
+                }
+                _ => {
+                    if name == "kCodeOffset" {
+                        fields.push(("InstructionStream::Code".to_owned(), offset));
+                    }
+                    offset += self.field_size(&size);
+                }
+            }
+        }
+        panic!("InstructionStream's field list has no header size")
     }
 
     /// The fields of a `V(kNameOffset, size)` list from `start`, until its

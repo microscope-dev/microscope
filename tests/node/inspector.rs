@@ -178,31 +178,28 @@ async fn a_launched_nodes_inspector_is_opened_and_shown_to_no_one() {
     }
 }
 
-#[tokio::test]
-async fn releasing_a_launched_child_closes_only_its_preloads_inspector() {
+async fn releasing_a_launched_child_closes_only_its_preloads_inspector(entry: &str) {
     use microscope::GroupEvent;
 
     crate::support::flight_recordings::watch_scenarios();
-    for entry in MATRIX {
-        for (borrowed, restricted) in [(true, false), (false, false), (false, true), (true, true)] {
-            // Node 22 has no --allow-inspector permission flag.
-            if restricted && crate::session::major(entry) == 22 {
-                continue;
-            }
-            let scratch = ScratchDir::new("node-launch-release");
-            let script = scratch.path().join("child.js");
-            let report = scratch.path().join("report");
-            let gate = scratch.path().join("gate");
-            let options =
-                release_child_options(entry, borrowed, restricted, &script, &report, &gate);
-            let group = release_child_group(script).await;
-            let mut events = group.subscribe();
-            group
-                .root()
-                .launch_with(options)
-                .await
-                .expect("launch shell");
-            let member = tokio::time::timeout(Duration::from_secs(30), async {
+    for (borrowed, restricted) in [(true, false), (false, false), (false, true), (true, true)] {
+        // Node 22 has no --allow-inspector permission flag.
+        if restricted && crate::session::major(entry) == 22 {
+            continue;
+        }
+        let scratch = ScratchDir::new("node-launch-release");
+        let script = scratch.path().join("child.js");
+        let report = scratch.path().join("report");
+        let gate = scratch.path().join("gate");
+        let options = release_child_options(entry, borrowed, restricted, &script, &report, &gate);
+        let group = release_child_group(script).await;
+        let mut events = group.subscribe();
+        group
+            .root()
+            .launch_with(options)
+            .await
+            .expect("launch shell");
+        let member = tokio::time::timeout(Duration::from_secs(30), async {
                 loop {
                     match events.recv().await.expect("group event") {
                         GroupEvent::GroupStopped { member, reason } => {
@@ -216,72 +213,104 @@ async fn releasing_a_launched_child_closes_only_its_preloads_inspector() {
             })
             .await
             .expect("child breakpoint deadline");
-            assert_ne!(member, 1, "the launched child stopped");
-            let before: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(&report).expect("before report"))
-                    .expect("JSON report");
-            let address: std::net::SocketAddr = before["before"]
-                .as_str()
-                .expect("open inspector")
-                .strip_prefix("ws://")
-                .expect("URL")
-                .split('/')
-                .next()
-                .expect("authority")
-                .parse()
-                .expect("address");
-            let released = group.detach(member).await;
-            let endpoint_open =
-                std::net::TcpStream::connect_timeout(&address, Duration::from_secs(1)).is_ok();
-            std::fs::write(&gate, "go").expect("release child gate");
-            group
-                .continue_all()
-                .await
-                .expect("resume parent to reap child");
-            let after = tokio::time::timeout(Duration::from_secs(10), async {
-                loop {
-                    let value: serde_json::Value =
-                        serde_json::from_slice(&std::fs::read(&report).expect("report"))
-                            .unwrap_or_default();
-                    if value.get("after").is_some() {
-                        break value;
-                    }
-                    tokio::time::sleep(Duration::from_millis(10)).await;
+        assert_ne!(member, 1, "the launched child stopped");
+        let before: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&report).expect("before report"))
+                .expect("JSON report");
+        let address: std::net::SocketAddr = before["before"]
+            .as_str()
+            .expect("open inspector")
+            .strip_prefix("ws://")
+            .expect("URL")
+            .split('/')
+            .next()
+            .expect("authority")
+            .parse()
+            .expect("address");
+        let released = group.detach(member).await;
+        let endpoint_open =
+            std::net::TcpStream::connect_timeout(&address, Duration::from_secs(1)).is_ok();
+        std::fs::write(&gate, "go").expect("release child gate");
+        group
+            .continue_all()
+            .await
+            .expect("resume parent to reap child");
+        let after = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let value: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&report).expect("report"))
+                        .unwrap_or_default();
+                if value.get("after").is_some() {
+                    break value;
                 }
-            })
-            .await;
-            let reaped = tokio::time::timeout(Duration::from_secs(10), async {
-                loop {
-                    if matches!(
-                        events.recv().await.expect("group event"),
-                        GroupEvent::GroupExited
-                    ) {
-                        break;
-                    }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        let reaped = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if matches!(
+                    events.recv().await.expect("group event"),
+                    GroupEvent::GroupExited
+                ) {
+                    break;
                 }
-            })
-            .await;
-            group.shutdown().await.expect("shutdown group");
-            released.unwrap_or_else(|error| {
-                panic!("{entry}: release borrowed={borrowed} restricted={restricted}: {error}")
-            });
-            reaped.expect("parent reaps the released child and exits");
-            let after = after.expect("released child progresses");
-            assert_eq!(
-                endpoint_open, borrowed,
-                "{entry}: listener borrowed={borrowed}"
-            );
-            assert_eq!(
-                after["after"],
-                if borrowed {
-                    before["before"].clone()
-                } else {
-                    serde_json::Value::Null
-                },
-                "{entry}: inspector borrowed={borrowed}"
-            );
-        }
+            }
+        })
+        .await;
+        group.shutdown().await.expect("shutdown group");
+        released.unwrap_or_else(|error| {
+            panic!("{entry}: release borrowed={borrowed} restricted={restricted}: {error}")
+        });
+        reaped.expect("parent reaps the released child and exits");
+        let after = after.expect("released child progresses");
+        assert_eq!(
+            endpoint_open, borrowed,
+            "{entry}: listener borrowed={borrowed}"
+        );
+        assert_eq!(
+            after["after"],
+            if borrowed {
+                before["before"].clone()
+            } else {
+                serde_json::Value::Null
+            },
+            "{entry}: inspector borrowed={borrowed}"
+        );
     }
+}
+
+// Keep the build matrix out of a single test's stress deadline.
+const _: () = assert!(MATRIX.len() == 6, "a release test for each build");
+
+#[tokio::test]
+async fn releasing_a_launched_child_closes_only_its_preloads_inspector_on_build_0() {
+    releasing_a_launched_child_closes_only_its_preloads_inspector(MATRIX[0]).await;
+}
+
+#[tokio::test]
+async fn releasing_a_launched_child_closes_only_its_preloads_inspector_on_build_1() {
+    releasing_a_launched_child_closes_only_its_preloads_inspector(MATRIX[1]).await;
+}
+
+#[tokio::test]
+async fn releasing_a_launched_child_closes_only_its_preloads_inspector_on_build_2() {
+    releasing_a_launched_child_closes_only_its_preloads_inspector(MATRIX[2]).await;
+}
+
+#[tokio::test]
+async fn releasing_a_launched_child_closes_only_its_preloads_inspector_on_build_3() {
+    releasing_a_launched_child_closes_only_its_preloads_inspector(MATRIX[3]).await;
+}
+
+#[tokio::test]
+async fn releasing_a_launched_child_closes_only_its_preloads_inspector_on_build_4() {
+    releasing_a_launched_child_closes_only_its_preloads_inspector(MATRIX[4]).await;
+}
+
+#[tokio::test]
+async fn releasing_a_launched_child_closes_only_its_preloads_inspector_on_build_5() {
+    releasing_a_launched_child_closes_only_its_preloads_inspector(MATRIX[5]).await;
 }
 
 async fn release_child_group(script: std::path::PathBuf) -> microscope::ProcessGroup {
