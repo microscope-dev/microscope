@@ -2581,7 +2581,7 @@ impl Reader<'_> {
                         stack: &done.sampled.copy,
                         chain: &done.sampled.chain,
                     },
-                    unwound,
+                    (&done.unwinding, unwound),
                     python.as_deref(),
                 );
                 drop(stacks);

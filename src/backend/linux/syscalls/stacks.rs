@@ -677,7 +677,7 @@ impl Stacks {
         let mut rules = std::mem::take(&mut self.rules);
         let unwound = unwinding.unwind(&mut rules, sample);
         self.rules = rules;
-        self.finish_sampled(process, sample, unwound, python)
+        self.finish_sampled(process, sample, (&unwinding, unwound), python)
     }
 
     /// What a sampled stack of `process` whose innermost address is
@@ -691,17 +691,26 @@ impl Stacks {
         }
     }
 
-    /// The stack a sample of `process` was `unwound` to through its
-    /// [`Self::unwinding`], unwound again if its modules were read again
-    /// for the code it ended at, with the frames of the interpreter it
-    /// runs, if any, from its walker's record `python`.
+    /// The stack a sample of `process` was unwound to through its
+    /// [`Self::unwinding`], with the frames of the interpreter it runs, if
+    /// any, from its walker's record `python`. A stack that ended at code in
+    /// no module is unwound again through the process's modules if they
+    /// changed since, as when another stack that ended there had them read
+    /// again, or if they are read again for it now.
     pub fn finish_sampled(
         &mut self,
         process: Pid,
         sample: SampledState<'_>,
-        (mut frames, mut end): (Vec<SampledFrame>, StackEnd),
+        (unwinding, (mut frames, mut end)): (&Unwinding, (Vec<SampledFrame>, StackEnd)),
         python: Option<&[u8]>,
     ) -> CallStack {
+        let changed = self
+            .processes
+            .get(&process)
+            .is_some_and(|now| !Arc::ptr_eq(now, &unwinding.mapped));
+        if changed && ends_outside(&frames, end) {
+            (frames, end) = self.unwind_copy(process, sample);
+        }
         if self.uncover(process, &frames, end, sample.chain) {
             (frames, end) = self.unwind_copy(process, sample);
         }
@@ -807,8 +816,7 @@ impl Stacks {
         let Some(last) = frames.last() else {
             return false;
         };
-        let unmapped = matches!(end, StackEnd::Truncated(Truncation::UnmappedAddress, _));
-        if last.module.is_some() && !unmapped {
+        if !ends_outside(frames, end) {
             return false;
         }
         let address = if last.module.is_some() {
@@ -1218,6 +1226,14 @@ const fn native_address(sampled: &sampler::RawV8Frame) -> VirtualAddress {
     }
 }
 
+/// Whether `frames` end at code in no module, or at a return address into
+/// such code.
+fn ends_outside(frames: &[SampledFrame], end: StackEnd) -> bool {
+    frames.last().is_some_and(|last| {
+        last.module.is_none() || matches!(end, StackEnd::Truncated(Truncation::UnmappedAddress, _))
+    })
+}
+
 /// The stack of unwound frames: the innermost frame's instruction, and for
 /// each frame after, the return address its call left, unless a signal
 /// interrupted it at the instruction itself.
@@ -1424,6 +1440,69 @@ mod tests {
             (Vec::new(), Some(Truncation::InterpretedUnknown))
         );
         assert_eq!(place(&stacks, other, &[], 9), (Vec::new(), None));
+    }
+
+    /// Stacks unwound through modules that lacked the code they reached,
+    /// one after another, each end as the first does once it had the
+    /// process's modules read again for that code: the later ones are
+    /// unwound again through the modules read, which the first's reading
+    /// would otherwise keep them from.
+    #[test]
+    fn stacks_unwound_through_modules_since_read_again_are_unwound_again() {
+        let own = std::process::id();
+        let process = Pid::new(own);
+        let mut stacks = Stacks::default();
+        // The test's own executable alone, so the C library's code is in
+        // no module the stacks are unwound through.
+        let executable = std::fs::read_link("/proc/self/exe").expect("this process's file");
+        let mapped = perf::mappings(own)
+            .expect("this process's mappings")
+            .into_iter()
+            .find(|mapped| {
+                mapped.executable && mapped.path == executable.as_os_str().as_encoded_bytes()
+            })
+            .expect("this process maps its file's code");
+        stacks.mapped(&decode::Mmap {
+            pid: process,
+            start: mapped.start,
+            length: mapped.end - mapped.start,
+            file_offset: mapped.file_offset,
+            inode: Some(mapped.inode),
+            executable: true,
+            path: &mapped.path,
+            time: 0,
+        });
+
+        let registers = [(
+            crate::unwind::RETURN_ADDRESS,
+            nix::libc::getpid as *const () as usize as u64,
+        )];
+        let sample = SampledState {
+            registers: &registers,
+            stack: &[],
+            chain: &[],
+        };
+        let mut rules = FrameRules::default();
+        let first = stacks.unwinding(process, None);
+        let second = stacks.unwinding(process, None);
+        let (first, second) = (
+            (first.unwind(&mut rules, sample), first),
+            (second.unwind(&mut rules, sample), second),
+        );
+        assert!(
+            first.0.0.last().is_some_and(|frame| frame.module.is_none()),
+            "the C library's code was in a module: {:?}",
+            first.0
+        );
+
+        let first = stacks.finish_sampled(process, sample, (&first.1, first.0), None);
+        let second = stacks.finish_sampled(process, sample, (&second.1, second.0), None);
+        assert_ne!(
+            first.truncated,
+            Some(Truncation::UnmappedAddress as u8),
+            "the modules were not read again"
+        );
+        assert_eq!(second, first);
     }
 
     #[test]

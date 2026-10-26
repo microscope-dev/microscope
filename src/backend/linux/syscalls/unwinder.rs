@@ -22,11 +22,12 @@ pub struct Job {
     pub sampled: SampledStack,
 }
 
-/// A stack unwound, with the sample it was unwound from, or the panic
-/// unwinding it raised, which the reader raises again, as it would have
-/// raised it unwinding the stack itself.
+/// A stack unwound, with the sample and modules it was unwound from, or the
+/// panic unwinding it raised, which the reader raises again, as it would
+/// have raised it unwinding the stack itself.
 pub struct Done {
     pub id: u64,
+    pub unwinding: Unwinding,
     pub sampled: SampledStack,
     pub unwound: std::thread::Result<(Vec<SampledFrame>, StackEnd)>,
 }
@@ -63,6 +64,7 @@ impl Unwinder {
                     }
                     let done = Done {
                         id: job.id,
+                        unwinding: job.unwinding,
                         sampled: job.sampled,
                         unwound,
                     };
