@@ -12,13 +12,46 @@ use crate::runtime_model::TargetThreadId;
 const MAX_STATUS_BYTES: usize = 64 * 1024;
 const MAX_ID_VALUES: usize = 64;
 
+/// Room for a whole record of most files: from an empty buffer, reading to
+/// the end begins with reads of a few bytes each.
+const RECORD_BYTES: usize = 4096;
+
 fn read(file: impl std::io::Read) -> std::io::Result<Vec<u8>> {
-    // Room for a whole record of most files up front: from an empty
-    // buffer, reading to the end begins with reads of a few bytes each.
-    let mut bytes = Vec::with_capacity(4096);
+    let mut bytes = Vec::with_capacity(RECORD_BYTES);
     file.take((MAX_STATUS_BYTES + 1) as u64)
         .read_to_end(&mut bytes)?;
+    Ok(bounded(bytes))
+}
 
+/// The record a kept `/proc` file holds now, read from its start. Each read
+/// at offset 0 has the kernel write the record anew (`seq_read_iter`), and
+/// it copies all of a record that fits, so a read shorter than the buffer
+/// is the whole record; one that fills it reads on from where it stopped.
+fn reread(file: &std::fs::File) -> std::io::Result<Vec<u8>> {
+    use std::os::unix::fs::FileExt as _;
+
+    let mut bytes = vec![0; RECORD_BYTES];
+    let mut length = 0;
+    loop {
+        let room = bytes.get_mut(length..).unwrap_or_default();
+        match file.read_at(room, length as u64) {
+            Ok(0) => break,
+            Ok(read) => {
+                length += read;
+                if length < bytes.len() || length > MAX_STATUS_BYTES {
+                    break;
+                }
+                bytes.resize((bytes.len() * 2).min(MAX_STATUS_BYTES + 1), 0);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    bytes.truncate(length);
+    Ok(bounded(bytes))
+}
+
+fn bounded(mut bytes: Vec<u8>) -> Vec<u8> {
     if bytes.len() > MAX_STATUS_BYTES {
         bytes.truncate(MAX_STATUS_BYTES);
         // A truncated final number is not identity evidence. Earlier
@@ -30,7 +63,7 @@ fn read(file: impl std::io::Read) -> std::io::Result<Vec<u8>> {
         bytes.truncate(end);
     }
 
-    Ok(bytes)
+    bytes
 }
 
 pub(super) fn read_path(path: impl AsRef<std::path::Path>) -> std::io::Result<Vec<u8>> {
@@ -274,18 +307,95 @@ pub(super) fn context_switches(status: &[u8]) -> Option<(u64, u64)> {
     ))
 }
 
-/// Thread `thread` of process `process`, if it is asleep in a system call.
-pub(super) fn thread_asleep(process: u32, thread: u32) -> std::io::Result<Option<Asleep>> {
-    let record = read_path(format!("/proc/{process}/task/{thread}/syscall"))?;
-    Ok(asleep(&record))
+/// A thread's `syscall` and `status` files, opened once and read again
+/// from the start for each record, which costs one system call where
+/// opening the file by its path costs four. A `/proc` file holds the
+/// thread's `struct pid`, not its number, and a read finds the task
+/// through it (`proc_single_show`): once the thread is gone, every read
+/// fails with `ESRCH`, even after a later thread is given its id. Both
+/// files are opened through one descriptor of the thread's directory,
+/// which holds the same, so they name the thread its start time does.
+/// Its `schedstat`, the shortest record a thread has, tells whether the
+/// thread is still there, and so whether the start time is still its own.
+#[derive(Debug)]
+pub struct ThreadFiles {
+    start: u64,
+    syscall: std::fs::File,
+    status: std::fs::File,
+    schedstat: std::fs::File,
+
+    /// Whether a read of them failed, as every read does once the thread
+    /// is gone: they are of no use, and a later thread may have its id.
+    failed: std::cell::Cell<bool>,
 }
 
-/// How many times thread `thread` of process `process` has given up its
-/// CPU, of its own accord and not.
-pub(super) fn thread_switches(process: u32, thread: u32) -> std::io::Result<(u64, u64)> {
-    let status = read_path(format!("/proc/{process}/task/{thread}/status"))?;
-    context_switches(&status)
-        .ok_or_else(|| std::io::Error::other("the status names no context switches"))
+impl ThreadFiles {
+    /// Opens the files of thread `thread` of process `process`.
+    pub fn open(process: u32, thread: u32) -> std::io::Result<Self> {
+        if !valid_pid(process) || !valid_pid(thread) {
+            return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+        }
+        let directory = nix::fcntl::open(
+            format!("/proc/{process}/task/{thread}").as_str(),
+            OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW,
+            Mode::empty(),
+        )?;
+        let file = |name: &str| -> std::io::Result<std::fs::File> {
+            let fd = openat(
+                &directory,
+                name,
+                OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW,
+                Mode::empty(),
+            )?;
+            Ok(std::fs::File::from(fd))
+        };
+        let start = stat_start_time(&reread(&file("stat")?)?).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "the thread's stat names no start time",
+            )
+        })?;
+        Ok(Self {
+            start,
+            syscall: file("syscall")?,
+            status: file("status")?,
+            schedstat: file("schedstat")?,
+            failed: std::cell::Cell::new(false),
+        })
+    }
+
+    /// When the thread started, in clock ticks since boot.
+    pub const fn start(&self) -> u64 {
+        self.start
+    }
+
+    /// Whether a read of the files failed, which every read does once the
+    /// thread is gone.
+    const fn failed(&self) -> bool {
+        self.failed.get()
+    }
+
+    /// Whether the thread is still there, so that a thread given its id
+    /// later is not taken for it. One read of its shortest record.
+    pub fn live(&self) -> bool {
+        !self.failed() && self.reread(&self.schedstat).is_ok()
+    }
+
+    /// The thread, if it is asleep in a system call.
+    pub fn asleep(&self) -> std::io::Result<Option<Asleep>> {
+        Ok(asleep(&self.reread(&self.syscall)?))
+    }
+
+    /// How many times the thread has given up its CPU, of its own accord
+    /// and not.
+    pub fn switches(&self) -> std::io::Result<(u64, u64)> {
+        context_switches(&self.reread(&self.status)?)
+            .ok_or_else(|| std::io::Error::other("the status names no context switches"))
+    }
+
+    fn reread(&self, file: &std::fs::File) -> std::io::Result<Vec<u8>> {
+        reread(file).inspect_err(|_| self.failed.set(true))
+    }
 }
 
 fn valid_pid(value: u32) -> bool {
@@ -406,12 +516,9 @@ mod tests {
         // It may still be leaving the channel's send; once it spins, it
         // stays in no system call.
         std::thread::sleep(std::time::Duration::from_millis(20));
+        let files = ThreadFiles::open(process, spinner_id).unwrap();
         for _ in 0..100 {
-            assert_eq!(
-                thread_asleep(process, spinner_id).unwrap(),
-                None,
-                "spinning"
-            );
+            assert_eq!(files.asleep().unwrap(), None, "spinning");
         }
         spin.store(false, std::sync::atomic::Ordering::Relaxed);
         spinner.join().unwrap();
@@ -423,30 +530,93 @@ mod tests {
                 .send(u32::try_from(nix::unistd::gettid().as_raw()).unwrap())
                 .unwrap();
             let mut byte = [0];
-            nix::unistd::read(&reader, &mut byte).unwrap();
+            while nix::unistd::read(&reader, &mut byte).unwrap() == 1 {}
         });
         let thread = parked
             .recv_timeout(std::time::Duration::from_secs(20))
             .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        let asleep = loop {
-            if let Some(asleep) = thread_asleep(process, thread).unwrap() {
-                break asleep;
+        let files = ThreadFiles::open(process, thread).unwrap();
+        let asleep = || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            loop {
+                if let Some(asleep) = files.asleep().unwrap() {
+                    break asleep;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the thread never blocked"
+                );
+                std::thread::yield_now();
             }
+        };
+        let first = asleep();
+        assert!(first.record.starts_with(b"0 "), "asleep in read: {first:?}");
+        let switches = files.switches().unwrap();
+        assert!(switches.0 >= 1, "{switches:?}");
+
+        // Each read of the kept files is of the thread as it is now.
+        nix::unistd::write(&writer, b"x").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while files.switches().unwrap() == switches {
+            assert!(std::time::Instant::now() < deadline, "never counted");
+            std::thread::yield_now();
+        }
+        assert_eq!(asleep(), first, "asleep in the same read again");
+        assert!(!files.failed());
+
+        // Once the thread is gone, so are its files.
+        // A joined thread may still be leaving: until the kernel releases
+        // it, its files read it as it exits.
+        drop(writer);
+        blocked.join().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while files.asleep().is_ok() {
             assert!(
                 std::time::Instant::now() < deadline,
-                "the thread never blocked"
+                "the thread never went away"
             );
             std::thread::yield_now();
-        };
-        assert!(
-            asleep.record.starts_with(b"0 "),
-            "asleep in read: {asleep:?}"
-        );
-        let switches = thread_switches(process, thread).unwrap();
-        assert!(switches.0 >= 1, "{switches:?}");
-        nix::unistd::write(&writer, b"x").unwrap();
-        blocked.join().unwrap();
+        }
+        for error in [files.asleep().unwrap_err(), files.switches().unwrap_err()] {
+            assert_eq!(error.raw_os_error(), Some(nix::libc::ESRCH), "{error}");
+        }
+        assert!(files.failed());
+        assert!(ThreadFiles::open(process, thread).is_err());
+    }
+
+    /// A record longer than the first buffer is read whole.
+    #[test]
+    fn a_record_is_reread_whole_whatever_its_length() {
+        let status = std::fs::File::open("/proc/self/status").unwrap();
+        let whole = read_path("/proc/self/status").unwrap();
+        let again = reread(&status).unwrap();
+        assert_eq!(field(&again, b"Name:"), field(&whole, b"Name:"));
+        assert!(again.ends_with(b"\n"));
+
+        let mut long = tempfile_with(&vec![b'x'; RECORD_BYTES * 3 + 5]);
+        assert_eq!(reread(&long).unwrap().len(), RECORD_BYTES * 3 + 5);
+        long = tempfile_with(&vec![b'x'; RECORD_BYTES]);
+        assert_eq!(reread(&long).unwrap().len(), RECORD_BYTES);
+        let huge = tempfile_with(&vec![b'9'; MAX_STATUS_BYTES + 1]);
+        assert!(reread(&huge).unwrap().is_empty());
+    }
+
+    fn tempfile_with(bytes: &[u8]) -> std::fs::File {
+        use std::io::Write as _;
+        let path = std::env::temp_dir().join(format!(
+            "microscope-reread-{}-{}",
+            std::process::id(),
+            bytes.len()
+        ));
+        let mut file = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        std::fs::remove_file(&path).unwrap();
+        file.write_all(bytes).unwrap();
+        file
     }
 
     #[test]

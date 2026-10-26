@@ -272,18 +272,43 @@ builtins (a `LoadedModule` with a `window`) runs no runtime of its own, so a
 live snapshot reads runtimes only through the full module. Otherwise each
 thread would be read twice, the second time with the copy's bias.
 
+Each check reads the `syscall` record first and the counts after it. The
+kernel writes another thread's record only while that thread is off its
+CPU (`task_current_syscall`), and a thread counts a context switch each
+time it leaves its CPU, before it is off it (`__schedule`). So a thread
+seen asleep has counted every run it made before, and counts read after
+the record that are still those of the last check prove it has not run
+since. Counts read before the record would miss a run between the two
+reads that ended asleep in the same call.
+
 A thread that has not run since a quiet read is not read again
 (`tasks::Kept`). A read keeps the frames it found with the thread's
 context-switch counts and its `syscall` record. The next read reuses the
-frames only while the record is unchanged, the counts read before and after
-it are both unchanged, and the thread's start time is the same. A thread
-that ran between the two reads of a single check and slept again in the same
-call leaves the same record, which the second count catches (`ran_since`). Its stack and the objects its frames name can change only while it
-runs: V8 collects an isolate's heap on the isolate's own thread. The
-exception is the heap isolates share under V8's flags for shared structs
-and strings, which Node leaves off and the reader does not check. A program
-whose threads stay parked then costs a few `/proc` reads per thread each
-time.
+frames only while the record is unchanged, the counts read after it are
+unchanged, and the thread's start time is the same. Its stack and the
+objects its frames name can change only while it runs: V8 collects an
+isolate's heap on the isolate's own thread. The exception is the heap
+isolates share under V8's flags for shared structs and strings, which Node
+leaves off and the reader does not check. A program whose threads stay
+parked then costs two `/proc` reads per thread each time.
+
+The recorder keeps each thread's `syscall`, `status`, and `schedstat`
+files open between snapshots (`proc_status::ThreadFiles`,
+`tasks::keep_files`) and reads them again at offset 0, which has the
+kernel write the record anew: one `pread` instead of an open, two reads,
+and a close. A kept file holds the thread's `struct pid`, not its number,
+so once the thread is gone every read fails with `ESRCH`, even after a
+later thread is given its id; the files cannot read another thread. Each
+snapshot reads every kept `schedstat`, the shortest record, and drops and
+reopens the files of a thread that is gone, so that a thread given a
+reused id gets its own start time, which the files read once from `stat`
+when they open. Files are kept for the first 256 threads by id, three
+descriptors each; a thread beyond them has its files opened for its read
+and closed after it, and is read only if they are of the thread whose
+start time the snapshot found. The counts come from `status`, the
+largest and slowest record: `stat` has none, and `schedstat`'s count of
+times the thread ran is kept only when the scheduler noted it queued
+(`sched_info_arrive`), so it can miss a run.
 
 A read of a thread that did run reads its memory in pages it keeps for the
 read (`StopMemory`). It first reads, in one `process_vm_readv` call, every

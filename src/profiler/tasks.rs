@@ -205,6 +205,55 @@ pub struct Snapshotter {
     /// What the last live read of each thread found of a runtime's frames,
     /// by the module's image, the thread's id, and when it started.
     kept: RefCell<BTreeMap<(crate::ModuleImageId, u32, u64), Kept>>,
+
+    /// The `/proc` files live snapshots read of each thread, by its id,
+    /// kept open between snapshots ([`keep_files`]).
+    files: ThreadsFiles,
+}
+
+/// Each thread's kept `/proc` files, by its id.
+type ThreadsFiles = BTreeMap<u32, crate::backend::ThreadFiles>;
+
+/// The most threads of a process whose `/proc` files live snapshots keep
+/// open between reads, three descriptors each, so that a program of
+/// thousands of threads does not take thousands more descriptors beside
+/// the one per thread and CPU that sampling it holds. A thread beyond
+/// them has its files opened for its read and closed after it.
+const MOST_KEPT_THREADS: usize = 256;
+
+/// Why a thread is not read: it exited, or another thread took its id.
+const EXITED: &str = "it exited";
+
+/// Keeps `files` to those of the first `most` of `threads`, the process
+/// `pid`'s threads in the order of their ids, opening those of a thread
+/// not yet kept. Files of a thread that is gone are dropped, and opened
+/// again if its id is listed: a later thread may have it, with a start
+/// time of its own. Files that cannot be opened are not kept.
+fn keep_files(files: &mut ThreadsFiles, pid: u32, threads: &[u32], most: usize) {
+    let kept = threads.get(..most).unwrap_or(threads);
+    files.retain(|tid, files| kept.binary_search(tid).is_ok() && files.live());
+    for &tid in kept {
+        if !files.contains_key(&tid)
+            && let Ok(opened) = crate::backend::ThreadFiles::open(pid, tid)
+        {
+            files.insert(tid, opened);
+        }
+    }
+}
+
+/// Opens the files of thread `tid` of process `pid` for one read, if they
+/// are still those of the thread that started at `start`.
+fn open_unkept(
+    pid: u32,
+    tid: u32,
+    start: Option<u64>,
+) -> Result<crate::backend::ThreadFiles, Arc<str>> {
+    let opened = crate::backend::ThreadFiles::open(pid, tid)
+        .map_err(|error| Arc::from(error.to_string()))?;
+    if start != Some(opened.start()) {
+        return Err(EXITED.into());
+    }
+    Ok(opened)
 }
 
 /// The frames a live read proven quiet found of a thread, with the proof
@@ -217,19 +266,17 @@ pub struct Snapshotter {
 /// thread. The one exception is the heap isolates share under V8's flags
 /// for shared structs and strings, which another isolate's thread may
 /// collect; Node leaves those flags off, and nothing here checks them.
+///
+/// The counts are read after the record. A thread asleep when its record
+/// is read left its CPU after any run it made since the kept read, and
+/// counted it, so counts read after the record that are still those kept
+/// prove it has not run since. Read before the record, they would miss a
+/// run between the two reads that ended asleep in the same call.
 #[derive(Debug)]
 struct Kept {
     switches: (u64, u64),
     asleep: crate::backend::Asleep,
     frames: Vec<runtime_model::InterpretedFrame>,
-}
-
-/// Whether a thread whose kept read left its context-switch counts at
-/// `kept` may have run since, by its counts read `before` and `after` its
-/// system call record: a thread that ran between the two reads and slept
-/// again in the same call leaves the same record behind.
-fn ran_since(kept: (u64, u64), before: (u64, u64), after: (u64, u64)) -> bool {
-    kept != before || kept != after
 }
 
 /// A runtime a module carries, bound or with why it cannot be.
@@ -285,6 +332,7 @@ impl Snapshotter {
             runtimes: BTreeMap::new(),
             tls: crate::backend::RunningTls::new(pid),
             kept: RefCell::default(),
+            files: BTreeMap::new(),
         })
     }
 
@@ -683,6 +731,7 @@ impl Snapshotter {
         let _span = crate::span!("live task snapshot");
         let mut snapshot = Snapshot::default();
         if exited(self.pid) {
+            self.files.clear();
             return Live::Exited;
         }
 
@@ -694,14 +743,8 @@ impl Snapshotter {
         }
 
         let threads = threads(self.pid);
-        let learning = self.learn_thread_pointers(&threads);
-        let starts: BTreeMap<u32, u64> = threads
-            .iter()
-            .filter_map(|thread| {
-                let tid = u32::try_from(thread.get()).ok()?;
-                Some((tid, thread_start(self.pid, tid)?))
-            })
-            .collect();
+        let starts = self.thread_starts(&threads);
+        let learning = self.learn_thread_pointers(&starts);
         let pointers = starts
             .iter()
             .filter_map(|(&tid, &start)| Some((tid, *self.thread_pointers.get(&(tid, start))?)))
@@ -748,6 +791,7 @@ impl Snapshotter {
                             model: model.as_ref(),
                             starts: &starts,
                             kept: &self.kept,
+                            files: &self.files,
                         };
 
                         if reads.tasks {
@@ -819,19 +863,33 @@ impl Snapshotter {
         }
     }
 
-    /// Learns the thread pointer of each of `threads` not yet learned from
-    /// the C library's lists of its threads, or says why it cannot.
-    fn learn_thread_pointers(&mut self, threads: &[crate::ThreadId]) -> Result<(), String> {
-        let started = threads
+    /// When each of `threads` started, by its id, from the files kept of
+    /// it, which this first keeps to the threads there now
+    /// ([`keep_files`]), or for a thread beyond them, from its `stat`.
+    fn thread_starts(&mut self, threads: &[crate::ThreadId]) -> BTreeMap<u32, u64> {
+        let tids: Vec<u32> = threads
             .iter()
-            .filter_map(|thread| {
-                let tid = u32::try_from(thread.get()).ok()?;
-                Some((tid, thread_start(self.pid, tid)?))
+            .filter_map(|thread| u32::try_from(thread.get()).ok())
+            .collect();
+        keep_files(&mut self.files, self.pid, &tids, MOST_KEPT_THREADS);
+        tids.iter()
+            .filter_map(|&tid| {
+                let start = match self.files.get(&tid) {
+                    Some(files) => Some(files.start()),
+                    None => thread_start(self.pid, tid),
+                };
+                Some((tid, start?))
             })
-            .collect::<Vec<_>>();
+            .collect()
+    }
+
+    /// Learns the thread pointer of each thread of `started`, by its id
+    /// and when it started, not yet learned from the C library's lists of
+    /// its threads, or says why it cannot.
+    fn learn_thread_pointers(&mut self, started: &BTreeMap<u32, u64>) -> Result<(), String> {
         if started
             .iter()
-            .all(|known| self.thread_pointers.contains_key(known))
+            .all(|(&tid, &start)| self.thread_pointers.contains_key(&(tid, start)))
         {
             return Ok(());
         }
@@ -844,7 +902,7 @@ impl Snapshotter {
         // may have its id.
         self.thread_pointers.clear();
 
-        for (tid, start) in started {
+        for (&tid, &start) in started {
             if let Some(pointer) = listed.get(&tid) {
                 self.thread_pointers.insert((tid, start), *pointer);
             }
@@ -1144,6 +1202,9 @@ struct LiveRuntime<'a> {
     /// When each thread started, by its id.
     starts: &'a BTreeMap<u32, u64>,
     kept: &'a RefCell<BTreeMap<(crate::ModuleImageId, u32, u64), Kept>>,
+
+    /// The threads' kept `/proc` files, by their ids.
+    files: &'a ThreadsFiles,
 }
 
 impl LiveRuntime<'_> {
@@ -1321,26 +1382,29 @@ impl LiveRuntime<'_> {
     ) -> Result<Option<Vec<runtime_model::InterpretedFrame>>, Arc<str>> {
         let stop = self.stop;
         let stack = stop.stack(tid)?;
-        let before = crate::backend::thread_switches(stop.pid, tid).map_err(Arc::<str>::from)?;
-        let asleep = crate::backend::thread_asleep(stop.pid, tid)
-            .map_err(Arc::<str>::from)?
-            .ok_or(NOT_ASLEEP)?;
-        let key = self
-            .starts
-            .get(&tid)
-            .map(|&start| (self.image.id(), tid, start));
+        let start = self.starts.get(&tid).copied();
+        let opened;
+        let files = if let Some(files) = self.files.get(&tid) {
+            files
+        } else {
+            opened = open_unkept(stop.pid, tid, start)?;
+            &opened
+        };
+        let io = |error: std::io::Error| Arc::<str>::from(error.to_string());
+
+        // The record first, then the counts: see `Kept`.
+        let asleep = files.asleep().map_err(io)?.ok_or(NOT_ASLEEP)?;
+        let before = files.switches().map_err(io)?;
+        let key = start.map(|start| (self.image.id(), tid, start));
         let kept = key.and_then(|key| {
             self.kept
                 .borrow()
                 .get(&key)
-                .filter(|kept| kept.switches == before && kept.asleep == asleep)
-                .map(|kept| (kept.switches, kept.frames.clone()))
+                .filter(|kept| kept.asleep == asleep && kept.switches == before)
+                .map(|kept| kept.frames.clone())
         });
-        if let Some((switches, frames)) = kept {
-            let after = crate::backend::thread_switches(stop.pid, tid).map_err(Arc::<str>::from)?;
-            if !ran_since(switches, before, after) {
-                return Ok(Some(frames));
-            }
+        if let Some(frames) = kept {
+            return Ok(Some(frames));
         }
         let thread = runtime_model::LiveThread {
             thread: crate::ThreadId::new(u64::from(tid)),
@@ -1349,8 +1413,8 @@ impl LiveRuntime<'_> {
             code,
         };
         let read = self.model.live_frames(stop, &thread);
-        let again = crate::backend::thread_asleep(stop.pid, tid).map_err(Arc::<str>::from)?;
-        let after = crate::backend::thread_switches(stop.pid, tid).map_err(Arc::<str>::from)?;
+        let again = files.asleep().map_err(io)?;
+        let after = files.switches().map_err(io)?;
         if again.as_ref() != Some(&asleep) || after != before {
             return Ok(None);
         }
@@ -1555,21 +1619,104 @@ const fn live_waits(task: &runtime_model::RuntimeTask) -> bool {
 
 #[cfg(test)]
 mod tests {
-    /// A kept read is reused only while the thread's counts, read before
-    /// and after its system call record, are both those it left.
+    use std::time::{Duration, Instant};
+
+    /// A thread blocked in a read of a pipe until the returned descriptor
+    /// is written or dropped, with its id.
+    fn blocked() -> (std::thread::JoinHandle<()>, std::os::fd::OwnedFd, u32) {
+        let (ready, started) = std::sync::mpsc::channel();
+        let (reader, writer) = nix::unistd::pipe().unwrap();
+        let thread = std::thread::spawn(move || {
+            ready
+                .send(u32::try_from(nix::unistd::gettid().as_raw()).unwrap())
+                .unwrap();
+            let mut byte = [0];
+            let _ = nix::unistd::read(&reader, &mut byte);
+        });
+        let tid = started.recv_timeout(Duration::from_secs(20)).unwrap();
+        (thread, writer, tid)
+    }
+
+    /// Files kept of a thread that exited fail to read, and the next
+    /// snapshot drops them rather than keep reading a thread that is gone:
+    /// a later thread given its id is opened anew.
     #[test]
-    fn a_kept_read_is_reused_only_while_the_counts_around_the_record_hold() {
-        use super::ran_since;
-        assert!(!ran_since((5, 1), (5, 1), (5, 1)));
-        assert!(
-            ran_since((5, 1), (6, 1), (6, 1)),
-            "ran before the first read"
+    fn the_files_of_a_thread_that_exited_are_dropped_and_opened_again() {
+        let pid = std::process::id();
+        let (thread, writer, tid) = blocked();
+        let mut files = super::ThreadsFiles::new();
+        super::keep_files(&mut files, pid, &[tid], super::MOST_KEPT_THREADS);
+        assert!(files[&tid].switches().is_ok());
+
+        // A joined thread may still be leaving: until the kernel releases
+        // it, its files read it as it exits.
+        drop(writer);
+        thread.join().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let error = loop {
+            match files[&tid].asleep() {
+                Err(error) => break error,
+                Ok(asleep) => assert_eq!(asleep, None, "asleep as it exits"),
+            }
+            assert!(Instant::now() < deadline, "the thread never went away");
+            std::thread::yield_now();
+        };
+        assert_eq!(error.raw_os_error(), Some(nix::libc::ESRCH), "{error}");
+
+        // As though another thread had its id: it is listed again.
+        super::keep_files(&mut files, pid, &[tid], super::MOST_KEPT_THREADS);
+        assert!(!files.contains_key(&tid), "kept the files of a thread gone");
+
+        // So are the files of a thread that left unread, whose start time
+        // a later thread with its id would otherwise be given.
+        let (thread, writer, tid) = blocked();
+        super::keep_files(&mut files, pid, &[tid], super::MOST_KEPT_THREADS);
+        assert!(files.contains_key(&tid));
+        drop(writer);
+        thread.join().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while std::fs::metadata(format!("/proc/{pid}/task/{tid}")).is_ok() {
+            assert!(Instant::now() < deadline, "the thread never went away");
+            std::thread::yield_now();
+        }
+        super::keep_files(&mut files, pid, &[tid], super::MOST_KEPT_THREADS);
+        assert!(!files.contains_key(&tid), "kept the files of a thread gone");
+    }
+
+    /// Files are kept for at most so many threads, and dropped with the
+    /// threads that left.
+    #[test]
+    fn files_are_kept_for_so_many_threads_as_they_stay() {
+        let pid = std::process::id();
+        let threads: Vec<_> = (0..3).map(|_| blocked()).collect();
+        let mut tids: Vec<u32> = threads.iter().map(|&(_, _, tid)| tid).collect();
+        tids.sort_unstable();
+        let mut files = super::ThreadsFiles::new();
+        super::keep_files(&mut files, pid, &tids, 2);
+        assert_eq!(files.keys().copied().collect::<Vec<_>>(), tids[..2]);
+        super::keep_files(&mut files, pid, &tids[1..], 2);
+        assert_eq!(files.keys().copied().collect::<Vec<_>>(), tids[1..]);
+        for (thread, writer, _) in threads {
+            drop(writer);
+            thread.join().unwrap();
+        }
+    }
+
+    /// A thread whose files are not kept is read through files opened for
+    /// the read only if they are of the thread the snapshot found.
+    #[test]
+    fn files_opened_for_one_read_are_of_the_thread_found() {
+        let pid = std::process::id();
+        let (thread, writer, tid) = blocked();
+        let start = super::thread_start(pid, tid);
+        assert!(super::open_unkept(pid, tid, start).is_ok());
+        let other = start.map(|start| start + 1);
+        assert_eq!(
+            super::open_unkept(pid, tid, other).unwrap_err().as_ref(),
+            super::EXITED
         );
-        assert!(ran_since((5, 1), (5, 1), (6, 1)), "ran between the reads");
-        assert!(
-            ran_since((5, 1), (5, 1), (5, 2)),
-            "preempted between the reads"
-        );
+        drop(writer);
+        thread.join().unwrap();
     }
 
     #[test]
@@ -1582,8 +1729,6 @@ mod tests {
         nix::sys::prctl::set_name(&original).unwrap();
         assert!(!exited, "invalid UTF-8 in comm does not imply process exit");
     }
-
-    use std::time::{Duration, Instant};
 
     use super::{Live, Snapshotter};
 
