@@ -346,16 +346,9 @@ fn calls(
 
 /// Where stack `row` was made, as a caller's row names it; read once.
 fn site<'a>(profile: &Profile, sites: &'a mut HashMap<u32, String>, row: u32) -> &'a String {
-    sites.entry(row).or_insert_with(|| {
-        profile.syscall_site(row).unwrap_or_else(|| {
-            profile
-                .syscall_stack(row)
-                .0
-                .into_iter()
-                .next()
-                .unwrap_or_else(|| "?".to_owned())
-        })
-    })
+    sites
+        .entry(row)
+        .or_insert_with(|| profile.syscall_site_name(row))
 }
 
 /// The path a call names, made absolute against the directory it names

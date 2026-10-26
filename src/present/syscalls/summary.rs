@@ -164,7 +164,7 @@ fn name(id: SyscallId) -> String {
 }
 
 /// The value a row sorts by, largest first except for names.
-fn key(column: Column, id: SyscallId, stats: &SyscallStats) -> (u64, String) {
+fn key(column: Column, label: &str, stats: &SyscallStats) -> (u64, String) {
     let number = match column {
         Column::TimePercent | Column::TotalTime => stats.total_ns,
         Column::MinTime => stats.min_ns,
@@ -179,7 +179,7 @@ fn key(column: Column, id: SyscallId, stats: &SyscallStats) -> (u64, String) {
         Column::Name | Column::Errnos => 0,
     };
 
-    (u64::MAX - number, name(id))
+    (u64::MAX - number, label.to_owned())
 }
 
 /// One cell of the table.
@@ -247,15 +247,29 @@ pub fn table(
     unit: Unit,
     errno: &dyn Fn(u16) -> String,
 ) -> Vec<String> {
-    let mut rows: Vec<(SyscallId, &SyscallStats)> =
-        calls.iter().map(|(&id, stats)| (id, stats)).collect();
+    let rows = calls.iter().map(|(&id, stats)| (name(id), stats)).collect();
+    labelled(rows, columns, sort, "syscall", usize::MAX, unit, errno)
+}
 
+/// The table of rows each named by its label, the column of labels
+/// headed `heading`, showing the first `limit` rows after sorting; the
+/// total counts every row.
+#[must_use]
+pub fn labelled(
+    mut rows: Vec<(String, &SyscallStats)>,
+    columns: &[Column],
+    sort: Option<Column>,
+    heading: &str,
+    limit: usize,
+    unit: Unit,
+    errno: &dyn Fn(u16) -> String,
+) -> Vec<String> {
     if let Some(sort) = sort {
-        rows.sort_by_key(|&(id, stats)| {
+        rows.sort_by_cached_key(|(label, stats)| {
             if sort == Column::Name {
-                (0, name(id))
+                (0, label.clone())
             } else {
-                key(sort, id, stats)
+                key(sort, label, stats)
             }
         });
     }
@@ -297,20 +311,22 @@ pub fn table(
     );
 
     let mut lines = vec![
-        line(
-            &mut columns
-                .iter()
-                .map(|&column| (column, column.header(unit).to_owned())),
-        ),
+        line(&mut columns.iter().map(|&column| {
+            let header = if column == Column::Name {
+                heading
+            } else {
+                column.header(unit)
+            };
+            (column, header.to_owned())
+        })),
         rule.clone(),
     ];
 
-    for (id, stats) in rows {
-        let label = name(id);
+    for (label, stats) in rows.iter().take(limit) {
         lines.push(line(
             &mut columns
                 .iter()
-                .map(|&column| (column, cell(column, stats, &label))),
+                .map(|&column| (column, cell(column, stats, label))),
         ));
     }
 

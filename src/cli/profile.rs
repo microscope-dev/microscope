@@ -183,7 +183,7 @@ pub struct ReportArgs {
     #[arg(long)]
     tree: bool,
 
-    /// Show this many functions.
+    /// Show this many functions, or call sites of system calls.
     #[arg(long, default_value_t = 20)]
     limit: usize,
 
@@ -348,10 +348,28 @@ fn convert(args: &ConvertArgs) -> Result<()> {
         .with_context(|| format!("converting {}", args.input.display()))?;
     std::fs::write(&args.output, bytes)
         .with_context(|| format!("writing {}", args.output.display()))?;
+    let (calls, trace) = (read.profile.has_syscalls(), read.profile.is_trace());
     let kept = match format {
         Format::Usprof => return Ok(()),
+        Format::Pprof if trace => {
+            "each call's stack, the call's name its innermost frame, weighing calls and \
+             nanoseconds, without times or threads"
+        }
+        Format::Folded if trace => {
+            "each call's stack, the call's name its innermost frame, weighing calls only"
+        }
+        Format::Pprof if calls => {
+            "the samples' stacks and their weights, without times, threads, instrumentation, or \
+             system calls"
+        }
+        Format::Folded if calls => {
+            "the samples' stacks and their weights only, without system calls"
+        }
         Format::Pprof => "stacks and their weights, without times, threads, or instrumentation",
         Format::Folded => "stacks and their weights only",
+        Format::Chrome if calls => {
+            "instrumentation, threads, and the calls that returned, without samples or stacks"
+        }
         Format::Chrome => "instrumentation and threads, without samples",
     };
 
@@ -780,15 +798,15 @@ fn report(args: &ReportArgs, out: &mut impl std::io::Write) -> Result<()> {
     symbolize_here(&mut profile, out)?;
 
     // A trace alone, which no recording sampled.
-    if profile.has_syscalls() && profile.setting("weight").is_none() {
-        return syscall_summary(&profile, out);
+    if profile.is_trace() {
+        return syscall_summary(&profile, args.limit, out);
     }
 
     summary(&profile, out)?;
 
     if profile.has_syscalls() {
         writeln!(out)?;
-        syscall_summary(&profile, out)?;
+        syscall_summary(&profile, args.limit, out)?;
     }
 
     let (source, total) = if args.waits {
@@ -984,13 +1002,15 @@ fn cost(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
     Ok(())
 }
 
-/// The system calls a capture holds, as `microscope syscalls -c` shows them.
+/// The system calls a capture holds, as `microscope syscalls -c` shows them,
+/// then the `limit` call sites that took the most time.
 #[expect(
     clippy::cast_precision_loss,
     reason = "seconds need no more precision than f64's"
 )]
-fn syscall_summary(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
-    use crate::present::syscalls::{errno, summary};
+fn syscall_summary(profile: &Profile, limit: usize, out: &mut impl std::io::Write) -> Result<()> {
+    use crate::present::syscalls::errno;
+    use crate::present::syscalls::summary::{self, Column};
     let syscalls = profile.syscalls();
     let calls = syscalls.stats().per_call();
     let (start, end) = profile.span();
@@ -1024,6 +1044,58 @@ fn syscall_summary(profile: &Profile, out: &mut impl std::io::Write) -> Result<(
         &errno,
     ) {
         writeln!(out, "{line}")?;
+    }
+
+    let mut recorded = syscalls
+        .events
+        .iter()
+        .filter(|event| matches!(event.event, microscope::syscalls::TraceEvent::Call(_)));
+    if !recorded.clone().any(|call| call.stack.is_some()) {
+        if recorded.next().is_some() {
+            writeln!(out)?;
+            writeln!(
+                out,
+                "The calls have no stacks to tell where they were made; trace with -k for them."
+            )?;
+        }
+
+        return Ok(());
+    }
+
+    let sites = profile.syscall_sites(&syscalls);
+    let columns = [
+        Column::TimePercent,
+        Column::TotalTime,
+        Column::Calls,
+        Column::Errors,
+        Column::P99,
+        Column::Name,
+    ];
+
+    writeln!(out)?;
+    writeln!(out, "By call site:")?;
+    let rows = sites
+        .iter()
+        .map(|(site, stats)| (site.clone(), stats))
+        .collect();
+    for line in summary::labelled(
+        rows,
+        &columns,
+        sort,
+        "site",
+        limit,
+        summary::Unit::Microseconds,
+        &errno,
+    ) {
+        writeln!(out, "{line}")?;
+    }
+
+    if sites.len() > limit {
+        writeln!(
+            out,
+            "and {} more sites, counted in the total; --limit shows more",
+            sites.len() - limit
+        )?;
     }
 
     Ok(())

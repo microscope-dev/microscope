@@ -846,13 +846,14 @@ impl CaptureBuilder {
 
     /// Adds every row of `capture`, which may come from another chunk of
     /// the same recording: threads, modules, frames, and stacks are matched
-    /// by what they are, not by index.
-    pub fn absorb(&mut self, capture: &Capture) {
+    /// by what they are, not by index. Returns where its rows landed.
+    pub fn absorb(&mut self, capture: &Capture) -> Remap {
         self.absorb_settings(capture);
         let mut map = Remap::default();
         self.absorb_identities(capture, &mut map);
         self.absorb_code(capture, &mut map);
         self.absorb_rows(capture, &map);
+        map
     }
 
     /// This pool's name for a string of `capture`'s.
@@ -1316,7 +1317,7 @@ fn index(position: usize) -> u32 {
 
 /// Where each of another capture's rows landed in this one.
 #[derive(Debug, Default)]
-struct Remap {
+pub struct Remap {
     modules: Vec<u32>,
     processes: Vec<u32>,
     threads: Vec<u32>,
@@ -1334,6 +1335,16 @@ impl Remap {
 
     fn module(&self, id: u32) -> u32 {
         Self::get(&self.modules, id)
+    }
+
+    /// The new row of thread `id`.
+    pub fn thread(&self, id: u32) -> u32 {
+        Self::get(&self.threads, id)
+    }
+
+    /// The new row of stack `id`, keeping [`NONE`].
+    pub fn stack(&self, id: u32) -> u32 {
+        Self::get(&self.stacks, id)
     }
 }
 

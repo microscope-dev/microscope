@@ -897,6 +897,340 @@ fn a_capture_holds_what_the_trace_shows_and_report_summarizes_it() {
     );
 }
 
+/// Runs `microscope report` on `trace.usprof` in `directory`.
+fn report(directory: &Path, arguments: &[&str]) -> String {
+    let report = Command::new(env!("CARGO_BIN_EXE_microscope"))
+        .arg("report")
+        .args(arguments)
+        .arg("trace.usprof")
+        .current_dir(directory)
+        .output()
+        .expect("run microscope report");
+    assert!(report.status.success(), "{}", text(&report.stderr));
+    text(&report.stdout)
+}
+
+/// A site in `report`'s table of call sites: its name, seconds, calls,
+/// and errors.
+type SiteRow = (String, f64, u64, u64);
+
+/// The rows of `report`'s table of call sites, and the calls of its total.
+fn site_rows(report: &str) -> (Vec<SiteRow>, u64) {
+    let number = |cell: &str| {
+        let cell = cell.trim();
+        if cell.is_empty() {
+            0
+        } else {
+            cell.parse()
+                .unwrap_or_else(|_| panic!("{cell:?} is no count\n{report}"))
+        }
+    };
+
+    // After the heading, the columns' names, and a rule.
+    let mut lines = report
+        .lines()
+        .skip_while(|line| *line != "By call site:")
+        .skip(3);
+    let rows = lines
+        .by_ref()
+        .take_while(|line| !line.starts_with("------"))
+        .map(|line| {
+            let seconds = line[7..18].trim().parse().expect("seconds");
+            (
+                line[51..].to_owned(),
+                seconds,
+                number(&line[19..28]),
+                number(&line[29..38]),
+            )
+        })
+        .collect();
+    let total = lines.next().unwrap_or_else(|| panic!("no total\n{report}"));
+    (rows, number(&total[19..28]))
+}
+
+/// `report` ranks a trace's call sites by their time, as the browser's
+/// table of calls by site does, each with its calls and errors, and shows
+/// `--limit` of them, counting the rest in the total.
+#[test]
+fn report_ranks_call_sites_by_time() {
+    let directory = ScratchDir::new("syscalls-sites");
+    let captured = trace(
+        directory.path(),
+        &["-e", "trace=openat,close", "-k", "-o", "trace.usprof"],
+        "files",
+    );
+    assert_eq!(
+        captured.status.code(),
+        Some(3),
+        "{}",
+        text(&captured.stderr)
+    );
+
+    let made = microscope::profiler::Profile::read(&directory.path().join("trace.usprof"))
+        .expect("the capture reads")
+        .profile
+        .syscall_count();
+    let all = report(directory.path(), &["--limit", "1000"]);
+    let (rows, total) = site_rows(&all);
+    assert_eq!(total, made, "{all}");
+    assert_eq!(rows.iter().map(|row| row.2).sum::<u64>(), made, "{all}");
+    assert!(
+        rows.windows(2).all(|pair| pair[0].1 >= pair[1].1),
+        "the sites that took longest come first\n{all}"
+    );
+
+    let site = |line: u32| {
+        let name = format!("files · syscalls.c:{line}");
+        rows.iter()
+            .find(|row| row.0 == name)
+            .map_or_else(|| panic!("no row {name}\n{all}"), |row| (row.2, row.3))
+    };
+
+    // The open of "present", the failed open of "missing", and each close.
+    assert_eq!(site(19), (1, 0), "{all}");
+    assert_eq!(site(24), (1, 1), "{all}");
+    for line in [23, 37, 38, 39, 40] {
+        assert_eq!(site(line), (1, 0), "{all}");
+    }
+
+    let cut = report(directory.path(), &["--limit", "2"]);
+    let (shown, total) = site_rows(&cut);
+    assert_eq!(shown, rows[..2], "{cut}");
+    assert_eq!(total, made, "{cut}");
+    assert!(
+        cut.contains(&format!("and {} more sites,", rows.len() - 2)),
+        "{cut}"
+    );
+
+    let unstacked = trace(
+        directory.path(),
+        &["-e", "trace=openat", "-o", "trace.usprof"],
+        "files",
+    );
+    assert_eq!(unstacked.status.code(), Some(3));
+    let unstacked = report(directory.path(), &[]);
+    assert!(!unstacked.contains("By call site"), "{unstacked}");
+    assert!(
+        unstacked.contains("The calls have no stacks"),
+        "{unstacked}"
+    );
+}
+
+/// A program without lines has its calls grouped by the function that
+/// called the C library.
+#[test]
+fn report_groups_calls_without_lines_by_their_function() {
+    let directory = ScratchDir::new("syscalls-sites-nolines");
+    let captured = microscope(&["--engine", "ptrace", "-e", "trace=openat", "-k"])
+        .args(["-o", "trace.usprof", "--"])
+        .arg(Scenario::fixture("syscalls-nolines"))
+        .arg("files")
+        .current_dir(directory.path())
+        .output()
+        .expect("run microscope");
+    assert_eq!(
+        captured.status.code(),
+        Some(3),
+        "{}",
+        text(&captured.stderr)
+    );
+
+    let all = report(directory.path(), &[]);
+    let (rows, _) = site_rows(&all);
+    let files: Vec<(u64, u64)> = rows
+        .iter()
+        .filter(|row| row.0 == "files")
+        .map(|row| (row.2, row.3))
+        .collect();
+
+    // Its three opens, one failed.
+    assert_eq!(files, [(3, 1)], "{all}");
+}
+
+/// A sample of a trace's pprof profile as Go's tool reads it: its calls
+/// and nanoseconds, and its locations' functions and places, innermost
+/// first.
+struct PprofSample {
+    calls: u64,
+    nanoseconds: u64,
+    path: Vec<(String, String)>,
+}
+
+/// The samples of the pprof profile at `path`, and Go's tool's text.
+fn pprof_samples(path: &Path) -> (Vec<PprofSample>, String) {
+    let raw = Command::new(Scenario::fixture("pprof"))
+        .args(["-raw", "-symbolize=none"])
+        .arg(path)
+        .output()
+        .expect("run Go's pprof");
+    let raw = text(&raw.stdout);
+    let locations: BTreeMap<&str, (String, String)> = raw
+        .lines()
+        .skip_while(|line| *line != "Locations")
+        .skip(1)
+        .take_while(|line| *line != "Mappings")
+        .filter_map(|line| {
+            let (id, rest) = line.trim().split_once(": ")?;
+            let words: Vec<&str> = rest.split_whitespace().collect();
+            let place = words[words.len() - 2].to_owned();
+            Some((id, (words[2..words.len() - 2].join(" "), place)))
+        })
+        .collect();
+    let samples = raw
+        .lines()
+        .skip_while(|line| *line != "calls/count time/nanoseconds")
+        .skip(1)
+        .take_while(|line| *line != "Locations")
+        .map(|line| {
+            let (values, ids) = line.split_once(':').expect("a sample");
+            let values: Vec<u64> = values
+                .split_whitespace()
+                .map(|value| value.parse().expect("a value"))
+                .collect();
+            PprofSample {
+                calls: values[0],
+                nanoseconds: values[1],
+                path: ids
+                    .split_whitespace()
+                    .map(|id| locations[id].clone())
+                    .collect(),
+            }
+        })
+        .collect();
+    (samples, raw)
+}
+
+/// The calls of the fixture's opens, traced with their stacks, converted
+/// to each of `outputs` in a new directory: the directory, how many calls
+/// were made, and how long the failed open of "missing" took.
+fn converted_opens(outputs: &[&str]) -> (ScratchDir, u64, u64) {
+    let directory = ScratchDir::new("syscalls-convert");
+    let captured = trace(
+        directory.path(),
+        &["-e", "trace=openat", "-k", "-o", "trace.usprof"],
+        "files",
+    );
+    assert_eq!(
+        captured.status.code(),
+        Some(3),
+        "{}",
+        text(&captured.stderr)
+    );
+
+    let profile = microscope::profiler::Profile::read(&directory.path().join("trace.usprof"))
+        .expect("the capture reads")
+        .profile;
+    let took: Vec<u64> = profile
+        .syscalls()
+        .events
+        .iter()
+        .filter_map(|event| match (&event.event, event.stack) {
+            (microscope::syscalls::TraceEvent::Call(call), Some(stack))
+                if profile.syscall_site_name(stack) == "files · syscalls.c:24" =>
+            {
+                call.duration()
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(took.len(), 1, "{}", text(&captured.stderr));
+
+    for output in outputs {
+        let converted = Command::new(env!("CARGO_BIN_EXE_microscope"))
+            .args(["convert", "trace.usprof", output])
+            .current_dir(directory.path())
+            .output()
+            .expect("run microscope convert");
+        assert!(converted.status.success(), "{}", text(&converted.stderr));
+    }
+
+    (directory, profile.syscall_count(), took[0])
+}
+
+/// A trace converts to pprof, which Go's own tool reads, and to folded
+/// stacks, each call a sample of its stack with the call innermost.
+#[test]
+fn convert_writes_each_call_as_a_sample_of_its_stack() {
+    let (directory, made, took) = converted_opens(&["trace.pb.gz", "trace.folded"]);
+    let (samples, raw) = pprof_samples(&directory.path().join("trace.pb.gz"));
+    assert_eq!(
+        samples.iter().map(|sample| sample.calls).sum::<u64>(),
+        made,
+        "{raw}"
+    );
+    assert!(
+        samples.iter().all(|sample| sample.path[0].0 == "openat"),
+        "{raw}"
+    );
+
+    let in_files = |sample: &&PprofSample| sample.path.iter().any(|(name, _)| name == "files");
+    assert_eq!(
+        samples
+            .iter()
+            .filter(in_files)
+            .map(|sample| sample.calls)
+            .sum::<u64>(),
+        3,
+        "{raw}"
+    );
+
+    let missing: Vec<(u64, u64)> = samples
+        .iter()
+        .filter(|sample| {
+            sample
+                .path
+                .iter()
+                .any(|(name, place)| name == "files" && place.ends_with("/syscalls.c:24:0"))
+        })
+        .map(|sample| (sample.calls, sample.nanoseconds))
+        .collect();
+    assert_eq!(missing, [(1, took)], "{raw}");
+
+    let folded =
+        std::fs::read_to_string(directory.path().join("trace.folded")).expect("the folded stacks");
+    let mut weights = (0, 0);
+    for line in folded.lines() {
+        let (stack, weight) = line.rsplit_once(' ').expect("a weight");
+        let weight: u64 = weight.parse().expect("a number");
+        assert!(stack.ends_with(";openat"), "{folded}");
+        weights.0 += weight;
+        if stack.contains(";files;") {
+            weights.1 += weight;
+        }
+    }
+
+    assert_eq!(weights, (made, 3), "{folded}");
+}
+
+/// A trace converts to a Chrome trace, each call a span naming its site.
+#[test]
+fn convert_writes_each_call_as_a_chrome_span() {
+    let (directory, made, _) = converted_opens(&["trace.json"]);
+    let chrome: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(directory.path().join("trace.json")).expect("the trace"),
+    )
+    .expect("JSON");
+    let calls: Vec<&serde_json::Value> = chrome["traceEvents"]
+        .as_array()
+        .expect("events")
+        .iter()
+        .filter(|event| event["cat"] == "syscall")
+        .collect();
+    assert_eq!(calls.len() as u64, made, "{chrome}");
+    assert!(
+        calls.iter().all(|call| call["ph"] == "X"
+            && call["name"] == "openat"
+            && call["dur"].as_f64() >= Some(0.0)),
+        "{chrome}"
+    );
+    let missing: Vec<&&serde_json::Value> = calls
+        .iter()
+        .filter(|call| call["args"]["site"] == "files · syscalls.c:24")
+        .collect();
+    assert_eq!(missing.len(), 1, "{chrome}");
+    assert_eq!(missing[0]["args"]["result"], -2, "{chrome}");
+}
+
 #[test]
 fn ndjson_carries_names_paths_errnos_and_stacks() {
     let directory = ScratchDir::new("syscalls-ndjson");

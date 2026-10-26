@@ -1,11 +1,15 @@
 //! Chrome's trace event JSON, as Perfetto and `chrome://tracing` read it:
-//! each thread's zones and labels as spans, and the program's marks as
-//! instants. Samples are not written: pprof and folded stacks hold them.
+//! each thread's zones, labels, and system calls as spans, and the
+//! program's marks as instants. Samples are not written: pprof and folded
+//! stacks hold them.
+
+use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 
 use crate::capture::records::{MarkerKind, ZONE_BEGAN_UNSEEN, ZONE_ENDED_UNSEEN, ZONE_MISMATCHED};
 use crate::profiler::Profile;
+use crate::syscalls::TraceEvent;
 
 /// The profile's instrumentation as a trace, its times in microseconds
 /// from the profile's start.
@@ -71,6 +75,33 @@ pub fn export(profile: &Profile) -> String {
         }
 
         events.push(event);
+    }
+
+    // A call that did not return has no span.
+    let mut sites: BTreeMap<u32, String> = BTreeMap::new();
+    for recorded in profile.syscalls().events {
+        let TraceEvent::Call(call) = recorded.event else {
+            continue;
+        };
+        let (Some(entered), Some(exited)) = (call.entered, call.exited) else {
+            continue;
+        };
+
+        let mut args = json!({"result": call.outcome.raw()});
+        if let Some(row) = recorded.stack {
+            args["site"] = json!(
+                sites
+                    .entry(row)
+                    .or_insert_with(|| profile.syscall_site_name(row))
+            );
+        }
+
+        let (entered, exited) = (micros(entered.cast_signed()), micros(exited.cast_signed()));
+        events.push(json!({
+            "ph": "X", "name": call.call.display_name(), "cat": "syscall",
+            "pid": call.process.get(), "tid": call.thread.get(),
+            "ts": entered, "dur": exited - entered, "args": args,
+        }));
     }
 
     json!({

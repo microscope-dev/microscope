@@ -1,6 +1,7 @@
 //! The system call trace a capture holds, read back into the events the
 //! engines produced.
 
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use super::{Profile, StackEnding};
@@ -90,6 +91,13 @@ impl Profile {
         !capture.syscalls.is_empty()
             || !capture.syscall_notes.is_empty()
             || !capture.syscall_stats.is_empty()
+    }
+
+    /// Whether the capture is a system call trace alone, which no recording
+    /// sampled.
+    #[must_use]
+    pub fn is_trace(&self) -> bool {
+        self.has_syscalls() && self.setting("weight").is_none()
     }
 
     /// Records of calls the engine lost.
@@ -190,6 +198,53 @@ impl Profile {
             counted: self.kernel_counted(&pid),
             lost: capture.account(AccountKind::SyscallsLost as u32),
         }
+    }
+
+    /// The site calls of stack `row` are grouped under: its
+    /// [`syscall_site`](Self::syscall_site), or else its innermost frame's
+    /// function, or `?` when it has no frame.
+    #[must_use]
+    pub fn syscall_site_name(&self, row: u32) -> String {
+        self.syscall_site(row).unwrap_or_else(|| {
+            self.syscall_stack(row)
+                .0
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| "?".to_owned())
+        })
+    }
+
+    /// The statistics of `syscalls`' calls by site, as
+    /// [`syscall_site_name`](Self::syscall_site_name) names it, and of
+    /// calls without a stack as `no stack`. Calls the kernel only counted
+    /// have no site and are not among them.
+    #[must_use]
+    pub fn syscall_sites(&self, syscalls: &RecordedSyscalls) -> BTreeMap<String, SyscallStats> {
+        let mut names: HashMap<u32, String> = HashMap::new();
+        let mut sites: BTreeMap<String, SyscallStats> = BTreeMap::new();
+
+        for event in &syscalls.events {
+            let TraceEvent::Call(call) = &event.event else {
+                continue;
+            };
+
+            let site = event.stack.map_or_else(
+                || "no stack".to_owned(),
+                |row| {
+                    names
+                        .entry(row)
+                        .or_insert_with(|| self.syscall_site_name(row))
+                        .clone()
+                },
+            );
+            sites.entry(site).or_default().add(
+                call.outcome,
+                call.duration(),
+                crate::syscalls::stats::bytes_moved(call),
+            );
+        }
+
+        sites
     }
 
     /// The statistics the kernel counted, per process and call.

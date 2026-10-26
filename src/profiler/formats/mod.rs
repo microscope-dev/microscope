@@ -6,6 +6,7 @@ mod chrome;
 mod folded;
 mod pprof;
 mod proto;
+mod syscalls;
 #[cfg(test)]
 mod tests;
 
@@ -113,19 +114,57 @@ impl Profile {
         })
     }
 
-    /// The profile in `format`, its stacks as `view` shows them.
+    /// The profile in `format`, its stacks as `view` shows them. A trace
+    /// alone, which no recording sampled, gives its calls as samples to
+    /// pprof, weighing calls and nanoseconds, and to folded stacks,
+    /// weighing calls.
     pub fn export(&self, format: Format, view: StackView) -> std::io::Result<Vec<u8>> {
-        let unit = self.setting("weight").unwrap_or("nanoseconds");
+        let trace = self.is_trace();
+        let (start, end) = self.span();
         match format {
             Format::Usprof => self.to_bytes(),
+            Format::Pprof if trace => {
+                let calls = syscalls::samples(self, syscalls::Weigh::Calls);
+                let time = syscalls::samples(self, syscalls::Weigh::Time);
+                let (calls_keys, time_keys) =
+                    (calls.keys(Granularity::Line), time.keys(Granularity::Line));
+                let values = [
+                    pprof::Values {
+                        kind: "calls",
+                        unit: "count",
+                        capture: &calls.capture,
+                        keys: &calls_keys,
+                        tree: &calls_keys.aggregate(&query(view)),
+                    },
+                    pprof::Values {
+                        kind: "time",
+                        unit: "nanoseconds",
+                        capture: &time.capture,
+                        keys: &time_keys,
+                        tree: &time_keys.aggregate(&query(view)),
+                    },
+                ];
+                pprof::export(&values, end - start)
+            }
             Format::Pprof => {
                 let keys = self.keys(Granularity::Line);
-                let tree = keys.aggregate(&query(view));
-                let (start, end) = self.span();
-                pprof::export(&self.capture, &keys, &tree, unit, end - start)
+                let (kind, unit) = match self.setting("weight").unwrap_or("nanoseconds") {
+                    "nanoseconds" => ("cpu", "nanoseconds"),
+                    "bytes" => ("space", "bytes"),
+                    unit => (unit, "count"),
+                };
+                let values = [pprof::Values {
+                    kind,
+                    unit,
+                    capture: &self.capture,
+                    keys: &keys,
+                    tree: &keys.aggregate(&query(view)),
+                }];
+                pprof::export(&values, end - start)
             }
             Format::Folded => {
-                let keys = self.keys(Granularity::Function);
+                let calls = trace.then(|| syscalls::samples(self, syscalls::Weigh::Calls));
+                let keys = calls.as_ref().unwrap_or(self).keys(Granularity::Function);
                 Ok(folded::export(&keys, &keys.aggregate(&query(view))).into_bytes())
             }
             Format::Chrome => Ok(chrome::export(self).into_bytes()),

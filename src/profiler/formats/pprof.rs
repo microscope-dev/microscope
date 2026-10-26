@@ -423,78 +423,93 @@ fn label(raw: &Raw<'_>, bytes: &[u8]) -> Result<String, String> {
     })
 }
 
-/// A call tree as a gzipped pprof profile: a sample for each path's own
-/// weight, a location for each key, by line.
-pub fn export(
-    capture: &Capture,
-    keys: &Keys<'_>,
-    tree: &CallTree,
-    unit: &str,
-    duration: i64,
-) -> std::io::Result<Vec<u8>> {
+/// One of an exported profile's values: its type and unit, and the call
+/// tree that weighs it.
+pub struct Values<'a> {
+    pub kind: &'a str,
+    pub unit: &'a str,
+    pub capture: &'a Capture,
+    pub keys: &'a Keys<'a>,
+    pub tree: &'a CallTree,
+}
+
+/// Call trees as a gzipped pprof profile: a sample for each path with its
+/// own weight in each tree, a location for each function, file, and line.
+pub fn export(values: &[Values<'_>], duration: i64) -> std::io::Result<Vec<u8>> {
     let mut strings = Strings::default();
-    let (kind, kind_unit) = match unit {
-        "nanoseconds" => ("cpu", "nanoseconds"),
-        "bytes" => ("space", "bytes"),
-        unit => (unit, "count"),
-    };
-
     let mut profile = Message::default();
-    let (kind, kind_unit) = (strings.of(kind), strings.of(kind_unit));
-    profile.message(1, |message| {
-        message.number(1, kind);
-        message.number(2, kind_unit);
-    });
 
-    let mut locations: BTreeMap<u32, u64> = BTreeMap::new();
+    for value in values {
+        let (kind, unit) = (strings.of(value.kind), strings.of(value.unit));
+        profile.message(1, |message| {
+            message.number(1, kind);
+            message.number(2, unit);
+        });
+    }
+
+    let mut locations: BTreeMap<(String, String, u32), u64> = BTreeMap::new();
     let mut functions: BTreeMap<(String, String), u64> = BTreeMap::new();
+    let mut samples: BTreeMap<Vec<u64>, Vec<u64>> = BTreeMap::new();
     let mut written = Message::default();
     let mut path = Vec::new();
 
-    for node in 0..tree.len() {
-        if tree.own[node] == 0 {
-            continue;
-        }
+    for (index, value) in values.iter().enumerate() {
+        let tree = value.tree;
+        let mut of_key: BTreeMap<u32, u64> = BTreeMap::new();
+        for node in 0..tree.len() {
+            if tree.own[node] == 0 {
+                continue;
+            }
 
-        path.clear();
-        let mut at = u32::try_from(node).unwrap_or(NONE);
+            path.clear();
+            let mut at = u32::try_from(node).unwrap_or(NONE);
 
-        while at != NONE {
-            let key = tree.key[at as usize];
-            let next = locations.len() as u64 + 1;
-            let location = *locations.entry(key).or_insert_with(|| {
-                let (name, file, line) = located(capture, keys, key);
-                let next_function = functions.len() as u64 + 1;
-                let function = *functions
-                    .entry((name.clone(), file.clone()))
-                    .or_insert_with(|| {
-                        let (name, file) = (strings.of(&name), strings.of(&file));
-                        written.message(5, |message| {
-                            message.number(1, next_function);
-                            message.number(2, name);
-                            message.number(3, name);
-                            message.number(4, file);
-                        });
-                        next_function
-                    });
+            while at != NONE {
+                let key = tree.key[at as usize];
+                let next = locations.len() as u64 + 1;
+                let location = *of_key.entry(key).or_insert_with(|| {
+                    *locations
+                        .entry(located(value.capture, value.keys, key))
+                        .or_insert_with_key(|(name, file, line)| {
+                            let next_function = functions.len() as u64 + 1;
+                            let function = *functions
+                                .entry((name.clone(), file.clone()))
+                                .or_insert_with(|| {
+                                    let (name, file) = (strings.of(name), strings.of(file));
+                                    written.message(5, |message| {
+                                        message.number(1, next_function);
+                                        message.number(2, name);
+                                        message.number(3, name);
+                                        message.number(4, file);
+                                    });
+                                    next_function
+                                });
 
-                written.message(4, |message| {
-                    message.number(1, next);
-                    message.message(4, |message| {
-                        message.number(1, function);
-                        message.number(2, u64::from(line));
-                    });
+                            written.message(4, |message| {
+                                message.number(1, next);
+                                message.message(4, |message| {
+                                    message.number(1, function);
+                                    message.number(2, u64::from(*line));
+                                });
+                            });
+                            next
+                        })
                 });
-                next
-            });
 
-            path.push(location);
-            at = tree.parent[at as usize];
+                path.push(location);
+                at = tree.parent[at as usize];
+            }
+
+            samples
+                .entry(path.clone())
+                .or_insert_with(|| vec![0; values.len()])[index] += tree.own[node];
         }
+    }
 
+    for (path, values) in &samples {
         profile.message(2, |message| {
             message.packed(1, path.iter().copied());
-            message.packed(2, [tree.own[node]]);
+            message.packed(2, values.iter().copied());
         });
     }
 

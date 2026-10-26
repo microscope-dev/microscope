@@ -164,17 +164,48 @@ When the `-o` file name ends in `.usprof`, microscope saves the whole trace:
 microscope syscalls -o server.usprof -- ./server
 ```
 
-`microscope report server.usprof` prints the `-c` table. `microscope web
-server.usprof` opens the trace in the browser, where you can filter calls,
-group them by file, process, or call site, see latency over time, and open any
-call to read its arguments and stack.
-
-A call site is the line of the program's own code that made the call, with
-`-k`. microscope looks past the C library and Rust's standard library, whose
-wrappers every call of a kind goes through. A program built without debug
-information has no lines, so its sites are its functions instead.
-
 Any other `-o` name gets the text output, as strace writes it.
+
+`microscope report server.usprof` prints the `-c` table. When the calls have
+stacks, it then shows where they were made, the sites that took the most time
+first:
+
+```text
+By call site:
+% time     seconds     calls    errors   p99 usecs site
+------ ----------- --------- --------- ----------- ----------------
+ 66.70    0.001027         1                   775 ld-linux-x86-64.so.2+0x1fd40
+  5.83    0.000089        11                    13 mmap
+  4.99    0.000076         9         7          12 __GI___open64_nocancel
+  2.66    0.000041         1                    36 files · syscalls.c:19
+ ...
+------ ----------- --------- --------- ----------- ----------------
+100.00    0.001540        63        16         775 total
+and 10 more sites, counted in the total; --limit shows more
+```
+
+A call's site is the line of the program's own code that made the call,
+shown as its function, file, and line. microscope looks past the C library and
+Rust's standard library, whose wrappers every call of a kind goes through. A
+program built without debug information has no lines, so its sites are its
+functions instead. `--limit` sets how many sites are shown, 20 unless told.
+
+`microscope web server.usprof` opens the trace in the browser, where you can
+filter calls, group them by file, process, or call site, see latency over
+time, and open any call to read its arguments and stack.
+
+`microscope convert` writes a saved trace's calls for other tools. In pprof
+and folded stacks each call is a sample of its stack, with the call's name as
+the innermost frame; pprof gives each sample the number of calls and the
+nanoseconds they took, and folded stacks give only the number of calls. A
+Chrome trace shows each call that returned as a span on its thread, with its
+result and its site:
+
+```sh
+microscope convert server.usprof server.pb.gz
+microscope convert server.usprof server.folded
+microscope convert server.usprof server.json
+```
 
 ## Choose an engine
 

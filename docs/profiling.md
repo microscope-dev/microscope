@@ -300,6 +300,12 @@ microscope convert server.usprof server.json
 Formats have different data models. Converting can lose tasks, blocked-time
 intervals, zones, or other information the destination cannot represent.
 
+A trace that `microscope syscalls -o` saved has no samples; pprof and folded
+stacks get its calls instead, as
+[System calls](syscalls.md#save-a-trace-and-open-it-later) describes. A
+recording made with `--syscalls` converts its samples to pprof and folded
+stacks, and its calls only to a Chrome trace.
+
 ## Instrument work in the program
 
 The probes SDK lets a program mark named work and values. Recording enables
