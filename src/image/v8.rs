@@ -1543,13 +1543,15 @@ entries! {
         /// What a thread's frames are read from while it runs: where an
         /// isolate keeps its `ThreadLocalTop`, the frame pointer and return
         /// address of the fast C call it makes (`v8-internal.h`'s
-        /// `Internals`), and whether its stack can be walked
-        /// (`IsolateData`'s field list); how far V8's root register points
+        /// `Internals`), whether its stack can be walked and whether it
+        /// shares a heap with other isolates (`IsolateData`'s field list);
+        /// how far V8's root register points
         /// past the isolate (`kRootRegisterBias`, `constants-x64.h`).
         IsolateThreadLocalTopOffset = "Internals::kIsolateThreadLocalTopOffset",
         IsolateFastCCallCallerFpOffset = "Internals::kIsolateFastCCallCallerFpOffset",
         IsolateFastCCallCallerPcOffset = "Internals::kIsolateFastCCallCallerPcOffset",
         IsolateStackIsIterableOffset = "IsolateData::kStackIsIterableOffset",
+        IsolateUsesSharedHeapFlagOffset = "IsolateData::kUsesSharedHeapFlagOffset",
         IsolateRootBias = "IsolateData::kIsolateRootBias",
 
         /// `ThreadLocalTop`'s members (`thread-local-top.h`): the frame

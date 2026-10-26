@@ -36,8 +36,12 @@
 //! runs none of its JavaScript. V8 runs no JavaScript on such a thread:
 //! only `Isolate::Enter` lets a thread run an isolate's code, and V8 makes
 //! a `LocalHeap` set the current isolate only on threads that run its
-//! background work, unless its shared heap is on, which Node does not turn
-//! on.
+//! background work. That holds while the isolate's heap is its own: with
+//! V8's shared heap on (`--shared-heap`, `--shared-string-table`,
+//! `--harmony-struct`), which Node leaves off unless asked, isolates share
+//! work V8 does not promise to keep apart, and such a thread is left out
+//! with that reason ([`SHARED_HEAP`]), read from the isolate's own
+//! `uses_shared_heap_flag`.
 //!
 //! Anything else leaves the thread out with the reason: never a shorter
 //! stack, nor a guessed one.
@@ -72,6 +76,8 @@ pub(super) const NESTED: &str = "it entered its isolate while it ran another iso
 pub(super) const STALE_EXIT: &str = "the exit frame its isolate names is gone";
 pub(super) const OFF_STACK: &str = "a frame its isolate names is not on its stack";
 pub(super) const OUTSIDE_STACK: &str = "its stack pointer is outside its stack";
+pub(super) const SHARED_HEAP: &str = "it holds an isolate whose JavaScript runs on another \
+     thread, which proves it runs none only while V8's shared heap is off, and it is on";
 pub(super) const WEBASSEMBLY: &str = "it runs WebAssembly, whose frames a live read does not walk";
 pub(super) const FAST_FROM_BUILTIN: &str = "it is in a fast C call from V8's own code in a \
      JavaScript frame, which saves no bytecode offset, so its line is not known";
@@ -107,6 +113,7 @@ struct Published {
     fast_fp: u64,
     fast_pc: u64,
     stack_is_iterable: u8,
+    uses_shared_heap: u8,
     vm_state: u16,
 }
 
@@ -121,6 +128,7 @@ struct Offsets {
     fast_fp: u64,
     fast_pc: u64,
     stack_is_iterable: u64,
+    uses_shared_heap: u64,
     caller_fp: i64,
     caller_pc: i64,
     marker: i64,
@@ -161,6 +169,7 @@ impl Offsets {
             fast_fp: unsigned(Constant::IsolateFastCCallCallerFpOffset)?,
             fast_pc: unsigned(Constant::IsolateFastCCallCallerPcOffset)?,
             stack_is_iterable: unsigned(Constant::IsolateStackIsIterableOffset)?,
+            uses_shared_heap: unsigned(Constant::IsolateUsesSharedHeapFlagOffset)?,
             caller_fp: constant(Constant::CommonFrameCallerFpOffset)?,
             caller_pc: constant(Constant::CommonFrameCallerPcOffset)?,
             marker: constant(Constant::CommonFrameContextOrFrameTypeOffset)?,
@@ -301,8 +310,13 @@ fn frames_of(
         return Ok(LiveFrames::None);
     }
     // The outermost entry on another thread's stack: the isolate's
-    // JavaScript runs there, and this thread only holds the isolate.
+    // JavaScript runs there, and this thread only holds the isolate, as
+    // V8's helpers do, unless the heap is shared, which lets V8 set the
+    // isolate where it otherwise would not.
     if !thread.stack.contains(&published.js_entry_sp) {
+        if published.uses_shared_heap != 0 {
+            return Err(Unread::Named(SHARED_HEAP));
+        }
         return Ok(LiveFrames::None);
     }
     if published.js_entry_sp <= sp {
@@ -343,6 +357,8 @@ fn publish(reader: &Reader<'_>, offsets: &Offsets, isolate: u64) -> Result<Publi
     let word = |offset: u64| reader.word(top.wrapping_add(offset));
     let mut flag = [0; 1];
     reader.bytes_into(isolate.wrapping_add(offsets.stack_is_iterable), &mut flag)?;
+    let mut shared = [0; 1];
+    reader.bytes_into(isolate.wrapping_add(offsets.uses_shared_heap), &mut shared)?;
     let mut state = [0; 2];
     reader.bytes_into(top.wrapping_add(offsets.vm_state), &mut state)?;
     Ok(Published {
@@ -352,6 +368,7 @@ fn publish(reader: &Reader<'_>, offsets: &Offsets, isolate: u64) -> Result<Publi
         fast_fp: reader.word(isolate.wrapping_add(offsets.fast_fp))?,
         fast_pc: reader.word(isolate.wrapping_add(offsets.fast_pc))?,
         stack_is_iterable: flag[0],
+        uses_shared_heap: shared[0],
         vm_state: u16::from_le_bytes(state),
     })
 }
@@ -734,6 +751,10 @@ mod tests {
             0,
         );
         memory.byte(ISOLATE + offset(Constant::IsolateStackIsIterableOffset), 1);
+        memory.byte(
+            ISOLATE + offset(Constant::IsolateUsesSharedHeapFlagOffset),
+            0,
+        );
         memory.word(ISOLATE + ENTRY_STACK, ITEM);
         memory.word(ITEM + offset(Constant::EntryStackItemPreviousIsolate), 0);
         memory.word(ITEM + offset(Constant::EntryStackItemPreviousItem), 0);
@@ -868,6 +889,23 @@ mod tests {
             OTHER_STACK,
         );
         assert_eq!(read_of(&layout, &memory), LiveFrames::None, "another stack");
+
+        // With the heap shared, holding the isolate proves nothing.
+        let shared =
+            ISOLATE + at(&layout, Constant::IsolateUsesSharedHeapFlagOffset).cast_unsigned();
+        memory.byte(shared, 1);
+        assert_eq!(
+            read_of(&layout, &memory),
+            unread(SHARED_HEAP),
+            "shared heap"
+        );
+
+        // But a thread whose own stack holds the entry is read as ever.
+        let mut memory = blocked(&layout);
+        let frames = read_of(&layout, &memory);
+        memory.byte(shared, 1);
+        assert_eq!(read_of(&layout, &memory), frames, "its own entry");
+        assert!(matches!(frames, LiveFrames::Frames(_)), "{frames:?}");
     }
 
     #[test]

@@ -1217,6 +1217,15 @@ impl Headers {
             "IsolateData::kStackIsIterableOffset".to_owned(),
             internal("kVariousBooleanFlagsOffset") + flag,
         ));
+        let shared = self.isolate_byte_flag("UsesSharedHeapFlag");
+        assert!(
+            shared < internal("kNumberOfBooleanFlags"),
+            "uses_shared_heap_flag is not among the isolate's boolean flags"
+        );
+        constants.push((
+            "IsolateData::kUsesSharedHeapFlagOffset".to_owned(),
+            internal("kVariousBooleanFlagsOffset") + shared,
+        ));
 
         let bias = self
             .class_constant(
