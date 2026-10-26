@@ -336,6 +336,13 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
         }
 
+        // A thread the execution resumes is out of the stop its reason
+        // describes, even one that waits stopped for another's repair. A
+        // stop that forms before it runs must not publish that reason again.
+        for &pid in &resume_threads {
+            inferior.thread_mut(pid)?.reason = None;
+        }
+
         inferior.public_stop = None;
         debug_assert!(
             inferior.active.is_none(),

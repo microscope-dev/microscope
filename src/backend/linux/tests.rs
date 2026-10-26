@@ -6782,6 +6782,64 @@ fn a_hit_on_a_watchpoint_removed_while_running_is_dropped() {
     );
 }
 
+/// Two threads hit one breakpoint, and the continue steps the first over it
+/// while the second waits. A watch hit by that step on a watchpoint removed
+/// meanwhile is dropped, and the second thread's hit belongs to the stop
+/// already published, so nothing is published again.
+#[test]
+fn a_dropped_watch_hit_during_a_repair_publishes_no_earlier_stop_again() {
+    let mut harness = watch_harness(2);
+    let [first, second] = harness.threads[..] else {
+        unreachable!("two threads");
+    };
+
+    let watchpoint = harness.add(0xd000, 8).expect("armed");
+    harness.add_breakpoint(HIT_SITE);
+    harness.start_continue();
+    harness.hit_at(first, HIT_SITE).expect("first hit");
+    harness.hit_at(second, HIT_SITE).expect("second hit");
+    assert!(matches!(
+        harness.stopped(),
+        Some((_, StopReason::Breakpoint { .. }))
+    ));
+    harness.trace().take_actions();
+
+    harness.resume().expect("resume");
+    assert_eq!(
+        harness.trace().take_actions(),
+        [
+            format!("remove_site {HIT_SITE:#x}"),
+            format!("step {first}")
+        ]
+    );
+
+    let mut removed = harness.edit(|reply| Edit::RemoveWatchpoint {
+        id: watchpoint.id,
+        reply,
+    });
+    harness
+        .trap(first, libc::TRAP_TRACE, STEPPED_SLOT_ZERO)
+        .expect("repair step");
+    harness.settle_requested_stops();
+    removed.try_recv().expect("reply").expect("removed");
+
+    let published = harness.published();
+    assert!(
+        !published
+            .iter()
+            .any(|event| matches!(event, DebuggerEvent::InferiorStopped { .. })),
+        "only the dropped hit could stop: {published:?}"
+    );
+    let actions = harness.trace().take_actions();
+    assert!(
+        actions.ends_with(&[
+            format!("remove_site {HIT_SITE:#x}"),
+            format!("step {second}")
+        ]),
+        "the second thread steps over the trap next: {actions:?}"
+    );
+}
+
 /// A thread that lost its slots to another user while running can't be
 /// armed when an edit's internal stop resumes the program. It stays stopped
 /// and the stop is published, as for a new thread that can't be armed;
