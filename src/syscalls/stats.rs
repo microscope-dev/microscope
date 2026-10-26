@@ -171,25 +171,44 @@ pub fn bytes_moved(event: &SyscallEvent) -> u64 {
     }
 }
 
-/// Whether a call's result counts the bytes it read or wrote through a
-/// descriptor, as `read` and `sendmsg`'s do.
+/// Whether a call's result counts the bytes it moved.
+///
+/// It read or wrote them through a descriptor, as `read` and `sendmsg` do,
+/// or copied them between two processes' memory or two descriptors, as
+/// `process_vm_readv` and `sendfile` do.
 #[must_use]
 pub fn moves(call: SyscallId) -> bool {
     let Some(spec) = specs::spec(call) else {
         return false;
     };
 
-    spec.args.iter().any(|arg| {
+    let through_descriptor = spec.args.iter().any(|arg| {
         matches!(
             arg,
             Arg::Mem {
                 kind: MemKind::Bytes | MemKind::Struct(specs::Struct::Iovec),
                 count: Count::Return | Count::Arg(_),
                 direction: Direction::In | Direction::Out,
+            } | Arg::Mem {
+                kind: MemKind::Struct(specs::Struct::Msghdr),
+                ..
             }
         )
-    }) && spec.args.first().is_some_and(|arg| matches!(arg, Arg::Fd))
+    }) && spec.args.first().is_some_and(|arg| matches!(arg, Arg::Fd));
+
+    through_descriptor || call.name().is_some_and(|name| COPIES.contains(&name))
 }
+
+/// The calls that copy bytes without passing them through the caller's
+/// memory, and return how many: their specs name no buffer to count by.
+const COPIES: [&str; 6] = [
+    "process_vm_readv",
+    "process_vm_writev",
+    "sendfile",
+    "splice",
+    "tee",
+    "copy_file_range",
+];
 
 /// Statistics folded per process and call.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -244,6 +263,31 @@ mod tests {
             assert_eq!(bucket(low), index);
             assert_eq!(bucket(high - 1), index);
             assert_eq!(bucket(high), index + 1);
+        }
+    }
+
+    /// The calls whose result is a count of the bytes they moved, and
+    /// so add to the bytes column: through a descriptor and memory, between
+    /// two processes' memory, and between two descriptors.
+    #[test]
+    fn calls_that_return_the_bytes_they_moved_count_them() {
+        let call = |name| SyscallId::named(crate::syscalls::Abi::X86_64, name).expect(name);
+        for name in [
+            "read",
+            "pwritev",
+            "sendmsg",
+            "process_vm_readv",
+            "process_vm_writev",
+            "sendfile",
+            "splice",
+            "tee",
+            "copy_file_range",
+        ] {
+            assert!(moves(call(name)), "{name} moves bytes");
+        }
+        // Their results are addresses, offsets, and descriptors.
+        for name in ["mmap", "lseek", "openat", "dup", "getpid"] {
+            assert!(!moves(call(name)), "{name} moves none");
         }
     }
 
