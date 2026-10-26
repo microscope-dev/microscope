@@ -94,7 +94,10 @@ yet, so the mappings read wait until every record stamped before the read has
 been processed. Each file mapping still not held under its own image then maps
 as its record would have, stamped with the read's time
 (`Processor::map_lost_before`). Anonymous code is left to the samples that run
-it, as below.
+it, as below, and to live reads: a thread blocked under V8's code is never
+sampled there, so the code a live read finds a frame at in no mapping is mapped
+the same way, once every record stamped before the read has been processed
+(`Processor::map_live_code`), and the reads after it find the thread.
 
 ### Code a compiler generated
 

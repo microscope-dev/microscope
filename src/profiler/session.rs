@@ -832,6 +832,7 @@ impl Snapshots {
                 let end = monotonic();
                 let weight = start.saturating_sub(self.previous);
                 processor.live_task_snapshot(Pid::new(self.pid), (start, end), weight, &snapshot);
+                processor.map_live_code(Pid::new(self.pid), end, &snapshot.unmapped_code);
                 self.previous = start;
                 // A snapshot keeps its first problem whole, which may be
                 // another, so falling behind is a note of its own: the read

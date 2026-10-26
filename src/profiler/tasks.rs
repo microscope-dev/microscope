@@ -178,6 +178,11 @@ pub struct Snapshot {
     /// The labels the program's runtimes gave each thread, by its id, as
     /// they were when read.
     pub thread_labels: Vec<(u32, Labels)>,
+
+    /// The code a live read found a frame at in no piece the recording
+    /// mapped, which a lost mapping record leaves unmapped: the recording
+    /// maps it for the reads after.
+    pub unmapped_code: Vec<u64>,
 }
 
 /// Takes snapshots of one process.
@@ -1243,7 +1248,18 @@ impl LiveRuntime<'_> {
     fn published(&self, snapshot: &mut Snapshot) {
         let stop = self.stop;
         let image = self.image.id();
-        let code = |address| code_at(self.code, image, address);
+        let unmapped = RefCell::new(BTreeSet::new());
+        let code = |address: crate::VirtualAddress| {
+            let at = address.get();
+            if !self
+                .code
+                .iter()
+                .any(|piece| piece.start <= at && at < piece.end)
+            {
+                unmapped.borrow_mut().insert(at);
+            }
+            code_at(self.code, image, address)
+        };
         let mut unread: BTreeMap<Arc<str>, Vec<u64>> = BTreeMap::new();
         for &thread in &stop.threads {
             if self.model.thread_holding(stop, thread).is_none() {
@@ -1269,6 +1285,7 @@ impl LiveRuntime<'_> {
                 Err(reason) => unread.entry(reason).or_default().push(number),
             }
         }
+        snapshot.unmapped_code.extend(unmapped.into_inner());
         // A snapshot keeps one problem, so every thread left out is in it,
         // by its reason.
         let unread: Vec<String> = unread

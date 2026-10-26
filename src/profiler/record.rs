@@ -279,6 +279,12 @@ pub struct Processor {
     /// were read, which take the place of the records lost once every
     /// record before that time is processed (see [`Processor::lost`]).
     lost_mappings: std::collections::VecDeque<(u64, Vec<ProcessMappings>)>,
+
+    /// The addresses each live read of a process found frames at in no
+    /// mapping, by when the read ended, whose anonymous code is mapped
+    /// once every record before then is processed (see
+    /// [`Processor::map_live_code`]).
+    live_unmapped: std::collections::VecDeque<(u64, Pid, Vec<u64>)>,
     stacks: Stacks,
     triggered: bool,
 
@@ -336,6 +342,7 @@ impl Processor {
             probes_mapped: BTreeSet::new(),
             probes_found: Vec::new(),
             lost_mappings: std::collections::VecDeque::new(),
+            live_unmapped: std::collections::VecDeque::new(),
             probes_executed: BTreeSet::new(),
             stacks: Stacks::default(),
             triggered: false,
@@ -1364,8 +1371,19 @@ impl Processor {
     /// has mapped where they are, as their records would have. Every
     /// record before the read has been processed by then, so what is
     /// still missing was lost. Anonymous code is left to the samples that
-    /// run it (see [`Processor::map_unseen_code`]).
+    /// run it (see [`Processor::map_unseen_code`]), and to the live reads
+    /// that find it, whose code is mapped here too.
     fn map_lost_before(&mut self, time: u64) {
+        while self
+            .live_unmapped
+            .front()
+            .is_some_and(|(read, ..)| *read <= time)
+        {
+            if let Some((read, pid, addresses)) = self.live_unmapped.pop_front() {
+                self.map_unseen_code_of(pid, read, &addresses);
+            }
+        }
+
         while let Some((read, _)) = self.lost_mappings.front()
             && *read <= time
         {
@@ -1428,7 +1446,25 @@ impl Processor {
     /// as it is read later anyway, but a file the process maps now where
     /// none was seen may have replaced what the sample ran.
     fn map_unseen_code(&mut self, sample: &decode::Sample<'_>, addresses: &[u64]) -> bool {
-        let Some(process) = self.processes.get(&sample.pid) else {
+        self.map_unseen_code_of(sample.pid, sample.time, addresses)
+    }
+
+    /// Maps the anonymous code that holds the frames a live read of
+    /// process `pid` that ended at `time` found in no mapping, as
+    /// [`Self::map_unseen_code`] maps a sample's: a thread blocked under
+    /// code whose mapping record was lost is never sampled there, so only
+    /// its live reads find it. Records stamped before the read may not be
+    /// processed yet, so the code is mapped once they are, as a lost
+    /// mapping is ([`Self::map_lost_before`]).
+    pub fn map_live_code(&mut self, pid: Pid, time: u64, addresses: &[u64]) {
+        if !addresses.is_empty() {
+            self.live_unmapped
+                .push_back((time, pid, addresses.to_vec()));
+        }
+    }
+
+    fn map_unseen_code_of(&mut self, pid: Pid, time: u64, addresses: &[u64]) -> bool {
+        let Some(process) = self.processes.get(&pid) else {
             return false;
         };
 
@@ -1440,28 +1476,28 @@ impl Processor {
                     .mapped
                     .iter()
                     .any(|mapped| (mapped.start..mapped.end).contains(&address))
-                    && process.jit.unseen(address, sample.time)
+                    && process.jit.unseen(address, time)
             })
             .collect();
         if unseen.is_empty() {
             return false;
         }
 
-        let Ok(mappings) = perf::mappings(sample.pid.get()) else {
+        let Ok(mappings) = perf::mappings(pid.get()) else {
             return false;
         };
 
         let mut mapped = false;
         for mapping in &mappings {
             let mmap = decode::Mmap {
-                pid: sample.pid,
+                pid,
                 start: mapping.start,
                 length: mapping.end - mapping.start,
                 file_offset: mapping.file_offset,
                 inode: Some(mapping.inode),
                 executable: mapping.executable,
                 path: &mapping.path,
-                time: sample.time,
+                time,
             };
             let holds = unseen
                 .iter()
@@ -2676,6 +2712,100 @@ mod tests {
     /// A module whose mapping was lost with a full ring's records is read
     /// from the process's mappings, with its instrumentation, once every
     /// record before they were read is processed, and is read only once.
+    /// A thread blocked under V8's code is never sampled there, so where a
+    /// ring lost the records that mapped that code, only a live read of
+    /// the thread finds it: the code that holds a frame the read found in
+    /// no mapping is mapped then, as a sample's would be.
+    #[test]
+    fn code_a_live_read_found_in_no_mapping_is_mapped() {
+        use std::io::BufRead as _;
+
+        struct Killed(std::process::Child);
+        impl Drop for Killed {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let node = std::path::Path::new(
+            &std::env::var_os("MICROSCOPE_NODE").expect("MICROSCOPE_NODE; run in the dev shell"),
+        )
+        .join("26/node");
+        let mut child = Killed(
+            std::process::Command::new(node)
+                .args([
+                    "-e",
+                    "process.stdout.write('ready\\n'); \
+                     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60000)",
+                ])
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("run node"),
+        );
+        let stdout = child.0.stdout.take().expect("its output");
+        let (sent, ready) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let line = std::io::BufReader::new(stdout).lines().next();
+            let _ = sent.send(line);
+        });
+        let line = ready
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("node says it is ready");
+        assert_eq!(line.map(Result::ok), Some(Some("ready".to_owned())));
+        let pid = Pid::new(child.0.id());
+
+        // Every mapping's record arrives but those of anonymous code, which
+        // the ring lost.
+        let mut processor = Processor::new(DebugFileSearch::default(), 64);
+        let mappings = perf::mappings(pid.get()).expect("node's mappings");
+        let mut anonymous = Vec::new();
+        for mapping in &mappings {
+            let mmap = decode::Mmap {
+                pid,
+                start: mapping.start,
+                length: mapping.end - mapping.start,
+                file_offset: mapping.file_offset,
+                inode: Some(mapping.inode),
+                executable: mapping.executable,
+                path: &mapping.path,
+                time: 1_000,
+            };
+            if perf::jit::is_anonymous_code(&mmap) {
+                anonymous.push(mapping.start..mapping.end);
+            } else {
+                processor.mmap(&mmap);
+            }
+        }
+        let code = anonymous
+            .iter()
+            .max_by_key(|range| range.end - range.start)
+            .expect("V8 maps anonymous code")
+            .start
+            + 0x10;
+        let covers = |processor: &Processor| {
+            processor
+                .mapped_code(pid)
+                .iter()
+                .any(|piece| piece.start <= code && code < piece.end)
+        };
+        assert!(!covers(&processor), "mapped before any read found it");
+
+        // Records stamped before the read may not be processed yet, so
+        // the code is mapped once they are, as a lost mapping is.
+        processor.map_live_code(pid, 2_000, &[code]);
+        processor.ingest(&[], Some(1_999));
+        assert!(
+            !covers(&processor),
+            "mapped before every record before the read was processed"
+        );
+        processor.ingest(&[], Some(2_000));
+        assert!(
+            covers(&processor),
+            "a live read's frame at {code:#x} is still in no mapping"
+        );
+    }
+
     #[test]
     fn a_module_whose_mapping_record_was_lost_is_found_in_the_process() {
         use std::io::{BufRead as _, Write as _};
