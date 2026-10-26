@@ -274,6 +274,14 @@ pub struct Asleep {
     record: Vec<u8>,
 }
 
+#[cfg(test)]
+impl Asleep {
+    /// The thread a `syscall` record describes, if it is asleep in one.
+    pub fn from_record(record: &[u8]) -> Option<Self> {
+        asleep(record)
+    }
+}
+
 /// The thread a `syscall` record describes, if it is asleep in a system
 /// call: not `running`, nor blocked outside one (`-1 sp pc`).
 pub(super) fn asleep(record: &[u8]) -> Option<Asleep> {

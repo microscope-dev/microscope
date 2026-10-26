@@ -279,6 +279,34 @@ struct Kept {
     frames: Vec<runtime_model::InterpretedFrame>,
 }
 
+/// What a live read proves a thread quiet by, each read anew: its system
+/// call record and its context-switch counts.
+trait ThreadState {
+    fn asleep(&self) -> std::io::Result<Option<crate::backend::Asleep>>;
+    fn switches(&self) -> std::io::Result<(u64, u64)>;
+}
+
+impl ThreadState for crate::backend::ThreadFiles {
+    fn asleep(&self) -> std::io::Result<Option<crate::backend::Asleep>> {
+        Self::asleep(self)
+    }
+
+    fn switches(&self) -> std::io::Result<(u64, u64)> {
+        Self::switches(self)
+    }
+}
+
+/// The record `thread` sleeps in and its counts, the record first: see
+/// [`Kept`]. A thread not asleep in a system call is not read.
+fn quiet_state(
+    thread: &impl ThreadState,
+) -> Result<(crate::backend::Asleep, (u64, u64)), Arc<str>> {
+    let io = |error: std::io::Error| Arc::<str>::from(error.to_string());
+    let asleep = thread.asleep().map_err(io)?.ok_or(NOT_ASLEEP)?;
+    let switches = thread.switches().map_err(io)?;
+    Ok((asleep, switches))
+}
+
 /// A runtime a module carries, bound or with why it cannot be.
 type Detected = Result<Arc<dyn runtime_model::RuntimeModel>, runtime_model::Unbound>;
 
@@ -1392,9 +1420,7 @@ impl LiveRuntime<'_> {
         };
         let io = |error: std::io::Error| Arc::<str>::from(error.to_string());
 
-        // The record first, then the counts: see `Kept`.
-        let asleep = files.asleep().map_err(io)?.ok_or(NOT_ASLEEP)?;
-        let before = files.switches().map_err(io)?;
+        let (asleep, before) = quiet_state(files)?;
         let key = start.map(|start| (self.image.id(), tid, start));
         let kept = key.and_then(|key| {
             self.kept
@@ -1635,6 +1661,52 @@ mod tests {
         });
         let tid = started.recv_timeout(Duration::from_secs(20)).unwrap();
         (thread, writer, tid)
+    }
+
+    /// A thread that runs between the two reads of the check and sleeps
+    /// again in the same call is seen to have run: its counts are read
+    /// after its record, so they hold the run. Read before it, they would
+    /// still be those a kept read left, and its stale frames be reused.
+    #[test]
+    fn a_thread_that_ran_between_the_checks_reads_is_seen_to_have_run() {
+        use std::cell::Cell;
+
+        /// A thread asleep in one read that runs once, after the first of
+        /// its files is read, and sleeps again in the same read.
+        struct Woke {
+            reads: Cell<u32>,
+            asleep: crate::backend::Asleep,
+        }
+        impl Woke {
+            fn ran(&self) -> bool {
+                let ran = self.reads.get() > 0;
+                self.reads.set(self.reads.get() + 1);
+                ran
+            }
+        }
+        impl super::ThreadState for Woke {
+            fn asleep(&self) -> std::io::Result<Option<crate::backend::Asleep>> {
+                self.ran();
+                Ok(Some(self.asleep.clone()))
+            }
+
+            fn switches(&self) -> std::io::Result<(u64, u64)> {
+                Ok(if self.ran() { (6, 1) } else { (5, 1) })
+            }
+        }
+
+        let asleep = crate::backend::Asleep::from_record(
+            b"0 0x3 0x7ffd0000 0x1 0x0 0x0 0x0 0x7ffc0000 0x7f0000001234\n",
+        )
+        .unwrap();
+        let kept = (asleep.clone(), (5, 1));
+        let thread = Woke {
+            reads: Cell::new(0),
+            asleep,
+        };
+        let now = super::quiet_state(&thread).unwrap();
+        assert_eq!(now.0, kept.0, "asleep in the same call");
+        assert_ne!(now, kept, "a thread that ran reuses its stale frames");
     }
 
     /// Files kept of a thread that exited fail to read, and the next
