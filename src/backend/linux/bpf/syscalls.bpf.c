@@ -1,4 +1,4 @@
-// The BPF engine's kernel side (plans/syscalls.html). It filters by
+// The BPF engine's kernel side (dev/syscalls.md). It filters by
 // process, timestamps each chosen call's entry, and at its exit counts it,
 // copies the bytes behind its arguments as its spec says, and sends one
 // record. microscope decodes and interprets everything in Rust. With

@@ -37,9 +37,6 @@ Read the pages that match the work:
 | Documentation | [`dev/documentation.md`](dev/documentation.md) |
 | Assertions, invariants, or what happens on a panic | [`dev/assertions.md`](dev/assertions.md) |
 
-The files in `plans/` are decision logs and implementation records. They are
-not current user documentation. Do not rewrite them while changing docs.
-
 ## Rules that apply everywhere
 
 - Keep the public model and request/event protocol independent of ELF, DWARF,

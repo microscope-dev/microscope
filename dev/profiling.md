@@ -707,5 +707,3 @@ For capture or analysis changes, also run import/export, malformed-input, and
 web profile tests. For lifecycle changes, test cancellation, target exit,
 recorder death, file publication, and the absence of surviving processes or
 open workers.
-
-The full decision and measurement history is in `plans/profilers.html`.

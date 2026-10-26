@@ -1,5 +1,5 @@
 //! The controller's inspector logic against a fake inspector whose messages
-//! each test orders exactly beside ptrace events (plans/node.html N3).
+//! each test orders exactly beside ptrace events.
 //!
 //! The fake serves one WebSocket on loopback. Each message it sends waits in
 //! the controller's queue until the test hands it on, so the test decides

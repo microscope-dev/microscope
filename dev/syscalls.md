@@ -24,7 +24,6 @@ formats, counts, or saves it.
 | `tests/syscalls.rs`, `tests/catchpoints.rs`, `tests/dap/catchpoints.rs`, `tests/web/syscalls.rs` | Integration tests |
 | `tests/fixtures/c/syscalls.c` | The fixture most tests trace, one workload per mode |
 | `tests/fixtures/c/syscall-load.c` | Rounds of `openat`, `read`, and `close` on N threads, paced or as a burst, for the ring and the reader |
-| `plans/syscalls.html` | Design record, measurements, and what building it changed |
 
 ## The neutral model
 
@@ -250,9 +249,8 @@ its path, which the evaluator exposes as `$arg0`–`$arg5`, `$ret`, and
 call, including the step over a breakpoint's trap, has to pass through the
 call's two stops; `catchpoints.rs` handles that case.
 
-The simulator models catch stops with rules K-SYS-1 to K-SYS-6 in
-`plans/simulator.md`, each pinned by a dual run in
-`src/sim/conformance/kernel.rs`.
+The simulator models catch stops with numbered K-SYS rules, each documented
+and pinned by a dual run in `src/sim/conformance/kernel.rs`.
 
 ## Captures
 

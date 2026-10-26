@@ -1,4 +1,4 @@
-// CPython frame walker for samples and syscall stacks (plans/python.html, "The BPF engine").
+// CPython frame walker for samples and syscall stacks; see dev/profiling.md.
 // Follows `previous` from the thread's innermost frame, copying py_frame records via py_layout.
 // microscope validates and names code objects later; this walker only copies.
 //

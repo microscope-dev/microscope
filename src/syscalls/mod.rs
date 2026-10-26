@@ -1,4 +1,4 @@
-//! System call tracing's neutral model (`plans/syscalls.html`).
+//! System call tracing's neutral model; see `dev/syscalls.md`.
 //!
 //! It holds the events both engines produce, the call tables and argument specs that drive
 //! decoding, strace's selection language, and what follows from a stream

@@ -1,6 +1,6 @@
 // A hostile renderer tries every way out of the sandbox while listeners on
 // the machine record what arrives. Every attempt must fail and nothing may
-// arrive (plans/web-visualizers.html, Security).
+// arrive (dev/web-ui.md, Visualizer sandbox).
 
 import { createSocket } from "node:dgram";
 import { mkdir, readFile, writeFile } from "node:fs/promises";

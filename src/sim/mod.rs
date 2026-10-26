@@ -1,4 +1,4 @@
-//! Deterministic simulation of debugging sessions; see `plans/simulator.md`.
+//! Deterministic simulation of debugging sessions; see `dev/simulator.md`.
 //!
 //! A run drives the real controller and `DebuggerHandle` against a simulated
 //! Linux kernel and x86-64 CPU, so that one seed names one complete,

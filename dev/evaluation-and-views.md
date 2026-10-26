@@ -229,8 +229,7 @@ matched:
   `d[nan]` finds a NaN key.
 
 `MAX_TUPLE_KEYS` and `MAX_TUPLE_DEPTH` bound a key, written or held, and
-so bound every lookup's work. `plans/composite-keys.md`
-records the decisions.
+so bound every lookup's work.
 
 ## View execution
 

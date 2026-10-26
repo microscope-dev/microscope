@@ -19,7 +19,6 @@ compare debugger state with the world's ground truth.
 | `src/backend/linux/sim_edge.rs` | Adapter from the real controller to simulated native operations |
 | `src/bin/microscope-sim.rs`, `src/sim/report.rs` | Sweep/replay command and failure reports |
 | `tests/golden/`, `scripts/golden.sh` | Reproducible native programs and manifest management |
-| `plans/simulator.md` | Numbered model rules and design record |
 
 ## Determinism
 
@@ -33,7 +32,8 @@ not regression tests, because code changes alter the run they name.
 ## Kernel model
 
 Model a kernel behavior only after a dual-run conformance test pins it on the
-real kernel. Record the behavior as a numbered rule in `plans/simulator.md`.
+real kernel. Record the behavior as a numbered rule beside its conformance test
+in `src/sim/conformance/`.
 An unmodeled behavior is a model gap and must fail the run; do not guess.
 
 ## Oracles
@@ -122,7 +122,7 @@ it in the trace when it affects behavior.
 ## Kernel rules and conformance
 
 The simulator models only facts established by dual-run tests on the real
-kernel. Rules in `plans/simulator.md` cover exec, wait ordering, traps,
+kernel. Rules in `src/sim/conformance/kernel.rs` cover exec, wait ordering, traps,
 signals, seize and interrupt, exit, clone and fork, job control, debug
 registers, ptrace memory, and perf sample layout.
 

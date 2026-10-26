@@ -988,7 +988,6 @@ without executing JavaScript. Live run control uses Node's inspector and
 the launch preload described below. Support covers V8 12.4, 13.6, and 14.6
 (Node 22, 24, and 26), the official and nixpkgs builds, and Debian's shared
 `libnode`.
-`plans/node.html` records the decisions and findings (F1 to F31) behind it.
 
 **Layouts.** `src/debug_info/v8.rs` detects V8 and binds one generated
 layout per version. The layouts come from each version's Torque output and
@@ -1340,6 +1339,3 @@ Check invariants at every relevant stop:
 Use a version matrix only where runtime or compiler output changes behavior.
 Run runtime integration tests, DAP and web task tests, stress, soak where
 applicable, and the long simulator sweep for run-control changes.
-
-The detailed historical rationale and producer facts remain in
-`plans/go.md` and `plans/tokio.md`.

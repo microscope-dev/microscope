@@ -1,8 +1,7 @@
 # Documentation
 
 Public documentation lives in `docs/` and is published with VitePress.
-Developer documentation lives in `dev/`. Design and implementation records
-stay in `plans/`.
+Developer documentation lives in `dev/`.
 
 ## Code map
 
@@ -13,7 +12,6 @@ stay in `plans/`.
 | `docs/` | Public, end-user documentation published by VitePress |
 | `docs/.vitepress/` | Site navigation, theme, metadata, and build configuration |
 | `dev/` | Detailed developer documentation kept in the repository |
-| `plans/` | Internal design records and implementation history |
 | `docs/package.json`, `docs/pnpm-lock.yaml` | Pinned documentation-site tools |
 | `justfile` | Documentation install, development, and build recipes |
 | `web/test/docs.test.tsx`, `src/eval/tests.rs` | Executable documentation examples and contracts |
@@ -27,9 +25,6 @@ structure, test machinery, or implementation plans.
 Developer pages explain how to change and verify the project. `AGENTS.md` is a
 short router and a list of rules that apply to almost every change. Put
 area-specific details here instead of growing the top-level file.
-
-Plans record decisions, evidence, and implementation history. They are not a
-promise of current behavior and are not included in the public site.
 
 ## Writing
 
@@ -96,7 +91,7 @@ Keep a workflow in one page when its steps share one goal. Split a reference
 only when readers can find an item more easily in the smaller page. File count
 is not a goal by itself; clear ownership is.
 
-The public site must not depend on `dev/` or `plans/` links. A person using an
+The public site must not depend on `dev/` links. A person using an
 installed microscope may not have the repository. Repository links are
 acceptable only when the repository artifact itself is the subject, such as an
 unpublished editor extension, and should use a full GitHub URL.
@@ -104,16 +99,13 @@ unpublished editor extension, and should use a full GitHub URL.
 ## Developer information architecture
 
 `AGENTS.md` contains universal constraints and a routing table. `dev/` owns
-current subsystem design and working practice. `plans/` preserves detailed
-decision history, measurements, alternatives, and implementation journals.
+current subsystem design and working practice.
 
 When information changes:
 
 - update `AGENTS.md` only if nearly every change must know it;
 - update the owning `dev/` page if it describes current implementation or
   required workflow;
-- leave the historical plan intact unless the plan itself is active work whose
-  record needs a new entry;
 - update public docs when user behavior, setup, output, or limits change.
 
 Avoid copying the same rule into several developer pages. Link to its owner and
@@ -164,7 +156,7 @@ clear and avoid implying those values are fixed.
 
 Use relative Markdown links between repository files. Public pages use links
 within `docs/` so VitePress can validate them. Developer pages link to source,
-tests, plans, and other developer pages relative to `dev/`.
+tests, and other developer pages relative to `dev/`.
 
 Use descriptive link text. “See the process-control guide” is useful out of
 context; “click here” is not.
@@ -268,12 +260,8 @@ through the normal review and `git diff --check`; VitePress does not publish or
 validate `dev/`.
 
 Search the repository before deleting or moving a page because source comments,
-SDK headers, tests, editor packages, and plans can name it:
+SDK headers, tests, and editor packages can name it:
 
 ```sh
 rg 'docs/old-page\.md|dev/old-page\.md'
 ```
-
-Keep plan references intact when a plan is a historical record. If a public
-page it names no longer exists, the plan still records what existed during the
-implementation; do not rewrite the plan solely to modernize links.

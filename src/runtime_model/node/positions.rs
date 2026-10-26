@@ -4,7 +4,7 @@
 //!
 //! A table is a sequence of entries, each a code offset and a source
 //! position, both written as the difference from the entry before. V8
-//! changed how it writes the code offset in 14.0 (F5 in plans/node.html):
+//! changed how it writes the code offset in 14.0:
 //! before, a zigzag-coded signed integer whose sign marks a statement;
 //! since, an unsigned integer whose two low bits mark a breakable position
 //! and a statement. Both decode a table into plausible lines, so the

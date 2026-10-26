@@ -257,7 +257,7 @@ impl CoreDump {
     /// it: one the producer saved and wrote. gcore leaves a hole in the
     /// file for the memory it failed to read, which reads back as zeros,
     /// as glibc's guard regions inside a thread's stack make it fail for
-    /// the rest of the stack (F9 in plans/node.html).
+    /// the rest of the stack.
     ///
     /// A byte the dump did not save at all is unreadable instead, which
     /// already says the memory is missing.

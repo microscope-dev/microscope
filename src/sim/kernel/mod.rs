@@ -1,5 +1,5 @@
 //! The simulated Linux kernel: processes, threads, signals, ptrace, and
-//! wait statuses, following the rules in `plans/simulator.md` (K-*).
+//! wait statuses, following the K-* rules in `src/sim/conformance/kernel.rs`.
 //!
 //! The kernel contains no randomness. Wherever Linux leaves an order open,
 //! such as which thread runs next or which status a wait returns, it

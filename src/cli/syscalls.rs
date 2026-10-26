@@ -1,5 +1,4 @@
-//! `microscope syscalls`: strace's flags over microscope's engines
-//! (`plans/syscalls.html`).
+//! `microscope syscalls`: strace's flags over microscope's engines.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;

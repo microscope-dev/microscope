@@ -1,4 +1,4 @@
-//! The system call engines (`plans/syscalls.html`): each turns what it
+//! The system call engines: each turns what it
 //! sees into the neutral events of `crate::syscalls`.
 
 pub mod bpf;

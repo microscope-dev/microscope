@@ -1,4 +1,4 @@
-// The profiler's BPF engine (plans/python.html, "The BPF engine"). The
+// The profiler's BPF engine (dev/profiling.md). The
 // program runs on the sampler's own perf events, as each takes a sample,
 // and returns 1, so that perf still writes the sample as it would. Before
 // that, it writes the sampled thread's Python frames to the same CPU's

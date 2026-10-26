@@ -44,7 +44,7 @@ will change:
 | Change system call tracing or catchpoints | `src/syscalls/`, `src/backend/linux/syscalls/` | [system call tracing](syscalls.md) |
 | Change the CLI, DAP server, or web UI | `src/cli/`, `src/dap/`, `src/web/`, `web/src/` | [web UI](web-ui.md) and the client test suites |
 | Add or diagnose an integration test | `tests/support/mod.rs`, `tests/fixtures/` | [testing](testing.md), [diagnosing failures](debugging-failures.md) |
-| Change simulated kernel behavior | `src/sim/`, `src/backend/linux/sim_edge.rs` | [simulator](simulator.md), `plans/simulator.md` |
+| Change simulated kernel behavior | `src/sim/`, `src/backend/linux/sim_edge.rs` | [simulator](simulator.md) |
 | Measure debugger cost | `src/timings/`, `bench/` | [performance](performance.md) |
 | Change public or developer docs | `docs/`, `dev/`, `AGENTS.md` | [documentation](documentation.md) |
 
@@ -115,7 +115,6 @@ the static binary so that the musl build keeps compiling.
 | `tests` | Public debugger, DAP, runtime, and web scenarios |
 | `views` | Built-in views and visualizers |
 | `sdk` | Headers and libraries used by debugged programs |
-| `plans` | Design decisions and implementation records |
 
 ## How a session is put together
 
@@ -180,13 +179,6 @@ For a behavior change:
 For a refactor, pin the behavior first when existing tests do not make the
 boundary clear. Refactors should preserve public transcripts, events, cleanup,
 and partial-result behavior.
-
-## Reading design records
-
-`plans/` explains why large features have their present shape. A plan may also
-contain rejected approaches, work lists, old measurements, or future phases.
-Use the code and tests for current behavior. Use plans for rationale and for
-facts that the implementation deliberately depends on.
 
 When a durable rule is missing from `AGENTS.md` or `dev/`, add it here after
 the implementation establishes it. Do not turn a work log into current
