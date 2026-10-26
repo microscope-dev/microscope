@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 
 use nix::unistd::Pid;
 
-use super::{ProcessServices, TlsError, dtv, failed, read_word, thread_pointer};
+use super::{DESCRIPTOR_SIZE, ProcessServices, TlsError, dtv, failed, read_word, thread_pointer};
 
 /// The C library, where glibc since 2.34 defines the descriptors. Lookups
 /// fall back to any module that defines them, as libpthread does before.
@@ -108,8 +108,12 @@ impl Glibc<'_> {
     }
 
     fn field_at(&self, name: &'static str, address: u64) -> Result<Field, TlsError> {
-        let mut bytes = [0; 12];
-        self.read(address, &mut bytes)?;
+        let mut bytes = [0; DESCRIPTOR_SIZE];
+        if !self.services.read_descriptor(address, &mut bytes) {
+            return Err(failed(format!(
+                "the C library's thread state at {address:#x} is unreadable"
+            )));
+        }
         let (words, _) = bytes.as_chunks::<4>();
         let word = |index: usize| -> Result<u32, TlsError> {
             let word = words

@@ -226,12 +226,15 @@ pub(in crate::backend) fn running_thread_pointers(pid: Pid) -> Result<Vec<(u64, 
 ///
 /// What does not change while the process runs is kept: the addresses of
 /// the symbols the lookups read, which would take reading every mapped
-/// file again, and each module's `link_map`, which is proven again by its
-/// load bias at each use. A process that execs maps other files: a
-/// lookup that fails forgets what was kept and tries once more.
+/// file again; glibc's descriptors of its fields, constants of the C
+/// library at those symbols, which every lookup reads for each thread; and
+/// each module's `link_map`, which is proven again by its load bias at
+/// each use. A process that execs maps other files: a lookup that fails
+/// forgets what was kept and tries once more.
 pub struct RunningTls {
     pid: Pid,
     symbols: std::cell::RefCell<BTreeMap<SymbolKey, Option<u64>>>,
+    descriptors: std::cell::RefCell<BTreeMap<u64, [u8; DESCRIPTOR_SIZE]>>,
     link_maps: std::cell::RefCell<BTreeMap<u64, u64>>,
 }
 
@@ -253,6 +256,7 @@ impl RunningTls {
         Self {
             pid: Pid::from_raw(i32::try_from(pid).unwrap_or(0)),
             symbols: std::cell::RefCell::default(),
+            descriptors: std::cell::RefCell::default(),
             link_maps: std::cell::RefCell::default(),
         }
     }
@@ -262,6 +266,7 @@ impl RunningTls {
     pub fn address(&self, thread_pointer: u64, bias: LoadBias, offset: u64) -> Result<u64, String> {
         self.try_address(thread_pointer, bias, offset).or_else(|_| {
             self.symbols.borrow_mut().clear();
+            self.descriptors.borrow_mut().clear();
             self.link_maps.borrow_mut().clear();
             self.try_address(thread_pointer, bias, offset)
         })
@@ -330,6 +335,18 @@ impl ProcessServices for RunningThread<'_> {
         Some(super::core_dump::user_registers(values))
     }
 
+    fn read_descriptor(&self, address: u64, output: &mut [u8; DESCRIPTOR_SIZE]) -> bool {
+        if let Some(kept) = self.tls.descriptors.borrow().get(&address) {
+            *output = *kept;
+            return true;
+        }
+        let read = self.read(address, output);
+        if read {
+            self.tls.descriptors.borrow_mut().insert(address, *output);
+        }
+        read
+    }
+
     fn lookup_symbol(&self, object: Option<&str>, symbol: &str) -> Option<u64> {
         let key = (object.map(str::to_owned), symbol.to_owned());
         if let Some(&kept) = self.tls.symbols.borrow().get(&key) {
@@ -340,6 +357,10 @@ impl ProcessServices for RunningThread<'_> {
         found
     }
 }
+
+/// The size of glibc's descriptor of a field: its width in bits, its
+/// element count, and its offset, each a 32-bit word.
+pub(super) const DESCRIPTOR_SIZE: usize = 12;
 
 /// Where `fs_base` is in the kernel's `user_regs_struct`.
 const FS_BASE: usize = 21;
@@ -387,6 +408,12 @@ fn read_word(services: &dyn ProcessServices, address: Option<u64>) -> Result<u64
 /// Read-only process state that TLS lookups query.
 pub(super) trait ProcessServices {
     fn read(&self, address: u64, output: &mut [u8]) -> bool;
+
+    /// Reads the descriptor of one of glibc's fields at `address`, which
+    /// the C library never changes.
+    fn read_descriptor(&self, address: u64, output: &mut [u8; DESCRIPTOR_SIZE]) -> bool {
+        self.read(address, output)
+    }
 
     fn registers(&self, lwp: Pid) -> Option<libc::user_regs_struct>;
 
