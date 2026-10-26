@@ -1,7 +1,7 @@
 # microscope
 
-microscope is a native debugger and profiler for Linux x86-64. It understands C,
-C++, Rust, Go, Zig, Odin, Fortran, D, Nim, and Ada programs. You can use it in a
+microscope is a debugger and profiler for Linux x86-64. It supports C, C++, Rust
+Go, Node, Python, Zig, Odin, Fortran, D, Nim, and Ada programs. You can use it in a
 terminal, in a browser, or through an editor that supports the Debug Adapter
 Protocol.
 
