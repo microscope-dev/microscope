@@ -787,14 +787,19 @@ static __always_inline void send_v8(u32 tid, u32 tgid, struct pt_regs *regs)
 // Sends the stack of the current thread, whose user registers `regs`
 // holds, before the call or signal record that follows: the kernel's
 // walk of its frame pointers, and with CONFIG_STACK_COPY, a copy of its
-// top, as far as it reads.
-static __always_inline void send_stack(void *ctx, u32 tid, u32 tgid, struct pt_regs *regs,
-				       u32 flags)
+// top, as far as it reads. Fails, having counted the loss, when the ring
+// has no room for it; the record it precedes is then not sent either, so
+// that the reader never pairs a record with another's stack, or shows one
+// without its stack.
+static __always_inline int send_stack(void *ctx, u32 tid, u32 tgid, struct pt_regs *regs,
+				      u32 flags)
 {
 	u32 zero = 0;
 	struct scratch *buffer = bpf_map_lookup_elem(&BUFFER, &zero);
-	if (!buffer)
-		return;
+	if (!buffer) {
+		lost();
+		return -1;
+	}
 	struct stack_record *record = &buffer->stack;
 	record->header.kind = RECORD_STACK;
 	record->header.tid = tid;
@@ -836,10 +841,13 @@ static __always_inline void send_stack(void *ctx, u32 tid, u32 tgid, struct pt_r
 	record->copied = copied;
 	u32 size = sizeof(*record) + frames * 8 + copied;
 	record->header.size = size;
-	if (bpf_ringbuf_output(&EVENTS, buffer->data, bounded(size, 16383), 0))
+	if (bpf_ringbuf_output(&EVENTS, buffer->data, bounded(size, 16383), 0)) {
 		lost();
+		return -1;
+	}
 	send_python(tid, tgid);
 	send_v8(tid, tgid, regs);
+	return 0;
 }
 
 // Describes the descriptors a call made, as its spec says.
@@ -964,8 +972,9 @@ static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
 	if (sent(settings, entry.flags)) {
 		if (spec->makes)
 			send_files(tid, tgid, spec, &entry, ret);
-		if (settings->flags & CONFIG_STACKS)
-			send_stack(ctx, tid, tgid, regs, settings->flags);
+		if ((settings->flags & CONFIG_STACKS) &&
+		    send_stack(ctx, tid, tgid, regs, settings->flags))
+			return 0;
 		send_call(tid, tgid, &entry, RECORD_CALL, READ_EXIT, ret, now);
 	}
 	return 0;
@@ -1156,7 +1165,8 @@ int signal_deliver(u64 *ctx)
 		return 0;
 	if (settings->flags & CONFIG_STACKS) {
 		struct pt_regs *regs = (struct pt_regs *)bpf_task_pt_regs(bpf_get_current_task_btf());
-		send_stack(ctx, tid, tgid, regs, settings->flags);
+		if (send_stack(ctx, tid, tgid, regs, settings->flags))
+			return 0;
 	}
 	struct signal_record *record = bpf_ringbuf_reserve(&EVENTS, sizeof(*record), 0);
 	if (!record) {
