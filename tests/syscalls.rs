@@ -250,6 +250,67 @@ fn times_print_to_each_precision_as_strace_prints_them() {
     }
 }
 
+/// `--absolute-timestamps` takes strace's formats and precisions, in any
+/// order and case, each one over the last, and -t's wall clock comes
+/// before -r's time, which it puts in `(+ )`.
+#[test]
+fn wall_clocks_print_to_each_format_and_precision_as_strace_prints_them() {
+    let times = Regex::new(r"^[\d:.]+ (\(\+ *[\d.]+\) )?|^ *[\d.]+ ").expect("regex");
+    let shaped = |trace: &str| {
+        trace
+            .lines()
+            .map(|line| {
+                times.replace(line, |found: &regex::Captures<'_>| {
+                    found[0].replace(|c: char| c.is_ascii_digit(), "t")
+                })
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    for set in [
+        &["--absolute-timestamps"][..],
+        &["--timestamps=ns"],
+        &["--absolute-timestamps=unix"],
+        &["--absolute-timestamps=none"],
+        &["--absolute-timestamps=ms"],
+        &["--absolute-timestamps=precision:us"],
+        &["--absolute-timestamps=format:unix,precision:ns"],
+        &["--absolute-timestamps=ns,UNIX"],
+        &["--absolute-timestamps=unix,ns,ms"],
+        &["--absolute-timestamps=unix", "--absolute-timestamps=ns"],
+        &["--absolute-timestamps=ns", "--absolute-timestamps"],
+        &["--absolute-timestamps=ns", "--absolute-timestamps=none"],
+        &["--absolute-timestamps=none", "--absolute-timestamps=ms"],
+        &["--absolute-timestamps=unix,ms", "-r"],
+        &["--absolute-timestamps=none", "-r"],
+        &["-t", "-r"],
+        &["-ttt", "--relative-timestamps=ns"],
+    ] {
+        let mut arguments = set.to_vec();
+        arguments.extend(["-e", "trace=pipe2,write,read"]);
+        let (theirs, ours) = both(&arguments, "dumps");
+        assert_same(
+            &shaped(&ours),
+            &shaped(&theirs),
+            &format!("with {arguments:?}"),
+        );
+    }
+
+    // strace refuses these; so must microscope.
+    let directory = ScratchDir::new("syscalls-stamps");
+    for set in [
+        &["--absolute-timestamps=xs"][..],
+        &["--absolute-timestamps=format:ns"],
+        &["--absolute-timestamps=precision:unix"],
+        &["-tt", "--absolute-timestamps=ms"],
+        &["--absolute-timestamps=unix", "-t"],
+    ] {
+        let traced = trace(directory.path(), set, "dumps");
+        assert!(!traced.status.success(), "{set:?} was taken");
+    }
+}
+
 /// `-ff` writes each thread's calls to a file of its own, as strace does.
 #[test]
 fn ff_writes_each_threads_calls_to_its_own_file() {

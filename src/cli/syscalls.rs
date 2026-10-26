@@ -160,6 +160,22 @@ pub struct SyscallsArgs {
     #[arg(short = 't', action = clap::ArgAction::Count)]
     timestamps: u8,
 
+    /// Print the time of day (time) or seconds since the epoch (unix), to s,
+    /// ms, us, or ns, as `[format:]FORMAT,[precision:]PRECISION`; none
+    /// prints neither. Each gives only what it names, over the last; the
+    /// first defaults to time and s.
+    #[arg(
+        long = "absolute-timestamps",
+        visible_alias = "timestamps",
+        value_name = "FORMAT,PRECISION",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "format:time",
+        value_parser = stamp,
+        action = clap::ArgAction::Append
+    )]
+    absolute_timestamps: Vec<Stamp>,
+
     /// Print the time since the previous line, in microseconds.
     #[arg(short = 'r', overrides_with = "relative_precision")]
     relative: bool,
@@ -358,6 +374,105 @@ fn precision(text: &str) -> Result<Precision, String> {
     Precision::named(text).ok_or_else(|| format!("{text:?} is not s, ms, us, or ns"))
 }
 
+/// The wall clock a line starts with: the time of day or seconds since
+/// the epoch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Clock {
+    Time,
+    Unix,
+}
+
+/// The wall clock each line starts with, and to what precision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Absolute {
+    clock: Clock,
+    precision: Precision,
+}
+
+/// A format `--absolute-timestamps` names: a clock, or none.
+#[derive(Debug, Clone, Copy)]
+enum Format {
+    None,
+    Clock(Clock),
+}
+
+/// What one `--absolute-timestamps` names: a format, a precision, or both.
+#[derive(Debug, Clone, Copy)]
+struct Stamp {
+    format: Option<Format>,
+    precision: Option<Precision>,
+}
+
+/// strace's `[[format:]FORMAT][,[precision:]PRECISION]`, in either order
+/// and any case, the last of each kind winning.
+fn stamp(text: &str) -> Result<Stamp, String> {
+    let mut stamp = Stamp {
+        format: None,
+        precision: None,
+    };
+
+    for token in text.split(',').filter(|token| !token.is_empty()) {
+        let lower = token.to_ascii_lowercase();
+        let (name, format, precision) = match lower.split_once(':') {
+            Some(("format", name)) => (name, true, false),
+            Some(("precision", name)) => (name, false, true),
+            _ => (lower.as_str(), true, true),
+        };
+
+        let named = match name {
+            "none" => Some(Format::None),
+            "time" => Some(Format::Clock(Clock::Time)),
+            "unix" => Some(Format::Clock(Clock::Unix)),
+            _ => None,
+        };
+
+        if format && let Some(named) = named {
+            stamp.format = Some(named);
+        } else if precision && let Some(named) = Precision::named(name) {
+            stamp.precision = Some(named);
+        } else {
+            return Err(format!(
+                "{token:?} is no format (none, time, unix) or precision (s, ms, us, ns)"
+            ));
+        }
+    }
+
+    Ok(stamp)
+}
+
+/// The wall clock -t and --absolute-timestamps ask for, if any, as strace
+/// sets it: -t, -tt and -ttt are `time`, `time,us` and `unix,us`. A stamp
+/// that names no format keeps the last, or starts the time of day.
+fn absolute(short: u8, long: &[Stamp]) -> Result<Option<Absolute>> {
+    if short > 0 && !long.is_empty() {
+        bail!("-t and --absolute-timestamps cannot be given together");
+    }
+
+    let shorts = match short {
+        0 => None,
+        1 => Some((Clock::Time, Precision::Seconds)),
+        2 => Some((Clock::Time, Precision::Microseconds)),
+        _ => Some((Clock::Unix, Precision::Microseconds)),
+    };
+    let short = shorts.map(|(clock, precision)| Stamp {
+        format: Some(Format::Clock(clock)),
+        precision: Some(precision),
+    });
+
+    let mut clock = None;
+    let mut precision = Precision::Seconds;
+    for stamp in short.iter().chain(long) {
+        clock = match stamp.format {
+            Some(Format::None) => None,
+            Some(Format::Clock(named)) => Some(named),
+            None => clock.or(Some(Clock::Time)),
+        };
+        precision = stamp.precision.unwrap_or(precision);
+    }
+
+    Ok(clock.map(|clock| Absolute { clock, precision }))
+}
+
 /// The precision a short flag or its long form asks for, if either does:
 /// the short flag's is microseconds.
 fn precision_of(short: bool, long: Option<Precision>) -> Option<Precision> {
@@ -539,6 +654,8 @@ fn check_targets(args: &SyscallsArgs, attached: &[u32]) -> Result<()> {
     {
         bail!("give one target: a program after --, -p PID, --cgroup, or --container");
     }
+
+    absolute(args.timestamps, &args.absolute_timestamps)?;
 
     if args.summary_only
         && matches!(
@@ -938,7 +1055,7 @@ struct Printer {
     summarize: bool,
     stats: BTreeMap<SyscallId, SyscallStats>,
     fds: FdTable,
-    timestamps: u8,
+    absolute: Option<Absolute>,
     relative: Option<Precision>,
     durations: Option<Precision>,
 
@@ -1434,7 +1551,7 @@ impl Printer {
             summarize: args.summary_only || args.summary_too,
             stats: BTreeMap::new(),
             fds: FdTable::default(),
-            timestamps: args.timestamps,
+            absolute: absolute(args.timestamps, &args.absolute_timestamps)?,
             relative: precision_of(args.relative, args.relative_precision),
             durations: precision_of(args.durations, args.durations_precision),
             unit: if args.durations_precision == Some(Precision::Nanoseconds) {
@@ -1601,6 +1718,40 @@ impl Printer {
             }
         }
 
+        // strace prints the wall clock first, and then puts the relative
+        // time in `(+ )`.
+        if let Some(Absolute { clock, precision }) = self.absolute {
+            let wall = self.realtime + i128::from(time);
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "the epoch's seconds and a fraction"
+            )]
+            let (seconds, nanos) = ((wall / 1_000_000_000) as i64, (wall % 1_000_000_000) as u64);
+            let whole = match clock {
+                Clock::Unix => seconds.to_string(),
+                Clock::Time => {
+                    let local = (seconds + self.zone).rem_euclid(86_400);
+                    format!(
+                        "{:02}:{:02}:{:02}",
+                        local / 3600,
+                        local / 60 % 60,
+                        local % 60
+                    )
+                }
+            };
+
+            // The fraction, cut to the precision as strace cuts it.
+            let fraction = present::seconds(nanos, precision);
+            let text = match fraction.split_once('.') {
+                Some((_, digits)) => format!("{whole}.{digits}"),
+                None => whole,
+            };
+
+            out.push(Kind::Time, text);
+            out.push(Kind::Punctuation, " ");
+        }
+
         if let Some(precision) = self.relative {
             let since = self
                 .previous
@@ -1609,41 +1760,14 @@ impl Printer {
             // strace pads the whole seconds to six places.
             let since = present::seconds(since, precision);
             let width = since.find('.').map_or(6, |point| since.len() - point + 6);
-            out.push(Kind::Time, format!("{since:>width$} "));
+            if self.absolute.is_some() {
+                out.push(Kind::Time, format!("(+{since:>width$}) "));
+            } else {
+                out.push(Kind::Time, format!("{since:>width$} "));
+            }
         }
 
         self.previous = Some(time);
-        if self.timestamps > 0 {
-            let wall = self.realtime + i128::from(time);
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "the epoch's seconds and a fraction"
-            )]
-            let (seconds, micros) = (
-                (wall / 1_000_000_000) as i64,
-                (wall % 1_000_000_000 / 1_000) as u32,
-            );
-            let text = if self.timestamps >= 3 {
-                format!("{seconds}.{micros:06}")
-            } else {
-                let local = (seconds + self.zone).rem_euclid(86_400);
-                let clock = format!(
-                    "{:02}:{:02}:{:02}",
-                    local / 3600,
-                    local / 60 % 60,
-                    local % 60
-                );
-                if self.timestamps == 2 {
-                    format!("{clock}.{micros:06}")
-                } else {
-                    clock
-                }
-            };
-
-            out.push(Kind::Time, text);
-            out.push(Kind::Punctuation, " ");
-        }
 
         if self.numbers
             && let Some(number) = number

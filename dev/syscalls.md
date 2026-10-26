@@ -269,6 +269,14 @@ The short flags take no value and mean microseconds; clap's
 `overrides_with` makes the last of the short and long forms win, as in
 strace.
 
+`--absolute-timestamps` is parsed per value into a `Stamp` naming a format,
+a precision, or both. `absolute` then folds the values in order, as
+strace's `parse_ts_arg` sets its globals: a value without a format keeps
+the last one, or starts `time` when there is none. `-t`, `-tt` and `-ttt`
+are `time,s`, `time,us` and `unix,us`; strace refuses `-t` beside the long
+form, and so do we. The wall clock comes before `-r`'s time, which is then
+put in `(+ )`.
+
 The `-c` table keeps strace's microseconds unless `--syscall-times=ns`
 asks for nanoseconds (`summary::Unit`). Then the per-call columns say
 `nsecs`, and `seconds` gets nine decimals and three more places of width,

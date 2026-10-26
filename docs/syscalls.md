@@ -75,6 +75,15 @@ close(3)                                = 0 <0.000003887>
 The short forms take no value, as in strace: write `--syscall-times=ns`,
 not `-Tns` or `-T=ns`. When both forms are given, the last one wins.
 
+`-t` prints the time of day, `-tt` adds microseconds, and `-ttt` prints
+seconds since the epoch. `--absolute-timestamps` (or `--timestamps`) sets
+the format and precision separately, as strace does: a format of `time`,
+`unix` or `none`, and a precision of `s`, `ms`, `us` or `ns`, in either
+order. `--absolute-timestamps=unix,ns` prints `1793023895.396960108`. A
+value that names only one of the two keeps the other from the flag before.
+`-t` and `--absolute-timestamps` can't be given together. With `-r` too, the
+time since the previous line follows in `(+ )`.
+
 A call that is still blocked after a second is reported while it waits, with
 how long it has been blocked so far. Change the threshold with
 `--in-flight`, or turn it off with `--in-flight off`.
