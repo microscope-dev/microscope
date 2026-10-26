@@ -293,8 +293,11 @@ blocked before then needs no other memory read; each page it finds missing
 costs one call more. This prefetch happens inside the quiet check, as every
 read of the thread does. A page the call cannot read is left out of the kept
 pages, so the read that needs it reads it alone and fails as it would have.
-On 20 threads that each wake every 2 ms, the memory reads went from about
-36 system calls per thread read to about 1.
+On 20 threads that each wake every 2 ms, read every 10 ms, the memory reads
+went from about 72 system calls per thread read, 21 µs in the kernel, to
+about 2, 11 µs: the pages are as many as before, about 54, and the time
+saved is each call's own cost (measured with `microscope syscalls --format
+ndjson` on the recorder).
 
 Live reads keep the rate asked of them: each is due one interval after the
 last was due, not after it ended, and the drain loop wakes for it
