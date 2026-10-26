@@ -2243,6 +2243,19 @@ impl Processor {
         self.builder.count(AccountKind::TaskSamples as u32, claimed);
     }
 
+    /// Each piece of process `pid`'s code once `drained` and the records
+    /// held back are processed up to `watermark`: what a live read taken
+    /// now finds code by.
+    pub fn code_for_read(
+        &mut self,
+        pid: Pid,
+        drained: &[u8],
+        watermark: u64,
+    ) -> Vec<super::tasks::MappedCode> {
+        self.ingest(drained, Some(watermark));
+        self.mapped_code(pid)
+    }
+
     /// Each piece of process `pid`'s code, in the order a frame's code is
     /// found among them.
     pub fn mapped_code(&self, pid: Pid) -> Vec<super::tasks::MappedCode> {
@@ -2874,6 +2887,73 @@ mod tests {
         );
         assert!(mapped > 0);
         assert_eq!(again, (0, mapped), "a known mapping was mapped again");
+    }
+
+    /// The bytes of a perf record of process `pid` mapping `mapped`, as
+    /// the kernel writes it, stamped `time`.
+    fn mmap_record(pid: u32, mapped: &perf::Mapped, time: u64) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(&pid.to_le_bytes());
+        body.extend_from_slice(&pid.to_le_bytes());
+        for word in [mapped.start, mapped.end - mapped.start, mapped.file_offset] {
+            body.extend_from_slice(&word.to_le_bytes());
+        }
+        body.extend_from_slice(&[0; 8]);
+        body.extend_from_slice(&mapped.inode.to_le_bytes());
+        body.extend_from_slice(&[0; 8]);
+        body.extend_from_slice(&5_u32.to_le_bytes());
+        body.extend_from_slice(&2_u32.to_le_bytes());
+        body.extend_from_slice(&mapped.path);
+        body.resize(body.len().next_multiple_of(8) + 8, 0);
+        for word in [u64::from(pid) | (u64::from(pid) << 32), time, 3, 1] {
+            body.extend_from_slice(&word.to_le_bytes());
+        }
+        let mut record = 10_u32.to_le_bytes().to_vec();
+        record.extend_from_slice(&0_u16.to_le_bytes());
+        record.extend_from_slice(&u16::try_from(8 + body.len()).expect("small").to_le_bytes());
+        record.extend_from_slice(&body);
+        record
+    }
+
+    /// A live read finds code by every mapping recorded before it: one the
+    /// last drain held back, past a watermark a slow drain left behind, as
+    /// V8's first code is while the drain loads Node's debug information,
+    /// and one still in the rings.
+    #[test]
+    fn a_live_read_finds_code_mapped_before_it_whatever_the_drain_held_back() {
+        let own = std::process::id();
+        let pid = Pid::new(own);
+        let files: Vec<perf::Mapped> = perf::mappings(own)
+            .expect("this process's mappings")
+            .into_iter()
+            // Libraries, whose debug information reads at once.
+            .filter(|mapped| {
+                mapped.executable
+                    && mapped.path.starts_with(b"/")
+                    && mapped.path.windows(3).any(|part| part == b".so")
+            })
+            .take(2)
+            .collect();
+        let [first, second] = files.as_slice() else {
+            panic!("two executable file mappings: {files:?}");
+        };
+        let covers = |code: &[super::super::tasks::MappedCode], mapped: &perf::Mapped| {
+            code.iter()
+                .any(|piece| (piece.start..piece.end).contains(&mapped.start))
+        };
+
+        let mut processor = Processor::new(DebugFileSearch::default(), 64);
+        processor.ingest(&mmap_record(own, first, 2_000), Some(1_000));
+        assert!(
+            !covers(&processor.mapped_code(pid), first),
+            "the drain processed a record past its watermark"
+        );
+        let code = processor.code_for_read(pid, &[], 3_000);
+        assert!(covers(&code, first), "held back: {code:?}");
+
+        let drained = mmap_record(own, second, 4_000);
+        let code = processor.code_for_read(pid, &drained, 5_000);
+        assert!(covers(&code, second), "drained: {code:?}");
     }
 
     /// The bytes of a perf sample record that event `identifier` wrote of

@@ -818,10 +818,23 @@ impl Snapshots {
         if self.live {
             // The program runs on, and the samples it writes meanwhile
             // arrive as any do.
+            //
+            // A runtime runs the code it maps at once, so the read finds
+            // code by every mapping recorded before it: those still in
+            // the rings, and those the last drain held back past a
+            // watermark that a slow drain, as one that loads a module's
+            // debug information, left far behind.
+            //
+            // The watermark is taken before the drain, as the recording
+            // loop takes its own: a drain that runs long must not pass
+            // records still to come from a ring it has already read.
+            let watermark = monotonic().saturating_sub(WATERMARK_DELAY);
+            let mut records = Vec::new();
+            events.drain(&mut records);
+            let code = processor.code_for_read(Pid::new(self.pid), &records, watermark);
             let start = monotonic();
             let late = std::time::Instant::now().saturating_duration_since(self.next);
             let modules = processor.modules_of(Pid::new(self.pid));
-            let code = processor.mapped_code(Pid::new(self.pid));
             let taken = snapshotter.take_live(self.reads, &modules, &code);
             // Reads keep their rate, whatever each takes up to the
             // interval. One that ran late is followed an interval after it
