@@ -275,6 +275,15 @@ many:
 --- lost 4502 events ---
 ```
 
+The kernel hands calls to microscope through a ring of 16 MiB, or 64 MiB with
+`-k=dwarf`, whose stack copies make each call about 20 times as large. Each
+call's stack is unwound and named as it is read, which with `-k` takes a few
+microseconds, so a program making more than about 100,000 calls a second with
+`-k`, or 50,000 with `-k=dwarf`, can outrun it on a fast machine, and fewer
+on a busy one. `--ring 256M` gives a burst more room; it does not make
+the reader faster. A call whose stack is lost is lost with it, and counted,
+rather than shown without its stack.
+
 For a short list of calls, the BPF engine attaches to the kernel functions
 behind them, which costs other processes nothing. While it does, a call in
 progress is lost if another tracer attaches to or detaches from the same

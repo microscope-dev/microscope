@@ -1525,6 +1525,8 @@ build_fixture gcc "$c_fixtures_dir/attach-leader-exits.c" "$output_dir/attach-le
     -O0 -g3 -fPIE -pie -pthread
 build_fixture gcc "$c_fixtures_dir/syscall-sweep.c" "$output_dir/syscall-sweep" -O1 -g
 build_fixture gcc "$c_fixtures_dir/syscall-burst.c" "$output_dir/syscall-burst" -O2 -g
+build_fixture gcc "$c_fixtures_dir/syscall-load.c" "$output_dir/syscall-load" \
+    -O1 -g -fno-omit-frame-pointer -pthread
 for variant in "gcc-o0 gcc -O0 -fno-omit-frame-pointer -fPIE -pie" \
     "clang-o2-nopie clang -O2 -fomit-frame-pointer -no-pie"; do
     read -r name compiler flags <<<"$variant"

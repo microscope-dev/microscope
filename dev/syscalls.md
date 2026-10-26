@@ -22,6 +22,7 @@ formats, counts, or saves it.
 | `src/sim/tracing.rs`, `src/sim/catches.rs` | The simulator's models of the tracepoint stream and of catchpoints |
 | `tests/syscalls.rs`, `tests/catchpoints.rs`, `tests/dap/catchpoints.rs`, `tests/web/syscalls.rs` | Integration tests |
 | `tests/fixtures/c/syscalls.c` | The fixture most tests trace, one workload per mode |
+| `tests/fixtures/c/syscall-load.c` | Rounds of `openat`, `read`, and `close` on N threads, paced or as a burst, for the ring and the reader |
 | `plans/syscalls.html` | Design record, measurements, and what building it changed |
 
 ## The neutral model
@@ -165,6 +166,27 @@ How it reads calls:
 - Pointer arguments are copied at exit, as each call's spec in
   `src/syscalls/specs.rs` says. `execve`, `execveat`, and `rseq` are copied at
   entry, because their memory is gone or rewritten by exit.
+- Every record goes through one `BPF_MAP_TYPE_RINGBUF`, `EVENTS`, shared by
+  all CPUs: 16 MiB (`DEFAULT_RING`), or 64 MiB (`STACK_COPY_RING`) with
+  `-k=dwarf`, whose 8 KiB copies make a call's records about 8.6 KiB
+  against some 440 bytes with `-k` and 160 without stacks. The kernel
+  charges a ring to the memory cgroup of the process that made it, not to
+  `perf_event_mlock_kb` or `RLIMIT_MEMLOCK`; a cgroup that cannot hold the
+  larger default gets a ring half as large, down to 16 MiB. `--ring` is
+  never shrunk.
+- A record that does not fit counts one loss in `LOST`. A stack goes before
+  the call or signal it belongs to; when the stack does not fit, that record
+  is not sent either, so the reader never shows a call without its stack or
+  with another call's.
+- The reader copies everything the ring holds out of it, then handles the
+  batch on the same thread: it unwinds each stack and names its frames, and
+  the CLI formats it. That work, not the ring, sets the rate a trace with
+  stacks keeps up with, so it is cached per image address: the code role
+  and frame-pointer rule (`FrameRules`), the call-frame row
+  (`DwarfUnwindInfo::row`), and the symbol and line (`Stacks::frame`). On
+  the machine that measured it, a call took about 7 µs with `-k` and 15 µs
+  with `-k=dwarf`. While a batch is handled, the ring fills; the ring's size
+  only decides how long a burst or a stall it rides out.
 - Calls in progress live in task storage. An `iter/task` program lists them
   every 100 ms tick, for `--in-flight`.
 - Statistics are a per-CPU array with a row per chosen call. For continuous
@@ -249,6 +271,13 @@ With `--window` or `--continuous`, each saved file gets its own span's calls.
   Another traces `tests/fixtures/node/frameless.js --opens`, whose opens of
   `/dev/zero` an addon (`frameless.c`) makes with 8 in `rbp`: each must name
   the function that made it or end saying its JavaScript frames are missing.
+- `a_burst_of_copied_stacks_loses_no_calls` traces 6,600 calls of
+  `syscall-load` with `-k=dwarf`, made in about 10 ms: 57 MB of records,
+  which the default ring holds whatever the reader does meanwhile, so that
+  a loaded machine cannot fail it. The reader's rate is measured, not
+  tested, since a loaded machine slows it: run `syscall-load 1 ROUNDS RATE`
+  under each build, alternating, and compare the losses and microscope's
+  CPU time.
 - The BPF tests each map perf rings on every CPU, which count against the
   user's perf memory, so nextest runs at most two at once: one of the
   `perf-rings` group, and one of `bpf-profiles`, which holds Node's BPF

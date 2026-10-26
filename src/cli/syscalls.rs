@@ -628,7 +628,7 @@ fn bpf_options(args: &SyscallsArgs, plan: &Plan, ring: Option<u32>) -> BpfOption
         && plan.filter.slower_than.is_none();
     BpfOptions {
         count_only,
-        ring: ring.unwrap_or(bpf::DEFAULT_RING),
+        ring,
         stack_copy: plan.stacks.is_some_and(|stacks| stacks.dwarf),
         attach: match args.attach {
             AttachArg::Auto => AttachMode::Auto,

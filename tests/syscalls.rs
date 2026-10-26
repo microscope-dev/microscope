@@ -1914,6 +1914,58 @@ mod bpf {
         assert!(holding >= 2 || lost > 0, "{found:?}");
     }
 
+    /// A burst of calls that each copy 8 KiB of their stack fits in the
+    /// ring by default, however little of it the reader drains meanwhile:
+    /// every call is shown, each with its stack.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn a_burst_of_copied_stacks_loses_no_calls() {
+        // 6,600 calls in about 10 ms, whose records take some 57 MB: more
+        // than three times what a 16 MiB ring holds, and less than 64 MiB.
+        let rounds = 2_200;
+        let directory = ScratchDir::new("syscalls-burst");
+        let directory = directory.path();
+        let output = microscope(&["-k=dwarf", "--attach", "tracepoint"])
+            .env_clear()
+            .args(["-e", "trace=openat,read,close", "-o", "trace.out", "--"])
+            .arg(Scenario::fixture("syscall-load"))
+            .args(["1", &rounds.to_string()])
+            .current_dir(directory)
+            .output()
+            .expect("run microscope");
+
+        assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+        let trace = std::fs::read_to_string(directory.join("trace.out")).expect("the trace");
+        let calls = stacks(&trace);
+        let lost: Vec<&str> = trace
+            .lines()
+            .filter(|line| line.starts_with("--- lost "))
+            .collect();
+
+        // A call whose stack was lost is lost with it.
+        let bare: Vec<&String> = calls
+            .iter()
+            .filter(|(call, frames)| frames.is_empty() && !call.starts_with("+++ "))
+            .map(|(call, _)| call)
+            .collect();
+        assert!(bare.is_empty(), "calls without stacks: {bare:?}");
+
+        // The fixture's calls, and not the loader's, are made in one_round.
+        let shown = calls
+            .iter()
+            .filter(|(_, frames)| frames.iter().any(|frame| frame.contains("(one_round+")))
+            .count();
+        let opens = calls
+            .iter()
+            .filter(|(call, _)| call.starts_with("openat(AT_FDCWD, \"/dev/zero\""))
+            .count();
+        assert_eq!(
+            (shown, opens),
+            (rounds * 3, rounds),
+            "calls shown with their stacks, and opens; {lost:?}"
+        );
+    }
+
     /// Attaching needs no consent, since the process never stops: it runs
     /// on, traced, to its own end, which ends the trace.
     #[test]

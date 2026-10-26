@@ -105,6 +105,16 @@ const _: () = assert!(SLOTS <= 1 << 16, "statistics rows outgrow their u16");
 /// no less than a few milliseconds.
 pub const DEFAULT_RING: u32 = 16 << 20;
 
+/// The ring's default size when each call copies its stack.
+///
+/// A call's records then take about 8.6 KiB, 20 times what they take with
+/// the kernel's walk alone, so that a 16 MiB ring holds fewer than 2,000
+/// calls and a 64 MiB one some 7,700: a burst of that many loses none, nor
+/// does a thread making 60,000 calls a second while the reader is held up
+/// for a tenth of a second. A memory cgroup that cannot hold the ring gets
+/// a smaller one, down to [`DEFAULT_RING`].
+pub const STACK_COPY_RING: u32 = 64 << 20;
+
 /// How one argument is copied (`struct arg_copy`).
 #[repr(C)]
 #[derive(
@@ -998,8 +1008,9 @@ pub struct BpfOptions {
     /// Count in the kernel and report no calls, only their statistics.
     pub count_only: bool,
 
-    /// The ring buffer's bytes: a power of two, in pages.
-    pub ring: u32,
+    /// The ring buffer's bytes: a power of two, in pages. By default,
+    /// [`DEFAULT_RING`], or [`STACK_COPY_RING`] with stack copies.
+    pub ring: Option<u32>,
 
     /// With stacks, copy each stack's top to unwind by call-frame
     /// information, rather than trust the kernel's walk alone.
@@ -1015,7 +1026,7 @@ impl Default for BpfOptions {
     fn default() -> Self {
         Self {
             count_only: false,
-            ring: DEFAULT_RING,
+            ring: None,
             stack_copy: false,
             attach: AttachMode::Auto,
             budget: None,
@@ -1143,6 +1154,48 @@ fn load_error(error: impl std::fmt::Display) -> BpfError {
     BpfError::Load(error.to_string())
 }
 
+/// Loads the programs, with `rows` rows of statistics, for `scope`.
+fn load_object(btf: &Btf, engine: BpfOptions, rows: u32, scope: Scope) -> Result<Ebpf, BpfError> {
+    let (cgroup_id, cgroup_level) = scope.cgroup.unwrap_or_default();
+    let (ns_inum, ns_level) = scope
+        .namespace
+        .map_or((0, 0), |namespace| (namespace.inum, namespace.level));
+    let mut ring = engine.ring.unwrap_or(if engine.stack_copy {
+        STACK_COPY_RING
+    } else {
+        DEFAULT_RING
+    });
+    loop {
+        let loaded = EbpfLoader::new()
+            .btf(Some(btf))
+            .map_max_entries("EVENTS", ring)
+            // Two halves, one counted into while the other is read.
+            .map_max_entries("STATS", rows * 2)
+            .override_global("cgroup_id", &cgroup_id, true)
+            .override_global("cgroup_level", &cgroup_level, true)
+            .override_global("ns_inum", &ns_inum, true)
+            .override_global("ns_level", &ns_level, true)
+            // aya cannot open task storage itself, which only the
+            // programs use.
+            .allow_unsupported_maps()
+            .load(OBJECT);
+        match loaded {
+            // The kernel charges the ring to microscope's memory cgroup,
+            // which may not hold the larger default.
+            Err(aya::EbpfError::MapError(aya::maps::MapError::CreateError { name, io_error }))
+                if engine.ring.is_none()
+                    && ring > DEFAULT_RING
+                    && name == "EVENTS"
+                    && io_error.raw_os_error() == Some(nix::libc::ENOMEM) =>
+            {
+                record!("syscalls bpf: no memory for a ring of {ring} bytes");
+                ring /= 2;
+            }
+            loaded => return loaded.map_err(load_error),
+        }
+    }
+}
+
 /// The loaded and attached programs, and their maps.
 struct Loaded {
     ebpf: Ebpf,
@@ -1197,25 +1250,7 @@ impl Loaded {
             attachment.functions
         );
 
-        let (cgroup_id, cgroup_level) = scope.cgroup.unwrap_or_default();
-        let (ns_inum, ns_level) = scope
-            .namespace
-            .map_or((0, 0), |namespace| (namespace.inum, namespace.level));
-        let mut ebpf = EbpfLoader::new()
-            .btf(Some(&btf))
-            .map_max_entries("EVENTS", engine.ring)
-            // Two halves, one counted into while the other is read.
-            .map_max_entries("STATS", rows * 2)
-            .override_global("cgroup_id", &cgroup_id, true)
-            .override_global("cgroup_level", &cgroup_level, true)
-            .override_global("ns_inum", &ns_inum, true)
-            .override_global("ns_level", &ns_level, true)
-            // aya cannot open task storage itself, which only the
-            // programs use.
-            .allow_unsupported_maps()
-            .load(OBJECT)
-            .map_err(load_error)?;
-
+        let mut ebpf = load_object(&btf, engine, rows, scope)?;
         {
             let mut calls: Array<_, Bytes<SPEC_BYTES>> =
                 Array::try_from(ebpf.map_mut("CALLS").ok_or_else(|| missing("CALLS"))?)
