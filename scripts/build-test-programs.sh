@@ -1978,6 +1978,12 @@ build_cpp_fixture clang++-libc++ "$cpp_fixtures_dir/containers.cpp" \
     "$output_dir/containers-cpp-libcxx-standalone" -O0 -std=c++23 -g3 -gdwarf-5 -fstandalone-debug -fPIE -pie
 build_rust_fixture "$rust_fixtures_dir/variables.rs" "$output_dir/variables-rust-o0" \
     -C opt-level=0 -C force-frame-pointers=yes
+# A call's site is the program's function past std's frames: in a debug
+# build, by std's lines; in a release build without lines, by its names.
+build_rust_fixture "$rust_fixtures_dir/syscalls.rs" "$output_dir/syscalls-rust-o0" \
+    -C opt-level=0 -C force-frame-pointers=yes
+build_rust_fixture "$rust_fixtures_dir/syscalls.rs" "$output_dir/syscalls-rust-release" \
+    -C opt-level=3 -C debuginfo=0 -C strip=debuginfo
 build_rust_fixture "$rust_fixtures_dir/variables.rs" "$output_dir/variables-rust-o2" \
     -C opt-level=2 -C force-frame-pointers=no
 build_rust_fixture "$rust_fixtures_dir/records.rs" "$output_dir/records-rust-o0" \

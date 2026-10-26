@@ -131,6 +131,11 @@ server.usprof` opens the trace in the browser, where you can filter calls,
 group them by file, process, or call site, see latency over time, and open any
 call to read its arguments and stack.
 
+A call site is the line of the program's own code that made the call, with
+`-k`. microscope looks past the C library and Rust's standard library, whose
+wrappers every call of a kind goes through. A program built without debug
+information has no lines, so its sites are its functions instead.
+
 Any other `-o` name gets the text output, as strace writes it.
 
 ## Choose an engine

@@ -637,6 +637,59 @@ fn a_call_in_a_program_without_lines_is_placed_in_its_own_function() {
     );
 }
 
+/// A Rust program's call is placed in its own function, past the standard
+/// library's frames that every call of a kind passes through: by std's
+/// lines in a debug build, and by std's names in a release build, which
+/// has no lines.
+#[test]
+fn a_rust_programs_call_is_placed_past_the_standard_library() {
+    for (fixture, site) in [
+        (
+            "syscalls-rust-o0",
+            "syscalls::open_settings · syscalls.rs:9",
+        ),
+        ("syscalls-rust-release", "syscalls::open_settings"),
+    ] {
+        let directory = ScratchDir::new(fixture);
+        let captured = microscope(&["--engine", "ptrace", "-e", "trace=openat", "-Z", "-k"])
+            .args(["-o", "trace.usprof", "--"])
+            .arg(Scenario::fixture(fixture))
+            .current_dir(directory.path())
+            .output()
+            .expect("run microscope");
+        assert_eq!(
+            captured.status.code(),
+            Some(3),
+            "{}",
+            text(&captured.stderr)
+        );
+
+        let profile = microscope::profiler::Profile::read(&directory.path().join("trace.usprof"))
+            .expect("the capture reads")
+            .profile;
+        let stacks: Vec<u32> = profile
+            .syscalls()
+            .events
+            .iter()
+            .filter(|event| matches!(event.event, microscope::syscalls::TraceEvent::Call(_)))
+            .filter_map(|event| event.stack)
+            .filter(|&stack| {
+                let (functions, _) = profile.syscall_stack(stack);
+                functions
+                    .iter()
+                    .any(|function| function.ends_with("open_settings"))
+            })
+            .collect();
+        assert_eq!(stacks.len(), 1, "{fixture}: {}", text(&captured.stderr));
+        let (functions, _) = profile.syscall_stack(stacks[0]);
+        assert_eq!(
+            profile.syscall_site(stacks[0]).as_deref(),
+            Some(site),
+            "{fixture}: {functions:?}"
+        );
+    }
+}
+
 #[test]
 fn a_capture_holds_what_the_trace_shows_and_report_summarizes_it() {
     let directory = ScratchDir::new("syscalls-capture");

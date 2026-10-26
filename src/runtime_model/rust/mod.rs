@@ -469,11 +469,27 @@ impl RuntimeModel for RustRuntime {
     }
 }
 
+/// Whether a function is the standard library's, by its name, for code
+/// with no lines to tell by: an item of `std`, `core`, or `alloc`, or a
+/// method of one of their types, as `<std::fs::File>::open` or
+/// `<&std::fs::File as std::io::Read>::read`. A program's own impl of a
+/// standard trait, as `<app::Config as core::fmt::Debug>::fmt`, is its own.
+pub fn standard_library_function(name: &str) -> bool {
+    let owner = name.strip_prefix('<').map_or(name, |inner| {
+        let inner = inner.trim_start_matches('&');
+        let inner = inner.strip_prefix("mut ").unwrap_or(inner);
+        inner.strip_prefix("dyn ").unwrap_or(inner)
+    });
+    ["std::", "core::", "alloc::"]
+        .iter()
+        .any(|krate| owner.starts_with(krate))
+}
+
 /// Whether a source file is the standard library's, wherever the toolchain
 /// put it: `/rustc/<commit>/library/<crate>/…` for its own code, and
 /// `…/rustlib/src/rust/library/<crate>/…` for generic code the program
 /// instantiated.
-fn standard_library(path: &Path) -> bool {
+pub fn standard_library(path: &Path) -> bool {
     let parts = path
         .components()
         .filter_map(|component| match component {
@@ -590,6 +606,29 @@ mod tests {
             "&[alloc::string::String; 2]"
         );
         assert_eq!(substituted("T", &[]), "T");
+    }
+
+    #[test]
+    fn the_standard_library_is_its_items_and_its_types_methods_by_name() {
+        for name in [
+            "std::rt::lang_start_internal",
+            "<std::fs::File>::open::<&str>",
+            "<&std::fs::File as std::io::Read>::read",
+            "<&dyn core::ops::function::Fn<()> as core::ops::function::FnOnce<()>>::call_once",
+            "alloc::raw_vec::finish_grow",
+        ] {
+            assert!(super::standard_library_function(name), "{name}");
+        }
+        // A program's own impls of standard traits, and its generics over
+        // standard types, are its own.
+        for name in [
+            "<app::Config as core::fmt::Debug>::fmt",
+            "app::load::<std::fs::File>",
+            "<fn() as core::ops::function::FnOnce<()>>::call_once",
+            "main",
+        ] {
+            assert!(!super::standard_library_function(name), "{name}");
+        }
     }
 
     #[test]

@@ -342,7 +342,9 @@ impl Profile {
     /// With no line in the stack, as in a release build, it is the
     /// function of the innermost frame outside the C library and the
     /// loader, as `recv`: their system call wrappers are shared by every
-    /// call of a kind, so they would put all of those in one site.
+    /// call of a kind, so they would put all of those in one site. Rust's
+    /// standard library is passed over the same way, by its lines' files
+    /// or by its names: its file and socket wrappers are shared too.
     #[must_use]
     pub fn syscall_site(&self, row: u32) -> Option<String> {
         let Some(place) = self.syscall_place(row) else {
@@ -353,27 +355,38 @@ impl Profile {
     }
 
     /// The innermost function of stack `row` outside the C library and the
-    /// loader.
+    /// loader, and outside Rust's standard library where any is.
     fn caller_of_c_library(&self, row: u32) -> Option<String> {
         let capture = &self.capture;
-        let frame = capture.stack_frames(row).find(|&frame| {
-            let record = &capture.frames[frame as usize];
-            let module = record.module.get();
-            record.kind != FrameKind::Truncated as u8
-                && (module == NONE || {
-                    let path = capture.string(capture.modules[module as usize].path.get());
-                    let name = path.rsplit('/').next().unwrap_or(path);
-                    !C_LIBRARY.iter().any(|prefix| name.starts_with(prefix))
-                })
-        })?;
+        let names: Vec<String> = capture
+            .stack_frames(row)
+            .filter(|&frame| {
+                let record = &capture.frames[frame as usize];
+                let module = record.module.get();
+                record.kind != FrameKind::Truncated as u8
+                    && (module == NONE || {
+                        let path = capture.string(capture.modules[module as usize].path.get());
+                        let name = path.rsplit('/').next().unwrap_or(path);
+                        !C_LIBRARY.iter().any(|prefix| name.starts_with(prefix))
+                    })
+            })
+            .flat_map(|frame| {
+                let lines = capture.frame_lines(frame);
+                if lines.is_empty() {
+                    return vec![self.address_name(frame)];
+                }
+                lines
+                    .iter()
+                    .map(|line| {
+                        let function = &capture.functions[line.function.get() as usize];
+                        capture.string(function.name.get()).to_owned()
+                    })
+                    .collect()
+            })
+            .collect();
 
-        Some(capture.frame_lines(frame).first().map_or_else(
-            || self.address_name(frame),
-            |line| {
-                let function = &capture.functions[line.function.get() as usize];
-                capture.string(function.name.get()).to_owned()
-            },
-        ))
+        let own = |name: &&String| !crate::runtime_model::rust::standard_library_function(name);
+        names.iter().find(own).or_else(|| names.first()).cloned()
     }
 
     /// The innermost frame of stack `row` with a source line, of its
@@ -387,11 +400,15 @@ impl Profile {
                 .get(*frame as usize)
                 .is_some_and(|frame| frame.kind == FrameKind::Interpreted as u8)
         };
+        // Rust's standard library's lines are passed over, as the C
+        // library's would be: every call of a kind runs through them.
         let place = |frame: u32| {
-            let line = capture
-                .frame_lines(frame)
-                .iter()
-                .find(|line| line.file.get() != NONE)?;
+            let line = capture.frame_lines(frame).iter().find(|line| {
+                line.file.get() != NONE
+                    && !crate::runtime_model::rust::standard_library(std::path::Path::new(
+                        capture.string(line.file.get()),
+                    ))
+            })?;
             Some(SyscallPlace {
                 function: capture
                     .string(capture.functions[line.function.get() as usize].name.get()),

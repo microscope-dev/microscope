@@ -28,7 +28,7 @@ pub use python::{
     is_script_filename as is_python_script_filename, script_name as python_script_name,
 };
 mod records;
-mod rust;
+pub mod rust;
 
 /// Whether a function breakpoint names a function a runtime runs itself,
 /// as `py:Shape.area` or `js:handler` do, which no native symbol answers
