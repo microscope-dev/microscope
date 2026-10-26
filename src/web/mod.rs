@@ -309,11 +309,12 @@ pub async fn run(args: &WebArgs) -> Result<()> {
         () = terminated => Ok(()),
     };
 
+    // A load in progress is given up; a launch or attach under way is
+    // waited for, and whatever it started is ended below.
+    session.stop_loading();
     if let Some(starting) = starting {
-        // Whatever it started is ended below, not left half launched.
-        // Loading cannot be interrupted, so a large program is waited for.
         if !starting.is_finished() {
-            eprintln!("microscope web: stopping once the program has loaded");
+            eprintln!("microscope web: stopping once the program has started");
         }
 
         let _ = starting.await;

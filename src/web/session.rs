@@ -189,6 +189,9 @@ pub struct Session {
     /// Which processes a launched or attached program starts are debugged
     /// too.
     follow: Mutex<FollowPolicy>,
+
+    /// Whether the server is stopping, which ends a program's load.
+    stopping: watch::Sender<bool>,
 }
 
 struct Target {
@@ -279,7 +282,16 @@ impl Session {
             resume_attached: AtomicBool::new(false),
             share_links: AtomicBool::new(true),
             follow: Mutex::default(),
+            stopping: watch::Sender::new(false),
         })
+    }
+
+    /// Gives up a load in progress, and any to come: the server is
+    /// stopping. A load reads files and starts nothing, so nothing is left
+    /// half done; an attach, which a stop could leave with its traps in the
+    /// process, runs to its end.
+    pub fn stop_loading(&self) {
+        self.stopping.send_replace(true);
     }
 
     /// Follows the processes programs debugged from now on start as
@@ -1752,7 +1764,8 @@ impl Session {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
-        let opened = match open(&start, &self.debug_files, policy).await {
+        let opened = match open(&start, &self.debug_files, policy, self.stopping.subscribe()).await
+        {
             Ok(opened) => opened,
             Err(message) => {
                 self.state.send_replace(Arc::new(State::idle(None)));
@@ -2212,6 +2225,7 @@ async fn open(
     start: &Start,
     debug_files: &microscope::DebugFileOptions,
     policy: FollowPolicy,
+    mut stopping: watch::Receiver<bool>,
 ) -> Result<Opened, String> {
     match start {
         Start::Launch { spec, .. } => {
@@ -2220,11 +2234,13 @@ async fn open(
             let failed = |error: microscope::Error| {
                 format!("failed to load {}: {error}", spec.program.display())
             };
-            let program = tokio::task::spawn_blocking(move || {
-                microscope::Program::load(&program, &debug_files)
-            })
-            .await
-            .map_err(|error| error.to_string())?
+            let program = loaded(
+                &mut stopping,
+                tokio::task::spawn_blocking(move || {
+                    microscope::Program::load(&program, &debug_files)
+                }),
+            )
+            .await?
             .map_err(failed)?;
             ProcessGroup::new(program, policy)
                 .map(Opened::Group)
@@ -2241,11 +2257,28 @@ async fn open(
             };
 
             let core = options.core.display().to_string();
-            tokio::task::spawn_blocking(move || Debugger::open_core(&options))
-                .await
-                .map_err(|error| error.to_string())?
-                .map(Opened::Single)
-                .map_err(|error| format!("failed to open the core dump {core}: {error}"))
+            loaded(
+                &mut stopping,
+                tokio::task::spawn_blocking(move || Debugger::open_core(&options)),
+            )
+            .await?
+            .map(Opened::Single)
+            .map_err(|error| format!("failed to open the core dump {core}: {error}"))
+        }
+    }
+}
+
+/// What `load` read, unless the server stops first. A load can block for
+/// good, as on a FIFO no one writes, and its thread cannot be interrupted:
+/// a stopping server leaves it behind.
+async fn loaded<T>(
+    stopping: &mut watch::Receiver<bool>,
+    load: tokio::task::JoinHandle<T>,
+) -> Result<T, String> {
+    tokio::select! {
+        loaded = load => loaded.map_err(|error| error.to_string()),
+        _ = stopping.wait_for(|stopping| *stopping) => {
+            Err("the server stopped while the program loaded".to_owned())
         }
     }
 }

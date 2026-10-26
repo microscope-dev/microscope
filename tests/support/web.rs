@@ -318,10 +318,21 @@ impl Web {
 
     /// Stops the server as a terminal's Ctrl-C would and waits for it.
     pub fn interrupt(&mut self) -> std::process::ExitStatus {
+        self.stop(nix::sys::signal::Signal::SIGINT)
+    }
+
+    /// Stops the server as a supervisor would and waits for it.
+    pub fn terminate(&mut self) -> std::process::ExitStatus {
+        self.stop(nix::sys::signal::Signal::SIGTERM)
+    }
+
+    /// Sends the server `signal` and waits for it to exit. One that has not
+    /// by the deadline is killed, so a failed test leaves no server behind.
+    fn stop(&mut self, signal: nix::sys::signal::Signal) -> std::process::ExitStatus {
         let mut child = self.child.take().expect("a running server");
         let pid = nix::unistd::Pid::from_raw(i32::try_from(child.id()).expect("a pid"));
 
-        let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGINT);
+        let _ = nix::sys::signal::kill(pid, signal);
 
         let deadline = Instant::now() + DEADLINE;
         loop {
@@ -329,7 +340,11 @@ impl Web {
                 return status;
             }
 
-            assert!(Instant::now() < deadline, "microscope web did not exit");
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("microscope web did not exit on {signal}");
+            }
             std::thread::sleep(Duration::from_millis(10));
         }
     }

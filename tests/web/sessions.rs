@@ -321,6 +321,26 @@ async fn the_page_is_served_while_the_program_loads() {
         .await;
 }
 
+/// A load that never ends, as of a FIFO no one writes or a hung network
+/// file system, launches nothing, so the server ends without waiting for it.
+#[tokio::test]
+async fn terminating_the_server_while_the_program_loads_ends_it() {
+    let scratch = ScratchDir::new("web-loading-stop");
+    let program = scratch.path().join("kvstore");
+    nix::unistd::mkfifo(&program, nix::sys::stat::Mode::S_IRWXU).expect("create FIFO");
+    let mut web = Web::start("loading-stop", &[program.to_str().expect("a UTF-8 path")]);
+    let mut tab = web.control("tab").await;
+    tab.state("the program loading", |state| {
+        state["busy"]
+            .as_str()
+            .is_some_and(|busy| busy.starts_with("Loading"))
+    })
+    .await;
+
+    let status = web.terminate();
+    assert!(status.success(), "{status}");
+}
+
 #[tokio::test]
 async fn interrupting_the_server_while_it_starts_the_program_shuts_it_down() {
     let program = fixture("spin");
