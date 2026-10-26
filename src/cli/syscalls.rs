@@ -35,7 +35,7 @@ use super::Renderers;
 use super::terminal::{ColorChoice, Renderer, Role};
 use crate::present::syscalls::summary::{self, Column};
 use crate::present::syscalls::{
-    self as present, Constants, Context, FdStyle, Hex, Kind, Style, Tokens,
+    self as present, Constants, Context, FdStyle, Hex, Kind, Precision, Style, Tokens,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -160,13 +160,40 @@ pub struct SyscallsArgs {
     #[arg(short = 't', action = clap::ArgAction::Count)]
     timestamps: u8,
 
-    /// Print the time since the previous line.
-    #[arg(short = 'r')]
+    /// Print the time since the previous line, in microseconds.
+    #[arg(short = 'r', overrides_with = "relative_precision")]
     relative: bool,
 
-    /// Print the time each call took.
-    #[arg(short = 'T')]
+    /// Print the time since the previous line in s, ms, us, or ns; us
+    /// when no PRECISION is given.
+    #[arg(
+        long = "relative-timestamps",
+        value_name = "PRECISION",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "us",
+        value_parser = precision,
+        overrides_with_all = ["relative", "relative_precision"]
+    )]
+    relative_precision: Option<Precision>,
+
+    /// Print the time each call took, in microseconds.
+    #[arg(short = 'T', overrides_with = "durations_precision")]
     durations: bool,
+
+    /// Print the time each call took in s, ms, us, or ns; us when no
+    /// PRECISION is given. With -c or -C, ns gives the table's times in
+    /// nanoseconds; -c takes only us or ns.
+    #[arg(
+        long = "syscall-times",
+        value_name = "PRECISION",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "us",
+        value_parser = precision,
+        overrides_with_all = ["durations", "durations_precision"]
+    )]
+    durations_precision: Option<Precision>,
 
     /// Print the stack of each call; -kk adds source lines. -k=dwarf has
     /// the BPF engine copy the stack and unwind it by call-frame
@@ -324,6 +351,17 @@ pub fn run(args: &SyscallsArgs) -> std::process::ExitCode {
             std::process::ExitCode::FAILURE
         }
     }
+}
+
+/// strace's PRECISION: s, ms, us, or ns.
+fn precision(text: &str) -> Result<Precision, String> {
+    Precision::named(text).ok_or_else(|| format!("{text:?} is not s, ms, us, or ns"))
+}
+
+/// The precision a short flag or its long form asks for, if either does:
+/// the short flag's is microseconds.
+fn precision_of(short: bool, long: Option<Precision>) -> Option<Precision> {
+    long.or_else(|| short.then_some(Precision::Microseconds))
 }
 
 /// Nanoseconds in a duration such as `10ms`, `2us`, `1.5s`, or `5m`.
@@ -500,6 +538,15 @@ fn check_targets(args: &SyscallsArgs, attached: &[u32]) -> Result<()> {
         > 1
     {
         bail!("give one target: a program after --, -p PID, --cgroup, or --container");
+    }
+
+    if args.summary_only
+        && matches!(
+            args.durations_precision,
+            Some(Precision::Seconds | Precision::Milliseconds)
+        )
+    {
+        bail!("-c's table shows microseconds or nanoseconds: give --syscall-times=us or ns");
     }
 
     if args.summary_only && (args.trigger_slower_than.is_some() || args.trigger_errno.is_some()) {
@@ -892,8 +939,11 @@ struct Printer {
     stats: BTreeMap<SyscallId, SyscallStats>,
     fds: FdTable,
     timestamps: u8,
-    relative: bool,
-    durations: bool,
+    relative: Option<Precision>,
+    durations: Option<Precision>,
+
+    /// The table's unit: nanoseconds when -T's precision is.
+    unit: summary::Unit,
     numbers: bool,
     column: usize,
     comm: bool,
@@ -1385,8 +1435,13 @@ impl Printer {
             stats: BTreeMap::new(),
             fds: FdTable::default(),
             timestamps: args.timestamps,
-            relative: args.relative,
-            durations: args.durations,
+            relative: precision_of(args.relative, args.relative_precision),
+            durations: precision_of(args.durations, args.durations_precision),
+            unit: if args.durations_precision == Some(Precision::Nanoseconds) {
+                summary::Unit::Nanoseconds
+            } else {
+                summary::Unit::Microseconds
+            },
             numbers: args.numbers,
             column: args.column,
             comm: args.comm,
@@ -1546,18 +1601,15 @@ impl Printer {
             }
         }
 
-        if self.relative {
+        if let Some(precision) = self.relative {
             let since = self
                 .previous
                 .map_or(0, |previous| time.saturating_sub(previous));
-            out.push(
-                Kind::Time,
-                format!(
-                    "{:>6}.{:06} ",
-                    since / 1_000_000_000,
-                    since % 1_000_000_000 / 1_000
-                ),
-            );
+
+            // strace pads the whole seconds to six places.
+            let since = present::seconds(since, precision);
+            let width = since.find('.').map_or(6, |point| since.len() - point + 6);
+            out.push(Kind::Time, format!("{since:>width$} "));
         }
 
         self.previous = Some(time);
@@ -1824,10 +1876,13 @@ impl Printer {
         }
 
         line.0.extend(returned.0);
-        if self.durations
+        if let Some(precision) = self.durations
             && let Some(duration) = event.duration()
         {
-            line.push(Kind::Time, format!(" <{}>", present::seconds(duration)));
+            line.push(
+                Kind::Time,
+                format!(" <{}>", present::seconds(duration, precision)),
+            );
         }
 
         let text = self.paint(&line);
@@ -2104,7 +2159,8 @@ impl Printer {
 
             match self.format {
                 OutputFormat::Text => {
-                    let lines = summary::table(&self.stats, &self.columns, self.sort, &errno);
+                    let lines =
+                        summary::table(&self.stats, &self.columns, self.sort, self.unit, &errno);
                     let mut out = self.output_for_summary();
                     for line in lines {
                         writeln!(out, "{line}")?;

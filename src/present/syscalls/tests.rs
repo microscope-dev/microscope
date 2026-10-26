@@ -282,7 +282,24 @@ fn names_round_trip() {
     assert_eq!(signal_named("TERM"), Some(15));
     assert_eq!(signal_named("SIGRT_2"), Some(34));
     assert_eq!(errno_named("EAGAIN"), Some(Errno(11)));
-    assert_eq!(seconds(1_500_012_345), "1.500012");
+}
+
+#[test]
+fn times_print_to_each_precision_cut_as_strace_cuts_them() {
+    let time = 1_500_012_345;
+    for (name, text) in [
+        ("s", "1"),
+        ("ms", "1.500"),
+        ("us", "1.500012"),
+        ("NS", "1.500012345"),
+    ] {
+        let precision = Precision::named(name).expect(name);
+        assert_eq!(seconds(time, precision), text);
+    }
+
+    assert_eq!(seconds(987, Precision::Nanoseconds), "0.000000987");
+    assert_eq!(seconds(987, Precision::default()), "0.000000");
+    assert_eq!(Precision::named("usec"), None);
 }
 
 proptest::proptest! {

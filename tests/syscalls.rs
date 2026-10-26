@@ -198,6 +198,58 @@ fn times_numbers_and_dumps_print_as_strace_prints_them() {
     }
 }
 
+/// `--syscall-times` and `--relative-timestamps` print times to the
+/// precision asked, as strace does, padded and aligned as strace's. When
+/// the short and long forms are mixed, the last one given wins.
+#[test]
+fn times_print_to_each_precision_as_strace_prints_them() {
+    // A time's digits differ between runs; how many there are must not.
+    let times = Regex::new(r"<\d+(\.\d+)?>|^ *\d+(\.\d+)? ").expect("regex");
+    let shaped = |trace: &str| {
+        trace
+            .lines()
+            .map(|line| {
+                times.replace_all(line, |found: &regex::Captures<'_>| {
+                    found[0].replace(|c: char| c.is_ascii_digit(), "t")
+                })
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let mut sets: Vec<Vec<String>> = ["s", "ms", "us", "ns", "NS"]
+        .iter()
+        .map(|precision| {
+            vec![
+                format!("--syscall-times={precision}"),
+                format!("--relative-timestamps={precision}"),
+            ]
+        })
+        .collect();
+    sets.push(vec![
+        "--syscall-times".into(),
+        "--relative-timestamps".into(),
+    ]);
+    sets.push(vec![
+        "--syscall-times=ns".into(),
+        "-T".into(),
+        "-r".into(),
+        "--relative-timestamps=ms".into(),
+    ]);
+
+    for set in sets {
+        let mut arguments: Vec<&str> = set.iter().map(String::as_str).collect();
+        arguments.extend(["-e", "trace=pipe2,write,read"]);
+        let (theirs, ours) = both(&arguments, "dumps");
+        assert!(theirs.contains('<'), "strace printed no times: {theirs}");
+        assert_same(
+            &shaped(&ours),
+            &shaped(&theirs),
+            &format!("with {arguments:?}"),
+        );
+    }
+}
+
 /// `-ff` writes each thread's calls to a file of its own, as strace does.
 #[test]
 fn ff_writes_each_threads_calls_to_its_own_file() {
@@ -585,6 +637,83 @@ fn the_summary_counts_calls_errors_and_errnos() {
     assert!(rows.iter().any(|row| row[..2] == ["write", "1"]), "{lines}");
     assert_eq!(rows.last().expect("total")[0], "total");
     assert!(!lines.contains("openat("), "-c prints no calls\n{lines}");
+}
+
+/// `-c --syscall-times=ns` gives the table's times in nanoseconds, where
+/// strace's are microseconds and print a call under one as 0.
+#[test]
+fn the_summary_times_calls_in_nanoseconds_when_asked() {
+    let directory = ScratchDir::new("syscalls-summary-ns");
+    let table = |arguments: &[&str]| {
+        let summary = trace(
+            directory.path(),
+            &[
+                &["-c", "-e", "trace=openat,close,write", "-S", "name"],
+                arguments,
+            ]
+            .concat(),
+            "files",
+        );
+        (summary.status.code(), text(&summary.stderr))
+    };
+
+    let (code, lines) = table(&[
+        "--syscall-times=ns",
+        "-U",
+        "total-time,min-time,max-time,avg-time,p50,calls,name",
+    ]);
+    assert_eq!(code, Some(3), "{lines}");
+    let rows: Vec<&str> = lines.lines().collect();
+    assert_eq!(
+        rows[0], "       seconds   min nsecs   max nsecs  nsecs/call   p50 nsecs     calls syscall",
+        "{lines}"
+    );
+
+    let row = Regex::new(r"^ *(\d+\.\d{9})(( +\d+){4}) +\d+ \S+$").expect("regex");
+    let mut times = Vec::new();
+    for line in rows.iter().filter(|line| !line.starts_with('-')).skip(1) {
+        let captures = row
+            .captures(line)
+            .unwrap_or_else(|| panic!("{line:?} is no row of nanoseconds:\n{lines}"));
+        let name = line.rsplit(' ').next().unwrap_or_default();
+        assert_eq!(
+            line.len() - name.len(),
+            rows[0].len() - "syscall".len(),
+            "{line:?} is out of line:\n{lines}"
+        );
+        times.extend(
+            captures[2]
+                .split_whitespace()
+                .map(|cell| cell.parse::<u64>().expect("a number")),
+        );
+    }
+
+    // Microseconds shown as nanoseconds would all be whole thousands.
+    assert!(
+        times.iter().any(|time| time % 1_000 != 0),
+        "no time finer than a microsecond:\n{lines}"
+    );
+
+    for precision in [
+        &["--syscall-times=us"][..],
+        &["--syscall-times"],
+        &["-T"],
+        &[],
+    ] {
+        let (code, lines) = table(precision);
+        assert_eq!(code, Some(3), "{lines}");
+        assert!(
+            lines.starts_with("% time     seconds  usecs/call     calls    errors syscall\n"),
+            "with {precision:?}:\n{lines}"
+        );
+    }
+
+    let (code, lines) = table(&["--syscall-times=ms"]);
+    assert_eq!(code, Some(1), "{lines}");
+    assert!(
+        lines.contains("-c's table shows microseconds or nanoseconds"),
+        "{lines}"
+    );
 }
 
 /// A program with no lines, as a release build ships, names a call's site
@@ -1542,6 +1671,46 @@ mod bpf {
                 "in {mode}:\n{bpf}\n---\n{ptrace}"
             );
         }
+    }
+
+    /// A getppid takes the BPF engine well under a microsecond, which
+    /// strace's table shows as 0 and `--syscall-times=ns` shows as it is.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn a_call_under_a_microsecond_counts_its_nanoseconds() {
+        let directory = ScratchDir::new("syscalls-bpf-ns");
+        let output = microscope(&[
+            "-c",
+            "--syscall-times=ns",
+            "-e",
+            "trace=getppid",
+            "-U",
+            "name,calls,min-time,p50",
+            "--",
+        ])
+        .env_clear()
+        .arg(fixture())
+        .args(["churn", "20"])
+        .current_dir(directory.path())
+        .output()
+        .expect("run microscope");
+        let table = text(&output.stderr);
+        assert_eq!(output.status.code(), Some(0), "{table}");
+        let row = table
+            .lines()
+            .find(|line| line.starts_with("getppid "))
+            .unwrap_or_else(|| panic!("no getppid row:\n{table}"));
+        let numbers: Vec<u64> = row
+            .split_whitespace()
+            .skip(1)
+            .map(|cell| cell.parse().expect("a number"))
+            .collect();
+        let [calls, min, p50] = numbers[..] else {
+            panic!("{row:?}");
+        };
+        assert_eq!(calls, 20, "{table}");
+        assert!((1..1_000).contains(&min), "min {min} ns:\n{table}");
+        assert!(p50 > 0, "{table}");
     }
 
     #[test]

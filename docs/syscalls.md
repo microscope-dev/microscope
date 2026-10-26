@@ -60,6 +60,21 @@ to, `-T` shows how long each call took, `-t` adds the time of day, and
 `-s SIZE` sets how much of each string is shown. `--format ndjson` writes one
 JSON object per line for other programs to read.
 
+`-T` and `-r`, which shows the time since the previous line, print
+microseconds. As with strace, their long forms take a precision of `s`,
+`ms`, `us`, or `ns`:
+
+```sh
+microscope syscalls --syscall-times=ns -e trace=close -- ./server
+```
+
+```text
+close(3)                                = 0 <0.000003887>
+```
+
+The short forms take no value, as in strace: write `--syscall-times=ns`,
+not `-Tns` or `-T=ns`. When both forms are given, the last one wins.
+
 A call that is still blocked after a second is reported while it waits, with
 how long it has been blocked so far. Change the threshold with
 `--in-flight`, or turn it off with `--in-flight off`.
@@ -84,6 +99,29 @@ microscope syscalls -c -- ls /
 
 `-C` prints both. `-S` sorts the table and `-U` chooses its columns, which
 include `p50`, `p90`, and `p99` latencies.
+
+The table's times are in microseconds, as strace's are, so a call that
+takes less than one counts as 0. `--syscall-times=ns` gives them in
+nanoseconds: `seconds` gets nine decimals, and the other time columns
+become `nsecs/call`, `min nsecs`, `max nsecs`, and `p50 nsecs` to
+`p99 nsecs`:
+
+```sh
+microscope syscalls -c --syscall-times=ns -e trace=getppid -U name,calls,min-time,p50 -- ./server
+```
+
+```text
+syscall              calls   min nsecs   p50 nsecs
+---------------- --------- ----------- -----------
+getppid                 20          60         202
+---------------- --------- ----------- -----------
+total                   20          60         202
+```
+
+strace ignores `-T` with `-c`. With `-c`, microscope takes only `us` or
+`ns`, since milliseconds or seconds would turn even more calls into 0.
+With `-C`, `s` and `ms` set the precision of the lines, and the table stays
+in microseconds.
 
 ## Show where calls come from
 

@@ -5,6 +5,33 @@ use std::fmt::Write as _;
 
 use microscope::syscalls::{Abi, SyscallId, SyscallStats};
 
+use super::{Precision, seconds};
+
+/// The unit of the table's times: strace's microseconds, or nanoseconds
+/// with `--syscall-times=ns`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Unit {
+    #[default]
+    Microseconds,
+    Nanoseconds,
+}
+
+impl Unit {
+    const fn of(self, nanoseconds: u64) -> u64 {
+        match self {
+            Self::Microseconds => nanoseconds / 1_000,
+            Self::Nanoseconds => nanoseconds,
+        }
+    }
+
+    const fn precision(self) -> Precision {
+        match self {
+            Self::Microseconds => Precision::Microseconds,
+            Self::Nanoseconds => Precision::Nanoseconds,
+        }
+    }
+}
+
 /// A column of the table, by its `-U` name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Column {
@@ -66,27 +93,36 @@ impl Column {
         Self::Name,
     ];
 
-    const fn header(self) -> &'static str {
+    const fn header(self, unit: Unit) -> &'static str {
+        let nanoseconds = matches!(unit, Unit::Nanoseconds);
         match self {
             Self::TimePercent => "% time",
             Self::TotalTime => "seconds",
+            Self::MinTime if nanoseconds => "min nsecs",
             Self::MinTime => "min usecs",
+            Self::MaxTime if nanoseconds => "max nsecs",
             Self::MaxTime => "max usecs",
+            Self::AvgTime if nanoseconds => "nsecs/call",
             Self::AvgTime => "usecs/call",
             Self::Calls => "calls",
             Self::Errors => "errors",
             Self::Name => "syscall",
+            Self::P50 if nanoseconds => "p50 nsecs",
             Self::P50 => "p50 usecs",
+            Self::P90 if nanoseconds => "p90 nsecs",
             Self::P90 => "p90 usecs",
+            Self::P99 if nanoseconds => "p99 nsecs",
             Self::P99 => "p99 usecs",
             Self::Bytes => "bytes",
             Self::Errnos => "errnos",
         }
     }
 
-    const fn width(self) -> usize {
+    const fn width(self, unit: Unit) -> usize {
         match self {
             Self::TimePercent => 6,
+            // Room for as many whole seconds as strace's column has.
+            Self::TotalTime if matches!(unit, Unit::Nanoseconds) => 14,
             Self::Calls | Self::Errors => 9,
             Self::Name => 16,
             Self::Errnos => 0,
@@ -117,10 +153,6 @@ pub fn sort_key(text: &str) -> Result<Option<Column>, String> {
             })
             .ok_or_else(|| format!("unknown sort key {other:?}")),
     }
-}
-
-const fn microseconds(nanoseconds: u64) -> u64 {
-    nanoseconds / 1_000
 }
 
 fn name(id: SyscallId) -> String {
@@ -156,6 +188,7 @@ fn cell(
     stats: &SyscallStats,
     label: &str,
     all_time: u64,
+    unit: Unit,
     errno: &dyn Fn(u16) -> String,
 ) -> String {
     match column {
@@ -169,27 +202,23 @@ fn cell(
 
             format!("{percent:.2}")
         }
-        Column::TotalTime => format!(
-            "{}.{:06}",
-            stats.total_ns / 1_000_000_000,
-            stats.total_ns % 1_000_000_000 / 1_000
-        ),
-        Column::MinTime => microseconds(stats.min_ns).to_string(),
-        Column::MaxTime => microseconds(stats.max_ns).to_string(),
-        Column::AvgTime => microseconds(stats.mean_ns().unwrap_or(0)).to_string(),
+        Column::TotalTime => seconds(stats.total_ns, unit.precision()),
+        Column::MinTime => unit.of(stats.min_ns).to_string(),
+        Column::MaxTime => unit.of(stats.max_ns).to_string(),
+        Column::AvgTime => unit.of(stats.mean_ns().unwrap_or(0)).to_string(),
         Column::Calls => stats.calls.to_string(),
         Column::Errors if stats.errors == 0 => String::new(),
         Column::Errors => stats.errors.to_string(),
         Column::Name => label.to_owned(),
         Column::P50 => stats
             .quantile_ns(0.5)
-            .map_or_else(String::new, |value| microseconds(value).to_string()),
+            .map_or_else(String::new, |value| unit.of(value).to_string()),
         Column::P90 => stats
             .quantile_ns(0.9)
-            .map_or_else(String::new, |value| microseconds(value).to_string()),
+            .map_or_else(String::new, |value| unit.of(value).to_string()),
         Column::P99 => stats
             .quantile_ns(0.99)
-            .map_or_else(String::new, |value| microseconds(value).to_string()),
+            .map_or_else(String::new, |value| unit.of(value).to_string()),
         Column::Bytes if stats.bytes == 0 => String::new(),
         Column::Bytes => stats.bytes.to_string(),
         Column::Errnos => {
@@ -208,12 +237,14 @@ fn cell(
     }
 }
 
-/// The table, one line each, with errno names from `errno`.
+/// The table, one line each, with times in `unit` and errno names from
+/// `errno`.
 #[must_use]
 pub fn table(
     calls: &BTreeMap<SyscallId, SyscallStats>,
     columns: &[Column],
     sort: Option<Column>,
+    unit: Unit,
     errno: &dyn Fn(u16) -> String,
 ) -> Vec<String> {
     let mut rows: Vec<(SyscallId, &SyscallStats)> =
@@ -236,8 +267,9 @@ pub fn table(
     }
 
     let all_time = total.total_ns;
-    let cell =
-        |column, stats: &SyscallStats, label: &str| cell(column, stats, label, all_time, errno);
+    let cell = |column, stats: &SyscallStats, label: &str| {
+        cell(column, stats, label, all_time, unit, errno)
+    };
 
     let line = |cells: &mut dyn Iterator<Item = (Column, String)>| -> String {
         let mut text = String::new();
@@ -247,7 +279,7 @@ pub fn table(
                 text.push(' ');
             }
 
-            let width = column.width();
+            let width = column.width(unit);
             if matches!(column, Column::Name | Column::Errnos) {
                 let _ = write!(text, "{value:<width$}");
             } else {
@@ -261,14 +293,14 @@ pub fn table(
     let rule = line(
         &mut columns
             .iter()
-            .map(|&column| (column, "-".repeat(column.width().max(6)))),
+            .map(|&column| (column, "-".repeat(column.width(unit).max(6)))),
     );
 
     let mut lines = vec![
         line(
             &mut columns
                 .iter()
-                .map(|&column| (column, column.header().to_owned())),
+                .map(|&column| (column, column.header(unit).to_owned())),
         ),
         rule.clone(),
     ];
@@ -321,7 +353,13 @@ mod tests {
             }
         };
 
-        let lines = table(&calls, &Column::DEFAULT, Some(Column::TotalTime), &errno);
+        let lines = table(
+            &calls,
+            &Column::DEFAULT,
+            Some(Column::TotalTime),
+            Unit::Microseconds,
+            &errno,
+        );
         assert_eq!(
             lines,
             [
@@ -335,12 +373,54 @@ mod tests {
         );
 
         let extra = columns("name,calls,p99,errnos").expect("columns");
-        let lines = table(&calls, &extra, Some(Column::Name), &errno);
+        let lines = table(
+            &calls,
+            &extra,
+            Some(Column::Name),
+            Unit::Microseconds,
+            &errno,
+        );
         assert_eq!(
             lines[2].split_whitespace().collect::<Vec<_>>(),
             ["openat", "2", "18", "ENOENT×1"]
         );
         assert!(columns("nonsense").is_err());
         assert_eq!(sort_key("nothing"), Ok(None));
+    }
+
+    /// A call under a microsecond is 0 in strace's units and itself in
+    /// nanoseconds, and the total keeps every nanosecond.
+    #[test]
+    fn nanoseconds_show_what_microseconds_cut_to_zero() {
+        let mut getpid = SyscallStats::default();
+        for duration in [180, 240, 600] {
+            getpid.add(Outcome::Returned(1), Some(duration), 0);
+        }
+
+        let calls = BTreeMap::from([(
+            SyscallId::named(Abi::X86_64, "getpid").expect("getpid"),
+            getpid,
+        )]);
+        let columns = columns("total-time,min-time,max-time,avg-time,calls,name").expect("columns");
+        let lines = |unit| {
+            table(&calls, &columns, None, unit, &|number: u16| {
+                number.to_string()
+            })
+        };
+
+        assert_eq!(
+            lines(Unit::Microseconds)[2],
+            "   0.000001           0           0           0         3 getpid"
+        );
+        assert_eq!(
+            lines(Unit::Nanoseconds),
+            [
+                "       seconds   min nsecs   max nsecs  nsecs/call     calls syscall",
+                "-------------- ----------- ----------- ----------- --------- ----------------",
+                "   0.000001020         180         600         340         3 getpid",
+                "-------------- ----------- ----------- ----------- --------- ----------------",
+                "   0.000001020         180         600         340         3 total",
+            ]
+        );
     }
 }

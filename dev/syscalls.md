@@ -244,6 +244,22 @@ events, so the browser and `microscope report` reuse the same presentation.
 sees the program's first call, and merges it with the samples on one clock.
 With `--window` or `--continuous`, each saved file gets its own span's calls.
 
+## Times in the text
+
+Every engine times calls in nanoseconds. `-T` and `-r` print them as
+strace 7.1 does, to the precision of `--syscall-times=` and
+`--relative-timestamps=` (`present::Precision`), cut rather than rounded.
+The short flags take no value and mean microseconds; clap's
+`overrides_with` makes the last of the short and long forms win, as in
+strace.
+
+The `-c` table keeps strace's microseconds unless `--syscall-times=ns`
+asks for nanoseconds (`summary::Unit`). Then the per-call columns say
+`nsecs`, and `seconds` gets nine decimals and three more places of width,
+so it holds as many whole seconds as strace's column does. `-c` refuses
+`s` and `ms`, which would turn more calls into 0, not fewer; under `-C` they
+change only the lines. `microscope report` always prints microseconds.
+
 ## Testing
 
 - Pure parts, such as the filter, decoders, statistics, and the budget's
@@ -251,7 +267,11 @@ With `--window` or `--continuous`, each saved file gets its own span's calls.
   `syscall_record`).
 - `tests/syscalls.rs` holds the CLI's output to strace's, using the ptrace
   engine, which needs no privilege. Its `bpf` module runs the dual-engine
-  tests through `just test-bpf`.
+  tests through `just test-bpf`. Times differ between runs, so the tests
+  compare their digit counts and columns with strace's, at every
+  precision. The ptrace engine's stops cost microseconds, so only the BPF
+  test `a_call_under_a_microsecond_counts_its_nanoseconds` sees a call
+  shorter than one.
 - `tests/catchpoints.rs` covers catchpoints through `Scenario`.
 - `tests/python/syscalls.rs` traces `tests/fixtures/python/syscalls.py` with
   `-k` on three interpreters. It checks each call's Python lines, a second

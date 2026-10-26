@@ -1123,14 +1123,49 @@ fn result(
     }
 }
 
-/// Seconds with microseconds, as `-T` and `-r` print them.
+/// How finely `-T` and `-r` print a time: strace's PRECISION.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Precision {
+    Seconds,
+    Milliseconds,
+    #[default]
+    Microseconds,
+    Nanoseconds,
+}
+
+impl Precision {
+    /// strace's names, in any case: `s`, `ms`, `us`, `ns`.
+    #[must_use]
+    pub fn named(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "s" => Some(Self::Seconds),
+            "ms" => Some(Self::Milliseconds),
+            "us" => Some(Self::Microseconds),
+            "ns" => Some(Self::Nanoseconds),
+            _ => None,
+        }
+    }
+
+    /// The digits after the point, and the nanoseconds in the last.
+    const fn digits(self) -> (usize, u64) {
+        match self {
+            Self::Seconds => (0, 1_000_000_000),
+            Self::Milliseconds => (3, 1_000_000),
+            Self::Microseconds => (6, 1_000),
+            Self::Nanoseconds => (9, 1),
+        }
+    }
+}
+
+/// Seconds to `precision`, cut rather than rounded, as `-T` and `-r` print
+/// them: `0.000003` in microseconds, `0` in seconds.
 #[must_use]
-pub fn seconds(nanoseconds: u64) -> String {
-    format!(
-        "{}.{:06}",
-        nanoseconds / 1_000_000_000,
-        nanoseconds % 1_000_000_000 / 1_000
-    )
+pub fn seconds(nanoseconds: u64, precision: Precision) -> String {
+    let whole = nanoseconds / 1_000_000_000;
+    match precision.digits() {
+        (0, _) => whole.to_string(),
+        (digits, unit) => format!("{whole}.{:0digits$}", nanoseconds % 1_000_000_000 / unit),
+    }
 }
 
 /// A duration for people: `11 µs`, `2.41 s`.

@@ -1016,7 +1016,13 @@ fn syscall_summary(profile: &Profile, out: &mut impl std::io::Write) -> Result<(
     let errno = |number: u16| errno(microscope::syscalls::Errno(number)).0;
     let sort = summary::sort_key("time").map_err(anyhow::Error::msg)?;
 
-    for line in summary::table(&calls, &summary::Column::DEFAULT, sort, &errno) {
+    for line in summary::table(
+        &calls,
+        &summary::Column::DEFAULT,
+        sort,
+        summary::Unit::Microseconds,
+        &errno,
+    ) {
         writeln!(out, "{line}")?;
     }
 
