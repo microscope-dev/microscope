@@ -435,8 +435,22 @@ impl NativeTracee {
             switches: false,
         };
 
+        // Rings on every CPU would take this user's perf memory that other
+        // recordings share, and a 64 KiB copy leaves no smaller ring to fall
+        // back to: the program is kept to one CPU, and sampled only there.
+        // The threads it starts after inherit it.
+        let allowed = nix::sched::sched_getaffinity(Pid::from_raw(0)).expect("this thread's CPUs");
+        let cpu = (0..nix::sched::CpuSet::count())
+            .find(|&cpu| allowed.is_set(cpu).unwrap_or(false))
+            .expect("a CPU this thread may run on");
+        let mut only = nix::sched::CpuSet::new();
+        only.set(cpu).expect("a CPU in the set");
+        nix::sched::sched_setaffinity(self.pid, &only).expect("keep the program to one CPU");
+
         let pid = self.pid.as_raw().cast_unsigned();
-        let events = super::perf::Events::attach(pid, &options, 4096).expect("open perf events");
+        let cpus = [u32::try_from(cpu).expect("a CPU number fits u32")];
+        let events =
+            super::perf::Events::attach_on(pid, &options, 4096, &cpus).expect("open perf events");
         self.sampling = Some(events);
     }
 

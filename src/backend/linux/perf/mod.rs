@@ -163,6 +163,17 @@ impl Events {
     /// than leaving threads unsampled.
     pub fn attach(pid: u32, options: &EventOptions, budget: usize) -> Result<Self, OpenError> {
         let cpus = online_cpus().map_err(OpenError::Cpus)?;
+        Self::attach_on(pid, options, budget, &cpus)
+    }
+
+    /// Attaches as [`Self::attach`] does, with events only on `cpus`: a
+    /// process kept to them needs no ring on any other.
+    pub fn attach_on(
+        pid: u32,
+        options: &EventOptions,
+        budget: usize,
+        cpus: &[u32],
+    ) -> Result<Self, OpenError> {
         raise_descriptor_limit();
         let mut attr = attr(options, 0);
         let mut opened = std::collections::BTreeSet::new();
@@ -194,13 +205,13 @@ impl Events {
 
                 let Some(events) = owner.as_mut() else {
                     // The first thread's events own the rings.
-                    match rings(attr, thread, &cpus, options) {
+                    match rings(attr, thread, cpus, options) {
                         Ok((rings, pages, watermark)) => {
                             attr.wakeup_watermark = watermark;
                             owner = Some(Self {
                                 rings,
                                 pages,
-                                cpus: cpus.clone(),
+                                cpus: cpus.to_vec(),
                                 followers: Vec::new(),
                             });
                         }
@@ -213,7 +224,7 @@ impl Events {
                     continue;
                 };
 
-                events.follow(&attr, thread, &cpus)?;
+                events.follow(&attr, thread, cpus)?;
             }
         }
 
