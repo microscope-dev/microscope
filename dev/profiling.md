@@ -292,23 +292,23 @@ isolates share under V8's flags for shared structs and strings, which Node
 leaves off and the reader does not check. A program whose threads stay
 parked then costs two `/proc` reads per thread each time.
 
-The recorder keeps each thread's `syscall`, `status`, and `schedstat`
-files open between snapshots (`proc_status::ThreadFiles`,
-`tasks::keep_files`) and reads them again at offset 0, which has the
-kernel write the record anew: one `pread` instead of an open, two reads,
-and a close. A kept file holds the thread's `struct pid`, not its number,
-so once the thread is gone every read fails with `ESRCH`, even after a
-later thread is given its id; the files cannot read another thread. Each
-snapshot reads every kept `schedstat`, the shortest record, and drops and
-reopens the files of a thread that is gone, so that a thread given a
-reused id gets its own start time, which the files read once from `stat`
-when they open. Files are kept for the first 256 threads by id, three
-descriptors each; a thread beyond them has its files opened for its read
-and closed after it, and is read only if they are of the thread whose
-start time the snapshot found. The counts come from `status`, the
-largest and slowest record: `stat` has none, and `schedstat`'s count of
-times the thread ran is kept only when the scheduler noted it queued
-(`sched_info_arrive`), so it can miss a run.
+The recorder keeps each thread's `syscall`, `status`, and `schedstat` files
+open between snapshots (`proc_status::ThreadFiles`, `tasks::keep_files`) and
+reads them again at offset 0, which has the kernel write the record anew:
+one `pread` instead of an open, two reads, and a close. A kept file holds
+the thread's `struct pid`, not its number, so once the thread is gone every
+read fails with `ESRCH`, even after a later thread is given its id; the
+files cannot read another thread. Each snapshot reads every kept
+`schedstat`, the shortest record (`status` on a kernel without
+`CONFIG_SCHED_INFO`, which has none), and drops and reopens the files of a
+thread that is gone, so that a thread given a reused id gets its own start
+time, which the files read once from `stat` when they open. Files are kept
+for the first 256 threads by id, three descriptors each; a thread beyond
+them has its files opened for its read and closed after it, and is read only
+if they are of the thread whose start time the snapshot found. The counts
+come from `status`, the largest and slowest record: `stat` has none, and
+`schedstat`'s count of times the thread ran is kept only when the scheduler
+noted it queued (`sched_info_arrive`), so it can miss a run.
 
 A read of a thread that did run reads its memory in pages it keeps for the
 read (`StopMemory`). It first reads, in one `process_vm_readv` call, every

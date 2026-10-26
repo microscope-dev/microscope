@@ -316,13 +316,14 @@ pub(super) fn context_switches(status: &[u8]) -> Option<(u64, u64)> {
 /// files are opened through one descriptor of the thread's directory,
 /// which holds the same, so they name the thread its start time does.
 /// Its `schedstat`, the shortest record a thread has, tells whether the
-/// thread is still there, and so whether the start time is still its own.
+/// thread is still there, and so whether the start time is still its own;
+/// a kernel without `CONFIG_SCHED_INFO` has none, and `status` tells it.
 #[derive(Debug)]
 pub struct ThreadFiles {
     start: u64,
     syscall: std::fs::File,
     status: std::fs::File,
-    schedstat: std::fs::File,
+    schedstat: Option<std::fs::File>,
 
     /// Whether a read of them failed, as every read does once the thread
     /// is gone: they are of no use, and a later thread may have its id.
@@ -359,7 +360,7 @@ impl ThreadFiles {
             start,
             syscall: file("syscall")?,
             status: file("status")?,
-            schedstat: file("schedstat")?,
+            schedstat: file("schedstat").ok(),
             failed: std::cell::Cell::new(false),
         })
     }
@@ -378,7 +379,10 @@ impl ThreadFiles {
     /// Whether the thread is still there, so that a thread given its id
     /// later is not taken for it. One read of its shortest record.
     pub fn live(&self) -> bool {
-        !self.failed() && self.reread(&self.schedstat).is_ok()
+        !self.failed()
+            && self
+                .reread(self.schedstat.as_ref().unwrap_or(&self.status))
+                .is_ok()
     }
 
     /// The thread, if it is asleep in a system call.
@@ -582,6 +586,41 @@ mod tests {
         }
         assert!(files.failed());
         assert!(ThreadFiles::open(process, thread).is_err());
+    }
+
+    /// Without `schedstat`, as a kernel without `CONFIG_SCHED_INFO`
+    /// leaves it, a thread's files still say whether it is there.
+    #[test]
+    fn a_thread_is_known_gone_without_its_schedstat() {
+        let process = std::process::id();
+        let (ready, started) = std::sync::mpsc::channel();
+        let (reader, writer) = nix::unistd::pipe().unwrap();
+        let blocked = std::thread::spawn(move || {
+            ready
+                .send(u32::try_from(nix::unistd::gettid().as_raw()).unwrap())
+                .unwrap();
+            let mut byte = [0];
+            let _ = nix::unistd::read(&reader, &mut byte);
+        });
+        let thread = started
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .unwrap();
+        let files = ThreadFiles {
+            schedstat: None,
+            ..ThreadFiles::open(process, thread).unwrap()
+        };
+        assert!(files.live());
+
+        drop(writer);
+        blocked.join().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while files.live() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a thread gone is still live"
+            );
+            std::thread::yield_now();
+        }
     }
 
     /// A record longer than the first buffer is read whole.
