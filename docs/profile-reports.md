@@ -56,6 +56,18 @@ With `--tree`, all paths from the selected function are merged into one
 subtree. Recursive calls remain in that subtree. Other callers' paths are
 not printed, and `--min-percent` is relative to the focused subtree.
 
+To see where calls to a function come from, rather than what it calls, add
+`--invert`:
+
+```sh
+microscope report reads.usprof --focus '[kernel: read]' --invert --tree
+```
+
+This prints the function's callers as a tree, each caller's callers nested
+under it, out to the outermost frame. The browser's "Inverted" checkbox
+shows the same view. It is how to get from a system call's leaf frame past
+libc's wrappers to the code that made the calls.
+
 If several functions have the same displayed name, the command lists them
 and refuses to choose. Copy a qualified name from that list, for example
 `--focus 'leaf [spin.c:12]'`. A qualifier includes the module when known and

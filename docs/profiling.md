@@ -104,7 +104,9 @@ microscope report server.usprof
 
 Use `--tree` for a call tree, `--limit N` to change the function count, and
 `--min-percent PERCENT` to hide small tree nodes. `--native` shows the stacks
-that native threads ran instead of logical task stacks.
+that native threads ran instead of logical task stacks. `--invert --tree`
+prints a caller tree instead: each function that ran, with its callers nested
+under it. `--invert` needs `--tree` and does not work with `--base`.
 
 Each inlined function gets its own row. When a small inlined helper takes
 most of a loop's own time, `--fold-inlines` counts it as part of the function

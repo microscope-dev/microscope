@@ -73,6 +73,7 @@ const fn options() -> report::Options<'static> {
         source: Source::Samples,
         look: Look::Native,
         focus: None,
+        invert: false,
     }
 }
 

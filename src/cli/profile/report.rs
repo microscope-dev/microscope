@@ -15,6 +15,10 @@ pub struct Options<'a> {
     pub source: Source,
     pub look: Look,
     pub focus: Option<&'a str>,
+
+    /// With `tree` and `focus`, the focused function's callers instead of
+    /// its callees.
+    pub invert: bool,
 }
 
 pub fn write(
@@ -262,26 +266,14 @@ fn focus(
     if options.tree {
         let mut selected = query;
         selected.transforms.push(Transform::Focus(key));
+        selected.invert = options.invert;
         let tree = keys.aggregate(&selected);
         if let Some((base_keys, base_key)) = base_keys.as_ref().zip(base_key) {
             selected.transforms = vec![Transform::Focus(base_key)];
             let base_tree = base_keys.aggregate(&selected);
             return compared_tree((&keys, &tree), (base_keys, &base_tree), options, unit, out);
         }
-        writeln!(out, "{:>18} {:>18}  function", "total", "own")?;
-        for node in 0..tree.len() {
-            if percent(tree.total[node], tree.weight) < options.min_percent {
-                continue;
-            }
-            writeln!(
-                out,
-                "{:>18} {:>18}  {}{}",
-                weight(tree.total[node].into(), unit, false),
-                weight(tree.own[node].into(), unit, false),
-                "  ".repeat(tree.depth[node] as usize),
-                keys.name(tree.key[node])
-            )?;
-        }
+        focused_tree(&keys, &tree, options, unit, out)?;
     } else {
         writeln!(out, "Callers (outermost occurrence):")?;
         relations(
@@ -304,6 +296,38 @@ fn focus(
             options,
             unit,
             out,
+        )?;
+    }
+    Ok(())
+}
+
+/// A focused function's subtree, or with `invert` its callers, which have
+/// no own cost of their own to show.
+fn focused_tree(
+    keys: &Keys<'_>,
+    tree: &CallTree,
+    options: &Options<'_>,
+    unit: &str,
+    out: &mut impl Write,
+) -> Result<()> {
+    if options.invert {
+        writeln!(out, "{:>18}  function", "total")?;
+    } else {
+        writeln!(out, "{:>18} {:>18}  function", "total", "own")?;
+    }
+    for node in 0..tree.len() {
+        if percent(tree.total[node], tree.weight) < options.min_percent {
+            continue;
+        }
+        write!(out, "{:>18}", weight(tree.total[node].into(), unit, false))?;
+        if !options.invert {
+            write!(out, " {:>18}", weight(tree.own[node].into(), unit, false))?;
+        }
+        writeln!(
+            out,
+            "  {}{}",
+            "  ".repeat(tree.depth[node] as usize),
+            keys.name(tree.key[node])
         )?;
     }
     Ok(())

@@ -713,11 +713,12 @@ impl Profile {
     /// their children.
     #[must_use]
     pub fn call_tree(&self, view: StackView) -> Vec<CallNode> {
-        self.call_tree_of(view, Source::Samples, Granularity::Function)
+        self.call_tree_of(view, Source::Samples, Granularity::Function, false)
     }
 
     /// The call tree of `source`, its frames told apart as `granularity`
-    /// says, from the outermost callers in; parents come before their
+    /// says, from the outermost callers in, or with `invert` from the
+    /// innermost frames out to their callers; parents come before their
     /// children.
     #[must_use]
     pub fn call_tree_of(
@@ -725,10 +726,12 @@ impl Profile {
         view: StackView,
         source: Source,
         granularity: Granularity,
+        invert: bool,
     ) -> Vec<CallNode> {
         let keys = self.keys(granularity);
         let tree = keys.aggregate(&Query {
             source,
+            invert,
             ..query(view)
         });
 

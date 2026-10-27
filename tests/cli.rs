@@ -6355,6 +6355,67 @@ fn report_folds_inlined_functions_into_their_callers() {
     );
 }
 
+/// An inverted tree nests each function's callers under it, out to the
+/// outermost frame, for every function or only the focused one.
+#[test]
+fn report_inverts_the_call_tree_into_callers() {
+    let scratch = support::ScratchDir::new("cli-report-invert");
+    let profile = scratch.path().join("spin.folded");
+    std::fs::write(
+        &profile,
+        "_start;main;a;leaf 30\n_start;main;b;leaf 10\n_start;main;setup 10\n",
+    )
+    .unwrap();
+    let profile = profile.to_string_lossy();
+
+    let callers = assert_success(microscope(&["report", "--invert", "--tree", &profile]));
+    assert_in_order(
+        &callers,
+        &[
+            " 80.00%  leaf",
+            " 60.00%    a",
+            " 60.00%      main",
+            " 60.00%        _start",
+            " 20.00%    b",
+            " 20.00%  setup",
+        ],
+    );
+
+    let focused = assert_success(microscope(&[
+        "report", "--focus", "leaf", "--invert", "--tree", &profile,
+    ]));
+    // Each name with where it starts, which its depth indents by two.
+    let rows: Vec<(usize, &str)> = focused
+        .lines()
+        .skip_while(|line| !line.ends_with("function"))
+        .skip(1)
+        .filter_map(|line| {
+            let name = line.split_whitespace().last()?;
+            Some((line.len() - name.len(), name))
+        })
+        .collect();
+    let outermost = rows.iter().map(|(start, _)| *start).min().unwrap_or(0);
+    let depths: Vec<_> = rows
+        .iter()
+        .map(|&(start, name)| ((start - outermost) / 2, name))
+        .collect();
+    assert_eq!(
+        depths,
+        [
+            (0, "leaf"),
+            (1, "a"),
+            (2, "main"),
+            (3, "_start"),
+            (1, "b"),
+            (2, "main"),
+            (3, "_start"),
+        ],
+        "{focused}"
+    );
+
+    assert_failure(&microscope(&["report", "--invert", &profile]), "--tree");
+}
+
 #[test]
 fn report_compares_and_focuses_from_the_command_line() {
     let scratch = support::ScratchDir::new("cli-report-query");

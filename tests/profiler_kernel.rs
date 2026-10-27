@@ -107,6 +107,18 @@ fn kernel_read_samples_cover_cpu_time_and_keep_the_calling_user_stack() {
         u128::from(sampled) * 10 >= u128::from(counted) * 9,
         "sampled {sampled} of {counted} ns"
     );
+    // The read's callers reach past libc's wrappers to the program.
+    let callers = Command::new(env!("CARGO_BIN_EXE_microscope"))
+        .args(["report", "--focus", "[kernel: read]", "--invert", "--tree"])
+        .arg(scratch.path().join("true.usprof"))
+        .output()
+        .expect("report the read's callers");
+    let callers = String::from_utf8_lossy(&callers.stdout);
+    assert!(
+        callers.lines().any(|line| line.ends_with(" main")),
+        "{callers}"
+    );
+
     // Loading the BPF walker is setup, not a cost of the program running.
     let (used, _) = kernel.recorder_cpu();
     let setup = kernel.recorder_setup();

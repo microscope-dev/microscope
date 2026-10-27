@@ -226,6 +226,12 @@ pub struct ReportArgs {
     #[arg(long, conflicts_with = "lines")]
     fold_inlines: bool,
 
+    /// With --tree, nest each function's callers under it, out to the
+    /// outermost frame, as the web UI's "Inverted" does: with --focus, the
+    /// callers of that function only.
+    #[arg(long, requires = "tree", conflicts_with = "base")]
+    invert: bool,
+
     /// Hide call-tree nodes below this percentage of the total.
     #[arg(long, value_name = "PERCENT", default_value_t = 1.0)]
     min_percent: f64,
@@ -905,7 +911,7 @@ fn ordinary_report(
 
     writeln!(out)?;
     if args.tree {
-        let tree = profile.call_tree_of(view, source, granularity);
+        let tree = profile.call_tree_of(view, source, granularity, args.invert);
         let mut depth = vec![0_usize; tree.len()];
 
         // Each node with its children after it, depth first.
@@ -936,14 +942,19 @@ fn ordinary_report(
                 continue;
             }
 
-            writeln!(
-                out,
-                "{:6.2}% {:6.2}%  {}{}",
-                percent(node.total),
-                percent(node.own),
-                "  ".repeat(depth[index]),
-                node.name
-            )?;
+            // A caller tree's own cost is that of the outermost frames, which
+            // says nothing about the function.
+            if args.invert {
+                write!(out, "{:6.2}%", percent(node.total))?;
+            } else {
+                write!(
+                    out,
+                    "{:6.2}% {:6.2}%",
+                    percent(node.total),
+                    percent(node.own)
+                )?;
+            }
+            writeln!(out, "  {}{}", "  ".repeat(depth[index]), node.name)?;
             for &child in children[index].iter().rev() {
                 depth[child] = depth[index] + 1;
                 pending.push(child);
@@ -1049,6 +1060,7 @@ fn selected_report(
                 StackView::Python => microscope::profiler::Look::Python,
             },
             focus: args.focus.as_deref(),
+            invert: args.invert,
         },
         out,
     )
