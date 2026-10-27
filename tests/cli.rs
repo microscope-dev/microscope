@@ -649,6 +649,14 @@ fn command_line_errors_explain_themselves() {
             ],
             "does not match the image recorded in the core dump: the build-id note differs; allow module mismatches",
         ),
+        (
+            &["record", "--stack-bytes", "65536", "--", "true"],
+            "--stack-bytes is at most 65528, the most stack perf copies per sample",
+        ),
+        (
+            &["record", "--stack-bytes", "1000000", "--", "true"],
+            "--stack-bytes is at most 65528, the most stack perf copies per sample",
+        ),
     ] {
         assert_failure(&microscope(arguments), expected);
     }

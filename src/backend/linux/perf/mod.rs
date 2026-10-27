@@ -55,15 +55,15 @@ pub struct EventOptions {
 #[derive(Debug, thiserror::Error)]
 pub enum OpenError {
     #[error(
-        "the kernel does not let this user sample the program (perf_event_paranoid is {paranoid}): {source}; kernel sampling needs CAP_PERFMON (or CAP_SYS_ADMIN), or a lower kernel.perf_event_paranoid setting"
+        "the kernel does not let this user sample the program (perf_event_paranoid is {paranoid}): {error}; kernel sampling needs CAP_PERFMON (or CAP_SYS_ADMIN), or a lower kernel.perf_event_paranoid setting"
     )]
     Denied {
         paranoid: String,
-        source: std::io::Error,
+        error: std::io::Error,
     },
 
-    #[error("opening a perf event on CPU {cpu} failed: {source}")]
-    Event { cpu: u32, source: std::io::Error },
+    #[error("opening a perf event on CPU {cpu} failed: {error}")]
+    Event { cpu: u32, error: std::io::Error },
 
     #[error("mapping a perf ring failed: {0}")]
     Ring(std::io::Error),
@@ -229,8 +229,8 @@ impl Events {
                             });
                         }
 
-                        Err(OpenError::Event { source, .. })
-                            if source.raw_os_error() == Some(libc::ESRCH) => {}
+                        Err(OpenError::Event { error, .. })
+                            if error.raw_os_error() == Some(libc::ESRCH) => {}
                         Err(error) => return Err(error),
                     }
 
@@ -260,10 +260,10 @@ impl Events {
             let fd = match sys::open(attr, thread, i32::try_from(cpu).unwrap_or(i32::MAX)) {
                 Ok(fd) => fd,
                 Err(error) if error.raw_os_error() == Some(libc::ESRCH) => return Ok(()),
-                Err(source) => return Err(OpenError::Event { cpu, source }),
+                Err(error) => return Err(OpenError::Event { cpu, error }),
             };
 
-            sys::set_output(&fd, ring.fd()).map_err(|source| OpenError::Event { cpu, source })?;
+            sys::set_output(&fd, ring.fd()).map_err(|error| OpenError::Event { cpu, error })?;
             self.followers.push(fd);
         }
 
@@ -305,7 +305,7 @@ impl Events {
             .iter()
             .zip(&self.cpus)
             .map(|(ring, &cpu)| {
-                let failed = |source| OpenError::Event { cpu, source };
+                let failed = |error| OpenError::Event { cpu, error };
                 let fd =
                     sys::open(&attr, -1, i32::try_from(cpu).unwrap_or(i32::MAX)).map_err(failed)?;
                 sys::set_output(&fd, ring.fd()).map_err(failed)?;
@@ -566,16 +566,16 @@ fn raise_descriptor_limit() {
 fn open_each(attr: &sys::Attr, pid: i32, cpus: &[u32]) -> Result<Vec<OwnedFd>, OpenError> {
     cpus.iter()
         .map(|&cpu| {
-            sys::open(attr, pid, i32::try_from(cpu).unwrap_or(i32::MAX)).map_err(|source| {
-                match source.raw_os_error() {
+            sys::open(attr, pid, i32::try_from(cpu).unwrap_or(i32::MAX)).map_err(
+                |error| match error.raw_os_error() {
                     Some(libc::EACCES | libc::EPERM) => OpenError::Denied {
                         paranoid: std::fs::read_to_string("/proc/sys/kernel/perf_event_paranoid")
                             .map_or_else(|_| "unknown".into(), |text| text.trim().to_owned()),
-                        source,
+                        error,
                     },
-                    _ => OpenError::Event { cpu, source },
-                }
-            })
+                    _ => OpenError::Event { cpu, error },
+                },
+            )
         })
         .collect()
 }
@@ -1224,6 +1224,29 @@ mod tests {
             .find(|pair| pair[0].2 && pair[1].0 > pair[0].1 + 0x1000)
             .map(|pair| pair[0].1)
             .expect("a readable mapping with a gap after it")
+    }
+
+    /// Errors print with their chain of causes, so one whose message names
+    /// its cause must not also report it as its source.
+    #[test]
+    fn open_errors_name_their_cause_once() {
+        let cause = || std::io::Error::from_raw_os_error(libc::EINVAL);
+        for error in [
+            OpenError::Denied {
+                paranoid: "2".into(),
+                error: cause(),
+            },
+            OpenError::Event {
+                cpu: 0,
+                error: cause(),
+            },
+            OpenError::Ring(cause()),
+            OpenError::Cpus(cause()),
+            OpenError::NoProcess(cause()),
+        ] {
+            let shown = format!("{:#}", anyhow::Error::from(error));
+            assert_eq!(shown.matches("Invalid argument").count(), 1, "{shown}");
+        }
     }
 
     #[test]

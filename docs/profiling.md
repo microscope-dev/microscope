@@ -78,7 +78,7 @@ copied memory end. A truncated stack records its reason. `dev` copies 32 KiB
 of each sampled stack, and `max` 16 KiB, since at its rate more makes the
 kernel drop samples. A program without frame pointers whose frames
 need more ends with `[stack copy exhausted]`, and the report suggests a larger
-`--stack-bytes`.
+`--stack-bytes`. perf copies at most 65528 bytes per sample.
 
 Code a just-in-time compiler generates has no file. A program that writes a
 perf map, `/tmp/perf-PID.map`, names it: stacks go on through the functions

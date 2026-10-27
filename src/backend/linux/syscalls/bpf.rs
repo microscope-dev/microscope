@@ -855,7 +855,7 @@ pub enum BpfError {
     System(#[from] nix::errno::Errno),
 
     #[error("following what the program maps, for its stacks, failed: {0}")]
-    Mappings(#[source] super::super::perf::OpenError),
+    Mappings(super::super::perf::OpenError),
 }
 
 /// What to do if the engine is missing a privilege.

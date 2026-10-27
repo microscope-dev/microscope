@@ -611,7 +611,7 @@ pub enum SamplerError {
     #[error("loading the BPF program for Python stacks failed: {0}")]
     Load(String),
 
-    #[error("{0}")]
+    #[error(transparent)]
     Events(#[from] perf::OpenError),
 
     #[error("attaching the BPF program for Python stacks to the perf events failed: {0}")]

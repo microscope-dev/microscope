@@ -66,8 +66,9 @@ pub struct RecordArgs {
     #[arg(long, conflicts_with = "function")]
     kernel: bool,
 
-    /// Bytes of stack each sample copies, over the preset's.
-    #[arg(long, value_name = "BYTES")]
+    /// Bytes of stack each sample copies, over the preset's: 0 to 65528,
+    /// rounded up to a multiple of 8.
+    #[arg(long, value_name = "BYTES", value_parser = stack_bytes)]
     stack_bytes: Option<u32>,
 
     /// Record each interval a thread spends off its CPU, blocked or
@@ -294,6 +295,19 @@ impl LookArgs {
 /// as its debugger attaches, and a live one costs it nothing.
 const SNAPSHOT_EVERY: Duration = Duration::from_millis(100);
 const LIVE_EVERY: Duration = Duration::from_millis(10);
+
+/// The bytes `--stack-bytes` asks for, which perf must be able to copy.
+fn stack_bytes(text: &str) -> Result<u32, String> {
+    let bytes: u64 = text.parse().map_err(|error| format!("{error}"))?;
+    u32::try_from(bytes)
+        .ok()
+        .filter(|&bytes| bytes <= MOST_STACK_COPY)
+        .ok_or_else(|| {
+            format!(
+                "--stack-bytes is at most {MOST_STACK_COPY}, the most stack perf copies per sample"
+            )
+        })
+}
 
 /// The engine `--python ENGINE` names.
 fn python_engine(engine: &str) -> Result<PythonEngine> {
