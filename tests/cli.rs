@@ -6309,6 +6309,52 @@ fn recorder_cost_keeps_starting_up_apart_and_short_runs_unjudged() {
     assert!(cost.ends_with("% of one CPU)."), "{long}");
 }
 
+/// An inlined helper that does a loop's work takes its own time from the
+/// function it was inlined into, unless the report folds inlines.
+#[test]
+fn report_folds_inlined_functions_into_their_callers() {
+    let scratch = support::ScratchDir::new("cli-fold-inlines");
+    let profile = scratch.path().join("inline.usprof");
+    let recorded = microscope_command()
+        .args(["record", "-o"])
+        .arg(&profile)
+        .arg("--")
+        .arg(fixture("build/test-programs/profile-inline"))
+        .output()
+        .expect("run microscope record");
+    assert!(recorded.status.success(), "{recorded:?}");
+    let profile = profile.to_string_lossy();
+    let row = |report: &str, name: &str| {
+        report
+            .lines()
+            .find(|line| line.split_whitespace().last() == Some(name))
+            .map(str::to_owned)
+    };
+
+    let split = assert_success(microscope(&["report", &profile]));
+    assert!(row(&split, "step").is_some(), "{split}");
+
+    let folded = assert_success(microscope(&["report", "--fold-inlines", &profile]));
+    assert!(row(&folded, "step").is_none(), "{folded}");
+    // All of scan's time is its own once step is part of it.
+    let costs = row(&folded, "scan").map(|row| {
+        let columns: Vec<_> = row.split_whitespace().collect();
+        (columns[0].to_owned(), columns[1].to_owned())
+    });
+    assert!(costs.is_some_and(|(own, total)| own == total), "{folded}");
+    for options in [&["--tree"][..], &["--focus", "scan"]] {
+        let report = assert_success(microscope(
+            &[&["report", "--fold-inlines"][..], options, &[&profile]].concat(),
+        ));
+        assert!(row(&report, "scan").is_some(), "{report}");
+        assert!(row(&report, "step").is_none(), "{report}");
+    }
+    assert_failure(
+        &microscope(&["report", "--fold-inlines", "--lines", &profile]),
+        "cannot be used with",
+    );
+}
+
 #[test]
 fn report_compares_and_focuses_from_the_command_line() {
     let scratch = support::ScratchDir::new("cli-report-query");

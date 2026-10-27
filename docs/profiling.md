@@ -106,6 +106,11 @@ Use `--tree` for a call tree, `--limit N` to change the function count, and
 `--min-percent PERCENT` to hide small tree nodes. `--native` shows the stacks
 that native threads ran instead of logical task stacks.
 
+Each inlined function gets its own row. When a small inlined helper takes
+most of a loop's own time, `--fold-inlines` counts it as part of the function
+it was inlined into, as the browser's "functions, inlines folded" does. It
+works with `--tree`, `--focus`, and `--base`, but not with `--lines`.
+
 Open the profile in the browser for flame views, timelines, source costs,
 disassembly, tasks, blocked time, and instrumentation zones:
 

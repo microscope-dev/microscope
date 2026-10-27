@@ -188,6 +188,7 @@ pub struct RecordArgs {
 }
 
 #[derive(Debug, clap::Args)]
+#[expect(clippy::struct_excessive_bools, reason = "one per flag")]
 pub struct ReportArgs {
     /// The profile to report, or a directory of --continuous segments.
     file: PathBuf,
@@ -219,6 +220,11 @@ pub struct ReportArgs {
     /// Tell frames apart by their lines, not only their functions.
     #[arg(long)]
     lines: bool,
+
+    /// Count each inlined function as part of the function it was inlined
+    /// into, as the web UI's "functions, inlines folded" does.
+    #[arg(long, conflicts_with = "lines")]
+    fold_inlines: bool,
 
     /// Hide call-tree nodes below this percentage of the total.
     #[arg(long, value_name = "PERCENT", default_value_t = 1.0)]
@@ -276,6 +282,18 @@ pub struct LookArgs {
     /// own frames.
     #[arg(long, visible_alias = "js")]
     python: bool,
+}
+
+impl ReportArgs {
+    const fn granularity(&self) -> Granularity {
+        if self.lines {
+            Granularity::Line
+        } else if self.fold_inlines {
+            Granularity::PhysicalFunction
+        } else {
+            Granularity::Function
+        }
+    }
 }
 
 impl LookArgs {
@@ -875,11 +893,7 @@ fn ordinary_report(
         (Source::Samples, profile.total_weight())
     };
 
-    let granularity = if args.lines {
-        Granularity::Line
-    } else {
-        Granularity::Function
-    };
+    let granularity = args.granularity();
 
     let percent = |value: u64| {
         if total == 0 {
@@ -1023,11 +1037,7 @@ fn selected_report(
             tree: args.tree,
             limit: args.limit,
             min_percent: args.min_percent,
-            granularity: if args.lines {
-                Granularity::Line
-            } else {
-                Granularity::Function
-            },
+            granularity: args.granularity(),
             source: if args.waits {
                 Source::Waits
             } else {
