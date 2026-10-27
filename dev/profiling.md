@@ -261,7 +261,11 @@ thread must be asleep in a system call (`/proc/PID/task/TID/syscall`) before
 and after the read, with the same record. Its context-switch counts
 (`/proc/PID/task/TID/status`) must be the same before and after. To run and
 sleep again, a thread gives up its CPU, which counts. A thread that may have
-run counts as changed. Every thread left out for another reason is named in
+run counts as changed. The note `threads changed while read: 12, 13` keeps
+these threads' ids at the snapshot's start time without counting them as
+snapshot failures. Use these notes, not the recording-wide changed count,
+when counting omitted reads in a thread's time window.
+Every thread left out for another reason is named in
 the snapshot's one problem, `frames not read live: threads 12, 13: REASON;
 ...`. `LiveStop::stack` bounds each thread's stack by the thread pointers
 glibc lists: a thread's stack lies below its own thread pointer and above the

@@ -2183,6 +2183,15 @@ impl Processor {
         self.builder.count(AccountKind::LiveSnapshots as u32, 1);
         self.builder
             .count(AccountKind::SnapshotChanged as u32, snapshot.changed);
+        if !snapshot.changed_threads.is_empty() {
+            let threads = snapshot
+                .changed_threads
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            self.snapshot_noted(start, &format!("threads changed while read: {threads}"));
+        }
         self.tasks(pid, (start, end), weight, snapshot);
     }
 
@@ -2658,6 +2667,50 @@ pub use crate::backend::perf::sys::thread_cpu;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changed_threads_keep_their_time_and_ids_without_counting_as_failures() {
+        let mut processor = Processor::new(DebugFileSearch::default(), 64);
+        let pid = Pid::new(7);
+        processor.live_task_snapshot(
+            pid,
+            (1_000, 1_100),
+            100,
+            &Snapshot {
+                changed: 3,
+                changed_threads: vec![12, 34],
+                ..Snapshot::default()
+            },
+        );
+        processor.live_task_snapshot(pid, (2_000, 2_100), 100, &Snapshot::default());
+        processor.live_task_snapshot(
+            pid,
+            (3_000, 3_100),
+            100,
+            &Snapshot {
+                changed: 1,
+                changed_threads: vec![56],
+                problems: vec!["first problem".to_owned(), "second problem".to_owned()],
+                ..Snapshot::default()
+            },
+        );
+        let profile = super::super::Profile {
+            capture: processor.finish(),
+        };
+        let profile = super::super::Profile::from_bytes(&profile.to_bytes().unwrap())
+            .unwrap()
+            .profile;
+        assert_eq!(profile.live_snapshots(), (3, 4));
+        assert_eq!(profile.task_snapshots(), (3, 0, 2));
+        assert_eq!(
+            profile.task_snapshot_problems(),
+            [
+                (1_000, "threads changed while read: 12, 34".to_owned()),
+                (3_000, "threads changed while read: 56".to_owned()),
+                (3_000, "first problem, and 1 more".to_owned()),
+            ]
+        );
+    }
 
     /// A segment cut where every record was processed, with nothing
     /// recorded after it, ends no earlier than it begins.

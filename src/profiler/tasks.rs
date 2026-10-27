@@ -175,6 +175,9 @@ pub struct Snapshot {
     /// because they changed while it read them.
     pub changed: u64,
 
+    /// The published-frame threads among `changed`, by native id.
+    pub changed_threads: Vec<u64>,
+
     /// The labels the program's runtimes gave each thread, by its id, as
     /// they were when read.
     pub thread_labels: Vec<(u32, Labels)>,
@@ -1374,7 +1377,10 @@ impl LiveRuntime<'_> {
                         .map(|frame| WaitFrame::Interpreted(InterpretedWait::of_frame(frame)))
                         .collect(),
                 }),
-                Ok(None) => snapshot.changed += 1,
+                Ok(None) => {
+                    snapshot.changed += 1;
+                    snapshot.changed_threads.push(number);
+                }
                 Err(reason) => unread.entry(reason).or_default().push(number),
             }
         }

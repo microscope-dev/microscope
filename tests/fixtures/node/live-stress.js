@@ -20,6 +20,8 @@
 // every phase, `ready TID TIME`; and as it stops, `done TID TIME`, with
 // TIME process.hrtime.bigint(). Between ready and done, the thread runs only
 // these sites and the code that leads to them.
+// Calls to churn also report their frames once per caller and phase: V8
+// can wait while compiling churn, before churn has a JavaScript frame.
 //
 // The sites, each of which blocks in native code that JavaScript called:
 //
@@ -54,6 +56,7 @@ const PHASES = 4;
 const tid = Number(fs.readlinkSync('/proc/thread-self').split('/').pop());
 const cell = new Int32Array(new SharedArrayBuffer(4));
 const seen = new Set();
+const churned = new Set();
 let garbage = [];
 let phase = 0;
 
@@ -72,7 +75,12 @@ function first(site) {
 
 // Objects of shapes that change, kept a while, so that the collector moves
 // them and code that read them deoptimizes.
-function churn(i) {
+function churn(i, site) {
+  const name = `churn-${site} ${phase} ${tid}`;
+  if (!churned.has(name)) {
+    churned.add(name);
+    truth.blocking(name);
+  }
   const object = i % 3 === 0 ? {a: i, b: [i, i + 1]} : i % 3 === 1 ? {s: `x${i}`} : [i, 'y', {z: i}];
   garbage.push(object);
   if (garbage.length > 2000) {
@@ -83,24 +91,24 @@ function churn(i) {
 
 function siteWait(i) {
   const name = first('wait'); if (name) truth.blocking(name), Atomics.wait(cell, 0, 0, BLOCK_MS); else Atomics.wait(cell, 0, 0, BLOCK_MS);
-  return churn(i);
+  return churn(i, 'wait');
 }
 
 function nestedInner(i) {
   const name = first('nested'); if (name) truth.blocking(name), Atomics.wait(cell, 0, 0, BLOCK_MS); else Atomics.wait(cell, 0, 0, BLOCK_MS);
-  return churn(i);
+  return churn(i, 'nested-inner');
 }
 
 function siteNested(i) {
   addon.inspect({}, 'text', function nestedCallback() {
     nestedInner(i);
   });
-  return churn(i);
+  return churn(i, 'nested');
 }
 
 function reviverInner(i) {
   const name = first('reviver'); if (name) truth.blocking(name), Atomics.wait(cell, 0, 0, BLOCK_MS); else Atomics.wait(cell, 0, 0, BLOCK_MS);
-  return churn(i);
+  return churn(i, 'reviver-inner');
 }
 
 function siteReviver(i) {
@@ -110,12 +118,12 @@ function siteReviver(i) {
     }
     return value;
   });
-  return churn(i);
+  return churn(i, 'reviver');
 }
 
 function sortInner(i) {
   const name = first('sort'); if (name) truth.blocking(name), Atomics.wait(cell, 0, 0, BLOCK_MS); else Atomics.wait(cell, 0, 0, BLOCK_MS);
-  return churn(i);
+  return churn(i, 'sort-inner');
 }
 
 function siteSort(i) {
@@ -123,18 +131,18 @@ function siteSort(i) {
     sortInner(i);
     return a - b;
   });
-  return churn(i);
+  return churn(i, 'sort');
 }
 
 function siteFast(i) {
   const name = first('fast'); if (name) truth.blocking(name), fast.nap(BLOCK_MS * 1000); else fast.nap(BLOCK_MS * 1000);
-  return churn(i);
+  return churn(i, 'fast');
 }
 
 function siteMixed(i) {
   const value = i % 97 === 0 ? `s${i}` : i;
   const name = first('mixed'); if (name) truth.blocking(name), Atomics.wait(cell, 0, 0, BLOCK_MS + 0 * `${value}`.length); else Atomics.wait(cell, 0, 0, BLOCK_MS + 0 * `${value}`.length);
-  return churn(i);
+  return churn(i, 'mixed');
 }
 
 const sites = [siteWait, siteNested, siteReviver, siteSort, siteFast, siteMixed];

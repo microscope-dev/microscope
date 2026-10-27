@@ -8,7 +8,9 @@ use std::collections::BTreeMap;
 use std::process::Command;
 use std::time::Duration;
 
-use microscope::profiler::{Look, Profile, PythonEngine, Query, RecordOptions, Source};
+use microscope::profiler::{
+    Look, Profile, PythonEngine, Query, RecordOptions, Source, TaskWaitStack,
+};
 
 use crate::profile::{ENTRY, line_key, paths_of, record_released};
 use crate::support::truth::Report;
@@ -117,9 +119,13 @@ fn thread_paths(
 /// Each thread the problems in `[since, until)` leave out, by its reason: a
 /// live snapshot's problem names them as `frames not read live: threads
 /// 12, 13: REASON; threads 14: REASON`.
-fn left_out(profile: &Profile, (since, until): (i64, i64)) -> Vec<(u64, String)> {
+fn left_out(profile: &Profile, window: (i64, i64)) -> Vec<(u64, String)> {
+    unread(&profile.task_snapshot_problems(), window)
+}
+
+fn unread(problems: &[(i64, String)], (since, until): (i64, i64)) -> Vec<(u64, String)> {
     let mut left = Vec::new();
-    for (time, problem) in profile.task_snapshot_problems() {
+    for &(time, ref problem) in problems {
         let Some(groups) = problem.strip_prefix("frames not read live: threads ") else {
             continue;
         };
@@ -450,8 +456,24 @@ pub fn check_tiers(entry: &str) {
     assert!(reasons.is_empty(), "{entry}: left out: {reasons:?}");
 }
 
-/// The sites `live-stress.js` blocks at.
-const STRESS_SITES: [&str; 6] = ["wait", "nested", "reviver", "sort", "fast", "mixed"];
+/// The blocking sites and churn calls `live-stress.js` reports.
+const STRESS_SITES: [&str; 15] = [
+    "wait",
+    "nested",
+    "reviver",
+    "sort",
+    "fast",
+    "mixed",
+    "churn-wait",
+    "churn-nested-inner",
+    "churn-nested",
+    "churn-reviver-inner",
+    "churn-reviver",
+    "churn-sort-inner",
+    "churn-sort",
+    "churn-fast",
+    "churn-mixed",
+];
 
 /// How many phases `live-stress.js` cycles through, each calling the sites
 /// through a function of its own.
@@ -535,6 +557,7 @@ pub fn looping(text: &str) -> Option<BTreeMap<u64, Looping>> {
 pub struct Tally {
     pub exact: usize,
     pub left_out: BTreeMap<String, usize>,
+    pub changed: usize,
     pub wrong: Vec<String>,
 
     /// Each read that found a thread twice, or both found it and left it
@@ -546,12 +569,24 @@ pub struct Tally {
     pub calling: usize,
 }
 
+impl Tally {
+    fn reads(&self) -> usize {
+        self.exact + self.left_out.values().sum::<usize>() + self.changed
+    }
+
+    #[expect(clippy::cast_precision_loss, reason = "counts of reads")]
+    fn check_accuracy(&self, summary: &str) {
+        let share = self.exact as f64 / self.reads().max(1) as f64;
+        assert!(share >= LEAST_EXACT, "{summary}");
+    }
+}
+
 /// Where a read found a looping thread, best first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Found {
     /// At a site, with the frames V8 reported there.
     Site,
-    /// In its phase's call of a site, before the site's frame began.
+    /// At a reported call of a site or churn, possibly before callee entry.
     Calling,
     /// Anywhere else, which no thread of `live-stress.js` blocks at.
     Wrong,
@@ -565,7 +600,9 @@ enum Found {
 /// called, and the compile can wait on a lock, as on the isolate's stack
 /// guard (`Runtime_CompileLazy`, `Compiler::Compile`,
 /// `StackGuard::PushInterruptsScope`). Its path is then a site's, cut off
-/// at the phase's own frame.
+/// at the phase's own frame. Calls to churn can have the same pre-entry state;
+/// the fixture reports their callers independently through V8's `CallSites`.
+/// A matching caller alone cannot rule out a missing callee frame.
 fn found(phase: usize, sites: &[Vec<String>], path: &[String]) -> Found {
     if sites.iter().any(|site| site == path) {
         return Found::Site;
@@ -575,6 +612,8 @@ fn found(phase: usize, sites: &[Vec<String>], path: &[String]) -> Found {
         site.iter()
             .position(|frame| frame.starts_with(&caller))
             .is_some_and(|at| site[..=at] == *path)
+            || site.last().is_some_and(|frame| frame.starts_with("churn "))
+                && site[..site.len() - 1] == *path
     };
     if sites.iter().any(calling) {
         return Found::Calling;
@@ -600,6 +639,11 @@ fn a_read_finds_a_thread_at_its_sites_or_calling_one() {
             "nestedInner live-stress.js:91",
             "readSync fs:741",
         ]),
+        path(&[
+            "phase1 live-stress.js:147",
+            "siteReviver live-stress.js:113",
+            "churn live-stress.js:76",
+        ]),
     ];
     let phase2 = [path(&[
         "phase2 live-stress.js:151",
@@ -617,6 +661,18 @@ fn a_read_finds_a_thread_at_its_sites_or_calling_one() {
         Found::Wrong,
         "another phase's call"
     );
+    assert_eq!(
+        found(
+            1,
+            &phase1,
+            &path(&[
+                "phase1 live-stress.js:147",
+                "siteReviver live-stress.js:113"
+            ])
+        ),
+        Found::Calling,
+        "the captured churn caller, possibly before callee entry"
+    );
     for wrong in [
         path(&[]),
         path(&["phase1 live-stress.js:148"]),
@@ -627,20 +683,24 @@ fn a_read_finds_a_thread_at_its_sites_or_calling_one() {
         ]),
         path(&["phase1 live-stress.js:147", "siteNested live-stress.js:96"]),
         path(&["phase1 live-stress.js:147", "siteWait live-stress.js:84"]),
+        path(&[
+            "phase1 live-stress.js:147",
+            "siteReviver live-stress.js:112",
+        ]),
     ] {
         assert_eq!(found(1, &phase1, &wrong), Found::Wrong, "{wrong:?}");
     }
 }
 
 pub fn tally(profile: &Profile, looping: &BTreeMap<u64, Looping>) -> Tally {
-    let mut tally = Tally::default();
     let waits = profile.task_waits();
+    let problems = profile.task_snapshot_problems();
+    let mut tally = tally_reads(&waits, &problems, looping);
     // How long each read that fell behind took, by when it began: a
     // snapshot's waits are stamped when it began, and it reaches each
     // thread before it ends, which on a starved machine can be a second
     // later. One that says nothing ended within the interval.
-    let took: BTreeMap<i64, Duration> = profile
-        .task_snapshot_problems()
+    let took: BTreeMap<i64, Duration> = problems
         .iter()
         .filter_map(|(time, problem)| Some((*time, read_took(problem)?)))
         .collect();
@@ -696,6 +756,18 @@ pub fn tally(profile: &Profile, looping: &BTreeMap<u64, Looping>) -> Tally {
                 }
             }
         }
+    }
+    tally
+}
+
+fn tally_reads(
+    waits: &[TaskWaitStack],
+    problems: &[(i64, String)],
+    looping: &BTreeMap<u64, Looping>,
+) -> Tally {
+    let mut tally = Tally::default();
+    for (&tid, thread) in looping {
+        let (since, until) = thread.window;
         let found: Vec<i64> = waits
             .iter()
             .filter(|wait| wait.noun == "thread" && wait.task == tid)
@@ -711,20 +783,118 @@ pub fn tally(profile: &Profile, looping: &BTreeMap<u64, Looping>) -> Tally {
                     .push(format!("thread {tid} found twice at {time}"));
             }
         }
-        for (time, problem) in profile.task_snapshot_problems() {
-            if reads.contains(&time) && problem.contains(&format!(" {tid}")) {
-                tally
-                    .twice
-                    .push(format!("thread {tid} found at {time}, and {problem}"));
+        for problem in problems {
+            let (time, text) = problem;
+            if !(since..until).contains(time) {
+                continue;
             }
-        }
-        for (left, reason) in left_out(profile, thread.window) {
-            if left == tid {
+            if let Some(threads) = text.strip_prefix("threads changed while read: ") {
+                for changed in threads.split(", ") {
+                    if changed.parse::<u64>().expect("a thread id") == tid {
+                        tally.changed += 1;
+                        if !reads.insert(*time) {
+                            tally
+                                .twice
+                                .push(format!("thread {tid} read twice at {time}: {text}"));
+                        }
+                    }
+                }
+            }
+            for (left, reason) in unread(std::slice::from_ref(problem), thread.window) {
+                if left != tid {
+                    continue;
+                }
                 *tally.left_out.entry(reason).or_default() += 1;
+                if !reads.insert(*time) {
+                    tally
+                        .twice
+                        .push(format!("thread {tid} read twice at {time}: {text}"));
+                }
             }
         }
     }
     tally
+}
+
+#[test]
+fn stress_accuracy_counts_only_each_threads_measured_reads() {
+    let looping = BTreeMap::from([
+        (
+            12,
+            Looping {
+                sites: vec![],
+                window: (10, 20),
+                phases: vec![],
+            },
+        ),
+        (
+            34,
+            Looping {
+                sites: vec![],
+                window: (20, 30),
+                phases: vec![],
+            },
+        ),
+    ]);
+    let waits: Vec<_> = [(12, 9), (12, 10), (12, 20), (34, 19), (34, 22), (34, 30)]
+        .into_iter()
+        .map(|(task, time)| TaskWaitStack {
+            noun: "thread".to_owned(),
+            task,
+            time,
+            weight: 1,
+            state: "sampled".to_owned(),
+            functions: vec![],
+            ending: microscope::profiler::StackEnding::Complete,
+        })
+        .collect();
+    let problems: Vec<_> = [
+        (9, "threads changed while read: 12, 34"),
+        (10, "threads changed while read: 34, 123"),
+        (11, "threads changed while read: 12, 34"),
+        (20, "threads changed while read: 12"),
+        (21, "threads changed while read: 12, 34"),
+        (30, "threads changed while read: 12, 34"),
+        (9, "frames not read live: threads 12: not asleep"),
+        (12, "frames not read live: threads 12, 34: not asleep"),
+        (20, "frames not read live: threads 12, 34: not asleep"),
+        (30, "frames not read live: threads 34: not asleep"),
+    ]
+    .into_iter()
+    .map(|(time, text)| (time, text.to_owned()))
+    .collect();
+    let tally = tally_reads(&waits, &problems, &looping);
+    assert_eq!(tally.exact, 2);
+    assert_eq!(
+        tally.left_out,
+        BTreeMap::from([("not asleep".to_owned(), 2)])
+    );
+    assert_eq!(tally.changed, 2);
+    assert_eq!(tally.reads(), 6);
+    tally.check_accuracy("only measured reads count");
+    assert!(tally.twice.is_empty(), "{tally:?}");
+
+    let mut lost = problems.clone();
+    lost.extend((13..17).map(|time| (time, "threads changed while read: 12".to_owned())));
+    let tally = tally_reads(&waits, &lost, &looping);
+    assert_eq!(tally.changed, 6);
+    assert!(
+        std::panic::catch_unwind(|| tally.check_accuracy("in-window losses")).is_err(),
+        "in-window losses must fail: {tally:?}"
+    );
+
+    let boundaries: Vec<_> = [9, 10, 20, 30]
+        .into_iter()
+        .map(|time| (time, "threads changed while read: 12, 34, 123".to_owned()))
+        .collect();
+    let tally = tally_reads(&[], &boundaries, &looping);
+    assert_eq!(tally.changed, 2, "include each start, exclude each end");
+    assert!(tally.twice.is_empty(), "{tally:?}");
+
+    let mut duplicated = problems;
+    duplicated.push((10, "threads changed while read: 12".to_owned()));
+    let tally = tally_reads(&waits, &duplicated, &looping);
+    assert_eq!(tally.twice.len(), 1, "a read cannot be exact and changed");
 }
 
 /// Records `live-stress.js` on `entry` with V8's `flags`, reading it live
@@ -759,23 +929,39 @@ pub fn stress(entry: &str, flags: &[&str]) {
     });
     let looping = looping(&text).unwrap_or_else(|| panic!("{entry} {flags:?}: no report:\n{text}"));
     let tally = tally(&profile, &looping);
-    let read = tally.exact + tally.left_out.values().sum::<usize>();
+    let read = tally.reads();
     let (snapshots, changed) = profile.live_snapshots();
     let summary = format!(
         "{entry} {flags:?}: {} exact of {read} reads ({} calling a site), left out {:#?}, \
-         {} wrong; {changed} changed while read, in {snapshots} snapshots",
+         {} wrong; {} scoped of {changed} global changed while read, in {snapshots} snapshots",
         tally.exact,
         tally.calling,
         tally.left_out,
-        tally.wrong.len()
+        tally.wrong.len(),
+        tally.changed,
     );
     eprintln!("{summary}");
     // A recording whose reads fell behind what it asked says so.
-    let behind = profile
-        .task_snapshot_problems()
+    let problems = profile.task_snapshot_problems();
+    let attributed: usize = problems
+        .iter()
+        .filter_map(|(_, problem)| problem.strip_prefix("threads changed while read: "))
+        .map(|threads| threads.split(", ").count())
+        .sum();
+    assert_eq!(
+        u64::try_from(attributed).expect("a count"),
+        changed,
+        "{summary}"
+    );
+    let behind = problems
         .iter()
         .filter(|(_, problem)| problem.starts_with("a live read took"))
         .count();
+    let slowest = problems
+        .iter()
+        .filter_map(|(_, problem)| Some((read_took(problem)?, problem)))
+        .max_by_key(|(took, _)| *took);
+    eprintln!("{behind} reads fell behind; longest: {slowest:?}");
     let asked = Duration::from_secs(STRESS_SECONDS.into()).as_nanos() / STRESS_EVERY.as_nanos();
     assert!(
         behind > 0 || u128::from(snapshots) * 2 >= asked,
@@ -791,12 +977,7 @@ pub fn stress(entry: &str, flags: &[&str]) {
         "{summary}\n{:#?}",
         &tally.twice[..tally.twice.len().min(5)]
     );
-    // A read that found its thread had run meanwhile is of no thread the
-    // profile names: each counts against every thread's share, as if it
-    // were a read of this program's looping threads.
-    #[expect(clippy::cast_precision_loss, reason = "counts of reads")]
-    let share = tally.exact as f64 / (read as f64 + changed as f64).max(1.0);
-    assert!(share >= LEAST_EXACT, "{summary}");
+    tally.check_accuracy(&summary);
 }
 
 /// V8's flags that make it collect garbage every few thousand
