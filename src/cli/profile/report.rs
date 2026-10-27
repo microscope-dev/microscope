@@ -236,6 +236,14 @@ fn focus(
     out: &mut impl Write,
 ) -> Result<()> {
     let keys = current.keys(options.granularity);
+    // A name that only inlined frames carry is folded away, not missing.
+    ensure!(
+        options.granularity != Granularity::PhysicalFunction
+            || !keys.named(name).is_empty()
+            || current.keys(Granularity::Function).named(name).is_empty(),
+        "{name} is only ever inlined, so --fold-inlines folds it into its callers; \
+         focus on it without --fold-inlines"
+    );
     let key = resolve(&keys, name, false)?;
     let base_keys = base.map(|base| base.keys(options.granularity));
     let base_key = base_keys

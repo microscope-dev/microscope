@@ -1091,12 +1091,18 @@ fn coverage(
     let judged = profile.samples() >= FEWEST_JUDGED_SAMPLES
         && (unit != "nanoseconds" || counted == 0 || counted >= LEAST_JUDGED_CPU);
     if !judged && profile.timed() {
-        if unit == "nanoseconds" && counted > 0 {
+        if unit == "nanoseconds" && counted > 0 && counted < LEAST_JUDGED_CPU {
             writeln!(
                 out,
                 "The program ran {} of CPU time, too little to judge the samples' coverage or \
                  what recording cost.",
                 seconds(counted)
+            )?;
+        } else if unit == "nanoseconds" && counted > 0 {
+            writeln!(
+                out,
+                "The run took {}, too few to judge coverage or what recording cost.",
+                plural(profile.samples() as u64, "sample")
             )?;
         } else {
             writeln!(

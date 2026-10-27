@@ -6272,11 +6272,12 @@ fn stack_copies_reach_past_large_frames_or_say_how_far_to_copy() {
 #[test]
 fn recorder_cost_keeps_starting_up_apart_and_short_runs_unjudged() {
     let scratch = support::ScratchDir::new("cli-recorder-cost");
-    let report = |name: &str, program: &str, argument: &str| {
+    let report = |name: &str, options: &[&str], program: &str, argument: &str| {
         let profile = scratch.path().join(name);
         let recorded = microscope_command()
             .args(["record", "-o"])
             .arg(&profile)
+            .args(options)
             .arg("--")
             .arg(fixture(program))
             .arg(argument)
@@ -6288,6 +6289,7 @@ fn recorder_cost_keeps_starting_up_apart_and_short_runs_unjudged() {
 
     let short = report(
         "short.usprof",
+        &[],
         "build/test-programs/profile-kernel",
         "20000",
     );
@@ -6299,7 +6301,26 @@ fn recorder_cost_keeps_starting_up_apart_and_short_runs_unjudged() {
     assert!(!short.contains("of one CPU"), "{short}");
     assert!(!short.contains("--preset prod"), "{short}");
 
-    let long = report("long.usprof", "build/test-programs/profile-bigframe", "80");
+    // At prod's rate a run with plenty of CPU time still takes too few
+    // samples, and the report blames the samples, not the run's length.
+    let sparse = report(
+        "sparse.usprof",
+        &["--preset", "prod"],
+        "build/test-programs/profile-bigframe",
+        "80",
+    );
+    assert!(
+        sparse.contains(" samples, too few to judge coverage or what recording cost."),
+        "{sparse}"
+    );
+    assert!(!sparse.contains("too little"), "{sparse}");
+
+    let long = report(
+        "long.usprof",
+        &[],
+        "build/test-programs/profile-bigframe",
+        "80",
+    );
     let cost = long
         .lines()
         .find(|line| line.starts_with("Recording took"))
@@ -6352,6 +6373,10 @@ fn report_folds_inlined_functions_into_their_callers() {
     assert_failure(
         &microscope(&["report", "--fold-inlines", "--lines", &profile]),
         "cannot be used with",
+    );
+    assert_failure(
+        &microscope(&["report", "--fold-inlines", "--focus", "step", &profile]),
+        "step is only ever inlined, so --fold-inlines folds it into its callers",
     );
 }
 
