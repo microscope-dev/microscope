@@ -946,24 +946,42 @@ const FOREIGN_CODE: &str =
 /// information of the module that carries V8.
 pub fn check_from_start(entry: &str) {
     let mut command = Command::new(node::node(entry));
-    command
-        .arg(node::fixture("waits.js"))
-        .args(["4", "1"])
-        .env_clear()
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+    command.arg(node::fixture("waits.js")).arg("4");
     let options = RecordOptions {
         python: Some(PythonEngine::Live { every: EVERY }),
         ..RecordOptions::default()
     };
-    let recording = microscope::profiler::record(command, &options).expect("record");
-    assert!(recording.status.success(), "{entry}: {}", recording.status);
-    let profile = recording.profile;
-    assert!(
-        profile.task_snapshots().0 > 0,
-        "{entry}: no read: {:#?}",
-        profile.task_snapshot_problems()
+    let (profile, reported, _) = record_released(
+        command,
+        &options,
+        |text| {
+            let tids: Vec<u64> = Report::parse(text)
+                .lines()
+                .filter(|fields| fields[0] == "ready")
+                .filter_map(|fields| fields.get(1)?.parse().ok())
+                .collect();
+            (tids.len() == 5).then_some(tids)
+        },
+        |profile, tids| {
+            let waits = profile.task_waits();
+            tids.iter().all(|tid| {
+                waits
+                    .iter()
+                    .any(|wait| wait.noun == "thread" && wait.task == *tid)
+            })
+        },
     );
+    let tids = reported.unwrap_or_else(|| panic!("{entry}: the threads never became ready"));
+    let waits = profile.task_waits();
+    for tid in tids {
+        assert!(
+            waits
+                .iter()
+                .any(|wait| wait.noun == "thread" && wait.task == tid),
+            "{entry}: thread {tid} was never read: {:#?}",
+            profile.task_snapshot_problems()
+        );
+    }
     let foreign: Vec<u64> = left_out(&profile, (i64::MIN, i64::MAX))
         .into_iter()
         .filter(|(_, reason)| reason == FOREIGN_CODE)
