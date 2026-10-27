@@ -107,6 +107,13 @@ fn kernel_read_samples_cover_cpu_time_and_keep_the_calling_user_stack() {
         u128::from(sampled) * 10 >= u128::from(counted) * 9,
         "sampled {sampled} of {counted} ns"
     );
+    // Loading the BPF walker is setup, not a cost of the program running.
+    let (used, _) = kernel.recorder_cpu();
+    let setup = kernel.recorder_setup();
+    assert!(
+        setup > default.recorder_setup() && setup * 2 > used,
+        "{setup} of {used} ns starting up"
+    );
     eprintln!(
         "kernel coverage: {sampled}/{counted} ns, {} samples, {} kernel reads",
         stacks.len(),

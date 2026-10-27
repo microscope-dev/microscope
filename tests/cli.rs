@@ -6266,6 +6266,49 @@ fn stack_copies_reach_past_large_frames_or_say_how_far_to_copy() {
     );
 }
 
+/// Starting the recorder costs the same however long the program runs, so
+/// only the cost while it ran is a share of a CPU, and a run too short to
+/// judge gets no share or coverage hint at all.
+#[test]
+fn recorder_cost_keeps_starting_up_apart_and_short_runs_unjudged() {
+    let scratch = support::ScratchDir::new("cli-recorder-cost");
+    let report = |name: &str, program: &str, argument: &str| {
+        let profile = scratch.path().join(name);
+        let recorded = microscope_command()
+            .args(["record", "-o"])
+            .arg(&profile)
+            .arg("--")
+            .arg(fixture(program))
+            .arg(argument)
+            .output()
+            .expect("run microscope record");
+        assert!(recorded.status.success(), "{recorded:?}");
+        assert_success(microscope(&["report", &profile.to_string_lossy()]))
+    };
+
+    let short = report(
+        "short.usprof",
+        "build/test-programs/profile-kernel",
+        "20000",
+    );
+    assert!(
+        short.contains("too little to judge the samples' coverage or what recording cost"),
+        "{short}"
+    );
+    assert!(!short.contains("Low coverage"), "{short}");
+    assert!(!short.contains("of one CPU"), "{short}");
+    assert!(!short.contains("--preset prod"), "{short}");
+
+    let long = report("long.usprof", "build/test-programs/profile-bigframe", "80");
+    let cost = long
+        .lines()
+        .find(|line| line.starts_with("Recording took"))
+        .unwrap_or_default();
+    assert!(cost.contains(" s starting up, and "), "{long}");
+    assert!(cost.contains(" s while the program ran ("), "{long}");
+    assert!(cost.ends_with("% of one CPU)."), "{long}");
+}
+
 #[test]
 fn report_compares_and_focuses_from_the_command_line() {
     let scratch = support::ScratchDir::new("cli-report-query");

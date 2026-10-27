@@ -67,6 +67,12 @@ Override individual choices with `--rate`, `--stack-bytes`, `--off-cpu`, and
 `--budget`. A higher rate or deeper stack copy increases recorder work and the
 amount of data written.
 
+The report says what recording cost microscope. Starting up, which with
+`--kernel` includes loading BPF programs, is shown apart from the cost while
+the program ran. Only the latter is a share of a CPU and is compared with
+`prod`'s 1% budget. A run with fewer than 20 samples or under 50 ms of CPU time
+is too short to judge either cost or coverage, and the report says so.
+
 High-rate recordings drain rings separately from unwinding. That queue is
 bounded: processing that falls behind long enough can still lose samples,
 which are reported as a count and percentage. If the kernel reduces ring

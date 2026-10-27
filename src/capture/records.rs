@@ -588,6 +588,10 @@ pub enum AccountKind {
 
     /// Records of interpreted frames the kernel's rings had no room for.
     InterpretedLost = 28,
+
+    /// The part of [`AccountKind::RecorderCpu`] spent before the program
+    /// was recorded: opening its events and loading BPF programs.
+    RecorderSetup = 29,
 }
 
 /// A count of something the views must show.

@@ -266,6 +266,7 @@ pub struct Processor {
     /// The CPU time of this thread when the processor began, and what
     /// loading images has taken of it since.
     began: std::time::Duration,
+    setup: Option<std::time::Duration>,
     loading: std::time::Duration,
     collection: std::time::Duration,
 
@@ -350,6 +351,7 @@ impl Processor {
             gaps: Vec::new(),
             gaps_end: 0,
             began: thread_cpu(),
+            setup: None,
             loading: std::time::Duration::ZERO,
             collection: std::time::Duration::ZERO,
             processed: 0,
@@ -1990,6 +1992,7 @@ impl Processor {
                 thread_cpu().saturating_sub(self.began) + self.collection,
             ),
             (AccountKind::RecorderLoading, self.loading),
+            (AccountKind::RecorderSetup, self.setup.unwrap_or_default()),
         ] {
             let charged = builder.account(kind as u32);
             builder.count(kind as u32, nanoseconds(total).saturating_sub(charged));
@@ -2441,6 +2444,13 @@ impl Processor {
     fn next_gap(&self, time: u64) -> u64 {
         let next = self.gaps.partition_point(|&(start, _)| start <= time);
         self.gaps.get(next).map_or(u64::MAX, |&(start, _)| start)
+    }
+
+    /// Ends the recorder's setup: what it costs from here on is the cost of
+    /// recording the program.
+    pub fn set_up(&mut self) {
+        self.setup
+            .get_or_insert_with(|| thread_cpu().saturating_sub(self.began));
     }
 
     /// The CPU time loading images has taken.

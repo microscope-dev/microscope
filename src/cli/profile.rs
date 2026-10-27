@@ -1044,24 +1044,102 @@ fn selected_report(
     )
 }
 
-/// What recording cost microscope, and how the budget held it.
+/// Fewer samples than this, or less of the program's CPU time, say too
+/// little to judge coverage, and the recorder's cost over so short a run is
+/// mostly noise.
+const FEWEST_JUDGED_SAMPLES: usize = 20;
+const LEAST_JUDGED_CPU: u64 = 50_000_000;
+
+/// How much of the program's CPU time the samples cover, and whether the
+/// run was long enough to judge that and what recording cost.
 #[expect(
     clippy::cast_precision_loss,
     reason = "seconds and percentages need no more precision than f64's"
 )]
-fn cost(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
+fn coverage(
+    profile: &Profile,
+    unit: &str,
+    lost: u64,
+    out: &mut impl std::io::Write,
+) -> Result<bool> {
+    let total = profile.total_weight();
+    let seconds = |value: u64| format!("{:.3} s", value as f64 / 1e9);
+    let counted = profile.counted();
+    let paused = !profile.gaps().is_empty();
+    let judged = profile.samples() >= FEWEST_JUDGED_SAMPLES
+        && (unit != "nanoseconds" || counted == 0 || counted >= LEAST_JUDGED_CPU);
+    if !judged && profile.timed() {
+        if unit == "nanoseconds" && counted > 0 {
+            writeln!(
+                out,
+                "The program ran {} of CPU time, too little to judge the samples' coverage or \
+                 what recording cost.",
+                seconds(counted)
+            )?;
+        } else {
+            writeln!(
+                out,
+                "{} are too few to judge what recording cost.",
+                plural(profile.samples() as u64, "sample")
+            )?;
+        }
+    } else if unit == "nanoseconds" && counted > total {
+        writeln!(
+            out,
+            "The samples cover {:.0}% of the {} of CPU time the program ran{}.",
+            total as f64 * 100.0 / counted as f64,
+            seconds(counted),
+            if paused { " while sampling was on" } else { "" }
+        )?;
+        if profile.setting("kernel") != Some("on") && total < counted / 2 && !paused && lost == 0 {
+            writeln!(
+                out,
+                "Low coverage may mean most CPU time was in the kernel; record with --kernel or trace with microscope syscalls -c."
+            )?;
+        }
+    }
+
+    Ok(judged)
+}
+
+/// What recording cost microscope, and how the budget held it. Only the
+/// cost after setup is a share of a CPU, and only for a run long enough
+/// that `judged` is set.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "seconds and percentages need no more precision than f64's"
+)]
+fn cost(profile: &Profile, judged: bool, out: &mut impl std::io::Write) -> Result<()> {
     let seconds = |nanoseconds: u64| nanoseconds as f64 / 1e9;
     let (start, end) = profile.span();
     let span = u64::try_from(end - start).unwrap_or(0).max(1);
     let (used, loading) = profile.recorder_cpu();
+    let setup = profile.recorder_setup().min(used);
+    let running = used - setup;
+    let share = (running as f64 / span as f64, judged);
+    let share = |before: &str, after: &str| match share {
+        (share, true) => format!("{before}{:.2}% of one CPU{after}", share * 100.0),
+        (_, false) => String::new(),
+    };
 
-    if used > 0 {
+    if used > 0 && setup > 0 {
         writeln!(
             out,
-            "Recording took {:.3} s of microscope's CPU time, {:.2}% of one CPU, {:.3} s of it \
-             reading debug information.",
+            "Recording took {:.3} s of microscope's CPU time, {:.3} s of it reading debug \
+             information: {:.3} s starting up, and {:.3} s while the program ran{}.",
             seconds(used),
-            used as f64 * 100.0 / span as f64,
+            seconds(loading),
+            seconds(setup),
+            seconds(running),
+            share(" (", ")")
+        )?;
+    } else if used > 0 {
+        writeln!(
+            out,
+            "Recording took {:.3} s of microscope's CPU time{}, {:.3} s of it reading debug \
+             information.",
+            seconds(used),
+            share(", ", ""),
             seconds(loading)
         )?;
     }
@@ -1084,13 +1162,27 @@ fn cost(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
                 changes => format!("{changes} times"),
             }
         )?;
-    } else if profile.setting("budget") == Some("none") && used * 20 > span {
+    } else if judged
+        && profile.setting("budget") == Some("none")
+        && running as f64 > span as f64 * Budget::PRODUCTION.cpu
+    {
         writeln!(
             out,
-            "That is more than --preset prod allows, which holds microscope to 1% of a CPU."
+            "That is more than --preset prod allows, which holds microscope to {}% of a CPU.",
+            Budget::PRODUCTION.cpu * 100.0
         )?;
     }
 
+    Ok(())
+}
+
+/// What task snapshots cost the program, and what they found.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "milliseconds need no more precision than f64's"
+)]
+fn snapshots(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
+    let seconds = |nanoseconds: u64| nanoseconds as f64 / 1e9;
     let (snapshots, held, _) = profile.task_snapshots();
     let (live, changed) = profile.live_snapshots();
 
@@ -1307,25 +1399,9 @@ fn summary(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
         writeln!(out, "The recording kept {window} it reached.")?;
     }
 
-    let counted = profile.counted();
-    let paused = !profile.gaps().is_empty();
-    if unit == "nanoseconds" && counted > total {
-        writeln!(
-            out,
-            "The samples cover {:.0}% of the {} of CPU time the program ran{}.",
-            total as f64 * 100.0 / counted as f64,
-            weight(counted),
-            if paused { " while sampling was on" } else { "" }
-        )?;
-        if profile.setting("kernel") != Some("on") && total < counted / 2 && !paused && lost == 0 {
-            writeln!(
-                out,
-                "Low coverage may mean most CPU time was in the kernel; record with --kernel or trace with microscope syscalls -c."
-            )?;
-        }
-    }
-
-    cost(profile, out)?;
+    let judged = coverage(profile, unit, lost, out)?;
+    cost(profile, judged, out)?;
+    snapshots(profile, out)?;
 
     if profile.setting("off-CPU") == Some("on") {
         let threads = profile.threads();

@@ -573,6 +573,7 @@ fn drive(
     mut ended: impl FnMut() -> bool,
     mut stop: impl FnMut() -> bool,
 ) {
+    processor.set_up();
     let mut pacer = options
         .budget
         .filter(|_| started.is_some())

@@ -850,6 +850,14 @@ impl Profile {
         )
     }
 
+    /// Nanoseconds of [`Profile::recorder_cpu`] spent setting up before the
+    /// program was recorded, such as loading BPF programs; 0 in a profile
+    /// that does not say.
+    #[must_use]
+    pub fn recorder_setup(&self) -> u64 {
+        self.capture.account(AccountKind::RecorderSetup as u32)
+    }
+
     /// Every interval a thread spent off its CPU, by thread and then time.
     #[must_use]
     pub fn off_cpu(&self) -> Vec<OffCpuInterval> {
