@@ -21,6 +21,23 @@ microscope record --pid 1842 -o server.usprof
 Stop an attached recording with Ctrl-C. Use `--duration SECONDS` when the
 recording should stop on its own.
 
+## Count function calls
+
+```sh
+microscope record --function hot -o calls.usprof -- ./program
+microscope report calls.usprof
+```
+
+The kernel counts every execution while stacks are captured every 1,024 calls
+per thread and CPU. The header separates the count from the share with stacks;
+the function table estimates costs from those sampled stacks. A function with
+fewer calls may have no stacks. Use `--function-period 1` to capture every call,
+at a higher cost and with possible stack loss. Hardware breakpoints still add
+work to every call in the program, even when its stack is not captured.
+
+Go stack checks can retry within one call. Those functions require a sample
+at every hit to distinguish retries from calls, regardless of the chosen period.
+
 ## Choose a preset
 
 `--preset` controls sample rate, stack copying, blocked-time recording, and

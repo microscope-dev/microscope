@@ -250,6 +250,7 @@ pub struct Processor {
     /// A breakpoint's instruction and the branch that makes its samples
     /// repeats, not calls.
     repeats: Option<(u64, Branch)>,
+    fixed_period: Option<u64>,
     chain: Vec<u64>,
     frames: Vec<u32>,
 
@@ -341,6 +342,7 @@ impl Processor {
             order: Vec::new(),
             registers: Vec::with_capacity(decode::DWARF_REGISTERS.len()),
             repeats: None,
+            fixed_period: None,
             chain: Vec::new(),
             frames: Vec::new(),
             switched_out: BTreeMap::new(),
@@ -390,6 +392,11 @@ impl Processor {
 
     pub const fn builder(&mut self) -> &mut CaptureBuilder {
         &mut self.builder
+    }
+
+    /// Breakpoint events omit `PERIOD` so the kernel honors their period.
+    pub const fn fixed_period(&mut self, period: u64) {
+        self.fixed_period = Some(period);
     }
 
     /// How the program at `path` keeps the frame-pointer chain, or `None`
@@ -520,7 +527,9 @@ impl Processor {
         let mut pairs: HashMap<usize, (interpreted::RecordKey, usize, usize)> = HashMap::default();
         let mut offset = 0;
 
-        while let Some(next) = decode::next_of(&bytes[offset..], &outputs) {
+        while let Some(next) =
+            decode::next_with_period(&bytes[offset..], &outputs, self.fixed_period)
+        {
             let Ok((record, length)) = next else {
                 self.builder.count(AccountKind::Malformed as u32, 1);
                 break;
@@ -587,7 +596,9 @@ impl Processor {
                 _ => None,
             });
 
-            if let Some(Ok((record, _))) = decode::next_of(record, &outputs) {
+            if let Some(Ok((record, _))) =
+                decode::next_with_period(record, &outputs, self.fixed_period)
+            {
                 self.process(record);
             }
         }

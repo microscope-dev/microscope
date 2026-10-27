@@ -89,6 +89,8 @@ fn symbolize_writes_in_symbols_a_recording_left_for_later() {
             "later",
             "--function",
             "breakpoint_target",
+            "--function-period",
+            "1",
             "-o",
         ])
         .arg(&profile)
@@ -131,7 +133,14 @@ fn convert_writes_what_go_and_flame_graph_tools_read() {
     let scratch = support::ScratchDir::new("cli-convert");
     let profile = scratch.path().join("leaf.usprof");
     let recorded = microscope_command()
-        .args(["record", "--function", "leaf", "-o"])
+        .args([
+            "record",
+            "--function",
+            "leaf",
+            "--function-period",
+            "1",
+            "-o",
+        ])
         .arg(&profile)
         .arg("--")
         .arg(fixture("build/test-programs/profile-stacks-gcc-o0"))
@@ -6182,12 +6191,42 @@ fn instrumentation_switches_itself_off_once_its_recorder_dies() {
 }
 
 #[test]
+fn function_recording_counts_calls_without_capturing_every_stack() {
+    let scratch = support::ScratchDir::new("cli-function-count");
+    let path = scratch.path().join("calls.usprof");
+    let recorded = microscope_command()
+        .args(["record", "--function", "hot", "-o"])
+        .arg(&path)
+        .arg("--")
+        .arg(fixture("build/test-programs/profile-calls"))
+        .arg("2000000")
+        .output()
+        .expect("record calls");
+    assert!(recorded.status.success(), "{recorded:?}");
+    let profile = microscope::profiler::Profile::read(&path).unwrap().profile;
+    assert_eq!(profile.counted(), 2_000_000);
+    let report = assert_success(microscope(&["report", &path.to_string_lossy()]));
+    assert!(report.contains("2000000 executions,"), "{report}");
+    assert!(report.contains("with stacks ("), "{report}");
+    assert!(report.contains("Stacks are sampled"), "{report}");
+    assert!(profile.samples() > 0 && profile.samples() < 4000);
+    assert!(!String::from_utf8_lossy(&recorded.stderr).contains("kernel dropped"));
+}
+
+#[test]
 fn record_writes_a_profile_that_report_summarizes() {
     let scratch = support::ScratchDir::new("cli-record");
     let profile = scratch.path().join("leaf.usprof");
     let program = fixture("build/test-programs/profile-stacks-gcc-o0");
     let recorded = microscope_command()
-        .args(["record", "--function", "leaf", "-o"])
+        .args([
+            "record",
+            "--function",
+            "leaf",
+            "--function-period",
+            "1",
+            "-o",
+        ])
         .arg(&profile)
         .arg("--")
         .arg(&program)
@@ -6205,7 +6244,7 @@ fn record_writes_a_profile_that_report_summarizes() {
     assert_in_order(
         &top,
         &[
-            "6 samples, 6 executions",
+            "6 executions, 6 with stacks (100.0%)",
             "    own   total  function",
             "100.00% 100.00%  leaf",
             "  0.00% 100.00%  middle",

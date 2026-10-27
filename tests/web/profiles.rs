@@ -26,6 +26,7 @@ fn record_calls_of(scratch: &ScratchDir, symbol: &str, name: &str) -> std::path:
         source: SampleSource::Function {
             symbol: symbol.into(),
         },
+        function_period: 1,
         ..RecordOptions::default()
     };
 

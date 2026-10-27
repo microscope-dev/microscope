@@ -99,7 +99,8 @@ pub fn record_watched(
         crate::backend::bpf::sampler::check_namespace()?;
     }
     let program = PathBuf::from(command.get_program());
-    let (source, breakpoint) = perf_source(&program, &options.source, None)?;
+    let (source, breakpoint) =
+        perf_source(&program, &options.source, None, options.function_period)?;
     let mut processor = processor(options, breakpoint);
     let (stack_bytes, stack_copy) = stack_copy(&mut processor, &program, options.stack);
     let events = perf::EventOptions {
@@ -108,6 +109,12 @@ pub fn record_watched(
         ring_pages: options.ring_pages,
         switches: options.off_cpu,
     };
+
+    if let perf::Source::Breakpoint { period, .. } = source
+        && period > 1
+    {
+        processor.fixed_period(period);
+    }
 
     let launch = perf::LaunchOptions {
         no_address_randomization: breakpoint.is_some(),
@@ -213,7 +220,8 @@ pub fn record_attached(
     }
     let program = PathBuf::from(format!("/proc/{pid}/exe"));
     let bias = perf::program_bias(pid);
-    let (source, breakpoint) = perf_source(&program, &options.source, bias)?;
+    let (source, breakpoint) =
+        perf_source(&program, &options.source, bias, options.function_period)?;
     let mut processor = processor(options, breakpoint);
     let (stack_bytes, stack_copy) = stack_copy(&mut processor, &program, options.stack);
     let events = perf::EventOptions {
@@ -222,6 +230,12 @@ pub fn record_attached(
         ring_pages: options.ring_pages,
         switches: options.off_cpu,
     };
+
+    if let perf::Source::Breakpoint { period, .. } = source
+        && period > 1
+    {
+        processor.fixed_period(period);
+    }
 
     let perf::Attached {
         mut events,
@@ -436,6 +450,9 @@ fn processor(options: &RecordOptions, breakpoint: Option<Calls>) -> record::Proc
         && let Some(branch) = calls.repeats_when
     {
         processor.repeats_when(calls.loaded().get(), branch);
+        processor
+            .builder()
+            .setting("function retries", "Go stack checks");
     }
 
     processor
@@ -452,6 +469,10 @@ fn settings(
     stack_copy: String,
 ) {
     let builder = processor.builder();
+    if let SampleSource::Function { .. } = options.source {
+        builder.setting("function stacks", "sampled");
+    }
+
     for (key, value) in [
         ("program", program.to_string_lossy().into_owned()),
         ("pid", pid.to_string()),
@@ -1031,6 +1052,7 @@ fn perf_source(
     program: &Path,
     source: &SampleSource,
     bias: Option<crate::LoadBias>,
+    period: u64,
 ) -> Result<(perf::Source, Option<Calls>), RecordError> {
     Ok(match source {
         SampleSource::Clock { rate } => (
@@ -1044,6 +1066,12 @@ fn perf_source(
             (
                 perf::Source::Breakpoint {
                     address: calls.loaded().get(),
+                    // Go stack checks must be read at every hit to reject retries.
+                    period: if calls.repeats_when.is_some() {
+                        1
+                    } else {
+                        period.max(1)
+                    },
                 },
                 Some(calls),
             )

@@ -201,6 +201,10 @@ pub struct RecordOptions {
     pub source: SampleSource,
     pub stack: StackCopy,
 
+    /// Calls between function stack samples; counting remains exact.
+    /// Go stack checks need every hit to distinguish retries from calls.
+    pub function_period: u64,
+
     /// The most frames a stack keeps, at least one.
     pub max_frames: usize,
 
@@ -270,6 +274,7 @@ impl RecordOptions {
                 rate: preset.rate(),
             },
             stack: preset.stack_copy(),
+            function_period: 1024,
             max_frames: 512,
             ring_pages: 128,
             max_events: 16_384,

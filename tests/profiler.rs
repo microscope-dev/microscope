@@ -62,13 +62,13 @@ fn command(variant: &str, iterations: u64) -> Command {
     command
 }
 
-/// Options that sample each call of the function `symbol` names. A count
-/// is exact only while no sample is lost, so the rings carry nothing else.
+/// Samples every call so the stack-conformance tests see every caller.
 fn calls_of(symbol: &str) -> RecordOptions {
     RecordOptions {
         source: SampleSource::Function {
             symbol: symbol.into(),
         },
+        function_period: 1,
         off_cpu: false,
         ..RecordOptions::default()
     }

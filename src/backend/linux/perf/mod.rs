@@ -23,8 +23,8 @@ pub enum Source {
     /// Every `period` of CPU time the program's threads spend in user code.
     Clock { period: Duration },
 
-    /// Every execution of the instruction at `address`.
-    Breakpoint { address: u64 },
+    /// Counts every execution at `address`, sampling every `period` hits.
+    Breakpoint { address: u64, period: u64 },
 
     /// No samples: only what the program maps, and its threads.
     Mappings,
@@ -384,12 +384,16 @@ fn attr(options: &EventOptions, start: u64) -> sys::Attr {
             attr.config = sys::COUNT_SW_CPU_CLOCK;
             attr.sample_period = u64::try_from(period.as_nanos()).unwrap_or(u64::MAX).max(1);
         }
-        Source::Breakpoint { address } => {
+        Source::Breakpoint { address, period } => {
             attr.kind = sys::TYPE_BREAKPOINT;
+            // PERIOD makes software-counted breakpoints sample every hit.
+            if period > 1 {
+                attr.sample_type &= !sys::sample::PERIOD;
+            }
             attr.bp_type = sys::BREAKPOINT_EXECUTE;
             attr.bp_addr = address;
             attr.bp_len = 8;
-            attr.sample_period = 1;
+            attr.sample_period = period.max(1);
         }
         Source::Mappings => {
             attr.kind = sys::TYPE_SOFTWARE;

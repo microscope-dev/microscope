@@ -74,9 +74,14 @@ pub struct RecordArgs {
     #[arg(long, value_name = "PERCENT")]
     budget: Option<f64>,
 
-    /// Sample each call of the function SYMBOL names, instead of CPU time.
+    /// Count calls of SYMBOL and sample their stacks, instead of CPU time.
     #[arg(long, value_name = "SYMBOL", conflicts_with = "rate")]
     function: Option<String>,
+
+    /// Capture a stack every N calls, still counting every call. Go stack
+    /// checks require every hit. Use 1 for a stack at every call.
+    #[arg(long, value_name = "N", requires = "function", value_parser = clap::value_parser!(u64).range(1..))]
+    function_period: Option<u64>,
 
     /// Record the running process PID, without stopping it, until it exits
     /// or Ctrl-C.
@@ -478,6 +483,10 @@ fn options(args: &RecordArgs) -> Result<RecordOptions> {
         };
     }
 
+    if let Some(period) = args.function_period {
+        options.function_period = period;
+    }
+
     if let Some(bytes) = args.stack_bytes {
         options.stack = StackCopy::Bytes(bytes);
     }
@@ -659,7 +668,7 @@ fn record(args: &RecordArgs) -> Result<i32> {
 
 fn report_losses(profile: &Profile) {
     let lost = profile.lost_samples();
-    if lost > 0 {
+    if lost > 0 && profile.setting("weight") != Some("executions") {
         eprintln!("microscope: the kernel dropped {lost} samples");
     }
 }
@@ -1115,12 +1124,37 @@ fn summary(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
         unit => format!("{value} {unit}"),
     };
 
-    writeln!(
-        out,
-        "{program}: {} samples, {}",
-        profile.samples(),
-        weight(total)
-    )?;
+    if unit == "executions"
+        && (profile.counted() > 0 || profile.setting("function stacks").is_some())
+    {
+        let calls = profile.counted().saturating_sub(profile.repeats());
+        let bound = if profile.setting("function retries").is_some() && profile.lost_samples() > 0 {
+            "at most "
+        } else {
+            ""
+        };
+        let share = if calls == 0 {
+            0.0
+        } else {
+            profile.samples() as f64 * 100.0 / calls as f64
+        };
+        writeln!(
+            out,
+            "{program}: {bound}{calls} executions, {} with stacks ({share:.1}%)",
+            profile.samples()
+        )?;
+        writeln!(
+            out,
+            "Stacks are sampled; function costs are estimates, not exact call counts."
+        )?;
+    } else {
+        writeln!(
+            out,
+            "{program}: {} samples, {}",
+            profile.samples(),
+            weight(total)
+        )?;
+    }
 
     if !profile.timed() {
         let source = profile.setting("source").unwrap_or("its file");
@@ -1128,7 +1162,7 @@ fn summary(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
     }
 
     let lost = profile.lost_samples();
-    if lost > 0 {
+    if lost > 0 && unit != "executions" {
         writeln!(out, "The kernel dropped {lost} samples.")?;
     }
 

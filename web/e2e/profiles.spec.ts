@@ -16,7 +16,18 @@ test("a profile is explored, and its address opens the same view", async ({
   const file = info.outputPath("calls.usprof");
   execFileSync(
     path.join(root, "target", "debug", "microscope"),
-    ["record", "-o", file, "--function", "leaf", "--", fixture("profile-stacks-gcc-o0"), "1"],
+    [
+      "record",
+      "-o",
+      file,
+      "--function",
+      "leaf",
+      "--function-period",
+      "1",
+      "--",
+      fixture("profile-stacks-gcc-o0"),
+      "1",
+    ],
     { stdio: "ignore" },
   );
   const served = await microscope.start([file]);
@@ -297,7 +308,18 @@ test("a profile is diffed with a range of its own, and with another profile", as
     const file = info.outputPath(name);
     execFileSync(
       path.join(root, "target", "debug", "microscope"),
-      ["record", "-o", file, "--function", symbol, "--", fixture("profile-stacks-gcc-o0"), "1"],
+      [
+        "record",
+        "-o",
+        file,
+        "--function",
+        symbol,
+        "--function-period",
+        "1",
+        "--",
+        fixture("profile-stacks-gcc-o0"),
+        "1",
+      ],
       { stdio: "ignore" },
     );
     return file;
@@ -346,7 +368,18 @@ test("a function's samples show on its source lines and its instructions", async
   const file = info.outputPath("calls.usprof");
   execFileSync(
     path.join(root, "target", "debug", "microscope"),
-    ["record", "-o", file, "--function", "leaf", "--", fixture("profile-stacks-gcc-o0"), "1"],
+    [
+      "record",
+      "-o",
+      file,
+      "--function",
+      "leaf",
+      "--function-period",
+      "1",
+      "--",
+      fixture("profile-stacks-gcc-o0"),
+      "1",
+    ],
     { stdio: "ignore" },
   );
   const served = await microscope.start([file]);

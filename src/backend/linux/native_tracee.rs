@@ -429,7 +429,7 @@ impl NativeTracee {
     /// copying `stack_bytes` of stack, through the profiler's events.
     pub fn sample_at(&mut self, address: u64, stack_bytes: u32) {
         let options = super::perf::EventOptions {
-            source: super::perf::Source::Breakpoint { address },
+            source: super::perf::Source::Breakpoint { address, period: 1 },
             stack_bytes,
             ring_pages: 64,
             switches: false,

@@ -253,6 +253,15 @@ pub fn next_of<'a>(
     bytes: &'a [u8],
     outputs: &[u64],
 ) -> Option<Result<(Record<'a>, usize), Malformed>> {
+    next_with_period(bytes, outputs, None)
+}
+
+/// Decodes a fixed-period event that omits `PERIOD`, or the usual layout.
+pub fn next_with_period<'a>(
+    bytes: &'a [u8],
+    outputs: &[u64],
+    period: Option<u64>,
+) -> Option<Result<(Record<'a>, usize), Malformed>> {
     if bytes.is_empty() {
         return None;
     }
@@ -273,7 +282,7 @@ pub fn next_of<'a>(
     }
 
     let body = &bytes[8..size];
-    Some(decode(kind, misc, body, outputs).map(|record| (record, size)))
+    Some(decode(kind, misc, body, outputs, period).map(|record| (record, size)))
 }
 
 fn decode<'a>(
@@ -281,6 +290,7 @@ fn decode<'a>(
     misc: u16,
     body: &'a [u8],
     outputs: &[u64],
+    period: Option<u64>,
 ) -> Result<Record<'a>, Malformed> {
     if kind == RECORD_SAMPLE {
         let identifier = u64::from_le_bytes(field(body, 0)?);
@@ -288,7 +298,7 @@ fn decode<'a>(
             return decode_output(body);
         }
 
-        return decode_sample(body).map(Record::Sample);
+        return decode_sample(body, period).map(Record::Sample);
     }
 
     // Every other record ends with its sample_id.
@@ -387,13 +397,16 @@ fn decode<'a>(
     })
 }
 
-fn decode_sample(body: &[u8]) -> Result<Sample<'_>, Malformed> {
+fn decode_sample(body: &[u8], period: Option<u64>) -> Result<Sample<'_>, Malformed> {
     let mut fields = Fields { bytes: body };
     let _identifier = fields.u64()?;
     let (pid, tid) = fields.pair()?;
     let time = fields.u64()?;
     let (cpu, _) = fields.pair()?;
-    let period = fields.u64()?;
+    let period = match period {
+        Some(period) => period,
+        None => fields.u64()?,
+    };
     let chain_length = fields.u64()?;
     let chain = fields.words(chain_length)?;
     let abi = fields.u64()?;
