@@ -16,6 +16,8 @@ use microscope::profiler::{
     SampleSource, Save, Source, StackCopy, StackView, Watch,
 };
 
+mod report;
+
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum PresetArg {
     /// 49 samples a second, copying as little stack as unwinds the program:
@@ -188,6 +190,14 @@ pub struct RecordArgs {
 pub struct ReportArgs {
     /// The profile to report, or a directory of --continuous segments.
     file: PathBuf,
+
+    /// Compare absolute costs against this profile.
+    #[arg(long, value_name = "FILE")]
+    base: Option<PathBuf>,
+
+    /// Show this exact function's callers and callees; --tree shows its subtree.
+    #[arg(long, value_name = "SYMBOL")]
+    focus: Option<String>,
 
     /// Show the call tree instead of the most expensive functions.
     #[arg(long)]
@@ -801,15 +811,10 @@ pub(super) fn handle_signals(
         .context("handling signals")
 }
 
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "seconds and percentages need no more precision than f64's"
-)]
 fn report(args: &ReportArgs, out: &mut impl std::io::Write) -> Result<()> {
     let read =
         Profile::read(&args.file).with_context(|| format!("reading {}", args.file.display()))?;
     let mut profile = read.profile;
-    let view = args.look.view();
 
     if read.truncated {
         writeln!(
@@ -820,16 +825,33 @@ fn report(args: &ReportArgs, out: &mut impl std::io::Write) -> Result<()> {
 
     symbolize_here(&mut profile, out)?;
 
+    if args.base.is_some() || args.focus.is_some() {
+        return selected_report(&profile, args, out);
+    }
+    ordinary_report(&profile, args, out)
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "seconds and percentages need no more precision than f64's"
+)]
+fn ordinary_report(
+    profile: &Profile,
+    args: &ReportArgs,
+    out: &mut impl std::io::Write,
+) -> Result<()> {
+    let view = args.look.view();
+
     // A trace alone, which no recording sampled.
     if profile.is_trace() {
-        return syscall_summary(&profile, args.limit, out);
+        return syscall_summary(profile, args.limit, out);
     }
 
-    summary(&profile, out)?;
+    summary(profile, out)?;
 
     if profile.has_syscalls() {
         writeln!(out)?;
-        syscall_summary(&profile, args.limit, out)?;
+        syscall_summary(profile, args.limit, out)?;
     }
 
     let (source, total) = if args.waits {
@@ -927,6 +949,57 @@ fn report(args: &ReportArgs, out: &mut impl std::io::Write) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Resolves the optional base and adapts CLI selections to the report query.
+fn selected_report(
+    profile: &Profile,
+    args: &ReportArgs,
+    out: &mut impl std::io::Write,
+) -> Result<()> {
+    let base = args
+        .base
+        .as_ref()
+        .map(|file| -> Result<Profile> {
+            let read =
+                Profile::read(file).with_context(|| format!("reading {}", file.display()))?;
+            if read.truncated {
+                writeln!(
+                    out,
+                    "The base file was cut short; this is the part that was complete."
+                )?;
+            }
+            let mut profile = read.profile;
+            symbolize_here(&mut profile, out)?;
+            Ok(profile)
+        })
+        .transpose()?;
+    report::write(
+        profile,
+        base.as_ref(),
+        &report::Options {
+            tree: args.tree,
+            limit: args.limit,
+            min_percent: args.min_percent,
+            granularity: if args.lines {
+                Granularity::Line
+            } else {
+                Granularity::Function
+            },
+            source: if args.waits {
+                Source::Waits
+            } else {
+                Source::Samples
+            },
+            look: match args.look.view() {
+                StackView::Logical => microscope::profiler::Look::Logical,
+                StackView::Native => microscope::profiler::Look::Native,
+                StackView::Python => microscope::profiler::Look::Python,
+            },
+            focus: args.focus.as_deref(),
+        },
+        out,
+    )
 }
 
 /// What recording cost microscope, and how the budget held it.

@@ -21,6 +21,9 @@ microscope record --pid 1842 -o server.usprof
 Stop an attached recording with Ctrl-C. Use `--duration SECONDS` when the
 recording should stop on its own.
 
+See [profile reports](profile-reports.md) for comparisons, focused caller/callee
+reports, and focused subtrees.
+
 ## Include kernel CPU time
 
 `microscope record --kernel -- ./program` also samples time spent in the

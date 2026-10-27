@@ -6214,6 +6214,45 @@ fn function_recording_counts_calls_without_capturing_every_stack() {
 }
 
 #[test]
+fn report_compares_and_focuses_from_the_command_line() {
+    let scratch = support::ScratchDir::new("cli-report-query");
+    let before = scratch.path().join("before.folded");
+    let after = scratch.path().join("after.folded");
+    std::fs::write(&before, "main;a;leaf 30\nmain;b;leaf 10\n").unwrap();
+    std::fs::write(&after, "main;a;leaf 5\nmain;b;leaf 15\n").unwrap();
+    let before = before.to_string_lossy();
+    let after = after.to_string_lossy();
+    let diff = assert_success(microscope(&["report", &after, "--base", &before]));
+    assert!(diff.contains("Before: 40"), "{diff}");
+    assert!(diff.contains("After: 20"), "{diff}");
+    assert!(diff.contains("-20"), "{diff}");
+    let focus = assert_success(microscope(&["report", &after, "--focus", "leaf"]));
+    assert!(focus.contains("Callers"), "{focus}");
+    for name in ["a", "b"] {
+        assert!(
+            focus
+                .lines()
+                .any(|line| line.split_whitespace().last() == Some(name)),
+            "{focus}"
+        );
+    }
+    let tree = assert_success(microscope(&[
+        "report",
+        &after,
+        "--base",
+        &before,
+        "--focus",
+        "a",
+        "--tree",
+        "--min-percent",
+        "0",
+        "--lines",
+    ]));
+    assert!(tree.contains("-25"), "{tree}");
+    assert!(!tree.contains("  b\n"), "{tree}");
+}
+
+#[test]
 fn record_writes_a_profile_that_report_summarizes() {
     let scratch = support::ScratchDir::new("cli-record");
     let profile = scratch.path().join("leaf.usprof");
