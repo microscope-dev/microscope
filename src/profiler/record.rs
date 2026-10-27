@@ -267,6 +267,7 @@ pub struct Processor {
     /// loading images has taken of it since.
     began: std::time::Duration,
     loading: std::time::Duration,
+    collection: std::time::Duration,
 
     /// The time every record up to has been processed.
     processed: u64,
@@ -350,6 +351,7 @@ impl Processor {
             gaps_end: 0,
             began: thread_cpu(),
             loading: std::time::Duration::ZERO,
+            collection: std::time::Duration::ZERO,
             processed: 0,
             window: None,
             segment: None,
@@ -1948,7 +1950,7 @@ impl Processor {
         for (kind, total) in [
             (
                 AccountKind::RecorderCpu,
-                thread_cpu().saturating_sub(self.began),
+                thread_cpu().saturating_sub(self.began) + self.collection,
             ),
             (AccountKind::RecorderLoading, self.loading),
         ] {
@@ -2400,6 +2402,16 @@ impl Processor {
         self.loading
     }
 
+    /// Updates the additional CPU time used by the ring reader.
+    pub const fn collection_cpu(&mut self, total: std::time::Duration) {
+        self.collection = total;
+    }
+
+    /// The processor and reader's CPU time, for the recording budget.
+    pub fn cpu(&self) -> std::time::Duration {
+        thread_cpu() + self.collection
+    }
+
     /// Leaves every frame without lines, for a viewer to symbolize from
     /// its module's build id and address.
     pub fn symbols_later(&mut self) {
@@ -2604,18 +2616,7 @@ pub fn truncation_counts(capture: &Capture) -> Vec<(Truncation, u64)> {
         .collect()
 }
 
-/// The CPU time this thread has taken.
-pub fn thread_cpu() -> std::time::Duration {
-    nix::time::clock_gettime(nix::time::ClockId::CLOCK_THREAD_CPUTIME_ID).map_or(
-        std::time::Duration::ZERO,
-        |time| {
-            std::time::Duration::new(
-                u64::try_from(time.tv_sec()).unwrap_or(0),
-                u32::try_from(time.tv_nsec()).unwrap_or(0),
-            )
-        },
-    )
-}
+pub use crate::backend::perf::sys::thread_cpu;
 
 #[cfg(test)]
 mod tests {

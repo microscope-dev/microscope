@@ -300,7 +300,7 @@ pub fn set_output_slot(map: BorrowedFd<'_>, slot: u32, event: &OwnedFd) -> std::
 #[derive(Debug)]
 pub struct Ring {
     fd: OwnedFd,
-    memory: RingMemory,
+    memory: std::sync::Mutex<RingMemory>,
 }
 
 impl Ring {
@@ -331,13 +331,13 @@ impl Ring {
 
         Ok(Self {
             fd,
-            memory: RingMemory {
+            memory: std::sync::Mutex::new(RingMemory {
                 base,
                 data: page,
                 size: pages * page,
                 owner: Owner::Mapping { length },
                 untrusted: 0,
-            },
+            }),
         })
     }
 
@@ -347,14 +347,20 @@ impl Ring {
 
     /// Appends every record the kernel has written since the last drain
     /// to `out` and returns their bytes to the kernel.
-    pub fn drain(&mut self, out: &mut Vec<u8>) -> usize {
-        self.memory.drain(out)
+    pub fn drain(&self, out: &mut Vec<u8>) -> usize {
+        self.memory
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain(out)
     }
 
     /// How many times the ring's head could not be trusted, so that the
     /// ring skipped what lay before it.
-    pub const fn untrusted(&self) -> u64 {
-        self.memory.untrusted()
+    pub fn untrusted(&self) -> u64 {
+        self.memory
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .untrusted()
     }
 }
 
@@ -506,6 +512,19 @@ impl Drop for RingMemory {
 /// The system's page size.
 pub fn page_size() -> usize {
     rustix::param::page_size()
+}
+
+/// The CPU time this thread has taken.
+pub fn thread_cpu() -> std::time::Duration {
+    nix::time::clock_gettime(nix::time::ClockId::CLOCK_THREAD_CPUTIME_ID).map_or(
+        std::time::Duration::ZERO,
+        |time| {
+            std::time::Duration::new(
+                u64::try_from(time.tv_sec()).unwrap_or(0),
+                u32::try_from(time.tv_nsec()).unwrap_or(0),
+            )
+        },
+    )
 }
 
 /// Whether `fd` is readable now, as a process descriptor is once its

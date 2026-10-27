@@ -53,6 +53,12 @@ Override individual choices with `--rate`, `--stack-bytes`, `--off-cpu`, and
 `--budget`. A higher rate or deeper stack copy increases recorder work and the
 amount of data written.
 
+High-rate recordings drain rings separately from unwinding. That queue is
+bounded: processing that falls behind long enough can still lose samples,
+which are reported as a count and percentage. If the kernel reduces ring
+sizes to fit locked-memory limits, the recorder gives their actual size and
+the `ulimit -l` and `kernel.perf_event_mlock_kb` settings to raise.
+
 Stacks are exact up to the point where the available unwind information and
 copied memory end. A truncated stack records its reason.
 

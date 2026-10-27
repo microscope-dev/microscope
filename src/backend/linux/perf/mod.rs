@@ -10,6 +10,8 @@ pub mod sys;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -91,6 +93,10 @@ pub struct Events {
     rings: Vec<sys::Ring>,
     pages: usize,
 
+    /// High-rate collection stays separate from symbol loading and unwinding.
+    buffered: Option<Mutex<Vec<u8>>>,
+    reader_cpu: AtomicU64,
+
     /// The CPU of each ring, in their order.
     cpus: Vec<u32>,
 
@@ -151,6 +157,8 @@ impl Events {
         Ok(Self {
             rings,
             pages,
+            buffered: collection_buffer(options),
+            reader_cpu: AtomicU64::new(0),
             cpus,
             followers: Vec::new(),
         })
@@ -211,6 +219,8 @@ impl Events {
                             owner = Some(Self {
                                 rings,
                                 pages,
+                                buffered: collection_buffer(options),
+                                reader_cpu: AtomicU64::new(0),
                                 cpus: cpus.to_vec(),
                                 followers: Vec::new(),
                             });
@@ -305,8 +315,73 @@ impl Events {
 
     /// Appends every ring's new records to `out`, a ring's whole records
     /// at a time, and returns how many bytes.
-    pub fn drain(&mut self, out: &mut Vec<u8>) -> usize {
-        self.rings.iter_mut().map(|ring| ring.drain(out)).sum()
+    pub fn drain(&self, out: &mut Vec<u8>) -> usize {
+        let before = out.len();
+        let mut buffered = self.buffered.as_ref().map(|buffer| {
+            buffer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        });
+        if let Some(buffer) = &mut buffered {
+            out.append(buffer);
+        }
+        // Keep the queue locked through this drain so a worker cannot put
+        // older records behind the records collected here, including at exit.
+        for ring in &self.rings {
+            ring.drain(out);
+        }
+        out.len() - before
+    }
+
+    /// Drains high-rate rings while `work` processes previous records. The
+    /// queue holds at most 64 MiB plus one drain; if processing cannot keep
+    /// up, kernel loss counters still account for every dropped sample.
+    pub fn read_while<R>(&self, work: impl FnOnce() -> R) -> R {
+        let Some(buffer) = &self.buffered else {
+            return work();
+        };
+        let stop = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let reader = scope.spawn(|| {
+                let began = sys::thread_cpu();
+                while !stop.load(Ordering::Relaxed) {
+                    let full = {
+                        let mut buffer = buffer
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let full = buffer.len() >= 64 * 1024 * 1024;
+                        if !full {
+                            for ring in &self.rings {
+                                ring.drain(&mut buffer);
+                            }
+                        }
+                        drop(buffer);
+                        full
+                    };
+                    let elapsed = sys::thread_cpu().saturating_sub(began);
+                    self.reader_cpu.store(
+                        u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX),
+                        Ordering::Relaxed,
+                    );
+                    if full {
+                        // Full rings remain readable; polling them would spin.
+                        std::thread::sleep(Duration::from_micros(100));
+                    } else {
+                        self.wait(Duration::from_micros(100));
+                    }
+                }
+            });
+            let guard = StopReader(&stop);
+            let result = work();
+            drop(guard);
+            let _ = reader.join();
+            result
+        })
+    }
+
+    /// CPU time spent collecting on the high-rate reader.
+    pub fn reader_cpu(&self) -> Duration {
+        Duration::from_nanos(self.reader_cpu.load(Ordering::Relaxed))
     }
 
     /// How many times a ring's head could not be trusted, so that the ring
@@ -344,6 +419,19 @@ impl Events {
             let _ = sys::enable(fd, on);
         }
     }
+}
+
+struct StopReader<'a>(&'a AtomicBool);
+
+impl Drop for StopReader<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+fn collection_buffer(options: &EventOptions) -> Option<Mutex<Vec<u8>>> {
+    matches!(options.source, Source::Clock { period } if period <= Duration::from_millis(2))
+        .then(|| Mutex::new(Vec::new()))
 }
 
 /// The attributes of every event: `options`' samples, with every record

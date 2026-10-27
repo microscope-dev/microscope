@@ -666,10 +666,18 @@ fn record(args: &RecordArgs) -> Result<i32> {
     Ok(code)
 }
 
+#[expect(clippy::cast_precision_loss, reason = "sample loss percentages")]
 fn report_losses(profile: &Profile) {
+    if let Some(warning) = profile.setting("ring warning") {
+        eprintln!("microscope: {warning}");
+    }
     let lost = profile.lost_samples();
     if lost > 0 && profile.setting("weight") != Some("executions") {
-        eprintln!("microscope: the kernel dropped {lost} samples");
+        let total = (profile.samples() as u64).saturating_add(lost);
+        eprintln!(
+            "microscope: the kernel dropped {lost} of {total} samples ({:.1}%)",
+            lost as f64 * 100.0 / total as f64
+        );
     }
 }
 
@@ -1163,7 +1171,15 @@ fn summary(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
 
     let lost = profile.lost_samples();
     if lost > 0 && unit != "executions" {
-        writeln!(out, "The kernel dropped {lost} samples.")?;
+        let total = (profile.samples() as u64).saturating_add(lost);
+        writeln!(
+            out,
+            "The kernel dropped {lost} of {total} samples ({:.1}%).",
+            lost as f64 * 100.0 / total as f64
+        )?;
+    }
+    if let Some(warning) = profile.setting("ring warning") {
+        writeln!(out, "{warning}.")?;
     }
 
     if let Some(window) = profile.setting("window").filter(|window| *window != "all") {

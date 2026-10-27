@@ -31,8 +31,13 @@ filter = 'test(/(^|::)bpf::/) & (binary(node) | (binary(python) & test(/^profile
 test-group = 'bpf-profiles'
 
 [[profile.default.overrides]]
-filter = 'test(/(^|::)bpf::/)'
+filter = 'test(/(^|::)bpf::/) | binary(profiler)'
 test-group = 'perf-rings'
+
+# The maximum-rate loss bound measures collection, not competing test workers.
+[[profile.default.overrides]]
+filter = 'binary(profiler) & test(=maximum_rate_keeps_at_least_99_percent_of_a_short_rust_burst)'
+threads-required = 'num-test-threads'
 
 # Node's profile and syscall tests record a program that spins two threads,
 # or stop it again and again for snapshots, and their own reads of V8 take

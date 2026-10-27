@@ -150,7 +150,7 @@ pub fn record_watched(
 
     let perf::Launched {
         pid,
-        mut events,
+        events,
         exit,
         killer,
         executed,
@@ -169,21 +169,24 @@ pub fn record_watched(
     // A program that failed to execute ends the recording with why, below,
     // without having been published as started.
     let started = executed.recv().is_ok().then_some(pid);
-    drive(
-        &mut processor,
-        &mut events,
-        watch,
-        options,
-        started,
-        syscalls.as_ref(),
-        walker.as_mut(),
-        || exit.is_finished(),
-        || {
-            record!("record: stopping, killing {pid}");
-            killer.kill();
-            false
-        },
-    );
+    events.read_while(|| {
+        drive(
+            &mut processor,
+            &events,
+            watch,
+            options,
+            started,
+            syscalls.as_ref(),
+            walker.as_mut(),
+            || exit.is_finished(),
+            || {
+                record!("record: stopping, killing {pid}");
+                killer.kill();
+                false
+            },
+        );
+    });
+    processor.collection_cpu(events.reader_cpu());
 
     let status = exit
         .join()
@@ -237,10 +240,7 @@ pub fn record_attached(
         processor.fixed_period(period);
     }
 
-    let perf::Attached {
-        mut events,
-        process,
-    } = perf::attach(pid, &events, options.max_events)?;
+    let perf::Attached { events, process } = perf::attach(pid, &events, options.max_events)?;
     let mut walker = match options.python {
         Some(PythonEngine::Bpf) => Some(Walker::attach(&events, &mut processor)?),
         _ => None,
@@ -260,21 +260,24 @@ pub fn record_attached(
     );
 
     let mut stopped = false;
-    drive(
-        &mut processor,
-        &mut events,
-        watch,
-        options,
-        Some(pid),
-        None,
-        walker.as_mut(),
-        || process.exited(),
-        || {
-            record!("record: stopping, detaching from {pid}");
-            stopped = true;
-            true
-        },
-    );
+    events.read_while(|| {
+        drive(
+            &mut processor,
+            &events,
+            watch,
+            options,
+            Some(pid),
+            None,
+            walker.as_mut(),
+            || process.exited(),
+            || {
+                record!("record: stopping, detaching from {pid}");
+                stopped = true;
+                true
+            },
+        );
+    });
+    processor.collection_cpu(events.reader_cpu());
 
     record!("record: detached from {pid}, stopped {stopped}");
     if !stopped {
@@ -472,11 +475,22 @@ fn settings(
     if let SampleSource::Function { .. } = options.source {
         builder.setting("function stacks", "sampled");
     }
+    if ring_pages < options.ring_pages.next_power_of_two() {
+        builder.setting(
+            "ring warning",
+            &format!(
+                "perf rings shrank from {} to {ring_pages} pages per CPU ({} KiB); raise ulimit -l or kernel.perf_event_mlock_kb",
+                options.ring_pages.next_power_of_two(),
+                ring_pages * perf::sys::page_size() / 1024,
+            ),
+        );
+    }
 
     for (key, value) in [
         ("program", program.to_string_lossy().into_owned()),
         ("pid", pid.to_string()),
         ("ring pages", ring_pages.to_string()),
+        ("requested ring pages", options.ring_pages.to_string()),
         ("source", options.source.to_string()),
         ("weight", options.source.unit().to_owned()),
         ("stack bytes", stack_bytes.to_string()),
@@ -538,10 +552,14 @@ fn settings(
 /// `options`, once the program `started` names has started. When `watch`
 /// stops the recording, `stop` ends it at once when it says so, or else
 /// waits for `ended`.
-#[expect(clippy::too_many_arguments, reason = "each is one part of a recording")]
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "the recording loop keeps collection, processing, and publication in order"
+)]
 fn drive(
     processor: &mut record::Processor,
-    events: &mut perf::Events,
+    events: &perf::Events,
     watch: &mut Watch<'_>,
     options: &RecordOptions,
     started: Option<u32>,
@@ -586,6 +604,9 @@ fn drive(
         }
 
         let finished = now || ended();
+        if finished {
+            events.enable(false);
+        }
 
         // Every record stamped before this has been written by the time
         // the next drain begins, but for a stalled CPU.
@@ -608,6 +629,7 @@ fn drive(
             buffer.len()
         );
         processor.ingest(&buffer, (!finished).then_some(watermark));
+        processor.collection_cpu(events.reader_cpu());
         if let Some(walker) = &mut walker {
             walker.refresh(processor);
         }
@@ -803,7 +825,7 @@ impl Snapshots {
     fn when_due(
         &mut self,
         processor: &mut record::Processor,
-        events: &mut perf::Events,
+        events: &perf::Events,
         sampling: bool,
     ) {
         if std::time::Instant::now() < self.next {
@@ -949,7 +971,7 @@ impl Pacer {
             on_since: Some(now),
             paused_since: None,
             sampled: 0,
-            cpu: record::thread_cpu(),
+            cpu: processor.cpu(),
             loading: processor.loading(),
             random: now | 1,
         }
@@ -1003,7 +1025,7 @@ impl Pacer {
             *on = now;
         }
 
-        let cpu = record::thread_cpu();
+        let cpu = processor.cpu();
         let loading = processor.loading();
         let observed = Observation {
             cpu: cpu

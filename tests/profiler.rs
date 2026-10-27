@@ -74,6 +74,59 @@ fn calls_of(symbol: &str) -> RecordOptions {
     }
 }
 
+#[test]
+fn maximum_rate_keeps_at_least_99_percent_of_a_short_rust_burst() {
+    let recording = record(
+        command("rust-o2-nofp", 2_000_000),
+        &RecordOptions::preset(Preset::Maximum),
+    )
+    .expect("record a maximum-rate burst");
+    assert!(recording.status.success());
+    let samples = recording.profile.samples() as u64;
+    let lost = recording.profile.lost_samples();
+    assert!(
+        samples > 100,
+        "the fixture must exercise sustained sampling"
+    );
+    assert!(lost * 100 < samples + lost, "kept {samples}, lost {lost}");
+}
+
+#[test]
+fn smaller_perf_rings_keep_their_size_and_limit_remedy_in_the_profile() {
+    let options = RecordOptions {
+        ring_pages: 1024,
+        ..RecordOptions::default()
+    };
+    let profile = record(Command::new("/bin/true"), &options)
+        .expect("record")
+        .profile;
+    let pages: usize = profile.setting("ring pages").unwrap().parse().unwrap();
+    assert_eq!(profile.setting("requested ring pages"), Some("1024"));
+    if pages < 1024 {
+        let warning = profile
+            .setting("ring warning")
+            .expect("explain smaller rings");
+        assert!(
+            warning.contains(&format!("to {pages} pages per CPU")),
+            "{warning}"
+        );
+        assert!(
+            warning.contains("KiB") && warning.contains("ulimit -l"),
+            "{warning}"
+        );
+        assert!(warning.contains("kernel.perf_event_mlock_kb"), "{warning}");
+    } else {
+        assert!(profile.setting("ring warning").is_none());
+    }
+    let read = Profile::from_bytes(&profile.to_bytes().unwrap())
+        .unwrap()
+        .profile;
+    assert_eq!(
+        read.setting("ring warning"),
+        profile.setting("ring warning")
+    );
+}
+
 /// The stack of each call of `leaf` on each thread, innermost first.
 fn expected(stack: &SampledStack) -> Vec<&'static str> {
     let mut expected = vec!["leaf", "middle", "outer"];
