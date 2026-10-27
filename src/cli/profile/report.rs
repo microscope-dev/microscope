@@ -56,12 +56,7 @@ pub fn write(
     };
     let costs = keys.functions(&query);
     let base_costs = base_keys.functions(&query);
-    writeln!(
-        out,
-        "Before: {}",
-        weight(base_costs.weight.into(), unit, false)
-    )?;
-    writeln!(out, "After: {}", weight(costs.weight.into(), unit, false))?;
+    total(base_costs.weight, costs.weight, unit, out)?;
     writeln!(out)?;
 
     if options.tree {
@@ -70,22 +65,29 @@ pub fn write(
         compared_tree((&keys, &tree), (&base_keys, &base_tree), options, unit, out)?;
     } else {
         let mut rows = diff_costs((&keys, &costs), (&base_keys, &base_costs));
+        rows.retain(|cost| cost.own > 0 || cost.base_own > 0);
         rows.sort_by_key(|cost| std::cmp::Reverse(cost.own.abs_diff(cost.base_own)));
         writeln!(out, "Own cost (after - before):")?;
-        writeln!(
-            out,
-            "{:>18} {:>18} {:>18}  function",
-            "before", "after", "change"
-        )?;
-        for cost in rows.iter().take(options.limit) {
-            comparison(out, cost.base_own, cost.own, unit)?;
-            writeln!(
-                out,
-                "  {}",
-                on_side(&keys, &base_keys, cost.side).name(cost.key)
-            )?;
-        }
+        let rows = rows.iter().take(options.limit).map(|cost| {
+            (
+                comparison(cost.base_own, cost.own, unit).to_vec(),
+                on_side(&keys, &base_keys, cost.side).name(cost.key),
+            )
+        });
+        table(&COMPARISON, "function", rows, out)?;
     }
+    Ok(())
+}
+
+/// Both profiles' total cost, and how it changed.
+fn total(before: u64, after: u64, unit: &str, out: &mut impl Write) -> Result<()> {
+    writeln!(
+        out,
+        "Total: {} → {} ({})",
+        weight(before.into(), unit, false),
+        weight(after.into(), unit, false),
+        relative(before, after)
+    )?;
     Ok(())
 }
 
@@ -97,29 +99,45 @@ fn compared_tree(
     out: &mut impl Write,
 ) -> Result<()> {
     let diff = diff_trees((keys, tree), (base_keys, base_tree));
+    let rows = tree_order(&diff).into_iter().filter_map(|node| {
+        let shown = percent(diff.total[node], tree.weight)
+            .max(percent(diff.base_total[node], base_tree.weight))
+            >= options.min_percent;
+        shown.then(|| {
+            let [before, after, change, relative] =
+                comparison(diff.base_total[node], diff.total[node], unit);
+            let [own_before, own_after, own_change, _] =
+                comparison(diff.base_own[node], diff.own[node], unit);
+            (
+                vec![
+                    before, after, change, relative, own_before, own_after, own_change,
+                ],
+                format!(
+                    "{}{}",
+                    "  ".repeat(diff.depth[node] as usize),
+                    on_side(keys, base_keys, diff.side[node]).name(diff.key[node])
+                ),
+            )
+        })
+    });
     writeln!(
         out,
-        "{:>18} {:>18} {:>18} {:>18} {:>18} {:>18}  function",
-        "before total", "after total", "change", "before own", "after own", "own change"
+        "Total cost through each path, then own cost (after - before):"
     )?;
-    for node in tree_order(&diff) {
-        if percent(diff.total[node], tree.weight)
-            .max(percent(diff.base_total[node], base_tree.weight))
-            < options.min_percent
-        {
-            continue;
-        }
-        comparison(out, diff.base_total[node], diff.total[node], unit)?;
-        write!(out, " ")?;
-        comparison(out, diff.base_own[node], diff.own[node], unit)?;
-        writeln!(
-            out,
-            "  {}{}",
-            "  ".repeat(diff.depth[node] as usize),
-            on_side(keys, base_keys, diff.side[node]).name(diff.key[node])
-        )?;
-    }
-    Ok(())
+    table(
+        &[
+            "before",
+            "after",
+            "change",
+            "",
+            "own before",
+            "own after",
+            "own change",
+        ],
+        "function",
+        rows,
+        out,
+    )
 }
 
 fn resolve(keys: &Keys<'_>, name: &str, base: bool) -> Result<u32> {
@@ -237,28 +255,17 @@ fn focus(
         .zip(base_key)
         .map(|(keys, key)| butterfly(keys, &query, key));
     if let Some(base_keys) = &base_keys {
-        writeln!(
-            out,
-            "Before: {}",
-            weight(base_keys.functions(&query).weight.into(), unit, false)
-        )?;
-        writeln!(
-            out,
-            "After: {}",
-            weight(keys.functions(&query).weight.into(), unit, false)
-        )?;
+        let before = base_keys.functions(&query).weight;
+        total(before, keys.functions(&query).weight, unit, out)?;
     }
     writeln!(out, "Focus: {name}")?;
     if let Some(before) = &before {
-        writeln!(
-            out,
-            "{:>18} {:>18} {:>18}  cost",
-            "before", "after", "change"
-        )?;
-        comparison(out, before.total, focused.total, unit)?;
-        writeln!(out, "  total")?;
-        comparison(out, before.own, focused.own, unit)?;
-        writeln!(out, "  own")?;
+        let rows = [
+            (before.total, focused.total, "total"),
+            (before.own, focused.own, "own"),
+        ]
+        .map(|(before, after, name)| (comparison(before, after, unit).to_vec(), name.to_owned()));
+        table(&COMPARISON, "cost", rows, out)?;
     } else {
         writeln!(out, "Total: {}", weight(focused.total.into(), unit, false))?;
         writeln!(out, "Own: {}", weight(focused.own.into(), unit, false))?;
@@ -345,19 +352,13 @@ fn relations(
     } else if let Some((base_keys, before)) = base {
         let mut rows = diff_costs((keys, costs), (base_keys, before));
         rows.sort_by_key(|cost| std::cmp::Reverse(cost.own.abs_diff(cost.base_own)));
-        writeln!(
-            out,
-            "{:>18} {:>18} {:>18}  function",
-            "before", "after", "change"
-        )?;
-        for cost in rows.iter().take(options.limit) {
-            comparison(out, cost.base_own, cost.own, unit)?;
-            writeln!(
-                out,
-                "  {}",
-                on_side(keys, base_keys, cost.side).name(cost.key)
-            )?;
-        }
+        let rows = rows.iter().take(options.limit).map(|cost| {
+            (
+                comparison(cost.base_own, cost.own, unit).to_vec(),
+                on_side(keys, base_keys, cost.side).name(cost.key),
+            )
+        });
+        table(&COMPARISON, "function", rows, out)?;
     } else {
         let mut rows: Vec<_> = costs.rows.iter().collect();
         rows.sort_by_key(|cost| std::cmp::Reverse(cost.own));
@@ -397,14 +398,66 @@ fn weight(value: i128, unit: &str, signed: bool) -> String {
     }
 }
 
-fn comparison(out: &mut impl Write, before: u64, after: u64, unit: &str) -> Result<()> {
-    write!(
-        out,
-        "{:>18} {:>18} {:>18}",
+/// The columns of [`comparison`].
+const COMPARISON: [&str; 4] = ["before", "after", "change", ""];
+
+/// A cost before and after, how much it changed, and by what share.
+fn comparison(before: u64, after: u64, unit: &str) -> [String; 4] {
+    [
         weight(before.into(), unit, false),
         weight(after.into(), unit, false),
-        weight(i128::from(after) - i128::from(before), unit, true)
-    )?;
+        weight(i128::from(after) - i128::from(before), unit, true),
+        relative(before, after),
+    ]
+}
+
+/// How `after` differs from `before` as a share of it: `new` when there
+/// was nothing before, and `gone` when there is nothing after.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "percentages need no more precision than f64's"
+)]
+fn relative(before: u64, after: u64) -> String {
+    match (before, after) {
+        (0, 0) => "=".to_owned(),
+        (0, _) => "new".to_owned(),
+        (_, 0) => "gone".to_owned(),
+        _ => format!(
+            "{:+.1}%",
+            (after as f64 - before as f64) * 100.0 / before as f64
+        ),
+    }
+}
+
+/// Rows of right-aligned cells, each column as wide as its widest cell or
+/// heading, then each row's name.
+fn table(
+    headings: &[&str],
+    name: &str,
+    rows: impl IntoIterator<Item = (Vec<String>, String)>,
+    out: &mut impl Write,
+) -> Result<()> {
+    let rows: Vec<_> = rows.into_iter().collect();
+    let widths: Vec<usize> = headings
+        .iter()
+        .enumerate()
+        .map(|(column, heading)| {
+            rows.iter()
+                .map(|(cells, _)| cells[column].len())
+                .fold(heading.len(), usize::max)
+        })
+        .collect();
+    let line = |cells: &mut dyn Iterator<Item = &str>, name: &str| {
+        let cells: Vec<_> = cells
+            .zip(&widths)
+            .map(|(cell, width)| format!("{cell:>width$}"))
+            .collect();
+        format!("{}  {name}", cells.join("  "))
+    };
+    writeln!(out, "{}", line(&mut headings.iter().copied(), name))?;
+    for (cells, name) in &rows {
+        writeln!(out, "{}", line(&mut cells.iter().map(String::as_str), name))?;
+    }
     Ok(())
 }
 

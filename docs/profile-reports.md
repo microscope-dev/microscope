@@ -8,19 +8,23 @@ microscope report after.usprof --base before.usprof --lines --limit 40
 microscope report after.usprof --base before.usprof --tree --min-percent 0.5
 ```
 
-The header shows each profile's total sampled cost. The flat table shows each
-function's own cost before and after, followed by after minus before. Rows are
-sorted by the size of that change, regardless of its sign. Positive changes
-mean more cost. `--lines` separates source lines and `--limit N` limits the
-flat table.
+The header shows each profile's total sampled cost and how it changed, for
+example `Total: 0.355 s → 0.118 s (-66.8%)`. The flat table shows each
+function's own cost before and after, after minus before, and that change as
+a percentage of before: `new` if it had no cost before, and `gone` if it has
+none after. Functions with no own cost in either profile are left out. Rows
+are sorted by the size of the change, regardless of its sign. Positive
+changes mean more cost. `--lines` separates source lines and `--limit N`
+limits the flat table.
 
 CPU costs are seconds. Other profiles keep their recorded unit, such as
-executions or samples. Costs are not percentages or normalized to equal run
-lengths. Compare equivalent work if you want to measure a speedup. Profiles
-with different units cannot be compared. `--waits` compares snapshot wait
-time, in seconds, instead of CPU samples.
+executions or samples. Costs are absolute, not normalized to equal run
+lengths, so the percentages compare absolute costs too. Compare equivalent
+work if you want to measure a speedup. Profiles with different units cannot
+be compared. `--waits` compares snapshot wait time, in seconds, instead of
+CPU samples.
 
-With `--tree`, the first three columns compare total cost through each path.
+With `--tree`, the first four columns compare total cost through each path.
 The next three compare its own cost. Functions called from several places
 still appear under each caller. Children are sorted by the size of their
 total-cost change. `--min-percent` keeps a node if its total reaches the
@@ -78,6 +82,6 @@ identical, use `--lines` and an exact displayed line name, for example
 When combined with `--base`, focus is resolved separately in each profile.
 A function missing from the base contributes zero; an ambiguous name in
 either profile is still an error. The butterfly lists and focused tree show
-absolute before, after, and change columns.
+absolute before, after, and change columns, and the percentage change.
 
 See [profiling](profiling.md) for recording options and the browser workflow.

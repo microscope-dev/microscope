@@ -6426,9 +6426,13 @@ fn report_compares_and_focuses_from_the_command_line() {
     let before = before.to_string_lossy();
     let after = after.to_string_lossy();
     let diff = assert_success(microscope(&["report", &after, "--base", &before]));
-    assert!(diff.contains("Before: 40"), "{diff}");
-    assert!(diff.contains("After: 20"), "{diff}");
-    assert!(diff.contains("-20"), "{diff}");
+    assert!(
+        diff.contains("Total: 40 samples → 20 samples (-50.0%)"),
+        "{diff}"
+    );
+    assert!(diff.contains("-20 samples  -50.0%  leaf"), "{diff}");
+    // a and b have no own cost before or after.
+    assert!(!diff.contains("  a\n") && !diff.contains("  b\n"), "{diff}");
     let focus = assert_success(microscope(&["report", &after, "--focus", "leaf"]));
     assert!(focus.contains("Callers"), "{focus}");
     for name in ["a", "b"] {
@@ -6453,6 +6457,7 @@ fn report_compares_and_focuses_from_the_command_line() {
     ]));
     assert!(tree.contains("-25"), "{tree}");
     assert!(!tree.contains("  b\n"), "{tree}");
+    assert!(tree.lines().all(|line| line.len() < 100), "{tree}");
 }
 
 #[test]

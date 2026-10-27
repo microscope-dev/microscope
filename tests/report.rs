@@ -162,17 +162,20 @@ fn report_diff_uses_absolute_own_costs_and_keeps_added_and_removed_functions() {
         ],
     );
     let text = render(&current, Some(&base), &options());
-    assert!(text.contains("Before: 4.000 s"), "{text}");
-    assert!(text.contains("After: 1.500 s"), "{text}");
+    assert!(text.contains("Total: 4.000 s → 1.500 s (-62.5%)"), "{text}");
     let rows = rows(&text);
     for expected in [
-        vec!["3.000", "s", "1.000", "s", "-2.000", "s", "leaf"],
-        vec!["1.000", "s", "0.000", "s", "-1.000", "s", "removed"],
-        vec!["0.000", "s", "0.500", "s", "+0.500", "s", "added"],
-        vec!["0.000", "s", "0.000", "s", "0.000", "s", "main"],
+        vec!["3.000", "s", "1.000", "s", "-2.000", "s", "-66.7%", "leaf"],
+        vec!["1.000", "s", "0.000", "s", "-1.000", "s", "gone", "removed"],
+        vec!["0.000", "s", "0.500", "s", "+0.500", "s", "new", "added"],
     ] {
         assert!(rows.contains(&expected), "{text}");
     }
+    // main has no own cost on either side.
+    assert!(
+        !rows.iter().any(|row| row.last() == Some(&"main")),
+        "{text}"
+    );
     assert!(text.find("leaf\n") < text.find("removed\n"), "{text}");
     let mut limited = options();
     limited.limit = 1;
@@ -197,7 +200,8 @@ fn report_diff_lines_match_names_across_different_key_orders() {
     assert!(text.contains("fixture.c:20"), "{text}");
     assert!(text.contains("-25 executions"), "{text}");
     assert!(text.contains("+15 executions"), "{text}");
-    assert!(!text.contains('%'), "{text}");
+    assert!(text.contains("-83.3%"), "{text}");
+    assert!(text.contains("+150.0%"), "{text}");
 }
 
 #[test]
@@ -392,13 +396,13 @@ fn report_focus_butterfly_compares_each_relation_by_absolute_cost() {
     options.focus = Some("f");
     let text = render(&current, Some(&base), &options);
     let rows = rows(&text);
-    for (before, after, change, name) in [
-        ("30", "20", "-10", "total"),
-        ("10", "15", "+5", "own"),
-        ("20", "0", "-20", "a"),
-        ("10", "5", "-5", "b"),
-        ("0", "15", "+15", "c"),
-        ("20", "5", "-15", "g"),
+    for (before, after, change, percent, name) in [
+        ("30", "20", "-10", "-33.3%", "total"),
+        ("10", "15", "+5", "+50.0%", "own"),
+        ("20", "0", "-20", "gone", "a"),
+        ("10", "5", "-5", "-50.0%", "b"),
+        ("0", "15", "+15", "new", "c"),
+        ("20", "5", "-15", "-75.0%", "g"),
     ] {
         assert!(
             rows.contains(&vec![
@@ -408,6 +412,7 @@ fn report_focus_butterfly_compares_each_relation_by_absolute_cost() {
                 "executions",
                 change,
                 "executions",
+                percent,
                 name
             ]),
             "{text}"
