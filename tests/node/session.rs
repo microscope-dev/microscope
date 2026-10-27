@@ -185,7 +185,7 @@ impl NodeSession {
             ..LaunchOptions::default()
         };
         let session = Self {
-            scenario: Scenario::new(format!("node {entry} {fixture}"), node::node(entry)),
+            scenario: Scenario::for_fixture(format!("node {entry} {fixture}"), node::node(entry)),
             entry: entry.to_owned(),
             fixture: fixture.to_owned(),
             output,
@@ -403,4 +403,22 @@ fn the_matrix_is_every_build_the_dev_shell_provides() {
 
     assert_eq!(known, provided);
     assert!(CORES.iter().all(|entry| MATRIX.contains(entry)));
+}
+
+#[tokio::test]
+async fn repeated_sessions_read_the_node_program_once() {
+    let recording = microscope::timings::Recording::start(microscope::timings::Options::default())
+        .expect("record loads");
+    for _ in 0..2 {
+        let pending = NodeSession::unlaunched("nixpkgs-26", "exceptions.js");
+        pending.session.shutdown().await;
+    }
+    let report = recording.finish().expect("load timings");
+    let loads = report.phases.iter().find(|phase| phase.name == "load");
+    assert_eq!(
+        loads.map(|phase| phase.spans),
+        Some(1),
+        "{:?}",
+        report.phases
+    );
 }

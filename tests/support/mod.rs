@@ -355,9 +355,14 @@ impl Scenario {
 
     /// Launches the named fixture under a scenario of the same name.
     pub fn launch(fixture: &str) -> Self {
-        let debugger = Debugger::for_program(loaded_fixture(&Self::fixture(fixture)))
+        Self::for_fixture(fixture, Self::fixture(fixture))
+    }
+
+    /// A built, immutable fixture whose program is shared across scenarios.
+    pub fn for_fixture(name: impl Into<String>, fixture: impl AsRef<Path>) -> Self {
+        let debugger = Debugger::for_program(loaded_fixture(fixture.as_ref()))
             .expect("initialize debugger scenario");
-        Self::from_debugger(fixture.to_owned(), debugger)
+        Self::from_debugger(name.into(), debugger)
     }
 
     /// Opens a post-mortem core dump through the public API.
