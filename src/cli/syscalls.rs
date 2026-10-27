@@ -1115,6 +1115,9 @@ struct Printer {
     /// With -kk, each frame's source line too.
     stack_lines: bool,
     frame_limit: usize,
+    frame_pointer_stacks: bool,
+    stacks_seen: u64,
+    broken_stacks: BTreeMap<Arc<str>, u64>,
 
     /// With `-o FILE.usprof`, the file and the capture of what is shown.
     capture: Option<(PathBuf, SyscallCapture)>,
@@ -1495,6 +1498,10 @@ const fn style(args: &SyscallsArgs) -> Style {
 }
 
 impl Printer {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "initializes the trace printer's independent settings"
+    )]
     fn new(args: &SyscallsArgs, plan: &Plan) -> Result<Self> {
         let open = |path: &std::path::Path| -> Result<File> {
             std::fs::OpenOptions::new()
@@ -1597,6 +1604,10 @@ impl Printer {
             stacks: None,
             stack_lines: plan.stacks.is_some_and(|stacks| stacks.lines),
             frame_limit: args.stack_trace_frame_limit,
+            frame_pointer_stacks: args.engine == EngineArg::Bpf
+                && plan.stacks.is_some_and(|stacks| !stacks.dwarf),
+            stacks_seen: 0,
+            broken_stacks: BTreeMap::new(),
             capture: capture.map(|path| (path.clone(), SyscallCapture::new(None))),
         })
     }
@@ -1857,6 +1868,9 @@ impl Printer {
                 before: false,
             },
         );
+        if let Some(stack) = &event.stack {
+            self.note_stack(event.process, stack);
+        }
         self.personality(event);
         match self.format {
             OutputFormat::Text => self.text(event, entry, returned),
@@ -1872,6 +1886,32 @@ impl Printer {
                 self.line = line;
             }
         }
+    }
+
+    fn broken_module(&self, process: Pid, stack: &CallStack) -> Option<Arc<str>> {
+        stack.truncation()?;
+        self.stacks
+            .as_ref()?
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .frame_pointer_break(process, stack)
+    }
+
+    fn note_stack(&mut self, process: Pid, stack: &CallStack) {
+        if self.frame_pointer_stacks {
+            self.stacks_seen += 1;
+            if let Some(module) = self.broken_module(process, stack) {
+                *self.broken_stacks.entry(module).or_default() += 1;
+            }
+        }
+    }
+
+    fn stack_end(&self, process: Pid, stack: &CallStack) -> Option<String> {
+        let reason = stack.truncation()?;
+        Some(self.broken_module(process, stack).map_or_else(
+            || reason.describe().to_owned(),
+            |module| format!("frame pointer chain broken in {module}"),
+        ))
     }
 
     /// A stack as ndjson writes it: each native frame's module, its
@@ -1919,8 +1959,8 @@ impl Printer {
                 Some(Value::Object(object))
             })
             .collect();
-        if let Some(reason) = stack.truncation() {
-            array.push(json!({ "ends": reason.describe() }));
+        if let Some(reason) = self.stack_end(process, stack) {
+            array.push(json!({ "ends": reason }));
         }
 
         Value::Array(array)
@@ -1961,8 +2001,8 @@ impl Printer {
         let total = stack.addresses.len() + stack.interpreted.len();
         if shown.len() < total {
             lines.push(format!(" > ... {} more frames", total - shown.len()));
-        } else if let Some(reason) = stack.truncation() {
-            lines.push(format!(" > [stack ends: {}]", reason.describe()));
+        } else if let Some(reason) = self.stack_end(process, stack) {
+            lines.push(format!(" > [stack ends: {reason}]"));
         }
 
         lines
@@ -2183,6 +2223,12 @@ impl Printer {
             return;
         }
 
+        if let TraceEvent::Signal {
+            stack: Some(stack), ..
+        } = event
+        {
+            self.note_stack(process, stack);
+        }
         match self.format {
             OutputFormat::Text => {
                 let Some(tokens) = present::other(event) else {
@@ -2271,6 +2317,13 @@ impl Printer {
 
     /// Prints the table and flushes every output.
     fn finish(&mut self) -> Result<()> {
+        if self.broken_stacks.values().sum::<u64>() > self.stacks_seen / 4
+            && let Some((module, count)) = self.broken_stacks.iter().max_by_key(|(_, count)| *count)
+        {
+            self.message(&format!(
+                "{count} stacks ended early because {module} doesn't keep frame pointers; -k=dwarf unwinds them"
+            ));
+        }
         if let Some(mut continuous) = self.continuous.take() {
             let path = continuous.end_segment(monotonic()).with_context(|| {
                 format!("writing a segment to {}", continuous.directory().display())

@@ -196,6 +196,12 @@ How it reads calls:
   waiting event, so what a tick tells the sink follows them. A panic while
   unwinding is raised again on the reader, which ends the trace as it did
   when the reader unwound the stack itself.
+- Frame-pointer mode copies no stack bytes. If its chain ends short,
+  `Unwinding::unwind` uses the last frame's
+  `FramePointerRule` to distinguish a missing frame pointer from an ended
+  chain or missing unwind information. A nonempty DWARF copy that runs out
+  retains `StackCopyExhausted`. The release Rust syscall fixture exercises
+  both failures, including calls from worker threads.
 - Unwinding is cached per image address: the code role and frame-pointer
   rule (`FrameRules`, one per thread), the call-frame row
   (`DwarfUnwindInfo::row`), and the symbol and line (`Stacks::frame`). On a

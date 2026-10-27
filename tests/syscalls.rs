@@ -2117,6 +2117,66 @@ mod bpf {
         }
     }
 
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn frame_pointer_breaks_name_the_module_and_suggest_dwarf() {
+        for (mode, count) in [("stacks", 32), ("thread-stacks", 64)] {
+            for method in ["-k", "-k=dwarf"] {
+                let output = microscope(&["-f", method, "-e", "trace=getppid", "--"])
+                    .arg(Scenario::fixture("syscalls-rust-release"))
+                    .arg(mode)
+                    .output()
+                    .expect("run microscope");
+                let trace = text(&output.stderr);
+                assert!(output.status.success(), "{trace}");
+                assert_eq!(trace.matches("getppid()").count(), count, "{trace}");
+                if method == "-k" {
+                    assert!(!trace.contains("stack copy exhausted"), "{trace}");
+                    assert_eq!(
+                        trace.matches("frame pointer chain broken in ").count(),
+                        count,
+                        "{trace}"
+                    );
+                    assert!(
+                        trace.contains(&format!("{count} stacks ended early because ")),
+                        "{trace}"
+                    );
+                    assert!(trace.contains("syscalls-rust-release doesn't keep frame pointers; -k=dwarf unwinds them"), "{trace}");
+                    assert_eq!(trace.matches("-k=dwarf unwinds them").count(), 1, "{trace}");
+                } else {
+                    assert!(trace.contains("syscalls::main"), "{trace}");
+                    assert!(!trace.contains("frame pointer chain broken"), "{trace}");
+                    assert!(!trace.contains("-k=dwarf unwinds them"), "{trace}");
+                }
+            }
+        }
+
+        let output = microscope(&["-k", "-e", "trace=read", "--"])
+            .arg(fixture())
+            .arg("dumps")
+            .output()
+            .expect("run microscope");
+        let trace = text(&output.stderr);
+        assert!(output.status.success(), "{trace}");
+        assert!(!trace.contains("stack copy exhausted"), "{trace}");
+        assert!(trace.contains("frame pointer chain broken in "), "{trace}");
+    }
+
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn dwarf_stack_copy_exhaustion_is_not_a_frame_pointer_break() {
+        let output = microscope(&["-k=dwarf", "-e", "trace=getppid", "--"])
+            .arg(Scenario::fixture("syscalls-rust-release"))
+            .arg("deep-stack")
+            .output()
+            .expect("run microscope");
+        let trace = text(&output.stderr);
+        assert!(output.status.success(), "{trace}");
+        assert!(trace.contains("stack copy exhausted"), "{trace}");
+        assert!(!trace.contains("frame pointer chain broken"), "{trace}");
+        assert!(!trace.contains("-k=dwarf unwinds them"), "{trace}");
+    }
+
     /// The kernel counts what `-c` alone shows, which the ptrace engine
     /// counts from every call it sees.
     #[test]

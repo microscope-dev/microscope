@@ -27,7 +27,7 @@ use crate::unwind::sample::{
     FrameRules, SampledFrame, SampledState, StackEnd, unwind_memory, unwind_sample,
 };
 
-use crate::unwind::{MemoryReader, UnwindModule};
+use crate::unwind::{FramePointerRule, MemoryReader, UnwindModule};
 use crate::{
     CodeRole, DebugFileOptions, ImageAddress, LoadBias, LoadedModule, ModuleId, ModuleImageId,
     VirtualAddress,
@@ -194,7 +194,28 @@ impl Unwinding {
                 })
             })
             .collect();
-        unwind_sample(&modules, rules, sample, MOST_FRAMES)
+        let (frames, mut end) = unwind_sample(&modules, rules, sample, MOST_FRAMES);
+        // Frame-pointer mode copies no bytes. A failed read there is
+        // evidence about the chain, not an exhausted copy.
+        if sample.stack.is_empty()
+            && matches!(end, StackEnd::Truncated(Truncation::StackCopyExhausted, _))
+            && let Some(frame) = frames.last()
+            && let Some(module) = frame.module.and_then(|index| modules.get(index))
+            && let Ok(address) = module.loaded.image_address(frame.address)
+        {
+            let index = frame.module;
+            end = match module.unwind.frame_pointer_rule(address) {
+                FramePointerRule::NotKept => {
+                    StackEnd::Truncated(Truncation::FramePointerNotKept, index)
+                }
+                FramePointerRule::Kept => StackEnd::Truncated(Truncation::ChainEnded, index),
+                FramePointerRule::NoUnwindInfo => {
+                    StackEnd::Truncated(Truncation::NoUnwindInfo, index)
+                }
+                FramePointerRule::Outermost => StackEnd::Complete,
+            };
+        }
+        (frames, end)
     }
 }
 
@@ -797,6 +818,19 @@ impl Stacks {
             mapped: self.processes.get(&process).cloned().unwrap_or_default(),
         };
         unwinding.unwind(&mut self.rules, sample)
+    }
+
+    /// The module where a frame-pointer chain broke, if known.
+    #[must_use]
+    pub fn frame_pointer_break(&self, process: Pid, stack: &CallStack) -> Option<Arc<str>> {
+        (stack.truncation() == Some(Truncation::FramePointerNotKept)).then_some(())?;
+        let &last = stack.addresses.last()?;
+        let code = if stack.addresses.len() == 1 {
+            last
+        } else {
+            last.wrapping_sub(1)
+        };
+        Some(self.mapping_at(process, code)?.path)
     }
 
     /// Reads `process`'s mappings again when `frames` end at code in no

@@ -143,7 +143,13 @@ microscope syscalls -kk -e trace=openat -- ./server
 The BPF engine, described below, finds stacks by walking frame pointers. A
 program built without them gives short stacks; `-k=dwarf` copies part of the
 stack and unwinds it with the program's debug information instead. A stack
-that ends early says why.
+that ends early says why. A broken frame-pointer chain names the module
+where it stopped. If more than a quarter of the shown stacks stop because
+code does not keep frame pointers, one hint at the end names the module
+responsible for the most breaks and suggests `-k=dwarf`.
+
+`-k=dwarf` still has a bounded stack copy. If it runs out of copied bytes,
+the stack ends with `stack copy exhausted`, not a frame-pointer warning.
 
 A Python program's stacks show each Python frame's function, file, and line,
 with either engine; see [Python](languages.md#system-calls). In ndjson, such
