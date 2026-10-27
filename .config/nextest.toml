@@ -27,7 +27,7 @@ bpf-profiles = { max-threads = 1 }
 # walker and microscope's reads of V8 follow, push past it beside them:
 # those run one at a time with each other.
 [[profile.default.overrides]]
-filter = 'test(/(^|::)bpf::/) & (binary(node) | (binary(python) & test(/^profile::/)))'
+filter = 'binary(profiler_kernel) | (test(/(^|::)bpf::/) & (binary(node) | (binary(python) & test(/^profile::/))))'
 test-group = 'bpf-profiles'
 
 [[profile.default.overrides]]

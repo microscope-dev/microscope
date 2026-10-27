@@ -1544,7 +1544,40 @@ impl Processor {
         mapped
     }
 
+    fn kernel_leaf(&mut self, sample: &decode::Sample<'_>) -> Option<u32> {
+        sample.kernel.then(|| {
+            let function = self
+                .paired
+                .as_ref()
+                .and_then(|(_, bytes)| crate::backend::bpf::sampler::kernel_syscall(bytes))
+                .map_or_else(
+                    || "[kernel: unknown]".to_owned(),
+                    |call| format!("[kernel: {}]", call.display_name()),
+                );
+            let name = self.builder.string(&function);
+            let leaf = self
+                .builder
+                .frame(FrameKind::Kernel, NONE, u64::from(name), 0);
+            if !self.builder.symbolized(leaf) {
+                self.builder.symbolize(
+                    leaf,
+                    NONE,
+                    &[LineInput {
+                        function: &function,
+                        file: None,
+                        line: 0,
+                        column: 0,
+                        declared: None,
+                        role: 0,
+                    }],
+                );
+            }
+            leaf
+        })
+    }
+
     fn sample(&mut self, sample: &decode::Sample<'_>) {
+        let kernel = self.kernel_leaf(sample);
         let time = sample.time.cast_signed();
         let thread = self.thread(sample.pid, sample.tid, time);
         self.registers.clear();
@@ -1646,6 +1679,10 @@ impl Processor {
             self.frames.push(frame);
             self.builder
                 .count(AccountKind::Truncated as u32 + reason as u32, 1);
+        }
+
+        if let Some(leaf) = kernel {
+            self.frames.insert(0, leaf);
         }
 
         let stack = self.builder.stack(&self.frames);
@@ -3085,6 +3122,89 @@ mod tests {
         rest.extend_from_slice(&stack);
         rest.extend_from_slice(&[0; 4]);
         perf_record(42, time, &rest)
+    }
+
+    #[test]
+    fn kernel_samples_keep_the_user_stack_and_a_sample_time_syscall_leaf() {
+        for (kernel, metadata, expected) in [
+            (true, Some((0, 0)), Some("[kernel: read]")),
+            (true, Some((1, 0)), Some("[kernel: write]")),
+            (true, Some((u64::MAX, 0)), Some("[kernel: unknown]")),
+            (true, Some((0, 3)), Some("[kernel: unknown]")),
+            (true, None, Some("[kernel: unknown]")),
+            (false, Some((0, 0)), None),
+        ] {
+            check_kernel_sample(kernel, metadata, expected);
+        }
+    }
+
+    fn check_kernel_sample(kernel: bool, metadata: Option<(u64, u32)>, expected: Option<&str>) {
+        let mut processor = Processor::new(DebugFileSearch::default(), 64);
+        processor.interpret(vec![42]);
+        let mut output = frames_record(10_500, false, 0);
+        if let Some((syscall, abi)) = metadata {
+            // Insert the sampler's kernel trailer before perf's raw padding.
+            let at = output.len() - 4;
+            let mut trailer = syscall.to_le_bytes().to_vec();
+            trailer.extend_from_slice(&abi.to_le_bytes());
+            trailer.extend_from_slice(&0_u32.to_le_bytes());
+            output.splice(at..at, trailer);
+            let size = u16::try_from(output.len()).unwrap();
+            output[6..8].copy_from_slice(&size.to_le_bytes());
+            output[40..44].copy_from_slice(&60_u32.to_le_bytes());
+        }
+
+        let mut rest = Vec::new();
+        for word in [
+            1000_u64,
+            2,
+            (-128_i64).cast_unsigned(),
+            0xffff_ffff_8100_0000,
+            2,
+        ] {
+            rest.extend_from_slice(&word.to_le_bytes());
+        }
+        let mut registers = [0_u64; 18];
+        registers[7] = 0x7000_0000;
+        registers[8] = 0x0040_1000;
+        for word in registers.into_iter().chain([0]) {
+            rest.extend_from_slice(&word.to_le_bytes());
+        }
+        let mut sample = perf_record(1, 10_000, &rest);
+        sample[4..6].copy_from_slice(&(if kernel { 1_u16 } else { 2 }).to_le_bytes());
+        output.extend(sample);
+        processor.ingest(&output, Some(9_000));
+        processor.ingest(&[], None);
+        let capture = processor.finish();
+        let frames: Vec<_> = capture
+            .stack_frames(capture.samples[0].stack.get())
+            .collect();
+        if let Some(expected) = expected {
+            let leaf = capture.frame_lines(frames[0]);
+            assert_eq!(
+                capture.frames[frames[0] as usize].kind,
+                FrameKind::Kernel as u8
+            );
+            assert_eq!(
+                capture.string(
+                    capture.functions[leaf[0].function.get() as usize]
+                        .name
+                        .get()
+                ),
+                expected
+            );
+        } else {
+            assert!(
+                frames
+                    .iter()
+                    .all(|frame| capture.frames[*frame as usize].kind != FrameKind::Kernel as u8)
+            );
+        }
+        assert!(frames.iter().any(|frame| {
+            let frame = &capture.frames[*frame as usize];
+            frame.kind == FrameKind::Native as u8 && frame.address.get() == 0x0040_1000
+        }));
+        assert!(!frames.iter().any(|frame| capture.frames[*frame as usize].address.get() == 0xffff_ffff_8100_0000));
     }
 
     /// The spans of the GIL label a capture holds.

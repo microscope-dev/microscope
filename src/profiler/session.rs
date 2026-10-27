@@ -95,7 +95,7 @@ pub fn record_watched(
     watch: &mut Watch<'_>,
 ) -> Result<Recording, RecordError> {
     let _span = crate::span!("record");
-    if options.python == Some(PythonEngine::Bpf) {
+    if options.kernel || options.python == Some(PythonEngine::Bpf) {
         crate::backend::bpf::sampler::check_namespace()?;
     }
     let program = PathBuf::from(command.get_program());
@@ -106,6 +106,7 @@ pub fn record_watched(
     let events = perf::EventOptions {
         source,
         stack_bytes,
+        kernel: options.kernel,
         ring_pages: options.ring_pages,
         switches: options.off_cpu,
     };
@@ -126,8 +127,8 @@ pub fn record_watched(
     let launched = perf::launch(command, &events, launch, |pid, events| {
         // The program runs on the events before the program can start a
         // thread that would inherit them without it.
-        if options.python == Some(PythonEngine::Bpf) {
-            match Walker::attach(events, &mut processor) {
+        if options.kernel || options.python == Some(PythonEngine::Bpf) {
+            match Walker::attach(events, &mut processor, options.kernel) {
                 Ok(attached) => walker = Some(attached),
                 Err(error) => {
                     let why = error.to_string();
@@ -218,7 +219,7 @@ pub fn record_attached(
     watch: &mut Watch<'_>,
 ) -> Result<Attachment, RecordError> {
     let _span = crate::span!("record attached");
-    if options.python == Some(PythonEngine::Bpf) {
+    if options.kernel || options.python == Some(PythonEngine::Bpf) {
         crate::backend::bpf::sampler::check_namespace()?;
     }
     let program = PathBuf::from(format!("/proc/{pid}/exe"));
@@ -230,6 +231,7 @@ pub fn record_attached(
     let events = perf::EventOptions {
         source,
         stack_bytes,
+        kernel: options.kernel,
         ring_pages: options.ring_pages,
         switches: options.off_cpu,
     };
@@ -241,9 +243,10 @@ pub fn record_attached(
     }
 
     let perf::Attached { events, process } = perf::attach(pid, &events, options.max_events)?;
-    let mut walker = match options.python {
-        Some(PythonEngine::Bpf) => Some(Walker::attach(&events, &mut processor)?),
-        _ => None,
+    let mut walker = if options.kernel || options.python == Some(PythonEngine::Bpf) {
+        Some(Walker::attach(&events, &mut processor, options.kernel)?)
+    } else {
+        None
     };
 
     processor.attached(Pid::new(pid), monotonic());
@@ -322,8 +325,9 @@ impl Walker {
     fn attach(
         events: &perf::Events,
         processor: &mut record::Processor,
+        kernel: bool,
     ) -> Result<Self, SamplerError> {
-        let (sampler, outputs) = Sampler::load(events)?;
+        let (sampler, outputs) = Sampler::load(events, kernel)?;
         processor.interpret(outputs);
         Ok(Self {
             sampler,
@@ -491,6 +495,7 @@ fn settings(
         ("pid", pid.to_string()),
         ("ring pages", ring_pages.to_string()),
         ("requested ring pages", options.ring_pages.to_string()),
+        ("kernel", if options.kernel { "on" } else { "off" }.into()),
         ("source", options.source.to_string()),
         ("weight", options.source.unit().to_owned()),
         ("stack bytes", stack_bytes.to_string()),

@@ -457,7 +457,7 @@ fn validation_rejects_every_out_of_bounds_reference() {
     assert!(broken.validate().is_err(), "an interpreted frame of no key");
 
     let mut broken = valid.clone();
-    broken.frames[named].kind = 6;
+    broken.frames[named].kind = u8::MAX;
     assert!(broken.validate().is_err(), "a frame of no kind");
 
     let mut broken = valid;

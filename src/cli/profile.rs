@@ -59,6 +59,11 @@ pub struct RecordArgs {
     #[arg(long, value_name = "HZ")]
     rate: Option<u32>,
 
+    /// Include kernel CPU time, naming the syscall on its calling user stack.
+    /// Requires `CAP_PERFMON` and `CAP_BPF` (or `CAP_SYS_ADMIN`).
+    #[arg(long, conflicts_with = "function")]
+    kernel: bool,
+
     /// Bytes of stack each sample copies, over the preset's.
     #[arg(long, value_name = "BYTES")]
     stack_bytes: Option<u32>,
@@ -472,6 +477,7 @@ fn options(args: &RecordArgs) -> Result<RecordOptions> {
         PresetArg::Dev => Preset::Development,
         PresetArg::Max => Preset::Maximum,
     });
+    options.kernel = args.kernel;
 
     if let Some(rate) = args.rate {
         options.source = SampleSource::Clock { rate };
@@ -1196,6 +1202,12 @@ fn summary(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
             weight(counted),
             if paused { " while sampling was on" } else { "" }
         )?;
+        if profile.setting("kernel") != Some("on") && total < counted / 2 && !paused && lost == 0 {
+            writeln!(
+                out,
+                "Low coverage may mean most CPU time was in the kernel; record with --kernel or trace with microscope syscalls -c."
+            )?;
+        }
     }
 
     cost(profile, out)?;

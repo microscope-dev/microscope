@@ -21,6 +21,17 @@ microscope record --pid 1842 -o server.usprof
 Stop an attached recording with Ctrl-C. Use `--duration SECONDS` when the
 recording should stop on its own.
 
+## Include kernel CPU time
+
+`microscope record --kernel -- ./program` also samples time spent in the
+kernel. It keeps the calling user stack and adds a leaf such as `[kernel: read]`.
+Interrupts or contexts without a syscall are labeled `[kernel: unknown]`.
+The recorder needs CAP_PERFMON and CAP_BPF, or CAP_SYS_ADMIN. On hosts configured
+with the BPF wrapper, prefix the command with
+`/run/wrappers/bin/microscope-bpf`. Restrictive `kernel.perf_event_paranoid`
+settings can also prohibit kernel sampling. Without `--kernel`, recording
+continues to sample user CPU time only, including with the production preset.
+
 ## Count function calls
 
 ```sh

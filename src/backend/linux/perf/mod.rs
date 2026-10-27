@@ -40,6 +40,9 @@ pub struct EventOptions {
     /// Bytes of stack each sample copies, a multiple of eight.
     pub stack_bytes: u32,
 
+    /// Sample kernel CPU time as well as user CPU time.
+    pub kernel: bool,
+
     /// Data pages of each ring, a power of two.
     pub ring_pages: usize,
 
@@ -52,7 +55,7 @@ pub struct EventOptions {
 #[derive(Debug, thiserror::Error)]
 pub enum OpenError {
     #[error(
-        "the kernel does not let this user sample the program (perf_event_paranoid is {paranoid}): {source}"
+        "the kernel does not let this user sample the program (perf_event_paranoid is {paranoid}): {source}; kernel sampling needs CAP_PERFMON (or CAP_SYS_ADMIN), or a lower kernel.perf_event_paranoid setting"
     )]
     Denied {
         paranoid: String,
@@ -443,7 +446,11 @@ fn attr(options: &EventOptions, start: u64) -> sys::Attr {
         sample_type: decode::SAMPLE_TYPE,
         flags: start
             | flag::INHERIT
-            | flag::EXCLUDE_KERNEL
+            | if options.kernel {
+                0
+            } else {
+                flag::EXCLUDE_KERNEL
+            }
             | flag::EXCLUDE_HV
             | flag::MMAP
             | flag::MMAP2

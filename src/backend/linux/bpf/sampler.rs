@@ -55,6 +55,43 @@ struct RawRecord {
     tgid: u32,
 }
 
+/// `struct kernel_sample_record`, after an interpreter record's bytes.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout)]
+struct RawKernelSample {
+    syscall: u64,
+    abi: u32,
+    reserved: u32,
+}
+
+/// The syscall captured at this sample, never inferred from the live task.
+pub fn kernel_syscall(bytes: &[u8]) -> Option<crate::syscalls::SyscallId> {
+    use crate::syscalls::{Abi, SyscallId};
+    let (header, _) = RawRecord::ref_from_prefix(bytes).ok()?;
+    match header.kind {
+        RECORD_PY_STACK => {
+            decode(bytes).ok()?;
+        }
+        RECORD_V8_STACK => {
+            decode_v8(bytes).ok()?;
+        }
+        _ => return None,
+    }
+    let size = usize::try_from(header.size).ok()?;
+    let (record, _) = RawKernelSample::ref_from_prefix(bytes.get(size..)?).ok()?;
+    let mut number = u32::try_from(record.syscall).ok()?;
+    let abi = match record.abi {
+        0 => Abi::X86_64,
+        1 => Abi::X86_32,
+        2 => {
+            number &= !(1 << 30);
+            Abi::X32
+        }
+        _ => return None,
+    };
+    (record.reserved == 0).then_some(SyscallId::new(abi, number))
+}
+
 /// `struct py_layout`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout)]
@@ -733,10 +770,17 @@ impl Sampler {
     ///
     /// When this process lacks the privileges, or the kernel refuses the
     /// program or the events.
-    pub fn load(events: &perf::Events) -> Result<(Self, Vec<u64>), SamplerError> {
+    pub fn load(events: &perf::Events, kernel: bool) -> Result<(Self, Vec<u64>), SamplerError> {
         check_namespace()?;
         let probe = super::super::syscalls::bpf::Probe::read();
         if let Some(missing) = probe.lacks_privileges() {
+            if kernel {
+                return Err(SamplerError::Unavailable(format!(
+                    "--kernel needs CAP_BPF and CAP_PERFMON to capture syscall attribution; this \
+                     process {missing}. Run through /run/wrappers/bin/microscope-bpf or a unit \
+                     with AmbientCapabilities=CAP_BPF CAP_PERFMON"
+                )));
+            }
             return Err(SamplerError::Unavailable(format!(
                 "the BPF engine for Python stacks needs CAP_BPF and CAP_PERFMON, and this \
                  process {missing}.\n{REMEDY}"
@@ -744,7 +788,9 @@ impl Sampler {
         }
 
         let cpus = aya::util::nr_cpus().map_err(|(_, error)| load_error(error))?;
+        let kernel = u32::from(kernel);
         let mut ebpf = EbpfLoader::new()
+            .override_global("KERNEL_SAMPLES", &kernel, true)
             .map_max_entries("OUTPUT", u32::try_from(cpus).unwrap_or(u32::MAX))
             .load(OBJECT)
             .map_err(load_error)?;
@@ -897,6 +943,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn kernel_syscalls_use_the_captured_number_and_abi_or_remain_unknown() {
+        use crate::syscalls::{Abi, SyscallId};
+        let bytes = |syscall, abi| {
+            let mut bytes = record(&[], 3, 0);
+            bytes.truncate(40);
+            bytes.extend_from_slice(
+                RawKernelSample {
+                    syscall,
+                    abi,
+                    reserved: 0,
+                }
+                .as_bytes(),
+            );
+            bytes
+        };
+        for (number, abi, expected) in [
+            (0, 0, Some(SyscallId::new(Abi::X86_64, 0))),
+            (3, 1, Some(SyscallId::new(Abi::X86_32, 3))),
+            (1 << 30, 2, Some(SyscallId::new(Abi::X32, 0))),
+            (u64::MAX, 0, None),
+            (0, 3, None),
+        ] {
+            let data = bytes(number, abi);
+            assert_eq!(kernel_syscall(&data), expected);
+            assert!(decode(&data).is_ok(), "trailer changed the Python record");
+            if let Some(call) = expected {
+                assert_eq!(call.name(), Some("read"));
+            }
+        }
+        assert_eq!(kernel_syscall(&record(&[], 3, 0)), None);
+        assert_eq!(kernel_syscall(&bytes(0, 0)[..55]), None);
+        let mut data = bytes(0, 0);
+        data[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(kernel_syscall(&data), None);
+        let mut javascript = v8_record(0, 0);
+        javascript.extend_from_slice(
+            RawKernelSample {
+                syscall: 0,
+                abi: 0,
+                reserved: 0,
+            }
+            .as_bytes(),
+        );
+        assert_eq!(
+            kernel_syscall(&javascript).and_then(SyscallId::name),
+            Some("read")
+        );
+        assert!(
+            decode_v8(&javascript).is_ok(),
+            "trailer changed the V8 record"
+        );
+    }
+
+    #[test]
     fn kernel_key_namespace_proof_rejects_other_namespace_types_and_ordinary_files() {
         let pid = std::fs::File::open("/proc/self/ns/pid").unwrap();
         let initial = std::fs::read_link("/proc/self/ns/pid").unwrap()
@@ -915,6 +1015,11 @@ mod tests {
         crate::backend::linux::bpf::assert_mirrors!(
             OBJECT,
             (RawRecord, "record", [kind, size, tid, tgid]),
+            (
+                RawKernelSample,
+                "kernel_sample_record",
+                [syscall, abi, reserved]
+            ),
             (
                 RawPyLayout,
                 "py_layout",

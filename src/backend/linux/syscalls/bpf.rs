@@ -1986,6 +1986,7 @@ fn begin(
 /// Events that sample nothing and say what the traced processes map.
 const MAPPINGS: perf::EventOptions = perf::EventOptions {
     source: perf::Source::Mappings,
+    kernel: false,
     stack_bytes: 0,
     ring_pages: 64,
     switches: false,

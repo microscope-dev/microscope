@@ -236,6 +236,9 @@ pub enum FrameKind {
     /// address is the string that keys its function and line, and its one
     /// line says where it is, its function declared where its code begins.
     Interpreted = 5,
+
+    /// Kernel time attributed to a syscall: the address keys its name string.
+    Kernel = 6,
 }
 
 impl FrameKind {
@@ -247,6 +250,7 @@ impl FrameKind {
             3 => Some(Self::Runtime),
             4 => Some(Self::Awaited),
             5 => Some(Self::Interpreted),
+            6 => Some(Self::Kernel),
             _ => None,
         }
     }
@@ -254,7 +258,7 @@ impl FrameKind {
     /// Whether a frame of this kind is keyed by a string, not an address,
     /// and so has no address to show.
     pub const fn named(self) -> bool {
-        matches!(self, Self::Awaited | Self::Interpreted)
+        matches!(self, Self::Awaited | Self::Interpreted | Self::Kernel)
     }
 }
 

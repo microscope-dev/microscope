@@ -431,6 +431,7 @@ impl NativeTracee {
         let options = super::perf::EventOptions {
             source: super::perf::Source::Breakpoint { address, period: 1 },
             stack_bytes,
+            kernel: false,
             ring_pages: 64,
             switches: false,
         };

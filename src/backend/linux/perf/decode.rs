@@ -46,9 +46,12 @@ const MISC_COMM_EXEC: u16 = 1 << 13;
 const MISC_SWITCH_OUT: u16 = 1 << 13;
 const MISC_SWITCH_OUT_PREEMPT: u16 = 1 << 14;
 const MISC_MMAP_BUILD_ID: u16 = 1 << 14;
+const MISC_CPUMODE_MASK: u16 = 7;
+const MISC_KERNEL: u16 = 1;
 
 /// Callchain entries at or above this mark a context, not an address.
 const CONTEXT_MAX: u64 = (-4095_i64).cast_unsigned();
+const CONTEXT_USER: u64 = (-512_i64).cast_unsigned();
 
 /// Little-endian words in a record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +75,7 @@ pub struct Sample<'a> {
     pub time: u64,
     pub cpu: u32,
     pub period: u64,
+    pub kernel: bool,
 
     /// The kernel's frame-pointer walk, context marks included.
     pub chain: Words<'a>,
@@ -91,7 +95,15 @@ pub struct Sample<'a> {
 impl Sample<'_> {
     /// The walk's user addresses, without context marks.
     pub fn user_chain(&self) -> impl Iterator<Item = u64> + '_ {
-        self.chain.iter().filter(|address| *address < CONTEXT_MAX)
+        let mut user = !self.kernel;
+        self.chain.iter().filter(move |address| {
+            if *address >= CONTEXT_MAX {
+                user = *address == CONTEXT_USER;
+                false
+            } else {
+                user
+            }
+        })
     }
 }
 
@@ -298,7 +310,8 @@ fn decode<'a>(
             return decode_output(body);
         }
 
-        return decode_sample(body, period).map(Record::Sample);
+        return decode_sample(body, misc & MISC_CPUMODE_MASK == MISC_KERNEL, period)
+            .map(Record::Sample);
     }
 
     // Every other record ends with its sample_id.
@@ -397,7 +410,7 @@ fn decode<'a>(
     })
 }
 
-fn decode_sample(body: &[u8], period: Option<u64>) -> Result<Sample<'_>, Malformed> {
+fn decode_sample(body: &[u8], kernel: bool, period: Option<u64>) -> Result<Sample<'_>, Malformed> {
     let mut fields = Fields { bytes: body };
     let _identifier = fields.u64()?;
     let (pid, tid) = fields.pair()?;
@@ -431,6 +444,7 @@ fn decode_sample(body: &[u8], period: Option<u64>) -> Result<Sample<'_>, Malform
         time,
         cpu,
         period,
+        kernel,
         chain,
         registers,
         stack,
@@ -476,6 +490,32 @@ pub fn fuzz(data: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kernel_callchain_addresses_never_enter_the_user_walk() {
+        let mut rest = Vec::new();
+        for word in [
+            1000_u64,
+            5,
+            (-128_i64).cast_unsigned(),
+            0xffff_ffff_8100_0000,
+            (-512_i64).cast_unsigned(),
+            0x0040_1000,
+            0x0040_2000,
+            0,
+            0,
+        ] {
+            rest.extend_from_slice(&word.to_le_bytes());
+        }
+        let bytes = sample_record(1, &rest);
+        let Some(Ok((Record::Sample(sample), _))) = next(&bytes) else {
+            panic!("sample");
+        };
+        assert_eq!(
+            sample.user_chain().collect::<Vec<_>>(),
+            [0x0040_1000, 0x0040_2000]
+        );
+    }
 
     /// A sample record, as an event of `identifier` writes it: the fields
     /// before its own, then `rest`.

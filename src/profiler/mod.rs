@@ -197,6 +197,10 @@ impl std::fmt::Display for PythonEngine {
 
 /// How to record.
 #[derive(Debug, Clone, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent recording features"
+)]
 pub struct RecordOptions {
     pub source: SampleSource,
     pub stack: StackCopy,
@@ -204,6 +208,9 @@ pub struct RecordOptions {
     /// Calls between function stack samples; counting remains exact.
     /// Go stack checks need every hit to distinguish retries from calls.
     pub function_period: u64,
+
+    /// Include kernel CPU time, attributed to the interrupted user stack.
+    pub kernel: bool,
 
     /// The most frames a stack keeps, at least one.
     pub max_frames: usize,
@@ -275,6 +282,7 @@ impl RecordOptions {
             },
             stack: preset.stack_copy(),
             function_period: 1024,
+            kernel: false,
             max_frames: 512,
             ring_pages: 128,
             max_events: 16_384,
