@@ -368,7 +368,9 @@ the reader faster. A call whose stack is lost is still shown, its stack
 reading `[stack ends: no stack]`, and the stack counts among the lost.
 
 For a short list of calls, the BPF engine attaches to the kernel functions
-behind them, which costs other processes nothing. While it does, a call in
-progress is lost if another tracer attaches to or detaches from the same
+behind them, which costs other processes nothing. `exit` and `exit_group`
+attach only at entry; the thread's exit completes their `= ?` record.
+With function attachments, a call in progress is lost if another tracer
+attaches to or detaches from the same
 function. microscope counts that call as lost rather than show it without its
 result.

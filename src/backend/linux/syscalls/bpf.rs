@@ -1648,6 +1648,11 @@ fn attach(ebpf: &mut Ebpf, btf: &Btf, attachment: &Attachment) -> Result<(), Bpf
             .map_err(load_error)?;
         program.load(function, btf).map_err(load_error)?;
         program.attach().map_err(load_error)?;
+        // These calls end at sched_process_exit, never at fexit, which
+        // the verifier refuses on their __noreturn kernel functions.
+        if function.ends_with("_sys_exit") || function.ends_with("_sys_exit_group") {
+            continue;
+        }
         let exit = format!("exit_{slot}");
         let program: &mut FExit = ebpf
             .program_mut(&exit)

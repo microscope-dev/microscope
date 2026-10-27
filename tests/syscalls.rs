@@ -1852,6 +1852,89 @@ mod bpf {
         );
     }
 
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn noreturn_calls_need_only_entry_and_sigreturn_still_returns() {
+        let directory = ScratchDir::new("syscalls-noreturn");
+        for (filter, mode, wanted) in [
+            ("exit_group", "signal", "exit_group(0)"),
+            ("exit", "family", "exit(0)"),
+            ("read,exit_group", "dumps", "read("),
+            ("rt_sigreturn", "signal", "rt_sigreturn("),
+        ] {
+            for attach in ["auto", "fentry", "tracepoint"] {
+                let (code, errors, trace) = traced(
+                    directory.path(),
+                    microscope(&["--attach", attach, "-f"]),
+                    &["-e", &format!("trace={filter}")],
+                    mode,
+                );
+                if filter == "rt_sigreturn" && attach == "fentry" && code != Some(0) {
+                    assert!(
+                        errors.contains("rt_sigreturn has no kernel function"),
+                        "{errors}"
+                    );
+                    continue;
+                }
+                assert_ne!(code, Some(2), "{filter}, {attach}: {errors}");
+                assert!(
+                    trace.contains(wanted),
+                    "{filter}, {attach}: {errors}{trace}"
+                );
+                if filter == "rt_sigreturn" {
+                    assert!(!trace.contains("= ?"), "{trace}");
+                } else if filter.contains("exit_group") {
+                    assert!(trace.contains("exit_group(0)"), "{trace}");
+                    assert!(trace.contains("= ?"), "{trace}");
+                }
+            }
+        }
+
+        for filter in ["exit", "exit_group"] {
+            let mut summaries = Vec::new();
+            for attach in ["auto", "tracepoint"] {
+                let (code, errors, trace) = traced(
+                    directory.path(),
+                    microscope(&["--attach", attach, "-f", "-c", "-U", "name,calls"]),
+                    &["-e", &format!("trace={filter}")],
+                    "family",
+                );
+                assert_eq!(code, Some(0), "{errors}");
+                let row = trace
+                    .lines()
+                    .find(|line| line.starts_with(filter))
+                    .expect("a counted call");
+                assert!(!row.ends_with(" 0"), "{trace}");
+                summaries.push(row.to_owned());
+            }
+            assert_eq!(summaries[0], summaries[1]);
+        }
+    }
+
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn a_failed_attachment_prints_no_summary() {
+        let output = microscope(&[
+            "-c",
+            "--attach",
+            "fentry",
+            "-e",
+            "trace=getpid@32",
+            "--",
+            "/bin/true",
+        ])
+        .output()
+        .expect("run microscope");
+        let errors = text(&output.stderr);
+        assert!(!output.status.success(), "{errors}");
+        assert!(
+            errors.contains("--attach fentry cannot be used"),
+            "{errors}"
+        );
+        assert!(!errors.contains("% time"), "{errors}");
+        assert!(!errors.contains("total"), "{errors}");
+    }
+
     /// Children and threads, each followed alike. A process that is not
     /// traced is never sent the SIGCHLD its default ignores, which ptrace
     /// makes the kernel queue, so the comparison leaves it out. Joining

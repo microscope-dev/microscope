@@ -904,6 +904,9 @@ fn trace(args: &SyscallsArgs) -> Result<i32> {
         }
     }
 
+    if finished.is_err() {
+        printer.summarize = false;
+    }
     printer.finish()?;
     let Finished { end } = finished?;
 
