@@ -6213,6 +6213,51 @@ fn function_recording_counts_calls_without_capturing_every_stack() {
     assert!(!String::from_utf8_lossy(&recorded.stderr).contains("kernel dropped"));
 }
 
+/// Without frame pointers, a stack unwinds only as far as its copy reaches.
+/// The default copy reaches past a 24 KiB frame, and a copy too short for
+/// it says which larger copy to ask for.
+#[test]
+fn stack_copies_reach_past_large_frames_or_say_how_far_to_copy() {
+    let scratch = support::ScratchDir::new("cli-stack-copy");
+    let tree = |name: &str, options: &[&str]| {
+        let profile = scratch.path().join(name);
+        let recorded = microscope_command()
+            .arg("record")
+            .args(options)
+            .arg("-o")
+            .arg(&profile)
+            .arg("--")
+            .arg(fixture("build/test-programs/profile-bigframe"))
+            .output()
+            .expect("run microscope record");
+        assert!(recorded.status.success(), "{recorded:?}");
+        assert_success(microscope(&[
+            "report",
+            "--tree",
+            &profile.to_string_lossy(),
+        ]))
+    };
+
+    let complete = tree("default.usprof", &[]);
+    // A sample can land in the dynamic loader, which has no unwind
+    // information, so only the copy's own truncation is ruled out.
+    assert!(
+        complete.lines().any(|line| line.ends_with("%  _start")),
+        "{complete}"
+    );
+    assert!(!complete.contains("stack copy exhausted"), "{complete}");
+
+    let short = tree("short.usprof", &["--stack-bytes", "4096"]);
+    assert!(short.contains("[stack copy exhausted]"), "{short}");
+    assert!(
+        short.lines().any(|line| line.ends_with(
+            "ran out of copied stack (4096 bytes); record with --stack-bytes 8192 to see \
+             their outermost frames."
+        )),
+        "{short}"
+    );
+}
+
 #[test]
 fn report_compares_and_focuses_from_the_command_line() {
     let scratch = support::ScratchDir::new("cli-report-query");

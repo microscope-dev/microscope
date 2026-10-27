@@ -1516,6 +1516,8 @@ build_fixture gcc "$c_fixtures_dir/profile-calls.c" "$output_dir/profile-calls" 
     -O2 -g -fno-omit-frame-pointer
 build_fixture gcc "$c_fixtures_dir/profile-kernel.c" "$output_dir/profile-kernel" \
     -O2 -g -fno-omit-frame-pointer
+build_fixture gcc "$c_fixtures_dir/profile-bigframe.c" "$output_dir/profile-bigframe" \
+    -O2 -g -fomit-frame-pointer
 for variant in "gcc-o0 gcc -O0 -fno-omit-frame-pointer -fPIE -pie" \
     "clang-o2-nopie clang -O2 -fomit-frame-pointer -no-pie"; do
     read -r name compiler flags <<<"$variant"

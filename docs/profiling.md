@@ -74,7 +74,11 @@ sizes to fit locked-memory limits, the recorder gives their actual size and
 the `ulimit -l` and `kernel.perf_event_mlock_kb` settings to raise.
 
 Stacks are exact up to the point where the available unwind information and
-copied memory end. A truncated stack records its reason.
+copied memory end. A truncated stack records its reason. `dev` copies 32 KiB
+of each sampled stack, and `max` 16 KiB, since at its rate more makes the
+kernel drop samples. A program without frame pointers whose frames
+need more ends with `[stack copy exhausted]`, and the report suggests a larger
+`--stack-bytes`.
 
 Code a just-in-time compiler generates has no file. A program that writes a
 perf map, `/tmp/perf-PID.map`, names it: stacks go on through the functions

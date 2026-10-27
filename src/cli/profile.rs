@@ -12,8 +12,8 @@ use super::format::plural;
 use anyhow::{Context, Result};
 use microscope::profiler::budget::Budget;
 use microscope::profiler::{
-    Format, GapReason, Granularity, Preset, ProbeSelection, Profile, PythonEngine, RecordOptions,
-    SampleSource, Save, Source, StackCopy, StackView, Watch,
+    Format, GapReason, Granularity, MOST_STACK_COPY, Preset, ProbeSelection, Profile, PythonEngine,
+    RecordOptions, SampleSource, Save, Source, StackCopy, StackView, Watch,
 };
 
 mod report;
@@ -939,12 +939,40 @@ fn ordinary_report(
         }
     }
 
+    truncations(profile, out)
+}
+
+/// Why stacks ended short of their outermost frame, and how to record
+/// more of those that ran out of copied stack.
+fn truncations(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
     let truncations = profile.truncations();
     if !truncations.is_empty() {
         writeln!(out)?;
         writeln!(out, "Stacks that end short of their outermost frame:")?;
         for (reason, count) in truncations {
             writeln!(out, "  {count:>8}  {reason}")?;
+        }
+    }
+
+    let exhausted = profile.stack_copy_exhausted();
+    let copied = profile
+        .setting("stack bytes")
+        .and_then(|bytes| bytes.parse::<u32>().ok());
+    if exhausted > 0
+        && let Some(copied) = copied
+    {
+        let ran_out = format!(
+            "{} ran out of copied stack ({copied} bytes)",
+            plural(exhausted, "stack")
+        );
+        if copied < MOST_STACK_COPY {
+            writeln!(
+                out,
+                "{ran_out}; record with --stack-bytes {} to see their outermost frames.",
+                copied.saturating_mul(2).min(MOST_STACK_COPY)
+            )?;
+        } else {
+            writeln!(out, "{ran_out}, the most perf copies.")?;
         }
     }
 

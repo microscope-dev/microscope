@@ -104,7 +104,8 @@ impl Preset {
     pub const fn stack_copy(self) -> StackCopy {
         match self {
             Self::Production => StackCopy::Auto,
-            Self::Development | Self::Maximum => StackCopy::Bytes(DEEP_STACK_COPY),
+            Self::Development => StackCopy::Bytes(FULL_STACK_COPY),
+            Self::Maximum => StackCopy::Bytes(DEEP_STACK_COPY),
         }
     }
 }
@@ -116,6 +117,17 @@ pub const SMALL_STACK_COPY: u32 = 512;
 /// Bytes of stack a sample copies where call-frame information alone
 /// unwinds: deep enough for most stacks.
 pub const DEEP_STACK_COPY: u32 = 16 * 1024;
+
+/// Bytes of stack each sample copies at `--preset dev`.
+///
+/// Release Rust programs overrun [`DEEP_STACK_COPY`] just short of `main`.
+/// `--preset max` keeps that copy: at its rate, twice the bytes fill perf's
+/// rings before they are drained, and the kernel drops samples.
+pub const FULL_STACK_COPY: u32 = 32 * 1024;
+
+/// The most stack perf copies per sample: it rejects 65536 and up, and
+/// anything not a multiple of eight.
+pub const MOST_STACK_COPY: u32 = 65528;
 
 /// How much stack each sample copies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -762,6 +774,14 @@ impl Profile {
             .into_iter()
             .map(|(reason, count)| (reason.describe().to_owned(), count))
             .collect()
+    }
+
+    /// How many stacks ended because unwinding reached the end of the stack
+    /// their sample copied.
+    #[must_use]
+    pub fn stack_copy_exhausted(&self) -> u64 {
+        self.capture
+            .account(AccountKind::Truncated as u32 + Truncation::StackCopyExhausted as u32)
     }
 
     /// How long each thread `query` selects was off its CPU in each of
