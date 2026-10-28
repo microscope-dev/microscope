@@ -278,6 +278,7 @@ pub(super) fn interpreted_frame(frame: &InterpretedFrame, segment: StackSegment)
         language: frame.language,
         place: frame.place.clone(),
         first_line: frame.first_line,
+        declared_in: None,
         generated: None,
         // A segment's problem notes the activation that runs it.
         problem: None,

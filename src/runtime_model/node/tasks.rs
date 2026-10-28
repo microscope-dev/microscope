@@ -136,10 +136,6 @@ const UV_FS_OPERATIONS: [&str; 37] = [
     "lutime",
 ];
 
-/// V8's `FUNCTION_SCOPE` (`globals.h`'s `ScopeType`), the scope of every
-/// function's own `ScopeInfo`, which keeps the function's positions.
-const FUNCTION_SCOPE: i64 = 2;
-
 /// Whose `Environment` a task is in: the main thread's, or the worker's
 /// that runs on a thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -936,15 +932,16 @@ fn describe(
 /// Where the source of the function `shared` describes begins, as
 /// `SharedFunctionInfo::StartPosition` gives it: from its scope once it
 /// is compiled, else from its uncompiled data; `None` for one with none.
-fn start_position(reader: &Reader<'_>, shared: Object) -> Result<Option<u64>, Problem> {
+pub(super) fn start_position(reader: &Reader<'_>, shared: Object) -> Result<Option<u64>, Problem> {
     let held = reader.field(shared, Field::SharedFunctionInfoNameOrScopeInfo)?;
     if let Some(scope) = reader.object(held)?
         && reader.is(scope, Constant::ScopeInfoType)?
     {
+        // Every scope but the empty one keeps its function's positions, as
+        // `ScopeInfo::HasPositionInfo` says, whatever its type: a Node
+        // module's wrapper and Node's own modules are of a script's scope.
         let flags = super::names::scope_flags(reader, scope)?;
-        let ty = (flags & reader.constant(Constant::ScopeTypeMask)?)
-            >> reader.constant(Constant::ScopeTypeShift)?;
-        if ty == FUNCTION_SCOPE {
+        if flags & reader.constant(Constant::ScopeIsEmptyMask)? == 0 {
             let start = if reader.layout.has(Field::ScopeInfoPositionInfo) {
                 Some(reader.field_address(scope, Field::ScopeInfoPositionInfo)?)
             } else {
@@ -968,6 +965,7 @@ fn start_position(reader: &Reader<'_>, shared: Object) -> Result<Option<u64>, Pr
     let Some(data) = super::names::function_data(reader, shared)? else {
         return Ok(None);
     };
+
     let ty = reader.instance_type(data)?;
     let uncompiled = [
         Constant::UncompiledDataWithPreparseDataType,

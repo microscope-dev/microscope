@@ -496,6 +496,18 @@ offset. The innermost frame has no line, and a compiled frame has none either,
 since the walk does not prove which code object it ran and V8's GC can move
 code. Both say why in the frame's problem.
 
+Every frame still carries where its function is declared: the line its source
+begins at (`Table::first_line`, from `SharedFunctionInfo::StartPosition`), and
+for a frame with no line, the script it is in (`RecordedFrame::declared_in`).
+That keys the function in the capture, so a compiled frame is its function's
+and two functions of one inferred name stay apart. V8 names an anonymous
+function `""`, which the capture keeps; `Keys::name` shows a nameless function
+of no module as `<anonymous FILE:LINE>`, so older profiles show it too.
+A non-empty `ScopeInfo` keeps its function's start, whatever its scope type
+(`ScopeInfo::HasPositionInfo`). The scope types were renumbered in V8 13, and a
+check against `FUNCTION_SCOPE`'s old number found no start for any compiled
+function on Node 24.
+
 A recording maps V8's anonymous code as modules (`unwind::code_copies`): a
 mapping that copies node's builtins byte for byte binds node's image; any
 other anonymous executable mapping is V8's generated code, unwound by frame

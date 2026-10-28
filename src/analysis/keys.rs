@@ -1,5 +1,7 @@
 //! What each frame stands for, as dense keys.
 
+use std::borrow::Cow;
+
 use foldhash::HashMap;
 
 use super::{CallTree, Costs, Query, index};
@@ -137,6 +139,17 @@ fn frame_keys(
             KeyKind::Function { function }
         }));
     }
+}
+
+/// The file an anonymous function is declared in, as its name shows it: a
+/// path by its last part, and a name that is no path, such as Node's
+/// `node:internal/modules/cjs/loader`, whole.
+fn short_file(file: &str) -> &str {
+    if file.starts_with("node:") {
+        return file;
+    }
+
+    file.rsplit('/').next().unwrap_or(file)
 }
 
 /// Whether each of `keys` keys is of an interpreted frame, given each
@@ -387,19 +400,17 @@ impl<'a> Keys<'a> {
     pub fn name(&self, key: u32) -> String {
         let capture = self.capture;
         match self.kind(key) {
-            KeyKind::Function { function } => capture
-                .string(capture.functions[function as usize].name.get())
-                .to_owned(),
+            KeyKind::Function { function } => self.function_name(function).into_owned(),
             KeyKind::Line {
                 function,
                 file,
                 line,
             } => {
-                let name = capture.string(capture.functions[function as usize].name.get());
+                let name = self.function_name(function);
                 match file {
                     // Code with no line, as a library without debug
                     // information has, is its function alone.
-                    NONE if line == 0 => name.to_owned(),
+                    NONE if line == 0 => name.into_owned(),
                     NONE => format!("{name}:{line}"),
                     file => {
                         let path = capture.string(file);
@@ -412,9 +423,7 @@ impl<'a> Keys<'a> {
             KeyKind::Task { function, frame } => {
                 let root = match function {
                     NONE => self.address_name(frame),
-                    function => capture
-                        .string(capture.functions[function as usize].name.get())
-                        .to_owned(),
+                    function => self.function_name(function).into_owned(),
                 };
 
                 format!("[task] {root}")
@@ -447,6 +456,27 @@ impl<'a> Keys<'a> {
                     || format!("[{reason}]"),
                     |module| format!("[{reason}: {module}]"),
                 )
+            }
+        }
+    }
+
+    /// A function's name as views show it. V8 names an anonymous function
+    /// "", so code an interpreter runs, which is in no module, is named for
+    /// where it is declared instead, as V8's stack traces name it. A
+    /// native function keeps its name, even an empty one.
+    fn function_name(&self, function: u32) -> Cow<'a, str> {
+        let capture = self.capture;
+        let record = &capture.functions[function as usize];
+        let name = capture.string(record.name.get());
+        if !name.is_empty() || record.module.get() != NONE {
+            return Cow::Borrowed(name);
+        }
+
+        match (record.file.get(), record.line.get()) {
+            (NONE, _) => Cow::Borrowed("<anonymous>"),
+            (file, 0) => format!("<anonymous {}>", short_file(capture.string(file))).into(),
+            (file, line) => {
+                format!("<anonymous {}:{line}>", short_file(capture.string(file))).into()
             }
         }
     }

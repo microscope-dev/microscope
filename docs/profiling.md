@@ -286,6 +286,14 @@ own scripts, such as `node:internal/timers`, stay in the stacks.
 JavaScript frame in, without V8's frames between them. With `--lines`,
 JavaScript functions are told apart by line where the line is known.
 
+A JavaScript function with no name is shown by where it is declared, as V8's
+own stack traces show it: `<anonymous linter.js:557>`, or
+`<anonymous node:internal/modules/cjs/loader:1314>` for Node's own scripts.
+`--focus` takes that name, and a diff pairs two such functions only when they
+are declared in the same place. Two functions V8 gives the same name, such as
+two arrow functions it names for the array that holds them, stay apart too,
+and `--focus` lists each with its file and line.
+
 With `bpf`, each sample carries the label `isolate` with the number of the V8
 isolate its thread ran in: the main thread's, a `worker_threads` worker's, or
 the one a V8 helper thread works for. Isolates are numbered 1, 2, and on in

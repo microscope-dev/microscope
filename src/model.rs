@@ -4737,6 +4737,10 @@ pub struct RecordedFrame {
     /// it.
     pub first_line: Option<u32>,
 
+    /// The file `first_line` is a line of, where the frame has no place to
+    /// say, as for code a runtime compiled whose lines it no longer keeps.
+    pub declared_in: Option<Arc<str>>,
+
     /// Why the runtime could not record the frame's place, as for code it
     /// optimized whose positions it no longer keeps; `None` where the
     /// place is known or the runtime gives no reason.

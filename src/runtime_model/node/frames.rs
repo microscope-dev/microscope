@@ -96,6 +96,7 @@ pub(super) fn describe(
                 language: SourceLanguage::JavaScript,
                 place: None,
                 first_line: None,
+                declared_in: None,
                 generated: None,
                 problem: Some(problem),
             }],
@@ -297,12 +298,19 @@ pub(super) fn recorded(
         _ => (None, None),
     };
 
+    // Where the function is declared tells it from others of its name, and
+    // names an anonymous one; a frame without it is still the function's.
+    let first_line = script
+        .and_then(|script| table.first_line(reader, shared, script).ok())
+        .flatten();
     let language = language(path.as_deref());
+    let declared_in = path.filter(|_| place.is_none() && first_line.is_some());
     Ok(RecordedFrame {
         function: name,
         language,
         place,
-        first_line: None,
+        first_line,
+        declared_in,
         generated: None,
         problem: problem.or(unnamed),
     })

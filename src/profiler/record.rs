@@ -16,7 +16,7 @@ use super::jit::{Jit, JitCode, Stale};
 use super::probes::{self, Event, SiteRecord, Stacks};
 use super::tasks::{InterpretedWait, Snapshot, WaitFrame};
 use crate::backend::perf::{self, decode};
-use crate::capture::builder::{InterpretedPlace, LineInput};
+use crate::capture::builder::LineInput;
 use crate::capture::records::{
     AccountKind, FrameKind, GapReason, Mapping, MarkerKind, NONE, Truncation, Zone, role_number,
 };
@@ -1876,12 +1876,7 @@ impl Processor {
 
         for frame in &frames {
             let wait = InterpretedWait::of_frame(frame);
-            let id = self.builder.interpreted(&InterpretedPlace {
-                function: &wait.function,
-                file: wait.file.as_deref(),
-                line: wait.line,
-                declared: wait.first_line,
-            });
+            let id = self.builder.interpreted(&wait.place());
             if let Some(segment) = segments.last_mut() {
                 segment.push(id);
             }
@@ -1932,12 +1927,7 @@ impl Processor {
         for (frame, index) in placed.iter().zip(positions) {
             for function in &frame.functions {
                 let wait = InterpretedWait::of(Some(function));
-                let id = self.builder.interpreted(&InterpretedPlace {
-                    function: &wait.function,
-                    file: wait.file.as_deref(),
-                    line: wait.line,
-                    declared: wait.first_line,
-                });
+                let id = self.builder.interpreted(&wait.place());
                 if let Some(slot) = before.get_mut(index) {
                     slot.push(id);
                 }
@@ -2298,12 +2288,7 @@ impl Processor {
                 let id = match frame {
                     WaitFrame::Code { address, role } => self.code_frame(pid, *address, *role),
                     WaitFrame::Awaited(text) => self.builder.awaited(text),
-                    WaitFrame::Interpreted(frame) => self.builder.interpreted(&InterpretedPlace {
-                        function: &frame.function,
-                        file: frame.file.as_deref(),
-                        line: frame.line,
-                        declared: frame.first_line,
-                    }),
+                    WaitFrame::Interpreted(frame) => self.builder.interpreted(&frame.place()),
                     WaitFrame::Truncated(reason) => self.builder.truncation(*reason, NONE),
                 };
 

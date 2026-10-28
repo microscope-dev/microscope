@@ -60,7 +60,7 @@ pub fn paths_of(profile: &Profile, query: &Query) -> BTreeMap<Vec<String>, u64> 
             let mut path = Vec::new();
             let mut at = u32::try_from(node).expect("a node");
             while let Some(&key) = tree.key.get(at as usize) {
-                path.push(keys.name(key));
+                path.push(reported_name(keys.name(key)));
                 at = tree.parent[at as usize];
             }
 
@@ -70,10 +70,26 @@ pub fn paths_of(profile: &Profile, query: &Query) -> BTreeMap<Vec<String>, u64> 
         .collect()
 }
 
+/// A key's name as a fixture's report can give it: an anonymous function's
+/// without where it is declared, which V8's call sites do not say.
+pub fn reported_name(name: String) -> String {
+    match name
+        .strip_prefix("<anonymous ")
+        .and_then(|rest| rest.split_once('>'))
+    {
+        Some((_, rest)) => format!("<anonymous>{rest}"),
+        None => name,
+    }
+}
+
 /// A frame V8 reported, as a profile names a line: its function, its
 /// file's last component, and its line.
 pub fn line_key(function: &str, file: &str, line: Option<u32>) -> String {
-    let function = if function == "-" { "" } else { function };
+    let function = if function == "-" {
+        "<anonymous>"
+    } else {
+        function
+    };
     let file = file.rsplit('/').next().unwrap_or(file);
     format!("{function} {file}:{}", line.unwrap_or(0))
 }
@@ -693,7 +709,7 @@ pub fn spinning(output: &str) -> Vec<(String, Vec<String>)> {
                 let compiled = tier == "sparkplug" || tier == "maglev" || tier == "turbofan";
                 let key = if compiled || depth == "0" {
                     if function == "-" {
-                        String::new()
+                        "<anonymous>".to_owned()
                     } else {
                         function.clone()
                     }
@@ -1305,6 +1321,14 @@ mod bpf {
             let paths = process_paths(&profile, rows, Look::Python);
             let truth = spinning(&text);
             assert_eq!(truth.len(), 2, "{pid}: {truth:#?}");
+            // The fixture's module wrapper is anonymous, and named for where
+            // it is declared: its script's first line.
+            let functions = profile.keys(Granularity::Function);
+            assert_eq!(
+                functions.named("<anonymous busy.js:1>").len(),
+                1,
+                "{pid}: {paths:#?}"
+            );
             let missing = missing(&truth, &paths);
             assert!(
                 missing.is_empty(),
@@ -1332,7 +1356,7 @@ mod bpf {
                 let mut path = Vec::new();
                 let mut at = u32::try_from(node).expect("a node");
                 while let Some(&key) = tree.key.get(at as usize) {
-                    path.push(keys.name(key));
+                    path.push(reported_name(keys.name(key)));
                     at = tree.parent[at as usize];
                 }
                 path.reverse();

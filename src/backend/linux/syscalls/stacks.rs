@@ -972,7 +972,7 @@ impl Stacks {
                         function: &call.function,
                         file: call.file.as_deref(),
                         line: call.line,
-                        declared: call.first_line,
+                        declared: call.file.as_deref().zip(call.first_line),
                     }));
                     continue;
                 }

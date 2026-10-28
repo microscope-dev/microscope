@@ -1233,6 +1233,7 @@ mod tests {
             place: None,
             generated: None,
             first_line: None,
+            declared_in: None,
             problem: None,
         }]
     }

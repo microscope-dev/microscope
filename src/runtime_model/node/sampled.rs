@@ -56,6 +56,7 @@ pub(super) fn describe(
             language: crate::SourceLanguage::JavaScript,
             place: None,
             first_line: None,
+            declared_in: None,
             generated: None,
             problem: Some(problem),
         },
@@ -147,11 +148,18 @@ fn recorded(
         (Some(_), Err(problem)) => (None, Some(problem)),
         (None, _) => (None, None),
     };
+    // A function is told apart from others of its name by where it is
+    // declared, and an anonymous one is shown by it; a frame without it
+    // is still the function's.
+    let first_line = table.first_line(reader, shared, script).ok().flatten();
+    let language = frames::language(path.as_deref());
+    let declared_in = path.filter(|_| place.is_none() && first_line.is_some());
     Ok(RecordedFrame {
         function,
-        language: frames::language(path.as_deref()),
+        language,
         place,
-        first_line: None,
+        first_line,
+        declared_in,
         generated: None,
         problem: problem.or(unnamed),
     })

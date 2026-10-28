@@ -30,15 +30,15 @@ pub struct LineInput<'a> {
     pub role: u8,
 }
 
-/// Where an interpreted frame is: its function, and the line it runs of
-/// the file its code is in, which its function's code begins at line
-/// `declared` of.
+/// Where an interpreted frame is: its function, the line it runs of the
+/// file its code is in, and the file and line its function's code begins
+/// at, which a frame whose line is unknown may still know.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InterpretedPlace<'a> {
     pub function: &'a str,
     pub file: Option<&'a str>,
     pub line: u32,
-    pub declared: Option<u32>,
+    pub declared: Option<(&'a str, u32)>,
 }
 
 /// Builds a capture as a recording proceeds.
@@ -350,14 +350,27 @@ impl CaptureBuilder {
     pub fn interpreted(&mut self, place: &InterpretedPlace<'_>) -> u32 {
         let file = place.file.unwrap_or_default();
 
-        // The file's length makes the key unambiguous whatever the names
-        // hold.
+        // The files' lengths make the key unambiguous whatever the names
+        // hold, and a declaration in another file than the frame's, which
+        // only a frame with no place has, is keyed after its own.
+        let elsewhere = place
+            .declared
+            .map(|(declared, _)| declared)
+            .filter(|declared| place.file != Some(*declared));
         let key = format!(
-            "{}\t{}\t{}\t{}{file}{}",
+            "{}\t{}\t{}\t{}{file}{}{}",
             place.line,
-            place.declared.map_or(-1, i64::from),
+            place.declared.map_or(-1, |(_, line)| i64::from(line)),
             file.len(),
-            u8::from(place.file.is_some()),
+            match (place.file, elsewhere) {
+                (_, Some(_)) => 2,
+                (Some(_), None) => 1,
+                (None, None) => 0,
+            },
+            elsewhere.map_or_else(String::new, |declared| format!(
+                "{}\t{declared}",
+                declared.len()
+            )),
             place.function
         );
         let name = self.string(&key);
@@ -368,7 +381,7 @@ impl CaptureBuilder {
                 file: place.file,
                 line: place.line,
                 column: 0,
-                declared: place.file.zip(place.declared),
+                declared: place.declared,
                 role: 0,
             };
 

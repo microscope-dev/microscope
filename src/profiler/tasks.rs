@@ -28,6 +28,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::RecordError;
+use crate::capture::builder::InterpretedPlace;
 use crate::capture::records::{Truncation, role_number};
 use crate::debug_info::DebugInfo;
 use crate::runtime_model::{self, RuntimeStop};
@@ -84,8 +85,10 @@ pub struct InterpretedWait {
     pub file: Option<Arc<str>>,
     pub line: u32,
 
-    /// The line its function's code begins at.
+    /// The line its function's code begins at, of `file`, or where the
+    /// frame has no place, of `declared_in`.
     pub first_line: Option<u32>,
+    pub declared_in: Option<Arc<str>>,
 }
 
 impl InterpretedWait {
@@ -97,6 +100,7 @@ impl InterpretedWait {
             file: recorded.place.as_ref().map(|place| Arc::clone(&place.path)),
             line: recorded.place.as_ref().map_or(0, |place| place.line),
             first_line: recorded.first_line,
+            declared_in: recorded.declared_in.clone(),
         })
     }
 
@@ -110,6 +114,7 @@ impl InterpretedWait {
                 file: frame.place.as_ref().map(|place| Arc::clone(&place.path)),
                 line: frame.place.as_ref().map_or(0, |place| place.line),
                 first_line: frame.first_line,
+                declared_in: None,
             })
     }
 
@@ -119,6 +124,21 @@ impl InterpretedWait {
             file: None,
             line: 0,
             first_line: None,
+            declared_in: None,
+        }
+    }
+
+    /// Where the frame is, for the capture.
+    pub fn place(&self) -> InterpretedPlace<'_> {
+        InterpretedPlace {
+            function: &self.function,
+            file: self.file.as_deref(),
+            line: self.line,
+            declared: self
+                .file
+                .as_deref()
+                .or(self.declared_in.as_deref())
+                .zip(self.first_line),
         }
     }
 }

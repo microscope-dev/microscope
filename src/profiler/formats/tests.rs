@@ -153,7 +153,7 @@ fn a_python_look_exports_its_interpreted_frames_by_line() {
             function,
             file: Some("/srv/app.py"),
             line,
-            declared: Some(1),
+            declared: Some(("/srv/app.py", 1)),
         })
     };
 

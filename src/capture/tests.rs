@@ -32,7 +32,7 @@ fn sample_capture(offset: i64) -> Capture {
         function: "Server.handle",
         file: Some("server.py"),
         line: 12,
-        declared: Some(10),
+        declared: Some(("server.py", 10)),
     });
 
     let deep = builder.stack(&[work, main]);
@@ -188,16 +188,19 @@ fn a_capture_seals_reads_back_and_files_merge_chunks_by_identity() {
 /// An interpreted frame is keyed by its function, file, and line, and its
 /// function by where its code begins, so that functions of one name in two
 /// files, or at two places in one, stay apart, while one function's lines
-/// share it. A capture rebuilt from others keys them by their text, not by
-/// where each kept it.
+/// share it, and a frame whose line is unknown is still its function's
+/// where it knows the function's. A capture rebuilt from others keys them by
+/// their text, not by where each kept it.
 #[test]
 fn interpreted_frames_keep_their_functions_apart_through_a_merge() {
     let places = [
-        ("handle", Some("a.py"), 12, Some(10)),
-        ("handle", Some("a.py"), 14, Some(10)),
-        ("handle", Some("b.py"), 12, Some(10)),
-        ("handle", Some("a.py"), 31, Some(30)),
+        ("handle", Some("a.py"), 12, Some(("a.py", 10))),
+        ("handle", Some("a.py"), 14, Some(("a.py", 10))),
+        ("handle", Some("b.py"), 12, Some(("b.py", 10))),
+        ("handle", Some("a.py"), 31, Some(("a.py", 30))),
         ("handle", None, 0, None),
+        ("handle", None, 0, Some(("a.py", 10))),
+        ("handle", None, 0, Some(("b.py", 10))),
     ];
 
     let build = |padding: &str| {
@@ -221,7 +224,7 @@ fn interpreted_frames_keep_their_functions_apart_through_a_merge() {
             function: "handle",
             file: Some("a.py"),
             line: 12,
-            declared: Some(10),
+            declared: Some(("a.py", 10)),
         });
         assert_eq!(again, frames[0], "one place is one frame");
         let thread = builder.thread(Pid::new(1), Tid::new(1), 0);
@@ -267,10 +270,14 @@ fn interpreted_frames_keep_their_functions_apart_through_a_merge() {
             ("handle", "b.py", 12, "b.py", 10),
             ("handle", "a.py", 31, "a.py", 30),
             ("handle", "", 0, "", 0),
+            ("handle", "", 0, "a.py", 10),
+            ("handle", "", 0, "b.py", 10),
         ]
     );
     let functions: Vec<u32> = rows.iter().map(|row| row.0).collect();
     assert_eq!(functions[0], functions[1], "one function's two lines");
+    assert_eq!(functions[0], functions[5], "a line of it no one knows");
+    assert_eq!(functions[2], functions[6], "and of the other file's");
     let distinct: std::collections::BTreeSet<u32> = functions.iter().copied().collect();
     assert_eq!(distinct.len(), 4, "four functions: {functions:?}");
 

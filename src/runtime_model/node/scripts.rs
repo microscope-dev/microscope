@@ -19,6 +19,9 @@ const MAX_ROWS: usize = 1 << 16;
 pub(super) struct Table {
     scripts: HashMap<u64, Script>,
     functions: HashMap<u64, Function>,
+
+    /// Each function's first line, by its shared information's address.
+    first_lines: HashMap<u64, (FunctionProof, Option<u32>)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,14 +111,7 @@ impl Table {
         let Some(script) = super::frames::script(reader, shared)? else {
             return Ok(super::names::function_name(reader, shared)?.into());
         };
-        let proof = FunctionProof {
-            script: script.0,
-            script_proof: ScriptProof {
-                id: reader.smi_field(script, Field::ScriptId)?,
-                source: reader.field(script, Field::ScriptSource)?,
-            },
-            literal: reader.int32_field(shared, Field::SharedFunctionInfoFunctionLiteralId)?,
-        };
+        let proof = function_proof(reader, shared, script)?;
         if let Some(row) = self.functions.get(&shared.0)
             && row.proof == proof
         {
@@ -133,6 +129,32 @@ impl Table {
             },
         );
         Ok(name)
+    }
+
+    /// The line, from 1, where the source of the function `shared` of
+    /// `script` begins: where V8's stack traces say it is declared. `None`
+    /// for one whose start V8 does not keep.
+    pub(super) fn first_line(
+        &mut self,
+        reader: &Reader<'_>,
+        shared: Object,
+        script: Object,
+    ) -> Result<Option<u32>, Problem> {
+        let proof = function_proof(reader, shared, script)?;
+        if let Some(&(known, line)) = self.first_lines.get(&shared.0)
+            && known == proof
+        {
+            return Ok(line);
+        }
+        let line = match super::tasks::start_position(reader, shared)? {
+            Some(offset) => Some(self.line_column(reader, script, offset)?.0),
+            None => None,
+        };
+        if self.first_lines.len() >= MAX_ROWS {
+            self.first_lines.clear();
+        }
+        self.first_lines.insert(shared.0, (proof, line));
+        Ok(line)
     }
 
     /// The line and column, each from 1, of the character `offset` of
@@ -161,6 +183,22 @@ impl Table {
         let column = u32::try_from(column + 1).map_err(|_| "a column is out of range")?;
         Ok((line, column))
     }
+}
+
+/// What proves a row of the function `shared` of `script` is still its.
+fn function_proof(
+    reader: &Reader<'_>,
+    shared: Object,
+    script: Object,
+) -> Result<FunctionProof, Problem> {
+    Ok(FunctionProof {
+        script: script.0,
+        script_proof: ScriptProof {
+            id: reader.smi_field(script, Field::ScriptId)?,
+            source: reader.field(script, Field::ScriptSource)?,
+        },
+        literal: reader.int32_field(shared, Field::SharedFunctionInfoFunctionLiteralId)?,
+    })
 }
 
 /// The most source characters scanned for newlines at once.

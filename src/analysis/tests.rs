@@ -670,7 +670,7 @@ fn python_capture() -> (Capture, u32, u32) {
             function,
             file: Some("/srv/server.py"),
             line,
-            declared: Some(declared),
+            declared: Some(("/srv/server.py", declared)),
         })
     };
 
@@ -778,6 +778,121 @@ fn python_mixed_and_native_looks_of_one_stack() {
     assert_eq!(shown, ["Server.handle server.py:12"]);
     assert!(keys.interpreted(keys.frame(handle)[0]));
     assert!(!keys.interpreted(keys.frame(decode)[0]));
+}
+
+/// A frame of an anonymous function: its file, three lines into its
+/// function, or none for compiled code; where its function is declared;
+/// and its sample's weight.
+type Anonymous<'a> = (Option<&'a str>, Option<(&'a str, u32)>, u64);
+
+/// A capture of one sample of each frame of `places`, each of an anonymous
+/// interpreted function as V8 names them, and the frames.
+fn anonymous(places: &[Anonymous<'_>]) -> (Capture, Vec<u32>) {
+    let mut builder = CaptureBuilder::new();
+    let thread = builder.thread(Pid::new(1), Tid::new(1), 0);
+    let frames: Vec<u32> = places
+        .iter()
+        .map(|&(file, declared, _)| {
+            builder.interpreted(&InterpretedPlace {
+                function: "",
+                file,
+                line: file.map_or(0, |_| declared.map_or(1, |(_, line)| line + 3)),
+                declared,
+            })
+        })
+        .collect();
+    for ((time, &frame), &(.., weight)) in (0..).zip(&frames).zip(places) {
+        let stack = builder.stack(&[frame]);
+        builder.sample(thread, time, weight, stack, NONE);
+    }
+
+    (builder.finish(), frames)
+}
+
+/// An anonymous JavaScript function is named for where it is declared, as
+/// V8's stack traces show it, so that no row is blank, `--focus` can name
+/// it, and two of them pair in a diff only if declared in one place. A
+/// native function with no name is not one.
+#[test]
+fn an_anonymous_function_is_named_for_where_it_is_declared() {
+    let linter = Some(("/app/lib/linter.js", 557));
+    let loader = "node:internal/modules/cjs/loader";
+    let (current, frames) = anonymous(&[
+        (Some("/app/lib/linter.js"), linter, 4),
+        (Some(loader), Some((loader, 1490)), 1),
+        (Some("/app/x.js"), Some(("/app/x.js", 0)), 1),
+        (None, None, 1),
+        (None, linter, 1),
+    ]);
+    let keys = Keys::new(&current, Granularity::Function);
+    let key = |frame: u32| keys.frame(frame)[0];
+    let shown: Vec<String> = frames.iter().map(|&frame| keys.name(key(frame))).collect();
+    assert_eq!(
+        shown,
+        [
+            "<anonymous linter.js:557>",
+            "<anonymous node:internal/modules/cjs/loader:1490>",
+            "<anonymous x.js>",
+            "<anonymous>",
+            "<anonymous linter.js:557>",
+        ]
+    );
+    assert_eq!(
+        key(frames[0]),
+        key(frames[4]),
+        "compiled code is its function's"
+    );
+    assert_eq!(keys.named(""), Vec::<u32>::new());
+    assert_eq!(keys.named("<anonymous linter.js:557>"), [key(frames[0])]);
+    let root = keys.task(key(frames[0])).expect("a task root");
+    assert_eq!(keys.name(root), "[task] <anonymous linter.js:557>");
+
+    let lines = Keys::new(&current, Granularity::Line);
+    assert_eq!(
+        lines.name(lines.frame(frames[0])[0]),
+        "<anonymous linter.js:557> linter.js:560"
+    );
+
+    let mut builder = CaptureBuilder::new();
+    let module = builder.module("/bin/app", None, [0; 16], 0);
+    let frame = builder.frame(FrameKind::Native, module, 0x100, 0);
+    builder.symbolize(frame, module, &[line("")]);
+    let native = builder.finish();
+    let native_keys = Keys::new(&native, Granularity::Function);
+    assert_eq!(native_keys.name(native_keys.frame(frame)[0]), "");
+
+    let (base, _) = anonymous(&[
+        (Some("/app/lib/other.js"), Some(("/app/lib/other.js", 7)), 2),
+        (Some("/app/lib/linter.js"), linter, 3),
+    ]);
+    let base_keys = Keys::new(&base, Granularity::Function);
+    let everything = Query {
+        look: Look::Logical,
+        ..Query::default()
+    };
+    let mut paired: Vec<(String, u64, u64)> = diff_costs(
+        (&keys, &keys.functions(&everything)),
+        (&base_keys, &base_keys.functions(&everything)),
+    )
+    .into_iter()
+    .map(|cost| {
+        let name = match cost.side {
+            Side::Current => keys.name(cost.key),
+            Side::Base => base_keys.name(cost.key),
+        };
+        (name, cost.own, cost.base_own)
+    })
+    .collect();
+    paired.sort();
+    let expected = [
+        ("<anonymous linter.js:557>", 5, 3),
+        ("<anonymous node:internal/modules/cjs/loader:1490>", 1, 0),
+        ("<anonymous other.js:7>", 0, 2),
+        ("<anonymous x.js>", 1, 0),
+        ("<anonymous>", 1, 0),
+    ]
+    .map(|(name, own, base_own)| (name.to_owned(), own, base_own));
+    assert_eq!(paired, expected);
 }
 
 /// A sample: its thread, time, weight, and task choice.

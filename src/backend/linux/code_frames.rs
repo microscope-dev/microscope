@@ -294,6 +294,7 @@ mod tests {
             language: SourceLanguage::JavaScript,
             place: None,
             first_line: None,
+            declared_in: None,
             generated: None,
             problem: None,
         }
