@@ -6510,6 +6510,54 @@ fn recorder_cost_keeps_starting_up_apart_and_short_runs_unjudged() {
     assert!(cost.ends_with("% of one CPU)."), "{long}");
 }
 
+/// The report counts the samples that ran a task only when the snapshots
+/// found tasks: a Python program's thread snapshots read threads, which no
+/// sample runs as a task, and asyncio's tasks are tasks.
+#[test]
+fn snapshots_of_threads_alone_count_no_samples_that_ran_a_task() {
+    let scratch = support::ScratchDir::new("cli-thread-snapshots");
+    let python = PathBuf::from(
+        std::env::var_os("MICROSCOPE_CPYTHON").expect("MICROSCOPE_CPYTHON names the interpreters"),
+    )
+    .join("3.14/python");
+    let report = |name: &str, options: &[&str], source: &str| {
+        let profile = scratch.path().join(name);
+        let recorded = microscope_command()
+            .args(["record", "-o"])
+            .arg(&profile)
+            .args(options)
+            .arg("--")
+            .arg(&python)
+            .args(["-c", source])
+            .output()
+            .expect("run microscope record");
+        assert!(recorded.status.success(), "{recorded:?}");
+        assert_success(microscope(&["report", &profile.to_string_lossy()]))
+    };
+    let spin = "import time\nend = time.monotonic() + 0.5\nwhile time.monotonic() < end: pass\n";
+
+    let threads = report("threads.usprof", &["--python", "snapshot=0.05"], spin);
+    assert!(
+        threads.contains("snapshots held the program stopped"),
+        "{threads}"
+    );
+    assert!(!threads.contains("ran a task"), "{threads}");
+
+    let tasks = report(
+        "tasks.usprof",
+        &["--task-snapshots", "0.05"],
+        "import asyncio, time\nasync def spin():\n    end = time.monotonic() + 0.5\n    \
+         while time.monotonic() < end: await asyncio.sleep(0)\n\
+         async def main(): await asyncio.gather(spin(), spin())\nasyncio.run(main())\n",
+    );
+    assert!(
+        tasks
+            .lines()
+            .any(|line| line.ends_with("ran a task the snapshots either side of them agree on.")),
+        "{tasks}"
+    );
+}
+
 /// An inlined helper that does a loop's work takes its own time from the
 /// function it was inlined into, unless the report folds inlines.
 #[test]

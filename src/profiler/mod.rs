@@ -38,6 +38,7 @@ pub use collector::ProbeSelection;
 pub use formats::Format;
 pub use session::{Attachment, Recording, Save, Watch, record, record_attached, record_watched};
 pub use symbols::ModuleSymbols;
+pub use tasks::THREAD;
 pub use zones::{
     PlotValue, ProbeCounts, ProfileZone, ProgramMarker, ZONE_BEGAN_UNSEEN, ZONE_ENDED_UNSEEN,
     ZONE_MISMATCHED, ZoneSite,

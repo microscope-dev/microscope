@@ -1401,7 +1401,13 @@ fn snapshots(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
         )?;
     }
 
-    if snapshots > 0 {
+    // Thread snapshots read threads as tasks of their own, which no sample
+    // runs as a task.
+    let tasks = profile
+        .tasks()
+        .iter()
+        .any(|task| task.noun != microscope::profiler::THREAD);
+    if snapshots > 0 && tasks {
         writeln!(
             out,
             "{} of the {} samples ran a task the snapshots either side of them agree on.",
