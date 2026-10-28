@@ -79,6 +79,12 @@ pub struct Jit {
     /// the objects were read.
     objects: BTreeMap<u64, JitCode>,
     descriptors: Option<Vec<u64>>,
+
+    /// Where each object's code starts and its image's outline, by where
+    /// the image was when it was read. A compiler adds objects to its list
+    /// one at a time, so most of a read finds the same images in the same
+    /// places, which are not read again.
+    images: BTreeMap<u64, (u64, Vec<u8>)>,
     headers: Vec<u8>,
 
     /// Why the map, or a registered object, was last not read, until it is
@@ -173,7 +179,10 @@ impl Jit {
         if self.objects.len() != objects {
             self.headers.clear();
         }
-        self.descriptors = None;
+        // Only a module holds a descriptor.
+        if !anonymous {
+            self.descriptors = None;
+        }
         self.quiet = 0;
 
         if anonymous {
@@ -317,7 +326,8 @@ impl Jit {
 
     /// Reads again the objects registered with `descriptors` when any of
     /// them changed since they were read, and returns each object not
-    /// known before.
+    /// known before. An object whose image is where and what it was is
+    /// kept as it was read.
     fn read_objects(&mut self, pid: u32, descriptors: &[u64]) -> Vec<JitCode> {
         let read = |address: u64, size: usize| {
             let mut bytes = vec![0; size];
@@ -334,7 +344,15 @@ impl Jit {
             return Vec::new();
         }
 
-        let mut registered = Registered::default();
+        let mut registered = Registered {
+            known: self
+                .images
+                .iter()
+                .filter(|(_, (start, _))| self.objects.contains_key(start))
+                .map(|(&image, (_, outline))| (image, outline.clone()))
+                .collect(),
+            ..Registered::default()
+        };
         let mut budget = OBJECTS_READ;
 
         for &descriptor in descriptors {
@@ -346,6 +364,16 @@ impl Jit {
         }
 
         let mut objects = BTreeMap::new();
+        let mut images = BTreeMap::new();
+        let mut new = Vec::new();
+        for image in registered.kept {
+            if let Some(kept) = self.images.remove(&image) {
+                if let Some(object) = self.objects.get(&kept.0) {
+                    objects.insert(kept.0, object.clone());
+                }
+                images.insert(image, kept);
+            }
+        }
 
         for object in registered.objects {
             let path = object.name().to_string_lossy().into_owned();
@@ -354,23 +382,30 @@ impl Jit {
                     .get_or_insert_with(|| format!("registered object {path} places no code"));
                 continue;
             };
-            objects.insert(
-                code.start,
-                JitCode {
-                    start: code.start,
-                    end: code.end,
-                    path,
-                    bytes: object.bytes.into(),
-                },
-            );
+            let size = object.bytes.len() as u64;
+            let outline = gdb_jit::outline(size, |at, length| {
+                let at = usize::try_from(at).ok()?;
+                object
+                    .bytes
+                    .get(at..at.checked_add(length)?)
+                    .map(<[u8]>::to_vec)
+            })
+            .unwrap_or_default();
+            let code = JitCode {
+                start: code.start,
+                end: code.end,
+                path,
+                bytes: object.bytes.into(),
+            };
+            if self.objects.get(&code.start) != Some(&code) {
+                new.push(code.clone());
+            }
+            images.insert(object.address, (code.start, outline));
+            objects.insert(code.start, code);
         }
 
-        let new = objects
-            .iter()
-            .filter(|(start, object)| self.objects.get(start) != Some(object))
-            .map(|(_, object)| object.clone())
-            .collect();
         self.objects = objects;
+        self.images = images;
         self.headers = headers;
         new
     }
@@ -668,6 +703,55 @@ mod tests {
             [(0x7000_3000, 0x7000_3040)]
         );
         drop(descriptor);
+    }
+
+    /// An object whose image is where it was, of the size and section
+    /// headers it had, is kept as it was read when the list changes, not
+    /// read again: a compiler that adds objects one at a time would
+    /// otherwise have its whole list read at each. Another image of the same
+    /// size in the same place places its code elsewhere, and is read.
+    #[test]
+    fn an_object_listed_as_it_was_is_not_read_again() {
+        let mut first = crate::debug_info::gdb_jit::test_image(0x7000_1000, 64);
+        let original = first.clone();
+        let second = crate::debug_info::gdb_jit::test_image(0x7000_3000, 64);
+        let mut later = Box::new([0, 0, second.as_ptr() as u64, second.len() as u64]);
+        let mut entry = Box::new([0, 0, first.as_ptr() as u64, first.len() as u64]);
+        let mut descriptor = Box::new([1_u64, 0, std::ptr::from_ref(&*entry) as u64]);
+        let at = std::ptr::from_ref(&*descriptor) as u64;
+        let pid = std::process::id();
+
+        let mut jit = Jit::default();
+        let mut time = 0;
+        let mut refresh = |jit: &mut Jit, address| {
+            time += QUIET;
+            let objects = jit.refresh(pid, time, [address], || vec![at]).objects;
+            objects
+                .iter()
+                .map(|object| object.start)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(refresh(&mut jit, 0x7000_1008), [0x7000_1000]);
+
+        // A second object goes first in the list, and the first object's
+        // code changes, which the code it ran told of, not its headers.
+        first[64..128].fill(0x90);
+        later[0] = std::ptr::from_ref(&*entry) as u64;
+        descriptor[2] = std::ptr::from_ref(&*later) as u64;
+        std::hint::black_box((&first, &descriptor));
+        assert_eq!(refresh(&mut jit, 0x7000_3008), [0x7000_3000]);
+        assert_eq!(
+            jit.objects.get(&0x7000_1000).map(|object| &*object.bytes),
+            Some(original.as_slice()),
+            "read again"
+        );
+
+        // Another image of the same size where the first was.
+        first.copy_from_slice(&crate::debug_info::gdb_jit::test_image(0x7000_5000, 64));
+        entry[1] = 1;
+        std::hint::black_box((&first, &entry));
+        assert_eq!(refresh(&mut jit, 0x7000_5008), [0x7000_5000]);
+        assert!(!jit.objects.contains_key(&0x7000_1000));
     }
 
     /// A read takes at most so much of the map, and the next read goes on

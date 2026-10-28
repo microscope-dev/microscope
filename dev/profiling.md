@@ -211,7 +211,13 @@ code in no mapping the recording saw, since a busy ring can lose the mapping's
 record. It reads them again only when the bytes of the descriptors or of
 the entries they list changed since, or when a mapping replaced an object's
 code. A new object's entry may be where an old one's was, which leaves the
-descriptor's own bytes as they were. A process whose modules hold no
+descriptor's own bytes as they were. A compiler adds objects one at a time
+to a list that grows long, so a read keeps each object whose image lies where
+it did with the same size, ELF header and section headers, and reads only
+the rest whole (`gdb_jit::outline`). Another image there places its code
+elsewhere, or over code a new mapping replaced, which drops the old object.
+Anonymous code, and the modules made of it, never make the recorder look
+for an interpreter or a descriptor again. A process whose modules hold no
 `__jit_debug_descriptor` is never read. A range that holds registered objects
 is theirs alone: no perf-map module is made over it. The objects are read
 from the running process, so a program that exits before the recorder

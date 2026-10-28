@@ -195,8 +195,10 @@ fn uncover(mapped: &mut Vec<Mapped>, start: u64, end: u64) {
 struct ProcessState {
     mapped: Vec<Mapped>,
 
-    /// How many mappings the process has made, which tells its modules
-    /// apart from what they were, as their number may not.
+    /// How many mappings the process has made of a module, or over part
+    /// of one, which tells its modules apart from what they were, as their
+    /// number may not. Anonymous code, which a JIT compiler maps over and
+    /// over, and the modules made of it, change none.
     mappings: u64,
 
     /// How many times the process has exec'd.
@@ -872,6 +874,11 @@ impl Processor {
         };
 
         let state = self.processes.entry(mmap.pid).or_default();
+        let images = &self.images;
+        let replaces_module = state.mapped.iter().any(|mapped| {
+            let image = &images[mapped.image];
+            mapped.start < end && mmap.start < mapped.end && !image.anonymous && !image.generated
+        });
 
         // A mapping replaces whatever it overlaps.
         uncover(&mut state.mapped, mmap.start, end);
@@ -885,7 +892,9 @@ impl Processor {
             })
             .filter(|piece| !piece.is_empty())
             .collect();
-        state.mappings += 1;
+        if image.is_some() || replaces_module {
+            state.mappings += 1;
+        }
         state.jit.mapped(
             mmap.start,
             end,
@@ -2885,7 +2894,9 @@ mod tests {
 
     /// A mapping over part of a library, as `mmap(MAP_FIXED)` over one of
     /// its pages makes, takes only that part: the library's other pages
-    /// still name its code.
+    /// still name its code. It changes the process's modules, so what they
+    /// say of its interpreter is read again; anonymous code a JIT compiler
+    /// maps, and maps again over the objects it registered, changes none.
     #[test]
     fn a_mapping_over_part_of_a_module_leaves_the_rest_of_it() {
         use object::{Object, ObjectSegment};
@@ -2926,6 +2937,32 @@ mod tests {
         }));
         let module = processor.processes[&pid].mapped.clone();
         assert_eq!(module.len(), 1, "{module:?}");
+        let modules = processor.processes[&pid].mappings;
+
+        let jit = |time| decode::Mmap {
+            pid,
+            start: 0x7e00_0000_0000,
+            length: 0x1000,
+            file_offset: 0,
+            inode: None,
+            executable: true,
+            path: b"//anon",
+            time,
+        };
+        processor.process(decode::Record::Mmap(jit(1_100)));
+        let object = crate::debug_info::gdb_jit::test_image(0x7e00_0000_0000, 64);
+        processor.jit_object_module(
+            pid,
+            1_200,
+            &JitCode {
+                start: 0x7e00_0000_0000,
+                end: 0x7e00_0000_0040,
+                path: "[jit]".to_owned(),
+                bytes: object.into(),
+            },
+        );
+        processor.process(decode::Record::Mmap(jit(1_300)));
+        assert_eq!(processor.processes[&pid].mappings, modules);
 
         processor.process(decode::Record::Mmap(decode::Mmap {
             pid,
@@ -2937,9 +2974,11 @@ mod tests {
             path: b"//anon",
             time: 2_000,
         }));
+        assert_ne!(processor.processes[&pid].mappings, modules);
         let pieces = processor.processes[&pid]
             .mapped
             .iter()
+            .filter(|mapped| mapped.start >= 0x7f00_0000_0000)
             .map(|mapped| (mapped.start, mapped.end, mapped.image, mapped.loaded))
             .collect::<Vec<_>>();
         let (image, loaded) = (module[0].image, module[0].loaded);

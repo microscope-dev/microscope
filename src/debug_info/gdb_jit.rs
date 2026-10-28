@@ -71,6 +71,14 @@ impl JitObject {
 pub struct Registered {
     pub objects: Vec<JitObject>,
 
+    /// The [`outline`] of each object the reader holds already, by where
+    /// its image lies, which is not read again while its outline is the
+    /// same; and the images of those still listed. A compiler adds objects
+    /// to a long list one at a time, which would otherwise be read whole
+    /// at each.
+    pub known: std::collections::BTreeMap<u64, Vec<u8>>,
+    pub kept: Vec<u64>,
+
     /// Each object, or part of a list, that could not be read, and why.
     pub problems: Vec<String>,
 }
@@ -108,9 +116,9 @@ fn word(bytes: &[u8], at: usize) -> Option<u64> {
         .map(u64::from_le_bytes)
 }
 
-/// The objects the descriptor at `descriptor` lists, reading at most
-/// `budget` bytes of them through `read`, which gives all the bytes asked
-/// for or none.
+/// The objects the descriptor at `descriptor` lists, but those
+/// `registered` knows, reading at most `budget` bytes of them through
+/// `read`, which gives all the bytes asked for or none.
 pub fn registered(
     descriptor: u64,
     budget: &mut u64,
@@ -165,6 +173,14 @@ pub fn registered(
             break;
         };
 
+        if let Some(known) = registered.known.get(&address)
+            && outline(size, |at, size| read(address.checked_add(at)?, size)).as_ref()
+                == Some(known)
+        {
+            registered.kept.push(address);
+            continue;
+        }
+
         if size == 0 || size > MAX_OBJECT_BYTES || size > *budget {
             problem(format!(
                 "the JIT object at {address:#x} has {size} bytes, of {budget} left to read"
@@ -188,6 +204,26 @@ pub fn registered(
     }
 
     registered.objects.extend(objects);
+}
+
+/// The size of an image of `size` bytes, its ELF header, and its section
+/// headers, which say where its sections lie and run, read through
+/// `read` from the image's start. Another image in its place has its own
+/// code's address, unless the code it held was mapped again, as a new
+/// mapping says.
+pub fn outline(size: u64, mut read: impl FnMut(u64, usize) -> Option<Vec<u8>>) -> Option<Vec<u8>> {
+    const HEADER: usize = 64;
+    let mut outline = size.to_le_bytes().to_vec();
+    let header = read(0, HEADER)?;
+    let half = |at: usize| u16::from_le_bytes([header[at], header[at + 1]]);
+    let sections = word(&header, 0x28)?;
+    let length = usize::from(half(0x3a)) * usize::from(half(0x3c));
+    if sections.checked_add(length as u64)? > size {
+        return None;
+    }
+    outline.extend_from_slice(&header);
+    outline.extend(read(sections, length)?);
+    Some(outline)
 }
 
 /// The addresses an image's allocated sections take, for an image with no
