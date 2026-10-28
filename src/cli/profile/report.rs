@@ -19,6 +19,49 @@ pub struct Options<'a> {
     /// With `tree` and `focus`, the focused function's callers instead of
     /// its callees.
     pub invert: bool,
+
+    /// How each stack is reshaped first, in order.
+    pub reshapes: &'a [Reshape],
+}
+
+/// A change to each stack before a report adds them up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reshape {
+    /// Removes the function, giving its cost to its caller.
+    Merge(String),
+
+    /// Removes every sample through the function.
+    Drop(String),
+
+    /// Merges each run of the function calling itself into its first call.
+    Collapse(String),
+
+    /// Cuts every cycle out of each stack.
+    Cycles,
+}
+
+/// `reshapes` as transforms of the profile `keys` are of, each function
+/// resolved as `--focus` resolves it. In a `base` profile, a function it
+/// lacks changes nothing there.
+pub fn transforms(keys: &Keys<'_>, reshapes: &[Reshape], base: bool) -> Result<Vec<Transform>> {
+    let mut transforms = Vec::new();
+    for reshape in reshapes {
+        let (name, make): (&str, fn(u32) -> Transform) = match reshape {
+            Reshape::Merge(name) => (name, Transform::Merge),
+            Reshape::Drop(name) => (name, Transform::Drop),
+            Reshape::Collapse(name) => (name, Transform::CollapseRecursion),
+            Reshape::Cycles => {
+                transforms.push(Transform::CollapseCycles);
+                continue;
+            }
+        };
+        let key = resolve(keys, name, base)?;
+        if key != NO_KEY {
+            transforms.push(make(key));
+        }
+    }
+
+    Ok(transforms)
 }
 
 pub fn write(
@@ -52,16 +95,22 @@ pub fn write(
     let query = Query {
         source: options.source,
         look: options.look,
+        transforms: transforms(&keys, options.reshapes, false)?,
         ..Query::default()
     };
+    let base_query = Query {
+        transforms: transforms(&base_keys, options.reshapes, true)
+            .context("resolving --base profile")?,
+        ..query.clone()
+    };
     let costs = keys.functions(&query);
-    let base_costs = base_keys.functions(&query);
+    let base_costs = base_keys.functions(&base_query);
     total(base_costs.weight, costs.weight, unit, out)?;
     writeln!(out)?;
 
     if options.tree {
         let tree = keys.aggregate(&query);
-        let base_tree = base_keys.aggregate(&query);
+        let base_tree = base_keys.aggregate(&base_query);
         compared_tree((&keys, &tree), (&base_keys, &base_tree), options, unit, out)?;
     } else {
         let mut rows = diff_costs((&keys, &costs), (&base_keys, &base_costs));
@@ -254,16 +303,28 @@ fn focus(
     let query = Query {
         source: options.source,
         look: options.look,
+        transforms: transforms(&keys, options.reshapes, false)?,
         ..Query::default()
     };
+    let base_query = base_keys
+        .as_ref()
+        .map(|keys| -> Result<Query> {
+            Ok(Query {
+                transforms: transforms(keys, options.reshapes, true)
+                    .context("resolving --base profile")?,
+                ..query.clone()
+            })
+        })
+        .transpose()?;
     let unit = unit(current, options.source);
     let focused = butterfly(&keys, &query, key);
     let before = base_keys
         .as_ref()
         .zip(base_key)
-        .map(|(keys, key)| butterfly(keys, &query, key));
-    if let Some(base_keys) = &base_keys {
-        let before = base_keys.functions(&query).weight;
+        .zip(base_query.as_ref())
+        .map(|((keys, key), query)| butterfly(keys, query, key));
+    if let Some((base_keys, base_query)) = base_keys.as_ref().zip(base_query.as_ref()) {
+        let before = base_keys.functions(base_query).weight;
         total(before, keys.functions(&query).weight, unit, out)?;
     }
     writeln!(out, "Focus: {name}")?;
@@ -283,9 +344,12 @@ fn focus(
         selected.transforms.push(Transform::Focus(key));
         selected.invert = options.invert;
         let tree = keys.aggregate(&selected);
-        if let Some((base_keys, base_key)) = base_keys.as_ref().zip(base_key) {
-            selected.transforms = vec![Transform::Focus(base_key)];
-            let base_tree = base_keys.aggregate(&selected);
+        if let Some(((base_keys, base_key), mut base_query)) =
+            base_keys.as_ref().zip(base_key).zip(base_query)
+        {
+            base_query.transforms.push(Transform::Focus(base_key));
+            base_query.invert = options.invert;
+            let base_tree = base_keys.aggregate(&base_query);
             return compared_tree((&keys, &tree), (base_keys, &base_tree), options, unit, out);
         }
         focused_tree(&keys, &tree, options, unit, out)?;

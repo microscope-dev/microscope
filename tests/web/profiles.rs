@@ -382,6 +382,80 @@ async fn a_profile_is_served_as_trees_functions_and_a_timeline() {
     tab.save_traffic("profile");
 }
 
+/// The recursion fixture, a sample at its calls of work, collapsed to the
+/// first call of each function on every path. The kernel throttles some
+/// of the calls, so each branch's weight is checked against the plain tree.
+#[tokio::test]
+async fn collapsing_cycles_cuts_each_path_back_to_its_first_call() {
+    let scratch = ScratchDir::new("web-cycles");
+    let mut command = Command::new(Scenario::fixture("profile-recursion"));
+    command.arg("20");
+    let options = RecordOptions {
+        source: SampleSource::Function {
+            symbol: "work".into(),
+        },
+        function_period: 1,
+        ..RecordOptions::default()
+    };
+    let recording = record(command, &options).expect("record");
+    let path = scratch.path().join("recursion.usprof");
+    recording.profile.write(&path).expect("write the profile");
+
+    let web = Web::start("profile", &[path.to_str().expect("a path")]);
+    let mut tab = web.control("tab").await;
+    let listed = tab
+        .expect("the profiles", |message| message["type"] == "profiles")
+        .await;
+    let id = listed["profiles"][0]["id"]
+        .as_str()
+        .expect("an id")
+        .to_owned();
+
+    // Below main, each path as `a/b/c` with its own and total weight.
+    let below_main = |nodes: &[(Vec<String>, u64, u64)]| {
+        nodes
+            .iter()
+            .filter_map(|(path, own, total)| {
+                let main = path.iter().position(|name| name == "main")?;
+                (path.len() > main + 1).then(|| (path[main + 1..].join("/"), *own, *total))
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let total_of = |nodes: &[(Vec<String>, u64, u64)], name: &str| {
+        below_main(nodes)
+            .iter()
+            .find(|(path, _, _)| path == name)
+            .map_or(0, |(_, _, total)| *total)
+    };
+
+    let plain = tree(&mut tab, json!({"profile": id})).await;
+    let (selfs, visits) = (total_of(&plain, "self"), total_of(&plain, "visit"));
+    assert!(selfs > 0 && visits > 0, "{plain:?}");
+    assert!(
+        plain.iter().any(|(path, _, _)| path.len() > 20),
+        "{plain:?}"
+    );
+
+    let collapsed = tree(
+        &mut tab,
+        json!({"profile": id, "transforms": [{"op": "collapseCycles"}]}),
+    )
+    .await;
+    assert_eq!(collapsed[0].2, plain[0].2);
+    assert_eq!(
+        below_main(&collapsed),
+        [
+            ("self".to_owned(), 0, selfs),
+            ("self/work".to_owned(), selfs, selfs),
+            ("visit".to_owned(), 0, visits),
+            ("visit/children".to_owned(), 0, visits),
+            ("visit/children/work".to_owned(), visits, visits),
+        ]
+        .into_iter()
+        .collect()
+    );
+}
+
 /// A profile of the waits fixture with task snapshots, once two of them
 /// have found its three receivers waiting, one after a snapshot found the
 /// spinner with its labels.

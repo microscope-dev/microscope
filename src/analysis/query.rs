@@ -99,6 +99,13 @@ pub enum Transform {
 
     /// Merges each run of the key calling itself into its first call.
     CollapseRecursion(u32),
+
+    /// Cuts every cycle out of each path, direct or through other
+    /// functions: walked from the outermost frame, a key already on the
+    /// path cuts it back to that earlier call, so `a b a c` is `a c`.
+    /// Every sample still counts once, and its own cost moves to the
+    /// outermost call of what it ran.
+    CollapseCycles,
 }
 
 /// The call tree of a query, its nodes in depth-first order with each
@@ -450,6 +457,41 @@ struct Paths<'a> {
     keys: &'a Keys<'a>,
     query: &'a Query,
     path: Vec<u32>,
+
+    /// Where each key is on the path while cycles are cut, or [`NONE`].
+    on_path: Vec<u32>,
+}
+
+/// Cuts each cycle out of `path`, from its first element: a key already
+/// kept cuts the kept path back to it. `on_path` is scratch of `keys`
+/// entries, each [`NONE`] before and after.
+fn erase_cycles(path: &mut Vec<u32>, on_path: &mut Vec<u32>, keys: usize) {
+    if on_path.len() < keys {
+        on_path.resize(keys, NONE);
+    }
+
+    let mut kept = 0;
+    for at in 0..path.len() {
+        let key = path[at];
+        match on_path[key as usize] {
+            NONE => {
+                on_path[key as usize] = index(kept);
+                path[kept] = key;
+                kept += 1;
+            }
+            earlier => {
+                for &cut in &path[earlier as usize + 1..kept] {
+                    on_path[cut as usize] = NONE;
+                }
+                kept = earlier as usize + 1;
+            }
+        }
+    }
+
+    for &key in &path[..kept] {
+        on_path[key as usize] = NONE;
+    }
+    path.truncate(kept);
 }
 
 impl<'a> Paths<'a> {
@@ -459,6 +501,7 @@ impl<'a> Paths<'a> {
             keys,
             query,
             path: Vec::new(),
+            on_path: Vec::new(),
         }
     }
 
@@ -506,6 +549,16 @@ impl<'a> Paths<'a> {
                         previous = *candidate;
                         !repeat
                     });
+                }
+                Transform::CollapseCycles => {
+                    // An inverted path is innermost first: cut from its end.
+                    if self.query.invert {
+                        path.reverse();
+                    }
+                    erase_cycles(path, &mut self.on_path, self.keys.count());
+                    if self.query.invert {
+                        path.reverse();
+                    }
                 }
             }
         }

@@ -1012,9 +1012,13 @@ look: ProfileLook, granularity: ProfileGranularity,
  */
 base?: ProfileBase | null, };
 
-export type ProfileTransform = { op: TransformOp, name: string, };
+export type ProfileTransform = { op: TransformOp, 
+/**
+ * The function it applies to; empty for an op that takes none.
+ */
+name: string, };
 
-export type TransformOp = "focus" | "merge" | "drop" | "collapse";
+export type TransformOp = "focus" | "merge" | "drop" | "collapse" | "collapseCycles";
 
 export type ProfileGranularity = "function" | "physical" | "line" | "address";
 

@@ -121,6 +121,16 @@ most of a loop's own time, `--fold-inlines` counts it as part of the function
 it was inlined into, as the browser's "functions, inlines folded" does. It
 works with `--tree`, `--focus`, and `--base`, but not with `--lines`.
 
+Deep recursion pushes a tree off the right edge of the terminal.
+`--collapse-recursion` cuts each stack back to the first call of any
+function it calls again, directly or through others, so `visit children
+visit children work` reads `visit children work`. `--collapse SYMBOL` does
+the same for one function calling itself. `--merge SYMBOL` hides a function
+and gives its cost to its caller, and `--drop SYMBOL` removes every sample
+through it. These repeat, apply in the order given, and work with `--tree`,
+`--focus`, `--invert`, and `--base`. See
+[profile reports](profile-reports.md#reshape-the-stacks).
+
 Open the profile in the browser for flame views, timelines, source costs,
 disassembly, tasks, blocked time, and instrumentation zones:
 

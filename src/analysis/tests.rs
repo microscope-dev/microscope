@@ -112,6 +112,21 @@ enum Named {
     Merge(&'static str),
     Drop(&'static str),
     Collapse(&'static str),
+    Cycles,
+}
+
+/// `path` with each cycle cut out, walked from its outermost frame: a
+/// function already on the path cuts it back to its earlier call.
+fn loop_erased(path: &[String]) -> Vec<String> {
+    let mut kept: Vec<String> = Vec::new();
+    for step in path {
+        match kept.iter().position(|earlier| earlier == step) {
+            Some(at) => kept.truncate(at + 1),
+            None => kept.push(step.clone()),
+        }
+    }
+
+    kept
 }
 
 /// The names of a sample's path, computed from the capture's tables alone.
@@ -167,6 +182,12 @@ fn naive_path(
 
                 path = collapsed;
             }
+            Named::Cycles if invert => {
+                path.reverse();
+                path = loop_erased(&path);
+                path.reverse();
+            }
+            Named::Cycles => path = loop_erased(&path),
         }
     }
 
@@ -203,7 +224,7 @@ fn strategy() -> impl Strategy<Value = (Stacks, (Samples, Waits), Selection)> {
         let waits = prop::collection::vec((0..100_i64, 1..5_u64, 0..count, 0..UNNAMED), 0..10);
         let range = prop::option::of((0..100_i64, 0..100_i64));
         let threads = prop::option::of(prop::collection::vec(0..3_u32, 0..3));
-        let transforms = prop::collection::vec((0..4_u8, 0..FUNCTIONS.len()), 0..3);
+        let transforms = prop::collection::vec((0..5_u8, 0..FUNCTIONS.len()), 0..3);
         let tasks = prop::option::of(prop::collection::vec(0..=UNNAMED, 0..3));
         (
             Just(stacks),
@@ -273,7 +294,8 @@ proptest! {
                     0 => Named::Focus(name),
                     1 => Named::Merge(name),
                     2 => Named::Drop(name),
-                    _ => Named::Collapse(name),
+                    3 => Named::Collapse(name),
+                    _ => Named::Cycles,
                 }
             })
             .collect();
@@ -294,7 +316,11 @@ proptest! {
         let mut naive_transforms = Vec::new();
 
         for transform in &named {
-            let (Named::Focus(name) | Named::Merge(name) | Named::Drop(name) | Named::Collapse(name)) = transform;
+            let (Named::Focus(name) | Named::Merge(name) | Named::Drop(name) | Named::Collapse(name)) = transform else {
+                naive_transforms.push(Named::Cycles);
+                query.transforms.push(Transform::CollapseCycles);
+                continue;
+            };
             let Some(key) = known(name) else { continue };
             naive_transforms.push(transform.clone());
             query.transforms.push(match transform {
@@ -302,6 +328,7 @@ proptest! {
                 Named::Merge(_) => Transform::Merge(key),
                 Named::Drop(_) => Transform::Drop(key),
                 Named::Collapse(_) => Transform::CollapseRecursion(key),
+                Named::Cycles => Transform::CollapseCycles,
             });
         }
 
@@ -893,6 +920,117 @@ fn an_anonymous_function_is_named_for_where_it_is_declared() {
     ]
     .map(|(name, own, base_own)| (name.to_owned(), own, base_own));
     assert_eq!(paired, expected);
+}
+
+/// A capture of one sample of each of `stacks`, outermost first, with its
+/// weight, each function a frame of its own.
+fn named_stacks(stacks: &[(&[&str], u64)]) -> Capture {
+    let mut builder = CaptureBuilder::new();
+    let module = builder.module("/bin/app", None, [0; 16], 0);
+    let thread = builder.thread(Pid::new(1), Tid::new(1), 0);
+    let mut frames: BTreeMap<String, u32> = BTreeMap::new();
+    for (time, &(names, weight)) in (0..).zip(stacks) {
+        let innermost_first: Vec<u32> = names
+            .iter()
+            .rev()
+            .map(|name| {
+                let next = 0x100 * (frames.len() as u64 + 1);
+                *frames.entry((*name).to_owned()).or_insert_with(|| {
+                    let frame = builder.frame(FrameKind::Native, module, next, 0);
+                    builder.symbolize(frame, module, &[line(name)]);
+                    frame
+                })
+            })
+            .collect();
+        let stack = builder.stack(&innermost_first);
+        builder.sample(thread, time, weight, stack, NONE);
+    }
+
+    builder.finish()
+}
+
+/// Collapsing every cycle cuts each path back to a function's first call
+/// whenever it is called again, however the call came round: directly, by
+/// two functions calling each other, by three, and again after the path
+/// left the cycle. Totals at the roots stay what they were.
+#[test]
+fn collapsing_cycles_cuts_each_path_back_to_the_first_call() {
+    let capture = named_stacks(&[
+        (&["main", "self", "self", "self", "work"], 1),
+        (
+            &["main", "visit", "children", "visit", "children", "work"],
+            2,
+        ),
+        (&["a", "b", "c", "a", "b", "c", "work"], 4),
+        (&["a", "b", "a", "c", "a"], 8),
+        (&["main", "visit", "children", "visit"], 16),
+    ]);
+    let keys = Keys::new(&capture, Granularity::Function);
+    let path = |names: &[&str]| {
+        names
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect::<Vec<_>>()
+    };
+    let paths = |transforms: Vec<Transform>, invert: bool| {
+        let query = Query {
+            transforms,
+            invert,
+            ..Query::default()
+        };
+        ending_paths(&aggregate(&capture, &keys, &query), &keys)
+    };
+
+    assert_eq!(
+        paths(vec![Transform::CollapseCycles], false),
+        BTreeMap::from([
+            (path(&["main", "self", "work"]), 1),
+            (path(&["main", "visit", "children", "work"]), 2),
+            (path(&["a", "b", "c", "work"]), 4),
+            // a b a c a: the second a cuts back to the first, then c is
+            // new, then the third a cuts c off again.
+            (path(&["a"]), 8),
+            (path(&["main", "visit"]), 16),
+        ])
+    );
+
+    // Own cost moves to the outermost call; the roots' totals do not
+    // change, though a function only a cut cycle ran loses that sample.
+    let costs = |transforms: Vec<Transform>| {
+        let query = Query {
+            transforms,
+            ..Query::default()
+        };
+        functions(&capture, &keys, &query)
+            .rows
+            .into_iter()
+            .map(|cost| (keys.name(cost.key), (cost.own, cost.total)))
+            .collect::<BTreeMap<_, _>>()
+    };
+    let collapsed = costs(vec![Transform::CollapseCycles]);
+    let plain = costs(Vec::new());
+    assert_eq!(collapsed["main"], (0, 19));
+    assert_eq!(collapsed["visit"], (16, 18));
+    assert_eq!(collapsed["a"], (8, 12));
+    for root in ["main", "a"] {
+        assert_eq!(collapsed[root].1, plain[root].1, "{root}");
+    }
+    assert_eq!((plain["b"].1, collapsed["b"].1), (12, 4));
+
+    // Inverted, each path from its innermost frame is cut the same way.
+    assert_eq!(
+        paths(vec![Transform::CollapseCycles], true)[&path(&["work", "c", "b", "a"])],
+        4
+    );
+
+    // A collapse of one function leaves cycles through others.
+    let self_key = keys.named("self")[0];
+    let one = paths(vec![Transform::CollapseRecursion(self_key)], false);
+    assert_eq!(one[&path(&["main", "self", "work"])], 1);
+    assert_eq!(
+        one[&path(&["main", "visit", "children", "visit", "children", "work"])],
+        2
+    );
 }
 
 /// A sample: its thread, time, weight, and task choice.

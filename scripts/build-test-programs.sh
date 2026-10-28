@@ -2345,6 +2345,9 @@ build_fixture gcc "$c_fixtures_dir/profile-offcpu.c" "$output_dir/profile-offcpu
 # Threads that switch far more often than they run, for what a full ring loses.
 build_fixture gcc "$c_fixtures_dir/profile-switches.c" "$output_dir/profile-switches" \
     -O1 -g -fno-omit-frame-pointer -pthread
+# Direct and mutual recursion, for collapsing cycles.
+build_fixture gcc "$c_fixtures_dir/profile-recursion.c" "$output_dir/profile-recursion" \
+    -O1 -g -fno-omit-frame-pointer -fno-optimize-sibling-calls
 # Steady work whose rate measures what recording costs.
 build_fixture gcc "$c_fixtures_dir/overhead.c" "$output_dir/overhead" \
     -O2 -g3 -fno-omit-frame-pointer -fPIE -pie -pthread

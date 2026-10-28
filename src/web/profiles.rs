@@ -909,6 +909,11 @@ fn resolve_in(
     let (start, _) = profile.span();
     let mut transforms = Vec::new();
     for transform in &query.transforms {
+        if transform.op == TransformOp::CollapseCycles {
+            transforms.push(Transform::CollapseCycles);
+            continue;
+        }
+
         let named = keys.named(&transform.name);
         if named.is_empty() && base {
             if transform.op == TransformOp::Focus {
@@ -937,6 +942,7 @@ fn resolve_in(
             TransformOp::Merge => Transform::Merge(key),
             TransformOp::Drop => Transform::Drop(key),
             TransformOp::Collapse => Transform::CollapseRecursion(key),
+            TransformOp::CollapseCycles => Transform::CollapseCycles,
         }));
     }
 

@@ -337,6 +337,95 @@ fn report_lists_the_programs_messages_and_each_threads_zones() {
     }
 }
 
+/// report's reshaping flags apply in the order given, a bare flag among
+/// them: merging children and then collapsing cycles leaves visit calling
+/// work, while collapsing first keeps children. Neither moves the root.
+#[test]
+fn report_reshapes_stacks_in_the_order_the_flags_are_given() {
+    let scratch = support::ScratchDir::new("cli-reshapes");
+    let profile = scratch.path().join("recursion.usprof");
+    let recorded = microscope_command()
+        .args(["record", "-o"])
+        .arg(&profile)
+        .arg("--")
+        .arg(fixture("build/test-programs/profile-recursion"))
+        .arg("300")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run microscope record");
+    assert!(recorded.status.success(), "{recorded:?}");
+    let profile = profile.to_string_lossy();
+    // Each tree row's total and name, indented by depth.
+    let tree = |flags: &[&str]| -> Vec<(String, String)> {
+        let mut arguments = vec!["report", &*profile, "--tree", "--min-percent", "5"];
+        arguments.extend_from_slice(flags);
+        assert_success(microscope(&arguments))
+            .lines()
+            .filter_map(|line| {
+                let (total, rest) = line.trim_start().split_once("% ")?;
+                let (_, name) = rest.trim_start().split_once("%  ")?;
+                total.parse::<f64>().ok()?;
+                Some((total.to_owned(), name.to_owned()))
+            })
+            .collect()
+    };
+    // Each row's path below main, as `visit/children/work`, in a set.
+    let under_main = |rows: Vec<(String, String)>| -> std::collections::BTreeSet<String> {
+        let mut stack: Vec<(usize, String)> = Vec::new();
+        let mut paths = std::collections::BTreeSet::new();
+        for (_, name) in rows {
+            let depth = name.len() - name.trim_start().len();
+            stack.retain(|(above, _)| *above < depth);
+            stack.push((depth, name.trim().to_owned()));
+            if let Some(main) = stack.iter().position(|(_, name)| name == "main") {
+                let below: Vec<&str> = stack[main + 1..]
+                    .iter()
+                    .map(|(_, name)| name.as_str())
+                    .collect();
+                if !below.is_empty() {
+                    paths.insert(below.join("/"));
+                }
+            }
+        }
+        paths
+    };
+    let set = |paths: &[&str]| {
+        paths
+            .iter()
+            .map(|path| (*path).to_owned())
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+
+    let root = |rows: &[(String, String)]| rows[0].0.clone();
+    let plain = tree(&[]);
+    assert!(plain.len() > 20, "{plain:?}");
+    let cycles = tree(&["--merge", "children", "--collapse-recursion"]);
+    assert_eq!(root(&cycles), root(&plain));
+    let merged = set(&["self", "self/work", "visit", "visit/work"]);
+    assert_eq!(under_main(cycles), merged);
+    assert_eq!(
+        under_main(tree(&["--collapse-recursion", "--merge", "children"])),
+        merged
+    );
+    assert_eq!(
+        under_main(tree(&["--collapse-recursion"])),
+        set(&[
+            "self",
+            "self/work",
+            "visit",
+            "visit/children",
+            "visit/children/work"
+        ])
+    );
+
+    let folded = under_main(tree(&["--collapse", "self"]));
+    assert!(
+        folded.contains("self/work") && !folded.contains("self/self"),
+        "{folded:?}"
+    );
+    assert!(folded.contains("visit/children/visit"), "{folded:?}");
+}
+
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(name)
 }

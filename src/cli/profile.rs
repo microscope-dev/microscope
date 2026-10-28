@@ -236,6 +236,103 @@ pub struct ReportArgs {
     /// Hide call-tree nodes below this percentage of the total.
     #[arg(long, value_name = "PERCENT", default_value_t = 1.0)]
     min_percent: f64,
+
+    #[command(flatten)]
+    reshapes: Reshapes,
+}
+
+/// How a report reshapes each stack before it adds them up, in the order
+/// the flags were given.
+#[derive(Debug, Default)]
+pub struct Reshapes(Vec<report::Reshape>);
+
+/// The reshaping flags: each one's name, help, and whether it takes a
+/// function.
+const RESHAPES: [(&str, &str, bool); 4] = [
+    (
+        "merge",
+        "Remove this function from every stack, giving its cost to its caller",
+        true,
+    ),
+    (
+        "drop",
+        "Remove every sample whose stack holds this function",
+        true,
+    ),
+    (
+        "collapse",
+        "Merge each run of this function calling itself into its first call",
+        true,
+    ),
+    (
+        "collapse-recursion",
+        "Cut every cycle out of each stack, direct or through other functions: a \
+         function called again cuts the stack back to its first call",
+        false,
+    ),
+];
+
+impl clap::FromArgMatches for Reshapes {
+    fn from_arg_matches(matches: &clap::ArgMatches) -> Result<Self, clap::Error> {
+        let mut given: Vec<(usize, report::Reshape)> = Vec::new();
+        for (name, _, named) in RESHAPES {
+            let given_here =
+                matches.value_source(name) == Some(clap::parser::ValueSource::CommandLine);
+            let (indices, values): (Vec<usize>, Vec<Option<String>>) = if !given_here {
+                continue;
+            } else if named {
+                (
+                    matches.indices_of(name).into_iter().flatten().collect(),
+                    matches
+                        .get_many::<String>(name)
+                        .into_iter()
+                        .flatten()
+                        .cloned()
+                        .map(Some)
+                        .collect(),
+                )
+            } else {
+                (matches.index_of(name).into_iter().collect(), vec![None])
+            };
+            for (index, value) in indices.into_iter().zip(values) {
+                let reshape = match (name, value) {
+                    ("merge", Some(symbol)) => report::Reshape::Merge(symbol),
+                    ("drop", Some(symbol)) => report::Reshape::Drop(symbol),
+                    ("collapse", Some(symbol)) => report::Reshape::Collapse(symbol),
+                    _ => report::Reshape::Cycles,
+                };
+                given.push((index, reshape));
+            }
+        }
+
+        given.sort_by_key(|(index, _)| *index);
+        Ok(Self(
+            given.into_iter().map(|(_, reshape)| reshape).collect(),
+        ))
+    }
+
+    fn update_from_arg_matches(&mut self, matches: &clap::ArgMatches) -> Result<(), clap::Error> {
+        *self = Self::from_arg_matches(matches)?;
+        Ok(())
+    }
+}
+
+impl clap::Args for Reshapes {
+    fn augment_args(mut command: clap::Command) -> clap::Command {
+        for (name, help, named) in RESHAPES {
+            let arg = clap::Arg::new(name).long(name).help(help);
+            command = command.arg(if named {
+                arg.value_name("SYMBOL").action(clap::ArgAction::Append)
+            } else {
+                arg.action(clap::ArgAction::SetTrue)
+            });
+        }
+        command
+    }
+
+    fn augment_args_for_update(command: clap::Command) -> clap::Command {
+        Self::augment_args(command)
+    }
 }
 
 #[derive(Debug, clap::Args)]
@@ -942,6 +1039,13 @@ fn ordinary_report(
     };
 
     let granularity = args.granularity();
+    let keys = profile.keys(granularity);
+    let query = microscope::profiler::Query {
+        source,
+        look: look(view),
+        transforms: report::transforms(&keys, &args.reshapes.0, false)?,
+        ..microscope::profiler::Query::default()
+    };
 
     let percent = |value: u64| {
         if total == 0 {
@@ -953,7 +1057,19 @@ fn ordinary_report(
 
     writeln!(out)?;
     if args.tree {
-        let tree = profile.call_tree_of(view, source, granularity, args.invert);
+        let tree = keys.aggregate(&microscope::profiler::Query {
+            invert: args.invert,
+            ..query
+        });
+        let tree: Vec<microscope::profiler::CallNode> = (0..tree.len())
+            .map(|node| microscope::profiler::CallNode {
+                parent: (tree.parent[node] != microscope::profiler::NO_KEY)
+                    .then_some(tree.parent[node] as usize),
+                name: keys.name(tree.key[node]),
+                own: tree.own[node],
+                total: tree.total[node],
+            })
+            .collect();
         let mut depth = vec![0_usize; tree.len()];
 
         // Each node with its children after it, depth first.
@@ -1005,22 +1121,27 @@ fn ordinary_report(
     } else {
         writeln!(out, "{:>7} {:>7}  function", "own", "total")?;
 
-        for cost in profile
-            .top_of(view, source, granularity)
-            .iter()
-            .take(args.limit)
-        {
+        for cost in keys.functions(&query).rows.iter().take(args.limit) {
             writeln!(
                 out,
                 "{:6.2}% {:6.2}%  {}",
                 percent(cost.own),
                 percent(cost.total),
-                cost.name
+                keys.name(cost.key)
             )?;
         }
     }
 
     truncations(profile, out)
+}
+
+/// The analysis's look of a stack view.
+const fn look(view: StackView) -> microscope::profiler::Look {
+    match view {
+        StackView::Logical => microscope::profiler::Look::Logical,
+        StackView::Native => microscope::profiler::Look::Native,
+        StackView::Python => microscope::profiler::Look::Python,
+    }
 }
 
 /// Why stacks ended short of their outermost frame, and how to record
@@ -1096,13 +1217,10 @@ fn selected_report(
             } else {
                 Source::Samples
             },
-            look: match args.look.view() {
-                StackView::Logical => microscope::profiler::Look::Logical,
-                StackView::Native => microscope::profiler::Look::Native,
-                StackView::Python => microscope::profiler::Look::Python,
-            },
+            look: look(args.look.view()),
             focus: args.focus.as_deref(),
             invert: args.invert,
+            reshapes: &args.reshapes.0,
         },
         out,
     )

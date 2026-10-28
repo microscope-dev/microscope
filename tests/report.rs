@@ -74,6 +74,7 @@ const fn options() -> report::Options<'static> {
         look: Look::Native,
         focus: None,
         invert: false,
+        reshapes: &[],
     }
 }
 
@@ -436,4 +437,90 @@ fn report_focus_refuses_an_ambiguous_base_before_writing_output() {
         "{error:#}"
     );
     assert!(out.is_empty());
+}
+
+/// Reshapes apply to both profiles of a comparison, each resolved in its
+/// own: a function the base lacks changes nothing there, and one the
+/// current lacks is an error. Merging `helper` gives its cost to `main` on
+/// both sides; collapsing cycles cuts `walk visit walk` back to `walk`.
+#[test]
+fn report_diff_reshapes_both_profiles() {
+    let base = fixture(
+        "nanoseconds",
+        &[
+            (&[("main", 1), ("helper", 2)], 3_000_000_000),
+            (
+                &[("main", 1), ("walk", 3), ("visit", 4), ("walk", 3)],
+                1_000_000_000,
+            ),
+        ],
+    );
+    let current = fixture(
+        "nanoseconds",
+        &[
+            (&[("main", 1), ("helper", 2)], 1_000_000_000),
+            (
+                &[("main", 1), ("walk", 3), ("visit", 4), ("walk", 3)],
+                2_000_000_000,
+            ),
+            (&[("main", 1), ("added", 5)], 500_000_000),
+        ],
+    );
+    let reshapes = [
+        report::Reshape::Merge("helper".into()),
+        report::Reshape::Merge("added".into()),
+        report::Reshape::Cycles,
+    ];
+    let text = render(
+        &current,
+        Some(&base),
+        &report::Options {
+            reshapes: &reshapes,
+            ..options()
+        },
+    );
+    let rows = rows(&text);
+    for expected in [
+        vec!["3.000", "s", "1.500", "s", "-1.500", "s", "-50.0%", "main"],
+        vec!["1.000", "s", "2.000", "s", "+1.000", "s", "+100.0%", "walk"],
+    ] {
+        assert!(rows.contains(&expected), "{text}");
+    }
+    assert!(
+        !rows
+            .iter()
+            .any(|row| matches!(row.last(), Some(&"helper" | &"visit" | &"added"))),
+        "{text}"
+    );
+
+    let mut out = Vec::new();
+    let missing = [report::Reshape::Drop("nosuch".into())];
+    let error = report::write(
+        &current,
+        Some(&base),
+        &report::Options {
+            reshapes: &missing,
+            ..options()
+        },
+        &mut out,
+    )
+    .expect_err("an unknown function");
+    assert!(
+        error
+            .to_string()
+            .contains("nothing in the profile is named nosuch"),
+        "{error}"
+    );
+    let collapsed = [report::Reshape::Collapse("walk".into())];
+    let text = render(
+        &current,
+        None,
+        &report::Options {
+            focus: Some("walk"),
+            tree: true,
+            reshapes: &collapsed,
+            ..options()
+        },
+    );
+    assert!(text.contains("walk"), "{text}");
 }

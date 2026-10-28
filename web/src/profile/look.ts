@@ -79,6 +79,8 @@ const SYSCALL_GROUPS: readonly string[] = ["class", "process", "thread", "path",
 const SYSCALL_TABS: readonly string[] = ["log", "files", "network", "processes"];
 const GRANULARITIES: readonly string[] = ["physical", "line", "address"];
 const OPS: readonly TransformOp[] = ["focus", "merge", "drop", "collapse"];
+/** The ops that take no name, written in the look as the op alone. */
+const NAMELESS: readonly TransformOp[] = ["collapseCycles"];
 
 /** The typed look, dropping anything malformed. */
 export function validateProfileLook(search: Record<string, unknown>): ProfileLook {
@@ -226,8 +228,12 @@ export function formatRange([start, end]: [number, number]): string {
   return `${Math.round(start)}-${Math.round(end)}`;
 }
 
-/** Parses `OP:NAME`; the name may hold colons of its own. */
+/** Parses `OP:NAME`, or an op that takes no name alone; the name may
+ * hold colons of its own. */
 export function parseTransform(entry: string): ProfileTransform | null {
+  if ((NAMELESS as readonly string[]).includes(entry)) {
+    return { op: entry as TransformOp, name: "" };
+  }
   const at = entry.indexOf(":");
   const op = entry.slice(0, at);
   const name = entry.slice(at + 1);
@@ -237,7 +243,7 @@ export function parseTransform(entry: string): ProfileTransform | null {
 }
 
 function formatTransform(transform: ProfileTransform): string {
-  return `${transform.op}:${transform.name}`;
+  return NAMELESS.includes(transform.op) ? transform.op : `${transform.op}:${transform.name}`;
 }
 
 /** The query a look asks of `profile`. */

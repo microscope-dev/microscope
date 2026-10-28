@@ -8,6 +8,7 @@ import {
   parseTransform,
   queryOf,
   rangeOf,
+  transformed,
   untransformed,
   withLook,
 } from "../../profile/look";
@@ -291,7 +292,11 @@ function ProfileHead() {
           return transform ? (
             <Chip
               key={entry}
-              label={`${transform.op} ${transform.name}`}
+              label={
+                transform.op === "collapseCycles"
+                  ? "collapse recursion"
+                  : `${transform.op} ${transform.name}`
+              }
               title="Remove this transform and those after it"
               remove={() => setLook((look) => untransformed(look, index), true)}
             />
@@ -299,6 +304,18 @@ function ProfileHead() {
         })}
         {sampled ? (
           <>
+            {(look.tf ?? []).includes("collapseCycles") ? null : (
+              <button
+                type="button"
+                className="tb ghost"
+                title="Cut each path back to the first call of anything it calls again, directly or through others"
+                onClick={() =>
+                  setLook((look) => transformed(look, { op: "collapseCycles", name: "" }), true)
+                }
+              >
+                Collapse recursion
+              </button>
+            )}
             <label className="check">
               <input
                 type="checkbox"

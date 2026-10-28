@@ -84,4 +84,36 @@ A function missing from the base contributes zero; an ambiguous name in
 either profile is still an error. The butterfly lists and focused tree show
 absolute before, after, and change columns, and the percentage change.
 
+## Reshape the stacks
+
+```sh
+microscope report parse.usprof --tree --collapse-recursion
+microscope report parse.usprof --tree --merge children --collapse self
+```
+
+These flags rewrite each stack before anything is counted. They apply in the
+order given, and each `SYMBOL` is resolved as `--focus` resolves it,
+ambiguity error included. With `--base`, each is resolved in both profiles; a
+name the base lacks changes nothing there.
+
+- `--merge SYMBOL` removes the function from every stack. Its own cost goes
+  to its caller, and its callees hang from that caller.
+- `--drop SYMBOL` removes every sample whose stack holds the function.
+- `--collapse SYMBOL` folds each run of the function calling itself directly
+  into the run's first call.
+- `--collapse-recursion` walks each stack from the outermost frame. When a
+  function appears that is already on the stack, the stack is cut back to
+  that earlier call, dropping the frames between. `self self self work`
+  becomes `self work`, and `visit children visit children work` becomes
+  `visit children work`.
+
+Collapse and merge differ in what they keep. Merge erases one function
+everywhere, so its cost moves up to its callers and it no longer appears.
+Collapse keeps every function and only removes repeated calls, so own cost
+moves to the outermost call of the function and the tree's shape matches
+the code's, one level per function. Neither changes totals: every sample
+still counts once. The browser's "Collapse recursion" button and the
+per-function "Collapse recursion" action match `--collapse-recursion` and
+`--collapse`.
+
 See [profiling](profiling.md) for recording options and the browser workflow.

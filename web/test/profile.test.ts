@@ -493,6 +493,19 @@ describe("a transform in the address", () => {
     expect(parseTransform(":main")).toBeNull();
     expect(parseTransform("drop:")).toBeNull();
   });
+
+  it("is an operation alone when it takes no name", () => {
+    expect(parseTransform("collapseCycles")).toEqual({ op: "collapseCycles", name: "" });
+    expect(parseTransform("collapseCycles:main")).toBeNull();
+    expect(parseTransform("collapse")).toBeNull();
+    const look = transformed({ tf: ["merge:a"] }, { op: "collapseCycles", name: "" });
+    expect(look.tf).toEqual(["merge:a", "collapseCycles"]);
+    expect(validateProfileLook({ tf: look.tf })).toEqual({ tf: ["merge:a", "collapseCycles"] });
+    expect(queryOf("p", look).transforms).toEqual([
+      { op: "merge", name: "a" },
+      { op: "collapseCycles", name: "" },
+    ]);
+  });
 });
 
 describe("a zone's flags", () => {

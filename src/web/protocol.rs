@@ -1072,6 +1072,9 @@ pub enum ProfileSource {
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileTransform {
     pub op: TransformOp,
+
+    /// The function it applies to; empty for an op that takes none.
+    #[serde(default)]
     pub name: String,
 }
 
@@ -1090,6 +1093,10 @@ pub enum TransformOp {
 
     /// Merges the function's calls of itself.
     Collapse,
+
+    /// Cuts each path back to the first call of anything it calls again,
+    /// directly or through others. It takes no name.
+    CollapseCycles,
 }
 
 /// How a query sees each stack's frames.
