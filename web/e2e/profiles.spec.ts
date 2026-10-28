@@ -125,6 +125,43 @@ test("each thread's lane says how long it was off its CPU, and the footer what r
   await expect(page.getByTestId("accounting")).toContainText(/microscope [\d.]+% of a CPU/);
 });
 
+test("with many threads, each lane's name is as tall as its lane and level with it", async ({
+  page,
+  microscope,
+}, info) => {
+  // Sixteen spinners and the thread that answers the pipe.
+  const file = info.outputPath("many.usprof");
+  execFileSync(
+    path.join(root, "target", "debug", "microscope"),
+    ["record", "-o", file, "--", fixture("profile-switches"), "10", "100", "16"],
+    { stdio: "ignore" },
+  );
+  const served = await microscope.start([file]);
+  await join(page, served.link);
+  const timeline = page.getByTestId("timeline");
+  const names = timeline.locator(".lane-name");
+  await expect.poll(() => names.count()).toBeGreaterThan(8);
+
+  // Each name's top and height, from the top of the lanes' canvas.
+  const measured = () =>
+    timeline.evaluate((box) => {
+      const lanes = box.querySelector("canvas")?.getBoundingClientRect();
+      return [...box.querySelectorAll(".lane-name")].map((name) => {
+        const at = name.getBoundingClientRect();
+        return [Math.round(at.top - (lanes?.top ?? 0)), Math.round(at.height)];
+      });
+    });
+  const level = (rows: number[][]) => rows.map((_, index) => [index * 18, 18]);
+  const before = await measured();
+  expect(before).toEqual(level(before));
+  await timeline.evaluate((box) => {
+    box.scrollTop = 100;
+  });
+  expect(await timeline.evaluate((box) => box.scrollTop)).toBeGreaterThan(0);
+  const after = await measured();
+  expect(after).toEqual(level(after));
+});
+
 test("a program recorded from the page grows live, stops, and saves", async ({
   page,
   microscope,

@@ -2828,6 +2828,9 @@ textarea.input {
   display: flex;
   flex: none;
   flex-direction: column;
+  /* As tall as its names, not the 160 px box, which would squeeze them
+   * out of line with the lanes they name. */
+  align-self: flex-start;
   border-right: 1px solid var(--line);
 }
 
