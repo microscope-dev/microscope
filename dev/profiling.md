@@ -479,6 +479,19 @@ as Python's is.
 process's layout once its V8 module is mapped and forgets it at exec and exit;
 each process of a group binds its own.
 
+A program the recorder launches gets its layout before it runs, too
+(`Walker::lay_out_before`, before the gate opens). Processing reads the
+image only once the program maps it, and node's debug information takes
+about 0.9 s to read without the image cache, so every JavaScript frame
+sampled until then was unknown. The early layout comes from the program's
+file and is loaded under the same path and inode its mapping finds later, so
+the image is read once. It places the isolate only where that needs no load
+bias, a fixed offset from the thread pointer; a slot, as Node 22 uses, waits
+for the mapping, and until then samples carry no isolate. The layout found
+at the mapping replaces it. A process microscope attaches to gets no early
+layout: its samples still wait for processing to read the image it has
+already mapped.
+
 A walked frame is kept only where its address is V8's code: a module V8 owns
 (`RuntimeModel::owns_code`) or a mapping of code it generated. Its functions
 are read as the record is drained (`interpreted::drain_v8`), but a drain may

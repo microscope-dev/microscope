@@ -129,7 +129,10 @@ pub fn record_watched(
         // thread that would inherit them without it.
         if options.kernel || options.python == Some(PythonEngine::Bpf) {
             match Walker::attach(events, &mut processor, options.kernel) {
-                Ok(attached) => walker = Some(attached),
+                Ok(mut attached) => {
+                    attached.lay_out_before(&mut processor, pid, &program);
+                    walker = Some(attached);
+                }
                 Err(error) => {
                     let why = error.to_string();
                     refused = Some(error);
@@ -383,6 +386,30 @@ impl Walker {
                 };
                 processor.builder().setting(&what, &problem);
             }
+        }
+    }
+
+    /// Tells the engine the V8 layout of the program at `program`, which
+    /// process `pid` is about to run, before it runs. Otherwise it is told
+    /// only once processing reads the program's image, most of a second
+    /// for node without the image cache, and every JavaScript frame
+    /// sampled until then is unknown. The process is not laid out yet:
+    /// the layout processing finds replaces this one, with the current
+    /// isolate placed where that needs the program's load bias.
+    fn lay_out_before(&mut self, processor: &mut record::Processor, pid: u32, program: &Path) {
+        let Some(path) = which(program).and_then(|path| std::fs::canonicalize(path).ok()) else {
+            return;
+        };
+        let Some(layout) = processor.program_v8_layout(&path) else {
+            return;
+        };
+        match self.sampler.set_v8_layout(pid, &layout) {
+            Ok(()) => {}
+            #[cfg_attr(
+                not(debug_assertions),
+                expect(unused_variables, reason = "only recorded")
+            )]
+            Err(error) => record!("walker: {pid}'s layout before it runs was refused: {error}"),
         }
     }
 

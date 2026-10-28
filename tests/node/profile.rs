@@ -733,8 +733,10 @@ pub fn spinning(output: &str) -> Vec<(String, Vec<String>)> {
 /// Each frame of `paths` of a function the threads in `truth` run that
 /// lies, one line each, of the paths sampled as `busy.js` spins, under its
 /// `spinFor`, which is when V8's report holds: before then, and as the
-/// program exits, Node's own functions that call it run other lines. A
-/// frame lies where its key is neither one V8's report gives it, nor
+/// program exits, Node's own functions that call it run other lines. The
+/// frames inside its `report` are not checked: V8's report is taken at
+/// its start, so what it calls after, as its callback to `forEach`, is
+/// in no report. A frame lies where its key is neither one V8's report gives it, nor
 /// its function alone, nor a line of `lines`, which the fixture's
 /// interpreted functions call from; or it has a line but called nothing,
 /// which its frame alone does not prove: the interpreter writes a frame's
@@ -760,7 +762,11 @@ pub fn misplaced(
     let mut misplaced: Vec<String> = Vec::new();
     let spinning = |path: &&Vec<String>| path.iter().any(|key| function(key) == "spinFor");
     for path in paths.keys().filter(spinning) {
-        for (index, key) in path.iter().enumerate() {
+        let checked = path
+            .iter()
+            .position(|key| function(key) == "report")
+            .map_or(path.len(), |report| report + 1);
+        for (index, key) in path[..checked].iter().enumerate() {
             let Some(keys) = allowed.get(&function(key)) else {
                 continue;
             };
@@ -975,6 +981,14 @@ fn the_spin_comparison_fails_on_each_lie() {
         called(&["spinFor a.js:9", "fast", "inner a.js:3"]),
         // Before the spin, as it warms up, and after.
         called(&["fast a.js:7", "inner a.js:8"]),
+        // What the fixture's report calls is in no report.
+        called(&[
+            "spinFor a.js:9",
+            "fast",
+            "inner a.js:2",
+            "report",
+            "inner a.js:4",
+        ]),
     ] {
         assert!(misplaced(&truth, &lines, &honest).is_empty(), "{honest:?}");
     }
@@ -1265,6 +1279,63 @@ mod bpf {
         let profile = Profile::read(&profile).expect("read the profile").profile;
         let lies = frameless_lies(&profile.stacks());
         assert!(lies.is_empty(), "{}", lies.join("\n"));
+    }
+
+    /// The walker knows a launched node's layout before node runs, so its
+    /// first samples hold their JavaScript frames however long node's
+    /// debug information takes to read. Without the image cache it takes
+    /// most of a second, which once left that long with every JavaScript
+    /// frame unknown.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
+    fn a_launched_nodes_first_samples_hold_their_javascript_frames() {
+        let launcher = std::env::var_os("MICROSCOPE_BPF_LAUNCHER")
+            .expect("MICROSCOPE_BPF_LAUNCHER names the microscope-bpf wrapper");
+        let scratch = ScratchDir::new("node-first-bpf");
+        let profile = scratch.path().join("first.usprof");
+        let finished = Command::new(&launcher)
+            .arg(env!("CARGO_BIN_EXE_microscope"))
+            .args(["record", "--node", "bpf", "--output"])
+            .arg(&profile)
+            .arg("--")
+            .arg(node::node(ENTRY))
+            .args([
+                "-e",
+                "function spin() { const end = Date.now() + 1500; let n = 0; \
+                 while (Date.now() < end) n++; return n; } spin();",
+            ])
+            .env_remove("NODE_OPTIONS")
+            .env("MICROSCOPE_CACHE_DIR", "")
+            .stdin(Stdio::null())
+            .output()
+            .expect("run microscope");
+        assert!(
+            finished.status.success(),
+            "{}",
+            String::from_utf8_lossy(&finished.stderr)
+        );
+
+        let profile = Profile::read(&profile).expect("read the profile").profile;
+        let stacks = profile.stacks();
+        let main = stacks.iter().map(|stack| stack.pid).min().expect("samples");
+        let ran: Vec<&SampledStack> = stacks.iter().filter(|stack| stack.tid == main).collect();
+        let unknown = ran
+            .iter()
+            .filter(|stack| {
+                matches!(&stack.ending, StackEnding::Truncated(reason)
+                    if reason == "interpreted frames unknown")
+            })
+            .count();
+        assert!(
+            ran.len() >= 500,
+            "only {} samples of node's main thread",
+            ran.len()
+        );
+        assert!(
+            unknown * 100 <= ran.len(),
+            "{unknown} of {} samples of node's main thread have unknown JavaScript frames",
+            ran.len()
+        );
     }
 
     /// Two Node processes a shell starts, each with its own V8 and its own

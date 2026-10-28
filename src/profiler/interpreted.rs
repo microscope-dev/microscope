@@ -347,38 +347,11 @@ impl Interpreted {
                 return None;
             }
             let image: Arc<dyn RuntimeImage + Send + Sync> = Arc::clone(&info.image) as _;
-            if let Some(v8) = image.v8() {
-                let model = runtime_model::detect(&image)
-                    .into_iter()
-                    .flatten()
-                    .find(|model| model.owns_generated_code())?;
-                let mut layout = match v8.layout {
-                    Ok(layout) => sampler::v8_layout(&layout)
-                        .map_err(|missing| format!("V8's layout has no {missing}")),
-                    Err(why) => Err(why.to_string()),
-                };
-                let placed: Result<(), Arc<str>> =
-                    match image.thread_local(crate::image::v8::CURRENT_ISOLATE) {
-                        Some(Ok(place)) => layout.as_mut().map_or(Ok(()), |layout| {
-                            layout
-                                .place_isolate(place, loaded.load_bias)
-                                .map_err(Arc::from)
-                        }),
-                        Some(Err(why)) => Err(format!(
-                            "its variable of the current isolate is not found: {why}"
-                        )
-                        .into()),
-                        None => Err("its image names no variable of the current isolate".into()),
-                    };
+            if let Some((model, kind)) = v8_runtime(&image, Some(loaded.load_bias)) {
                 return Some(Runtime {
                     model,
                     bias: loaded.load_bias,
-                    kind: Kind::V8 {
-                        layout,
-                        unplaced: placed
-                            .err()
-                            .map(|why| format!("samples have no isolate labels: {why}").into()),
-                    },
+                    kind,
                 });
             }
             let python = image.python()?;
@@ -733,6 +706,57 @@ enum Owner {
     /// None of the mappings yet says: a drain may hold a mapping it has not
     /// yet processed, and the code may also be no runtime's.
     Unknown,
+}
+
+/// The runtime model of a V8 `image`, if one owns its generated code, and
+/// how the walker reads it: by its layout, with each thread's current
+/// isolate where a slot of the image loaded with `bias` holds it or a fixed
+/// offset from the thread pointer does. With no `bias`, as before the image
+/// is mapped, a slot is not placed.
+fn v8_runtime(
+    image: &Arc<dyn RuntimeImage + Send + Sync>,
+    bias: Option<LoadBias>,
+) -> Option<(Arc<dyn RuntimeModel>, Kind)> {
+    let v8 = image.v8()?;
+    let model = runtime_model::detect(image)
+        .into_iter()
+        .flatten()
+        .find(|model| model.owns_generated_code())?;
+    let mut layout = match v8.layout {
+        Ok(layout) => {
+            sampler::v8_layout(&layout).map_err(|missing| format!("V8's layout has no {missing}"))
+        }
+        Err(why) => Err(why.to_string()),
+    };
+    let placed: Result<(), Arc<str>> = match image.thread_local(crate::image::v8::CURRENT_ISOLATE) {
+        Some(Ok(crate::ThreadLocal::Slot(_))) if bias.is_none() => {
+            Err("its slot of the current isolate is not yet mapped".into())
+        }
+        Some(Ok(place)) => layout.as_mut().map_or(Ok(()), |layout| {
+            layout
+                .place_isolate(place, bias.unwrap_or_default())
+                .map_err(Arc::from)
+        }),
+        Some(Err(why)) => {
+            Err(format!("its variable of the current isolate is not found: {why}").into())
+        }
+        None => Err("its image names no variable of the current isolate".into()),
+    };
+    let unplaced = placed
+        .err()
+        .map(|why| format!("samples have no isolate labels: {why}").into());
+    Some((model, Kind::V8 { layout, unplaced }))
+}
+
+/// The layout the walker reads the V8 of `image` by, before the program
+/// runs it, if it is one: with its isolate placed where that needs no
+/// load bias.
+pub(super) fn v8_layout_before(info: &DebugInfo) -> Option<sampler::RawV8Layout> {
+    let image: Arc<dyn RuntimeImage + Send + Sync> = Arc::clone(&info.image) as _;
+    match v8_runtime(&image, None)?.1 {
+        Kind::V8 { layout, .. } => layout.ok(),
+        Kind::Python { .. } => None,
+    }
 }
 
 /// Whose code is at `address`, which `code` says where it is, of the

@@ -447,6 +447,19 @@ impl Processor {
         Some(Sites::Static(sites, function))
     }
 
+    /// The layout the BPF walker reads the V8 of the program at `path` by,
+    /// if it is one, before the program runs: its image is loaded now,
+    /// and found again by its path and inode once the program maps it.
+    pub fn program_v8_layout(
+        &mut self,
+        path: &std::path::Path,
+    ) -> Option<crate::backend::bpf::sampler::RawV8Layout> {
+        use std::os::unix::fs::MetadataExt;
+        let inode = std::fs::metadata(path).ok()?.ino();
+        let image = self.image(path.to_owned(), path, Some(inode));
+        interpreted::v8_layout_before(self.images[image].info.as_ref()?)
+    }
+
     /// Drops the samples at the instruction at `address` that `branch`
     /// takes, counting them as repeats.
     pub const fn repeats_when(&mut self, address: u64, branch: Branch) {

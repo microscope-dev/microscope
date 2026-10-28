@@ -285,8 +285,10 @@ microscope report --js --lines server.usprof
   machine started it late, says so in the profile, as reads then ran less
   often than asked.
 
-A sample taken before microscope has read V8's layout, as just after the
-program starts, ends in "interpreted frames unknown". With `bpf`, a sample in
+A sample taken before microscope has read V8's layout ends in "interpreted
+frames unknown". With `bpf`, a program microscope launches has its layout read
+before it starts, so this is mostly just after microscope attaches to a
+running process. With `bpf`, a sample in
 native code that keeps something other than a frame pointer in its
 frame-pointer register, as an addon built without frame pointers may, hides
 the JavaScript frames under it, and ends in "interpreted frames ended
