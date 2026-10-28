@@ -113,6 +113,59 @@ static __always_inline u64 py_native(const struct py_layout *layout)
 	return ids.pid;
 }
 
+// Set as microscope loads the programs on kernels with bpf_loop (5.17),
+// whose callback the verifier checks once rather than once per step. The
+// plain loops stay for older kernels, and the verifier drops whichever
+// is unused.
+const volatile u32 loop_helper = 0;
+
+// Where a search for a thread's state stands. `result` holds the state
+// found, or 0, once `done`.
+struct py_search {
+	u64 interp_next, interp_threads_head, thread_native_id, thread_next;
+	u64 native, interp, state, found, result;
+	u32 done;
+};
+
+// One step of a search: 1 once it has its answer, 0 to go on.
+static __always_inline long py_search_step(struct py_search *search)
+{
+	if (!search->state) {
+		if (py_word(search->interp + search->interp_next, &search->interp))
+			goto none;
+		if (!search->interp) {
+			search->result = search->found;
+			search->done = 1;
+			return 1;
+		}
+		if (py_word(search->interp + search->interp_threads_head, &search->state))
+			goto none;
+		return 0;
+	}
+
+	u64 named = 0;
+	if (py_word(search->state + search->thread_native_id, &named))
+		goto none;
+	if (named == search->native) {
+		if (search->found)
+			goto none;
+		search->found = search->state;
+	}
+	if (py_word(search->state + search->thread_next, &search->state))
+		goto none;
+	return 0;
+
+none:
+	search->result = 0;
+	search->done = 1;
+	return 1;
+}
+
+static long py_search_callback(u32 index, void *context)
+{
+	return py_search_step(context);
+}
+
 // The one state among every interpreter's that names `native` as its
 // thread, or 0 where none does, more than one does, or the search ends
 // before it has seen every state.
@@ -123,34 +176,25 @@ __noinline u64 py_find(const struct py_layout *layout, u64 native)
 	    layout->interp_threads_head == PY_ABSENT || layout->thread_next == PY_ABSENT)
 		return 0;
 
-	u64 interp = 0, state = 0, found = 0;
-	if (py_word(layout->runtime + layout->runtime_interpreters_head, &interp) || !interp ||
-	    py_word(interp + layout->interp_threads_head, &state))
+	struct py_search search = {
+		.interp_next = layout->interp_next,
+		.interp_threads_head = layout->interp_threads_head,
+		.thread_native_id = layout->thread_native_id,
+		.thread_next = layout->thread_next,
+		.native = native,
+	};
+	if (py_word(layout->runtime + layout->runtime_interpreters_head, &search.interp) ||
+	    !search.interp || py_word(search.interp + search.interp_threads_head, &search.state))
 		return 0;
-	for (u32 i = 0; i < PY_SEARCH; i++) {
-		if (!state) {
-			if (py_word(interp + layout->interp_next, &interp))
-				return 0;
-			if (!interp)
-				return found;
-			if (py_word(interp + layout->interp_threads_head, &state))
-				return 0;
-			continue;
-		}
-
-		u64 named = 0;
-		if (py_word(state + layout->thread_native_id, &named))
-			return 0;
-		if (named == native) {
-			if (found)
-				return 0;
-			found = state;
-		}
-		if (py_word(state + layout->thread_next, &state))
-			return 0;
+	if (loop_helper) {
+		bpf_loop(PY_SEARCH, py_search_callback, &search, 0);
+	} else {
+		for (u32 i = 0; i < PY_SEARCH; i++)
+			if (py_search_step(&search))
+				break;
 	}
 
-	return 0;
+	return search.done ? search.result : 0;
 }
 
 // Reads the current thread's frames into `stack`, as `layout` places their

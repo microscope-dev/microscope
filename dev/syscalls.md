@@ -222,6 +222,11 @@ How it reads calls:
   running programs, so counted segments sum exactly.
 - Settings fixed at load, such as the cgroup and PID namespace, are `.rodata`
   globals, so the verifier drops the code they turn off.
+- Loading is mostly verifier time. The verifier walks every step of a plain
+  loop, so the long ones (counting a string array, searching for a Python
+  thread's state) run through `bpf_loop` on 5.17 and later, where it checks
+  the callback once. That cut `record --syscalls all -- /bin/true` from about
+  0.53 s to 0.2 s. Older kernels keep the plain loops (`loop_helper`).
 
 `--budget` measures microscope's own CPU time, plus the programs' run time when
 `kernel.bpf_stats_enabled` is on, and steps down: drop stacks, cut strings,

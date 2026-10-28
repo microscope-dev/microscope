@@ -6,6 +6,14 @@
 
 pub mod sampler;
 
+/// The programs' `loop_helper`: 1 on kernels with `bpf_loop` (5.17), whose
+/// callbacks the verifier checks once where it walks a plain loop's every
+/// step, which costs over 100 ms on a long one.
+pub fn loop_helper() -> u32 {
+    use aya::util::KernelVersion;
+    u32::from(KernelVersion::current().is_ok_and(|version| version >= KernelVersion::new(5, 17, 0)))
+}
+
 /// An object's BTF: each struct's size and its members' names and byte
 /// offsets, which tests hold the Rust mirrors of its structs to.
 #[cfg(test)]

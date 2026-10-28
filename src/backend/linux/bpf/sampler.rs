@@ -791,6 +791,7 @@ impl Sampler {
         let kernel = u32::from(kernel);
         let mut ebpf = EbpfLoader::new()
             .override_global("KERNEL_SAMPLES", &kernel, true)
+            .override_global("loop_helper", &super::loop_helper(), true)
             .map_max_entries("OUTPUT", u32::try_from(cpus).unwrap_or(u32::MAX))
             .load(OBJECT)
             .map_err(load_error)?;

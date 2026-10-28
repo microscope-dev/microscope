@@ -379,23 +379,57 @@ static __always_inline u32 copy_bytes(u8 *out, u64 address, u64 wanted, u32 limi
 #define STRINGS_UNENDED 0xffffffff
 #define STRINGS_UNREADABLE 0xfffffffe
 
+// Where a count of a string array's elements stands.
+struct counting {
+	u64 address;
+	u32 abi, most, result;
+};
+
+// Element `i` of a count: 1 once `result` holds the answer, 0 to go on.
+static __always_inline long count_step(u32 i, struct counting *counting)
+{
+	u32 step = counting->abi == ABI_32 ? 4 : 8;
+	if (i >= counting->most) {
+		counting->result = STRINGS_UNENDED;
+		return 1;
+	}
+	u64 pointer = 0;
+	if (bpf_probe_read_user(&pointer, step, (void *)(counting->address + (u64)i * step))) {
+		counting->result = i == 0 ? STRINGS_UNREADABLE : STRINGS_UNENDED;
+		return 1;
+	}
+	if (!pointer) {
+		counting->result = i;
+		return 1;
+	}
+	return 0;
+}
+
+static long count_callback(u32 i, void *context)
+{
+	return count_step(i, context);
+}
+
 // The elements of the string array at `address` before its NULL, counted
 // to `most`: their number, STRINGS_UNENDED when its end was not found, or
 // STRINGS_UNREADABLE when not even its first pointer could be read. Global
 // functions are verified on their own, which keeps a long loop cheap.
 __noinline u32 count_strings(u64 address, u32 abi, u32 most)
 {
-	u32 step = abi == ABI_32 ? 4 : 8;
-	for (u32 i = 0; i < MOST_COUNTED; i++) {
-		if (i >= most)
-			return STRINGS_UNENDED;
-		u64 pointer = 0;
-		if (bpf_probe_read_user(&pointer, step, (void *)(address + (u64)i * step)))
-			return i == 0 ? STRINGS_UNREADABLE : STRINGS_UNENDED;
-		if (!pointer)
-			return i;
+	struct counting counting = {
+		.address = address,
+		.abi = abi,
+		.most = most,
+		.result = STRINGS_UNENDED,
+	};
+	if (loop_helper) {
+		bpf_loop(MOST_COUNTED, count_callback, &counting, 0);
+	} else {
+		for (u32 i = 0; i < MOST_COUNTED; i++)
+			if (count_step(i, &counting))
+				break;
 	}
-	return STRINGS_UNENDED;
+	return counting.result;
 }
 
 // Copies the first `count` elements of the string array at `address` into
