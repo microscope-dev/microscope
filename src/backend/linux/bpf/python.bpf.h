@@ -272,6 +272,7 @@ __noinline int py_walk(const struct py_layout *layout, struct py_stack *stack, u
 		out->code = 0;
 		out->qualname = 0;
 		out->linetable = 0;
+		out->function = 0;
 		out->first_line = 0;
 		out->offset = PY_NO_OFFSET;
 
@@ -286,6 +287,10 @@ __noinline int py_walk(const struct py_layout *layout, struct py_stack *stack, u
 			}
 
 			out->code = code;
+			// Only microscope's naming of code `exec` compiled needs the
+			// function; one that cannot be read leaves the code's name.
+			if (layout->frame_function != PY_ABSENT)
+				py_word(frame + layout->frame_function, &out->function);
 			u64 bytecode = py_bytecode(layout, frame, code);
 			s64 offset = (s64)(instruction - bytecode);
 			if (bytecode && offset >= -(s64)0x7fffffff && offset <= (s64)0x7fffffff)

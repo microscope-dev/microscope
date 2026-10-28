@@ -276,6 +276,7 @@ int main(int argc, char **argv) {
     FIELD(FrameOwner, offsetof(_PyInterpreterFrame, owner));
     FIELD(FrameGlobals, offsetof(_PyInterpreterFrame, f_globals));
     FIELD(FrameBuiltins, offsetof(_PyInterpreterFrame, f_builtins));
+    FIELD(FrameFunction, offsetof(_PyInterpreterFrame, f_funcobj));
 #if PY_VERSION_HEX >= 0x030e0000
     FIELD(FrameStackpointer, offsetof(_PyInterpreterFrame, stackpointer));
     FIELD(ThreadAsyncioRunningTask, offsetof(_PyThreadStateImpl, asyncio_running_task));
@@ -367,6 +368,7 @@ int main(int argc, char **argv) {
     FIELD(SetEntryHash, offsetof(setentry, hash));
     FIELD(ModuleDict, offsetof(PyModuleObject, md_dict));
     FIELD(FunctionQualname, offsetof(PyFunctionObject, func_qualname));
+    FIELD(FunctionCode, offsetof(PyFunctionObject, func_code));
     FIELD(BuiltinMethod, offsetof(PyCFunctionObject, m_ml));
     FIELD(BuiltinSelf, offsetof(PyCFunctionObject, m_self));
     FIELD(MethodDefName, offsetof(PyMethodDef, ml_name));

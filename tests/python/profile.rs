@@ -81,6 +81,46 @@ fn paths(profile: &Profile, source: Source, look: Look) -> BTreeMap<Vec<String>,
         .collect()
 }
 
+/// The functions of the methods `dataclass_methods.py`'s two dataclasses
+/// get from `dataclasses`, which compiles each from a string.
+const DATACLASS_METHODS: [&str; 2] = ["Point.__init__", "Line.__init__"];
+
+/// Whether `frames` name each of [`DATACLASS_METHODS`] by its class. A
+/// frame caught as it returns, its function already cleared, keeps the
+/// name of the code, `__create_fn__.<locals>.__init__`, which every
+/// dataclass's shares.
+fn names_dataclass_methods<'a>(frames: impl IntoIterator<Item = &'a String>) -> bool {
+    let frames: Vec<_> = frames.into_iter().collect();
+    DATACLASS_METHODS
+        .iter()
+        .all(|method| frames.iter().any(|frame| frame.starts_with(method)))
+}
+
+/// Snapshots that stop the program and live ones both name the methods
+/// `dataclasses` compiles from strings by their classes: by each frame's
+/// function, not its code, which every dataclass's `__init__` shares.
+#[test]
+fn snapshots_name_dataclass_methods_by_their_class() {
+    for interpreter in PROFILED {
+        for engine in [
+            PythonEngine::Snapshot { every: EVERY },
+            PythonEngine::Live { every: EVERY },
+        ] {
+            let named = |profile: &Profile| {
+                let paths = python_paths(profile);
+                names_dataclass_methods(paths.keys().flatten())
+            };
+            let profile =
+                record_until_with_args(interpreter, engine, "dataclass_methods.py", &[], named);
+            assert!(
+                named(&profile),
+                "{interpreter} {engine:?}: {:#?}",
+                python_paths(&profile)
+            );
+        }
+    }
+}
+
 /// Whether a Python path passes through `spin` calling `work`. Native
 /// callees of `work` remain in the Python look and may follow those frames.
 fn spins(path: &[String], lines: &BTreeMap<String, u32>) -> bool {
@@ -160,12 +200,13 @@ fn record_until(
     engine: PythonEngine,
     ready: impl FnMut(&Profile) -> bool,
 ) -> Profile {
-    record_until_with_args(interpreter, engine, &[], ready)
+    record_until_with_args(interpreter, engine, "profiled.py", &[], ready)
 }
 
 fn record_until_with_args(
     interpreter: &str,
     engine: PythonEngine,
+    fixture: &str,
     arguments: &[&str],
     mut ready: impl FnMut(&Profile) -> bool,
 ) -> Profile {
@@ -173,7 +214,7 @@ fn record_until_with_args(
     let mut command = Command::new(python::interpreter(interpreter));
     command
         .args(["-I", "-B"])
-        .arg(python::fixture("profiled.py"))
+        .arg(python::fixture(fixture))
         .args(arguments)
         .stdin(reader)
         .stdout(Stdio::null())
@@ -361,7 +402,8 @@ fn arbitrary_kernel_names_preserve_live_and_stopped_python_profiles() {
                     && paths.keys().any(|path| naps(path, &lines))
             };
 
-            let profile = record_until_with_args(interpreter, engine, &["--bad-names"], ready);
+            let profile =
+                record_until_with_args(interpreter, engine, "profiled.py", &["--bad-names"], ready);
             assert!(
                 ready(&profile),
                 "{interpreter}: {:?}",
@@ -854,6 +896,27 @@ mod bpf {
         );
 
         Profile::read(&output).expect("read the profile").profile
+    }
+
+    /// The BPF engine names the methods `dataclasses` compiles from strings
+    /// by their classes, as the frames' functions name them, in the Python
+    /// look that `report --python` shows.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
+    fn the_bpf_engine_names_dataclass_methods_by_their_class() {
+        for interpreter in PROFILED {
+            let profile = recorded_with(
+                interpreter,
+                "dataclass_methods.py",
+                &[],
+                Duration::from_millis(500),
+            );
+            let python = paths(&profile, Source::Samples, Look::Python);
+            assert!(
+                names_dataclass_methods(python.keys().flatten()),
+                "{interpreter}: {python:#?}"
+            );
+        }
     }
 
     /// A thread that never enters the interpreter's loop, as a library's

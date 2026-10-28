@@ -456,17 +456,17 @@ const fn structure_size(field: Field) -> Option<Field> {
     use Field::{
         CodeArgcount, CodeFilename, CodeFirstlineno, CodeFlags, CodeKwonlyargcount, CodeLinetable,
         CodeLocalspluskinds, CodeLocalsplusnames, CodeName, CodeNlocalsplus, CodeQualname,
-        CodeSize, CodeTlbc, FrameBuiltins, FrameExecutable, FrameGlobals, FrameInstruction,
-        FrameOwner, FramePrevious, FrameSize, FrameTlbcIndex, ThreadBaseFrame, ThreadCurrentFrame,
-        ThreadGilRequested, ThreadHoldsGil, ThreadId, ThreadInterp, ThreadNativeId, ThreadNext,
-        ThreadPrev, ThreadSize,
+        CodeSize, CodeTlbc, FrameBuiltins, FrameExecutable, FrameFunction, FrameGlobals,
+        FrameInstruction, FrameOwner, FramePrevious, FrameSize, FrameTlbcIndex, ThreadBaseFrame,
+        ThreadCurrentFrame, ThreadGilRequested, ThreadHoldsGil, ThreadId, ThreadInterp,
+        ThreadNativeId, ThreadNext, ThreadPrev, ThreadSize,
     };
 
     match field {
         ThreadPrev | ThreadNext | ThreadInterp | ThreadCurrentFrame | ThreadBaseFrame
         | ThreadId | ThreadNativeId | ThreadHoldsGil | ThreadGilRequested => Some(ThreadSize),
         FramePrevious | FrameExecutable | FrameInstruction | FrameOwner | FrameTlbcIndex
-        | FrameGlobals | FrameBuiltins => Some(FrameSize),
+        | FrameGlobals | FrameBuiltins | FrameFunction => Some(FrameSize),
 
         CodeFilename | CodeName | CodeQualname | CodeLinetable | CodeFirstlineno | CodeArgcount
         | CodeKwonlyargcount | CodeLocalsplusnames | CodeLocalspluskinds | CodeTlbc | CodeFlags

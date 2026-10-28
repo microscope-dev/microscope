@@ -863,6 +863,16 @@ Code CPython makes for itself carries `CO_NO_MONITORING_EVENTS` from 3.13, as
 `CALL_ALLOC_AND_ENTER_INIT` runs: it has no lines, so its frame keeps its name
 and no place, and is not unreadable.
 
+A frame of code `exec` compiled from a string (`co_filename` `<string>`), as
+`dataclasses` compiles each method it makes, is named by its function's
+`__qualname__`: the frame's `f_funcobj`, held as its code is, must be an
+object whose `func_code` is the frame's code, or the code's own `co_qualname`
+stays. The name is kept on the code's row with the function and `str` it was
+read from, and read again when either differs. The kernel's walker copies
+`f_funcobj` into each `py_frame` for the same naming when its record drains.
+A frame returning has its function cleared before its code, so it keeps the
+code's name.
+
 **Splicing.** `RuntimeModel::driven` recognizes the activations of the
 evaluation loop, by the names `RuntimeModel::activation` judges, which the
 profiler's BPF engine and syscall stacks, having only symbols, ask directly: `_PyEval_EvalFrameDefault`, or, in a build whose loop

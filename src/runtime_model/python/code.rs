@@ -88,6 +88,10 @@ pub(super) struct CodeRecord {
     pub(super) internal: bool,
     pub(super) locals: Span<Local>,
     lines: Span<u8>,
+
+    /// The function last seen running it, the `str` it named itself by,
+    /// and that name, as [`CodeTable::function_name`] read them.
+    function: Option<(VirtualAddress, VirtualAddress, NameId)>,
 }
 
 /// The code objects a process has shown.
@@ -205,6 +209,7 @@ impl CodeTable {
             internal,
             locals: Span::since(first_local, self.locals.len()).ok_or_else(full)?,
             lines: Span::since(first_line, self.lines.len()).ok_or_else(full)?,
+            function: None,
         });
         Ok(id)
     }
@@ -239,6 +244,27 @@ impl CodeTable {
     /// keep them.
     pub(super) fn locals(&self, id: CodeId) -> &[Local] {
         &self.locals[self.row(id).locals.range()]
+    }
+
+    /// The `__qualname__` of the function at `function`, which runs the
+    /// code of row `id` and names itself by the `str` at `qualname`: read
+    /// once while the row's code is seen run by that function by that name.
+    pub(super) fn function_name(
+        &mut self,
+        reader: &Reader<'_>,
+        id: CodeId,
+        function: VirtualAddress,
+        qualname: VirtualAddress,
+    ) -> Result<Arc<str>, Problem> {
+        if let Some((seen, named, name)) = self.row(id).function
+            && (seen, named) == (function, qualname)
+        {
+            return Ok(Arc::clone(self.name(name)));
+        }
+
+        let name = self.intern(reader.string(qualname)?)?;
+        self.rows[id.index()].function = Some((function, qualname, name));
+        Ok(Arc::clone(self.name(name)))
     }
 
     pub(super) fn name(&self, id: NameId) -> &Arc<str> {
@@ -384,6 +410,7 @@ mod tests {
             internal: false,
             locals: Span::since(0, 0).expect("a span"),
             lines: Span::since(0, 4).expect("a span"),
+            function: None,
         });
         table.check_invariants();
     }

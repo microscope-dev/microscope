@@ -147,6 +147,10 @@ entries! {
         /// dict.
         FrameGlobals = "interpreter_frame.globals",
         FrameBuiltins = "interpreter_frame.builtins",
+
+        /// The function object whose code the frame runs, held as its
+        /// code is.
+        FrameFunction = "interpreter_frame.funcobj",
         FrameTlbcIndex = "interpreter_frame.tlbc_index",
 
         /// From 3.14, the top of the frame's stack of values, which
@@ -241,6 +245,7 @@ entries! {
         SetEntryHash = "set_entry.hash",
         ModuleDict = "module_object.md_dict",
         FunctionQualname = "function_object.func_qualname",
+        FunctionCode = "function_object.func_code",
 
         /// A built-in function's method definition, whose name is its
         /// name, and the object it is bound to, NULL or a module for a

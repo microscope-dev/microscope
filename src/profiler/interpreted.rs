@@ -1113,6 +1113,7 @@ fn sampled_frames(stack: &PyStack<'_>) -> Vec<SampledFrame> {
             },
             offset: (frame.offset != NO_OFFSET).then_some(i64::from(frame.offset)),
             owner: frame.owner,
+            function: (frame.function != 0).then_some(frame.function),
         })
         .collect()
 }

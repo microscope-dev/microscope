@@ -7,6 +7,7 @@
 //! have no line, never the nearest one.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use super::code::{CodeId, CodeTable};
 use super::objects::{Problem, Reader, Record, stack_reference};
@@ -17,6 +18,9 @@ use crate::{RecordedPlace, SourceLanguage, VirtualAddress};
 
 /// The most frames of one thread read.
 pub(super) const MAX_FRAMES: usize = 1 << 13;
+
+/// The file CPython gives code `exec` compiles from a string.
+const EXECUTED: &str = "<string>";
 
 /// What owns a frame, as this version of CPython numbers its owners.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,10 +145,12 @@ impl Walk<'_, '_> {
             role: crate::CodeRole::Ordinary,
         };
 
-        match self.located(frame) {
-            Ok((code, line)) => {
-                let row = self.code.row(code);
-                built.function = Some(std::sync::Arc::clone(self.code.name(row.qualname)));
+        match self.code_of(frame) {
+            Ok((code, id)) => {
+                let line = self.line(frame, code, id);
+                let function = frame.word(Field::FrameFunction).ok();
+                built.function = Some(self.function_name(id, code, function));
+                let row = self.code.row(id);
                 built.first_line = u32::try_from(row.first_line).ok();
                 let path = std::sync::Arc::clone(self.code.name(row.file));
                 built.role = role(&path);
@@ -167,10 +173,51 @@ impl Walk<'_, '_> {
         built
     }
 
-    /// The frame's code, and its line or why it has none.
-    fn located(&mut self, frame: &Record<'_>) -> Result<(CodeId, Result<u32, Problem>), Problem> {
-        let (code, id) = self.code_of(frame)?;
-        Ok((id, self.line(frame, code, id)))
+    /// The name a frame that runs the code `id`, at `code`, is shown by:
+    /// for code `exec` compiled from a string, as `dataclasses` compiles
+    /// each method it makes, the `__qualname__` of the frame's function,
+    /// the frame's `function` word, where that is a function whose code
+    /// it is; else the code's own `co_qualname`.
+    fn function_name(
+        &mut self,
+        id: CodeId,
+        code: VirtualAddress,
+        function: Option<u64>,
+    ) -> Arc<str> {
+        let row = self.code.row(id);
+        let own = Arc::clone(self.code.name(row.qualname));
+        if **self.code.name(row.file) != *EXECUTED {
+            return own;
+        }
+
+        let Some(function) = function.and_then(|bits| self.reference(bits)) else {
+            return own;
+        };
+        let named = self.reader.head(function).and_then(|head| {
+            Ok((
+                head.field_word(Field::FunctionCode)?,
+                head.field_word(Field::FunctionQualname)?,
+            ))
+        });
+        match named {
+            Ok((runs, qualname)) if runs == code.get() && qualname != 0 => self
+                .code
+                .function_name(&self.reader, id, function, VirtualAddress::new(qualname))
+                .unwrap_or(own),
+            _ => own,
+        }
+    }
+
+    /// The object a frame's word that holds one, as its code, names; or
+    /// `None` for none.
+    fn reference(&self, bits: u64) -> Option<VirtualAddress> {
+        if self.reader.layout.constant(Constant::StackRefs) == 0 {
+            Some(bits)
+                .filter(|address| *address != 0)
+                .map(VirtualAddress::new)
+        } else {
+            stack_reference(bits)
+        }
     }
 
     /// The code object the frame runs, and its row in the code table.
@@ -178,16 +225,8 @@ impl Walk<'_, '_> {
         &mut self,
         frame: &Record<'_>,
     ) -> Result<(VirtualAddress, CodeId), Problem> {
-        let layout = self.reader.layout;
         let executable = frame.word(Field::FrameExecutable)?;
-        let code = if layout.constant(Constant::StackRefs) == 0 {
-            Some(executable)
-                .filter(|address| *address != 0)
-                .map(VirtualAddress::new)
-        } else {
-            stack_reference(executable)
-        }
-        .ok_or_else(|| -> Problem {
+        let code = self.reference(executable).ok_or_else(|| -> Problem {
             format!("the frame at {:#x} runs no code", frame.address).into()
         })?;
 
@@ -314,8 +353,8 @@ impl Walk<'_, '_> {
             }
         };
 
+        built.function = Some(self.function_name(id, frame.code, frame.function));
         let row = self.code.row(id);
-        built.function = Some(std::sync::Arc::clone(self.code.name(row.qualname)));
         built.first_line = u32::try_from(row.first_line).ok();
         let path = std::sync::Arc::clone(self.code.name(row.file));
         built.role = role(&path);

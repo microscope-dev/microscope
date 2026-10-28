@@ -631,11 +631,16 @@ fn sampled(process: &Process, frame: u64) -> SampledFrame {
         (proof, Some(offset))
     };
 
+    let function = process
+        .layout
+        .has(Field::FrameFunction)
+        .then(|| field(frame, Field::FrameFunction, 8));
     SampledFrame {
         code: VirtualAddress::new(code),
         proof,
         offset,
         owner,
+        function,
     }
 }
 
@@ -695,6 +700,89 @@ fn cpythons_own_code_is_at_no_line_without_a_problem() {
             );
         }
     }
+}
+
+/// Code `exec` compiled from a string, as each method `dataclasses` makes
+/// is, is named by its frame's function's `__qualname__` where that
+/// function runs the code: the walk and the frames a walker in the kernel
+/// read alike. A function that runs other code, and code from a file, keep
+/// the code's own name.
+#[test]
+fn code_compiled_from_a_string_is_named_by_its_function() {
+    let mut process = Process::new(layout());
+    for (field, offset) in [
+        (Field::FrameFunction, 32),
+        (Field::FunctionQualname, 24),
+        (Field::FunctionCode, 32),
+    ] {
+        process.layout.set_field(field, offset);
+    }
+    let made = "__create_fn__.<locals>.__init__";
+    let executed = process.string("<string>");
+    let method = |process: &mut Process| {
+        let code = process.code(made, 3, &[(2, 0)]);
+        process.word(code, Field::CodeFilename, executed);
+        code
+    };
+    let point = method(&mut process);
+    let line = method(&mut process);
+    let other = method(&mut process);
+    let plain = process.code("plain", 1, &[(2, 0)]);
+    let function = |process: &mut Process, code: u64, qualname: &str| {
+        let function = process.alloc(48);
+        process.word(function, Field::FunctionCode, code);
+        let qualname = process.string(qualname);
+        process.word(function, Field::FunctionQualname, qualname);
+        function
+    };
+    let mut frames = vec![process.entry(0)];
+    for (code, runs, qualname) in [
+        (plain, plain, "Renamed.plain"),
+        (point, point, "Point.__init__"),
+        (line, line, "Line.__init__"),
+        (other, point, "Wrong.__init__"),
+    ] {
+        let function = function(&mut process, runs, qualname);
+        let previous = *frames.last().expect("a frame");
+        let frame = process.frame(previous, code, process.instruction(code, 0));
+        process.word(frame, Field::FrameFunction, function);
+        frames.push(frame);
+    }
+    let names = |frames: &[InterpretedFrame]| -> Vec<String> {
+        frames
+            .iter()
+            .map(|frame| frame.function.as_deref().unwrap_or("?").to_owned())
+            .collect()
+    };
+    let expected = [made, "Line.__init__", "Point.__init__", "plain"];
+
+    let innermost = *frames.last().expect("a frame");
+    let (walked, end) = walk_thread(&process, innermost);
+    assert_eq!(end, None);
+    assert_eq!(names(&walked), expected);
+
+    let mut chain: Vec<SampledFrame> = frames
+        .iter()
+        .rev()
+        .map(|&frame| sampled(&process, frame))
+        .collect();
+    let mut code = CodeTable::default();
+    let mut sampled_walk = |process: &Process, chain: &[SampledFrame]| {
+        Walk {
+            reader: process.reader(),
+            code: &mut code,
+            code_type: VirtualAddress::new(process.code_type),
+        }
+        .sampled(chain)
+        .0
+    };
+    assert_eq!(names(&sampled_walk(&process, &chain)), expected);
+
+    // Another function that runs the same code, by another name, is read
+    // anew rather than given the name the code table keeps.
+    let moved = function(&mut process, line, "Moved.__init__");
+    chain[1].function = Some(moved);
+    assert_eq!(names(&sampled_walk(&process, &chain))[1], "Moved.__init__");
 }
 
 /// The frames a walker in the kernel read name the functions and lines

@@ -1859,6 +1859,10 @@ pub struct SampledFrame {
     /// be just before it; `None` where it could not be read.
     pub offset: Option<i64>,
     pub owner: u32,
+
+    /// The frame's function object as the frame holds it, a stack
+    /// reference from 3.14; `None` where the walker read none.
+    pub function: Option<u64>,
 }
 
 /// What a walker in the kernel read of a frame's code object, which proves

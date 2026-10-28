@@ -126,6 +126,8 @@ pub struct RawPyLayout {
     interp_next: u32,
     interp_threads_head: u32,
     thread_next: u32,
+    frame_function: u32,
+    pad: u32,
     runtime: u64,
     ns_dev: u64,
     ns_ino: u64,
@@ -168,6 +170,9 @@ pub struct RawPyFrame {
     pub code: u64,
     pub qualname: u64,
     pub linetable: u64,
+
+    /// Its function object as the frame holds it, or 0.
+    pub function: u64,
 
     /// Its instruction's byte offset from its bytecode's start, or
     /// [`NO_OFFSET`].
@@ -596,6 +601,8 @@ pub fn layout(layout: &PythonLayout) -> Result<RawPyLayout, &'static str> {
         interp_next: optional(Field::InterpreterNext),
         interp_threads_head: optional(Field::InterpreterThreadsHead),
         thread_next: optional(Field::ThreadNext),
+        frame_function: optional(Field::FrameFunction),
+        pad: 0,
         runtime: 0,
         ns_dev: 0,
         ns_ino: 0,
@@ -1055,6 +1062,8 @@ mod tests {
                     interp_next,
                     interp_threads_head,
                     thread_next,
+                    frame_function,
+                    pad,
                     runtime,
                     ns_dev,
                     ns_ino,
@@ -1064,7 +1073,9 @@ mod tests {
             (
                 RawPyFrame,
                 "py_frame",
-                [code, qualname, linetable, offset, first_line, owner, pad]
+                [
+                    code, qualname, linetable, function, offset, first_line, owner, pad
+                ]
             ),
             (
                 RawPyStackRecord,
@@ -1226,6 +1237,7 @@ mod tests {
             code,
             qualname: code + 8,
             linetable: code + 16,
+            function: code + 24,
             offset: 6,
             first_line: 3,
             owner: 0,

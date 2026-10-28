@@ -335,6 +335,9 @@ struct py_layout {
 	u32 interp_next;
 	u32 interp_threads_head;
 	u32 thread_next;
+	// The function object a frame holds, as it holds its code.
+	u32 frame_function;
+	u32 pad;
 	// Where the process keeps _PyRuntime.
 	u64 runtime;
 	// The device and inode of the process's pid namespace, whose ids its
@@ -393,6 +396,8 @@ struct py_frame {
 	u64 code;
 	u64 qualname;
 	u64 linetable;
+	// The frame's function object as the frame holds it, or 0.
+	u64 function;
 	// The byte offset of the frame's instruction from the start of the
 	// bytecode it runs, or PY_NO_OFFSET.
 	s32 offset;
