@@ -136,7 +136,7 @@ export function Timeline() {
     // Spans not sampled cover every lane.
     context.fillStyle = token("--line");
     context.globalAlpha = 0.7;
-    for (const [from, to] of summary.gaps) {
+    for (const [from, to] of [...summary.gaps, ...summary.behind]) {
       const x = (plot * from) / span;
       context.fillRect(x, 0, Math.max((plot * (to - from)) / span, 1), height);
     }
@@ -164,6 +164,7 @@ export function Timeline() {
     range,
     shown,
     summary.gaps,
+    summary.behind,
     scheme,
   ]);
 

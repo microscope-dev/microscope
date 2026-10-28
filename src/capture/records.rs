@@ -767,6 +767,10 @@ pub enum GapReason {
 
     /// A task snapshot held the program stopped.
     TaskSnapshot = 2,
+
+    /// Microscope fell behind processing samples, and sampling was off
+    /// until it caught up.
+    Behind = 3,
 }
 
 impl GapReason {
@@ -775,6 +779,7 @@ impl GapReason {
         match number {
             1 => Some(Self::Budget),
             2 => Some(Self::TaskSnapshot),
+            3 => Some(Self::Behind),
             _ => None,
         }
     }

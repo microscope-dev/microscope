@@ -740,6 +740,40 @@ fn report_losses(profile: &Profile) {
             plural(records, "record")
         );
     }
+    if let Some(behind) = behind(profile) {
+        eprintln!("microscope: {behind}");
+    }
+}
+
+/// How long sampling was off while microscope caught up on the samples it
+/// had read, if it ever was.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "seconds and percentages need no more precision than f64's"
+)]
+fn behind(profile: &Profile) -> Option<String> {
+    let gaps = profile.paused(GapReason::Behind);
+    if gaps.is_empty() {
+        return None;
+    }
+
+    let (start, end) = profile.span();
+    let span = u64::try_from(end - start).unwrap_or(0).max(1);
+    let off: u64 = gaps
+        .iter()
+        .map(|(start, end)| u64::try_from(end - start).unwrap_or(0))
+        .sum();
+    Some(format!(
+        "sampling was off for {:.3} s of the {:.3} s recorded ({:.0}%), {}, while microscope \
+         caught up on the samples it had read; a lower --rate or --stack-bytes keeps more",
+        off as f64 / 1e9,
+        span as f64 / 1e9,
+        off as f64 * 100.0 / span as f64,
+        match gaps.len() {
+            1 => "once".to_owned(),
+            times => format!("{times} times"),
+        }
+    ))
 }
 
 /// Hands the profile written to `path` to the agent, and prints its link
@@ -1206,6 +1240,11 @@ fn cost(profile: &Profile, judged: bool, out: &mut impl std::io::Write) -> Resul
             "That is more than --preset prod allows, which holds microscope to {}% of a CPU.",
             Budget::PRODUCTION.cpu * 100.0
         )?;
+    }
+
+    if let Some(mut behind) = behind(profile) {
+        behind[..1].make_ascii_uppercase();
+        writeln!(out, "{behind}.")?;
     }
 
     Ok(())

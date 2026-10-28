@@ -633,6 +633,9 @@ fn drive(
             (!finished).then_some(watermark),
         );
         record!("record: drained {drained} bytes, finished {finished}");
+        for (start, end) in events.behind(None) {
+            processor.gap(start, end, GapReason::Behind);
+        }
         processor.collection_cpu(events.reader_cpu());
         if let Some(walker) = &mut walker {
             walker.refresh(processor);
@@ -687,8 +690,12 @@ fn drive(
     }
 
     events.enable(false);
+    let end = monotonic();
+    for (start, end) in events.behind(Some(end)) {
+        processor.gap(start, end, GapReason::Behind);
+    }
     if let Some(pacer) = pacer {
-        pacer.finish(monotonic(), processor);
+        pacer.finish(end, processor);
     }
 
     if let Some(walker) = walker {

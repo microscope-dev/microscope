@@ -112,6 +112,35 @@ pub struct Events {
     /// The events that write every record but samples, each to the ring
     /// of its CPU; none where the events sample nothing.
     sideband: Vec<OwnedFd>,
+
+    /// What the queue is swapped for when processing takes it.
+    spare: Mutex<Vec<u8>>,
+
+    /// Whether the sampling events are on.
+    gate: Mutex<Gate>,
+}
+
+/// The high-rate reader holds at most this much for processing before it
+/// turns sampling off until processing takes it.
+const QUEUE_BYTES: usize = 64 * 1024 * 1024;
+
+/// The room each of the reader's buffers has: the queue, what the rings
+/// held when sampling went off, and the sideband's records until
+/// processing takes it.
+const QUEUE_ROOM: usize = 2 * QUEUE_BYTES;
+
+/// The sampling events are on while the recording wants them and the
+/// reader is not behind. The sideband stays on while sampling is off for
+/// the reader, so that no mapping, thread, or context switch is missed.
+#[derive(Debug, Default)]
+struct Gate {
+    /// The recording turned every event off.
+    off: bool,
+
+    /// Since when the reader has been behind, and each earlier span it
+    /// was, not yet taken.
+    behind: Option<u64>,
+    spans: Vec<(u64, u64)>,
 }
 
 /// What a recording's events counted and lost.
@@ -193,6 +222,8 @@ impl Events {
             cpus,
             followers: Vec::new(),
             sideband,
+            spare: Mutex::default(),
+            gate: Mutex::default(),
         })
     }
 
@@ -264,6 +295,8 @@ impl Events {
                                 cpus: cpus.to_vec(),
                                 followers: Vec::new(),
                                 sideband,
+                                spare: Mutex::default(),
+                                gate: Mutex::default(),
                             });
                         }
 
@@ -373,25 +406,47 @@ impl Events {
     /// at a time, and returns how many bytes.
     pub fn drain(&self, out: &mut Vec<u8>) -> usize {
         let before = out.len();
-        let mut buffered = self.buffered.as_ref().map(|buffer| {
-            buffer
+        let Some(buffer) = &self.buffered else {
+            for ring in &self.rings {
+                ring.drain(out);
+            }
+            return out.len() - before;
+        };
+
+        // The queue is swapped for an empty one with room for all it will
+        // hold, and copied out after, so that the reader never waits on a
+        // copy or a reallocation while the rings fill.
+        let mut queue = std::mem::take(
+            &mut *self
+                .spare
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-        });
-        if let Some(buffer) = &mut buffered {
-            out.append(buffer);
-        }
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        queue.reserve(QUEUE_ROOM);
+        let mut buffer = buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::mem::swap(&mut queue, &mut buffer);
         // Keep the queue locked through this drain so a worker cannot put
         // older records behind the records collected here, including at exit.
         for ring in &self.rings {
-            ring.drain(out);
+            ring.drain(&mut queue);
         }
+        drop(buffer);
+        out.extend_from_slice(&queue);
+        queue.clear();
+        *self
+            .spare
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = queue;
         out.len() - before
     }
 
-    /// Drains high-rate rings while `work` processes previous records. The
-    /// queue holds at most 64 MiB plus one drain; if processing cannot keep
-    /// up, kernel loss counters still account for every dropped sample.
+    /// Drains high-rate rings while `work` processes previous records.
+    /// Once the queue holds [`QUEUE_BYTES`], sampling is off until
+    /// processing takes it, so that the kernel need not drop samples for
+    /// want of room. The rings are still drained meanwhile, of the samples
+    /// in flight and the sideband's records. [`Self::behind`] says when.
     pub fn read_while<R>(&self, work: impl FnOnce() -> R) -> R {
         let Some(buffer) = &self.buffered else {
             return work();
@@ -400,31 +455,25 @@ impl Events {
         std::thread::scope(|scope| {
             let reader = scope.spawn(|| {
                 let began = sys::thread_cpu();
+                let mut behind = false;
                 while !stop.load(Ordering::Relaxed) {
-                    let full = {
-                        let mut buffer = buffer
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        let full = buffer.len() >= 64 * 1024 * 1024;
-                        if !full {
-                            for ring in &self.rings {
-                                ring.drain(&mut buffer);
-                            }
-                        }
-                        drop(buffer);
-                        full
-                    };
+                    let mut buffer = buffer
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if (buffer.len() >= QUEUE_BYTES) != behind {
+                        behind = !behind;
+                        self.fall_behind(behind);
+                    }
+                    for ring in &self.rings {
+                        ring.drain(&mut buffer);
+                    }
+                    drop(buffer);
                     let elapsed = sys::thread_cpu().saturating_sub(began);
                     self.reader_cpu.store(
                         u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX),
                         Ordering::Relaxed,
                     );
-                    if full {
-                        // Full rings remain readable; polling them would spin.
-                        std::thread::sleep(Duration::from_micros(100));
-                    } else {
-                        self.wait(Duration::from_micros(100));
-                    }
+                    self.wait(Duration::from_micros(100));
                 }
             });
             let guard = StopReader(&stop);
@@ -433,6 +482,48 @@ impl Events {
             let _ = reader.join();
             result
         })
+    }
+
+    /// Turns sampling off while the reader is `behind`, and back on as the
+    /// recording wants once it is not.
+    fn fall_behind(&self, behind: bool) {
+        let mut gate = self
+            .gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if behind {
+            if !gate.off {
+                self.enable_sampling(false);
+            }
+            gate.behind = Some(sys::monotonic());
+            drop(gate);
+            record!("perf: the reader is behind, sampling is off");
+        } else if let Some(since) = gate.behind.take() {
+            gate.spans.push((since, sys::monotonic()));
+            if !gate.off {
+                self.enable_sampling(true);
+            }
+            drop(gate);
+            record!("perf: the reader caught up, sampling is on");
+        }
+    }
+
+    /// Each span sampling was off because the reader was behind, in
+    /// `CLOCK_MONOTONIC` nanoseconds, that no earlier call took. A span
+    /// still going ends at `until` if given, and is otherwise left for
+    /// later.
+    pub fn behind(&self, until: Option<u64>) -> Vec<(u64, u64)> {
+        let mut gate = self
+            .gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(until) = until
+            && let Some(since) = gate.behind.take()
+        {
+            gate.spans.push((since, until.max(since)));
+        }
+
+        std::mem::take(&mut gate.spans)
     }
 
     /// CPU time spent collecting on the high-rate reader.
@@ -479,15 +570,24 @@ impl Events {
     }
 
     /// Starts or stops every event, and every event a thread inherited
-    /// from one, counting and sampling.
+    /// from one, counting and sampling. While the reader is behind,
+    /// sampling starts only once it catches up.
     pub fn enable(&self, on: bool) {
-        for fd in self
-            .rings
-            .iter()
-            .map(sys::Ring::fd)
-            .chain(&self.followers)
-            .chain(&self.sideband)
-        {
+        let mut gate = self
+            .gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        gate.off = !on;
+        self.enable_sampling(on && gate.behind.is_none());
+        drop(gate);
+        for fd in &self.sideband {
+            let _ = sys::enable(fd, on);
+        }
+    }
+
+    /// Starts or stops the sampling events alone.
+    fn enable_sampling(&self, on: bool) {
+        for fd in self.rings.iter().map(sys::Ring::fd).chain(&self.followers) {
             let _ = sys::enable(fd, on);
         }
     }
@@ -503,7 +603,7 @@ impl Drop for StopReader<'_> {
 
 fn collection_buffer(options: &EventOptions) -> Option<Mutex<Vec<u8>>> {
     matches!(options.source, Source::Clock { period } if period <= Duration::from_millis(2))
-        .then(|| Mutex::new(Vec::new()))
+        .then(|| Mutex::new(Vec::with_capacity(QUEUE_ROOM)))
 }
 
 /// The flags of the records beside the samples: what each process maps and
@@ -1437,6 +1537,52 @@ mod tests {
             counts.lost_records > 10 * possible,
             "lost {counts:?}, though the ring was never read"
         );
+    }
+
+    /// A reader whose processing never takes what it reads turns sampling
+    /// off once its queue is full, rather than leaving the rings to fill and
+    /// the kernel to drop samples. Eight threads spinning for 750 ms at 1
+    /// kHz, each sample copying 64 KiB of stack, fill the 64 MiB queue in
+    /// about 125 ms of their CPU time.
+    #[test]
+    fn a_reader_that_falls_behind_pauses_sampling_instead_of_losing_samples() {
+        let options = EventOptions {
+            source: Source::Clock {
+                period: Duration::from_millis(1),
+            },
+            stack_bytes: 65528,
+            kernel: false,
+            ring_pages: 128,
+            switches: false,
+        };
+        let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("build/test-programs/profile-switches");
+        let mut command = Command::new(program);
+        command.args(["0", "750", "8"]);
+        let Launched { events, exit, .. } =
+            launch(command, &options, LaunchOptions::default(), |_, _| Ok(()))
+                .expect("launch the program");
+        let (status, exited) = events.read_while(|| (exit.join(), sys::monotonic()));
+        let status = status
+            .expect("the launch thread ends")
+            .expect("the program exits");
+        assert!(status.success(), "{status}");
+
+        let counts = events.counts();
+        assert_eq!(
+            (counts.lost_samples, counts.lost_records),
+            (0, 0),
+            "{counts:?}"
+        );
+        // Nothing took the queue, so sampling went off once and stayed off.
+        let end = sys::monotonic();
+        assert_eq!(events.behind(None), []);
+        let spans = events.behind(Some(end));
+        assert!(
+            matches!(spans[..], [(start, until)] if start < exited && until == end),
+            "{spans:?}, though the program exited at {exited} and the test ended at {end}"
+        );
+        assert_eq!(events.behind(Some(end)), []);
     }
 
     #[test]

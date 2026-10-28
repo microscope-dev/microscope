@@ -738,6 +738,15 @@ fn controls(role: Role) -> Result<(), Failure> {
     }
 }
 
+/// Each span sampling paused for `reason`, from `start`.
+fn paused(profile: &Profile, reason: GapReason, start: i64) -> Vec<[i64; 2]> {
+    profile
+        .paused(reason)
+        .into_iter()
+        .map(|(from, to)| [from - start, to - start])
+        .collect()
+}
+
 fn summary(entry: &Entry) -> ProfileSummary {
     let profile = &entry.profile;
     let (start, end) = profile.span();
@@ -774,11 +783,8 @@ fn summary(entry: &Entry) -> ProfileSummary {
         throttles: profile.throttles(),
         recorder_cpu: profile.recorder_cpu().0,
         recorder_loading: profile.recorder_cpu().1,
-        gaps: profile
-            .paused(GapReason::Budget)
-            .into_iter()
-            .map(|(from, to)| [from - start, to - start])
-            .collect(),
+        gaps: paused(profile, GapReason::Budget, start),
+        behind: paused(profile, GapReason::Behind, start),
         budget_changes: markers(profile.budget_changes(), start),
         tasks: tasks(profile),
         interpreted: profile.interpreted(),

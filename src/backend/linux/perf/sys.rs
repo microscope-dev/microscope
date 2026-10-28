@@ -514,6 +514,14 @@ pub fn page_size() -> usize {
     rustix::param::page_size()
 }
 
+/// `CLOCK_MONOTONIC` in nanoseconds, the clock samples are stamped with.
+pub fn monotonic() -> u64 {
+    nix::time::clock_gettime(nix::time::ClockId::CLOCK_MONOTONIC).map_or(0, |time| {
+        u64::try_from(time.tv_sec()).unwrap_or(0) * 1_000_000_000
+            + u64::try_from(time.tv_nsec()).unwrap_or(0)
+    })
+}
+
 /// The CPU time this thread has taken.
 pub fn thread_cpu() -> std::time::Duration {
     nix::time::clock_gettime(nix::time::ClockId::CLOCK_THREAD_CPUTIME_ID).map_or(

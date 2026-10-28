@@ -58,6 +58,18 @@ Collection and processing are separate. The collector owns perf resources and
 reads event buffers. The processor validates records, tracks mappings and
 threads, reconstructs stacks, and appends normalized capture rows.
 
+At high rates a reader thread drains the rings into a queue while the
+processor works (`Events::read_while`). Once the queue holds 64 MiB, the
+reader turns the sampling events off, leaves the sideband on, and keeps
+draining; when processing takes the queue, sampling comes back on. Each span
+off is a gap of reason `Behind`, so the kernel never drops samples for want of
+a reader, and weights stay true for the time sampled. The processor swaps the
+queue for an empty buffer under the lock and copies it after: copying 64 MiB
+under the lock took 9 to 20 ms, longer than a ring holds 16 busy threads'
+samples, and every one of those waits lost samples. Both buffers are reserved
+up front for the same reason. A reader that is never read from pauses instead
+of losing samples (`a_reader_that_falls_behind_pauses_sampling_instead_of_losing_samples`).
+
 Treat kernel records as untrusted binary input. Validate sizes, alignments,
 sample field order, IDs, and ranges before indexing. A truncated or unknown
 record produces a counted problem or an error according to whether the stream

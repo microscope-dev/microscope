@@ -525,6 +525,7 @@ function ProfileFoot({ summary }: { summary: ProfileSummary }) {
   const source = setting("source");
   const stack = setting("stack bytes");
   const paused = summary.gaps.reduce((sum, [from, to]) => sum + (to - from), 0);
+  const behind = summary.behind.reduce((sum, [from, to]) => sum + (to - from), 0);
   const span = Math.max(summary.duration, 1);
   const by = tracedBy(summary.settings);
   const vdso =
@@ -590,6 +591,14 @@ function ProfileFoot({ summary }: { summary: ProfileSummary }) {
             .join("\n")}
         >
           paused {formatPercent(paused, span)} for the budget
+        </span>
+      ) : null}
+      {summary.behind.length > 0 ? (
+        <span
+          className="warn"
+          title={`Sampling was off ${formatCount(summary.behind.length, "time")} while microscope caught up on the samples it had read; a lower --rate or --stack-bytes keeps more`}
+        >
+          paused {formatPercent(behind, span)} to catch up
         </span>
       ) : null}
       {summary.probes.events > 0 || probesLost > 0 ? (

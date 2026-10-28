@@ -1134,9 +1134,15 @@ settings: Array<ProfileSetting>,
  */
 recorderCpu: number, recorderLoading: number, 
 /**
- * Spans not sampled, in nanoseconds from the start.
+ * Spans not sampled to hold microscope to its budget, in nanoseconds
+ * from the start.
  */
 gaps: Array<[number, number]>, 
+/**
+ * Spans not sampled while microscope caught up on the samples it had
+ * read, in nanoseconds from the start.
+ */
+behind: Array<[number, number]>, 
 /**
  * Each change the budget made, from the start.
  */

@@ -1262,8 +1262,13 @@ pub struct ProfileSummary {
     pub recorder_cpu: u64,
     pub recorder_loading: u64,
 
-    /// Spans not sampled, in nanoseconds from the start.
+    /// Spans not sampled to hold microscope to its budget, in nanoseconds
+    /// from the start.
     pub gaps: Vec<[i64; 2]>,
+
+    /// Spans not sampled while microscope caught up on the samples it had
+    /// read, in nanoseconds from the start.
+    pub behind: Vec<[i64; 2]>,
 
     /// Each change the budget made, from the start.
     pub budget_changes: Vec<ProfileMarker>,

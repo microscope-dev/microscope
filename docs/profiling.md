@@ -74,8 +74,12 @@ the program ran. Only the latter is a share of a CPU and is compared with
 is too short to judge either cost or coverage, and the report says so.
 
 High-rate recordings drain rings separately from unwinding. That queue is
-bounded: processing that falls behind long enough can still lose samples,
-which are reported as a count and percentage. A full ring also loses the
+bounded: when processing falls behind far enough to fill it, sampling stops
+until processing catches up, rather than letting the kernel drop samples. The
+record and the report say how long sampling was off, and the browser shades
+those spans; a lower `--rate` or `--stack-bytes` keeps more. Samples the
+kernel still drops, such as when the recorder is starved of CPU, are
+reported as a count and percentage. A full ring also loses the
 records of what the program maps and names and of its threads' context
 switches; the report counts those apart, as records, so the samples it says
 were dropped are never more than the program's CPU time allowed. If the
