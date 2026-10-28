@@ -178,6 +178,16 @@
         real=$(readlink -f $out/install/bin/${binary})
         ${pkgs.python3}/bin/python3 ${fixDynstr} "$real"
         patchelf --set-interpreter ${pkgs.glibc}/lib/ld-linux-x86-64.so.2 "$real"
+        # The stripped archives carry no bytecode, and the store is read-only,
+        # so without this every process compiled each module it imported and
+        # could not keep the result. The store's files never change, so the
+        # bytecode is not checked against them, which the store's fixed
+        # mtimes could not do. Marshal marks an object it may refer back to by
+        # its reference count, which the cycle collector changes, and the
+        # free-threaded build's bytecode differed between two builds until
+        # the collector was turned off for the compile.
+        "$real" -c 'import compileall, gc, sys; gc.disable(); sys.exit(not compileall.main())' \
+          -q -o 0 -o 1 -o 2 --invalidation-mode unchecked-hash $out/install/lib/${binary}
         ln -s install/bin/${binary} $out/python
         ln -s install/include/${binary} $out/include
       '';
