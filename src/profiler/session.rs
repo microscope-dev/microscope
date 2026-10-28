@@ -87,10 +87,22 @@ pub struct Save<'a> {
     pub to: &'a mut dyn FnMut(Profile),
 }
 
+/// Recording every site, names the recorder in `command`'s environment, so
+/// that the program records from its first site, before the recorder finds
+/// it (`abi::RECORDER`).
+fn name_recorder(command: &mut Command, options: &RecordOptions) {
+    if options.probes == ProbeSelection::All {
+        command.env(
+            microscope_probes::abi::RECORDER,
+            std::process::id().to_string(),
+        );
+    }
+}
+
 /// Records `command` as [`record`] does, publishing the profile so far as
 /// `watch` asks.
 pub fn record_watched(
-    command: Command,
+    mut command: Command,
     options: &RecordOptions,
     watch: &mut Watch<'_>,
 ) -> Result<Recording, RecordError> {
@@ -101,6 +113,8 @@ pub fn record_watched(
     let program = PathBuf::from(command.get_program());
     let (source, breakpoint) =
         perf_source(&program, &options.source, None, options.function_period)?;
+
+    name_recorder(&mut command, options);
     let mut processor = processor(options, breakpoint);
     let (stack_bytes, stack_copy) = stack_copy(&mut processor, &program, options.stack);
     let events = perf::EventOptions {

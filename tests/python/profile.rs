@@ -482,6 +482,47 @@ fn the_python_package_records_what_the_program_marks() {
     );
 }
 
+/// Recording every site, a program the recording starts records its zones
+/// from its first line, before the recorder has found the program's
+/// library; the program's own children, which nothing reads, do not.
+#[test]
+fn a_zone_the_program_begins_at_once_is_recorded() {
+    let sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/python");
+    let script = r"
+import subprocess, sys, time
+sys.path.insert(0, sys.argv[1])
+import microscope
+for name in ('first', 'second'):
+    with microscope.zone(name):
+        end = time.monotonic() + 0.02
+        while time.monotonic() < end:
+            pass
+child = 'import sys; sys.path.insert(0, sys.argv[1]); import microscope; print(microscope.listening())'
+listened = subprocess.run([sys.executable, '-c', child, sys.argv[1]], capture_output=True, text=True)
+assert listened.stdout == 'False\n', listened
+";
+    let mut command = Command::new(python::interpreter("3.14"));
+    command
+        .args(["-I", "-B", "-c", script])
+        .arg(sdk)
+        .env(
+            "MICROSCOPE_PROBES_LIBRARY",
+            crate::support::Scenario::fixture("libmicroscope_probes_c.so"),
+        )
+        .stdin(Stdio::null());
+    let recording = record(command, &RecordOptions::default()).expect("record");
+    assert!(recording.status.success(), "{}", recording.status);
+
+    let zones = recording.profile.zones();
+    for name in ["first", "second"] {
+        let zone = zones.iter().find(|zone| zone.name == name);
+        assert!(
+            zone.is_some_and(|zone| zone.flags == 0 && zone.end - zone.start >= 20_000_000),
+            "{name}: {zones:?}"
+        );
+    }
+}
+
 /// Without its native library the package still imports, and every mark
 /// does nothing, as with no recording; `problem` says why.
 #[test]

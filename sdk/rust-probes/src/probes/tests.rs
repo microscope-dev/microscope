@@ -126,7 +126,7 @@ fn switching_off_zeroes_each_sites_state_byte() {
 
     // SAFETY: the table holds two whole sites, whose offsets name state
     // bytes of the same table, which outlives the call.
-    unsafe { switch_off(start, start.wrapping_add(2 * abi::SITE_SIZE)) };
+    unsafe { switch_all(start, start.wrapping_add(2 * abi::SITE_SIZE), 0) };
 
     let states = table
         .states

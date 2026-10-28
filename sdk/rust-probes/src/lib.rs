@@ -58,7 +58,7 @@ pub mod abi {
     /// | 0 | magic `USCOPEPR` |
     /// | 8 | ABI version, `u16` |
     /// | 10 | clock, `u16`: a `CLOCK_` constant, set by microscope |
-    /// | 12 | enable, `u32`: set by microscope: [`ENABLED`], with [`ENABLE_DEFINED`] |
+    /// | 12 | enable, `u32`: set by microscope: [`ENABLED`], with [`ENABLE_DEFINED`]; or by the program, as [`RECORDER`] says |
     /// | 16 | ring size, `u32`, as a power of two of records: set by microscope |
     /// | 20 | rings, `u32`: how many of the registry's slots threads took |
     /// | 24 | heartbeat, `u64`: microscope's `CLOCK_MONOTONIC`, written as it reads |
@@ -85,6 +85,18 @@ pub mod abi {
     /// The enable word's bit that every run-time site is on as it is
     /// defined, as when microscope records every site (ABI 2).
     pub const ENABLE_DEFINED: u32 = 2;
+
+    /// The environment variable a recording that starts a program and
+    /// records every site sets to its own process id. A program whose
+    /// parent that is switches every static site on, and sets its enable
+    /// word to [`ENABLED`] and [`ENABLE_DEFINED`] and its heartbeat to now,
+    /// as it first defines a run-time site or asks whether microscope
+    /// listens, so that it records from then on, before microscope has
+    /// found it. Its timeout stays zero, which microscope never
+    /// writes, and says so. A program microscope never reads switches
+    /// itself off once [`STALE_NANOSECONDS`] pass, as any program does.
+    /// The program's own children have another parent, and are not on.
+    pub const RECORDER: &str = "MICROSCOPE_PROBES_RECORDER";
 
     /// Record times are nanoseconds of `CLOCK_MONOTONIC`.
     pub const CLOCK_MONOTONIC: u16 = 1;

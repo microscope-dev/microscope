@@ -121,6 +121,7 @@ static DEFINED: std::sync::Mutex<Definitions> = std::sync::Mutex::new(Vec::new()
 /// either text is longer than [`abi::MOST_SITE_TEXT`], or every site is
 /// taken. It is off until microscope switches it on, as a static site is.
 pub fn define(kind: u8, name: &str, file: &str, line: u32) -> Option<&'static Site> {
+    arm();
     let longest = abi::MOST_SITE_TEXT as usize;
     if !(abi::SITE_ZONE..=abi::SITE_TRIGGER).contains(&kind)
         || name.len() > longest
@@ -327,7 +328,31 @@ static FORKS: AtomicU32 = AtomicU32::new(0);
 /// it chose is on.
 #[must_use]
 pub fn listening() -> bool {
+    arm();
     CONTROL.enable.load(Ordering::Acquire) != 0
+}
+
+static ARMED: Once = Once::new();
+
+/// Switches the program on, once, if the recording that started it records
+/// every site and has not found it yet: see [`abi::RECORDER`].
+fn arm() {
+    ARMED.call_once(|| {
+        let recorder =
+            std::env::var_os(abi::RECORDER).and_then(|value| value.to_str()?.parse::<i32>().ok());
+        if recorder.is_some_and(|recorder| recorder == getppid()) {
+            // Every site is on before the program is, as microscope switches
+            // them; microscope may have switched the program on already.
+            CONTROL.heartbeat.store(monotonic(), Ordering::Relaxed);
+            switch_sites(1);
+            let _ = CONTROL.enable.compare_exchange(
+                0,
+                abi::ENABLED | abi::ENABLE_DEFINED,
+                Ordering::SeqCst,
+                Ordering::Relaxed,
+            );
+        }
+    });
 }
 
 /// Whether the site whose state byte is `state` is on.
@@ -583,6 +608,8 @@ unsafe extern "C" {
     safe fn clock_gettime(clock: i32, time: &mut Timespec) -> i32;
     safe fn gettid() -> i32;
     #[cfg(not(miri))]
+    safe fn getppid() -> i32;
+    #[cfg(not(miri))]
     safe fn atexit(handler: extern "C" fn()) -> i32;
     #[cfg(not(miri))]
     safe fn pthread_atfork(
@@ -592,7 +619,13 @@ unsafe extern "C" {
     ) -> i32;
 }
 
-/// Miri runs neither, and its tests never fork or exit.
+/// Miri runs none of these, and its tests never fork or exit, nor are they
+/// started by a recording.
+#[cfg(miri)]
+const fn getppid() -> i32 {
+    0
+}
+
 #[cfg(miri)]
 fn atexit(_: extern "C" fn()) -> i32 {
     0
@@ -650,7 +683,7 @@ static SITE: &AtomicU8 = crate::__site!(crate::abi::SITE_NONE, "microscope_probe
 fn disable() {
     // Cleared before the count is read: see `define`.
     CONTROL.enable.store(0, Ordering::SeqCst);
-    switch_sites_off();
+    switch_sites(0);
     let defined = SITES.count.load(Ordering::SeqCst) as usize;
     for site in SITES.records.iter().take(defined) {
         site.state.store(0, Ordering::Relaxed);
@@ -658,22 +691,23 @@ fn disable() {
     let _ = SITE;
 }
 
-/// Writes zero to every site's state byte. Miri has no section to walk.
+/// Writes `state` to every static site's state byte. Miri has no section to
+/// walk.
 #[cfg(miri)]
-fn switch_sites_off() {}
+fn switch_sites(_: u8) {}
 
 #[cfg(not(miri))]
-fn switch_sites_off() {
+fn switch_sites(state: u8) {
     let start = (&raw const __start_microscope_sites).cast::<u8>();
     let stop = (&raw const __stop_microscope_sites).cast::<u8>();
 
     // SAFETY: the linker gathers every site into the section, whole, and
     // each site's state offset names an `AtomicU8` static in its module.
-    unsafe { switch_off(start, stop) };
+    unsafe { switch_all(start, stop, state) };
 }
 
-/// Writes zero to the state byte of each site in the table from `start` to
-/// `stop`.
+/// Writes `value` to the state byte of each site in the table from `start`
+/// to `stop`.
 ///
 /// The table and the state bytes are separate statics, which Rust's model
 /// does not let one pointer step between, so the walk steps with wrapping
@@ -683,7 +717,7 @@ fn switch_sites_off() {
 ///
 /// `start..stop` holds whole sites, and each site's state offset, from its
 /// field, names an `AtomicU8` that lives through the call.
-unsafe fn switch_off(start: *const u8, stop: *const u8) {
+unsafe fn switch_all(start: *const u8, stop: *const u8, value: u8) {
     /// Where a site's state offset lies in it.
     const STATE_FIELD: usize = 24;
 
@@ -697,7 +731,7 @@ unsafe fn switch_off(start: *const u8, stop: *const u8) {
         unsafe {
             let offset = field.cast::<i32>().read_unaligned();
             let state = &*field.wrapping_offset(offset as isize).cast::<AtomicU8>();
-            state.store(0, Ordering::Relaxed);
+            state.store(value, Ordering::Relaxed);
         }
 
         site = site.wrapping_add(abi::SITE_SIZE);

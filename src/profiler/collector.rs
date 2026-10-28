@@ -173,8 +173,7 @@ impl Collector {
             if self.instances[index].defines {
                 self.define(processor, index);
             }
-            let instance = &self.instances[index];
-            if !instance.on && !instance.states.is_empty() && !self.finishing {
+            if !self.instances[index].on && self.wants_on(index) {
                 self.switch_on(index);
             }
             if self.gone {
@@ -290,9 +289,19 @@ impl Collector {
         if self.instances[index].defines {
             self.define(processor, index);
         }
-        if !self.instances[index].states.is_empty() && !self.finishing {
+        if self.wants_on(index) {
             self.switch_on(index);
         }
+    }
+
+    /// Whether a module's control block is to be switched on: once a site
+    /// it selects is known, or, recording every site, once the module may
+    /// define one, which is then on from its definition.
+    fn wants_on(&self, index: usize) -> bool {
+        let instance = &self.instances[index];
+        !self.finishing
+            && (!instance.states.is_empty()
+                || (instance.defines && self.selection == ProbeSelection::All))
     }
 
     /// Reads the sites a module defined as it ran since they were last
@@ -425,9 +434,12 @@ impl Collector {
 
         let mut rings = BTreeMap::new();
 
+        // A program that switched itself on wrote its records for this
+        // recording, and they are read from the first its rings still hold.
+        let armed = registry.0.armed;
         for address in registry.1 {
             if let Ok(Some(header)) = self.header(address) {
-                if header.state == abi::RING_RETIRED {
+                if header.state == abi::RING_RETIRED && !armed {
                     let _ =
                         perf::write_memory(self.pid, address + 12, &abi::RING_FREE.to_le_bytes());
                 }
@@ -435,10 +447,10 @@ impl Collector {
                 rings.insert(
                     address,
                     Ring {
-                        tail: header.head,
+                        tail: if armed { 0 } else { header.head },
                         thread: None,
-                        interrupted: header.interrupted,
-                        before: true,
+                        interrupted: if armed { 0 } else { header.interrupted },
+                        before: !armed,
                         broken: false,
                     },
                 );
@@ -463,7 +475,7 @@ impl Collector {
         };
 
         let instance = &mut self.instances[index];
-        instance.dropped = registry.0.dropped;
+        instance.dropped = if armed { 0 } else { registry.0.dropped };
         instance.rings = rings;
         let on = writes
             .iter()

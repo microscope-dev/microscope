@@ -647,8 +647,26 @@ drain's read of the table and its read of the rings, so a ring that names a
 site the collector has not seen reads the table again before it counts any of
 its records: the SDK counts a site before it records one, so the second read
 finds it. `trace_calls` defines a site as each new function first runs, so the
-Python package's records fall in that gap whenever a drain is slow. A
-malformed table or record is counted as malformed. The decoder still reads ABI
+Python package's records fall in that gap whenever a drain is slow.
+Recording every site, the collector switches an ABI 2 module on when it
+adopts it, before any site is defined, so the first site is on from its
+definition too.
+
+The recorder finds a program it starts some tens of milliseconds after the
+program loads its library, and a Python program's first zones began and
+ended in that window, unrecorded and unmentioned. So recording every site,
+the recorder sets `abi::RECORDER` to its pid in the program's environment.
+The SDK, as it first defines a site or is asked whether microscope
+listens, switches the program on itself when its parent has that pid: it
+switches every static site on, sets `ENABLED | ENABLE_DEFINED` and a
+heartbeat, and leaves the timeout
+zero, which microscope never writes. Its children inherit the variable but
+not the parent, and the recorder reads none of them. The collector reads
+the rings of a program so armed (`probes::Control::armed`) from their first
+record, not from their head, and keeps the rings threads retired. A program
+the recorder never finds switches itself off after `STALE_NANOSECONDS`, as
+for a recorder that stopped reading. A malformed table or record is counted
+as malformed. The decoder still reads ABI
 1, which has no table.
 
 The SDK's `c` feature exports C entry points to run-time sites

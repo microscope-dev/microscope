@@ -250,6 +250,11 @@ pub struct Control {
     /// What microscope last set its sites to, unless the program switched
     /// them off: zero is off.
     pub enable: u32,
+
+    /// Whether the program switched itself on before microscope found it,
+    /// as a program a recording starts does: it is on, and its timeout is
+    /// zero, which microscope never writes (`abi::RECORDER`).
+    pub armed: bool,
 }
 
 /// Reads a control block's first [`abi::CONTROL_SIZE`] bytes.
@@ -271,6 +276,7 @@ pub fn control(bytes: &[u8]) -> Result<Control, &'static str> {
         dropped: u64::from_le_bytes(bytes[32..40].try_into().unwrap_or_default()),
         exiting: word(44) != 0,
         enable: word(12),
+        armed: word(12) != 0 && word(52) == 0,
     })
 }
 

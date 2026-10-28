@@ -400,7 +400,14 @@ name ending in `*` limits what is enabled.
 
 A program can also define sites as it runs, as a language that names its
 work at run time does. Recording every site, such a site is on from its
-definition. Recording sites by name, it is switched on, by the same names,
+definition. The recording finds a program it starts some tens of
+milliseconds after the program loads the SDK, so it names itself in the
+program's environment as `MICROSCOPE_PROBES_RECORDER`, and the program, as
+its child, switches every site on itself the first time it defines a site or
+asks whether microscope listens. The Python and Node packages' first zone
+is then recorded, however soon it begins. The recording reads that
+program's instrumentation alone; its children have another parent, and stay
+off. Recording sites by name, a site is switched on, by the same names,
 when the recording next reads the program, so its first uses can go
 unrecorded. A program that defines more than 4096 sites gets no more, and
 the profile reports it. Each distinct name is a separate site, so give a
