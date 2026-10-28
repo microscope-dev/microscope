@@ -752,6 +752,14 @@ impl Profile {
             .account(crate::capture::records::AccountKind::LostSamples as u32)
     }
 
+    /// Records other than samples the kernel dropped: of mappings, names,
+    /// threads, and context switches.
+    #[must_use]
+    pub fn lost_records(&self) -> u64 {
+        self.capture
+            .account(crate::capture::records::AccountKind::LostRecords as u32)
+    }
+
     /// What the events counted, in the weight's unit, sampled or not: the
     /// CPU time the program ran, or each execution of a breakpoint's
     /// instruction. A thread's time on each CPU is sampled only once a whole

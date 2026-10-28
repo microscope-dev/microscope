@@ -75,9 +75,13 @@ is too short to judge either cost or coverage, and the report says so.
 
 High-rate recordings drain rings separately from unwinding. That queue is
 bounded: processing that falls behind long enough can still lose samples,
-which are reported as a count and percentage. If the kernel reduces ring
-sizes to fit locked-memory limits, the recorder gives their actual size and
-the `ulimit -l` and `kernel.perf_event_mlock_kb` settings to raise.
+which are reported as a count and percentage. A full ring also loses the
+records of what the program maps and names and of its threads' context
+switches; the report counts those apart, as records, so the samples it says
+were dropped are never more than the program's CPU time allowed. If the
+kernel reduces ring sizes to fit locked-memory limits, the recorder gives
+their actual size and the `ulimit -l` and `kernel.perf_event_mlock_kb`
+settings to raise.
 
 Stacks are exact up to the point where the available unwind information and
 copied memory end. A truncated stack records its reason. `dev` copies 32 KiB

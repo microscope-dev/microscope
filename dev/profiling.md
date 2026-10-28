@@ -42,6 +42,18 @@ records. Samples can contain process and thread IDs, user registers, a kernel
 frame-pointer call chain, and a copied stack region. Other records describe
 thread and mapping lifecycle or instrumentation data.
 
+The kernel counts each record an event finds no room for in its ring, of
+whatever kind (`__perf_output_begin` in `kernel/events/ring_buffer.c`), so
+mapping, name, thread, and context-switch records come from a dummy event of
+their own on each CPU (`perf::sideband_attr`), which writes into the same ring
+as the CPU's sampling event. The sampling events' loss is then samples alone,
+and the dummy's is every other record. One event held both until a recording
+of a program that switched far more often than it ran counted 79,574 samples
+lost where its CPU time allowed 93
+(`a_full_ring_counts_the_samples_it_lost_apart_from_other_records`). An
+attach opens both events for each thread on each CPU, so its event budget
+covers half the threads it did.
+
 Collection and processing are separate. The collector owns perf resources and
 reads event buffers. The processor validates records, tracks mappings and
 threads, reconstructs stacks, and appends normalized capture rows.

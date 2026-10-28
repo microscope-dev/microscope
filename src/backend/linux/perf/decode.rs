@@ -18,6 +18,11 @@ pub const SAMPLE_TYPE: u64 = sample::IDENTIFIER
     | sample::REGS_USER
     | sample::STACK_USER;
 
+/// The fields of [`SAMPLE_TYPE`] the `sample_id` every other record ends
+/// with holds: an event that asks for these alone writes records that end
+/// as a sampling event's do.
+pub const SAMPLE_ID_TYPE: u64 = sample::IDENTIFIER | sample::TID | sample::TIME | sample::CPU;
+
 /// The `sample_id` every other record ends with: tid, time, cpu, id.
 const SAMPLE_ID: usize = 32;
 

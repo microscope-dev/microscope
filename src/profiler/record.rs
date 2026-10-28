@@ -500,14 +500,19 @@ impl Processor {
         }
     }
 
-    /// Takes the events' counts so far: what they counted, how many
-    /// samples they lost, and how many times a ring's head could not be
-    /// trusted, whose skipped spans count as records that could not be
-    /// read.
-    pub fn counts(&mut self, (counted, lost, untrusted): (u64, u64, u64)) {
+    /// Takes the events' counts so far. A span a ring skipped because its
+    /// head could not be trusted counts as a record that could not be read.
+    pub fn counts(&mut self, counts: perf::Counts) {
+        let perf::Counts {
+            counted,
+            lost_samples,
+            lost_records,
+            untrusted,
+        } = counts;
         for (kind, total) in [
             (AccountKind::Counted, counted),
-            (AccountKind::LostSamples, lost),
+            (AccountKind::LostSamples, lost_samples),
+            (AccountKind::LostRecords, lost_records),
         ] {
             let had = self.builder.account(kind as u32);
             self.builder.count(kind as u32, total.saturating_sub(had));

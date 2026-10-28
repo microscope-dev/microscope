@@ -1,7 +1,10 @@
 //! Sampling processes with perf events, from outside them: no ptrace and
 //! no code in the program. One event per CPU follows a process and every
-//! thread and child it starts, and writes samples, mappings, and thread
-//! lifetimes to that CPU's ring.
+//! thread and child it starts, and writes its samples to that CPU's ring.
+//! A second, which samples nothing, writes what the process maps and names,
+//! its threads' lifetimes, and their context switches to the same ring: the
+//! kernel counts what each event loses, so the samples lost are counted
+//! apart from the rest.
 
 pub mod decode;
 pub mod jit;
@@ -80,12 +83,12 @@ pub enum OpenError {
     NoProcess(std::io::Error),
 
     #[error(
-        "sampling {threads} threads on {cpus} CPUs takes {} events, more than the budget of {budget}",
-        threads * cpus
+        "sampling {threads} threads on {cpus} CPUs takes {events} events, more than the budget of {budget}"
     )]
     TooManyEvents {
         threads: usize,
         cpus: usize,
+        events: usize,
         budget: usize,
     },
 }
@@ -103,8 +106,29 @@ pub struct Events {
     /// The CPU of each ring, in their order.
     cpus: Vec<u32>,
 
-    /// Events that write to the rings of others on their CPUs.
+    /// Sampling events that write to the rings of others on their CPUs.
     followers: Vec<OwnedFd>,
+
+    /// The events that write every record but samples, each to the ring
+    /// of its CPU; none where the events sample nothing.
+    sideband: Vec<OwnedFd>,
+}
+
+/// What a recording's events counted and lost.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Counts {
+    /// What the sampling events counted, in their source's units.
+    pub counted: u64,
+
+    /// Samples the rings had no room for.
+    pub lost_samples: u64,
+
+    /// Other records the rings had no room for: mappings, names, threads,
+    /// and context switches.
+    pub lost_records: u64,
+
+    /// Times a ring's head could not be trusted.
+    pub untrusted: u64,
 }
 
 /// The fields of each record a BPF program writes through an [`Output`],
@@ -148,10 +172,14 @@ impl Events {
     /// Opens disabled events for `pid`, its threads, and its children,
     /// which enable themselves when it next executes a program.
     pub fn open(pid: u32, options: &EventOptions) -> Result<Self, OpenError> {
-        let attr = attr(options, sys::flag::DISABLED | sys::flag::ENABLE_ON_EXEC);
+        let start = sys::flag::DISABLED | sys::flag::ENABLE_ON_EXEC;
         let pid = i32::try_from(pid).map_err(|_| OpenError::Cpus(std::io::Error::other("pid")))?;
         let cpus = online_cpus().map_err(OpenError::Cpus)?;
-        let (rings, pages, _) = rings(attr, pid, &cpus, options)?;
+        let (rings, pages, _) = rings(attr(options, start), pid, &cpus, options)?;
+        let sideband = match sideband_attr(options, start) {
+            Some(attr) => into_rings(&attr, pid, &cpus, &rings)?,
+            None => Vec::new(),
+        };
         record!(
             "perf events for {pid}: {} CPUs, {pages} pages each",
             rings.len()
@@ -164,6 +192,7 @@ impl Events {
             reader_cpu: AtomicU64::new(0),
             cpus,
             followers: Vec::new(),
+            sideband,
         })
     }
 
@@ -187,6 +216,8 @@ impl Events {
     ) -> Result<Self, OpenError> {
         raise_descriptor_limit();
         let mut attr = attr(options, 0);
+        let sideband = sideband_attr(options, 0);
+        let per_thread = cpus.len() * if sideband.is_some() { 2 } else { 1 };
         let mut opened = std::collections::BTreeSet::new();
         let mut owner = None;
 
@@ -202,10 +233,12 @@ impl Events {
                 break;
             }
 
-            if (opened.len() + new.len()) * cpus.len() > budget {
+            let threads = opened.len() + new.len();
+            if threads * per_thread > budget {
                 return Err(OpenError::TooManyEvents {
-                    threads: opened.len() + new.len(),
+                    threads,
                     cpus: cpus.len(),
+                    events: threads * per_thread,
                     budget,
                 });
             }
@@ -219,6 +252,10 @@ impl Events {
                     match rings(attr, thread, cpus, options) {
                         Ok((rings, pages, watermark)) => {
                             attr.wakeup_watermark = watermark;
+                            let sideband = match &sideband {
+                                Some(sideband) => into_rings(sideband, thread, cpus, &rings)?,
+                                None => Vec::new(),
+                            };
                             owner = Some(Self {
                                 rings,
                                 pages,
@@ -226,6 +263,7 @@ impl Events {
                                 reader_cpu: AtomicU64::new(0),
                                 cpus: cpus.to_vec(),
                                 followers: Vec::new(),
+                                sideband,
                             });
                         }
 
@@ -237,7 +275,7 @@ impl Events {
                     continue;
                 };
 
-                events.follow(&attr, thread, cpus)?;
+                events.follow(&attr, sideband.as_ref(), thread, cpus)?;
             }
         }
 
@@ -253,18 +291,33 @@ impl Events {
         Ok(events)
     }
 
-    /// Opens `thread`'s events on each of `cpus`, into the rings already
-    /// open there. A thread that has exited has none.
-    fn follow(&mut self, attr: &sys::Attr, thread: i32, cpus: &[u32]) -> Result<(), OpenError> {
+    /// Opens `thread`'s events on each of `cpus`, and its `sideband`
+    /// events if any, into the rings already open there. A thread that
+    /// has exited has none.
+    fn follow(
+        &mut self,
+        attr: &sys::Attr,
+        sideband: Option<&sys::Attr>,
+        thread: i32,
+        cpus: &[u32],
+    ) -> Result<(), OpenError> {
         for (ring, &cpu) in self.rings.iter().zip(cpus) {
-            let fd = match sys::open(attr, thread, i32::try_from(cpu).unwrap_or(i32::MAX)) {
-                Ok(fd) => fd,
-                Err(error) if error.raw_os_error() == Some(libc::ESRCH) => return Ok(()),
-                Err(error) => return Err(OpenError::Event { cpu, error }),
-            };
+            for (attr, fds) in [
+                (Some(attr), &mut self.followers),
+                (sideband, &mut self.sideband),
+            ] {
+                let Some(attr) = attr else {
+                    continue;
+                };
+                let fd = match sys::open(attr, thread, i32::try_from(cpu).unwrap_or(i32::MAX)) {
+                    Ok(fd) => fd,
+                    Err(error) if error.raw_os_error() == Some(libc::ESRCH) => return Ok(()),
+                    Err(error) => return Err(OpenError::Event { cpu, error }),
+                };
 
-            sys::set_output(&fd, ring.fd()).map_err(|error| OpenError::Event { cpu, error })?;
-            self.followers.push(fd);
+                sys::set_output(&fd, ring.fd()).map_err(|error| OpenError::Event { cpu, error })?;
+                fds.push(fd);
+            }
         }
 
         Ok(())
@@ -398,27 +451,43 @@ impl Events {
         sys::poll(&self.rings, timeout);
     }
 
-    /// What the events have counted so far, in their source's units, how
-    /// many samples they have lost, exactly, and how many times a ring's
-    /// head could not be trusted.
-    pub fn counts(&self) -> (u64, u64, u64) {
-        let (counted, lost) = self
-            .rings
-            .iter()
-            .map(sys::Ring::fd)
-            .chain(&self.followers)
-            .filter_map(|fd| sys::counts(fd).ok())
-            .fold((0, 0), |(count, lost), (more, also)| {
-                (count + more, lost + also)
-            });
+    /// What the events have counted and lost so far, exactly. An event
+    /// counts each record it had no room for, whatever its kind, so the
+    /// samples lost are the sampling events' losses, and the rest the
+    /// sideband's. Events that sample nothing lose only other records.
+    pub fn counts(&self) -> Counts {
+        let sum = |fds: &mut dyn Iterator<Item = &OwnedFd>| {
+            fds.filter_map(|fd| sys::counts(fd).ok())
+                .fold((0, 0), |(count, lost), (more, also)| {
+                    (count + more, lost + also)
+                })
+        };
+        let (counted, lost) = sum(&mut self.rings.iter().map(sys::Ring::fd).chain(&self.followers));
+        let (_, sideband) = sum(&mut self.sideband.iter());
+        let (lost_samples, lost_records) = if self.sideband.is_empty() {
+            (0, lost)
+        } else {
+            (lost, sideband)
+        };
 
-        (counted, lost, self.untrusted())
+        Counts {
+            counted,
+            lost_samples,
+            lost_records,
+            untrusted: self.untrusted(),
+        }
     }
 
     /// Starts or stops every event, and every event a thread inherited
     /// from one, counting and sampling.
     pub fn enable(&self, on: bool) {
-        for fd in self.rings.iter().map(sys::Ring::fd).chain(&self.followers) {
+        for fd in self
+            .rings
+            .iter()
+            .map(sys::Ring::fd)
+            .chain(&self.followers)
+            .chain(&self.sideband)
+        {
             let _ = sys::enable(fd, on);
         }
     }
@@ -437,8 +506,22 @@ fn collection_buffer(options: &EventOptions) -> Option<Mutex<Vec<u8>>> {
         .then(|| Mutex::new(Vec::new()))
 }
 
-/// The attributes of every event: `options`' samples, with every record
-/// of mappings and threads beside them, and `start`'s flags.
+/// The flags of the records beside the samples: what each process maps and
+/// names, its threads' lifetimes, and with `switches` their context
+/// switches.
+const fn sideband_flags(switches: bool) -> u64 {
+    use sys::flag;
+    flag::MMAP
+        | flag::MMAP2
+        | flag::COMM
+        | flag::COMM_EXEC
+        | flag::TASK
+        | if switches { flag::CONTEXT_SWITCH } else { 0 }
+}
+
+/// The attributes of the events that own the rings: `options`' samples,
+/// and `start`'s flags. Events that sample nothing write the records
+/// beside samples themselves; otherwise [`sideband_attr`]'s do.
 fn attr(options: &EventOptions, start: u64) -> sys::Attr {
     use sys::flag;
     let mut attr = sys::Attr {
@@ -452,11 +535,6 @@ fn attr(options: &EventOptions, start: u64) -> sys::Attr {
                 flag::EXCLUDE_KERNEL
             }
             | flag::EXCLUDE_HV
-            | flag::MMAP
-            | flag::MMAP2
-            | flag::COMM
-            | flag::COMM_EXEC
-            | flag::TASK
             | flag::SAMPLE_ID_ALL
             | flag::EXCLUDE_CALLCHAIN_KERNEL
             | flag::USE_CLOCKID
@@ -469,8 +547,8 @@ fn attr(options: &EventOptions, start: u64) -> sys::Attr {
         ..sys::Attr::default()
     };
 
-    if options.switches {
-        attr.flags |= flag::CONTEXT_SWITCH;
+    if options.source == Source::Mappings {
+        attr.flags |= sideband_flags(options.switches);
     }
 
     match options.source {
@@ -497,6 +575,45 @@ fn attr(options: &EventOptions, start: u64) -> sys::Attr {
     }
 
     attr
+}
+
+/// The attributes of the events that write every record but samples into
+/// the rings, with `start`'s flags, where the rings' own events sample:
+/// a dummy event, which counts what it loses as the sampling events count
+/// theirs.
+fn sideband_attr(options: &EventOptions, start: u64) -> Option<sys::Attr> {
+    use sys::flag;
+    (options.source != Source::Mappings).then(|| sys::Attr {
+        size: sys::ATTR_SIZE,
+        kind: sys::TYPE_SOFTWARE,
+        config: sys::COUNT_SW_DUMMY,
+        sample_type: decode::SAMPLE_ID_TYPE,
+        flags: start
+            | flag::INHERIT
+            | flag::EXCLUDE_HV
+            | flag::SAMPLE_ID_ALL
+            | flag::USE_CLOCKID
+            | sideband_flags(options.switches),
+        read_format: sys::FORMAT_LOST,
+        clockid: libc::CLOCK_MONOTONIC,
+        ..sys::Attr::default()
+    })
+}
+
+/// One event of `attr` for `pid` on each of `cpus`, each writing into the
+/// ring of its CPU among `rings`.
+fn into_rings(
+    attr: &sys::Attr,
+    pid: i32,
+    cpus: &[u32],
+    rings: &[sys::Ring],
+) -> Result<Vec<OwnedFd>, OpenError> {
+    let events = open_each(attr, pid, cpus)?;
+    for ((fd, ring), &cpu) in events.iter().zip(rings).zip(cpus) {
+        sys::set_output(fd, ring.fd()).map_err(|error| OpenError::Event { cpu, error })?;
+    }
+
+    Ok(events)
 }
 
 /// One event of `attr` for `pid` on each of `cpus` with its ring, the rings'
@@ -1272,6 +1389,54 @@ mod tests {
             let shown = format!("{:#}", anyhow::Error::from(error));
             assert_eq!(shown.matches("Invalid argument").count(), 1, "{shown}");
         }
+    }
+
+    /// A ring never drained fills at once and loses the rest. A program
+    /// that switches threads far more often than its CPU time makes
+    /// samples loses many more records than it could samples, and the
+    /// samples counted lost are only those its CPU time allowed: about the
+    /// 50 ms it spins in its own code once its threads stop switching.
+    #[test]
+    fn a_full_ring_counts_the_samples_it_lost_apart_from_other_records() {
+        const PERIOD_NS: u64 = 1_000_000;
+        let options = EventOptions {
+            source: Source::Clock {
+                period: Duration::from_nanos(PERIOD_NS),
+            },
+            stack_bytes: 512,
+            kernel: false,
+            ring_pages: 1,
+            switches: true,
+        };
+        let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("build/test-programs/profile-switches");
+        let launched = launch(
+            Command::new(program),
+            &options,
+            LaunchOptions::default(),
+            |_, _| Ok(()),
+        )
+        .expect("launch the program");
+        let status = launched
+            .exit
+            .join()
+            .expect("the launch thread ends")
+            .expect("the program exits");
+        assert!(status.success(), "{status}");
+
+        let counts = launched.events.counts();
+        // Each event's count is sampled once a whole period of it passes,
+        // so each CPU's event may hold one period's part over.
+        let possible = counts.counted / PERIOD_NS + launched.events.cpus.len() as u64;
+        assert!(
+            (1..=possible).contains(&counts.lost_samples),
+            "lost {counts:?}, but {possible} samples were possible"
+        );
+        // Each of 20,000 rounds switches each thread out and in.
+        assert!(
+            counts.lost_records > 10 * possible,
+            "lost {counts:?}, though the ring was never read"
+        );
     }
 
     #[test]

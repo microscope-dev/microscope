@@ -733,6 +733,13 @@ fn report_losses(profile: &Profile) {
             lost as f64 * 100.0 / total as f64
         );
     }
+    let records = profile.lost_records();
+    if records > 0 {
+        eprintln!(
+            "microscope: the kernel dropped {} of mappings, thread names, and context switches",
+            plural(records, "record")
+        );
+    }
 }
 
 /// Hands the profile written to `path` to the agent, and prints its link
@@ -1417,6 +1424,14 @@ fn summary(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
             out,
             "The kernel dropped {lost} of {total} samples ({:.1}%).",
             lost as f64 * 100.0 / total as f64
+        )?;
+    }
+    let records = profile.lost_records();
+    if records > 0 {
+        writeln!(
+            out,
+            "The kernel dropped {} of mappings, thread names, and context switches.",
+            plural(records, "record")
         )?;
     }
     if let Some(warning) = profile.setting("ring warning") {

@@ -514,6 +514,11 @@ pub enum AccountKind {
     /// Samples the kernel dropped because a ring was full.
     LostSamples = 1,
 
+    /// Other records the kernel dropped because a ring was full: of
+    /// mappings, names, threads, and context switches. A recording before
+    /// these were counted apart counts them among the samples.
+    LostRecords = 30,
+
     /// Times the kernel throttled a sampling event.
     Throttles = 2,
 
